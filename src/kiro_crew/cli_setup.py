@@ -16,10 +16,6 @@ from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 from kiro_crew.acp.client import KIRO_CLI_BIN
-from kiro_crew.aim_agents import (
-    install_cc_plugin,
-    installed_kiro_packages_missing_from_cc,
-)
 from kiro_crew.browser.setup import (
     ensure_playwright_installed,
     generate_playwright_config,
@@ -318,9 +314,6 @@ def _setup(agent_only: bool = False, electron_only: bool = False, clean: bool = 
                 skill_path.unlink()
     except Exception as exc:
         print(f"  ⚠️  Conductor skill generation failed: {exc}")
-
-    # 2d. Offer to install missing capability packages for Claude Code (if using CC provider)
-    _maybe_sync_cc_plugins()
 
     if agent_only:
         print("\n👻 Done! Try: kirocrew gateway")
@@ -722,53 +715,3 @@ def _maybe_setup_custom_domain() -> None:
             )
     except Exception:
         pass
-
-
-def _maybe_sync_cc_plugins() -> None:
-    """Prompt user to install missing capability packages for Claude Code.
-
-    Only activates when the configured provider is ``claude_code``.
-    Does NOT auto-install — prompts the user for opt-in. In the public build
-    the package source is optional, so this is typically a no-op.
-    """
-    try:
-        cfg = KiroCrewConfig.load()
-    except Exception:
-        return
-    if cfg.agent.provider != "claude_code":
-        return
-
-    try:
-        missing = installed_kiro_packages_missing_from_cc()
-    except Exception:
-        return
-
-    if not missing:
-        return
-
-    print("\n── Claude Code Capability Parity ──\n")
-    print(f"  Found {len(missing)} capability package(s) not yet installed for Claude Code:")
-    for pkg in missing:
-        print(f"    - {pkg}")
-
-    try:
-        answer = input(f"\n  Install {len(missing)} package(s) for Claude Code? [Y/n] ").strip()
-    except (EOFError, KeyboardInterrupt):
-        print("\n  Skipped.")
-        return
-
-    if answer.lower() in ("n", "no"):
-        print("  Skipped. Run `kirocrew aim sync-cc` later to install.")
-        return
-
-    successes = 0
-    for pkg in missing:
-        print(f"  Installing {pkg}...", end=" ", flush=True)
-        ok, msg = install_cc_plugin(pkg, standalone=True)
-        if ok:
-            print("done")
-            successes += 1
-        else:
-            print(f"FAILED: {msg}")
-
-    print(f"  ✅ {successes}/{len(missing)} packages installed for Claude Code")

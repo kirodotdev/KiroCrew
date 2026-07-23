@@ -1,13 +1,13 @@
 import { useState, useMemo, useRef, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { RefreshCw, Plug, AlertTriangle, ArrowUp, Check, ChevronRight, Zap, X } from 'lucide-react'
+import { RefreshCw, Plug, AlertTriangle, Check, ChevronRight, Zap, X } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { api } from '../../api/client'
 import { Card, Btn, Badge, SearchInput, ContentSkeleton } from '../../components/ui'
 import InfoTip from '../../components/InfoTip'
 import { useProvider } from '../../providers'
 import McpRegistryCard from '../../components/McpRegistryCard'
-import type { McpServer, McpApplyChange, McpScopePresence } from '../../types'
+import type { McpServer, McpApplyChange, McpScopePresence, McpGlobalScope } from '../../types'
 import { useSortableTable } from '../../hooks/useSortableTable'
 import SortableHeader from '../../components/SortableHeader'
 
@@ -15,7 +15,9 @@ async function fetchServers(): Promise<McpServer[]> {
   return await api.mcpServers()
 }
 
-type ScopeKey = 'kirocrew' | 'kiroGlobal' | 'ccGlobal'
+// A scope key: the core scopes 'kirocrew' / 'kiroGlobal', or a provider scope
+// id like 'ccGlobal' contributed at runtime via the extra_mcp_scopes() seam.
+type ScopeKey = string
 
 // Per-server pending overrides keyed by server name.
 type PendingChange = {
@@ -23,16 +25,13 @@ type PendingChange = {
   uninstall?: boolean
 }
 
-const DEFAULT_PRESENCE: McpScopePresence = { kirocrew: true, kiroGlobal: false, ccGlobal: false }
+const DEFAULT_PRESENCE: McpScopePresence = { kirocrew: true, kiroGlobal: false }
 
 function effectivePresence(s: McpServer, pending: PendingChange | undefined): McpScopePresence {
+  // Spread so provider scopes (e.g. ccGlobal) carried on the server's presence
+  // survive; DEFAULT_PRESENCE guarantees the core scopes are always defined.
   const base = s.presence || DEFAULT_PRESENCE
-  const override = pending?.scopes || {}
-  return {
-    kirocrew: override.kirocrew ?? base.kirocrew,
-    kiroGlobal: override.kiroGlobal ?? base.kiroGlobal,
-    ccGlobal: override.ccGlobal ?? base.ccGlobal,
-  }
+  return { ...DEFAULT_PRESENCE, ...base, ...(pending?.scopes || {}) } as McpScopePresence
 }
 
 function hasPendingScopeChange(s: McpServer, pending: PendingChange | undefined): boolean {
@@ -103,11 +102,9 @@ export default function McpTab() {
   // component is gone — that throws "window is not defined" once the test
   // environment (jsdom) is torn down and fails the build.
   const applyMsgTimer = useRef<ReturnType<typeof setTimeout>>()
-  const updateMsgTimer = useRef<ReturnType<typeof setTimeout>>()
   useEffect(
     () => () => {
       clearTimeout(applyMsgTimer.current)
-      clearTimeout(updateMsgTimer.current)
     },
     []
   )
@@ -115,6 +112,16 @@ export default function McpTab() {
   const { data: servers = [], isLoading, refetch } = useQuery<McpServer[]>({
     queryKey: ['mcp-servers'],
     queryFn: fetchServers,
+  })
+
+  // Provider-specific global scopes contributed via the extra_mcp_scopes()
+  // seam (CPP). Public build returns [] → the Globals column shows only the
+  // core "Kiro" badge; a companion returns e.g. [{id:'ccGlobal',label:'Claude'}]
+  // and the column re-surfaces that scope's toggle without any core edit.
+  const { data: extraScopes = [] } = useQuery<McpGlobalScope[]>({
+    queryKey: ['mcp-global-scopes'],
+    queryFn: async () => (await api.mcpGlobalScopes()).scopes || [],
+    staleTime: Infinity,
   })
 
   const pendingCount = useMemo(() => {
@@ -209,7 +216,12 @@ export default function McpTab() {
         const eff = effectivePresence(s, p)
         change.kirocrew = eff.kirocrew
         change.kiroGlobal = eff.kiroGlobal
-        change.ccGlobal = eff.ccGlobal
+        // Seam scopes: send each provider scope's effective presence so the
+        // backend preserves/updates it. Omitting one means "preserve" backend
+        // side, but we send it explicitly to reflect any pending toggle.
+        for (const sc of extraScopes) {
+          change[sc.id as `${string}Global`] = !!eff[sc.id]
+        }
         const tools = pendingTools[s.name]
         if (tools && Object.keys(tools).length > 0) {
           change.toolOverrides = { ...tools }
@@ -237,22 +249,6 @@ export default function McpTab() {
     setApplyMsg('')
   }
 
-  const [updateMsg, setUpdateMsg] = useState('')
-  const updateAll = useMutation({
-    mutationFn: async () => {
-      const r = await api.aimUpdate('mcp')
-      if (r.error) throw new Error(r.error)
-      return r
-    },
-    onSuccess: (r) => {
-      setUpdateMsg(r.output || 'Updated')
-      queryClient.invalidateQueries({ queryKey: ['mcp-servers'] })
-      queryClient.invalidateQueries({ queryKey: ['mcp-registry'] })
-      clearTimeout(updateMsgTimer.current)
-      updateMsgTimer.current = setTimeout(() => setUpdateMsg(''), 8000)
-    },
-  })
-
   const probe = useMutation({
     mutationFn: () => api.mcpProbe(),
     onSuccess: (data) => {
@@ -278,12 +274,10 @@ export default function McpTab() {
     <McpRegistryCard />
     <h4 className="text-sm font-semibold text-text-strong mt-4 mb-2 flex items-center gap-2">
       Installed Integrations
-      <InfoTip text={`MCP servers across KiroCrew and your interactive ${provider.displayName}/Kiro/Claude globals. The KiroCrew badge shows if it'll load in KiroCrew sessions; the Globals badges show if it's shared to your interactive provider globals. Click to toggle, then Apply.`} />
+      <InfoTip text={`MCP servers across KiroCrew and your interactive ${provider.displayName}/Kiro globals. The KiroCrew badge shows if it'll load in KiroCrew sessions; the Globals badge shows if it's shared to your interactive Kiro global. Click to toggle, then Apply.`} />
     </h4>
     <Card>
-      {updateAll.error && <div className="mb-3 text-[13px] text-danger">{(updateAll.error as Error).message}</div>}
       {apply.error && <div className="mb-3 text-[13px] text-danger">{(apply.error as Error).message}</div>}
-      {updateMsg && <div className="mb-3 text-[13px] text-ok animate-rise"><Check className="lucide-inline" /> {updateMsg}</div>}
       {applyMsg && <div className="mb-3 text-[13px] text-ok animate-rise"><Check className="lucide-inline" /> {applyMsg}</div>}
 
       {/* Pending-changes banner */}
@@ -309,7 +303,6 @@ export default function McpTab() {
         </div>
         <div className="ml-auto flex items-center gap-2">
           <Btn onClick={() => probe.mutate()} disabled={probe.isPending} aria-label="Probe MCP servers"><RefreshCw size={14} className={probe.isPending ? 'animate-spin' : ''} /></Btn>
-          <Btn onClick={() => updateAll.mutate()} disabled={updateAll.isPending}>{updateAll.isPending ? <><ArrowUp className="lucide-inline" /> Updating…</> : <><ArrowUp className="lucide-inline" /> Update packages</>}</Btn>
         </div>
       </div>
       <div className="flex gap-2 flex-wrap mb-3">
@@ -362,14 +355,17 @@ export default function McpTab() {
                       disabled={pendingUninstall}
                       onClick={() => toggleScope(s.name, 'kiroGlobal', !eff.kiroGlobal, base)}
                     />
-                    <ScopeBadge
-                      label="Claude"
-                      scope="ccGlobal"
-                      active={eff.ccGlobal}
-                      pendingChange={!pendingUninstall && !!p?.scopes && 'ccGlobal' in p.scopes}
-                      disabled={pendingUninstall}
-                      onClick={() => toggleScope(s.name, 'ccGlobal', !eff.ccGlobal, base)}
-                    />
+                    {extraScopes.map(sc => (
+                      <ScopeBadge
+                        key={sc.id}
+                        label={sc.label}
+                        scope={sc.id}
+                        active={!!eff[sc.id]}
+                        pendingChange={!pendingUninstall && !!p?.scopes && sc.id in p.scopes}
+                        disabled={pendingUninstall}
+                        onClick={() => toggleScope(s.name, sc.id, !eff[sc.id], base)}
+                      />
+                    ))}
                   </div>
                 </td>
                 <td className="px-2.5 py-2 border-b border-border text-sm">

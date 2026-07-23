@@ -13,10 +13,13 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
+
+if TYPE_CHECKING:
+    from kiro_crew.platform.interfaces import McpScope
 
 from kiro_crew import security, sso_status
-from kiro_crew.platform.interfaces import InterceptDecision
+from kiro_crew.platform.interfaces import CapabilityResult, InterceptDecision
 
 # ``agent``, ``sandbox``, ``embeddings``, ``apps.registry`` and ``slack.enterprise``
 # import ``kiro_crew.platform`` at module-load time, so importing them at the top
@@ -209,12 +212,62 @@ class DefaultEmbeddingSource:
 
 
 class DefaultMcpToolingProvider:
-    """No extra MCP servers or skills beyond the managed set."""
+    """No extra MCP servers, skills, or provider scopes beyond the managed set."""
 
     def extra_mcp_servers(self) -> Dict[str, dict]:
         return {}
 
     def extra_skills(self) -> List[Path]:
+        return []
+
+    def extra_mcp_scopes(self) -> List["McpScope"]:
+        return []
+
+
+class DefaultAgentCatalogProvider:
+    """No edition agent-catalog rows — discovery is the on-disk scan only."""
+
+    def builtin_agents(self) -> List[Dict[str, Any]]:
+        return []
+
+
+class DefaultPromptSourceProvider:
+    """No edition prompt/SOP roots — only user-authored prompts are listed."""
+
+    def prompt_source_roots(self) -> List[Path]:
+        return []
+
+
+class DefaultCapabilityManager:
+    """Unavailable capability manager — the public edition ships no external
+    package manager, so ``/api/capability/*`` report 503. Every operation is a
+    fail-closed no-op that MUST NOT be reached (handlers guard on ``available()``)."""
+
+    def available(self) -> bool:
+        return False
+
+    async def list_mcp(self) -> List[Dict[str, Any]]:
+        return []
+
+    async def install_mcp(self, server_id: str) -> "CapabilityResult":
+        return CapabilityResult(ok=False, message="capability manager not available")
+
+    async def uninstall_mcp(self, server_id: str) -> "CapabilityResult":
+        return CapabilityResult(ok=False, message="capability manager not available")
+
+    async def registry(self) -> List[Dict[str, Any]]:
+        return []
+
+    async def list_skills(self) -> List[Dict[str, Any]]:
+        return []
+
+    async def install_skill(self, package: str) -> "CapabilityResult":
+        return CapabilityResult(ok=False, message="capability manager not available")
+
+    async def uninstall_skill(self, package: str) -> "CapabilityResult":
+        return CapabilityResult(ok=False, message="capability manager not available")
+
+    async def list_agents(self) -> List[Dict[str, Any]]:
         return []
 
 

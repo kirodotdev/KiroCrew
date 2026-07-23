@@ -71,14 +71,14 @@ def _patch_statfns(monkeypatch, spec, *, uid=4242):
 
 
 class TestAugmentedPath:
-    def test_prepends_aim_mcp_servers(self) -> None:
+    def test_prepends_extra_dirs(self) -> None:
         result = augmented_path("/usr/bin")
         dirs = result.split(os.pathsep)
         # base_path sits after the well-known extras but BEFORE the
         # interpreter-dir fallback (the final entry).
         assert dirs[-2] == "/usr/bin"
         assert dirs[-1] == str(Path(sys.executable).parent)
-        assert any(".aim/mcp-servers" in d for d in dirs)
+        assert any(".local/bin" in d for d in dirs)
 
     def test_appends_running_interpreter_bin_dir_last(self, monkeypatch) -> None:
         """The venv's own console-scripts dir must be discoverable — but LAST.
@@ -99,12 +99,12 @@ class TestAugmentedPath:
         # base_path still outranks the interpreter dir.
         assert dirs.index("/usr/bin") < dirs.index(str(Path(fake_exe).parent))
 
-    def test_aim_before_toolbox(self) -> None:
+    def test_local_bin_before_toolbox(self) -> None:
         result = augmented_path("")
         dirs = result.split(os.pathsep)
-        aim_idx = next(i for i, d in enumerate(dirs) if ".aim/mcp-servers" in d)
+        local_idx = next(i for i, d in enumerate(dirs) if ".local/bin" in d)
         toolbox_idx = next(i for i, d in enumerate(dirs) if ".toolbox/bin" in d)
-        assert aim_idx < toolbox_idx
+        assert local_idx < toolbox_idx
 
     def test_empty_base(self) -> None:
         result = augmented_path("")
@@ -113,7 +113,7 @@ class TestAugmentedPath:
 
     def test_no_arg_defaults_empty(self) -> None:
         result = augmented_path()
-        assert ".aim/mcp-servers" in result
+        assert ".local/bin" in result
 
     def test_includes_nvm_node_bins(self, tmp_path, monkeypatch) -> None:
         # Simulate a home with two nvm-installed node versions.

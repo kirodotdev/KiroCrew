@@ -1,4 +1,4 @@
-"""Tests for agent discovery in ``aim_agents.py``.
+"""Tests for agent discovery in ``agent_discovery.py``.
 
 Focus on the robustness/security guards around scanning ``~/.kiro/agents/*.json``:
 - macOS AppleDouble (``._*.json``) and non-UTF-8 files must not crash the scan.
@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from kiro_crew.aim_agents import clear_list_agents_cache, list_agents
+from kiro_crew.agent_discovery import clear_list_agents_cache, list_agents
 
 
 @pytest.fixture
@@ -137,10 +137,10 @@ class TestListAgentsDedup:
         a = next((x for x in agents if x.name == "myagent"), None)
         assert a is not None
         assert a.package == "MyPkg"
-        assert a.source == "aim"
+        assert a.source == "package"
 
     def test_aim_kirocrew_package_source(self, tmp_path: Path) -> None:
-        """AIM agent from KiroCrewAICapabilities gets source='kirocrew'."""
+        """A package-installed agent (e.g. KiroCrewAICapabilities) gets source='package'."""
         agents_dir = tmp_path / "agents"
         agents_dir.mkdir()
         (agents_dir / "KiroCrewAICapabilities-myskill.json").write_text(
@@ -149,7 +149,7 @@ class TestListAgentsDedup:
         agents = list_agents(agents_dir=agents_dir)
         a = next((x for x in agents if x.name == "myskill"), None)
         assert a is not None
-        assert a.source == "kirocrew"
+        assert a.source == "package"
 
     def test_aim_package_preferred_over_builtin(self, tmp_path: Path) -> None:
         """AIM-packaged agent replaces same-name builtin in dedup."""

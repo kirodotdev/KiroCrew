@@ -1622,19 +1622,6 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
     )
     cfg_sub.add_parser("edit", help="Open config in $EDITOR")
 
-    # aim
-    aim_parser = sub.add_parser(
-        "aim",
-        help="Manage capability-package parity across providers",
-        epilog="""
-Examples:
-  kirocrew aim sync-cc        # Install capability packages for Claude Code
-""",
-        formatter_class=_fmt,
-    )
-    aim_sub = aim_parser.add_subparsers(dest="aim_action")
-    aim_sub.add_parser("sync-cc", help="Install capability packages as CC plugins")
-
     if len(sys.argv) > 1 and sys.argv[1] == "mcp-playwright-proxy":
         from kiro_crew.mcp_playwright_proxy import run_proxy
 
@@ -1911,8 +1898,6 @@ Examples:
         _handle_workspace(args)
     elif args.command == "app":
         _handle_app(args)
-    elif args.command == "aim":
-        _handle_aim(args)
     else:
         print(BANNER)
         parser.print_help()
@@ -1928,7 +1913,6 @@ from kiro_crew.cli_commands import (  # noqa: E402
     _artifact,
     _cron,
     _handle_agent,
-    _handle_aim,
     _handle_app,
     _handle_workspace,
     _learn,

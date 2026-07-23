@@ -7,14 +7,37 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.security import is_sensitive_path
-from kiro_crew.skills import aim_skills_dir, skills_dir
+from kiro_crew.skills import skills_dir
+
+if TYPE_CHECKING:
+    from kiro_crew.platform.interfaces import CapabilityManager
 
 logger = logging.getLogger(__name__)
+
+
+def _capability_manager() -> "CapabilityManager":
+    """The edition's external capability manager (CPP seam).
+
+    Lives in the shared layer (not a leaf handler) so every consumer —
+    ``agents.py`` handlers, ``mcp.py`` uninstall, and the skill/prompt listers
+    here — imports it DOWNWARD with no circular dependency. Operations-based: the
+    edition owns its CLI grammar, output parsing, and error translation. Fails closed to
+    an unavailable ``DefaultCapabilityManager`` so ``/api/capability/*`` degrade
+    to 503 rather than crashing.
+    """
+    from kiro_crew.platform.context import current_context, safe_context_call
+    from kiro_crew.platform.defaults import DefaultCapabilityManager
+
+    return safe_context_call(
+        lambda: current_context().capability_manager,
+        fallback_factory=DefaultCapabilityManager,
+        log_message="capability_manager lookup failed; treating as unavailable",
+    )
 
 
 def _get_memory(state: DashboardState):
@@ -62,131 +85,39 @@ def _get_skills(state: DashboardState):
     return state._standalone_skills  # type: ignore[attr-defined]
 
 
+def _edition_skill_roots() -> list[Path]:
+    """Return edition-contributed SKILL.md source roots (CPP seam).
+
+    Reads ``McpToolingProvider.extra_skills()`` fail-closed through
+    ``safe_context_call`` (public Default: ``[]``), so on a vanilla OSS install
+    there are no roots to discover and the AIM-flavored skill helpers below
+    return "nothing found" rather than globbing a hardcoded ``~/.aim``.
+    Deferred import (sel.py pattern) so this module never imports the platform
+    package at module load.
+    """
+    from kiro_crew.platform.context import current_context, safe_context_call
+
+    roots: list[Path] = safe_context_call(
+        lambda: list(current_context().mcp_tooling.extra_skills()),
+        fallback_factory=list,
+        log_message="extra_skills lookup failed; using none",
+    )
+    return [Path(r) for r in roots]
+
+
 def _resolve_aim_skill_path(name: str) -> Path | None:
-    """Find SKILL.md for an AIM skill by name (supports nested paths)."""
-    aim_dir = Path.home() / ".aim"
-    for pattern in (f"skills/*/{name}/SKILL.md", f"packages/*/skills/*/{name}/SKILL.md"):
-        for p in aim_dir.glob(pattern):
-            return p
+    """Find SKILL.md for an edition-contributed skill by leaf name.
+
+    Iterates the edition skill roots (``McpToolingProvider.extra_skills()``)
+    instead of globbing ``~/.aim`` directly. Within each root a skill lives at
+    either ``<root>/<pkg>/<name>/SKILL.md`` or ``<root>/<name>/SKILL.md``; the
+    first match (roots in seam order) wins.
+    """
+    for root in _edition_skill_roots():
+        for pattern in (f"*/{name}/SKILL.md", f"{name}/SKILL.md"):
+            for p in root.glob(pattern):
+                return p
     return None
-
-
-def _aim_skill_path_index() -> dict[str, Path]:
-    """Build a ``{skill_name: SKILL.md path}`` index by globbing ``~/.aim`` ONCE.
-
-    :func:`_resolve_aim_skill_path` does two globs of the whole ``~/.aim`` tree
-    per lookup; calling it once per skill is O(2N) tree walks for N skills.
-    When resolving *many* skills (see :func:`_parse_aim_skills`) build this
-    index up front instead — two globs total — then do dict lookups.
-
-    Precedence matches :func:`_resolve_aim_skill_path`, which tries the
-    ``skills/*`` layout before ``packages/*/skills/*``: index the winning
-    layout first, then use ``setdefault`` on the second pass so it only fills
-    names the first pass didn't already claim.
-    """
-    aim_dir = Path.home() / ".aim"
-    index: dict[str, Path] = {}
-    for p in aim_dir.glob("skills/*/*/SKILL.md"):
-        index.setdefault(p.parent.name, p)
-    for p in aim_dir.glob("packages/*/skills/*/*/SKILL.md"):
-        index.setdefault(p.parent.name, p)
-    return index
-
-
-async def _aim_list_stdout() -> str | None:
-    """Run ``aim skills list`` and return its stdout, or None on failure.
-
-    This is the only *async* part of AIM skill discovery — the subprocess
-    is awaited on the event loop (non-blocking). Parsing the output, which
-    does synchronous ``~/.aim`` globbing per skill, is split into the sync
-    :func:`_parse_aim_skills` so callers can run it off the loop.
-    """
-    import asyncio
-
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "aim", "skills", "list",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=15)
-        if proc.returncode != 0:
-            return None
-    except asyncio.TimeoutError:
-        try:
-            proc.kill()
-        except ProcessLookupError:
-            pass
-        await proc.communicate()
-        return None
-    except OSError:
-        # aim missing (FileNotFoundError), not executable (PermissionError),
-        # or exec failing under resource limits (other OSError). AIM is one of
-        # three skill sources; a failure here must degrade to "no aim skills",
-        # never propagate and 500 the whole /api/skills (which would also hide
-        # the unrelated kirocrew + kiro sources).
-        return None
-    return stdout.decode(errors="replace")
-
-
-def _parse_aim_skills(stdout: str | None) -> list[dict[str, Any]]:
-    """Parse ``aim skills list`` output into skill metadata dicts.
-
-    Synchronous and filesystem-heavy: resolves each skill's SKILL.md path
-    against a one-shot ``~/.aim`` index (:func:`_aim_skill_path_index`).
-    Callers on the asyncio event loop MUST run this in an executor so it never
-    blocks the loop. Returns ``[]`` when *stdout* is None (subprocess failed).
-    """
-    import re
-
-    if stdout is None:
-        return []
-
-    # Glob ~/.aim ONCE up front, then look up each skill by name — instead of
-    # two full-tree globs per skill (O(2N) walks). Built lazily below so the
-    # empty/None-output paths pay nothing.
-    path_index: dict[str, Path] | None = None
-    result: list[dict[str, Any]] = []
-    pkg = ""
-    for line in stdout.splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-        # Package header: non-indented line (no leading spaces)
-        if not line.startswith(" ") and not line.startswith("Installed"):
-            pkg = stripped
-            continue
-        # Description line (check BEFORE skill line — both match `word: text`).
-        # Consume ANY "Description:" line here, even when it precedes the first
-        # skill (empty result / package mismatch): otherwise it falls through to
-        # the skill regex below, which matches "Description: text" and appends a
-        # bogus skill named "Description".
-        dm = re.match(r"^\s+Description:\s+(.+)", line)
-        if dm:
-            if result and result[-1]["package"] == pkg:
-                result[-1]["description"] = dm.group(1)
-            continue
-        # Skill line: "  name [vX.Y.Z]: display-name" or "  name: display-name"
-        m = re.match(r"^\s+(\S+)(?:\s+\[v[\d.]+\])?:\s+(.+)", line)
-        if m:
-            name = m.group(1)
-            if path_index is None:
-                path_index = _aim_skill_path_index()
-            resolved = path_index.get(name)
-            result.append(
-                {
-                    "key": f"aim/{name}",
-                    "name": name,
-                    "description": "",
-                    "path": str(resolved) if resolved else "",
-                    "dir": str(resolved.parent) if resolved else "",
-                    "always": False,
-                    "source": "aim",
-                    "package": pkg,
-                }
-            )
-
-    return result
 
 
 # ── Kiro-cli native skills (~/.kiro/skills/, <project>/.kiro/skills/) ──
@@ -469,7 +400,7 @@ def annotate_skills_with_agents(skills: list[dict[str, Any]]) -> None:
 
 def collect_skills_blocking(
     skills_loader: Any,
-    aim_stdout: str | None,
+    package_skills: list[dict[str, Any]],
     project_dir: Path | None,
 ) -> list[dict[str, Any]]:
     """Gather + annotate the full skill catalog. Runs ALL blocking FS work.
@@ -478,29 +409,73 @@ def collect_skills_blocking(
     every filesystem-heavy step in one call so the caller can offload the
     whole thing to a thread via ``run_in_executor`` — previously only the
     agent annotation was offloaded while ``list_skills()`` (os.walk +
-    per-file frontmatter reads), the AIM path globs, and
-    ``list_kiro_skills()`` (per-skill resolve + read) still ran on the event
-    loop and could stall it past the loop-stall watchdog on large catalogs.
+    per-file frontmatter reads) and ``list_kiro_skills()`` (per-skill resolve +
+    read) still ran on the event loop and could stall it past the loop-stall
+    watchdog on large catalogs.
 
     Steps, in the same order the handler used inline:
 
     1. ``skills_loader.list_skills()`` — kirocrew skills (default source).
-    2. ``_parse_aim_skills(aim_stdout)`` — AIM skills; the async ``aim``
-       subprocess must already have run (its stdout passed in), leaving only
-       the synchronous ``~/.aim`` path globs here.
+    2. ``package_skills`` — edition/package skills already fetched (structured
+       rows) from ``CapabilityManager.list_skills()``; the manager owns their
+       parsing, so nothing is parsed here.
     3. ``list_kiro_skills(project_dir)`` — open-standard kiro-cli skills.
     4. ``annotate_skills_with_agents(...)`` — ``loaded_by_agents`` per skill.
 
-    The subprocess is intentionally NOT run here (it needs the event loop);
-    the caller awaits it and hands us the stdout.
+    The capability-manager fetch is intentionally NOT done here (it is async);
+    the caller awaits it and hands us the structured rows.
     """
     result: list[dict[str, Any]] = skills_loader.list_skills()
     for s in result:
         s.setdefault("source", "kirocrew")
-    result.extend(_parse_aim_skills(aim_stdout))
+    _warn_skills_outside_roots(package_skills)
+    result.extend(package_skills)
     result.extend(list_kiro_skills(project_dir))
     annotate_skills_with_agents(result)
     return result
+
+
+def _warn_skills_outside_roots(package_skills: list[dict[str, Any]]) -> None:
+    """Log loudly for any ``CapabilityManager.list_skills()`` row whose path
+    falls outside every ``McpToolingProvider.extra_skills()`` root.
+
+    Enforces (at runtime, not just in the interface docstring) the containment
+    invariant the two Protocols share: the skill browser
+    (``/api/skills/package/<name>/tree`` + detail) resolves a skill's on-disk
+    path by searching those roots, so a listed row outside them lists in
+    ``/api/skills`` but 404s on tree/detail. An edition that satisfies both
+    seams independently can violate this; a loud warning turns an otherwise
+    silent, hard-to-diagnose 404 into an actionable log line. No-op in OSS
+    (``list_skills()`` returns ``[]``, so ``package_skills`` is empty).
+    """
+    if not package_skills:
+        return
+    roots = _edition_skill_roots()
+    if not roots:
+        return
+    resolved_roots = []
+    for r in roots:
+        try:
+            resolved_roots.append(r.resolve())
+        except OSError:
+            continue
+    for row in package_skills:
+        raw = row.get("dir") or row.get("path")
+        if not raw:
+            continue
+        try:
+            p = Path(raw).resolve()
+        except OSError:
+            continue
+        if not any(p == root or root in p.parents for root in resolved_roots):
+            logger.warning(
+                "skill %r (path %s) is outside every extra_skills() root %s — it "
+                "will list in /api/skills but 404 on tree/detail (CapabilityManager."
+                "list_skills / McpToolingProvider.extra_skills containment invariant)",
+                row.get("name") or row.get("key"),
+                raw,
+                [str(r) for r in resolved_roots],
+            )
 
 
 # ── Skill directory browser (tree + file content) ──
@@ -517,7 +492,7 @@ def _resolve_skill_root(name: str, state: DashboardState) -> Path | None:
     Accepts the same nested-name scheme used by the existing skill API:
     - ``foo`` → ``~/.kirocrew/skills/foo``
     - ``utils/tiny-url`` → ``~/.kirocrew/skills/utils/tiny-url``
-    - ``aim/<skill>`` → resolved via _resolve_aim_skill_path() lookup
+    - ``package/<skill>`` → resolved via _resolve_aim_skill_path() lookup
     - ``kiro-user/<skill>`` → ``~/.kiro/skills/<skill>``
     - ``kiro-workspace/<skill>`` → ``<project>/.kiro/skills/<skill>``
 
@@ -542,9 +517,9 @@ def _resolve_skill_root(name: str, state: DashboardState) -> Path | None:
         if proj is None:
             return None
         root = proj / ".kiro" / "skills"
-    elif name.startswith("aim/"):
+    elif name.startswith("package/"):
         # Locate via existing helper (sync version).
-        aim_name = name[len("aim/") :]
+        aim_name = name[len("package/") :]
         path = _resolve_aim_skill_path(aim_name)
         if not path:
             return None
@@ -576,14 +551,14 @@ def _resolve_skill_root(name: str, state: DashboardState) -> Path | None:
         if not rel or ".." in rel or rel.startswith("/") or rel.startswith("~"):
             return None
         # Root precedence must match SkillsLoader.load_skill(): kirocrew ->
-        # user extra_paths -> aim (lowest). Otherwise the tree endpoint could
-        # display a different directory than load_skill() actually reads.
+        # user extra_paths -> edition skill roots (lowest). Otherwise the tree
+        # endpoint could display a different directory than load_skill() reads.
         roots = [skills_dir()]
         try:
             roots.extend(Path(p).expanduser() for p in KiroCrewConfig.load().skills.extra_paths)
         except Exception:
             logger.debug("failed to load extra skill paths from config", exc_info=True)
-        roots.append(aim_skills_dir())
+        roots.extend(_edition_skill_roots())
 
         def _probe(r: Path) -> bool:
             try:

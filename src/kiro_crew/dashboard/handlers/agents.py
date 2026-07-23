@@ -8,7 +8,6 @@ import json
 import logging
 import os
 import re
-import shutil
 import subprocess
 import uuid
 from datetime import datetime, timezone
@@ -18,11 +17,7 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew import agent_state, model_registry
-from kiro_crew.aim_agents import (
-    install_cc_plugin,
-    installed_kiro_packages_missing_from_cc,
-    list_agents,
-)
+from kiro_crew.agent_discovery import list_agents
 from kiro_crew.config.loader import (
     KiroCrewAgentConfig,
     KiroCrewConfig,
@@ -37,11 +32,10 @@ from kiro_crew.dashboard.chat_utils import (
     _history_key_for,
     is_deprecated_model,
 )
+from kiro_crew.dashboard.handlers._shared import _capability_manager
 from kiro_crew.dashboard.state import DashboardState
-from kiro_crew.env import augmented_path
 from kiro_crew.executors import discovery_executor, maintenance_executor
 
-_VALID_PACKAGE_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9/_.-]*$")
 _MODEL_LIST_STDERR_TAIL_CHARS = 1000
 
 logger = logging.getLogger(__name__)
@@ -483,89 +477,22 @@ async def api_config_schema(request: web.Request) -> web.Response:
     return web.json_response({"entries": result})
 
 
-_AIM_TIMEOUT = 60
+_CAPABILITY_UNAVAILABLE = "capability manager not available"
 
 
-def _aim_cap_type() -> str:
-    """Return the AIM capability subcommand based on active provider.
-
-    A companion-registered backend uses 'plugins' while kiro-cli uses 'agents'.
-    """
-    cfg = KiroCrewConfig.load()
-    return "plugins" if cfg.agent.provider == "claude_code" else "agents"
-
-
-def _aim_path() -> str | None:
-    """Return the absolute path to the ``aim`` CLI, or None if not installed.
-
-    Uses the same PATH augmentation as :func:`_run_aim` so handler guards
-    don't false-negative when the gateway runs under systemd (or any other
-    non-login context) with a stripped ``$PATH``.
-    """
-    return shutil.which("aim", path=augmented_path(os.environ.get("PATH", "")))
-
-
-async def _run_aim(*args: str, timeout: int = _AIM_TIMEOUT) -> tuple[int, str]:
-    """Run an ``aim`` CLI command and return (returncode, combined_output).
-
-    ``aim`` is an optional, Amazon-internal package manager that is not
-    bundled with the public distribution.  When it is not resolvable on
-    PATH this returns a graceful failure ``(127, …)`` instead of raising,
-    so AIM-backed handlers become no-ops on a vanilla machine rather than
-    crashing with ``FileNotFoundError``.
-    """
-    env = {**os.environ}
-    env["PATH"] = augmented_path(env.get("PATH", ""))
-    aim_bin = shutil.which("aim", path=env["PATH"])
-    if not aim_bin:
-        return (127, "aim CLI not available")
-    proc = await asyncio.create_subprocess_exec(
-        aim_bin,
-        *args,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,  # merge stderr into stdout
-        env=env,
-    )
+async def api_capability_mcp_list(request: web.Request) -> web.Response:
+    """GET /api/capability/mcp — list installed MCP servers (edition capability manager)."""
+    mgr = _capability_manager()
+    if not mgr.available():
+        return web.json_response({"error": _CAPABILITY_UNAVAILABLE}, status=503)
     try:
-        out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except asyncio.TimeoutError:
-        try:
-            proc.kill()
-        except ProcessLookupError:
-            pass
-        await proc.communicate()
-        return (1, f"aim command timed out after {timeout}s")
-    output = out.decode(errors="replace") if out else ""
-    return (proc.returncode or 0, output)
-
-
-def _friendly_aim_error(raw: str, package: str) -> str:
-    """Translate raw ``aim`` CLI errors into user-friendly messages."""
-    lower = raw.lower()
-    if "couldn't find a version set" in lower or "failed to parse" in lower:
-        return f"Package '{package}' not found. Check the name and try again."
-    if "not installed" in lower:
-        return f"Package '{package}' is not installed."
-    # Strip ANSI codes and truncate
-    clean = re.sub(r"\x1b\[[0-9;]*m", "", raw).strip()
-    return clean[:500] if clean else "Unknown error"
-
-
-async def api_aim_mcp_list(request: web.Request) -> web.Response:
-    """GET /api/aim/mcp — list installed AIM MCP servers."""
-    if not _aim_path():
-        return web.json_response({"error": "aim CLI not found"}, status=503)
-    try:
-        rc, out = await _run_aim("mcp", "list", "--installed")
-        if rc != 0:
-            return web.json_response({"error": out[:500]}, status=500)
-        return web.json_response({"installed": out.strip()})
+        return web.json_response(await mgr.list_mcp())
     except Exception as exc:
         return _err500(exc)
 
 
-async def api_aim_mcp_install(request: web.Request) -> web.Response:
-    """POST /api/aim/mcp/install — install MCP server via AIM."""
+async def api_capability_mcp_install(request: web.Request) -> web.Response:
+    """POST /api/capability/mcp/install — install an MCP server via the capability manager."""
     try:
         body = await request.json()
     except Exception:
@@ -573,10 +500,13 @@ async def api_aim_mcp_install(request: web.Request) -> web.Response:
     server_id = body.get("server_id", "").strip()
     if not server_id:
         return web.json_response({"error": "server_id required"}, status=400)
+    mgr = _capability_manager()
+    if not mgr.available():
+        return web.json_response({"error": _CAPABILITY_UNAVAILABLE}, status=503)
     try:
-        rc, out = await _run_aim("mcp", "install", server_id, timeout=120)
-        if rc != 0:
-            return web.json_response({"error": out[:500]}, status=500)
+        res = await mgr.install_mcp(server_id)
+        if not res.ok:
+            return web.json_response({"error": (res.message or "install failed")[:500]}, status=500)
         from kiro_crew.dashboard.handlers.mcp import (  # noqa: E402 circular: mcp imports agents
             _sync_mcp_to_agent,
         )
@@ -590,8 +520,8 @@ async def api_aim_mcp_install(request: web.Request) -> web.Response:
         return _err500(exc)
 
 
-async def api_aim_mcp_uninstall(request: web.Request) -> web.Response:
-    """POST /api/aim/mcp/uninstall — uninstall MCP server via AIM."""
+async def api_capability_mcp_uninstall(request: web.Request) -> web.Response:
+    """POST /api/capability/mcp/uninstall — uninstall an MCP server via the capability manager."""
     try:
         body = await request.json()
     except Exception:
@@ -599,10 +529,15 @@ async def api_aim_mcp_uninstall(request: web.Request) -> web.Response:
     server_id = body.get("server_id", "").strip()
     if not server_id:
         return web.json_response({"error": "server_id required"}, status=400)
+    mgr = _capability_manager()
+    if not mgr.available():
+        return web.json_response({"error": _CAPABILITY_UNAVAILABLE}, status=503)
     try:
-        rc, out = await _run_aim("mcp", "uninstall", server_id)
-        if rc != 0:
-            return web.json_response({"error": out[:500]}, status=500)
+        res = await mgr.uninstall_mcp(server_id)
+        if not res.ok:
+            return web.json_response(
+                {"error": (res.message or "uninstall failed")[:500]}, status=500
+            )
         from kiro_crew.dashboard.handlers.mcp import (  # noqa: E402 circular: mcp imports agents
             _sync_mcp_to_agent,
         )
@@ -616,21 +551,24 @@ async def api_aim_mcp_uninstall(request: web.Request) -> web.Response:
         return _err500(exc)
 
 
-async def api_aim_skills_list(request: web.Request) -> web.Response:
-    """GET /api/aim/skills — list installed AIM skill packages."""
-    if not _aim_path():
-        return web.json_response({"error": "aim CLI not found"}, status=503)
+async def api_capability_skills_list(request: web.Request) -> web.Response:
+    """GET /api/capability/skills — list installed skill packages (edition capability manager)."""
+    mgr = _capability_manager()
+    if not mgr.available():
+        return web.json_response({"error": _CAPABILITY_UNAVAILABLE}, status=503)
     try:
-        rc, out = await _run_aim("skills", "list")
-        if rc != 0:
-            return web.json_response({"error": out[:500]}, status=500)
-        return web.json_response({"skills": out.strip()})
+        return web.json_response(await mgr.list_skills())
     except Exception as exc:
         return _err500(exc)
 
 
-async def api_aim_skills_install(request: web.Request) -> web.Response:
-    """POST /api/aim/skills/install — install AIM skill package."""
+async def api_capability_skills_install(request: web.Request) -> web.Response:
+    """POST /api/capability/skills/install — install a skill package.
+
+    Takes only ``package``; any version/source resolution is owned by the
+    edition's capability manager (no Amazon-internal version-set field is
+    exposed on the public API).
+    """
     try:
         body = await request.json()
     except Exception:
@@ -638,18 +576,19 @@ async def api_aim_skills_install(request: web.Request) -> web.Response:
     package = body.get("package", "").strip()
     if not package:
         return web.json_response({"error": "package required"}, status=400)
-    vs = body.get("version_set", "").strip()
+    mgr = _capability_manager()
+    if not mgr.available():
+        return web.json_response({"error": _CAPABILITY_UNAVAILABLE}, status=503)
     try:
-        args = ["skills", "install", package]
-        if vs:
-            args.extend(["--version-set", vs])
-        rc, out = await _run_aim(*args, timeout=120)
-        if rc != 0:
-            return web.json_response({"error": _friendly_aim_error(out, package)}, status=500)
-        # Regenerate agent config to pick up new skill paths
+        res = await mgr.install_skill(package)
+        if not res.ok:
+            return web.json_response({"error": (res.message or "install failed")[:500]}, status=500)
+        # Regenerate agent config to pick up new skill paths. install_agent()
+        # does filesystem-heavy config rebuilding — offload it so it never
+        # blocks the asyncio event loop (chat/heartbeat) under a slow FS.
         from kiro_crew.agent import install_agent  # noqa: F811
 
-        install_agent()
+        await asyncio.to_thread(install_agent)
         state: DashboardState = request.app["state"]
         state.push_refresh("agents")
         return web.json_response({"ok": True, "package": package})
@@ -657,8 +596,8 @@ async def api_aim_skills_install(request: web.Request) -> web.Response:
         return _err500(exc)
 
 
-async def api_aim_skills_uninstall(request: web.Request) -> web.Response:
-    """POST /api/aim/skills/uninstall — uninstall AIM skill package."""
+async def api_capability_skills_uninstall(request: web.Request) -> web.Response:
+    """POST /api/capability/skills/uninstall — uninstall a skill package."""
     try:
         body = await request.json()
     except Exception:
@@ -666,13 +605,18 @@ async def api_aim_skills_uninstall(request: web.Request) -> web.Response:
     package = body.get("package", "").strip()
     if not package:
         return web.json_response({"error": "package required"}, status=400)
+    mgr = _capability_manager()
+    if not mgr.available():
+        return web.json_response({"error": _CAPABILITY_UNAVAILABLE}, status=503)
     try:
-        rc, out = await _run_aim("skills", "uninstall", package)
-        if rc != 0:
-            return web.json_response({"error": out[:500]}, status=500)
+        res = await mgr.uninstall_skill(package)
+        if not res.ok:
+            return web.json_response(
+                {"error": (res.message or "uninstall failed")[:500]}, status=500
+            )
         from kiro_crew.agent import install_agent  # noqa: F811
 
-        install_agent()
+        await asyncio.to_thread(install_agent)
         state: DashboardState = request.app["state"]
         state.push_refresh("agents")
         return web.json_response({"ok": True, "package": package})
@@ -1015,7 +959,6 @@ async def api_agent_detail(request: web.Request) -> web.Response:
                     if f.name in (
                         "kirocrew.json",
                         "kirocrew-lite.json",
-                        "KiroCrewAICapabilities-kirocrew-lite.json",
                     ):
                         return web.json_response({"error": "cannot delete kirocrew"}, status=400)
                     f.unlink()
@@ -1059,252 +1002,29 @@ async def api_agent_detail(request: web.Request) -> web.Response:
     return web.json_response({"error": "not found"}, status=404)
 
 
-async def api_aim_agents_list(request: web.Request) -> web.Response:
-    """GET /api/aim/agents — list installed AIM agent/plugin packages."""
-    if not _aim_path():
-        return web.json_response({"error": "aim CLI not found"}, status=503)
+async def api_capability_agents_list(request: web.Request) -> web.Response:
+    """GET /api/capability/agents — list installed agent packages (edition capability manager)."""
+    mgr = _capability_manager()
+    if not mgr.available():
+        return web.json_response({"error": _CAPABILITY_UNAVAILABLE}, status=503)
     try:
-        rc, out = await _run_aim(_aim_cap_type(), "list")
-        if rc != 0:
-            return web.json_response({"error": out[:500]}, status=500)
-        return web.json_response({"output": out.strip()})
+        return web.json_response(await mgr.list_agents())
     except Exception as exc:
         return _err500(exc)
 
 
-async def api_aim_agents_install(request: web.Request) -> web.Response:
-    """POST /api/aim/agents/install — install AIM agent/plugin package."""
+async def api_capability_mcp_registry(request: web.Request) -> web.Response:
+    """GET /api/capability/mcp/registry — browse available MCP servers from the registry.
+
+    The capability manager owns registry-output parsing and returns entries
+    directly (conventional keys: id, installed, title, tier, description); the
+    core passes them through verbatim.
+    """
+    mgr = _capability_manager()
+    if not mgr.available():
+        return web.json_response({"error": _CAPABILITY_UNAVAILABLE}, status=503)
     try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
-    package = body.get("package", "").strip()
-    if not package:
-        return web.json_response({"error": "package required"}, status=400)
-    if not _VALID_PACKAGE_RE.match(package) or ".." in package:
-        return web.json_response({"error": "invalid package name"}, status=400)
-    vs = body.get("version_set", "").strip()
-    if vs and not _VALID_PACKAGE_RE.match(vs):
-        return web.json_response({"error": "invalid version_set"}, status=400)
-    try:
-        # Install for the active provider
-        args = [_aim_cap_type(), "install", package]
-        if vs:
-            args.extend(["--version-set", vs])
-        rc, out = await _run_aim(*args, timeout=120)
-        if rc != 0:
-            return web.json_response({"error": _friendly_aim_error(out, package)}, status=500)
-
-        # Bidirectional: also install for the other provider
-        other = "agents" if _aim_cap_type() == "plugins" else "plugins"
-        other_args = [other, "install", package, "--non-interactive"]
-        if vs:
-            other_args.extend(["--version-set", vs])
-        rc2, out2 = await _run_aim(*other_args, timeout=120)
-        if rc2 != 0:
-            logger.warning("AIM %s install %s failed: %s", other, package, out2[:200])
-        try:
-            _sel().log_api_access(
-                caller="dashboard",
-                operation=f"aim_{other}.install",
-                outcome="ok" if rc2 == 0 else "error",
-                source="api_aim_agents_install",
-                resources=package,
-            )
-        except Exception:
-            logger.warning("SEL logging failed for cross-provider sync", exc_info=True)
-
-        # Regenerate kirocrew.json to pick up new skill paths + enforce security
-        from kiro_crew.agent import install_agent  # noqa: F811
-
-        install_agent()
-        _regen_conductor()
-        state: DashboardState = request.app["state"]
-        state.push_refresh("agents")
-        return web.json_response({"ok": True, "package": package, "output": out.strip()})
-    except Exception as exc:
-        return _err500(exc)
-
-
-async def api_aim_agents_uninstall(request: web.Request) -> web.Response:
-    """POST /api/aim/agents/uninstall — uninstall AIM agent/plugin package."""
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
-    package = body.get("package", "").strip()
-    if not package:
-        return web.json_response({"error": "package required"}, status=400)
-    # Protect KiroCrew's own AIM package from accidental uninstall
-    bare = package.removeprefix("local/")
-    if bare.startswith("KiroCrewAICapabilities"):
-        try:
-            _sel().log_api_access(
-                caller="dashboard",
-                operation="aim_agents.uninstall",
-                outcome="denied",
-                source="dashboard",
-                resources=package,
-            )
-        except Exception:
-            logger.warning("SEL logging failed for uninstall denial", exc_info=True)
-        return web.json_response(
-            {"error": "KiroCrewAICapabilities is managed by KiroCrew and cannot be uninstalled"},
-            status=400,
-        )
-    if not _VALID_PACKAGE_RE.match(package) or ".." in package:
-        return web.json_response({"error": "invalid package name"}, status=400)
-    try:
-        rc, out = await _run_aim(_aim_cap_type(), "uninstall", package)
-        if rc != 0:
-            return web.json_response({"error": out[:500]}, status=500)
-
-        # Bidirectional: also uninstall from the other provider
-        other = "agents" if _aim_cap_type() == "plugins" else "plugins"
-        rc2, out2 = await _run_aim(other, "uninstall", package, "--non-interactive")
-        if rc2 != 0:
-            logger.warning("AIM %s uninstall %s failed: %s", other, package, out2[:200])
-        try:
-            _sel().log_api_access(
-                caller="dashboard",
-                operation=f"aim_{other}.uninstall",
-                outcome="ok" if rc2 == 0 else "error",
-                source="api_aim_agents_uninstall",
-                resources=package,
-            )
-        except Exception:
-            logger.warning("SEL logging failed for cross-provider sync", exc_info=True)
-
-        # Also uninstall skills so sync_aim_packages does not reinstall the
-        # package from a stale skills artifact.  Packages with no
-        # skills component return non-zero here — log and continue.
-        rc3, out3 = await _run_aim("skills", "uninstall", package, "--non-interactive")
-        if rc3 != 0:
-            logger.warning("AIM skills uninstall %s failed: %s", package, out3[:200])
-        try:
-            _sel().log_api_access(
-                caller="dashboard",
-                operation="aim_skills.uninstall",
-                outcome="ok" if rc3 == 0 else "error",
-                source="api_aim_agents_uninstall",
-                resources=package,
-            )
-        except Exception:
-            logger.warning("SEL logging failed for skills uninstall", exc_info=True)
-
-        state: DashboardState = request.app["state"]
-        state.push_refresh("agents")
-        state.push_refresh("skills")
-        from kiro_crew.agent import install_agent  # noqa: F811
-
-        install_agent()
-        _regen_conductor()
-        return web.json_response({"ok": True, "package": package})
-    except Exception as exc:
-        return _err500(exc)
-
-
-async def api_aim_update(request: web.Request) -> web.Response:
-    """POST /api/aim/update — update agents/plugins, skills, or MCP packages."""
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
-    kind = body.get("kind", "agents")  # agents | skills | mcp
-    package = body.get("package", "").strip()  # empty = update all
-    if package and (not _VALID_PACKAGE_RE.match(package) or ".." in package):
-        return web.json_response({"error": "invalid package name"}, status=400)
-    try:
-        if kind == "mcp":
-            args = ["mcp", "update"] + ([package] if package else [])
-        elif kind == "skills":
-            args = ["skills", "update"] + ([package] if package else [])
-        else:
-            args = [_aim_cap_type(), "update"] + ([package] if package else [])
-        rc, out = await _run_aim(*args, timeout=120)
-        if rc != 0:
-            return web.json_response({"error": out[:500]}, status=500)
-
-        # For agents/plugins updates, update ALL types to converge versions
-        if kind == "agents":
-            other = "agents" if _aim_cap_type() == "plugins" else "plugins"
-            rc_o, _ = await _run_aim(
-                other, "update", *([package] if package else []), "--non-interactive", timeout=120
-            )
-            rc_s, _ = await _run_aim(
-                "skills",
-                "update",
-                *([package] if package else []),
-                "--non-interactive",
-                timeout=120,
-            )
-            try:
-                _sel().log_api_access(
-                    caller="dashboard",
-                    operation=f"aim_{other}.update",
-                    outcome="ok" if rc_o == 0 else "error",
-                    source="api_aim_update",
-                    resources=package or "all",
-                )
-                _sel().log_api_access(
-                    caller="dashboard",
-                    operation="aim_skills.update",
-                    outcome="ok" if rc_s == 0 else "error",
-                    source="api_aim_update",
-                    resources=package or "all",
-                )
-            except Exception:
-                logger.warning("SEL logging failed for cross-provider update", exc_info=True)
-
-        from kiro_crew.agent import install_agent  # noqa: F811
-
-        install_agent()
-        state: DashboardState = request.app["state"]
-        state.push_refresh("agents")
-        return web.json_response({"ok": True, "output": out.strip()})
-    except Exception as exc:
-        return _err500(exc)
-
-
-async def api_aim_mcp_registry(request: web.Request) -> web.Response:
-    """GET /api/aim/mcp/registry — browse available MCP servers from registry."""
-    if not _aim_path():
-        return web.json_response({"error": "aim CLI not found"}, status=503)
-    try:
-        rc, out = await _run_aim("mcp", "list", "-o", "JSON", timeout=30)
-        if rc != 0:
-            return web.json_response({"error": out[:500]}, status=500)
-        # Parse JSON output from `aim mcp list -o JSON`
-        raw = out.strip()
-        start = raw.find("[")
-        if start == -1:
-            return web.json_response({"error": "unexpected aim output format"}, status=500)
-        try:
-            decoder = json.JSONDecoder()
-            items, _ = decoder.raw_decode(raw, start)
-        except json.JSONDecodeError:
-            return web.json_response({"error": "unexpected aim output format"}, status=500)
-
-        entries: list[dict[str, Any]] = []
-        for item in items:
-            name_str = item.get("name", "")
-            # Extract tier from name like "Title [Recommended]"
-            tier = ""
-            tier_match = re.search(r"\[(Recommended|Supported)\]\s*$", name_str)
-            if tier_match:
-                tier = tier_match.group(1)
-                name_str = name_str[: tier_match.start()].strip()
-
-            entries.append(
-                {
-                    "id": item.get("bundleId", ""),
-                    "installed": "yes" if item.get("isInstalled") else "",
-                    "title": name_str,
-                    "tier": tier,
-                    "description": item.get("description", ""),
-                }
-            )
-        return web.json_response({"servers": entries})
+        return web.json_response({"servers": await mgr.registry()})
     except Exception as exc:
         return _err500(exc)
 
@@ -1376,43 +1096,46 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
     synced: list[str] = []
     pruned: list[str] = []
     try:
-        aim_agents = await asyncio.get_running_loop().run_in_executor(
+        discovered_agents = await asyncio.get_running_loop().run_in_executor(
             discovery_executor(), lambda: list(list_agents())
         )
-        aim_names = {a.name for a in aim_agents}
+        discovered_names = {a.name for a in discovered_agents}
 
         # Add new agents
         mc_kiro_agents = {a.kiro_agent for a in cfg.agents.values()}
-        for aim in aim_agents:
+        for disc in discovered_agents:
             if (
-                aim.name not in mc_kiro_agents
-                and aim.name not in cfg.agents
-                and aim.source != "kirocrew"
+                disc.name not in mc_kiro_agents
+                and disc.name not in cfg.agents
+                and disc.source != "kirocrew"
             ):
-                cfg.agents[aim.name] = KiroCrewAgentConfig(
-                    kiro_agent=aim.name,
-                    description=aim.description,
-                    source=aim.source,
+                cfg.agents[disc.name] = KiroCrewAgentConfig(
+                    kiro_agent=disc.name,
+                    description=disc.description,
+                    source=disc.source,
                 )
-                synced.append(aim.name)
+                synced.append(disc.name)
 
         # Prune agents whose kiro_agent file no longer exists on disk.
-        # Only prune AIM-sourced agents (never user-created or kirocrew-owned).
+        # Only prune package-installed agents (never user-created or kirocrew-owned).
         # Skip pruning if scan returned nothing -- likely a transient issue.
-        # Invariant: for source="aim" entries, kiro_agent == dict key == AIM agent name.
-        if aim_names:
+        # Invariant: for package-sourced entries, kiro_agent == dict key == agent name.
+        # ("aim" retained for backward-compat with configs written before the rename.)
+        if discovered_names:
             for name, agent_cfg in list(cfg.agents.items()):
-                if agent_cfg.source == "aim" and agent_cfg.kiro_agent not in aim_names:
+                if agent_cfg.source in ("package", "aim") and (
+                    agent_cfg.kiro_agent not in discovered_names
+                ):
                     del cfg.agents[name]
                     pruned.append(name)
     except Exception:
-        logger.warning("Failed to scan AIM agents", exc_info=True)
+        logger.warning("Failed to scan installed agents", exc_info=True)
         try:
             _sel().log_api_access(
                 caller=request.get("user", "dashboard"),
                 operation="agent.auto_sync",
                 outcome="failure",
-                source="aim",
+                source="agent_sync",
             )
         except Exception:
             logger.warning("SEL logging failed for agent sync failure", exc_info=True)
@@ -1422,13 +1145,13 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
         try:
             cfg.save()
         except Exception:
-            logger.warning("Failed to save config after AIM sync", exc_info=True)
+            logger.warning("Failed to save config after agent sync", exc_info=True)
             try:
                 _sel().log_api_access(
                     caller=request.get("user", "dashboard"),
                     operation="agent.auto_sync",
                     outcome="failure",
-                    source="aim",
+                    source="agent_sync",
                 )
             except Exception:
                 logger.warning("SEL logging failed for config save failure", exc_info=True)
@@ -1440,7 +1163,7 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
                 caller=request.get("user", "dashboard"),
                 operation="agent.auto_sync",
                 outcome="success",
-                source="aim",
+                source="agent_sync",
                 resources=", ".join(synced + [f"-{p}" for p in pruned]),
             )
         except Exception:
@@ -1451,7 +1174,7 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
                 caller=request.get("user", "dashboard"),
                 operation="agent.auto_sync",
                 outcome="noop",
-                source="aim",
+                source="agent_sync",
             )
         except Exception:
             logger.warning("SEL logging failed for agent sync noop", exc_info=True)
@@ -1648,67 +1371,3 @@ async def api_agent_metadata_delete(request: web.Request) -> web.Response:
     except Exception:
         logger.warning("SEL logging failed", exc_info=True)
     return web.json_response({"ok": True, "name": name})
-
-
-async def api_cc_aim_missing(request: web.Request) -> web.Response:
-    """GET /api/cc/aim/missing — kiro AIM packages not installed for CC."""
-    try:
-        missing = await asyncio.to_thread(installed_kiro_packages_missing_from_cc)
-    except Exception as exc:
-        logger.warning("cc aim missing query failed", exc_info=True)
-        return _err500(exc)
-    return web.json_response({"missing": missing})
-
-
-async def api_cc_aim_sync(request: web.Request) -> web.Response:
-    """POST /api/cc/aim/sync — install missing AIM packages as CC plugins."""
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
-    requested = body.get("packages")
-    if requested is not None and not isinstance(requested, list):
-        return web.json_response({"error": "packages must be a list or null"}, status=400)
-
-    try:
-        targets: list[str]
-        if requested is not None:
-            # Caller passed an explicit list; an empty list means "install nothing".
-            targets = [str(p).strip() for p in requested if str(p).strip()]
-        else:
-            targets = await asyncio.to_thread(installed_kiro_packages_missing_from_cc)
-    except Exception as exc:
-        logger.warning("cc aim sync target resolution failed", exc_info=True)
-        return _err500(exc)
-
-    invalid = [p for p in targets if not _VALID_PACKAGE_RE.match(p) or ".." in p]
-    if invalid:
-        return web.json_response(
-            {"error": f"invalid package name(s): {', '.join(invalid)[:200]}"}, status=400
-        )
-
-    installed: list[str] = []
-    failed: list[dict[str, str]] = []
-    for pkg in targets:
-        try:
-            ok, msg = await asyncio.to_thread(install_cc_plugin, pkg, standalone=True)
-        except Exception as exc:
-            ok, msg = False, str(exc)[:200]
-        if ok:
-            installed.append(pkg)
-        else:
-            failed.append({"package": pkg, "error": msg})
-        try:
-            _sel().log_api_access(
-                caller=request.get("user", "anonymous"),
-                operation="cc_aim.install",
-                outcome="ok" if ok else "error",
-                source="dashboard",
-                resources=pkg,
-            )
-        except Exception:
-            logger.warning("SEL logging failed for cc_aim.install", exc_info=True)
-
-    state: DashboardState = request.app["state"]
-    state.push_refresh("agents")
-    return web.json_response({"installed": installed, "failed": failed})

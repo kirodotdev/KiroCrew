@@ -130,9 +130,9 @@ export function Badge({ variant, children, className, ...rest }: { variant: 'ok'
   )
 }
 
-export function AimBadge({ source }: { source: string }) {
+export function SourceBadge({ source }: { source: string }) {
   const cls =
-    source === 'aim' ? 'bg-aim-subtle text-aim border-aim/30'
+    source === 'package' ? 'bg-aim-subtle text-aim border-aim/30'
     : source === 'kirocrew' ? 'bg-bg-elevated text-muted border-border'
     : source === 'project' ? 'text-ok border-ok/30'
     : 'bg-bg-elevated text-muted border-border'

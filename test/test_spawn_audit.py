@@ -100,7 +100,6 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
     {
         "acp/runtime.py::_get_rss_mb",
         "acp/runtime.py::_get_rss_tree_mb",
-        "agent.py::is_aim_package_installed",
         "apps/backend.py::_proc_start_time",
         "apps/backend.py::_resolve_nvm_path",
         "apps/backend.py::stop_app_backend",
@@ -141,8 +140,6 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "cloud/ssm.py::_run_install_command",
         "cloud/ssm.py::open_port_forward",
         "dashboard/chat_voice.py::api_voice_voices",
-        "dashboard/handlers/_shared.py::_aim_list_stdout",
-        "dashboard/handlers/agents.py::_run_aim",
         "dashboard/handlers/core.py::_is_apple_silicon",
         "dashboard/handlers/core.py::_stt_prereq_commands",
         "dashboard/handlers/core.py::_unusable",
@@ -152,7 +149,6 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "dashboard/handlers/files.py::api_screenshot",
         "dashboard/handlers/files.py::api_upload",
         "dashboard/handlers/knowledge.py::_run_folder_dialog",
-        "dashboard/handlers/mcp.py::api_mcp_remove",
         # Terminal live-cwd probe on hosts without /proc (macOS/BSD): fixed
         # `lsof -a -p <pid> -d cwd -Fn` list-argv (no shell=True) where <pid>
         # is the gateway's own PTY child pid (an int from asyncio.subprocess),

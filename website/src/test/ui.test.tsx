@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
-import { Card, CardTitle, Btn, SendBtn, Input, SearchInput, Badge, AimBadge, StatCard, EmptyState, PageHeader } from '../components/ui'
+import { Card, CardTitle, Btn, SendBtn, Input, SearchInput, Badge, SourceBadge, StatCard, EmptyState, PageHeader } from '../components/ui'
 
 describe('Card', () => {
   it('renders children', () => {
@@ -68,10 +68,10 @@ describe('Badge', () => {
   })
 })
 
-describe('AimBadge', () => {
+describe('SourceBadge', () => {
   it('renders source text', () => {
-    render(<AimBadge source="aim" />)
-    expect(screen.getByText('aim')).toBeInTheDocument()
+    render(<SourceBadge source="package" />)
+    expect(screen.getByText('package')).toBeInTheDocument()
   })
 })
 

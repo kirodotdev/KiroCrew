@@ -12,7 +12,6 @@ import pytest
 from kiro_crew.dashboard.chat import _expand_prompt_mention, _run_chat
 from kiro_crew.dashboard.handlers import (
     _extract_sop_description,
-    _latest_aim_event_dir,
     _list_aim_prompts,
     api_prompt_detail,
     api_prompts,
@@ -33,8 +32,23 @@ def _isolate_home(tmp_path, monkeypatch):
 
 
 @pytest.fixture()
-def aim_dir(tmp_path):
-    return tmp_path / ".aim" / "packages"
+def aim_dir(tmp_path, monkeypatch):
+    """Base dir whose child package dirs are exposed via the prompt_source_roots seam.
+
+    Each child directory becomes one edition prompt root; SOPs placed under it
+    (at any depth) are discovered by ``_list_aim_prompts`` via ``rglob('*.sop.md')``
+    with ``package = <root.name>``.
+    """
+    base = tmp_path / "prompt_pkgs"
+    base.mkdir()
+    from kiro_crew.platform.defaults import DefaultPromptSourceProvider
+
+    monkeypatch.setattr(
+        DefaultPromptSourceProvider,
+        "prompt_source_roots",
+        lambda self: [d for d in sorted(base.iterdir()) if d.is_dir()],
+    )
+    return base
 
 
 @pytest.fixture()
@@ -57,26 +71,17 @@ def block_sensitive(monkeypatch):
 # ── Helpers ──
 
 
-def _aim_pkg(aim_dir, pkg_name, event_id, sops):
-    """Create a fake AIM package with event dir, manifest, and SOPs."""
-    pkg_dir = aim_dir / pkg_name
-    sops_dir = pkg_dir / f"eventId-{event_id}" / "agent-sops"
-    sops_dir.mkdir(parents=True)
-    manifest = pkg_dir / ".aim" / ".version-manifest.json"
-    manifest.parent.mkdir(parents=True, exist_ok=True)
-    manifest.write_text(json.dumps({"currentEventId": event_id}))
-    for name, content in sops.items():
-        (sops_dir / f"{name}.sop.md").write_text(content)
-    return pkg_dir
+def _aim_pkg(base, pkg_name, event_id, sops):
+    """Create a package root under *base* exposing SOP files.
 
-
-def _local_aim_pkg(aim_dir, namespace, pkg_name, sops):
-    """Create a local AIM package (no eventId dir, direct agent-sops/)."""
-    pkg_dir = aim_dir / namespace / pkg_name
-    sops_dir = pkg_dir / "agent-sops"
-    sops_dir.mkdir(parents=True)
+    ``event_id`` is retained for call-site compatibility but unused — the seam
+    model has no eventId layout; SOPs are placed directly under the package root
+    and found via ``rglob('*.sop.md')``.
+    """
+    pkg_dir = base / pkg_name
+    pkg_dir.mkdir(parents=True, exist_ok=True)
     for name, content in sops.items():
-        (sops_dir / f"{name}.sop.md").write_text(content)
+        (pkg_dir / f"{name}.sop.md").write_text(content)
     return pkg_dir
 
 
@@ -87,12 +92,6 @@ def _user_prompt(tmp_path, name, content="# Placeholder"):
     p = d / f"{name}.md"
     p.write_text(content)
     return p
-
-
-def _manifest(pkg, content):
-    m = pkg / ".aim" / ".version-manifest.json"
-    m.parent.mkdir(parents=True, exist_ok=True)
-    m.write_text(content if isinstance(content, str) else json.dumps(content))
 
 
 def _api_request(name):
@@ -144,47 +143,6 @@ def _ss():
     return _State(), _Slot()
 
 
-# ── _latest_aim_event_dir ──
-
-
-class TestLatestAimEventDir:
-    def test_uses_manifest(self, tmp_path):
-        pkg = tmp_path / "P"
-        (pkg / "eventId-100").mkdir(parents=True)
-        (pkg / "eventId-200").mkdir(parents=True)
-        _manifest(pkg, {"currentEventId": "100"})
-        assert _latest_aim_event_dir(pkg).name == "eventId-100"
-
-    def test_fallback_to_highest_numeric(self, tmp_path):
-        pkg = tmp_path / "P"
-        (pkg / "eventId-100").mkdir(parents=True)
-        (pkg / "eventId-200").mkdir(parents=True)
-        assert _latest_aim_event_dir(pkg).name == "eventId-200"
-
-    def test_no_event_dirs(self, tmp_path):
-        pkg = tmp_path / "P"
-        pkg.mkdir(parents=True)
-        assert _latest_aim_event_dir(pkg) is None
-
-    def test_corrupt_manifest_falls_back(self, tmp_path):
-        pkg = tmp_path / "P"
-        (pkg / "eventId-300").mkdir(parents=True)
-        _manifest(pkg, "not json")
-        assert _latest_aim_event_dir(pkg).name == "eventId-300"
-
-    def test_manifest_points_to_missing_dir(self, tmp_path):
-        pkg = tmp_path / "P"
-        (pkg / "eventId-100").mkdir(parents=True)
-        _manifest(pkg, {"currentEventId": "999"})
-        assert _latest_aim_event_dir(pkg).name == "eventId-100"
-
-    def test_non_numeric_event_id_sorts_as_zero(self, tmp_path):
-        pkg = tmp_path / "P"
-        (pkg / "eventId-abc").mkdir(parents=True)
-        (pkg / "eventId-5").mkdir(parents=True)
-        assert _latest_aim_event_dir(pkg).name == "eventId-5"
-
-
 # ── _extract_sop_description ──
 
 
@@ -227,17 +185,20 @@ class TestListAimPrompts:
         })
         r = _list_aim_prompts()
         assert len(r) == 1
-        assert (r[0]["name"], r[0]["fullName"], r[0]["source"]) == ("my-sop", "agent-sop:my-sop", "aim")
+        assert (r[0]["name"], r[0]["fullName"], r[0]["source"]) == (
+            "my-sop", "agent-sop:my-sop", "package")
         assert r[0]["description"] == "Test SOP"
+        assert r[0]["package"] == "Pkg-1.0"
 
-    def test_deduplicates_via_manifest(self, aim_dir):
-        pkg = aim_dir / "Pkg-1.0"
-        for eid in ("100", "200"):
-            sops = pkg / f"eventId-{eid}" / "agent-sops"
-            sops.mkdir(parents=True)
-            (sops / "dup.sop.md").write_text("# Dup\n")
-        _manifest(pkg, {"currentEventId": "200"})
-        assert len(_list_aim_prompts()) == 1
+    def test_discovers_nested_sops(self, aim_dir):
+        # rglob finds SOPs at any depth under a prompt root (e.g. agent-sops/).
+        pkg = aim_dir / "Deep-1.0" / "agent-sops" / "sub"
+        pkg.mkdir(parents=True)
+        (pkg / "deep.sop.md").write_text("---\nname: deep\ndescription: D\n---\n")
+        r = _list_aim_prompts()
+        assert [p["name"] for p in r] == ["deep"]
+        assert r[0]["package"] == "Deep-1.0"
+        assert r[0]["source"] == "package"
 
     def test_discovers_user_prompts(self, tmp_path):
         _user_prompt(tmp_path, "my-prompt", "# P\nDo things.\n")
@@ -256,16 +217,13 @@ class TestListAimPrompts:
     def test_empty(self, tmp_path):
         assert _list_aim_prompts() == []
 
-    def test_skips_dotdirs_and_files(self, aim_dir):
-        (aim_dir / ".hidden").mkdir(parents=True)
-        aim_dir.mkdir(parents=True, exist_ok=True)
-        (aim_dir / "file.txt").write_text("x")
-        assert _list_aim_prompts() == []
+    def test_no_roots_lists_no_package_sops(self, monkeypatch):
+        # Default seam ([], the OSS behavior) → no package SOPs discovered.
+        from kiro_crew.platform.defaults import DefaultPromptSourceProvider
 
-    def test_skips_pkg_without_sops_dir(self, aim_dir):
-        pkg = aim_dir / "NoSops-1.0"
-        (pkg / "eventId-1").mkdir(parents=True)
-        _manifest(pkg, {"currentEventId": "1"})
+        monkeypatch.setattr(
+            DefaultPromptSourceProvider, "prompt_source_roots", lambda self: []
+        )
         assert _list_aim_prompts() == []
 
     def test_name_collision(self, aim_dir):
@@ -275,54 +233,14 @@ class TestListAimPrompts:
         assert [p["name"] for p in r].count("shared") == 2
         assert {p["package"] for p in r} == {"A-1.0", "B-1.0"}
 
-    def test_discovers_local_aim_packages(self, aim_dir):
-        """Local packages (aim install --local) have no eventId dir."""
-        _local_aim_pkg(aim_dir, "local", "MyAgent-1.0", {
-            "my-sop": "---\nname: my-sop\ndescription: Local SOP\n---\n",
-        })
-        r = _list_aim_prompts()
-        assert len(r) == 1
-        assert r[0]["name"] == "my-sop"
-        assert r[0]["package"] == "MyAgent-1.0"
-
-    def test_local_and_published_coexist(self, aim_dir):
-        """Both published and local packages are discovered."""
-        _aim_pkg(aim_dir, "Published-1.0", "1", {"pub": "# Pub\n"})
-        _local_aim_pkg(aim_dir, "local", "Local-1.0", {"loc": "# Loc\n"})
-        r = _list_aim_prompts()
-        assert {p["name"] for p in r} == {"pub", "loc"}
-
-    def test_namespace_skips_dotdirs(self, aim_dir):
-        """Hidden dirs inside a namespace dir are ignored."""
-        ns = aim_dir / "local"
-        ns.mkdir(parents=True)
-        (ns / ".hidden").mkdir()
-        (ns / ".hidden" / "agent-sops").mkdir(parents=True)
-        (ns / ".hidden" / "agent-sops" / "bad.sop.md").write_text("# Bad\n")
-        assert _list_aim_prompts() == []
-
-    def test_namespace_child_oserror_skips_only_that_child(self, aim_dir):
-        """An unreadable child in a namespace doesn't skip siblings."""
-        _local_aim_pkg(aim_dir, "local", "Good-1.0", {"ok": "# OK\n"})
-        bad = aim_dir / "local" / "Bad-1.0"
-        bad.mkdir(parents=True)
-        (bad / "agent-sops").mkdir()
-        (bad / "agent-sops").chmod(0o000)
-        try:
-            r = _list_aim_prompts()
-            assert len(r) == 1 and r[0]["name"] == "ok"
-        finally:
-            (bad / "agent-sops").chmod(0o755)
-
     def test_sensitive_sop_symlink_skipped(self, aim_dir, tmp_path, monkeypatch):
         """SOP symlinks resolving to sensitive paths are skipped."""
         secret = tmp_path / "secrets" / "creds.sop.md"
         secret.parent.mkdir(parents=True)
         secret.write_text("# Creds\n")
-        pkg = aim_dir / "local" / "Evil-1.0"
-        sops = pkg / "agent-sops"
-        sops.mkdir(parents=True)
-        (sops / "evil.sop.md").symlink_to(secret)
+        pkg = aim_dir / "Evil-1.0"
+        pkg.mkdir(parents=True)
+        (pkg / "evil.sop.md").symlink_to(secret)
         monkeypatch.setattr(
             "kiro_crew.dashboard.handlers.is_sensitive_path",
             lambda p: "secrets" in p,

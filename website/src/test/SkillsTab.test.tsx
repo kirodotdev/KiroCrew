@@ -15,7 +15,7 @@ const mockApi = vi.hoisted(() => ({
 vi.mock('../api/client', () => ({ api: mockApi }))
 
 vi.mock('../providers', () => ({
-  useProvider: () => ({ labels: { pluginRegistryName: 'AIM' } }),
+  useProvider: () => ({ labels: { pluginRegistryName: 'Packages' } }),
 }))
 
 vi.mock('../components/MarkdownRenderer', () => ({
@@ -115,16 +115,16 @@ describe('SkillsTab', () => {
     expect(screen.queryByText(/Loaded by/)).not.toBeInTheDocument()
   })
 
-  it('groups AIM skills under their own section, kiro-user with local skills', async () => {
+  it('groups package skills under their own section, kiro-user with local skills', async () => {
     mockApi.skills.mockResolvedValue([
       { key: 'kiro-user/x', name: 'x', description: 'kiro-x', source: 'kiro-user', loaded_by_agents: [] },
-      { key: 'aim-only', name: 'aim-only', description: 'aim-pkg', source: 'aim', loaded_by_agents: [] },
+      { key: 'aim-only', name: 'aim-only', description: 'aim-pkg', source: 'package', loaded_by_agents: [] },
     ])
     renderWithQuery()
-    // Both rows render; AIM has a section header.
+    // Both rows render; package skills have a section header.
     await waitFor(() => expect(screen.getByText('X')).toBeInTheDocument())
     expect(screen.getByText('Aim Only')).toBeInTheDocument()
-    expect(screen.getByText(/AIM PACKAGES/)).toBeInTheDocument()
+    expect(screen.getByText(/PACKAGES/)).toBeInTheDocument()
   })
 
   it('auto-selects the first skill and renders the directory browser (no modal)', async () => {

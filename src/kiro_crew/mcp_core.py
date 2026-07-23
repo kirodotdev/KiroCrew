@@ -36,7 +36,7 @@ from typing import Any
 from urllib.parse import quote, urlencode, urlparse
 
 from kiro_crew import platform_compat
-from kiro_crew.aim_agents import list_agents
+from kiro_crew.agent_discovery import list_agents
 from kiro_crew.artifacts import _infer_kind
 from kiro_crew.config.loader import KiroCrewConfig, config_dir, outbox_dir
 from kiro_crew.context_management import COMPLETION_KEEP_DEFAULT_CHARS, summarize_result

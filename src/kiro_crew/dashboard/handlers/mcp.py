@@ -6,8 +6,6 @@ import asyncio
 import json
 import logging
 import re
-import shutil
-import subprocess
 import time
 from pathlib import Path
 from typing import Any
@@ -729,36 +727,18 @@ async def api_mcp_remove(request: web.Request) -> web.Response:
 
     logger.info("MCP remove: %s", name)
 
-    # Optional aim uninstall (best-effort).  aim is not bundled; only attempt
-    # when it resolves on PATH so the handler stays fully functional without it.
-    aim_bin = shutil.which("aim")
-    if aim_bin:
-        proc = None
+    # Optional capability-manager uninstall (best-effort). The edition's
+    # capability manager owns the actual uninstall; only attempt when the seam
+    # reports it available so the handler stays fully functional without it.
+    from kiro_crew.dashboard.handlers._shared import _capability_manager
+
+    mgr = _capability_manager()
+    if mgr.available():
         try:
-            proc = await asyncio.create_subprocess_exec(
-                aim_bin,
-                "mcp",
-                "uninstall",
-                name,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
-            rc = proc.returncode
-            out = (stdout or b"").decode(errors="replace").strip()
-            err = (stderr or b"").decode(errors="replace").strip()
-            logger.info("MCP uninstall via aim: rc=%d out=%s err=%s", rc, out[:100], err[:100])
-        except asyncio.TimeoutError:
-            try:
-                if proc is not None:
-                    proc.kill()
-            except ProcessLookupError:
-                pass
-            if proc is not None:
-                await proc.communicate()
-            logger.warning("aim mcp uninstall timed out for %s", name)
+            res = await mgr.uninstall_mcp(name)
+            logger.info("MCP uninstall via capability manager: ok=%s msg=%s", res.ok, res.message[:100])
         except Exception as exc:
-            logger.warning("aim mcp uninstall failed for %s: %s", name, exc)
+            logger.warning("capability-manager mcp uninstall failed for %s: %s", name, exc)
 
     # Remove from global mcp.json
     async with _get_mcp_lock():
@@ -786,7 +766,7 @@ async def api_mcp_remove(request: web.Request) -> web.Response:
 # MCP server registration (generic REST)
 # ---------------------------------------------------------------------------
 
-_AIM_TIMEOUT = 60
+_CAPABILITY_UNINSTALL_TIMEOUT = 60
 
 
 async def api_mcp_server_detail(request: web.Request) -> web.Response:
@@ -868,7 +848,40 @@ async def api_mcp_server_detail(request: web.Request) -> web.Response:
 # ─── Batched scope apply ────────────────────────────────────────────────
 
 _KIROCREW_MCP_JSON = Path.home() / ".kirocrew" / "mcp.json"
-_CC_GLOBAL_JSON = Path.home() / ".claude.json"
+
+
+def _extra_mcp_scopes() -> list:
+    """Edition-contributed provider MCP config scopes (CPP seam).
+
+    Public Default returns ``[]`` so the core writes the Kiro global only; a
+    companion contributes additional provider scopes (e.g. Claude Code's
+    ``~/.claude.json``). Deferred context read so this module never imports the
+    platform package at load; fails closed to no extra scopes.
+    """
+    from kiro_crew.platform.context import current_context, safe_context_call
+
+    return safe_context_call(
+        lambda: list(current_context().mcp_tooling.extra_mcp_scopes()),
+        fallback_factory=list,
+        log_message="extra_mcp_scopes lookup failed; using none",
+    )
+
+
+async def api_mcp_global_scopes(request: web.Request) -> web.Response:
+    """GET /api/mcp/scopes — extra provider global MCP scopes (CPP seam).
+
+    Returns the provider-specific global scopes an edition contributes via
+    ``extra_mcp_scopes()``, so the dashboard's Installed-Integrations "Globals"
+    column can render a badge per scope instead of hardcoding a provider name.
+    The public Default returns ``[]`` (the core manages only the Kiro global,
+    which the UI renders unconditionally); a companion returns e.g.
+    ``[{"id": "ccGlobal", "label": "Claude"}]``. ``id`` is the presence/apply
+    key (``f"{scope.id}Global"``) the UI uses for toggle + apply.
+    """
+    scopes = [
+        {"id": f"{s.id}Global", "label": s.label or s.id} for s in _extra_mcp_scopes()
+    ]
+    return web.json_response({"scopes": scopes})
 
 
 def _load_json_or_empty(path: Path) -> dict[str, Any]:
@@ -900,14 +913,15 @@ def _find_server_spec_anywhere(name: str) -> dict | None:
     """Locate a server's full spec from any known source.
 
     Search order matches the KiroCrew merge: agent config → ~/.kirocrew/mcp.json
-    → kiro global → CC global.  Returns a shallow copy with ``disabled``
-    stripped (the caller decides whether to disable in its target scope).
+    → kiro global → edition-contributed provider scopes.  Returns a shallow copy
+    with ``disabled`` stripped (the caller decides whether to disable in its
+    target scope).
     """
     candidates = [
         Path.home() / ".kiro" / "agents" / "kirocrew.json",
         _KIROCREW_MCP_JSON,
         _GLOBAL_MCP_JSON,
-        _CC_GLOBAL_JSON,
+        *[s.global_json for s in _extra_mcp_scopes()],
     ]
     for p in candidates:
         spec = _load_json_or_empty(p).get("mcpServers", {}).get(name)
@@ -1145,9 +1159,10 @@ async def api_mcp_apply(request: web.Request) -> web.Response:
                 outcome["actions"]["kiroGlobal"] = _set_scope_entry(
                     _GLOBAL_MCP_JSON, name, enabled=False
                 )
-                outcome["actions"]["ccGlobal"] = _set_scope_entry(
-                    _CC_GLOBAL_JSON, name, enabled=False
-                )
+                for scope in _extra_mcp_scopes():
+                    outcome["actions"][f"{scope.id}Global"] = _set_scope_entry(
+                        scope.global_json, name, enabled=False
+                    )
                 # Also strip the entry directly from the rendered agent files
                 # so the next rebuild doesn't resurrect it via the
                 # "start from existing agent config" base.  Without this the
@@ -1155,32 +1170,28 @@ async def api_mcp_apply(request: web.Request) -> web.Response:
                 _remove_from_agent_file(
                     Path.home() / ".kiro" / "agents" / "kirocrew.json", name
                 )
-                _remove_from_agent_file(
-                    Path.home() / ".claude" / "agents" / "kirocrew.mcp.json", name
-                )
-                # Best-effort AIM uninstall (don't block on failure)
-                aim = shutil.which("aim")
-                if aim:
+                for scope in _extra_mcp_scopes():
+                    if scope.agent_mcp_file is not None:
+                        _remove_from_agent_file(scope.agent_mcp_file, name)
+                # Best-effort capability-manager uninstall (don't block on failure)
+                from kiro_crew.dashboard.handlers._shared import _capability_manager
+
+                mgr = _capability_manager()
+                if mgr.available():
                     try:
-                        # subprocess.run blocks — run in a thread so we don't
-                        # stall the asyncio event loop under the MCP file lock.
-                        await asyncio.to_thread(
-                            subprocess.run,
-                            [aim, "mcp", "uninstall", name],
-                            capture_output=True,
-                            text=True,
-                            timeout=30,
+                        res = await mgr.uninstall_mcp(name)
+                        outcome["actions"]["capability"] = (
+                            "uninstalled" if res.ok else "uninstall_failed"
                         )
-                        outcome["actions"]["aim"] = "uninstall_attempted"
                     except Exception as exc:
                         # Error strings may include env vars / AWS keys /
-                        # URLs surfaced by failing subprocesses; scrub
-                        # them before returning to the dashboard.  Both
-                        # redact helpers return (cleaned_text, warnings);
-                        # we only surface the cleaned text.
+                        # URLs surfaced by failing operations; scrub them
+                        # before returning to the dashboard.  Both redact
+                        # helpers return (cleaned_text, warnings); we only
+                        # surface the cleaned text.
                         _urls_clean, _ = redact_exfiltration_urls(str(exc))
                         _redacted, _ = redact_credentials(_urls_clean)
-                        outcome["actions"]["aim_error"] = _redacted
+                        outcome["actions"]["capability_error"] = _redacted
                 sel().log_api_access(
                     caller="dashboard",
                     operation="mcp_uninstall",
@@ -1193,13 +1204,22 @@ async def api_mcp_apply(request: web.Request) -> web.Response:
             # ── Scope toggles: compute desired + apply preservation ──
             desired_mc = bool(change.get("kirocrew", True))
             desired_kiro = bool(change.get("kiroGlobal", False))
-            desired_cc = bool(change.get("ccGlobal", False))
+            extra_scopes = _extra_mcp_scopes()
+            # An omitted ``f"{id}Global"`` field means "preserve current presence"
+            # — the OSS frontend never sends it, so defaulting to False would
+            # delete a companion-contributed scope's entry on any unrelated apply
+            # (a Kiro/MC toggle or a tool-override change). Only an explicit value
+            # from an edition frontend changes a contributed scope.
+            desired_extra = {
+                s.id: bool(change.get(f"{s.id}Global", _scope_has_entry(name, s.global_json)))
+                for s in extra_scopes
+            }
 
             # Preservation rule: if MC is desired ON and both globals are
             # going to lose the entry (or never had it), copy the spec into
             # ~/.kirocrew/mcp.json so MC keeps its config via the merge.
             preserved_spec: dict | None = None
-            if desired_mc and not desired_kiro and not desired_cc:
+            if desired_mc and not desired_kiro and not any(desired_extra.values()):
                 has_mc = _scope_has_entry(name, _KIROCREW_MCP_JSON)
                 if not has_mc:
                     preserved_spec = _find_server_spec_anywhere(name)
@@ -1225,12 +1245,13 @@ async def api_mcp_apply(request: web.Request) -> web.Response:
                 enabled=desired_kiro,
                 spec=resolved_spec,
             )
-            outcome["actions"]["ccGlobal"] = _set_scope_entry(
-                _CC_GLOBAL_JSON,
-                name,
-                enabled=desired_cc,
-                spec=resolved_spec,
-            )
+            for scope in extra_scopes:
+                outcome["actions"][f"{scope.id}Global"] = _set_scope_entry(
+                    scope.global_json,
+                    name,
+                    enabled=desired_extra[scope.id],
+                    spec=resolved_spec,
+                )
 
             # ── Per-tool overrides (disabledTools in ~/.kirocrew/mcp.json) ──
             tool_overrides = change.get("toolOverrides")
@@ -1273,8 +1294,11 @@ async def api_mcp_apply(request: web.Request) -> web.Response:
                 resources=(
                     f"{name} "
                     f"mc={'on' if desired_mc else 'off'} "
-                    f"kiro={'on' if desired_kiro else 'off'} "
-                    f"cc={'on' if desired_cc else 'off'}"
+                    f"kiro={'on' if desired_kiro else 'off'}"
+                    + "".join(
+                        f" {sid}={'on' if on else 'off'}"
+                        for sid, on in desired_extra.items()
+                    )
                 ),
             )
 

@@ -19,7 +19,7 @@ const displayName = (s: Skill) => s.name.replace(/[-_]/g, ' ').replace(/\b\w/g, 
 /** Short, human label for a skill's provenance — drives the source badge. */
 function sourceLabel(source: Skill['source']): string | null {
   switch (source) {
-    case 'aim': return 'AIM'
+    case 'package': return 'Package'
     case 'kiro-user': return '~/.kiro/skills'
     case 'kiro-workspace': return 'workspace'
     default: return null  // kirocrew — the default home, no badge needed
@@ -95,16 +95,16 @@ export default function SkillsTab() {
 
   // Two groups: skills KiroCrew can edit (kirocrew + kiro-cli's own dirs) and
   // read-only AIM-package skills.  The text filter is applied to both.
-  const { localSkills, aimSkills } = useMemo(() => {
+  const { localSkills, packageSkills } = useMemo(() => {
     const q = skillFilter.toLowerCase()
     const match = (s: Skill) => !q || (s.name + ' ' + s.key + ' ' + (s.description || '')).toLowerCase().includes(q)
     return {
-      localSkills: skills.filter(s => s.source !== 'aim').filter(match),
-      aimSkills: skills.filter(s => s.source === 'aim').filter(match),
+      localSkills: skills.filter(s => s.source !== 'package').filter(match),
+      packageSkills: skills.filter(s => s.source === 'package').filter(match),
     }
   }, [skills, skillFilter])
 
-  const allFiltered = useMemo(() => [...localSkills, ...aimSkills], [localSkills, aimSkills])
+  const allFiltered = useMemo(() => [...localSkills, ...packageSkills], [localSkills, packageSkills])
   const selectedSkill = useMemo(() => skills.find(s => s.key === selectedKey) ?? null, [skills, selectedKey])
 
   // Keep a valid selection: default to the first skill, and recover if the
@@ -140,8 +140,8 @@ export default function SkillsTab() {
       >
         <div className="flex items-center gap-1.5 min-w-0">
           <span className="text-[13px] font-semibold text-text truncate flex-1">{displayName(s)}</span>
-          {s.source === 'aim'
-            ? <span className="text-[10px] px-1.5 py-[1px] rounded-full bg-aim-subtle text-aim border border-aim/30 font-bold shrink-0">AIM</span>
+          {s.source === 'package'
+            ? <span className="text-[10px] px-1.5 py-[1px] rounded-full bg-aim-subtle text-aim border border-aim/30 font-bold shrink-0">Package</span>
             : s.always
               ? <span className="text-[10px] px-1.5 py-[1px] rounded-full bg-ok-subtle text-ok font-bold shrink-0">auto</span>
               : <span className="text-[10px] px-1.5 py-[1px] rounded-full bg-bg-elevated text-muted border border-border font-bold shrink-0">on-demand</span>}
@@ -199,12 +199,12 @@ export default function SkillsTab() {
            *  between scrollable and non-scrollable states. */}
           <div className="w-[240px] shrink-0 overflow-y-auto scrollbar-overlay border border-border rounded-md p-2" role="listbox" aria-label="Skills">
             {localSkills.map(renderRow)}
-            {aimSkills.length > 0 && (
+            {packageSkills.length > 0 && (
               <div className="mt-2">
-                <div className="text-[11px] text-aim font-semibold tracking-wider px-2 py-1.5 mb-1" title={`Skills from ${provider.labels.pluginRegistryName} packages — read-only`}>
-                  {provider.labels.pluginRegistryName.toUpperCase()} PACKAGES
+                <div className="text-[11px] text-aim font-semibold tracking-wider px-2 py-1.5 mb-1" title={`Skills from ${provider.labels.pluginRegistryName} — read-only`}>
+                  {provider.labels.pluginRegistryName.toUpperCase()}
                 </div>
-                {aimSkills.map(renderRow)}
+                {packageSkills.map(renderRow)}
               </div>
             )}
             {allFiltered.length === 0 && <div className="text-muted/70 text-[12px] italic px-2 py-2">No skills match “{skillFilter}”.</div>}
@@ -234,7 +234,7 @@ export default function SkillsTab() {
                   <div className="flex items-center gap-2 min-w-0">
                     <span className="text-sm font-bold text-text-strong truncate">{displayName(selectedSkill)}</span>
                     {sourceLabel(selectedSkill.source) && (
-                      <span className={`text-[11px] px-1.5 py-[1px] rounded-full font-bold shrink-0 ${selectedSkill.source === 'aim' ? 'bg-aim-subtle text-aim border border-aim/30' : 'bg-bg-elevated text-muted border border-border'}`}>{sourceLabel(selectedSkill.source)}</span>
+                      <span className={`text-[11px] px-1.5 py-[1px] rounded-full font-bold shrink-0 ${selectedSkill.source === 'package' ? 'bg-aim-subtle text-aim border border-aim/30' : 'bg-bg-elevated text-muted border border-border'}`}>{sourceLabel(selectedSkill.source)}</span>
                     )}
                   </div>
                   {selectedSkill.source === 'kirocrew' && (

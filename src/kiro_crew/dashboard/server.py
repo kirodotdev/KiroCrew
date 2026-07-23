@@ -1327,6 +1327,7 @@ async def start_dashboard(
 
     # MCP servers
     app.router.add_get("/api/mcp", handlers.api_mcp_servers)
+    app.router.add_get("/api/mcp/scopes", handlers.api_mcp_global_scopes)
     app.router.add_get("/api/mcp/active", handlers.api_mcp_active)
     app.router.add_post("/api/mcp/probe", handlers.api_mcp_probe)
     app.router.add_get("/api/mcp/probe", handlers.api_mcp_probe_cached)
@@ -1346,12 +1347,12 @@ async def start_dashboard(
     app.router.add_get("/api/mcp-gateway/servers", handlers.api_mcp_gateway_servers)
     app.router.add_post("/api/mcp-gateway/servers/poolable", handlers.api_mcp_gateway_set_poolable)
     # AIM integration
-    app.router.add_get("/api/aim/mcp", handlers.api_aim_mcp_list)
-    app.router.add_post("/api/aim/mcp/install", handlers.api_aim_mcp_install)
-    app.router.add_post("/api/aim/mcp/uninstall", handlers.api_aim_mcp_uninstall)
-    app.router.add_get("/api/aim/skills", handlers.api_aim_skills_list)
-    app.router.add_post("/api/aim/skills/install", handlers.api_aim_skills_install)
-    app.router.add_post("/api/aim/skills/uninstall", handlers.api_aim_skills_uninstall)
+    app.router.add_get("/api/capability/mcp", handlers.api_capability_mcp_list)
+    app.router.add_post("/api/capability/mcp/install", handlers.api_capability_mcp_install)
+    app.router.add_post("/api/capability/mcp/uninstall", handlers.api_capability_mcp_uninstall)
+    app.router.add_get("/api/capability/skills", handlers.api_capability_skills_list)
+    app.router.add_post("/api/capability/skills/install", handlers.api_capability_skills_install)
+    app.router.add_post("/api/capability/skills/uninstall", handlers.api_capability_skills_uninstall)
 
     # Chat
     app.router.add_post("/api/chat", chat.api_chat)
@@ -1409,13 +1410,7 @@ async def start_dashboard(
     app.router.add_put("/api/agents/{name}", handlers.api_kirocrew_agent_update)
     app.router.add_delete("/api/agents/{name}", handlers.api_kirocrew_agent_delete)
     # AIM agents
-    app.router.add_get("/api/aim/agents", handlers.api_aim_agents_list)
-    app.router.add_post("/api/aim/agents/install", handlers.api_aim_agents_install)
-    app.router.add_post("/api/aim/agents/uninstall", handlers.api_aim_agents_uninstall)
-    app.router.add_post("/api/aim/update", handlers.api_aim_update)
-    # Companion-backend migration (kiro → alternate ACP backend)
-    app.router.add_get("/api/cc/aim/missing", handlers.api_cc_aim_missing)
-    app.router.add_post("/api/cc/aim/sync", handlers.api_cc_aim_sync)
+    app.router.add_get("/api/capability/agents", handlers.api_capability_agents_list)
     # Agent metadata (Phase 1)
     app.router.add_get("/api/agent-metadata/{name}", handlers.api_agent_metadata_get)
     app.router.add_put("/api/agent-metadata/{name}", handlers.api_agent_metadata_put)
@@ -1426,7 +1421,7 @@ async def start_dashboard(
     app.router.add_get(
         "/api/sessions/{id}/agents/{agent_id}/stream", handlers.api_session_agent_stream
     )
-    app.router.add_get("/api/aim/mcp/registry", handlers.api_aim_mcp_registry)
+    app.router.add_get("/api/capability/mcp/registry", handlers.api_capability_mcp_registry)
     app.router.add_post("/api/chat/slots/{slot}/resume", chat.api_chat_slot_resume)
     app.router.add_post("/api/chat/slots/{slot}/approve", chat.api_chat_slot_approve)
     app.router.add_post("/api/chat/slots/{slot}/plan-action", chat.api_chat_plan_action)

@@ -2,18 +2,8 @@
 
 Provides ``list_agents()`` which returns metadata about all installed
 agents, including KiroCrew's own agent and any agents shipped by
-locally-installed skill packages (agent config files on disk).
-
-Also provides CC (Claude Code) plugin discovery helpers:
-- ``list_cc_plugins()`` — installed CC plugin package names (reads disk)
-- ``is_cc_plugin_installed()`` — check a single package
-- ``install_cc_plugin()`` — no-op in OSS (the optional plugin CLI is absent)
-- ``installed_kiro_packages_missing_from_cc()`` — empty in OSS
-
-The optional ``aim`` plugin manager is not part of the public distribution,
-so the install/sync helpers degrade gracefully to no-ops when its binary is
-absent. ``list_agents()`` remains fully functional — it only reads on-disk
-agent config files and has no external-tool dependency.
+locally-installed skill packages (agent config files on disk). It only
+reads on-disk agent config files and has no external-tool dependency.
 
 Each agent is identified by its ``modeId`` — the value passed to
 ``session/set_mode`` in the ACP protocol to switch the backend's behavior.
@@ -24,7 +14,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -35,12 +24,6 @@ from kiro_crew.sel import sel as _sel
 logger = logging.getLogger(__name__)
 
 _KIRO_AGENTS_DIR = Path.home() / ".kiro" / "agents"
-_CC_PLUGINS_DIR = Path.home() / ".aim" / "cc-plugins"
-
-_VALID_PACKAGE_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9/_.-]*$")
-
-# AIM packages whose agents are treated as kirocrew-owned (orange badge, not purple)
-_KIROCREW_AIM_PACKAGES = {"KiroCrewAICapabilities"}
 
 # ── list_agents() result cache ──
 # list_agents() reads and JSON-parses every ~/.kiro/agents/*.json on each call.
@@ -50,11 +33,11 @@ _KIROCREW_AIM_PACKAGES = {"KiroCrewAICapabilities"}
 # directory signature (file count + newest mtime) is unchanged — that signature
 # detects adds, removals, and in-place edits.
 _ListAgentsSig = tuple[int, int]
-_LIST_AGENTS_CACHE: dict[str, tuple[_ListAgentsSig, list[AimAgent]]] = {}
+_LIST_AGENTS_CACHE: dict[str, tuple[_ListAgentsSig, list[AgentInfo]]] = {}
 
 
 @dataclass
-class AimAgent:
+class AgentInfo:
     """Metadata for an installed kiro-cli agent."""
 
     name: str
@@ -63,7 +46,7 @@ class AimAgent:
     model: str
     skills: list[str] = field(default_factory=list)
     mcp_servers: list[str] = field(default_factory=list)
-    source: str = "builtin"  # "aim" | "kirocrew" | "builtin"
+    source: str = "builtin"  # "kirocrew" | "package" | "builtin"
     package: str = ""  # AIM package name (e.g. "Customer360GenAIContext")
 
     def to_dict(self) -> dict[str, Any]:
@@ -121,10 +104,51 @@ def clear_list_agents_cache() -> None:
     _LIST_AGENTS_CACHE.clear()
 
 
-def list_agents(agents_dir: Path | None = None) -> list[AimAgent]:
+def _with_edition_agents(disk_agents: list[AgentInfo]) -> list[AgentInfo]:
+    """Merge edition-contributed agent-catalog rows onto the on-disk scan.
+
+    Reads ``AgentCatalogProvider.builtin_agents()`` through the platform context
+    (deferred import so this module never imports the platform package at load
+    time; fails closed to no extra agents). ADD-only and de-duped by name — an
+    on-disk agent of the same name wins. The public Default returns ``[]`` so
+    this is a no-op for the standalone edition.
+    """
+    from kiro_crew.platform.context import current_context, safe_context_call
+
+    rows: list[dict[str, Any]] = safe_context_call(
+        lambda: list(current_context().agent_catalog.builtin_agents()),
+        fallback_factory=list,
+        log_message="builtin_agents lookup failed; using none",
+    )
+    if not rows:
+        return list(disk_agents)
+    by_name: dict[str, AgentInfo] = {a.name: a for a in disk_agents}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        name = row.get("name")
+        if not name or name in by_name:
+            continue
+        try:
+            by_name[name] = AgentInfo(
+                name=name,
+                filename=row.get("filename", ""),
+                description=row.get("description", ""),
+                model=row.get("model", "auto"),
+                skills=list(row.get("skills") or []),
+                mcp_servers=list(row.get("mcp_servers") or []),
+                source=row.get("source", "builtin"),
+                package=row.get("package", ""),
+            )
+        except Exception:
+            logger.debug("Skipping malformed edition agent row: %r", row)
+    return list(by_name.values())
+
+
+def list_agents(agents_dir: Path | None = None) -> list[AgentInfo]:
     """Scan ~/.kiro/agents/*.json for all installed agents.
 
-    Returns a list of ``AimAgent`` objects sorted by name. Each agent
+    Returns a list of ``AgentInfo`` objects sorted by name. Each agent
     corresponds to a kiro-cli agent config file that can be selected
     via ``session/set_mode`` in the ACP protocol.
 
@@ -137,9 +161,9 @@ def list_agents(agents_dir: Path | None = None) -> list[AimAgent]:
     signature = _dir_signature(d)
     cached = _LIST_AGENTS_CACHE.get(cache_key)
     if cached is not None and cached[0] == signature:
-        return list(cached[1])
+        return _with_edition_agents(list(cached[1]))
 
-    agents: list[AimAgent] = []
+    agents: list[AgentInfo] = []
 
     if d.is_dir():
         for f in sorted(d.glob("*.json")):
@@ -154,7 +178,7 @@ def list_agents(agents_dir: Path | None = None) -> list[AimAgent]:
                 if is_sensitive_path(str(real)):
                     logger.debug("Skipping sensitive agent config: %s", f)
                     _sel().log_api_access(
-                        caller="aim_agents",
+                        caller="agent_discovery",
                         operation="list_agents",
                         outcome="denied",
                         source="list_agents",
@@ -176,10 +200,13 @@ def list_agents(agents_dir: Path | None = None) -> list[AimAgent]:
                 stem = f.stem
 
                 package = ""
-                is_aim_filename = (
+                # Package-installed agents follow the "{package}-{name}.json"
+                # filename convention (a generic package-manager convention, not
+                # tied to any specific tool). A plain "{name}.json" is built-in.
+                is_package_filename = (
                     agent_name and stem.endswith(agent_name) and stem != agent_name
                 )
-                if is_aim_filename:
+                if is_package_filename:
                     pkg_stem = f.stem
                     if pkg_stem.startswith("local-"):
                         pkg_stem = pkg_stem[len("local-") :]
@@ -187,13 +214,13 @@ def list_agents(agents_dir: Path | None = None) -> list[AimAgent]:
 
                 if f.name in ("kirocrew.json", "kirocrew-lite.json"):
                     source = "kirocrew"
-                elif is_aim_filename:
-                    source = "kirocrew" if package in _KIROCREW_AIM_PACKAGES else "aim"
+                elif is_package_filename:
+                    source = "package"
                 else:
                     source = "builtin"
 
                 agents.append(
-                    AimAgent(
+                    AgentInfo(
                         name=data.get("name", f.stem),
                         filename=f.name,
                         description=data.get("description", ""),
@@ -210,8 +237,8 @@ def list_agents(agents_dir: Path | None = None) -> list[AimAgent]:
                 logger.debug("Skipping invalid agent config: %s", f)
                 continue
 
-    # Deduplicate by name — prefer AIM-installed (has package) over fallback
-    seen: dict[str, AimAgent] = {}
+    # Deduplicate by name — prefer package-installed (has package) over fallback
+    seen: dict[str, AgentInfo] = {}
     for a in agents:
         existing = seen.get(a.name)
         if existing is None:
@@ -228,93 +255,4 @@ def list_agents(agents_dir: Path | None = None) -> list[AimAgent]:
             )
     result = list(seen.values())
     _LIST_AGENTS_CACHE[cache_key] = (signature, result)
-    return list(result)
-
-
-# ---------------------------------------------------------------------------
-# Claude Code plugin discovery and installation
-# ---------------------------------------------------------------------------
-
-
-def list_cc_plugins() -> list[str]:
-    """Return package names of installed CC plugins from the AIM marketplace.
-
-    Reads ``~/.aim/cc-plugins/.claude-plugin/marketplace.json`` if it exists.
-    Returns an empty list if AIM is not installed or the file is missing.
-    """
-    marketplace = _CC_PLUGINS_DIR / ".claude-plugin" / "marketplace.json"
-    if not marketplace.is_file():
-        return []
-    try:
-        data = json.loads(marketplace.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        logger.debug("Cannot read CC plugins marketplace.json")
-        return []
-    # marketplace.json is an array of objects with a "packageName" field
-    if isinstance(data, list):
-        return [
-            entry["packageName"]
-            for entry in data
-            if isinstance(entry, dict) and entry.get("packageName")
-        ]
-    # Alternate format: dict with "plugins" key
-    if isinstance(data, dict):
-        plugins = data.get("plugins", [])
-        if isinstance(plugins, list):
-            return [
-                entry["packageName"]
-                for entry in plugins
-                if isinstance(entry, dict) and entry.get("packageName")
-            ]
-    return []
-
-
-def is_cc_plugin_installed(pkg: str) -> bool:
-    """Check if a specific AIM package is installed as a CC plugin."""
-    return pkg in list_cc_plugins()
-
-
-def _ensure_standalone_mode() -> bool:
-    """No-op in OSS — the optional plugin manager config is not managed here.
-
-    Preserved for API compatibility. Always returns True; writes nothing.
-    """
-    return True
-
-
-def install_cc_plugin(pkg: str, *, standalone: bool = True) -> tuple[bool, str]:
-    """Install a package as a CC plugin (no-op in this distribution).
-
-    The optional plugin manager used to perform installs is not part of the
-    public distribution, so this degrades to a graceful no-op rather than
-    shelling out to an absent binary.
-
-    Args:
-        pkg: Package name (validated for safety, otherwise unused).
-        standalone: Accepted for API compatibility; ignored.
-
-    Returns:
-        (success, message) tuple. ``success`` is always False here.
-    """
-    if not _VALID_PACKAGE_RE.match(pkg) or ".." in pkg:
-        return False, f"Invalid package name: {pkg!r}"
-    return False, "Plugin install is not available in this distribution"
-
-
-def _list_kiro_packages() -> set[str]:
-    """Return installed plugin-manager package names — empty in OSS.
-
-    The optional plugin manager CLI is absent in the public distribution, so
-    there are no externally-tracked packages to enumerate. Returns an empty
-    set (no subprocess spawned).
-    """
-    return set()
-
-
-def installed_kiro_packages_missing_from_cc() -> list[str]:
-    """Return packages installed for the agent backend but missing from CC.
-
-    With no external plugin manager in the public distribution there is
-    nothing to diff, so this always returns an empty list.
-    """
-    return []
+    return _with_edition_agents(result)

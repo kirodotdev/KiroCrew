@@ -14,6 +14,7 @@ deny decision must be ``@final`` to enforce the ADD-only floor.
 from __future__ import annotations
 
 import enum
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional, Protocol
 
@@ -337,11 +338,34 @@ class EmbeddingSource(Protocol):
     ) -> Optional[dict]: ...
 
 
-class McpToolingProvider(Protocol):
-    """Extra MCP servers + skill catalog the edition contributes.
+@dataclass(frozen=True)
+class McpScope:
+    """A provider-specific global MCP config scope contributed by an edition.
 
-    Public default = none beyond the managed servers.  The companion injects
-    the internal MCP server and the internal skill paths.
+    ``id`` is the short scope key used in the ``/api/mcp/apply`` request body
+    (``f"{id}Global"``, e.g. ``ccGlobal``). ``global_json`` is the provider's
+    global MCP config file. ``agent_mcp_file`` is the rendered per-agent MCP file
+    to strip on uninstall, or ``None`` if the provider has none. ``label`` is the
+    human display name the dashboard shows on the scope badge (e.g. ``Claude``);
+    it defaults to ``id`` when empty.
+    """
+
+    id: str
+    global_json: Path
+    agent_mcp_file: Optional[Path] = None
+    label: str = ""
+
+
+class McpToolingProvider(Protocol):
+    """Extra MCP servers, skill roots, and provider MCP scopes the edition adds.
+
+    This seam is scoped to MCP tooling ONLY. Agent-catalog contributions live on
+    ``AgentCatalogProvider``, prompt/SOP roots on ``PromptSourceProvider``, and
+    external package management on ``CapabilityManager`` — each a distinct edition
+    concern with its own Protocol rather than accreting onto this one.
+
+    Public default = none beyond the managed servers.  The companion injects the
+    internal MCP server, internal skill paths, and its provider MCP scope(s).
     """
 
     def extra_mcp_servers(self) -> Dict[str, dict]: ...
@@ -356,6 +380,152 @@ class McpToolingProvider(Protocol):
         skill) is discoverable by trigger matching and the ``$skill`` picker. The
         public Default returns ``[]`` (no extra paths — discovery is unchanged).
         """
+        ...
+
+    def extra_mcp_scopes(self) -> List["McpScope"]:
+        """Provider-specific global MCP config scopes the edition manages.
+
+        WIRED: ``/api/mcp/apply``, the MCP uninstall path, AND MCP discovery
+        (``mcp_discovery._extra_scope_sources``) write/scan each returned scope's
+        ``global_json`` (and strip its ``agent_mcp_file``) IN ADDITION to the
+        core Kiro global, keyed by ``f"{scope.id}Global"`` in the request body.
+        ``GET /api/mcp/scopes`` surfaces them to the dashboard's Globals column.
+        The public Default returns ``[]`` so the core writes the **Kiro scope
+        only**; a companion returns e.g. the Claude Code scope
+        (``~/.claude.json``) to keep that provider's config in sync.
+        """
+        ...
+
+
+class AgentCatalogProvider(Protocol):
+    """Extra agent-catalog rows the edition contributes.
+
+    A distinct concern split out of ``McpToolingProvider`` (was
+    ``builtin_agents()`` there) so each edition hook lands on its own interface.
+    """
+
+    def builtin_agents(self) -> List[Dict[str, Any]]:
+        """Extra agent-catalog rows the edition contributes.
+
+        WIRED: ``agent_discovery.list_agents()`` merges these AFTER the on-disk
+        ``~/.kiro/agents`` scan — ADD-only and de-duped by name, so an on-disk
+        agent of the same name wins. Each row is a plain dict with the
+        ``AgentInfo`` fields (``name`` required; ``filename``, ``description``,
+        ``model``, ``skills``, ``mcp_servers``, ``source``, ``package``
+        optional). Lets an edition surface agents that are not materialized as
+        on-disk config files. The public Default returns ``[]`` (discovery is
+        the on-disk scan only).
+        """
+        ...
+
+
+class PromptSourceProvider(Protocol):
+    """Edition-contributed prompt/SOP source roots the dashboard lists.
+
+    A distinct concern split out of ``McpToolingProvider`` (was
+    ``prompt_source_roots()`` there).
+    """
+
+    def prompt_source_roots(self) -> List[Path]:
+        """Edition-contributed prompt/SOP source roots the dashboard lists.
+
+        WIRED: the dashboard prompt discovery (``_list_aim_prompts``) walks each
+        returned root generically (``rglob('*.sop.md')``) to surface agent SOPs,
+        emitting them with ``source: "package"``. The public Default returns
+        ``[]`` so the OSS build lists NO package SOPs (only the user-authored
+        ``~/.kiro/prompts`` files it already discovers); a companion returns its
+        resolved package prompt/SOP roots so its installed SOPs appear in the
+        ``/api/prompts`` catalog and ``@agent-sop:`` mentions. Read fail-closed
+        through ``safe_context_call`` at the call site (fallback ``[]``).
+        """
+        ...
+
+
+@dataclass(frozen=True)
+class CapabilityResult:
+    """Outcome of a ``CapabilityManager`` mutation.
+
+    ``message`` is ALREADY human-friendly — the manager owns error translation,
+    so the core never matches package-manager-specific error strings.
+    """
+
+    ok: bool
+    message: str = ""
+
+
+class CapabilityManager(Protocol):
+    """Operations-based external package/capability manager (CPP seam).
+
+    Replaces the former ``external_capability_bin()`` binary-name seam: rather
+    than naming a binary whose exact CLI grammar the core then hardcodes, the
+    edition implements these OPERATIONS and OWNS its own invocation grammar,
+    output parsing, and error translation. The core calls an operation and only
+    serializes the result / applies side effects (config sync, agent rebuild).
+
+    The public Default is unavailable (``available()`` → ``False``), so the
+    ``/api/capability/*`` handlers report "not available" (HTTP 503); a companion
+    implements registry-backed MCP/skill/agent management. Every op is ``async``
+    (it does I/O) and MUST NOT be called when ``available()`` is ``False``.
+    """
+
+    def available(self) -> bool:
+        """True when this edition provides a capability manager."""
+        ...
+
+    async def list_mcp(self) -> List[Dict[str, Any]]:
+        """Installed MCP servers as structured entries (the manager parses its
+        own output). Conventional keys: ``name``, ``server_id``, ``package``,
+        ``version``."""
+        ...
+
+    async def install_mcp(self, server_id: str) -> "CapabilityResult": ...
+
+    async def uninstall_mcp(self, server_id: str) -> "CapabilityResult": ...
+
+    async def registry(self) -> List[Dict[str, Any]]:
+        """Available MCP servers from the registry.
+
+        The manager parses its own registry output into entries; the core passes
+        them through verbatim as ``{"servers": [...]}``. Conventional keys the
+        dashboard consumes: ``id``, ``installed``, ``title``, ``tier``,
+        ``description`` (plus any extra fields the edition includes).
+        """
+        ...
+
+    async def list_skills(self) -> List[Dict[str, Any]]:
+        """Installed skill packages as structured rows (the manager parses its
+        own output AND resolves paths — the core keeps no text grammar). Each row
+        carries the skill-catalog fields the dashboard merges: ``key``, ``name``,
+        ``description``, ``path``, ``dir``, ``always``, ``source``, ``package``.
+
+        CONTAINMENT INVARIANT: every skill returned here MUST live under one of
+        the roots reported by ``McpToolingProvider.extra_skills()``. The skill
+        *browser* endpoints (``/api/skills/package/<name>/tree`` and detail)
+        resolve a skill's on-disk path by searching those roots, so a row whose
+        ``path``/``dir`` falls outside every ``extra_skills()`` root will list in
+        ``/api/skills`` but 404 on tree/detail. An edition that satisfies both
+        Protocols independently MUST keep them consistent (list only skills that
+        are under an advertised root). The public ``Default`` returns ``[]`` so
+        the standalone build has no mismatch. The core enforces this at runtime:
+        ``collect_skills_blocking`` logs a loud warning for any listed row whose
+        ``path``/``dir`` falls outside every ``extra_skills()`` root, turning an
+        otherwise silent browse-404 into an actionable log line.
+        """
+        ...
+
+    async def install_skill(self, package: str) -> "CapabilityResult":
+        """Install a skill package by name.
+
+        The edition resolves any version/source internally — NO Amazon-internal
+        version-set concept is exposed on this operation or the public API.
+        """
+        ...
+
+    async def uninstall_skill(self, package: str) -> "CapabilityResult": ...
+
+    async def list_agents(self) -> List[Dict[str, Any]]:
+        """Installed agent packages as structured entries (the manager parses its
+        own output). Conventional keys: ``name``, ``package``, ``version``."""
         ...
 
 

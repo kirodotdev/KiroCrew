@@ -1,7 +1,7 @@
 """Cross-platform ``flock`` shim so POSIX-only modules import on Windows.
 
 The gateway (and everything that takes an advisory file lock — cron, gateway
-singleton, session-pid, autonudge, aim_agents) runs only on macOS/Linux. But the
+singleton, session-pid, autonudge, agent_discovery) runs only on macOS/Linux. But the
 Windows ``kirocrew cloud`` thin-client runs ``python -m kiro_crew cloud launch``,
 which imports the *whole* CLI — pulling those modules in at import time. A bare
 module-level ``import fcntl`` (POSIX-only) would then crash the launcher on

@@ -98,16 +98,16 @@ export default function PromptsTab() {
     [filter],
   )
 
-  const aimPrompts = useMemo(() => prompts.filter(p => p.source === 'aim'), [prompts])
-  const userPrompts = useMemo(() => prompts.filter(p => p.source !== 'aim'), [prompts])
+  const packagePrompts = useMemo(() => prompts.filter(p => p.source === 'package'), [prompts])
+  const userPrompts = useMemo(() => prompts.filter(p => p.source !== 'package'), [prompts])
   const filteredUser = useMemo(() => userPrompts.filter(sf), [userPrompts, sf])
-  const filteredAim = useMemo(() => aimPrompts.filter(sf), [aimPrompts, sf])
+  const filteredPackage = useMemo(() => packagePrompts.filter(sf), [packagePrompts, sf])
 
   const grouped = useMemo(() => {
     const g: Record<string, Prompt[]> = {}
-    for (const p of filteredAim) (g[p.package || 'unknown'] ||= []).push(p)
+    for (const p of filteredPackage) (g[p.package || 'unknown'] ||= []).push(p)
     return Object.entries(g).sort(([a], [b]) => a.localeCompare(b))
-  }, [filteredAim])
+  }, [filteredPackage])
 
   const renderPrompt = (p: Prompt) => {
     const pk = promptKey(p)
@@ -117,7 +117,7 @@ export default function PromptsTab() {
       <div role="button" tabIndex={0} aria-expanded={activeKey === pk} className="flex items-start gap-2.5 px-3 py-2.5 cursor-pointer hover:bg-bg-hover transition-colors" onClick={() => toggle(p)} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(p) } }}>
         <span className="text-muted text-[13px] mt-0.5 w-4 shrink-0">{activeKey === pk ? '▼' : '▶'}</span>
         <span className="font-semibold text-text-strong font-mono text-[13px] whitespace-nowrap">@{p.fullName}</span>
-        {p.source === 'aim' ? <Badge variant="ok">AIM SOP</Badge>
+        {p.source === 'package' ? <Badge variant="ok">Package</Badge>
          : <Badge variant="warn">{p.source}</Badge>}
         <span className="text-muted text-[13px] leading-relaxed truncate">{p.description}</span>
       </div>
@@ -136,17 +136,17 @@ export default function PromptsTab() {
 
   return (<>
     <Card>
-      <CardTitle><ScrollText className="lucide-inline" /> Prompts & Agent SOPs <InfoTip text={`Saved prompts and Agent SOPs from ${provider.labels.pluginRegistryName.toLowerCase()} and ~/.kiro/prompts/. Invoke with @name in chat or /prompts get name. SOPs are step-by-step workflows the agent follows when invoked.`} /></CardTitle>
+      <CardTitle><ScrollText className="lucide-inline" /> Prompts <InfoTip text={`Saved prompts from ${provider.labels.pluginRegistryName.toLowerCase()} and ~/.kiro/prompts/. Invoke with @name in chat or /prompts get name.`} /></CardTitle>
       <p className="text-muted text-[13px] mb-3 leading-relaxed">
         Invoke in chat: <code className="text-[12px]">@agent-sop:name</code> or <code className="text-[12px]">/prompts get name</code>.
-        SOPs are loaded on-demand — they don't consume context until invoked.
+        Prompts are loaded on-demand — they don't consume context until invoked.
       </p>
       {prompts.length > 0 && (
         <div className="mb-3 px-3">
           <SearchInput placeholder="Filter prompts…" value={filter} onChange={e => setFilter(e.target.value)} />
         </div>
       )}
-      {prompts.length === 0 && !loading && !error && <p className="text-muted italic text-sm px-3 py-4">No prompts or agent SOPs found. Install a {provider.labels.pluginRegistryName.toLowerCase().replace(/s$/, '')} with agent-sops/ or create prompts in ~/.kiro/prompts/.</p>}
+      {prompts.length === 0 && !loading && !error && <p className="text-muted italic text-sm px-3 py-4">No prompts found. Install a {provider.labels.pluginRegistryName.toLowerCase().replace(/s$/, '')} with prompts or create prompts in ~/.kiro/prompts/.</p>}
       {loading && <p className="text-muted italic text-sm px-3 py-4">Loading prompts…</p>}
       {error && <p className="text-red-400 text-sm px-3 py-4">{error.message || 'Failed to load prompts'}</p>}
     </Card>
@@ -155,7 +155,7 @@ export default function PromptsTab() {
       {filteredUser.map(renderPrompt)}
     </Card>}
     {grouped.length > 0 && <Card>
-      <CardTitle>{provider.labels.pluginRegistryName} Agent SOPs ({filter ? `${filteredAim.length} of ${aimPrompts.length}` : aimPrompts.length}) <InfoTip text="Agent SOPs from installed AIM packages. Step-by-step workflows with MUST/SHOULD/MAY constraints." /></CardTitle>
+      <CardTitle>{provider.labels.pluginRegistryName} Prompts ({filter ? `${filteredPackage.length} of ${packagePrompts.length}` : packagePrompts.length})</CardTitle>
       {grouped.map(([pkg, items]) => (
           <div key={pkg} className="mb-3">
             <div className="text-muted text-[12px] uppercase tracking-[.06em] font-semibold px-3 py-1.5 bg-bg-hover rounded-t-md">{pkg}</div>

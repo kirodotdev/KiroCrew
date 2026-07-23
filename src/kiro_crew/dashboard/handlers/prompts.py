@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import re
 from pathlib import Path
@@ -16,9 +15,8 @@ from kiro_crew.executors import discovery_executor
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 from ._shared import (
-    _aim_list_stdout,
+    _capability_manager,
     _get_skills,
-    _parse_aim_skills,
     _resolve_skill_root,
     collect_skills_blocking,
     list_skill_tree,
@@ -44,37 +42,6 @@ def _sel():
 
 
 # ── Prompts (Agent SOPs) ──
-
-
-def _latest_aim_event_dir(pkg_dir: Path) -> Path | None:
-    """Return the current eventId-* directory for an AIM package.
-
-    Uses ``.aim/.version-manifest.json`` (authoritative) with a fallback
-    to the highest numeric eventId if the manifest is missing.
-    """
-    # Authoritative: read currentEventId from manifest (same as agent.py)
-    manifest = pkg_dir / ".aim" / ".version-manifest.json"
-    if manifest.is_file():
-        try:
-            current = json.loads(manifest.read_text(encoding="utf-8")).get("currentEventId", "")
-            if current:
-                candidate = pkg_dir / f"eventId-{current}"
-                if candidate.is_dir():
-                    return candidate
-        except (json.JSONDecodeError, OSError):
-            pass
-    # Fallback: highest numeric eventId
-    events = [d for d in pkg_dir.iterdir() if d.is_dir() and d.name.startswith("eventId-")]
-    if not events:
-        return None
-
-    def _sort_key(d: Path) -> int:
-        try:
-            return int(d.name.split("-", 1)[1])
-        except (IndexError, ValueError):
-            return 0
-
-    return max(events, key=_sort_key)
 
 
 def _extract_sop_description(path: Path) -> str:
@@ -144,7 +111,10 @@ def _find_prompt(raw_name: str) -> dict[str, Any] | None:
 async def api_prompt_detail(request: web.Request) -> web.Response:
     """GET /api/prompts/{name} — read a prompt/SOP file."""
     raw = request.match_info["name"]
-    p = _find_prompt(raw)
+    # _find_prompt() → _list_aim_prompts() does an rglob('*.sop.md') walk over the
+    # (possibly large / edition-provided) prompt roots on a cold/expired cache;
+    # offload it so a slow FS can't stall the event loop.
+    p = await asyncio.get_running_loop().run_in_executor(discovery_executor(), _find_prompt, raw)
     if not p:
         _sel().log_tool_invocation(
             session_key='', agent='api', source='dashboard',
@@ -231,12 +201,18 @@ async def api_skills(request: web.Request) -> web.Response:
     # (see kiro_crew.executors). No result cache: the endpoint always reflects
     # current on-disk state, so freshly created/installed skills appear
     # immediately (correctness over the latency a cache would add).
-    aim_stdout = await _aim_list_stdout()
+    mgr = _capability_manager()
+    try:
+        package_skills = await mgr.list_skills() if mgr.available() else []
+    except Exception:
+        # The capability manager is one of three skill sources; degrade to "no
+        # package skills" rather than 500 the whole /api/skills endpoint.
+        package_skills = []
     result = await asyncio.get_running_loop().run_in_executor(
         discovery_executor(),
         collect_skills_blocking,
         skills,
-        aim_stdout,
+        package_skills,
         project_dir,
     )
     return web.json_response(result)
@@ -344,16 +320,17 @@ async def api_skill_detail(request: web.Request) -> web.Response:
 
     # GET
     content = skills.load_skill(name)
-    if content is None and name.startswith("aim/"):
-        aim_name = name[4:]  # strip "aim/" prefix
-        # Run the aim subprocess on the loop (async), parse off-loop: the parse
-        # does per-skill ~/.aim globs and must not block the event loop.
-        aim_stdout = await _aim_list_stdout()
-        aim_skills = await asyncio.get_running_loop().run_in_executor(
-            discovery_executor(), _parse_aim_skills, aim_stdout
-        )
-        for s in aim_skills:
-            if s["name"] == aim_name or s["key"] == name:
+    if content is None and name.startswith("package/"):
+        pkg_name = name[len("package/") :]  # strip "package/" prefix
+        # The capability manager owns skill listing + path resolution; it
+        # returns structured rows (no core text parsing / event-loop globbing).
+        mgr = _capability_manager()
+        try:
+            package_skills = await mgr.list_skills() if mgr.available() else []
+        except Exception:
+            package_skills = []
+        for s in package_skills:
+            if s["name"] == pkg_name or s["key"] == name:
                 if s["path"]:
                     from kiro_crew.hooks import validate_file_path  # noqa: F811
                     resolved = validate_file_path(s["path"])

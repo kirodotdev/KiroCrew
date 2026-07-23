@@ -25,10 +25,12 @@ if TYPE_CHECKING:  # avoid import cycles — config.loader imports heavy modules
     from kiro_crew.config.loader import KiroCrewConfig
     from kiro_crew.platform.governance import GovernanceCeiling
     from kiro_crew.platform.interfaces import (
+        AgentCatalogProvider,
         AgentExecutableResolver,
         AgentRuntime,
         AppRegistryPolicy,
         AppsLoader,
+        CapabilityManager,
         CredentialPolicy,
         DashboardContributor,
         EmbeddingSource,
@@ -38,6 +40,7 @@ if TYPE_CHECKING:  # avoid import cycles — config.loader imports heavy modules
         KnowledgeProvider,
         McpToolingProvider,
         PackageManager,
+        PromptSourceProvider,
         ProviderRegistry,
         PublishRegistry,
         SandboxPolicy,
@@ -103,6 +106,9 @@ class PlatformContext:
     identity: "IdentityProvider"
     embeddings: "EmbeddingSource"
     mcp_tooling: "McpToolingProvider"
+    agent_catalog: "AgentCatalogProvider"
+    prompt_sources: "PromptSourceProvider"
+    capability_manager: "CapabilityManager"
 
     # ── install / structural extension points ──
     registry: "AppRegistryPolicy"

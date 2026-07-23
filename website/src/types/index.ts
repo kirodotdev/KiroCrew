@@ -124,7 +124,10 @@ export interface DiscoverInstallResult {
 export interface McpScopePresence {
   kirocrew: boolean
   kiroGlobal: boolean
-  ccGlobal: boolean
+  // Provider-specific global scopes contributed by an edition via the
+  // extra_mcp_scopes() seam, keyed by `${scopeId}Global` (e.g. "ccGlobal").
+  // The public build has none; a companion adds them at runtime.
+  [scope: string]: boolean
 }
 
 export interface McpServer {
@@ -138,9 +141,20 @@ export interface McpApplyChange {
   name: string
   kirocrew?: boolean
   kiroGlobal?: boolean
-  ccGlobal?: boolean
   uninstall?: boolean
   toolOverrides?: Record<string, boolean>
+  // Provider-specific global scopes ("<id>Global", e.g. "ccGlobal") contributed
+  // by an edition via the extra_mcp_scopes() seam. Omitting a scope means
+  // "preserve current presence"; the pattern index keeps `kiroGlobal` typed too.
+  [scopeGlobal: `${string}Global`]: boolean | undefined
+}
+
+/** A provider-specific global MCP scope surfaced by the extra_mcp_scopes() seam. */
+export interface McpGlobalScope {
+  /** Presence/apply key, e.g. "ccGlobal". */
+  id: string
+  /** Human display label for the scope badge, e.g. "Claude". */
+  label: string
 }
 
 export interface ChatSlot {

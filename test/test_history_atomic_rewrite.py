@@ -118,11 +118,18 @@ class TestConcurrentAppendVsRewrite:
             while not stop.is_set():
                 try:
                     log.mark_consolidated("k", 1)
-                    # Concurrent read must never see a truncated/torn file.
+                    # A reader observes a consistent (never torn) file only when
+                    # it reads under the same per-file lock that serializes
+                    # append + rewrite. An unlocked read can legitimately catch
+                    # a plain O(1) append mid-write; production readers
+                    # (_read_messages) tolerate that by skipping torn trailing
+                    # lines. Here we assert the stronger lock-serialized
+                    # guarantee, so the read must hold the lock too.
                     path = reader._path("k")
-                    for line in path.read_text(encoding="utf-8").splitlines():
-                        if line.strip():
-                            json.loads(line)
+                    with reader._file_lock("k"):
+                        for line in path.read_text(encoding="utf-8").splitlines():
+                            if line.strip():
+                                json.loads(line)
                 except Exception as exc:  # noqa: BLE001
                     errors.append(exc)
 

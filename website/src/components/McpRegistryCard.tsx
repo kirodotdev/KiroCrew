@@ -3,7 +3,7 @@ import { useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { RefreshCw, Check, Star } from 'lucide-react'
 import { motion } from 'framer-motion'
-import { api } from '../api/client'
+import { api, ApiError } from '../api/client'
 import { Card, Btn, SearchInput } from './ui'
 import InfoTip from './InfoTip'
 import McpDetailModal from './McpDetailModal'
@@ -36,7 +36,13 @@ export default function McpRegistryCard() {
 
   const { data: servers = [], isLoading, isFetching, error, refetch } = useQuery<RegistryServer[]>({
     queryKey: ['mcp-registry'],
-    queryFn: async () => { const r = await api.aimMcpRegistry(); return r.servers || [] },
+    queryFn: async () => { const r = await api.capabilityMcpRegistry(); return r.servers || [] },
+    // The registry is only reachable when an external capability manager is
+    // configured (the extension seam). When it isn't (OSS default:
+    // CapabilityManager.available() is false), the endpoint returns a
+    // 503/404 — don't burn retries on it; we hide the whole section below.
+    retry: (count, err) =>
+      !(err instanceof ApiError && (err.status === 503 || err.status === 404)) && count < 2,
   })
 
   // Cross-reference AIM's isInstalled flag against servers actually in
@@ -56,7 +62,7 @@ export default function McpRegistryCard() {
 
   const install = useMutation({
     mutationFn: async (serverId: string) => {
-      const r = await api.aimMcpInstall(serverId)
+      const r = await api.capabilityMcpInstall(serverId)
       if (r.error) throw new Error(r.error)
       return r
     },
@@ -75,7 +81,7 @@ export default function McpRegistryCard() {
 
   const uninstall = useMutation({
     mutationFn: async (serverId: string) => {
-      const r = await api.aimMcpUninstall(serverId)
+      const r = await api.capabilityMcpUninstall(serverId)
       if (r.error) throw new Error(r.error)
       return r
     },
@@ -91,6 +97,15 @@ export default function McpRegistryCard() {
   })
 
   const dismiss = useCallback(() => setSelectedId(null), [])
+
+  // Hide the entire "Browse Integrations" section when no external capability
+  // manager / integration endpoint is configured — the registry endpoint then
+  // returns a deterministic 503/404 (OSS default: CapabilityManager.available()
+  // None). A permanently-failing "Failed to load registry" card reads like a
+  // bug, so there is nothing useful to browse; the "Installed Integrations"
+  // table below still renders on its own.
+  const registryUnavailable = error instanceof ApiError && (error.status === 503 || error.status === 404)
+  if (registryUnavailable) return null
 
   const filtered = servers.filter(s => !filter || (s.id + ' ' + (s.title || '') + ' ' + (s.description || '') + ' ' + s.tier).toLowerCase().includes(filter.toLowerCase()))
 

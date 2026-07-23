@@ -2009,7 +2009,10 @@ async def _run_chat(
 
         # /prompts or /prompts list — show available prompts
         try:
-            prompts = _list_aim_prompts()
+            # _list_aim_prompts walks the (possibly large or edition-supplied)
+            # prompt_source_roots() with rglob + file reads; keep it off the
+            # event loop so a slow/network-backed root can't stall the gateway.
+            prompts = await asyncio.to_thread(_list_aim_prompts)
         except Exception:
             prompts = []
         if not prompts:
@@ -2035,7 +2038,7 @@ async def _run_chat(
         for p in prompts:
             (by_source.setdefault(p["source"], [])).append(p)
         for src, items in sorted(by_source.items()):
-            label = "Agent SOPs" if src == "aim" else f"User Prompts ({src})"
+            label = "User Prompts" if src in ("aim", "package") else f"User Prompts ({src})"
             lines.append(f"\n**{label}:**")
             for p in items:
                 desc = f" — {p['description']}" if p["description"] else ""

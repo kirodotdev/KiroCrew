@@ -21,7 +21,6 @@ logger = logging.getLogger(__name__)
 # Common directories where MCP server binaries may be installed.
 # Order matters — earlier entries take precedence.
 _EXTRA_PATH_DIRS = (
-    "{home}/.aim/mcp-servers",
     "{home}/.local/bin",
     "{home}/.toolbox/bin",
     "{home}/.npm-packages/bin",
@@ -122,7 +121,7 @@ def augmented_path(base_path: str = "") -> str:
 
     When KiroCrew runs under systemd or another non-login shell the
     inherited ``$PATH`` rarely includes directories like
-    ``~/.aim/mcp-servers``.  Both the MCP-probe code and the kiro-cli
+    ``~/.local/bin``.  Both the MCP-probe code and the kiro-cli
     spawn code need the same augmentation — this helper keeps them in
     sync.
 

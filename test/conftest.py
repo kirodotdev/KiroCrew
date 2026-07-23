@@ -32,13 +32,18 @@ requires_git = pytest.mark.skipif(not _HAS_GIT, reason="git not available")
 
 @pytest.fixture(autouse=True)
 def _isolate_aim_skills_dir(tmp_path, monkeypatch):
-    """Prevent SkillsLoader from discovering ~/.aim/skills during tests.
+    """Prevent SkillsLoader from discovering edition-contributed skill roots.
 
-    Without this, hosts with many AIM capability packages (400+ skill files,
-    ~35MB) inflate session context beyond _MAX_CONTEXT_CHARS, causing silent
-    truncation and non-deterministic test failures under xdist.
+    SkillsLoader now sources extra skill roots from the CPP seam
+    ``McpToolingProvider.extra_skills()`` (public Default ``[]``) rather than a
+    hardcoded ``~/.aim/skills``. Pin the Default to ``[]`` so a developer with a
+    composed companion (or leftover roots) can't inflate session context beyond
+    _MAX_CONTEXT_CHARS and cause silent truncation / non-deterministic xdist
+    failures.
     """
-    monkeypatch.setattr("kiro_crew.skills.aim_skills_dir", lambda: tmp_path / "no_aim")
+    from kiro_crew.platform.defaults import DefaultMcpToolingProvider
+
+    monkeypatch.setattr(DefaultMcpToolingProvider, "extra_skills", lambda self: [])
 
 
 def pytest_configure(config: pytest.Config) -> None:

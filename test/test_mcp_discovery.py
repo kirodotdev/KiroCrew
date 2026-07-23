@@ -10,13 +10,18 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from kiro_crew.mcp_discovery import (
+    SCOPE_CC_GLOBAL,
+    SCOPE_KIRO_GLOBAL,
+    SCOPE_KIROCREW,
     McpServerInfo,
     _cache_probe,
     _get_cached,
+    _load_mcp_json_by_source,
     _probe_cache,
     _probe_remote,
     _read_jsonrpc_response,
     _read_stdio_jsonrpc_response,
+    _scope_priority,
     discover_servers_to_sync,
     list_servers,
     probe_server,
@@ -387,6 +392,130 @@ class TestListServers:
 
         servers = list_servers()
         assert any(s.name == "srv" for s in servers)
+
+
+class TestExtraScopeSeam:
+    """Discovery sources provider scopes from the extra_mcp_scopes() CPP seam
+    instead of hardcoding ~/.claude.json, keeping discovery symmetric with the
+    apply/uninstall path (no un-uninstallable "zombie" servers)."""
+
+    def test_oss_default_scans_kiro_only(self, tmp_path, monkeypatch) -> None:
+        """With no companion (seam returns []), a provider global is NOT scanned."""
+        agent_dir = tmp_path / "agents"
+        agent_dir.mkdir()
+        (agent_dir / "defaults.json").write_text(json.dumps({"mcpServers": {}}))
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
+        _clear_cache()
+
+        cc = tmp_path / "cc.json"
+        cc.write_text(json.dumps({"mcpServers": {"companion-srv": {"command": "x"}}}))
+        # OSS default: seam contributes nothing.
+        monkeypatch.setattr("kiro_crew.mcp_discovery._extra_scope_sources", lambda: [])
+
+        by_source = _load_mcp_json_by_source()
+        assert by_source.get("ccGlobal") == {}
+        assert "companion-srv" not in {s.name for s in list_servers()}
+
+    def test_companion_scope_is_scanned(self, tmp_path, monkeypatch) -> None:
+        """A seam-contributed scope is scanned and its server surfaces w/ presence."""
+        agent_dir = tmp_path / "agents"
+        agent_dir.mkdir()
+        (agent_dir / "defaults.json").write_text(json.dumps({"mcpServers": {}}))
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
+        _clear_cache()
+
+        cc = tmp_path / "cc.json"
+        cc.write_text(json.dumps({"mcpServers": {"companion-srv": {"command": "x"}}}))
+        monkeypatch.setattr(
+            "kiro_crew.mcp_discovery._extra_scope_sources", lambda: [(cc, "ccGlobal")]
+        )
+
+        by_source = _load_mcp_json_by_source()
+        assert "companion-srv" in by_source.get("ccGlobal", {})
+
+        server = next(s for s in list_servers() if s.name == "companion-srv")
+        assert server.presence["ccGlobal"] is True
+
+    def test_non_cc_scope_reported_in_presence(self, tmp_path, monkeypatch) -> None:
+        """A seam scope whose id is NOT 'cc' (e.g. vendorGlobal) must appear in
+        every server's presence. If it were omitted, the frontend reads the
+        absent key as False and an unrelated apply would DELETE the server from
+        the vendor's global config (GPT 5.6 HIGH data-loss finding)."""
+        agent_dir = tmp_path / "agents"
+        agent_dir.mkdir()
+        (agent_dir / "defaults.json").write_text(json.dumps({"mcpServers": {}}))
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
+        _clear_cache()
+
+        vendor = tmp_path / "vendor.json"
+        vendor.write_text(json.dumps({"mcpServers": {"vendor-srv": {"command": "x"}}}))
+        monkeypatch.setattr(
+            "kiro_crew.mcp_discovery._extra_scope_sources",
+            lambda: [(vendor, "vendorGlobal")],
+        )
+
+        server = next(s for s in list_servers() if s.name == "vendor-srv")
+        # The scope key is present (not omitted) and correctly True here.
+        assert "vendorGlobal" in server.presence
+        assert server.presence["vendorGlobal"] is True
+        # A server that is NOT in the vendor scope still reports the key as
+        # False (present, explicit) rather than omitting it.
+        (agent_dir / "defaults.json").write_text(
+            json.dumps({"mcpServers": {"other-srv": {"command": "y"}}})
+        )
+        _clear_cache()
+        other = next(s for s in list_servers() if s.name == "other-srv")
+        assert other.presence.get("vendorGlobal") is False
+
+    def test_seam_scope_ranks_below_kiro_global(self, tmp_path, monkeypatch) -> None:
+        """A seam-contributed scope (e.g. ccGlobal) must rank BELOW the Kiro
+        global in discovery's merge — matching rebuild_agent_config, which
+        treats provider globals as lowest-priority gap-fillers. Otherwise the
+        dashboard would show/probe a spec the agent never runs. Guards the
+        _CORE_SCOPE_ORDER fix (ccGlobal dropped from the core tuple)."""
+        # _scope_priority orders core scopes first, seam scopes in the tail.
+        by_source = {
+            SCOPE_KIROCREW: {},
+            SCOPE_KIRO_GLOBAL: {"shared-srv": {"command": "kiro"}},
+            SCOPE_CC_GLOBAL: {"shared-srv": {"command": "cc"}},
+        }
+        order = _scope_priority(by_source)
+        assert order.index(SCOPE_KIRO_GLOBAL) < order.index(SCOPE_CC_GLOBAL), (
+            "Kiro global must outrank the seam ccGlobal scope (rebuild parity)"
+        )
+
+        # Functional: same server in Kiro global + seam ccGlobal with different
+        # disabledTools → first-scope-wins gives the Kiro-global value.
+        agent_dir = tmp_path / "agents"
+        agent_dir.mkdir()
+        (agent_dir / "defaults.json").write_text(json.dumps({"mcpServers": {}}))
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
+        _clear_cache()
+
+        kiro_mcp = tmp_path / "kiro.json"
+        kiro_mcp.write_text(
+            json.dumps(
+                {"mcpServers": {"shared-srv": {"command": "x", "disabledTools": ["kiro-tool"]}}}
+            )
+        )
+        cc_mcp = tmp_path / "cc.json"
+        cc_mcp.write_text(
+            json.dumps(
+                {"mcpServers": {"shared-srv": {"command": "x", "disabledTools": ["cc-tool"]}}}
+            )
+        )
+        monkeypatch.setattr(
+            "kiro_crew.mcp_discovery._MCP_SOURCES", ((kiro_mcp, SCOPE_KIRO_GLOBAL),)
+        )
+        monkeypatch.setattr("kiro_crew.mcp_discovery._MCP_JSON_PATHS", (kiro_mcp,))
+        monkeypatch.setattr(
+            "kiro_crew.mcp_discovery._extra_scope_sources", lambda: [(cc_mcp, "ccGlobal")]
+        )
+
+        server = next(s for s in list_servers() if s.name == "shared-srv")
+        assert server.disabled_tools == ["kiro-tool"], (
+            "Kiro-global disabledTools must win over the seam scope (first-scope-wins)"
+        )
 
 
 class TestDiscoverNew:

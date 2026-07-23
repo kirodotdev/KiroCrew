@@ -7,6 +7,8 @@ from unittest.mock import MagicMock
 import pytest
 from aiohttp import web
 
+from kiro_crew.platform.interfaces import McpScope
+
 
 def _make_request(body: dict) -> MagicMock:
     """Build a fake aiohttp request for the api_mcp_apply handler."""
@@ -148,7 +150,7 @@ class TestApplyEndpoint:
 
         monkeypatch.setattr(mcp_mod, "_KIROCREW_MCP_JSON", mc_path)
         monkeypatch.setattr(mcp_mod, "_GLOBAL_MCP_JSON", kiro_path)
-        monkeypatch.setattr(mcp_mod, "_CC_GLOBAL_JSON", cc_path)
+        monkeypatch.setattr(mcp_mod, "_extra_mcp_scopes", lambda: [McpScope("cc", cc_path, None)])
         # Point _find_server_spec_anywhere's lookup list at our tmp paths.
         monkeypatch.setattr(
             mcp_mod,
@@ -212,12 +214,12 @@ class TestApplyEndpoint:
 
         monkeypatch.setattr(mcp_mod, "_KIROCREW_MCP_JSON", mc_path)
         monkeypatch.setattr(mcp_mod, "_GLOBAL_MCP_JSON", kiro_path)
-        monkeypatch.setattr(mcp_mod, "_CC_GLOBAL_JSON", cc_path)
+        monkeypatch.setattr(mcp_mod, "_extra_mcp_scopes", lambda: [McpScope("cc", cc_path, None)])
         # Prevent the handler from shelling out to a real `aim` binary if it
         # happens to be on PATH in the test/CI environment.  The handler
         # looks up `aim` via shutil.which; returning None short-circuits
         # the subprocess.run call entirely.
-        monkeypatch.setattr(mcp_mod.shutil, "which", lambda _name: None)
+        monkeypatch.setattr("kiro_crew.dashboard.handlers._shared._capability_manager", lambda: MagicMock(**{"available.return_value": False}))
 
         import kiro_crew.agent
 
@@ -247,11 +249,13 @@ class TestApplyEndpoint:
 
         monkeypatch.setattr(mcp_mod, "_KIROCREW_MCP_JSON", tmp_path / "mc.json")
         monkeypatch.setattr(mcp_mod, "_GLOBAL_MCP_JSON", tmp_path / "kiro.json")
-        monkeypatch.setattr(mcp_mod, "_CC_GLOBAL_JSON", tmp_path / "cc.json")
+        monkeypatch.setattr(
+            mcp_mod, "_extra_mcp_scopes", lambda: [McpScope("cc", tmp_path / "cc.json", None)]
+        )
         # The last change is an uninstall that would try to run `aim mcp
         # uninstall c` as a real subprocess if `aim` is on PATH in CI.
         # Return None from shutil.which to short-circuit that path.
-        monkeypatch.setattr(mcp_mod.shutil, "which", lambda _name: None)
+        monkeypatch.setattr("kiro_crew.dashboard.handlers._shared._capability_manager", lambda: MagicMock(**{"available.return_value": False}))
 
         import kiro_crew.agent
 
@@ -326,12 +330,11 @@ class TestHostileNameRejection:
         cc_path = tmp_path / "cc.json"
         monkeypatch.setattr(mcp_mod, "_KIROCREW_MCP_JSON", mc_path)
         monkeypatch.setattr(mcp_mod, "_GLOBAL_MCP_JSON", kiro_path)
-        monkeypatch.setattr(mcp_mod, "_CC_GLOBAL_JSON", cc_path)
+        monkeypatch.setattr(mcp_mod, "_extra_mcp_scopes", lambda: [McpScope("cc", cc_path, None)])
         # Trap: if the handler tries to shell out despite the name-gate, fail loudly.
         monkeypatch.setattr(
-            mcp_mod.shutil,
-            "which",
-            lambda _name: pytest.fail("shutil.which must not be reached for invalid name"),
+            "kiro_crew.dashboard.handlers._shared._capability_manager",
+            lambda: pytest.fail("_capability_manager must not be reached for invalid name"),
         )
 
         import kiro_crew.agent
@@ -376,11 +379,13 @@ class TestHostileNameRejection:
         mc_path = tmp_path / "mc.json"
         monkeypatch.setattr(mcp_mod, "_KIROCREW_MCP_JSON", mc_path)
         monkeypatch.setattr(mcp_mod, "_GLOBAL_MCP_JSON", tmp_path / "kiro.json")
-        monkeypatch.setattr(mcp_mod, "_CC_GLOBAL_JSON", tmp_path / "cc.json")
+        monkeypatch.setattr(
+            mcp_mod, "_extra_mcp_scopes", lambda: [McpScope("cc", tmp_path / "cc.json", None)]
+        )
         monkeypatch.setattr(
             mcp_mod, "_find_server_spec_anywhere", lambda n: {"command": "x"}
         )
-        monkeypatch.setattr(mcp_mod.shutil, "which", lambda _n: None)
+        monkeypatch.setattr("kiro_crew.dashboard.handlers._shared._capability_manager", lambda: MagicMock(**{"available.return_value": False}))
 
         import kiro_crew.agent
 
@@ -418,3 +423,45 @@ class TestHostileNameRejection:
         # The good tool went through
         assert "tools" in actions
         assert "legit-tool" in actions["tools"]
+
+
+# ---------------------------------------------------------------------------
+# api_mcp_global_scopes — the extra_mcp_scopes() seam surfaced to the UI
+# ---------------------------------------------------------------------------
+
+
+class TestGlobalScopesEndpoint:
+    @pytest.mark.asyncio
+    async def test_default_returns_no_extra_scopes(self, monkeypatch, tmp_path) -> None:
+        """OSS default: no provider scopes → the UI shows only the core Kiro badge."""
+        from kiro_crew.dashboard.handlers import mcp as mcp_mod
+
+        monkeypatch.setattr(mcp_mod, "_extra_mcp_scopes", lambda: [])
+        resp = await mcp_mod.api_mcp_global_scopes(_make_request({}))
+        assert resp.status == 200
+        assert json.loads(resp.text) == {"scopes": []}
+
+    @pytest.mark.asyncio
+    async def test_companion_scope_is_surfaced(self, monkeypatch, tmp_path) -> None:
+        """A companion scope is returned as {id: '<id>Global', label} for the badge."""
+        from kiro_crew.dashboard.handlers import mcp as mcp_mod
+
+        monkeypatch.setattr(
+            mcp_mod,
+            "_extra_mcp_scopes",
+            lambda: [McpScope("cc", tmp_path / "cc.json", None, "Claude")],
+        )
+        resp = await mcp_mod.api_mcp_global_scopes(_make_request({}))
+        assert resp.status == 200
+        assert json.loads(resp.text) == {"scopes": [{"id": "ccGlobal", "label": "Claude"}]}
+
+    @pytest.mark.asyncio
+    async def test_label_falls_back_to_id(self, monkeypatch, tmp_path) -> None:
+        """An empty label falls back to the scope id."""
+        from kiro_crew.dashboard.handlers import mcp as mcp_mod
+
+        monkeypatch.setattr(
+            mcp_mod, "_extra_mcp_scopes", lambda: [McpScope("cc", tmp_path / "cc.json")]
+        )
+        resp = await mcp_mod.api_mcp_global_scopes(_make_request({}))
+        assert json.loads(resp.text) == {"scopes": [{"id": "ccGlobal", "label": "cc"}]}

@@ -272,16 +272,6 @@ def skills_dir() -> Path:
     return config_dir() / SKILLS_DIR_NAME
 
 
-def aim_skills_dir() -> Path:
-    """Root of AIM-installed skills (``~/.aim/skills``).
-
-    Factored out (rather than inlined in ``SkillsLoader.__init__``) so tests can
-    monkeypatch it and stay hermetic — otherwise every loader construction would
-    pick up the developer's real AIM skills.
-    """
-    return Path.home() / ".aim" / "skills"
-
-
 class SkillsLoader:
     """Load skill markdown files from ~/.kirocrew/skills/.
 
@@ -332,25 +322,12 @@ class SkillsLoader:
                 self._extra_paths.append(resolved)
             else:
                 logger.debug("Extra skill path does not exist: %s", p)
-        # Implicitly include the AIM skills root (~/.aim/skills) as a lowest-
-        # precedence source. The dashboard's /api/skills (and thus the $skill
-        # autocomplete picker) lists AIM-installed skills, so the $skill resolver
-        # MUST be able to resolve them too — otherwise the picker offers a token
-        # the backend can't load. We scan the dir directly (not the async `aim skills list`
-        # CLI) so this stays sync + cache-friendly; it's the same on-disk truth the CLI reports.
-        # Skipped if already covered by a configured extra_path, missing, or sensitive.
-        aim_skills_root = aim_skills_dir().resolve()
-        if (
-            aim_skills_root not in self._extra_paths
-            and aim_skills_root.is_dir()
-            and not is_sensitive_path(str(aim_skills_root))
-        ):
-            self._extra_paths.append(aim_skills_root)
 
         # Edition-contributed skill paths (CPP seam). A companion returns extra
         # SKILL.md source roots via McpToolingProvider.extra_skills(); the public
         # Default returns [] so this is a no-op for the standalone edition.
-        # Lowest precedence (appended last, after local + AIM), sensitivity- and
+        # Lowest precedence (appended last, after local + configured extra_paths),
+        # sensitivity- and
         # existence-checked exactly like the configured extra_paths. Deferred
         # context read via the sel.py pattern so skills.py never imports the
         # platform package at module load; fails closed to no extra paths.
@@ -1039,7 +1016,7 @@ class SkillsLoader:
             return []
 
         # Build leaf → full-key map once from the enumerated (allowlisted) set.
-        # _iter() already applies local > workspace > AIM precedence and dedupes
+        # _iter() already applies local > extra-path precedence and dedupes
         # by full key, so the first full key seen for a given leaf wins.
         leaf_to_name: dict[str, str] = {}
         for name, _path in self._iter():

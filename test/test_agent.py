@@ -3268,6 +3268,11 @@ def _run_install_mcp_merge(
         patch("kiro_crew.agent._aim_skill_paths", return_value=[]),
         patch("kiro_crew.agent.shutil.which", side_effect=which_side_effect),
         patch("kiro_crew.agent._mc_config_path", return_value=mc_config),
+        # A companion contributes the Claude Code scope via the CPP seam — the
+        # core no longer reads ~/.claude.json directly at rebuild time (OSS is
+        # Kiro-only). Point the seam at cc_mcp so these merge-priority tests
+        # exercise the seam-routed provider-global merge.
+        patch("kiro_crew.agent._extra_mcp_scope_globals", return_value=[cc_mcp]),
     ]
     with ExitStack() as stack:
         for p in patches:

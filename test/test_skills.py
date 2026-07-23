@@ -11,17 +11,19 @@ from kiro_crew.skills import SkillsLoader
 @pytest.fixture(autouse=True)
 def _isolate_extra_paths(monkeypatch, tmp_path_factory):
     """SkillsLoader.__init__ reads global config for ``skills.extra_paths`` and
-    the AIM skills root (``~/.aim/skills``); isolate both so a developer's local
-    ~/.kirocrew extra_paths / installed AIM skills don't bleed into these
-    hermetic loader tests. Tests that need extra_paths pass ``config=``; tests
-    that need AIM resolution monkeypatch ``kiro_crew.skills.aim_skills_dir``."""
+    edition-contributed skill roots via the ``extra_skills()`` seam; isolate both
+    so a developer's local ~/.kirocrew extra_paths / composed companion roots
+    don't bleed into these hermetic loader tests. Tests that need extra_paths
+    pass ``config=``; tests that need edition-root resolution monkeypatch
+    ``DefaultMcpToolingProvider.extra_skills``."""
+    from kiro_crew.platform.defaults import DefaultMcpToolingProvider
+
     monkeypatch.setattr(
         KiroCrewConfig,
         "load",
         classmethod(lambda cls: KiroCrewConfig(skills=SkillsConfig(extra_paths=[]))),
     )
-    _no_aim = tmp_path_factory.mktemp("no_aim") / "absent"
-    monkeypatch.setattr("kiro_crew.skills.aim_skills_dir", lambda: _no_aim)
+    monkeypatch.setattr(DefaultMcpToolingProvider, "extra_skills", lambda self: [])
 
 
 def _create_skill(skills_dir, name, content):
@@ -1279,18 +1281,22 @@ class TestResolveDollarSkills:
         assert "AIM ALARM" in out[0][2]
 
     def test_implicit_aim_skills_root_resolves(self, tmp_path, monkeypatch):
-        # An AIM-installed skill under ~/.aim/skills/<pkg>/<leaf> must resolve via
-        # $leaf WITHOUT being in extra_paths — the loader implicitly includes the
-        # AIM root so the $skill resolver matches what the /api/skills picker
-        # offers (frontend/backend parity).
+        # An edition-contributed skill root (via the extra_skills() seam) must
+        # resolve via $leaf WITHOUT being in config extra_paths — the loader
+        # appends edition roots so the $skill resolver matches what the
+        # /api/skills picker offers (frontend/backend parity).
+        from kiro_crew.platform.defaults import DefaultMcpToolingProvider
+
         aim_root = tmp_path / "aim_skills"
         _create_skill(
             aim_root,
             "HoangvpPrivatePackage/personal-kb-sync",
             "---\nname: personal-kb-sync\ndescription: Sync\n---\n# Sync\nAIM KB BODY",
         )
-        monkeypatch.setattr("kiro_crew.skills.aim_skills_dir", lambda: aim_root)
-        # No extra_paths configured — resolution must come from the implicit AIM root.
+        monkeypatch.setattr(
+            DefaultMcpToolingProvider, "extra_skills", lambda self: [aim_root]
+        )
+        # No extra_paths configured — resolution must come from the edition root.
         loader = SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
         out = loader.resolve_dollar_skills("run $personal-kb-sync")
         assert len(out) == 1
@@ -1298,11 +1304,15 @@ class TestResolveDollarSkills:
         assert "AIM KB BODY" in out[0][2]
 
     def test_local_skill_wins_over_aim_root_on_leaf_collision(self, tmp_path, monkeypatch):
-        # Local skills dir and the implicit AIM root both have a `grill` leaf →
-        # local wins (AIM root is appended last, _iter dedupes by first-seen).
+        # Local skills dir and an edition root both have a `grill` leaf → local
+        # wins (edition roots are appended last, _iter dedupes by first-seen).
+        from kiro_crew.platform.defaults import DefaultMcpToolingProvider
+
         aim_root = tmp_path / "aim_skills"
         _create_skill(aim_root, "SomePkg/grill", "---\nname: grill\n---\nAIM GRILL")
-        monkeypatch.setattr("kiro_crew.skills.aim_skills_dir", lambda: aim_root)
+        monkeypatch.setattr(
+            DefaultMcpToolingProvider, "extra_skills", lambda self: [aim_root]
+        )
         local = tmp_path / "skills"
         _create_skill(local, "grill", "---\nname: grill\n---\nLOCAL GRILL")
         loader = SkillsLoader(skills_path=local, install_builtins=False)

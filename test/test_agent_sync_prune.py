@@ -7,12 +7,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from kiro_crew.aim_agents import AimAgent
+from kiro_crew.agent_discovery import AgentInfo
 from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
 
 
-def _make_aim_agent(name: str) -> AimAgent:
-    return AimAgent(
+def _make_aim_agent(name: str) -> AgentInfo:
+    return AgentInfo(
         name=name,
         filename=f"local-OmniAgents-{name}.json",
         description=f"{name} agent",
@@ -31,7 +31,7 @@ def _make_config(agents: dict[str, KiroCrewAgentConfig]) -> KiroCrewConfig:
     return cfg
 
 
-async def _run_sync(cfg: KiroCrewConfig, aim_agents_list: list[AimAgent]) -> dict:
+async def _run_sync(cfg: KiroCrewConfig, aim_agents_list: list[AgentInfo]) -> dict:
     """Invoke the production _do_agents_sync with mocked dependencies and return parsed body."""
     from kiro_crew.dashboard.handlers.agents import _do_agents_sync
 
@@ -113,7 +113,7 @@ class TestAgentSyncPrune:
             "gpu-dev": KiroCrewAgentConfig(kiro_agent="gpu-dev", source="aim"),
         }
         cfg = _make_config(agents)
-        aim_list: list[AimAgent] = []
+        aim_list: list[AgentInfo] = []
 
         body = await _run_sync(cfg, aim_list)
 

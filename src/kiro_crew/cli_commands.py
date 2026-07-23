@@ -18,10 +18,6 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from kiro_crew.aim_agents import (
-    install_cc_plugin,
-    installed_kiro_packages_missing_from_cc,
-)
 from kiro_crew.apps.bridges import (
     deregister_app,
     deregister_app_crons_from_service,
@@ -1507,44 +1503,6 @@ def _artifact(args: argparse.Namespace) -> None:
         "Usage: kirocrew artifact {list|show|save|update|delete|versions}",
         file=sys.stderr,
     )
-    sys.exit(2)
-
-
-def _handle_aim(args: argparse.Namespace) -> None:
-    """Dispatch aim subcommands: sync-cc."""
-    action = getattr(args, "aim_action", None)
-
-    if action == "sync-cc":
-        missing = installed_kiro_packages_missing_from_cc()
-        if not missing:
-            print("All capability packages are already installed for Claude Code.")
-            return
-
-        print(f"Found {len(missing)} package(s) missing from Claude Code:\n")
-        for pkg in missing:
-            print(f"  - {pkg}")
-        print()
-
-        successes: list[str] = []
-        failures: list[tuple[str, str]] = []
-        for pkg in missing:
-            print(f"  Installing {pkg}...", end=" ", flush=True)
-            ok, msg = install_cc_plugin(pkg, standalone=True)
-            if ok:
-                print("done")
-                successes.append(pkg)
-            else:
-                print(f"FAILED: {msg}")
-                failures.append((pkg, msg))
-
-        print(f"\nSummary: {len(successes)} installed, {len(failures)} failed")
-        if failures:
-            for pkg, msg in failures:
-                print(f"  FAILED {pkg}: {msg}", file=sys.stderr)
-            sys.exit(1)
-        return
-
-    print("Usage: kirocrew aim {sync-cc}", file=sys.stderr)
     sys.exit(2)
 
 

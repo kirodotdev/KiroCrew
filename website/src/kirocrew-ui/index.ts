@@ -19,7 +19,7 @@ export {
   Input,
   SearchInput,
   Badge,
-  AimBadge,
+  SourceBadge,
   StatCard,
   Skeleton,
   ContentSkeleton,

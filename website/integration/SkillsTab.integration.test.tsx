@@ -291,7 +291,7 @@ describe('SkillsTab Integration Tests', () => {
         return HttpResponse.json([
           { name: 'amazon-writing', key: 'amazon-writing', description: 'Amazon writing guidelines', always: true, source: 'kirocrew', dir: '/path' },
           { name: 'code-search', key: 'code-search', description: 'Search code', always: false, source: 'kirocrew', dir: '/path' },
-          { name: 'aim-benchmark', key: 'aim-benchmark', description: 'AIM benchmark tool', always: false, source: 'aim', dir: '/path' },
+          { name: 'aim-benchmark', key: 'aim-benchmark', description: 'AIM benchmark tool', always: false, source: 'package', dir: '/path' },
         ])
       })
     )
@@ -299,8 +299,8 @@ describe('SkillsTab Integration Tests', () => {
     renderWithProviders(<SkillsTab />)
 
     // The section header is derived from the provider's pluginRegistryName
-    // (e.g. "AIM Plugins" → "AIM PLUGINS PACKAGES"), so match on the generic
-    // " PACKAGES" suffix rather than a hardcoded "AIM PACKAGES".
+    // (derived from pluginRegistryName, e.g. 'Packages' → 'PACKAGES').
+    //
     await waitFor(() => {
       expect(screen.getByText(/PACKAGES/)).toBeInTheDocument()
     })
@@ -311,7 +311,7 @@ describe('SkillsTab Integration Tests', () => {
     server.use(
       http.get('/api/skills', () => {
         return HttpResponse.json([
-          { name: 'aim-tool', key: 'aim-tool', description: 'AIM tool', always: false, source: 'aim', dir: '/path' },
+          { name: 'aim-tool', key: 'aim-tool', description: 'AIM tool', always: false, source: 'package', dir: '/path' },
         ])
       })
     )

@@ -641,6 +641,7 @@ export const api = {
     post('/api/skills/-/discover/install', { provider, skill_id: skillId, name: opts?.name, overwrite: opts?.overwrite }).then(j) as Promise<import('../types').DiscoverInstallResult>,
   // MCP
   mcpServers: () => fetch('/api/mcp').then(j),
+  mcpGlobalScopes: () => fetch('/api/mcp/scopes').then(j),
   mcpActive: (agent?: string) => fetch('/api/mcp/active' + (agent ? `?agent=${encodeURIComponent(agent)}` : '')).then(j),
   mcpProbe: () => post('/api/mcp/probe').then(j),
   mcpSync: () => post('/api/mcp/sync').then(j),
@@ -668,17 +669,14 @@ export const api = {
   // install (AIM / kiro usage are stubbed). Kept so the UI compiles and
   // degrades gracefully (panels render empty when the feature is absent).
   kiroUsage: () => fetch('/api/usage/kiro').then(j),
-  aimMcpList: () => fetch('/api/aim/mcp').then(j),
-  aimMcpInstall: (serverId: string) => post('/api/aim/mcp/install', { server_id: serverId }).then(j),
-  aimMcpUninstall: (serverId: string) => post('/api/aim/mcp/uninstall', { server_id: serverId }).then(j),
-  aimSkillsList: () => fetch('/api/aim/skills').then(j),
-  aimSkillsInstall: (pkg: string, vs?: string) => post('/api/aim/skills/install', { package: pkg, version_set: vs || '' }).then(j),
-  aimSkillsUninstall: (pkg: string) => post('/api/aim/skills/uninstall', { package: pkg }).then(j),
-  aimAgentsList: () => fetch('/api/aim/agents').then(j),
-  aimAgentsInstall: (pkg: string, vs?: string) => post('/api/aim/agents/install', { package: pkg, version_set: vs || '' }).then(j),
-  aimAgentsUninstall: (pkg: string) => post('/api/aim/agents/uninstall', { package: pkg }).then(j),
-  aimUpdate: (kind: string, pkg?: string) => post('/api/aim/update', { kind, package: pkg || '' }).then(j),
-  aimMcpRegistry: () => fetch('/api/aim/mcp/registry').then(j),
+  capabilityMcpList: () => fetch('/api/capability/mcp').then(j),
+  capabilityMcpInstall: (serverId: string) => post('/api/capability/mcp/install', { server_id: serverId }).then(j),
+  capabilityMcpUninstall: (serverId: string) => post('/api/capability/mcp/uninstall', { server_id: serverId }).then(j),
+  capabilitySkillsList: () => fetch('/api/capability/skills').then(j),
+  capabilitySkillsInstall: (pkg: string) => post('/api/capability/skills/install', { package: pkg }).then(j),
+  capabilitySkillsUninstall: (pkg: string) => post('/api/capability/skills/uninstall', { package: pkg }).then(j),
+  capabilityAgentsList: () => fetch('/api/capability/agents').then(j),
+  capabilityMcpRegistry: () => fetch('/api/capability/mcp/registry').then(j),
   // STT
   sttConfig: () => fetch('/api/config/stt').then(j),
   saveSttConfig: (body: {

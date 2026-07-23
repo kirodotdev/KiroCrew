@@ -9,8 +9,8 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+from kiro_crew.agent_discovery import list_agents
 from kiro_crew.agent_metadata import load, load_all, save
-from kiro_crew.aim_agents import list_agents
 
 logger = logging.getLogger(__name__)
 

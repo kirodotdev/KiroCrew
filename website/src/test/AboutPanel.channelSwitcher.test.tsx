@@ -64,11 +64,22 @@ describe('AboutPanel channel switcher', () => {
     expect(switcher).toBeTruthy()
     // jsdom reports zero width, so SegmentedControl renders its responsive
     // dropdown mode: a toggle labeled with the current lane, options after
-    // opening. Open it, then pick Insider.
-    fireEvent.click(screen.getByRole('button', { name: /stable/i }))
-    const insider = await screen.findByRole('button', { name: /insider/i })
-    fireEvent.click(insider)
-    await waitFor(() => expect(setChannel).toHaveBeenCalledWith('insider'))
+    // opening. The mode is decided by a measure() effect + ResizeObserver, so
+    // an initial 'full' render can flip to 'dropdown' asynchronously and
+    // unmount the option between find and click. Retry open+select+assert in a
+    // single waitFor so a mode re-render (or CI slowness) can't strand it:
+    // reopen the dropdown when the option isn't shown, otherwise pick Insider.
+    await waitFor(
+      () => {
+        if (screen.queryAllByRole('button', { name: /insider/i }).length === 0) {
+          fireEvent.click(screen.getByRole('button', { name: /stable/i }))
+        }
+        const insiders = screen.getAllByRole('button', { name: /insider/i })
+        fireEvent.click(insiders[insiders.length - 1]) // the option, not a toggle
+        expect(setChannel).toHaveBeenCalledWith('insider')
+      },
+      { timeout: 3000 },
+    )
   })
 
   it('does not call setChannel when re-picking the current lane', async () => {

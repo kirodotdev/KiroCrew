@@ -55,21 +55,75 @@ _PROBE_TTL_SECS = 1800
 # source of truth for the ``presence`` field on each server.
 SCOPE_KIROCREW = "kirocrew"
 SCOPE_KIRO_GLOBAL = "kiroGlobal"
+# Well-known label for a provider global (e.g. Claude Code's ~/.claude.json).
+# The core no longer scans it directly — a companion edition contributes it
+# via the extra_mcp_scopes() CPP seam (see :func:`_extra_scope_sources`), so
+# discovery scans exactly what apply/uninstall manage.
 SCOPE_CC_GLOBAL = "ccGlobal"
 
-# Single source of truth pairing each config path with its scope label.
-# Priority at collision time is controlled by the explicit scope iteration
-# order in :func:`_load_mcp_json` (kirocrew > cc global > kiro global),
-# not by this tuple's order.
+# Core (edition-independent) MCP config scopes the build always scans.
+# Provider-specific scopes are NOT hardcoded here; they are contributed at
+# call time by the platform seam (:func:`_extra_scope_sources`) so discovery
+# stays symmetric with the apply/uninstall path — OSS is Kiro-only, and a
+# companion re-adds its provider global through the seam rather than the core
+# scanning a file it can no longer manage (which would surface un-uninstallable
+# "zombie" servers).
 _MCP_SOURCES: tuple[tuple[Path, str], ...] = (
     (Path.home() / ".kirocrew" / "mcp.json", SCOPE_KIROCREW),
     (Path.home() / ".kiro" / "settings" / "mcp.json", SCOPE_KIRO_GLOBAL),
-    (Path.home() / ".claude.json", SCOPE_CC_GLOBAL),
 )
 
 # Legacy name preserved for backward-compat with tests that monkeypatch it.
-# Derived from :data:`_MCP_SOURCES` so the two can never drift.
+# Derived from :data:`_MCP_SOURCES` (core scopes only) so the two can never
+# drift; seam-contributed scopes are merged in at call time, not baked here.
 _MCP_JSON_PATHS: tuple[Path, ...] = tuple(p for p, _ in _MCP_SOURCES)
+
+
+def _extra_scope_sources() -> list[tuple[Path, str]]:
+    """Provider MCP config scopes contributed by the edition (CPP seam).
+
+    Each returned :class:`~kiro_crew.platform.interfaces.McpScope` becomes a
+    ``(global_json, f"{id}Global")`` pair, so a companion's Claude Code scope
+    (``~/.claude.json`` → ``ccGlobal``) is scanned by discovery exactly as the
+    apply/uninstall path writes it. The public Default returns ``[]`` so
+    discovery is Kiro-only. Deferred context read so this module never imports
+    the platform package at load; fails closed to no extra scopes.
+    """
+    from kiro_crew.platform.context import current_context, safe_context_call
+
+    scopes: list = safe_context_call(
+        lambda: list(current_context().mcp_tooling.extra_mcp_scopes()),
+        fallback_factory=list,
+        log_message="extra_mcp_scopes lookup failed; discovery using core scopes only",
+    )
+    return [(s.global_json, f"{s.id}Global") for s in scopes]
+
+
+# Core (edition-independent) scopes in merge/priority order, highest first: the
+# kirocrew-specific file, then the Kiro global. ``ccGlobal`` (and every other
+# provider global) is NOT a core scope — it is contributed by the edition seam
+# and appended AFTER these by :func:`_scope_priority` (lowest priority), so a
+# companion's provider global only fills gaps and never outranks the Kiro
+# global. This matches ``rebuild_agent_config``'s merge order in agent.py
+# (kirocrew > kiro-global > seam provider globals) — discovery, apply, and
+# rebuild all agree, so the dashboard never shows a spec the agent won't run.
+_CORE_SCOPE_ORDER: tuple[str, ...] = (SCOPE_KIROCREW, SCOPE_KIRO_GLOBAL)
+
+
+def _scope_priority(by_source: dict[str, dict[str, Any]]) -> list[str]:
+    """Return every scope in ``by_source`` in merge/priority order.
+
+    Core scopes come first in their fixed priority (:data:`_CORE_SCOPE_ORDER`);
+    every seam-contributed provider scope (including the always-seeded
+    ``ccGlobal``) follows in stable insertion order at the lowest priority —
+    matching ``rebuild_agent_config`` so discovery/apply/rebuild agree. All
+    presence/merge callers derive their scope list from this so a companion
+    scope is never silently dropped from the reported ``presence`` (which the
+    frontend would misread as ``false`` and delete on the next apply).
+    """
+    ordered = [s for s in _CORE_SCOPE_ORDER if s in by_source]
+    ordered += [s for s in by_source if s not in _CORE_SCOPE_ORDER]
+    return ordered
 
 
 @dataclass
@@ -220,10 +274,12 @@ def _load_mcp_json_by_source() -> dict[str, dict[str, Any]]:
     their origin scope.  Unlike :func:`_load_mcp_json`, no cross-source
     merging happens — callers that need per-scope presence use this.
 
-    Iterates :data:`_MCP_SOURCES` (path + scope pairs), so paths and scope
-    labels can never drift.  When tests monkeypatch :data:`_MCP_JSON_PATHS`
-    to a shorter tuple for isolation, the corresponding scopes are
-    recovered by looking up each patched path in ``_MCP_SOURCES``; any
+    Iterates the core :data:`_MCP_SOURCES` (path + scope pairs) PLUS any
+    provider scopes contributed by the platform seam
+    (:func:`_extra_scope_sources`), so discovery scans exactly what
+    apply/uninstall manage and paths/scope labels can never drift.  When tests
+    monkeypatch :data:`_MCP_JSON_PATHS` to a shorter tuple for isolation, the
+    corresponding scopes are recovered by looking up each patched path; any
     unknown path falls back to :data:`SCOPE_KIROCREW`.
     """
     result: dict[str, dict[str, Any]] = {
@@ -231,8 +287,13 @@ def _load_mcp_json_by_source() -> dict[str, dict[str, Any]]:
         SCOPE_KIRO_GLOBAL: {},
         SCOPE_CC_GLOBAL: {},
     }
+    extra_sources = _extra_scope_sources()
+    for _, scope in extra_sources:
+        result.setdefault(scope, {})
     path_to_scope = {p: scope for p, scope in _MCP_SOURCES}
-    for p in _MCP_JSON_PATHS:
+    path_to_scope.update({p: scope for p, scope in extra_sources})
+    scan_paths: tuple[Path, ...] = tuple(_MCP_JSON_PATHS) + tuple(p for p, _ in extra_sources)
+    for p in scan_paths:
         scope = path_to_scope.get(p, SCOPE_KIROCREW)
         if not p.is_file():
             continue
@@ -268,9 +329,9 @@ def _load_mcp_json() -> dict[str, Any]:
     merged: dict[str, Any] = {}
     by_source = _load_mcp_json_by_source()
     # Iteration order = priority (setdefault is a no-op once populated):
-    # kirocrew-specific file > CC global > kiro global. Matches
-    # rebuild_agent_config's merge order in agent.py.
-    for scope in (SCOPE_KIROCREW, SCOPE_CC_GLOBAL, SCOPE_KIRO_GLOBAL):
+    # kirocrew-specific file > kiro global > any seam provider globals.
+    # Matches rebuild_agent_config's merge order in agent.py.
+    for scope in _scope_priority(by_source):
         for name, spec in by_source.get(scope, {}).items():
             merged.setdefault(name, spec)
     return merged
@@ -367,11 +428,11 @@ def list_servers() -> list[McpServerInfo]:
 
     # 2. From scope-tagged mcp.json sources, in priority order so highest-
     #    priority scope populates disabled_tools first and lower scopes
-    #    don't overwrite it.  Order = kirocrew-specific > CC global >
-    #    Kiro global, matching rebuild_agent_config's merge priority.
+    #    don't overwrite it.  Order = kirocrew-specific > Kiro global >
+    #    any seam provider globals, matching rebuild_agent_config.
     by_source = _load_mcp_json_by_source()
     disabled_tools_claimed: set[str] = set()
-    for scope in (SCOPE_KIROCREW, SCOPE_CC_GLOBAL, SCOPE_KIRO_GLOBAL):
+    for scope in _scope_priority(by_source):
         for name, spec in by_source.get(scope, {}).items():
             if not isinstance(spec, dict):
                 continue
@@ -402,21 +463,22 @@ def list_servers() -> list[McpServerInfo]:
     #    Kiro/CC presence = raw membership in that provider's global config.
     agent_names = set(agent_cfg.get("mcpServers", {}).keys())
     kirocrew_own = by_source.get(SCOPE_KIROCREW, {})
+    # Every scope other than kirocrew is a raw-membership global scope
+    # (Kiro/CC/any seam-contributed provider). Derive them from by_source so a
+    # companion scope is reported in presence rather than omitted — an omitted
+    # scope is read as False by the frontend and DELETED on the next apply.
+    global_scopes = [s for s in _scope_priority(by_source) if s != SCOPE_KIROCREW]
     for name, server in servers.items():
         mc_disabled = (
             isinstance(kirocrew_own.get(name), dict) and kirocrew_own[name].get("disabled") is True
         )
-        in_any_source = (
-            name in agent_names
-            or name in kirocrew_own
-            or name in by_source.get(SCOPE_KIRO_GLOBAL, {})
-            or name in by_source.get(SCOPE_CC_GLOBAL, {})
+        in_any_source = name in agent_names or any(
+            name in by_source.get(scope, {}) for scope in by_source
         )
-        server.presence = {
-            SCOPE_KIROCREW: in_any_source and not mc_disabled,
-            SCOPE_KIRO_GLOBAL: name in by_source.get(SCOPE_KIRO_GLOBAL, {}),
-            SCOPE_CC_GLOBAL: name in by_source.get(SCOPE_CC_GLOBAL, {}),
-        }
+        presence: dict[str, bool] = {SCOPE_KIROCREW: in_any_source and not mc_disabled}
+        for scope in global_scopes:
+            presence[scope] = name in by_source.get(scope, {})
+        server.presence = presence
 
     # 3b. Canonicalize: fold a server keyed by a slash/colon name into its
     #     mcp_server_alias() form so a server registered under BOTH its raw key

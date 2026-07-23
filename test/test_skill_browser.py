@@ -23,11 +23,9 @@ from kiro_crew.dashboard.handlers._shared import (
     SKILL_FILE_MAX_BYTES,
     SKILL_TREE_MAX_ENTRIES,
     _agent_loads_skill,
-    _aim_skill_path_index,
     _expand_agent_globs,
     _expand_resource_uri,
     _load_parsed_agents,
-    _parse_aim_skills,
     _parse_skill_description,
     _resolve_loaded_by_agents,
     _resolve_skill_root,
@@ -451,146 +449,6 @@ class TestAnnotateSkillsWithAgents:
         assert _resolve_loaded_by_agents(skill_md) == []
 
 
-# ── _parse_aim_skills ──
-
-
-class TestParseAimSkills:
-    """``_parse_aim_skills`` turns ``aim skills list`` stdout into metadata
-    dicts. Split from the async subprocess so it can run off the loop."""
-
-    _SAMPLE = (
-        "Installed skills:\n"
-        "MyPackage\n"
-        "  cool-skill [v1.2.3]: Cool Skill\n"
-        "    Description: does cool things\n"
-        "  plain-skill: Plain Skill\n"
-    )
-
-    def test_none_stdout_returns_empty(self):
-        # Subprocess failure (FileNotFoundError / non-zero / timeout) → None.
-        assert _parse_aim_skills(None) == []
-
-    def test_empty_stdout_returns_empty(self):
-        assert _parse_aim_skills("") == []
-
-    def test_parses_skills_and_description(self):
-        out = _parse_aim_skills(self._SAMPLE)
-        keys = {s["key"] for s in out}
-        assert keys == {"aim/cool-skill", "aim/plain-skill"}
-        cool = next(s for s in out if s["key"] == "aim/cool-skill")
-        assert cool["package"] == "MyPackage"
-        assert cool["description"] == "does cool things"
-        assert cool["source"] == "aim"
-
-    def test_matches_legacy_list_aim_skills_shape(self, fake_home):
-        """The split parser must yield the same dicts the old inline
-        AIM-listing loop produced (path/dir depend on ~/.aim resolution,
-        which is empty here → empty strings)."""
-        out = _parse_aim_skills(self._SAMPLE)
-        for s in out:
-            assert set(s) == {
-                "key", "name", "description", "path", "dir",
-                "always", "source", "package",
-            }
-            # No ~/.aim skills on disk in the sandbox → unresolved paths.
-            assert s["path"] == ""
-            assert s["dir"] == ""
-
-    def test_description_before_first_skill_not_treated_as_skill(self, fake_home):
-        """Regression: a ``Description:`` line preceding any skill line (empty
-        result / package mismatch) must be consumed, NOT fall through to the
-        skill regex and append a bogus ``aim/Description`` entry."""
-        stdout = (
-            "Installed skills:\n"
-            "OddPackage\n"
-            "    Description: stray description before any skill\n"
-            "  real-skill: Real Skill\n"
-        )
-        out = _parse_aim_skills(stdout)
-        keys = {s["key"] for s in out}
-        assert keys == {"aim/real-skill"}
-        assert "aim/Description" not in keys
-
-    def test_resolves_paths_from_aim_index(self, fake_home):
-        """When the skill exists under ~/.aim, path/dir are resolved via the
-        one-shot index (both layouts)."""
-        aim = fake_home / ".aim"
-        # skills/<pkg>/<name>/SKILL.md layout
-        s1 = aim / "skills" / "pkgA" / "cool-skill" / "SKILL.md"
-        s1.parent.mkdir(parents=True)
-        s1.write_text("---\n---\n")
-        # packages/<pkg>/skills/<pkg2>/<name>/SKILL.md layout
-        s2 = aim / "packages" / "pkgB" / "skills" / "sub" / "plain-skill" / "SKILL.md"
-        s2.parent.mkdir(parents=True)
-        s2.write_text("---\n---\n")
-
-        out = _parse_aim_skills(self._SAMPLE)
-        by_key = {s["key"]: s for s in out}
-        assert by_key["aim/cool-skill"]["path"] == str(s1)
-        assert by_key["aim/plain-skill"]["path"] == str(s2)
-
-
-class TestAimSkillPathIndex:
-    """``_aim_skill_path_index`` globs ~/.aim ONCE into {name: path}."""
-
-    def test_empty_when_no_aim_dir(self, fake_home):
-        assert _aim_skill_path_index() == {}
-
-    def test_indexes_both_layouts(self, fake_home):
-        aim = fake_home / ".aim"
-        s1 = aim / "skills" / "pkgA" / "alpha" / "SKILL.md"
-        s1.parent.mkdir(parents=True)
-        s1.write_text("x")
-        s2 = aim / "packages" / "pkgB" / "skills" / "sub" / "beta" / "SKILL.md"
-        s2.parent.mkdir(parents=True)
-        s2.write_text("x")
-        index = _aim_skill_path_index()
-        assert index["alpha"] == s1
-        assert index["beta"] == s2
-
-    def test_skills_layout_wins_over_packages(self, fake_home):
-        """Precedence matches _resolve_aim_skill_path: skills/* beats
-        packages/*/skills/* for the same name."""
-        aim = fake_home / ".aim"
-        winner = aim / "skills" / "pkgA" / "dup" / "SKILL.md"
-        winner.parent.mkdir(parents=True)
-        winner.write_text("x")
-        loser = aim / "packages" / "pkgB" / "skills" / "sub" / "dup" / "SKILL.md"
-        loser.parent.mkdir(parents=True)
-        loser.write_text("x")
-        assert _aim_skill_path_index()["dup"] == winner
-
-
-class TestAimListStdoutErrorHandling:
-    """``_aim_list_stdout`` must swallow ANY OSError from spawning ``aim`` and
-    return None (degrade to 'no aim skills'), never propagate and 500 the whole
-    /api/skills endpoint."""
-
-    @pytest.mark.asyncio
-    async def test_permission_error_returns_none(self, monkeypatch):
-        import kiro_crew.dashboard.handlers._shared as shared
-
-        async def _boom(*a, **k):
-            # `aim` present but not executable → PermissionError (an OSError
-            # subclass that is NOT FileNotFoundError).
-            raise PermissionError(13, "Permission denied")
-
-        monkeypatch.setattr(
-            "asyncio.create_subprocess_exec", _boom
-        )
-        assert await shared._aim_list_stdout() is None
-
-    @pytest.mark.asyncio
-    async def test_missing_binary_returns_none(self, monkeypatch):
-        import kiro_crew.dashboard.handlers._shared as shared
-
-        async def _missing(*a, **k):
-            raise FileNotFoundError(2, "No such file")
-
-        monkeypatch.setattr("asyncio.create_subprocess_exec", _missing)
-        assert await shared._aim_list_stdout() is None
-
-
 # ── collect_skills_blocking ──
 
 
@@ -617,29 +475,31 @@ class TestCollectSkillsBlocking:
         kiro_md = _write_skill(kiro_root, "kiro-one") / "SKILL.md"
 
         loader = self._loader_with({"key": "mc", "name": "mc", "path": ""})
-        aim_stdout = "Pkg\n  aim-one: Aim One\n"
+        # Package skills arrive pre-structured from CapabilityManager.list_skills()
+        # (the manager owns parsing — no core text grammar).
+        package_skills = [{"key": "package/aim-one", "name": "aim-one", "source": "package", "path": ""}]
 
-        result = collect_skills_blocking(loader, aim_stdout, project_dir=None)
+        result = collect_skills_blocking(loader, package_skills, project_dir=None)
 
         by_key = {s["key"]: s for s in result}
-        # kirocrew source defaulted, aim parsed, kiro discovered.
+        # kirocrew source defaulted, package rows merged, kiro discovered.
         assert by_key["mc"]["source"] == "kirocrew"
-        assert "aim/aim-one" in by_key
+        assert "package/aim-one" in by_key
         assert "kiro-user/kiro-one" in by_key
         # Every entry carries loaded_by_agents; the kiro skill matches loader.
         assert all("loaded_by_agents" in s for s in result)
         assert by_key["kiro-user/kiro-one"]["loaded_by_agents"] == ["loader"]
         assert str(kiro_md)  # path was materialized
 
-    def test_none_aim_stdout_skips_aim(self, fake_home):
+    def test_empty_package_skills_skips_package(self, fake_home):
         loader = self._loader_with({"key": "mc", "name": "mc", "path": ""})
-        result = collect_skills_blocking(loader, None, project_dir=None)
+        result = collect_skills_blocking(loader, [], project_dir=None)
         assert [s["key"] for s in result] == ["mc"]
         assert result[0]["loaded_by_agents"] == []
 
     def test_empty_everything(self, fake_home):
         loader = self._loader_with()
-        assert collect_skills_blocking(loader, None, project_dir=None) == []
+        assert collect_skills_blocking(loader, [], project_dir=None) == []
 
 
 # ── _expand_agent_globs (annotation O(n²) reduction) ──
@@ -877,7 +737,7 @@ class TestResolveSkillRoot:
         state = MagicMock(_slots={})
         # candidate.parent (the symlinked ``evil`` dir) resolves to ~/.aws,
         # which is sensitive → must return None, never the credentials dir.
-        assert _resolve_skill_root("aim/evil", state) is None
+        assert _resolve_skill_root("package/evil", state) is None
 
 
 # ── GET endpoints (integration) ──

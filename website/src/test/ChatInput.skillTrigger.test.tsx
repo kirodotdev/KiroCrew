@@ -11,7 +11,7 @@ vi.mock('../api/client', () => ({ api: mockApi }))
 import ChatInput from '../components/ChatInput'
 
 const SKILLS = [
-  { key: 'WorkforceEmploymentKnowledgeBase/oncall-handover', name: 'oncall-handover', description: 'Handover', source: 'aim' },
+  { key: 'WorkforceEmploymentKnowledgeBase/oncall-handover', name: 'oncall-handover', description: 'Handover', source: 'package' },
   { key: 'grill', name: 'grill', description: 'Questioning', source: 'kirocrew' },
 ]
 

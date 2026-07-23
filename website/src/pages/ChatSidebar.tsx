@@ -1676,9 +1676,9 @@ function ChatSidebar({
     const layoutScope = scope === 'flat' ? 'list' : scope
     const agentName = s.agent || defaultAgent || ''
     const agentMeta = installedAgents.find(a => a.name === agentName)
-    const isAim = agentMeta?.source === 'aim'
+    const isPackageAgent = agentMeta?.source === 'package'
     const isBuiltin = agentMeta?.source === 'builtin'
-    const agentColor = isAim ? 'text-[var(--aim)]' : isBuiltin ? 'text-muted' : 'text-muted'
+    const agentColor = isPackageAgent ? 'text-[var(--aim)]' : isBuiltin ? 'text-muted' : 'text-muted'
     const isActive = activeSlot === s.key
     const isOut = poppedOut.has(s.key)
     const recent = recentRank.get(s.key)
@@ -2967,7 +2967,7 @@ function ChatSidebar({
                 // match the session-row visual language (agent name tinted by source).
                 const agentColorFor = (agentName: string): string => {
                   const meta = installedAgents.find(a => a.name === agentName)
-                  if (meta?.source === 'aim') return 'text-[var(--aim)]'
+                  if (meta?.source === 'package') return 'text-[var(--aim)]'
                   if (meta?.source === 'builtin') return 'text-muted'
                   return 'text-muted'
                 }

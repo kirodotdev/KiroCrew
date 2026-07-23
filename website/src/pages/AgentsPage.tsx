@@ -1,13 +1,13 @@
 import { useState, useEffect, useRef, type ReactNode } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { modelListRefetchInterval } from '../providers/modelListHealth'
-import { Check, Star, StarOff, Brain, Plug, X, Pin, Package, ArrowUp, Lock, Hourglass, Bot, ChevronDown } from 'lucide-react'
+import { Check, Star, StarOff, Brain, Plug, X, Pin, Package, Lock, Hourglass, Bot, ChevronDown } from 'lucide-react'
 import { createPortal } from 'react-dom'
 import { useAppSelector } from '../store'
 import { api } from '../api/client'
 import type { SubagentInfo } from '../types'
 import Clickable from '../components/Clickable'
-import { AimBadge, StatCard, PageHeader, EmptyState, Btn, Input } from '../components/ui'
+import { SourceBadge, StatCard, PageHeader, EmptyState, Btn, Input } from '../components/ui'
 import ModelDropdownList from '../components/ModelDropdownList'
 import { LAYOUT } from '../components/layout'
 import InfoTip from '../components/InfoTip'
@@ -179,20 +179,9 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
     mutationFn: ({ name, model }: { name: string; model: string }) => api.agentPatch(name, { model }),
     onSuccess: (_r, { model }) => { setSelectedAgent(prev => (prev ? { ...prev, model } : prev)); refetchInstalled() },
   })
-  const [pkgError, setPkgError] = useState<{ pkg: string; msg: string } | null>(null)
   const deleteAgentMut = useMutation({
     mutationFn: (name: string) => api.agentDelete(name),
     onSuccess: (_r, name) => { if (selectedAgent?.name === name) setSelectedAgent(null); refetchInstalled() },
-  })
-  const aimUpdateMut = useMutation({
-    mutationFn: ({ type, pkg }: { type: string; pkg: string }) => api.aimUpdate(type, pkg),
-    onSuccess: () => { setPkgError(null); refetchInstalled() },
-    onError: (err: Error, { pkg }) => setPkgError({ pkg, msg: err.message || 'Update failed' }),
-  })
-  const aimUninstallMut = useMutation({
-    mutationFn: (pkg: string) => api.aimAgentsUninstall(pkg),
-    onSuccess: () => { setSelectedAgent(null); refetchInstalled() },
-    onError: (err: Error, pkg) => setPkgError({ pkg, msg: err.message || 'Uninstall failed' }),
   })
   const spawnClearMut = useMutation({ mutationFn: () => api.spawnClear(), onSuccess: () => refetchSpawn() })
   const spawnDeleteMut = useMutation({ mutationFn: (id: string) => api.spawnDelete(id), onSuccess: () => refetchSpawn() })
@@ -233,9 +222,9 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
               {/* Agent list — scrollable */}
               <div className="w-[260px] shrink-0 border-r border-border overflow-y-auto p-2">
                 {(() => {
-                  // Group: non-AIM agents first, then AIM grouped by package
-                  const nonAim = installed.filter(a => a.source !== 'aim')
-                  const aimGrouped = installed.filter(a => a.source === 'aim').reduce<Record<string, typeof installed>>((g, a) => {
+                  // Group: non-package agents first, then package agents grouped by package
+                  const nonPackage = installed.filter(a => a.source !== 'package')
+                  const packageGrouped = installed.filter(a => a.source === 'package').reduce<Record<string, typeof installed>>((g, a) => {
                     const key = a.package || a.name; (g[key] ||= []).push(a); return g
                   }, {})
                   const renderAgent = (a: typeof installed[0], showDelete?: boolean) => (
@@ -252,7 +241,7 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-1.5 mb-0.5">
                           <span className="text-[13px] font-mono font-semibold text-text truncate">{a.name}</span>
-                          <AimBadge source={a.source} />
+                          <SourceBadge source={a.source} />
                         </div>
                         <div className="flex gap-2 mt-0.5">
                           {a.skills.length > 0 && <span className="text-[11px] text-muted"><Brain className="lucide-inline" />{a.skills.length}</span>}
@@ -264,19 +253,14 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
                     </Clickable>
                   )
                   return (<>
-                    {nonAim.map(a => renderAgent(a, a.source !== 'kirocrew'))}
-                    {Object.entries(aimGrouped).map(([pkg, agents]) => {
-                      // For local packages: uninstall with local/PackageName
+                    {nonPackage.map(a => renderAgent(a, a.source !== 'kirocrew'))}
+                    {Object.entries(packageGrouped).map(([pkg, agents]) => {
                       const isLocal = agents[0]?.filename?.startsWith('local-')
-                      const uninstallId = isLocal ? `local/${pkg}` : pkg
                       return (
                         <div key={pkg} className="mt-2">
                           <div className="flex items-center gap-1.5 px-2 py-1.5 bg-bg-hover rounded-md mb-1 min-w-0">
                             <span className="text-[11px] text-aim font-semibold tracking-wider min-w-0 truncate flex-1" title={pkg}>{isLocal ? <Pin className="lucide-inline" /> : <Package className="lucide-inline" />} {pkg}</span>
-                            <button className="text-[10px] text-accent hover:text-accent-fg hover:bg-accent px-1.5 py-0.5 rounded border border-accent/30 transition-all shrink-0" title="Update" aria-label="Update package" onClick={e => { e.stopPropagation(); setPkgError(null); aimUpdateMut.mutate({ type: 'agents', pkg: uninstallId }) }}><ArrowUp className="lucide-inline" /></button>
-                            <button className="text-[10px] text-danger hover:text-danger-fg hover:bg-danger px-1.5 py-0.5 rounded border border-danger/30 transition-all shrink-0" title="Uninstall" aria-label="Uninstall package" onClick={e => { e.stopPropagation(); if (confirm(`Uninstall ${uninstallId}?`)) { setPkgError(null); aimUninstallMut.mutate(uninstallId) } }}><X className="lucide-inline" /></button>
                           </div>
-                          {pkgError?.pkg === pkg && <div className="text-[11px] text-danger px-2 py-1">{pkgError.msg}</div>}
                           {agents.map(a => renderAgent(a))}
                         </div>
                       )

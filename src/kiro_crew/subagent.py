@@ -114,7 +114,7 @@ def _validate_agent(requested: str) -> tuple[str, str]:
     """
     if not requested:
         return "", ""
-    from kiro_crew.aim_agents import list_agents
+    from kiro_crew.agent_discovery import list_agents
 
     known = {a.name for a in list_agents()}
     if requested in known:

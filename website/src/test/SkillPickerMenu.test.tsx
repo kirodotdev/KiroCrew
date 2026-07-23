@@ -12,7 +12,7 @@ vi.mock('../api/client', () => ({ api: mockApi }))
 import SkillPickerMenu from '../components/SkillPickerMenu'
 
 const SKILLS = [
-  { key: 'WorkforceEmploymentKnowledgeBase/oncall-handover', name: 'oncall-handover', description: 'Handover report', source: 'aim' },
+  { key: 'WorkforceEmploymentKnowledgeBase/oncall-handover', name: 'oncall-handover', description: 'Handover report', source: 'package' },
   { key: 'ticket-pull', name: 'ticket-pull', description: 'Pull tickets', source: 'kirocrew' },
   { key: 'grill', name: 'grill', description: 'Structured questioning', source: 'kirocrew' },
 ]
@@ -68,7 +68,7 @@ describe('SkillPickerMenu', () => {
   it('shows a source badge for non-kirocrew skills', async () => {
     render(<Harness query="handover" open />)
     await screen.findByText('$oncall-handover')
-    expect(screen.getByText('aim')).toBeInTheDocument()
+    expect(screen.getByText('package')).toBeInTheDocument()
   })
 
   it('shows "No matching skills" when filter excludes everything', async () => {
@@ -120,7 +120,7 @@ describe('SkillPickerMenu', () => {
   it('dedupes skills that share a leaf name', async () => {
     mockApi.skills.mockResolvedValue([
       { key: 'kirocrew/grill', name: 'grill', description: 'local grill', source: 'kirocrew' },
-      { key: 'AIMPkg/grill', name: 'grill', description: 'aim grill', source: 'aim' },
+      { key: 'AIMPkg/grill', name: 'grill', description: 'aim grill', source: 'package' },
     ])
     render(<Harness query="grill" open />)
     await waitFor(() => expect(mockApi.skills).toHaveBeenCalled())

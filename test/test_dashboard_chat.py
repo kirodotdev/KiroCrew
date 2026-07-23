@@ -9156,11 +9156,12 @@ class TestExpandDollarSkills:
     def _state_with_skills(self, tmp_path, monkeypatch, *skills):
         """A DashboardState whose _get_skills() returns a hermetic loader
         pointed at *skills* (each a ``(name, body)`` pair)."""
+        # Keep edition-contributed skill roots out of the hermetic loader.
+        from kiro_crew.platform.defaults import DefaultMcpToolingProvider
         from kiro_crew.skills import SkillsLoader
 
-        # Keep the implicit ~/.aim/skills root out of the hermetic loader.
         monkeypatch.setattr(
-            "kiro_crew.skills.aim_skills_dir", lambda: tmp_path / "no_aim_absent"
+            DefaultMcpToolingProvider, "extra_skills", lambda self: []
         )
         skills_dir = tmp_path / "skills"
         for name, body in skills:

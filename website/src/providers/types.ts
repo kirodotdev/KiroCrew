@@ -131,7 +131,7 @@ export interface ProviderAdapter {
   fetchProviderHooks(): Promise<Record<string, NormalizedProviderHook[]>>
 
   listPlugins(): Promise<NormalizedPlugin[]>
-  installPlugin(pkg: string, type: 'agent' | 'skill' | 'mcp', versionSet?: string): Promise<{ ok: boolean; error?: string }>
+  installPlugin(pkg: string, type: 'agent' | 'skill' | 'mcp'): Promise<{ ok: boolean; error?: string }>
   uninstallPlugin(pkg: string, type: 'agent' | 'skill' | 'mcp'): Promise<{ ok: boolean; error?: string }>
   updatePlugins(type: 'agent' | 'skill' | 'mcp'): Promise<{ ok: boolean; output?: string; error?: string }>
 

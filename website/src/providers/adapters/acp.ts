@@ -88,8 +88,8 @@ interface RawHookEntry {
   source?: string
 }
 
-/** Raw plugin (agent/skill/mcp) entry from /api/aim/*. */
-interface RawAimPlugin {
+/** Raw plugin (agent/skill/mcp) entry from /api/capability/*. */
+interface RawPlugin {
   name: string
   package?: string
   server_id?: string
@@ -197,37 +197,41 @@ export class AcpAdapter implements ProviderAdapter {
 
   async listPlugins(): Promise<NormalizedPlugin[]> {
     const [agents, skills, mcp] = await Promise.all([
-      api.aimAgentsList().catch(() => []),
-      api.aimSkillsList().catch(() => []),
-      api.aimMcpList().catch(() => []),
+      api.capabilityAgentsList().catch(() => []),
+      api.capabilitySkillsList().catch(() => []),
+      api.capabilityMcpList().catch(() => []),
     ])
     const plugins: NormalizedPlugin[] = []
-    for (const a of agents as RawAimPlugin[]) {
-      plugins.push({ id: a.package || a.name, name: a.name, type: 'agent', source: 'aim', version: a.version })
+    for (const a of agents as RawPlugin[]) {
+      plugins.push({ id: a.package || a.name, name: a.name, type: 'agent', source: 'package', version: a.version })
     }
-    for (const s of skills as RawAimPlugin[]) {
-      plugins.push({ id: s.package || s.name, name: s.name, type: 'skill', source: 'aim', version: s.version })
+    for (const s of skills as RawPlugin[]) {
+      plugins.push({ id: s.package || s.name, name: s.name, type: 'skill', source: 'package', version: s.version })
     }
-    for (const m of mcp as RawAimPlugin[]) {
-      plugins.push({ id: m.server_id || m.name, name: m.name, type: 'mcp', source: 'aim', version: m.version })
+    for (const m of mcp as RawPlugin[]) {
+      plugins.push({ id: m.server_id || m.name, name: m.name, type: 'mcp', source: 'package', version: m.version })
     }
     return plugins
   }
 
-  async installPlugin(pkg: string, type: 'agent' | 'skill' | 'mcp', versionSet?: string) {
-    if (type === 'agent') return api.aimAgentsInstall(pkg, versionSet)
-    if (type === 'skill') return api.aimSkillsInstall(pkg, versionSet)
-    return api.aimMcpInstall(pkg)
+  async installPlugin(pkg: string, type: 'agent' | 'skill' | 'mcp') {
+    // Package (agent) install/uninstall/update routes were removed; only
+    // skill + MCP install remain (Kiro-only apply). The edition capability
+    // manager owns any version/source resolution — no version_set is sent.
+    if (type === 'skill') return api.capabilitySkillsInstall(pkg)
+    if (type === 'mcp') return api.capabilityMcpInstall(pkg)
+    return { ok: false as const, error: 'agent install is not supported' }
   }
 
   async uninstallPlugin(pkg: string, type: 'agent' | 'skill' | 'mcp') {
-    if (type === 'agent') return api.aimAgentsUninstall(pkg)
-    if (type === 'skill') return api.aimSkillsUninstall(pkg)
-    return api.aimMcpUninstall(pkg)
+    if (type === 'skill') return api.capabilitySkillsUninstall(pkg)
+    if (type === 'mcp') return api.capabilityMcpUninstall(pkg)
+    return { ok: false as const, error: 'agent uninstall is not supported' }
   }
 
-  async updatePlugins(type: 'agent' | 'skill' | 'mcp') {
-    return api.aimUpdate(type === 'mcp' ? 'mcp' : type === 'skill' ? 'skills' : 'agents')
+  async updatePlugins(_type: 'agent' | 'skill' | 'mcp') {
+    // Bulk update route was removed.
+    return { ok: false as const, error: 'plugin update is not supported' }
   }
 
   async fetchAvailableModels(): Promise<ModelInfo[]> {

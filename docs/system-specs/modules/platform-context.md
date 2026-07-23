@@ -44,7 +44,10 @@ boot holding the chosen adapter for every extension point, plus three carriers:
 | `slack_gate` | adapter | `DefaultSlackEnterpriseGate` (default-open) | fail-closed enterprise allowlist |
 | `identity` | adapter | `DefaultIdentityProvider` (`sso_status.py` stub) | enterprise SSO / directory |
 | `embeddings` | adapter | `DefaultEmbeddingSource` (dormant seam — the public runtime is the bundled in-process llama-cpp model via `embeddings.register_embedding_backend`; `endpoint_url`/`sign_request` kept for contract stability) | internal source + SigV4 |
-| `mcp_tooling` | adapter | `DefaultMcpToolingProvider` (empty) | enterprise MCP server + skills |
+| `mcp_tooling` | adapter | `DefaultMcpToolingProvider` (all methods empty) | enterprise MCP server + skills + provider MCP scopes |
+| `agent_catalog` | adapter | `DefaultAgentCatalogProvider` (`builtin_agents()` → `[]`) | edition agent-catalog rows |
+| `prompt_sources` | adapter | `DefaultPromptSourceProvider` (`prompt_source_roots()` → `[]`) | edition prompt/SOP roots |
+| `capability_manager` | adapter | `DefaultCapabilityManager` (`available()` → `False`) | operations-based external package/skill/MCP manager |
 | `registry` | adapter | `DefaultAppRegistryPolicy` (public-forge baseline) | internal git hosts |
 | `apps_loader` | adapter | `DefaultAppsLoader` (OSS builtins) | internal app sources (code-reviewer; team_manager/mimir follow-on) |
 | `package_manager` | adapter | `DefaultPackageManager` (brew/pip) | managed installer |
@@ -515,6 +518,106 @@ is byte-identical) with no `CONTRACT_VERSION` bump.
 - `McpToolingProvider.extra_skills()` — now WIRED: `SkillsLoader.__init__`
   appends returned paths as lowest-precedence extra skill roots (sensitivity- +
   existence-checked). Default `[]`.
+- `AgentCatalogProvider.builtin_agents() -> List[Dict[str, Any]]` — ADD-only
+  agent-catalog rows merged by `agent_discovery.list_agents()` AFTER the on-disk
+  `~/.kiro/agents` scan (via `_with_edition_agents`, through
+  `safe_context_call`), de-duped by name so an on-disk agent of the same name
+  wins. Each row is a plain dict of `AgentInfo` fields (`name` required;
+  `filename`/`description`/`model`/`skills`/`mcp_servers`/`source`/`package`
+  optional), letting an edition surface agents not materialized as on-disk config
+  files. Default `[]` (discovery is the on-disk scan only). **Split out of
+  `McpToolingProvider` into its own Protocol** — agent-catalog contribution is a
+  distinct concern from MCP tooling; each edition hook lands on its own interface
+  rather than accreting onto the nearest existing one.
+- `CapabilityManager` (operations-based external package/capability manager) —
+  **replaces the former `external_capability_bin()` binary-name seam.** Rather
+  than naming a binary whose exact CLI grammar the core then hardcodes, the
+  edition implements OPERATIONS and OWNS its own invocation grammar, output
+  parsing, and error translation; the core (`/api/capability/*` handlers +
+  `mcp.py` uninstall) calls an operation and only serializes the result / applies
+  side effects (config sync, agent rebuild). Ops: `available() -> bool`;
+  `async list_mcp()/list_skills()/list_agents() -> List[Dict[str, Any]]`
+  (structured entries — the manager parses its own output; the core keeps no
+  text grammar; **`list_skills()` containment invariant:** every skill row MUST
+  live under an `McpToolingProvider.extra_skills()` root, because the skill
+  browser (`/api/skills/package/<name>/tree` + detail) resolves paths by
+  searching those roots — a row outside them lists but 404s on tree/detail, so an
+  edition satisfying both Protocols MUST keep them consistent; the core enforces
+  this at runtime — `collect_skills_blocking` logs a loud warning for any listed
+  row outside every `extra_skills()` root);
+  `async install_mcp/uninstall_mcp(server_id)`,
+  `async install_skill/uninstall_skill(package)` → `CapabilityResult(ok, message)`
+  (the manager translates its own errors — the core never matches
+  package-manager error strings, and **no Amazon-internal `version_set` field is
+  exposed** on the op or the public `/api/capability/skills/install` schema);
+  `async registry() -> List[Dict]` (the manager parses its own registry output
+  into entries; the core passes them through as `{"servers": [...]}`). The public
+  `DefaultCapabilityManager.available()` is `False` → the handlers return HTTP 503;
+  a companion implements registry-backed management. This is the operations-based
+  Protocol the prior binary-name seam's contract note anticipated — chosen now,
+  pre-launch, so no Amazon CLI grammar fossilizes in the core.
+- `McpToolingProvider.extra_mcp_scopes() -> List[McpScope]` — provider-specific
+  GLOBAL MCP config scopes. `/api/mcp/apply` and the MCP uninstall path write
+  each returned scope's `global_json` (and strip its `agent_mcp_file`) IN
+  ADDITION to the core Kiro global, keyed by `f"{scope.id}Global"` in the request
+  body. Default `[]` → **the core writes the Kiro global ONLY**; a companion
+  returns e.g. the Claude Code scope (`~/.claude.json`) to keep that provider's
+  config in sync. Backed by the new frozen dataclass
+  `McpScope(id: str, global_json: Path, agent_mcp_file: Optional[Path] = None, label: str = "")`
+  in `interfaces.py`: `id` is the short scope key used in the request body
+  (`f"{id}Global"`, e.g. `ccGlobal`), `global_json` is the provider's global MCP
+  config file, `agent_mcp_file` is the rendered per-agent MCP file to strip
+  on uninstall (or `None`), and `label` is the human display name the dashboard
+  shows on the scope badge (e.g. `Claude`; defaults to `id`). All are v1 additions
+  to the existing `McpToolingProvider` Protocol; the `Default*` returns empty/`None`
+  so a standalone process is byte-identical, and no `CONTRACT_VERSION` bump.
+  MCP **discovery** (`mcp_discovery._extra_scope_sources`) reads this SAME seam,
+  so the scopes discovery scans are exactly the scopes apply/uninstall manage:
+  the core scans the Kiro globals only, and a companion's provider scope
+  (`~/.claude.json` → `ccGlobal`) is both scanned AND managed — no
+  discover-but-can't-uninstall "zombie" servers. The dashboard is seam-aware too:
+  `GET /api/mcp/scopes` (`api_mcp_global_scopes`) returns the configured extra
+  scopes as `[{id: "<id>Global", label}]`, and the Installed-Integrations
+  "Globals" column renders the core **Kiro** badge unconditionally plus one badge
+  per returned scope — so a companion re-surfaces its Claude toggle with no core
+  edit, and the public build (empty list) shows Kiro only.
+  - **`/api/mcp/apply` omitted-field semantics (contract).** A per-server change
+    object carries a presence boolean per scope. The two scope families
+    deliberately differ on an **omitted** key: the core `kiroGlobal` key is
+    `omit → delete` (defaults to `False` — the bundled SPA always sends it
+    explicitly, so an omission means "not present"), while every seam scope
+    `f"{id}Global"` is `omit → preserve` (defaults to the scope's *current*
+    on-disk presence via `_scope_has_entry`). The asymmetry is intentional and
+    load-bearing: the OSS SPA does not know a companion's scope keys, so it omits
+    them, and omit-preserve prevents an unrelated apply from silently deleting a
+    companion-managed server from its provider global (e.g. `~/.claude.json`).
+    A companion frontend that toggles a seam scope MUST send that scope's boolean
+    explicitly to change it. (Equivalent alternative, not chosen: unify all scopes
+    on preserve-on-omit and have every client always send explicit booleans.)
+- `PromptSourceProvider.prompt_source_roots() -> List[Path]` — WIRED: the dashboard
+  prompt listing (`handlers/__init__._list_aim_prompts`) walks each returned root
+  generically (`rglob('*.sop.md')`) for prompt/SOP markdown, replacing the former
+  hardcoded `~/.aim/packages` + eventId/`.version-manifest.json` layout. Default
+  `[]` so the standalone edition lists only `~/.kiro/prompts` user prompts; a
+  companion returns its resolved package prompt roots. **Split out of
+  `McpToolingProvider` into its own Protocol** (a distinct concern). v1 addition;
+  `Default` returns `[]`.
+
+**`McpToolingProvider` is intentionally scoped to MCP tooling only** —
+`extra_mcp_servers()`, `extra_skills()`, and `extra_mcp_scopes()`. The former
+grab-bag members were split into dedicated Protocols this session
+(`AgentCatalogProvider`, `PromptSourceProvider`, `CapabilityManager`) so the CPP
+layer keeps its "one adapter per concern" shape; every future edition hook lands
+on its own interface rather than accreting onto the nearest existing one.
+
+**Agent-discovery module rename (this session).** `aim_agents.py` →
+`agent_discovery.py`; the `AimAgent` dataclass → `AgentInfo`. The agent `source`
+classification was generalized: the old `KiroCrewAICapabilities`-specific
+hardcode was removed, so a package-installed agent is now classified
+`source="package"` (alongside `"kirocrew"` for `kirocrew.json`/`kirocrew-lite.json`
+and `"builtin"` for the rest) rather than the former `"aim"` literal. Importers
+(`subagent`, `mcp_core`, `conductor_skill`, dashboard agents) were updated to the
+new module/class names.
 - `browser/auth.py::register_browser_auth_provider(provider)` — module-level
   registration hook (twin of `register_acp_backends`); every `browser/auth`
   helper delegates to it when present, else the OSS default. `browser/cli.py`

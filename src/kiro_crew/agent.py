@@ -30,7 +30,6 @@ import os
 import re
 import shutil
 import stat
-import subprocess
 import sys
 import tempfile
 import uuid
@@ -39,7 +38,6 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew import agent_state, platform_compat
-from kiro_crew.aim_agents import installed_kiro_packages_missing_from_cc
 from kiro_crew.config import config_path as _mc_config_path
 from kiro_crew.env import augmented_path
 from kiro_crew.mcp_utils import mcp_server_alias
@@ -92,6 +90,10 @@ _MAIN_AGENT_NAME = "kirocrew"
 # Stored in the agent_state sidecar, never in the kiro spec (deny_unknown_fields).
 _BACKGROUND_CC_MODEL = "claude-sonnet-4.6"
 _KIRO_MCP_JSON = Path.home() / ".kiro" / "settings" / "mcp.json"
+# Well-known Claude Code global MCP config. The core no longer reads this at
+# rebuild/discovery/apply time (OSS is Kiro-only); a companion contributes it as
+# a scope via the extra_mcp_scopes() CPP seam. Retained as the canonical path
+# constant for that companion and for tests.
 _CC_MCP_JSON = Path.home() / ".claude.json"
 
 # Bundled fallback — inside the kiro_crew.config package
@@ -321,6 +323,26 @@ def _extra_mcp_servers() -> dict[str, dict]:
     return dict(extra) if extra else {}
 
 
+def _extra_mcp_scope_globals() -> list[Path]:
+    """Provider-global MCP config files contributed by the edition (CPP seam).
+
+    Mirrors ``mcp_discovery._extra_scope_sources`` and the ``/api/mcp/apply``
+    uninstall path: the rebuild-time merge reads each seam scope's
+    ``global_json`` so a companion's provider global (e.g. Claude Code's
+    ``~/.claude.json`` → ``ccGlobal``) is merged into the agent config ONLY when
+    that edition contributes it. The Default returns ``[]`` so OSS merges the
+    Kiro global only — keeping rebuild symmetric with discovery + apply/uninstall
+    (a server the dashboard can't see is never re-merged/resurrected). Fails
+    closed to no extra scopes.
+    """
+    scopes: list = safe_context_call(
+        lambda: list(current_context().mcp_tooling.extra_mcp_scopes()),
+        fallback_factory=list,
+        log_message="extra_mcp_scopes lookup failed; rebuild using core scopes only",
+    )
+    return [s.global_json for s in scopes]
+
+
 def ensure_kirocrew_on_path(bin_dir: Path | None = None) -> str | None:
     """Ensure a ``kirocrew`` launcher is reachable on the user's PATH.
 
@@ -492,7 +514,13 @@ def _all_skill_paths() -> list[str]:
     - ``~/.kirocrew/skills`` (user-created)
     """
     paths: set[str] = set()
-    # AIM skills — only known locations, not broad rglob
+    # AIM skills — only known locations, not broad rglob.
+    # TODO(aim-governance follow-up): this hardcoded ``~/.aim`` scan should
+    # route through the ``McpToolingProvider.extra_skills()`` CPP seam (as the
+    # dashboard skills catalog already does) so the agent-config rebuild and the
+    # dashboard read the SAME source. Deferred to its own PR because of the
+    # security-sensitive symlink-resolution + sensitive-path gating below.
+    # OSS-inert today (no ``~/.aim`` tree on a vanilla install).
     aim_dir = Path.home() / ".aim"
     if aim_dir.is_dir():
         aim_skills = aim_dir / "skills"
@@ -1665,15 +1693,27 @@ def rebuild_agent_config(*, clean: bool = False) -> Path:
             # fallback candidate during command validation below.
             config.setdefault("mcpServers", {}).setdefault(name, dict(spec))
 
-    # Merge shared MCP servers from ~/.claude.json (Claude Code user-level
-    # config) — now LOWER priority than Kiro global; setdefault is a no-op when
-    # Kiro already populated the same key, so CC only fills gaps.
-    cc_shared_mcp = _load_json(_CC_MCP_JSON).get("mcpServers", {})
-    for name, spec in cc_shared_mcp.items():
-        if isinstance(spec, dict) and name not in managed_names:
-            # Copy (see note above) so cc_shared_mcp stays pristine for the
-            # fallback-candidate lookup.
-            config.setdefault("mcpServers", {}).setdefault(name, dict(spec))
+    # Merge shared MCP servers from edition-contributed provider globals (CPP
+    # seam) — now LOWER priority than Kiro global; setdefault is a no-op when
+    # Kiro already populated the same key, so these only fill gaps. In OSS the
+    # seam is empty, so NO provider global (e.g. ~/.claude.json) is merged —
+    # keeping rebuild symmetric with discovery + apply/uninstall so a server the
+    # dashboard can't see is never re-merged into sessions. A companion
+    # contributes its Claude Code scope here and manages it end-to-end.
+    # ``extra_shared_mcp`` accumulates the raw per-scope entries (first scope
+    # wins) for the fallback-candidate lookup and shared-server tools sync below
+    # (replaces the old single ``cc_shared_mcp``).
+    extra_shared_mcp: dict[str, dict] = {}
+    for scope_global in _extra_mcp_scope_globals():
+        scope_shared_mcp = _load_json(scope_global).get("mcpServers", {})
+        for name, spec in scope_shared_mcp.items():
+            if not isinstance(spec, dict):
+                continue
+            extra_shared_mcp.setdefault(name, spec)
+            if name not in managed_names:
+                # Copy (see note above) so the source dict stays pristine for
+                # the fallback-candidate lookup.
+                config.setdefault("mcpServers", {}).setdefault(name, dict(spec))
 
     # ~/.kirocrew/mcp.json overrides kiro mcp.json for the kirocrew agent —
     # kirocrew-specific config wins in a tie.
@@ -1698,7 +1738,7 @@ def rebuild_agent_config(*, clean: bool = False) -> Path:
     # resolve (e.g. a bare command whose binary isn't on the rebuild PATH —
     # the classic internal-MCP-server shadowing case), fall back to the SAME server's
     # spec from the other sources before dropping it, in priority order
-    # (kirocrew > kiro-global > cc-global).  This prevents one source's
+    # (kirocrew > kiro-global > provider-global).  This prevents one source's
     # unresolvable command from killing a server another source can resolve.
     def _resolve_command(cmd: str, env: dict | None) -> str | None:
         """Resolve an MCP command to an absolute path, or None if not found.
@@ -1741,7 +1781,7 @@ def rebuild_agent_config(*, clean: bool = False) -> Path:
         for label, src in (
             ("kirocrew", kirocrew_mcp),
             ("kiro-global", shared_mcp),
-            ("cc-global", cc_shared_mcp),
+            ("provider-global", extra_shared_mcp),
         ):
             alt = src.get(name)
             if isinstance(alt, dict) and alt is not spec:
@@ -1803,7 +1843,7 @@ def rebuild_agent_config(*, clean: bool = False) -> Path:
     # be registered regardless of fresh/existing config state.
     _shared_added: list[str] = []
     _shared_removed: list[str] = []
-    for name, spec in itertools.chain(cc_shared_mcp.items(), shared_mcp.items()):
+    for name, spec in itertools.chain(extra_shared_mcp.items(), shared_mcp.items()):
         if not isinstance(spec, dict) or name in managed_names:
             continue
         alias = mcp_server_alias(name)
@@ -1908,35 +1948,9 @@ def rebuild_agent_config(*, clean: bool = False) -> Path:
 
 _LITE_AGENT_FILENAME = "kirocrew-lite.json"
 
-_KIROCREW_AIM_PACKAGE = "KiroCrewAICapabilities"
-
-_LITE_AGENT_NAMES = frozenset({_LITE_AGENT_FILENAME, f"{_KIROCREW_AIM_PACKAGE}-kirocrew-lite.json"})
-
 
 # Backward-compat alias — callers may still use the old name.
 install_agent = rebuild_agent_config
-
-
-def is_aim_package_installed(package: str) -> bool:
-    """Check if an AIM agents package is already installed.
-
-    AIM is an Amazon-internal package manager and is absent on a public
-    install, so this returns ``False`` unless an ``aim`` binary happens to
-    be on PATH and reports the package.
-    """
-    aim = shutil.which("aim")
-    if not aim:
-        return False
-    try:
-        result = subprocess.run(
-            [aim, "agents", "list"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        return any(line.startswith(package) for line in (result.stdout or "").splitlines())
-    except Exception:
-        return False
 
 
 def _install_aim_capabilities() -> None:
@@ -2262,22 +2276,6 @@ def sync_aim_packages() -> None:
 def repair_agent_configs() -> None:
     """Sanitize invalid hook keys in all agent configs."""
     _sanitize_agent_hooks()
-
-
-def _ensure_cc_parity_for_kiro_packages() -> None:
-    """No-op on public installs (AIM package manager absent).
-
-    Previously warned when an AIM package was installed for the kiro
-    provider but not for Claude Code.  AIM is Amazon-internal, so
-    ``installed_kiro_packages_missing_from_cc`` returns an empty list on a
-    public machine and there is nothing to warn about.  The call is retained
-    (and stays harmless) to preserve the cross-provider parity contract if a
-    user happens to have an ``aim`` binary on PATH.
-    """
-    try:
-        _ = installed_kiro_packages_missing_from_cc()
-    except Exception:
-        logger.debug("CC parity check failed", exc_info=True)
 
 
 _hooks_sanitized_mtimes: dict[str, float] = {}

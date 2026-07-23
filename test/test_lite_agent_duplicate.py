@@ -9,7 +9,6 @@ from unittest.mock import patch
 import pytest
 
 from kiro_crew.agent import (
-    _KIROCREW_AIM_PACKAGE,
     _LITE_AGENT_FILENAME,
     _install_lite_agent_fallback,
     _remove_bare_lite_if_aim_installed,
@@ -24,7 +23,9 @@ def agents_dir(tmp_path: Path) -> Path:
     return d
 
 
-AIM_LITE_FILENAME = f"{_KIROCREW_AIM_PACKAGE}-kirocrew-lite.json"
+# Legacy package-installed lite-agent filename (companion layout). Core no longer
+# references the package name; the fork must still tolerate such a file if present.
+AIM_LITE_FILENAME = "KiroCrewAICapabilities-kirocrew-lite.json"
 
 
 class TestLiteAgentDuplicate:

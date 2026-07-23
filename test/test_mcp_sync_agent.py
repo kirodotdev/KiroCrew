@@ -8,7 +8,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from kiro_crew.dashboard.handlers.agents import api_aim_mcp_install, api_aim_mcp_uninstall
+from kiro_crew.dashboard.handlers.agents import (
+    api_capability_mcp_install,
+    api_capability_mcp_uninstall,
+)
 
 
 @pytest.fixture()
@@ -144,21 +147,33 @@ class TestSyncMcpToAgentBatch:
 
 class TestAimMcpInstallSync:
 
+    @staticmethod
+    def _mgr(ok: bool):
+        from kiro_crew.platform.interfaces import CapabilityResult
+
+        m = MagicMock()
+        m.available.return_value = True
+        m.install_mcp = AsyncMock(
+            return_value=CapabilityResult(ok=ok, message="" if ok else "install failed")
+        )
+        m.uninstall_mcp = AsyncMock(
+            return_value=CapabilityResult(ok=ok, message="" if ok else "uninstall failed")
+        )
+        return m
+
     @pytest.mark.asyncio
     async def test_install_calls_sync(self):
         req = MagicMock()
         req.json = AsyncMock(return_value={"server_id": "meetings-mcp"})
         req.app = {"state": MagicMock()}
         with (
-            patch("shutil.which", return_value="/usr/bin/aim"),
             patch(
-                "kiro_crew.dashboard.handlers.agents._run_aim",
-                new_callable=AsyncMock,
-                return_value=(0, "ok"),
+                "kiro_crew.dashboard.handlers.agents._capability_manager",
+                return_value=self._mgr(ok=True),
             ),
             patch("kiro_crew.dashboard.handlers.mcp._sync_mcp_to_agent") as mock_sync,
         ):
-            resp = await api_aim_mcp_install(req)
+            resp = await api_capability_mcp_install(req)
 
         assert resp.status == 200
         mock_sync.assert_called_once_with("meetings-mcp", True)
@@ -169,15 +184,13 @@ class TestAimMcpInstallSync:
         req.json = AsyncMock(return_value={"server_id": "bad-mcp"})
         req.app = {"state": MagicMock()}
         with (
-            patch("shutil.which", return_value="/usr/bin/aim"),
             patch(
-                "kiro_crew.dashboard.handlers.agents._run_aim",
-                new_callable=AsyncMock,
-                return_value=(1, "install failed"),
+                "kiro_crew.dashboard.handlers.agents._capability_manager",
+                return_value=self._mgr(ok=False),
             ),
             patch("kiro_crew.dashboard.handlers.mcp._sync_mcp_to_agent") as mock_sync,
         ):
-            resp = await api_aim_mcp_install(req)
+            resp = await api_capability_mcp_install(req)
 
         assert resp.status == 500
         mock_sync.assert_not_called()
@@ -188,15 +201,13 @@ class TestAimMcpInstallSync:
         req.json = AsyncMock(return_value={"server_id": "meetings-mcp"})
         req.app = {"state": MagicMock()}
         with (
-            patch("shutil.which", return_value="/usr/bin/aim"),
             patch(
-                "kiro_crew.dashboard.handlers.agents._run_aim",
-                new_callable=AsyncMock,
-                return_value=(0, "ok"),
+                "kiro_crew.dashboard.handlers.agents._capability_manager",
+                return_value=self._mgr(ok=True),
             ),
             patch("kiro_crew.dashboard.handlers.mcp._sync_mcp_to_agent") as mock_sync,
         ):
-            resp = await api_aim_mcp_uninstall(req)
+            resp = await api_capability_mcp_uninstall(req)
 
         assert resp.status == 200
         mock_sync.assert_called_once_with("meetings-mcp", False, remove=True)
@@ -207,15 +218,13 @@ class TestAimMcpInstallSync:
         req.json = AsyncMock(return_value={"server_id": "bad-mcp"})
         req.app = {"state": MagicMock()}
         with (
-            patch("shutil.which", return_value="/usr/bin/aim"),
             patch(
-                "kiro_crew.dashboard.handlers.agents._run_aim",
-                new_callable=AsyncMock,
-                return_value=(1, "uninstall failed"),
+                "kiro_crew.dashboard.handlers.agents._capability_manager",
+                return_value=self._mgr(ok=False),
             ),
             patch("kiro_crew.dashboard.handlers.mcp._sync_mcp_to_agent") as mock_sync,
         ):
-            resp = await api_aim_mcp_uninstall(req)
+            resp = await api_capability_mcp_uninstall(req)
 
         assert resp.status == 500
         mock_sync.assert_not_called()

@@ -58,10 +58,8 @@ from kiro_crew.dashboard.handlers.agents import (  # noqa: E402, F401
     _THEME_CSS_VARS_SET,
     _auto_install_agent,
     _find_agent_config,
-    _friendly_aim_error,
     _get_config_lock,
     _installed_agent_config,
-    _run_aim,
     _sanitize_css_value,
     _slugify_theme_name,
     _strip_to_allowed_vars,
@@ -72,19 +70,14 @@ from kiro_crew.dashboard.handlers.agents import (  # noqa: E402, F401
     api_agent_metadata_get,
     api_agent_metadata_put,
     api_agents_installed,
-    api_aim_agents_install,
-    api_aim_agents_list,
-    api_aim_agents_uninstall,
-    api_aim_mcp_install,
-    api_aim_mcp_list,
-    api_aim_mcp_registry,
-    api_aim_mcp_uninstall,
-    api_aim_skills_install,
-    api_aim_skills_list,
-    api_aim_skills_uninstall,
-    api_aim_update,
-    api_cc_aim_missing,
-    api_cc_aim_sync,
+    api_capability_agents_list,
+    api_capability_mcp_install,
+    api_capability_mcp_list,
+    api_capability_mcp_registry,
+    api_capability_mcp_uninstall,
+    api_capability_skills_install,
+    api_capability_skills_list,
+    api_capability_skills_uninstall,
     api_config_schema,
     api_default_agent,
     api_effort_levels,
@@ -173,6 +166,7 @@ from kiro_crew.dashboard.handlers.mcp import (  # noqa: E402, F401
     api_mcp_gateway_servers,
     api_mcp_gateway_set_poolable,
     api_mcp_gateway_status,
+    api_mcp_global_scopes,
     api_mcp_probe,
     api_mcp_probe_cached,
     api_mcp_remove,
@@ -254,7 +248,6 @@ from kiro_crew.dashboard.handlers.prompts import (  # noqa: E402, F401
     MAX_PROMPT_BYTES,
     _extract_sop_description,
     _find_prompt,
-    _latest_aim_event_dir,
     _redact_prompt,
     api_prompt_detail,
     api_prompts,
@@ -373,23 +366,41 @@ _prompt_cache_ts: float = 0
 
 
 def _list_aim_prompts() -> list[dict[str, Any]]:
-    """Discover agent SOPs from installed AIM packages and user prompts."""
+    """Discover agent SOPs from edition-contributed prompt roots and user prompts.
+
+    Edition SOP roots come from ``PromptSourceProvider.prompt_source_roots()`` (CPP
+    seam; public Default ``[]``), read fail-closed through ``safe_context_call``.
+    Each root is walked generically (``rglob('*.sop.md')``) — no ``~/.aim``
+    package layout or eventId resolution — and every SOP is emitted with
+    ``source: "package"``. User-authored prompts under ``~/.kiro/prompts`` are
+    still discovered (``source: "global"``/``"local"``).
+    """
     global _prompt_cache, _prompt_cache_ts  # noqa: PLW0603
     now = time.monotonic()
     if _prompt_cache is not None and now - _prompt_cache_ts < _PROMPT_CACHE_TTL:
         return [dict(p) for p in _prompt_cache]
 
-    aim_dir = Path.home() / ".aim" / "packages"
     result: list[dict[str, Any]] = []
 
-    def _collect(pkg_dir: Path) -> bool:
-        """Append SOPs from *pkg_dir*. Returns True if it looked like an AIM package."""
-        event_dir = _latest_aim_event_dir(pkg_dir)
-        # eventId-* layout (published) OR direct agent-sops/ (aim install --local)
-        sops_dir = (event_dir / "agent-sops") if event_dir else (pkg_dir / "agent-sops")
-        if not sops_dir.is_dir():
-            return event_dir is not None
-        for sop_file in sorted(sops_dir.rglob("*.sop.md")):
+    # Edition-contributed prompt/SOP roots (CPP seam). Deferred import (sel.py
+    # pattern) so this package never imports the platform package at module load.
+    from kiro_crew.platform.context import current_context, safe_context_call
+
+    roots: list[Path] = safe_context_call(
+        lambda: list(current_context().prompt_sources.prompt_source_roots()),
+        fallback_factory=list,
+        log_message="prompt_source_roots lookup failed; using none",
+    )
+    for root in roots:
+        root = Path(root)
+        try:
+            if not root.is_dir():
+                continue
+            sop_files = sorted(root.rglob("*.sop.md"))
+        except OSError:
+            logger.debug("Skipping unreadable prompt root: %s", root)
+            continue
+        for sop_file in sop_files:
             try:
                 resolved = str(sop_file.resolve())
             except OSError:
@@ -398,34 +409,15 @@ def _list_aim_prompts() -> list[dict[str, Any]]:
                 logger.debug("Skipping sensitive path: %s", sop_file)
                 continue
             name = sop_file.stem.removesuffix(".sop")
-            result.append(
-                {
-                    "name": name,
-                    "fullName": f"agent-sop:{name}",
-                    "description": _extract_sop_description(sop_file),
-                    "path": resolved,
-                    "package": pkg_dir.name,
-                    "source": "aim",
-                }
-            )
-        return True
+            result.append({
+                "name": name,
+                "fullName": f"agent-sop:{name}",
+                "description": _extract_sop_description(sop_file),
+                "path": resolved,
+                "package": root.name,
+                "source": "package",
+            })
 
-    if aim_dir.is_dir():
-        for pkg_dir in sorted(aim_dir.iterdir()):
-            if not pkg_dir.is_dir() or pkg_dir.name.startswith("."):
-                continue
-            try:
-                if not _collect(pkg_dir):
-                    # Namespace dir (e.g. ~/.aim/packages/local/): descend one level.
-                    for child in sorted(pkg_dir.iterdir()):
-                        if child.is_dir() and not child.name.startswith("."):
-                            try:
-                                _collect(child)
-                            except OSError:
-                                logger.debug("Skipping unreadable AIM package: %s", child)
-            except OSError:
-                logger.debug("Skipping unreadable AIM package: %s", pkg_dir)
-                continue
     # Also scan ~/.kiro/prompts/ for user-created prompts
     home = Path.home()
     prompt_dirs: list[tuple[Path, str]] = [(home / ".kiro" / "prompts", "global")]
