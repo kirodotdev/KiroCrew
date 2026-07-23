@@ -125,27 +125,86 @@ class TestToLlmEventFieldPropagation:
 
 class TestCompactRouting:
     @pytest.mark.asyncio
-    async def test_kiro_backend_uses_send_command(self):
+    async def test_kiro_backend_uses_session_prompt(self):
+        """kiro-cli 2.14.0 exits rc=0 on the string form of
+        _kiro.dev/commands/execute (live-probe confirmed), so /compact must
+        flow through session/prompt on the kiro backend too."""
         provider = _build_provider(backend="")
         provider._client.send_command = AsyncMock(return_value="")
         provider._client.stream_events = MagicMock(return_value=_async_iter([]))
 
         await provider.compact()
 
-        provider._client.send_command.assert_awaited_once_with("/compact")
-        provider._client.stream_events.assert_not_called()
+        provider._client.stream_events.assert_called_once_with("/compact")
+        provider._client.send_command.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_kiro_backend_send_command_with_context(self):
+    async def test_kiro_backend_prompt_with_context(self):
         provider = _build_provider(backend="")
         provider._client.send_command = AsyncMock(return_value="")
+        provider._client.stream_events = MagicMock(return_value=_async_iter([]))
 
         await provider.compact("important context")
 
-        provider._client.send_command.assert_awaited_once()
-        sent = provider._client.send_command.await_args.args[0]
+        provider._client.stream_events.assert_called_once()
+        sent = provider._client.stream_events.call_args.args[0]
         assert sent.startswith("/compact ")
         assert "important context" in sent
+        provider._client.send_command.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_midturn_terminal_status_cached_for_wait(self):
+        """kiro-cli may emit the terminal compaction status BEFORE end_turn.
+        compact()'s drain must capture it so a subsequent
+        wait_for_compaction() (task_executor, wechat, cli_chat) returns it
+        instead of stalling 120s and resetting a compacted session."""
+        provider = _build_provider(backend="")
+        status = AcpEvent(kind="compaction_status", text="completed", title="sum")
+        provider._client.stream_events = MagicMock(return_value=_async_iter([status]))
+        provider._client.wait_for_compaction = AsyncMock(
+            return_value={"type": "timeout"}  # would be WRONG if consulted
+        )
+
+        await provider.compact()
+        result = await provider.wait_for_compaction(timeout=1.0)
+
+        assert result == {"type": "completed", "summary": "sum"}
+        provider._client.wait_for_compaction.assert_not_awaited()
+        # Cache is one-shot: the next wait falls through to the client.
+        result2 = await provider.wait_for_compaction(timeout=1.0)
+        assert result2 == {"type": "timeout"}
+
+    @pytest.mark.asyncio
+    async def test_async_status_falls_through_to_client_wait(self):
+        """No terminal status mid-turn — wait_for_compaction delegates to the
+        client's queue wait (the async-after-end_turn case)."""
+        provider = _build_provider(backend="")
+        provider._client.stream_events = MagicMock(return_value=_async_iter([]))
+        provider._client.wait_for_compaction = AsyncMock(
+            return_value={"type": "completed", "summary": ""}
+        )
+
+        await provider.compact()
+        result = await provider.wait_for_compaction(timeout=1.0)
+
+        assert result["type"] == "completed"
+        provider._client.wait_for_compaction.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_new_compact_clears_stale_cached_result(self):
+        """A fresh compact() must not leave a PREVIOUS attempt's cached
+        result satisfying a later wait."""
+        provider = _build_provider(backend="")
+        status = AcpEvent(kind="compaction_status", text="completed", title="old")
+        provider._client.stream_events = MagicMock(return_value=_async_iter([status]))
+        await provider.compact()  # caches "old"
+
+        provider._client.stream_events = MagicMock(return_value=_async_iter([]))
+        provider._client.wait_for_compaction = AsyncMock(return_value={"type": "failed"})
+        await provider.compact()  # no mid-turn status this time
+        result = await provider.wait_for_compaction(timeout=1.0)
+
+        assert result == {"type": "failed"}
 
     @pytest.mark.asyncio
     async def test_claude_backend_uses_session_prompt(self):

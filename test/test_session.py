@@ -2510,15 +2510,25 @@ class TestKiroInPlaceCompaction:
     the fallback. Fix for 'session stops after auto-compaction'."""
 
     @staticmethod
-    def _inplace_provider_factory(result: dict):
-        """Provider whose native compaction reports *result*."""
+    def _inplace_provider_factory(result: dict, *, stream_events: list | None = None):
+        """Provider whose native compaction reports *result*.
+
+        ``stream_command("/compact")`` yields *stream_events* (default: none —
+        the terminal status arrives async via ``wait_for_compaction``,
+        mirroring kiro-cli's post-end_turn status emission).
+        """
 
         def factory(session_key=None, agent=None, channel_id=None, **kwargs):
             m = AsyncMock()
             m.start = AsyncMock()
             m.shutdown = AsyncMock()
             m.context_usage_pct = lambda: 0.0
-            m.compact = AsyncMock()
+
+            async def _stream(_cmd):
+                for ev in stream_events or []:
+                    yield ev
+
+            m.stream_command = MagicMock(side_effect=_stream)
             m.wait_for_compaction = AsyncMock(return_value=result)
             return m
 
@@ -2539,7 +2549,7 @@ class TestKiroInPlaceCompaction:
         # Session survives in place: same entry, same provider, no SIGKILL.
         assert "dashboard:chat-1" in mgr._sessions
         assert mgr._sessions["dashboard:chat-1"].provider is provider
-        provider.compact.assert_awaited_once()
+        provider.stream_command.assert_called_once_with("/compact")
         provider.shutdown.assert_not_awaited()
         cb.assert_awaited_once_with("dashboard:chat-1", 92.0, success=True)
         # Semaphore released: the next turn can proceed immediately.
@@ -2600,6 +2610,55 @@ class TestKiroInPlaceCompaction:
         await mgr.close_all()
 
     @pytest.mark.asyncio
+    async def test_inplace_midstream_terminal_status_skips_async_wait(self, cfg):
+        """kiro-cli may emit the terminal compaction status MID-TURN (before
+        end_turn). The stream watcher must latch it so the blind drain never
+        eats it — otherwise wait_for_compaction would stall to timeout and
+        wrongly recycle a just-compacted healthy session."""
+        from kiro_crew.acp.types import EVENT_COMPACTION_STATUS, AcpEvent
+
+        mid = AcpEvent(kind=EVENT_COMPACTION_STATUS, text="completed", title="sum")
+        mgr = SessionManager(
+            cfg,
+            provider_factory=self._inplace_provider_factory(
+                {"type": "timeout"},  # async wait would FAIL if consulted
+                stream_events=[mid],
+            ),
+        )
+        provider, _, _ = await mgr.get_or_create("dashboard:chat-1")
+        mgr.release("dashboard:chat-1")
+        cb = AsyncMock()
+        mgr.set_compact_callback(cb)
+
+        await mgr._compact_session("dashboard:chat-1", 92.0)
+
+        # Mid-stream status decided the outcome; async wait never consulted.
+        assert "dashboard:chat-1" in mgr._sessions
+        provider.wait_for_compaction.assert_not_awaited()
+        provider.shutdown.assert_not_awaited()
+        cb.assert_awaited_once_with("dashboard:chat-1", 92.0, success=True)
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_inplace_never_uses_commands_execute(self, cfg):
+        """Regression for the 2026-07-23 production failure: /compact sent
+        via the string form of _kiro.dev/commands/execute makes kiro-cli
+        2.14.0 exit rc=0. The auto-compact path must use the prompt
+        transport (stream_command), never send_command."""
+        mgr = SessionManager(
+            cfg, provider_factory=self._inplace_provider_factory({"type": "completed"})
+        )
+        provider, _, _ = await mgr.get_or_create("dashboard:chat-1")
+        provider.send_command = AsyncMock()
+        mgr.release("dashboard:chat-1")
+
+        await mgr._compact_session("dashboard:chat-1", 92.0)
+
+        provider.stream_command.assert_called_once_with("/compact")
+        provider.send_command.assert_not_awaited()
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
     async def test_inplace_holds_semaphore_so_queued_turns_wait(self, cfg):
         """While the in-place compact runs, the session semaphore is held —
         a queued turn waits behind it and then continues on the compacted
@@ -2611,7 +2670,12 @@ class TestKiroInPlaceCompaction:
             m.start = AsyncMock()
             m.shutdown = AsyncMock()
             m.context_usage_pct = lambda: 0.0
-            m.compact = AsyncMock()
+
+            async def _stream(_cmd):
+                if False:  # pragma: no cover - empty async generator
+                    yield
+
+            m.stream_command = MagicMock(side_effect=_stream)
 
             async def _wait(timeout=120.0):
                 await gate.wait()

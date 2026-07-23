@@ -19,7 +19,12 @@ from kiro_crew.acp.client import (
 )
 from kiro_crew.acp.runtime import AcpRuntime, AcpRuntimeError
 from kiro_crew.acp.session_provider import AcpSessionProvider
-from kiro_crew.acp.types import ACP_BACKEND_CLAUDE, STOP_REASON_CANCELLED, STOP_REASON_END_TURN
+from kiro_crew.acp.types import (
+    ACP_BACKEND_CLAUDE,
+    EVENT_COMPACTION_STATUS,
+    STOP_REASON_CANCELLED,
+    STOP_REASON_END_TURN,
+)
 from kiro_crew.effort import (
     EFFORT_LEVELS,
     effort_settings_key,
@@ -243,6 +248,9 @@ class AcpProvider(LLMProvider):
         if agent:
             kwargs["agent"] = agent
         self._client = AcpClient(**kwargs)
+        # Terminal compaction status captured by compact() while draining its
+        # prompt turn; consumed by wait_for_compaction() (see compact()).
+        self._compact_result: dict | None = None
         # Per-model reasoning-effort. Resolution priority (see effort.py):
         # slot override > workspace defaults > None. The kiro backend applies
         # this via a workspace cli.json overlay read at spawn; the claude
@@ -885,14 +893,31 @@ class AcpProvider(LLMProvider):
             message = f"/compact Preserve this session context in the summary:\n{prompt}"
         else:
             message = "/compact"
-        # claude-agent-acp does not implement _kiro.dev/commands/execute —
-        # send /compact through session/prompt, which the claude backend
-        # handles natively as a slash command.
-        if self.is_claude_backend:
-            async for _ in self._client.stream_events(message):
-                pass
-            return
-        await self._client.send_command(message)
+        # BOTH backends send /compact through session/prompt.
+        # - claude-agent-acp does not implement _kiro.dev/commands/execute;
+        #   the claude backend handles the slash command natively in-prompt.
+        # - kiro-cli DOES advertise commands/execute, but its STRING form
+        #   (`"command": "/compact"`) makes kiro-cli 2.14.0 exit rc=0 without
+        #   a response — live-probe confirmed for /compact AND /help, while
+        #   the object form (`{"command": "help", "args": {}}`, used by
+        #   /effort) works. The prompt transport is the path the dashboard's
+        #   manual /compact and Slack's !compact have always used: kiro ACKs
+        #   the prompt (end_turn) and then emits _kiro.dev/compaction/status
+        #   started/completed, which wait_for_compaction() picks up.
+        # Capture a terminal status emitted MID-TURN (before end_turn) while
+        # draining — otherwise it would be consumed and lost, stranding a
+        # subsequent wait_for_compaction() (task_executor, wechat, cli_chat)
+        # until timeout even though the compact succeeded.
+        self._compact_result = None
+        async for event in self._client.stream_events(message):
+            if event.kind == EVENT_COMPACTION_STATUS and event.text in (
+                "completed",
+                "failed",
+            ):
+                self._compact_result = {
+                    "type": event.text,
+                    "summary": event.title or "",
+                }
 
     async def cancel(self, *, wait_ack_timeout: float = 0.0) -> CancelOutcome:
         """Cancel in-flight operation via ACP session/cancel."""
@@ -936,7 +961,16 @@ class AcpProvider(LLMProvider):
         return bool(getattr(self._client, "supports_steer", False))
 
     async def wait_for_compaction(self, timeout: float = 120.0) -> dict:
-        """Wait for compaction completed/failed after stream ends."""
+        """Wait for compaction completed/failed after stream ends.
+
+        Consumes the result compact() captured mid-turn if there is one
+        (kiro-cli may emit the terminal status before end_turn), otherwise
+        delegates to the client's queue wait (async-after-end_turn case).
+        """
+        cached = getattr(self, "_compact_result", None)
+        if cached is not None:
+            self._compact_result = None
+            return cached
         return await self._client.wait_for_compaction(timeout)
 
     async def new_conversation(self) -> None:

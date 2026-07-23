@@ -73,8 +73,10 @@ check (`dashboard/handlers/cron.py`).
 ## Key Behaviors
 
 - **Context compaction**: at ≥ configured threshold (`session.autocompact_pct`, default 90%, valid 5–90), compacts **in place** on both
-  backends: kiro-cli via native `/compact` (command execute +
-  `_kiro.dev/compaction/status` wait), claude via SDK `/compact`. The
+  backends: kiro-cli via a `/compact` **prompt** (`session/prompt` +
+  `_kiro.dev/compaction/status` watch — never the string form of
+  `_kiro.dev/commands/execute`, which kiro-cli 2.14.0 exits rc=0 on),
+  claude via SDK `/compact`. The
   process and session ID survive, so queued/agentic work continues
   automatically. kiro-cli only: if the in-place compact fails, times out,
   or the provider lacks native support, falls back to the legacy

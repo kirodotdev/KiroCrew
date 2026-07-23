@@ -2439,13 +2439,35 @@ class SessionManager:
         try:
 
             async def _run() -> None:
-                await session.provider.compact()
-                result = await session.provider.wait_for_compaction(
-                    timeout=_COMPACT_RESULT_WAIT_SECS
-                )
-                rtype = result.get("type") if isinstance(result, dict) else None
-                if rtype != "completed":
-                    raise RuntimeError(f"compaction reported {rtype or 'no result'}")
+                # Lazy import: kiro_crew.acp.__init__ eagerly pulls client/
+                # runtime; a module-level import here would recreate the
+                # providers<->session cycle this file avoids everywhere else.
+                from kiro_crew.acp.types import EVENT_COMPACTION_STATUS
+
+                # Mirror the proven Slack !compact flow: send /compact as a
+                # PROMPT and watch the stream for the compaction status
+                # inline. kiro-cli may emit _kiro.dev/compaction/status
+                # either mid-turn (before end_turn) or asynchronously after
+                # it — watching the stream first means a mid-turn status is
+                # never eaten by a blind drain (which would strand
+                # wait_for_compaction until timeout and wrongly recycle a
+                # just-compacted healthy session).
+                status: str | None = None
+                async for event in session.provider.stream_command("/compact"):
+                    if event.kind == EVENT_COMPACTION_STATUS and event.text in (
+                        "completed",
+                        "failed",
+                    ):
+                        status = event.text
+                if status is None:
+                    # No terminal status mid-turn (a "started" may have
+                    # streamed) — the result arrives async after end_turn.
+                    result = await session.provider.wait_for_compaction(
+                        timeout=_COMPACT_RESULT_WAIT_SECS
+                    )
+                    status = result.get("type") if isinstance(result, dict) else None
+                if status != "completed":
+                    raise RuntimeError(f"compaction reported {status or 'no result'}")
 
             await asyncio.wait_for(_run(), timeout=_COMPACT_TIMEOUT_SECS)
         except (Exception, asyncio.TimeoutError):

@@ -224,6 +224,11 @@ class AcpSessionHandle:
         self._inflight_tool: ToolCallState | None = None
         # Last monotonic ts a WORKING-verdict deferral was logged (rate limit).
         self._working_logged_ts = 0.0
+        # Terminal compaction status captured by compact() while draining its
+        # own prompt turn (kiro-cli may emit _kiro.dev/compaction/status
+        # BEFORE end_turn). wait_for_compaction() consumes it first so the
+        # drain never strands a caller into a spurious 120s timeout.
+        self._compact_result: dict[str, str] | None = None
         self._cancelled = False
         # Unresponsive-cancel tracking (mirrors AcpClient._cancel_ts /
         # _cancel_grace_secs). Set by cancel(); the dispatch loop uses them to
@@ -558,18 +563,47 @@ class AcpSessionHandle:
     # ── Compaction ──
 
     async def compact(self, context: str = "") -> None:
-        """Trigger context compaction via /compact command."""
+        """Trigger context compaction via a ``/compact`` prompt.
+
+        Sent through ``session/prompt`` (drained to turn end), NOT through
+        ``_kiro.dev/commands/execute``: kiro-cli 2.14.0 exits rc=0 without a
+        response on the STRING form of commands/execute (live-probe confirmed
+        for /compact and /help alike; the object form used by /effort is
+        fine). The prompt transport matches the dashboard's manual /compact
+        and Slack's !compact: kiro ACKs the prompt (end_turn) and then emits
+        ``_kiro.dev/compaction/status``, which ``wait_for_compaction()``
+        picks up from the session queue.
+        """
         cmd = "/compact"
         if context:
             cmd = f"/compact {context}"
-        await self.send_command(cmd)
+        # Capture a terminal status emitted MID-TURN (before end_turn) while
+        # draining — otherwise it would be consumed and lost, stranding a
+        # subsequent wait_for_compaction() until timeout even though the
+        # compact succeeded. wait_for_compaction() consumes this cache first.
+        self._compact_result = None
+        async for event in self.prompt(cmd):
+            if event.kind == EVENT_COMPACTION_STATUS and event.text in (
+                "completed",
+                "failed",
+            ):
+                self._compact_result = {
+                    "type": event.text,
+                    "summary": event.title or "",
+                }
 
     async def wait_for_compaction(self, timeout: float = 120.0) -> dict[str, str]:
         """Wait for compaction completed/failed event from the session queue.
 
         Returns {"type": "completed"|"failed"|"timeout", "summary": "..."}.
-        Drains the queue looking for COMPACTION_STATUS notifications.
+        Consumes the result compact() captured mid-turn if there is one,
+        otherwise drains the queue looking for COMPACTION_STATUS
+        notifications (the async-after-end_turn case).
         """
+        cached = self._compact_result
+        if cached is not None:
+            self._compact_result = None
+            return cached
         deadline = time.monotonic() + timeout
         buffered: list[JsonRpcMessage] = []
         try:
