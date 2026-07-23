@@ -32,6 +32,7 @@ import InstanceTabBar, { visibleInstanceTabs } from './InstanceTabBar'
 import { resolveTunnelOrigin } from '../lib/tunnelOrigin'
 import { TRAFFIC_LIGHT_INSET_PX } from '../lib/electron'
 import { isEmbeddedPane } from '../lib/embedded'
+import { isElectron } from '../lib/electron'
 
 // Refresh the embedded token once elapsed reaches this fraction of its TTL
 // (mirrors the gateway's default 80% threshold). Proactive refresh reloads the
@@ -276,7 +277,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
             ttlTotal: ttlToSeconds(selfInst.ttl),
           }
         : null
-      return { type: 'mc-host-model', v: 1, tabs, activeId, self, macInset }
+      return { type: 'mc-host-model', v: 1, tabs, activeId, self, macInset, electron: isElectron }
     },
     [instancesQuery.data, warm, unread, activeId, macInset],
   )

@@ -24,7 +24,7 @@ export interface ShortcutDef {
   meta?: boolean  // Cmd on Mac, Ctrl on Windows/Linux
   shift?: boolean
   label: string
-  group: 'Chat Navigation' | 'Panel Navigation' | 'Actions'
+  group: 'Chat Navigation' | 'Panel Navigation' | 'Actions' | 'Instances'
 }
 
 export const DEFAULT_SHORTCUTS: ShortcutDef[] = [
@@ -62,7 +62,25 @@ export const DEFAULT_SHORTCUTS: ShortcutDef[] = [
   { id: 'cycle-model', key: 's', alt: true, shift: true, label: 'Cycle model', group: 'Actions' },
   { id: 'cycle-prev-model', key: 'x', alt: true, shift: true, label: 'Previous model', group: 'Actions' },
   { id: 'optimize-prompt', key: 'Enter', meta: true, shift: true, label: 'Optimize prompt', group: 'Actions' },
+  // Instance switcher — Cmd on Mac / Ctrl on Win-Linux. 1 = Local, 2..6 = the
+  // 1st..5th remote instance, matching the InstanceTabBar left-to-right order.
+  // Handled by useInstanceShortcuts (not the Alt-based handler below); listed
+  // here so they appear in the shortcuts modal + Settings → Shortcuts.
+  { id: 'instance-1', key: '1', meta: true, label: 'Switch to Local', group: 'Instances' },
+  { id: 'instance-2', key: '2', meta: true, label: 'Switch to instance 1', group: 'Instances' },
+  { id: 'instance-3', key: '3', meta: true, label: 'Switch to instance 2', group: 'Instances' },
+  { id: 'instance-4', key: '4', meta: true, label: 'Switch to instance 3', group: 'Instances' },
+  { id: 'instance-5', key: '5', meta: true, label: 'Switch to instance 4', group: 'Instances' },
+  { id: 'instance-6', key: '6', meta: true, label: 'Switch to instance 5', group: 'Instances' },
 ]
+
+/**
+ * The instance-switch entries, exported as the single source of truth for
+ * useInstanceShortcuts: the handler accepts exactly Digit1..Digit<N> where N =
+ * INSTANCE_SHORTCUTS.length, so the chords the modal advertises and the chords
+ * the handler claims can never drift apart.
+ */
+export const INSTANCE_SHORTCUTS = DEFAULT_SHORTCUTS.filter(s => s.group === 'Instances')
 
 const isMac = () => typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform)
 

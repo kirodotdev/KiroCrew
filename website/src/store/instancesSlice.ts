@@ -52,6 +52,10 @@ export interface HostModel {
   /** True when the parent is a macOS Electron window not in fullscreen, so the
    *  embedded header must inset its content clear of the native traffic lights. */
   macInset: boolean
+  /** True when the parent shell is Electron. Gates the embedded ⌘/Ctrl+digit
+   *  instance-switch chord: in a plain browser those chords are reserved for
+   *  browser tab switching, so the pane must not bind (or advertise) them. */
+  electron: boolean
 }
 
 interface InstancesState {

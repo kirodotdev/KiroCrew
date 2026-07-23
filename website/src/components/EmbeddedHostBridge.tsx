@@ -52,6 +52,7 @@ function parseHostModel(data: unknown): HostModel | null {
     activeId: typeof d.activeId === 'string' ? d.activeId : null,
     self,
     macInset: !!d.macInset,
+    electron: !!d.electron,
   }
 }
 

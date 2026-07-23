@@ -16,12 +16,13 @@
  * (host SSH expiry lives in the title bar, not duplicated here).
  */
 import { useCallback, useMemo, type CSSProperties } from 'react'
-import { useMutation, useQuery } from '@tanstack/react-query'
+import { useQuery } from '@tanstack/react-query'
 import { Home, Server, Loader2 } from 'lucide-react'
 import { api, ApiError, type InstanceView } from '../api/client'
-import { useAppDispatch, useAppSelector } from '../store'
-import { setWarm, setActiveId, type WarmConn } from '../store/instancesSlice'
+import { useAppSelector } from '../store'
+import { type WarmConn } from '../store/instancesSlice'
 import { isEmbeddedPane } from '../lib/embedded'
+import { useSelectInstance } from '../hooks/useSelectInstance'
 
 /**
  * Instances that get a tab: sticky connect intent (`was_connected`, cleared
@@ -193,7 +194,6 @@ export default function InstanceTabBar({
   variant = 'strip',
   style,
 }: { variant?: 'strip' | 'inline'; style?: CSSProperties } = {}) {
-  const dispatch = useAppDispatch()
   const activeId = useAppSelector(s => s.instances.activeId)
   const warm = useAppSelector(s => s.instances.warm)
   const unread = useAppSelector(s => s.instances.unread)
@@ -216,36 +216,16 @@ export default function InstanceTabBar({
   // instead of vanishing and forcing the user back to Settings → Instances.
   const tabInstances = visibleInstanceTabs(instances, warm)
 
-  const connectMutation = useMutation({
-    mutationFn: (id: string) => api.connectInstance(id),
-    onSuccess: (st, id) => {
-      if (st.state === 'connected' && st.local_port && st.token) {
-        dispatch(setWarm({ id, conn: { port: st.local_port, token: st.token } }))
-      }
-      // The tab was already activated on click; on failure the active pane shows
-      // the in-pane error/reconnect panel (see InstancesViewport).
-    },
-  })
+  // Select-and-maybe-reconnect semantics live in the shared useSelectInstance
+  // hook — the SAME unit the ⌘/Ctrl+digit chord uses (useInstanceShortcuts) —
+  // so the click path and the keyboard path cannot drift apart.
+  const { selectInstance, connectMutation } = useSelectInstance(instances)
 
   const onSelectInstance = useCallback(
-    (id: string) => {
-      // Always activate the clicked tab so its pane shows immediately — the warm
-      // iframe if connected, otherwise the in-pane connecting/error panel. If it
-      // isn't warm yet, kick off a (re)connect: success warms it, failure leaves
-      // the error pane up. A failed connect never removes the tab.
-      dispatch(setActiveId(id))
-      // Reconnect when the tab has no warm iframe yet OR when its live tunnel is
-      // no longer connected. The status check matters: a mid-session tunnel drop
-      // flips status to error/disconnected but does NOT clear the stale `warm`
-      // entry, so gating only on `!warm[id]` would skip the reconnect AND hide
-      // the error panel — clicking the (red) tab would do nothing visible.
-      const inst = instances.find(i => i.id === id)
-      const live = !inst || inst.status?.state === 'connected'
-      if (!warm[id] || !live) connectMutation.mutate(id)
-    },
-    [warm, instances, dispatch, connectMutation],
+    (id: string) => selectInstance(id),
+    [selectInstance],
   )
-  const onLocal = useCallback(() => dispatch(setActiveId(null)), [dispatch])
+  const onLocal = useCallback(() => selectInstance(null), [selectInstance])
 
   // Embedded panes render the parent-relayed switcher (option B). Hooks above
   // still run unconditionally (rules-of-hooks); the instances poll is disabled

@@ -2,10 +2,11 @@ import { safeSetItem } from '../utils/safeStorage'
 import { useEffect, useState } from 'react'
 import { X, Keyboard } from 'lucide-react'
 import { DEFAULT_SHORTCUTS, formatShortcut, SHORTCUTS_ENABLED_KEY, SHORTCUTS_ENABLED_EVENT, IS_MAC, MAC_CTRL_DIGITS_KEY } from '../hooks/useKeyboardShortcuts'
+import { isElectron } from '../lib/electron'
 import { Toggle } from './ui'
 
 /** Shortcut group headings, in display order. Shared with Settings → Shortcuts. */
-export const SHORTCUT_GROUPS = ['Chat Navigation', 'Panel Navigation', 'Actions'] as const
+export const SHORTCUT_GROUPS = ['Chat Navigation', 'Panel Navigation', 'Actions', 'Instances'] as const
 
 export function Kbd({ children }: { children: string }) {
   return <kbd className="inline-flex items-center justify-center min-w-[24px] h-6 px-1.5 rounded-md bg-bg border border-border text-[12px] font-mono font-medium text-text-strong shadow-sm">{children}</kbd>
@@ -38,6 +39,11 @@ export function useShortcutPrefs() {
 
 /** Shortcuts in `group`, with the Mac Ctrl/Option digit display adjustment applied. */
 export function groupShortcuts(group: string, macCtrl: boolean) {
+  // The Instances chord (⌘/Ctrl+digit) only works in the Electron shell — in a
+  // plain browser those chords are reserved for browser tab switching and the
+  // handler never binds (see useInstanceShortcuts). Don't advertise a binding
+  // the host environment will steal.
+  if (group === 'Instances' && !isElectron) return []
   return DEFAULT_SHORTCUTS.filter(s => s.group === group).map(s => {
     // When Mac user toggles back to Alt+digit, adjust the display
     if (IS_MAC && !macCtrl && s.id.startsWith('chat-') && s.ctrl) {
@@ -102,16 +108,20 @@ export default function ShortcutsModal({ onClose }: { onClose: () => void }) {
           <div className="flex items-center gap-2 text-sm font-bold text-text-strong"><Keyboard size={16} /> Keyboard Shortcuts</div>
           <button className="text-muted cursor-pointer hover:text-text bg-transparent border-none" onClick={onClose} aria-label="Close"><X size={16} /></button>
         </div>
-        {SHORTCUT_GROUPS.map(group => (
-          <div key={group} className="mb-5 last:mb-0">
-            <div className="text-[12px] font-medium text-muted uppercase tracking-wider mb-2">{group}</div>
-            <div className="grid gap-1">
-              {groupShortcuts(group, macCtrl).map(s => (
-                <ShortcutRow key={s.id} label={s.label} keys={formatShortcut(s).split(' + ')} />
-              ))}
+        {SHORTCUT_GROUPS.map(group => {
+          const entries = groupShortcuts(group, macCtrl)
+          if (entries.length === 0) return null
+          return (
+            <div key={group} className="mb-5 last:mb-0">
+              <div className="text-[12px] font-medium text-muted uppercase tracking-wider mb-2">{group}</div>
+              <div className="grid gap-1">
+                {entries.map(s => (
+                  <ShortcutRow key={s.id} label={s.label} keys={formatShortcut(s).split(' + ')} />
+                ))}
+              </div>
             </div>
-          </div>
-        ))}
+          )
+        })}
         <div className="mb-5 last:mb-0">
           <div className="text-[12px] font-medium text-muted uppercase tracking-wider mb-2">Search</div>
           <div className="grid gap-1">

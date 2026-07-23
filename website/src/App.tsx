@@ -79,6 +79,7 @@ import MigrationCheck from './components/MigrationCheck'
 import BuiltinAppRoute from './apps/BuiltinAppRoute'
 import { FEATURE_REQUEST_PROMPT } from './prompts/featureRequest'
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
+import { useInstanceShortcuts } from './hooks/useInstanceShortcuts'
 import { useCommandPalette } from './hooks/useCommandPalette'
 import { useProvider } from './providers/context'
 import { useAgents } from './hooks/useAgents'
@@ -1043,6 +1044,11 @@ export default function App() {
       api.chatSlotModel(activeSlot, models[prevIdx].name)
     },
   })
+  // Cmd+1..9 (⌘ mac / Ctrl win-linux) switches instance panes: 1=Local,
+  // 2=first remote, … — matching the InstanceTabBar left-to-right tab order.
+  // Registered here (once) rather than in InstanceTabBar, which can mount more
+  // than once (strip + inline header copies).
+  useInstanceShortcuts()
 
   // Kiro CLI monthly credit usage. /api/sessions/usage TRIGGERS the background
   // `kiro-cli /usage` fetch AND returns the cached result, so the pill is

@@ -32,16 +32,20 @@ export function ShortcutsPanel() {
           />
         )}
       </SettingsCard>
-      {SHORTCUT_GROUPS.map(group => (
-        <div key={group}>
-          <SettingsSection title={group} />
-          <SettingsCard>
-            {groupShortcuts(group, macCtrl).map(s => (
-              <ShortcutRow key={s.id} label={s.label} keys={formatShortcut(s).split(' + ')} />
-            ))}
-          </SettingsCard>
-        </div>
-      ))}
+      {SHORTCUT_GROUPS.map(group => {
+        const entries = groupShortcuts(group, macCtrl)
+        if (entries.length === 0) return null
+        return (
+          <div key={group}>
+            <SettingsSection title={group} />
+            <SettingsCard>
+              {entries.map(s => (
+                <ShortcutRow key={s.id} label={s.label} keys={formatShortcut(s).split(' + ')} />
+              ))}
+            </SettingsCard>
+          </div>
+        )
+      })}
       <SettingsSection title="Search" />
       <SettingsCard>
         <SearchEverywhereRow />
