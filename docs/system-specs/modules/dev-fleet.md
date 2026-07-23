@@ -49,8 +49,8 @@ verification. Route names below are relative to that prefix.
 | `/apps/dev-fleet/api/sync` | — | Pull main + rebuild (single-flight) |
 | `/apps/dev-fleet/api/worktree/remove` | `{name, force?}` | Remove a worktree (stops pod first) |
 | `/apps/dev-fleet/api/prune-run` | `{names[]}` | Batch-remove eligible worktrees |
-| `/apps/dev-fleet/api/pod/up` | `{name}` | Start isolated pod instance |
-| `/apps/dev-fleet/api/pod/down` | `{name}` | Stop pod instance |
+| `/apps/dev-fleet/api/pod/up` | `{name}` | Start isolated pod instance (re-verifies the unit is active) |
+| `/apps/dev-fleet/api/pod/down` | `{name}` | Stop pod instance (re-verifies the unit is gone before reporting success) |
 | `/apps/dev-fleet/api/pod/restart` | `{name}` | Stop then start pod |
 | `/apps/dev-fleet/api/pod/token` | `{name}` | Mint a dashboard token for the pod |
 | `/apps/dev-fleet/api/pod/provision` | `{name}` | Start async venv+dist build (returns `{run_id}`) |
@@ -96,10 +96,32 @@ Relies on `kiro_crew.pod` subpackage (optional import — degrades gracefully if
 All blocking pod operations are offloaded via `asyncio.get_running_loop().run_in_executor(
 subprocess_executor(), ...)` to avoid blocking the gateway event loop.
 
+Pod lifecycle verbs (`up`/`down`/`restart`/`provision`) shell the CLI via
+`_find_cli()` = `[sys.executable, "-m", "kiro_crew"]` — the **package** entry
+(`kiro_crew/__main__`, which also runs the required SSL-cert / UTF-8-console
+setup), never `-m kiro_crew.cli`. `kiro_crew/cli.py` has no
+`if __name__ == "__main__"` guard, so `python -m kiro_crew.cli <cmd>` imports the
+module, runs no `main()`, and exits 0 with no output — which turned every pod op
+into a **silent no-op the backend reported as success** (the "Stopped but still
+running" bug, issue #220). As defence-in-depth, `_pod_up` and `_pod_down` both
+re-check `runtime.active_names` after the CLI returns and fail closed
+(`pod not active after start` / `pod still active after shutdown`) — a CLI exit 0
+is never taken as proof of the state change, in either direction.
+
 ## Background Tasks
 
 - **Status refresher** (`_status_refresher`) — runs every 60s, fetches origin + refreshes
   fleet cache. Started via `dev_fleet_startup` on app startup.
+- **Auto-prune reaper** (`_auto_prune_reaper`) — opt-in background loop that removes
+  merged worktrees on a timer, reusing the manual-prune verdict (`_prune_candidates`,
+  filtered to `code == "merged"` only — the stale-empty class stays manual) and
+  `_worktree_remove` guards (stops the pod first, squash-safe OID race guard, never
+  force). Disabled by default; enable via `dev_fleet.auto_prune.enabled: true`
+  (a **literal boolean** — a truthy string like `"false"` does NOT arm it) with
+  optional `interval_secs` (floored at 300s, default 3600s), re-read each cycle
+  so it toggles live
+  without a restart. Cycles that remove or fail anything are SEL-audited under
+  `dev_fleet_auto_prune`. Cancelled on `dev_fleet_cleanup`.
 - **Fleet cache** — 10s TTL. Cold requests block on fresh data; warm requests serve stale
   and background-refresh.
 

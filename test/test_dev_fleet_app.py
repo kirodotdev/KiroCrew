@@ -2558,10 +2558,11 @@ async def test_upstream_remote_rejects_option_injection(monkeypatch):
 
 def test_find_cli_is_module_invocation_only():
     """No filesystem resolution: a planted `kirocrew` shim must never become
-    the pod CLI. Always our interpreter + module."""
+    the pod CLI. Always our interpreter + the RUNNABLE ``kiro_crew`` package
+    entry (its __main__), never ``kiro_crew.cli`` (no __main__ guard -> #220)."""
     import sys as _sys
 
-    assert mod._find_cli() == [_sys.executable, "-m", "kiro_crew.cli"]
+    assert mod._find_cli() == [_sys.executable, "-m", "kiro_crew"]
 
 
 def test_sanitize_helper_rejects_shell_and_persistent(monkeypatch):
@@ -3114,3 +3115,208 @@ async def test_build_fleet_payload_has_context_fields():
     # main row still present and carries empty context (no crash)
     assert rows["main"]["summary"] is None
     assert rows["main"]["issues"] == []
+
+
+# =============================================================================
+# Regression: _find_cli must target a RUNNABLE entry point (issue #220)
+# =============================================================================
+def test_find_cli_targets_kiro_crew_package():
+    """_find_cli must invoke the ``kiro_crew`` package (its __main__), not
+    ``kiro_crew.cli`` — the latter has no __main__ guard and no-ops silently."""
+    import sys
+
+    assert mod._find_cli() == [sys.executable, "-m", "kiro_crew"]
+
+
+def test_kiro_crew_module_entry_actually_runs():
+    """The entry point _find_cli uses must actually run main() and emit output.
+
+    Guards the root cause of #220: ``python -m kiro_crew.cli`` imported the
+    module, ran no main(), and exited 0 with EMPTY output — so every pod op was
+    a silent no-op reported as success. A runnable entry prints usage on --help.
+    """
+    import subprocess
+    import sys
+
+    proc = subprocess.run(
+        [sys.executable, "-m", "kiro_crew", "--help"],
+        capture_output=True, text=True, timeout=90,
+    )
+    assert proc.returncode == 0
+    assert proc.stdout.strip(), "entry point produced no output (silent no-op regression)"
+
+
+# =============================================================================
+# _pod_down post-stop verification (issue #220)
+# =============================================================================
+@pytest.mark.asyncio
+async def test_pod_down_fails_closed_when_still_active():
+    """A CLI exit 0 must NOT be reported as success if the unit is still up."""
+    with patch.object(mod, "_pod_checkout_guard", new_callable=AsyncMock, return_value=None), \
+         patch.object(mod, "_run_cmd", new_callable=AsyncMock, return_value=(0, "", "")), \
+         patch.object(mod, "_load_cfg", return_value=object()), \
+         patch.object(mod, "_POD_AVAILABLE", True), \
+         patch.object(mod.rt, "active_names", return_value={"kirocrew-wt-x"}):
+        result = await mod._pod_down("kirocrew-wt-x")
+    assert result["ok"] is False
+    assert "still active" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_pod_down_ok_when_unit_gone():
+    """rc 0 AND the unit no longer active -> genuine success."""
+    with patch.object(mod, "_pod_checkout_guard", new_callable=AsyncMock, return_value=None), \
+         patch.object(mod, "_run_cmd", new_callable=AsyncMock, return_value=(0, "", "")), \
+         patch.object(mod, "_load_cfg", return_value=object()), \
+         patch.object(mod, "_POD_AVAILABLE", True), \
+         patch.object(mod.rt, "active_names", return_value=set()):
+        result = await mod._pod_down("kirocrew-wt-x")
+    assert result["ok"] is True
+    assert result["error"] is None
+
+
+@pytest.mark.asyncio
+async def test_pod_down_fails_closed_when_verify_raises():
+    """If the post-stop active-state check errors, fail closed (never claim ok)."""
+    with patch.object(mod, "_pod_checkout_guard", new_callable=AsyncMock, return_value=None), \
+         patch.object(mod, "_run_cmd", new_callable=AsyncMock, return_value=(0, "", "")), \
+         patch.object(mod, "_load_cfg", return_value=object()), \
+         patch.object(mod, "_POD_AVAILABLE", True), \
+         patch.object(mod.rt, "active_names", side_effect=RuntimeError("boom")):
+        result = await mod._pod_down("kirocrew-wt-x")
+    assert result["ok"] is False
+    assert "cannot verify pod shutdown" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_pod_down_nonzero_rc_is_failure():
+    """A non-zero CLI exit is surfaced as failure verbatim."""
+    with patch.object(mod, "_pod_checkout_guard", new_callable=AsyncMock, return_value=None), \
+         patch.object(mod, "_run_cmd", new_callable=AsyncMock, return_value=(1, "", "stop failed")):
+        result = await mod._pod_down("kirocrew-wt-x")
+    assert result["ok"] is False
+    assert "stop failed" in result["error"]
+
+
+# =============================================================================
+# auto-prune reaper (issue #220)
+# =============================================================================
+def test_auto_prune_cfg_disabled_by_default():
+    with patch.object(mod, "_load_dev_fleet_cfg", return_value={}):
+        enabled, interval = mod._auto_prune_cfg()
+    assert enabled is False
+    assert interval == mod._AUTO_PRUNE_DEFAULT_INTERVAL_S
+
+
+def test_auto_prune_cfg_enabled_with_interval_floor():
+    with patch.object(mod, "_load_dev_fleet_cfg",
+                      return_value={"auto_prune": {"enabled": True, "interval_secs": 5}}):
+        enabled, interval = mod._auto_prune_cfg()
+    assert enabled is True
+    # 5s is below the floor -> clamped up to the minimum.
+    assert interval == mod._AUTO_PRUNE_MIN_INTERVAL_S
+
+
+def test_auto_prune_cfg_bad_interval_falls_back():
+    with patch.object(mod, "_load_dev_fleet_cfg",
+                      return_value={"auto_prune": {"enabled": True, "interval_secs": "nope"}}):
+        enabled, interval = mod._auto_prune_cfg()
+    assert enabled is True
+    assert interval == mod._AUTO_PRUNE_DEFAULT_INTERVAL_S
+
+
+@pytest.mark.asyncio
+async def test_auto_prune_once_removes_merged_only_and_records_failures():
+    """Acts ONLY on code=='merged' candidates (stale-empty is skipped); splits
+    the merged results into removed/failed."""
+    candidates = {"candidates": [
+        {"name": "wt-merged", "code": "merged"},
+        {"name": "wt-bad", "code": "merged"},
+        {"name": "wt-stale-empty", "code": "empty"},  # must be skipped
+    ]}
+    seen = []
+
+    async def _fake_remove(name, force=False):
+        assert force is False  # reaper never force-removes
+        seen.append(name)
+        return {"ok": True} if name == "wt-merged" else {"ok": False, "error": "nope"}
+
+    with patch.object(mod, "_prune_candidates", new_callable=AsyncMock, return_value=candidates), \
+         patch.object(mod, "_worktree_remove", side_effect=_fake_remove):
+        res = await mod._auto_prune_once()
+    assert res["removed"] == ["wt-merged"]
+    assert res["failed"] == [{"name": "wt-bad", "error": "nope"}]
+    # stale-empty is never touched — unattended auto-prune is merged-only.
+    assert "wt-stale-empty" not in seen
+
+
+@pytest.mark.asyncio
+async def test_auto_prune_once_survives_scan_error():
+    with patch.object(mod, "_prune_candidates", new_callable=AsyncMock,
+                      side_effect=RuntimeError("gh down")):
+        res = await mod._auto_prune_once()
+    # scan failure is surfaced (not swallowed into an empty success) so the
+    # reaper can emit a SEL failure event.
+    assert res["removed"] == [] and res["failed"] == []
+    assert "gh down" in res["error"]
+
+
+def test_auto_prune_cfg_truthy_nonbool_stays_disabled():
+    """A truthy-but-non-boolean 'enabled' (e.g. the string 'false', or 1) must
+    NOT arm destructive auto-prune — only literal JSON true does (Codex HIGH)."""
+    for bad in ("false", "true", 1, "yes", "0"):
+        with patch.object(mod, "_load_dev_fleet_cfg",
+                          return_value={"auto_prune": {"enabled": bad}}):
+            enabled, _ = mod._auto_prune_cfg()
+        assert enabled is False, f"{bad!r} must not enable auto-prune"
+
+
+@pytest.mark.asyncio
+async def test_pod_up_fails_closed_when_not_active():
+    """rc==0 but the unit is not active -> fail closed (no false 'started')."""
+    with patch.object(mod, "_pod_checkout_guard", new_callable=AsyncMock, return_value=None), \
+         patch.object(mod, "_run_cmd", new_callable=AsyncMock, return_value=(0, "{}", "")), \
+         patch.object(mod, "_load_cfg", return_value=object()), \
+         patch.object(mod, "_POD_AVAILABLE", True), \
+         patch.object(mod.rt, "active_names", return_value=set()):
+        result = await mod._pod_up("kirocrew-wt-x")
+    assert result["ok"] is False
+    assert "not active after start" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_pod_up_ok_when_active():
+    """rc==0 AND the unit active -> success, parsed JSON merged in."""
+    with patch.object(mod, "_pod_checkout_guard", new_callable=AsyncMock, return_value=None), \
+         patch.object(mod, "_run_cmd", new_callable=AsyncMock, return_value=(0, '{"port": 7999}', "")), \
+         patch.object(mod, "_load_cfg", return_value=object()), \
+         patch.object(mod, "_POD_AVAILABLE", True), \
+         patch.object(mod.rt, "active_names", return_value={"kirocrew-wt-x"}):
+        result = await mod._pod_up("kirocrew-wt-x")
+    assert result["ok"] is True
+    assert result["port"] == 7999
+
+
+@pytest.mark.asyncio
+async def test_auto_prune_reaper_audits_scan_failure():
+    """A failed destructive-op cycle (scan error) must still emit a SEL failure
+    event — the reaper cannot silently skip auditing (Codex HIGH)."""
+    events = []
+    fake_sel = MagicMock()
+    fake_sel.log_tool_invocation = lambda **kw: events.append(kw)
+
+    async def _break_after_first_cycle(_secs):
+        raise asyncio.CancelledError  # exit the while True after one cycle
+
+    with patch.object(mod, "_auto_prune_cfg", return_value=(True, 300)), \
+         patch.object(mod, "_auto_prune_once", new_callable=AsyncMock,
+                      return_value={"removed": [], "failed": [], "error": "gh down"}), \
+         patch.object(mod, "_sel", return_value=fake_sel), \
+         patch("asyncio.sleep", _break_after_first_cycle):
+        with pytest.raises(asyncio.CancelledError):
+            await mod._auto_prune_reaper()
+
+    assert len(events) == 1
+    assert events[0]["tool_name"] == "dev_fleet_auto_prune"
+    assert events[0]["outcome"] == "failure"
+    assert "gh down" in events[0]["error"]

@@ -237,8 +237,17 @@ def _find_cli() -> list[str]:
     agent-writable PATH entry (or venv bin) would become an absolute path
     that bypasses the trusted-binary gate. `sys.executable -m` pins the CLI
     to the exact code identity this backend is already running.
+
+    Targets the ``kiro_crew`` PACKAGE (its ``__main__``), NOT ``kiro_crew.cli``:
+    ``cli.py`` has no ``if __name__ == "__main__"`` guard, so
+    ``python -m kiro_crew.cli <cmd>`` imports the module, runs no ``main()`` and
+    exits 0 with NO output — turning every pod op (up/down/restart/provision)
+    into a SILENT no-op the backend then reports as success (a stopped pod that
+    keeps running, the confirmed "Stopped but still up" bug). The package
+    ``__main__`` also performs the SSL-cert / UTF-8-console setup that must run
+    before ``kiro_crew.cli`` is imported, so it is the only correct ``-m`` entry.
     """
-    return [sys.executable, "-m", "kiro_crew.cli"]
+    return [sys.executable, "-m", "kiro_crew"]
 
 
 # Git hardening injected as ENVIRONMENT (same precedence as `git -c`, which
@@ -1616,12 +1625,30 @@ async def _pod_up(name: str) -> dict:
         return {"ok": False, "error": guard}
     cmd = _find_cli() + ["pod", "up", name, "--json"]
     rc, stdout, stderr = await _run_cmd(cmd, cwd=MAIN_REPO, env=_pod_env(), timeout=180)
-    if rc == 0:
+    if rc != 0:
+        return {"ok": False, "error": _redact(stderr or stdout)}
+    # Post-start verification (symmetry with _pod_down): rc==0 is not proof the
+    # pod is up. Confirm the unit is actually active, else fail closed rather
+    # than flash a false "started" — the same false-success class this fix kills,
+    # in the opposite direction.
+    cfg = _load_cfg()
+    if _POD_AVAILABLE and cfg:
         try:
-            return {"ok": True, **json.loads(stdout)}
-        except (json.JSONDecodeError, ValueError):
-            return {"ok": True, "output": stdout}
-    return {"ok": False, "error": _redact(stderr or stdout)}
+            loop = asyncio.get_running_loop()
+            active = await loop.run_in_executor(
+                subprocess_executor(), rt.active_names, cfg
+            )
+            if name not in active:
+                return {"ok": False, "error": "pod not active after start"}
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "ok": False,
+                "error": f"cannot verify pod start: {_redact(str(exc))}",
+            }
+    try:
+        return {"ok": True, **json.loads(stdout)}
+    except (json.JSONDecodeError, ValueError):
+        return {"ok": True, "output": stdout}
 
 
 async def _pod_down(name: str) -> dict:
@@ -1630,7 +1657,28 @@ async def _pod_down(name: str) -> dict:
         return {"ok": False, "error": guard}
     cmd = _find_cli() + ["pod", "down", name]
     rc, stdout, stderr = await _run_cmd(cmd, cwd=MAIN_REPO, env=_pod_env(), timeout=30)
-    return {"ok": rc == 0, "error": _redact(stderr or stdout) if rc != 0 else None}
+    if rc != 0:
+        return {"ok": False, "error": _redact(stderr or stdout)}
+    # Post-stop verification: a CLI exit 0 is NOT proof the unit stopped (a
+    # broken `-m` entry point historically no-op'd with rc 0, and a real stop
+    # can still fail or time out). Re-check the live unit state and fail CLOSED
+    # if the pod is still active — mirrors the post-shutdown recheck in
+    # _worktree_remove so "Stopped" is never reported for a pod still running.
+    cfg = _load_cfg()
+    if _POD_AVAILABLE and cfg:
+        try:
+            loop = asyncio.get_running_loop()
+            active = await loop.run_in_executor(
+                subprocess_executor(), rt.active_names, cfg
+            )
+            if name in active:
+                return {"ok": False, "error": "pod still active after shutdown"}
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "ok": False,
+                "error": f"cannot verify pod shutdown: {_redact(str(exc))}",
+            }
+    return {"ok": True, "error": None}
 
 
 async def _pod_restart(name: str) -> dict:
@@ -2127,6 +2175,12 @@ async def _prune_status() -> dict:
 _NET_REFRESH_S = 60
 _refresher_task: asyncio.Task | None = None
 _warm_task: asyncio.Task | None = None
+_reaper_task: asyncio.Task | None = None
+
+# Auto-prune reaper (opt-in via dev_fleet.auto_prune.enabled). The poll interval
+# is floored so a misconfigured tiny value can't hammer gh/git every cycle.
+_AUTO_PRUNE_MIN_INTERVAL_S = 300
+_AUTO_PRUNE_DEFAULT_INTERVAL_S = 3600
 
 
 async def _status_refresher() -> None:
@@ -2142,6 +2196,98 @@ async def _status_refresher() -> None:
         except Exception:
             logger.exception("dev-fleet status refresher failed")
         await asyncio.sleep(_NET_REFRESH_S)
+
+
+# --- auto-prune reaper (opt-in) ---------------------------------------------
+def _auto_prune_cfg() -> tuple[bool, int]:
+    """(enabled, interval_secs) from the ``dev_fleet.auto_prune`` config section.
+
+    Disabled by default — auto-prune REMOVES merged worktrees (and stops their
+    pods), so it must be an explicit opt-in. The interval is floored at
+    ``_AUTO_PRUNE_MIN_INTERVAL_S`` to protect gh/git from a misconfigured tiny
+    value, and read fresh each cycle so toggling the flag takes effect without a
+    gateway restart.
+    """
+    section = _load_dev_fleet_cfg().get("auto_prune")
+    if not isinstance(section, dict):
+        return False, _AUTO_PRUNE_DEFAULT_INTERVAL_S
+    # Strict literal-True opt-in: a truthy string like "false" (or any non-empty
+    # string / nonzero int) must NEVER arm destructive auto-prune — only a real
+    # JSON boolean true does. `bool("false")` is True, so `bool(...)` is unsafe here.
+    enabled = section.get("enabled") is True
+    raw = section.get("interval_secs", _AUTO_PRUNE_DEFAULT_INTERVAL_S)
+    try:
+        interval = int(raw)
+    except (TypeError, ValueError):
+        interval = _AUTO_PRUNE_DEFAULT_INTERVAL_S
+    return enabled, max(_AUTO_PRUNE_MIN_INTERVAL_S, interval)
+
+
+async def _auto_prune_once() -> dict:
+    """Remove every MERGED+clean worktree once, reusing the manual-prune path.
+
+    Candidates come from ``_prune_candidates`` but are filtered to
+    ``code == "merged"`` (PR MERGED + clean + OID-verified). ``_prune_candidates``
+    also surfaces an "empty + stale >48h" class; silently auto-deleting an
+    unmerged empty branch (e.g. one created but not yet pushed) on a timer is
+    surprising, so that riskier class stays MANUAL-only ("Prune merged"). Each
+    kept candidate is removed via ``_worktree_remove(force=False)`` — which stops
+    a running pod first (then re-verifies) and applies the squash-safe OID race
+    guard. Nothing is force-removed. Best-effort: never raises; returns
+    ``{removed, failed}``.
+    """
+    removed: list[str] = []
+    failed: list[dict] = []
+    try:
+        cand = await _prune_candidates()
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("dev-fleet auto-prune: candidate scan failed")
+        # Surface the scan failure so the reaper still emits a SEL FAILURE event
+        # — a failed destructive-op cycle must never be absent from the audit trail.
+        return {"removed": removed, "failed": failed, "error": _redact(str(exc))}
+    for row in cand.get("candidates", []):
+        name = row.get("name")
+        # Restrict unattended auto-prune to MERGED worktrees only; the
+        # stale-empty class stays manual (see docstring).
+        if not name or row.get("code") != "merged":
+            continue
+        try:
+            res = await _worktree_remove(name, force=False)
+        except Exception as exc:  # noqa: BLE001
+            res = {"ok": False, "error": _redact(str(exc))}
+        if res.get("ok"):
+            removed.append(name)
+        else:
+            failed.append({"name": name, "error": res.get("error")})
+    return {"removed": removed, "failed": failed, "error": None}
+
+
+async def _auto_prune_reaper() -> None:
+    """Background loop that auto-prunes merged worktrees when enabled.
+
+    Always running but a strict opt-in: each cycle re-reads
+    ``dev_fleet.auto_prune`` and does nothing unless ``enabled`` is true, so the
+    feature toggles live. A cycle that removes or fails anything is recorded in
+    the SEL audit trail (same tamper-evident sink as the manual mutations).
+    """
+    while True:
+        enabled, interval = _auto_prune_cfg()
+        if enabled:
+            try:
+                res = await _auto_prune_once()
+                had_error = bool(res["failed"] or res.get("error"))
+                if res["removed"] or had_error:
+                    _sel().log_tool_invocation(
+                        session_key="api", source="api",
+                        tool_name="dev_fleet_auto_prune", tool_kind="dev_fleet",
+                        outcome="failure" if had_error else "success",
+                        resources=_redact(",".join(res["removed"])),
+                        error="" if not had_error
+                        else _redact(res.get("error") or str(res["failed"]))[:200],
+                    )
+            except Exception:  # noqa: BLE001
+                logger.exception("dev-fleet auto-prune reaper cycle failed")
+        await asyncio.sleep(interval)
 
 
 # =============================================================================
@@ -2386,7 +2532,7 @@ async def api_dev_fleet_rebase(request: web.Request) -> web.Response:
 # --- startup hook ---
 async def dev_fleet_startup(app: web.Application) -> None:
     """Start the background fleet refresher on app startup."""
-    global _refresher_task, _warm_task, MAIN_REPO
+    global _refresher_task, _warm_task, _reaper_task, MAIN_REPO
     loop = asyncio.get_running_loop()
     MAIN_REPO = await loop.run_in_executor(
         subprocess_executor(), _resolve_primary_checkout, MAIN_REPO
@@ -2396,12 +2542,14 @@ async def dev_fleet_startup(app: web.Application) -> None:
     await _upstream_remote()
     if _refresher_task is None or _refresher_task.done():
         _refresher_task = asyncio.create_task(_status_refresher())
+    if _reaper_task is None or _reaper_task.done():
+        _reaper_task = asyncio.create_task(_auto_prune_reaper())
     _warm_task = asyncio.create_task(_fleet_refresh())
 
 
 async def dev_fleet_cleanup(app: web.Application) -> None:
     """Cancel and await background tasks so a stopped runner leaves nothing behind."""
-    global _refresher_task, _warm_task
+    global _refresher_task, _warm_task, _reaper_task
     # Kill active sync/provision subprocess trees first, then cancel workers —
     # otherwise a gateway restart leaves pip/npm mutating shared checkouts.
     for rid, (task, proc) in list(_ACTIVE_RUNS.items()):
@@ -2418,7 +2566,7 @@ async def dev_fleet_cleanup(app: web.Application) -> None:
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
         _ACTIVE_RUNS.pop(rid, None)
-    for bg_task in (_refresher_task, _warm_task):
+    for bg_task in (_refresher_task, _warm_task, _reaper_task):
         if bg_task is not None and not bg_task.done():
             bg_task.cancel()
             try:
@@ -2427,6 +2575,7 @@ async def dev_fleet_cleanup(app: web.Application) -> None:
                 pass
     _refresher_task = None
     _warm_task = None
+    _reaper_task = None
 
 
 # =============================================================================
