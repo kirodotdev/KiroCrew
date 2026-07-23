@@ -12,7 +12,7 @@ import logging
 import random
 from collections.abc import Awaitable, Callable
 from enum import Enum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from kiro_crew.acp.client import AcpError
 from kiro_crew.hooks import fire_tool_hooks, get_global_hook_store
@@ -230,6 +230,73 @@ OnPermissionCallback = Callable[[LLMEvent], Awaitable[bool]]
 
 
 # ── Stream and Collect ──
+
+
+async def run_bg_oneliner(
+    sessions: Any,
+    prompt: str,
+    *,
+    model: str | None = None,
+    sel_source: str = "bg_oneliner",
+    sel_session_key: str = "_bg",
+    timeout: float | None = None,
+) -> str:
+    """Stream a single prompt through an ephemeral background session and return
+    the accumulated text.
+
+    Consolidates the identical "acquire a ``_bg`` session -> best-effort pin the
+    cheap model -> drive the event loop -> ``destroy()`` in ``finally``" skeleton
+    that was copied across title, link-label, folder-icon, and session-summary
+    generation. The task is tool-free by contract: permission requests are
+    rejected and **always** SEL-logged as ``denied`` — every permission decision
+    must be audited (``backend-security-controls``). Callers may override
+    ``sel_source`` to attribute the denial to their feature; callers that omit it
+    are audited under the generic ``"bg_oneliner"`` source rather than silently
+    dropping the SEL event.
+
+    Errors propagate to the caller (the ``_bg`` session is still ``destroy()``-ed
+    in ``finally``): callers that want best-effort "" fallback wrap the call
+    themselves, while callers that surface the failure (title/nav) get it
+    unchanged. ``sessions`` is duck-typed (a ``SessionManager``-like object
+    exposing ``get_bg_session()``) rather than statically imported, so this
+    low-level helper stays free of a dashboard/session import cycle.
+    """
+    session = await sessions.get_bg_session()
+
+    async def _drive() -> str:
+        text = ""
+        set_model = getattr(session, "set_model", None)
+        if model and set_model is not None:
+            try:
+                await set_model(model)
+            except Exception:
+                logger.debug("bg oneliner: model override to %s failed; using default", model)
+        async for event in session.prompt(prompt):
+            if event.kind == EVENT_TEXT_CHUNK:
+                text += event.text
+            elif event.kind == EVENT_PERMISSION_REQUEST:
+                await session.reject_tool(event.request_id)
+                # Every permission decision must be audited — always emit the
+                # SEL denial event (backend-security-controls). ``sel_source``
+                # carries a non-empty default so callers that don't attribute a
+                # feature still produce an audit record.
+                _sel().log_tool_invocation(
+                    session_key=sel_session_key,
+                    tool_name="unknown",
+                    outcome="denied",
+                    source=sel_source or "bg_oneliner",
+                    request_id=str(event.request_id),
+                )
+            elif event.kind == EVENT_COMPLETE:
+                break
+        return text
+
+    try:
+        if timeout is not None:
+            return await asyncio.wait_for(_drive(), timeout)
+        return await _drive()
+    finally:
+        await session.destroy()
 
 
 async def stream_and_collect(

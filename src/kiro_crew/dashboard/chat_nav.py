@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 from aiohttp import web
 
 from kiro_crew.dashboard.state import DashboardState
-from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_PERMISSION_REQUEST, EVENT_TEXT_CHUNK
+from kiro_crew.llm_helpers import run_bg_oneliner
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 from kiro_crew.session import BACKGROUND_KEY
@@ -72,31 +72,11 @@ _LINK_SUMMARY_MODEL = "claude-haiku-4.5"
 async def _resolve_link_summaries(state: DashboardState, links: list[dict]) -> list[str]:
     """Generate summaries for a batch of links using the background session."""
     prompt = _build_link_summary_prompt(links)
-    session = await state.sessions.get_bg_session()
-    text = ""
-    try:
-        # Link labeling is a trivial classification task — run on the cheapest
-        # model. Best-effort: fall through on the session's default if the
-        # backend can't switch.
-        _set_model = getattr(session, "set_model", None)
-        if _set_model is not None:
-            try:
-                await _set_model(_LINK_SUMMARY_MODEL)
-            except Exception:
-                logger.debug("Link summary model override to %s failed; using default", _LINK_SUMMARY_MODEL)
-        async for event in session.prompt(prompt):
-            if event.kind == EVENT_TEXT_CHUNK:
-                text += event.text
-            elif event.kind == EVENT_PERMISSION_REQUEST:
-                await session.reject_tool(event.request_id)
-                sel().log_tool_invocation(
-                    session_key=BACKGROUND_KEY, tool_name="unknown", outcome="denied",
-                    source="chat_nav", request_id=str(event.request_id),
-                )
-            elif event.kind == EVENT_COMPLETE:
-                break
-    finally:
-        await session.destroy()
+    # Link labeling is a trivial classification task — run on the cheapest model
+    # via the shared background one-liner helper (denials SEL-logged as before).
+    text = await run_bg_oneliner(
+        state.sessions, prompt, model=_LINK_SUMMARY_MODEL, sel_source="chat_nav"
+    )
 
     # Parse: one label per line
     lines = [re.sub(r'^\d{1,2}[.)]\s+', '', ln.strip()) for ln in text.strip().splitlines() if ln.strip()]

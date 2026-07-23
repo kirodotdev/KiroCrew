@@ -13,10 +13,9 @@ from aiohttp import web
 from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.executors import subprocess_executor
-from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_PERMISSION_REQUEST, EVENT_TEXT_CHUNK
+from kiro_crew.llm_helpers import run_bg_oneliner
 from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
-from kiro_crew.session import BACKGROUND_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -86,37 +85,20 @@ async def generate_emoji_for_name(state: DashboardState, name: str) -> str:
         "No text, no explanation, just the single emoji character."
     )
 
-    async def _stream_session(session) -> str:  # type: ignore[no-untyped-def]
-        # Folder icon is a trivial single-emoji task — run on the cheapest model.
-        _set_model = getattr(session, "set_model", None)
-        if _set_model is not None:
-            try:
-                await _set_model(_FOLDER_ICON_MODEL)
-            except Exception:
-                logger.debug("Folder icon model override to %s failed; using default", _FOLDER_ICON_MODEL)
-        t = ""
-        async for event in session.prompt(prompt):
-            if event.kind == EVENT_TEXT_CHUNK:
-                t += event.text
-            elif event.kind == EVENT_PERMISSION_REQUEST:
-                await session.reject_tool(event.request_id)
-                sel().log_tool_invocation(
-                    session_key=BACKGROUND_KEY, tool_name="unknown", outcome="denied",
-                    source="chat_folders", request_id=str(event.request_id),
-                )
-            elif event.kind == EVENT_COMPLETE:
-                break
-        return t
-
-    text = ""
+    # Folder icon is a trivial single-emoji task — run on the cheapest model via
+    # the shared background one-liner helper (best-effort, 30s bound, denials
+    # SEL-logged). The lock serializes icon generation across folders.
     async with _folder_icon_lock:
-        session = await state.sessions.get_bg_session()
         try:
-            text = await asyncio.wait_for(_stream_session(session), timeout=30)
+            text = await run_bg_oneliner(
+                state.sessions,
+                prompt,
+                model=_FOLDER_ICON_MODEL,
+                sel_source="chat_folders",
+                timeout=30,
+            )
         except Exception:  # noqa: BLE001 — best-effort background task
             text = ""
-        finally:
-            await session.destroy()
     icon = text.strip()
     icon, _ = redact_exfiltration_urls(icon)
     icon, _ = redact_credentials(icon)

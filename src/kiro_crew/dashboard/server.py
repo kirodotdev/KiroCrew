@@ -218,6 +218,7 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         "/api/slack/pins",
         "/api/slack/reactions",
         "/api/slack-profile",  # MCP-only (slack_profile tool); no browser caller
+        "/api/sessions/summarize",  # MCP-only (list_sessions summarize leg); internal-secret, no browser caller
         "/api/mcp/servers",
     }
 )
@@ -1662,6 +1663,7 @@ async def start_dashboard(
     app.router.add_post("/api/sessions/restart", handlers.api_sessions_restart)
     # NOTE: /search must be registered before /{key} to avoid the path param catching "search"
     app.router.add_get("/api/sessions/search", handlers.api_sessions_search)
+    app.router.add_post("/api/sessions/summarize", handlers.api_sessions_summarize)
     app.router.add_get("/api/sessions/{key}", handlers.api_session_detail)
     app.router.add_delete("/api/sessions/{key}", handlers.api_session_delete)
     app.router.add_get("/api/logs", handlers.api_logs)

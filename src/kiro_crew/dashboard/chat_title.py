@@ -12,7 +12,7 @@ from kiro_crew.config.loader import config_dir
 from kiro_crew.context_management import extract_plan_metadata, rephrase_plan
 from kiro_crew.dashboard.chat_utils import _history_key_for
 from kiro_crew.dashboard.state import NEW_SESSION_TITLE, DashboardState, _ChatSlot
-from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_PERMISSION_REQUEST, EVENT_TEXT_CHUNK
+from kiro_crew.llm_helpers import run_bg_oneliner
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 from kiro_crew.session import BACKGROUND_KEY
@@ -314,27 +314,10 @@ async def _generate_title_via_kiro(
         return ""
 
     logger.debug("Title generation prompt (%d chars)", len(prompt))
-    session = await state.sessions.get_bg_session()
-    text = ""
-    try:
-        # Run titling on a fast/cheap model. Best-effort: if the backend can't
-        # switch (older kiro-cli, non-kiro provider), fall through on the
-        # session's default model.
-        _set_model = getattr(session, "set_model", None)
-        if _set_model is not None:
-            try:
-                await _set_model(_TITLE_MODEL)
-            except Exception:
-                logger.debug("Title model override to %s failed; using default", _TITLE_MODEL)
-        async for event in session.prompt(prompt):
-            if event.kind == EVENT_TEXT_CHUNK:
-                text += event.text
-            elif event.kind == EVENT_PERMISSION_REQUEST:
-                await session.reject_tool(event.request_id)
-            elif event.kind == EVENT_COMPLETE:
-                break
-    finally:
-        await session.destroy()
+    # Run titling on a fast/cheap model via the shared background one-liner
+    # helper. Best-effort: on any error it returns "" and we fall through to the
+    # heuristic fallback title.
+    text = await run_bg_oneliner(state.sessions, prompt, model=_TITLE_MODEL)
     title = _clean_title(text)
     if not title or title.upper() == "SKIP":
         logger.info("Title generation returned SKIP/empty — topic not clear yet")

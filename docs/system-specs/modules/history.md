@@ -18,6 +18,34 @@ Per-thread JSONL files at `~/.kirocrew/sessions/{safe_key}.jsonl`. First line is
 - `agent_usage()` — returns `{agent_name: (session_count, last_used_mtime)}`; built on `list_sessions()` so it inherits canonical-session dedup + symlink-skip (counts per logical conversation). Used by `GET /api/agents` to order the roster most-used-first, degrading to config order on failure.
 - `search_sessions(query, limit=50)` — case-insensitive substring content search over the newest `_SEARCH_SCAN_WINDOW` session JSONL files. Counts all occurrences per session (length-normalized) to rank by relevance, then caps to `limit` results. Exposed via `GET /api/sessions/search?q=<q>&limit=<n>` (min 2 chars); used by the dashboard history filter to find sessions by content (CR ids, error messages, file paths) rather than title alone. Returns the same meta dicts as `list_sessions()`, so each search hit likewise carries `folder_id` (when present), letting the sidebar group results by folder.
 - `delete_session(key)` — permanently removes a session JSONL file
+
+### MCP chat-history tools (`mcp_core.py`)
+
+These read-only tools expose the session store to the agent and are all
+workspace-scoped by default (fail-closed via `_caller_workspace`/`_ws_bucket`,
+`all_workspaces` opts out), exclude incognito/temporary sessions (canonical
+`INCOGNITO_MEMORY_MODES` in `history.py`), and redact their output:
+
+- `search_chat_history` — keyword lookup over past transcripts (ranked snippets).
+- `get_chat_session` — read one full transcript by `session_key`.
+- `list_sessions` — browse/overview counterpart to search: returns recent
+  sessions newest-first (title, owning agent, message count, timestamps) built
+  on `ConversationLog.list_sessions()`, with `limit` (default 20, max 100).
+  Opt-in `summarize=true` calls `POST /api/sessions/summarize` to attach a fresh
+  one-line LLM summary per session — MCP core has no LLM access, so the LLM leg
+  runs gateway-side on an ephemeral background session (cheap Haiku model),
+  bounded to 8 sessions and best-effort (falls back to the title on any failure).
+  A generated summary is cached in a **sidecar file** (`sessions/.summaries/`),
+  never in the session JSONL, keyed by the session file mtime — so summarizing an
+  active session never rewrites (and cannot clobber a concurrently-appended
+  message in) its log, and a repeat call for an unchanged session pays zero LLM
+  cost. A new message advances the mtime and invalidates the cache. Because the
+  session log is untouched, `list_sessions(summarize=true)` remains a true read of
+  conversation history (`get_cached_summary` / `set_cached_summary` in
+  `ConversationLog`). The gateway-side one-liner
+  generation uses the shared `llm_helpers.run_bg_oneliner` helper (the same
+  acquire→drive→destroy skeleton as title / link-label / folder-icon generation).
+
 ## Dashboard History Persistence — Frozen Prefix + Live Window (`dashboard/chat_persistence.py`)
 
 `_save_slot_to_history` persists dashboard chat slots. It models the session

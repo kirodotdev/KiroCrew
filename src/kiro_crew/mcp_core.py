@@ -43,7 +43,7 @@ from kiro_crew.config.loader import KiroCrewConfig, config_dir, outbox_dir
 from kiro_crew.context_management import COMPLETION_KEEP_DEFAULT_CHARS, summarize_result
 from kiro_crew.dashboard.origin import parse_dashboard_url
 from kiro_crew.history import _SEARCH_SCAN_WINDOW as SEARCH_SCAN_WINDOW
-from kiro_crew.history import ConversationLog
+from kiro_crew.history import INCOGNITO_MEMORY_MODES, ConversationLog
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes
 from kiro_crew.knowledge.dedup import dedup_sweep
 from kiro_crew.knowledge.embedder import create_embedder_from_config
@@ -92,6 +92,7 @@ from kiro_crew.validation import (
     GET_CHAT_SESSION_SCHEMA,
     KNOWLEDGE_DEDUP_SCHEMA,
     LEARN_ADD_SCHEMA,
+    LIST_SESSIONS_SCHEMA,
     LOCAL_KNOWLEDGE_SEARCH_SCHEMA,
     MAX_MEDIUM_STRING,
     MAX_SHORT_STRING,
@@ -1372,6 +1373,47 @@ def _list_tools() -> list[dict[str, Any]]:
             },
         },
         {
+            "name": "list_sessions",
+            "description": (
+                "List your recent conversation sessions in this workspace so you "
+                "can see the work in flight and what you've been doing — titles, "
+                "owning agent, message volume, and last-activity time, newest "
+                "first. Use this when the user asks 'what are you working on?', "
+                "'what sessions are open?', 'what have we been doing?', or when you "
+                "need a bird's-eye view of your own workspace before acting. This "
+                "is a READ — it never modifies memory or history. It complements "
+                "search_chat_history (which finds a specific past thread by "
+                "keyword): list_sessions is the browse/overview, search is the "
+                "lookup. Scoped to your current workspace by default; "
+                "incognito/temporary sessions are never listed."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max sessions to return, newest first (default 20, max 100).",
+                        "default": 20,
+                    },
+                    "all_workspaces": {
+                        "type": "boolean",
+                        "description": "List sessions across all workspaces instead of just the current one (default false).",
+                        "default": False,
+                    },
+                    "summarize": {
+                        "type": "boolean",
+                        "description": (
+                            "When true, generate a fresh one-line LLM summary for the top "
+                            "sessions (bounded, best-effort — costs tokens + latency, so it's "
+                            "opt-in). When false (default), the existing session title is used "
+                            "with zero cost."
+                        ),
+                        "default": False,
+                    },
+                },
+            },
+        },
+        {
             "name": "browse_outline",
             "description": (
                 "Compress a browser snapshot into a compact outline with element refs. "
@@ -2072,7 +2114,7 @@ def _session_key_header_error(sk: str) -> str | None:
         )
 
 
-def _post(path: str, body: dict | None = None) -> dict:
+def _post(path: str, body: dict | None = None, *, timeout: float = 30) -> dict:
     data = json.dumps(body or {}).encode()
     headers = {"Content-Type": "application/json", "X-Internal-Secret": _internal_secret()}
     sk = _resolve_session_key()
@@ -2088,7 +2130,8 @@ def _post(path: str, body: dict | None = None) -> dict:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected -- URL is the loopback gateway (_API from dashboard.url config) + a fixed internal path; never user-controlled  # noqa: E501
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read())
     except urllib.error.HTTPError as e:
         # urlopen raises HTTPError on 4xx/5xx; str(e) is only "HTTP Error 400:
@@ -2481,7 +2524,7 @@ def _call_tool(name: str, raw_args: dict[str, Any]) -> str:
 
 # ── Chat-history search helpers (Phase 1: search_chat_history / get_chat_session) ──
 
-_HISTORY_INCOGNITO_MODES = frozenset({"incognito", "temporary"})
+_HISTORY_INCOGNITO_MODES = INCOGNITO_MEMORY_MODES  # canonical set (single source of truth in history.py)
 _SNIPPET_RADIUS = 120  # chars of context kept on each side of a match
 _SNIPPET_MAX_LEN = 320  # hard cap on a returned snippet
 # Upper bound on ranked candidates pulled from the backend per search. Bound to
@@ -4458,6 +4501,86 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             tool_name="get_chat_session",
             outcome="success",
             metadata={"message_count": len(messages)},
+        )
+        return output
+
+    if name == "list_sessions":
+        args = validate_tool_args(args, LIST_SESSIONS_SCHEMA)
+        limit = args.get("limit", 20)
+        all_workspaces = args.get("all_workspaces", False)
+        summarize = args.get("summarize", False)
+
+        cl = ConversationLog()
+        session_key = _resolve_session_key()
+        list_ws: str | None = None if all_workspaces else _caller_workspace(cl, session_key)
+
+        rows: list[dict] = []
+        for meta in cl.list_sessions():
+            key = meta.get("key", "")
+            if not key:
+                continue
+            if _history_is_incognito(meta):
+                continue  # incognito/temporary never surface
+            if list_ws is not None:
+                # list_sessions() rows omit `workspace`, so scope off the full
+                # metadata line (mirrors search_chat_history). Runs in the MCP
+                # process, not the gateway loop, so the extra read is fine.
+                if _ws_bucket(cl.get_metadata(key).get("workspace")) != list_ws:
+                    continue  # fail-closed workspace scoping
+            rows.append(meta)
+            if len(rows) >= limit:
+                break
+
+        if not rows:
+            sel().log_tool_invocation(
+                session_key=session_key,
+                source="mcp",
+                tool_name="list_sessions",
+                outcome="no_results",
+            )
+            return "No sessions found in this workspace yet."
+
+        # Opt-in: ask the gateway (which owns the LLM background session) to
+        # generate fresh one-line summaries for the returned keys. Best-effort —
+        # any failure falls back to titles, so the list is always returned.
+        summaries: dict[str, str] = {}
+        if summarize:
+            resp = _post(
+                "/api/sessions/summarize",
+                {"keys": [r["key"] for r in rows]},
+                timeout=120,
+            )
+            if isinstance(resp, dict) and isinstance(resp.get("summaries"), dict):
+                summaries = {str(k): str(v) for k, v in resp["summaries"].items() if v}
+
+        scope_label = "across all workspaces" if all_workspaces else "in this workspace"
+        lines = [f"\U0001f5c2\ufe0f Sessions {scope_label} ({len(rows)}, newest first):"]
+        for r in rows:
+            key = r["key"]
+            title = r.get("title") or key
+            agent = r.get("agent")
+            msgs = r.get("messages", 0)
+            created = r.get("created", "")
+            meta_bits = []
+            if agent:
+                meta_bits.append(f"agent={agent}")
+            meta_bits.append(f"~{msgs} msgs")
+            if created:
+                meta_bits.append(str(created)[:16])
+            lines.append("\n---")
+            lines.append(f"**{title}**  ·  `{key}`")
+            lines.append(f"_{'  ·  '.join(meta_bits)}_")
+            summary = summaries.get(key)
+            if summary:
+                lines.append(f"\n{summary}")
+
+        output = _redact_history_output("\n".join(lines))
+        sel().log_tool_invocation(
+            session_key=session_key,
+            source="mcp",
+            tool_name="list_sessions",
+            outcome="success",
+            metadata={"result_count": len(rows), "summarized": len(summaries)},
         )
         return output
 

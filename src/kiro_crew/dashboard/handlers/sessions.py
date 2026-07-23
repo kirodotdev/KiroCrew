@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import logging
 import os
@@ -25,7 +26,8 @@ from kiro_crew.acp.client import _resolve_kiro_bin
 from kiro_crew.dashboard.handlers import kiro_usage_api
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.executors import subprocess_executor
-from kiro_crew.history import SEARCH_MIN_CHARS, _archive_dir
+from kiro_crew.history import INCOGNITO_MEMORY_MODES, SEARCH_MIN_CHARS, _archive_dir
+from kiro_crew.llm_helpers import run_bg_oneliner
 from kiro_crew.mcp_discovery import (
     discover_servers_to_sync,
     register_servers_for_cc,
@@ -363,6 +365,140 @@ async def api_sessions(request: web.Request) -> web.Response:
             "has_more": offset + limit < total,
         }
     )
+
+
+_SUMMARIZE_MAX_SESSIONS = 8  # bound cost/latency: only the top-N get an LLM pass
+_SUMMARIZE_MODEL = "claude-haiku-4.5"  # cheap/fast — a one-liner needs no heavy model
+_SUMMARIZE_MSG_LIMIT = 12  # messages fed to the summarizer per session
+_SUMMARIZE_TIMEOUT_SECS = 30  # per-session deadline so one stalled prompt can't pin the shared _bg session
+_SUMMARIZE_PROMPT = (
+    "Summarize the following conversation in ONE terse line (max 18 words), "
+    "describing what the user and assistant are working on. No preamble, no "
+    "quotes, no trailing period. If the topic is unclear, reply exactly SKIP.\n\n"
+    "===== CONVERSATION =====\n"
+    "{transcript}\n"
+    "===== END ====="
+)
+
+
+def _build_summary_prompt(messages: list[dict]) -> str | None:
+    """Build a one-line-summary prompt from a session's recent messages."""
+    lines: list[str] = []
+    for m in messages[:_SUMMARIZE_MSG_LIMIT]:
+        role = m.get("role", "")
+        content = " ".join(str(m.get("content", "")).split())
+        if role in ("user", "assistant") and content:
+            lines.append(f"{role}: {content[:300]}")
+    if not lines:
+        return None
+    return _SUMMARIZE_PROMPT.format(transcript="\n".join(lines))
+
+
+async def _summarize_one(state: DashboardState, key: str) -> str:
+    """Generate a one-line LLM summary for a single session. "" on any failure.
+
+    Mirrors dashboard.chat_title._generate_title_via_kiro: uses an ephemeral
+    background session on the cheap/fast model and destroys it in a finally.
+    Best-effort — every failure path returns "" so the caller falls back to the
+    session's stored title.
+    """
+    log = state.conversation_log
+    if not log:
+        return ""
+    loop = asyncio.get_running_loop()
+    # get_metadata + recent do synchronous full-file reads (read_text + per-line
+    # JSON parse, up to 2MB). Offload to the executor so a batch of large session
+    # files never freezes the gateway event loop — mirrors api_sessions above.
+    meta = await loop.run_in_executor(None, log.get_metadata, key)
+    # Defense in depth: never summarize an incognito/temporary session even if a
+    # caller somehow passes its key.
+    if str(meta.get("memory_mode", "")).lower() in INCOGNITO_MEMORY_MODES:
+        return ""
+    # Cache: a summary persisted in a sidecar file is reusable as long as the
+    # session file hasn't changed since it was generated. session_mtime advances
+    # only on real message appends (preserved across metadata writes), so it is a
+    # cheap, exact staleness signal — a repeat list_sessions(summarize=true) for
+    # an unchanged session pays zero LLM cost. The cache lives in a sidecar
+    # (never the session JSONL) so summarizing an *active* session never rewrites
+    # its log and cannot lose a concurrently-appended message.
+    sig = await loop.run_in_executor(None, log.session_mtime, key)
+    cached = await loop.run_in_executor(None, log.get_cached_summary, key)
+    if cached:
+        return str(cached)
+    messages = await loop.run_in_executor(
+        None,
+        functools.partial(
+            log.recent, key, max_messages=_SUMMARIZE_MSG_LIMIT, roles={"user", "assistant"}
+        ),
+    )
+    prompt = _build_summary_prompt(messages)
+    if not prompt:
+        return ""
+    try:
+        text = await run_bg_oneliner(
+            state.sessions, prompt, model=_SUMMARIZE_MODEL, timeout=_SUMMARIZE_TIMEOUT_SECS
+        )
+    except Exception:
+        logger.debug("Session summary generation failed for %s", key, exc_info=True)
+        return ""
+    summary = text.strip().strip('"').strip("'").strip(".")
+    if not summary or summary.upper() == "SKIP":
+        return ""
+    summary, _ = redact_exfiltration_urls(summary)
+    summary, _ = redact_credentials(summary)
+    summary = summary[:200]
+    # Persist for reuse in a sidecar cache (best-effort; keyed by the mtime we
+    # observed above so a concurrent append invalidates it on the next call).
+    # Writing the sidecar never touches the session JSONL, so it cannot race a
+    # concurrent append or reorder list_sessions.
+    if sig is not None:
+        try:
+            await loop.run_in_executor(
+                None,
+                functools.partial(log.set_cached_summary, key, summary, sig),
+            )
+        except Exception:
+            logger.debug("Failed to persist summary cache for %s", key, exc_info=True)
+    return summary
+
+
+async def api_sessions_summarize(request: web.Request) -> web.Response:
+    """POST /api/sessions/summarize — one-line LLM summaries for given sessions.
+
+    Body: ``{"keys": ["<session_key>", ...]}``. Only the first
+    ``_SUMMARIZE_MAX_SESSIONS`` keys are summarized (cost/latency bound); the
+    rest are silently skipped and the caller falls back to their titles.
+    Returns ``{"summaries": {key: one_line_summary}}`` — keys that produced no
+    usable summary are omitted. Best-effort: a per-session failure never fails
+    the whole request.
+    """
+    state: DashboardState = request.app["state"]
+    if not state.conversation_log:
+        return web.json_response({"summaries": {}})
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON body"}, status=400)
+    keys = body.get("keys") if isinstance(body, dict) else None
+    if not isinstance(keys, list):
+        return web.json_response({"error": "keys must be a list"}, status=400)
+    # Dedupe while preserving order, drop non-strings, then bound the count.
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for k in keys:
+        if isinstance(k, str) and k and k not in seen:
+            seen.add(k)
+            ordered.append(k)
+    ordered = ordered[:_SUMMARIZE_MAX_SESSIONS]
+
+    summaries: dict[str, str] = {}
+    for key in ordered:
+        if not state.conversation_log.has_log(key):
+            continue
+        summary = await _summarize_one(state, key)
+        if summary:
+            summaries[key] = summary
+    return web.json_response({"summaries": summaries})
 
 
 async def api_sessions_search(request: web.Request) -> web.Response:

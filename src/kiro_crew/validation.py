@@ -1216,6 +1216,15 @@ GET_CHAT_SESSION_SCHEMA = ToolSchema(
     ],
 )
 
+LIST_SESSIONS_SCHEMA = ToolSchema(
+    tool_name="list_sessions",
+    fields=[
+        FieldSpec("limit", int, required=False, min_val=1, max_val=100, default=20),
+        FieldSpec("all_workspaces", bool, required=False, default=False),
+        FieldSpec("summarize", bool, required=False, default=False),
+    ],
+)
+
 # ── Schema Registry ──
 
 MCP_CORE_SCHEMAS: dict[str, ToolSchema] = {
@@ -1239,6 +1248,7 @@ MCP_CORE_SCHEMAS: dict[str, ToolSchema] = {
     "knowledge_dedup": KNOWLEDGE_DEDUP_SCHEMA,
     "search_chat_history": SEARCH_CHAT_HISTORY_SCHEMA,
     "get_chat_session": GET_CHAT_SESSION_SCHEMA,
+    "list_sessions": LIST_SESSIONS_SCHEMA,
     "set_project": SET_PROJECT_SCHEMA,
     "artifact_save": ARTIFACT_SAVE_SCHEMA,
     "artifact_get": ARTIFACT_GET_SCHEMA,

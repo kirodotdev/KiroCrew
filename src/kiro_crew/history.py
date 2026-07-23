@@ -397,6 +397,12 @@ SEARCH_MIN_CHARS = 2  # shortest query string that triggers backend search
 _TITLE_BOOST = 10  # field-boost multiplier for title matches in search_sessions
 _SEARCH_SCAN_WINDOW = 500  # cap files scanned per search to bound I/O
 
+# Canonical set of memory_mode values that mark a session private — never
+# searchable/listable/summarizable. Single source of truth shared by the MCP
+# history tools (mcp_core) and the dashboard session handlers so the exclusion
+# can't silently diverge between surfaces.
+INCOGNITO_MEMORY_MODES = frozenset({"incognito", "temporary"})
+
 
 def _safe_mtime(path: Path) -> float | None:
     """Return a file's mtime, or None if it can't be stat'd."""
@@ -956,6 +962,55 @@ class ConversationLog:
     def has_log(self, key: str) -> bool:
         """Return True if a conversation log file exists for *key*."""
         return self._path(key).exists()
+
+    def session_mtime(self, key: str) -> float | None:
+        """Return the session file's mtime, or None if it can't be stat'd.
+
+        Advances on every real message :meth:`append` but is preserved across
+        metadata-only writes (see :func:`_restore_mtime`), so it is a faithful
+        "has this conversation changed?" signal — used as the cache-validity
+        signature for derived artifacts like on-demand session summaries.
+        """
+        return _safe_mtime(self._path(key))
+
+    def _summary_cache_path(self, key: str) -> Path:
+        """Sidecar path for a session's cached one-line summary."""
+        return self._dir / ".summaries" / f"{_safe_key(key)}.json"
+
+    def get_cached_summary(self, key: str) -> str | None:
+        """Return the cached one-line summary for *key* if still valid.
+
+        Summaries are cached in a sidecar file — never in the session JSONL —
+        so summarizing a session never rewrites (and therefore never risks
+        clobbering, via a read-modify-write race with :meth:`append`) its
+        conversation log. The cache is valid only while the session file's
+        mtime matches the signature recorded when the summary was generated;
+        any real append advances the mtime and invalidates it.
+        """
+        try:
+            data = json.loads(
+                self._summary_cache_path(key).read_text(encoding="utf-8")
+            )
+        except (OSError, json.JSONDecodeError):
+            return None
+        summary = data.get("summary")
+        sig = self.session_mtime(key)
+        if sig is not None and data.get("sig") == sig and isinstance(summary, str):
+            return summary
+        return None
+
+    def set_cached_summary(self, key: str, summary: str, sig: float) -> None:
+        """Persist a derived one-line *summary* to the sidecar cache.
+
+        Keyed by the session file's mtime *sig* so a later append invalidates
+        it. Atomic and side-effect-free with respect to the session JSONL —
+        no read-modify-write, hence no data-loss race with a concurrent
+        :meth:`append`.
+        """
+        atomic_write(
+            self._summary_cache_path(key),
+            json.dumps({"sig": sig, "summary": summary}),
+        )
 
     def append(
         self,
@@ -1699,6 +1754,16 @@ class ConversationLog:
                     path.unlink(missing_ok=True)
                 except OSError:
                     return False
+                # Also remove the derived summary sidecar (.summaries/<key>.json)
+                # so a deleted session leaves no orphaned LLM-generated
+                # description on disk — delete_session is contractually a
+                # *permanent* removal. Best-effort: unlike the ``.lock`` sidecar
+                # below, the summary cache is not a mutex inode, so reaping it is
+                # safe, and a failure here must not fail the primary delete.
+                try:
+                    self._summary_cache_path(key).unlink(missing_ok=True)
+                except OSError:
+                    pass
         except HistoryLockTimeout:
             logger.warning(
                 "delete_session: lock timeout, not deleting key=%s", key

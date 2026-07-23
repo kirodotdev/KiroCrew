@@ -3062,3 +3062,27 @@ class TestReadMessagesImmutabilityContract:
         assert len(fresh) == 2
         assert fresh[0]["content"] == "a"
         assert fresh[1]["content"] == "b"
+
+
+class TestDeleteSessionSummarySidecar:
+    def test_delete_session_removes_summary_sidecar(self, tmp_path):
+        # delete_session is a *permanent* removal — the derived one-line summary
+        # sidecar must not survive the session it describes (Arbiter data-lifecycle).
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("thread-sum", "user", "tune the redis timeout")
+        sig = log.session_mtime("thread-sum")
+        assert sig is not None
+        log.set_cached_summary("thread-sum", "Tuning redis timeout", sig)
+        sidecar = log._summary_cache_path("thread-sum")
+        assert sidecar.exists()
+
+        assert log.delete_session("thread-sum") is True
+        assert not sidecar.exists()
+        assert log.get_cached_summary("thread-sum") is None
+
+    def test_delete_session_without_summary_is_fine(self, tmp_path):
+        # No sidecar present → delete still succeeds, no error.
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("thread-nosum", "user", "hello")
+        assert log.delete_session("thread-nosum") is True
+        assert not log._summary_cache_path("thread-nosum").exists()
