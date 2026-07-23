@@ -30,12 +30,27 @@ describe('loadChatConfig', () => {
     localStorage.setItem('mc-chat-config', JSON.stringify({ confirmCloseSession: true }))
     expect(loadChatConfig().confirmCloseSession).toBe(true)
   })
+
+  it('shows turn stats by default', () => {
+    expect(loadChatConfig().showTurnStats).toBe(true)
+  })
+
+  it('respects stored showTurnStats=false', () => {
+    localStorage.setItem('mc-chat-config', JSON.stringify({ showTurnStats: false }))
+    expect(loadChatConfig().showTurnStats).toBe(false)
+  })
+
+  it('repairs a non-boolean showTurnStats value to the enabled default', () => {
+    localStorage.setItem('mc-chat-config', JSON.stringify({ showTurnStats: 'no' }))
+    expect(loadChatConfig().showTurnStats).toBe(true)
+  })
 })
 
 describe('ChatSettings – session restore UI', () => {
   let onChange: ReturnType<typeof vi.fn>
 
   beforeEach(() => {
+    localStorage.removeItem('mc-chat-config')
     onChange = vi.fn()
     // Mock fetch to return default dashboard config
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, opts) => {
@@ -119,6 +134,19 @@ describe('ChatSettings – session restore UI', () => {
     await waitFor(() => {
       expect(screen.getByText('Quick Send')).toBeInTheDocument()
     })
+  })
+
+  it('persists disabling elapsed time and credits', async () => {
+    const config = { ...DEFAULTS, showTurnStats: true }
+    renderSettings({ config, onChange })
+    fireEvent.click(screen.getByRole('button', { name: 'Chat settings' }))
+    const toggle = await screen.findByRole('switch', { name: 'Show elapsed time and credits' })
+    expect(toggle).toHaveAttribute('aria-checked', 'true')
+
+    fireEvent.click(toggle)
+
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ showTurnStats: false }))
+    expect(JSON.parse(localStorage.getItem('mc-chat-config') || '{}').showTurnStats).toBe(false)
   })
 
   it('shows Quick Send hint when enabled', async () => {

@@ -469,6 +469,45 @@ def _flush_file_changes(slot: "_ChatSlot") -> None:
     slot._file_changes = []
 
 
+def _attach_turn_stats(
+    slot: "_ChatSlot",
+    elapsed_ms: int,
+    credits: float,
+    cost_usd: float,
+    turn_boundary: int = 0,
+) -> None:
+    """Attach per-turn stats to the last assistant message's meta.
+
+    Mirrors ``_flush_file_changes``: the meta lands on the in-memory message
+    BEFORE ``_save_slot_to_history`` persists it, and reaches the live UI via
+    the ``chat_done`` → ``refreshSlot`` re-fetch (no dedicated WS event).
+
+    ``elapsed_ms`` is the turn wall clock (or the provider-reported duration
+    when available); ``credits`` is kiro-cli's per-turn ``meteringUsage`` sum;
+    ``cost_usd`` is claude_code's API-reported cost. Zero fields are omitted so
+    the frontend renders only what the provider actually bills in.
+
+    ``turn_boundary`` is ``len(slot.messages)`` captured at turn start: only
+    messages appended DURING this turn are candidates. Without it, an
+    error/refusal-only turn (which appends no assistant message) would walk
+    back into the PREVIOUS turn's assistant message and overwrite its stats
+    with the failed turn's numbers. No-op when the turn produced no assistant
+    message or when there is nothing to show.
+    """
+    if elapsed_ms <= 0:
+        return
+    stats: dict[str, Any] = {"elapsed_ms": int(elapsed_ms)}
+    if credits > 0:
+        stats["credits"] = round(credits, 4)
+    if cost_usd > 0:
+        stats["cost_usd"] = round(cost_usd, 6)
+    boundary = max(0, turn_boundary)
+    for m in reversed(slot.messages[boundary:]):
+        if m.get("role") == "assistant":
+            m.setdefault("meta", {})["turn_stats"] = stats
+            break
+
+
 def _redact_acp_string(s: str) -> str:
     """Scrub credentials + exfil URLs from an ACP-controlled string.
 
@@ -2349,6 +2388,19 @@ async def _run_chat(
         _stall_tool_title = ""
         _stall_command = ""
         _stall_evidence = ""
+        # ── Per-turn stats (elapsed / credits) ──
+        # Wall-clock start of the turn. kiro (acp) leaves TurnUsage.duration_ms
+        # at 0, so elapsed is measured here; claude_code's API-reported
+        # duration_ms is preferred when present. Captured at EVENT_COMPLETE and
+        # attached to the final assistant message via _attach_turn_stats so the
+        # dashboard shows the same end-of-turn stats kiro-cli prints natively.
+        # _turn_msg_boundary scopes the attach to THIS turn's messages so an
+        # error-only turn can't overwrite the previous turn's stats.
+        _turn_t0 = time.monotonic()
+        _turn_elapsed_ms = 0
+        _turn_credits = 0.0
+        _turn_cost_usd = 0.0
+        _turn_msg_boundary = len(slot.messages)
         async for event in event_stream:
             # Heartbeat every 5s during long operations
             if time.time() - last_heartbeat > 5:
@@ -3385,6 +3437,12 @@ async def _run_chat(
                     _wsred.reset()
             elif event.kind == EVENT_CLEAR_STATUS:
                 slot.messages.clear()
+                # The boundary was captured against the pre-clear message
+                # count; the list is now empty, so reset it to 0 or the
+                # clear-confirmation appended below would fall outside the
+                # turn-stats scan slice and the completed turn would drop its
+                # elapsed/credits stats.
+                _turn_msg_boundary = 0
                 assistant_text = ""
                 _wsred.reset()
                 _produced_visible_output = True
@@ -3463,6 +3521,17 @@ async def _run_chat(
                 # so cards don't stay stuck "running".
                 _native_subagent_close_all(state, slot, _native_tracker, _native_card_output)
                 _u = event.usage
+                # Capture per-turn stats for the assistant-message footer.
+                # Prefer the provider-reported duration (claude_code) over the
+                # local wall clock (kiro/acp reports duration_ms=0).
+                try:
+                    _turn_elapsed_ms = int(
+                        _u.duration_ms or (time.monotonic() - _turn_t0) * 1000
+                    )
+                    _turn_credits = float(_u.credits or 0.0)
+                    _turn_cost_usd = float(_u.cost_usd or 0.0)
+                except (TypeError, ValueError):
+                    _turn_elapsed_ms = int((time.monotonic() - _turn_t0) * 1000)
                 if _u.input_tokens or _u.output_tokens or _u.credits:
                     stats = Stats()
                     stats.inc_input_tokens(_u.input_tokens)
@@ -3793,6 +3862,13 @@ async def _run_chat(
         # immediately re-run; skip persistence / consolidation / success-recording
         # so we don't save a spurious empty turn or skew reliability metrics.
         if not _retrying_empty:
+            # Attach per-turn stats (elapsed / credits) to the last assistant
+            # message so the footer can show them (parity with kiro-cli).
+            # Scoped to this turn's messages via _turn_msg_boundary.
+            _attach_turn_stats(
+                slot, _turn_elapsed_ms, _turn_credits, _turn_cost_usd,
+                turn_boundary=_turn_msg_boundary,
+            )
             # Attach accumulated file changes to last assistant message before persist
             _flush_file_changes(slot)
             # Save to history and trigger memory consolidation

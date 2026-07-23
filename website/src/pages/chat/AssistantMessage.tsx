@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect, memo, useRef } from 'react'
 import { motion } from 'framer-motion'
-import { Copy, Check, Volume2, Code, ClipboardList, CheckCircle, RefreshCw, ChevronLeft, ChevronRight, GitFork, Loader2, Link2, Compass } from 'lucide-react'
+import { Copy, Check, Volume2, Code, ClipboardList, CheckCircle, RefreshCw, ChevronLeft, ChevronRight, GitFork, Loader2, Link2, Compass, Clock } from 'lucide-react'
 import { copyToClipboard } from '../../utils/clipboard'
 import { copySessionLink } from '../../utils/shareUrl'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
@@ -25,6 +25,29 @@ import type { PlanStepInput } from '../../api/client'
 const OPTION_MARKER_RE = /\[OPTION(S)?:\s*([^\]\n]+?)\s*\]/gi
 const PLAN_HEADER_RE = /📋\s*Plan for:/i
 const STAGE_RE = /^Stage\s+\d+\s*:/m
+
+/** Per-turn stats attached by the backend to the last assistant message of a
+ *  completed turn (chat_runner._attach_turn_stats). Parity with the end-of-turn
+ *  line kiro-cli prints natively: elapsed wall clock + credits (kiro) or
+ *  API cost (claude_code). Zero fields are omitted by the backend. */
+export interface TurnStats { elapsed_ms: number; credits?: number; cost_usd?: number }
+
+/** "8.4s" under 10s, "42s" under a minute, "2m 34s" beyond. */
+export function fmtTurnElapsed(ms: number): string {
+  const s = ms / 1000
+  if (s < 10) return `${s.toFixed(1)}s`
+  if (s < 60) return `${Math.round(s)}s`
+  // Round to whole seconds FIRST, then split into minutes + remainder so a value
+  // like 119.6s renders "2m 0s", never the invalid "1m 60s" (flooring minutes
+  // before rounding seconds can push the remainder to 60).
+  const total = Math.round(s)
+  return `${Math.floor(total / 60)}m ${total % 60}s`
+}
+
+/** Trim credit noise: 2 decimals under 10, 1 decimal beyond ("0.25", "12.5"). */
+export function fmtCredits(c: number): string {
+  return c >= 10 ? c.toFixed(1) : c.toFixed(2)
+}
 
 export function parseOptions(content: string): { text: string; options: string[]; multi: boolean; isPlan: boolean } {
   let last: RegExpMatchArray | null = null
@@ -77,7 +100,7 @@ function SteerAckChip({ summary }: { summary: string }) {
   )
 }
 
-const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, onFileOpen, planTaskId, onApplyPlan, slotRunning, onSpeak, timestamp, showFooter = true, onRegenerate, variants, variantIdx, onSwitchVariant, isRegenerating, onFork, onPlanFromHere, forkIndex, onQuote, messageTs, slotKey, slotTitle, mode, fileChanges, onOpenDiff, fileChipStyle, artifactPaths }: { content: string; isStreaming: boolean; onFileOpen?: (path: string) => void; planTaskId?: string; onApplyPlan?: (steps: PlanStepInput[]) => Promise<boolean>; slotRunning?: boolean; onSpeak?: () => void; timestamp?: string; showFooter?: boolean; onRegenerate?: () => void; variants?: { content: string; ts?: string }[]; variantIdx?: number; onSwitchVariant?: (index: number) => void; isRegenerating?: boolean; onFork?: (index: number) => void | Promise<void>; onPlanFromHere?: (index: number) => void | Promise<void>; forkIndex?: number; onQuote?: (text: string, rect: DOMRect) => void; messageTs?: string; slotKey?: string; slotTitle?: string; mode?: string; fileChanges?: FileChangeEntry[]; onOpenDiff?: (path: string, modified: string, original: string) => void; fileChipStyle?: FileChipStyle; artifactPaths?: Set<string> }) {
+const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, onFileOpen, planTaskId, onApplyPlan, slotRunning, onSpeak, timestamp, showFooter = true, onRegenerate, variants, variantIdx, onSwitchVariant, isRegenerating, onFork, onPlanFromHere, forkIndex, onQuote, messageTs, slotKey, slotTitle, mode, fileChanges, onOpenDiff, fileChipStyle, artifactPaths, turnStats }: { content: string; isStreaming: boolean; onFileOpen?: (path: string) => void; planTaskId?: string; onApplyPlan?: (steps: PlanStepInput[]) => Promise<boolean>; slotRunning?: boolean; onSpeak?: () => void; timestamp?: string; showFooter?: boolean; onRegenerate?: () => void; variants?: { content: string; ts?: string }[]; variantIdx?: number; onSwitchVariant?: (index: number) => void; isRegenerating?: boolean; onFork?: (index: number) => void | Promise<void>; onPlanFromHere?: (index: number) => void | Promise<void>; forkIndex?: number; onQuote?: (text: string, rect: DOMRect) => void; messageTs?: string; slotKey?: string; slotTitle?: string; mode?: string; fileChanges?: FileChangeEntry[]; onOpenDiff?: (path: string, modified: string, original: string) => void; fileChipStyle?: FileChipStyle; artifactPaths?: Set<string>; turnStats?: TurnStats }) {
   const [applied, setApplied] = useState(false)
   const [copied, setCopied] = useState(false)
   const [linkCopied, setLinkCopied] = useState(false)
@@ -191,6 +214,14 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
     </div>
     {fileChanges && fileChanges.length > 0 && !isStreaming && (
       <FileChangeChips fileChanges={fileChanges} onOpenDiff={onOpenDiff} style={fileChipStyle} artifactPaths={artifactPaths} />
+    )}
+    {!isStreaming && showFooter && turnStats && turnStats.elapsed_ms > 0 && (
+      <div className="flex items-center gap-1 mt-1 text-[11px] text-muted/60 font-mono tabular-nums" data-testid="turn-stats" title={`Turn took ${fmtTurnElapsed(turnStats.elapsed_ms)}${(turnStats.credits ?? 0) > 0 ? ` and used ${fmtCredits(turnStats.credits!)} credits` : ''}${(turnStats.cost_usd ?? 0) > 0 ? ` ($${turnStats.cost_usd!.toFixed(4)} API cost)` : ''}`}>
+        <Clock size={11} aria-hidden="true" />
+        <span>{fmtTurnElapsed(turnStats.elapsed_ms)}</span>
+        {(turnStats.credits ?? 0) > 0 && <span>· {fmtCredits(turnStats.credits!)} credits</span>}
+        {!(turnStats.credits ?? 0) && (turnStats.cost_usd ?? 0) > 0 && <span>· ${turnStats.cost_usd!.toFixed(turnStats.cost_usd! < 0.01 ? 4 : 2)}</span>}
+      </div>
     )}
     {!isStreaming && showFooter && (
       <div className="flex items-center gap-1 mt-0.5 opacity-0 transition-opacity duration-300 delay-100 group-hover/msg:opacity-100 group-hover/msg:delay-300 group-focus-within/msg:opacity-100 group-focus-within/msg:delay-300">

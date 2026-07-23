@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
 import { render, screen, fireEvent, act } from '@testing-library/react'
-import AssistantMessage, { parseOptions } from '../pages/chat/AssistantMessage'
+import AssistantMessage, { parseOptions, fmtTurnElapsed, fmtCredits } from '../pages/chat/AssistantMessage'
 
 // Mock MarkdownRenderer to avoid complex markdown parsing in tests
 vi.mock('../components/MarkdownRenderer', () => ({
@@ -308,5 +308,60 @@ describe('parseOptions', () => {
   it('does not show "Copy link to message" while streaming', () => {
     render(<AssistantMessage content="typing" isStreaming={true} slotRunning={true} messageTs="2025-05-13T14:00:00.000Z" slotKey="chat-1" />)
     expect(screen.queryByTitle('Copy link to message')).not.toBeInTheDocument()
+  })
+})
+
+describe('turn stats footer (elapsed time + credits)', () => {
+  it('renders elapsed and credits on a completed turn', () => {
+    render(<AssistantMessage content="done" isStreaming={false} slotRunning={false} turnStats={{ elapsed_ms: 84_000, credits: 2.5 }} />)
+    const stats = screen.getByTestId('turn-stats')
+    expect(stats).toHaveTextContent('1m 24s')
+    expect(stats).toHaveTextContent('2.50 credits')
+  })
+
+  it('renders cost_usd when the provider bills in dollars (no credits)', () => {
+    render(<AssistantMessage content="done" isStreaming={false} slotRunning={false} turnStats={{ elapsed_ms: 8_400, cost_usd: 0.0231 }} />)
+    const stats = screen.getByTestId('turn-stats')
+    expect(stats).toHaveTextContent('8.4s')
+    expect(stats).toHaveTextContent('$0.02')
+    expect(stats).not.toHaveTextContent('credits')
+  })
+
+  it('renders elapsed alone when nothing was billed', () => {
+    render(<AssistantMessage content="done" isStreaming={false} slotRunning={false} turnStats={{ elapsed_ms: 42_000 }} />)
+    const stats = screen.getByTestId('turn-stats')
+    expect(stats).toHaveTextContent('42s')
+    expect(stats).not.toHaveTextContent('credits')
+    expect(stats).not.toHaveTextContent('$')
+  })
+
+  it('hidden while streaming', () => {
+    render(<AssistantMessage content="typing…" isStreaming={true} slotRunning={true} turnStats={{ elapsed_ms: 5_000, credits: 1 }} />)
+    expect(screen.queryByTestId('turn-stats')).not.toBeInTheDocument()
+  })
+
+  it('hidden when showFooter is false (mid-turn assistant segment)', () => {
+    render(<AssistantMessage content="segment" isStreaming={false} slotRunning={false} showFooter={false} turnStats={{ elapsed_ms: 5_000, credits: 1 }} />)
+    expect(screen.queryByTestId('turn-stats')).not.toBeInTheDocument()
+  })
+
+  it('hidden without turnStats (old messages persisted before the feature)', () => {
+    render(<AssistantMessage content="old" isStreaming={false} slotRunning={false} />)
+    expect(screen.queryByTestId('turn-stats')).not.toBeInTheDocument()
+  })
+
+  it('fmtTurnElapsed formats sub-10s, sub-minute, and minutes', () => {
+    expect(fmtTurnElapsed(3_450)).toBe('3.5s')
+    expect(fmtTurnElapsed(42_400)).toBe('42s')
+    expect(fmtTurnElapsed(154_000)).toBe('2m 34s')
+    // Second-remainder that rounds up to 60 must roll into the next minute,
+    // never render the invalid "1m 60s" (Codex MEDIUM regression guard).
+    expect(fmtTurnElapsed(119_600)).toBe('2m 0s')
+    expect(fmtTurnElapsed(179_600)).toBe('3m 0s')
+  })
+
+  it('fmtCredits trims to 2 decimals under 10, 1 above', () => {
+    expect(fmtCredits(0.25)).toBe('0.25')
+    expect(fmtCredits(12.53)).toBe('12.5')
   })
 })

@@ -55,5 +55,6 @@ Load relevant module specs before making changes to that component. Read common 
 | [inline-action-buttons](features/inline-action-buttons.md) | Interactive buttons in chat messages |
 | [prompt-optimizer](features/prompt-optimizer.md) | Native pre-send prompt optimization (Cmd+Shift+Enter) |
 | [stt-streaming](features/stt-streaming.md) | Live speech-to-text via AWS Transcribe Streaming |
+| [turn-stats-footer](features/turn-stats-footer.md) | Per-turn elapsed time + credits footer under assistant messages (kiro-cli parity) |
 | [voice-streaming](features/voice-streaming.md) | Real-time Polly TTS with streaming auto-speak and interrupt |
 | [workflow-chat-cards](features/workflow-chat-cards.md) | Inline launch + completion cards for workflows in chat, clickable to the Workflows panel |
