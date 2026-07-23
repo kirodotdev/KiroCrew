@@ -69,7 +69,7 @@ import { useUpdateSubscription } from './hooks/useUpdateSubscription'
 import UpdateModal from './components/UpdateModal'
 import BrowserLiveView from './components/BrowserLiveView'
 import BottomTerminalPanel from './components/BottomTerminalPanel'
-import { useBottomTerminalOpen, toggleBottomTerminal } from './hooks/useBottomTerminal'
+import { toggleBottomTerminal } from './hooks/useBottomTerminal'
 import { setTerminalEnabledFlag } from './utils/terminalRegistry'
 import AppsPage from './pages/AppsPage'
 import AppPage from './pages/AppPage'
@@ -734,7 +734,6 @@ export default function App() {
   // so there is no hidden-until-fetch-resolves flash.
   const terminalEnabled = terminalConfig?.enabled !== false
   useEffect(() => { setTerminalEnabledFlag(terminalEnabled) }, [terminalEnabled])
-  const bottomTerminalOpen = useBottomTerminalOpen()
   const navigate = useNavigate()
 
   // Main-dashboard role for the artifact popout nav-intent handshake: perform
@@ -1609,12 +1608,7 @@ export default function App() {
               aria-expanded={!effectiveCollapsed}
             >
               <span className="flex items-center gap-2.5 min-w-0">
-                {/* Glow via box-shadow, NOT filter: drop-shadow. A drop-shadow
-                    filter re-rasterizes for a frame when the sidebar width
-                    transition starts on expand (a visible "blink"); box-shadow
-                    composites without that re-raster. The logo is a rounded-md
-                    square, so the rounded-rect box-shadow reads the same. */}
-                <img src={avatar} alt="" aria-hidden="true" className={`${isLumon ? 'w-auto h-8' : 'w-8 h-8'} rounded-md shrink-0 object-contain transition-transform duration-300 group-hover:rotate-[-8deg]`} style={{ boxShadow: '0 2px 8px var(--accent-glow)' }} />
+                <img src={avatar} alt="" aria-hidden="true" className={`${isLumon ? 'w-auto h-8' : 'w-8 h-8'} rounded-md shrink-0 object-contain transition-transform duration-300 group-hover:rotate-[-8deg]`} />
                 <AnimatePresence initial={false}>
                   {!effectiveCollapsed && (
                     <motion.span
@@ -1768,7 +1762,6 @@ export default function App() {
           const devPath = '/developer'
           return (
             <div className="shrink-0 grid gap-0.5 px-2 pt-1 pb-2">
-              <div>{renderNavRow(cap)}</div>
               {devMode && (() => {
                 const dotClass = effectiveCollapsed
                   ? 'absolute top-1 right-1 w-2 h-2 bg-accent rounded-full z-10 animate-pulse'
@@ -1790,12 +1783,13 @@ export default function App() {
                   path="#"
                   label="Terminal"
                   icon={<SquareTerminal size={16} />}
-                  active={bottomTerminalOpen}
+                  active={false}
                   collapsed={effectiveCollapsed}
                   onClick={closeMobileNav}
                   onClickOverride={() => toggleBottomTerminal()}
                 />
               )}
+              <div>{renderNavRow(cap)}</div>
               <NavItem
                 path={s.path}
                 label={s.label}
