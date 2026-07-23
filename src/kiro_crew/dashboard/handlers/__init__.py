@@ -31,6 +31,7 @@ from kiro_crew.session import _sync_kill_provider  # noqa: F401
 def sel():
     """Dynamic sel() that always resolves from kiro_crew.sel for test patching."""
     from kiro_crew.sel import sel as _s
+
     return _s()
 
 
@@ -397,14 +398,16 @@ def _list_aim_prompts() -> list[dict[str, Any]]:
                 logger.debug("Skipping sensitive path: %s", sop_file)
                 continue
             name = sop_file.stem.removesuffix(".sop")
-            result.append({
-                "name": name,
-                "fullName": f"agent-sop:{name}",
-                "description": _extract_sop_description(sop_file),
-                "path": resolved,
-                "package": pkg_dir.name,
-                "source": "aim",
-            })
+            result.append(
+                {
+                    "name": name,
+                    "fullName": f"agent-sop:{name}",
+                    "description": _extract_sop_description(sop_file),
+                    "path": resolved,
+                    "package": pkg_dir.name,
+                    "source": "aim",
+                }
+            )
         return True
 
     if aim_dir.is_dir():
@@ -435,14 +438,16 @@ def _list_aim_prompts() -> list[dict[str, Any]]:
         if not prompts_dir.is_dir():
             continue
         for f in sorted(prompts_dir.glob("*.md")):
-            result.append({
-                "name": f.stem,
-                "fullName": f.stem,
-                "description": _extract_sop_description(f),
-                "path": str(f),
-                "package": "",
-                "source": src,
-            })
+            result.append(
+                {
+                    "name": f.stem,
+                    "fullName": f.stem,
+                    "description": _extract_sop_description(f),
+                    "path": str(f),
+                    "package": "",
+                    "source": src,
+                }
+            )
     _prompt_cache = result
     _prompt_cache_ts = now
     return [dict(p) for p in result]
@@ -491,4 +496,12 @@ from kiro_crew.dashboard.handlers.portability import (  # noqa: E402, F401
     api_portability_export,
     api_portability_import,
     api_portability_preview,
+)
+from kiro_crew.dashboard.handlers.security import (  # noqa: E402, F401
+    api_denied_command_builtin_toggle,
+    api_denied_command_user_add,
+    api_denied_command_user_delete,
+    api_denied_command_user_toggle,
+    api_denied_commands_disable_all,
+    api_denied_commands_list,
 )

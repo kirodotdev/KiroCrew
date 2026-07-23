@@ -100,3 +100,8 @@ ignore_files:
   # Vendored third-party code (llama-cpp-python) — carries upstream GitHub
   # source URLs and identifiers we must not rewrite.
   - src/kiro_crew/_vendor/**
+  # Byte-exact deny-rule parity fixture: the git-publish patterns must match the
+  # literal protected git branch name (main|mainline|master) they detect, so the
+  # term cannot be rewritten. The security.py source carries wokeignore comments;
+  # JSON can't, so the fixture is ignored here (mirrored in the CI --stdin scan).
+  - test/fixtures/denied_commands_golden.json

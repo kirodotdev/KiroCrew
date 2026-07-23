@@ -389,14 +389,6 @@ async def api_agent_config(request: web.Request) -> web.Response:
         if not isinstance(config, dict):
             return web.json_response({"error": "config must be an object"}, status=400)
         try:
-            # Inject security-critical deniedCommands before writing
-            from kiro_crew.agent import build_agent_config  # noqa: F811
-
-            defaults_ts = build_agent_config().get("toolsSettings", {}).get("execute_bash", {})
-            if "deniedCommands" in defaults_ts:
-                config.setdefault("toolsSettings", {}).setdefault("execute_bash", {})[
-                    "deniedCommands"
-                ] = defaults_ts["deniedCommands"]
             # Track tools the user intentionally removed from shipped defaults
             # so they don't reappear on upgrade.  Stored in ~/.kirocrew/config.json
             # (NOT kirocrew.json — kiro-cli rejects unknown fields).
@@ -692,6 +684,7 @@ async def api_agents_installed(request: web.Request) -> web.Response:
 
     kirocrew is always first; kirocrew-lite is excluded.
     """
+
     # list_agents() does glob + per-file resolve(strict=True) + read_bytes +
     # json.loads over ~/.kiro/agents — blocking filesystem work that, on a large
     # agents dir (network home, many project-registry agents), can stall the
@@ -702,9 +695,7 @@ async def api_agents_installed(request: web.Request) -> web.Response:
         agents.sort(key=lambda a: (0 if a.name == "kirocrew" else 1, a.name))
         return agents
 
-    agents = await asyncio.get_running_loop().run_in_executor(
-        discovery_executor(), _collect
-    )
+    agents = await asyncio.get_running_loop().run_in_executor(discovery_executor(), _collect)
     return web.json_response([a.to_dict() for a in agents])
 
 
@@ -831,9 +822,7 @@ async def api_models(request: web.Request) -> web.Response:
             # result. Return 503 so the client retries instead of caching an
             # empty list — a cached [] renders an empty picker that only a
             # manual page refresh recovers from.
-            return web.json_response(
-                {"error": "kiro binary not resolved"}, status=503
-            )
+            return web.json_response({"error": "kiro binary not resolved"}, status=503)
         argv = [kiro_bin, "chat", "--list-models", "--format", "json", "--no-interactive"]
         # Mirror AcpClient._spawn() sandbox: wrap_argv + env + process isolation.
         # Note: AcpClient._spawn() is for interactive ACP sessions (stdin/stdout
@@ -868,9 +857,7 @@ async def api_models(request: web.Request) -> web.Response:
                 # 503 instead so React Query retries with backoff and the
                 # picker self-heals without a manual refresh.
                 logger.warning("api_models: --list-models timed out; returning 503")
-                return web.json_response(
-                    {"error": "model list timed out"}, status=503
-                )
+                return web.json_response({"error": "model list timed out"}, status=503)
         finally:
             if cleanup and callable(cleanup):
                 cleanup()
@@ -971,9 +958,7 @@ async def api_slash_commands(request: web.Request) -> web.Response:
             {"name": f"/{c}", "description": SLASH_COMMAND_DESCRIPTIONS.get(f"/{c}", "")}
             for c in cc_commands
         ]
-        result.append(
-            {"name": "/side", "description": SLASH_COMMAND_DESCRIPTIONS.get("/side", "")}
-        )
+        result.append({"name": "/side", "description": SLASH_COMMAND_DESCRIPTIONS.get("/side", "")})
         return web.json_response(result)
 
     return web.json_response(

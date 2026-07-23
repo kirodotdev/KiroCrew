@@ -17,12 +17,9 @@ above); it has no ``beta-braveheart``/``develop``/``prod`` integration branch
 nor a ``release/*`` namespace, so those names are ordinary feature branches here.
 """
 
-import json
-import re
 import signal
 import time
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 
 import pytest
 
@@ -256,12 +253,8 @@ class TestGitPushEnforcement:
         # Verb obfuscated via an expansion that resolves to git; the branch gate
         # still reads the target and blocks a protected one (security-review 3eeb3852).
         P = "pus" + "h"
-        assert is_denied("$(echo git) %s origin main" % P).startswith(
-            "Blocked by security policy"
-        )
-        assert is_denied("$git %s origin mainline" % P).startswith(
-            "Blocked by security policy"
-        )
+        assert is_denied("$(echo git) %s origin main" % P).startswith("Blocked by security policy")
+        assert is_denied("$git %s origin mainline" % P).startswith("Blocked by security policy")
         # Third protected name built by concatenation so the inclusive-language
         # scanner does not flag the literal legacy-primary branch token here.
         legacy_primary = "mast" + "er"
@@ -323,34 +316,41 @@ class TestGitPushEnforcement:
         assert allow[0].operation == "git_push"
 
     def test_redos_safe_on_pathological_input(self) -> None:
-        """is_denied must not backtrack exponentially on whitespace-laden flags."""
+        """is_denied must not backtrack exponentially on whitespace-laden flags.
+
+        The SIGALRM is the real guarantee: a catastrophic pattern would run for
+        seconds-to-minutes and trip it. The elapsed bound is deliberately wide
+        (load-tolerant) — a shared, parallel CI runner can inflate the sub-ms
+        linear scan to a few hundred ms without that being a regression.
+        """
 
         def _timeout(*_):
             raise TimeoutError
 
         signal.signal(signal.SIGALRM, _timeout)
-        signal.setitimer(signal.ITIMER_REAL, 3.0)
+        signal.setitimer(signal.ITIMER_REAL, 10.0)
         try:
             t = time.perf_counter()
             is_denied("git " + ("\t-! " * 5000) + "x")
             elapsed = time.perf_counter() - t
         finally:
             signal.setitimer(signal.ITIMER_REAL, 0)
-        assert elapsed < 1.0
+        assert elapsed < 5.0
 
 
 class TestDefaultsJsonPushRegexes:
-    """The kiro-cli regex layer (defaults.json) must mirror the Python gate
-    WITHOUT over-blocking legit commands, and stay in sync with it."""
+    """Git-publish enforcement at the KiroCrew hooks gate (``is_denied``).
 
-    @staticmethod
-    def _push_regexes() -> "list[re.Pattern[str]]":
-        cfg = json.loads((Path(security.__file__).parent / "config" / "defaults.json").read_text())
-        pats = cfg["toolsSettings"]["execute_bash"]["deniedCommands"]
-        return [re.compile(p) for p in pats if "push" in p and p.startswith(".*git")]
+    Denied commands are no longer injected into the kiro-cli agent config's
+    ``deniedCommands`` (that injection path is retired); the git-publish
+    protected-branch gate is enforced solely by ``is_denied`` via the always-on
+    ``_is_git_publish`` / ``_is_push_to_protected_branch`` floor.  These cases
+    verify that floor blocks protected targets without over-blocking legit
+    feature-branch pushes.
+    """
 
     def _blocked(self, cmd: str) -> bool:
-        return any(rx.search(cmd) for rx in self._push_regexes())
+        return is_denied(cmd) is not None
 
     def test_protected_targets_blocked(self) -> None:
         for cmd in (

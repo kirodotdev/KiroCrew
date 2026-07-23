@@ -279,6 +279,20 @@ def config_local_path() -> Path:
     return config_dir() / "config.local.json"
 
 
+def denied_commands_path() -> Path:
+    """Return path to denied_commands.json — the denied-command opt-out state.
+
+    This is a KEYSTONE trust-root file (on ``security._SENSITIVE_HOME_DIRS``):
+    it holds ``{disable_all, disabled_ids, user_added}``, the user's opt-out from
+    the built-in deny ceiling. It lives OUTSIDE the agent-readable
+    ``config.json`` precisely so an auto-approved/YOLO agent shell cannot write
+    it (via any shell trick) and disable its own deny ceiling. Only the operator
+    edits it out-of-band — through the dashboard ``/api/security/…`` endpoints,
+    which do not route through the agent tool gate. Respects ``KIROCREW_HOME``.
+    """
+    return config_dir() / "denied_commands.json"
+
+
 def read_local_secret() -> str:
     """Read ``<config_dir>/.local_secret`` (the gateway IPC secret), or ``""``.
 
@@ -707,15 +721,6 @@ class AgentConfig:
             "Persistent log level for the kiro_crew logger. "
             "Applied at startup; overridden by --verbose CLI flag.",
             enum=["DEBUG", "INFO", "WARNING", "ERROR"],
-        ),
-    )
-    enforce_denied_commands: str = field(
-        default="all",
-        metadata=_meta(
-            "Enforce Denied Commands",
-            "Scope for deniedCommands enforcement on kiro agent configs. "
-            "'all' enforces on every agent; 'kirocrew' only on the kirocrew agent.",
-            enum=["all", "kirocrew"],
         ),
     )
     soft_stop_budget_secs: float = field(
@@ -3111,7 +3116,9 @@ class KiroCrewConfig:
                 ),
                 subagent_max_turns=agent_data.get("subagent_max_turns", 100),
                 subagent_timeout_secs=agent_data.get("subagent_timeout_secs", 1800),
-                subagent_stall_idle_secs=_safe_int(agent_data.get("subagent_stall_idle_secs", 120), 120),
+                subagent_stall_idle_secs=_safe_int(
+                    agent_data.get("subagent_stall_idle_secs", 120), 120
+                ),
                 completion_keep=_validated_completion_keep(
                     agent_data.get("completion_keep", "head")
                 ),
@@ -3124,9 +3131,6 @@ class KiroCrewConfig:
                     )
                 ),
                 log_level=agent_data.get("log_level", "WARNING").upper(),
-                enforce_denied_commands=agent_data.get("enforce_denied_commands", "all")
-                .lower()
-                .strip(),
                 bot_name=_sanitize_bot_name(agent_data.get("bot_name", "")),
                 max_channels=agent_data.get("max_channels", 1),
                 max_channel_agents=agent_data.get("max_channel_agents", 3),
@@ -3239,9 +3243,7 @@ class KiroCrewConfig:
                     and ttl >= 0
                     else 300
                 ),
-                auto_ingest_doc_links=bool(
-                    knowledge_data.get("auto_ingest_doc_links", False)
-                ),
+                auto_ingest_doc_links=bool(knowledge_data.get("auto_ingest_doc_links", False)),
                 doc_ingest_hosts=[
                     str(h)
                     for h in knowledge_data.get("doc_ingest_hosts", [])
@@ -3256,9 +3258,7 @@ class KiroCrewConfig:
                     1, min(100, _coerce_int(telegram_data.get("soft_threshold_pct"), 80))
                 ),
                 allow_forum=bool(telegram_data.get("allow_forum", False)),
-                allowed_forum_chat_ids=_coerce_int_ids(
-                    telegram_data.get("allowed_forum_chat_ids")
-                ),
+                allowed_forum_chat_ids=_coerce_int_ids(telegram_data.get("allowed_forum_chat_ids")),
             ),
             discord=DiscordConfig(
                 enabled=bool(discord_data.get("enabled", False)),

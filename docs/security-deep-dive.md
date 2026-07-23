@@ -108,11 +108,13 @@ pill). It re-verifies `is_sensitive_path()`, SEL-audits every outcome, and fails
 only to the hardcoded prod AWS endpoint over TLS (verify on, redirects off) and never reach an
 LLM/agent surface; the parsed numeric result is credential-redacted before caching.
 
-## Layer 2: Command Denial (`security.py` + `agents/defaults.json`)
+## Layer 2: Command Denial (`security.py`)
 
-### Denied Commands (113 patterns)
+### Denied Commands (137 built-in rules, default-on, user-disableable)
 
-Regex patterns in `agents/defaults.json` blocking:
+First-class `DeniedCommandRule` records in `BUILTIN_DENIED_RULES` (`security.py`) —
+each a stable `id`, a Python regex `pattern`, a `category`, and a human
+`description` — blocking:
 
 **Credential exfiltration:**
 - `echo $AWS_SECRET*`, `printenv AWS*`, `env | grep AWS`
@@ -128,7 +130,31 @@ Regex patterns in `agents/defaults.json` blocking:
 - `cdk destroy`, `terraform destroy`
 - `DROP TABLE`, `DROP DATABASE`
 
-**Enforcement**: `_enforce_denied_commands()` replaces denied commands in ALL agent configs from bundled defaults at install, gateway startup, and periodically (~60s).
+**Enforcement**: hooks-gate-only. The rules are evaluated at KiroCrew's own
+PreToolUse gate (`HookManager.on_tool_call` → `PolicyAuthority.is_denied`), NEVER
+injected into a kiro agent config. The former `_enforce_denied_commands()`
+agent-config injection + the ~60s re-enforce loop are retired, so a kiro agent
+config that edits or omits its own deny list cannot weaken KiroCrew's ceiling.
+
+**User opt-out (Settings > Security)**: built-ins are default-ON but
+user-DISABLEABLE — a "disable all" toggle, per-rule toggles, and an add-your-own
+field for custom deny patterns. Opt-out state (`disable_all` / `disabled_ids` /
+`user_added`) persists in its own **keystone** file
+`~/.kirocrew/denied_commands.json`; a disable requires a confirm-modal ack + SEL
+audit. Because that state IS a security ceiling, the file lives on
+`_SENSITIVE_HOME_DIRS` (full read+write block, same floor as
+`security_policy.json`) — the agent can neither read nor write its own deny
+ceiling via ANY shell form, so an auto-approved/YOLO shell cannot persist
+`disable_all=true` and defeat the ceiling. Only the operator edits it out-of-band
+via the dashboard `/api/security/…` endpoints (which open the file directly, not
+through the agent tool gate). An enterprise **governance** `commands`-scope
+policy (Level-1 `security_policy.json`) or a Level-2 profile can force-pin a rule
+as un-opt-out-able (tightest-wins).
+
+The linear-time `_DenyMatcher` (ReDoS-safe fragment split, with a bounded
+whole-regex fallback for top-level alternation or greedy-fragment patterns)
+evaluates each pattern against the full command so a needle at any offset is
+found without catastrophic backtracking.
 
 ### Per-Segment Deny Pattern Evaluation (`security.py`)
 
@@ -322,9 +348,9 @@ Optional two-layer defense against data exfiltration to personal/external Slack 
 **Problem**: Agent subprocesses can consume unlimited CPU/memory. A runaway process can OOM the host (documented in `resource-protection.md` as known gap).
 **Suggestion**: Add cgroup v2 limits for agent subprocesses: memory cap (e.g., 4GB), CPU quota, PID limit. Configurable via `agent.resource_limits` in config.
 
-### Gap 3: No Runtime Integrity Verification
-**Problem**: If an attacker modifies `agents/defaults.json` to remove denied commands, there's no detection mechanism.
-**Suggestion**: Compute SHA-256 hash of `defaults.json` at install time, verify at gateway startup. Alert on mismatch. Store hash in a separate protected location.
+### Gap 3: Runtime Integrity of the Deny List — CLOSED
+**Was**: If an attacker modified `agents/defaults.json` to remove denied commands, there was no detection mechanism.
+**Now**: Denied commands are no longer injected into any agent config. They are first-class `BUILTIN_DENIED_RULES` in `security.py`, enforced solely at KiroCrew's PreToolUse gate, so editing/removing a kiro agent config's own deny list cannot weaken the ceiling. The user opt-out lives in the keystone `~/.kirocrew/denied_commands.json` (on the `_SENSITIVE_HOME_DIRS` read+write floor, so the agent can neither read nor write its own ceiling — same protection as `security_policy.json`), and an enterprise governance `commands`-scope pin is un-opt-out-able. The remaining residual is the deny *set contents* being code-defined (updated via release), not runtime-verified against a signed manifest — a much smaller surface than the former mutable-agent-config vector.
 
 ### Gap 4: Denied Command Patterns Are Regex-Based
 **Problem**: Regex patterns can be bypassed with creative shell tricks (e.g., `c"a"t ~/.aws/credentials`, `$(echo cat) ~/.ssh/id_rsa`, variable expansion).

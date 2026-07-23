@@ -1638,6 +1638,20 @@ async def start_dashboard(
     app.router.add_get("/api/sel/events", handlers.api_sel_events)
     app.router.add_get("/api/sel/verify", handlers.api_sel_verify)
     app.router.add_get("/api/security/stats", handlers.api_security_stats)
+    app.router.add_get("/api/security/denied-commands", handlers.api_denied_commands_list)
+    app.router.add_patch(
+        "/api/security/denied-commands/disable-all", handlers.api_denied_commands_disable_all
+    )
+    app.router.add_patch(
+        "/api/security/denied-commands/builtins/{id}", handlers.api_denied_command_builtin_toggle
+    )
+    app.router.add_post("/api/security/denied-commands/user", handlers.api_denied_command_user_add)
+    app.router.add_patch(
+        "/api/security/denied-commands/user/{id}", handlers.api_denied_command_user_toggle
+    )
+    app.router.add_delete(
+        "/api/security/denied-commands/user/{id}", handlers.api_denied_command_user_delete
+    )
     app.router.add_get("/api/approvals", handlers.api_approvals)
     app.router.add_post("/api/approvals/{id}/{action}", handlers.api_approval_resolve)
 

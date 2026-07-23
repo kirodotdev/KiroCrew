@@ -154,14 +154,28 @@ profile falls back to deny-all (Validation rule 5), **not** the ceiling.
 ## Enforcement planes
 
 - **Plane A — the host gate** (`HookManager.on_tool_call`, the primary
-  chokepoint). After the always-on sensitive-path + deny-floor checks, it
-  evaluates `gate_decision(ceiling, profile, title)` — **including MCP titles**
-  (`mcp__server__tool`, converted to `@server/tool`) — *before* the auto-approve
-  loop, so a governance deny wins over a user auto-approve and denies a tool the
-  kiro agent config granted. The call sites thread `session_key`/`agent` (they
-  default to `""`, so non-governed callers are unaffected).
-- **Plane B — kiro agent JSON**: out of scope (v1). The gate is authoritative;
-  KiroCrew does not regenerate `~/.kiro/agents/*.json`.
+  chokepoint). The deny-floor is now the *effective* denied-command rule set —
+  the enabled subset of `BUILTIN_DENIED_RULES` ∪ the user's `user_added`
+  patterns from the keystone `denied_commands.json` opt-out state, resolved by
+  `HookManager._effective_denied(ctx)` and passed to `PolicyAuthority.is_denied`
+  as `denied_regexes` (see `security.md`). Gate order: **sensitive-path
+  keystone → effective deny-floor (`is_denied`) → `gate_decision(ceiling,
+  profile, title)` (governance, incl. the `commands` scope, and MCP titles
+  `mcp__server__tool` converted to `@server/tool`) → read-only auto-approve →
+  user `auto_approve_tools` loop**. A governance deny wins over a user
+  auto-approve, and the read-only auto-approve fast-path runs strictly AFTER
+  both the deny-floor and `gate_decision`, so a read-only classification can
+  never re-admit a denied/governed call. The governance `commands` deny is
+  evaluated in `gate_decision` **independently of** the user's keystone
+  opt-out state, so a rule the operator disabled in `denied_commands.json` is
+  STILL denied when the enterprise ceiling pins the equivalent pattern —
+  tightest-wins. The call sites thread `session_key`/`agent` (they default to
+  `""`, so non-governed callers are unaffected).
+- **Plane B — kiro agent JSON**: out of scope (v1). KiroCrew no longer writes
+  `deniedCommands` into `~/.kiro/agents/*.json` at all — the
+  `agent._enforce_denied_commands` injection path is retired — so the hooks gate
+  is the SOLE denied-command enforcement point, not a secondary layer. The gate
+  is authoritative; KiroCrew does not regenerate `~/.kiro/agents/*.json`.
 - **Plane C — out-of-band executors**: the cron `command` (runs via `sh -c`
   outside the ACP flow) is gated in `mcp_cron._vet_command_governance`; the
   cron *capability* on/off gate in `mcp_cron._vet_cron_capability_governance`
@@ -286,7 +300,8 @@ denials leave the same forensic trail.
 > is intentional and documented here rather than silently divergent.
 
 The **enforced** scopes in v1 are: `tools`, `mcp`, `commands` (host gate + cron
-command body), `filesystem.read` / `filesystem.write` / `folders.*` and
+command body + the enterprise force-pin for built-in denied-command rules, see
+below), `filesystem.read` / `filesystem.write` / `folders.*` and
 `network.egress` (host gate via tool kind + args), `channels` (per-transport at
 the messaging chokepoint), `apps` (app activation), `sandbox.min_level` (ordinal
 floor at `wrap_argv`), `approval_mode` (boot floor only), and every capability
@@ -294,6 +309,42 @@ gate — `capabilities.spawn`, `capabilities.messaging`, `capabilities.cron`,
 `capabilities.memory_writes`, `capabilities.script_hooks`, and
 `capabilities.publish` (artifact publish chokepoint — see below). Only the live
 `approval_mode` clamp remains reserved.
+
+The `commands` scope now **doubles as the enterprise force-pin** for built-in
+denied-command rules. A deny-mode `commands` ScopedRuleset's `deny` patterns are
+projected as force-pins via `GovernanceCeiling.pinned_command_patterns()` /
+`Profile.pinned_command_patterns()`, unioned by `resolve_pinned_commands(ceiling,
+profile)` (order-preserving, deduped — deny composes by union, tightest-wins).
+`hooks.py` unions these into the effective denied set, so an operator's
+`security_policy.json` `commands.deny` patterns are **un-opt-out-able**: they
+apply regardless of the user's `denied_commands.json` `disable_all` /
+`disabled_ids`, because governance is Level-1 POLICY and the keystone opt-out is
+operator-editable (agent-unwritable) state. This is `effective = POLICY ∩ PROFILE`,
+tightest-wins, applied to command denials. Only deny-mode entries become pins;
+an allow-mode `commands` allowlist is a deny-by-default gate enforced solely by
+`gate_decision` and is NOT projected as a pin (the accessor returns `()`).
+Because `security_policy.json` is on the `_SENSITIVE_HOME_DIRS` keystone (the
+agent cannot write it — `assert_governance_paths_protected`), a pin is
+un-opt-out-able by construction. NOTE: the governance `command` matcher is
+case-sensitive `fnmatchcase` while the security union matches case-insensitively;
+a pin is an independent ceiling that *covers the same command*, not literally the
+same rule string. Double coverage (gate + security union) is intended and
+harmless — both only deny. New public surface (reflected in `__all__`):
+`COMMANDS_SCOPE`, `resolve_pinned_commands`; purely additive — no new
+`SCOPE_CATALOG` row and no change to `resolve`/`gate_decision`/`load_security_policy`.
+
+Two `security.py` accessors keep enforcement and display correctly scoped:
+`pinned_builtin_command_ids()` (ENFORCEMENT) resolves the **active ceiling
+only** — the hooks gate force-re-adds these so a user opt-out can't weaken a
+*ceiling* pin, but it does NOT union other profiles' pins (a profile-A pin must
+not force-enforce for profile B / a no-profile session; per-profile command
+enforcement is the gate's bound-profile `_governance_denial` deny plane).
+`pinned_builtin_command_ids_for_snapshot()` (DISPLAY) unions the ceiling pins
+with **all** loaded profiles' pins (`all_profile_pinned_commands()`) for the
+surface-agnostic Settings > Security snapshot + the builtin-toggle 409 check, so
+a rule pinned by any profile renders locked and rejects a disable rather than
+surfacing a no-op opt-out (UI success while the bound-profile gate still denies).
+Display-only union — it does not widen enforcement.
 
 `capabilities.publish` is a `CapabilityGate` (opt-in: `capability_default=False`)
 with an inner `destinations` `ScopedRuleset` (`identifier` matcher) bounding
@@ -350,7 +401,7 @@ carve-out stay as code. It expects `CONTRACT_VERSION == 1` (pinned pre-launch).
 
 - `platform/governance.py` — archetypes, catalog, loader, evaluator
   (`resolve`, `resolve_ordinal`, `gate_decision`, `assert_governance_floor`,
-  `compose_profiles`).
+  `compose_profiles`, `resolve_pinned_commands` + `COMMANDS_SCOPE` force-pins).
 - `platform/governance_profiles.py` — `ProfileStore` (hot-reload),
   `resolve_active_scope`, `governance_permits`, `governance_floor_ordinal`.
 - `security.py` — `_SENSITIVE_HOME_DIRS` keystone entries.

@@ -113,8 +113,19 @@ class TestPolicyAuthorityAddOnly:
             assert_security_floor(_WeakeningAuthority())
 
     def test_baseline_deny_still_blocks_known_patterns(self) -> None:
+        """``BASELINE_DENY`` is now ``()`` — the built-ins are no longer the
+        compiled floor.  A default ``PolicyAuthority`` (no overlay) therefore
+        contributes an EMPTY floor via ``effective_patterns``, but its
+        ``is_denied`` still fails closed to the full built-in rule set when the
+        caller passes ``denied_regexes=None`` (the hooks gate always passes the
+        resolved effective set, but the fail-closed default must stay safe).
+        """
         authority = PolicyAuthority()
-        assert authority.is_denied("get_secret_foo") is not None
+        # Floor is empty: built-ins live in the disableable regex tier now.
+        assert authority.effective_patterns() == ()
+        # …but the decision still fails closed to built-ins for a real
+        # destructive command, and allows a benign read-only one.
+        assert authority.is_denied("aws ec2 terminate-instances --instance-ids i-1") is not None
         assert authority.is_denied("ls -la") is None
 
 
@@ -240,7 +251,9 @@ class TestBootstrapAndDiscovery:
         with pytest.raises(PlatformCompositionError):
             bootstrap_context(cfg)
 
-    def test_none_companion_on_enterprise_fails_closed(self, cfg: KiroCrewConfig, monkeypatch) -> None:
+    def test_none_companion_on_enterprise_fails_closed(
+        self, cfg: KiroCrewConfig, monkeypatch
+    ) -> None:
         # Defense in depth: if discovery ever returns None for a non-standalone
         # profile, bootstrap must STILL refuse to boot rather than install an
         # enterprise-labeled context with open defaults.

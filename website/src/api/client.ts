@@ -137,6 +137,32 @@ export interface WebexConfigSave {
   allowed_emails: string[]
 }
 
+/** A built-in denied-command rule as returned by GET /api/security/denied-commands. */
+export interface DeniedCommandRule {
+  id: string
+  pattern: string
+  category: string
+  description: string
+  enabled: boolean
+  pinned: boolean
+}
+
+/** A user-authored denied-command pattern. */
+export interface DeniedUserRule {
+  id: string
+  pattern: string
+  enabled: boolean
+}
+
+/** Full denied-commands snapshot returned by every denied-commands endpoint. */
+export interface DeniedCommandsData {
+  builtins: DeniedCommandRule[]
+  user_added: DeniedUserRule[]
+  disable_all: boolean
+  effective_count: number
+  governance_locked: boolean
+}
+
 let _sessionExpiredShown = false
 
 /**
@@ -431,6 +457,19 @@ export const api = {
   system: () => fetch('/api/system').then(j),
   telemetryStartup: () => fetch('/api/telemetry/startup').then(j),
   securityStats: () => fetch('/api/security/stats').then(j) as Promise<{ denied_commands: number; suspicious_patterns: number; tool_schemas: number; redaction_paths: number }>,
+  // Denied commands (Settings → Security). Every endpoint returns the full
+  // refreshed snapshot so callers can seed their query cache from the response.
+  deniedCommands: () => get('/api/security/denied-commands').then(j) as Promise<DeniedCommandsData>,
+  toggleBuiltinDeniedCommand: (id: string, enabled: boolean) =>
+    patch('/api/security/denied-commands/builtins/' + encodeURIComponent(id), { enabled }).then(j) as Promise<DeniedCommandsData>,
+  setDeniedCommandsDisableAll: (value: boolean) =>
+    patch('/api/security/denied-commands/disable-all', { value }).then(j) as Promise<DeniedCommandsData>,
+  addUserDeniedCommand: (pattern: string) =>
+    post('/api/security/denied-commands/user', { pattern }).then(j) as Promise<DeniedCommandsData>,
+  toggleUserDeniedCommand: (id: string, enabled: boolean) =>
+    patch('/api/security/denied-commands/user/' + encodeURIComponent(id), { enabled }).then(j) as Promise<DeniedCommandsData>,
+  deleteUserDeniedCommand: (id: string) =>
+    del('/api/security/denied-commands/user/' + encodeURIComponent(id)).then(j) as Promise<DeniedCommandsData>,
   suggestions: (force?: boolean) => fetch(`/api/suggestions${force ? '?force=1' : ''}`).then(j) as Promise<{ suggestions: string[]; generated_at: number; stale: boolean }>,
   branding: () => fetch('/api/dashboard/branding').then(j) as Promise<{ bot_name: string; avatar: string }>,
   // Instances (multi-instance management) — owner-only, gated by instances.enabled.

@@ -118,6 +118,34 @@ jobs:
           fi
           echo "::endgroup::"
 
+          echo "::group::denied-command opt-out state must stay on the keystone floor"
+          # The opt-out state (denied_commands.json) is a security ceiling: it
+          # MUST live on _SENSITIVE_HOME_DIRS so the agent can neither read nor
+          # write its own deny ceiling. Guard the invariant: it must be listed in
+          # security.py's sensitive floor AND in the governance boot-integrity
+          # required tuple. Fast tripwire — the authoritative controls are
+          # security.py + governance.py + their unit tests.
+          if ! grep -q '".kirocrew/denied_commands.json"' src/kiro_crew/security.py; then
+            echo "::error::denied_commands.json must be in security._SENSITIVE_HOME_DIRS (agent must not read/write its own deny ceiling)"
+            exit 1
+          fi
+          if ! grep -q '".kirocrew/denied_commands.json"' src/kiro_crew/platform/governance.py; then
+            echo "::error::denied_commands.json must be in the governance boot-integrity required tuple"
+            exit 1
+          fi
+          echo "::endgroup::"
+
+          echo "::group::denied-command opt-out must not silently disable via bool() truthiness"
+          # A hand-edited config.json is operator-editable; boolean opt-out fields
+          # (disable_all etc.) must be parsed with _coerce_bool, never bare bool()
+          # (bool("false") is True — would silently disable every protection).
+          # (?<![_\w]) so bare ``bool(`` matches but ``_coerce_bool(`` does not.
+          if git diff "$BASE".."$HEAD" -- 'src/kiro_crew/hooks.py' | grep -nP "^\+.*(?<![_\w])bool\(\s*(dc|data|denied)\.get\(\s*['\"](disable_all|auto_approve_subagent|enabled)"; then
+            echo "::error::Parse operator-editable boolean opt-out fields with _coerce_bool(), not bare bool() (bool('false') is truthy)"
+            exit 1
+          fi
+          echo "::endgroup::"
+
   # The semantic AI layer of code review (the rules that cannot be
   # expressed as a grep) lives in claude-review.yml, which auto-runs on every
   # PR and fails the check on high-severity findings.
@@ -160,7 +188,7 @@ jobs:
           # and identifiers must not be rewritten — mirrors the .woke.yml
           # ignore_files entry (file ignores don't apply to a --stdin scan).
           git diff "$BASE".."$HEAD" --unified=0 --diff-filter=ACMR \
-            -- ':(exclude)THIRD-PARTY-NOTICES' ':(exclude)CHANGELOG.md' ':(exclude)*.lock' ':(exclude).woke.yml' ':(exclude)AUTOSDE.yaml' ':(exclude)website/AUTOSDE.yaml' ':(exclude)src/kiro_crew/_vendor/**' \
+            -- ':(exclude)THIRD-PARTY-NOTICES' ':(exclude)CHANGELOG.md' ':(exclude)*.lock' ':(exclude).woke.yml' ':(exclude)AUTOSDE.yaml' ':(exclude)website/AUTOSDE.yaml' ':(exclude)src/kiro_crew/_vendor/**' ':(exclude)test/fixtures/denied_commands_golden.json' \
             | grep '^+[^+]' | sed 's/^+//' > /tmp/diff-added-lines.txt
 
           if [ ! -s /tmp/diff-added-lines.txt ]; then

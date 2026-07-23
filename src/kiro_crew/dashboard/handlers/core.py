@@ -20,7 +20,6 @@ from aiohttp.client_exceptions import ClientConnectionResetError
 
 import kiro_crew.validation as _validation_mod
 from kiro_crew import platform_compat
-from kiro_crew.agent import build_agent_config
 from kiro_crew.config.loader import (
     _VALID_STT_PROVIDERS,
     MAX_SUBAGENTS_FIXED_FLOOR,
@@ -820,13 +819,11 @@ async def api_security_stats(_request: web.Request) -> web.Response:
     """GET /api/security/stats — live security feature counts."""
     denied = 0
     try:
-        dc = (
-            build_agent_config()
-            .get("toolsSettings", {})
-            .get("execute_bash", {})
-            .get("deniedCommands", [])
-        )
-        denied = len(dc)
+        from kiro_crew.dashboard.handlers.security import build_denied_commands_snapshot_async
+
+        # Offloaded to a thread executor — reads denied_commands.json + walks the
+        # governance profile store (blocking FS I/O) off the event loop.
+        denied = (await build_denied_commands_snapshot_async())["effective_count"]
     except Exception:
         logger.warning("Failed to load denied commands count", exc_info=True)
 
@@ -1012,7 +1009,6 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     "agent.sandbox": {"type": "enum", "values": ["auto", "off"]},
     "agent.sandbox_allow_no_isolation": {"type": "bool"},
     "agent.apps_allow_third_party": {"type": "bool"},
-    "agent.enforce_denied_commands": {"type": "enum", "values": ["all", "kirocrew"]},
     "agent.completion_keep": {"type": "enum", "values": ["head", "tail", "both"]},
     "agent.completion_keep_chars": {"type": "int", "min": 0, "max": RESULT_FILE_MAX_BYTES},
     "agent.soft_stop_budget_secs": {"type": "float", "min": 0.5, "max": 60.0},

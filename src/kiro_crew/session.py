@@ -91,7 +91,6 @@ if TYPE_CHECKING:
     from kiro_crew.acp.types import AcpEvent
 
 from kiro_crew import model_registry, platform_compat, shutdown_event
-from kiro_crew.agent import _enforce_denied_commands
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.loader import POOL_SIZE_MAX, build_provider_factory, default_project_dir
 from kiro_crew.executors import maintenance_executor, subprocess_executor
@@ -584,7 +583,6 @@ class SessionManager:
             [
                 CleanupHook("idle_expiry", self._expire_idle_hook),
                 CleanupHook("orphan_mcp", self._orphan_mcp_hook),
-                CleanupHook("denied_commands", self._enforce_denied_commands_hook),
                 CleanupHook("rss_threshold", self._rss_threshold_check),
             ]
         )
@@ -643,11 +641,6 @@ class SessionManager:
         # Prune stale session map entries on startup
         self._session_map.prune()
 
-        # Enforce deniedCommands on all agent configs before any session starts
-        try:
-            _enforce_denied_commands()
-        except Exception:
-            logger.debug("Failed to enforce deniedCommands at pool start", exc_info=True)
         self._pool_started = True
 
         if not blocking:
@@ -1151,11 +1144,15 @@ class SessionManager:
         """
         try:
             asyncio.get_running_loop().run_in_executor(
-                subprocess_executor(), _sync_kill_provider, provider,
+                subprocess_executor(),
+                _sync_kill_provider,
+                provider,
             )
         except RuntimeError:
             threading.Thread(
-                target=_sync_kill_provider, args=(provider,), daemon=True,
+                target=_sync_kill_provider,
+                args=(provider,),
+                daemon=True,
             ).start()
 
     async def _discard_pool_provider(self, provider: LLMProvider, context: str) -> None:
@@ -1197,7 +1194,8 @@ class SessionManager:
         except Exception:
             logger.warning(
                 "%s: provider shutdown failed — falling back to hard kill",
-                context, exc_info=True,
+                context,
+                exc_info=True,
             )
         except BaseException:
             self._dispatch_hard_kill(provider)  # same rationale as the CancelledError arm
@@ -1215,7 +1213,8 @@ class SessionManager:
         if still_alive:
             logger.warning(
                 "%s: provider process (pid=%s) still alive after shutdown — hard-killing",
-                context, pid,
+                context,
+                pid,
             )
             # Normal (non-cancellation) path: offload — on Windows kill_pid
             # shells out to taskkill, a blocking call that must not run on the
@@ -1225,12 +1224,16 @@ class SessionManager:
             # pass, and an escaping exception here would leak the rest.
             try:
                 await asyncio.get_running_loop().run_in_executor(
-                    subprocess_executor(), _sync_kill_provider, provider,
+                    subprocess_executor(),
+                    _sync_kill_provider,
+                    provider,
                 )
             except Exception:
                 logger.warning(
-                    "%s: executor hard kill failed (pid=%s) — dispatching to a "
-                    "dedicated thread", context, pid, exc_info=True,
+                    "%s: executor hard kill failed (pid=%s) — dispatching to a " "dedicated thread",
+                    context,
+                    pid,
+                    exc_info=True,
                 )
                 self._dispatch_hard_kill(provider)
 
@@ -1407,10 +1410,7 @@ class SessionManager:
                     to_shutdown.append(provider)
                     continue
                 try:
-                    alive = (
-                        hasattr(provider, "is_process_alive")
-                        and provider.is_process_alive()
-                    )
+                    alive = hasattr(provider, "is_process_alive") and provider.is_process_alive()
                 except Exception:
                     alive = False
                 if not alive:
@@ -1653,9 +1653,7 @@ class SessionManager:
                 # duplicate provider that would overwrite _sessions[key] and
                 # leak the replacement's process.
                 _existing = self._sessions.get(key)
-                _is_recycling = (
-                    _existing is not None and self._recycling.get(key) is _existing
-                )
+                _is_recycling = _existing is not None and self._recycling.get(key) is _existing
                 if _existing is not None and not _is_recycling:
                     sess = _existing
                     # If the provider's process died (crash, SIGKILL, etc.),
@@ -1972,9 +1970,7 @@ class SessionManager:
                 # so even if we do register over a being-recycled entry, only
                 # the old session object is killed.
                 _existing = self._sessions.get(key)
-                _is_recycling = (
-                    _existing is not None and self._recycling.get(key) is _existing
-                )
+                _is_recycling = _existing is not None and self._recycling.get(key) is _existing
                 if _existing is not None and not _is_recycling:
                     # Another task won the race — use theirs and shut down our
                     # duplicate provider below, after the lock is released
@@ -2164,9 +2160,7 @@ class SessionManager:
                 # macOS pgrep/ps spawns are offloaded to subprocess_executor
                 # to keep the reset path responsive.
                 _loop = asyncio.get_running_loop()
-                fresh = await _loop.run_in_executor(
-                    subprocess_executor(), _get_child_pids, pid
-                )
+                fresh = await _loop.run_in_executor(subprocess_executor(), _get_child_pids, pid)
                 new_pids = [p for p in fresh if p not in child_pids]
                 if new_pids:
                     child_pids.update(
@@ -2186,14 +2180,10 @@ class SessionManager:
                         # Async variants offload Windows taskkill to
                         # subprocess_executor so this reset path never blocks
                         # the event loop on taskkill.exe.
-                        await platform_compat.kill_process_tree_async(
-                            pid, platform_compat.SIGKILL
-                        )
+                        await platform_compat.kill_process_tree_async(pid, platform_compat.SIGKILL)
                     except (ProcessLookupError, OSError):
                         try:
-                            await platform_compat.kill_pid_async(
-                                pid, platform_compat.SIGKILL
-                            )
+                            await platform_compat.kill_pid_async(pid, platform_compat.SIGKILL)
                         except (ProcessLookupError, OSError):
                             pass
                 # Sweep children in different PGIDs (MCP servers) even when
@@ -3098,19 +3088,6 @@ class SessionManager:
         except Exception:
             pass
 
-    async def _enforce_denied_commands_hook(self) -> None:
-        """Re-enforce deniedCommands (catches manual edits). The sync enforcement
-        performs file I/O and is reachable from the event loop (via
-        _cleanup_loop → watchdog.tick()), so it is offloaded to the bounded
-        maintenance pool — mirroring _orphan_mcp_hook — to avoid blocking the
-        loop. Preserves the original silent-swallow behaviour."""
-        try:
-            await asyncio.get_running_loop().run_in_executor(
-                maintenance_executor(), _enforce_denied_commands
-            )
-        except Exception:
-            pass
-
     async def _rss_threshold_check(self) -> None:
         """Recycle non-busy sessions whose process tree exceeds the configured
         RSS ceiling. New in CR 1; disabled by default (``watchdog_rss_max_mb=0``).
@@ -3215,9 +3192,8 @@ class SessionManager:
         self._idle_sweep_enabled = idle_sweep_enabled
         self._idle_timeout = timeout
         # When idle sweep is disabled we still run the maintenance sweeps
-        # (orphaned MCP servers, leaked kiro-cli PIDs, deniedCommands) on a
-        # fixed cadence so operators who set timeout_secs=0 don't also lose
-        # process hygiene.
+        # (orphaned MCP servers, leaked kiro-cli PIDs) on a fixed cadence so
+        # operators who set timeout_secs=0 don't also lose process hygiene.
         interval = max(timeout // 6, 60) if idle_sweep_enabled else 300
         while not shutdown_event.is_set():
             try:
@@ -3226,8 +3202,8 @@ class SessionManager:
             except asyncio.TimeoutError:
                 pass  # normal wake-up
 
-            # idle expiry + orphaned-MCP sweep + deniedCommands re-enforcement,
-            # plus the new RSS-threshold recycle, are dispatched by the watchdog.
+            # idle expiry + orphaned-MCP sweep, plus the new RSS-threshold
+            # recycle, are dispatched by the watchdog.
             # Each hook carries the exact error handling of the block it was
             # lifted from (the orphan-MCP hook keeps the maintenance-
             # executor offload). The orphan-PID sweep below is intentionally left

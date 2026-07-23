@@ -301,6 +301,17 @@ change, never an evaluator edit.
 (`is_sensitive_path` is the shared gate; bash write/extract verbs are covered).
 This single mechanism is what makes the ceiling un-disableable — do not weaken it.
 
+**Denied commands** are first-class `DeniedCommandRule` records
+(`BUILTIN_DENIED_RULES`, 130 rules) enforced **only** at the `hooks.py` PreToolUse
+gate — not injected into `~/.kiro/agents/*.json` (the `agent._enforce_denied_commands`
+path + `autoAllowReadonly` are retired; read-only auto-approve moved into
+`hooks.py` after the deny/governance checks). They are default-ON but
+**user-configurable from Settings → Security** (`config.json`
+`hooks.denied_commands` = `disable_all`/`disabled_ids`/`user_added`); the
+governance `commands` scope is the un-opt-out-able enterprise force-pin
+(tightest-wins). Keep the generic security controls intact. See
+`docs/system-specs/modules/security.md` + `governance.md`.
+
 **If you change `platform/`:** read the two spec docs first and update them in
 the same commit; leave `CONTRACT_VERSION` at **1** pre-launch (the companion
 rebuilds in lockstep — no field/interface change bumps it until the first public

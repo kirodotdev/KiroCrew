@@ -38,7 +38,7 @@ from kiro_crew.embeddings import make_sync_embed_fn, model_file_present
 from kiro_crew.env import activate_mise
 from kiro_crew.frontend import build_frontend_sync, ensure_dev_dist_symlink
 from kiro_crew.history import ConversationLog, HistoryConsolidator
-from kiro_crew.hooks import HookManager, HooksConfig
+from kiro_crew.hooks import HookManager, hooks_config_from_config_dict
 from kiro_crew.learn import LessonStore
 from kiro_crew.memory import MemoryStore
 from kiro_crew.preflight import run_preflight_checks
@@ -933,7 +933,9 @@ async def _run_task(args: argparse.Namespace) -> None:
         if body:
             print(f"  {body}")
 
-    hooks = HookManager(HooksConfig.from_dict(cfg.hooks))
+    # Opt-out state is sourced from the keystone denied_commands.json, not
+    # config.json's hooks section (the agent cannot write the keystone file).
+    hooks = HookManager(hooks_config_from_config_dict(cfg.hooks))
     ctx = ContextBuilder(
         memory=memory, skills=skills, hooks=hooks, lessons=lessons, bot_name=cfg.agent.bot_name
     )

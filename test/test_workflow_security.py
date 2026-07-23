@@ -350,6 +350,60 @@ class TestResolveDenyPatterns:
         assert "req-1" in provider.approved
 
 
+class TestResolveHonorsOptOut:
+    """The AUTO_APPROVE surface (cron/Slack/workflow/heartbeat) must honor the
+    user's Settings>Security opt-out — not fail closed to all built-ins and
+    re-introduce "disabled but still blocked"."""
+
+    @pytest.mark.asyncio
+    async def test_disabled_builtin_allowed_when_hooks_opt_out(self, mock_sel):
+        from kiro_crew.hooks import HookManager, HooksConfig
+        from kiro_crew.llm_helpers import _resolve_permission
+
+        # User disabled the ec2 terminate-instances built-in in the dashboard.
+        mgr = HookManager(
+            HooksConfig(denied_commands_disabled_ids=["aws-destructive-ec2-terminate-instances"])
+        )
+        provider = FakeProvider()
+        event = FakeEvent(title="aws ec2 terminate-instances --instance-ids i-1")
+        result = await _resolve_permission(
+            provider, event, ToolApprovalPolicy.AUTO_APPROVE, hooks=mgr
+        )
+        # Opt-out honored on this surface too — not blocked.
+        assert result is True
+        assert "req-1" in provider.approved
+
+    @pytest.mark.asyncio
+    async def test_other_builtin_still_denied_when_one_disabled(self, mock_sel):
+        from kiro_crew.hooks import HookManager, HooksConfig
+        from kiro_crew.llm_helpers import _resolve_permission
+
+        mgr = HookManager(
+            HooksConfig(denied_commands_disabled_ids=["aws-destructive-ec2-terminate-instances"])
+        )
+        provider = FakeProvider()
+        # A DIFFERENT destructive command the user did NOT disable stays blocked.
+        event = FakeEvent(title="aws cloudformation delete-stack --stack-name prod")
+        result = await _resolve_permission(
+            provider, event, ToolApprovalPolicy.AUTO_APPROVE, hooks=mgr
+        )
+        assert result is False
+        assert "req-1" in provider.rejected
+
+    @pytest.mark.asyncio
+    async def test_no_hooks_fails_closed_to_all_builtins(self, mock_sel):
+        from kiro_crew.llm_helpers import _resolve_permission
+
+        # hooks=None (rare) → fail-closed: all built-ins enforced.
+        provider = FakeProvider()
+        event = FakeEvent(title="aws ec2 terminate-instances --instance-ids i-1")
+        result = await _resolve_permission(
+            provider, event, ToolApprovalPolicy.AUTO_APPROVE, hooks=None
+        )
+        assert result is False
+        assert "req-1" in provider.rejected
+
+
 class TestResolveRejectAll:
     """REJECT_ALL policy still works."""
 

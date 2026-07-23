@@ -449,7 +449,13 @@ async def _resolve_permission(
         await provider.reject_tool(event.request_id)
         _log("denied", error=_bash_reason, metadata={"mechanism": "always_deny"})
         return False
-    _deny_reason = is_denied(normalized)
+    # Honor the user's Settings>Security opt-out + governance pins on this
+    # surface too (cron / Slack / workflow / heartbeat). Without threading the
+    # effective set, is_denied() fails closed to ALL built-ins here, which would
+    # re-introduce "disabled but still blocked" on every non-dashboard surface.
+    # No HookManager (rare) → None → fail-closed default (all built-ins).
+    _denied_regexes = hooks.effective_denied_regexes() if hooks is not None else None
+    _deny_reason = is_denied(normalized, denied_regexes=_denied_regexes)
     if _deny_reason:
         await provider.reject_tool(event.request_id)
         _log("denied", error=_deny_reason, metadata={"mechanism": "always_deny"})
@@ -477,7 +483,7 @@ async def _resolve_permission(
                 await provider.reject_tool(event.request_id)
                 _log("denied", error=_input_bash, metadata={"mechanism": "always_deny_input"})
                 return False
-            _input_deny = is_denied(s)
+            _input_deny = is_denied(s, denied_regexes=_denied_regexes)
             if _input_deny:
                 await provider.reject_tool(event.request_id)
                 _log("denied", error=_input_deny, metadata={"mechanism": "always_deny_input"})

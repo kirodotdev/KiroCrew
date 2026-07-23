@@ -50,7 +50,6 @@
         "max_channels": 1,
         "max_channel_agents": 3,
         "log_level": "WARNING",
-        "enforce_denied_commands": "all",
         "soft_stop_budget_secs": 10.0
       }
     },
@@ -553,23 +552,6 @@
         "ERROR"
       ],
       "defaultValue": "WARNING"
-    },
-    {
-      "path": "agent.enforce_denied_commands",
-      "kind": "core",
-      "type": "string",
-      "required": false,
-      "deprecated": false,
-      "sensitive": false,
-      "tags": [],
-      "label": "Enforce Denied Commands",
-      "help": "Scope for deniedCommands enforcement on kiro agent configs. 'all' enforces on every agent; 'kirocrew' only on the kirocrew agent.",
-      "hasChildren": false,
-      "enumValues": [
-        "all",
-        "kirocrew"
-      ],
-      "defaultValue": "all"
     },
     {
       "path": "agent.soft_stop_budget_secs",

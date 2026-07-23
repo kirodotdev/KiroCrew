@@ -775,6 +775,9 @@ ORDINAL = "ordinal"
 CAPABILITY = "capability"
 SCOPEDMAP = "scopedmap"
 
+# SCOPE_CATALOG key whose deny-mode deny list is force-pinned (un-opt-out-able).
+COMMANDS_SCOPE = "commands"
+
 
 @dataclass(frozen=True)
 class ScopeSpec:
@@ -872,6 +875,16 @@ class GovernanceCeiling:
     def get(self, scope: str) -> Optional[object]:
         return self.controls.get(scope)
 
+    def pinned_command_patterns(self) -> Tuple[str, ...]:
+        """Force-deny command patterns pinned by this ceiling's ``commands`` scope.
+
+        Enterprise lock: these patterns are un-opt-out-able. hooks/security union
+        them into the effective denied set so a user cannot disable a built-in
+        rule the fleet policy pinned. Returns ``()`` when the policy does not
+        govern ``commands`` or governs it in allow (allowlist) mode.
+        """
+        return _command_deny_patterns(self.controls.get(COMMANDS_SCOPE))
+
 
 @dataclass(frozen=True)
 class Bind:
@@ -892,6 +905,10 @@ class Profile:
 
     def get(self, scope: str) -> Optional[object]:
         return self.controls.get(scope)
+
+    def pinned_command_patterns(self) -> Tuple[str, ...]:
+        """Force-deny command patterns pinned by this profile's ``commands`` scope."""
+        return _command_deny_patterns(self.controls.get(COMMANDS_SCOPE))
 
 
 def deny_all_profile(name: str = "_deny_all") -> Profile:
@@ -932,6 +949,23 @@ def _dedup(items: Tuple[str, ...]) -> Tuple[str, ...]:
     for it in items:
         seen.setdefault(it, None)
     return tuple(seen)
+
+
+def _command_deny_patterns(control: object) -> Tuple[str, ...]:
+    """Extract force-deny command patterns from a parsed ``commands`` control.
+
+    A DENY-mode ScopedRuleset's ``deny`` tuple IS the set of force-pins: patterns
+    that must remain denied regardless of user opt-out. An ALLOW-mode ruleset is
+    an allowlist (deny-by-default) enforced by ``gate_decision`` and CANNOT be
+    projected as a deny-pattern union, so it returns ``()`` (with a debug log).
+    Any non-ScopedRuleset control (e.g. an ``_AndRuleset`` that can only arise
+    from an allow-mode combination) also returns ``()``.
+    """
+    if isinstance(control, ScopedRuleset) and control.mode == MODE_DENY:
+        return control.deny
+    if control is not None:
+        logger.debug("commands control %r yields no force-deny pins", type(control))
+    return ()
 
 
 def _parse_control(scope: str, spec: ScopeSpec, raw: object, *, is_policy: bool) -> object:
@@ -1301,6 +1335,28 @@ def gate_decision(
     return Decision(True, "permitted by all mapped scopes", rule="rule2-intersect")
 
 
+def resolve_pinned_commands(
+    ceiling: Optional[GovernanceCeiling],
+    profile: Optional[Profile] = None,
+) -> Tuple[str, ...]:
+    """Effective force-pinned command patterns = ceiling pins ∪ profile pins.
+
+    Deny-mode denies compose by UNION (tightest-wins), so the effective pin set
+    is the order-preserving, de-duplicated union of the ceiling's and the active
+    profile's ``commands`` deny patterns. hooks.py calls this and unions the
+    result into security.py's effective denied set so an enterprise/policy pin
+    (and a bound profile's command deny) overrides the user's per-rule opt-out.
+    Returns ``()`` for an ungoverned standalone host (ceiling and profile both
+    None or neither governing ``commands``) — no behavior change there.
+    """
+    pins: Tuple[str, ...] = ()
+    if ceiling is not None:
+        pins = pins + ceiling.pinned_command_patterns()
+    if profile is not None:
+        pins = pins + profile.pinned_command_patterns()
+    return _dedup(pins)
+
+
 def resolve_ordinal(
     ceiling: Optional[GovernanceCeiling],
     profile: Optional[Profile],
@@ -1374,6 +1430,9 @@ def assert_governance_paths_protected() -> None:
         ".kirocrew/security_policy.json",
         ".kirocrew/profiles",
         ".kirocrew/admission_policy.json",
+        # Denied-command opt-out ceiling — the agent must not be able to write
+        # its own deny opt-out state (would let it disable the deny gate).
+        ".kirocrew/denied_commands.json",
     )
     sensitive = set(security._SENSITIVE_HOME_DIRS)  # noqa: SLF001 — boot integrity check
     missing = [p for p in required if p not in sensitive]
@@ -1437,6 +1496,7 @@ __all__ = [
     "POLICY_VERSION",
     "MODE_ALLOW",
     "MODE_DENY",
+    "COMMANDS_SCOPE",
     "register_scope",
     "register_matcher",
     "mcp_title_to_ref",
@@ -1447,6 +1507,7 @@ __all__ = [
     "parse_profile",
     "load_security_policy",
     "resolve",
+    "resolve_pinned_commands",
     "resolve_ordinal",
     "gate_decision",
     "assert_governance_floor",

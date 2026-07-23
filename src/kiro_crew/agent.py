@@ -40,7 +40,6 @@ from typing import Any
 
 from kiro_crew import agent_state, platform_compat
 from kiro_crew.aim_agents import installed_kiro_packages_missing_from_cc
-from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config import config_path as _mc_config_path
 from kiro_crew.env import augmented_path
 from kiro_crew.mcp_utils import mcp_server_alias
@@ -681,6 +680,37 @@ def _kiro_hooks_only(hooks: dict) -> dict:
     return {k: v for k, v in hooks.items() if k in _VALID_HOOK_EVENTS}
 
 
+def _strip_legacy_denied_commands(config: dict) -> None:
+    """Remove the retired ``deniedCommands`` / ``autoAllowReadonly`` injection.
+
+    Denied commands are now enforced solely at KiroCrew's hooks.py PreToolUse
+    gate; they are no longer injected into the kiro agent spec. But an install
+    UPGRADED from a build that DID inject them keeps a stale
+    ``toolsSettings.execute_bash/shell.deniedCommands`` (and ``autoAllowReadonly``)
+    in its ``kirocrew.json``. kiro-cli would keep enforcing those stale rules
+    before the hook gate — so a user who disables a built-in in Settings >
+    Security would see it "succeed" yet stay blocked. Strip them on every refresh
+    so upgraded installs behave exactly like a fresh one (hooks-gate-only).
+
+    Any OTHER ``toolsSettings`` keys a user authored are preserved, and an
+    emptied ``execute_bash``/``shell``/``toolsSettings`` object is removed so no
+    empty scaffolding lingers.
+    """
+    ts = config.get("toolsSettings")
+    if not isinstance(ts, dict):
+        return
+    for tool in ("execute_bash", "shell"):
+        entry = ts.get(tool)
+        if not isinstance(entry, dict):
+            continue
+        entry.pop("deniedCommands", None)
+        entry.pop("autoAllowReadonly", None)
+        if not entry:
+            ts.pop(tool, None)
+    if not ts:
+        config.pop("toolsSettings", None)
+
+
 _MAX_USER_HOOKS_PER_EVENT = 10
 _MAX_TOTAL_USER_HOOKS = 20
 
@@ -1223,27 +1253,28 @@ def _apply_user_kiro_hooks(config: dict, mc_cfg: dict) -> None:
 def build_agent_config() -> dict:
     """Return the final agent config (shipped defaults + user overrides + dynamic fields).
 
-    Security-critical fields (``deniedCommands``, ``hooks``) always use the
-    bundled config as their base, even when a project-dir override is present.
-    This prevents dev overrides from silently dropping security controls.
-    User-defined ``kiro_hooks`` from ``~/.kirocrew/config.json`` are then
-    additively merged; bundled hooks always run first and cannot be removed.
+    Security-critical ``hooks`` always use the bundled config as their base,
+    even when a project-dir override is present, so dev overrides cannot
+    silently drop the PreToolUse security gate. ``deniedCommands`` are NO
+    LONGER injected here — command denial is enforced at KiroCrew's own
+    hooks.py PreToolUse gate, not via the kiro agent spec. User-defined
+    ``kiro_hooks`` from ``~/.kirocrew/config.json`` are then additively merged;
+    bundled hooks always run first and cannot be removed.
     """
     config = _load_json(_shipped_defaults())
     config = _deep_merge(config, _load_json(_USER_OVERRIDES))
 
-    # Ensure deniedCommands and hooks always come from the bundled config,
+    # Ensure hooks always come from the bundled config,
     # even if the project-level defaults.json is stale.
     bundled = _load_json(_BUNDLED_CFG_DIR / "defaults.json")
-    bundled_dc = bundled.get("toolsSettings", {}).get("execute_bash", {}).get("deniedCommands")
-    if bundled_dc:
-        config.setdefault("toolsSettings", {}).setdefault("execute_bash", {})[
-            "deniedCommands"
-        ] = bundled_dc
     bundled_hooks = bundled.get("hooks")
     if not bundled_hooks:
         raise RuntimeError("Cannot build agent config: hooks missing from bundled defaults")
     config["hooks"] = _kiro_hooks_only(bundled_hooks)
+
+    # Strip the retired deniedCommands/autoAllowReadonly injection so a config
+    # merged from a stale project defaults.json or user override cannot carry it.
+    _strip_legacy_denied_commands(config)
 
     # Merge user-defined kiro_hooks from ~/.kirocrew/config.json (additive).
     mc_cfg = _load_json(_mc_config_path()) or {}
@@ -1317,7 +1348,7 @@ def _refresh_dynamic_fields(config: dict) -> None:
     for name, extra_spec in _extra_mcp_servers().items():
         mcp.setdefault(name, dict(extra_spec))
 
-    # Security: deniedCommands and hooks always from bundled config.
+    # Security: hooks always from bundled config.
     # Hard-fail if bundled defaults are missing — deny-by-default.
     bundled = _load_json(_BUNDLED_CFG_DIR / "defaults.json")
     if bundled is None:
@@ -1329,19 +1360,15 @@ def _refresh_dynamic_fields(config: dict) -> None:
             "Cannot refresh security fields: bundled defaults.json is not a JSON object"
         )
 
-    bundled_dc = bundled.get("toolsSettings", {}).get("execute_bash", {}).get("deniedCommands")
-    if not bundled_dc:
-        raise RuntimeError(
-            "Cannot refresh security fields: deniedCommands missing from bundled defaults"
-        )
-    config.setdefault("toolsSettings", {}).setdefault("execute_bash", {})[
-        "deniedCommands"
-    ] = bundled_dc
-
     bundled_hooks = bundled.get("hooks")
     if not bundled_hooks:
         raise RuntimeError("Cannot refresh security fields: hooks missing from bundled defaults")
     config["hooks"] = _kiro_hooks_only(bundled_hooks)
+
+    # Upgrade cleanup: drop the retired deniedCommands/autoAllowReadonly that an
+    # older build injected into this existing config, so kiro-cli stops enforcing
+    # the stale list ahead of the hooks gate (see _strip_legacy_denied_commands).
+    _strip_legacy_denied_commands(config)
 
     # Merge user-defined kiro_hooks from ~/.kirocrew/config.json (additive).
     mc_cfg = _load_json(_mc_config_path()) or {}
@@ -1587,9 +1614,8 @@ def rebuild_agent_config(*, clean: bool = False) -> Path:
 
     When the config already exists and *clean* is False, the existing file
     is used as the base so that **all** user customizations are preserved.
-    Only security-critical fields (``deniedCommands``, ``hooks``) and
-    dynamic fields (``prompt`` URI, kirocrew MCP server commands) are
-    refreshed from defaults.
+    Only security-critical ``hooks`` and dynamic fields (``prompt`` URI,
+    kirocrew MCP server commands) are refreshed from defaults.
 
     Args:
         clean: If True, ignore existing config and regenerate from defaults.
@@ -1874,7 +1900,7 @@ def rebuild_agent_config(*, clean: bool = False) -> Path:
     # are also available for the other (agents↔plugins, skills).
     sync_aim_packages()
 
-    # Security: enforce deniedCommands + sanitize invalid hook keys
+    # Security: sanitize invalid hook keys in agent configs
     repair_agent_configs()
 
     return path
@@ -2234,8 +2260,7 @@ def sync_aim_packages() -> None:
 
 
 def repair_agent_configs() -> None:
-    """Enforce security controls and sanitize invalid keys in all agent configs."""
-    _enforce_denied_commands()
+    """Sanitize invalid hook keys in all agent configs."""
     _sanitize_agent_hooks()
 
 
@@ -2255,93 +2280,6 @@ def _ensure_cc_parity_for_kiro_packages() -> None:
         logger.debug("CC parity check failed", exc_info=True)
 
 
-_denied_cmd_mtimes: dict[str, float] = {}
-_last_skipped_set: frozenset[str] = frozenset()
-
-
-def _enforce_denied_commands() -> None:
-    """Inject deniedCommands from bundled defaults into agent configs.
-
-    Scope controlled by ``agent.enforce_denied_commands`` in config:
-      - ``"all"`` (default): enforce on every installed agent.
-      - ``"kirocrew"``: only enforce on kirocrew.json, skip other agents.
-
-    Runs at: install_agent(), start_pool() (gateway startup),
-    _cleanup_loop() (~60s periodic). Uses mtime to skip unchanged files.
-    """
-    bundled = _load_json(_BUNDLED_CFG_DIR / "defaults.json")
-    denied = bundled.get("toolsSettings", {}).get("execute_bash", {}).get("deniedCommands")
-    if not denied:
-        return
-
-    # Determine scope from config
-    try:
-        scope = KiroCrewConfig.load().agent.enforce_denied_commands
-    except Exception as exc:
-        logger.debug("Failed to load enforce_denied_commands scope, defaulting to 'all': %s", exc)
-        scope = "all"
-
-    kirocrew_names = frozenset(
-        f.name for f in KIRO_AGENTS_DIR.glob("*.json") if "kirocrew" in f.name.lower()
-    )
-
-    skipped: list[str] = []
-
-    for f in KIRO_AGENTS_DIR.glob("*.json"):
-        if f.name in _LITE_AGENT_NAMES:
-            continue
-        if scope == "kirocrew" and f.name not in kirocrew_names:
-            skipped.append(f.name)
-            continue
-        try:
-            mtime = f.stat().st_mtime
-            if _denied_cmd_mtimes.get(str(f)) == mtime:
-                continue
-            data = json.loads(f.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
-            continue
-        # A valid-JSON-but-non-object root (e.g. an AppleDouble ._foo.json stub,
-        # or a hand-edited/tool-emitted "[]"/42) would raise AttributeError on
-        # the setdefault below — which is NOT in the except tuple above, so it
-        # would propagate out of this per-file loop and abort enforcement for
-        # every agent config after it (deniedCommands, a security control,
-        # silently left un-refreshed). Skip the bad file and keep enforcing the
-        # rest. _load_json() already guards non-dict roots the same way.
-        if not isinstance(data, dict):
-            continue
-        ts = data.setdefault("toolsSettings", {})
-        bash = ts.setdefault("execute_bash", {})
-        shell = ts.setdefault("shell", {})
-        existing_bash = set(bash.get("deniedCommands", []))
-        existing_shell = set(shell.get("deniedCommands", []))
-        required = set(denied)
-
-        if existing_bash == required and existing_shell == required:
-            _denied_cmd_mtimes[str(f)] = mtime
-            continue
-        # Replace entirely — bundled defaults are the canonical source.
-        # User-added patterns via dashboard are not supported; all
-        # security patterns must ship in agents/defaults.json.
-        bash["deniedCommands"] = sorted(required)
-        shell["deniedCommands"] = sorted(required)
-        _atomic_json_write(f, data)
-        _denied_cmd_mtimes[str(f)] = f.stat().st_mtime
-        logger.info("Enforced deniedCommands on %s", f.name)
-
-    if skipped:
-        skipped_set = frozenset(skipped)
-        global _last_skipped_set
-        if skipped_set != _last_skipped_set:
-            _last_skipped_set = skipped_set
-            sel().log_api_access(
-                caller="system",
-                operation="enforce_denied_commands.skip",
-                outcome="ok",
-                source="agent",
-                resources=",".join(sorted(skipped)),
-            )
-
-
 _hooks_sanitized_mtimes: dict[str, float] = {}
 
 
@@ -2352,8 +2290,8 @@ def _sanitize_agent_hooks() -> None:
     ``auto_approve_tools``), causing it to silently fall back to the
     default agent — losing kirocrew-core, kirocrew-cron.
 
-    Runs alongside ``_enforce_denied_commands`` to auto-repair configs
-    for users who already have the invalid key from prior versions.
+    Auto-repairs configs for users who already have the invalid key from
+    prior versions.
     """
     for f in KIRO_AGENTS_DIR.glob("*.json"):
         try:

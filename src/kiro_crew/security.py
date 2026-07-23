@@ -17,6 +17,7 @@ import string
 import sys
 import uuid
 from collections import Counter
+from dataclasses import dataclass
 
 try:
     import resource as _resource
@@ -40,50 +41,1448 @@ from kiro_crew.vector_memory_constants import _contains_injection
 # off the lightweight import path.
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterable
 
 logger = logging.getLogger(__name__)
 
-# ── Built-in Deny Patterns ──
-# These are always enforced regardless of user config.
-# Patterns use fnmatch (case-insensitive): * matches anything.
+# ── Built-in Denied-Command Rules ──
+# The canonical catalog of built-in denied commands.  Each rule is a Python
+# REGEX (matched case-insensitively via ``re.search``) with a stable ``id``
+# (the opt-out key + SEL audit key), a ``category`` for UI grouping, and a
+# human ``description``.  Rules are DEFAULT-ON but user-disableable from
+# Settings → Security; a governance ``commands``-scope policy can force-pin a
+# rule as un-opt-out-able (see ``platform/governance.py``).  Enforcement is at
+# KiroCrew's own ``hooks.py`` PreToolUse gate — these are NOT injected into the
+# kiro-cli agent spec.
+#
+# The always-on keystone controls (``_is_git_publish``,
+# ``is_sensitive_bash_command``, ``audit_bash_exfiltration``,
+# ``_check_imds_access``, ``_ENV_CRED_PATTERNS``, ``_SENSITIVE_HOME_DIRS``) are
+# independent and un-disableable; they run BEFORE the rule tiers.
 
-BUILTIN_DENY_PATTERNS: list[str] = [
-    # Credential / secret access — only explicit secret-fetching tool names.
-    # Credential file access is handled by the OS-level sandbox (sandbox.py)
-    # which bind-mounts empty dirs over ~/.aws, ~/.gnupg, etc., and by
-    # deniedCommands in the kiro-cli agent config.  Broad "*credential*"
-    # patterns caused false positives on package names (e.g.
-    # CredentialValidatorServiceCDK, credential-rotation-service).
-    "get_secret*",
-    "read_secret*",
-    # Destructive AWS operations.
-    # Real AWS CLI subcommands are HYPHENATED (``aws cloudformation
-    # delete-stack``, ``aws ec2 terminate-instances``); boto3 SDK method names
-    # are the UNDERSCORE forms (``client.delete_stack(...)``). The underscore
-    # globs alone matched no real CLI invocation, so a destructive
-    # ``aws … delete-stack``/``terminate-instances`` slipped through
-    # ``is_denied`` — notably on the ``mcp_cron`` command path, which relies on
-    # ``is_denied`` to block prompt-injected destructive shell. Cover BOTH
-    # spellings. Patterns are specific destructive subcommand tokens, so they
-    # don't over-block benign reads (``describe-instances``, ``s3 ls``) or
-    # command/package names like ``get-credentials`` / ``credential-rotation``.
-    "*delete_stack*",
-    "*delete-stack*",
-    "*terminate_instance*",
-    "*terminate-instance*",  # matches terminate-instance and terminate-instances
-    "*drop_table*",
-    "*drop-table*",
-    "*delete_table*",
-    "*delete-table*",
-    "*delete_bucket*",
-    "*delete-bucket*",
-    # NOTE: ``git push`` is NOT a glob here — a broad ``*git*push*`` substring
-    # glob over-blocked any command whose text merely contained "push" (e.g. a
-    # ``git commit -m`` message mentioning push, or an ``ssh host '...'`` whose
-    # remote command did).  It is now matched by the verb-anchored
-    # ``_GIT_PUBLISH_*_RE`` regexes below (see ``_is_git_publish``).
+
+@dataclass(frozen=True)
+class DeniedCommandRule:
+    """A single built-in denied-command rule.
+
+    ``pattern`` is a Python regex string matched via ``re.search`` with
+    ``re.IGNORECASE`` (NOT an fnmatch glob).  ``id`` is a stable slug used as
+    the opt-out key in config and as the SEL audit ``rule_id``.
+    """
+
+    id: str
+    pattern: str
+    category: str
+    description: str
+
+
+BUILTIN_DENIED_RULES: list[DeniedCommandRule] = [
+    DeniedCommandRule(
+        id="credential-exfil-s3-cp",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+s3(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+cp .* s3://.*",
+        category="credential-exfil",
+        description=(
+            "Blocks `aws s3 cp` uploads to an s3:// destination, which can exfiltrate local "
+            "files or credentials into an attacker-controlled bucket."
+        ),
+    ),
+    DeniedCommandRule(
+        id="credential-exfil-s3-mv",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+s3(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+mv .* s3://.*",
+        category="credential-exfil",
+        description=(
+            "Blocks `aws s3 mv` moves to an s3:// destination, which can exfiltrate local files "
+            "or credentials into an attacker-controlled bucket."
+        ),
+    ),
+    DeniedCommandRule(
+        id="credential-exfil-s3-sync",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+s3(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+sync .* s3://.*",
+        category="credential-exfil",
+        description=(
+            "Blocks `aws s3 sync` to an s3:// destination, which can bulk-exfiltrate a local "
+            "directory tree into an attacker-controlled bucket."
+        ),
+    ),
+    DeniedCommandRule(
+        id="credential-exfil-echo-aws-secret",
+        pattern=".*echo.*\\$AWS_SECRET.*",
+        category="credential-exfil",
+        description=(
+            "Blocks echoing the $AWS_SECRET* environment variable, which would print the AWS "
+            "secret access key to stdout/logs where it can be captured."
+        ),
+    ),
+    DeniedCommandRule(
+        id="credential-exfil-echo-aws-session",
+        pattern=".*echo.*\\$AWS_SESSION.*",
+        category="credential-exfil",
+        description=(
+            "Blocks echoing the $AWS_SESSION* environment variable, which would print the AWS "
+            "session token to stdout/logs where it can be captured."
+        ),
+    ),
+    DeniedCommandRule(
+        id="credential-exfil-echo-aws-access",
+        pattern=".*echo.*\\$AWS_ACCESS.*",
+        category="credential-exfil",
+        description=(
+            "Blocks echoing the $AWS_ACCESS* environment variable, which would print the AWS "
+            "access key ID to stdout/logs where it can be captured."
+        ),
+    ),
+    DeniedCommandRule(
+        id="credential-exfil-printenv-aws",
+        pattern=".*printenv.*AWS.*",
+        category="credential-exfil",
+        description=(
+            "Blocks `printenv` dumping any AWS_* environment variable, which can leak AWS "
+            "credentials held in the environment."
+        ),
+    ),
+    DeniedCommandRule(
+        id="credential-exfil-kirocrew-token",
+        pattern=".*kirocrew.*token",
+        category="credential-exfil",
+        description=(
+            "Blocks the `kirocrew ... token` CLI, which mints a signed dashboard access token "
+            "an attacker could use to authenticate to the gateway."
+        ),
+    ),
+    DeniedCommandRule(
+        id="credential-exfil-env-grep-aws",
+        pattern=".*env.*grep.*AWS.*",
+        category="credential-exfil",
+        description=(
+            "Blocks `env | grep AWS`, which filters the environment for AWS_* variables and "
+            "leaks any credentials stored there."
+        ),
+    ),
+    DeniedCommandRule(
+        id="credential-exfil-python-boto3-get-credentials",
+        pattern=".*python.*boto3.*get_credentials.*",
+        category="credential-exfil",
+        description=(
+            "Blocks a Python/boto3 one-liner calling get_credentials(), which resolves and can "
+            "print the active AWS credentials from the credential chain."
+        ),
+    ),
+    DeniedCommandRule(
+        id="credential-exfil-python-botocore-credentials",
+        pattern=".*python.*botocore.*credentials.*",
+        category="credential-exfil",
+        description=(
+            "Blocks a Python/botocore one-liner accessing the credentials module, which can "
+            "resolve and expose the active AWS credentials."
+        ),
+    ),
+    DeniedCommandRule(
+        id="credential-exfil-curl-imds",
+        pattern=".*curl.*169\\.254\\.169\\.254.*",
+        category="credential-exfil",
+        description=(
+            "Blocks `curl` to the 169.254.169.254 instance metadata service (IMDS), a classic "
+            "path to steal EC2 role credentials."
+        ),
+    ),
+    DeniedCommandRule(
+        id="credential-exfil-wget-imds",
+        pattern=".*wget.*169\\.254\\.169\\.254.*",
+        category="credential-exfil",
+        description=(
+            "Blocks `wget` to the 169.254.169.254 instance metadata service (IMDS), a classic "
+            "path to steal EC2 role credentials."
+        ),
+    ),
+    DeniedCommandRule(
+        id="credential-exfil-curl-aws-secret",
+        pattern=".*curl.*\\$AWS_SECRET.*",
+        category="credential-exfil",
+        description=(
+            "Blocks `curl` invocations that reference $AWS_SECRET*, which would send the AWS "
+            "secret access key to a remote endpoint."
+        ),
+    ),
+    DeniedCommandRule(
+        id="credential-exfil-curl-aws-access",
+        pattern=".*curl.*\\$AWS_ACCESS.*",
+        category="credential-exfil",
+        description=(
+            "Blocks `curl` invocations that reference $AWS_ACCESS*, which would send the AWS "
+            "access key ID to a remote endpoint."
+        ),
+    ),
+    DeniedCommandRule(
+        id="credential-exfil-curl-aws-session",
+        pattern=".*curl.*\\$AWS_SESSION.*",
+        category="credential-exfil",
+        description=(
+            "Blocks `curl` invocations that reference $AWS_SESSION*, which would send the AWS "
+            "session token to a remote endpoint."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-autoscaling-delete",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+autoscaling(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-.*",
+        category="aws-destructive",
+        description=(
+            "Blocks any 'aws autoscaling delete-*' command, which tears down Auto Scaling "
+            "groups, policies, or launch configurations and can permanently disrupt capacity "
+            "management."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-cfn-delete-stack",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+cloudformation(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-stack.*",
+        category="aws-destructive",
+        description=(
+            "Blocks 'aws cloudformation delete-stack', which destroys an entire CloudFormation "
+            "stack and every resource it manages."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-cfn-deploy-mutate",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+cloudformation(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+(deploy|create-stack|update-stack|create-change-set|execute-change-set).*",
+        category="aws-destructive",
+        description=(
+            "Blocks CloudFormation "
+            "deploy/create-stack/update-stack/create-change-set/execute-change-set, which "
+            "create or mutate infrastructure stacks and can overwrite live production "
+            "resources."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-ec2-run-instances",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+ec2(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+run-instances.*",
+        category="aws-destructive",
+        description=(
+            "Blocks 'aws ec2 run-instances', which launches new EC2 instances that incur cost "
+            "and can be abused for resource sprawl or cryptomining."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-ec2-create-security-group",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+ec2(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+create-security-group.*",
+        category="aws-destructive",
+        description=(
+            "Blocks 'aws ec2 create-security-group', which creates new network access-control "
+            "groups that can widen the attack surface."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-ec2-authorize-security-group",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+ec2(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+authorize-security-group-(ingress|egress).*",
+        category="aws-destructive",
+        description=(
+            "Blocks 'aws ec2 authorize-security-group-ingress/egress', which opens firewall "
+            "rules and can expose resources to the public internet."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-iam-privilege-mutate",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+iam(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+(create-role|create-policy|create-policy-version|put-role-policy|attach-role-policy|create-instance-profile|add-role-to-instance-profile|pass-role).*",
+        category="aws-destructive",
+        description=(
+            "Blocks IAM role/policy creation, attachment, and pass-role operations, which grant "
+            "or escalate privileges and are a classic privilege-escalation vector."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-cfn-termination-protection",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+cloudformation(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+update-termination-protection.*",
+        category="aws-destructive",
+        description=(
+            "Blocks 'aws cloudformation update-termination-protection', which can disable the "
+            "safeguard that prevents accidental stack deletion."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-dynamodb-delete-table",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+dynamodb(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-table.*",
+        category="aws-destructive",
+        description=(
+            "Blocks 'aws dynamodb delete-table', which permanently deletes a DynamoDB table and "
+            "every item it holds."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-ec2-delete",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+ec2(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-.*",
+        category="aws-destructive",
+        description=(
+            "Blocks any 'aws ec2 delete-*' command, which removes EC2 resources such as VPCs, "
+            "subnets, volumes, snapshots, or security groups."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-ec2-terminate-instances",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+ec2(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+terminate-instances.*",
+        category="aws-destructive",
+        description=(
+            "Blocks 'aws ec2 terminate-instances', which permanently shuts down and deletes "
+            "running EC2 instances."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-ssm-send-command",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+ssm(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+send-command.*",
+        category="aws-destructive",
+        description=(
+            "Blocks 'aws ssm send-command', which executes arbitrary commands on managed "
+            "instances (remote code execution across the fleet)."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-ssm-start-session",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+ssm(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+start-session.*",
+        category="aws-destructive",
+        description=(
+            "Blocks 'aws ssm start-session', which opens an interactive shell onto a managed "
+            "instance, bypassing normal access controls."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-ssm-get-command-invocation",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+ssm(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+get-command-invocation.*",
+        category="aws-destructive",
+        description=(
+            "Blocks 'aws ssm get-command-invocation', which reads the output of remotely "
+            "executed SSM commands (used to harvest results of injected commands)."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-ssm-list-command-invocations",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+ssm(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+list-command-invocations.*",
+        category="aws-destructive",
+        description=(
+            "Blocks 'aws ssm list-command-invocations', which enumerates remote-command "
+            "execution history on managed instances."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-ecr-delete",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+ecr(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-.*",
+        category="aws-destructive",
+        description=(
+            "Blocks any 'aws ecr delete-*' command, which removes container image repositories "
+            "or images and can break deployments relying on them."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-ecs-delete",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+ecs(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-.*",
+        category="aws-destructive",
+        description=(
+            "Blocks any 'aws ecs delete-*' command, which tears down ECS clusters, services, or "
+            "task definitions and can cause service outages."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-eks-delete-cluster",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+eks(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-cluster.*",
+        category="aws-destructive",
+        description=(
+            "Blocks 'aws eks delete-cluster', which destroys an entire Kubernetes control plane "
+            "and all workloads running on it."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-elasticache-delete",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+elasticache(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-.*",
+        category="aws-destructive",
+        description=(
+            "Blocks any 'aws elasticache delete-*' command, which removes Redis/Memcached "
+            "clusters and destroys their cached data."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-elb-delete",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+elb(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-.*",
+        category="aws-destructive",
+        description=(
+            "Blocks any 'aws elb delete-*' command (classic load balancers), which can drop "
+            "traffic routing and cause an outage."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-elbv2-delete",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+elbv2(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-.*",
+        category="aws-destructive",
+        description=(
+            "Blocks any 'aws elbv2 delete-*' command (ALB/NLB load balancers, listeners, target "
+            "groups), which can drop traffic routing and cause an outage."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-glue-delete",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+glue(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-.*",
+        category="aws-destructive",
+        description=(
+            "Blocks any 'aws glue delete-*' command, which removes Glue databases, tables, "
+            "jobs, or crawlers and can break data pipelines."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-iam-create-access-key",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+iam(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+create-access-key.*",
+        category="aws-destructive",
+        description=(
+            "Blocks 'aws iam create-access-key', which mints long-lived programmatic "
+            "credentials that can be exfiltrated for persistent access."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-iam-delete",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+iam(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-.*",
+        category="aws-destructive",
+        description=(
+            "Blocks any 'aws iam delete-*' command, which removes roles, users, policies, or "
+            "access keys and can lock out legitimate access."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-kinesis-delete",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+kinesis(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-.*",
+        category="aws-destructive",
+        description=(
+            "Blocks any 'aws kinesis delete-*' command, which removes data streams and discards "
+            "in-flight records."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-kms-schedule-key-deletion",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+kms(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+schedule-key-deletion.*",
+        category="aws-destructive",
+        description=(
+            "Blocks 'aws kms schedule-key-deletion', which queues a KMS key for deletion and "
+            "can permanently render all data encrypted under it unrecoverable."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-lambda-delete-function",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+lambda(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-function.*",
+        category="aws-destructive",
+        description=(
+            "Blocks 'aws lambda delete-function', which removes a serverless function and can "
+            "break dependent workflows."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-logs-delete",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+logs(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-.*",
+        category="aws-destructive",
+        description=(
+            "Blocks any 'aws logs delete-*' command, which deletes CloudWatch log "
+            "groups/streams and can destroy audit and forensic evidence."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-opensearch-delete",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+opensearch(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-.*",
+        category="aws-destructive",
+        description=(
+            "Blocks any 'aws opensearch delete-*' command, which removes OpenSearch domains and "
+            "destroys their indexed data."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-rds-delete",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+rds(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-.*",
+        category="aws-destructive",
+        description=(
+            "Blocks any 'aws rds delete-*' command, which removes RDS instances, clusters, or "
+            "snapshots and can cause irreversible data loss."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-redshift-delete",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+redshift(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-.*",
+        category="aws-destructive",
+        description=(
+            "Blocks any 'aws redshift delete-*' command, which removes Redshift clusters or "
+            "snapshots and can cause irreversible data-warehouse loss."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-route53-delete",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+route53(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-.*",
+        category="aws-destructive",
+        description=(
+            "Blocks any 'aws route53 delete-*' command, which removes DNS hosted zones or "
+            "records and can take domains offline."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-s3-rb",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+s3(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+rb.*",
+        category="aws-destructive",
+        description=(
+            "Blocks 'aws s3 rb', which removes an S3 bucket (with --force, deleting all its "
+            "objects)."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-s3-rm",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+s3(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+rm.*",
+        category="aws-destructive",
+        description=(
+            "Blocks 'aws s3 rm', which deletes S3 objects (recursively with --recursive) and "
+            "can wipe stored data."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-s3api-delete",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+s3api(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-.*",
+        category="aws-destructive",
+        description=(
+            "Blocks any 'aws s3api delete-*' command, which removes buckets, objects, object "
+            "versions, or bucket configs and can cause data loss."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-s3api-put-object",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+s3api(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+put-object.*",
+        category="aws-destructive",
+        description=(
+            "Blocks 'aws s3api put-object', which writes/overwrites S3 objects and can corrupt "
+            "data or stage exfiltrated content."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-s3api-copy-object",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+s3api(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+copy-object.*",
+        category="aws-destructive",
+        description=(
+            "Blocks 'aws s3api copy-object', which overwrites S3 objects or duplicates data "
+            "across buckets (a data-movement/exfil vector)."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-s3api-multipart-upload",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+s3api(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+(create-multipart-upload|upload-part|upload-part-copy|complete-multipart-upload).*",
+        category="aws-destructive",
+        description=(
+            "Blocks S3 multipart-upload operations "
+            "(create/upload-part/upload-part-copy/complete), which write large objects into S3 "
+            "and can overwrite data or stage exfiltration."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-s3api-put-bucket",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+s3api(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+put-bucket-.*",
+        category="aws-destructive",
+        description=(
+            "Blocks any 'aws s3api put-bucket-*' command, which mutates bucket configuration "
+            "such as policy, ACL, encryption, or public-access settings and can weaken data "
+            "protections."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-secretsmanager-delete-secret",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+secretsmanager(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-secret.*",
+        category="aws-destructive",
+        description=(
+            "Blocks 'aws secretsmanager delete-secret', which removes stored secrets and can "
+            "break every service depending on them."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-sns-delete",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+sns(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-.*",
+        category="aws-destructive",
+        description=(
+            "Blocks any 'aws sns delete-*' command, which removes SNS topics or subscriptions "
+            "and can silently break notification delivery."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-sqs-delete",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+sqs(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-.*",
+        category="aws-destructive",
+        description=(
+            "Blocks any 'aws sqs delete-*' command, which removes SQS queues or purges messages "
+            "and can drop in-flight work."
+        ),
+    ),
+    DeniedCommandRule(
+        id="aws-destructive-stepfunctions-delete",
+        pattern="aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+stepfunctions(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-.*",
+        category="aws-destructive",
+        description=(
+            "Blocks any 'aws stepfunctions delete-*' command, which removes Step Functions "
+            "state machines or activities and can break orchestration workflows."
+        ),
+    ),
+    DeniedCommandRule(
+        id="iac-teardown-cdk-destroy",
+        pattern="cdk destroy.*",
+        category="iac-teardown",
+        description=(
+            "Blocks `cdk destroy`, which tears down an entire AWS CDK stack and all its "
+            "provisioned cloud resources — irreversible infrastructure and data loss."
+        ),
+    ),
+    DeniedCommandRule(
+        id="local-destructive-chmod-777",
+        pattern="chmod 777.*",
+        category="local-destructive",
+        description=(
+            "Blocks chmod 777, which grants world read/write/execute permissions and creates a "
+            "serious security exposure."
+        ),
+    ),
+    DeniedCommandRule(
+        id="local-destructive-chmod-usr",
+        pattern="chmod.*/usr/.*",
+        category="local-destructive",
+        description=(
+            "Blocks chmod changes to /usr, which can corrupt permissions on system binaries and "
+            "break the OS."
+        ),
+    ),
+    DeniedCommandRule(
+        id="local-destructive-chmod-etc",
+        pattern="chmod.*/etc/.*",
+        category="local-destructive",
+        description=(
+            "Blocks chmod changes to /etc, which can corrupt permissions on critical system "
+            "config files and break the OS."
+        ),
+    ),
+    DeniedCommandRule(
+        id="local-destructive-chmod-sbin",
+        pattern="chmod.*/sbin/.*",
+        category="local-destructive",
+        description=(
+            "Blocks chmod changes to /sbin, which can corrupt permissions on privileged system "
+            "binaries and break the OS."
+        ),
+    ),
+    DeniedCommandRule(
+        id="local-destructive-chmod-boot",
+        pattern="chmod.*/boot/.*",
+        category="local-destructive",
+        description=(
+            "Blocks chmod changes to /boot, which can corrupt permissions on boot/kernel files "
+            "and render the system unbootable."
+        ),
+    ),
+    DeniedCommandRule(
+        id="local-destructive-chmod-lib",
+        pattern="chmod.*/lib/.*",
+        category="local-destructive",
+        description=(
+            "Blocks chmod changes to /lib, which can corrupt permissions on shared system "
+            "libraries and break the OS."
+        ),
+    ),
+    DeniedCommandRule(
+        id="local-destructive-chmod-lib64",
+        pattern="chmod.*/lib64/.*",
+        category="local-destructive",
+        description=(
+            "Blocks chmod changes to /lib64, which can corrupt permissions on 64-bit shared "
+            "system libraries and break the OS."
+        ),
+    ),
+    DeniedCommandRule(
+        id="local-destructive-chown-usr",
+        pattern="chown.*/usr/.*",
+        category="local-destructive",
+        description=(
+            "Blocks chown changes to /usr, which can corrupt ownership on system binaries and "
+            "break the OS."
+        ),
+    ),
+    DeniedCommandRule(
+        id="local-destructive-chown-etc",
+        pattern="chown.*/etc/.*",
+        category="local-destructive",
+        description=(
+            "Blocks chown changes to /etc, which can corrupt ownership on critical system "
+            "config files and break the OS."
+        ),
+    ),
+    DeniedCommandRule(
+        id="local-destructive-chown-sbin",
+        pattern="chown.*/sbin/.*",
+        category="local-destructive",
+        description=(
+            "Blocks chown changes to /sbin, which can corrupt ownership on privileged system "
+            "binaries and break the OS."
+        ),
+    ),
+    DeniedCommandRule(
+        id="local-destructive-chown-boot",
+        pattern="chown.*/boot/.*",
+        category="local-destructive",
+        description=(
+            "Blocks chown changes to /boot, which can corrupt ownership on boot/kernel files "
+            "and render the system unbootable."
+        ),
+    ),
+    DeniedCommandRule(
+        id="local-destructive-chown-lib",
+        pattern="chown.*/lib/.*",
+        category="local-destructive",
+        description=(
+            "Blocks chown changes to /lib, which can corrupt ownership on shared system "
+            "libraries and break the OS."
+        ),
+    ),
+    DeniedCommandRule(
+        id="local-destructive-chown-lib64",
+        pattern="chown.*/lib64/.*",
+        category="local-destructive",
+        description=(
+            "Blocks chown changes to /lib64, which can corrupt ownership on 64-bit shared "
+            "system libraries and break the OS."
+        ),
+    ),
+    DeniedCommandRule(
+        id="pipe-to-shell-curl-bash",
+        pattern="curl .* \\| bash",
+        category="pipe-to-shell",
+        description=(
+            "Blocks piping a curl download directly into bash, which executes arbitrary remote "
+            "code with no chance to inspect the script first."
+        ),
+    ),
+    DeniedCommandRule(
+        id="pipe-to-shell-curl-sh",
+        pattern="curl .* \\| sh",
+        category="pipe-to-shell",
+        description=(
+            "Blocks piping a curl download directly into sh, which executes arbitrary remote "
+            "code with no chance to inspect the script first."
+        ),
+    ),
+    DeniedCommandRule(
+        id="local-destructive-dd-if",
+        pattern="dd if=.*",
+        category="local-destructive",
+        description=(
+            "Blocks dd invocations with an input file, which can overwrite raw disks/partitions "
+            "and cause irreversible data loss."
+        ),
+    ),
+    DeniedCommandRule(
+        id="sql-drop-database",
+        pattern="(?i:DROP\\s+DATABASE.*)",
+        category="sql",
+        description=(
+            "Blocks SQL DROP DATABASE statements, which irreversibly delete an entire database "
+            "and all its tables and data."
+        ),
+    ),
+    DeniedCommandRule(
+        id="sql-drop-table",
+        pattern="(?i:DROP\\s+TABLE.*)",
+        category="sql",
+        description=(
+            "Blocks SQL DROP TABLE statements, which permanently delete a table and every row "
+            "it contains."
+        ),
+    ),
+    DeniedCommandRule(
+        id="credential-exfil-export-aws-access",
+        pattern="export AWS_ACCESS.*",
+        category="credential-exfil",
+        description=(
+            "Blocks `export AWS_ACCESS...`, which injects an attacker-chosen AWS access key ID "
+            "into the environment for later use by AWS tooling."
+        ),
+    ),
+    DeniedCommandRule(
+        id="credential-exfil-export-aws-secret",
+        pattern="export AWS_SECRET.*",
+        category="credential-exfil",
+        description=(
+            "Blocks `export AWS_SECRET...`, which injects an attacker-chosen AWS secret access "
+            "key into the environment for later use by AWS tooling."
+        ),
+    ),
+    DeniedCommandRule(
+        id="git-publish-push-bare",
+        pattern=".*git\\s+(-\\S+\\s+[^-]\\S*\\s+|-\\S+\\s+)*push\\s*$",
+        category="git-publish",
+        description=(
+            "Blocks a bare 'git push' with no explicit remote or branch, which pushes the "
+            "current branch to its default upstream (often a protected branch like main) "
+            "without confirmation."
+        ),
+    ),
+    DeniedCommandRule(
+        id="git-publish-push-single-arg",
+        pattern=".*git\\s+(-\\S+\\s+[^-]\\S*\\s+|-\\S+\\s+)*push\\s+\\S+\\s*$",
+        category="git-publish",
+        description=(
+            "Blocks 'git push <remote>' with a single argument (no branch), which pushes to the "
+            "configured upstream and can publish to a protected branch unattended."
+        ),
+    ),
+    DeniedCommandRule(
+        id="git-publish-push-protected-branch-name",
+        pattern=".*git\\s+(-\\S+\\s+[^-]\\S*\\s+|-\\S+\\s+)*push\\s+.*[\\s:]\\+?(main|mainline|master)(\\s.*|$)",  # wokeignore:rule=master
+        category="git-publish",
+        description=(
+            "Blocks 'git push' whose refspec targets a protected default branch, including "
+            "force-push '+' refspecs, preventing unreviewed writes to the trunk."
+        ),
+    ),
+    DeniedCommandRule(
+        id="git-publish-push-protected-ref-path",
+        pattern=".*git\\s+(-\\S+\\s+[^-]\\S*\\s+|-\\S+\\s+)*push\\s+.*(refs/)?(heads/|remotes/[^/\\s]+/)(main|mainline|master)(\\s.*|$)",  # wokeignore:rule=master
+        category="git-publish",
+        description=(
+            "Blocks 'git push' targeting a fully-qualified ref path (refs/heads/ or "
+            "remotes/<remote>/) for a protected default branch, catching path-style "
+            "evasions of the trunk-push guard."
+        ),
+    ),
+    DeniedCommandRule(
+        id="git-publish-push-wildcard-refspec",
+        pattern=".*git\\s+(-\\S+\\s+[^-]\\S*\\s+|-\\S+\\s+)*push\\s+[^&|;\\n]*\\*",
+        category="git-publish",
+        description=(
+            "Blocks 'git push' with a wildcard '*' refspec, which can mass-publish many "
+            "branches (potentially including protected ones) in a single command."
+        ),
+    ),
+    DeniedCommandRule(
+        id="git-publish-push-brace-expansion-refspec",
+        pattern=".*git\\s+(-\\S+\\s+[^-]\\S*\\s+|-\\S+\\s+)*push\\s+[^&|;\\n]*\\{[^{}]*(,|\\.\\.)[^{}]*\\}",
+        category="git-publish",
+        description=(
+            "Blocks 'git push' using shell brace-expansion (e.g. {a,b} or {1..3}) in the "
+            "refspec, which expands to multiple branch targets and could push to a protected "
+            "branch."
+        ),
+    ),
+    DeniedCommandRule(
+        id="git-publish-push-mirror-all",
+        pattern=".*git\\s+(-\\S+\\s+[^-]\\S*\\s+|-\\S+\\s+)*push\\s+.*--(mirror|all)(\\s.*|$)",
+        category="git-publish",
+        description=(
+            "Blocks 'git push --mirror' and 'git push --all', which push every local ref/branch "
+            "to the remote and can overwrite or publish protected branches wholesale."
+        ),
+    ),
+    DeniedCommandRule(
+        id="local-destructive-git-reset-hard",
+        pattern="git reset --hard.*",
+        category="local-destructive",
+        description=(
+            "Blocks git reset --hard, which discards uncommitted changes and rewrites the "
+            "working tree, causing irreversible loss of local work."
+        ),
+    ),
+    DeniedCommandRule(
+        id="iac-teardown-kubectl-delete-namespace",
+        pattern="kubectl delete namespace.*",
+        category="iac-teardown",
+        description=(
+            "Blocks `kubectl delete namespace`, which deletes a Kubernetes namespace and "
+            "cascades to every workload, service, and volume inside it — irreversible "
+            "cluster-wide teardown."
+        ),
+    ),
+    DeniedCommandRule(
+        id="local-destructive-mkfs",
+        pattern="mkfs.*",
+        category="local-destructive",
+        description=(
+            "Blocks mkfs (and mkfs.* variants), which formats a filesystem and destroys all "
+            "existing data on the target device."
+        ),
+    ),
+    DeniedCommandRule(
+        id="reverse-shell-nc",
+        pattern="nc -e.*",
+        category="reverse-shell",
+        description=(
+            "Blocks 'nc -e', which spawns a netcat reverse shell handing remote command "
+            "execution to an attacker."
+        ),
+    ),
+    DeniedCommandRule(
+        id="reverse-shell-ncat",
+        pattern="ncat -e.*",
+        category="reverse-shell",
+        description=(
+            "Blocks 'ncat -e', which spawns an ncat reverse shell handing remote command "
+            "execution to an attacker."
+        ),
+    ),
+    DeniedCommandRule(
+        id="iac-teardown-pulumi-destroy",
+        pattern="pulumi destroy.*",
+        category="iac-teardown",
+        description=(
+            "Blocks `pulumi destroy`, which deletes all cloud resources managed by a Pulumi "
+            "stack — irreversible infrastructure teardown."
+        ),
+    ),
+    DeniedCommandRule(
+        id="local-destructive-rm-rf-root",
+        pattern="rm -rf /.*",
+        category="local-destructive",
+        description=(
+            "Blocks recursive force-deletion rooted at the filesystem root (rm -rf /...), which "
+            "can wipe the entire operating system and all data."
+        ),
+    ),
+    DeniedCommandRule(
+        id="local-destructive-rm-rf-home",
+        pattern="rm -rf ~.*",
+        category="local-destructive",
+        description=(
+            "Blocks recursive force-deletion of the user home directory (rm -rf ~...), which "
+            "would destroy all personal files and config."
+        ),
+    ),
+    DeniedCommandRule(
+        id="iac-teardown-terraform-destroy",
+        pattern="terraform destroy.*",
+        category="iac-teardown",
+        description=(
+            "Blocks `terraform destroy`, which destroys every resource tracked in the Terraform "
+            "state — irreversible infrastructure and data loss."
+        ),
+    ),
+    DeniedCommandRule(
+        id="sql-truncate-table",
+        pattern="(?i:TRUNCATE\\s+TABLE.*)",
+        category="sql",
+        description=(
+            "Blocks SQL TRUNCATE TABLE statements, which delete all rows in a table in one "
+            "unrecoverable operation."
+        ),
+    ),
+    DeniedCommandRule(
+        id="pipe-to-shell-wget-bash",
+        pattern="wget .* \\| bash",
+        category="pipe-to-shell",
+        description=(
+            "Blocks piping a wget download directly into bash, which executes arbitrary remote "
+            "code with no chance to inspect the script first."
+        ),
+    ),
+    DeniedCommandRule(
+        id="sensitive-file-read-cat-aws",
+        pattern=".*cat.*/\\.aws/.*",
+        category="sensitive-file-read",
+        description=(
+            "Blocks using cat to read files under ~/.aws, which holds AWS access keys and "
+            "session credentials that could be exfiltrated."
+        ),
+    ),
+    DeniedCommandRule(
+        id="sensitive-file-read-cat-ssh",
+        pattern=".*cat.*/\\.ssh/.*",
+        category="sensitive-file-read",
+        description=(
+            "Blocks using cat to read files under ~/.ssh, which holds private SSH keys and "
+            "known-hosts data granting remote access."
+        ),
+    ),
+    DeniedCommandRule(
+        id="sensitive-file-read-cat-gnupg",
+        pattern=".*cat.*/\\.gnupg/.*",
+        category="sensitive-file-read",
+        description=(
+            "Blocks using cat to read files under ~/.gnupg, which holds GPG private keyrings "
+            "and trust data used to sign or decrypt secrets."
+        ),
+    ),
+    DeniedCommandRule(
+        id="sensitive-file-read-cat-gpg",
+        pattern=".*cat.*/\\.gpg/.*",
+        category="sensitive-file-read",
+        description=(
+            "Blocks using cat to read files under ~/.gpg, which holds GPG key material used to "
+            "sign or decrypt secrets."
+        ),
+    ),
+    DeniedCommandRule(
+        id="sensitive-file-read-cat-netrc",
+        pattern=".*cat.*/\\.netrc.*",
+        category="sensitive-file-read",
+        description=(
+            "Blocks using cat to read ~/.netrc, which stores plaintext login/password "
+            "credentials for FTP, HTTP, and other services."
+        ),
+    ),
+    DeniedCommandRule(
+        id="sensitive-file-read-cat-git-credentials",
+        pattern=".*cat.*/\\.git-credentials.*",
+        category="sensitive-file-read",
+        description=(
+            "Blocks using cat to read ~/.git-credentials, which stores plaintext Git remote "
+            "usernames and access tokens."
+        ),
+    ),
+    DeniedCommandRule(
+        id="sensitive-file-read-cat-npmrc",
+        pattern=".*cat.*/\\.npmrc.*",
+        category="sensitive-file-read",
+        description="Blocks using cat to read ~/.npmrc, which can contain npm registry auth tokens.",
+    ),
+    DeniedCommandRule(
+        id="sensitive-file-read-cat-pypirc",
+        pattern=".*cat.*/\\.pypirc.*",
+        category="sensitive-file-read",
+        description=(
+            "Blocks using cat to read ~/.pypirc, which can contain PyPI upload usernames and "
+            "API tokens."
+        ),
+    ),
+    DeniedCommandRule(
+        id="sensitive-file-read-cat-docker-config",
+        pattern=".*cat.*/\\.docker/config\\.json.*",
+        category="sensitive-file-read",
+        description=(
+            "Blocks using cat to read ~/.docker/config.json, which holds base64-encoded "
+            "container registry credentials."
+        ),
+    ),
+    DeniedCommandRule(
+        id="sensitive-file-read-cat-kube-config",
+        pattern=".*cat.*/\\.kube/config.*",
+        category="sensitive-file-read",
+        description=(
+            "Blocks using cat to read ~/.kube/config, which holds Kubernetes cluster tokens, "
+            "client certs, and API credentials."
+        ),
+    ),
+    DeniedCommandRule(
+        id="sensitive-file-read-cat-kirocrew-env",
+        pattern=".*cat.*/\\.kirocrew/\\.env.*",
+        category="sensitive-file-read",
+        description=(
+            "Blocks using cat to read ~/.kirocrew/.env, which holds KiroCrew's own secrets and "
+            "environment credentials."
+        ),
+    ),
+    DeniedCommandRule(
+        id="sensitive-file-read-head-aws",
+        pattern=".*head.*/\\.aws/.*",
+        category="sensitive-file-read",
+        description=(
+            "Blocks using head to read files under ~/.aws, which holds AWS access keys and "
+            "session credentials."
+        ),
+    ),
+    DeniedCommandRule(
+        id="sensitive-file-read-tail-aws",
+        pattern=".*tail.*/\\.aws/.*",
+        category="sensitive-file-read",
+        description=(
+            "Blocks using tail to read files under ~/.aws, which holds AWS access keys and "
+            "session credentials."
+        ),
+    ),
+    DeniedCommandRule(
+        id="sensitive-file-read-less-aws",
+        pattern=".*less.*/\\.aws/.*",
+        category="sensitive-file-read",
+        description=(
+            "Blocks using less to read files under ~/.aws, which holds AWS access keys and "
+            "session credentials."
+        ),
+    ),
+    DeniedCommandRule(
+        id="sensitive-file-read-more-aws",
+        pattern=".*more.*/\\.aws/.*",
+        category="sensitive-file-read",
+        description=(
+            "Blocks using more to read files under ~/.aws, which holds AWS access keys and "
+            "session credentials."
+        ),
+    ),
+    DeniedCommandRule(
+        id="sensitive-file-read-strings-aws",
+        pattern=".*strings.*/\\.aws/.*",
+        category="sensitive-file-read",
+        description=(
+            "Blocks using strings to extract text from files under ~/.aws, which holds AWS "
+            "access keys and session credentials."
+        ),
+    ),
+    DeniedCommandRule(
+        id="sensitive-file-read-base64-aws",
+        pattern=".*base64.*/\\.aws/.*",
+        category="sensitive-file-read",
+        description=(
+            "Blocks using base64 to encode/dump files under ~/.aws, a common way to exfiltrate "
+            "AWS credentials past text filters."
+        ),
+    ),
+    DeniedCommandRule(
+        id="sensitive-file-read-head-ssh",
+        pattern=".*head.*/\\.ssh/.*",
+        category="sensitive-file-read",
+        description=(
+            "Blocks using head to read files under ~/.ssh, which holds private SSH keys "
+            "granting remote access."
+        ),
+    ),
+    DeniedCommandRule(
+        id="sensitive-file-read-tail-ssh",
+        pattern=".*tail.*/\\.ssh/.*",
+        category="sensitive-file-read",
+        description=(
+            "Blocks using tail to read files under ~/.ssh, which holds private SSH keys "
+            "granting remote access."
+        ),
+    ),
+    DeniedCommandRule(
+        id="sensitive-file-read-less-ssh",
+        pattern=".*less.*/\\.ssh/.*",
+        category="sensitive-file-read",
+        description=(
+            "Blocks using less to read files under ~/.ssh, which holds private SSH keys "
+            "granting remote access."
+        ),
+    ),
+    DeniedCommandRule(
+        id="sensitive-file-read-more-ssh",
+        pattern=".*more.*/\\.ssh/.*",
+        category="sensitive-file-read",
+        description=(
+            "Blocks using more to read files under ~/.ssh, which holds private SSH keys "
+            "granting remote access."
+        ),
+    ),
+    DeniedCommandRule(
+        id="sensitive-file-read-strings-ssh",
+        pattern=".*strings.*/\\.ssh/.*",
+        category="sensitive-file-read",
+        description=(
+            "Blocks using strings to extract text from files under ~/.ssh, which holds private "
+            "SSH keys granting remote access."
+        ),
+    ),
+    DeniedCommandRule(
+        id="sensitive-file-read-base64-ssh",
+        pattern=".*base64.*/\\.ssh/.*",
+        category="sensitive-file-read",
+        description=(
+            "Blocks using base64 to encode/dump files under ~/.ssh, a common way to exfiltrate "
+            "private SSH keys past text filters."
+        ),
+    ),
+    DeniedCommandRule(
+        id="sensitive-file-read-cp-aws",
+        pattern=".*cp.*/\\.aws/.*",
+        category="sensitive-file-read",
+        description=(
+            "Blocks copying files out of ~/.aws, which would duplicate AWS credentials to an "
+            "unprotected location for exfiltration."
+        ),
+    ),
+    DeniedCommandRule(
+        id="sensitive-file-read-cp-ssh",
+        pattern=".*cp.*/\\.ssh/.*",
+        category="sensitive-file-read",
+        description=(
+            "Blocks copying files out of ~/.ssh, which would duplicate private SSH keys to an "
+            "unprotected location for exfiltration."
+        ),
+    ),
+    DeniedCommandRule(
+        id="sensitive-file-read-python-aws",
+        pattern=".*python.*open.*/\\.aws/.*",
+        category="sensitive-file-read",
+        description=(
+            "Blocks a Python open() of files under ~/.aws, a scripted path to read AWS "
+            "credentials past shell-verb filters."
+        ),
+    ),
+    DeniedCommandRule(
+        id="sensitive-file-read-python-ssh",
+        pattern=".*python.*open.*/\\.ssh/.*",
+        category="sensitive-file-read",
+        description=(
+            "Blocks a Python open() of files under ~/.ssh, a scripted path to read private SSH "
+            "keys past shell-verb filters."
+        ),
+    ),
+    DeniedCommandRule(
+        id="self-protection-restart",
+        pattern=".*kiro.?crew restart.*",
+        category="self-protection",
+        description=(
+            "Blocks 'kirocrew restart' so the agent cannot restart its own gateway process and "
+            "disrupt the running session or evade in-flight controls."
+        ),
+    ),
+    DeniedCommandRule(
+        id="self-protection-update",
+        pattern=".*kiro.?crew update.*",
+        category="self-protection",
+        description=(
+            "Blocks 'kirocrew update' so the agent cannot self-update (git pull + rebuild + "
+            "execv restart) and swap out its own running code without operator oversight."
+        ),
+    ),
+    DeniedCommandRule(
+        id="self-protection-cloud",
+        pattern=".*kiro.?crew\\s+cloud\\s+(destroy|stop|start|launch|connect|tunnel|login).*",
+        category="self-protection",
+        description=(
+            "Blocks 'kirocrew cloud' lifecycle subcommands "
+            "(destroy/stop/start/launch/connect/tunnel/login) so the agent cannot tear down, "
+            "provision, or re-authenticate its own cloud instance."
+        ),
+    ),
+    DeniedCommandRule(
+        id="self-protection-gateway-restart",
+        pattern=".*kiro.?crew gateway restart.*",
+        category="self-protection",
+        description=(
+            "Blocks 'kirocrew gateway restart' so the agent cannot bounce its own gateway "
+            "server and interrupt the active session or supervision."
+        ),
+    ),
+    DeniedCommandRule(
+        id="self-protection-kill",
+        pattern=".*\\b(kill|pkill|killall)\\b.*\\bkiro[-.]?crew\\b.*",
+        category="self-protection",
+        description=(
+            "Blocks kill/pkill/killall targeting a kirocrew process so the agent cannot "
+            "terminate its own gateway or supervisor and disable the controls governing it."
+        ),
+    ),
+    # ── Legacy security.py deny globs (converted to regex) ──
+    # These predate the agent-config ``deniedCommands`` list and were NOT part
+    # of it, so they are not in the 130 ported patterns.  They cover explicit
+    # secret-fetching tool names and the boto3 UNDERSCORE spellings of
+    # destructive AWS calls (``client.delete_stack(...)``) that the hyphenated
+    # CLI rules above do not match.  ``is_denied`` (notably the ``mcp_cron``
+    # command path) relies on these to block prompt-injected destructive shell.
+    # ``.*foo.*`` is the re.search equivalent of the old ``*foo*`` glob.
+    DeniedCommandRule(
+        id="legacy-get-secret",
+        pattern="get_secret.*",
+        category="credential-exfil",
+        description=(
+            "Blocks explicit secret-fetching tool names such as `get_secret_value`, which "
+            "read credential material that could be exfiltrated."
+        ),
+    ),
+    DeniedCommandRule(
+        id="legacy-read-secret",
+        pattern="read_secret.*",
+        category="credential-exfil",
+        description=(
+            "Blocks explicit secret-reading tool names such as `read_secret`, which read "
+            "credential material that could be exfiltrated."
+        ),
+    ),
+    DeniedCommandRule(
+        id="legacy-delete-stack-underscore",
+        pattern=".*delete_stack.*",
+        category="aws-destructive",
+        description=(
+            "Blocks the boto3 underscore form `delete_stack`, which destroys a CloudFormation "
+            "stack and every resource it manages."
+        ),
+    ),
+    DeniedCommandRule(
+        id="legacy-terminate-instance-underscore",
+        pattern=".*terminate_instance.*",
+        category="aws-destructive",
+        description=(
+            "Blocks the boto3 underscore form `terminate_instance(s)`, which permanently shuts "
+            "down and deletes running EC2 instances."
+        ),
+    ),
+    DeniedCommandRule(
+        id="legacy-drop-table-underscore",
+        pattern=".*drop_table.*",
+        category="sql",
+        description=(
+            "Blocks the underscore form `drop_table`, which permanently deletes a database "
+            "table and all its rows."
+        ),
+    ),
+    DeniedCommandRule(
+        id="legacy-delete-table-underscore",
+        pattern=".*delete_table.*",
+        category="aws-destructive",
+        description=(
+            "Blocks the boto3 underscore form `delete_table`, which permanently deletes a "
+            "DynamoDB table and every item it holds."
+        ),
+    ),
+    DeniedCommandRule(
+        id="legacy-delete-bucket-underscore",
+        pattern=".*delete_bucket.*",
+        category="aws-destructive",
+        description=(
+            "Blocks the boto3 underscore form `delete_bucket`, which removes an S3 bucket and "
+            "can cause irreversible data loss."
+        ),
+    ),
 ]
+
+_RULES_BY_ID: dict[str, DeniedCommandRule] = {r.id: r for r in BUILTIN_DENIED_RULES}
+
+# Reverse map (pattern → rule id) for SEL audit enrichment on a regex-tier match.
+_RULE_ID_BY_PATTERN: dict[str, str] = {r.pattern: r.id for r in BUILTIN_DENIED_RULES}
+
+# ── Git-publish rule patterns are NOT evaluated in the Python regex tier ──
+# The ``git-publish`` category rules exist in the catalog for UI display /
+# opt-out parity, but git-publish enforcement is done UNCONDITIONALLY by the
+# verb-anchored ``_is_git_publish`` / ``_is_push_to_protected_branch`` floor
+# (evaluated BEFORE the tiers below).  Their patterns were authored for
+# kiro-cli's linear-time (RE2-style) engine; under Python's backtracking
+# ``re`` the nested ``(?:...)*`` quantifiers are catastrophic (ReDoS) on
+# pathological flag-spam input, so they must never reach ``re.search``.  The
+# always-on floor already covers every case these patterns would (protected
+# targets denied, feature branches allowed), so skipping them loses no coverage.
+_GIT_PUBLISH_RULE_CATEGORY = "git-publish"
+_GIT_PUBLISH_RULE_PATTERNS: frozenset[str] = frozenset(
+    r.pattern for r in BUILTIN_DENIED_RULES if r.category == _GIT_PUBLISH_RULE_CATEGORY
+)
+
+# ── Back-compat alias ──
+# Retained as a DERIVED flat string list so ``platform/security_authority`` and
+# ``cli_commands`` keep importing a ``list[str]``.  Its members are now REGEX
+# strings (string identity only — the match semantics moved to ``re.search``).
+BUILTIN_DENY_PATTERNS: list[str] = [r.pattern for r in BUILTIN_DENIED_RULES]
+
+
+def compute_effective_denied(
+    rules: "list[DeniedCommandRule]",
+    disabled_ids: "Iterable[str]",
+    disable_all: bool,
+    user_added: "Iterable[str]",
+    governance_pins: "Iterable[str]",
+) -> list[str]:
+    """Resolve the effective regex-tier deny list (pure, deterministic).
+
+    Returns the ordered, de-duplicated list of REGEX strings to enforce:
+
+    1. For each rule in ``rules`` (input order), include ``rule.pattern`` if
+       ``(not disable_all and rule.id not in disabled_ids) or rule.id in
+       governance_pins``.  A governance pin re-adds a rule even when the user
+       individually disabled it OR set disable-all — tightest-wins: an
+       enterprise pin cannot be opted out.
+    2. Append every entry of ``user_added`` verbatim (the user's own regexes).
+    3. De-duplicate preserving first-seen order.
+
+    No I/O, no config reads, no globals mutated — callers (the hooks gate) own
+    where ``disabled_ids`` / ``disable_all`` / ``user_added`` / ``governance_pins``
+    come from.
+    """
+    disabled = set(disabled_ids)
+    pins = set(governance_pins)
+    out: list[str] = []
+    for rule in rules:
+        if (not disable_all and rule.id not in disabled) or rule.id in pins:
+            out.append(rule.pattern)
+    out.extend(user_added)
+    return list(dict.fromkeys(out))
+
+
+def builtin_denied_rules() -> list[dict]:
+    """Return the built-in rule catalog as plain dicts for API serialization.
+
+    Each entry has exactly ``{id, pattern, category, description}``.  Handlers
+    consume this so they never need to import the ``DeniedCommandRule`` dataclass.
+    """
+    return [
+        {
+            "id": r.id,
+            "pattern": r.pattern,
+            "category": r.category,
+            "description": r.description,
+        }
+        for r in BUILTIN_DENIED_RULES
+    ]
+
+
+def pinned_builtin_command_ids() -> set[str]:
+    """Return built-in rule ids force-pinned by the ACTIVE governance ceiling.
+
+    A governance ``commands``-scope deny policy can pin a built-in rule as
+    un-opt-out-able.  A pattern is treated as pinning a built-in rule when it is
+    string-identical to that rule's regex.
+
+    Scope: the **active** Level-1 ceiling (``current_context().governance``)
+    ONLY.  This is the ENFORCEMENT accessor (the hooks gate force-re-adds these
+    ids so a user opt-out cannot weaken a ceiling pin, tightest-wins).  It does
+    NOT union other profiles' pins — a rule pinned only for profile A must not be
+    force-enforced for profile B or a no-profile session (that would break
+    profile-scoped governance).  Per-profile command enforcement is handled
+    separately by the gate's ``_governance_denial`` commands-scope deny plane,
+    which resolves the *bound* profile.  For the surface-agnostic Settings
+    snapshot (which must over-lock across all profiles) use
+    :func:`pinned_builtin_command_ids_for_snapshot`.
+
+    Fail-soft: returns an empty set on a standalone/ungoverned host or if
+    governance resolution fails (mirrors the degrade discipline elsewhere in this
+    module; ``PlatformCompositionError`` still propagates fail-closed).
+    """
+    from kiro_crew.platform import governance as _governance
+    from kiro_crew.platform.context import PlatformCompositionError, current_context
+
+    try:
+        ceiling = current_context().governance
+        if ceiling is None:
+            return set()
+        # ``resolve_pinned_commands`` is provided by the governance module (a
+        # sibling change-set); resolve it dynamically so this module composes
+        # regardless of build order.  Missing symbol → no pins (fail-soft).
+        resolver = getattr(_governance, "resolve_pinned_commands", None)
+        if resolver is None:
+            return set()
+        pins = resolver(ceiling)
+        return {_RULE_ID_BY_PATTERN[p] for p in pins if p in _RULE_ID_BY_PATTERN}
+    except PlatformCompositionError:
+        raise
+    except Exception:
+        return set()
+
+
+def pinned_builtin_command_ids_for_snapshot() -> set[str]:
+    """Built-in rule ids pinned by the ceiling OR by ANY loaded profile.
+
+    DISPLAY accessor for the surface-agnostic Settings > Security snapshot, which
+    has no session/agent/app to resolve a single *active* profile.  It unions the
+    active ceiling pins (:func:`pinned_builtin_command_ids`) with the pins from
+    ALL loaded profiles, so a rule pinned by ANY profile renders locked and is
+    never presented as freely disableable — otherwise a profile-pinned rule would
+    surface as a no-op opt-out (UI reports success, but the bound-profile gate
+    still denies).  Conservative by design (over-locks, never under-locks).
+
+    This is DISPLAY-only: the ENFORCEMENT gate uses the ctx-scoped
+    :func:`pinned_builtin_command_ids` (active ceiling) + the bound-profile deny
+    plane, so unioning all profiles here does NOT widen enforcement.
+
+    Fail-soft like :func:`pinned_builtin_command_ids`.
+    """
+    from kiro_crew.platform.context import PlatformCompositionError
+
+    try:
+        ids = pinned_builtin_command_ids()
+    except PlatformCompositionError:
+        raise
+    except Exception:
+        ids = set()
+    try:
+        from kiro_crew.platform.governance_profiles import all_profile_pinned_commands
+
+        for p in all_profile_pinned_commands():
+            rid = _RULE_ID_BY_PATTERN.get(p)
+            if rid is not None:
+                ids.add(rid)
+    except Exception:
+        pass
+    return ids
+
 
 # Exceptions keyed by the deny pattern they apply to. If an input matches
 # a deny pattern AND one of that pattern's exceptions, the deny is skipped.
@@ -118,6 +1517,491 @@ _DENY_EXCEPTIONS: dict[str, list[str]] = {}
 # Literal whitespace is NOT a separator — flag values (e.g. `-C /path`)
 # must stay attached to their flag token.
 _CMD_SPLIT_RE = re.compile(r"[;\n`]|\|\|?|&&|&(?!&)|\$\(|\)")
+
+# ── ReDoS mitigation for the regex deny tier ──
+# The 137 built-in rule patterns were authored for kiro-cli's linear-time
+# (RE2-style) engine.  Under Python's backtracking ``re`` two independent
+# pathologies appear on hostile input, so the raw patterns must never be fed to
+# ``re.search`` verbatim.  ``_DenyMatcher`` compiles each pattern into a
+# behaviourally-identical but linear-time matcher and matches against the FULL
+# (untruncated) string, so a destructive needle at any offset is always found.
+# All of this is EVALUATION-LAYER only — ``BUILTIN_DENIED_RULES`` (and the
+# golden fixture the parity test pins to) stay byte-for-byte unchanged, and the
+# human-readable denial reason / SEL audit still report the ORIGINAL pattern.
+#
+# Pathology 1 — catastrophic (exponential) backtracking.
+#   The 46 ``aws-*`` patterns embed the nested-star flag run
+#   ``(?:\s+--?[a-z-]+(?:[= ]\S+)?)*``.  Two internal ambiguities make it
+#   exponential: (a) ``--?`` and ``[a-z-]+`` can both claim the leading dashes
+#   of a flag; (b) a space-separated value ``[= ]\S+`` can equally be read as
+#   the next flag.  On input like ``aws -x -x -x …`` (only ~40 repeats / ~124
+#   chars) the engine explores 2ⁿ parses before failing — a length bound does
+#   NOT help because the blow-up happens well below any sane bound.  We rewrite
+#   the run to ``_LINEARIZED_AWS_FLAG_RUN`` which removes BOTH ambiguities
+#   (``--?``→``-`` for the flag name, and a negative lookahead so a space value
+#   cannot itself be a flag token).  This is provably language-equivalent — see
+#   ``test_denied_commands_security`` ReDoS tests and the exhaustive
+#   brute-force/directional equivalence checks documented there.
+#
+# Pathology 2 — polynomial (O(n²)/O(n³)) backtracking.
+#   Every ``.*``-prefixed pattern (~50 of them) and the multi-``.*`` chains
+#   (e.g. ``python.*open.*/\.ssh/``) are linear/polynomial per pattern but scan
+#   the whole string, so across ~123 effective patterns a 20k-char input costs
+#   seconds.  These ``.*`` occur ONLY at the TOP LEVEL of the ported patterns
+#   (none has a top-level alternation or a top-level ``.+``), so we SPLIT each
+#   pattern on its top-level ``.*`` into fixed fragments and existence-match
+#   them in order with a monotonically-advancing ``re.search(text, pos)``.  A
+#   top-level ``.*`` matches "anything", so "fragment₀ then fragment₁ then …"
+#   at leftmost advancing positions is exactly equivalent to the whole regex —
+#   verified by exhaustive brute-force + a 40k-input equivalence harness — but
+#   runs in O(n) with NO backtracking across the gaps and NO length bound, so a
+#   padded needle inside a single un-separated segment (the bypass this fixes)
+#   is still caught.  A pattern that is NOT safe to split this way (a top-level
+#   alternation, only possible via a user-supplied custom regex — no built-in
+#   has one) falls back to a length-bounded ``re.search`` on the linearized
+#   form (``_DENY_FALLBACK_SCAN_MAX_CHARS``): correct for short commands and
+#   ReDoS-safe, at the cost of not scanning a needle past the bound in such an
+#   exotic custom pattern (built-ins are unaffected).
+_DENY_FALLBACK_SCAN_MAX_CHARS = 2000
+
+# The dangerous nested-star flag run as it appears (raw) in the aws-* patterns.
+_DANGEROUS_AWS_FLAG_RUN = r"(?:\s+--?[a-z-]+(?:[= ]\S+)?)*"
+# Linear, language-equivalent replacement (see Pathology 1 above).
+_LINEARIZED_AWS_FLAG_RUN = r"(?:\s+-[a-z-]+(?:=\S+| (?!-[a-z-]+(?:[= ]|$))\S+)?)*"
+
+
+def _linearize_deny_pattern(pattern: str) -> str:
+    """Rewrite the exponential aws flag-run into its linear-time equivalent.
+
+    Pure / idempotent.  Only touches Pathology 1 (the nested-star flag run);
+    the top-level ``.*`` gaps are handled structurally by ``_split_deny_frags``.
+    """
+    return pattern.replace(_DANGEROUS_AWS_FLAG_RUN, _LINEARIZED_AWS_FLAG_RUN)
+
+
+# ── ReDoS-safety gate for USER-supplied deny regexes ──
+# The 137 built-in patterns are ReDoS-safe by construction (the one dangerous
+# construct — the aws flag run — is rewritten by ``_linearize_deny_pattern``,
+# and the git-publish patterns never reach the regex tier).  But a USER can add
+# an ARBITRARY regex via ``POST /api/security/denied-commands/user``; a
+# catastrophic-backtracking pattern such as ``(a+)+$`` would then run inside the
+# synchronous PreToolUse gate on the event loop and could freeze the gateway
+# (2ⁿ backtracking is NOT bounded by scanning a length-limited prefix — the
+# blow-up happens far below any byte bound).  ``is_safe_user_regex`` is a
+# conservative, stdlib-only STRUCTURAL check used both at the add boundary
+# (reject with HTTP 400) and as runtime defense-in-depth in ``_DenyMatcher``
+# (an already-stored unsafe pattern is skipped, never executed).
+#
+# Heuristic (the classic exponential family): a pattern is UNSAFE if it contains
+# a QUANTIFIED GROUP — one whose quantifier permits >1 repetitions (``*``,
+# ``+``, ``{m,}``, ``{m,n}`` with n>1, ``{n}`` with n>1) — whose body itself
+# contains EITHER (a) another quantifier (nested quantifier: ``(X+)+``,
+# ``(X*)*``, ``(X?)*`` …) OR (b) a top-level alternation (branch-overlap risk:
+# ``(a|a)+``, ``(ab|a)+``).  We deliberately err toward REJECTING a suspicious
+# user pattern: built-ins are unaffected (they are added programmatically, never
+# through this gate), and a user who hits a false positive can rephrase without
+# the nested quantifier.  We first strip the known-safe linearized aws flag run
+# so the (harmless) built-in construct is never mistaken for the dangerous
+# signature if this ever runs over the effective set.
+
+
+def _redos_prone(pattern: str) -> bool:
+    """Structural exponential-ReDoS heuristic (see the section comment above).
+
+    Robust to malformed / unbalanced input — never raises; returns ``False`` for
+    a structure it cannot reason about (``re.compile`` is validated separately by
+    callers, and the runtime fallback is length-bounded regardless).
+    """
+    n = len(pattern)
+    i = 0
+    # One frame per open group; base frame is the whole pattern.
+    stack: list[dict] = [{"has_inner_quant": False, "has_alt": False}]
+
+    def read_quantifier(idx: int) -> "tuple[str | None, int]":
+        """Return (kind, new_idx): kind is ``"multi"`` (>1 repetitions possible),
+        ``"opt"`` (``?`` or ``{0,1}``), or ``None`` (no quantifier at ``idx``)."""
+        if idx >= n:
+            return None, idx
+        ch = pattern[idx]
+        if ch in "*+":
+            j = idx + 1
+            if j < n and pattern[j] in "?+":  # lazy / possessive-style modifier
+                j += 1
+            return "multi", j
+        if ch == "?":
+            j = idx + 1
+            if j < n and pattern[j] in "?+":
+                j += 1
+            return "opt", j
+        if ch == "{":
+            k = idx + 1
+            body: list[str] = []
+            while k < n and pattern[k] != "}":
+                body.append(pattern[k])
+                k += 1
+            if k >= n:  # unterminated ``{`` — treat as a literal, no quantifier
+                return None, idx + 1
+            k += 1  # consume ``}``
+            spec = "".join(body)
+            if "," in spec:
+                _, _, hi = spec.partition(",")
+                hi = hi.strip()
+                multi = hi == "" or not hi.isdigit() or int(hi) > 1
+            else:
+                multi = not spec.isdigit() or int(spec) > 1
+            return ("multi" if multi else "opt"), k
+        return None, idx
+
+    while i < n:
+        c = pattern[i]
+        if c == "\\":
+            i += 2
+            kind, i = read_quantifier(i)
+            if kind is not None:
+                stack[-1]["has_inner_quant"] = True
+            continue
+        if c == "[":
+            i += 1
+            if i < n and pattern[i] == "^":
+                i += 1
+            if i < n and pattern[i] == "]":
+                i += 1
+            while i < n and pattern[i] != "]":
+                if pattern[i] == "\\":
+                    i += 1
+                i += 1
+            i += 1  # consume ``]``
+            kind, i = read_quantifier(i)
+            if kind is not None:
+                stack[-1]["has_inner_quant"] = True
+            continue
+        if c == "(":
+            i += 1
+            if i < n and pattern[i] == "?":
+                nxt = pattern[i + 1] if i + 1 < n else ""
+                if nxt in "=!":  # (?= (?! lookahead — a normal group frame
+                    i += 2
+                elif nxt == "<" and i + 2 < n and pattern[i + 2] in "=!":
+                    i += 3  # (?<= (?<! lookbehind
+                else:
+                    # (?: , (?i: , (?P<name> … — skip the prefix up to ``:``/``>``
+                    j = i + 1
+                    while j < n and pattern[j] not in ":>)":
+                        j += 1
+                    i = j + 1 if j < n and pattern[j] in ":>" else j
+            stack.append({"has_inner_quant": False, "has_alt": False})
+            continue
+        if c == ")":
+            grp = stack.pop() if len(stack) > 1 else {"has_inner_quant": False, "has_alt": False}
+            i += 1
+            kind, i = read_quantifier(i)
+            if kind == "multi" and (grp["has_inner_quant"] or grp["has_alt"]):
+                return True
+            if kind is not None:
+                # A quantified group is itself a quantifier in the parent frame.
+                stack[-1]["has_inner_quant"] = True
+            continue
+        if c == "|":
+            stack[-1]["has_alt"] = True
+            i += 1
+            continue
+        if c in "*+?{":
+            kind, i = read_quantifier(i)
+            if kind is not None:
+                stack[-1]["has_inner_quant"] = True
+            continue
+        i += 1
+    return False
+
+
+def is_safe_user_regex(pattern: str) -> bool:
+    """Return ``True`` if a USER-supplied deny regex is safe to run on the gate.
+
+    A pattern is safe when it (a) compiles and (b) is NOT flagged by the
+    structural exponential-ReDoS heuristic (``_redos_prone``).  Callers — the
+    dashboard ``POST /denied-commands/user`` handler and ``_DenyMatcher`` —
+    reject/skip a pattern that fails this check so a catastrophic user regex can
+    never freeze the synchronous PreToolUse gate.
+
+    The known-safe linearized aws flag run is stripped before the structural
+    check so the (harmless) built-in construct is never misflagged.
+
+    A pattern with a TOP-LEVEL alternation (``a|b``) is also rejected: it cannot
+    be split on ``.*`` for the linear full-length fragment matcher, so it would
+    fall back to a length-bounded whole-string scan — which a padded command
+    (a needle beyond the bound in one segment) could slip past. No built-in rule
+    has top-level alternation; a user can express the same intent as separate
+    rules, so rejecting it here closes the truncation-bypass with no coverage
+    loss.
+    """
+    try:
+        re.compile(pattern)
+    except re.error:
+        return False
+    scrubbed = pattern.replace(_DANGEROUS_AWS_FLAG_RUN, "").replace(_LINEARIZED_AWS_FLAG_RUN, "")
+    if _redos_prone(scrubbed):
+        return False
+    return not _has_top_level_alternation(scrubbed)
+
+
+def _has_top_level_alternation(pattern: str) -> bool:
+    """True if ``pattern`` has a ``|`` at nesting depth 0.
+
+    A top-level alternation binds looser than concatenation (``a.*b|c`` is
+    ``(a.*b)|(c)``), so splitting on top-level ``.*`` would be INCORRECT — such
+    a pattern must use the bounded-scan fallback instead.  Bracket classes and
+    escapes are skipped so a ``|`` inside ``[...]`` or a literal ``\\|`` does
+    not count.
+    """
+    depth = 0
+    i, n = 0, len(pattern)
+    while i < n:
+        c = pattern[i]
+        if c == "\\":
+            i += 2
+            continue
+        if c == "[":
+            i += 1
+            if i < n and pattern[i] == "^":
+                i += 1
+            if i < n and pattern[i] == "]":
+                i += 1
+            while i < n and pattern[i] != "]":
+                if pattern[i] == "\\":
+                    i += 1
+                i += 1
+            i += 1
+            continue
+        if c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+        elif c == "|" and depth == 0:
+            return True
+        i += 1
+    return False
+
+
+def _split_deny_frags(pattern: str) -> list[str]:
+    """Split ``pattern`` on its TOP-LEVEL ``.*`` gaps into fixed fragments.
+
+    Only an unescaped ``.`` immediately followed by ``*`` at nesting depth 0 is
+    treated as a gap (a ``.?`` / ``.+`` / a nested ``.*`` inside ``(...)`` stays
+    inside its fragment and is matched by the real engine).  A lazy (``.*?``) or
+    possessive (``.*+``) modifier on the gap is consumed with it — all three
+    spellings mean "any run of characters" for an ordered existence-match split,
+    and leaving the dangling ``?`` / ``+`` behind would produce a fragment that
+    starts with a bare quantifier and fails to compile, silently disabling an
+    otherwise-valid user rule.  Empty fragments (from a leading/trailing/adjacent
+    ``.*``) are dropped — a leading/trailing ``.*`` is redundant under
+    ``re.search`` and an interior empty cannot occur because two adjacent
+    top-level ``.*`` collapse to one gap.
+    """
+    frags: list[str] = []
+    cur: list[str] = []
+    depth = 0
+    i, n = 0, len(pattern)
+    while i < n:
+        c = pattern[i]
+        if c == "\\":
+            cur.append(pattern[i : i + 2])
+            i += 2
+            continue
+        if c == "[":
+            j = i + 1
+            if j < n and pattern[j] == "^":
+                j += 1
+            if j < n and pattern[j] == "]":
+                j += 1
+            while j < n and pattern[j] != "]":
+                if pattern[j] == "\\":
+                    j += 1
+                j += 1
+            j += 1
+            cur.append(pattern[i:j])
+            i = j
+            continue
+        if c == "(":
+            depth += 1
+            cur.append(c)
+            i += 1
+            continue
+        if c == ")":
+            depth -= 1
+            cur.append(c)
+            i += 1
+            continue
+        if c == "." and depth == 0 and i + 1 < n and pattern[i + 1] == "*":
+            frags.append("".join(cur))
+            cur = []
+            i += 2
+            # Absorb a lazy/possessive modifier on the gap (``.*?`` / ``.*+``);
+            # otherwise the dangling ``?`` / ``+`` becomes a fragment-leading
+            # quantifier that fails to compile and disables the whole rule.
+            if i < n and pattern[i] in "?+":
+                i += 1
+            continue
+        cur.append(c)
+        i += 1
+    frags.append("".join(cur))
+    return [f for f in frags if f]
+
+
+def _frags_can_underconsume(frags: list[str]) -> bool:
+    """True if the forward-only fragment matcher could MISS a real match.
+
+    The linear matcher searches each fragment in order with an advancing
+    ``re.search(text, pos)`` and cannot backtrack across a ``.*`` gap boundary.
+    So if a NON-FINAL fragment ends in a greedy, variable-width quantifier
+    (``.+`` / ``x*`` / ``\\S+`` / ``(...)+`` / ``a{2,}``), that fragment greedily
+    consumes characters the NEXT fragment needs — e.g. ``rm .+`` in
+    ``rm .+ .* --no-preserve-root`` eats ``x--no-preserve-root`` so the tail
+    fragment never matches, a FALSE NEGATIVE that lets a denied command through.
+    Real ``re.search`` would backtrack; the linear matcher won't.
+
+    A lazy (``*?`` / ``+?`` / ``{m,}?``) trailing quantifier consumes minimally,
+    so it CANNOT over-consume — those are safe. Only the FINAL fragment's greedy
+    tail is harmless (nothing follows it). When this returns True the matcher
+    routes to the bounded whole-regex path (exact ``re.search`` semantics on a
+    length-capped window) instead of the linear split.
+    """
+    for frag in frags[:-1]:
+        s = frag.rstrip()
+        if not s:
+            continue
+        last = s[-1]
+        # A lazy modifier (``*?`` / ``+?`` / ``}?``) consumes minimally → safe.
+        if last == "?" and len(s) >= 2 and s[-2] in "*+}":
+            continue
+        if last in "*+":
+            # Count preceding backslashes: an odd count means the quantifier is
+            # escaped (a literal ``\*``/``\+``), which does not over-consume.
+            j = len(s) - 2
+            bs = 0
+            while j >= 0 and s[j] == "\\":
+                bs += 1
+                j -= 1
+            if bs % 2 == 0:
+                return True
+        elif last == "}":
+            # ``{m,}`` / ``{m,n}`` — an open-ended (``,``-bearing) count is
+            # variable-width and greedy; ``{m}`` (exact) is fixed-width, safe.
+            open_idx = s.rfind("{")
+            if open_idx >= 0 and "," in s[open_idx + 1 : -1]:
+                return True
+    return False
+
+
+class _DenyMatcher:
+    """A ReDoS-safe, full-length matcher for a single deny regex.
+
+    Built once per pattern (memoized in ``_DENY_MATCHER_CACHE``).  ``match``
+    returns whether the ORIGINAL pattern would match anywhere in ``text``:
+
+    * Fragment path (BUILT-INS ONLY) — the pattern is split on its top-level
+      ``.*`` gaps and the fragments are searched in order with an advancing
+      ``re.search(text, pos)`` (equivalent to ``frag0.*frag1.*…`` but linear-time,
+      no length bound). The 137 built-ins were authored for kiro-cli's RE2-style
+      engine and are parity-tested to be fragment-safe (no backtracking-dependent
+      construct — no ``(a|b)`` before a ``.*``, no greedy variable-width tail on a
+      non-final fragment).
+    * Bounded path (USER CUSTOM REGEXES + any built-in with a top-level
+      alternation) — compiled whole and matched against a length-bounded prefix,
+      giving EXACT ``re.search`` semantics (backtracking preserved). A
+      user-supplied pattern is NEVER run through the forward-only fragment
+      matcher: that matcher commits to each fragment's first match and cannot
+      backtrack across a ``.*`` gap, so a pattern like ``(ab|a).*b`` (or a greedy
+      ``rm .+.*x``) would UNDER-match and let a denied command through. Routing
+      all user patterns to the exact bounded engine closes that fidelity class
+      entirely — and it is ReDoS-safe because ``is_safe_user_regex`` already
+      rejected catastrophic-backtracking patterns at add-time and here.
+
+    Defense-in-depth: a pattern that fails ``is_safe_user_regex`` (a
+    catastrophic-backtracking construct, only reachable via an already-stored
+    USER custom regex — built-ins are safe by construction) is DISABLED — the
+    matcher never runs it and never matches, logged once.  This guarantees the
+    synchronous PreToolUse gate cannot be frozen even if such a pattern slipped
+    into the config before the add-time check existed.  A malformed pattern
+    (``re.error``) is likewise disabled so one bad rule cannot wedge the gate.
+    """
+
+    __slots__ = ("_frag_res", "_whole_re", "_bounded", "_disabled")
+
+    def __init__(self, pattern: str) -> None:
+        self._frag_res: "list[re.Pattern[str]]" = []
+        self._whole_re: "re.Pattern[str] | None" = None
+        self._bounded = False
+        self._disabled = False
+        if not is_safe_user_regex(pattern):
+            # Either malformed or ReDoS-prone — refuse to run it (built-ins never
+            # reach this branch; they are safe by construction).
+            logger.warning("Disabling unsafe/malformed denied-command regex %r", pattern)
+            self._disabled = True
+            return
+        linear = _linearize_deny_pattern(pattern)
+        # A USER custom pattern (not one of the built-ins) is matched by the exact
+        # bounded engine, never the forward-only fragment matcher — the latter
+        # cannot faithfully emulate ``re.search`` backtracking (``(ab|a).*b``,
+        # greedy ``.+`` before ``.*``, etc.), which would UNDER-match and let a
+        # denied command through.  Built-ins are RE2-authored + parity-tested, so
+        # they keep the fast fragment path.
+        is_builtin = pattern in _RULE_ID_BY_PATTERN
+        try:
+            frags = None if _has_top_level_alternation(linear) else _split_deny_frags(linear)
+            if not is_builtin or frags is None or _frags_can_underconsume(frags):
+                # Bounded whole-regex: exact ``re.search`` semantics on a
+                # length-capped window.  ReDoS-safe because ``is_safe_user_regex``
+                # above already rejected catastrophic patterns.
+                self._whole_re = re.compile(linear, re.IGNORECASE)
+                self._bounded = True
+            else:
+                self._frag_res = [re.compile(f, re.IGNORECASE) for f in frags]
+        except re.error:
+            logger.warning("Skipping malformed denied-command regex %r", pattern)
+            self._disabled = True
+
+    def match(self, text: str) -> bool:
+        if self._disabled:
+            return False
+        if self._bounded:
+            if self._whole_re is None:
+                return False
+            # DOCUMENTED TRADE-OFF: the bounded path scans only the first
+            # ``_DENY_FALLBACK_SCAN_MAX_CHARS`` chars. Python's backtracking ``re``
+            # cannot give exact ``re.search`` semantics AND full-input AND
+            # ReDoS-safety at once — a polynomial (non-catastrophic, so
+            # is_safe_user_regex-accepted) user pattern like ``(ab|a).*b`` is
+            # O(n²), which would freeze the gate on a large input without this
+            # cap (true full-input would need a linear RE2 engine — a dependency
+            # the project deliberately avoids). Scope of the residual: this path
+            # is USER-custom-regex-only (the 137 built-in security rules use the
+            # full-input fragment matcher, no truncation), the cap far exceeds any
+            # real command, and the only bypass is a single >cap-char shell
+            # segment defeating the user's OWN custom rule. See security.md.
+            return self._whole_re.search(text[:_DENY_FALLBACK_SCAN_MAX_CHARS]) is not None
+        # An empty fragment list means the pattern reduced to ``.*`` (matches
+        # everything).  No built-in does this, but stay fail-open-safe: only a
+        # literal ``.*`` custom rule would, and it legitimately matches all.
+        pos = 0
+        for frag_re in self._frag_res:
+            m = frag_re.search(text, pos)
+            if m is None:
+                return False
+            pos = m.end()
+        return True
+
+
+_DENY_MATCHER_CACHE: dict[str, _DenyMatcher] = {}
+
+
+def _deny_matcher(pattern: str) -> _DenyMatcher:
+    """Return the memoized :class:`_DenyMatcher` for ``pattern``."""
+    matcher = _DENY_MATCHER_CACHE.get(pattern)
+    if matcher is None:
+        matcher = _DenyMatcher(pattern)
+        _DENY_MATCHER_CACHE[pattern] = matcher
+    return matcher
+
 
 # ── Git publish detection (verb-anchored) ──
 # ``git push`` must be blocked, but ``push`` appearing anywhere in arbitrary
@@ -597,6 +2481,20 @@ _SENSITIVE_HOME_DIRS: list[str] = [
     ".kirocrew/security_policy.json",
     ".kirocrew/profiles",
     ".kirocrew/admission_policy.json",
+    # Denied-command opt-out state (KEYSTONE). ``denied_commands.json`` holds the
+    # user's opt-out from the built-in deny ceiling
+    # (``{disable_all, disabled_ids, user_added}``). It is a security ceiling: if
+    # an auto-approved / YOLO agent shell could WRITE it, it could set
+    # ``disable_all=true`` and, after a restart, defeat the whole deny gate. It
+    # therefore lives OUTSIDE the agent-readable ``config.json`` and on this
+    # read+write floor, so the agent (the governed subject) can neither read nor
+    # write its own ceiling via ANY shell form — inheriting the full
+    # ``is_sensitive_path`` gate (variable-indirection, symlinks, KIROCREW_HOME,
+    # interpreters, casefold, realpath) instead of a bespoke bash matcher. The
+    # operator edits it out-of-band via the dashboard ``/api/security/…``
+    # endpoints, which open the file directly and do NOT route through this gate,
+    # so legitimate opt-out changes still work.
+    ".kirocrew/denied_commands.json",
     # KiroCrew's own dashboard-auth secrets. ``token_signing.key``
     # (dashboard/token_secret.py) signs every access + refresh token;
     # ``refresh_chains.json`` (dashboard/refresh_tokens.py) stores refresh-token
@@ -632,6 +2530,9 @@ _SENSITIVE_HOME_DIRS: list[str] = [
 # inflated on-disk value no matter how it was written. The operator edits config
 # out-of-band (dashboard config API / CLI), which do NOT route through this
 # gate, so legitimate config changes still work.
+# (The denied-command opt-out state does NOT live here — it is a security
+# ceiling and lives on the read+write keystone floor in ``denied_commands.json``
+# above, so no bash-level write matcher is needed for it.)
 _WRITE_PROTECTED_HOME_PATHS: list[str] = [
     ".kirocrew/config.json",
     ".kirocrew/config.local.json",
@@ -2028,10 +3929,40 @@ class StreamRedactor:
         self._buf = ""
 
 
-def is_denied(tool_name: str, extra_patterns: list[str] | None = None) -> str | None:
-    """Check tool name against built-in + extra deny patterns.
+def _deny_pattern_matches(pattern: str, text: str, is_regex: bool) -> bool:
+    """Match ``text`` (already lowercased) against a deny ``pattern``.
+
+    Regex tier: matched via ``_deny_matcher`` (a memoized, ReDoS-safe
+    *linear-time* matcher for the raw pattern — see the ReDoS-mitigation notes
+    on ``_DenyMatcher``).  The matcher scans the FULL string, so a destructive
+    needle at any offset (e.g. after a long benign prefix inside one un-split
+    shell segment) is found — no length truncation.  A malformed stored pattern
+    (``re.error``) is treated as a non-match so a single bad custom rule cannot
+    wedge the whole gate — other rules still enforce.  Glob tier: ``fnmatch``
+    (case-insensitive), unchanged.
+    """
+    if is_regex:
+        return _deny_matcher(pattern).match(text)
+    return fnmatch.fnmatch(text, pattern.lower())
+
+
+def is_denied(
+    tool_name: str,
+    extra_patterns: list[str] | None = None,
+    *,
+    denied_regexes: list[str] | None = None,
+) -> str | None:
+    """Check tool name against the built-in/effective + extra deny patterns.
 
     Returns denial reason string, or None if allowed.
+
+    ── Two tiers ──
+    * Regex tier (``denied_regexes``): the effective enabled built-in rule
+      regexes plus user-added regexes (output of ``compute_effective_denied``),
+      matched via ``re.search`` (``re.IGNORECASE``).  When ``None``, FAILS
+      CLOSED to all built-ins enabled.
+    * Glob tier (``extra_patterns``): legacy ``auto_deny_tools`` + companion
+      overlay globs, matched via ``fnmatch`` exactly as before.
 
     ── Two-pass evaluation ──
     Pass 1 (whole-string): every deny pattern is matched against the
@@ -2077,15 +4008,30 @@ def is_denied(tool_name: str, extra_patterns: list[str] | None = None) -> str | 
 
     Args:
         tool_name: The full command line / tool invocation to evaluate.
-        extra_patterns: Optional fnmatch glob patterns to append to the
-            built-in deny list (typically from user config).
+        extra_patterns: Optional fnmatch glob patterns (glob tier — legacy
+            ``auto_deny_tools`` + companion overlay).
+        denied_regexes: The effective enabled rule regexes (regex tier).  When
+            ``None``, fails closed to all built-in rules enabled.
 
     Returns:
         Denial reason string (mentioning the matched pattern), or
         ``None`` if the input is allowed.
     """
     lower = tool_name.lower()
-    all_glob_patterns = BUILTIN_DENY_PATTERNS + (extra_patterns or [])
+    glob_patterns = list(extra_patterns or [])
+    if denied_regexes is None:
+        regex_patterns = compute_effective_denied(BUILTIN_DENIED_RULES, (), False, (), ())
+    else:
+        regex_patterns = list(denied_regexes)
+    # Never feed git-publish rule patterns to Python ``re`` — they are ReDoS-prone
+    # under backtracking and are already enforced by the ``_is_git_publish`` floor
+    # below (see ``_GIT_PUBLISH_RULE_PATTERNS``).
+    regex_patterns = [p for p in regex_patterns if p not in _GIT_PUBLISH_RULE_PATTERNS]
+    # Ordered (pattern, is_regex) pairs so the two passes share one code path;
+    # regex tier first (the effective rule set), then the glob tier.
+    all_patterns: list[tuple[str, bool]] = [(p, True) for p in regex_patterns] + [
+        (p, False) for p in glob_patterns
+    ]
 
     # ── Git publish (verb-anchored, not a glob) ──
     # Checked on the whole string first so command-substitution glue-evasion
@@ -2109,12 +4055,16 @@ def is_denied(tool_name: str, extra_patterns: list[str] | None = None) -> str | 
 
     # ── Pass 1: whole-string deny ──
     # If any pattern matches the full input AND no exception matches the
-    # full input, deny outright.  Otherwise note the first pattern that
-    # matched (and has at least one exception that matched) — that's the
-    # candidate for per-segment exception evaluation in Pass 2.
-    pass2_candidate_pattern: str | None = None
-    for pattern in all_glob_patterns:
-        if fnmatch.fnmatch(lower, pattern.lower()):
+    # full input, deny outright.  A whole-string match that IS covered by an
+    # exception falls through to the per-segment Pass 2 carve-out re-check.
+    #
+    # The regex tier matches the FULL, untruncated string via ``_DenyMatcher``
+    # (linear-time, no length bound — see the ReDoS-mitigation notes above), so
+    # a destructive needle at any offset within a single un-separated segment is
+    # caught here.  ``_is_git_publish`` / the always-on floors also run on the
+    # full string before this point.
+    for pattern, is_regex in all_patterns:
+        if _deny_pattern_matches(pattern, lower, is_regex):
             exceptions = _DENY_EXCEPTIONS.get(pattern, [])
             whole_string_exception_match = exceptions and any(
                 fnmatch.fnmatch(lower, e.lower()) for e in exceptions
@@ -2122,32 +4072,21 @@ def is_denied(tool_name: str, extra_patterns: list[str] | None = None) -> str | 
             if not whole_string_exception_match:
                 _emit_deny_event(tool_name, pattern, lower)
                 return f"Blocked by security policy: {pattern}"
-            # Exception candidate — record and continue checking the
-            # remaining patterns (a later pattern with no exception
-            # match must still trigger an outright deny in pass 1).
-            if pass2_candidate_pattern is None:
-                pass2_candidate_pattern = pattern
 
-    if pass2_candidate_pattern is None:
-        # No deny match at all on the whole string.
-        if push_allow_pending:
-            _schedule_push_allow_audit(lower)
-        return None
-
-    # ── Pass 2: per-segment exception evaluation ──
-    # Split into segments and re-check each.  Any segment that matches a
-    # deny pattern without a matching exception denies the whole input —
-    # this preserves chaining-bypass protection because an embedded real
-    # publish (e.g. after ``;`` / ``&&`` / inside ``$(...)``) is its own
-    # segment and matches the deny pattern.  Segments that match a deny
-    # pattern AND an exception are allowed with a SEL audit event.
+    # ── Pass 2: per-segment (re-)evaluation ──
+    # Split into segments and check each.  This runs UNCONDITIONALLY: besides
+    # the exception-carve-out re-check, splitting isolates an embedded real
+    # publish/destructive command (e.g. after ``;`` / ``&&`` / inside
+    # ``$(...)``) into its own segment so it matches the deny pattern in its own
+    # right (chaining-bypass protection).  Segments that match a deny pattern
+    # AND an exception are allowed with a SEL audit event.
     segments = _split_segments(lower)
     for segment in segments:
         seg_lower = segment.strip()
         if not seg_lower:
             continue
-        for pattern in all_glob_patterns:
-            if fnmatch.fnmatch(seg_lower, pattern.lower()):
+        for pattern, is_regex in all_patterns:
+            if _deny_pattern_matches(pattern, seg_lower, is_regex):
                 exceptions = _DENY_EXCEPTIONS.get(pattern, [])
                 if exceptions and any(fnmatch.fnmatch(seg_lower, e.lower()) for e in exceptions):
                     if not _emit_deny_exception_event(tool_name, pattern):
@@ -2160,7 +4099,7 @@ def is_denied(tool_name: str, extra_patterns: list[str] | None = None) -> str | 
                     continue
                 _emit_deny_event(tool_name, pattern, seg_lower)
                 return f"Blocked by security policy: {pattern}"
-    # All segments cleared the glob passes — the input is allowed.  If it was a
+    # All windows cleared the deny passes — the input is allowed.  If it was a
     # feature-branch push, emit the deferred allow audit now (final outcome).
     if push_allow_pending:
         _schedule_push_allow_audit(lower)

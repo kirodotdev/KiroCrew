@@ -347,6 +347,24 @@ def get_store_profile(name: str) -> Optional[Profile]:
     return _STORE.get(name)
 
 
+def all_profile_pinned_commands() -> "tuple[str, ...]":
+    """Union of ``commands``-scope deny patterns across ALL loaded profiles.
+
+    The Settings > Security snapshot is surface-agnostic (it has no session /
+    agent / app to resolve a single *active* profile), so it must treat a rule
+    as governance-locked if ANY profile pins it — otherwise a profile-pinned
+    rule would render as freely disableable, the user "disables" it, and the
+    per-session gate (which DOES resolve the bound profile) still denies the
+    command: a confusing no-op opt-out. Conservative by design (over-locks
+    rather than under-locks). Empty on an ungoverned standalone host.
+    """
+    pins: list[str] = []
+    for profile in _STORE.all_profiles():
+        pins.extend(profile.pinned_command_patterns())
+    # Order-preserving de-dup.
+    return tuple(dict.fromkeys(pins))
+
+
 def assert_profiles_within_ceiling(ceiling: "object") -> None:
     """Boot-time floor gate: every loaded profile must be ≥ as strict as the ceiling.
 

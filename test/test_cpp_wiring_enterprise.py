@@ -169,8 +169,10 @@ def test_hooks_caller_blocks_overlay_pattern(enterprise_ctx) -> None:
     # hooks caller consults current_context().security, not bare security.
     result = mgr.on_tool_call("please get_sso_cookie now")
     assert result.action == TOOL_DENY
-    # A baseline pattern is still blocked.
-    assert mgr.on_tool_call("get_secret_foo").action == TOOL_DENY
+    # A built-in rule (regex tier) is still blocked through the same caller —
+    # BASELINE_DENY is now () so this exercises the disableable built-in tier,
+    # not the compiled floor.  A real hyphenated AWS-CLI teardown is a built-in.
+    assert mgr.on_tool_call("aws ec2 terminate-instances --instance-ids i-1").action == TOOL_DENY
     # A benign command is still allowed.
     assert mgr.on_tool_call("ls -la").action != TOOL_DENY
 

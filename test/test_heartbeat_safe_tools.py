@@ -20,6 +20,7 @@ from kiro_crew.slack.gateway import (
     _HEARTBEAT_KEEP_INJECTION,
     HEARTBEAT_SAFE_TOOLS,
     GatewayOrchestrator,
+    _build_heartbeat_hooks,
     _is_heartbeat_safe_tool,
 )
 
@@ -34,6 +35,42 @@ def _make_event(title: str, *, tool_kind: str = "mcp", request_id: str = "req-1"
     )
 
 
+# ── Heartbeat-scoped denied-command state ──
+
+
+class TestHeartbeatHooksCarryDeniedState:
+    """``_build_heartbeat_hooks`` must reflect the CURRENT primary manager's
+    denied-command opt-out state.
+
+    Rebuilt per heartbeat run (see ``_init_heartbeat``), so a live
+    Settings > Security change hot-reloaded into the primary manager reaches
+    heartbeat sessions without a gateway restart. A once-at-init snapshot would
+    let a heartbeat session keep enforcing a just-disabled rule (or skip a
+    just-added user deny) — the cross-surface inconsistency this guards against.
+    """
+
+    def test_scoped_hooks_snapshot_live_denied_state(self) -> None:
+        from kiro_crew.hooks import HookManager, HooksConfig, UserDeniedPattern
+
+        primary = HookManager(HooksConfig())
+        # Simulate a live opt-out mutation hot-reloaded into the primary manager.
+        primary.reload(
+            HooksConfig(
+                denied_commands_disable_all=True,
+                denied_commands_disabled_ids=["local-destructive-rm-rf-root"],
+                denied_commands_user_added=[UserDeniedPattern(id="u1", pattern="frobnicate.*")],
+            )
+        )
+
+        scoped = _build_heartbeat_hooks(primary)
+
+        assert scoped._config.denied_commands_disable_all is True
+        assert scoped._config.denied_commands_disabled_ids == ["local-destructive-rm-rf-root"]
+        assert [p.pattern for p in scoped._config.denied_commands_user_added] == ["frobnicate.*"]
+        # The user's auto-approve tools are still dropped (heartbeat safety).
+        assert scoped._config.auto_approve_tools == []
+
+
 # ── Allowlist membership ──
 
 
@@ -41,7 +78,9 @@ class TestHeartbeatSafeTools:
     def test_canonical_read_tools_present(self) -> None:
         """Spot-check tools every heartbeat task should reasonably need."""
         for name in [
-            "Read", "Grep", "Glob",
+            "Read",
+            "Grep",
+            "Glob",
             "WorkspaceSearch",
             "learn_list",
             "cron_list",
@@ -182,9 +221,7 @@ class TestEditionHeartbeatAllowlist:
 
         ctx = dataclasses.replace(base, slack_gate=_Gate())
         set_context(ctx)
-        monkeypatch.setattr(
-            "kiro_crew.platform.bootstrap._BOOTED", True, raising=False
-        )
+        monkeypatch.setattr("kiro_crew.platform.bootstrap._BOOTED", True, raising=False)
 
     @pytest.fixture(autouse=True)
     def _reset_ctx(self):
@@ -337,6 +374,7 @@ class TestHeartbeatApproval:
         guideline: never trust LLM output. (review-bot finding on rev 6.)
         """
         import logging
+
         sel_mock = MagicMock()
         monkeypatch.setattr("kiro_crew.slack.gateway.sel", lambda: sel_mock)
         # Title carries an AWS access key (a polled CR comment or ticket
@@ -348,9 +386,9 @@ class TestHeartbeatApproval:
         # The raw AWS key body must NOT appear in any log record produced
         # by this callback — redact_credentials should have replaced it.
         for record in caplog.records:
-            assert "AKIAIOSFODNN7EXAMPLE" not in record.getMessage(), (
-                f"Unredacted credential leaked into log: {record.getMessage()}"
-            )
+            assert (
+                "AKIAIOSFODNN7EXAMPLE" not in record.getMessage()
+            ), f"Unredacted credential leaked into log: {record.getMessage()}"
 
     @pytest.mark.asyncio
     async def test_sel_failure_deny_path_still_denies(self, orchestrator, monkeypatch) -> None:
@@ -431,6 +469,7 @@ class TestHeartbeatHooks:
 
     def _user_hooks(self, **cfg):
         from kiro_crew.hooks import HookManager, HooksConfig
+
         return HookManager(HooksConfig(**cfg))
 
     def test_drops_user_auto_approve_tools(self) -> None:

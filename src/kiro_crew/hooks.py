@@ -15,7 +15,7 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from kiro_crew import platform_compat
+from kiro_crew import platform_compat, security
 from kiro_crew.platform import current_context
 from kiro_crew.security import (
     audit_bash_exfiltration,
@@ -133,6 +133,53 @@ _BUNDLED_AUTO_APPROVE_TOOLS: list[str] = [
 ]
 
 
+def _coerce_bool(value: object, default: bool) -> bool:
+    """Coerce an operator-editable config value to a bool without ``bool()`` traps.
+
+    ``config.json`` is hand-editable, and plain ``bool("false")`` is ``True`` in
+    Python — a footgun that would let ``"disable_all": "false"`` silently turn
+    OFF every opt-out-capable protection.  A real bool is returned as-is; a
+    recognized string spelling (``true``/``false``/``1``/``0``/``yes``/``no``/
+    ``on``/``off``, case-insensitive) maps to its value; anything else falls back
+    to *default* (chosen by the caller to fail safe).
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if v in ("true", "1", "yes", "on"):
+            return True
+        if v in ("false", "0", "no", "off"):
+            return False
+    return default
+
+
+@dataclass
+class UserDeniedPattern:
+    """A user-authored denied-command pattern (Settings > Security 'add your own')."""
+
+    id: str = ""
+    pattern: str = ""
+    enabled: bool = True
+
+    @classmethod
+    def from_dict(cls, data: dict) -> UserDeniedPattern:
+        pid = str(data.get("id", "") or "").strip()
+        if not pid:
+            pid = uuid.uuid4().hex[:12]
+        return cls(
+            id=pid,
+            pattern=str(data.get("pattern", "") or ""),
+            # Default a malformed ``enabled`` to True: a user-authored deny rule
+            # is present because the operator wanted it enforced, so ambiguous
+            # junk should keep it ON (fail safe = keep denying).
+            enabled=_coerce_bool(data.get("enabled", True), default=True),
+        )
+
+    def to_dict(self) -> dict:
+        return {"id": self.id, "pattern": self.pattern, "enabled": self.enabled}
+
+
 @dataclass
 class HooksConfig:
     """Loaded from config.json ``hooks`` section."""
@@ -145,17 +192,45 @@ class HooksConfig:
     auto_replies: list[AutoReplyHook] = field(default_factory=list)
     transforms: list[TransformHook] = field(default_factory=list)
     context_rules: list[ContextRule] = field(default_factory=list)
+    # User-configurable denied-command opt-out state (Settings > Security),
+    # persisted nested under the ``hooks.denied_commands`` sub-object.
+    denied_commands_disabled_ids: list[str] = field(default_factory=list)
+    denied_commands_disable_all: bool = False
+    denied_commands_user_added: list[UserDeniedPattern] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, data: dict) -> HooksConfig:
-        """Parse hooks config from a dict (config.json ``hooks`` section)."""
+        """Parse hooks config from a dict (config.json ``hooks`` section).
+
+        ``config.json`` is operator-editable and this method runs at gateway
+        boot (``cli_server``/``slack/gateway``), so every field is parsed
+        defensively: a malformed scalar/string where a list or list-of-dicts is
+        expected (e.g. ``"auto_replies": 1`` or ``"auto_approve_tools": "x"``)
+        must degrade to the empty default rather than raise and abort startup.
+        """
+        if not isinstance(data, dict):
+            data = {}
+
+        def _dict_items(key: str) -> list:
+            """List of dict entries under *key*; junk (non-list, non-dict items) dropped."""
+            raw = data.get(key, [])
+            if not isinstance(raw, list):
+                return []
+            return [h for h in raw if isinstance(h, dict)]
+
+        def _str_list(value) -> list:
+            """Non-empty strings from *value* (a list); anything else -> []."""
+            if not isinstance(value, list):
+                return []
+            return [s for s in value if isinstance(s, str)]
+
         auto_replies = [
             AutoReplyHook(
                 pattern=h.get("pattern", ""),
                 reply=h.get("reply", ""),
                 exact=h.get("exact", False),
             )
-            for h in data.get("auto_replies", [])
+            for h in _dict_items("auto_replies")
         ]
         transforms = [
             TransformHook(
@@ -163,27 +238,96 @@ class HooksConfig:
                 prefix=h.get("prefix", ""),
                 suffix=h.get("suffix", ""),
             )
-            for h in data.get("transforms", [])
+            for h in _dict_items("transforms")
         ]
         context_rules = [
             ContextRule(
                 triggers=r.get("triggers", []),
                 context=r.get("context", ""),
             )
-            for r in data.get("context_rules", [])
+            for r in _dict_items("context_rules")
         ]
-        user_approve = data.get("auto_approve_tools", [])
+        user_approve = _str_list(data.get("auto_approve_tools", []))
         merged_approve = list(dict.fromkeys(_BUNDLED_AUTO_APPROVE_TOOLS + user_approve))
+        # Denied-commands opt-out state is stored under a nested sub-object so it
+        # can grow independently of the flat top-level hook keys.  config.json is
+        # operator-editable, so each nested value is defended against non-list /
+        # non-dict junk: a malformed scalar (e.g. ``"user_added": 1``) must not
+        # raise at gateway boot — it degrades to "no opt-out" instead.
+        dc = data.get("denied_commands", {})
+        if not isinstance(dc, dict):
+            dc = {}
+        raw_user_added = dc.get("user_added", [])
+        if not isinstance(raw_user_added, list):
+            raw_user_added = []
+        user_added = [
+            UserDeniedPattern.from_dict(u)
+            for u in raw_user_added
+            if isinstance(u, dict) and str(u.get("pattern", "") or "").strip()
+        ]
+        raw_disabled_ids = dc.get("disabled_ids", [])
+        if not isinstance(raw_disabled_ids, list):
+            raw_disabled_ids = []
+        disabled_ids = [str(i) for i in raw_disabled_ids if isinstance(i, str) and i]
         return cls(
             auto_approve_tools=merged_approve,
-            auto_approve_sources=data.get("auto_approve_sources", []),
-            auto_approve_subagent_spawn=bool(data.get("auto_approve_subagent_spawn", False)),
-            auto_approve_subagent_tools=bool(data.get("auto_approve_subagent_tools", False)),
-            auto_deny_tools=data.get("auto_deny_tools", []),
+            auto_approve_sources=_str_list(data.get("auto_approve_sources", [])),
+            # Fail safe: malformed auto-approve flags must NOT silently widen
+            # approval (a string "false" is truthy under plain bool()) — default
+            # to False so ambiguous junk keeps interactive approval on.
+            auto_approve_subagent_spawn=_coerce_bool(
+                data.get("auto_approve_subagent_spawn", False), default=False
+            ),
+            auto_approve_subagent_tools=_coerce_bool(
+                data.get("auto_approve_subagent_tools", False), default=False
+            ),
+            auto_deny_tools=_str_list(data.get("auto_deny_tools", [])),
             auto_replies=auto_replies,
             transforms=transforms,
             context_rules=context_rules,
+            denied_commands_disabled_ids=disabled_ids,
+            # Fail safe: a malformed ``disable_all`` (incl. the string "false",
+            # which is truthy under plain bool()) must NOT silently disable every
+            # built-in protection — unknown junk defaults to False (denies stay on).
+            denied_commands_disable_all=_coerce_bool(dc.get("disable_all", False), default=False),
+            denied_commands_user_added=user_added,
         )
+
+    def to_dict(self) -> dict:
+        """Serialize hook config for persistence / API round-trip.
+
+        Does NOT re-emit ``_BUNDLED_AUTO_APPROVE_TOOLS`` (they are injected on
+        load and would accrete in config.json on every save).  The
+        denied-commands opt-out state is written back nested under
+        ``denied_commands``.
+        """
+        return {
+            "auto_approve_tools": [
+                t for t in self.auto_approve_tools if t not in _BUNDLED_AUTO_APPROVE_TOOLS
+            ],
+            "auto_approve_sources": list(self.auto_approve_sources),
+            "auto_approve_subagent_spawn": self.auto_approve_subagent_spawn,
+            "auto_approve_subagent_tools": self.auto_approve_subagent_tools,
+            "auto_deny_tools": list(self.auto_deny_tools),
+            "auto_replies": [asdict(h) for h in self.auto_replies],
+            "transforms": [asdict(h) for h in self.transforms],
+            "context_rules": [asdict(r) for r in self.context_rules],
+            # The denied-command opt-out state is NOT persisted in config.json's
+            # hooks section — it lives in the keystone ``denied_commands.json``
+            # (see ``denied_commands_state``/``load_denied_commands_state``). We
+            # still surface it here (nested) for the round-trip API + tests, but
+            # config.json readers ignore it (the boot path re-sources it from the
+            # keystone file).
+            "denied_commands": self.denied_commands_state(),
+        }
+
+    def denied_commands_state(self) -> dict:
+        """The opt-out state as the keystone ``denied_commands.json`` object."""
+        return {
+            "disabled_ids": list(self.denied_commands_disabled_ids),
+            "disable_all": self.denied_commands_disable_all,
+            "user_added": [p.to_dict() for p in self.denied_commands_user_added],
+        }
 
 
 # ── HookManager ──
@@ -363,21 +507,21 @@ class HookManager:
         # recommendation to block agent tools from modifying config files. Gated
         # on the ACP ``edit`` kind (the fs_write/code tool) so a plain read of
         # config is unaffected — the dashboard file viewer, ``cat``, and knowledge
-        # indexing legitimately read config.json. Defense in depth on top of the
-        # loader's load-time clamp, which already neutralizes any inflated value.
+        # indexing legitimately read config.json. Bash writes (``tee``/``>``/
+        # ``cp``-dest) are blocked separately by ``is_sensitive_bash_command``
+        # above; this branch covers the file-EDIT tool.
         #
         # Empty/unknown ``tool_kind`` (the ACP kind field is spec-optional; some
-        # backends omit it) is DELIBERATELY left to the clamp rather than mirrored
-        # here. ``governance._scopes_for_call`` (platform/governance.py) infers
-        # BOTH filesystem.read AND filesystem.write from a lone ``path`` when the
-        # kind is empty, because it is a *policy intersection* where an ungoverned
+        # backends omit it) is DELIBERATELY not mirrored here.
+        # ``governance._scopes_for_call`` (platform/governance.py) infers BOTH
+        # filesystem.read AND filesystem.write from a lone ``path`` when the kind
+        # is empty, because it is a *policy intersection* where an ungoverned
         # scope permits. This gate is a HARD deny, so applying that same shape
         # inference would also block legitimate config READS that arrive without a
         # kind — regressing the read-allowance that is the whole point of the
-        # write-only tier. The load-time clamp is the authoritative backstop for
-        # the empty-kind edit vector (and for bash writes like ``tee``/``>``),
-        # so intentionally not hard-denying empty-kind keeps the two write-gates
-        # from drifting into a read regression.
+        # write-only tier. Empty-kind edits are rare (the ACP fs_write tool sets
+        # ``edit``); not hard-denying them keeps the two write-gates from drifting
+        # into a read regression, and the bash gate covers the shell surface.
         if tool_kind == _EDIT_TOOL_KIND and raw_params:
             wpath = raw_params.get("path") or raw_params.get("file_path")
             if isinstance(wpath, str) and wpath and is_sensitive_write_path(wpath):
@@ -395,12 +539,14 @@ class HookManager:
         # original title forms.
         ctx = current_context()
         authority = ctx.security
-        deny = self._config.auto_deny_tools
+        denied_regexes = self._effective_denied(ctx)
         deny_targets = [normalized, tool_name]
         if command:
             deny_targets.append(command)
         for target in deny_targets:
-            reason = authority.is_denied(target, deny)
+            reason = authority.is_denied(
+                target, self._config.auto_deny_tools, denied_regexes=denied_regexes
+            )
             if reason:
                 return ToolHookResult.deny(reason)
 
@@ -425,7 +571,167 @@ class HookManager:
             if _tool_matches(pattern, tool_name) or _tool_matches(pattern, normalized):
                 return ToolHookResult.auto_approve()
 
+        # KiroCrew-side read-only auto-approve — the LAST branch before allow(),
+        # AFTER every early-return deny (deny-by-default shell, sensitive-path,
+        # sensitive-bash, exfil, write-protected-config, the effective deny set,
+        # and governance). Its position guarantees a read-only classification can
+        # never re-admit anything the gates above blocked. This re-homes the
+        # "reads don't nag" UX now that kiro-cli's autoAllowReadonly is retired.
+        # Imports are function-local: slack.gateway imports hooks at module top,
+        # so a top-level import here would create a boot import cycle.
+        if is_shell:
+            # A shell read-only classification uses the deny-by-default bash
+            # classifier (rejects redirects/substitution/backgrounding). When the
+            # command could not be recovered we already denied above; a present
+            # command that is not read-only falls through to interactive approval.
+            from kiro_crew.dashboard.state import is_read_only_bash
+
+            if command and is_read_only_bash(command):
+                return ToolHookResult.auto_approve()
+        else:
+            from kiro_crew.slack.gateway import _is_read_only_tool
+
+            kind = (tool_kind or "").strip().lower()
+            # Trust the SEMANTIC kind first. The (agent-supplied, spoofable)
+            # title heuristic is only a fallback for when the kind is
+            # absent/unknown and NOT a known mutating/executing kind, so a write
+            # tool with a read-sounding title can't auto-approve.
+            if kind in _READ_ONLY_TOOL_KINDS:
+                return ToolHookResult.auto_approve()
+            if kind not in _WRITE_TOOL_KINDS and not kind and _is_read_only_tool(tool_name):
+                return ToolHookResult.auto_approve()
+
         return ToolHookResult.allow()
+
+    def _effective_denied(self, ctx: object) -> list[str]:
+        """Resolve the effective regex-tier denied set for this call.
+
+        Combines the still-enabled built-in rules (after applying
+        ``disable_all`` / ``disabled_ids``, with governance-pinned rule ids
+        force-re-added) with the user's own enabled ``user_added`` regexes. The
+        result is passed to ``authority.is_denied(..., denied_regexes=)``; the
+        glob-tier ``auto_deny_tools`` still travel through ``extra_patterns``.
+        """
+        return resolve_effective_denied_regexes(self._config, ctx)
+
+    def effective_denied_regexes(self) -> list[str]:
+        """Public accessor for the effective regex-tier denied set.
+
+        Resolves the platform context itself, so callers outside the tool-call
+        gate (e.g. ``llm_helpers._resolve_permission`` on the cron / Slack /
+        workflow / heartbeat surfaces) can honor the SAME user opt-out +
+        governance-pin state that ``on_tool_call`` enforces, instead of failing
+        closed to all built-ins and re-introducing "disabled but still blocked".
+        """
+        return self._effective_denied(current_context())
+
+
+# ACP semantic tool kinds treated as read-only for the non-shell auto-approve
+# branch. Deliberately minimal — excludes "search"/"edit"/"execute"/"delete"/
+# "move"; add conservatively (auto-approving trusts an agent-supplied field).
+_READ_ONLY_TOOL_KINDS: frozenset[str] = frozenset({"read", "fetch"})
+
+# Semantic kinds that mutate/execute — a title heuristic must NEVER auto-approve
+# these, even if the agent-supplied title reads like a read (e.g. a write tool
+# labelled "Read project status"). The title fallback only applies when the kind
+# is absent/unknown.
+_WRITE_TOOL_KINDS: frozenset[str] = frozenset(
+    {"edit", "execute", "delete", "move", "write", "create"}
+)
+
+
+def _governance_pinned_command_ids(ctx: object) -> set[str]:
+    """Return built-in command rule ids force-pinned by the active governance ceiling.
+
+    Reads the boot-frozen ceiling (``ctx.governance``) ``commands``-scope deny
+    patterns and maps the ones that pin a built-in rule to that rule's id, so
+    ``_effective_denied`` can force-re-enable them even when the user opted out
+    (tightest-wins). Returns ``set()`` on a standalone/ungoverned host.
+
+    Fail-soft, mirroring ``_governance_denial``: a ``PlatformCompositionError``
+    (a non-standalone host that could not compose) propagates fail-closed; any
+    other error degrades to an empty set so a transient governance glitch cannot
+    wedge every tool call out of ``_effective_denied``. The enterprise force-pin
+    is also independently enforced by ``_governance_denial``'s commands-scope
+    deny plane, so pins here are belt-and-suspenders.
+    """
+    from kiro_crew.platform.context import PlatformCompositionError
+
+    try:
+        return security.pinned_builtin_command_ids()
+    except PlatformCompositionError:
+        raise
+    except Exception:
+        logger.debug("governance pin resolution failed", exc_info=True)
+        return set()
+
+
+def load_denied_commands_state() -> dict:
+    """Read the keystone ``denied_commands.json`` opt-out state (fail-soft to {}).
+
+    The opt-out state (``{disable_all, disabled_ids, user_added}``) lives in a
+    keystone trust-root file the agent cannot write, NOT in ``config.json``.
+    Returns ``{}`` (= no opt-out, all built-ins enforced) if the file is absent,
+    unreadable, or not a JSON object — fail-safe for a deny gate.
+    """
+    try:
+        from kiro_crew.config.loader import denied_commands_path
+
+        raw = json.loads(denied_commands_path().read_text(encoding="utf-8"))
+        return raw if isinstance(raw, dict) else {}
+    except FileNotFoundError:
+        return {}
+    except Exception:
+        logger.debug("denied_commands.json load failed; treating as no opt-out", exc_info=True)
+        return {}
+
+
+def hooks_config_from_config_dict(hooks_section: dict) -> HooksConfig:
+    """Build a ``HooksConfig`` for the gateway boot path.
+
+    Parses the config.json ``hooks`` section for the flat hook keys, then
+    OVERLAYS the denied-command opt-out state from the keystone
+    ``denied_commands.json`` file (config.json's ``hooks.denied_commands`` is
+    ignored — the keystone file is the sole source, so an agent that edits
+    config.json cannot affect the deny ceiling).
+    """
+    merged = dict(hooks_section) if isinstance(hooks_section, dict) else {}
+    merged["denied_commands"] = load_denied_commands_state()
+    return HooksConfig.from_dict(merged)
+
+
+def resolve_effective_denied_regexes(config: "HooksConfig", ctx: object = None) -> list[str]:
+    """Effective regex-tier denied set from a HooksConfig (module-level).
+
+    Same resolution as ``HookManager._effective_denied`` but usable by callers
+    that hold a config rather than a HookManager (e.g. cron command vetting in
+    ``mcp_cron``). Honors the user opt-out (disable_all / disabled_ids /
+    user_added) with governance pins force-re-added (tightest-wins).
+    """
+    return security.compute_effective_denied(
+        security.BUILTIN_DENIED_RULES,
+        config.denied_commands_disabled_ids,
+        config.denied_commands_disable_all,
+        [p.pattern for p in config.denied_commands_user_added if p.enabled],
+        _governance_pinned_command_ids(ctx),
+    )
+
+
+def effective_denied_regexes_from_config() -> list[str]:
+    """Resolve the effective denied set from on-disk state.
+
+    Convenience for surfaces with neither a HookManager nor a parsed config in
+    hand (cron vetting). The denied-command opt-out state comes from the keystone
+    ``denied_commands.json`` (NOT config.json). Fail-soft: on any load error,
+    falls back to the full built-in set (fail-closed — safer for a deny gate) so
+    a glitch can never silently drop enforcement.
+    """
+    try:
+        cfg = HooksConfig.from_dict({"denied_commands": load_denied_commands_state()})
+        return resolve_effective_denied_regexes(cfg)
+    except Exception:
+        logger.debug("effective denied-set load failed; failing closed", exc_info=True)
+        return security.compute_effective_denied(security.BUILTIN_DENIED_RULES, (), False, (), ())
 
 
 def _governance_denial(
@@ -575,9 +881,7 @@ def safe_read_file(path: str) -> str:
         # swap of the final component into a symlink — refuse it. Any other
         # OSError (ENOENT, EACCES) is a normal read error; re-raise as-is.
         if exc.errno in (errno.ELOOP, getattr(errno, "EMLINK", -1)):
-            raise PermissionError(
-                f"Blocked: refusing to follow symlink at {resolved}"
-            ) from exc
+            raise PermissionError(f"Blocked: refusing to follow symlink at {resolved}") from exc
         raise
     with os.fdopen(fd, "r", encoding="utf-8") as fh:
         return fh.read()
@@ -1080,8 +1384,7 @@ def _emit_internal_read_audit(read_id: str, outcome: str) -> bool:
         from kiro_crew.sel import sel
     except ImportError:  # pragma: no cover - sel optional in some test envs
         logger.warning(
-            "SEL backend unavailable; internal-read audit dropped "
-            "for read_id=%s outcome=%s",
+            "SEL backend unavailable; internal-read audit dropped " "for read_id=%s outcome=%s",
             read_id,
             outcome,
         )
@@ -1370,9 +1673,7 @@ async def run_script_hook(
                 # Async variant offloads the Windows taskkill spawn — the hook
                 # timeout path already runs on the event loop, so we never want
                 # to stall it further while taskkill.exe walks the tree
-                await platform_compat.kill_process_tree_async(
-                    proc.pid, platform_compat.SIGKILL
-                )
+                await platform_compat.kill_process_tree_async(proc.pid, platform_compat.SIGKILL)
                 await proc.communicate()
         except Exception:
             pass

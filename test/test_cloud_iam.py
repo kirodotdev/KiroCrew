@@ -525,28 +525,23 @@ class TestReachabilityCheck:
 
 
 class TestAgentDenyListForCloudVerbs:
-    """The cloud teardown verbs are human-only; the agent must be blocked from
-    the destructive AWS CLI strings. That block lives in the kiro-cli
-    ``deniedCommands`` (config/defaults.json), NOT security.py's underscored
-    BUILTIN_DENY_PATTERNS — guard it so the guarantee can't silently regress."""
+    """The cloud teardown/provision verbs are human-only; the agent must be
+    blocked from the destructive AWS CLI strings. That block is enforced at
+    KiroCrew's own PreToolUse gate (``security.is_denied`` via the ported
+    ``BUILTIN_DENIED_RULES``), NOT by injecting ``deniedCommands`` into the
+    kiro agent config (that path is retired) — guard it so the guarantee can't
+    silently regress."""
 
-    def _denied_commands(self):
-        import importlib.resources as res
+    @staticmethod
+    def _denied(cmd: str) -> bool:
+        from kiro_crew.security import is_denied
 
-        data = json.loads(
-            (res.files("kiro_crew.config") / "defaults.json").read_text(encoding="utf-8")
-        )
-        out = {}
-        for tool in ("execute_bash", "shell"):
-            out[tool] = data.get("toolsSettings", {}).get(tool, {}).get("deniedCommands", [])
-        return out
+        return is_denied(cmd) is not None
 
     def test_destructive_aws_cli_verbs_denied(self):
-        # Assert BEHAVIOR, not literal pattern text: each destructive verb must
-        # be matched by SOME deny pattern (kiro-cli uses re.search). This is the
-        # real guarantee and survives pattern-syntax changes.
-        import re
-
+        # Assert BEHAVIOR at the enforcement point: each destructive verb must be
+        # blocked by is_denied. This is the real guarantee and survives
+        # pattern-syntax changes.
         must_deny = [
             "aws ec2 terminate-instances --instance-ids i-1",
             "aws ec2 delete-security-group --group-id sg-1",
@@ -556,11 +551,8 @@ class TestAgentDenyListForCloudVerbs:
             "aws ssm get-command-invocation --command-id c --instance-id i",
             "aws ssm list-command-invocations",
         ]
-        denied = self._denied_commands()
-        assert denied["execute_bash"] and denied["shell"], "deniedCommands missing for a tool"
-        for tool, patterns in denied.items():
-            for cmd in must_deny:
-                assert any(re.search(p, cmd) for p in patterns), f"{tool} does not deny {cmd!r}"
+        for cmd in must_deny:
+            assert self._denied(cmd), f"is_denied does not deny {cmd!r}"
 
     def test_global_args_do_not_bypass_deny(self):
         # Regression: the deny patterns must tolerate AWS global options in BOTH
@@ -568,9 +560,6 @@ class TestAgentDenyListForCloudVerbs:
         # between the service and the operation (`aws ec2 --region r
         # terminate-...`), otherwise an agent trivially bypasses the denylist.
         # Also confirm read-only calls are still ALLOWED (no over-broad match).
-        import re
-
-        denied = self._denied_commands()
         bypass_attempts = [
             # options before the service
             "aws --profile dev --region us-east-1 ec2 terminate-instances --instance-ids i-1",
@@ -597,15 +586,10 @@ class TestAgentDenyListForCloudVerbs:
             "aws s3 --profile p ls s3://bucket",
             "aws iam get-role --role-name r",
         ]
-        for tool, patterns in denied.items():
-            for cmd in bypass_attempts:
-                assert any(
-                    re.search(p, cmd) for p in patterns
-                ), f"{tool}: global-args bypass not denied: {cmd!r}"
-            for cmd in still_allowed:
-                assert not any(
-                    re.search(p, cmd) for p in patterns
-                ), f"{tool}: read-only call wrongly denied: {cmd!r}"
+        for cmd in bypass_attempts:
+            assert self._denied(cmd), f"global-args bypass not denied: {cmd!r}"
+        for cmd in still_allowed:
+            assert not self._denied(cmd), f"read-only call wrongly denied: {cmd!r}"
 
     def test_launcher_creation_verbs_denied(self):
         # The cloud launcher's CREATE/mutation verbs are human/installer-only —
@@ -613,9 +597,6 @@ class TestAgentDenyListForCloudVerbs:
         # run_aws chokepoint + the not-an-MCP-tool boundary). Deny the full
         # provision path, not just the destructive verbs. READ/discovery stays
         # allowed.
-        import re
-
-        denied = self._denied_commands()
         must_deny = [
             "aws cloudformation deploy --template-file t --stack-name kirocrew-x",
             "aws --profile dev cloudformation create-stack --stack-name x",
@@ -627,9 +608,6 @@ class TestAgentDenyListForCloudVerbs:
             "aws iam put-role-policy --role-name r --policy-name p --policy-document {}",
             "aws iam attach-role-policy --role-name r --policy-arn a",
             "aws --profile p iam create-instance-profile --instance-profile-name p",
-            # The launcher policy grants iam:CreatePolicy on the fixed boundary
-            # name — deny the agent shell from reaching it (first-write race +
-            # consistency with the other create verbs).
             "aws iam create-policy --policy-name kirocrew-ec2-boundary --policy-document {}",
             "aws iam create-policy-version --policy-arn a --policy-document {}",
         ]
@@ -642,15 +620,10 @@ class TestAgentDenyListForCloudVerbs:
             "aws iam get-policy --policy-arn a",
             "aws iam list-policies",
         ]
-        for tool, patterns in denied.items():
-            for cmd in must_deny:
-                assert any(
-                    re.search(p, cmd) for p in patterns
-                ), f"{tool}: creation verb not denied: {cmd!r}"
-            for cmd in still_allowed:
-                assert not any(
-                    re.search(p, cmd) for p in patterns
-                ), f"{tool}: read-only call wrongly denied: {cmd!r}"
+        for cmd in must_deny:
+            assert self._denied(cmd), f"creation verb not denied: {cmd!r}"
+        for cmd in still_allowed:
+            assert not self._denied(cmd), f"read-only call wrongly denied: {cmd!r}"
 
     def test_s3api_write_verbs_denied(self):
         # The launcher IAM grants s3:PutObject to kirocrew-src-* buckets; if the
@@ -658,9 +631,6 @@ class TestAgentDenyListForCloudVerbs:
         # multipart / copy / bucket-policy verbs), it has a data-exfiltration
         # path that the high-level `aws s3 cp` denies don't cover. Block the whole
         # s3api write surface; keep s3api READS allowed.
-        import re
-
-        denied = self._denied_commands()
         must_deny = [
             "aws s3api put-object --bucket b --key k --body /etc/passwd",
             "aws --profile dev --region us-east-1 s3api put-object --bucket b --key k --body f",
@@ -675,37 +645,25 @@ class TestAgentDenyListForCloudVerbs:
             "aws s3api list-objects-v2 --bucket b",
             "aws s3api head-bucket --bucket b",
         ]
-        for tool, patterns in denied.items():
-            for cmd in must_deny:
-                assert any(
-                    re.search(p, cmd) for p in patterns
-                ), f"{tool}: s3api write not denied: {cmd!r}"
-            for cmd in still_allowed:
-                assert not any(
-                    re.search(p, cmd) for p in patterns
-                ), f"{tool}: s3api read wrongly denied: {cmd!r}"
+        for cmd in must_deny:
+            assert self._denied(cmd), f"s3api write not denied: {cmd!r}"
+        for cmd in still_allowed:
+            assert not self._denied(cmd), f"s3api read wrongly denied: {cmd!r}"
 
     def test_kirocrew_cloud_wrapper_denied(self):
         # `kirocrew cloud destroy` is a wrapper that internally runs
-        # `aws cloudformation delete-stack`; the denylist only sees the wrapper
+        # `aws cloudformation delete-stack`; the gate only sees the wrapper
         # string, so it must be blocked in its own right or the agent bypasses
         # the raw-CLI teardown block.
-        import re
-
-        denied = self._denied_commands()
-        for tool, patterns in denied.items():
-            wrapper = [p for p in patterns if "cloud" in p and "destroy" in p]
-            assert wrapper, f"{tool} missing a kirocrew-cloud-destroy deny pattern"
-            pat = wrapper[0]
-            for cmd in (
-                "kirocrew cloud destroy --yes --tag kc-1",
-                "kirocrew cloud stop",
-                "kiro-crew cloud launch",
-                "kirocrew cloud connect",  # mints/prints a dashboard token
-                "kirocrew cloud tunnel",
-                "kirocrew cloud login",
-            ):
-                assert re.search(pat, cmd), f"{pat!r} did not match {cmd!r}"
-            # read-only observation stays allowed
-            for allowed in ("kirocrew cloud list", "kirocrew cloud status"):
-                assert not re.search(pat, allowed), f"{pat!r} should not match {allowed!r}"
+        for cmd in (
+            "kirocrew cloud destroy --yes --tag kc-1",
+            "kirocrew cloud stop",
+            "kiro-crew cloud launch",
+            "kirocrew cloud connect",  # mints/prints a dashboard token
+            "kirocrew cloud tunnel",
+            "kirocrew cloud login",
+        ):
+            assert self._denied(cmd), f"kirocrew cloud wrapper not denied: {cmd!r}"
+        # read-only observation stays allowed
+        for allowed in ("kirocrew cloud list", "kirocrew cloud status"):
+            assert not self._denied(allowed), f"read-only wrongly denied: {allowed!r}"

@@ -59,7 +59,9 @@ def _run_install(tmp_path: Path, cfg_dir: Path, managed_mcps: dict | None = None
             _BUNDLED_CFG_DIR=cfg_dir,
             _KIROCREW_BIN="/usr/bin/kirocrew",
             _USER_DIR=tmp_path / "kirocrew_home",
-            _MANAGED_MCP_SERVERS=managed_mcps if managed_mcps is not None else _DEFAULT_MANAGED_MCPS,
+            _MANAGED_MCP_SERVERS=(
+                managed_mcps if managed_mcps is not None else _DEFAULT_MANAGED_MCPS
+            ),
             _KIRO_MCP_JSON=tmp_path / "fake_kiro_mcp.json",
             _CC_MCP_JSON=tmp_path / "fake_cc_mcp.json",
         ),
@@ -68,7 +70,6 @@ def _run_install(tmp_path: Path, cfg_dir: Path, managed_mcps: dict | None = None
         patch("kiro_crew.agent._project_dir", return_value=None),
         patch("kiro_crew.agent._aim_skill_paths", return_value=[]),
         patch("kiro_crew.agent.shutil.which", side_effect=lambda c, **kw: c),
-        patch("kiro_crew.agent._enforce_denied_commands"),
         patch("kiro_crew.agent._mc_config_path", return_value=mc_config),
     ]
     with ExitStack() as stack:
@@ -177,7 +178,15 @@ class TestInstallAgent:
         assert agent_state.get_model_managed("kirocrew") is False
 
     def test_existing_config_refreshes_security_fields(self, tmp_path: Path):
-        """deniedCommands and hooks are always overwritten from bundled."""
+        """hooks are always overwritten from bundled.
+
+        ``deniedCommands`` are NO LONGER injected into the agent spec (command
+        denial moved to KiroCrew's own hooks.py PreToolUse gate). A stale
+        ``deniedCommands`` left by an older build is STRIPPED on refresh so
+        kiro-cli stops enforcing it ahead of the hook gate — otherwise an
+        upgraded install's Settings > Security opt-out would silently stay
+        blocked. Here the whole (now-empty) ``toolsSettings`` is removed.
+        """
         cfg_dir = _bundled_defaults(tmp_path)
         kiro_dir = tmp_path / "kiro_agents"
         kiro_dir.mkdir(exist_ok=True)
@@ -193,7 +202,8 @@ class TestInstallAgent:
 
         path = _run_install(tmp_path, cfg_dir)
         config = json.loads(path.read_text())
-        assert config["toolsSettings"]["execute_bash"]["deniedCommands"] == ["rm -rf /"]
+        # Legacy deniedCommands injection is retired AND stripped on upgrade.
+        assert "toolsSettings" not in config
         assert config["hooks"] == {"preToolUse": "audit"}
 
     def test_existing_config_refreshes_dynamic_mcp_servers(self, tmp_path: Path):
@@ -254,8 +264,10 @@ class TestInstallAgent:
         assert config["mcpServers"]["kirocrew-core"]["autoApprove"] == ["learn_list"]
         # other MCP servers: untouched
         assert config["mcpServers"]["builder-mcp"]["autoApprove"] == ["ReadInternalWebsites"]
-        # security fields must always be refreshed from bundled defaults
-        assert config["toolsSettings"]["execute_bash"]["deniedCommands"] == ["rm -rf /"]
+        # hooks are always refreshed from bundled defaults; the retired
+        # deniedCommands injection is stripped on refresh, so the emptied
+        # toolsSettings scaffolding is removed entirely.
+        assert "toolsSettings" not in config
         assert config["hooks"] == {"preToolUse": "audit"}
 
     def test_kirocrew_mcp_json_overrides_kiro_mcp(self, tmp_path: Path):
@@ -280,12 +292,16 @@ class TestInstallAgent:
         # kirocrew mcp.json overrides args (removes --include-tools)
         mc_home = tmp_path / "kirocrew_home"
         mc_home.mkdir(exist_ok=True)
-        (mc_home / "mcp.json").write_text(json.dumps({
-            "mcpServers": {
-                "builder-mcp": {"command": "builder-mcp", "args": []},
-                "new-server": {"command": "new-cmd", "args": ["start"]},
-            }
-        }))
+        (mc_home / "mcp.json").write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "builder-mcp": {"command": "builder-mcp", "args": []},
+                        "new-server": {"command": "new-cmd", "args": ["start"]},
+                    }
+                }
+            )
+        )
         path = _run_install(tmp_path, cfg_dir)
         config = json.loads(path.read_text())
         # builder-mcp args overridden by kirocrew mcp.json (no tool-tag injection
@@ -827,7 +843,7 @@ class TestResolveKirocrewBin:
         bin_dir = venv / "bin"
         bin_dir.mkdir()
         kirocrew_bin = bin_dir / "kirocrew"
-        kirocrew_bin.write_text("#!/bin/sh\nexec kirocrew \"$@\"\n")
+        kirocrew_bin.write_text('#!/bin/sh\nexec kirocrew "$@"\n')
         kirocrew_bin.chmod(0o755)
 
         # A PATH fallback that should NOT be chosen — the walk finds bin first.
@@ -861,7 +877,9 @@ class TestResolveKirocrewBin:
         # Create env/runtime/.envroot + env/runtime/bin/kirocrew (Apollo)
         runtime = tmp_path / "env" / "runtime"
         (runtime / "lib" / "python3.10" / "site-packages" / "kiro_crew").mkdir(parents=True)
-        (runtime / "lib" / "python3.10" / "site-packages" / "kiro_crew" / "__init__.py").write_text("")
+        (runtime / "lib" / "python3.10" / "site-packages" / "kiro_crew" / "__init__.py").write_text(
+            ""
+        )
         (runtime / ".envroot").write_text("")
 
         bin_dir = runtime / "bin"
@@ -873,7 +891,9 @@ class TestResolveKirocrewBin:
         kirocrew_bin.chmod(0o755)
 
         mock_mc = unittest.mock.MagicMock()
-        mock_mc.__file__ = str(runtime / "lib" / "python3.10" / "site-packages" / "kiro_crew" / "__init__.py")
+        mock_mc.__file__ = str(
+            runtime / "lib" / "python3.10" / "site-packages" / "kiro_crew" / "__init__.py"
+        )
 
         old_val = agent_mod._KIROCREW_BIN
         try:
@@ -902,7 +922,7 @@ class TestResolveKirocrewBin:
         bin_dir = project / "bin"
         bin_dir.mkdir()
         wrapper = bin_dir / "kirocrew"
-        wrapper.write_text("#!/bin/sh\nexec kirocrew \"$@\"\n")
+        wrapper.write_text('#!/bin/sh\nexec kirocrew "$@"\n')
         wrapper.chmod(0o755)
 
         # A PATH fallback that should NOT be chosen.
@@ -939,9 +959,7 @@ class TestResolveKirocrewBin:
         bin_dir = workspace / "bin"
         bin_dir.mkdir()
         brazil_wrapper = bin_dir / "kirocrew"
-        brazil_wrapper.write_text(
-            "#!/bin/sh\nexec brazil-runtime-exec kirocrew \"$@\"\n"
-        )
+        brazil_wrapper.write_text('#!/bin/sh\nexec brazil-runtime-exec kirocrew "$@"\n')
         brazil_wrapper.chmod(0o755)
 
         assert _bin_is_usable(brazil_wrapper) is True
@@ -961,16 +979,14 @@ class TestResolveKirocrewBin:
         # .venv/bin/kirocrew — the preferred candidate
         venv_bin = project / ".venv" / "bin" / "kirocrew"
         venv_bin.parent.mkdir(parents=True)
-        venv_bin.write_text("#!/bin/sh\nexec python -m kiro_crew \"$@\"\n")
+        venv_bin.write_text('#!/bin/sh\nexec python -m kiro_crew "$@"\n')
         venv_bin.chmod(0o755)
 
         # bin/kirocrew — Brazil wrapper (should be skipped)
         bin_dir = project / "bin"
         bin_dir.mkdir()
         brazil_wrapper = bin_dir / "kirocrew"
-        brazil_wrapper.write_text(
-            "#!/bin/sh\nexec brazil-runtime-exec kirocrew \"$@\"\n"
-        )
+        brazil_wrapper.write_text('#!/bin/sh\nexec brazil-runtime-exec kirocrew "$@"\n')
         brazil_wrapper.chmod(0o755)
 
         mock_mc = unittest.mock.MagicMock()
@@ -1001,7 +1017,7 @@ class TestResolveKirocrewBin:
         # .venv/bin/kirocrew exists (step 1 should find it)
         venv_bin = venv_root / "bin" / "kirocrew"
         venv_bin.parent.mkdir(parents=True)
-        venv_bin.write_text("#!/bin/sh\nexec python -m kiro_crew \"$@\"\n")
+        venv_bin.write_text('#!/bin/sh\nexec python -m kiro_crew "$@"\n')
         venv_bin.chmod(0o755)
 
         mock_mc = unittest.mock.MagicMock()
@@ -1079,7 +1095,10 @@ class TestKiroHooksMerge:
         return str(hook)
 
     def _run_with_kiro_hooks(
-        self, tmp_path: Path, kiro_hooks: dict, existing: dict | None = None,
+        self,
+        tmp_path: Path,
+        kiro_hooks: dict,
+        existing: dict | None = None,
     ) -> dict:
         """Install agent with kiro_hooks in config.json and return the result."""
         cfg_dir = self._bundled_with_hooks(tmp_path)
@@ -1119,7 +1138,6 @@ class TestKiroHooksMerge:
             patch("kiro_crew.agent._project_dir", return_value=None),
             patch("kiro_crew.agent._aim_skill_paths", return_value=[]),
             patch("kiro_crew.agent.shutil.which", side_effect=lambda c, **kw: c),
-            patch("kiro_crew.agent._enforce_denied_commands"),
             patch("kiro_crew.agent._mc_config_path", return_value=mc_config),
         ]
         with ExitStack() as stack:
@@ -1131,9 +1149,12 @@ class TestKiroHooksMerge:
     def test_user_hooks_appended_to_bundled(self, tmp_path: Path):
         """User kiro_hooks are appended after bundled hooks per event."""
         hook = self._make_hook(tmp_path, "guardian.sh")
-        config = self._run_with_kiro_hooks(tmp_path, {
-            "postToolUse": [{"matcher": "*", "command": hook}],
-        })
+        config = self._run_with_kiro_hooks(
+            tmp_path,
+            {
+                "postToolUse": [{"matcher": "*", "command": hook}],
+            },
+        )
         post = config["hooks"]["postToolUse"]
         assert post[0] == {"matcher": "execute_bash", "command": "audit.sh"}  # bundled first
         assert post[1] == {"matcher": "*", "command": hook}  # user appended
@@ -1141,9 +1162,12 @@ class TestKiroHooksMerge:
     def test_user_hooks_new_event_type(self, tmp_path: Path):
         """User kiro_hooks can add hooks for event types not in bundled."""
         hook = self._make_hook(tmp_path, "guardian.sh")
-        config = self._run_with_kiro_hooks(tmp_path, {
-            "preToolUse": [{"matcher": "*", "command": hook}],
-        })
+        config = self._run_with_kiro_hooks(
+            tmp_path,
+            {
+                "preToolUse": [{"matcher": "*", "command": hook}],
+            },
+        )
         assert config["hooks"]["postToolUse"] == [
             {"matcher": "execute_bash", "command": "audit.sh"},
         ]
@@ -1154,12 +1178,15 @@ class TestKiroHooksMerge:
     def test_user_hooks_dedup_by_command(self, tmp_path: Path):
         """Duplicate commands are not added twice."""
         hook = self._make_hook(tmp_path)
-        config = self._run_with_kiro_hooks(tmp_path, {
-            "preToolUse": [
-                {"command": hook},
-                {"command": hook},
-            ],
-        })
+        config = self._run_with_kiro_hooks(
+            tmp_path,
+            {
+                "preToolUse": [
+                    {"command": hook},
+                    {"command": hook},
+                ],
+            },
+        )
         assert len(config["hooks"]["preToolUse"]) == 1
 
     def test_user_hooks_dedup_against_bundled(self, tmp_path: Path):
@@ -1176,23 +1203,29 @@ class TestKiroHooksMerge:
     def test_user_hooks_same_command_different_matcher(self, tmp_path: Path):
         """Same command with different matchers are kept as separate entries."""
         hook = self._make_hook(tmp_path)
-        config = self._run_with_kiro_hooks(tmp_path, {
-            "preToolUse": [
-                {"matcher": "execute_bash", "command": hook},
-                {"matcher": "ReadFile", "command": hook},
-            ],
-        })
+        config = self._run_with_kiro_hooks(
+            tmp_path,
+            {
+                "preToolUse": [
+                    {"matcher": "execute_bash", "command": hook},
+                    {"matcher": "ReadFile", "command": hook},
+                ],
+            },
+        )
         assert len(config["hooks"]["preToolUse"]) == 2
 
     def test_user_hooks_malformed_skipped(self, tmp_path: Path):
         """Entries without command field are skipped."""
         hook = self._make_hook(tmp_path, "valid.sh")
-        config = self._run_with_kiro_hooks(tmp_path, {
-            "preToolUse": [
-                {"matcher": "*"},  # no command
-                {"command": hook},
-            ],
-        })
+        config = self._run_with_kiro_hooks(
+            tmp_path,
+            {
+                "preToolUse": [
+                    {"matcher": "*"},  # no command
+                    {"command": hook},
+                ],
+            },
+        )
         assert config["hooks"]["preToolUse"] == [{"command": hook}]
 
     def test_existing_config_merges_kiro_hooks(self, tmp_path: Path):
@@ -1292,11 +1325,13 @@ class TestKiroHooksMerge:
         from kiro_crew.agent import _merge_kiro_hooks
 
         hook = self._make_hook(tmp_path)
-        user = {"preToolUse": [
-            {"command": hook, "matcher": {"$regex": ".*"}},
-            {"command": hook, "matcher": ["list"]},
-            {"command": hook, "matcher": "*"},
-        ]}
+        user = {
+            "preToolUse": [
+                {"command": hook, "matcher": {"$regex": ".*"}},
+                {"command": hook, "matcher": ["list"]},
+                {"command": hook, "matcher": "*"},
+            ]
+        }
         result = _merge_kiro_hooks({}, user)
         assert len(result["preToolUse"]) == 1
         assert result["preToolUse"][0] == {"command": hook, "matcher": "*"}
@@ -1324,13 +1359,15 @@ class TestKiroHooksMerge:
         from kiro_crew.agent import _merge_kiro_hooks
 
         hook = self._make_hook(tmp_path)
-        user = {"preToolUse": [
-            {"command": hook, "matcher": "tool; rm -rf /"},
-            {"command": hook, "matcher": "tool | cat"},
-            {"command": hook, "matcher": "$(evil)"},
-            {"command": hook, "matcher": "tool name with spaces"},
-            {"command": hook, "matcher": "*"},  # valid
-        ]}
+        user = {
+            "preToolUse": [
+                {"command": hook, "matcher": "tool; rm -rf /"},
+                {"command": hook, "matcher": "tool | cat"},
+                {"command": hook, "matcher": "$(evil)"},
+                {"command": hook, "matcher": "tool name with spaces"},
+                {"command": hook, "matcher": "*"},  # valid
+            ]
+        }
         result = _merge_kiro_hooks({}, user)
         assert len(result["preToolUse"]) == 1
         assert result["preToolUse"][0]["matcher"] == "*"
@@ -1340,10 +1377,12 @@ class TestKiroHooksMerge:
         from kiro_crew.agent import _MAX_MATCHER_LEN, _merge_kiro_hooks
 
         hook = self._make_hook(tmp_path)
-        user = {"preToolUse": [
-            {"command": hook, "matcher": "a" * (_MAX_MATCHER_LEN + 1)},
-            {"command": hook, "matcher": "valid"},
-        ]}
+        user = {
+            "preToolUse": [
+                {"command": hook, "matcher": "a" * (_MAX_MATCHER_LEN + 1)},
+                {"command": hook, "matcher": "valid"},
+            ]
+        }
         result = _merge_kiro_hooks({}, user)
         assert len(result["preToolUse"]) == 1
         assert result["preToolUse"][0]["matcher"] == "valid"
@@ -1716,13 +1755,9 @@ class TestKiroHooksAutoimport:
         with caplog.at_level(logging.WARNING, logger="kiro_crew.agent"):
             _apply_user_kiro_hooks(config, mc_cfg)
 
-        merged_total = sum(
-            len(v) for v in config["hooks"].values() if isinstance(v, list)
-        )
+        merged_total = sum(len(v) for v in config["hooks"].values() if isinstance(v, list))
         assert merged_total == _MAX_TOTAL_USER_HOOKS
-        cap_warnings = [
-            r for r in caplog.records if "global limit" in r.message.lower()
-        ]
+        cap_warnings = [r for r in caplog.records if "global limit" in r.message.lower()]
         # review-bot rev 8 fix: `_merge_kiro_hooks` re-checks the cap at the
         # start of each event's inner loop, so the number of WARNINGs
         # depends on how scripts are distributed across events -- which
@@ -1771,9 +1806,7 @@ class TestKiroHooksAutoimport:
         explicit_dir = tmp_path / "explicit-scripts"
         explicit_dir.mkdir(parents=True, exist_ok=True)
         explicit_events = ["preToolUse", "postToolUse", "userPromptSubmit"]
-        explicit_hooks: dict[str, list[dict[str, str]]] = {
-            ev: [] for ev in explicit_events
-        }
+        explicit_hooks: dict[str, list[dict[str, str]]] = {ev: [] for ev in explicit_events}
         for i in range(_MAX_TOTAL_USER_HOOKS):
             script = explicit_dir / f"e{i:02d}.sh"
             script.write_text("#!/bin/sh\nexit 0\n")
@@ -1814,9 +1847,7 @@ class TestKiroHooksAutoimport:
         with caplog.at_level(logging.WARNING, logger="kiro_crew.agent"):
             _apply_user_kiro_hooks(config, mc_cfg)
 
-        merged_total = sum(
-            len(v) for v in config["hooks"].values() if isinstance(v, list)
-        )
+        merged_total = sum(len(v) for v in config["hooks"].values() if isinstance(v, list))
         assert merged_total == _MAX_TOTAL_USER_HOOKS, (
             f"regression: combined explicit + autoimport hooks exceeded "
             f"_MAX_TOTAL_USER_HOOKS ({_MAX_TOTAL_USER_HOOKS}); got "
@@ -1830,17 +1861,13 @@ class TestKiroHooksAutoimport:
         # ``_merge_kiro_hooks`` iterates events and re-checks the cap per
         # event after it is reached; the count is not the invariant here,
         # the total-merged count above is.
-        cap_warnings = [
-            r for r in caplog.records if "global limit" in r.message.lower()
-        ]
+        cap_warnings = [r for r in caplog.records if "global limit" in r.message.lower()]
         assert cap_warnings, (
             "expected at least one global-limit WARNING from the single "
             "merge pass when combined input exceeds _MAX_TOTAL_USER_HOOKS"
         )
 
-    def test_kiro_hooks_per_event_cap_emits_sel_audit(
-        self, tmp_path: Path, monkeypatch, caplog
-    ):
+    def test_kiro_hooks_per_event_cap_emits_sel_audit(self, tmp_path: Path, monkeypatch, caplog):
         """Regression: per-event cap break must emit SEL audit.
 
         review-bot rev 8 finding (agent.py:682, importance=1,
@@ -1897,9 +1924,7 @@ class TestKiroHooksAutoimport:
         # audit tagged with the event (preToolUse) and the
         # "per-event limit exceeded" reason.  Under the pre-fix code
         # this assertion failed with zero SEL calls tagged that reason.
-        cap_sel = [
-            c for c in sel_calls if "per-event limit exceeded" in c[2].lower()
-        ]
+        cap_sel = [c for c in sel_calls if "per-event limit exceeded" in c[2].lower()]
         assert cap_sel, (
             f"regression: per-event cap must emit _sel_hook_rejected; got "
             f"zero calls with reason 'per-event limit exceeded'.  All SEL "
@@ -1911,9 +1936,7 @@ class TestKiroHooksAutoimport:
         # function).
         assert cap_sel[0][0] == "preToolUse"
 
-    def test_kiro_hooks_global_cap_emits_sel_audit(
-        self, tmp_path: Path, monkeypatch, caplog
-    ):
+    def test_kiro_hooks_global_cap_emits_sel_audit(self, tmp_path: Path, monkeypatch, caplog):
         """Regression: global cap break must emit SEL audit.
 
         review-bot rev 8 finding (agent.py:688, importance=1,
@@ -1959,16 +1982,12 @@ class TestKiroHooksAutoimport:
         with caplog.at_level(logging.WARNING, logger="kiro_crew.agent"):
             _apply_user_kiro_hooks(config, mc_cfg)
 
-        merged_total = sum(
-            len(v) for v in config["hooks"].values() if isinstance(v, list)
-        )
+        merged_total = sum(len(v) for v in config["hooks"].values() if isinstance(v, list))
         assert merged_total == _MAX_TOTAL_USER_HOOKS
         # Global-cap SEL audit must fire at least once.  The reason
         # string is the contract; the exact count depends on how many
         # events the loop visits after the cap is reached.
-        cap_sel = [
-            c for c in sel_calls if "global limit exceeded" in c[2].lower()
-        ]
+        cap_sel = [c for c in sel_calls if "global limit exceeded" in c[2].lower()]
         assert cap_sel, (
             f"regression: global cap must emit _sel_hook_rejected; got "
             f"zero calls with reason 'global limit exceeded'.  All SEL "
@@ -2019,16 +2038,13 @@ class TestKiroHooksAutoimport:
         assert config["hooks"] == {}
         unknown_sel = [c for c in sel_calls if "unknown event" in c[2].lower()]
         assert unknown_sel, (
-            f"regression: unknown event type must emit _sel_hook_rejected; "
-            f"got {sel_calls!r}"
+            f"regression: unknown event type must emit _sel_hook_rejected; " f"got {sel_calls!r}"
         )
         event_tag, _command, reason = unknown_sel[0]
         assert event_tag == "bogusEvent"
         assert "unknown event type" in reason.lower()
 
-    def test_kiro_hooks_non_list_entries_emits_sel_audit(
-        self, tmp_path: Path, monkeypatch, caplog
-    ):
+    def test_kiro_hooks_non_list_entries_emits_sel_audit(self, tmp_path: Path, monkeypatch, caplog):
         """Regression: non-list entries for a valid event must emit SEL audit.
 
         review-bot rev 9 finding (agent.py:669, importance=1,
@@ -2067,8 +2083,7 @@ class TestKiroHooksAutoimport:
 
         non_list_sel = [c for c in sel_calls if "not a list" in c[2].lower()]
         assert non_list_sel, (
-            f"regression: non-list entries must emit _sel_hook_rejected; "
-            f"got {sel_calls!r}"
+            f"regression: non-list entries must emit _sel_hook_rejected; " f"got {sel_calls!r}"
         )
         event_tag, _command, reason = non_list_sel[0]
         assert event_tag == "preToolUse"
@@ -2189,9 +2204,7 @@ class TestKiroHooksAutoimport:
         # ``NoSuchEvent`` is not in _HOOK_EVENT_CANONICAL, so _infer_hook_event
         # returns None and this rejection branch fires.  The filename has no
         # known suffix so fallback inference does not rescue it either.
-        script = self._make_script(
-            hooks_dir, "bogus.sh", body="# event: NoSuchEvent\nexit 0\n"
-        )
+        script = self._make_script(hooks_dir, "bogus.sh", body="# event: NoSuchEvent\nexit 0\n")
 
         sel_calls: list[tuple[str, str, str]] = []
 
@@ -2523,9 +2536,7 @@ class TestKiroHooksAutoimport:
             for rec in caplog.records
         )
 
-    def test_kiro_hooks_autoimport_rejects_symlink_escaping_dir(
-        self, tmp_path: Path, caplog
-    ):
+    def test_kiro_hooks_autoimport_rejects_symlink_escaping_dir(self, tmp_path: Path, caplog):
         """A symlink inside hooks_dir pointing at an outside script is rejected.
 
         Regression guard: entry.is_file() follows symlinks, and
@@ -2552,9 +2563,7 @@ class TestKiroHooksAutoimport:
             result = _autoimport_kiro_hooks(hooks_dir)
 
         assert result == {}
-        assert any(
-            "resolves outside" in rec.message for rec in caplog.records
-        )
+        assert any("resolves outside" in rec.message for rec in caplog.records)
 
     def test_kiro_hooks_autoimport_validates_before_parsing_headers(
         self, tmp_path: Path, monkeypatch, caplog
@@ -2593,9 +2602,7 @@ class TestKiroHooksAutoimport:
         # Force _validate_hook_command to reject everything.  This isolates
         # the reorder: if header parsing ran before validation, we'd still
         # see a call; with the reorder, validation rejects first.
-        monkeypatch.setattr(
-            _agent_mod, "_validate_hook_command", lambda *_a, **_kw: None
-        )
+        monkeypatch.setattr(_agent_mod, "_validate_hook_command", lambda *_a, **_kw: None)
 
         header_calls: list[str] = []
 
@@ -2603,9 +2610,7 @@ class TestKiroHooksAutoimport:
             header_calls.append(str(path))
             return None, None
 
-        monkeypatch.setattr(
-            _agent_mod, "_parse_hook_script_headers", _record_header_call
-        )
+        monkeypatch.setattr(_agent_mod, "_parse_hook_script_headers", _record_header_call)
 
         # Spy on the SEL audit sink so we can assert a rejection was
         # recorded with the ``"autoimport"`` source tag.  Without this,
@@ -2710,9 +2715,7 @@ class TestKiroHooksAutoimport:
         # Sanity: it really is NOT the symlink form (would be the bug).
         assert forwarded != link_hooks
 
-    def test_kiro_hooks_dir_null_byte_does_not_crash(
-        self, tmp_path: Path, monkeypatch
-    ):
+    def test_kiro_hooks_dir_null_byte_does_not_crash(self, tmp_path: Path, monkeypatch):
         """Regression: ``kiro_hooks_dir`` with a null byte must not crash.
 
         deep-review adversarial finding: ``Path("\\x00")``
@@ -2792,9 +2795,7 @@ class TestKiroHooksAutoimport:
         assert command == str(hooks_dir)
         assert "cannot read" in reason.lower()
 
-    def test_kiro_hooks_dir_non_string_ignored_without_sel(
-        self, tmp_path: Path, monkeypatch
-    ):
+    def test_kiro_hooks_dir_non_string_ignored_without_sel(self, tmp_path: Path, monkeypatch):
         """Regression: non-string ``kiro_hooks_dir`` reverts to default silently.
 
         deep-review coverage finding: an LLM-writable
@@ -2831,8 +2832,7 @@ class TestKiroHooksAutoimport:
             # Must not raise.
             _apply_user_kiro_hooks(config, mc_cfg)
             assert config["hooks"] == {}, (
-                f"non-string kiro_hooks_dir={bogus!r} produced hooks: "
-                f"{config['hooks']!r}"
+                f"non-string kiro_hooks_dir={bogus!r} produced hooks: " f"{config['hooks']!r}"
             )
 
         assert sel_calls == [], (
@@ -3012,9 +3012,7 @@ class TestKiroHooksAutoimport:
         assert command == str(entry)
         assert "cannot resolve" in reason.lower()
 
-    def test_kiro_hooks_dir_resolve_oserror_falls_back(
-        self, tmp_path: Path, monkeypatch, caplog
-    ):
+    def test_kiro_hooks_dir_resolve_oserror_falls_back(self, tmp_path: Path, monkeypatch, caplog):
         """Regression: OSError from ``Path.resolve()`` falls back cleanly.
 
         deep-review coverage finding: if
@@ -3082,11 +3080,14 @@ class TestKiroHooksAutoimport:
         # broadly accurate (resolved=None does land in that branch),
         # but a future refinement may split OSError into its own
         # reason string -- either shape is acceptable here.
-        assert "kiro_hooks_dir" in reason.lower() or "hooks_dir" in reason.lower() or "home" in reason.lower() or "sensitive" in reason.lower()
-        # A warning mentioning "rejected" must be logged.
-        assert any(
-            "rejected" in rec.message.lower() for rec in caplog.records
+        assert (
+            "kiro_hooks_dir" in reason.lower()
+            or "hooks_dir" in reason.lower()
+            or "home" in reason.lower()
+            or "sensitive" in reason.lower()
         )
+        # A warning mentioning "rejected" must be logged.
+        assert any("rejected" in rec.message.lower() for rec in caplog.records)
 
 
 class TestRefreshDynamicFieldsStripsStaleUrl:
@@ -3125,6 +3126,42 @@ class TestRefreshDynamicFieldsStripsStaleUrl:
         # A genuine remote server is not a managed one — its url must survive.
         assert config["mcpServers"]["deepwiki"]["url"] == "https://mcp.deepwiki.com/mcp"
 
+    def test_refresh_strips_legacy_denied_commands(self):
+        # Upgrade path: an existing config injected by an older build carries a
+        # stale toolsSettings.deniedCommands + autoAllowReadonly that kiro-cli
+        # would keep enforcing ahead of the hooks gate. The refresh must remove
+        # them so upgraded installs behave like a fresh (hooks-gate-only) one.
+        from kiro_crew.agent import _refresh_dynamic_fields
+
+        config = {
+            "toolsSettings": {
+                "execute_bash": {
+                    "autoAllowReadonly": True,
+                    "deniedCommands": ["aws .* delete-.*", "rm -rf /.*"],
+                },
+                "shell": {"deniedCommands": ["rm -rf /.*"]},
+            }
+        }
+        _refresh_dynamic_fields(config)
+        # The empty scaffolding is removed entirely.
+        assert "toolsSettings" not in config
+
+    def test_refresh_preserves_other_tools_settings(self):
+        # Only the retired keys are stripped — a user-authored sibling stays.
+        from kiro_crew.agent import _refresh_dynamic_fields
+
+        config = {
+            "toolsSettings": {
+                "execute_bash": {
+                    "deniedCommands": ["rm -rf /.*"],
+                    "allowedCommands": ["ls", "cat"],
+                }
+            }
+        }
+        _refresh_dynamic_fields(config)
+        assert "deniedCommands" not in config["toolsSettings"]["execute_bash"]
+        assert config["toolsSettings"]["execute_bash"]["allowedCommands"] == ["ls", "cat"]
+
 
 class TestMigrateAgentSpecs:
     """migrate_agent_specs lifts KiroCrew bookkeeping keys into the sidecar."""
@@ -3135,9 +3172,7 @@ class TestMigrateAgentSpecs:
         (kiro / "a.json").write_text(
             json.dumps({"name": "alpha", "model": "m", "model_managed": False})
         )
-        (kiro / "b.json").write_text(
-            json.dumps({"name": "beta", "cc_model": "claude-sonnet-4.6"})
-        )
+        (kiro / "b.json").write_text(json.dumps({"name": "beta", "cc_model": "claude-sonnet-4.6"}))
         (kiro / "c.json").write_text(json.dumps({"name": "gamma", "model": "m"}))
         with patch("kiro_crew.agent.KIRO_AGENTS_DIR", kiro):
             cleaned = migrate_agent_specs()
@@ -3232,7 +3267,6 @@ def _run_install_mcp_merge(
         patch("kiro_crew.agent._project_dir", return_value=None),
         patch("kiro_crew.agent._aim_skill_paths", return_value=[]),
         patch("kiro_crew.agent.shutil.which", side_effect=which_side_effect),
-        patch("kiro_crew.agent._enforce_denied_commands"),
         patch("kiro_crew.agent._mc_config_path", return_value=mc_config),
     ]
     with ExitStack() as stack:
@@ -3309,8 +3343,8 @@ class TestMcpMergePriority:
         )
         srv = config["mcpServers"]["srv"]
         assert srv["command"] == cc_cmd
-        assert srv["args"] == ["--cc"]          # adopted from the resolving source
-        assert srv.get("env") == {"CC": "1"}     # adopted from the resolving source
+        assert srv["args"] == ["--cc"]  # adopted from the resolving source
+        assert srv.get("env") == {"CC": "1"}  # adopted from the resolving source
         assert srv.get("autoApprove") == ["tool"]  # winner's non-command field kept
 
     def test_server_without_command_is_dropped(self, tmp_path: Path):
@@ -3339,7 +3373,9 @@ class TestMcpMergePriority:
             kirocrew_servers={"srv": {"command": "bare-unresolvable"}},
             which_side_effect=lambda c, **kw: None if c == "bare-unresolvable" else c,
         )
-        assert "srv" in config["mcpServers"], "server dropped: global source dict corrupted by override"
+        assert (
+            "srv" in config["mcpServers"]
+        ), "server dropped: global source dict corrupted by override"
         assert config["mcpServers"]["srv"]["command"] == kiro_cmd
 
 

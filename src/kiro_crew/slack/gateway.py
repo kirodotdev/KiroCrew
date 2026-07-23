@@ -108,7 +108,7 @@ from kiro_crew.heartbeat import (
     strip_keep_sentinel,
 )
 from kiro_crew.history import ConversationLog, HistoryConsolidator
-from kiro_crew.hooks import HookManager, HooksConfig
+from kiro_crew.hooks import HookManager, HooksConfig, hooks_config_from_config_dict
 from kiro_crew.learn import LessonStore
 from kiro_crew.llm_helpers import (
     PromptBusyExhaustedError,
@@ -315,23 +315,25 @@ def _is_read_only_tool(event_title: str) -> bool:
 # When a legitimate new read tool needs to run in heartbeat, operators
 # observe the SEL ``denied`` events for it and explicitly add the name to
 # this set.  This is deny-by-default per the security-controls guideline.
-HEARTBEAT_SAFE_TOOLS = frozenset({
-    # Local / built-in read tools
-    "Read",
-    "Grep",
-    "Glob",
-    # Workspace exploration
-    "WorkspaceSearch",
-    # KiroCrew-core reads (no side effects)
-    "learn_list",
-    "cron_list",
-    "spawn_list",
-    "spawn_status",
-    "artifact_list",
-    "artifact_get",
-    "artifact_versions",
-    "local_knowledge_search",
-})
+HEARTBEAT_SAFE_TOOLS = frozenset(
+    {
+        # Local / built-in read tools
+        "Read",
+        "Grep",
+        "Glob",
+        # Workspace exploration
+        "WorkspaceSearch",
+        # KiroCrew-core reads (no side effects)
+        "learn_list",
+        "cron_list",
+        "spawn_list",
+        "spawn_status",
+        "artifact_list",
+        "artifact_get",
+        "artifact_versions",
+        "local_knowledge_search",
+    }
+)
 
 
 _HEARTBEAT_STATUS_PREFIXES = ("Running: ",)
@@ -366,7 +368,7 @@ def _is_heartbeat_safe_tool(event_title: str) -> bool:
     # Strip leading status prefix: "Running: @example-mcp/Tool" → "@example-mcp/Tool"
     for prefix in _HEARTBEAT_STATUS_PREFIXES:
         if name.startswith(prefix):
-            name = name[len(prefix):]
+            name = name[len(prefix) :]
             break
     # Preserve the server-QUALIFIED form (before the prefix is stripped) so the
     # edition allowlist can match on the full identity and avoid bare-name
@@ -452,6 +454,12 @@ def _build_heartbeat_hooks(user_hooks: HookManager) -> HookManager:
     scoped = HooksConfig(
         auto_approve_tools=[],
         auto_deny_tools=list(user_cfg.auto_deny_tools),
+        # Denied-command opt-out state carries over: denies can only narrow what
+        # runs in a heartbeat session, never widen it, so the effective built-in
+        # ruleset (and user-added denies) must apply here too.
+        denied_commands_disabled_ids=list(user_cfg.denied_commands_disabled_ids),
+        denied_commands_disable_all=user_cfg.denied_commands_disable_all,
+        denied_commands_user_added=list(user_cfg.denied_commands_user_added),
     )
     return HookManager(scoped)
 
@@ -491,7 +499,12 @@ class GatewayOrchestrator:
     """
 
     def __init__(
-        self, cfg: KiroCrewConfig, *, no_dashboard: bool = False, no_crons: bool = False, no_open: bool = False,
+        self,
+        cfg: KiroCrewConfig,
+        *,
+        no_dashboard: bool = False,
+        no_crons: bool = False,
+        no_open: bool = False,
         port_override: str | None = None,
         json_ready: bool = False,
         approval_mode: str | None = None,
@@ -528,34 +541,24 @@ class GatewayOrchestrator:
         self._slack_enabled = bool(self._app_token and self._bot_token)
         self._wecom_bot_id = creds.get(CRED_WECOM_BOT_ID, "")
         self._wecom_secret = creds.get(CRED_WECOM_SECRET, "")
-        self._wecom_enabled = bool(
-            cfg.wechat.enabled and self._wecom_bot_id and self._wecom_secret
-        )
+        self._wecom_enabled = bool(cfg.wechat.enabled and self._wecom_bot_id and self._wecom_secret)
         # Telegram — the TELEGRAM_BOT_TOKEN credential (env/.env) overrides
         # cfg.telegram.bot_token; all other settings come from the typed
         # cfg.telegram dataclass (no ad-hoc config.json re-parse).
-        self._telegram_bot_token = (
-            creds.get(CRED_TELEGRAM_BOT_TOKEN, "") or cfg.telegram.bot_token
-        )
+        self._telegram_bot_token = creds.get(CRED_TELEGRAM_BOT_TOKEN, "") or cfg.telegram.bot_token
         self._telegram_enabled = bool(cfg.telegram.enabled and self._telegram_bot_token)
         self._telegram_allowed_user_ids: list[int] = list(cfg.telegram.allowed_user_ids)
         # Forum-topic gate (fail closed): serve supergroup forum Topics only when
         # allow_forum is set AND the supergroup's chat_id is allow-listed.
         self._telegram_allow_forum: bool = bool(cfg.telegram.allow_forum)
-        self._telegram_allowed_forum_chat_ids: list[int] = list(
-            cfg.telegram.allowed_forum_chat_ids
-        )
+        self._telegram_allowed_forum_chat_ids: list[int] = list(cfg.telegram.allowed_forum_chat_ids)
         self._telegram_client: "TelegramClient | None" = None
         # Discord — the DISCORD_BOT_TOKEN credential (env/.env) overrides
         # cfg.discord.bot_token; all other settings come from the typed
         # cfg.discord dataclass (mirrors the Telegram block above).
-        self._discord_bot_token = (
-            creds.get(CRED_DISCORD_BOT_TOKEN, "") or cfg.discord.bot_token
-        )
+        self._discord_bot_token = creds.get(CRED_DISCORD_BOT_TOKEN, "") or cfg.discord.bot_token
         self._discord_enabled = bool(cfg.discord.enabled and self._discord_bot_token)
-        self._discord_allowed_user_ids: list[str] = [
-            str(u) for u in cfg.discord.allowed_user_ids
-        ]
+        self._discord_allowed_user_ids: list[str] = [str(u) for u in cfg.discord.allowed_user_ids]
         self._discord_client: "DiscordClient | None" = None
         # Webex — the WEBEX_BOT_TOKEN credential (env/.env) overrides
         # cfg.webex.bot_token; all other settings come from the typed
@@ -579,7 +582,9 @@ class GatewayOrchestrator:
         self.secretary_svc: object | None = None
         self.subagent_mgr: SubagentManager | None = None
         self._cron_injecting: dict[str, int] = {}  # parent_key → pending injection count
-        self._running_script_ids: set[str] = set()  # job IDs with in-flight script/command execution
+        self._running_script_ids: set[str] = (
+            set()
+        )  # job IDs with in-flight script/command execution
         self.task_runner: TaskRunner | None = None
         self.channel_history: ChannelHistory | None = None
         self.dashboard_state: DashboardState | None = None
@@ -622,9 +627,7 @@ class GatewayOrchestrator:
                         # block shutdown — treat it as idle.
                         pass
             except Exception:
-                logger.debug(
-                    "in-flight count: active_providers() failed", exc_info=True
-                )
+                logger.debug("in-flight count: active_providers() failed", exc_info=True)
         # In-flight Slack session turns (one task per active thread turn).
         for task in list(self._session_tasks.values()):
             if not task.done():
@@ -709,7 +712,9 @@ class GatewayOrchestrator:
                             resources=_safe,
                         )
                     except Exception:
-                        logger.warning("SEL audit failed for cli --approval auto-approve", exc_info=True)
+                        logger.warning(
+                            "SEL audit failed for cli --approval auto-approve", exc_info=True
+                        )
                     return True
 
             # Check both YOLO sources: Slack handler (!yolo on) and dashboard UI
@@ -868,9 +873,7 @@ class GatewayOrchestrator:
                         else DashboardState._APPROVAL_TIMEOUT
                     )
                     try:
-                        outcome = await asyncio.wait_for(
-                            pending.future, timeout=approval_timeout
-                        )
+                        outcome = await asyncio.wait_for(pending.future, timeout=approval_timeout)
                     except asyncio.TimeoutError:
                         outcome = "rejected"
                     finally:
@@ -912,9 +915,7 @@ class GatewayOrchestrator:
     # ------------------------------------------------------------------
     # Heartbeat tool approval — strict allowlist, no UI prompt
     # ------------------------------------------------------------------
-    async def _heartbeat_approval(
-        self, event: LLMEvent, _parent_session_key: str = ""
-    ) -> bool:
+    async def _heartbeat_approval(self, event: LLMEvent, _parent_session_key: str = "") -> bool:
         """Tool-approval callback for heartbeat sessions.
 
         Heartbeat runs unattended on a timer — there is no human to click an
@@ -936,9 +937,7 @@ class GatewayOrchestrator:
         # Tool titles are LLM-originated input. Redact before any external
         # surface — SEL audit AND dashboard-visible logger warnings —
         # per the security-controls "never trust LLM output" guideline.
-        safe_title = redact_exfiltration_urls(
-            redact_credentials(title)[0]
-        )[0]
+        safe_title = redact_exfiltration_urls(redact_credentials(title)[0])[0]
 
         def _audit(outcome: str, *, critical: bool = False, **metadata: str) -> None:
             """Emit a SEL ``log_tool_invocation`` event.
@@ -995,8 +994,7 @@ class GatewayOrchestrator:
             _audit("denied", reason="not_in_heartbeat_safe_tools")
         except Exception:
             logger.warning(
-                "SEL audit failed on heartbeat deny path — "
-                "tool was still rejected",
+                "SEL audit failed on heartbeat deny path — " "tool was still rejected",
                 exc_info=True,
             )
         logger.warning(
@@ -1023,8 +1021,7 @@ class GatewayOrchestrator:
         if method_file.is_file():
             return method_file.read_text().strip() == "brazil"
         return bool(
-            shutil.which("brazil-build")
-            and (Path(proj).parent.parent / ".brazil").is_dir()
+            shutil.which("brazil-build") and (Path(proj).parent.parent / ".brazil").is_dir()
         )
 
     def _check_missing_deps(self) -> None:
@@ -1033,10 +1030,7 @@ class GatewayOrchestrator:
         After auto-update, old code may have pulled new source via git reset
         but skipped ``pip install``. This catches the gap on next startup.
         """
-        missing = [
-            pip for mod, pip in self._REQUIRED_DEPS
-            if importlib.util.find_spec(mod) is None
-        ]
+        missing = [pip for mod, pip in self._REQUIRED_DEPS if importlib.util.find_spec(mod) is None]
         if not missing:
             return
 
@@ -1071,7 +1065,9 @@ class GatewayOrchestrator:
 
         # Check kiro-cli version (--agent requires >= 1.26)
         try:
-            result = subprocess.run(["kiro-cli", "--version"], capture_output=True, text=True, timeout=5)
+            result = subprocess.run(
+                ["kiro-cli", "--version"], capture_output=True, text=True, timeout=5
+            )
             if result.returncode == 0:
                 # e.g. "kiro-cli 1.25.0" -> (1, 25, 0)
                 parts = result.stdout.strip().split()[-1].split(".")
@@ -1125,7 +1121,9 @@ class GatewayOrchestrator:
         memory.vector_store = self.vector_memory
 
         skills = SkillsLoader()
-        hooks = HookManager(HooksConfig.from_dict(self._cfg.hooks))
+        # Opt-out state comes from the keystone denied_commands.json (agent-
+        # unwritable), not config.json's hooks section.
+        hooks = HookManager(hooks_config_from_config_dict(self._cfg.hooks))
         lessons = LessonStore()
         self.ctx_builder = ContextBuilder(
             memory=memory,
@@ -1183,7 +1181,9 @@ class GatewayOrchestrator:
         indexed = memory.rebuild_index()
         logger.info("FTS index built: %d files", indexed)
 
-    async def _open_dm_with_retry(self, user_id: str, job_name: str, max_attempts: int = 3) -> str | None:
+    async def _open_dm_with_retry(
+        self, user_id: str, job_name: str, max_attempts: int = 3
+    ) -> str | None:
         """Retry open_dm to handle transient Slack API errors."""
         if self.slack is None:
             return None
@@ -1203,7 +1203,10 @@ class GatewayOrchestrator:
                 if attempt < max_attempts:
                     logger.warning(
                         "Cron '%s': open_dm attempt %d/%d failed, retrying in %ds",
-                        job_name, attempt, max_attempts, attempt,
+                        job_name,
+                        attempt,
+                        max_attempts,
+                        attempt,
                         exc_info=True,
                     )
                     await asyncio.sleep(attempt)
@@ -1247,12 +1250,13 @@ class GatewayOrchestrator:
         if options:
             try:
                 await self.slack.post_blocks(
-                    channel, build_options_blocks(options), "Options", thread_ts,
+                    channel,
+                    build_options_blocks(options),
+                    "Options",
+                    thread_ts,
                 )
             except Exception:
-                logger.debug(
-                    "Cron %s: failed to post OPTIONS blocks", parent_key, exc_info=True
-                )
+                logger.debug("Cron %s: failed to post OPTIONS blocks", parent_key, exc_info=True)
         return True
 
     def _cron_job_is_silent(self, parent_key: str) -> bool:
@@ -1278,7 +1282,9 @@ class GatewayOrchestrator:
     async def _init_cron(self) -> None:
         """Initialize and start the cron service."""
 
-        async def _deliver_script_result(job: CronJob, message: str, *, remove: bool = False) -> None:
+        async def _deliver_script_result(
+            job: CronJob, message: str, *, remove: bool = False
+        ) -> None:
             """Deliver a script cron result to the originating session. Optionally remove the job."""
             delivered = False
             try:
@@ -1309,10 +1315,14 @@ class GatewayOrchestrator:
                             task.add_done_callback(self.dashboard_state._background_tasks.discard)
                         self.dashboard_state.push_slots_update()
                     else:
-                        self.dashboard_state.notify("cron", f"⚡ {label}", message, meta={"job_id": job.id})
+                        self.dashboard_state.notify(
+                            "cron", f"⚡ {label}", message, meta={"job_id": job.id}
+                        )
                 elif message and not job.silent and self.dashboard_state:
                     label = redact(job.name)
-                    self.dashboard_state.notify("cron", f"⚡ {label}", message, meta={"job_id": job.id})
+                    self.dashboard_state.notify(
+                        "cron", f"⚡ {label}", message, meta={"job_id": job.id}
+                    )
                 delivered = True
             except Exception as notify_exc:
                 logger.warning("Cron '%s' delivery failed: %s", job.name, notify_exc)
@@ -1335,11 +1345,15 @@ class GatewayOrchestrator:
                 try:
                     try:
                         sel().log_tool_invocation(
-                            session_key=f"cron:{job.id}", tool_name="cron_command_exec",
-                            tool_kind="cron_command", outcome="invoked",
+                            session_key=f"cron:{job.id}",
+                            tool_name="cron_command_exec",
+                            tool_kind="cron_command",
+                            outcome="invoked",
                         )
                     except Exception:
-                        logger.debug("SEL logging failed in cron command invoked path", exc_info=True)
+                        logger.debug(
+                            "SEL logging failed in cron command invoked path", exc_info=True
+                        )
                     cmd_timeout = job.timeout or 300
                     result = await asyncio.wait_for(
                         asyncio.get_running_loop().run_in_executor(
@@ -1363,7 +1377,9 @@ class GatewayOrchestrator:
                             job.record_success()
                         else:
                             job.last_status = "error"
-                            job.last_error = f"non-ok status with no output (status={result.get('status')})"
+                            job.last_error = (
+                                f"non-ok status with no output (status={result.get('status')})"
+                            )
                             job.record_failure()
                         return None  # no output = no delivery
                     job.last_result = redact(output)
@@ -1377,11 +1393,15 @@ class GatewayOrchestrator:
                         job.record_failure()
                     try:
                         sel().log_tool_invocation(
-                            session_key=f"cron:{job.id}", tool_name="cron_command_exec",
-                            tool_kind="cron_command", outcome=job.last_status,
+                            session_key=f"cron:{job.id}",
+                            tool_name="cron_command_exec",
+                            tool_kind="cron_command",
+                            outcome=job.last_status,
                         )
                     except Exception:
-                        logger.debug("SEL logging failed in cron command result path", exc_info=True)
+                        logger.debug(
+                            "SEL logging failed in cron command result path", exc_info=True
+                        )
                     return job.last_result
                 except asyncio.TimeoutError:
                     job.last_error = f"timeout ({cmd_timeout + 5}s)"
@@ -1389,11 +1409,15 @@ class GatewayOrchestrator:
                     job.record_failure()
                     try:
                         sel().log_tool_invocation(
-                            session_key=f"cron:{job.id}", tool_name="cron_command_exec",
-                            tool_kind="cron_command", outcome="timeout",
+                            session_key=f"cron:{job.id}",
+                            tool_name="cron_command_exec",
+                            tool_kind="cron_command",
+                            outcome="timeout",
                         )
                     except Exception:
-                        logger.debug("SEL logging failed in cron command timeout path", exc_info=True)
+                        logger.debug(
+                            "SEL logging failed in cron command timeout path", exc_info=True
+                        )
                     return None
                 except Exception as exc:
                     logger.exception("Command cron '%s' failed: %s", job.name, exc)
@@ -1403,8 +1427,10 @@ class GatewayOrchestrator:
                     job.record_failure()
                     try:
                         sel().log_tool_invocation(
-                            session_key=f"cron:{job.id}", tool_name="cron_command_exec",
-                            tool_kind="cron_command", outcome="error",
+                            session_key=f"cron:{job.id}",
+                            tool_name="cron_command_exec",
+                            tool_kind="cron_command",
+                            outcome="error",
                         )
                     except Exception:
                         logger.debug("SEL logging failed in cron command error path", exc_info=True)
@@ -1418,11 +1444,15 @@ class GatewayOrchestrator:
                 try:
                     try:
                         sel().log_tool_invocation(
-                            session_key=f"cron:{job.id}", tool_name=job.script,
-                            tool_kind="cron_script", outcome="invoked",
+                            session_key=f"cron:{job.id}",
+                            tool_name=job.script,
+                            tool_kind="cron_script",
+                            outcome="invoked",
                         )
                     except Exception:
-                        logger.debug("SEL logging failed in cron script invoked path", exc_info=True)
+                        logger.debug(
+                            "SEL logging failed in cron script invoked path", exc_info=True
+                        )
                     # Validate path before spawning subprocess
                     resolve_script_path(job.script)
                     # Run in sandboxed subprocess via wrap_argv()
@@ -1450,8 +1480,10 @@ class GatewayOrchestrator:
                         job.record_success()
                         try:
                             sel().log_tool_invocation(
-                                session_key=f"cron:{job.id}", tool_name=job.script,
-                                tool_kind="cron_script", outcome="ok",
+                                session_key=f"cron:{job.id}",
+                                tool_name=job.script,
+                                tool_kind="cron_script",
+                                outcome="ok",
                             )
                         except Exception:
                             logger.debug("SEL logging failed in cron script ok path", exc_info=True)
@@ -1459,11 +1491,15 @@ class GatewayOrchestrator:
                     elif status == "skip":
                         try:
                             sel().log_tool_invocation(
-                                session_key=f"cron:{job.id}", tool_name=job.script,
-                                tool_kind="cron_script", outcome="skip",
+                                session_key=f"cron:{job.id}",
+                                tool_name=job.script,
+                                tool_kind="cron_script",
+                                outcome="skip",
                             )
                         except Exception:
-                            logger.debug("SEL logging failed in cron script skip path", exc_info=True)
+                            logger.debug(
+                                "SEL logging failed in cron script skip path", exc_info=True
+                            )
                         return None
                     elif status == "done":
                         msg = result.get("message", "")
@@ -1475,11 +1511,15 @@ class GatewayOrchestrator:
                         await _deliver_script_result(job, job.last_result, remove=True)
                         try:
                             sel().log_tool_invocation(
-                                session_key=f"cron:{job.id}", tool_name=job.script,
-                                tool_kind="cron_script", outcome="done",
+                                session_key=f"cron:{job.id}",
+                                tool_name=job.script,
+                                tool_kind="cron_script",
+                                outcome="done",
                             )
                         except Exception:
-                            logger.debug("SEL logging failed in cron script done path", exc_info=True)
+                            logger.debug(
+                                "SEL logging failed in cron script done path", exc_info=True
+                            )
                         return job.last_result or "done"
                     elif status == "report":
                         msg = result.get("message", "")
@@ -1491,29 +1531,44 @@ class GatewayOrchestrator:
                         await _deliver_script_result(job, job.last_result)
                         try:
                             sel().log_tool_invocation(
-                                session_key=f"cron:{job.id}", tool_name=job.script,
-                                tool_kind="cron_script", outcome="report",
+                                session_key=f"cron:{job.id}",
+                                tool_name=job.script,
+                                tool_kind="cron_script",
+                                outcome="report",
                             )
                         except Exception:
-                            logger.debug("SEL logging failed in cron script report path", exc_info=True)
+                            logger.debug(
+                                "SEL logging failed in cron script report path", exc_info=True
+                            )
                         return job.last_result or "report"
                     else:
                         err = result.get("error", "unknown error")
                         raise RuntimeError(err)
                 except asyncio.TimeoutError:
-                    logger.warning("Script cron '%s' timed out after %ds", job.name, script_timeout + 5)
+                    logger.warning(
+                        "Script cron '%s' timed out after %ds", job.name, script_timeout + 5
+                    )
                     job.last_error = f"timeout ({script_timeout + 5}s)"
                     job.last_status = "error"
                     job.record_failure()
                     if job.auto_paused:
-                        logger.warning("Script cron '%s' auto-paused after %d consecutive errors", job.name, job.consecutive_failures)
+                        logger.warning(
+                            "Script cron '%s' auto-paused after %d consecutive errors",
+                            job.name,
+                            job.consecutive_failures,
+                        )
                     try:
                         sel().log_tool_invocation(
-                            session_key=f"cron:{job.id}", tool_name=job.script,
-                            tool_kind="cron_script", outcome="error", error=f"timeout ({script_timeout + 5}s)",
+                            session_key=f"cron:{job.id}",
+                            tool_name=job.script,
+                            tool_kind="cron_script",
+                            outcome="error",
+                            error=f"timeout ({script_timeout + 5}s)",
                         )
                     except Exception:
-                        logger.debug("SEL logging failed in cron script timeout path", exc_info=True)
+                        logger.debug(
+                            "SEL logging failed in cron script timeout path", exc_info=True
+                        )
                     return None
                 except Exception as exc:
                     logger.exception("Script cron '%s' failed: %s", job.name, exc)
@@ -1522,11 +1577,18 @@ class GatewayOrchestrator:
                     job.last_status = "error"
                     job.record_failure()
                     if job.auto_paused:
-                        logger.warning("Script cron '%s' auto-paused after %d consecutive errors", job.name, job.consecutive_failures)
+                        logger.warning(
+                            "Script cron '%s' auto-paused after %d consecutive errors",
+                            job.name,
+                            job.consecutive_failures,
+                        )
                     try:
                         sel().log_tool_invocation(
-                            session_key=f"cron:{job.id}", tool_name=job.script,
-                            tool_kind="cron_script", outcome="error", error=err_str,
+                            session_key=f"cron:{job.id}",
+                            tool_name=job.script,
+                            tool_kind="cron_script",
+                            outcome="error",
+                            error=err_str,
                         )
                     except Exception:
                         logger.debug("SEL logging failed in cron script error path", exc_info=True)
@@ -1563,7 +1625,9 @@ class GatewayOrchestrator:
                         raise
                     logger.warning(
                         "Cron '%s': model %r unavailable (%s); retrying with default",
-                        job.name, job.model, model_exc,
+                        job.name,
+                        job.model,
+                        model_exc,
                     )
                     client, is_new, resumed = await self.sessions.get_or_create(
                         key,
@@ -1595,15 +1659,18 @@ class GatewayOrchestrator:
                         self.cron_svc.register_active_session_key(job.id, agent_session_key)
                     _acq = False
                     try:
-                        client, is_new, _resumed, _downgraded = (
-                            await _acquire_with_model_fallback(agent_session_key, agent)
+                        client, is_new, _resumed, _downgraded = await _acquire_with_model_fallback(
+                            agent_session_key, agent
                         )
                         _seq_downgraded = _seq_downgraded or _downgraded
                         _acq = True
                         # Off-loop: build_message embeds the episodic query.
                         full_message, _ = await run_in_embed_pool(
                             self.ctx_builder.build_message,
-                            msg, True, interactive=False, agent=agent,
+                            msg,
+                            True,
+                            interactive=False,
+                            agent=agent,
                         )
                         result_text = await stream_and_collect(
                             client,
@@ -1615,15 +1682,14 @@ class GatewayOrchestrator:
                             ),
                             hooks=self.ctx_builder.hooks,
                             on_tool_approval=(
-                                None if job.approval_mode == "auto"
+                                None
+                                if job.approval_mode == "auto"
                                 else self._interactive_approval("cron")
                             ),
                         )
                         if not result_text:
                             result_text = "_No response._"
-                        logger.info(
-                            "Cron '%s': agent '%s' completed", job.name, agent
-                        )
+                        logger.info("Cron '%s': agent '%s' completed", job.name, agent)
                     finally:
                         if _acq:
                             self.sessions.release(agent_session_key)
@@ -1645,8 +1711,8 @@ class GatewayOrchestrator:
             try:
                 assert self.sessions is not None
                 assert self.ctx_builder is not None
-                client, is_new, _resumed, _model_downgraded = (
-                    await _acquire_with_model_fallback(session_key, job.agent_id or None)
+                client, is_new, _resumed, _model_downgraded = await _acquire_with_model_fallback(
+                    session_key, job.agent_id or None
                 )
                 _acquired = True
                 if job.acked_items:
@@ -1659,7 +1725,10 @@ class GatewayOrchestrator:
                 # Off-loop: build_message embeds the episodic query.
                 full_message, _ = await run_in_embed_pool(
                     self.ctx_builder.build_message,
-                    msg, True, interactive=False, agent=job.agent_id or None,
+                    msg,
+                    True,
+                    interactive=False,
+                    agent=job.agent_id or None,
                     provider_type=_provider,
                     minimal_context=job.minimal_context,
                 )
@@ -1734,7 +1803,12 @@ class GatewayOrchestrator:
                             downstream_service="none",
                         )
                         # Still inject into dashboard slot even when Slack is suppressed
-                        if self.dashboard_state and job.persistent_session and not job.hide_in_chat and self.dashboard_state.has_slot(f"cron-{job.id}"):
+                        if (
+                            self.dashboard_state
+                            and job.persistent_session
+                            and not job.hide_in_chat
+                            and self.dashboard_state.has_slot(f"cron-{job.id}")
+                        ):
                             inject_cron_result_to_dashboard(self.dashboard_state, job, result_text)
                         return result_text
 
@@ -1748,7 +1822,12 @@ class GatewayOrchestrator:
                         downstream_service="none",
                     )
                     # Still inject into dashboard slot even when silent
-                    if self.dashboard_state and job.persistent_session and not job.hide_in_chat and self.dashboard_state.has_slot(f"cron-{job.id}"):
+                    if (
+                        self.dashboard_state
+                        and job.persistent_session
+                        and not job.hide_in_chat
+                        and self.dashboard_state.has_slot(f"cron-{job.id}")
+                    ):
                         inject_cron_result_to_dashboard(self.dashboard_state, job, result_text)
                     return result_text
 
@@ -1767,10 +1846,17 @@ class GatewayOrchestrator:
                     # paths above only re-inject into an already-existing slot via has_slot(), so
                     # they self-no-op when hide_in_chat is True.
                     if job.persistent_session and not job.hide_in_chat:
-                        history = await asyncio.to_thread(
-                            self.dashboard_state.conversation_log.read_messages, f"cron:{job.id}"
-                        ) if self.dashboard_state.conversation_log else []
-                        inject_cron_result_to_dashboard(self.dashboard_state, job, result_text, history=history)
+                        history = (
+                            await asyncio.to_thread(
+                                self.dashboard_state.conversation_log.read_messages,
+                                f"cron:{job.id}",
+                            )
+                            if self.dashboard_state.conversation_log
+                            else []
+                        )
+                        inject_cron_result_to_dashboard(
+                            self.dashboard_state, job, result_text, history=history
+                        )
                     redacted_for_dash, _ = redact_exfiltration_urls(result_text)
                     redacted_for_dash, _ = redact_credentials(redacted_for_dash)
                     safe_name, _ = redact_exfiltration_urls(job.name)
@@ -1832,7 +1918,9 @@ class GatewayOrchestrator:
                             job.consecutive_dupes = 0
                             job.last_posted_at = time.time()
                         else:
-                            logger.warning("Cron '%s': no channel resolved, skipping notification", job.name)
+                            logger.warning(
+                                "Cron '%s': no channel resolved, skipping notification", job.name
+                            )
                     except Exception as slack_exc:
                         logger.error(
                             "Cron job '%s': Slack delivery failed (job succeeded)",
@@ -1910,7 +1998,9 @@ class GatewayOrchestrator:
                                 meta={"job_id": job.id, "failure_hash": fh},
                             )
                     except Exception:
-                        logger.debug("Dashboard notify failed in cron failure suppress path", exc_info=True)
+                        logger.debug(
+                            "Dashboard notify failed in cron failure suppress path", exc_info=True
+                        )
                     # SEL logging is best-effort — never mask the original
                     # exception if audit logging itself fails.
                     try:
@@ -1937,7 +2027,9 @@ class GatewayOrchestrator:
                         alert_title, _ = redact_credentials(alert_title)
                         self.dashboard_state.notify("cron", alert_title, "❌ Job failed")
                 except Exception:
-                    logger.debug("Dashboard notify failed in cron failure alert path", exc_info=True)
+                    logger.debug(
+                        "Dashboard notify failed in cron failure alert path", exc_info=True
+                    )
                 # Compute the count this alert represents (including itself) so
                 # the re-alert message can call out persistence.
                 new_count = job.consecutive_failures + 1 if is_dup else 1
@@ -1978,7 +2070,9 @@ class GatewayOrchestrator:
                             # fail_msg already redacted at construction above.
                             await self.slack.post_message(channel, fail_msg)
                         else:
-                            logger.warning("Cron '%s': no channel resolved for error notification", job.name)
+                            logger.warning(
+                                "Cron '%s': no channel resolved for error notification", job.name
+                            )
 
                     except Exception:
                         slack_failed = True
@@ -2003,7 +2097,9 @@ class GatewayOrchestrator:
                             session_key=f"cron:{job.id}",
                             tool_name="cron_failure_alert",
                             outcome="suppressed" if job.silent else "alerted",
-                            downstream_service="slack" if (self.slack and not job.silent) else "none",
+                            downstream_service=(
+                                "slack" if (self.slack and not job.silent) else "none"
+                            ),
                         )
                     except Exception:
                         logger.debug(
@@ -2051,15 +2147,21 @@ class GatewayOrchestrator:
 
         # Heartbeat-scoped hooks: drops the user's ``auto_approve_tools`` so
         # ``HEARTBEAT_SAFE_TOOLS`` is the sole approval authority for any
-        # tool call in a heartbeat session.  Built once at init — heartbeat
-        # config changes require a gateway restart anyway.
+        # tool call in a heartbeat session.  REBUILT per run (below) from the
+        # live primary manager: denied-command opt-out state is mutable at
+        # runtime (Settings > Security hot-reloads ``ctx_builder.hooks``), so a
+        # once-at-init snapshot would let a heartbeat session keep enforcing a
+        # just-disabled rule — or skip a just-added one — until restart.
         assert self.ctx_builder is not None
-        heartbeat_hooks = _build_heartbeat_hooks(self.ctx_builder.hooks)
 
         async def _heartbeat_task(task_text: str, deliver: str) -> str | None:
             assert self.sessions is not None
             assert self.ctx_builder is not None
             session_key = HEARTBEAT_KEY
+            # Re-derive the heartbeat-scoped hooks from the CURRENT primary
+            # manager each cycle so live denied-command changes take effect
+            # without a gateway restart (cross-surface consistency).
+            heartbeat_hooks = _build_heartbeat_hooks(self.ctx_builder.hooks)
             _acquired = False
             try:
                 # Use the dedicated ``kirocrew-heartbeat`` agent — minimal
@@ -2068,7 +2170,8 @@ class GatewayOrchestrator:
                 # runtime by ``_heartbeat_approval`` against
                 # ``HEARTBEAT_SAFE_TOOLS``.
                 client, is_new, _resumed = await self.sessions.get_or_create(
-                    session_key, agent="kirocrew-heartbeat",
+                    session_key,
+                    agent="kirocrew-heartbeat",
                 )
                 _acquired = True
 
@@ -2288,9 +2391,7 @@ class GatewayOrchestrator:
                     agent=_get_agent_for_session(key),
                 )
             except Exception:
-                logger.warning(
-                    "AutoNudge: failed to persist nudge turn for %s", key, exc_info=True
-                )
+                logger.warning("AutoNudge: failed to persist nudge turn for %s", key, exc_info=True)
         return True
 
     async def _fire_discord_nudge(self, loop: NudgeLoop) -> bool:
@@ -2312,9 +2413,7 @@ class GatewayOrchestrator:
         # Key shape: discord:{agent}:direct:{user_id}[:genN]
         parts = key.split(":")
         if len(parts) < 4 or parts[2] != "direct":
-            logger.warning(
-                "AutoNudge: unsupported discord key %s — removing loop %s", key, loop.id
-            )
+            logger.warning("AutoNudge: unsupported discord key %s — removing loop %s", key, loop.id)
             if self.autonudge_svc:
                 await self.autonudge_svc.remove(loop.id)
             return False
@@ -2418,7 +2517,9 @@ class GatewayOrchestrator:
                 return False
             slot = self.dashboard_state._slots.get(loop.slot_key)
             if slot is None:
-                logger.warning("AutoNudge: slot %s missing — removing loop %s", loop.slot_key, loop.id)
+                logger.warning(
+                    "AutoNudge: slot %s missing — removing loop %s", loop.slot_key, loop.id
+                )
                 await self.autonudge_svc.remove(loop.id)  # type: ignore[union-attr]
                 return False
             msg = render_nudge_message(loop.message, loop.stop_sentinel_path)
@@ -2509,9 +2610,7 @@ class GatewayOrchestrator:
         from kiro_crew.dashboard.chat_utils import _history_key_for
 
         try:
-            await asyncio.to_thread(
-                conv_log.set_title, _history_key_for(slot.key), slot.title
-            )
+            await asyncio.to_thread(conv_log.set_title, _history_key_for(slot.key), slot.title)
         except Exception:
             logger.warning(
                 "Heartbeat: failed to persist slot title for %s", slot.key, exc_info=True
@@ -2580,9 +2679,7 @@ class GatewayOrchestrator:
                     content_budget = max(0, MAX_PROMPT_BYTES - prefix_bytes)
                     content_bytes = result_text.encode("utf-8")
                     if len(content_bytes) > content_budget:
-                        truncated = content_bytes[:content_budget].decode(
-                            "utf-8", errors="ignore"
-                        )
+                        truncated = content_bytes[:content_budget].decode("utf-8", errors="ignore")
                         logger.warning(
                             "Heartbeat prompt truncated to %d bytes for slot %s",
                             MAX_PROMPT_BYTES,
@@ -2601,9 +2698,7 @@ class GatewayOrchestrator:
                         source="gateway",
                         resources=f"requested={slot_name},resolved={slot.key}",
                     )
-                    ran = slot.enqueue_or_run_prompt(
-                        prompt, _run_chat, self.dashboard_state
-                    )
+                    ran = slot.enqueue_or_run_prompt(prompt, _run_chat, self.dashboard_state)
                     if ran:
                         # Only push UI updates when the prompt actually started —
                         # queued prompts produce no visible change until dequeued.
@@ -2645,9 +2740,7 @@ class GatewayOrchestrator:
                     )
                     slot.append("assistant", f"{title}\n\n{result_text}", "msg msg-a")
                     self.dashboard_state.push_slots_update()
-                    self.dashboard_state.notify(
-                        "heartbeat", title, body, meta={"slot": slot.key}
-                    )
+                    self.dashboard_state.notify("heartbeat", title, body, meta={"slot": slot.key})
                 else:
                     sel().log_api_access(
                         caller="heartbeat",
@@ -2793,7 +2886,9 @@ class GatewayOrchestrator:
             if slot._recovery_retrigger_count >= _max_retrigger:
                 logger.warning(
                     "Recovery retrigger cap (%d) reached for %s, dropping %d queued failures",
-                    _max_retrigger, parent_key, len(slot._pending_subagent_failures),
+                    _max_retrigger,
+                    parent_key,
+                    len(slot._pending_subagent_failures),
                 )
                 slot._pending_subagent_failures.clear()
                 return
@@ -2809,7 +2904,8 @@ class GatewayOrchestrator:
             slot.append("user", msg, "msg msg-u auto-go")
             logger.info(
                 "Re-triggering recovery _run_chat for %s (%d queued failures)",
-                parent_key, len(failures),
+                parent_key,
+                len(failures),
             )
 
             def _done(t: asyncio.Task) -> None:  # type: ignore[type-arg]
@@ -2820,7 +2916,8 @@ class GatewayOrchestrator:
                 elif t.exception():
                     logger.error(
                         "Re-triggered recovery failed for %s",
-                        parent_key, exc_info=t.exception(),
+                        parent_key,
+                        exc_info=t.exception(),
                     )
                 slot._recovery_chat_triggered = False
                 if slot._pending_subagent_failures:
@@ -3084,7 +3181,8 @@ class GatewayOrchestrator:
                             if _injection_slot.running:
                                 logger.info(
                                     "Subagent %s: slot %s claimed by another injection, queuing",
-                                    info.id, _slot_name,
+                                    info.id,
+                                    _slot_name,
                                 )
                                 # Bounded by CHAT_TURN_TIMEOUT (~7200s): _run_chat's
                                 # finally block drains slot._queue on any exit path.
@@ -3102,21 +3200,22 @@ class GatewayOrchestrator:
                         )
                         _injection_slot.task = _task
                         self.dashboard_state._background_tasks.add(_task)
-                        _task.add_done_callback(
-                            self.dashboard_state._background_tasks.discard
-                        )
+                        _task.add_done_callback(self.dashboard_state._background_tasks.discard)
 
                         def _on_inject_done(t: asyncio.Task) -> None:  # type: ignore[type-arg]
                             if _injection_slot.task is t:
                                 _injection_slot.task = None
                             if not t.cancelled() and t.exception():
-                                logger.error("Subagent injection _run_chat failed: %s", t.exception())
+                                logger.error(
+                                    "Subagent injection _run_chat failed: %s", t.exception()
+                                )
                                 if self.subagent_mgr:
                                     _reason = str(t.exception())
                                     _reason, _ = redact_exfiltration_urls(_reason)
                                     _reason, _ = redact_credentials(_reason)
                                     self.subagent_mgr.notify_injection_failed(
-                                        info, reason=_reason,
+                                        info,
+                                        reason=_reason,
                                     )
 
                         _task.add_done_callback(_on_inject_done)
@@ -3127,7 +3226,8 @@ class GatewayOrchestrator:
                 else:
                     logger.info(
                         "Subagent %s: parent slot %s gone, notification only",
-                        info.id, _slot_name,
+                        info.id,
+                        _slot_name,
                     )
                     # Only notify when slot is gone — active slots already show
                     # results in the Activity panel and chat.
@@ -3155,14 +3255,23 @@ class GatewayOrchestrator:
                     try:
                         logger.debug(
                             "Subagent %s: Slack injection attempt %d/%d into %s",
-                            info.id, _attempt, _MAX_INJECT_ATTEMPTS, parent_key,
+                            info.id,
+                            _attempt,
+                            _MAX_INJECT_ATTEMPTS,
+                            parent_key,
                         )
                         client, is_new, _resumed = await self.sessions.get_or_create(parent_key)
                         _acquired = True
                         _footer_client = client
                         _provider = self._cfg.agent.provider if hasattr(self, "_cfg") else "acp"
                         if self.ctx_builder:
-                            msg, _ = await run_in_embed_pool(self.ctx_builder.build_message, announce, is_new, parent_key, provider_type=_provider)
+                            msg, _ = await run_in_embed_pool(
+                                self.ctx_builder.build_message,
+                                announce,
+                                is_new,
+                                parent_key,
+                                provider_type=_provider,
+                            )
                         else:
                             msg = announce
                         response = await asyncio.wait_for(
@@ -3178,26 +3287,41 @@ class GatewayOrchestrator:
                                     self.sessions.get_channel(parent_key) if self.sessions else None
                                 ) or await self.slack.open_dm(self._owner_id)
                                 if channel:
-                                    reply_text, _ = redact_exfiltration_urls(to_slack_mrkdwn(response))
+                                    reply_text, _ = redact_exfiltration_urls(
+                                        to_slack_mrkdwn(response)
+                                    )
                                     reply_text, _ = redact_credentials(reply_text)
                                     reply_text, options = extract_options(reply_text)
                                     for part in split_message(reply_text):
                                         await self.slack.post_message(channel, part, parent_key)
                                     try:
-                                        elapsed = info.elapsed if info.elapsed > 0 else (time.monotonic() - info.started)
+                                        elapsed = (
+                                            info.elapsed
+                                            if info.elapsed > 0
+                                            else (time.monotonic() - info.started)
+                                        )
                                         footer_blocks, footer_text = build_timing_footer(
-                                            elapsed, _footer_client,
+                                            elapsed,
+                                            _footer_client,
                                         )
                                         if options:
                                             footer_blocks.extend(build_options_blocks(options))
                                         await self.slack.post_blocks(
-                                            channel, footer_blocks, footer_text, parent_key,
+                                            channel,
+                                            footer_blocks,
+                                            footer_text,
+                                            parent_key,
                                         )
                                     except Exception:
-                                        logger.debug("Failed to post timing footer for %s", parent_key, exc_info=True)
+                                        logger.debug(
+                                            "Failed to post timing footer for %s",
+                                            parent_key,
+                                            exc_info=True,
+                                        )
                         except Exception:
                             logger.exception(
-                                "Subagent %s: Slack posting failed (injection succeeded)", info.id,
+                                "Subagent %s: Slack posting failed (injection succeeded)",
+                                info.id,
                             )
 
                         # Persist the subagent completion turn to the conversation
@@ -3230,7 +3354,8 @@ class GatewayOrchestrator:
                                 )
                             except Exception:
                                 logger.warning(
-                                    "Failed to persist subagent turn for %s", parent_key,
+                                    "Failed to persist subagent turn for %s",
+                                    parent_key,
                                     exc_info=True,
                                 )
 
@@ -3242,7 +3367,10 @@ class GatewayOrchestrator:
                         )
                         logger.warning(
                             "Subagent %s: Slack injection attempt %d/%d timed out after %.0fs",
-                            info.id, _attempt, _MAX_INJECT_ATTEMPTS, INJECTION_TIMEOUT,
+                            info.id,
+                            _attempt,
+                            _MAX_INJECT_ATTEMPTS,
+                            INJECTION_TIMEOUT,
                         )
                         if _acquired:
                             try:
@@ -3250,7 +3378,8 @@ class GatewayOrchestrator:
                             except Exception:
                                 logger.debug(
                                     "Failed to reset %s after Slack injection timeout",
-                                    parent_key, exc_info=True,
+                                    parent_key,
+                                    exc_info=True,
                                 )
                         if _attempt < _MAX_INJECT_ATTEMPTS:
                             _sleep_before_retry = True
@@ -3265,7 +3394,8 @@ class GatewayOrchestrator:
                             except Exception:
                                 logger.debug(
                                     "Failed to cancel parent prompt for %s",
-                                    info.id, exc_info=True,
+                                    info.id,
+                                    exc_info=True,
                                 )
                             try:
                                 self.sessions.release(parent_key)
@@ -3278,11 +3408,14 @@ class GatewayOrchestrator:
                     _last_failure_reason, _ = redact_credentials(_last_failure_reason)
                     logger.error(
                         "Subagent %s: all %d Slack injection attempts failed: %s",
-                        info.id, _MAX_INJECT_ATTEMPTS, _last_failure_reason,
+                        info.id,
+                        _MAX_INJECT_ATTEMPTS,
+                        _last_failure_reason,
                     )
                     if self.subagent_mgr:
                         self.subagent_mgr.notify_injection_failed(
-                            info, reason=_last_failure_reason,
+                            info,
+                            reason=_last_failure_reason,
                         )
                 # Dashboard notification
                 if self.dashboard_state:
@@ -3307,7 +3440,13 @@ class GatewayOrchestrator:
                     acquired = True
                     _provider = self._cfg.agent.provider if hasattr(self, "_cfg") else "acp"
                     if self.ctx_builder:
-                        msg, _ = await run_in_embed_pool(self.ctx_builder.build_message, announce, is_new, parent_key, provider_type=_provider)
+                        msg, _ = await run_in_embed_pool(
+                            self.ctx_builder.build_message,
+                            announce,
+                            is_new,
+                            parent_key,
+                            provider_type=_provider,
+                        )
                     else:
                         msg = announce
                     cron_response = await asyncio.wait_for(
@@ -3752,9 +3891,7 @@ class GatewayOrchestrator:
                     f"skipped={counts['skipped']}"
                 )
                 try:
-                    store._log_event(
-                        "migration", "system", "auto_migrate", None, summary, "auto"
-                    )
+                    store._log_event("migration", "system", "auto_migrate", None, summary, "auto")
                 except Exception:
                     logger.debug("auto-migrate audit log failed", exc_info=True)
                 logger.info("Auto-migrated legacy memory: %s", summary)
@@ -4167,7 +4304,9 @@ class GatewayOrchestrator:
                 self.dashboard_state.push_update_progress("building", "Building frontend…")
             await build_frontend_async(
                 proj,
-                push_progress=self.dashboard_state.push_update_progress if self.dashboard_state else None,
+                push_progress=(
+                    self.dashboard_state.push_update_progress if self.dashboard_state else None
+                ),
             )
 
             if self.dashboard_state:
@@ -4185,9 +4324,7 @@ class GatewayOrchestrator:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            pip_out, pip_err = await asyncio.wait_for(
-                pip_install.communicate(), timeout=400
-            )
+            pip_out, pip_err = await asyncio.wait_for(pip_install.communicate(), timeout=400)
             if pip_install.returncode != 0:
                 err_text = pip_err.decode(errors="replace")[:500]
                 logger.error(
@@ -4209,14 +4346,17 @@ class GatewayOrchestrator:
                 # internal-index dependency.
                 core_deps = [pip for _mod, pip in self._REQUIRED_DEPS]
                 fallback = await asyncio.create_subprocess_exec(
-                    sys.executable, "-m", "pip", "install", "--quiet", *core_deps,
+                    sys.executable,
+                    "-m",
+                    "pip",
+                    "install",
+                    "--quiet",
+                    *core_deps,
                     cwd=proj,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                 )
-                _fb_out, fb_err = await asyncio.wait_for(
-                    fallback.communicate(), timeout=300
-                )
+                _fb_out, fb_err = await asyncio.wait_for(fallback.communicate(), timeout=300)
                 if fallback.returncode == 0:
                     logger.info(
                         "Auto-update: core deps repaired after pip failure (%s)",
@@ -4434,11 +4574,13 @@ class GatewayOrchestrator:
                 # Fall back to signal.signal for SIGINT so shutdown_event still
                 # gets set; SIGTERM is not meaningfully deliverable on Windows.
                 if sig == signal.SIGINT:
+
                     def _sigint_fallback(*_a: object) -> None:
                         try:
                             loop.call_soon_threadsafe(_on_signal)
                         except RuntimeError:
                             _on_signal()  # loop already closed
+
                     try:
                         signal.signal(sig, _sigint_fallback)
                     except (ValueError, OSError):
@@ -4452,6 +4594,7 @@ class GatewayOrchestrator:
         print("👻 Probing MCP servers…")
         try:
             from kiro_crew.config.loader import KiroCrewConfig as _Cfg
+
             _probe_t = _Cfg.load().dashboard.mcp_probe_timeout_secs + 15
         except Exception:
             _probe_t = 30  # fallback: original default (15 + 15)
@@ -4530,9 +4673,7 @@ class GatewayOrchestrator:
         # backend turns (count_in_flight) so active work isn't killed
         # mid-prompt by the restart.
         _watchdog = asyncio.create_task(
-            run_stale_asset_watchdog(
-                shutdown_event, count_in_flight=self._count_in_flight_work
-            )
+            run_stale_asset_watchdog(shutdown_event, count_in_flight=self._count_in_flight_work)
         )
         self._background_tasks.add(_watchdog)
         _watchdog.add_done_callback(self._background_tasks.discard)
@@ -4546,9 +4687,7 @@ class GatewayOrchestrator:
         # but connect failed" — slack_client alone only proves the latter.
         if self.dashboard_state:
             self.dashboard_state.slack_socket_connected = connected
-            self.dashboard_state.slack_connect_error = getattr(
-                self, "_slack_connect_error", ""
-            )
+            self.dashboard_state.slack_connect_error = getattr(self, "_slack_connect_error", "")
 
         # Block until shutdown
         await shutdown_event.wait()

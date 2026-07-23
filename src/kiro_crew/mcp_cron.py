@@ -255,8 +255,16 @@ def _vet_shell_command(command: str) -> str | None:
     # ONLY deny gate for the cron `command` field — it executes via ``sh -c``
     # outside the kiro-cli ACP permission/hook flow — so an overlay-only deny
     # pattern would otherwise be silently bypassed here.
+    # Honor the user's Settings > Security opt-out here too (governance pins are
+    # force-re-added, so an enterprise-pinned rule stays enforced). Without the
+    # effective set, is_denied would fail closed to ALL built-ins — a rule the
+    # user disabled would still block on cron, contradicting the global opt-out.
+    from kiro_crew.hooks import effective_denied_regexes_from_config
+
     reason = (
-        current_context().security.is_denied(command)
+        current_context().security.is_denied(
+            command, denied_regexes=effective_denied_regexes_from_config()
+        )
         or is_sensitive_bash_command(command)
         or audit_bash_exfiltration(command)
     )
@@ -428,9 +436,9 @@ def _list_tools() -> list[dict[str, Any]]:
                 "NOTE: the default response shape was compacted from the "
                 "legacy verbose layout; programmatic callers that need "
                 "byte-identical legacy output must pass verbose=true, or "
-                "ids=[\"<job_id>\", ...] to drill in on specific jobs. Set "
+                'ids=["<job_id>", ...] to drill in on specific jobs. Set '
                 "verbose=true for the full output (full message body and "
-                "full last_error/last_result). Pass ids=[\"<job_id>\", ...] "
+                'full last_error/last_result). Pass ids=["<job_id>", ...] '
                 "to fetch full bodies for only those jobs (drill-in "
                 "pattern after a compact list). ids takes precedence over "
                 "verbose."
@@ -531,7 +539,7 @@ def _list_tools() -> list[dict[str, Any]]:
                     "skip_dates": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "ISO dates to skip (e.g. [\"2026-04-06\", \"2026-12-25\"]). "
+                        "description": 'ISO dates to skip (e.g. ["2026-04-06", "2026-12-25"]). '
                         "Job silently does not fire on these dates. Evaluated in job's timezone.",
                     },
                     "timezone": {
@@ -860,9 +868,7 @@ def _render_cron_list_compact(jobs: list[Any]) -> str:
         if last_status == "error" and isinstance(j.last_error, str) and j.last_error:
             san_err = _sanitize(j.last_error)
             err_short = (
-                san_err
-                if len(san_err) <= _ERR_PREVIEW_LEN
-                else san_err[:_ERR_PREVIEW_LEN] + "…"
+                san_err if len(san_err) <= _ERR_PREVIEW_LEN else san_err[:_ERR_PREVIEW_LEN] + "…"
             )
             extras.append(f"err={err_short}")
         elif (
@@ -905,8 +911,12 @@ def _validate_args(name: str, args: dict[str, Any]) -> dict[str, Any]:
 def _call_tool(name: str, raw_args: dict[str, Any]) -> str:
     """Execute a cron tool and return the result as text."""
     return call_tool_with_logging(
-        name, raw_args, _validate_args, _call_tool_inner,
-        session_key="mcp_cron", downstream_service="kirocrew-cron",
+        name,
+        raw_args,
+        _validate_args,
+        _call_tool_inner,
+        session_key="mcp_cron",
+        downstream_service="kirocrew-cron",
     )
 
 
@@ -1076,8 +1086,10 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             svc._save()
         sched_str = format_schedule(job.schedule)
         sel().log_api_access(
-            caller="mcp", operation="cron.create",
-            outcome="allowed", source="mcp",
+            caller="mcp",
+            operation="cron.create",
+            outcome="allowed",
+            source="mcp",
             resources=f"job_id={job.id}",
         )
         return f"Added job: {job.id} ({job.name}) [{sched_str}]. Tell the user: scheduled for {sched_str}."
@@ -1148,8 +1160,10 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         if not updated:
             return f"Job not found: {jid}"
         sel().log_api_access(
-            caller="mcp", operation="cron.update",
-            outcome="allowed", source="mcp",
+            caller="mcp",
+            operation="cron.update",
+            outcome="allowed",
+            source="mcp",
             resources=f"job_id={jid}",
         )
         sched_str = format_schedule(updated.schedule)
@@ -1220,8 +1234,10 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         secret_path = config_dir() / ".local_secret"
         ok, msg = trigger_cron_job(jid, port, secret_path)
         sel().log_api_access(
-            caller="mcp", operation="cron.trigger",
-            outcome="allowed" if ok else "error", source="mcp",
+            caller="mcp",
+            operation="cron.trigger",
+            outcome="allowed" if ok else "error",
+            source="mcp",
             resources=f"job_id={jid}",
         )
         if ok:

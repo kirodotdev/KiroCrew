@@ -66,6 +66,14 @@ changing code, **never reintroduce** any of the following:
 credential redaction, destructive-command deny patterns, `~/.aws` / `~/.ssh`
 sensitive-path blocking, SEL audit log.
 
+The destructive-command deny patterns are now first-class `DeniedCommandRule`
+records (`BUILTIN_DENIED_RULES`, 137 rules) enforced **only** at the `hooks.py`
+PreToolUse gate (no more agent-config `deniedCommands` injection or
+`autoAllowReadonly`); they are default-ON but **user-configurable from Settings →
+Security** (disable-all / per-rule toggle / add-your-own), with the governance
+`commands` scope as the un-opt-out-able enterprise force-pin. See
+`docs/system-specs/modules/security.md`.
+
 **Fork-initiated UX divergences (do not let an upstream sync re-introduce):** the
 artifact **Iterate** button is hidden (`SHOW_ARTIFACT_ITERATE` in
 `ArtifactDetailPage.tsx`), the **Channels** app is hidden from the App Store

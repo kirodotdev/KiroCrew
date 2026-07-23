@@ -1,9 +1,12 @@
-import { useQuery } from '@tanstack/react-query'
-import { ShieldCheck, ShieldAlert, Lock, Eye, EyeOff, FileWarning, Terminal, Globe, Fingerprint, KeyRound, ScanLine, Layers, AlertTriangle, CheckCircle2, ExternalLink } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { ShieldCheck, ShieldAlert, Lock, Eye, EyeOff, FileWarning, Terminal, Globe, Fingerprint, KeyRound, ScanLine, Layers, AlertTriangle, CheckCircle2, ExternalLink, ChevronRight, ChevronDown, Plus, Trash2 } from 'lucide-react'
 import { useAppSelector } from '../../store'
-import { Badge } from '../../components/ui'
+import { Badge, Btn, Input, Toggle, Checkbox } from '../../components/ui'
 import { SettingsSection, SettingsCard } from '../../components/settings'
-import { api } from '../../api/client'
+import Modal from '../../components/Modal'
+import InfoTip from '../../components/InfoTip'
+import { api, type DeniedCommandsData, type DeniedCommandRule, type DeniedUserRule } from '../../api/client'
 
 /* ── Security feature registry (static — derived from security-deep-dive.md) ── */
 
@@ -17,7 +20,7 @@ interface SecurityFeature {
 const FEATURES: SecurityFeature[] = [
   { icon: <Lock size={14} />, label: 'OS-Level Sandbox', description: 'User + mount namespace isolation (Linux) / Seatbelt sandbox (macOS) hides credential paths from agent subprocesses', layer: 'Layer 0' },
   { icon: <FileWarning size={14} />, label: 'Sensitive Path Blocking', description: '13 credential directories blocked at the hook layer before tool execution', layer: 'Layer 1' },
-  { icon: <Terminal size={14} />, label: 'Denied Commands', description: '91+ regex patterns blocking destructive and credential-exfiltrating CLI operations', layer: 'Layer 2' },
+  { icon: <Terminal size={14} />, label: 'Denied Commands', description: 'Built-in regex patterns blocking destructive and credential-exfiltrating CLI operations (configurable below)', layer: 'Layer 2' },
   { icon: <AlertTriangle size={14} />, label: 'Suspicious Bash Patterns', description: '42 patterns detecting deletion, exfiltration, and pipe-execution attacks', layer: 'Layer 2' },
   { icon: <ScanLine size={14} />, label: 'MCP Input Validation', description: 'Type-safe schemas, unicode normalization, length limits, and unknown field rejection on all 12 tool handlers', layer: 'Layer 3' },
   { icon: <KeyRound size={14} />, label: 'Credential Redaction', description: 'Scans all 5 output paths for plaintext and base64-encoded AWS keys, private keys, and Slack tokens', layer: 'Layer 4' },
@@ -30,6 +33,8 @@ const FEATURES: SecurityFeature[] = [
 ]
 
 const CODE_BASE = 'https://github.com/kirodotdev/KiroCrew/blob/main'
+
+const PINNED_TOOLTIP = "Enforced by your organization's security policy"
 
 /* ── Layer color mapping ── */
 function layerColor(layer: string): 'ok' | 'aim' | 'warn' {
@@ -76,10 +81,252 @@ function FeatureRow({ feature }: { feature: SecurityFeature }) {
   )
 }
 
+/* ── Denied Commands ── */
+
+/** Human-readable category header, e.g. "aws-destructive" → "Aws Destructive". */
+function categoryLabel(category: string): string {
+  return category
+    .split('-')
+    .map(w => (w ? w[0].toUpperCase() + w.slice(1) : w))
+    .join(' ')
+}
+
+/** A single built-in denied-command rule row (Card A). */
+function BuiltinDenyRow({ rule, dimmed, onToggle }: { rule: DeniedCommandRule; dimmed: boolean; onToggle: (next: boolean) => void }) {
+  const [open, setOpen] = useState(false)
+  const Chevron = open ? ChevronDown : ChevronRight
+  return (
+    <div className="py-2">
+      <div className="flex items-center gap-2.5">
+        <button
+          type="button"
+          className="shrink-0 text-muted hover:text-text transition-colors bg-transparent border-none cursor-pointer p-0"
+          onClick={() => setOpen(o => !o)}
+          aria-label={open ? 'Hide pattern' : 'Show pattern'}
+          aria-expanded={open}
+        >
+          <Chevron size={14} />
+        </button>
+        <span className="flex-1 min-w-0 text-[13px] text-text">{rule.description}</span>
+        {rule.pinned ? (
+          <span className="flex items-center gap-1.5 shrink-0">
+            <Lock size={13} className="text-muted" />
+            <InfoTip text={PINNED_TOOLTIP} />
+            <Toggle checked disabled onChange={() => { /* pinned — forced on */ }} label={rule.description} />
+          </span>
+        ) : (
+          <span className={`shrink-0 ${dimmed ? 'opacity-50' : ''}`}>
+            <Toggle checked={rule.enabled} onChange={onToggle} label={rule.description} />
+          </span>
+        )}
+      </div>
+      {open && (
+        <pre className="mt-1.5 ml-6 overflow-x-auto rounded-md bg-bg-elevated border border-border px-2.5 py-1.5 text-[12px] font-mono text-muted whitespace-pre-wrap break-all">{rule.pattern}</pre>
+      )}
+    </div>
+  )
+}
+
+/** A collapsible category group (Card A) — folds its rules under a header that
+ *  shows the category name, an enabled/total count, and a pinned-lock hint.
+ *  Collapsed by default to keep the 137-rule panel scannable. */
+function CategoryGroup({
+  category,
+  rules,
+  open,
+  onToggleOpen,
+  disableAll,
+  onRuleToggle,
+}: {
+  category: string
+  rules: DeniedCommandRule[]
+  open: boolean
+  onToggleOpen: () => void
+  disableAll: boolean
+  onRuleToggle: (rule: DeniedCommandRule, next: boolean) => void
+}) {
+  const Chevron = open ? ChevronDown : ChevronRight
+  const enabled = rules.filter(r => r.enabled).length
+  const pinned = rules.some(r => r.pinned)
+  // "off" when every non-pinned rule in the group is disabled.
+  const allOff = enabled === 0
+  return (
+    <div className="border-t border-border first:border-t-0">
+      <button
+        type="button"
+        className="w-full flex items-center gap-2 py-2.5 bg-transparent border-none cursor-pointer text-left group"
+        onClick={onToggleOpen}
+        aria-expanded={open}
+        aria-label={`${open ? 'Collapse' : 'Expand'} ${categoryLabel(category)} rules`}
+      >
+        <Chevron size={14} className="shrink-0 text-muted group-hover:text-text transition-colors" />
+        <span className="text-[11px] font-semibold uppercase tracking-[.04em] text-muted group-hover:text-text transition-colors">
+          {categoryLabel(category)}
+        </span>
+        {pinned && <Lock size={12} className="shrink-0 text-muted" />}
+        <span className="flex-1" />
+        {allOff && !pinned && (
+          <span className="text-[11px] text-warn">off</span>
+        )}
+        <Badge variant="muted" className="tabular-nums">{enabled}/{rules.length}</Badge>
+      </button>
+      {open && (
+        <div className="divide-y divide-border pb-1.5 pl-6">
+          {rules.map(rule => (
+            <BuiltinDenyRow
+              key={rule.id}
+              rule={rule}
+              dimmed={disableAll && !rule.pinned}
+              onToggle={next => onRuleToggle(rule, next)}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** A single user-authored denied-command row (Card B). */
+function CustomDenyRow({ rule, onToggle, onDelete }: { rule: DeniedUserRule; onToggle: (next: boolean) => void; onDelete: () => void }) {
+  return (
+    <div className="flex items-center gap-2.5 py-2">
+      <code className="flex-1 min-w-0 overflow-x-auto text-[12px] font-mono text-text whitespace-pre-wrap break-all">{rule.pattern}</code>
+      <Toggle checked={rule.enabled} onChange={onToggle} label={rule.pattern} />
+      <button
+        type="button"
+        className="shrink-0 text-muted hover:text-danger transition-colors bg-transparent border-none cursor-pointer p-1"
+        onClick={onDelete}
+        aria-label={`Delete pattern ${rule.pattern}`}
+      >
+        <Trash2 size={14} />
+      </button>
+    </div>
+  )
+}
+
+/** Add-a-custom-pattern input with client-side RegExp validation (Card B). */
+function AddDenyInput({ onAdd, busy }: { onAdd: (pattern: string) => void; busy: boolean }) {
+  const [value, setValue] = useState('')
+  const [error, setError] = useState('')
+
+  const submit = () => {
+    const pattern = value.trim()
+    if (!pattern) return
+    try {
+      new RegExp(pattern)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Invalid regular expression')
+      return
+    }
+    setError('')
+    onAdd(pattern)
+    setValue('')
+  }
+
+  return (
+    <div className="pt-1.5">
+      <div className="flex items-center gap-2">
+        <Input
+          value={value}
+          onChange={e => { setValue(e.target.value); if (error) setError('') }}
+          onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); submit() } }}
+          placeholder="Add a custom deny pattern (regex), e.g. rm -rf /tmp/mine"
+          aria-label="Custom deny pattern"
+        />
+        <Btn primary onClick={submit} disabled={busy || !value.trim()}>
+          <Plus size={14} />
+          Add
+        </Btn>
+      </div>
+      {error && <div className="text-[12px] text-danger mt-1.5">{error}</div>}
+    </div>
+  )
+}
+
+/* ── Confirm modal target ── */
+type ConfirmTarget =
+  | { kind: 'builtin'; id: string; description: string }
+  | { kind: 'disable-all' }
+
 export function SecurityPanel() {
   const status = useAppSelector(s => s.dashboard.status)
   const yolo = status?.yolo ?? false
+  const qc = useQueryClient()
   const { data: stats } = useQuery({ queryKey: ['security-stats'], queryFn: api.securityStats, staleTime: 60_000 })
+  const { data: dc } = useQuery<DeniedCommandsData>({ queryKey: ['denied-commands'], queryFn: api.deniedCommands })
+
+  const [confirm, setConfirm] = useState<ConfirmTarget | null>(null)
+  const [ack, setAck] = useState(false)
+  // Category accordion state (Card A). Categories are collapsed by default —
+  // an id in this set is EXPANDED. Keeps the 137-rule list scannable.
+  const [expandedCats, setExpandedCats] = useState<Set<string>>(() => new Set())
+
+  // The acknowledgment checkbox resets whenever the modal opens or closes.
+  useEffect(() => { setAck(false) }, [confirm])
+
+  const applySnapshot = (snap: DeniedCommandsData) => {
+    qc.setQueryData(['denied-commands'], snap)
+    qc.invalidateQueries({ queryKey: ['denied-commands'] })
+    qc.invalidateQueries({ queryKey: ['security-stats'] })
+  }
+
+  const toggleBuiltin = useMutation({
+    mutationFn: (v: { id: string; enabled: boolean }) => api.toggleBuiltinDeniedCommand(v.id, v.enabled),
+    onSuccess: applySnapshot,
+  })
+  const setDisableAll = useMutation({
+    mutationFn: (value: boolean) => api.setDeniedCommandsDisableAll(value),
+    onSuccess: applySnapshot,
+  })
+  const addUser = useMutation({
+    mutationFn: (pattern: string) => api.addUserDeniedCommand(pattern),
+    onSuccess: applySnapshot,
+  })
+  const toggleUser = useMutation({
+    mutationFn: (v: { id: string; enabled: boolean }) => api.toggleUserDeniedCommand(v.id, v.enabled),
+    onSuccess: applySnapshot,
+  })
+  const deleteUser = useMutation({
+    mutationFn: (id: string) => api.deleteUserDeniedCommand(id),
+    onSuccess: applySnapshot,
+  })
+
+  const grouped = useMemo(() => {
+    const groups: Record<string, DeniedCommandRule[]> = {}
+    for (const rule of dc?.builtins ?? []) {
+      (groups[rule.category] ??= []).push(rule)
+    }
+    return groups
+  }, [dc])
+
+  const disableAll = dc?.disable_all ?? false
+  const governanceLocked = dc?.governance_locked ?? false
+
+  // Enabling a rule (or re-enabling all built-ins) is immediate; disabling
+  // opens a confirm modal. `next` is the toggle's new value.
+  const onBuiltinToggle = (rule: DeniedCommandRule, next: boolean) => {
+    if (next) toggleBuiltin.mutate({ id: rule.id, enabled: true })
+    else setConfirm({ kind: 'builtin', id: rule.id, description: rule.description })
+  }
+  const onDisableAllToggle = (next: boolean) => {
+    if (next) setConfirm({ kind: 'disable-all' })
+    else setDisableAll.mutate(false)
+  }
+
+  const runConfirm = () => {
+    if (!confirm) return
+    if (confirm.kind === 'builtin') toggleBuiltin.mutate({ id: confirm.id, enabled: false })
+    else setDisableAll.mutate(true)
+    setConfirm(null)
+  }
+
+  const confirmBody = !confirm ? '' : confirm.kind === 'disable-all'
+    ? 'Disabling all built-in denies removes KiroCrew’s protection against destructive '
+      + 'and credential-exfiltration commands. Some commands may stay blocked by independent '
+      + 'defense-in-depth controls (sensitive paths, IMDS, git-publish).'
+    : `Disabling "${confirm.description}" weakens protection against destructive or `
+      + 'credential-exfiltration commands. Some commands may stay blocked by independent '
+      + 'defense-in-depth controls.'
 
   return (
     <>
@@ -109,9 +356,8 @@ export function SecurityPanel() {
             href={`${CODE_BASE}/src/kiro_crew/dashboard/token_auth.py`} />
           <StatusRow icon={<Terminal size={14} />}
             label="Denied Commands"
-            value={stats ? `${stats.denied_commands + stats.suspicious_patterns} patterns` : '...'}
+            value={dc ? `${dc.effective_count} active` : '...'}
             variant="ok"
-            href={`${CODE_BASE}/agents/defaults.json`}
           />
           <StatusRow icon={<ScanLine size={14} />}
             label="Input Validation"
@@ -125,6 +371,102 @@ export function SecurityPanel() {
             variant="ok"
             href={`${CODE_BASE}/src/kiro_crew/security.py`}
           />
+        </SettingsCard>
+      </SettingsSection>
+
+      {/* ── Denied Commands ── */}
+      <SettingsSection title="Denied Commands">
+        {/* Card A — Built-in denies */}
+        <SettingsCard>
+          <div className="flex items-center justify-between py-1.5">
+            <div className="flex-1 min-w-0 mr-4">
+              <div className="flex items-center gap-1.5">
+                <span className="text-[13px] font-semibold text-text">Disable all built-in denies</span>
+                {governanceLocked && <Lock size={13} className="text-muted" />}
+              </div>
+              <div className="text-[12px] text-muted mt-0.5 leading-relaxed">
+                Turn off every built-in denied-command rule at once. Independent defense-in-depth controls (sensitive paths, IMDS, git-publish) stay enforced{governanceLocked ? ', and rules pinned by your organization’s policy remain on.' : '.'}
+              </div>
+            </div>
+            {/* Disable-all stays available even when governance-locked: the
+                backend keeps policy-pinned rules enforced under disable_all
+                (compute_effective_denied), so a pin on one rule must not block
+                opting every OTHER (unpinned) rule out. When locked, show the
+                pinned-policy tooltip alongside the still-functional toggle. */}
+            <span className="flex items-center gap-1.5 shrink-0">
+              {governanceLocked && <InfoTip text={PINNED_TOOLTIP} />}
+              <Toggle checked={disableAll} onChange={onDisableAllToggle} disabled={!dc} label="Disable all built-in denies" />
+            </span>
+          </div>
+
+          <div className="text-[12px] text-muted mt-1 mb-2 leading-relaxed">
+            Disabling a rule that overlaps an always-on control (sensitive-file reads, IMDS, git-publish) does not fully unblock it — defense-in-depth keeps it blocked.
+          </div>
+
+          {!dc ? (
+            <div className="text-[12px] text-muted py-2">Loading built-in rules…</div>
+          ) : (
+            <>
+              <div className="flex items-center justify-between mt-1 mb-0.5">
+                <span className="text-[11px] text-muted">{Object.keys(grouped).length} categories · {dc.builtins.length} rules</span>
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    className="text-[11px] text-muted hover:text-text bg-transparent border-none cursor-pointer p-0 transition-colors"
+                    onClick={() => setExpandedCats(new Set(Object.keys(grouped)))}
+                  >
+                    Expand all
+                  </button>
+                  <button
+                    type="button"
+                    className="text-[11px] text-muted hover:text-text bg-transparent border-none cursor-pointer p-0 transition-colors"
+                    onClick={() => setExpandedCats(new Set())}
+                  >
+                    Collapse all
+                  </button>
+                </div>
+              </div>
+              <div>
+                {Object.entries(grouped).map(([category, rules]) => (
+                  <CategoryGroup
+                    key={category}
+                    category={category}
+                    rules={rules}
+                    open={expandedCats.has(category)}
+                    onToggleOpen={() => setExpandedCats(prev => {
+                      const next = new Set(prev)
+                      if (next.has(category)) next.delete(category)
+                      else next.add(category)
+                      return next
+                    })}
+                    disableAll={disableAll}
+                    onRuleToggle={onBuiltinToggle}
+                  />
+                ))}
+              </div>
+            </>
+          )}
+        </SettingsCard>
+
+        {/* Card B — Your custom denies */}
+        <SettingsCard>
+          <div className="text-[13px] font-semibold text-text">Your custom denies</div>
+          <div className="text-[12px] text-muted mt-0.5 mb-1 leading-relaxed">
+            Add your own deny patterns (Python-compatible regex). These are enforced at KiroCrew's PreToolUse gate alongside the built-in rules.
+          </div>
+          {dc && dc.user_added.length > 0 && (
+            <div className="divide-y divide-border">
+              {dc.user_added.map(rule => (
+                <CustomDenyRow
+                  key={rule.id}
+                  rule={rule}
+                  onToggle={next => toggleUser.mutate({ id: rule.id, enabled: next })}
+                  onDelete={() => deleteUser.mutate(rule.id)}
+                />
+              ))}
+            </div>
+          )}
+          <AddDenyInput onAdd={pattern => addUser.mutate(pattern)} busy={addUser.isPending} />
         </SettingsCard>
       </SettingsSection>
 
@@ -156,6 +498,30 @@ export function SecurityPanel() {
           </div>
         </SettingsCard>
       </SettingsSection>
+
+      {/* ── Confirm modal (disable a built-in rule / disable all) ── */}
+      <Modal
+        open={confirm !== null}
+        onClose={() => setConfirm(null)}
+        title={confirm?.kind === 'disable-all' ? 'Disable all built-in denies?' : 'Disable this denied command?'}
+        maxWidth={480}
+        footer={
+          <>
+            <Btn onClick={() => setConfirm(null)}>Cancel</Btn>
+            <Btn danger disabled={!ack} onClick={runConfirm}>Disable</Btn>
+          </>
+        }
+      >
+        <div className="flex items-start gap-3">
+          <AlertTriangle size={18} className="text-warn shrink-0 mt-0.5" />
+          <div className="text-[13px] text-text leading-relaxed">{confirmBody}</div>
+        </div>
+        {/* eslint-disable-next-line jsx-a11y/label-has-associated-control, jsx-a11y/label-has-for -- the Checkbox control is nested inside the label */}
+        <label className="flex items-center gap-2.5 mt-4 cursor-pointer">
+          <Checkbox checked={ack} onChange={e => setAck(e.target.checked)} />
+          <span className="text-[13px] text-text">I understand this weakens KiroCrew's protection.</span>
+        </label>
+      </Modal>
     </>
   )
 }

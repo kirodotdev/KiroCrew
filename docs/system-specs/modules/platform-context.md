@@ -116,22 +116,51 @@ once loaded.
 
 `PolicyAuthority` (concrete class in `security_authority.py`) is the deny-floor
 authority. The invariant — a companion may **add** deny patterns but never
-remove or weaken the baseline — is enforced structurally:
+remove or weaken the floor — is enforced structurally:
 
 - `is_denied` and `effective_patterns` are `@final`. No subclass overrides the
   decision or the union construction.
 - The only override surface is the `SecurityOverlay` Protocol, whose
   `extra_deny_patterns()` is **concatenated** to `BASELINE_DENY`. There is no
-  method anywhere that subtracts from the baseline.
+  method anywhere that subtracts from that union.
 - `assert_security_floor(authority)` (run at boot) verifies the authority is a
-  `PolicyAuthority` and that its effective set ⊇ `BASELINE_DENY`; a weakening
-  companion fails composition and boot aborts.
+  `PolicyAuthority` and that it has not overridden the `@final` decision methods;
+  it also keeps a (now-vacuous) `effective set ⊇ BASELINE_DENY` superset check so
+  a future non-empty static floor is auto-enforced. A weakening companion fails
+  composition and boot aborts.
 - The actual evaluation (two-pass, git-publish verb anchoring, SEL audit) is
   reused verbatim from `security.is_denied` via the `extra_patterns` parameter.
 
+**`BASELINE_DENY` is now `()` — the floor redefinition.** The built-in
+denied-command patterns are **default-ON but user-DISABLEABLE** (Settings →
+Security; see `security.md`), so they can no longer be an unconditional compiled
+`BASELINE_DENY = tuple(security.BUILTIN_DENY_PATTERNS)` — that would re-apply
+every built-in inside `PolicyAuthority.is_denied` and make user opt-out inert.
+`BASELINE_DENY` therefore narrows to the empty tuple: the static, un-weakenable
+OSS floor is now empty. The un-opt-out-able floor is supplied dynamically by (a)
+the companion's ADD-only `SecurityOverlay` (structurally un-removable via the
+`@final` union) and (b) the governance `commands`-scope **pins**
+(`resolve_pinned_commands`, applied tightest-wins in `hooks.py` — see
+`governance.md`). The disableable built-in rules ride in through the resolved
+**effective set** (`denied_regexes`): the hooks layer computes
+`compute_effective_denied(...)` and passes it into
+`current_context().security.is_denied(target, extra_patterns=…,
+denied_regexes=…)`. The always-on keystone denials that are NOT rule-toggleable
+(git-publish / protected-branch, exfiltration shapes, sensitive-path) run
+unconditionally inside `security.is_denied`, independent of the tiers. A user
+opt-out of a built-in is orthogonal to — and can never weaken — the companion
+overlay or the governance ceiling: the overlay travels via `extra_patterns` and
+is never routed through the opt-out, and a governance pin re-adds a rule the user
+disabled.
+
 The enforcement hot path (`hooks.py` tool-deny) reads
-`current_context().security.is_denied(...)`, so an enterprise overlay is enforced at
-the synchronous tool-call boundary. Standalone overlay is empty → identical.
+`current_context().security.is_denied(target, extra_patterns=…,
+denied_regexes=…)`, passing the resolved *effective* denied-command set (enabled
+built-ins ∪ user `user_added`, with governance-pinned ids force-re-added) as
+`denied_regexes`, on top of the companion overlay (glob tier) and the redefined
+empty baseline. A standalone install with no opt-out and an empty overlay
+resolves to today's full built-in list → behavior identical for the default
+install.
 
 > ADD-only constrains the **contract boundary** (a plugin/companion). It does
 > not constrain a user who edits the open source. For managed fleets, the

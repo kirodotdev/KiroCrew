@@ -46,10 +46,16 @@ def _make_app_with_state(
 
 def _seed_config() -> dict:
     return {
-        "agents": {"kirocrew": {"kiro_agent": "kirocrew", "workspace": "default", "memory_store": "default"}},
+        "agents": {
+            "kirocrew": {
+                "kiro_agent": "kirocrew",
+                "workspace": "default",
+                "memory_store": "default",
+            }
+        },
         "default_agent": "kirocrew",
         "session": {"pool_agent": "", "timeout_secs": 3600, "autocompact_pct": 50.0},
-        "agent": {"approval_mode": "auto", "sandbox": "auto", "enforce_denied_commands": "all"},
+        "agent": {"approval_mode": "auto", "sandbox": "auto"},
         "auto_update": False,
     }
 
@@ -68,6 +74,7 @@ async def _patch(client, path, value):
 
 # ── General ──────────────────────────────────────────────────────────────
 
+
 class TestPatchGeneral:
     @pytest.mark.asyncio
     async def test_unknown_field_returns_400(self, tmp_config) -> None:
@@ -78,11 +85,16 @@ class TestPatchGeneral:
     @pytest.mark.asyncio
     async def test_invalid_json_body_returns_400(self, tmp_config) -> None:
         async with TestClient(TestServer(_make_app())) as c:
-            resp = await c.patch("/api/config/kirocrew", data=b"not json", headers={"Content-Type": "application/json"})
+            resp = await c.patch(
+                "/api/config/kirocrew",
+                data=b"not json",
+                headers={"Content-Type": "application/json"},
+            )
             assert resp.status == 400
 
 
 # ── Enum validator ───────────────────────────────────────────────────────
+
 
 class TestEnumValidator:
     @pytest.mark.asyncio
@@ -105,6 +117,7 @@ class TestEnumValidator:
 
 
 # ── Int validator ────────────────────────────────────────────────────────
+
 
 class TestIntValidator:
     @pytest.mark.asyncio
@@ -133,6 +146,7 @@ class TestIntValidator:
 
 
 # ── Float validator ──────────────────────────────────────────────────────
+
 
 class TestFloatValidator:
     @pytest.mark.asyncio
@@ -168,6 +182,7 @@ class TestFloatValidator:
 
 # ── Bool validator ───────────────────────────────────────────────────────
 
+
 class TestBoolValidator:
     @pytest.mark.asyncio
     async def test_valid_bool_passes(self, tmp_config) -> None:
@@ -195,6 +210,7 @@ class TestBoolValidator:
 
 
 # ── Str validator (pool_agent) ───────────────────────────────────────────
+
 
 class TestStrValidator:
     @pytest.mark.asyncio
@@ -237,9 +253,7 @@ class TestCompletionKeepHotReload:
     """Settings UI changes must propagate to the live SubagentManager."""
 
     @pytest.mark.asyncio
-    async def test_mode_change_calls_setter_with_loader_validated_value(
-        self, tmp_config
-    ) -> None:
+    async def test_mode_change_calls_setter_with_loader_validated_value(self, tmp_config) -> None:
         """PATCH agent.completion_keep invokes update_completion_keep with the
         loader-validated mode and the current chars value."""
         app, subagents = _make_app_with_state()

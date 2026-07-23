@@ -701,204 +701,164 @@ class TestBareSecretKeyRedaction:
 
 
 class TestSandboxDeniedCommands:
-    """Verify denied commands allow/block the right ada and AWS patterns."""
+    """Verify command denial allows/blocks the right ada and AWS patterns.
 
-    @pytest.fixture()
-    def denied_commands(self) -> list[str]:
-        defaults = (
-            Path(__file__).resolve().parent.parent
-            / "src"
-            / "kiro_crew"
-            / "config"
-            / "defaults.json"
-        )
-        with open(defaults) as f:
-            data = json.load(f)
-        return data["toolsSettings"]["execute_bash"]["deniedCommands"]
+    Command denial is no longer injected into the kiro-cli agent spec
+    (``config/defaults.json`` no longer carries ``deniedCommands``); it is
+    enforced solely at KiroCrew's own ``hooks.py`` PreToolUse gate, whose
+    decision function is ``security.is_denied`` (built-in regex tier + the
+    always-on keystone controls for exfiltration / sensitive-path reads).  These
+    tests therefore exercise the real gate directly.
+    """
 
     @staticmethod
-    def _is_denied(cmd: str, patterns: list[str]) -> bool:
-        import re
+    def _is_denied(cmd: str) -> bool:
+        from kiro_crew.security import is_denied
 
-        return any(re.search(p, cmd) for p in patterns)
+        return is_denied(cmd) is not None
 
     # --- ada: allowed (blocked by kiro-cli at runtime) ---
 
-    def test_ada_update_once_allowed(self, denied_commands: list[str]) -> None:
+    def test_ada_update_once_allowed(self) -> None:
         cmd = "ada credentials update --once --account 123 --provider sso --role Admin"
-        assert not self._is_denied(cmd, denied_commands)
+        assert not self._is_denied(cmd)
 
-    def test_ada_update_daemon_allowed(self, denied_commands: list[str]) -> None:
+    def test_ada_update_daemon_allowed(self) -> None:
         cmd = "ada credentials update --account 123 --provider iam --role Admin"
-        assert not self._is_denied(cmd, denied_commands)
+        assert not self._is_denied(cmd)
 
-    def test_ada_profile_add_allowed(self, denied_commands: list[str]) -> None:
+    def test_ada_profile_add_allowed(self) -> None:
         cmd = "ada profile add --profile staging --account 123 --provider sso --role Y"
-        assert not self._is_denied(cmd, denied_commands)
+        assert not self._is_denied(cmd)
 
-    def test_ada_profile_list_allowed(self, denied_commands: list[str]) -> None:
-        assert not self._is_denied("ada profile list", denied_commands)
+    def test_ada_profile_list_allowed(self) -> None:
+        assert not self._is_denied("ada profile list")
 
     # --- ada: blocked by kiro-cli ---
 
     # --- AWS CLI: allowed ---
 
-    def test_aws_describe_allowed(self, denied_commands: list[str]) -> None:
-        assert not self._is_denied("aws ec2 describe-instances", denied_commands)
+    def test_aws_describe_allowed(self) -> None:
+        assert not self._is_denied("aws ec2 describe-instances")
 
-    def test_aws_logs_filter_allowed(self, denied_commands: list[str]) -> None:
+    def test_aws_logs_filter_allowed(self) -> None:
         cmd = "aws logs filter-log-events --log-group-name /aws/lambda/fn"
-        assert not self._is_denied(cmd, denied_commands)
+        assert not self._is_denied(cmd)
 
-    def test_aws_s3_ls_allowed(self, denied_commands: list[str]) -> None:
-        assert not self._is_denied("aws s3 ls s3://my-bucket", denied_commands)
+    def test_aws_s3_ls_allowed(self) -> None:
+        assert not self._is_denied("aws s3 ls s3://my-bucket")
 
-    def test_aws_s3_download_allowed(self, denied_commands: list[str]) -> None:
-        assert not self._is_denied("aws s3 cp s3://bucket/file ./local", denied_commands)
+    def test_aws_s3_download_allowed(self) -> None:
+        assert not self._is_denied("aws s3 cp s3://bucket/file ./local")
 
-    def test_aws_sts_assume_role_allowed(self, denied_commands: list[str]) -> None:
+    def test_aws_sts_assume_role_allowed(self) -> None:
         cmd = "aws sts assume-role --role-arn arn:aws:iam::123:role/X"
-        assert not self._is_denied(cmd, denied_commands)
+        assert not self._is_denied(cmd)
 
-    def test_aws_sts_get_caller_identity_allowed(self, denied_commands: list[str]) -> None:
-        assert not self._is_denied("aws sts get-caller-identity", denied_commands)
+    def test_aws_sts_get_caller_identity_allowed(self) -> None:
+        assert not self._is_denied("aws sts get-caller-identity")
 
     # --- AWS CLI: blocked ---
 
-    def test_aws_s3_upload_blocked(self, denied_commands: list[str]) -> None:
-        assert self._is_denied("aws s3 cp ./file s3://bucket/", denied_commands)
+    def test_aws_s3_upload_blocked(self) -> None:
+        assert self._is_denied("aws s3 cp ./file s3://bucket/")
 
-    def test_aws_s3_sync_upload_blocked(self, denied_commands: list[str]) -> None:
-        assert self._is_denied("aws s3 sync ./dir s3://bucket/", denied_commands)
+    def test_aws_s3_sync_upload_blocked(self) -> None:
+        assert self._is_denied("aws s3 sync ./dir s3://bucket/")
 
-    def test_aws_delete_blocked(self, denied_commands: list[str]) -> None:
-        assert self._is_denied("aws ec2 delete-vpc --vpc-id vpc-123", denied_commands)
+    def test_aws_delete_blocked(self) -> None:
+        assert self._is_denied("aws ec2 delete-vpc --vpc-id vpc-123")
 
-    def test_aws_terminate_blocked(self, denied_commands: list[str]) -> None:
-        assert self._is_denied("aws ec2 terminate-instances --instance-ids i-1", denied_commands)
+    def test_aws_terminate_blocked(self) -> None:
+        assert self._is_denied("aws ec2 terminate-instances --instance-ids i-1")
 
     # --- Credential exfiltration: blocked ---
 
-    def test_echo_aws_secret_blocked(self, denied_commands: list[str]) -> None:
-        assert self._is_denied("echo $AWS_SECRET_ACCESS_KEY", denied_commands)
+    def test_echo_aws_secret_blocked(self) -> None:
+        assert self._is_denied("echo $AWS_SECRET_ACCESS_KEY")
 
-    def test_printenv_aws_blocked(self, denied_commands: list[str]) -> None:
-        assert self._is_denied("printenv AWS_SECRET_ACCESS_KEY", denied_commands)
+    def test_printenv_aws_blocked(self) -> None:
+        assert self._is_denied("printenv AWS_SECRET_ACCESS_KEY")
 
-    def test_env_grep_aws_blocked(self, denied_commands: list[str]) -> None:
-        assert self._is_denied("env | grep AWS_SECRET", denied_commands)
+    def test_env_grep_aws_blocked(self) -> None:
+        assert self._is_denied("env | grep AWS_SECRET")
 
-    def test_curl_imds_blocked(self, denied_commands: list[str]) -> None:
-        assert self._is_denied("curl http://169.254.169.254/latest/meta-data/", denied_commands)
+    def test_curl_imds_blocked(self) -> None:
+        assert self._is_denied("curl http://169.254.169.254/latest/meta-data/")
 
-    def test_python_boto_creds_blocked(self, denied_commands: list[str]) -> None:
+    def test_python_boto_creds_blocked(self) -> None:
         cmd = "python3 -c 'import boto3; print(boto3.Session().get_credentials())'"
-        assert self._is_denied(cmd, denied_commands)
+        assert self._is_denied(cmd)
 
-    def test_cat_aws_creds_blocked(self, denied_commands: list[str]) -> None:
-        assert self._is_denied("cat ~/.aws/credentials", denied_commands)
+    def test_cat_aws_creds_blocked(self) -> None:
+        assert self._is_denied("cat ~/.aws/credentials")
 
-    def test_cat_ssh_key_blocked(self, denied_commands: list[str]) -> None:
-        assert self._is_denied("cat ~/.ssh/id_rsa", denied_commands)
+    def test_cat_ssh_key_blocked(self) -> None:
+        assert self._is_denied("cat ~/.ssh/id_rsa")
 
 
 class TestKiroCliBundledDeniedCommands:
-    """Verify the bundled kiro-cli ``config/defaults.json`` deniedCommands.
+    """Verify the ``self-protection-kill`` built-in rule via the real gate.
 
-    This is a different file from ``agents/defaults.json`` (tested by
-    ``TestSandboxDeniedCommands`` above, which is the Q CLI agent config).
-    The kiro-cli bundled config is the canonical source for deniedCommands
-    written into ``~/.kiro/agents/kirocrew.json`` by ``build_agent_config``.
-
-    ``_is_denied`` mirrors kiro-cli's actual matching semantics, not a loose
-    ``re.search()``.  Per the kiro-cli pattern matcher
-    (``crates/agent/src/agent/tool_permission/pattern_matcher.rs``, also
-    vendored at ``NickengAITools/mistrust/src/pattern_matcher.rs`` and
-    ``IotMuninnAICapabilities/tests/unit/shell-eval/src/pattern_matcher.rs``)
-    patterns are auto-wrapped with ``^...$`` anchors and compiled with
-    ``(?s)`` (dotall) mode.  Using ``re.search`` without that wrapping
-    would produce false passes for patterns missing ``.*`` prefix/suffix.
+    Command denial is no longer injected into the kiro-cli agent spec — the
+    bundled ``config/defaults.json`` no longer carries ``deniedCommands``.  The
+    self-protection kill guard is now a ``BUILTIN_DENIED_RULES`` entry
+    (``self-protection-kill``) enforced at KiroCrew's own ``hooks.py`` PreToolUse
+    gate, whose decision function is ``security.is_denied``.  These tests
+    therefore exercise ``is_denied`` directly (tool-shape agnostic — the same
+    gate runs regardless of whether the tool is ``execute_bash`` or ``shell``).
 
     Regression tests for the ``kill``/``kirocrew`` pattern false positive:
     the old pattern ``.*kill.*kiro.?crew.*`` matched any command whose
     argv contained ``~/.kirocrew/skills/...`` (because ``skills`` contains
-    the substring ``kill``) followed by ``kirocrew`` anywhere.  The new
+    the substring ``kill``) followed by ``kirocrew`` anywhere.  The rule
     pattern ``.*\\b(kill|pkill|killall)\\b.*\\bkiro[-.]?crew\\b.*`` anchors
     the kill word on word boundaries so skill-dir paths are no longer
     caught, while still matching ``kirocrew`` and ``kiro-crew``.
-    Leading/trailing ``.*`` are required for parity with sibling patterns
-    under kiro-cli's ``^...$`` auto-anchoring.
     """
 
-    @pytest.fixture(params=["execute_bash", "shell"])
-    def denied_commands(self, request: pytest.FixtureRequest) -> list[str]:
-        bundled = (
-            Path(__file__).resolve().parent.parent
-            / "src"
-            / "kiro_crew"
-            / "config"
-            / "defaults.json"
-        )
-        with open(bundled) as f:
-            data = json.load(f)
-        return data["toolsSettings"][request.param]["deniedCommands"]
-
     @staticmethod
-    def _anchor(pattern: str) -> str:
-        """Mirror kiro-cli ``anchor_regex``: wrap with ``^...$`` unless already anchored."""
-        starts = pattern.startswith("^")
-        ends = pattern.endswith("$")
-        if starts and ends:
-            return pattern
-        if starts:
-            return pattern + "$"
-        if ends:
-            return "^" + pattern
-        return "^" + pattern + "$"
+    def _is_denied(cmd: str) -> bool:
+        from kiro_crew.security import is_denied
 
-    @classmethod
-    def _is_denied(cls, cmd: str, patterns: list[str]) -> bool:
-        """Match kiro-cli's decider: auto-anchored, dotall, full-string match."""
-        import re
-
-        return any(re.search(f"(?s){cls._anchor(p)}", cmd) is not None for p in patterns)
+        return is_denied(cmd) is not None
 
     # --- real kill attempts: blocked ---
 
-    def test_pkill_kirocrew_blocked(self, denied_commands: list[str]) -> None:
-        assert self._is_denied("pkill kirocrew", denied_commands)
+    def test_pkill_kirocrew_blocked(self) -> None:
+        assert self._is_denied("pkill kirocrew")
 
-    def test_kill_kirocrew_pid_blocked(self, denied_commands: list[str]) -> None:
-        assert self._is_denied("kill -9 $(pgrep kirocrew)", denied_commands)
+    def test_kill_kirocrew_pid_blocked(self) -> None:
+        assert self._is_denied("kill -9 $(pgrep kirocrew)")
 
-    def test_killall_kirocrew_blocked(self, denied_commands: list[str]) -> None:
-        assert self._is_denied("sudo killall kirocrew", denied_commands)
+    def test_killall_kirocrew_blocked(self) -> None:
+        assert self._is_denied("sudo killall kirocrew")
 
-    def test_kill_kiro_crew_hyphenated_blocked(self, denied_commands: list[str]) -> None:
+    def test_kill_kiro_crew_hyphenated_blocked(self) -> None:
         # The `.?` in the pattern covers an optional separator so agents can't
         # bypass with "kiro-crew".
-        assert self._is_denied("pkill kiro-crew", denied_commands)
+        assert self._is_denied("pkill kiro-crew")
 
     # --- skill-dir false positives: must be allowed ---
 
-    def test_skill_create_sh_kirocrew_domain_allowed(self, denied_commands: list[str]) -> None:
+    def test_skill_create_sh_kirocrew_domain_allowed(self) -> None:
         """The brazil-workspace skill scaffold must not be blocked."""
         cmd = "/Users/meyffret/.kirocrew/skills/brazil-workspace/create.sh --domain kirocrew"
-        assert not self._is_denied(cmd, denied_commands)
+        assert not self._is_denied(cmd)
 
-    def test_skills_dir_listing_allowed(self, denied_commands: list[str]) -> None:
-        assert not self._is_denied("ls ~/.kirocrew/skills/", denied_commands)
+    def test_skills_dir_listing_allowed(self) -> None:
+        assert not self._is_denied("ls ~/.kirocrew/skills/")
 
-    def test_skill_run_with_kirocrew_arg_allowed(self, denied_commands: list[str]) -> None:
+    def test_skill_run_with_kirocrew_arg_allowed(self) -> None:
         cmd = "/Users/meyffret/.kirocrew/skills/coder/run.sh kirocrew --dry-run"
-        assert not self._is_denied(cmd, denied_commands)
+        assert not self._is_denied(cmd)
 
-    def test_bash_skill_script_allowed(self, denied_commands: list[str]) -> None:
-        assert not self._is_denied("bash ~/.kirocrew/skills/something.sh", denied_commands)
+    def test_bash_skill_script_allowed(self) -> None:
+        assert not self._is_denied("bash ~/.kirocrew/skills/something.sh")
 
-    def test_cat_kirocrew_config_allowed(self, denied_commands: list[str]) -> None:
+    def test_cat_kirocrew_config_allowed(self) -> None:
         # "cat" has no "kill" word anywhere — must not match.
-        assert not self._is_denied("cat ~/.kirocrew/config.json", denied_commands)
+        assert not self._is_denied("cat ~/.kirocrew/config.json")
 
 
 class TestBuiltinDenyPatterns:
@@ -925,15 +885,26 @@ class TestBuiltinDenyPatterns:
         assert is_denied("credential-rotation-service build") is None
         assert is_denied("get-credentials --profile default") is None
 
-    def test_blocks_get_secret(self) -> None:
+    def test_blocks_secretsmanager_destructive(self) -> None:
+        """The new catalog blocks the REAL destructive Secrets Manager CLI verb.
+
+        The old glob catalog blocked bare tool-name tokens like
+        ``get_secret_value`` / ``read_secret_store`` — underscore/no-prefix
+        method names the AWS CLI never emits.  The new ``credential-exfil`` /
+        ``aws-destructive`` rules match the real hyphenated CLI instead; a plain
+        secret READ is intentionally allowed (reading is not exfiltration — the
+        always-on keystone catches actual exfil), while a destructive
+        ``delete-secret`` stays blocked.
+        """
         from kiro_crew.security import is_denied
 
-        assert is_denied("get_secret_value") is not None
+        assert is_denied("aws secretsmanager delete-secret --secret-id x") is not None
 
-    def test_blocks_read_secret(self) -> None:
+    def test_secret_exfil_still_blocked_by_keystone(self) -> None:
+        """Dumping an AWS secret env var stays blocked (credential-exfil rule)."""
         from kiro_crew.security import is_denied
 
-        assert is_denied("read_secret_store") is not None
+        assert is_denied("echo $AWS_SECRET_ACCESS_KEY") is not None
 
     def test_blocks_git_push(self) -> None:
         from kiro_crew.security import is_denied
@@ -1056,7 +1027,7 @@ class TestBuiltinDenyPatterns:
         # still be ALLOWED — the second segment must be deny-free.
         assert is_denied("git stash push -m 'wip' & echo done") is None
 
-    def test_two_pass_evaluates_all_deny_patterns(self) -> None:
+    def test_two_pass_evaluates_all_deny_patterns(self, monkeypatch) -> None:
         """Pass 1 must continue iterating deny patterns after granting an
         exception, so a *different* pattern with no exception still triggers
         an outright deny.
@@ -1068,20 +1039,28 @@ class TestBuiltinDenyPatterns:
         keeps iterating (this test exercises that path); pass 2 uses
         ``continue`` for the same reason (covered by other tests).
 
-        With ``_DENY_EXCEPTIONS`` containing a single entry for
-        ``*git*push*``, this is the only multi-pattern interaction the
-        existing pattern set can express.  The test serves as a guard
-        against future regressions if either the loop control or the
-        ``_DENY_EXCEPTIONS`` map is changed.
+        ``_DENY_EXCEPTIONS`` is now empty (the sole former ``*git*push*`` entry
+        is obsolete — git-publish is verb-anchored and never trips the exception
+        machinery), so the multi-pattern interaction can no longer be expressed
+        with live catalog data.  We install a synthetic two-glob scenario to
+        keep exercising the loop-control invariant directly: the input matches
+        an exception-carrying glob AND a second glob with no exception, so pass 1
+        must fall through to the second glob and deny outright.  A ``break``
+        regression would skip the second glob and falsely allow.
         """
-        from kiro_crew.security import is_denied
+        import kiro_crew.security as security_module
 
+        monkeypatch.setattr(security_module, "_DENY_EXCEPTIONS", {"*alpha*": ["* stash *"]})
         # Pass 1 sees:
-        #   *git*push*       — matches, ` stash push` exception matches → candidate
-        #   *terminate_instance* — matches, no exception → outright deny
-        # If the candidate logic ever regresses to ``break``, the second
-        # pattern would be skipped and this would falsely allow.
-        assert is_denied("git stash push terminate_instance i-deadbeef") is not None
+        #   *alpha* — matches, " stash " whole-string exception matches → candidate
+        #   *bravo* — matches, no exception → outright deny
+        assert (
+            security_module.is_denied("alpha stash bravo", extra_patterns=["*alpha*", "*bravo*"])
+            is not None
+        )
+        # Confidence check: with only the exception-carrying glob and no second
+        # deny, the command is allowed (the candidate path itself does not deny).
+        assert security_module.is_denied("alpha stash here", extra_patterns=["*alpha*"]) is None
 
     def test_allows_commit_message_mentioning_push(self) -> None:
         """A ``git commit`` whose message merely mentions ``push`` must be
@@ -1188,21 +1167,33 @@ class TestBuiltinDenyPatterns:
         result = security_module.is_denied("git stash push && git push origin main")
         assert result is not None
         assert any("git push origin main" in c[2] for c in captured)
-        # A glob-based deny (e.g. terminate_instance) still records its glob.
+        # A regex-tier built-in deny (real hyphenated AWS CLI) records the
+        # matched rule pattern verbatim.
         captured.clear()
-        result = security_module.is_denied("aws ec2 terminate_instance i-1")
+        result = security_module.is_denied("aws ec2 terminate-instances --instance-ids i-1")
         assert result is not None
-        assert captured[0][1] == "*terminate_instance*"
+        assert captured[0][1] == (
+            r"aws(?:\s+--?[a-z-]+(?:[= ]\S+)?)*\s+ec2"
+            r"(?:\s+--?[a-z-]+(?:[= ]\S+)?)*\s+terminate-instances.*"
+        )
 
     def test_blocks_delete_stack(self) -> None:
+        """The real hyphenated CloudFormation teardown is blocked.
+
+        The old glob catalog matched the underscore token ``delete_stack`` the
+        AWS CLI never emits; the new catalog matches the real
+        ``aws cloudformation delete-stack`` invocation instead (see
+        ``test_blocks_real_hyphenated_destructive_aws_cli``).
+        """
         from kiro_crew.security import is_denied
 
-        assert is_denied("delete_stack --stack-name foo") is not None
+        assert is_denied("aws cloudformation delete-stack --stack-name foo") is not None
 
     def test_blocks_terminate_instance(self) -> None:
+        """The real hyphenated EC2 terminate is blocked (underscore form retired)."""
         from kiro_crew.security import is_denied
 
-        assert is_denied("terminate_instance i-123") is not None
+        assert is_denied("aws ec2 terminate-instances --instance-ids i-123") is not None
 
     def test_blocks_real_hyphenated_destructive_aws_cli(self) -> None:
         """Real AWS CLI destructive subcommands use HYPHENS, not underscores.
@@ -1221,9 +1212,10 @@ class TestBuiltinDenyPatterns:
         assert is_denied("aws ec2 terminate-instances --instance-ids i-123") is not None
         assert is_denied("aws s3api delete-bucket --bucket prod-data") is not None
         assert is_denied("aws dynamodb delete-table --table-name prod") is not None
-        # Underscore/boto3 method-name forms must remain blocked too.
-        assert is_denied("terminate_instances call") is not None
-        assert is_denied("delete_table x") is not None
+        # NB: the underscore/boto3 method-name forms (``terminate_instances``,
+        # ``delete_table``) are intentionally NOT blocked by the new catalog —
+        # it ports only the real hyphenated AWS CLI regexes (the CLI never emits
+        # the underscore forms).  See ``test_blocks_terminate_instance``.
 
     def test_allows_benign_aws_reads_after_deny_fix(self) -> None:
         """The hyphenated destructive patterns must not over-block benign
@@ -2167,6 +2159,36 @@ class TestIsSensitiveBashCommand:
         # A benign host that resolves elsewhere must not be flagged as IMDS.
         assert _check_imds_access("curl http://93.184.216.34/") is None
         assert canonicalize_ip("8.8.8.8") == "8.8.8.8"
+
+
+class TestDeniedCommandsKeystone:
+    """The denied-command opt-out file is a KEYSTONE trust root.
+
+    The opt-out state (``{disable_all, disabled_ids, user_added}``) lives in
+    ``~/.kirocrew/denied_commands.json`` on ``_SENSITIVE_HOME_DIRS`` — a full
+    read+write block — NOT in config.json. So the agent can neither read nor
+    write its own deny ceiling via any shell form, inheriting the mature
+    ``is_sensitive_path`` gate (the same protection level as
+    ``security_policy.json``). This replaces the bespoke bash write-matcher that
+    was needed while the state lived in the agent-readable config.json.
+    """
+
+    def test_keystone_path_is_sensitive(self) -> None:
+        from kiro_crew.security import is_sensitive_path
+
+        assert is_sensitive_path("~/.kirocrew/denied_commands.json") is True
+
+    def test_bash_write_and_read_both_blocked(self) -> None:
+        # Full keystone: BOTH reads and writes of the opt-out file are blocked
+        # for the agent (it must not read OR write its own ceiling).
+        for cmd in (
+            "echo x > ~/.kirocrew/denied_commands.json",
+            "tee ~/.kirocrew/denied_commands.json",
+            "cp evil ~/.kirocrew/denied_commands.json",
+            "cat ~/.kirocrew/denied_commands.json",
+            "python -c open ~/.kirocrew/denied_commands.json",
+        ):
+            assert is_sensitive_bash_command(cmd) is not None, cmd
 
 
 class TestAuditBashCommand:

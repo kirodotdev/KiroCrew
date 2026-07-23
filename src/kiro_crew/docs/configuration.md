@@ -106,7 +106,6 @@ Set via `kirocrew config set sandbox.mode auto`.
 | `agent.spawn_min_memory_gb` | Minimum available memory (GB) to spawn a subagent (0 disables) | `4.0` |
 | `agent.completion_keep` | Which end of the subagent transcript to keep in the completion event injected into the parent session. Three values: `"head"` (first N chars), `"tail"` (last N chars), `"both"` (head + middle marker + tail). | `"head"` |
 | `agent.completion_keep_chars` | Maximum characters retained in the completion event after applying `completion_keep`. The full transcript stays in `~/.kirocrew/subagents/<id>/result.txt` until cleanup; use the `spawn_status` MCP tool to read it before delivery. `0` disables truncation entirely. | `3000` |
-| `agent.enforce_denied_commands` | Scope for deniedCommands: `"all"` or `"kirocrew"` | `"all"` |
 | `session.timeout_secs` | Idle session timeout (0 disables idle sweep) | `1800` (30 min) |
 | `session.pool_size` | Number of pre-warmed agent processes | `0` (disabled) |
 | `session.pool_agent` | Agent for warm pool processes (empty = default) | `""` |
