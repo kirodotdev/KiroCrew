@@ -422,3 +422,266 @@ class TestOwnerSourceStatusTransport:
             assert "state" not in initial_slots[0]["source_links"][0]
             refresh.assert_not_called()
         state.unregister_ws.assert_called_once_with(fake_ws)
+
+
+class TestPeriodicCheckStatusRefresh:
+    """Regression: sidebar PR chip status must not freeze at connect time.
+
+    ``push_slots_update`` serves *cached* check status but never schedules
+    refreshes, so before the periodic owner-WS driver existed the cache was
+    only populated at WS-connect / slots-GET time — a PR merged after page
+    load never gained its merge icon until a full reload.
+    """
+
+    def test_ttl_alias_matches_cache_ttl(self) -> None:
+        from kiro_crew.dashboard.handlers import source_providers
+
+        assert source_providers.CHECK_STATUS_TTL_SECS == source_providers._CHECK_TTL_SECS
+
+    def test_source_link_urls_spans_slots_and_caps_at_serialized_count(
+        self, state: DashboardState
+    ) -> None:
+        slot_a = state.get_or_create_slot("chat-a")
+        for n in (1, 2, 3, 4):
+            slot_a.append("assistant", f"see https://github.com/acme/repo/pull/{n}", broadcast=False)
+        slot_b = state.get_or_create_slot("chat-b")
+        slot_b.append("assistant", "and https://github.com/acme/other/pull/9", broadcast=False)
+
+        urls = state.source_link_urls()
+
+        # Capped at the serialized chip count per slot — refreshing links the
+        # sidebar never renders would waste provider quota — and aggregated
+        # across every slot so background sessions stay fresh too.
+        assert urls == [
+            "https://github.com/acme/repo/pull/1",
+            "https://github.com/acme/repo/pull/2",
+            "https://github.com/acme/repo/pull/3",
+            "https://github.com/acme/other/pull/9",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_owner_ws_loop_schedules_ttl_paced_refreshes(self, monkeypatch) -> None:
+        from kiro_crew.dashboard import ws as dashboard_ws
+        from kiro_crew.dashboard.handlers import source_providers
+
+        url = "https://github.com/acme/repo/pull/248"
+        state = MagicMock()
+        state.owner_id = "U_OWNER"
+        state.serialize_slots.return_value = []
+        state._yolo = False
+        state.source_link_urls.return_value = [url]
+
+        class Request(dict):
+            def __init__(self) -> None:
+                super().__init__({"user": "U_OWNER", "app": ""})
+                self.app = {"state": state}
+
+        refreshed = asyncio.Event()
+        refresh_calls: list[tuple] = []
+
+        def refresh(urls, on_update=None):
+            refresh_calls.append((urls, on_update))
+            refreshed.set()
+
+        class FakeWebSocket:
+            def __init__(self) -> None:
+                self.closed = False
+                self.sent: list[dict] = []
+
+            async def prepare(self, request) -> None:
+                return None
+
+            async def send_json(self, payload: dict) -> None:
+                self.sent.append(payload)
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                # Hold the connection open until the periodic loop has fired
+                # once, then end the handler (which cancels the loop task).
+                await refreshed.wait()
+                raise StopAsyncIteration
+
+        fake_ws = FakeWebSocket()
+        monkeypatch.setattr(dashboard_ws, "_check_ws_origin", lambda request: None)
+        monkeypatch.setattr(dashboard_ws.web, "WebSocketResponse", lambda **kwargs: fake_ws)
+        monkeypatch.setattr(source_providers, "CHECK_STATUS_TTL_SECS", 0.01)
+        monkeypatch.setattr(source_providers, "schedule_check_refresh", refresh)
+
+        await asyncio.wait_for(dashboard_ws.api_ws(Request()), timeout=5)  # type: ignore[arg-type]
+
+        # The loop fired after one TTL tick with the visible chip URLs and the
+        # broadcast callback (which pushes only on actual status change).
+        assert refresh_calls
+        assert refresh_calls[0] == ([url], state.push_slots_update)
+
+    @pytest.mark.asyncio
+    async def test_non_owner_ws_never_starts_refresh_loop(self, monkeypatch) -> None:
+        from kiro_crew.dashboard import ws as dashboard_ws
+        from kiro_crew.dashboard.handlers import source_providers
+
+        state = MagicMock()
+        state.owner_id = "U_OWNER"
+        state.serialize_slots.return_value = []
+        state._yolo = False
+
+        class Request(dict):
+            def __init__(self) -> None:
+                super().__init__({"user": "U_OTHER", "app": ""})
+                self.app = {"state": state}
+
+        refresh = MagicMock()
+
+        class FakeWebSocket:
+            def __init__(self) -> None:
+                self.closed = False
+                self.sent: list[dict] = []
+
+            async def prepare(self, request) -> None:
+                return None
+
+            async def send_json(self, payload: dict) -> None:
+                self.sent.append(payload)
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                # Stay open long enough for several 0.01s TTL ticks to elapse.
+                await asyncio.sleep(0.05)
+                raise StopAsyncIteration
+
+        fake_ws = FakeWebSocket()
+        monkeypatch.setattr(dashboard_ws, "_check_ws_origin", lambda request: None)
+        monkeypatch.setattr(dashboard_ws.web, "WebSocketResponse", lambda **kwargs: fake_ws)
+        monkeypatch.setattr(source_providers, "CHECK_STATUS_TTL_SECS", 0.01)
+        monkeypatch.setattr(source_providers, "schedule_check_refresh", refresh)
+
+        await asyncio.wait_for(dashboard_ws.api_ws(Request()), timeout=5)  # type: ignore[arg-type]
+
+        refresh.assert_not_called()
+        state.source_link_urls.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_refresh_loop_rotates_offset_across_rounds(self, monkeypatch) -> None:
+        """Findings #1: with more stale chips than the per-round admission cap,
+        the driver must rotate which URLs it submits first so every chip is
+        eventually refreshed instead of the same slot-order prefix winning
+        every TTL (deterministic starvation of newer slots)."""
+        from kiro_crew.dashboard import ws as dashboard_ws
+        from kiro_crew.dashboard.handlers import source_providers
+
+        urls = [
+            "https://github.com/acme/repo/pull/1",
+            "https://github.com/acme/repo/pull/2",
+            "https://github.com/acme/repo/pull/3",
+        ]
+        state = MagicMock()
+        state.owner_id = "U_OWNER"
+        state.serialize_slots.return_value = []
+        state._yolo = False
+        state.source_link_urls.return_value = list(urls)
+
+        class Request(dict):
+            def __init__(self) -> None:
+                super().__init__({"user": "U_OWNER", "app": ""})
+                self.app = {"state": state}
+
+        done = asyncio.Event()
+        leads: list[str] = []
+
+        def refresh(submitted, on_update=None):
+            leads.append(submitted[0])
+            if len(leads) >= 3:
+                done.set()
+
+        class FakeWebSocket:
+            def __init__(self) -> None:
+                self.closed = False
+                self.sent: list[dict] = []
+
+            async def prepare(self, request) -> None:
+                return None
+
+            async def send_json(self, payload: dict) -> None:
+                self.sent.append(payload)
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                await done.wait()
+                raise StopAsyncIteration
+
+        fake_ws = FakeWebSocket()
+        monkeypatch.setattr(dashboard_ws, "_check_ws_origin", lambda request: None)
+        monkeypatch.setattr(dashboard_ws.web, "WebSocketResponse", lambda **kwargs: fake_ws)
+        monkeypatch.setattr(source_providers, "CHECK_STATUS_TTL_SECS", 0.01)
+        monkeypatch.setattr(source_providers, "CHECK_STATUS_PENDING_MAX", 2)
+        monkeypatch.setattr(source_providers, "schedule_check_refresh", refresh)
+
+        await asyncio.wait_for(dashboard_ws.api_ws(Request()), timeout=5)  # type: ignore[arg-type]
+
+        # offset = round * cap(2) % len(3): rounds 0,1,2 lead with index 0,2,1 —
+        # every URL leads within ceil(len/cap) rounds, so none is starved.
+        assert leads[:3] == [urls[0], urls[2], urls[1]]
+        assert set(leads[:3]) == set(urls)
+
+    @pytest.mark.asyncio
+    async def test_refresh_loop_survives_transient_exception(self, monkeypatch) -> None:
+        """Findings #2: a single transient failure inside a refresh round must
+        be logged and swallowed so the driver keeps running, rather than
+        silently dying and reverting to the frozen-chip bug it fixes."""
+        from kiro_crew.dashboard import ws as dashboard_ws
+        from kiro_crew.dashboard.handlers import source_providers
+
+        url = "https://github.com/acme/repo/pull/248"
+        state = MagicMock()
+        state.owner_id = "U_OWNER"
+        state.serialize_slots.return_value = []
+        state._yolo = False
+        state.source_link_urls.return_value = [url]
+
+        class Request(dict):
+            def __init__(self) -> None:
+                super().__init__({"user": "U_OWNER", "app": ""})
+                self.app = {"state": state}
+
+        recovered = asyncio.Event()
+        calls: list[str] = []
+
+        def refresh(submitted, on_update=None):
+            calls.append(submitted[0])
+            if len(calls) == 1:
+                raise RuntimeError("transient provider glitch")
+            recovered.set()
+
+        class FakeWebSocket:
+            def __init__(self) -> None:
+                self.closed = False
+                self.sent: list[dict] = []
+
+            async def prepare(self, request) -> None:
+                return None
+
+            async def send_json(self, payload: dict) -> None:
+                self.sent.append(payload)
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                await recovered.wait()
+                raise StopAsyncIteration
+
+        fake_ws = FakeWebSocket()
+        monkeypatch.setattr(dashboard_ws, "_check_ws_origin", lambda request: None)
+        monkeypatch.setattr(dashboard_ws.web, "WebSocketResponse", lambda **kwargs: fake_ws)
+        monkeypatch.setattr(source_providers, "CHECK_STATUS_TTL_SECS", 0.01)
+        monkeypatch.setattr(source_providers, "schedule_check_refresh", refresh)
+
+        await asyncio.wait_for(dashboard_ws.api_ws(Request()), timeout=5)  # type: ignore[arg-type]
+
+        # Fired at least twice: the first raised, the loop logged and continued.
+        assert len(calls) >= 2

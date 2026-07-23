@@ -1431,6 +1431,11 @@ async def api_pull_request_resolve(request: web.Request) -> web.Response:
 # refreshes are fire-and-forget with inflight dedup and a bounded map.
 
 _CHECK_TTL_SECS = 60
+# Public alias for periodic drivers (the owner-WS refresh loop) that pace
+# their wakeups to the cache TTL. Sleeping exactly one TTL between rounds
+# means each round finds the previous round's entries just expired — one
+# provider fetch per URL per TTL, no wasted wakeups.
+CHECK_STATUS_TTL_SECS = _CHECK_TTL_SECS
 # The dashboard caps live slots at 500. Keeping one tiny status entry per slot
 # avoids eviction churn when a large workspace is open.
 _CHECK_CACHE_MAX = 512
@@ -1438,6 +1443,10 @@ _CHECK_CACHE_MAX = 512
 # timestamp with no status, which backs them off for one TTL instead of creating
 # a new task on every slots request.
 _CHECK_PENDING_MAX = 16
+# Public alias for periodic drivers that need to know the per-round admission
+# cap so they can rotate which URLs they submit first across rounds (fair
+# scheduling when the number of stale chips exceeds the cap).
+CHECK_STATUS_PENDING_MAX = _CHECK_PENDING_MAX
 _CHECK_UPDATE_DEBOUNCE_SECS = 0.1
 # Bound concurrent gh/glab refresh operations so a cold cache across many
 # sessions can't spawn a burst of provider subprocesses at once. TTL + inflight

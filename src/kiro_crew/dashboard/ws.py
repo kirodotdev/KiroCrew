@@ -88,6 +88,8 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
 
     state: DashboardState = request.app["state"]
     from kiro_crew.dashboard.handlers.source_providers import (
+        CHECK_STATUS_PENDING_MAX,
+        CHECK_STATUS_TTL_SECS,
         is_owner_dashboard_request,
         schedule_check_refresh,
     )
@@ -142,6 +144,45 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
             pass
 
     status_task = asyncio.create_task(_push_status())
+
+    # Background task (owner connections only): keep sidebar PR/MR chip
+    # status fresh. push_slots_update serves the *cached* check status but
+    # never schedules refreshes — without a periodic driver the cache is only
+    # populated at connect / slots-GET time, so chips freeze at their initial
+    # state (e.g. a PR merged after page load never gains the merge icon).
+    # schedule_check_refresh is TTL-gated and inflight-deduped, so multiple
+    # owner connections still cost at most one provider fetch per URL per
+    # TTL, and on_update broadcasts only when a status actually changed.
+    async def _refresh_check_loop() -> None:
+        # Rotate the starting offset each round. schedule_check_refresh admits
+        # at most CHECK_STATUS_PENDING_MAX URLs per call and backs the rest off
+        # for one TTL; because every chip expires in lockstep, feeding URLs in
+        # the same slot order every round would let the first-N win forever and
+        # starve later chips (deterministic with >N PR-linked slots). Advancing
+        # the offset by the admission cap each round cycles every chip through
+        # the admitted window within ceil(len/cap) rounds.
+        refresh_round = 0
+        while not ws.closed and not shutdown_event.is_set():
+            # Guard the body (not the whole loop) so a single transient failure
+            # from source_link_urls()/schedule_check_refresh logs and continues
+            # instead of silently killing the driver and reverting to the
+            # frozen-chip bug this loop exists to fix.
+            try:
+                await asyncio.sleep(CHECK_STATUS_TTL_SECS)
+                urls = state.source_link_urls()
+                if urls:
+                    offset = (refresh_round * CHECK_STATUS_PENDING_MAX) % len(urls)
+                    urls = urls[offset:] + urls[:offset]
+                    schedule_check_refresh(urls, state.push_slots_update)
+                refresh_round += 1
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning(
+                    "check-status refresh round failed; continuing", exc_info=True
+                )
+
+    check_task = asyncio.create_task(_refresh_check_loop()) if owner_request else None
     try:
         async for msg in ws:
             if msg.type == WSMsgType.TEXT:
@@ -222,6 +263,8 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
         pass
     finally:
         status_task.cancel()
+        if check_task is not None:
+            check_task.cancel()
         state.unsubscribe_logs(ws)
         state.unsubscribe_subagents(ws)
         state.unregister_ws(ws)

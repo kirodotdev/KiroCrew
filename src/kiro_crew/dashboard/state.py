@@ -321,6 +321,10 @@ _SESSION_RECYCLED_NOTICE = (
 )
 _MAX_SLOT_MESSAGES = 10000  # Keep all messages — virtual scrolling handles performance
 _MAX_SOURCE_LINKS_PER_SLOT = 64
+# How many source links each slot payload actually serializes (the sidebar
+# renders at most this many chips). Shared with the periodic check-status
+# refresh so the driver and the serializer cannot drift.
+_SERIALIZED_SOURCE_LINKS_PER_SLOT = 3
 _NON_DURABLE_SOURCE_LINK_ROLES = frozenset(
     {"chunk", "done", "streaming", "queued", "permission"}
 )
@@ -1279,7 +1283,7 @@ class _ChatSlot:
                     **link,
                     **((_cached_check_status(link["url"]) or {}) if include_check_status else {}),
                 }
-                for link in source_links[:3]
+                for link in source_links[:_SERIALIZED_SOURCE_LINKS_PER_SLOT]
             ],
             "source_links_total": len(source_links),
             "has_options": has_options,
@@ -2317,6 +2321,22 @@ class DashboardState:
                 raise
         except Exception:
             logger.warning("Failed to write %s", path.name, exc_info=True)
+
+    def source_link_urls(self) -> list[str]:
+        """URLs of the sidebar-visible PR/MR chips across all slots.
+
+        Only the links each slot actually serializes (the first
+        ``_SERIALIZED_SOURCE_LINKS_PER_SLOT``) are returned — these are the
+        chips whose check status the periodic owner-WS refresh keeps fresh.
+        Reads the per-slot revision cache, so this is cheap to call on a timer.
+        """
+        urls: list[str] = []
+        for s in self._slots.values():
+            urls.extend(
+                link["url"]
+                for link in s._pr_source_links()[:_SERIALIZED_SOURCE_LINKS_PER_SLOT]
+            )
+        return urls
 
     def serialize_slots(self, *, include_check_status: bool = False) -> list:
         """Serialize slots, optionally including owner-only provider status.
