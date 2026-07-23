@@ -210,7 +210,13 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, fuseBelow = 
                 }}
                 exit={{ y: y + 40, zIndex: 50, borderBottomWidth: 1, borderBottomLeftRadius: 12, borderBottomRightRadius: 12, transition: SPRING }}
                 transition={SPRING}
-                className="queue-card absolute top-0 left-0 right-0 bg-warn/15 border border-warn/40 px-3 py-2 text-[13px] text-warn"
+                // Theme colors are raw var(--x) without <alpha-value>, so Tailwind
+                // alpha modifiers (bg-warn/15) silently generate no CSS. Use explicit
+                // color-mix instead — and mix the bg toward the opaque surface color
+                // (not transparent): cards overlap in the collapsed peek stack, so a
+                // translucent bg would let the cards behind bleed through. The
+                // kiro-dark .queue-card override in index.css still takes precedence.
+                className="queue-card absolute top-0 left-0 right-0 bg-[color-mix(in_srgb,var(--warn)_15%,var(--bg-elevated))] border border-[color-mix(in_srgb,var(--warn)_40%,transparent)] px-3 py-2 text-[13px] text-warn"
                 style={{ transformOrigin: 'bottom center', height: CARD_H, zIndex }}
               >
                 <span className="flex items-center gap-1.5 h-full">
