@@ -15,6 +15,7 @@ const { sanitizeWindowState, captureWindowState } = require("./window-state");
 const { createLivenessMonitor } = require("./gateway-liveness");
 const { capturePySpyDump } = require("./pyspy-dump");
 const { identityFamily, decideGatewayAction, FAMILY_META, HEALTH_IDENTITY_PATH } = require("./instance-guard");
+const { clampZoomFactor, stepZoomFactor } = require("./zoom");
 
 // ── Persistent settings for remote tunnel mode ──
 
@@ -1493,7 +1494,11 @@ app.whenReady().then(async () => {
       const wc = webContents.getFocusedWebContents();
       if (!wc) return;
       apply(wc);
-      positionTrafficLights(BaseWindow.getFocusedWindow());
+      // Chromium applies per-origin zoom to every same-origin window at once,
+      // so recenter traffic lights on all shell windows, not just the focused one.
+      for (const win of BaseWindow.getAllWindows()) {
+        if (win._mcView) positionTrafficLights(win);
+      }
     },
   });
   const appMenu = Menu.buildFromTemplate([
@@ -1507,9 +1512,9 @@ app.whenReady().then(async () => {
         { label: "Reload", accelerator: "CmdOrCtrl+R", click: () => { const wc = focusedDashboardWC(); if (wc) wc.reload(); } },
         { label: "Force Reload", accelerator: "CmdOrCtrl+Shift+R", click: () => { const wc = focusedDashboardWC(); if (wc) wc.reloadIgnoringCache(); } },
         { type: "separator" },
-        zoomItem("Actual Size", "CmdOrCtrl+0", (wc) => wc.setZoomLevel(0)),
-        zoomItem("Zoom In", "CmdOrCtrl+=", (wc) => wc.setZoomLevel(wc.getZoomLevel() + 0.5)),
-        zoomItem("Zoom Out", "CmdOrCtrl+-", (wc) => wc.setZoomLevel(wc.getZoomLevel() - 0.5)),
+        zoomItem("Actual Size", "CmdOrCtrl+0", (wc) => wc.setZoomFactor(1)),
+        zoomItem("Zoom In", "CmdOrCtrl+=", (wc) => wc.setZoomFactor(stepZoomFactor(wc.getZoomFactor(), +1))),
+        zoomItem("Zoom Out", "CmdOrCtrl+-", (wc) => wc.setZoomFactor(stepZoomFactor(wc.getZoomFactor(), -1))),
         { type: "separator" },
         { role: "togglefullscreen" },
         { type: "separator" },
@@ -1556,6 +1561,26 @@ app.whenReady().then(async () => {
       store.set("themeAccent", hex);
     }
   });
+
+  // Native zoom bridge for the Settings > Display "Zoom Level" stepper.
+  // A renderer cannot touch Chromium's per-origin zoom itself, so it
+  // round-trips through these handlers. The same stepZoomFactor ladder backs
+  // the View menu (Cmd/Ctrl +/-/0), so the stepper and the shortcuts always
+  // agree on the value ladder. Chromium persists the factor per-origin in the
+  // persistent session — no store writes needed. Handlers target event.sender
+  // (the dashboard that asked), and return the applied factor so the stepper
+  // can render it without a second round-trip.
+  const applyZoom = (wc, factor) => {
+    wc.setZoomFactor(factor);
+    for (const win of BaseWindow.getAllWindows()) {
+      if (win._mcView) positionTrafficLights(win);
+    }
+    return factor;
+  };
+  ipcMain.handle("zoom:get", (event) => event.sender.getZoomFactor());
+  ipcMain.handle("zoom:set", (event, factor) => applyZoom(event.sender, clampZoomFactor(factor)));
+  ipcMain.handle("zoom:step", (event, dir) =>
+    applyZoom(event.sender, stepZoomFactor(event.sender.getZoomFactor(), dir > 0 ? +1 : -1)));
 
   // The renderer reports whether the 32px instance tab strip is the topmost row
   // (App.tsx macInstanceBarInset). When it is, the native traffic lights sit

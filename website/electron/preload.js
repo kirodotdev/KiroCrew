@@ -36,6 +36,18 @@ contextBridge.exposeInMainWorld("electronAPI", {
   setInstanceBarInset: (on) => ipcRenderer.send("instancebar-inset-changed", !!on),
 });
 
+// Native zoom bridge for the Settings > Display "Zoom Level" stepper.
+// Chromium's per-origin zoom (the thing Cmd/Ctrl +/- changes) is not
+// reachable from page JS, so the renderer round-trips through main.js.
+// All three calls resolve with the applied zoom factor. Absent in plain
+// browsers — the renderer treats a missing bridge as "zoom not controllable"
+// and shows a shortcut hint instead of the stepper.
+contextBridge.exposeInMainWorld("zoomAPI", {
+  get: () => ipcRenderer.invoke("zoom:get"),
+  set: (factor) => ipcRenderer.invoke("zoom:set", factor),
+  step: (dir) => ipcRenderer.invoke("zoom:step", dir),
+});
+
 // Desktop auto-update bridge. Drives the in-app UpdateModal + Settings > About.
 // onState pushes update lifecycle events ({state, version, notes, channel});
 // check/install/getInfo are promise-based round-trips to the main process.

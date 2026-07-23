@@ -9,19 +9,24 @@ const BTN = 'px-3 py-1 rounded-full text-[13px] cursor-pointer border transition
 const active = (on: boolean) => on ? 'bg-accent-subtle text-accent border-accent' : 'bg-transparent text-muted border-border hover:border-border-strong hover:text-text'
 
 export default function DisplayTab() {
-  const { zoom, zoomIn, zoomOut, reset, family, setFontFamily } = useZoomCtx()
+  const { zoom, zoomSupported, zoomIn, zoomOut, reset, family, setFontFamily } = useZoomCtx()
   const { preference, setTheme, colorTheme, setColorTheme, allThemes } = useTheme()
   const editor = useThemeEditor()
+  const modKey = /mac/i.test(navigator.platform) ? '⌘' : 'Ctrl'
 
   return (
     <div className="grid grid-cols-2 gap-4 max-[900px]:grid-cols-1">
       <Card>
-        <CardTitle>Zoom <InfoTip text="Scale the entire dashboard UI. Click the percentage to reset to 100%." /></CardTitle>
-        <div className="flex items-center gap-2">
-          <button className={BTN + ' ' + active(false)} onClick={zoomOut}>−</button>
-          <button className={BTN + ' ' + active(false)} onClick={reset}>{zoom}%</button>
-          <button className={BTN + ' ' + active(false)} onClick={zoomIn}>+</button>
-        </div>
+        <CardTitle>Zoom <InfoTip text={zoomSupported ? `Native window zoom, the same setting as ${modKey}+ / ${modKey}−. Click the percentage to reset to 100%.` : 'Use your browser\u2019s zoom. Your browser remembers it for this site.'} /></CardTitle>
+        {zoomSupported ? (
+          <div className="flex items-center gap-2">
+            <button className={BTN + ' ' + active(false)} onClick={zoomOut}>−</button>
+            <button className={BTN + ' ' + active(false)} onClick={reset}>{zoom}%</button>
+            <button className={BTN + ' ' + active(false)} onClick={zoomIn}>+</button>
+          </div>
+        ) : (
+          <div className="text-[13px] text-muted">Zoom with {modKey} + / {modKey} −</div>
+        )}
       </Card>
       <Card>
         <CardTitle>Font <InfoTip text="Change the dashboard font family. Persists across sessions." /></CardTitle>

@@ -107,11 +107,10 @@ function toApiDecision(d: string): 'approve' | 'reject' {
 // Pending-approval selection is now slot-aware — see selectSlotPendingApproval
 // in chatSlice (Path B S3): each grid pane's approval bar reflects ITS slot.
 
-/** Effective viewport height accounting for KiroCrew zoom scale.
- *  --mc-vh is px when zoom active; falls back to window.innerHeight otherwise. */
+/** Usable viewport height. Native window zoom already reports zoomed CSS
+ *  pixels through innerHeight, so no compensation var is needed. */
 function effectiveVh(): number {
-  const v = getComputedStyle(document.documentElement).getPropertyValue('--mc-vh')
-  return v ? parseFloat(v) : window.innerHeight
+  return window.innerHeight
 }
 
 /** Auto-size textarea to fit content (only when not manually sized).
@@ -809,7 +808,7 @@ function ChatInput({
     if (!wrapperRef.current) return
     if (manualHeight !== null) {
       wrapperRef.current.style.height = Math.max(manualHeight, INPUT_MIN_H) + 'px'
-      wrapperRef.current.style.maxHeight = `calc(var(--mc-vh, 100vh) * ${INPUT_DRAG_MAX_RATIO})`
+      wrapperRef.current.style.maxHeight = `${INPUT_DRAG_MAX_RATIO * 100}vh`
     } else {
       wrapperRef.current.style.height = ''
       wrapperRef.current.style.maxHeight = ''
@@ -1795,7 +1794,7 @@ function ChatInput({
         <textarea
           ref={inputRef}
           aria-label="Message input"
-          className={`relative w-full bg-transparent border-none ${INPUT_TYPO} text-text outline-none min-h-[44px] max-h-[calc(var(--mc-vh,100vh)*0.5)] placeholder:text-muted resize-none ${manualHeight !== null ? 'flex-1' : ''} ${disabled ? 'opacity-40 pointer-events-none' : ''} ${optimizing ? 'opacity-30' : ''}`}
+          className={`relative w-full bg-transparent border-none ${INPUT_TYPO} text-text outline-none min-h-[44px] max-h-[50vh] placeholder:text-muted resize-none ${manualHeight !== null ? 'flex-1' : ''} ${disabled ? 'opacity-40 pointer-events-none' : ''} ${optimizing ? 'opacity-30' : ''}`}
           style={manualHeight !== null ? { height: '100%' } : undefined}
           placeholder={!connected ? 'Gateway offline — message will not send' : disabled ? 'Stopping…' : voiceRecording ? 'Recording… click mic to stop' : voiceTranscribing ? 'Transcribing, please wait…' : resolvedPlaceholder}
           readOnly={optimizing}

@@ -256,14 +256,6 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
-    "id": "display.font-size",
-    "label": "Font Size",
-    "description": "Scale text and spacing (100%–250%). Affects all rem-based values.",
-    "tab": "display",
-    "type": "stepper",
-    "occurrence": 1
-  },
-  {
     "id": "display.highlight-recent-sessions",
     "label": "Highlight recent sessions",
     "description": "Highlight the N most-recently-active sessions with a graded accent stripe (0 = off). Saved to your KiroCrew config.",
@@ -306,7 +298,6 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "display.zoom-level",
     "label": "Zoom Level",
-    "description": "Scale entire UI (80%–150%)",
     "tab": "display",
     "type": "stepper",
     "occurrence": 1

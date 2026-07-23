@@ -16,7 +16,9 @@ import { api } from '../../api/client'
 import { clampTintCount, RECENT_TINT_COUNT } from '../../utils/recencyTint'
 
 export function DisplayPanel() {
-  const { zoom, zoomIn, zoomOut, reset, fontScale, fontScaleUp, fontScaleDown, fontScaleReset, family, setFontFamily } = useZoomCtx()
+  const { zoom, zoomSupported, zoomIn, zoomOut, reset, family, setFontFamily } = useZoomCtx()
+  // Shortcut label for the zoom hint/description: ⌘ on macOS, Ctrl elsewhere.
+  const modKey = /mac/i.test(navigator.platform) ? '⌘' : 'Ctrl'
   const { preference, setTheme, colorTheme, setColorTheme, allThemes } = useTheme()
   const { uiMode, setUIMode } = useUIMode()
   const editor = useThemeEditor()
@@ -64,8 +66,22 @@ export function DisplayPanel() {
 
       <SettingsSection title="Zoom & Font">
         <SettingsCard>
-          <SettingsStepper label="Zoom Level" description="Scale entire UI (80%–150%)" value={zoom} suffix="%" onIncrement={zoomIn} onDecrement={zoomOut} onReset={reset} />
-          <SettingsStepper label="Font Size" description="Scale text and spacing (100%–250%). Affects all rem-based values." value={fontScale} suffix="%" onIncrement={fontScaleUp} onDecrement={fontScaleDown} onReset={fontScaleReset} />
+          {zoomSupported ? (
+            <SettingsStepper label="Zoom Level" description={`Native window zoom, the same setting as ${modKey}+ / ${modKey}− (50%–300%). Remembered across launches.`} value={zoom} suffix="%" onIncrement={zoomIn} onDecrement={zoomOut} onReset={reset} />
+          ) : (
+            <div className="flex items-center justify-between gap-4 py-1.5">
+              <div className="flex flex-col gap-0.5">
+                <span className="text-[13px] font-semibold text-text">Zoom Level</span>
+                <span className="text-[12px] text-muted">Use your browser's zoom. Your browser remembers it for this site.</span>
+              </div>
+              <span className="flex items-center gap-1 text-[12px] text-muted whitespace-nowrap">
+                <kbd className="px-1.5 py-0.5 rounded border border-border bg-bg-elevated text-text font-mono text-[11px]">{modKey}</kbd>
+                <kbd className="px-1.5 py-0.5 rounded border border-border bg-bg-elevated text-text font-mono text-[11px]">+</kbd>
+                <span>/</span>
+                <kbd className="px-1.5 py-0.5 rounded border border-border bg-bg-elevated text-text font-mono text-[11px]">−</kbd>
+              </span>
+            </div>
+          )}
           <SettingsButtonGroup label="Font Family" description="UI font family for the dashboard" value={family}
             options={[{ value: 'sans', label: 'Sans' }, { value: 'mono', label: 'Mono' }, { value: 'system', label: 'System' }]}
             onChange={v => setFontFamily(v as 'sans' | 'mono' | 'system')} />

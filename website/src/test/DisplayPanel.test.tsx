@@ -1,23 +1,24 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, waitFor } from '@testing-library/react'
+import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { DisplayPanel } from '../pages/settings/DisplayPanel'
 import { renderWithProviders } from './helpers'
 
-// Mock useZoomCtx — DisplayPanel uses it for zoom/font controls
+// Mock useZoomCtx — DisplayPanel uses it for zoom/font controls. The object is
+// module-scoped and mutable so individual tests can flip zoomSupported to
+// cover both the desktop stepper and the plain-browser shortcut hint.
+const zoomCtx = {
+  zoom: 100,
+  zoomSupported: true,
+  zoomIn: vi.fn(),
+  zoomOut: vi.fn(),
+  reset: vi.fn(),
+  family: 'sans',
+  setFontFamily: vi.fn(),
+  cycleFamily: vi.fn(),
+}
 vi.mock('../hooks/ZoomProvider', () => ({
-  useZoomCtx: () => ({
-    zoom: 100,
-    zoomIn: vi.fn(),
-    zoomOut: vi.fn(),
-    reset: vi.fn(),
-    fontScale: 100,
-    fontScaleUp: vi.fn(),
-    fontScaleDown: vi.fn(),
-    fontScaleReset: vi.fn(),
-    family: 'sans',
-    setFontFamily: vi.fn(),
-  }),
+  useZoomCtx: () => zoomCtx,
 }))
 
 // Mock useTheme — provides color theme state. ThemeProvider is a passthrough
@@ -154,5 +155,48 @@ describe('DisplayPanel – ThemeEditorPanel overlay', () => {
     // Sidebar Colors section should still be visible and interactive
     expect(screen.getByText('Sidebar Colors')).toBeInTheDocument()
     expect(screen.getByText('Palette')).toBeInTheDocument()
+  })
+})
+
+describe('DisplayPanel – zoom setting', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    zoomCtx.zoomSupported = true
+    zoomCtx.zoom = 100
+  })
+
+  /** Scope queries to the zoom stepper's button row — the panel has other
+   *  steppers (e.g. "Highlight recent sessions") with identical
+   *  Increase/Decrease labels. Only the zoom value renders with a % suffix,
+   *  and that text sits on the reset button whose parent is the row. */
+  const zoomRow = () => within(screen.getByText(/^\d+%$/).parentElement as HTMLElement)
+
+  it('desktop: renders the native zoom stepper and drives the bridge callbacks', async () => {
+    const user = userEvent.setup()
+    zoomCtx.zoom = 125
+    renderWithProviders(<DisplayPanel />)
+
+    expect(screen.getByText('Zoom Level')).toBeInTheDocument()
+    expect(screen.getByText('125%')).toBeInTheDocument()
+    // Single zoom control only — the legacy Font Size stepper must be gone.
+    expect(screen.queryByText('Font Size')).not.toBeInTheDocument()
+
+    await user.click(zoomRow().getByLabelText('Increase'))
+    expect(zoomCtx.zoomIn).toHaveBeenCalledTimes(1)
+    await user.click(zoomRow().getByLabelText('Decrease'))
+    expect(zoomCtx.zoomOut).toHaveBeenCalledTimes(1)
+    await user.click(screen.getByText('125%'))
+    expect(zoomCtx.reset).toHaveBeenCalledTimes(1)
+  })
+
+  it('browser: shows the shortcut hint instead of a stepper', () => {
+    zoomCtx.zoomSupported = false
+    renderWithProviders(<DisplayPanel />)
+
+    expect(screen.getByText('Zoom Level')).toBeInTheDocument()
+    expect(screen.getByText(/Use your browser's zoom/)).toBeInTheDocument()
+    // No zoom % value button renders in browser mode (other steppers keep theirs).
+    expect(screen.queryByText(/^\d+%$/)).not.toBeInTheDocument()
+    expect(screen.queryByText('Font Size')).not.toBeInTheDocument()
   })
 })

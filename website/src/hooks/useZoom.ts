@@ -1,10 +1,8 @@
-import { useState, useEffect, useLayoutEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { safeSetItem } from '../utils/safeStorage'
 
 export type FontFamily = 'sans' | 'mono' | 'system'
 
-const MIN = 80, MAX = 150, STEP = 10
-const FONT_MIN = 100, FONT_MAX = 250, FONT_STEP = 10
 const FAMILIES: FontFamily[] = ['sans', 'mono', 'system']
 const FAMILY_MAP: Record<FontFamily, string> = {
   sans: "'Space Grotesk',-apple-system,BlinkMacSystemFont,sans-serif",
@@ -12,60 +10,83 @@ const FAMILY_MAP: Record<FontFamily, string> = {
   system: "-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif",
 }
 
+// Native zoom bridge exposed by electron/preload.js. Chromium's per-origin
+// zoom (what Cmd/Ctrl +/- changes) is the ONLY zoom mechanism in KiroCrew:
+// the desktop app exposes read/write access to it over IPC, and Chromium
+// itself persists the factor per-origin across launches. In a plain browser
+// the bridge is absent — a web page cannot drive the browser's native zoom —
+// so the UI falls back to a keyboard-shortcut hint (`zoomSupported: false`).
+type ZoomAPI = {
+  get(): Promise<number>
+  set(factor: number): Promise<number>
+  step(dir: 1 | -1): Promise<number>
+}
+const zoomAPI = (): ZoomAPI | undefined => (window as { zoomAPI?: ZoomAPI }).zoomAPI
+
+// Legacy page-side scaling (removed): a CSS `zoom` on #root ('mc-zoom') and an
+// html font-size scale ('mc-font-scale') that stacked with native zoom into
+// three multiplying mechanisms. One-time migration: fold the combined legacy
+// scale into the native zoom factor (desktop only — browsers can't be set
+// programmatically), then drop the keys so page scaling never re-applies.
+const LEGACY_ZOOM_KEY = 'mc-zoom'
+const LEGACY_FONT_SCALE_KEY = 'mc-font-scale'
+function migrateLegacyScale(api: ZoomAPI | undefined) {
+  const zoomRaw = localStorage.getItem(LEGACY_ZOOM_KEY)
+  const fontRaw = localStorage.getItem(LEGACY_FONT_SCALE_KEY)
+  if (zoomRaw === null && fontRaw === null) return
+  localStorage.removeItem(LEGACY_ZOOM_KEY)
+  localStorage.removeItem(LEGACY_FONT_SCALE_KEY)
+  if (!api) return
+  const zoom = parseInt(zoomRaw || '100', 10)
+  const font = parseInt(fontRaw || '100', 10)
+  if (Number.isNaN(zoom) || Number.isNaN(font)) return
+  const combined = (zoom / 100) * (font / 100)
+  if (Math.abs(combined - 1) < 0.005) return
+  // Same bounds as electron/zoom.js (main clamps again regardless).
+  void api.set(Math.min(3, Math.max(0.5, combined))).catch(() => {})
+}
+
 export function useZoom() {
-  const [zoom, setZoom] = useState(() => parseInt(localStorage.getItem('mc-zoom') || '100', 10))
-  const [fontScale, setFontScale] = useState(() => parseInt(localStorage.getItem('mc-font-scale') || '100', 10))
+  // Percent view of the native zoom factor (100 = 1.0). In browsers this
+  // stays 100 and zoomSupported is false — the value is never shown there.
+  const [zoom, setZoomPct] = useState(100)
+  const zoomSupported = !!zoomAPI()
   const [family, setFamily] = useState<FontFamily>(
     () => (localStorage.getItem('mc-font-family') as FontFamily) || 'sans'
   )
 
-  // Zoom: the CSS `zoom` property on #root (a TRUE layout zoom).
-  //
-  // We deliberately use `zoom`, NOT `transform: scale()`. `transform: scale` is
-  // paint-only: it visually resizes pixels but leaves every element's layout box
-  // at its original size, so scroll math, text selection / hit-testing, and
-  // position:fixed all operate on the unscaled boxes — the UI looks scaled but
-  // you can't scroll to or click what you see (the reported bug). `zoom` instead
-  // reflows layout: every component gets a genuinely larger/smaller box, so
-  // scrolling, selection, and fixed positioning all work interactively. It is
-  // supported in all target browsers (Chrome/Edge/Safari always; Firefox 126+).
-  // Because `zoom` scales the coordinate system, the shell's `h-screen`/`100vh`
-  // resolves correctly at any level with no width/min-height compensation.
-  //
-  // useLayoutEffect sets it synchronously before paint to avoid first-render flicker.
-  useLayoutEffect(() => {
-    const el = document.getElementById('root') as HTMLElement | null
-    if (!el) return
-    const s = zoom / 100
-    // setProperty('zoom', …) avoids depending on `zoom` being in the TS DOM lib.
-    if (s === 1) {
-      el.style.removeProperty('zoom')
-    } else {
-      el.style.setProperty('zoom', String(s))
-    }
-    // --mc-vh/--mc-vw: ChatInput caps its textarea against the usable viewport.
-    // Under `zoom`, a raw px value is read in the zoomed coordinate space, so
-    // innerHeight/s px still maps to the real viewport height — keep the existing
-    // semantics so the input cap stays correct at any zoom.
-    const updateVh = () => {
-      document.documentElement.style.setProperty('--mc-vh', `${window.innerHeight / s}px`)
-      document.documentElement.style.setProperty('--mc-vw', `${window.innerWidth / s}px`)
-    }
-    updateVh()
-    window.addEventListener('resize', updateVh)
-    return () => {
-      window.removeEventListener('resize', updateVh)
-      document.documentElement.style.removeProperty('--mc-vh')
-      document.documentElement.style.removeProperty('--mc-vw')
-      el.style.removeProperty('zoom')
-    }
-  }, [zoom])
-
-  // Font scale: html font-size scales all rem-based text (Tailwind classes).
   useEffect(() => {
-    document.documentElement.style.fontSize = `${fontScale}%`
-    return () => { document.documentElement.style.removeProperty('font-size') }
-  }, [fontScale])
+    const api = zoomAPI()
+    migrateLegacyScale(api)
+    if (!api) return
+    let alive = true
+    const sync = () => {
+      void api.get().then(f => { if (alive) setZoomPct(Math.round(f * 100)) }).catch(() => {})
+    }
+    sync()
+    // Native zoom changes from OUTSIDE this hook (View menu Cmd/Ctrl +/-,
+    // ctrl+wheel) resize the CSS-pixel viewport, which fires window 'resize'.
+    // Re-reading on resize keeps the Settings stepper live without a push
+    // channel; plain window resizes just re-read an unchanged value.
+    window.addEventListener('resize', sync)
+    return () => { alive = false; window.removeEventListener('resize', sync) }
+  }, [])
+
+  const applyResult = useCallback((p: Promise<number>) => {
+    void p.then(f => setZoomPct(Math.round(f * 100))).catch(() => {})
+  }, [])
+  const zoomIn = useCallback(() => {
+    const api = zoomAPI()
+    if (api) applyResult(api.step(1))
+  }, [applyResult])
+  const zoomOut = useCallback(() => {
+    const api = zoomAPI()
+    if (api) applyResult(api.step(-1))
+  }, [applyResult])
+  const reset = useCallback(() => {
+    const api = zoomAPI()
+    if (api) applyResult(api.set(1))
+  }, [applyResult])
 
   useEffect(() => {
     // Apply --font-body from the user's Font Family preference, with one
@@ -91,16 +112,6 @@ export function useZoom() {
     return () => obs.disconnect()
   }, [family])
 
-  const set = useCallback((v: number) => {
-    const c = Math.max(MIN, Math.min(MAX, v))
-    safeSetItem('mc-zoom', String(c))
-    setZoom(c)
-  }, [])
-
-  const zoomIn = useCallback(() => set(zoom + STEP), [zoom, set])
-  const zoomOut = useCallback(() => set(zoom - STEP), [zoom, set])
-  const reset = useCallback(() => set(100), [set])
-
   const setFontFamily = useCallback((f: FontFamily) => {
     safeSetItem('mc-font-family', f)
     setFamily(f)
@@ -112,14 +123,5 @@ export function useZoom() {
     setFamily(next)
   }, [family])
 
-  const setFontScaleVal = useCallback((v: number) => {
-    const c = Math.max(FONT_MIN, Math.min(FONT_MAX, v))
-    safeSetItem('mc-font-scale', String(c))
-    setFontScale(c)
-  }, [])
-  const fontScaleUp = useCallback(() => setFontScaleVal(fontScale + FONT_STEP), [fontScale, setFontScaleVal])
-  const fontScaleDown = useCallback(() => setFontScaleVal(fontScale - FONT_STEP), [fontScale, setFontScaleVal])
-  const fontScaleReset = useCallback(() => setFontScaleVal(100), [setFontScaleVal])
-
-  return { zoom, zoomIn, zoomOut, reset, fontScale, fontScaleUp, fontScaleDown, fontScaleReset, family, setFontFamily, cycleFamily }
+  return { zoom, zoomSupported, zoomIn, zoomOut, reset, family, setFontFamily, cycleFamily }
 }
