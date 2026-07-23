@@ -1397,8 +1397,14 @@ async def handle_app_ui_file(request: web.Request) -> web.Response:
     # change and must always see the latest bytes. Use the in-memory cache
     # (maintained by the dev-mode watcher) so this hot path does NO disk IO on
     # the event loop for every asset served (no-blocking-call-on-event-loop).
+    # Everything else: no-cache (NOT no-store) — the browser may cache but MUST
+    # revalidate each load. FileResponse answers conditional requests
+    # (If-Modified-Since / If-None-Match from its Last-Modified/ETag) with a
+    # body-less 304, so unchanged files stay cheap while app updates are picked
+    # up on a plain refresh. The previous public,max-age=3600 served every
+    # app's UI stale for up to an hour after an update.
     from kiro_crew.apps.dev_mode import is_dev_mode_cached
-    cache = "no-store" if is_dev_mode_cached(name) else "public, max-age=3600"
+    cache = "no-store" if is_dev_mode_cached(name) else "no-cache"
     return web.FileResponse(full_path, headers={"Content-Type": content_type, "Cache-Control": cache})  # type: ignore[return-value]
 
 

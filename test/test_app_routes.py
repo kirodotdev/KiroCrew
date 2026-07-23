@@ -147,3 +147,45 @@ async def test_uninstall(tmp_path, monkeypatch):
 
         resp = await client.get("/api/apps/api-test-app")
         assert resp.status == 404
+
+
+# ---------------------------------------------------------------------------
+# UI file serving — cache policy
+# ---------------------------------------------------------------------------
+
+def _make_app_source_with_ui(tmp_path, name="ui-cache-app"):
+    src = _make_app_source(tmp_path, name)
+    ui = src / "ui"
+    ui.mkdir()
+    (ui / "index.mjs").write_text("export default function App() { return null }\n")
+    manifest = json.loads((src / APP_MANIFEST_FILENAME).read_text())
+    manifest["ui"] = {"entry": "index.mjs", "pages": [{"route": f"/{name}", "label": name}]}
+    (src / APP_MANIFEST_FILENAME).write_text(json.dumps(manifest, indent=2))
+    return src
+
+
+@pytest.mark.asyncio
+async def test_ui_file_no_cache_revalidation(tmp_path, monkeypatch):
+    """App UI files are served with Cache-Control: no-cache so browsers
+    revalidate every load (app updates / dev edits show on plain refresh),
+    and conditional requests get a body-less 304 so unchanged files stay cheap.
+
+    Regression: the previous ``public, max-age=3600`` served every app's UI
+    stale for up to an hour after an update.
+    """
+    _setup_env(tmp_path, monkeypatch)
+    install_app(str(_make_app_source_with_ui(tmp_path)))
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.get("/apps/ui-cache-app/ui/index.mjs")
+        assert resp.status == 200
+        assert resp.headers.get("Cache-Control") == "no-cache"
+        assert "max-age" not in resp.headers.get("Cache-Control", "")
+        last_modified = resp.headers.get("Last-Modified")
+        assert last_modified  # FileResponse provides the validator
+
+        # A revalidation request with the validator must yield 304 (no body).
+        resp304 = await client.get(
+            "/apps/ui-cache-app/ui/index.mjs",
+            headers={"If-Modified-Since": last_modified},
+        )
+        assert resp304.status == 304
