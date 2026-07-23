@@ -2,6 +2,7 @@ import { useState, useRef, useCallback, useEffect, useLayoutEffect, useMemo } fr
 import { createPortal } from 'react-dom'
 import { useLocation, useNavigate, useNavigationType, useSearchParams } from 'react-router-dom'
 import { useQuery, useQueries, useMutation, useQueryClient } from '@tanstack/react-query'
+import { modelListRefetchInterval } from '../providers/modelListHealth'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { useSwipeEdge } from '../hooks/useSwipeEdge'
 import { useAppSelector, useAppDispatch, store } from '../store'
@@ -605,6 +606,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
       const models = await provider.fetchAvailableModels()
       return [{ name: 'auto', description: 'Default' }, ...models.filter(m => m.name !== 'auto')]
     },
+    refetchInterval: modelListRefetchInterval,
   })
   const { open: modelDropdown, setOpen: setModelDropdown, filter: modelFilter, setFilter: setModelFilter, dropdownRef: modelDropdownRef, inputRef: modelInputRef, filtered: filteredModels } = useFilteredDropdown(availableModels)
   // Roving-focus keyboard nav for the agent + model dropdowns (shared with StyledSelect/AgentSelector).

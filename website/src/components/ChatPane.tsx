@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import { X, ShieldCheck, BookOpen, Handshake, Rocket, Check } from 'lucide-react'
 import { SplitGlyph } from './SplitGlyph'
 import { useQuery, useMutation } from '@tanstack/react-query'
+import { modelListRefetchInterval } from '../providers/modelListHealth'
 import ChatMessageList from '../app-sdk/ChatMessageList'
 import ToolCallLine from '../pages/chat/ToolCallLine'
 import type { ChatMessage } from '../types'
@@ -103,6 +104,7 @@ export default function ChatPane({
       const models = await provider.fetchAvailableModels()
       return [{ name: 'auto', description: 'Default' }, ...models.filter((m) => m.name !== 'auto')]
     },
+    refetchInterval: modelListRefetchInterval,
   })
   const modelDD = useFilteredDropdown(availableModels)
 

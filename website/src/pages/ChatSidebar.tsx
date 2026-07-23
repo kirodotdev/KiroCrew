@@ -8,6 +8,7 @@ import { DndContext, closestCenter, pointerWithin, KeyboardSensor, PointerSensor
 import { SortableContext, verticalListSortingStrategy, useSortable, sortableKeyboardCoordinates } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { modelListRefetchInterval } from '../providers/modelListHealth'
 import { useAppDispatch, useAppSelector } from '../store'
 import { useConnected } from '../hooks/useConnected'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent } from '../components/ui/dropdown-menu'
@@ -881,6 +882,7 @@ function ChatSidebar({
     },
     enabled: bulkModelOpen,
     staleTime: 60_000,
+    refetchInterval: modelListRefetchInterval,
   })
   const bulkRunningCount = useMemo(() => slots.filter(s => s.running).length, [slots])
   // Count only slots that would actually change: model differs from the target

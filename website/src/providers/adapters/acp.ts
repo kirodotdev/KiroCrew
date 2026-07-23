@@ -1,5 +1,6 @@
 import { api } from '../../api/client'
 import modelTokensRaw from '../../model_tokens.json'
+import { markModelsDegraded } from '../modelListHealth'
 import type {
   ProviderAdapter,
   ProviderCapabilities,
@@ -16,6 +17,61 @@ const MODEL_TOKENS: Record<string, number> = Object.fromEntries(
   Object.entries(modelTokensRaw).filter(([k]) => !k.startsWith('_')) as [string, number][]
 )
 const DEFAULT_CONTEXT = 200_000
+
+// Persist the last SUCCESSFUL live /api/models list so a transient backend
+// failure (a creds/token hiccup, or a cold `--list-models` spawn exceeding the
+// gateway's timeout → 503) degrades to the real, last-known-good list instead
+// of collapsing to auto-only. The cached ids came from the backend, so they are
+// valid ACP model ids — unlike the canonical registry keys (fable-5-1m, …)
+// which the ACP CLI rejects (-32603). A TTL bounds staleness: entitlements /
+// available models can change while the backend is unreachable, so a very old
+// cache could still offer a model the CLI no longer accepts (a residual, now
+// time-boxed, -32603 window). Versioned key so a shape change invalidates.
+const MODELS_CACHE_KEY = 'kc.acp.models.v1'
+const MODELS_CACHE_TTL_MS = 24 * 60 * 60 * 1000 // 24h — bound stale-model exposure
+
+interface CachedModels {
+  ts: number
+  models: ModelInfo[]
+}
+
+/** Read the last-good live model list from localStorage, or null if absent,
+ *  expired (older than the TTL), or unusable. Fully guarded: SSR (no
+ *  localStorage), disabled storage, quota, and corrupt JSON all degrade to null
+ *  so the caller falls through to auto-only. */
+function readCachedModels(): ModelInfo[] | null {
+  try {
+    if (typeof localStorage === 'undefined') return null
+    const raw = localStorage.getItem(MODELS_CACHE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as CachedModels
+    if (!parsed || typeof parsed.ts !== 'number' || !Array.isArray(parsed.models)) return null
+    const age = Date.now() - parsed.ts
+    // Reject a stale cache AND a future timestamp: a cache written while the
+    // clock was ahead yields a negative age after the clock is corrected, which
+    // would otherwise slip past a `> TTL` check and be served indefinitely.
+    if (age < 0 || age > MODELS_CACHE_TTL_MS) return null
+    const clean = parsed.models.filter(
+      (m): m is ModelInfo =>
+        !!m && typeof m.name === 'string' && m.name.length > 0
+    )
+    return clean.length > 0 ? clean : null
+  } catch {
+    return null
+  }
+}
+
+/** Persist a live model list with a timestamp. Best-effort — storage errors
+ *  (quota, disabled, SSR) are swallowed so caching never breaks the picker. */
+function writeCachedModels(models: ModelInfo[]): void {
+  try {
+    if (typeof localStorage === 'undefined') return
+    const payload: CachedModels = { ts: Date.now(), models }
+    localStorage.setItem(MODELS_CACHE_KEY, JSON.stringify(payload))
+  } catch {
+    /* quota exceeded / storage disabled — non-fatal */
+  }
+}
 
 /** Raw daily-usage entry from /api/usage/kiro. */
 interface RawDailyHistory {
@@ -177,15 +233,26 @@ export class AcpAdapter implements ProviderAdapter {
   async fetchAvailableModels(): Promise<ModelInfo[]> {
     try {
       const models = await api.models()
-      if (!Array.isArray(models)) return this._defaultModels()
+      if (!Array.isArray(models) || models.length === 0) {
+        // Empty/non-array success: NOT a live list — keep polling, serve the
+        // last-good live list if we have one, else auto-only.
+        markModelsDegraded(this.id, true)
+        return readCachedModels() ?? this._defaultModels()
+      }
       const result = models.map((m: RawModel) => ({
         name: m.model_name,
         description: m.description || '',
         contextWindow: MODEL_TOKENS[m.model_name] ?? DEFAULT_CONTEXT,
       }))
-      return result.length > 0 ? result : this._defaultModels()
+      writeCachedModels(result) // remember this good live list for next hiccup
+      markModelsDegraded(this.id, false) // live success → self-heal can stop polling
+      return result
     } catch {
-      return this._defaultModels()
+      // Transient backend failure (503 / network): NOT live — keep polling.
+      // Serve the last-good live list if we have one, else auto-only. Never
+      // surface canonical registry keys — the ACP CLI rejects them (-32603).
+      markModelsDegraded(this.id, true)
+      return readCachedModels() ?? this._defaultModels()
     }
   }
 

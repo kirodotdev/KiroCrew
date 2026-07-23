@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, type ReactNode } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
+import { modelListRefetchInterval } from '../providers/modelListHealth'
 import { Check, Star, StarOff, Brain, Plug, X, Pin, Package, ArrowUp, Lock, Hourglass, Bot, ChevronDown } from 'lucide-react'
 import { createPortal } from 'react-dom'
 import { useAppSelector } from '../store'
@@ -153,6 +154,7 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
       const models = await provider.fetchAvailableModels()
       return [{ name: 'auto', description: 'Default' }, ...models.filter(x => x.name && x.name !== 'auto')]
     },
+    refetchInterval: modelListRefetchInterval,
   })
   const modelOptions = modelOptionsData ?? []
   const { open: modelDropOpen, setOpen: setModelDropOpen, filter: modelFilter, setFilter: setModelFilter, dropdownRef: modelDropRef, inputRef: modelInputRef, filtered: filteredModels } = useFilteredDropdown(modelOptions)

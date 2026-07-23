@@ -9,9 +9,17 @@ vi.mock('../api/client', () => ({
 
 import { api } from '../api/client'
 import { AcpAdapter } from '../providers/adapters/acp'
+import {
+  markModelsDegraded,
+  modelsDegraded,
+  modelListRefetchInterval,
+} from '../providers/modelListHealth'
 
 describe('AcpAdapter.fetchAvailableModels', () => {
-  beforeEach(() => vi.clearAllMocks())
+  beforeEach(() => {
+    vi.clearAllMocks()
+    localStorage.clear()
+  })
 
   it('returns backend-advertised models on success', async () => {
     ;(api.models as any).mockResolvedValue([
@@ -55,5 +63,131 @@ describe('AcpAdapter.fetchAvailableModels', () => {
     const models = await new AcpAdapter().fetchAvailableModels()
     expect(models[0].name).toBe('auto')
     expect(models[0].contextWindow).toBeGreaterThan(0)
+  })
+
+  it('persists a good live list to localStorage', async () => {
+    ;(api.models as any).mockResolvedValue([
+      { model_name: 'auto', description: 'a' },
+      { model_name: 'claude-opus-4.8', description: 'b' },
+    ])
+    await new AcpAdapter().fetchAvailableModels()
+    const raw = localStorage.getItem('kc.acp.models.v1')
+    expect(raw).toBeTruthy()
+    const cached = JSON.parse(raw as string)
+    expect(cached.models.map((m: any) => m.name)).toEqual(['auto', 'claude-opus-4.8'])
+    expect(typeof cached.ts).toBe('number')
+  })
+
+  it('serves the last-good cached list (not auto-only) when the API throws', async () => {
+    // Prime the cache with a good live fetch.
+    ;(api.models as any).mockResolvedValueOnce([
+      { model_name: 'auto', description: 'a' },
+      { model_name: 'claude-opus-4.8', description: 'b' },
+      { model_name: 'claude-fable-5', description: 'c' },
+    ])
+    const adapter = new AcpAdapter()
+    await adapter.fetchAvailableModels()
+    // Next fetch fails transiently — should degrade to the cached 3, not auto-only.
+    ;(api.models as any).mockRejectedValue(new Error('503'))
+    const models = await adapter.fetchAvailableModels()
+    expect(models).toHaveLength(3)
+    expect(models.map(m => m.name)).toContain('claude-fable-5')
+  })
+
+  it('falls back to auto-only when the API throws and there is no cache', async () => {
+    ;(api.models as any).mockRejectedValue(new Error('503'))
+    const models = await new AcpAdapter().fetchAvailableModels()
+    expect(models).toHaveLength(1)
+    expect(models[0].name).toBe('auto')
+  })
+
+  it('does not overwrite the cache with an empty/failed result', async () => {
+    ;(api.models as any).mockResolvedValueOnce([
+      { model_name: 'auto', description: 'a' },
+      { model_name: 'claude-opus-4.8', description: 'b' },
+    ])
+    const adapter = new AcpAdapter()
+    await adapter.fetchAvailableModels()
+    ;(api.models as any).mockResolvedValue([]) // empty success must not clobber cache
+    await adapter.fetchAvailableModels()
+    const cached = JSON.parse(localStorage.getItem('kc.acp.models.v1') as string)
+    expect(cached.models).toHaveLength(2)
+  })
+
+  it('ignores a cache older than the TTL (bounds -32603 exposure)', async () => {
+    // Write a stale cache (25h old) directly.
+    localStorage.setItem(
+      'kc.acp.models.v1',
+      JSON.stringify({
+        ts: Date.now() - 25 * 60 * 60 * 1000,
+        models: [{ name: 'auto' }, { name: 'stale-model' }],
+      }),
+    )
+    ;(api.models as any).mockRejectedValue(new Error('503'))
+    const models = await new AcpAdapter().fetchAvailableModels()
+    // Too stale to trust → auto-only, not the stale cached list.
+    expect(models).toHaveLength(1)
+    expect(models[0].name).toBe('auto')
+  })
+
+  it('ignores a cache with a future timestamp (clock skew)', async () => {
+    localStorage.setItem(
+      'kc.acp.models.v1',
+      JSON.stringify({
+        ts: Date.now() + 60 * 60 * 1000, // 1h in the future
+        models: [{ name: 'auto' }, { name: 'skewed-model' }],
+      }),
+    )
+    ;(api.models as any).mockRejectedValue(new Error('503'))
+    const models = await new AcpAdapter().fetchAvailableModels()
+    expect(models).toHaveLength(1)
+    expect(models[0].name).toBe('auto')
+  })
+})
+
+describe('model-list liveness (self-heal signal)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    localStorage.clear()
+    markModelsDegraded('acp', false)
+  })
+
+  it('marks degraded on failure and clears it on a live success', async () => {
+    ;(api.models as any).mockRejectedValue(new Error('503'))
+    const adapter = new AcpAdapter()
+    await adapter.fetchAvailableModels()
+    expect(modelsDegraded('acp')).toBe(true)
+    // Poll continues while degraded, regardless of served list length.
+    expect(modelListRefetchInterval({ queryKey: ['available-models', 'acp'] })).toBe(8_000)
+
+    ;(api.models as any).mockResolvedValue([
+      { model_name: 'auto', description: 'a' },
+      { model_name: 'claude-opus-4.8', description: 'b' },
+    ])
+    await adapter.fetchAvailableModels()
+    expect(modelsDegraded('acp')).toBe(false)
+    // Live success → stop polling.
+    expect(modelListRefetchInterval({ queryKey: ['available-models', 'acp'] })).toBe(false)
+  })
+
+  it('keeps polling on a degraded CACHED multi-model list (the -32603/stale bug)', async () => {
+    // Prime a good live list, then fail: the served list is multi-entry but
+    // degraded — polling MUST continue (the old length>1 heuristic stopped it).
+    ;(api.models as any).mockResolvedValueOnce([
+      { model_name: 'auto', description: 'a' },
+      { model_name: 'claude-opus-4.8', description: 'b' },
+      { model_name: 'claude-fable-5', description: 'c' },
+    ])
+    const adapter = new AcpAdapter()
+    await adapter.fetchAvailableModels()
+    ;(api.models as any).mockRejectedValue(new Error('503'))
+    const served = await adapter.fetchAvailableModels()
+    expect(served.length).toBeGreaterThan(1) // multi-entry cached list
+    expect(modelsDegraded('acp')).toBe(true)
+    expect(modelListRefetchInterval({ queryKey: ['available-models', 'acp'] })).toBe(8_000)
+  })
+
+  it('does not poll an unmarked/unknown provider', () => {
+    expect(modelListRefetchInterval({ queryKey: ['available-models', 'other'] })).toBe(false)
   })
 })
