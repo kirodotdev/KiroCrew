@@ -394,13 +394,7 @@ function NavItem({ path, label, icon, active, collapsed, badge, onClickOverride,
       whileHover={collapsed ? undefined : { scale: 1.02 }}
       whileTap={{ scale: 0.97 }}
       transition={{ duration: 0.15 }}
-      // mx-1 insets the whole box (incl. its selected tint) by an even 4px on
-      // each side so it lines up with the logo, which sits 4px further in than
-      // the px-2 nav container (logo row adds p-1). Expanded: tint left edge
-      // aligns with the logo's left edge; icon/label keep their prior x (pl-2 +
-      // mx-1 == old pl-3). Collapsed: box becomes 32px wide (== logo width),
-      // centered under the logo (justify-center), so the tint mirrors the logo.
-      className={`nav-item group/nav relative flex items-center rounded-md cursor-pointer text-sm font-medium whitespace-nowrap gap-2.5 py-2 mx-1 transition-colors duration-200 ${collapsed ? 'justify-center px-0' : 'pl-2 pr-2 overflow-hidden'} ${active ? 'nav-active text-text-strong bg-accent-subtle' : 'text-muted hover:text-text hover:bg-bg-hover'}`}
+      className={`nav-item group/nav relative flex items-center rounded-md cursor-pointer text-sm font-medium whitespace-nowrap gap-2.5 py-2 pl-3 pr-3 transition-colors duration-200 ${collapsed ? '' : 'overflow-hidden'} ${active ? 'nav-active text-text-strong bg-accent-subtle' : 'text-muted hover:text-text hover:bg-bg-hover'}`}
       onClick={activate}
       onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); activate() } }}
       onMouseEnter={showTip}
@@ -416,12 +410,8 @@ function NavItem({ path, label, icon, active, collapsed, badge, onClickOverride,
       {iconEl}
       {!collapsed && <span className="whitespace-nowrap overflow-hidden">{label}</span>}
       {collapsed && tip && createPortal(
-        // pl-2 pr-2 (not pl-3) so the flyout icon lands at the same x as the
-        // rest-state rail icon. The flyout is anchored to the row's border box
-        // (tip.left), which the row's mx-1 inset by 4px; matching pl-2 puts the
-        // icon back on the rail icon's centered spot instead of 4px to its right.
         <div
-          className={`fixed flex items-center gap-2.5 pl-2 pr-2 rounded-md bg-card border border-border shadow-lg text-text text-sm font-medium z-[9999] pointer-events-none whitespace-nowrap transition-opacity duration-150 ${tipOn ? 'opacity-100' : 'opacity-0'}`}
+          className={`fixed flex items-center gap-2.5 pl-3 pr-3 rounded-md bg-card border border-border shadow-lg text-text text-sm font-medium z-[9999] pointer-events-none whitespace-nowrap transition-opacity duration-150 ${tipOn ? 'opacity-100' : 'opacity-0'}`}
           style={{ top: tip.top, left: tip.left, height: tip.height }}
         >
           <span className={`app-icon-nav w-4 h-4 flex items-center justify-center shrink-0 ${active ? 'text-accent is-lit' : ''}`}>{icon}</span>
@@ -1602,23 +1592,31 @@ export default function App() {
         {/* Top-fixed: menu row + primary destinations + Apps section header.
             The sidebar toggle lives HERE (menu row), not in the topbar. */}
         <div className="shrink-0 flex flex-col gap-0.5 px-2 pt-2">
-          <div className={`flex items-center p-1 ${effectiveCollapsed ? 'justify-start' : ''}`}>
+          {/* mb-1.5 (6px) + the container's gap-0.5 (2px) = 8px between the
+              header and the first nav item, without widening the 2px item gaps. */}
+          <div className={`flex items-center mb-1.5 ${effectiveCollapsed ? 'justify-start' : ''}`}>
             {/* One persistent click target that toggles the rail. The logo
                 never unmounts, so it stays perfectly still across collapse/
                 expand (no swap, no shift). Only the brand text + collapse arrow
                 animate — fading in on expand and out on collapse via
                 AnimatePresence. No hover tint on the row; on hover only the
                 logo rotates (group-hover). */}
+            {/* No overflow-hidden here: the 40px logo's hover-rotate paints a
+                few px past its box, and clipping it looked cut off. Rotation is
+                a transform so it doesn't affect the header's layout height (row
+                stays 40px, collapse-icon alignment unchanged); horizontal spill
+                on collapse is still clipped by the rail (motion.nav) and the
+                brand text clips itself via `truncate`. */}
             <button
               type="button"
-              className="group relative flex items-center gap-2 w-full p-0 bg-transparent border-none cursor-pointer text-left overflow-hidden"
+              className="group relative flex items-center gap-2 w-full p-0 bg-transparent border-none cursor-pointer text-left"
               onClick={toggleNav}
               title={effectiveCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
               aria-label={effectiveCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
               aria-expanded={!effectiveCollapsed}
             >
               <span className="flex items-center gap-2.5 min-w-0">
-                <img src={avatar} alt="" aria-hidden="true" className={`${isLumon ? 'w-auto h-8' : 'w-8 h-8'} rounded-md shrink-0 object-contain transition-transform duration-300 group-hover:rotate-[-8deg]`} />
+                <img src={avatar} alt="" aria-hidden="true" className={`${isLumon ? 'w-auto h-10' : 'w-10 h-10'} rounded-md shrink-0 object-contain transition-transform duration-300 group-hover:rotate-[-8deg]`} />
                 <AnimatePresence initial={false}>
                   {!effectiveCollapsed && (
                     <motion.span
