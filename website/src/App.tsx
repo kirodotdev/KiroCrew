@@ -394,7 +394,13 @@ function NavItem({ path, label, icon, active, collapsed, badge, onClickOverride,
       whileHover={collapsed ? undefined : { scale: 1.02 }}
       whileTap={{ scale: 0.97 }}
       transition={{ duration: 0.15 }}
-      className={`nav-item group/nav relative flex items-center rounded-md cursor-pointer text-sm font-medium whitespace-nowrap gap-2.5 py-2 pl-3 pr-3 transition-colors duration-200 ${collapsed ? '' : 'overflow-hidden'} ${active ? 'nav-active text-text-strong bg-accent-subtle' : 'text-muted hover:text-text hover:bg-bg-hover'}`}
+      // mx-1 insets the whole box (incl. its selected tint) by an even 4px on
+      // each side so it lines up with the logo, which sits 4px further in than
+      // the px-2 nav container (logo row adds p-1). Expanded: tint left edge
+      // aligns with the logo's left edge; icon/label keep their prior x (pl-2 +
+      // mx-1 == old pl-3). Collapsed: box becomes 32px wide (== logo width),
+      // centered under the logo (justify-center), so the tint mirrors the logo.
+      className={`nav-item group/nav relative flex items-center rounded-md cursor-pointer text-sm font-medium whitespace-nowrap gap-2.5 py-2 mx-1 transition-colors duration-200 ${collapsed ? 'justify-center px-0' : 'pl-2 pr-2 overflow-hidden'} ${active ? 'nav-active text-text-strong bg-accent-subtle' : 'text-muted hover:text-text hover:bg-bg-hover'}`}
       onClick={activate}
       onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); activate() } }}
       onMouseEnter={showTip}
@@ -410,8 +416,12 @@ function NavItem({ path, label, icon, active, collapsed, badge, onClickOverride,
       {iconEl}
       {!collapsed && <span className="whitespace-nowrap overflow-hidden">{label}</span>}
       {collapsed && tip && createPortal(
+        // pl-2 pr-2 (not pl-3) so the flyout icon lands at the same x as the
+        // rest-state rail icon. The flyout is anchored to the row's border box
+        // (tip.left), which the row's mx-1 inset by 4px; matching pl-2 puts the
+        // icon back on the rail icon's centered spot instead of 4px to its right.
         <div
-          className={`fixed flex items-center gap-2.5 pl-3 pr-3 rounded-md bg-card border border-border shadow-lg text-text text-sm font-medium z-[9999] pointer-events-none whitespace-nowrap transition-opacity duration-150 ${tipOn ? 'opacity-100' : 'opacity-0'}`}
+          className={`fixed flex items-center gap-2.5 pl-2 pr-2 rounded-md bg-card border border-border shadow-lg text-text text-sm font-medium z-[9999] pointer-events-none whitespace-nowrap transition-opacity duration-150 ${tipOn ? 'opacity-100' : 'opacity-0'}`}
           style={{ top: tip.top, left: tip.left, height: tip.height }}
         >
           <span className={`app-icon-nav w-4 h-4 flex items-center justify-center shrink-0 ${active ? 'text-accent is-lit' : ''}`}>{icon}</span>
