@@ -40,11 +40,33 @@ export function loadActiveKinds(): Set<Kind> {
   return new Set(KIND_KEYS)
 }
 
-export function parseTs(ts: string): Date {
-  let d = new Date(ts)
-  if (isNaN(d.getTime())) {
-    const epoch = parseFloat(ts)
-    if (!isNaN(epoch)) d = new Date(epoch * 1000)
+export function parseTs(ts: string | number): Date {
+  // A numeric epoch (number, or an all-digits string) can arrive in any unit —
+  // seconds, milliseconds, microseconds, or nanoseconds — depending on the
+  // producer. Detect the unit by magnitude and normalize to milliseconds.
+  //
+  // The previous implementation did `new Date(ts)` then, only on failure,
+  // `new Date(parseFloat(ts) * 1000)`. That broke for a millisecond epoch
+  // passed as a string: `new Date("1784784205932")` is Invalid Date in V8, so
+  // it fell through and multiplied ms by 1000 (treating it as seconds), which
+  // rendered the year as ~58527. Detecting the unit up front fixes both the
+  // ms-as-string and microsecond-as-number cases.
+  const num =
+    typeof ts === 'number'
+      ? ts
+      : /^\s*\d+(\.\d+)?\s*$/.test(ts)
+        ? parseFloat(ts)
+        : NaN
+  let d: Date
+  if (!isNaN(num)) {
+    let ms: number
+    if (num >= 1e17) ms = num / 1e6 // nanoseconds → ms
+    else if (num >= 1e14) ms = num / 1e3 // microseconds → ms
+    else if (num >= 1e11) ms = num // milliseconds (already)
+    else ms = num * 1e3 // seconds → ms
+    d = new Date(ms)
+  } else {
+    d = new Date(ts) // ISO 8601 / RFC date string
   }
   if (isNaN(d.getTime()) || d.getTime() < Date.UTC(2020, 0, 1)) return new Date(NaN)
   return d
@@ -72,12 +94,12 @@ export const KIND_META: Record<string, { icon: ReactNode; color: string; label: 
 }
 export const DEFAULT_META = { icon: <Bell className="lucide-inline" />, color: 'bg-muted/15 text-muted', label: 'Notification', borderColor: 'border-l-muted' }
 
-export function fmtTime(ts: string): string {
+export function fmtTime(ts: string | number): string {
   const d = parseTs(ts)
   return isNaN(d.getTime()) ? 'Unknown date' : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 }
 
-export function fmtFull(ts: string): string {
+export function fmtFull(ts: string | number): string {
   const d = parseTs(ts)
   return isNaN(d.getTime()) ? 'Unknown date' : d.toLocaleString()
 }
