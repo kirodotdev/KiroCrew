@@ -101,6 +101,11 @@ from kiro_crew.dashboard.handlers.discover import (
     api_skills_discover_preview,
 )
 from kiro_crew.dashboard.handlers.knowledge import setup_knowledge_routes
+from kiro_crew.dashboard.handlers.mcp_discover import (
+    api_mcp_discover,
+    api_mcp_discover_detail,
+    api_mcp_discover_install,
+)
 from kiro_crew.dashboard.handlers.source_providers import (
     api_pull_request_checks,
     api_pull_request_resolve,
@@ -1309,6 +1314,10 @@ async def start_dashboard(
     app.router.add_get("/api/mcp", handlers.api_mcp_servers)
     app.router.add_get("/api/mcp/scopes", handlers.api_mcp_global_scopes)
     app.router.add_get("/api/mcp/active", handlers.api_mcp_active)
+    # Multi-provider MCP discovery (official registry + optional edition capability provider)
+    app.router.add_get("/api/mcp/discover", api_mcp_discover)
+    app.router.add_get("/api/mcp/discover/detail", api_mcp_discover_detail)
+    app.router.add_post("/api/mcp/discover/install", api_mcp_discover_install)
     app.router.add_post("/api/mcp/probe", handlers.api_mcp_probe)
     app.router.add_get("/api/mcp/probe", handlers.api_mcp_probe_cached)
     app.router.add_post("/api/mcp/sync", handlers.api_mcp_sync)

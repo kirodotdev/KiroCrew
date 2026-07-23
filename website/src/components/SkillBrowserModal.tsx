@@ -8,11 +8,12 @@
  */
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Search, Download, Check, ExternalLink, Loader2, RefreshCw, X, FileText, AlertTriangle, ArrowLeft } from 'lucide-react'
+import { Download, Check, ExternalLink, Loader2, RefreshCw, FileText, AlertTriangle, ArrowLeft } from 'lucide-react'
 import { api, ApiError } from '../api/client'
 import Modal from './Modal'
 import { Btn } from './ui'
 import MarkdownRenderer from './MarkdownRenderer'
+import { DiscoverySearchBar, DiscoveryStates } from './DiscoverySearchBar'
 import { SkillMetaStrip } from './SkillDirectoryBrowser'
 import { parseFrontmatter } from './SkillForm'
 import type { DiscoveredSkill } from '../types'
@@ -176,62 +177,23 @@ export default function SkillBrowserModal({ open, onClose }: Props) {
       }
     >
       <div className="flex flex-col h-full min-h-0">
-        {/* Search */}
-        <div className="mb-3 shrink-0">
-          <div className="relative">
-            <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" aria-hidden="true" />
-            <input
-              ref={inputRef}
-              type="text"
-              role="combobox"
-              aria-expanded={results.length > 0}
-              aria-controls="skill-results-list"
-              aria-activedescendant={selectedKey ? `skill-opt-${selectedKey}` : undefined}
-              aria-label="Search skills"
-              value={query}
-              onChange={e => handleQueryChange(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder="Search skills across providers..."
-              className="w-full pl-9 pr-9 py-2 rounded-md border border-border bg-bg text-text text-sm focus:outline-none focus:ring-2 focus:ring-accent"
-              autoFocus
-            />
-            {query && (
-              <button
-                onClick={clearQuery}
-                aria-label="Clear search"
-                className="absolute right-2.5 top-1/2 -translate-y-1/2 p-0.5 rounded text-muted hover:text-text hover:bg-bg-hover"
-              >
-                <X size={14} aria-hidden="true" />
-              </button>
-            )}
-          </div>
-          <div className="mt-1.5 flex items-center justify-between text-xs text-muted">
-            <span>{providers.length > 0 ? `Searching: ${providers.join(', ')}` : '\u00A0'}</span>
-            {debouncedQuery.length >= 2 && !isLoading && (
-              <span>{results.length} result{results.length === 1 ? '' : 's'}</span>
-            )}
-          </div>
-        </div>
+        <DiscoverySearchBar
+          ref={inputRef}
+          idPrefix="skill"
+          subject="skills"
+          query={query}
+          debouncedQuery={debouncedQuery}
+          providers={providers}
+          resultCount={results.length}
+          isLoading={isLoading}
+          hasResults={results.length > 0}
+          activeDescendant={selectedKey}
+          onQueryChange={handleQueryChange}
+          onKeyDown={handleKeyDown}
+          onClear={clearQuery}
+        />
 
-        {/* States */}
-        {debouncedQuery.length < 2 && (
-          <div className="flex flex-col items-center justify-center flex-1 text-muted text-sm">
-            Type at least 2 characters to search
-          </div>
-        )}
-
-        {debouncedQuery.length >= 2 && isLoading && (
-          <div className="flex flex-col items-center justify-center flex-1 text-muted text-sm">
-            <Loader2 size={20} className="animate-spin mb-2" aria-hidden="true" />
-            Searching...
-          </div>
-        )}
-
-        {debouncedQuery.length >= 2 && !isLoading && results.length === 0 && (
-          <div className="flex flex-col items-center justify-center flex-1 text-muted text-sm">
-            No skills found for &ldquo;{debouncedQuery}&rdquo;
-          </div>
-        )}
+        <DiscoveryStates debouncedQuery={debouncedQuery} isLoading={isLoading} resultCount={results.length} noun="skills" />
 
         {/* Two-pane on md+: results list (left) + detail preview (right).
             Single-pane below md: the list fills the modal; clicking a row

@@ -13,8 +13,8 @@ vi.mock('../api/client', () => ({ api: mockApi }))
 vi.mock('../providers', () => ({
   useProvider: () => ({ displayName: 'ACP', labels: { pluginRegistryName: 'Packages' } }),
 }))
-// McpRegistryCard fires its own queries; not under test here.
-vi.mock('../components/McpRegistryCard', () => ({ default: () => null }))
+// McpBrowserModal fires its own queries; not under test here.
+vi.mock('../components/McpBrowserModal', () => ({ default: () => null }))
 
 import McpTab from '../pages/overview/McpTab'
 

@@ -654,6 +654,18 @@ export const api = {
   // MCP
   mcpServers: () => fetch('/api/mcp').then(j),
   mcpGlobalScopes: () => fetch('/api/mcp/scopes').then(j),
+  /** Multi-provider MCP server discovery (official registry, plus the
+   *  edition capability provider when one is installed). A query
+   *  shorter than 2 chars returns {results: [], providers: [...]} without
+   *  hitting any provider — a cheap availability probe. */
+  mcpDiscover: (query: string, opts?: { provider?: string; limit?: number }) =>
+    get(`/api/mcp/discover?q=${encodeURIComponent(query)}${opts?.provider ? `&provider=${opts.provider}` : ''}${opts?.limit ? `&limit=${opts.limit}` : ''}`).then(j) as Promise<import('../types').McpDiscoverResponse>,
+  /** Full description + install-plan preview for one discovered server. */
+  mcpDiscoverDetail: (provider: string, id: string) =>
+    get(`/api/mcp/discover/detail?provider=${encodeURIComponent(provider)}&id=${encodeURIComponent(id)}`).then(j) as Promise<import('../types').McpDiscoverDetail>,
+  /** Install a discovered MCP server. Throws ApiError(409) on name collision. */
+  mcpDiscoverInstall: (provider: string, id: string) =>
+    post('/api/mcp/discover/install', { provider, id }).then(j) as Promise<import('../types').McpDiscoverInstallResult>,
   mcpActive: (agent?: string) => fetch('/api/mcp/active' + (agent ? `?agent=${encodeURIComponent(agent)}` : '')).then(j),
   mcpProbe: () => post('/api/mcp/probe').then(j),
   mcpSync: () => post('/api/mcp/sync').then(j),

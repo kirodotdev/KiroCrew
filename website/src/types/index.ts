@@ -121,6 +121,66 @@ export interface DiscoverInstallResult {
   file_count: number
 }
 
+/** A server result from the multi-provider MCP discover endpoint. */
+export interface DiscoveredMcpServer {
+  /** Provider-specific id (official: reverse-DNS name; capability: backend-defined id). */
+  id: string
+  /** Short display name (last path segment for official). */
+  name: string
+  /** Optional prettier title ("" if none). */
+  title: string
+  description: string
+  provider: string
+  display_provider: string
+  /** "" when the provider reports no version. */
+  version: string
+  /** "" if unknown. */
+  repo_url: string
+  /** Cross-referenced against KiroCrew's configured servers. */
+  installed: boolean
+  /** Install methods derivable from the entry (capability: ["capability"]). */
+  methods: string[]
+  deprecated: boolean
+}
+
+/** Response from GET /api/mcp/discover */
+export interface McpDiscoverResponse {
+  results: DiscoveredMcpServer[]
+  providers: string[]
+}
+
+/** Install-plan preview inside the discover detail response. */
+export interface McpInstallPlan {
+  method: 'npx' | 'uvx' | 'docker' | 'url'
+  spec: { command?: string; args?: string[]; env?: Record<string, string>; url?: string }
+}
+
+/** Response from GET /api/mcp/discover/detail */
+export interface McpDiscoverDetail {
+  id: string
+  name: string
+  title: string
+  /** Full description (markdown ok, redacted server-side). */
+  description: string
+  provider: string
+  version: string
+  repo_url: string
+  /** What Install will write (preview) — null for capability entries. */
+  install_plan: McpInstallPlan | null
+  /** Env vars the user must fill after install ([] if none). */
+  required_env: string[]
+}
+
+/** Response from POST /api/mcp/discover/install */
+export interface McpDiscoverInstallResult {
+  ok: boolean
+  name: string
+  required_env: string[]
+  method: string
+  /** False when the entry was written disabled (required env unset). Absent for capability installs. */
+  enabled?: boolean
+}
+
 export interface McpScopePresence {
   kirocrew: boolean
   kiroGlobal: boolean

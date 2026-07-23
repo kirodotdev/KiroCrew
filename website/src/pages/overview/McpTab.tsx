@@ -1,12 +1,12 @@
 import { useState, useMemo, useRef, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { RefreshCw, Plug, AlertTriangle, Check, ChevronRight, Zap, X } from 'lucide-react'
+import { RefreshCw, Plug, AlertTriangle, Check, ChevronRight, Zap, X, Download } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { api } from '../../api/client'
 import { Card, Btn, Badge, SearchInput, ContentSkeleton } from '../../components/ui'
 import InfoTip from '../../components/InfoTip'
 import { useProvider } from '../../providers'
-import McpRegistryCard from '../../components/McpRegistryCard'
+import McpBrowserModal from '../../components/McpBrowserModal'
 import type { McpServer, McpApplyChange, McpScopePresence, McpGlobalScope } from '../../types'
 import { useSortableTable } from '../../hooks/useSortableTable'
 import SortableHeader from '../../components/SortableHeader'
@@ -89,6 +89,9 @@ export default function McpTab() {
   const provider = useProvider()
   const queryClient = useQueryClient()
   const [mcpFilter, setMcpFilter] = useState('')
+  // Multi-provider server browser (Add Server button) — discovery lives in
+  // the modal so the installed config stays the page's primary content.
+  const [browserOpen, setBrowserOpen] = useState(false)
   const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set())
   const [pending, setPending] = useState<Record<string, PendingChange>>({})
   // Per-server per-tool pending overrides.  Key = server name, value = map
@@ -271,10 +274,12 @@ export default function McpTab() {
   const { sorted: sortedServers, sort: mcpSort, toggle: toggleMcpSort } = useSortableTable(filtered, 'mcp-overview', mcpComparators, { key: 'name', dir: 'asc' })
 
   return (<>
-    <McpRegistryCard />
     <h4 className="text-sm font-semibold text-text-strong mt-4 mb-2 flex items-center gap-2">
-      Installed Integrations
+      MCP Servers ({servers.length})
       <InfoTip text={`MCP servers across KiroCrew and your interactive ${provider.displayName}/Kiro globals. The KiroCrew badge shows if it'll load in KiroCrew sessions; the Globals badge shows if it's shared to your interactive Kiro global. Click to toggle, then Apply.`} />
+      <span className="ml-auto flex items-center gap-2">
+        <Btn primary onClick={() => setBrowserOpen(true)}><Download size={14} /> Add Server</Btn>
+      </span>
     </h4>
     <Card>
       {apply.error && <div className="mb-3 text-[13px] text-danger">{(apply.error as Error).message}</div>}
@@ -407,5 +412,7 @@ export default function McpTab() {
         </div>
       )}
     </Card>
+
+    <McpBrowserModal open={browserOpen} onClose={() => setBrowserOpen(false)} />
   </>)
 }
