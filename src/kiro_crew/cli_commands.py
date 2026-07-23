@@ -521,6 +521,23 @@ def _handle_app(args: argparse.Namespace) -> None:
             print(f"❌ {result.error}", file=sys.stderr)
             sys.exit(1)
 
+    elif action == "dev":
+        from kiro_crew.apps.dev_mode import set_dev_mode
+
+        enabled = not getattr(args, "off", False)
+        dev_result = set_dev_mode(args.name, enabled)
+        if "error" in dev_result:
+            print(f"❌ {dev_result['error']}", file=sys.stderr)
+            sys.exit(1)
+        if enabled:
+            print(f"✅ {args.name} is now in dev mode")
+            print("   UI files served with no-store; edits under ui/ trigger a live reload")
+            print("   in the dashboard within ~1s (picked up by the gateway watcher).")
+            print("   Tip: symlink the installed ui/ to your source tree for zero-copy edits.")
+            print(f"   Turn off with: kirocrew app dev {args.name} --off")
+        else:
+            print(f"✅ {args.name} dev mode off (normal caching restored)")
+
     elif action == "info":
         info = get_app(args.name)
         if not info:

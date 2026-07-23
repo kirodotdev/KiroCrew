@@ -1746,6 +1746,11 @@ async def start_dashboard(
             cron_service=state.crons,
             broadcast_fn=state.broadcast if hasattr(state, "broadcast") else None,
         )
+        # App dev-mode live reload: watch dev-flagged apps' ui/ dirs and
+        # broadcast app_reload WS events on change (see apps/dev_mode.py).
+        from kiro_crew.apps.dev_mode import init_dev_mode_watcher
+
+        await init_dev_mode_watcher(state.broadcast_ws)
 
     app.on_startup.append(_hooks_startup)
 
@@ -1770,6 +1775,12 @@ async def start_dashboard(
 
     async def _hooks_shutdown(app_: web.Application) -> None:
         await on_gateway_shutdown()
+        # Cancel the app dev-mode watcher started in _hooks_startup so an
+        # in-process gateway restart does not leak the module-global task (which
+        # holds a stale broadcast_ws targeting dead clients). Await cancellation.
+        from kiro_crew.apps.dev_mode import stop_dev_mode_watcher
+
+        await stop_dev_mode_watcher()
 
     app.on_cleanup.append(_hooks_shutdown)
 

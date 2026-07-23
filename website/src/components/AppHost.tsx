@@ -11,7 +11,7 @@
  * The app is a normal React component in the same tree — no iframes,
  * no Web Components, no Shadow DOM.
  */
-import { Suspense, lazy, useMemo, useState, useCallback } from 'react'
+import { Suspense, lazy, useMemo, useState, useCallback, useEffect } from 'react'
 import React from 'react'
 import { useNavigate } from 'react-router-dom'
 import { ArrowLeft, RefreshCw, PowerOff, AlertTriangle, Package, Bot } from 'lucide-react'
@@ -198,6 +198,23 @@ function AppNoUI({ app }: { app: AppHostProps['app'] }) {
 function AppHostInner({ app }: AppHostProps) {
   const navigate = useNavigate()
   const [resetKey, setResetKey] = useState(0)
+
+  // App dev-mode live reload: the gateway broadcasts app_reload when a
+  // dev-flagged app's ui/ files change (useWebSocket re-dispatches it as a
+  // window CustomEvent). We do a FULL PAGE RELOAD rather than only bumping the
+  // entry-module import URL: cache-busting just the entry leaves its statically
+  // imported dependency chunks pinned to their original URLs, and the browser's
+  // ESM module map is keyed by URL — so edits confined to a chunk would stay
+  // stale. A page reload re-fetches every module (the app's assets are served
+  // no-store in dev mode), guaranteeing the latest bytes across the whole graph.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail as { app?: string } | undefined
+      if (detail?.app === app.name) window.location.reload()
+    }
+    window.addEventListener('mc:app-reload', handler)
+    return () => window.removeEventListener('mc:app-reload', handler)
+  }, [app.name])
 
   const entry = app.manifest?.ui?.entry
   const permissions = app.manifest?.permissions || {}

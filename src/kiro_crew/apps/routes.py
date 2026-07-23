@@ -1393,7 +1393,42 @@ async def handle_app_ui_file(request: web.Request) -> web.Response:
     except ValueError:
         return web.json_response({"error": "invalid path"}, status=400)
     content_type = _CONTENT_TYPES.get(ext, "application/octet-stream")
-    return web.FileResponse(full_path, headers={"Content-Type": content_type, "Cache-Control": "public, max-age=3600"})  # type: ignore[return-value]
+    # Dev-mode apps: never cache — the file-watch live-reload reloads on every
+    # change and must always see the latest bytes. Use the in-memory cache
+    # (maintained by the dev-mode watcher) so this hot path does NO disk IO on
+    # the event loop for every asset served (no-blocking-call-on-event-loop).
+    from kiro_crew.apps.dev_mode import is_dev_mode_cached
+    cache = "no-store" if is_dev_mode_cached(name) else "public, max-age=3600"
+    return web.FileResponse(full_path, headers={"Content-Type": content_type, "Cache-Control": cache})  # type: ignore[return-value]
+
+
+async def handle_app_dev_mode(request: web.Request) -> web.Response:
+    """POST /api/apps/{name}/dev — toggle dev mode (body: {"enabled": bool}).
+
+    Metadata-only change (installed.json); the dev-mode watcher picks it up
+    within one poll interval, so no gateway restart is needed.
+    """
+    from kiro_crew.apps.dev_mode import set_dev_mode
+    name = request.match_info["name"]
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON"}, status=400)
+    enabled = body.get("enabled")
+    if not isinstance(enabled, bool):
+        return web.json_response({"error": "enabled must be a boolean"}, status=400)
+    # set_dev_mode does blocking filesystem IO (reads/writes installed.json and
+    # the dev sentinel) — offload it so the gateway event loop never stalls.
+    result = await asyncio.to_thread(set_dev_mode, name, enabled)
+    if "error" in result:
+        return web.json_response(result, status=404 if "not installed" in result["error"] else 400)
+    sel().log_api_access(
+        caller=request.get("user", "dashboard"),
+        operation="app_dev_mode",
+        outcome="ok",
+        resources=f"{name} enabled={enabled}",
+    )
+    return web.json_response(result)
 
 
 # ---------------------------------------------------------------------------
@@ -2047,6 +2082,7 @@ def register_app_routes(app: web.Application) -> None:
     app.router.add_post("/api/apps/{name}/enable", handle_enable_app)
     app.router.add_post("/api/apps/{name}/disable", handle_disable_app)
     app.router.add_post("/api/apps/{name}/open", handle_open_app)
+    app.router.add_post("/api/apps/{name}/dev", handle_app_dev_mode)
     app.router.add_delete("/api/apps/{name}/migrate-cleanup", handle_migrate_cleanup)
     app.router.add_get("/apps/{name}/ui/{path:.*}", handle_app_ui_file)
     # Reverse proxy: dashboard app UI → app backend (same-origin, avoids CORS)

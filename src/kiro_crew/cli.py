@@ -1581,6 +1581,11 @@ Examples:
     )
     app_info = app_sub.add_parser("info", help="Show app details")
     app_info.add_argument("name", help="App name")
+    app_dev = app_sub.add_parser(
+        "dev", help="Toggle dev mode (no-store UI serving + live reload on file change)"
+    )
+    app_dev.add_argument("name", help="App name")
+    app_dev.add_argument("--off", action="store_true", help="Turn dev mode off")
     app_init = app_sub.add_parser("init", help="Scaffold a new app")
     app_init.add_argument("name", help="App name (kebab-case)")
     app_init.add_argument("--dir", default=".", help="Output directory (default: current)")

@@ -31,6 +31,8 @@ This allows `kirocrew` to find project-level agent config and skills from any di
 | `kirocrew doctor` | Verify kiro-cli is installed and config is valid |
 | `kirocrew cron add/list/remove` | Manage cron jobs |
 | `kirocrew spawn run/list` | Manage background subagents |
+| `kirocrew app install/list/enable/disable/uninstall` | Manage App Kit apps |
+| `kirocrew app dev <name> [--off]` | Toggle an installed app into/out of dev mode (no-store UI serving + live reload on file change). See [App Dev Mode](#app-dev-mode). |
 | `kirocrew learn add/list/remove` | Manage learned corrections |
 | `kirocrew run TASK.md` | Run an autonomous task from a spec file |
 | `kirocrew token` | Print a dashboard access URL with auth token |
@@ -369,3 +371,36 @@ are ignored).
 
 `kirocrew status` queries the running gateway's `/api/status` endpoint
 and prints uptime, sessions, messages, tool calls, subagents, crons, lessons.
+
+## App Dev Mode
+
+`kirocrew app dev <name> [--off]` toggles an installed App Kit app into (or,
+with `--off`, out of) **dev mode**, which speeds the app-UI edit loop by serving
+UI files uncached and live-reloading the dashboard on file change. The command
+writes the flag out-of-process; the running gateway's watcher picks it up within
+one poll interval, so no gateway restart is needed. Full App Kit developer docs
+live in `docs/app-kit/api-reference.md`; the durable contract surfaces this
+feature introduces are:
+
+- **Persisted schema — `installed.json` `dev: bool`** (default `false`): a
+  per-app flag in each app's `~/.kirocrew/apps/<name>/installed.json`. Tolerant
+  on read (absent ⇒ `false`), reversible, no migration. This field is the sole
+  authoritative source of truth for an app's dev-mode state. Builtin apps cannot
+  enter dev mode.
+- **Endpoint — `POST /api/apps/{name}/dev`**, body `{"enabled": <bool>}`,
+  returns `{"name": <name>, "dev": <bool>}`. Behind standard gateway auth; emits
+  an `app_dev_mode` SEL audit event. `400` for a non-boolean body, a builtin
+  app, or an unsafe app name; `404` when the app is not installed. Equivalent to
+  the CLI toggle for in-dashboard control.
+- **WebSocket event — `app_reload`**, payload `{"app": <name>, "ts": <float>}`,
+  broadcast when a dev-mode app's `ui/` tree changes; the dashboard reloads that
+  app so edits appear immediately.
+- **Serving behavior:** while an app is in dev mode the gateway serves its UI
+  with `Cache-Control: no-store`; otherwise the standard revalidation header
+  applies.
+
+An internal, unstable sentinel cache under `~/.kirocrew/apps/` mirrors the set of
+dev-mode apps so the zero-dev-apps steady state costs one `stat()` per second.
+It is a derived cache reconciled from `installed.json` at watcher init (under a
+cross-process lock, atomic with concurrent toggles), **not** part of the App Kit
+contract — its path and format are internal and may change without notice.

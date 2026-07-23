@@ -469,6 +469,11 @@ export function useWebSocket() {
           case 'subagent_done':
             dispatch(sseSubagentDone(data as { slot: string; id: string; elapsed: number; error?: string }))
             break
+          case 'app_reload':
+            // App dev-mode live reload: the gateway watched a dev-flagged app's
+            // ui/ dir change. AppHost listens for this and re-imports the bundle.
+            window.dispatchEvent(new CustomEvent('mc:app-reload', { detail: data as { app: string } }))
+            break
           case 'subagent_snapshot':
             dispatch(sseSubagentSnapshot(data as { id: string; slot: string; task: string; agent: string; streaming: string; last_tool: string; started: number; tool_count?: number; stalled?: boolean }))
             break

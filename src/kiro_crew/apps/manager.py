@@ -17,7 +17,7 @@ import re
 import shutil
 import stat
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -103,6 +103,7 @@ class InstalledApp:
     migratedTo: str = (
         ""  # noqa: N815  — target standalone app: "registry:{name}" or "standalone:{name}"
     )
+    dev: bool = False  # dev mode: no-store UI serving + file-watch live reload
 
     def validate_fields(self) -> list[str]:
         """Validate classification field values. Returns error list (empty = valid)."""
@@ -133,6 +134,7 @@ class InstalledApp:
             lifecycle=str(data.get("lifecycle", "gateway")),
             schemaVersion=int(data.get("schemaVersion", 1)),
             migratedTo=str(data.get("migratedTo", "")),
+            dev=bool(data.get("dev", False)),
         )
         # Migrate old "managed" field to new classification fields
         if inst.schemaVersion < 2 and "origin" not in data:
@@ -671,13 +673,18 @@ def update_app(source: str | Path, *, expected_name: str | None = None) -> AppRe
             pass
         return AppResult(ok=False, name=name, error=f"failed to update app files: {exc}")
 
-    # Update metadata — preserve enabled state and install time
-    meta = InstalledApp(
-        name=name,
+    # Update metadata — carry every persisted field forward from ``existing``
+    # via dataclasses.replace, overriding only what the update actually changes
+    # (version/displayName/updatedAt/source). Constructing a fresh InstalledApp
+    # here silently dropped any field not re-listed (enabled, installedAt,
+    # origin, resources, lifecycle, schemaVersion, migratedTo, and — the bug
+    # that surfaced this — the ``dev`` flag, so updating an app being iterated
+    # on in dev mode wrote ``dev: false`` and later dropped it from live
+    # reload). ``replace`` makes new fields regression-proof by construction.
+    meta = replace(
+        existing,
         version=manifest.version,
         displayName=manifest.displayName,
-        enabled=existing.enabled,
-        installedAt=existing.installedAt,
         updatedAt=_now_iso(),
         source=str(source),
     )
@@ -744,6 +751,15 @@ def uninstall_app(name: str, *, keep_data: bool = False) -> AppResult:
         return AppResult(ok=False, name=name, error=f"failed to remove app: {exc}")
 
     logger.info("Uninstalled app %s (keep_data=%s)", name, keep_data)
+    # Drop any dev-mode sentinel entry so an app later reinstalled under this
+    # name does not inherit stale dev-mode serving/watching. Lazy import avoids
+    # a module-level cycle (dev_mode imports from manager).
+    try:
+        from kiro_crew.apps.dev_mode import remove_dev_app
+
+        remove_dev_app(name)
+    except Exception:
+        logger.debug("dev-mode cleanup on uninstall of %r failed", name, exc_info=True)
     return AppResult(ok=True, name=name, message=f"uninstalled {name}")
 
 

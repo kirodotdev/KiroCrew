@@ -101,7 +101,8 @@ All `on*` methods return an unsubscribe function.
 
 WebSocket event types: `chat_chunk`, `chat_done`, `chat_message`, `chat_error`,
 `tool_call`, `notification`, `slots`, `slot_title`, `dashboard`, `log`, `refresh`,
-`approval`, `subagent_done`, `task_update`, `task_complete`, `proactive_notification`, `error`.
+`approval`, `subagent_done`, `task_update`, `task_complete`, `proactive_notification`,
+`app_reload`, `error`.
 
 ### Subagents
 
@@ -418,6 +419,7 @@ endpoints. Apps can also call them directly via `fetch()`.
 | POST | `/api/apps/{name}/uninstall` | Uninstall app |
 | POST | `/api/apps/{name}/enable` | Enable app |
 | POST | `/api/apps/{name}/disable` | Disable app |
+| POST | `/api/apps/{name}/dev` | Toggle dev mode (live reload) — body `{"enabled": bool}` |
 | POST | `/api/apps/{name}/open` | Launch app via openCommand |
 | GET | `/apps/{name}/ui/{path}` | Serve app UI bundle files |
 | * | `/apps/{name}/api/{path}` | Reverse proxy to app backend (HMAC-signed) |
@@ -447,3 +449,43 @@ the value in the `X-KiroCrew-Proxy` header (constant-time), rejecting stale time
 > to bind `sha256(body)` while keeping the constant-time compare and ±60s freshness. A gateway
 > that signs body-bound HMACs will fail verification against any deployed old verifier, so the
 > client release must ship together with this change.
+
+## App Dev Mode (live reload)
+
+Dev mode speeds up app-UI iteration: no manual copy-and-hard-refresh loop. When
+an installed app is in dev mode the gateway serves its UI files with
+`Cache-Control: no-store` and watches the app's `ui/` directory; on any file
+change it broadcasts an `app_reload` WebSocket event and the dashboard reloads
+the app so edits appear immediately. The recommended setup symlinks
+`~/.kirocrew/apps/<name>/ui/` to your source tree so the watcher sees edits at
+the real files.
+
+**Contract surface:**
+
+- **`installed.json` field — `dev: bool`** (default `false`): persisted per-app
+  flag. Tolerant on read (absent ⇒ `false`); reversible; no migration needed.
+  Builtin apps cannot enter dev mode.
+- **Endpoint — `POST /api/apps/{name}/dev`**, body `{"enabled": <bool>}`.
+  Returns `{"name": <name>, "dev": <bool>}`. `400` for a non-boolean body,
+  a builtin app, or an unsafe app name; `404` if the app is not installed.
+  Behind the standard gateway auth; emits an `app_dev_mode` SEL audit event.
+- **WebSocket event — `app_reload`**, payload `{"app": <name>, "ts": <float>}`.
+  Re-dispatched to the frontend as the `mc:app-reload` window CustomEvent; the
+  AppHost triggers a full page reload for the matching app.
+- **CLI — `kirocrew app dev <name> [--off]`**: toggles the flag out-of-process;
+  the gateway watcher picks up the change within one poll interval, so no
+  gateway restart is needed.
+
+**Cost model:** dev mode is off for essentially all gateways. The
+authoritative per-app state is the `installed.json` `dev` field above; to keep
+the steady-state cost negligible the gateway also maintains an **internal,
+unstable cache** (a small sentinel file under `~/.kirocrew/apps/`, plus an
+in-memory mirror) listing the app names currently in dev mode. The watcher
+`stat()`s only that one file each second and walks a `ui/` tree solely for apps
+in the set — so a gateway with no dev apps pays one `stat()` per second and
+never invokes the heavier `list_apps()` walk; the in-memory mirror lets the
+UI-serving hot path decide the cache header with no per-request disk IO. This
+sentinel is a derived cache and **not** part of the App Kit contract: its path,
+name, and format are internal implementation details, may change without
+notice, and must not be read or written by app or third-party tooling — treat
+`installed.json` `dev` as the only supported source of truth.
