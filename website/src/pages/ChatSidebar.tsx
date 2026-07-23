@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, memo, useMemo, useCallback, Fragment } from 'react'
 import { createPortal } from 'react-dom'
 import { LayoutGroup, AnimatePresence, motion } from 'framer-motion'
-import { Plus, X, Pin, Monitor, EyeOff, VenetianMask, Droplet, FolderPlus, MessageSquare, MessageSquarePlus, Folder, FolderOpen, ChevronRight, ChevronDown, Clock, Pencil, BrushCleaning, Link, Link2, Circle, MoreVertical, Tag as TagIcon, Columns2, Columns3, GripVertical, Zap, Check, Copy, ListFilter, List, Loader2, Smile, RotateCcw, Bot, ExternalLink, Cpu, GitMerge } from 'lucide-react'
+import { Plus, X, Pin, Monitor, EyeOff, VenetianMask, Droplet, FolderPlus, MessageSquare, MessageSquarePlus, Folder, FolderOpen, ChevronRight, ChevronDown, Clock, Pencil, BrushCleaning, Link, Link2, Circle, MoreVertical, Tag as TagIcon, Columns2, Columns3, GripVertical, Zap, Check, Copy, ListFilter, List, Loader2, Smile, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, Workflow } from 'lucide-react'
 import GithubLogo from '../components/icons/GithubLogo'
 import GitlabLogo from '../components/icons/GitlabLogo'
 import { DndContext, closestCenter, pointerWithin, KeyboardSensor, PointerSensor, useSensor, useSensors, useDroppable, DragOverlay, MeasuringStrategy, type DragEndEvent, type DragStartEvent, type DragOverEvent, type CollisionDetection } from '@dnd-kit/core'
@@ -38,6 +38,8 @@ import SessionActionsMenu from '../components/SessionActionsMenu'
 import TagManagerList from '../components/TagManagerList'
 import { DndDraggable, DndDroppable } from '../components/dnd'
 import { collectFolderSubtreeIds } from '../utils/folderTree'
+import { runBelongsToSlot } from '../apps/workflows/runModel'
+import { sanitizeLlmOutput } from '../utils/sanitize'
 import type { ChatFolder, ChatTag, TagColumn, TagColumnMode, SubagentActivity } from '../types'
 import { decideUnreadDrain } from './unreadDrain'
 import {
@@ -673,6 +675,32 @@ function ChatSidebar({
     }
     return counts
   }, [storeActiveSlot, activeSlotSubagents, slotActivity])
+  // Live dynamic-workflow runs per slot, for the sidebar row's "workflow
+  // running" subtitle. Mirrors WorkflowProgressBar's source of truth:
+  // chatSlice.workflowRuns (populated by the globally-subscribed
+  // workflow_run_event WS broadcasts, so background slots are covered too),
+  // scoped to each slot via runBelongsToSlot — the same ownership rule that
+  // keeps a run pinned to ITS chat and not every open chat.
+  const workflowRuns = useAppSelector(s => s.chat.workflowRuns)
+  const workflowActive = useMemo(() => {
+    const out: Record<string, { count: number; label: string }> = {}
+    const running = Object.values(workflowRuns ?? {}).filter(r => r.status === 'running')
+    if (running.length === 0) return out
+    for (const s of slots) {
+      const mine = running.filter(r => runBelongsToSlot(r.sessionKey, s.key))
+      if (mine.length === 0) continue
+      const first = mine[0]
+      const name = sanitizeLlmOutput(first.name || first.run_id).slice(0, 60)
+      const phase = first.phase ? sanitizeLlmOutput(first.phase).slice(0, 40) : ''
+      out[s.key] = {
+        count: mine.length,
+        label: mine.length > 1
+          ? `${mine.length} workflows running`
+          : `${name}${phase ? ` · ${phase}` : ''}`,
+      }
+    }
+    return out
+  }, [workflowRuns, slots])
   const creatingSlot = useAppSelector(s => s.chat.creatingSlot)
   const connected = useConnected()
   // O(1) lookup set for the filter predicate (mirrors the `pinned` and
@@ -732,11 +760,14 @@ function ChatSidebar({
     const now = Date.now()
     return slots.map(s => {
       const recent = isWithinRecentWindow(s.last_ts || s.created, now, recentWindowMs)
-      return { ...s, unread: unreadSet.has(s.key), recent }
+      // A slot with a live dynamic-workflow run counts as running so the
+      // "In progress" filter (and its count) surfaces it, even though the
+      // parent turn has ended while the run executes in the background.
+      return { ...s, running: s.running || !!workflowActive[s.key], unread: unreadSet.has(s.key), recent }
     })
     // `recentTick` is an intentional dep: it forces recency to re-evaluate on
     // the heartbeat above so idle sessions age out of the Recent filter.
-  }, [slots, unreadSet, recentWindowMs, recentTick]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [slots, unreadSet, recentWindowMs, recentTick, workflowActive]) // eslint-disable-line react-hooks/exhaustive-deps
   const filterCounts = useMemo(() => {
     const counts = {} as Record<SessionFilterKey, number>
     for (const filterDef of SESSION_FILTERS) counts[filterDef.key] = enrichedSlots.filter(slot => slot[filterDef.key]).length
@@ -1650,6 +1681,7 @@ function ChatSidebar({
     const isOut = poppedOut.has(s.key)
     const recent = recentRank.get(s.key)
     const subagentCount = subagentCounts[s.key] || 0
+    const wfActive = workflowActive[s.key]
     const ci = s.color_index != null && s.color_index >= 0 && s.color_index < paletteColors.length ? s.color_index : null
     const rowColor = ci != null ? paletteColors[ci] : null
     const boostStyle: Record<string, string> = {}
@@ -1783,6 +1815,18 @@ function ChatSidebar({
               <div className="text-[12px] leading-snug mt-0.5 flex items-center gap-1.5 min-w-0">
                 <span className="w-2 h-2 rounded-full shrink-0" style={{ background: 'var(--warn)' }} title="Needs approval" />
                 <span className="truncate"><span className="font-medium" style={{ color: 'var(--warn)' }}>Needs approval</span>{s.last_message ? <span className="text-muted"> · {s.last_message}</span> : null}</span>
+              </div>
+            ) : wfActive ? (
+              // A dynamic-workflow run launched from this session is still
+              // executing — surface it even though the parent turn has ended
+              // (s.running is false while the run executes in the background),
+              // so the sidebar shows the live run instead of a stale last
+              // message. Outranks the subagent count: workflow track agents
+              // may also register as subagents, and "which workflow / phase"
+              // is the stronger signal.
+              <div className="text-[12px] text-accent leading-snug truncate mt-0.5 flex items-center gap-1" title={`${wfActive.count} workflow${wfActive.count > 1 ? 's' : ''} running`}>
+                <Workflow size={11} className="shrink-0 animate-pulse" aria-hidden />
+                <span className="truncate">{wfActive.label}</span>
               </div>
             ) : subagentCount > 0 ? (
               // A spawned subagent is still running — surface it even if the
