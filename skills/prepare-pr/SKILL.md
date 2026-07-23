@@ -22,6 +22,7 @@ Do **not** merge/land a PR — that is the user's separate, explicit call.
 - **Review-ready** (the goal): one clean commit on a feature branch, PR open/updated, all required checks green, mergeable (no conflicts, not draft, not `CHANGES_REQUESTED`), and every review thread resolved. Not "merged".
 - **Round**: one ~5-min poll cycle — let CI + bots finish, act on the result, re-push. Hard cap **10 rounds**.
 - **Severity gate**: judge each finding *legitimate or not* first; only legitimate **High/Medium** block readiness (fix them), disputed ones need a posted rebuttal, **Low/nit** MAY be deferred. If a bot gives no severity, treat correctness/security/build-breaking as High-equivalent and style as Low.
+- **Long-Term Impact arbiter**: a second-order gate (the `Long-Term Impact` check, posted by the `longterm-arbiter.yml` workflow) escalates the *sub-threshold* findings the AI reviewers raised — design `CONCERNS` and code `Medium`/`Low` — when deferring them carries a concrete long-term cost. When that check is `failure`, its escalated items are **fix-or-formally-defer, NOT skippable** like a raw Medium: either fix them, or (with the user's agreement) add the `defer-longterm` label to the PR, which turns the check green. The label alone clears the gate — posting a justification comment alongside it is an expected convention, not workflow-enforced. A pending (`in_progress`) `Long-Term Impact` check just means it is still waiting for all reviewers to post — treat it as RUNNING and wait.
 - **Single commit**: KiroCrew requires one commit per PR — always squash before pushing.
 
 ## Scripts & setup (source of truth)
@@ -76,6 +77,7 @@ The scripts are stdlib **Python 3** (run with `python3`; no third-party deps), p
    - **Legitimate** → fix it (High/Medium MUST; Low MAY). Take security findings especially seriously.
    - **False positive / misread / N/A** → don't change correct code; reply with a specific, evidence-based rebuttal (for scanners like CodeQL, push back **without** dismissing).
    - Do exactly one — fix or rebut; never silently appease or ignore. Reply "Fixed in <sha>: …", then **resolve the thread**. For a deferred Low, reply with the rationale and resolve it too — `pr_status.py` blocks on *any* unresolved thread, so convergence requires every thread resolved (you defer the *fix*, not the thread).
+4. **`Long-Term Impact` check = `failure`** → open the arbiter's PR comment (marker `<!-- longterm-arbiter -->`) and, for each escalated item, either fix it (root cause, verify locally) or — only with the user's explicit agreement — add the `defer-longterm` label to clear the check (the workflow honors the label itself; post a justification comment alongside it as an expected convention, not a workflow-enforced requirement). Do NOT treat an escalated item as a skippable Medium. If the check is `neutral` ("could not complete") it is non-blocking; a re-run may be needed.
 
 ### Phase 4 — Converge or escalate
 - **Converged** (`pr_status.py` = 0): notify the user with the PR URL, one-line status, commit sha, and any Low/nit left on purpose. Stop — don't merge.

@@ -1,4 +1,4 @@
-name: Codex Review
+name: GPT 5.6 Review
 
 # Second AI reviewer using OpenAI GPT-5.6 Sol via Amazon Bedrock (Mantle).
 # Runs alongside claude-review.yml to provide a second independent perspective.
@@ -21,7 +21,7 @@ concurrency:
 
 jobs:
   codex-review:
-    name: Codex Review
+    name: GPT 5.6 Review
     runs-on: ubuntu-latest
     # Only run on PRs from the same repo (not forks) to prevent:
     # - Budget abuse (anyone can open fork PRs to trigger expensive reviews)
@@ -214,7 +214,7 @@ jobs:
           role-to-assume: ${{ secrets.AWS_CODEX_BEDROCK_ROLE_ARN }}
           aws-region: us-east-1
 
-      - name: Codex review
+      - name: GPT 5.6 review
         if: github.actor != 'dependabot[bot]'
         env:
           # Codex's amazon-bedrock provider resolves the assumed role's SigV4
@@ -257,7 +257,7 @@ jobs:
           MARKER="<!-- codex-ai-review -->"
           {
             echo "$MARKER"
-            echo "## Codex Review (GPT-5.6 Sol via Bedrock)"
+            echo "## GPT 5.6 Review (GPT-5.6 Sol via Bedrock)"
             echo ""
             echo "_Reviewed \`$HEAD\` — this comment is updated in place on each push._"
             echo ""
@@ -268,7 +268,7 @@ jobs:
               # Bedrock failure). Say so in the SAME comment rather than leaving a
               # stale prior body; the gate step still fails the check.
               echo "_Codex produced no output for this commit (the review may have"
-              echo "errored). See the Codex Review job logs; re-run to refresh._"
+              echo "errored). See the GPT 5.6 Review job logs; re-run to refresh._"
             fi
           } > /tmp/codex-comment.md
 
@@ -283,7 +283,7 @@ jobs:
           #     first line across all pages — a multi-page comment list must
           #     not produce a malformed multi-line id.
           existing="$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
-            --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | contains(\"$MARKER\"))) | .id" 2>/dev/null \
+            --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$MARKER\"))) | .id" 2>/dev/null \
             | head -n1 || true)"
 
           if [ -n "$existing" ] && [ "$existing" != "null" ]; then
@@ -314,25 +314,25 @@ jobs:
           # Pass the gate green rather than fail closed — dependency bumps are
           # covered by Semgrep, Dependency Audit, CodeQL and the build/tests.
           if [ "$ACTOR" = "dependabot[bot]" ]; then
-            echo "Dependabot PR ($ACTOR): Codex AI review skipped (no Bedrock secrets/OIDC). Passing gate."
+            echo "Dependabot PR ($ACTOR): GPT 5.6 AI review skipped (no Bedrock secrets/OIDC). Passing gate."
             exit 0
           fi
           if [ ! -s codex-review-output.md ]; then
-            echo "::error::Codex review produced no output"
+            echo "::error::GPT 5.6 review produced no output"
             exit 1
           fi
           reviewed="[CODEX-REVIEWED] $HEAD"
           blocked="[BLOCK-MERGE] $HEAD"
           # Positive proof the review ran for THIS commit (fail closed).
           if ! grep -Fq "$reviewed" codex-review-output.md; then
-            echo "::error::Codex review did not complete for $HEAD (no [CODEX-REVIEWED] marker). Failing closed — re-run the workflow or inspect the Codex review step logs."
+            echo "::error::GPT 5.6 review did not complete for $HEAD (no [CODEX-REVIEWED] marker). Failing closed — re-run the workflow or inspect the GPT 5.6 review step logs."
             echo "--- review output ---"
             cat codex-review-output.md
             exit 1
           fi
           # Block ONLY on the contract-gated marker — not on raw HIGH labels.
           if grep -Fq "$blocked" codex-review-output.md; then
-            echo "::error::Codex review flagged a blocking (CRITICAL/HIGH) issue on $HEAD — see PR comment"
+            echo "::error::GPT 5.6 review flagged a blocking (CRITICAL/HIGH) issue on $HEAD — see PR comment"
             exit 1
           fi
           # Coherence backstop (defense-in-depth for the SEVERITY-BLOCK COHERENCE
@@ -344,9 +344,9 @@ jobs:
           # so prose like "no HIGH severity issues" does NOT match, and we do NOT
           # block on raw labels in the general case — only on the inconsistency.
           if grep -qiE '^[[:space:]]*[-*]?[[:space:]]*Severity:[[:space:]]*(HIGH|CRITICAL)\b' codex-review-output.md; then
-            echo "::error::Codex review is self-inconsistent for $HEAD: an anchored 'Severity: HIGH/CRITICAL' finding was reported without the [BLOCK-MERGE] marker. Per SEVERITY-BLOCK COHERENCE, a CRITICAL/HIGH finding MUST carry [BLOCK-MERGE] (or be re-labelled MEDIUM/LOW). Failing closed."
+            echo "::error::GPT 5.6 review is self-inconsistent for $HEAD: an anchored 'Severity: HIGH/CRITICAL' finding was reported without the [BLOCK-MERGE] marker. Per SEVERITY-BLOCK COHERENCE, a CRITICAL/HIGH finding MUST carry [BLOCK-MERGE] (or be re-labelled MEDIUM/LOW). Failing closed."
             echo "--- review output ---"
             cat codex-review-output.md
             exit 1
           fi
-          echo "Codex review completed for $HEAD with no blocking findings."
+          echo "GPT 5.6 review completed for $HEAD with no blocking findings."

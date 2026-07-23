@@ -27,7 +27,7 @@ jobs:
       # Deterministic replication of the blocking rules from
       # website/AUTOSDE.yaml. These catch the unambiguous cases; the semantic
       # half (aria-label on icon-only buttons, no-emoji, template-literal HTML)
-      # is covered by the auto-running Claude review in claude-review.yml.
+      # is covered by the auto-running Opus 4.8 review in claude-review.yml.
       - name: Check frontend blocking rules
         if: contains(steps.changed.outputs.files, 'website/src/')
         working-directory: website
@@ -79,7 +79,7 @@ jobs:
 
           echo "::group::frontend-security (advisory) — dangerouslySetInnerHTML without sanitize/md/DOMPurify"
           if git diff "$BASE".."$HEAD" -- 'src/**/*.tsx' 'src/**/*.ts' | grep -nP '^\+.*dangerouslySetInnerHTML' | grep -vP 'sanitize\(|\bmd\(|DOMPurify'; then
-            echo "::warning::dangerouslySetInnerHTML must go through sanitize()/md() (DOMPurify). The Claude review will block if unsanitized."
+            echo "::warning::dangerouslySetInnerHTML must go through sanitize()/md() (DOMPurify). The Opus 4.8 review will block if unsanitized."
           fi
           echo "::endgroup::"
 
