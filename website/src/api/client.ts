@@ -830,9 +830,15 @@ export const api = {
     checkSessionExpired(res)
     let body: { paths?: unknown; error?: string }
     try { body = await res.json() } catch { body = {} }
-    if (!res.ok) return { paths: [] as string[], error: body.error || res.statusText, resized }
-    if (!Array.isArray(body.paths)) return { paths: [] as string[], error: 'Unexpected server response', resized }
-    return { ...(body as { paths: string[]; error?: string }), resized }
+    if (!res.ok) return { paths: [] as string[], error: body.error || res.statusText, resized, resizedByPath: {} as Record<string, ResizeInfo> }
+    if (!Array.isArray(body.paths)) return { paths: [] as string[], error: 'Unexpected server response', resized, resizedByPath: {} as Record<string, ResizeInfo> }
+    // The server appends one path per multipart 'file' part in order, so
+    // paths[i] is prepared[i]'s stored location — zip them to key resize
+    // details by the exact server path the attachment chip renders from.
+    const paths = body.paths as string[]
+    const resizedByPath: Record<string, ResizeInfo> = {}
+    prepared.forEach((p, i) => { if (p.info && paths[i]) resizedByPath[paths[i]] = p.info })
+    return { ...(body as { paths: string[]; error?: string }), resized, resizedByPath }
   },
   screenshot: () => post('/api/screenshot').then(j) as Promise<{ path: string }>,
   // Custom Themes

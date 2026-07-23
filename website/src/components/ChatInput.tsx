@@ -28,6 +28,7 @@ import PasteHighlightLayer, { INPUT_TYPO } from './PasteHighlightLayer'
 import FollowUpBar from './FollowUpBar'
 import { dispatchLightbox } from './MarkdownRenderer'
 import { IMG_EXT } from '../utils/fileTokens'
+import type { ResizeInfo } from '../utils/resizeImage'
 import { platformShortcut } from '../utils/platform'
 import {
   type PasteBlock,
@@ -173,6 +174,8 @@ interface ChatInputProps {
   uploading?: boolean
   /** Pending file paths (images + non-images) for preview strip */
   pendingFiles?: string[]
+  /** Resize details keyed by pending-file path; renders a badge on the chip */
+  resizedInfo?: Record<string, ResizeInfo>
   /** Remove a pending file by path */
   onRemoveFile?: (path: string) => void
   /** Show macOS-only buttons (screenshot) */
@@ -266,7 +269,42 @@ interface ChatInputProps {
   onOptimizeResult?: (slotId: string | null, optimized: string) => void
 }
 
-function FilePreviewStrip({ files, onRemove }: { files: string[]; onRemove?: (path: string) => void }) {
+/** Accent pill on a downscaled attachment chip. Hover (or focus) shows a
+ *  styled tooltip with the resize details, portal-rendered above the chip so
+ *  the strip's overflow-x-auto can't clip it. */
+function ResizeBadge({ resize }: { resize: ResizeInfo }) {
+  const [tip, setTip] = useState<{ top: number; left: number } | null>(null)
+  const ref = useRef<HTMLSpanElement>(null)
+  const show = () => {
+    const r = ref.current?.getBoundingClientRect()
+    if (r) setTip({ top: r.top - 8, left: r.left })
+  }
+  const hide = () => setTip(null)
+  return (
+    <>
+      <span
+        ref={ref}
+        tabIndex={0}
+        aria-label={`Resized to fit model limits: ${resize.fromW}×${resize.fromH} to ${resize.toW}×${resize.toH}`}
+        className="absolute bottom-1 left-1 z-10 px-1.5 py-[1px] rounded-full text-[10px] font-bold bg-accent text-accent-fg shadow-sm cursor-default"
+        onMouseEnter={show} onMouseLeave={hide} onFocus={show} onBlur={hide}
+      >RESIZED</span>
+      {tip && createPortal(
+        <div
+          role="tooltip"
+          className="fixed z-[9999] -translate-y-full rounded-lg border border-border-strong bg-bg-elevated px-2.5 py-1.5 text-[11px] leading-snug shadow-lg pointer-events-none whitespace-nowrap"
+          style={{ top: tip.top, left: tip.left }}
+        >
+          <div className="text-text">Resized to fit model limits</div>
+          <div className="text-muted">{resize.fromW}×{resize.fromH} → {resize.toW}×{resize.toH}</div>
+        </div>,
+        document.body,
+      )}
+    </>
+  )
+}
+
+function FilePreviewStrip({ files, resizedInfo, onRemove }: { files: string[]; resizedInfo?: Record<string, ResizeInfo>; onRemove?: (path: string) => void }) {
   const imgs = files.filter(p => IMG_EXT.test(p))
   const nonImgs = files.filter(p => !IMG_EXT.test(p))
   if (!imgs.length && !nonImgs.length) return null
@@ -275,6 +313,7 @@ function FilePreviewStrip({ files, onRemove }: { files: string[]; onRemove?: (pa
     <div className="flex gap-2 px-5 py-2 border-t border-border bg-chrome/50 overflow-x-auto items-end" data-image-scope="">
       {imgs.map((path, i) => {
         const src = `/api/file-raw?path=${encodeURIComponent(path)}`
+        const resize = resizedInfo?.[path]
         return (
           <div key={path} className="relative group/preview shrink-0" title={path}>
             <span className="absolute -top-1.5 -left-1.5 w-5 h-5 rounded-full bg-accent text-accent-fg text-[10px] font-bold flex items-center justify-center z-10">{i + 1}</span>
@@ -287,6 +326,7 @@ function FilePreviewStrip({ files, onRemove }: { files: string[]; onRemove?: (pa
               <img src={src} alt={path} className="h-16 rounded border border-border object-contain hover:opacity-80 transition-opacity"
                 data-lightbox-image="" />
             </button>
+            {resize && <ResizeBadge resize={resize} />}
             {onRemove && (
               <button
                 aria-label="Remove"
@@ -324,6 +364,7 @@ function ChatInput({
   onUploadFiles,
   uploading = false,
   pendingFiles = [],
+  resizedInfo,
   onRemoveFile,
   isMac = false,
   onDrop,
@@ -1784,7 +1825,7 @@ function ChatInput({
         onDragLeave={onDragLeave}
         onDrop={onDrop}
       >
-        <FilePreviewStrip files={pendingFiles} onRemove={onRemoveFile} />
+        <FilePreviewStrip files={pendingFiles} resizedInfo={resizedInfo} onRemove={onRemoveFile} />
 
         <VoiceStatusBar recording={voiceRecording} level={voiceLevel} deviceLabel={voiceDeviceLabel} error={voiceError} onDismissError={onClearVoiceError} />
 

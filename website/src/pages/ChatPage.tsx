@@ -5,6 +5,7 @@ import { useQuery, useQueries, useMutation, useQueryClient } from '@tanstack/rea
 import { modelListRefetchInterval } from '../providers/modelListHealth'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { useSwipeEdge } from '../hooks/useSwipeEdge'
+import type { ResizeInfo } from '../utils/resizeImage'
 import { useAppSelector, useAppDispatch, store } from '../store'
 import { useConnected } from '../hooks/useConnected'
 import { useChatPopouts } from '../hooks/useChatPopouts'
@@ -944,7 +945,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
       : [])
     knowledgeFetchRef.current.clearResults()
     setUploadError('')
-    setUploadNotice('')
     flushDrafts()
   }, [activeSlot, flushDrafts])
   // Persist drafts on unmount (navigating away from chat page)
@@ -1029,7 +1029,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
   // batched with the switch smear onto the new slot.
   useEffect(() => { composerSlotRef.current = activeSlot }, [activeSlot])
   const [uploadError, setUploadError] = useState('')
-  const [uploadNotice, setUploadNotice] = useState('')
+  // Resize details keyed by uploaded server path. Rendered as a badge on the
+  // attachment chip itself (FilePreviewStrip) instead of a banner — the info
+  // describes one staged file, so it lives on that file's chip. Keyed by the
+  // unique upload path, entries stay valid across slot switches (drafts
+  // restore chips per slot) and stale keys are harmless.
+  const [resizedInfo, setResizedInfo] = useState<Record<string, ResizeInfo>>({})
   const isMac = useAppSelector(s => s.dashboard.status?.platform) === 'darwin'
   const { data: sttCfg } = useQuery({
     queryKey: ['sttConfig'],
@@ -1394,7 +1399,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
     // Same slot-capture pattern as takeScreenshot — see note there.
     const requestSlot = activeSlotRef.current
     setUploadError('')
-    setUploadNotice('')
     if (files.length > 20) { setUploadError('Too many files (max 20)'); return }
     const big = files.find(f => f.size > 50 * 1024 * 1024)
     if (big) { setUploadError(`File too large: ${big.name} (max 50 MB)`); return }
@@ -1412,14 +1416,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
           saveDrafts()
         }
       }
-      if (!res.error && res.resized?.length) {
-        const n = res.resized.length
-        const first = res.resized[0]
-        setUploadNotice(
-          n === 1
-            ? `Resized ${first.name} (${first.fromW}×${first.fromH} → ${first.toW}×${first.toH}) to fit model limits.`
-            : `Resized ${n} images to fit model limits.`,
-        )
+      if (!res.error && res.resizedByPath && Object.keys(res.resizedByPath).length) {
+        setResizedInfo(prev => ({ ...prev, ...res.resizedByPath }))
       }
     } catch { setUploadError('Upload failed — check file type and size (max 50 MB)') }
     setUploading(false)
@@ -3043,12 +3041,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
             <button onClick={() => setUploadError('')} aria-label="Dismiss upload error" className="text-muted hover:text-text text-lg leading-none">&times;</button>
           </div>
         )}
-        {uploadNotice && (
-          <div className="mx-4 mt-2 mb-0 bg-bg-elevated border rounded-lg p-3 flex items-center gap-3 animate-rise" style={{ borderColor: 'color-mix(in srgb, var(--accent) 45%, transparent)' }}>
-            <span className="text-sm text-text flex-1">{uploadNotice}</span>
-            <button onClick={() => setUploadNotice('')} aria-label="Dismiss notice" className="text-muted hover:text-text text-lg leading-none">&times;</button>
-          </div>
-        )}
         {sidError && (
           <div className="mx-4 mt-2 mb-0 bg-bg-elevated border rounded-lg p-3 flex items-center gap-3 animate-rise" style={{ borderColor: 'color-mix(in srgb, var(--warn) 45%, transparent)' }}>
             <span className="text-sm text-text flex-1">{sidError}</span>
@@ -3439,6 +3431,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
               onUploadFiles={uploadFiles}
               uploading={uploading}
               pendingFiles={pendingFiles}
+              resizedInfo={resizedInfo}
               onRemoveFile={p => setPendingFiles(prev => prev.filter(x => x !== p))}
               onFileSelect={path => setPendingFiles(prev => prev.includes(path) ? prev : [...prev, path])}
               onFileOpen={handleFileOpen}
