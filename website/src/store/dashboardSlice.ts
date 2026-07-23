@@ -19,6 +19,10 @@ interface DashboardState {
   unreadSlots: string[]
   slotsLoaded: boolean
   updateProgress: { step: string; detail: string } | null
+  // Desktop updater: an update is discoverable/staged (found|downloading|
+  // downloaded). Drives the Settings nav dot + the About tab dot. Mirrored
+  // from the Electron update-state events by useUpdateSubscription.
+  desktopUpdateAvailable: boolean
   subagentRunning: Record<string, number>
   subagentDetails: Record<string, SubagentDetail[]>
   subagentText: Record<string, Record<string, string>>
@@ -59,6 +63,7 @@ const initialState: DashboardState = {
   unreadSlots: (() => { try { return JSON.parse(localStorage.getItem('mc-unread-slots') ?? '[]') as string[] } catch { return [] } })(),
   slotsLoaded: false,
   updateProgress: null,
+  desktopUpdateAvailable: false,
   subagentRunning: {},
   subagentDetails: {},
   subagentText: {},
@@ -146,6 +151,9 @@ const dashboardSlice = createSlice({
     setUpdateProgress(state, action: PayloadAction<{ step: string; detail: string } | null>) {
       state.updateProgress = action.payload
     },
+    setDesktopUpdateAvailable(state, action: PayloadAction<boolean>) {
+      state.desktopUpdateAvailable = action.payload
+    },
     sseSubagentStatus(state, action: PayloadAction<{ running: number; slot: string; agents?: SubagentDetail[] }>) {
       const { slot, running, agents } = action.payload
       if (!slot) return
@@ -207,7 +215,8 @@ const dashboardSlice = createSlice({
   },
 })
 
-export const { sseStatus, sseConnected, sseDisconnected, sseSlots, touchSlotActivity, setChannelTrusted, sseSlotTitle, addSlotOptimistic, removeSlotOptimistic, updateSlot, updateSlotFolder, updateSlotPin, triggerRefresh, markSlotUnread, markSlotRead, setUpdateProgress, sseSubagentStatus, sseSubagentText, sseSlotColor, setSessionDefaultColor, setSessionColorsMode, setSessionColorsPalette, setSessionColorsIntensity, setEnabledAppIds } = dashboardSlice.actions
+export const { sseStatus, sseConnected, sseDisconnected, sseSlots, touchSlotActivity, setChannelTrusted, sseSlotTitle, addSlotOptimistic, removeSlotOptimistic, updateSlot, updateSlotFolder, updateSlotPin, triggerRefresh, markSlotUnread, markSlotRead, setUpdateProgress,
+  setDesktopUpdateAvailable, sseSubagentStatus, sseSubagentText, sseSlotColor, setSessionDefaultColor, setSessionColorsMode, setSessionColorsPalette, setSessionColorsIntensity, setEnabledAppIds } = dashboardSlice.actions
 
 /**
  * Resolve a slot's surface key. Backend emits `surface` (mirrors `mode` today

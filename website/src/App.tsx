@@ -672,7 +672,10 @@ export default function App() {
   const initialPopoutPath = useRef(window.location.pathname + window.location.search).current
   const dispatch = useAppDispatch()
   const { connected, updateProgress } = useAppSelector(s => s.dashboard)
-  const updateAvailable = useAppSelector(s => s.dashboard.status?.update_available)
+  // Gateway (web) update flag OR desktop updater availability (mirrored from
+  // Electron update-state by useUpdateSubscription) -- both light the same
+  // Settings nav dot below.
+  const updateAvailable = useAppSelector(s => s.dashboard.status?.update_available || s.dashboard.desktopUpdateAvailable)
   const version = useAppSelector(s => s.dashboard.status?.version) || '—'
   // Track whether the session-expired auth banner is currently injected by
   // api/client.ts. When auth is the real reason the gateway is unreachable,
@@ -1795,7 +1798,7 @@ export default function App() {
                 active={activePath === s.path}
                 collapsed={effectiveCollapsed}
                 onClick={closeMobileNav}
-                badge={updateAvailable ? <span title="Update available" className={effectiveCollapsed ? 'absolute top-1 right-1 w-2 h-2 bg-accent rounded-full z-10' : 'absolute top-1/2 -translate-y-1/2 right-2 w-2 h-2 bg-accent rounded-full z-10'} /> : undefined}
+                badge={updateAvailable ? <span title="Update available" role="status" aria-label="update available" className={effectiveCollapsed ? 'absolute top-1 right-1 w-2 h-2 bg-accent rounded-full z-10' : 'absolute top-1/2 -translate-y-1/2 right-2 w-2 h-2 bg-accent rounded-full z-10'} /> : undefined}
               />
               {/* Contact Us — icon links to kiro.dev, the GitHub repo,
                   and the Discord community. Hidden while the rail is collapsed

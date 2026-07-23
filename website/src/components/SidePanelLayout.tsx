@@ -7,6 +7,8 @@ export interface SidePanelTab {
   label: string
   icon: React.ReactNode
   description?: string
+  /** Presence dot after the label (e.g. About while an update is available). */
+  dot?: boolean
 }
 
 interface SidePanelLayoutProps {
@@ -55,6 +57,7 @@ export default function SidePanelLayout({ title, tabs, defaultTab, footer, heade
               >
                 <span className="w-3.5 h-3.5 shrink-0 flex items-center justify-center">{t.icon}</span>
                 {t.label}
+                {t.dot && <span className="w-1.5 h-1.5 bg-accent rounded-full shrink-0" role="status" aria-label="update available" />}
               </button>
             ))}
           </div>
@@ -77,6 +80,7 @@ export default function SidePanelLayout({ title, tabs, defaultTab, footer, heade
                 {t.icon}
               </span>
               {t.label}
+              {t.dot && <span className="ml-auto w-2 h-2 bg-accent rounded-full shrink-0" role="status" aria-label="update available" />}
             </button>
           ))}
           {footer && <div className="mt-auto pt-3 px-2.5">{footer}</div>}

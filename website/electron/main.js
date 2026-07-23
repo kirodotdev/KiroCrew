@@ -35,6 +35,7 @@ const store = new Store({
     remoteHosts: {},                       // { [port]: { host, binPath, remotePort?, remotePath? } }
     sshTimeoutMs: 20000,
     windowState: null,                     // persisted main-window geometry (see window-state.js)
+    lastNudgedVersion: "",                 // last update version announced via native notification (nudge once per version)
     themeAccent: "",                       // user's resolved theme accent hex; injected into the boot splash
     updateChannel: "",                     // "" = follow build stamp; "insider"|"stable" = user opt-in (Settings > About)
   },
@@ -1659,6 +1660,26 @@ app.whenReady().then(async () => {
     Notification,
     getFlavor: () => "stable",
     getChannelPreference: () => store.get("updateChannel", ""),
+    // Once-per-version nudge: tell the user an update exists; downloading and
+    // installing stay in Settings > About (the in-app dot guides them there).
+    notifyUpdateFound: (version) => {
+      if (!version || store.get("lastNudgedVersion", "") === version) return;
+      store.set("lastNudgedVersion", version);
+      try {
+        const n = new Notification({
+          title: `${app.name} update available`,
+          body: `Version ${version} is ready. Open Settings > About to download and install.`,
+        });
+        n.on("click", () => {
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            if (mainWindow.isMinimized()) mainWindow.restore();
+            mainWindow.show();
+            mainWindow.focus();
+          }
+        });
+        n.show();
+      } catch { /* notifications optional */ }
+    },
     stopGateway: () => stopGatewayGracefully(),
     onUpdateState: broadcastUpdateState,
   });

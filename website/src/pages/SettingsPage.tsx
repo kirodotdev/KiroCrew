@@ -41,7 +41,11 @@ export default function SettingsPage() {
   // An embedded instance pane can't manage remote instances (single-level by
   // design) — hide the Instances tab so a pane can't connect onward.
   const embedded = isEmbeddedPane()
-  const tabs = embedded ? TABS.filter(t => t.key !== 'instances') : TABS
+  // Update nudge: dot on the About entry while a desktop update is available
+  // (mirrored from Electron update-state by useUpdateSubscription).
+  const updateAvailable = useAppSelector(s => s.dashboard.desktopUpdateAvailable)
+  const baseTabs = embedded ? TABS.filter(t => t.key !== 'instances') : TABS
+  const tabs = updateAvailable ? baseTabs.map(t => (t.key === 'about' ? { ...t, dot: true } : t)) : baseTabs
 
   return (
     <SidePanelLayout

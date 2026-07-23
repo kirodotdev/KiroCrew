@@ -173,6 +173,7 @@ function initAutoUpdate(deps) {
     Notification,
     getFlavor,
     getChannelPreference = () => "",
+    notifyUpdateFound = null,
     stopGateway,
     platform = "darwin-arm64",
     feedBase = process.env.KIROCREW_UPDATE_FEED || DEFAULT_FEED_BASE,
@@ -285,6 +286,12 @@ function initAutoUpdate(deps) {
       // and wait for an explicit download() before engaging Squirrel.
       foundFeed = feed;
       log.info(`[update] found ${feed.version} (running ${app.getVersion()}) — awaiting user consent`);
+      // Nudge hook: main.js shows a native notification pointing at
+      // Settings > About (deduped there, once per version). Discovery-only —
+      // download/install still require the explicit consent actions.
+      if (typeof notifyUpdateFound === "function") {
+        try { notifyUpdateFound(feed.version); } catch (err) { log.error("[update] notifyUpdateFound threw", err); }
+      }
       emit("found", {
         version: feed.version,
         notes: typeof feed.notes === "string" ? feed.notes : "",

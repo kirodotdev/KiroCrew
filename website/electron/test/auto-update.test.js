@@ -398,3 +398,48 @@ test("nightly build reports not switchable and stays on nightly", () =>
     assert.ok(calls.setFeedURL.every((u2) => u2.includes("/nightly/")),
       `expected nightly feed URLs, got: ${calls.setFeedURL}`);
   }));
+
+// ---------------------------------------------------------------------------
+// Update nudge: found fires notifyUpdateFound (discovery-only); up-to-date
+// and error paths never do. Once-per-version dedupe lives in main.js.
+// ---------------------------------------------------------------------------
+
+test("found fires notifyUpdateFound with the feed version", () =>
+  withDarwin(async () => {
+    const nudges = [];
+    const { deps } = makeDeps({
+      appVersion: "1.0.0",
+      feed: { version: "1.1.0", url: "https://cdn.example.dev/desktop/insider/1.1.0/KiroCrew.zip" },
+    });
+    deps.notifyUpdateFound = (v) => nudges.push(v);
+    const u = initAutoUpdate(deps);
+    await u.check();
+    await new Promise((r) => setImmediate(r));
+    assert.deepStrictEqual(nudges, ["1.1.0"]);
+  }));
+
+test("up-to-date and failed checks never nudge", () =>
+  withDarwin(async () => {
+    const nudges = [];
+    const same = makeDeps({ appVersion: "1.0.0", feed: { version: "1.0.0", url: "https://cdn.example.dev/x.zip" } });
+    same.deps.notifyUpdateFound = (v) => nudges.push(v);
+    await initAutoUpdate(same.deps).check();
+    const err = makeDeps({ appVersion: "1.0.0", fetchErr: new Error("offline") });
+    err.deps.notifyUpdateFound = (v) => nudges.push(v);
+    await initAutoUpdate(err.deps).check();
+    await new Promise((r) => setImmediate(r));
+    assert.deepStrictEqual(nudges, []);
+  }));
+
+test("a throwing nudge callback does not break the check (found still emitted)", () =>
+  withDarwin(async () => {
+    const { deps, calls } = makeDeps({
+      appVersion: "1.0.0",
+      feed: { version: "1.1.0", url: "https://cdn.example.dev/x.zip" },
+    });
+    deps.notifyUpdateFound = () => { throw new Error("boom"); };
+    const u = initAutoUpdate(deps);
+    await u.check();
+    await new Promise((r) => setImmediate(r));
+    assert.ok(calls.states.includes("found"), `states: ${calls.states}`);
+  }));

@@ -125,4 +125,8 @@ registerBuiltinSurface({
   label: 'Settings',
   icon: <Settings size={16} />,
   group: 'Bottom',
+  // NOTE: the Settings nav dot (gateway update OR desktop update available)
+  // is hand-rolled in App.tsx's bottom-fixed section, which renders this row
+  // directly (not via renderNavRow/NavBadge) -- a registry badge here would
+  // be dead code.
 })

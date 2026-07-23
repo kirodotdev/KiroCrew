@@ -1,8 +1,10 @@
 import { useEffect } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
+import { useAppDispatch } from '../store'
+import { setDesktopUpdateAvailable } from '../store/dashboardSlice'
 
 export type UpdateState = {
-  state: 'checking' | 'available' | 'downloading' | 'downloaded' | 'not-available' | 'error'
+  state: 'checking' | 'found' | 'available' | 'downloading' | 'downloaded' | 'not-available' | 'error'
   version?: string
   notes?: string
   channel?: string
@@ -26,11 +28,21 @@ type UpdateAPI = {
  */
 export function useUpdateSubscription() {
   const queryClient = useQueryClient()
+  const dispatch = useAppDispatch()
   useEffect(() => {
     const api = (window as unknown as { updateAPI?: UpdateAPI }).updateAPI
     if (!api?.onState) return
     return api.onState((payload) => {
       queryClient.setQueryData(['update-state'], payload)
+      // Mirror availability into Redux so nav dots (Settings item, About tab)
+      // can use the surface-registry badge pipeline. found/downloading/
+      // downloaded all mean "an update exists"; not-available clears it.
+      // checking/error deliberately leave the flag unchanged.
+      if (payload.state === 'found' || payload.state === 'available' || payload.state === 'downloading' || payload.state === 'downloaded') {
+        dispatch(setDesktopUpdateAvailable(true))
+      } else if (payload.state === 'not-available') {
+        dispatch(setDesktopUpdateAvailable(false))
+      }
     })
-  }, [queryClient])
+  }, [queryClient, dispatch])
 }
