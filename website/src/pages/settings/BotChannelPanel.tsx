@@ -16,6 +16,7 @@ export interface BotChannelConfigData {
   bot_token_preview: string
   enabled: boolean
   allowed_user_ids: string[]
+  allowed_thread_ids?: string[]
   soft_threshold_pct: number
 }
 
@@ -25,6 +26,7 @@ export interface BotChannelConfigSave {
   bot_token_clear: boolean
   enabled: boolean
   allowed_user_ids: string[]
+  allowed_thread_ids?: string[]
   soft_threshold_pct: number
 }
 
@@ -56,6 +58,14 @@ export interface BotChannelSpec {
   thresholdDescription: string
   /** Fail-closed hint shown when enabled + token set but allowlist empty. */
   emptyAllowlistHint: string
+  /** Optional shared-thread allow-list rendered below user access controls. */
+  threadAllowlist?: {
+    label: string
+    description: string
+    placeholder: string
+    help: ReactNode
+    warning: ReactNode
+  }
   /** API calls. */
   getConfig: () => Promise<BotChannelConfigData>
   saveConfig: (body: Partial<BotChannelConfigSave>) => Promise<{ ok: boolean; restart_required: boolean; verify_warning: string }>
@@ -66,6 +76,7 @@ export interface BotChannelSpec {
 type Draft = {
   enabled: boolean
   allowed_user_ids: string[]
+  allowed_thread_ids: string[]
   soft_threshold_pct: string
 }
 
@@ -73,6 +84,7 @@ function draftFrom(c: BotChannelConfigData): Draft {
   return {
     enabled: c.enabled,
     allowed_user_ids: [...c.allowed_user_ids],
+    allowed_thread_ids: [...(c.allowed_thread_ids ?? [])],
     soft_threshold_pct: String(c.soft_threshold_pct),
   }
 }
@@ -190,6 +202,7 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
       allowed_user_ids: draft.allowed_user_ids,
       soft_threshold_pct: pct,
     }
+    if (spec.threadAllowlist) payload.allowed_thread_ids = draft.allowed_thread_ids
     if (botClear) payload.bot_token_clear = true
     else if (botToken.trim()) payload.bot_token = botToken.trim()
     saveMut.mutate(payload)
@@ -293,6 +306,26 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
             validate={v => /^\d+$/.test(v)}
             readOnly={ro}
           />
+          {spec.threadAllowlist && (
+            <div className="border-t border-border mt-4 pt-4">
+              <TagListEditor
+                label={spec.threadAllowlist.label}
+                description={spec.threadAllowlist.description}
+                values={draft.allowed_thread_ids}
+                placeholder={spec.threadAllowlist.placeholder}
+                onChange={v => upd({ allowed_thread_ids: v })}
+                validate={v => /^\d+$/.test(v)}
+                readOnly={ro}
+              />
+              <p className="text-[12px] text-muted mt-2 mb-0">
+                {spec.threadAllowlist.help}
+              </p>
+              <p className="text-[12px] text-warn mt-2 mb-0 flex items-start gap-1.5">
+                <AlertTriangle size={13} className="flex-none mt-0.5" />
+                <span>{spec.threadAllowlist.warning}</span>
+              </p>
+            </div>
+          )}
         </SettingsCard>
       </SettingsSection>
 

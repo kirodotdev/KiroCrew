@@ -93,6 +93,7 @@ def test_save_persists_token_and_config(tmp_path: Path, monkeypatch) -> None:
             "bot_token": VALID_TOKEN,
             "enabled": True,
             "allowed_user_ids": ["123456789012345678", "987654321098765432"],
+            "allowed_thread_ids": ["234567890123456789"],
             "soft_threshold_pct": 75,
         },
     )
@@ -107,6 +108,10 @@ def test_save_persists_token_and_config(tmp_path: Path, monkeypatch) -> None:
     assert cfg["discord"]["allowed_user_ids"] == [
         "123456789012345678",
         "987654321098765432",
+    ]
+    assert cfg["discord"]["allowed_thread_ids"] == ["234567890123456789"]
+    assert loader.KiroCrewConfig.load().discord.allowed_thread_ids == [
+        "234567890123456789"
     ]
     assert cfg["discord"]["soft_threshold_pct"] == 75
 
@@ -176,6 +181,19 @@ def test_save_rejects_non_numeric_user_ids(tmp_path: Path, monkeypatch) -> None:
     assert "numeric" in body["error"]
 
 
+def test_save_rejects_non_numeric_thread_ids(tmp_path: Path, monkeypatch) -> None:
+    import kiro_crew.dashboard.handlers.messaging as mod
+
+    _accept_token(monkeypatch, mod)
+    (status_body, _) = _client_put(
+        mod, monkeypatch, tmp_path, {"allowed_thread_ids": ["general"]}
+    )
+    status, body = status_body
+    assert status == 400
+    assert "thread ID" in body["error"]
+    assert "numeric" in body["error"]
+
+
 def test_clear_flag_must_be_strict_boolean(tmp_path: Path, monkeypatch) -> None:
     """Truthy non-bool clear flags (e.g. "false", 1) must not delete the token."""
     import kiro_crew.dashboard.handlers.messaging as mod
@@ -234,7 +252,8 @@ def test_get_masks_token_and_reports_state(tmp_path: Path, monkeypatch) -> None:
     env.write_text(f"DISCORD_BOT_TOKEN={VALID_TOKEN}\n", encoding="utf-8")
     cfg = tmp_path / "config.json"
     cfg.write_text(
-        '{"discord": {"enabled": true, "allowed_user_ids": ["42"]}}',
+        '{"discord": {"enabled": true, "allowed_user_ids": ["42"], '
+        '"allowed_thread_ids": ["99"]}}',
         encoding="utf-8",
     )
     monkeypatch.setattr(loader, "env_path", lambda: env)
@@ -257,3 +276,4 @@ def test_get_masks_token_and_reports_state(tmp_path: Path, monkeypatch) -> None:
     assert body["connected"] is False
     assert body["enabled"] is True
     assert body["allowed_user_ids"] == ["42"]
+    assert body["allowed_thread_ids"] == ["99"]

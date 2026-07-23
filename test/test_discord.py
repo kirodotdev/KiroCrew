@@ -21,7 +21,11 @@ from kiro_crew.acp.types import (
     EVENT_TEXT_CHUNK,
 )
 from kiro_crew.discord.client import (
+    _INTENT_DIRECT_MESSAGES,
+    _INTENT_GUILD_MESSAGES,
+    _INTENT_MESSAGE_CONTENT,
     DISCORD_CHUNK_LIMIT,
+    DiscordClient,
     DiscordInbound,
     DiscordInteraction,
     _find_button_label,
@@ -64,7 +68,11 @@ class FakeClient:
         self.component_edits: list[tuple[str, Any]] = []
         self.acked: list[str] = []
         self.reactions: list[tuple[str, str]] = []
+        self.thread_channels: set[str] = set()
         self._mid = 100
+
+    async def is_thread_channel(self, channel_id: str) -> bool:
+        return channel_id in self.thread_channels
 
     async def send_typing(self, channel_id: str) -> None:
         return None
@@ -274,7 +282,11 @@ def _cfg(soft: int = 80, default_agent: str = "") -> Any:
 
 
 def _dispatcher(
-    allowed: set[str], *, raise_on_get: bool = False, default_agent: str = ""
+    allowed: set[str],
+    *,
+    allowed_threads: set[str] | None = None,
+    raise_on_get: bool = False,
+    default_agent: str = "",
 ) -> tuple[DiscordDispatcher, FakeClient, FakeSessions]:
     sess = FakeSessions(raise_on_get=raise_on_get)
     d = DiscordDispatcher(
@@ -282,6 +294,7 @@ def _dispatcher(
         ctx_builder=FakeCtx(),  # type: ignore[arg-type]
         cfg=_cfg(default_agent=default_agent),
         allowed_user_ids=allowed,
+        allowed_thread_ids=allowed_threads,
         agent=None,
         conv_log=None,
     )
@@ -437,6 +450,36 @@ class TestFindButtonLabel:
         assert _find_button_label(components, "opt:9") == ""
 
 
+# ── client.py Gateway intents ────────────────────────────────────────────
+
+
+class _FakeWs:
+    def __init__(self) -> None:
+        self.payloads: list[dict[str, Any]] = []
+
+    async def send_json(self, payload: dict[str, Any]) -> None:
+        self.payloads.append(payload)
+
+
+class TestGatewayIntents:
+    @pytest.mark.asyncio
+    async def test_dm_only_requests_no_privileged_intent(self) -> None:
+        client = DiscordClient(token="test", enable_guild_threads=False)
+        ws = _FakeWs()
+        await client._identify(ws)
+        assert ws.payloads[0]["d"]["intents"] == _INTENT_DIRECT_MESSAGES
+
+    @pytest.mark.asyncio
+    async def test_thread_mode_requests_guild_messages_and_content(self) -> None:
+        client = DiscordClient(token="test", enable_guild_threads=True)
+        ws = _FakeWs()
+        await client._identify(ws)
+        intents = ws.payloads[0]["d"]["intents"]
+        assert intents & _INTENT_DIRECT_MESSAGES
+        assert intents & _INTENT_GUILD_MESSAGES
+        assert intents & _INTENT_MESSAGE_CONTENT
+
+
 # ── transport.py ─────────────────────────────────────────────────────────
 
 
@@ -466,7 +509,7 @@ class TestTransportAuth:
         assert DISCORD_CAPABILITIES.streaming is True
         assert DISCORD_CAPABILITIES.edit is True
         assert DISCORD_CAPABILITIES.reactions is True
-        assert DISCORD_CAPABILITIES.threads is False
+        assert DISCORD_CAPABILITIES.threads is True
 
 
 class TestPublicInjectionSurface:
@@ -507,22 +550,27 @@ class TestPublicInjectionSurface:
 
 
 class TestTransportReceive:
-    def _transport(self, allowed: list[str]) -> tuple[DiscordTransport, list[InboundMessage]]:
+    def _transport(
+        self, allowed: list[str], allowed_threads: list[str] | None = None
+    ) -> tuple[DiscordTransport, list[InboundMessage], FakeClient]:
         dispatched: list[InboundMessage] = []
 
         async def _dispatch(m: InboundMessage) -> None:
             dispatched.append(m)
 
+        client = FakeClient()
+        client.thread_channels.update(allowed_threads or [])
         t = DiscordTransport(
-            FakeClient(),  # type: ignore[arg-type]
+            client,  # type: ignore[arg-type]
             allowed_user_ids=allowed,
+            allowed_thread_ids=allowed_threads or [],
             dispatch=_dispatch,
         )
-        return t, dispatched
+        return t, dispatched, client
 
     @pytest.mark.asyncio
     async def test_authorized_dm_dispatches(self) -> None:
-        t, dispatched = self._transport(["u1"])
+        t, dispatched, _ = self._transport(["u1"])
         await t.receive(
             DiscordInbound(channel_id="c1", user_id="u1", text="hello", message_id="m1")
         )
@@ -533,32 +581,80 @@ class TestTransportReceive:
         assert msg.message_id == "m1"
 
     @pytest.mark.asyncio
-    async def test_guild_message_denied_even_for_allowed_user(self) -> None:
-        t, dispatched = self._transport(["u1"])
+    async def test_allowed_user_in_unapproved_thread_is_audited(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        events: list[dict[str, Any]] = []
+        monkeypatch.setattr(
+            "kiro_crew.discord.transport.sel",
+            lambda: SimpleNamespace(log_api_access=lambda **kwargs: events.append(kwargs)),
+        )
+        t, dispatched, _ = self._transport(["u1"], ["t1"])
         await t.receive(DiscordInbound(channel_id="c1", user_id="u1", text="hello", guild_id="g1"))
+        assert dispatched == []
+        assert [event["outcome"] for event in events] == ["denied_unapproved_thread"]
+
+    @pytest.mark.asyncio
+    async def test_unrelated_guild_chatter_is_dropped_without_audit(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        events: list[dict[str, Any]] = []
+        monkeypatch.setattr(
+            "kiro_crew.discord.transport.sel",
+            lambda: SimpleNamespace(log_api_access=lambda **kwargs: events.append(kwargs)),
+        )
+        t, dispatched, _ = self._transport(["u1"], ["t1"])
+        await t.receive(DiscordInbound(channel_id="c1", user_id="u2", text="hello", guild_id="g1"))
+        assert dispatched == []
+        assert events == []
+
+    @pytest.mark.asyncio
+    async def test_allowlisted_thread_dispatches_for_allowed_user(self) -> None:
+        t, dispatched, _ = self._transport(["u1"], ["t1"])
+        await t.receive(
+            DiscordInbound(channel_id="t1", user_id="u1", text="hello", guild_id="g1")
+        )
+        assert len(dispatched) == 1
+        assert dispatched[0].thread_id == "t1"
+
+    @pytest.mark.asyncio
+    async def test_normal_channel_denied_even_if_id_is_allowlisted(self) -> None:
+        t, dispatched, client = self._transport(["u1"], ["c1"])
+        client.thread_channels.clear()
+        await t.receive(
+            DiscordInbound(channel_id="c1", user_id="u1", text="hello", guild_id="g1")
+        )
+        assert dispatched == []
+
+    @pytest.mark.asyncio
+    async def test_allowlisted_thread_denies_unapproved_user(self) -> None:
+        t, dispatched, _ = self._transport(["u1"], ["t1"])
+        await t.receive(
+            DiscordInbound(channel_id="t1", user_id="u2", text="hello", guild_id="g1")
+        )
         assert dispatched == []
 
     @pytest.mark.asyncio
     async def test_unauthorized_user_dropped(self) -> None:
-        t, dispatched = self._transport(["u1"])
+        t, dispatched, _ = self._transport(["u1"])
         await t.receive(DiscordInbound(channel_id="c1", user_id="u2", text="hello"))
         assert dispatched == []
 
     @pytest.mark.asyncio
     async def test_empty_text_dropped(self) -> None:
-        t, dispatched = self._transport(["u1"])
+        t, dispatched, _ = self._transport(["u1"])
         await t.receive(DiscordInbound(channel_id="c1", user_id="u1", text=""))
         assert dispatched == []
 
     @pytest.mark.asyncio
     async def test_non_inbound_envelope_ignored(self) -> None:
-        t, dispatched = self._transport(["u1"])
+        t, dispatched, _ = self._transport(["u1"])
         await t.receive({"random": "dict"})
         assert dispatched == []
 
     @pytest.mark.asyncio
     async def test_resolve_conversation_creates_dm_channel(self) -> None:
-        t, _ = self._transport(["u1"])
+        t, _, _ = self._transport(["u1"])
         assert await t.resolve_conversation("u1") == "dm-u1"
 
 
@@ -828,6 +924,11 @@ class TestDispatcher:
         await d.handle_message(self._msg("hi"))
         assert sess.last_agent == "custom"
 
+    def test_thread_session_is_shared_but_dms_remain_per_user(self) -> None:
+        d, _, _ = _dispatcher({"u1", "u2"}, allowed_threads={"t1"})
+        assert d._session_key("u1", "t1") == d._session_key("u2", "t1")
+        assert d._session_key("u1") != d._session_key("u2")
+
 
 class TestInteractions:
     def _itx(self, custom_id: str, label: str = "", guild: str = "") -> DiscordInteraction:
@@ -853,6 +954,14 @@ class TestInteractions:
         d, cli, _ = _dispatcher({"u1"})
         await d.on_interaction(self._itx("a:r1:aabbccdd:1", guild="g1"))
         assert cli.acked == []
+
+    @pytest.mark.asyncio
+    async def test_allowlisted_thread_interaction_is_acked(self) -> None:
+        d, cli, _ = _dispatcher({"u1"}, allowed_threads={"c1"})
+        cli.thread_channels.add("c1")
+        await d.on_interaction(self._itx("a:r9:aabbccdd:1", guild="g1"))
+        assert cli.acked == ["i1"]
+        assert any("expired" in text for _, text, _ in cli.edits)
 
     @pytest.mark.asyncio
     async def test_approval_resolves_pending_future(self) -> None:

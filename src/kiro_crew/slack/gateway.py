@@ -559,6 +559,9 @@ class GatewayOrchestrator:
         self._discord_bot_token = creds.get(CRED_DISCORD_BOT_TOKEN, "") or cfg.discord.bot_token
         self._discord_enabled = bool(cfg.discord.enabled and self._discord_bot_token)
         self._discord_allowed_user_ids: list[str] = [str(u) for u in cfg.discord.allowed_user_ids]
+        self._discord_allowed_thread_ids: list[str] = [
+            str(t) for t in cfg.discord.allowed_thread_ids
+        ]
         self._discord_client: "DiscordClient | None" = None
         # Webex — the WEBEX_BOT_TOKEN credential (env/.env) overrides
         # cfg.webex.bot_token; all other settings come from the typed

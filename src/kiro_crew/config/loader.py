@@ -2575,8 +2575,9 @@ class DiscordConfig:
         default=False,
         metadata=_meta(
             "Enabled",
-            "Enable the Discord channel (Gateway WebSocket, DM-only). Requires "
-            "DISCORD_BOT_TOKEN (env/.env) or discord.bot_token.",
+            "Enable the Discord channel (Gateway WebSocket, DMs plus optional "
+            "allow-listed server threads). Requires DISCORD_BOT_TOKEN (env/.env) "
+            "or discord.bot_token.",
             tags=["discord"],
         ),
     )
@@ -2594,8 +2595,17 @@ class DiscordConfig:
         default_factory=list,
         metadata=_meta(
             "Allowed User IDs",
-            "Discord user IDs (snowflakes) permitted to DM the bot. Empty = deny "
-            "all (fail closed): anyone sharing a server with the bot can DM it.",
+            "Discord user IDs (snowflakes) permitted to message the bot. Empty = "
+            "deny all (fail closed).",
+            tags=["discord"],
+        ),
+    )
+    allowed_thread_ids: list[str] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Allowed Thread IDs",
+            "Discord server thread IDs where approved users may run the agent. "
+            "Empty = DMs only. Normal server channels are always denied.",
             tags=["discord"],
         ),
     )
@@ -3267,6 +3277,7 @@ class KiroCrewConfig:
                 # keep them as strings (JSON round-trip safe, matches the
                 # transport's string comparison).
                 allowed_user_ids=_coerce_str_ids(discord_data.get("allowed_user_ids")),
+                allowed_thread_ids=_coerce_str_ids(discord_data.get("allowed_thread_ids")),
                 soft_threshold_pct=max(
                     1, min(100, _coerce_int(discord_data.get("soft_threshold_pct"), 80))
                 ),

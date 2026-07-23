@@ -46,7 +46,7 @@ async def maybe_start_discord(orch: "GatewayOrchestrator") -> "DiscordClient | N
 
     Returns the running client (so the gateway can ``close()`` it on shutdown)
     or None. The transport + dispatcher stay alive via the client's handler
-    references. Token / enabled / allowed_user_ids are read once in the
+    references. Token / enabled / allow-lists are read once in the
     orchestrator's constructor and consumed off ``orch`` here.
     """
     if not getattr(orch, "_discord_enabled", False):
@@ -59,6 +59,9 @@ async def maybe_start_discord(orch: "GatewayOrchestrator") -> "DiscordClient | N
         assert orch.sessions is not None and orch.ctx_builder is not None
 
         allowed_ids: set[str] = set(getattr(orch, "_discord_allowed_user_ids", []) or [])
+        allowed_threads: set[str] = set(
+            getattr(orch, "_discord_allowed_thread_ids", []) or []
+        )
         if not allowed_ids:
             logger.warning(
                 "Discord: allowed_user_ids is empty — the bot is reachable by "
@@ -72,13 +75,21 @@ async def maybe_start_discord(orch: "GatewayOrchestrator") -> "DiscordClient | N
             ctx_builder=orch.ctx_builder,
             cfg=orch._cfg,
             allowed_user_ids=allowed_ids,
+            allowed_thread_ids=allowed_threads,
             agent=None,
             conv_log=getattr(orch, "conv_log", None),
             approval_mode=_resolve_approval_mode(orch),
         )
-        client = DiscordClient(token=bot_token, on_interaction=dispatcher.on_interaction)
+        client = DiscordClient(
+            token=bot_token,
+            on_interaction=dispatcher.on_interaction,
+            enable_guild_threads=bool(allowed_threads),
+        )
         transport = DiscordTransport(
-            client, allowed_user_ids=allowed_ids, dispatch=dispatcher.handle_message
+            client,
+            allowed_user_ids=allowed_ids,
+            allowed_thread_ids=allowed_threads,
+            dispatch=dispatcher.handle_message,
         )
         # Inbound: Gateway WS -> transport.receive (authorize + normalize)
         # -> dispatcher.handle_message (drive the turn on the shared TurnDriver).

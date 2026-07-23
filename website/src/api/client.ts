@@ -83,6 +83,7 @@ export interface DiscordConfigData {
   bot_token_preview: string
   enabled: boolean
   allowed_user_ids: string[]
+  allowed_thread_ids: string[]
   soft_threshold_pct: number
 }
 
@@ -105,6 +106,7 @@ export interface DiscordConfigSave {
   bot_token_clear: boolean
   enabled: boolean
   allowed_user_ids: string[]
+  allowed_thread_ids: string[]
   soft_threshold_pct: number
 }
 

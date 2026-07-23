@@ -139,6 +139,7 @@ class DiscordDispatcher:
         ctx_builder: "ContextBuilder",
         cfg: "KiroCrewConfig",
         allowed_user_ids: set[str],
+        allowed_thread_ids: set[str] | None = None,
         agent: str | None = None,
         conv_log: "ConversationLog | None" = None,
         approval_mode: str = APPROVAL_INTERACTIVE,
@@ -147,6 +148,7 @@ class DiscordDispatcher:
         self.ctx_builder = ctx_builder
         self.cfg = cfg
         self._allowed = set(allowed_user_ids or ())
+        self._allowed_threads = set(allowed_thread_ids or ())
         self.agent = agent
         self.conv_log = conv_log
         self.approval_mode = approval_mode
@@ -172,6 +174,8 @@ class DiscordDispatcher:
         assert self.client is not None, "DiscordDispatcher.client must be set"
         user_id = msg.user_id
         channel_id = msg.conversation_id
+        thread_id = msg.thread_id or ""
+        scope_id = self._scope_id(user_id, thread_id)
         text = msg.text
 
         # Per-message mid-turn override (!queue/!steer) — see the Telegram
@@ -183,41 +187,41 @@ class DiscordDispatcher:
         # ── Command intercept (no LLM session needed) ──
         cmd = parse_command(text) if interpret_commands and override_mode is None else None
         if cmd == "new":
-            self._conv.bump_gen(user_id)
+            self._conv.bump_gen(scope_id)
             await self.client.send_message(channel_id, "✅ New conversation started.")
             return
         if cmd == "compact":
-            self._conv.clear_awaiting(user_id)
-            await self._handle_compact(user_id, channel_id)
+            self._conv.clear_awaiting(scope_id)
+            await self._handle_compact(user_id, channel_id, thread_id)
             return
         if cmd == "link":
-            await self._handle_link(user_id, channel_id)
+            await self._handle_link(user_id, channel_id, thread_id)
             return
         if cmd == "unlink":
-            await self._handle_unlink(user_id, channel_id)
+            await self._handle_unlink(user_id, channel_id, thread_id)
             return
         if cmd == "help":
             await self.client.send_message(channel_id, _HELP_TEXT)
             return
         if cmd == "stop":
-            await self._handle_stop(user_id, channel_id)
+            await self._handle_stop(user_id, channel_id, thread_id)
             return
 
         # ── Mid-turn concurrency: check the CURRENT-generation key BEFORE any
         # idle/daily rotation (see the Telegram dispatcher's rationale). ──
-        session_key = self._session_key(user_id)
+        session_key = self._session_key(user_id, thread_id)
         if self.sessions.is_busy(session_key):
             await self._handle_busy(session_key, msg, text, override_mode)
             return
 
         self._conv.maybe_rotate(
-            user_id,
+            scope_id,
             time.time(),
             idle_minutes=self.cfg.messaging.idle_reset_minutes,
             daily_reset_hour=self.cfg.messaging.daily_reset_hour,
         )
-        session_key = self._session_key(user_id)
-        chan_id = f"discord:{user_id}"
+        session_key = self._session_key(user_id, thread_id)
+        chan_id = f"discord:{channel_id}" if thread_id else f"discord:{user_id}"
         agent = self._resolve_agent()
 
         decider = (
@@ -296,7 +300,7 @@ class DiscordDispatcher:
                     exc_info=True,
                 )
             try:
-                await self._maybe_notice(channel_id, user_id, session_key, provider)
+                await self._maybe_notice(channel_id, scope_id, session_key, provider)
             except Exception:
                 logger.warning(
                     "Discord: maybe_notice failed session=%s",
@@ -337,7 +341,7 @@ class DiscordDispatcher:
 
         # Drain anything queued during the turn (queue_mode == "queue").
         if drain:
-            await self._drain_queue(session_key, user_id, channel_id)
+            await self._drain_queue(session_key, user_id, channel_id, thread_id)
 
     async def _handle_busy(
         self,
@@ -381,7 +385,9 @@ class DiscordDispatcher:
         if not await self._enqueue_with_receipt(session_key, channel_id, text):
             await self.handle_message(msg)
 
-    async def _drain_queue(self, session_key: str, user_id: str, channel_id: str) -> None:
+    async def _drain_queue(
+        self, session_key: str, user_id: str, channel_id: str, thread_id: str = ""
+    ) -> None:
         """Collapse every message queued during the just-finished turn into ONE
         combined turn (order preserved). See the Telegram dispatcher for the
         lock/ordering rationale."""
@@ -417,6 +423,7 @@ class DiscordDispatcher:
                 user_id=user_id,
                 conversation_id=channel_id,
                 text=combined,
+                thread_id=thread_id or None,
             ),
             drain=False,
             interpret_commands=False,
@@ -482,10 +489,12 @@ class DiscordDispatcher:
         except Exception:
             logger.debug("discord: queue receipt cancel-finalize failed", exc_info=True)
 
-    async def _handle_stop(self, user_id: str, channel_id: str) -> None:
+    async def _handle_stop(
+        self, user_id: str, channel_id: str, thread_id: str = ""
+    ) -> None:
         """Hard cancel: abort the in-flight turn and clear everything."""
         assert self.client is not None
-        session_key = self._session_key(user_id)
+        session_key = self._session_key(user_id, thread_id)
         cancelled_turn = False
         if self.sessions.is_busy(session_key):
             provider = self.sessions.get_provider(session_key)
@@ -516,8 +525,13 @@ class DiscordDispatcher:
         # Auth first (deny-by-default short-circuit).
         if not self._authorized(itx.user_id):
             return
-        # DM-only (mirrors receive()): deny guild interactions defensively.
-        if itx.guild_id:
+        # Guild buttons are accepted only in an allow-listed channel that
+        # Discord confirms is a thread. This mirrors transport.receive().
+        thread_id = itx.channel_id if itx.guild_id else ""
+        if itx.guild_id and (
+            thread_id not in self._allowed_threads
+            or not await self.client.is_thread_channel(thread_id)
+        ):
             return
         # Ack to dismiss Discord's "interaction failed" state.
         await self.client.ack_component_interaction(itx.interaction_id, itx.interaction_token)
@@ -532,7 +546,9 @@ class DiscordDispatcher:
             head, _, flag = body.rpartition(":")
             rid, _, nonce = head.rpartition(":")
             approved = flag == "1"
-            key = DiscordApprovalDecider.key(self._session_key(itx.user_id), rid)
+            key = DiscordApprovalDecider.key(
+                self._session_key(itx.user_id, thread_id), rid
+            )
             resolved = DiscordApprovalDecider.resolve_global(key, approved, nonce=nonce)
             if resolved:
                 verdict = "✅ Approved" if approved else "🚫 Denied"
@@ -563,6 +579,7 @@ class DiscordDispatcher:
                 user_id=itx.user_id,
                 conversation_id=itx.channel_id,
                 text=choice_text,
+                thread_id=thread_id or None,
             )
             await self.handle_message(synthetic)
 
@@ -590,17 +607,34 @@ class DiscordDispatcher:
     def _resolve_agent(self) -> str:
         return self.agent or self.cfg.agent.default_agent or _DEFAULT_KIROCREW_AGENT
 
-    def _session_key(self, user_id: str) -> str:
-        gen = self._conv.current_gen(user_id)
+    @staticmethod
+    def _scope_id(user_id: str, thread_id: str = "") -> str:
+        return f"thread:{thread_id}" if thread_id else f"user:{user_id}"
+
+    def _session_key(self, user_id: str, thread_id: str = "") -> str:
+        scope_id = self._scope_id(user_id, thread_id)
+        gen = self._conv.current_gen(scope_id)
         return build_dm_session_key(
             "discord",
             self._resolve_agent(),
-            user_id,
+            thread_id or user_id,
             gen=gen,
-            dm_scope=self.cfg.messaging.dm_scope,
+            dm_scope=("per-channel-peer" if thread_id else self.cfg.messaging.dm_scope),
+            chat_type=("group" if thread_id else "direct"),
         )
 
-    def _seed_gen(self, user_id: str) -> int:
+    def _seed_gen(self, scope_id: str) -> int:
+        if scope_id.startswith("thread:"):
+            thread_id = scope_id.removeprefix("thread:")
+            bucket = build_dm_session_key(
+                "discord",
+                self._resolve_agent(),
+                thread_id,
+                dm_scope="per-channel-peer",
+                chat_type="group",
+            )
+            return self.sessions.max_generation(bucket)
+        user_id = scope_id.removeprefix("user:")
         return seed_generation(
             self.sessions,
             channel="discord",
@@ -609,10 +643,12 @@ class DiscordDispatcher:
             dm_scope=self.cfg.messaging.dm_scope,
         )
 
-    async def _handle_link(self, user_id: str, channel_id: str) -> None:
+    async def _handle_link(
+        self, user_id: str, channel_id: str, thread_id: str = ""
+    ) -> None:
         """Mirror this conversation's dashboard tab back to Discord."""
         assert self.client is not None
-        key = dashboard_mirror_key(self._session_key(user_id))
+        key = dashboard_mirror_key(self._session_key(user_id, thread_id))
         self.sessions.set_mirror_link(key, ChannelLink("discord", channel_id=channel_id))
         await self.client.send_message(
             channel_id,
@@ -620,9 +656,11 @@ class DiscordDispatcher:
             "also show up here. Send `!unlink` to stop.",
         )
 
-    async def _handle_unlink(self, user_id: str, channel_id: str) -> None:
+    async def _handle_unlink(
+        self, user_id: str, channel_id: str, thread_id: str = ""
+    ) -> None:
         assert self.client is not None
-        key = dashboard_mirror_key(self._session_key(user_id))
+        key = dashboard_mirror_key(self._session_key(user_id, thread_id))
         was_linked = self.sessions.clear_mirror_link(key)
         await self.client.send_message(
             channel_id,
@@ -643,13 +681,13 @@ class DiscordDispatcher:
             self.conv_log.set_title(session_key, title)
 
     async def _maybe_notice(
-        self, channel_id: str, user_id: str, session_key: str, provider: Any
+        self, channel_id: str, scope_id: str, session_key: str, provider: Any
     ) -> None:
         """Soft-threshold context warning as a SEPARATE message (not persisted)."""
         pct = self.sessions.check_context_usage(session_key, provider)
         soft_pct = self.cfg.discord.soft_threshold_pct
-        if pct >= soft_pct and not self._conv.is_awaiting(user_id):
-            self._conv.set_awaiting(user_id)
+        if pct >= soft_pct and not self._conv.is_awaiting(scope_id):
+            self._conv.set_awaiting(scope_id)
             assert self.client is not None
             await self.client.send_message(
                 channel_id,
@@ -657,12 +695,12 @@ class DiscordDispatcher:
                 "`!new` to start fresh.",
             )
 
-    async def _handle_compact(self, user_id: str, channel_id: str) -> None:
-        """In-place ACP ``/compact`` on the user's session (mirrors Telegram —
-        including the atomic ``try_acquire`` that prevents a normal turn from
-        interleaving JSON-RPC with the compaction on one stdio channel)."""
+    async def _handle_compact(
+        self, user_id: str, channel_id: str, thread_id: str = ""
+    ) -> None:
+        """In-place ACP ``/compact`` on the conversation's session."""
         assert self.client is not None
-        session_key = self._session_key(user_id)
+        session_key = self._session_key(user_id, thread_id)
         if not await self.sessions.try_acquire(session_key):
             if self.sessions.has_session(session_key):
                 await self.client.send_message(

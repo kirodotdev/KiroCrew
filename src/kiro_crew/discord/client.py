@@ -40,10 +40,16 @@ DISCORD_CHUNK_LIMIT = 1900
 _API_BASE = "https://discord.com/api/v10"
 _GATEWAY_URL = "wss://gateway.discord.gg/?v=10&encoding=json"
 
-# Gateway intents: DIRECT_MESSAGES (1<<12) is all a DM-only bot needs.
-# Message content is always delivered for DMs — the privileged MESSAGE_CONTENT
-# intent (1<<15) only gates *guild* message content, which we deny anyway.
+# Gateway intents. DM-only installations request DIRECT_MESSAGES alone. When
+# an explicit server-thread allow-list is configured, GUILD_MESSAGES delivers
+# thread messages and the privileged MESSAGE_CONTENT intent exposes their text.
 _INTENT_DIRECT_MESSAGES = 1 << 12
+_INTENT_GUILD_MESSAGES = 1 << 9
+_INTENT_MESSAGE_CONTENT = 1 << 15
+_THREAD_INTENTS = _INTENT_GUILD_MESSAGES | _INTENT_MESSAGE_CONTENT
+
+# Discord channel types: announcement thread, public thread, private thread.
+_THREAD_CHANNEL_TYPES = frozenset({10, 11, 12})
 
 # Gateway opcodes.
 _OP_DISPATCH = 0
@@ -102,11 +108,15 @@ class DiscordClient:
         token: str,
         on_message: Callable[[DiscordInbound], Awaitable[None]] | None = None,
         on_interaction: Callable[[DiscordInteraction], Awaitable[None]] | None = None,
+        enable_guild_threads: bool = False,
         proxy: str | None = None,
     ) -> None:
         self._token = token
         self._on_message = on_message
         self._on_interaction = on_interaction
+        self._intents = _INTENT_DIRECT_MESSAGES | (
+            _THREAD_INTENTS if enable_guild_threads else 0
+        )
         self._proxy = proxy or _resolve_proxy()
         self._session: aiohttp.ClientSession | None = None
         self._session_lock: asyncio.Lock = asyncio.Lock()
@@ -123,6 +133,9 @@ class DiscordClient:
         self._handler_tasks: set[asyncio.Task[None]] = set()
         # Bot's own user id (from READY) so we can drop our own messages.
         self.bot_user_id: str = ""
+        # channel_id -> Discord channel type. This proves a configured ID is
+        # actually a thread before any shared-channel turn can run.
+        self._channel_types: dict[str, int] = {}
         # Set when the Gateway handshake reaches READY (cleared while
         # disconnected/reconnecting). ``wait_ready`` gates "connected" status.
         self.ready: asyncio.Event = asyncio.Event()
@@ -260,6 +273,24 @@ class DiscordClient:
         result = await self._api("POST", "/users/@me/channels", {"recipient_id": user_id})
         return str(result.get("id")) if result else ""
 
+    async def is_thread_channel(self, channel_id: str) -> bool:
+        """Confirm ``channel_id`` is a Discord thread, failing closed.
+
+        IDs are user-configured, but an ID alone does not prove channel type.
+        Resolve the channel once through Discord and cache its immutable type,
+        so accidentally allow-listing a normal guild channel cannot expose
+        agent or tool output there.
+        """
+        cached = self._channel_types.get(channel_id)
+        if cached is not None:
+            return cached in _THREAD_CHANNEL_TYPES
+        result = await self._api("GET", f"/channels/{channel_id}", None)
+        if not isinstance(result, dict) or not isinstance(result.get("type"), int):
+            return False
+        channel_type = int(result["type"])
+        self._channel_types[channel_id] = channel_type
+        return channel_type in _THREAD_CHANNEL_TYPES
+
     async def edit_message_components(
         self, channel_id: str, message_id: str, components: list[dict]
     ) -> bool:
@@ -385,7 +416,7 @@ class DiscordClient:
                 "op": _OP_IDENTIFY,
                 "d": {
                     "token": self._token,
-                    "intents": _INTENT_DIRECT_MESSAGES,
+                    "intents": self._intents,
                     "properties": {
                         "os": "linux",
                         "browser": "kirocrew",

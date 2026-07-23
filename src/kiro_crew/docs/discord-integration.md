@@ -1,71 +1,167 @@
 # Discord Integration
 
-Talk to your agent from Discord DMs. The channel connects outbound over
-Discord's Gateway WebSocket, so it works behind NAT and firewalls with no
-webhook or public address.
+Talk to your agent from Discord DMs and explicitly approved server threads.
+The channel connects outbound over Discord's Gateway WebSocket, so it works
+behind NAT and firewalls with no webhook, public address, or inbound port.
+
+## How the bot behaves
+
+| Context | Behavior |
+|---------|----------|
+| **DMs** | Responds to messages from an allow-listed user. No `@mention` needed. |
+| **Approved server threads** | Responds when both the sender's user ID and the exact thread ID are allow-listed. Everyone who can view the thread can read replies and tool output. |
+| **Normal server channels** | Always ignored, even if someone accidentally enters the channel ID in the thread allow-list. Kiro Crew verifies the Discord channel type before running a turn. |
+| **Unknown users or threads** | Denied. Security-relevant attempts are audited; unrelated guild chatter is discarded silently. Empty user allow-list denies everything; empty thread allow-list means DMs only. |
+
+Discord represents threads as specialized guild channels with their own channel
+IDs. Forum posts are threads too. Group DMs are different and are not supported
+by Discord's bot API.
 
 ## Setup
 
-1. **Create the app.** Open the [Discord Developer Portal](https://discord.com/developers/applications),
-   click **New Application**, and name it.
-2. **Get the bot token.** On the app's **Bot** page, click **Reset Token** and
-   copy it. No privileged intents are needed: the bot is DM-only and DM
-   content is always delivered.
-3. **Install the bot.** On **Installation**, copy the install link (or use
-   OAuth2 → URL Generator with the `bot` scope) and open it to add the bot to
-   any server you share. You can then DM it directly.
-4. **Find your user ID.** In Discord, enable **Settings → Advanced →
-   Developer Mode**, then right-click your name and choose **Copy User ID**.
-5. **Configure KiroCrew.** In the dashboard, open **Settings → Discord**:
-   enable the channel, paste the bot token, and add your user ID to the
-   allowed list. Or edit config directly:
+### 1. Create the app
 
-   ```bash
-   # ~/.kirocrew/.env
-   DISCORD_BOT_TOKEN=<your bot token>
-   ```
+Open the [Discord Developer Portal](https://discord.com/developers/applications),
+click **New Application**, and name it.
 
-   ```json
-   // ~/.kirocrew/config.json
-   {
-     "discord": {
-       "enabled": true,
-       "allowed_user_ids": ["123456789012345678"]
-     }
-   }
-   ```
+### 2. Get the bot token and choose intents
 
-6. **Restart the gateway** (`kirocrew restart`). The Settings page shows a
-   Connected badge once the channel is up.
+On the app's **Bot** page, click **Reset Token** and copy it. Discord shows the
+token only once; treat it like a password.
+
+- **DMs only:** leave Presence Intent, Server Members Intent, and Message Content
+  Intent **OFF**. DM content is always delivered.
+- **Server threads:** enable **Message Content Intent**. Discord requires this
+  privileged intent to deliver guild/thread message text. Presence and Server
+  Members intents remain unnecessary.
+
+Kiro Crew requests the guild/message-content Gateway intents only when at least
+one `allowed_thread_ids` entry is configured, so DM-only installs keep the
+narrower intent set.
+
+### 3. Install the bot
+
+On **Installation**, enable **Guild Install** and select the **`bot`** OAuth
+scope. `applications.commands` is not needed because Kiro Crew uses text
+commands such as `!help`, not Discord slash commands.
+
+For DMs only, no guild permissions are required. For server threads, grant:
+
+- **View Channel**
+- **Read Message History**
+- **Send Messages in Threads**
+- **Add Reactions** (used for mid-turn steer receipts)
+
+A manual thread-capable install URL is:
+
+```text
+https://discord.com/oauth2/authorize?client_id=YOUR_APP_ID&scope=bot&permissions=274877973568
+```
+
+This permission set does not grant **Send Messages** in normal server channels.
+For a private thread, explicitly add the bot to that thread if Discord does not
+already show it as a member.
+
+### 4. Find the user and thread IDs
+
+Enable **Discord Settings → Advanced → Developer Mode**.
+
+- Right-click your own name → **Copy User ID**.
+- Right-click the thread → **Copy Channel ID**. Use the thread's own ID, not its
+  parent channel ID.
+
+Both values are long numeric snowflakes, for example `284102345871466496`.
+
+### 5. Configure Kiro Crew
+
+In **Settings → Discord**, enable the channel, paste the bot token, add every
+user who may run the agent, and optionally add approved server thread IDs.
+
+Or edit the local configuration directly:
+
+```bash
+# ~/.kirocrew/.env
+DISCORD_BOT_TOKEN=<your bot token>
+```
+
+```json
+// ~/.kirocrew/config.json
+{
+  "discord": {
+    "enabled": true,
+    "allowed_user_ids": ["123456789012345678"],
+    "allowed_thread_ids": ["234567890123456789"]
+  }
+}
+```
+
+Omit `allowed_thread_ids` or leave it empty for DMs only.
+
+### 6. Restart the gateway
+
+```bash
+kirocrew restart
+```
+
+Discord settings and Gateway intents are read at startup. The Settings page
+shows **Connected** once Discord accepts the IDENTIFY handshake and sends READY.
+If Discord closes with code 4014, enable Message Content Intent in the Developer
+Portal or clear the thread allow-list and restart in DM-only mode.
+
+### 7. Test both paths
+
+- **DM:** click the bot's name → **Message**, then send `!help`.
+- **Thread:** open an approved thread and send `!help`. No `@mention` is needed.
+- **Negative check:** send `!help` in the parent channel; the bot must remain
+  silent.
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| Enabled, but no Discord activity | Token missing or gateway not restarted | Set `DISCORD_BOT_TOKEN`, then `kirocrew restart` |
+| Gateway closes with 4004 | Bad or reset token | Reset the token, update `.env`, restart |
+| Gateway closes with 4014 after adding a thread | Message Content Intent is disabled | Enable it on the Bot page, then restart |
+| DMs are ignored | User ID is missing/wrong | Add the numeric user ID; inspect `kirocrew security events` |
+| Thread is ignored but DMs work | Thread ID missing/wrong, bot cannot view it, or Message Content Intent is off | Copy the thread's Channel ID, check permissions/membership, enable the intent, restart |
+| Parent channel is ignored | Expected behavior | Use an approved thread; normal channels are always disabled |
+| Bot can read but cannot reply in a thread | Missing guild permission or private-thread membership | Grant View Channel, Read Message History, Send Messages in Threads; add the bot to private threads |
+| Logs are silent on successful connection | `agent.log_level` is `WARNING` | Trust the Connected badge or lower the log level |
 
 ## Security model
 
-- **Deny-by-default allow-list.** Anyone sharing a server with the bot can DM
-  it, so an empty `allowed_user_ids` rejects every message (fail closed).
-  Every denial is recorded in the security event log.
-- **DM-only.** Messages in server channels are ignored even from allowed
-  users, so tool output can never land in a shared channel.
+- **Two allow-lists for threads.** A server-thread turn runs only when both the
+  sender and exact thread are approved. An empty user list denies all traffic;
+  an empty thread list preserves DM-only behavior.
+- **Channel-type verification.** Kiro Crew resolves an approved guild channel
+  through Discord and accepts only announcement, public, or private thread
+  types. Accidentally entering a normal channel ID does not enable it.
+- **Global intent scope.** Enabling any server thread turns on Discord's global
+  Message Content intent. Discord then delivers content from every server
+  channel the bot can see; Kiro Crew immediately discards traffic outside
+  approved threads and does not audit routine background chatter.
+- **Shared output warning.** Every member who can view an approved thread can
+  read agent replies, tool output, and interactive approvals. Approve only
+  threads whose membership and history are appropriate for that disclosure.
+- **Conversation scope.** Approved participants in one thread share that
+  thread's agent session and context. DMs remain isolated per user.
 - **Token handling.** The token lives in `~/.kirocrew/.env` (mode 0600), is
-  masked in the settings UI, is excluded from agent subprocess environments,
-  and config writes are accepted only from the machine running the gateway.
+  masked in Settings, excluded from agent subprocess environments, and can be
+  changed only from the machine running the gateway.
 
 ## Usage
 
-Send a DM to chat. Replies stream in and long answers split across messages.
+Send a DM or message an approved thread. Replies stream in place and long
+answers split across messages.
 
 | Command | Effect |
 |---------|--------|
-| `!new` | Start a fresh conversation |
-| `!compact` | Compress context when it gets long |
+| `!new` | Start a fresh conversation (shared for the current thread) |
+| `!compact` | Compress the current conversation context |
 | `!link` / `!unlink` | Mirror this conversation's dashboard tab here |
-| `!stop` | Stop the current reply and clear the queue |
+| `!stop` | Stop the current reply and clear its queue |
 | `!help` | Show commands |
 
 While a reply is running, prefix a message with `!steer` to fold it into the
-running turn, or `!queue` to answer it after. A plain mid-turn message follows
-the global `messaging.queue_mode` setting. Telegram-style `/` prefixes are
-also accepted, though Discord's own client may intercept bare `/` as a
-slash-command.
-
-`[OPTIONS:]` choices render as buttons. Tool approvals appear as
-Approve/Deny buttons when the approval mode is interactive.
+running turn or `!queue` to answer it afterward. `[OPTIONS:]` choices render as
+buttons, and interactive tool approvals render as Approve/Deny buttons.

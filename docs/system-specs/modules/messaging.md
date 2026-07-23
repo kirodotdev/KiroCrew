@@ -285,8 +285,10 @@ runtime enforces owner-only access.
 ## Discord channel
 
 **Transport (`kiro_crew/discord/`).** A concrete `MessagingTransport` over a
-pure-aiohttp Discord Gateway WebSocket client (`client.py`): identify with the
-`DIRECT_MESSAGES` intent only, heartbeat at the server interval with jitter,
+pure-aiohttp Discord Gateway WebSocket client (`client.py`): identify with
+`DIRECT_MESSAGES` for DM-only installs; when `allowed_thread_ids` is non-empty,
+also request `GUILD_MESSAGES` and privileged `MESSAGE_CONTENT`. Heartbeat uses
+the server interval with jitter,
 resume via `resume_gateway_url`/sequence tracking, exponential-backoff
 reconnect, and hard stop on non-recoverable close codes (4004/4010-4014).
 Outbound is REST v10 (send/edit/typing/reactions/interaction acks) with a
@@ -299,12 +301,19 @@ truthful via the `on_state_change` observer (a non-recoverable close flips it
 back off with the reason).
 
 **Security model.** `authorize` is deny-by-default against
-`discord.allowed_user_ids` (snowflakes kept as strings — they exceed 2^53);
-every denial is SEL-audited. DM-only fail-closed: any message carrying a
-`guild_id` is rejected even from allow-listed users so tool output can never
-land in a shared channel. Bot-authored messages (including our own) are
-dropped in the client as a loop guard. `DISCORD_BOT_TOKEN` is on the sandbox
-agent env denylist.
+`discord.allowed_user_ids` (snowflakes kept as strings — they exceed 2^53).
+DM denials and authorization failures in configured threads are SEL-audited.
+Because Discord's global guild/message-content intents deliver every visible
+channel message, unrelated guild chatter is discarded silently; an approved
+user attempting an unapproved thread remains audit-worthy. Guild turns require
+both an approved sender and an exact `discord.allowed_thread_ids` match, then a
+REST channel lookup must confirm Discord type 10/11/12 before dispatch. Normal
+guild channels are always rejected. An approved thread is a shared disclosure
+boundary: every member who can view it can read agent/tool output. Enabling any
+thread also means Discord delivers message content from every server channel
+the bot can see, although Kiro Crew immediately discards traffic outside
+approved threads. Bot-authored messages (including our own) are dropped as a
+loop guard. `DISCORD_BOT_TOKEN` is on the sandbox agent env denylist.
 
 **Dispatch + rendering.** Turns ride the shared `TurnDriver`
 (`transport_dispatch.py` mirrors the Telegram dispatcher: mid-turn
@@ -337,8 +346,9 @@ timeout and retires the nonce with it.
   and are verified against Discord `GET /users/@me` before storage; rejection
   returns 400 and writes nothing, network failure saves with
   `verify_warning`. `bot_token_clear` must be a strict boolean.
-  `allowed_user_ids` accepts numeric snowflake strings only. Secrets land in
-  `config_dir/.env` (atomic 0600) with `os.environ` synced; non-secrets go to
+  `allowed_user_ids` and `allowed_thread_ids` accept numeric snowflake strings
+  only. Secrets land in `config_dir/.env` (atomic 0600) with `os.environ`
+  synced; non-secrets go to
   `config.json` under `discord`. All fields are boot-read, so
   `restart_required` is true on any actual change.
 ## Telegram settings API

@@ -8,11 +8,11 @@ instead of a hand-rolled turn loop.
 Dependency direction is ``discord -> messaging`` (allowed); the neutral
 ``messaging`` package never imports ``discord``.
 
-Security: :meth:`authorize` is **deny-by-default** and owner-only. A Discord
-bot can be DM'd by anyone who shares a server with it, so an empty
-``allowed_user_ids`` MUST authorize nobody (fail closed), never everybody.
-DM-only: guild messages are denied outright (mirrors Telegram's
-private-chat-only rule) so tool output can never leak into a shared channel.
+Security: :meth:`authorize` is **deny-by-default**. A Discord bot can be DM'd
+by anyone who shares a server with it, so an empty ``allowed_user_ids`` MUST
+authorize nobody. Guild traffic additionally requires an exact thread-ID
+allow-list match and a Discord-confirmed thread channel type; normal guild
+channels are always denied.
 """
 
 from __future__ import annotations
@@ -52,15 +52,16 @@ DispatchFn = Callable[[InboundMessage], Awaitable[None]]
 
 # Discord's capabilities: edit-based streaming, a 2000-char cap (we chunk at
 # 1900 for headroom), up to 5 buttons per action row, emoji reactions (used
-# for steer-ack receipts), native markdown rendering, and no threads in a DM.
-# Single source of truth for the renderer's degradation decisions.
+# for steer-ack receipts), native markdown rendering, and allow-listed server
+# threads (represented by Discord as channels). Single source of truth for the
+# renderer's degradation decisions.
 DISCORD_CAPABILITIES = TransportCapabilities(
     streaming=True,
     edit=True,
     reactions=True,  # add_reaction — used for the steer-ack receipt
     files=False,
     rich_blocks=False,
-    threads=False,
+    threads=True,
     max_message_chars=DISCORD_CHUNK_LIMIT,
     max_buttons=5,  # per action row (max 5 rows -> 25 total)
     supports_proactive_send=True,
@@ -77,12 +78,16 @@ class DiscordTransport(MessagingTransport):
         client: DiscordClient,
         *,
         allowed_user_ids: Iterable[str] = (),
+        allowed_thread_ids: Iterable[str] = (),
         dispatch: DispatchFn | None = None,
     ) -> None:
         self._client = client
-        # Deny-by-default: freeze the allow-list as strings (Discord snowflake
-        # ids) so it can't mutate under an in-flight decision.
+        # Deny-by-default: freeze both allow-lists as snowflake strings so they
+        # cannot mutate under an in-flight authorization decision.
         self._allowed: frozenset[str] = frozenset(str(u) for u in allowed_user_ids)
+        self._allowed_threads: frozenset[str] = frozenset(
+            str(t) for t in allowed_thread_ids
+        )
         self._dispatch = dispatch
         self.capabilities = DISCORD_CAPABILITIES
 
@@ -160,28 +165,40 @@ class DiscordTransport(MessagingTransport):
         inbound = raw_envelope
         if not inbound.text:
             return
-        # DM-only, fail closed. A bot in a server receives guild messages;
-        # even from an allow-listed user, running a turn would reply in the
-        # guild channel, exposing tool output to non-authorized members. Deny
-        # anything carrying a guild_id and audit it (mirrors Telegram's
-        # private-chat-only rule).
+        thread_id: str | None = None
         if inbound.guild_id:
-            sel().log_api_access(
-                caller=inbound.user_id or "unknown",
-                operation="discord_transport.receive",
-                outcome="denied_guild_message",
-                source="discord",
-            )
-            return
+            # Discord's guild intents deliver every visible channel message.
+            # Unrelated chatter is expected background traffic, not a security
+            # event: discard it silently unless an approved user tried to use
+            # an unapproved thread. Messages in configured threads still pass
+            # through the normal user authorization audit below.
+            if inbound.channel_id not in self._allowed_threads:
+                if inbound.user_id in self._allowed:
+                    sel().log_api_access(
+                        caller=inbound.user_id,
+                        operation="discord_transport.receive",
+                        outcome="denied_unapproved_thread",
+                        source="discord",
+                    )
+                return
+            thread_id = inbound.channel_id
         msg = DiscordInboundMessage(
             channel_type="discord",
             user_id=inbound.user_id,
             conversation_id=inbound.channel_id,
             text=inbound.text,
-            thread_id=None,
+            thread_id=thread_id,
             message_id=inbound.message_id,
         )
         if not self.authorize(msg):
+            return
+        if thread_id and not await self._client.is_thread_channel(thread_id):
+            sel().log_api_access(
+                caller=inbound.user_id,
+                operation="discord_transport.receive",
+                outcome="denied_non_thread_channel",
+                source="discord",
+            )
             return
         if self._dispatch is not None:
             await self._dispatch(msg)
