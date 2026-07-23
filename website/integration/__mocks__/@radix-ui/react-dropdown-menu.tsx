@@ -14,6 +14,9 @@
  * single-rAF mount focus (real-browser order; jsdom fires setTimeout(0) before
  * rAF, so setTimeout would be wrong). Without this, a broken folder-rename path
  * passes its test.
+ *
+ * onSelect preventDefault fidelity: real Radix keeps the menu open when an
+ * Item's onSelect calls event.preventDefault(); the mock honors that too.
  */
 import React, { useState, useContext, useRef, createContext } from 'react'
 
@@ -71,6 +74,10 @@ export const Item = React.forwardRef<HTMLDivElement, any>(({ children, className
       onClick={e => {
         props.onClick?.(e)
         onSelect?.(e)
+        // Real Radix keeps the menu open when onSelect prevents default
+        // (used by items that open an inline sub-panel, e.g. cut mode or a
+        // confirm card). Mirror that: only close when not defaultPrevented.
+        if (e.defaultPrevented) return
         setOpen(false)
         const trigger = triggerRef.current
         const handler = closeAutoFocusRef.current

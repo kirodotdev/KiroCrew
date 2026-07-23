@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { createPortal } from 'react-dom'
-import { X, ShieldCheck, BookOpen, Handshake, Rocket, Check } from 'lucide-react'
+import { X } from 'lucide-react'
 import { SplitGlyph } from './SplitGlyph'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { modelListRefetchInterval } from '../providers/modelListHealth'
@@ -20,15 +20,7 @@ import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { useAppSelector, useAppDispatch } from '../store'
 import { selectSlotMessages, selectSlotStreamState, selectComposerBusy, hydrateSlotMessages, appendSlotMessage, requestStop, cancelQueuedMessage } from '../store/chatSlice'
 import { api } from '../api/client'
-import { changeApprovalMode } from '../store/dashboardSlice'
-import { safeSetItem } from '../utils/safeStorage'
 
-const APPROVAL_SEGMENTS = [
-  { key: 'normal' as const, label: 'Normal', icon: <ShieldCheck size={13} />, tooltip: 'KiroCrew asks you before doing anything', desc: 'KiroCrew checks with you before doing anything' },
-  { key: 'trust_reads' as const, label: 'Reads', icon: <BookOpen size={13} />, tooltip: 'KiroCrew looks things up on its own, but asks before making changes', desc: 'KiroCrew looks things up on its own, but asks before making any changes' },
-  { key: 'trust' as const, label: 'Trust', icon: <Handshake size={13} />, tooltip: 'In this chat, KiroCrew works without asking you first', desc: 'In this chat, KiroCrew works without asking you first' },
-  { key: 'yolo' as const, label: 'YOLO', icon: <Rocket size={13} />, tooltip: 'In every chat, KiroCrew works without asking you first', desc: 'In every chat, KiroCrew works without asking you first' },
-]
 
 /**
  * ChatPane — one live chat session in the native session grid (Path B S3 + S3d).
@@ -58,13 +50,8 @@ export default function ChatPane({
   const [input, setInput] = useState('')
   const [pendingFiles, setPendingFiles] = useState<string[]>([])
   const [dragOver, setDragOver] = useState(false)
-  const [yoloDontAsk, setYoloDontAsk] = useState(false)
   const [agentBtnRect, setAgentBtnRect] = useState<DOMRect | null>(null)
   const [modelBtnRect, setModelBtnRect] = useState<DOMRect | null>(null)
-  const [approvalDropdown, setApprovalDropdown] = useState(false)
-  const [approvalBtnRect, setApprovalBtnRect] = useState<DOMRect | null>(null)
-  const [yoloConfirm, setYoloConfirm] = useState(0)
-  const approvalDropdownRef = useRef<HTMLDivElement>(null)
   const endRef = useRef<HTMLDivElement>(null)
   const lastHashRef = useRef('')
   const isAtBottomRef = useRef(true)
@@ -155,18 +142,6 @@ export default function ChatPane({
     }
   }, [msgHash, running])
 
-  // Close the approval dropdown on outside click (agent/model dropdowns handle
-  // their own outside-click via useFilteredDropdown).
-  useEffect(() => {
-    if (!approvalDropdown) return
-    const onDown = (e: MouseEvent) => {
-      if (approvalDropdownRef.current?.contains(e.target as Node)) return
-      setApprovalDropdown(false)
-      setYoloConfirm(0)
-    }
-    document.addEventListener('mousedown', onDown)
-    return () => document.removeEventListener('mousedown', onDown)
-  }, [approvalDropdown])
 
   const switchAgent = useCallback((name: string) => { api.chatSlotAgent(slotKey, name).catch((e) => console.error('[ChatPane] switchAgent failed', e)) }, [slotKey])
   const switchModel = useCallback((name: string) => { api.chatSlotModel(slotKey, name).catch((e) => console.error('[ChatPane] switchModel failed', e)) }, [slotKey])
@@ -192,19 +167,6 @@ export default function ChatPane({
     filteredCount: modelDD.filtered.length,
     onEnterSingleMatch: () => { switchModel(modelDD.filtered[0].name); modelDD.setOpen(false) },
     closeToTrigger: () => modelDD.setOpen(false),
-  })
-  // Approval-mode picker has no filter input, so the hook focuses the first
-  // mode option on open and roves the four <button role="option">s; Enter/Space
-  // fire the button's onClick natively, Escape/Tab close + return focus.
-  const approvalNoInputRef = useRef<HTMLElement | null>(null)
-  const { onListKeyDown: onApprovalListKeyDown } = useListboxKeyboard({
-    open: approvalDropdown,
-    dropdownRef: approvalDropdownRef,
-    inputRef: approvalNoInputRef,
-    hasFilterInput: false,
-    filteredCount: 0,
-    onEnterSingleMatch: () => {},
-    closeToTrigger: () => { setApprovalDropdown(false); setYoloConfirm(0) },
   })
 
   // File upload as a mutation (isPending replaces a manual `uploading` flag).
@@ -321,7 +283,6 @@ export default function ChatPane({
           onAgentClick={provider.capabilities.agentTemplates ? (rect) => { setAgentBtnRect(rect); agentDD.setOpen(!agentDD.open) } : undefined}
           onModelClick={(rect) => { setModelBtnRect(rect); modelDD.setOpen(!modelDD.open) }}
           approvalMode={displayMode}
-          onApprovalClick={(rect) => { setApprovalBtnRect(rect); setApprovalDropdown(!approvalDropdown) }}
           onUploadFiles={uploadFiles}
           pendingFiles={pendingFiles}
           onRemoveFile={(p) => setPendingFiles((prev) => prev.filter((x) => x !== p))}
@@ -386,67 +347,6 @@ export default function ChatPane({
           document.body,
         )}
 
-        {/* Approval-mode picker portal — reuses the existing per-slot control; the
-            app-wide YOLO confirm gate (mc-yolo-ack) is preserved, not bypassed. */}
-        {approvalDropdown && approvalBtnRect && createPortal(
-          <div
-            ref={approvalDropdownRef}
-            tabIndex={-1}
-            onKeyDown={onApprovalListKeyDown}
-            className="fixed z-[9999] animate-slide-up flex items-end gap-2"
-            style={(() => { const left = Math.max(8, Math.min(approvalBtnRect.left, window.innerWidth - 520)); return { bottom: window.innerHeight - approvalBtnRect.top + 4, left } })()}
-          >
-            <div role="listbox" aria-label="Approval mode" className="rounded-lg bg-bg-elevated border border-border py-1 w-[280px] shrink-0">
-              {APPROVAL_SEGMENTS.map((s) => (
-                <button
-                  key={s.key}
-                  role="option"
-                  tabIndex={-1}
-                  aria-selected={s.key === displayMode}
-                  title={s.tooltip}
-                  onClick={() => {
-                    const m = s.key
-                    if (m === 'yolo') {
-                      if (displayMode === 'yolo') return
-                      if (localStorage.getItem('mc-yolo-ack')) { dispatch(changeApprovalMode({ mode: m, slot: slotKey })); setApprovalDropdown(false) }
-                      else setYoloConfirm((c) => c + 1)
-                      return
-                    }
-                    setYoloConfirm(0)
-                    dispatch(changeApprovalMode({ mode: m, slot: slotKey }))
-                    setApprovalDropdown(false)
-                  }}
-                  className={`flex items-center gap-2 w-full px-3 py-2 text-[13px] font-medium cursor-pointer border-none bg-transparent text-left hover:bg-bg-hover ${s.key === displayMode ? 'text-accent' : 'text-text'}`}
-                >
-                  <span className="shrink-0">{s.icon}</span>
-                  <span className="flex flex-col min-w-0 flex-1">
-                    <span>{s.label}</span>
-                    <span className="text-[11px] font-normal text-muted leading-snug">{s.desc}</span>
-                  </span>
-                  {s.key === displayMode && <Check size={12} className="shrink-0 text-accent" />}
-                </button>
-              ))}
-            </div>
-            {yoloConfirm > 0 && (
-              <div className="px-3 py-2 rounded-lg bg-bg-elevated border border-border text-[12px] w-[260px]">
-                <p className="font-medium text-text">YOLO mode is an app-wide setting</p>
-                <p className="text-muted mt-0.5">All tools will get auto-approved across all sessions.</p>
-                <div className="flex items-center gap-2 mt-1.5">
-                  {/* Gate fix: commit mc-yolo-ack to localStorage ONLY when the user
-                      confirms via Enable — never on the checkbox's onChange, so a
-                      check-then-Cancel can't silently disable the confirm. */}
-                  <button className="px-2.5 py-1 rounded-md bg-card border border-border text-danger font-medium hover:bg-bg-hover cursor-pointer" onClick={() => { if (yoloDontAsk) safeSetItem('mc-yolo-ack', '1'); dispatch(changeApprovalMode({ mode: 'yolo', slot: slotKey })); setYoloConfirm(0); setApprovalDropdown(false) }}>Enable</button>
-                  <button className="px-2.5 py-1 rounded-md text-muted hover:text-text hover:bg-bg-hover cursor-pointer" onClick={(e) => { e.stopPropagation(); setYoloConfirm(0) }}>Cancel</button>
-                  <label className="flex items-center gap-1 text-[11px] text-muted cursor-pointer ml-auto">
-                    <input type="checkbox" className="rounded" checked={yoloDontAsk} onChange={(e) => setYoloDontAsk(e.target.checked)} />
-                    Don't show again
-                  </label>
-                </div>
-              </div>
-            )}
-          </div>,
-          document.body,
-        )}
       </div>
     </SlotProvider>
   )

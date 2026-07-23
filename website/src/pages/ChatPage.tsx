@@ -23,7 +23,7 @@ import {
 import { removeNotificationByTs } from '../store/notificationsSlice'
 import { onTerminalReady, sendToTerminalSession } from '../utils/terminalRegistry'
 import { interceptSlashCommand } from './chat/ChatInput'
-import { changeApprovalMode, sseSlotTitle } from '../store/dashboardSlice'
+import { sseSlotTitle } from '../store/dashboardSlice'
 import { api } from '../api/client'
 import type { PlanStepInput } from '../api/client'
 import { useProvider } from '../providers'
@@ -113,19 +113,13 @@ import OverlayDrawer from '../components/OverlayDrawer'
 import { loadChatConfig, CONTENT_WIDTH, type ChatConfig } from './chat/ChatSettings'
 import { useKnowledgeFetch, extractKnowledgeQuery, expandKnowledgeBlock } from './chat/useKnowledgeFetch'
 import { KnowledgePicker } from './chat/KnowledgePicker'
-import { ShieldCheck, BookOpen, Handshake, Rocket, EyeOff, Loader, PanelLeftOpen, PanelLeftClose, Pen, ChevronDown, ChevronRight, Plug, ArrowDown, ArrowUp, MessageSquare, MessageSquareDot, Sparkles, VenetianMask, Clock, Undo2, Check, Columns2, ExternalLink, PanelRight, Paperclip } from 'lucide-react'
+import { BookOpen, EyeOff, Loader, PanelLeftOpen, PanelLeftClose, Pen, ChevronDown, ChevronRight, Plug, ArrowDown, ArrowUp, MessageSquare, MessageSquareDot, Sparkles, VenetianMask, Clock, Undo2, Columns2, ExternalLink, PanelRight, Paperclip } from 'lucide-react'
 
 import InfoTip from '../components/InfoTip'
 import { FileCard } from '../components/FileCard'
 import SlotTagPopover from '../components/SlotTagPopover'
 import { TagPopoverProvider } from '../hooks/useTagPopover'
 
-const APPROVAL_SEGMENTS = [
-  { key: 'normal' as const, label: 'Normal', icon: <ShieldCheck size={13} />, tooltip: 'KiroCrew asks you before doing anything', desc: 'KiroCrew checks with you before doing anything' },
-  { key: 'trust_reads' as const, label: 'Reads', icon: <BookOpen size={13} />, tooltip: 'KiroCrew looks things up on its own, but asks before making changes', desc: 'KiroCrew looks things up on its own, but asks before making any changes' },
-  { key: 'trust' as const, label: 'Trust', icon: <Handshake size={13} />, tooltip: 'In this chat, KiroCrew works without asking you first', desc: 'In this chat, KiroCrew works without asking you first' },
-  { key: 'yolo' as const, label: 'YOLO', icon: <Rocket size={13} />, tooltip: 'In every chat, KiroCrew works without asking you first', desc: 'In every chat, KiroCrew works without asking you first' },
-]
 import { AnimatePresence, motion } from 'framer-motion'
 import DetailPanel from '../components/DetailPanel'
 
@@ -731,33 +725,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
     mutationFn: (text: string) => api.steerChat(text, activeSlot!),
     onError: (e) => { console.error('steer failed', e) },
   })
-  const [approvalDropdown, setApprovalDropdown] = useState(false)
-  const [approvalBtnRect, setApprovalBtnRect] = useState<DOMRect | null>(null)
   const [reasoningEffortDropdown, setReasoningEffortDropdown] = useState(false)
   const [reasoningEffortBtnRect, setReasoningEffortBtnRect] = useState<DOMRect | null>(null)
   const reasoningEffortDropdownRef = useRef<HTMLDivElement>(null)
   const [autoNudgeOpen, setAutoNudgeOpen] = useState(false)
   const [autoNudgeLoop, setAutoNudgeLoop] = useState<AutoNudgeLoop | null>(null)
-  const approvalDropdownRef = useRef<HTMLDivElement>(null)
   const approvalMode = useAppSelector(s => s.dashboard.approvalMode)
-  const [yoloConfirm, setYoloConfirm] = useState(0)
-  useEffect(() => {
-    if (!approvalDropdown) return
-    const handler = (e: MouseEvent) => {
-      if (approvalDropdownRef.current?.contains(e.target as Node)) return
-      if (approvalBtnRect) {
-        const r = approvalBtnRect
-        if (e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom) return
-      }
-      setApprovalDropdown(false)
-      setYoloConfirm(0)
-    }
-    document.addEventListener('mousedown', handler)
-    return () => document.removeEventListener('mousedown', handler)
-    // approvalBtnRect is read inside the handler; include it so the
-    // click-outside test uses the current button rect (re-subscribes only when
-    // the rect changes, which happens once when the dropdown opens).
-  }, [approvalDropdown, approvalBtnRect])
 
   // ── Reasoning effort dropdown click-outside ──
   useEffect(() => {
@@ -3623,7 +3596,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
               isQueued={slotStopping}
               stopState={currentSlot?.stop_state}
               approvalMode={displayMode}
-              onApprovalClick={(rect) => { setApprovalBtnRect(rect); setApprovalDropdown(!approvalDropdown) }}
               providerId={provider.id}
               reasoningEffort={currentSlot?.reasoning_effort || ''}
               onReasoningEffortClick={provider.capabilities.reasoningEffort && modelSupportsEffort(currentSlot?.model || resolvedModel) ? (rect) => { setReasoningEffortBtnRect(rect); setReasoningEffortDropdown(!reasoningEffortDropdown) } : undefined}
@@ -3730,61 +3702,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
               anchorRect={projectBtnRect}
               onSelect={path => { setProject(path); setProjectPickerOpen(false) }}
             />
-            {/* Approval mode dropdown portal — triggered from input bar */}
-            {approvalDropdown && approvalBtnRect && createPortal(
-              <div ref={approvalDropdownRef} className="fixed z-[9999] animate-slide-up flex items-end gap-2" style={(() => { const left = Math.max(8, Math.min(approvalBtnRect.left, window.innerWidth - 520)); return { bottom: window.innerHeight - approvalBtnRect.top + 4, left: isMobile ? 8 : left, ...(isMobile ? { flexDirection: 'column-reverse' as const, alignItems: 'flex-start', right: 8, maxWidth: 'calc(100vw - 16px)' } : {}) } })()}>
-                <div className="rounded-lg bg-bg-elevated border border-border py-1 w-[280px] shrink-0">
-                  {APPROVAL_SEGMENTS.map(s => (
-                    <Btn
-                      key={s.key}
-                      title={s.tooltip}
-                      onClick={() => {
-                        const m = s.key
-                        if (m === 'yolo') {
-                          if (displayMode === 'yolo') return
-                          if (localStorage.getItem('mc-yolo-ack')) { dispatch(changeApprovalMode({ mode: m, slot: activeSlot || '' })); setApprovalDropdown(false) }
-                          else setYoloConfirm(c => c + 1)
-                          return
-                        }
-                        setYoloConfirm(0)
-                        dispatch(changeApprovalMode({ mode: m, slot: activeSlot || '' })); setApprovalDropdown(false)
-                      }}
-                      className={`flex items-center gap-2 w-full px-3 py-2 text-[13px] font-medium cursor-pointer border-none bg-transparent text-left hover:bg-bg-hover ${
-                        s.key === displayMode ? 'text-accent' : 'text-text'
-                      }`}
-                    >
-                      <span className="shrink-0">{s.icon}</span>
-                      <span className="flex flex-col min-w-0 flex-1">
-                        <span>{s.label}</span>
-                        <span className="text-[11px] font-normal text-muted leading-snug">{s.desc}</span>
-                      </span>
-                      {s.key === displayMode && <Check size={12} className="shrink-0 text-accent" />}
-                    </Btn>
-                  ))}
-                </div>
-                {yoloConfirm > 0 && (
-                  <motion.div key={yoloConfirm} animate={{ x: [0, -3, 3, -2, 2, 0] }} transition={{ duration: 0.3 }} className="px-3 py-2 rounded-lg bg-bg-elevated border border-border text-[12px] w-[260px]">
-                    <p className="font-medium text-text">YOLO mode is an app-wide setting</p>
-                    <p className="text-muted mt-0.5">All tools will get auto-approved across all sessions.</p>
-                    <div className="flex items-center gap-2 mt-1.5">
-                      <Btn className="px-2.5 py-1 rounded-md bg-card border border-border text-danger font-medium hover:bg-bg-hover cursor-pointer" onClick={() => {
-                        dispatch(changeApprovalMode({ mode: 'yolo', slot: activeSlot || '' })); setYoloConfirm(0); setApprovalDropdown(false)
-                      }}>Enable</Btn>
-                      <Btn className="px-2.5 py-1 rounded-md text-muted hover:text-text hover:bg-bg-hover cursor-pointer" onClick={e => { e.stopPropagation(); setYoloConfirm(0) }}>Cancel</Btn>
-                      {/* The label is associated both by nesting and htmlFor/id;
-                          label-has-for can't see the id because <Input> is a
-                          custom wrapper around the native <input>. */}
-                      {/* eslint-disable-next-line jsx-a11y/label-has-for */}
-                      <label htmlFor="yolo-dont-show-again" className="flex items-center gap-1 text-[11px] text-muted cursor-pointer ml-auto">
-                        <Input id="yolo-dont-show-again" type="checkbox" className="rounded" onChange={e => { if ((e.target as HTMLInputElement).checked) safeSetItem('mc-yolo-ack', '1'); else localStorage.removeItem('mc-yolo-ack') }} />
-                        Don't show again
-                      </label>
-                    </div>
-                  </motion.div>
-                )}
-              </div>,
-              document.body
-            )}
             {/* Reasoning effort dropdown portal */}
             {reasoningEffortDropdown && reasoningEffortBtnRect && activeSlot && provider.capabilities.reasoningEffort && modelSupportsEffort(currentSlot?.model || resolvedModel) && createPortal(
               <div ref={reasoningEffortDropdownRef} className="fixed z-[9999] animate-slide-up" style={(() => { const left = Math.max(8, Math.min(reasoningEffortBtnRect.left, window.innerWidth - 220)); return { bottom: window.innerHeight - reasoningEffortBtnRect.top + 4, left: isMobile ? 8 : left, ...(isMobile ? { right: 8, maxWidth: 'calc(100vw - 16px)' } : {}) } })()}>

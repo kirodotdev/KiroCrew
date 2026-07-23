@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useLayoutEffect, useCallback, memo } from 'react'
-import { ArrowUpFromLine, ArrowUp, Loader2, Plus, Crop, Bot, Mic, Square, ShieldCheck, BookOpen, Handshake, Rocket, X, ClipboardList, CheckCircle, Ban, Sparkles, Target, Lock, Globe, FolderOpen, FileText, ChevronDown, Check } from 'lucide-react'
+import { ArrowUpFromLine, ArrowUp, Loader2, Plus, Crop, Bot, Mic, Square, BookOpen, X, ClipboardList, CheckCircle, Ban, Sparkles, Target, Lock, Globe, FolderOpen, FileText, ChevronDown, Check } from 'lucide-react'
 import { Toggle } from './ui'
 import VoiceStatusBar from './VoiceStatusBar'
 import { createPortal } from 'react-dom'
@@ -49,12 +49,7 @@ import type { SendMode } from '../pages/chat/ChatSettings'
 const IMAGE_ACCEPT = 'image/png,image/jpeg,image/gif,image/webp,image/bmp,image/svg+xml'
 const FILE_ACCEPT = IMAGE_ACCEPT + ',.txt,.md,.json,.yaml,.yml,.xml,.csv,.log,.py,.js,.ts,.tsx,.jsx,.html,.css,.sh,.bash,.rb,.go,.rs,.java,.c,.cpp,.h,.hpp,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.odt,.ods,.odp,.rtf,.zip,.tar,.gz'
 
-const APPROVAL_DISPLAY: Record<string, { label: string; icon: React.ReactNode; color: string }> = {
-  normal: { label: 'Normal', icon: <ShieldCheck size={13} />, color: '' },
-  trust_reads: { label: 'Reads', icon: <BookOpen size={13} />, color: 'text-accent' },
-  trust: { label: 'Trust', icon: <Handshake size={13} />, color: 'text-ok' },
-  yolo: { label: 'YOLO', icon: <Rocket size={13} />, color: 'text-danger' },
-}
+import ApprovalModePicker from './ApprovalModePicker'
 // Effort vocabulary lives in lib/effort.ts (mirrors backend effort.py).
 // Re-exported here for back-compat with existing `from './ChatInput'` imports.
 export {
@@ -230,7 +225,6 @@ interface ChatInputProps {
   isQueued?: boolean
   stopState?: 'idle' | 'soft_pending' | 'killing'
   approvalMode?: string
-  onApprovalClick?: (rect: DOMRect) => void
   reasoningEffort?: string
   onReasoningEffortClick?: (rect: DOMRect) => void
   providerId?: string
@@ -409,7 +403,6 @@ function ChatInput({
   isQueued = false,
   stopState,
   approvalMode,
-  onApprovalClick,
   reasoningEffort,
   onReasoningEffortClick,
   providerId: _providerId,
@@ -2055,24 +2048,13 @@ function ChatInput({
                   onChange={onAutoNudgeChange || (() => {})}
                 />
               )}
-              {!isMobile && onApprovalClick && approvalMode && (() => {
-                const d = APPROVAL_DISPLAY[approvalMode] || APPROVAL_DISPLAY.normal
-                return (
-                  <button className="h-7 px-2 rounded-lg text-[12px] font-mono text-muted hover:text-text hover:bg-bg-hover flex items-center gap-1 cursor-pointer transition-all bg-transparent border-none shrink-0 whitespace-nowrap" onClick={e => onApprovalClick(e.currentTarget.getBoundingClientRect())} title="Approval mode">
-                    <span className={`shrink-0 ${d.color}`}>{d.icon}</span>
-                    {d.label}
-                  </button>
-                )
-              })()}
+              {!isMobile && approvalMode && (
+                <ApprovalModePicker mode={approvalMode} slotKey={activeSlot || ''} />
+              )}
             </div>
-            {isMobile && onApprovalClick && approvalMode && (() => {
-              const d = APPROVAL_DISPLAY[approvalMode] || APPROVAL_DISPLAY.normal
-              return (
-                <button className="h-7 px-2 rounded-lg text-[12px] font-mono text-muted hover:text-text hover:bg-bg-hover flex items-center gap-1 cursor-pointer transition-all bg-transparent border-none shrink-0 whitespace-nowrap" onClick={e => onApprovalClick(e.currentTarget.getBoundingClientRect())} title="Approval mode">
-                  <span className={`shrink-0 ${d.color}`}>{d.icon}</span>
-                </button>
-              )
-            })()}
+            {isMobile && approvalMode && (
+              <ApprovalModePicker mode={approvalMode} slotKey={activeSlot || ''} compact />
+            )}
           </div>
           <div className="flex items-center gap-1 shrink-0">
             {onVoiceToggle && (
