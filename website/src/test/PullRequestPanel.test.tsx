@@ -17,6 +17,7 @@ vi.mock('../components/MarkdownRenderer', () => ({
 import PullRequestPanel, {
   CHECK_POLL_MAX_FAILURES,
   pullRequestCheckPollDelay,
+  pullRequestMergeBlocker,
 } from '../components/PullRequestPanel'
 
 const github: PullRequestSource = {
@@ -412,5 +413,96 @@ describe('PullRequestPanel', () => {
     expect(await screen.findByText('GitLab source')).toBeInTheDocument()
     await waitFor(() => expect(mockApi.pullRequestSource).toHaveBeenCalledWith(gitlab.url, false))
     expect(screen.getByText('Merged')).toBeInTheDocument()
+  })
+})
+
+describe('pullRequestMergeBlocker', () => {
+  it('flags conflicts as danger with a resolve handoff that reserves force-push for unshared branches', () => {
+    const blocker = pullRequestMergeBlocker({ ...github, mergeable: 'conflicting', mergeStateStatus: 'dirty' })
+    expect(blocker).toMatchObject({ tone: 'danger', title: 'Merge conflicts' })
+    expect(blocker?.detail).toContain('conflicts with main')
+    expect(blocker?.handoff).toContain('Resolve the conflicts with main')
+    expect(blocker?.handoff).toContain('prefer merging main into the branch')
+    expect(blocker?.handoff).toContain('--force-with-lease')
+    expect(blocker?.handoff).not.toContain('force-push')
+    expect(blocker?.handoff).toContain(github.url)
+  })
+
+  it('flags behind-base as warn with a no-history-rewrite update handoff', () => {
+    const blocker = pullRequestMergeBlocker({ ...github, mergeable: 'mergeable', mergeStateStatus: 'behind' })
+    expect(blocker).toMatchObject({ tone: 'warn', title: 'Branch is behind' })
+    expect(blocker?.handoff).toContain('without rewriting history')
+    expect(blocker?.handoff).toContain('merge main into the branch')
+    expect(blocker?.handoff).not.toContain('--force-with-lease')
+  })
+
+  it('flags branch-protection blocks as warn without a handoff', () => {
+    const blocker = pullRequestMergeBlocker({ ...github, mergeable: 'mergeable', mergeStateStatus: 'blocked' })
+    expect(blocker).toMatchObject({ tone: 'warn', title: 'Merge blocked' })
+    expect(blocker?.handoff).toBeUndefined()
+  })
+
+  it("banners open GitLab MRs, whose raw provider state is 'opened'", () => {
+    const blocker = pullRequestMergeBlocker({
+      ...gitlab,
+      state: 'opened',
+      mergedAt: '',
+      mergeable: 'conflicting',
+      mergeStateStatus: 'dirty',
+    })
+    expect(blocker).toMatchObject({ tone: 'danger', title: 'Merge conflicts' })
+    expect(blocker?.handoff).toContain('MR !7')
+  })
+
+  it('flags GitLab need_rebase with a rebase-aware handoff, never a merge-commit suggestion', () => {
+    const blocker = pullRequestMergeBlocker({
+      ...gitlab,
+      state: 'opened',
+      mergedAt: '',
+      mergeable: 'mergeable',
+      mergeStateStatus: 'need_rebase',
+    })
+    expect(blocker).toMatchObject({ tone: 'warn', title: 'Rebase required' })
+    expect(blocker?.handoff).toContain('merge commits will not unblock the MR')
+    expect(blocker?.handoff).toContain('--force-with-lease')
+    expect(blocker?.handoff).not.toContain('merge main into the branch')
+  })
+
+  it('returns null for clean, unknown, draft, merged, closed, and locked states', () => {
+    expect(pullRequestMergeBlocker({ ...github, mergeable: 'mergeable', mergeStateStatus: 'clean' })).toBeNull()
+    expect(pullRequestMergeBlocker(github)).toBeNull()
+    expect(pullRequestMergeBlocker({ ...github, mergeable: 'unknown', mergeStateStatus: 'unknown' })).toBeNull()
+    expect(pullRequestMergeBlocker({ ...github, draft: true, mergeable: 'conflicting' })).toBeNull()
+    expect(pullRequestMergeBlocker({ ...github, state: 'MERGED', mergedAt: '2026-07-13T10:00:00Z', mergeable: 'conflicting' })).toBeNull()
+    expect(pullRequestMergeBlocker({ ...github, state: 'CLOSED', mergeable: 'conflicting' })).toBeNull()
+    expect(pullRequestMergeBlocker({ ...github, state: 'LOCKED', mergeable: 'conflicting' })).toBeNull()
+  })
+
+  it('names the base branch generically when the provider omitted it', () => {
+    const blocker = pullRequestMergeBlocker({ ...github, baseBranch: '', mergeable: 'conflicting' })
+    expect(blocker?.detail).toContain('conflicts with the base branch')
+  })
+})
+
+describe('PullRequestPanel merge-blocker banner', () => {
+  it('shows a conflict banner and hands the rebase off to chat', async () => {
+    mockApi.pullRequestSource.mockResolvedValue({ ...github, mergeable: 'conflicting', mergeStateStatus: 'dirty' })
+    const { onAddToChat } = renderPanel()
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('Merge conflicts')
+    expect(alert).toHaveTextContent('conflicts with main')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add to chat' }))
+    expect(onAddToChat).toHaveBeenCalledWith(expect.stringContaining('Resolve the conflicts with main'))
+    expect(onAddToChat).toHaveBeenCalledWith(expect.stringContaining('PR #12'))
+  })
+
+  it('shows no banner when the pull request is mergeable', async () => {
+    mockApi.pullRequestSource.mockResolvedValue({ ...github, mergeable: 'mergeable', mergeStateStatus: 'clean' })
+    renderPanel()
+
+    expect(await screen.findByText('Add source tabs')).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 })

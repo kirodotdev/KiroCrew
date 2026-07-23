@@ -668,6 +668,73 @@ def _github_thread_map(payload: Any) -> dict[str, dict[str, Any]]:
     return result
 
 
+def _github_merge_state(details: dict[str, Any]) -> tuple[str, str]:
+    """Normalize GitHub merge fields to (mergeable, mergeStateStatus).
+
+    ``mergeable`` is one of ``mergeable`` / ``conflicting`` / ``unknown`` and
+    ``mergeStateStatus`` is GitHub's merge-state vocabulary lowercased
+    (``clean``, ``dirty``, ``behind``, ``blocked``, ``unstable``, ...).
+    """
+    raw_mergeable = str(details.get("mergeable") or "").upper()
+    if raw_mergeable == "MERGEABLE":
+        mergeable = "mergeable"
+    elif raw_mergeable == "CONFLICTING":
+        mergeable = "conflicting"
+    else:
+        mergeable = "unknown" if raw_mergeable else ""
+    return mergeable, str(details.get("mergeStateStatus") or "").lower()
+
+
+# GitLab detailed_merge_status values mapped onto the GitHub-style
+# merge-state vocabulary the frontend renders.
+_GITLAB_MERGE_STATE_MAP = {
+    "mergeable": "clean",
+    "conflict": "dirty",
+    # need_rebase keeps its own value: on fast-forward-only projects a merge
+    # commit cannot unblock the MR, so it must not be conflated with "behind".
+    "need_rebase": "need_rebase",
+    "ci_must_pass": "blocked",
+    "ci_still_running": "unstable",
+    "discussions_not_resolved": "blocked",
+    "not_approved": "blocked",
+    "blocked_status": "blocked",
+    "external_status_checks": "blocked",
+    "jira_association_missing": "blocked",
+    "requested_changes": "blocked",
+    "status_checks_must_pass": "blocked",
+    "policies_denied": "blocked",
+    "security_policy_violations": "blocked",
+    "merge_request_blocked": "blocked",
+    "draft_status": "draft",
+}
+
+
+def _gitlab_merge_state(details: dict[str, Any]) -> tuple[str, str]:
+    """Normalize GitLab merge fields to (mergeable, mergeStateStatus).
+
+    ``detailed_merge_status`` is authoritative; the deprecated legacy
+    ``merge_status`` is consulted only when the detailed field is absent
+    (it can be stale or coarse and must never override the detailed value).
+    """
+    detailed = str(details.get("detailed_merge_status") or "").lower()
+    legacy = str(details.get("merge_status") or "").lower()
+    if detailed:
+        if detailed == "conflict":
+            mergeable = "conflicting"
+        elif detailed == "mergeable":
+            mergeable = "mergeable"
+        else:
+            mergeable = "unknown"
+        return mergeable, _GITLAB_MERGE_STATE_MAP.get(detailed, "unknown")
+    if legacy == "cannot_be_merged":
+        mergeable = "conflicting"
+    elif legacy == "can_be_merged":
+        mergeable = "mergeable"
+    else:
+        mergeable = "unknown" if legacy else ""
+    return mergeable, ""
+
+
 async def _fetch_github(ref: SourceRef) -> dict[str, Any]:
     fields = ",".join(
         [
@@ -682,6 +749,8 @@ async def _fetch_github(ref: SourceRef) -> dict[str, Any]:
             "headRefName",
             "headRefOid",
             "isDraft",
+            "mergeStateStatus",
+            "mergeable",
             "mergedAt",
             "number",
             "reviews",
@@ -796,6 +865,7 @@ async def _fetch_github(ref: SourceRef) -> dict[str, Any]:
             }
         )
 
+    github_mergeable, github_merge_state = _github_merge_state(details)
     return {
         "provider": "github",
         "url": details.get("url") or ref.url,
@@ -805,6 +875,8 @@ async def _fetch_github(ref: SourceRef) -> dict[str, Any]:
         "state": details.get("state") or "",
         "draft": bool(details.get("isDraft")),
         "mergedAt": details.get("mergedAt") or "",
+        "mergeable": github_mergeable,
+        "mergeStateStatus": github_merge_state,
         "updatedAt": details.get("updatedAt") or "",
         "headBranch": details.get("headRefName") or "",
         "baseBranch": details.get("baseRefName") or "",
@@ -961,6 +1033,7 @@ async def _fetch_gitlab(ref: SourceRef) -> dict[str, Any]:
                 }
             )
 
+    gitlab_mergeable, gitlab_merge_state = _gitlab_merge_state(details)
     return {
         "provider": "gitlab",
         "url": details.get("web_url") or ref.url,
@@ -970,6 +1043,8 @@ async def _fetch_gitlab(ref: SourceRef) -> dict[str, Any]:
         "state": details.get("state") or "",
         "draft": bool(details.get("draft") or details.get("work_in_progress")),
         "mergedAt": details.get("merged_at") or "",
+        "mergeable": gitlab_mergeable,
+        "mergeStateStatus": gitlab_merge_state,
         "updatedAt": details.get("updated_at") or "",
         "headBranch": details.get("source_branch") or "",
         "baseBranch": details.get("target_branch") or "",

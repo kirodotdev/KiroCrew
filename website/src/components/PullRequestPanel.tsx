@@ -9,6 +9,7 @@ import {
   Circle,
   ExternalLink,
   GitCommitHorizontal,
+  GitMerge,
   Loader,
   MessageSquare,
   RefreshCw,
@@ -84,6 +85,81 @@ function safeExternalUrl(value: string): string | undefined {
   } catch {
     return undefined
   }
+}
+
+export interface PullRequestMergeBlocker {
+  tone: 'danger' | 'warn'
+  title: string
+  detail: string
+  /** Prefilled chat handoff for blockers the agent can act on. */
+  handoff?: string
+}
+
+/** Derive the merge blocker to surface for an open pull request, or null when
+ * nothing blocks the merge (or the PR is not plainly open — draft, merged,
+ * closed, locked, ... — where merge state is either expected or moot).
+ * Conflicts and behind-base are agent-actionable and carry a chat handoff;
+ * branch-protection blocks need a human. The behind handoff deliberately
+ * avoids history rewriting (merge base into head); rebase + force-push is
+ * reserved for genuine conflicts. */
+export function pullRequestMergeBlocker(source: PullRequestSource): PullRequestMergeBlocker | null {
+  // GitLab reports open MRs as 'opened'; the full payload carries the raw
+  // provider state (matching stateTone below), so accept both spellings.
+  const state = source.state.toLowerCase()
+  if ((state !== 'open' && state !== 'opened') || source.mergedAt || source.draft) return null
+  const base = source.baseBranch || 'the base branch'
+  const label = source.provider === 'github' ? `PR #${source.number}` : `MR !${source.number}`
+  const sourceUrl = safeExternalUrl(source.url)
+  const handoffHeader = (problem: string) => [
+    `${problem} on ${label} (${source.title}):`,
+    '',
+    `- Branch: ${source.headBranch || 'the feature branch'} -> ${base}`,
+    ...(sourceUrl ? [`- Pull request: ${sourceUrl}`] : []),
+    '',
+  ]
+  if (source.mergeable === 'conflicting') {
+    return {
+      tone: 'danger',
+      title: 'Merge conflicts',
+      detail: `This branch has conflicts with ${base} and cannot be merged until they are resolved.`,
+      handoff: [
+        ...handoffHeader('Merge conflict'),
+        `Resolve the conflicts with ${base}. If the branch is shared with other contributors, prefer merging ${base} into the branch; otherwise rebase onto ${base} and push with \`git push --force-with-lease\` (abort if the lease fails).`,
+      ].join('\n'),
+    }
+  }
+  if (source.mergeStateStatus === 'need_rebase') {
+    // GitLab-specific: the project requires a rebase (e.g. fast-forward-only
+    // merge method) -- a merge commit cannot unblock this MR.
+    return {
+      tone: 'warn',
+      title: 'Rebase required',
+      detail: `This project requires the branch to be rebased onto ${base} before merging; a merge commit will not unblock it.`,
+      handoff: [
+        ...handoffHeader('Rebase required'),
+        `This project requires a rebase (merge commits will not unblock the MR). If the branch is shared with other contributors, coordinate with them before rewriting history; otherwise rebase onto ${base} and push with \`git push --force-with-lease\` (abort if the lease fails).`,
+      ].join('\n'),
+    }
+  }
+  if (source.mergeStateStatus === 'behind') {
+    return {
+      tone: 'warn',
+      title: 'Branch is behind',
+      detail: `This branch is out of date with ${base} and must be updated before merging.`,
+      handoff: [
+        ...handoffHeader('Out-of-date branch'),
+        `Update the branch without rewriting history: merge ${base} into the branch (or use the provider's update-branch option) and push normally. Only rebase if the repository requires a linear history, and never force-push a shared branch without checking with its other contributors.`,
+      ].join('\n'),
+    }
+  }
+  if (source.mergeStateStatus === 'blocked') {
+    return {
+      tone: 'warn',
+      title: 'Merge blocked',
+      detail: 'Branch protection requirements (approving reviews or required checks) are not yet satisfied.',
+    }
+  }
+  return null
 }
 
 function stateTone(source: PullRequestSource): string {
@@ -544,6 +620,7 @@ export default function PullRequestPanel({
     && checkCounts.pending === 0
     && checkCounts.complete === checkCounts.total
   const showAllChecksPassed = allChecksPassed && !query.isFetching
+  const mergeBlocker = source ? pullRequestMergeBlocker(source) : null
 
   const tabs: Array<{ id: SourceTab; label: string; count?: number; tone?: string }> = source ? [
     { id: 'changes', label: 'Changes', count: source.files.length },
@@ -640,6 +717,24 @@ export default function PullRequestPanel({
               {source.updatedAt && <span>Updated {age(source.updatedAt)}</span>}
             </div>
           </div>
+
+          {mergeBlocker && (
+            <div role="alert" className={`shrink-0 flex items-start gap-2 px-4 py-2 border-b border-border text-[11px] text-muted ${mergeBlocker.tone === 'danger' ? 'bg-danger/10' : 'bg-warn/10'}`}>
+              <GitMerge className={`lucide-inline shrink-0 mt-0.5 ${mergeBlocker.tone === 'danger' ? 'text-danger' : 'text-warn'}`} />
+              <span className="min-w-0 flex-1">
+                <span className={`font-medium ${mergeBlocker.tone === 'danger' ? 'text-danger' : 'text-warn'}`}>{mergeBlocker.title}.</span> {mergeBlocker.detail}
+              </span>
+              {mergeBlocker.handoff && (
+                <Btn
+                  type="button"
+                  onClick={() => onAddToChat(mergeBlocker.handoff!)}
+                  className="text-[11px] shrink-0 px-2 py-1 rounded-md border border-border bg-transparent text-muted hover:text-text hover:bg-bg-hover cursor-pointer"
+                >
+                  Add to chat
+                </Btn>
+              )}
+            </div>
+          )}
 
           {source.partialSections && source.partialSections.length > 0 && (
             <div role="status" className="shrink-0 flex items-start gap-2 px-4 py-2 border-b border-border bg-warn/10 text-[11px] text-muted">

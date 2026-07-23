@@ -178,6 +178,10 @@ export interface PullRequestSource {
   description: string; state: string; draft: boolean; mergedAt: string; updatedAt: string
   headBranch: string; baseBranch: string; headSha: string; author: string
   additions: number; deletions: number; changedFiles: number
+  /** Normalized merge ability: 'mergeable' | 'conflicting' | 'unknown' ('' when the provider omitted it). */
+  mergeable?: string
+  /** Normalized merge-state detail: 'clean' | 'dirty' | 'behind' | 'blocked' | 'unstable' | 'draft' | 'need_rebase' (GitLab) | 'unknown' | ''. */
+  mergeStateStatus?: string
   commits: PullRequestCommit[]; checks: PullRequestCheck[]
   comments: PullRequestComment[]; files: PullRequestFile[]
   /** Sections potentially incomplete because a provider request failed or hit a page/output limit. */

@@ -653,6 +653,60 @@ async def test_run_json_rejects_non_provider_executable() -> None:
         await source._run_json("sh", "-c", "echo unsafe")
 
 
+@pytest.mark.parametrize(
+    ("details", "expected"),
+    [
+        ({"mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN"}, ("mergeable", "clean")),
+        ({"mergeable": "CONFLICTING", "mergeStateStatus": "DIRTY"}, ("conflicting", "dirty")),
+        ({"mergeable": "MERGEABLE", "mergeStateStatus": "BEHIND"}, ("mergeable", "behind")),
+        ({"mergeable": "MERGEABLE", "mergeStateStatus": "BLOCKED"}, ("mergeable", "blocked")),
+        ({"mergeable": "UNKNOWN", "mergeStateStatus": "UNKNOWN"}, ("unknown", "unknown")),
+        ({}, ("", "")),
+    ],
+)
+def test_github_merge_state_normalization(details: dict, expected: tuple[str, str]) -> None:
+    assert source._github_merge_state(details) == expected
+
+
+@pytest.mark.parametrize(
+    ("details", "expected"),
+    [
+        ({"detailed_merge_status": "mergeable"}, ("mergeable", "clean")),
+        ({"detailed_merge_status": "conflict"}, ("conflicting", "dirty")),
+        ({"detailed_merge_status": "need_rebase"}, ("unknown", "need_rebase")),
+        ({"detailed_merge_status": "not_approved"}, ("unknown", "blocked")),
+        ({"detailed_merge_status": "ci_must_pass"}, ("unknown", "blocked")),
+        ({"detailed_merge_status": "status_checks_must_pass"}, ("unknown", "blocked")),
+        ({"detailed_merge_status": "policies_denied"}, ("unknown", "blocked")),
+        ({"detailed_merge_status": "security_policy_violations"}, ("unknown", "blocked")),
+        ({"detailed_merge_status": "merge_request_blocked"}, ("unknown", "blocked")),
+        ({"detailed_merge_status": "ci_still_running"}, ("unknown", "unstable")),
+        ({"detailed_merge_status": "draft_status"}, ("unknown", "draft")),
+        ({"detailed_merge_status": "checking"}, ("unknown", "unknown")),
+        # Legacy merge_status is a fallback only when the detail is absent.
+        ({"merge_status": "cannot_be_merged"}, ("conflicting", "")),
+        ({"merge_status": "can_be_merged"}, ("mergeable", "")),
+        # A stale legacy value must never override the authoritative detail:
+        # not_approved + cannot_be_merged is blocked, NOT conflicting.
+        (
+            {"detailed_merge_status": "not_approved", "merge_status": "cannot_be_merged"},
+            ("unknown", "blocked"),
+        ),
+        (
+            {"detailed_merge_status": "mergeable", "merge_status": "cannot_be_merged"},
+            ("mergeable", "clean"),
+        ),
+        (
+            {"detailed_merge_status": "conflict", "merge_status": "can_be_merged"},
+            ("conflicting", "dirty"),
+        ),
+        ({}, ("", "")),
+    ],
+)
+def test_gitlab_merge_state_normalization(details: dict, expected: tuple[str, str]) -> None:
+    assert source._gitlab_merge_state(details) == expected
+
+
 def test_parse_gitlab_merge_request_with_nested_group() -> None:
     ref = source.parse_source_url("https://gitlab.com/acme/platform/service/-/merge_requests/42")
     assert ref.provider == "gitlab"
@@ -690,6 +744,8 @@ async def test_fetch_github_normalizes_commits_checks_comments_and_files(monkeyp
                 "body": "## Summary\nAdds source tabs.",
                 "state": "OPEN",
                 "isDraft": False,
+                "mergeable": "CONFLICTING",
+                "mergeStateStatus": "DIRTY",
                 "headRefName": "feature/source-tabs",
                 "baseRefName": "main",
                 "headRefOid": "abc123",
@@ -766,6 +822,8 @@ async def test_fetch_github_normalizes_commits_checks_comments_and_files(monkeyp
     )
 
     assert data["provider"] == "github"
+    assert data["mergeable"] == "conflicting"
+    assert data["mergeStateStatus"] == "dirty"
     assert data["commits"][0]["sha"] == "abc123"
     assert data["checks"][0]["bucket"] == "passed"
     assert {comment["kind"] for comment in data["comments"]} == {"comment", "review", "inline"}
