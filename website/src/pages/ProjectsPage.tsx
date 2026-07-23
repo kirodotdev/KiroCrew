@@ -5,7 +5,7 @@ import { useAppSelector, useAppDispatch } from '../store'
 import { setPendingInput, switchSlot } from '../store/chatSlice'
 import { api } from '../api/client'
 import type { TaskRunnerStatus, ProjectRun } from '../types'
-import { Card, PageHeader, SendBtn, Btn, Checkbox } from '../components/ui'
+import { Card, PageHeader, SendBtn, Btn, Checkbox, Input } from '../components/ui'
 import AgentSelector from '../components/AgentSelector'
 import type { KiroCrewAgent } from '../components/AgentSelector'
 import ProjectDetailPage from './ProjectDetailPage'
@@ -46,6 +46,13 @@ export default function ProjectsPage() {
   const [agent, setAgent] = useState('')
   const [agents, setAgents] = useState<KiroCrewAgent[]>([])
   const [defaultAgentName, setDefaultAgentName] = useState('')
+  // The user's explicit per-run workspace override. Starts empty and is only
+  // populated when the user actually types — an untouched field means "no
+  // override" so the backend keeps its per-run isolated scratch dir (and
+  // Execute/Resume can never silently re-target an existing plan). The backend
+  // default is shown as a placeholder only (defaultWorkspaceDir), never as a value.
+  const [workspaceDir, setWorkspaceDir] = useState('')
+  const [defaultWorkspaceDir, setDefaultWorkspaceDir] = useState('')
   const [isPlanning, setIsPlanning] = useState(() => sessionStorage.getItem('tr-planning') === '1')
   const [planError, setPlanError] = useState('')
   const [editingName, setEditingName] = useState(false)
@@ -68,6 +75,10 @@ export default function ProjectsPage() {
     try {
       const d = await api.taskRunnerStatus()
       setData(d)
+      // Surface the backend's default workspace folder as a PLACEHOLDER only —
+      // never as the field's value — so an untouched field stays empty ("no
+      // override") and doesn't collapse per-run workspace isolation.
+      if (d.default_workspace_dir) setDefaultWorkspaceDir(d.default_workspace_dir)
       // If ?applied set a pending selection, pick it up here
       const pending = appliedRef.current
       if (pending) {
@@ -134,7 +145,8 @@ export default function ProjectsPage() {
     // THIS run — always pass false. (Per-run trust requires an explicit dashboard
     // toggle + manual Execute.) Passing the component-wide `autoApprove` here would
     // also race the sync effect below and could leak a stale `true` from a
-    // previously-selected run onto this one.
+    // previously-selected run onto this one. Workspace is fixed at plan time
+    // (planTask baked it into work_dir), so execute never re-sends it.
     api.executePlan(selectedRun.task_id, agent, false).then(r => { if (r.ok) load() })
   }, [selectedRun, agent, load])
   // Sync the per-run auto-approve toggle from the selected run (default false).
@@ -149,7 +161,7 @@ export default function ProjectsPage() {
   const doPlan = async (input: string, source: string, spec: string | undefined, autoRun: boolean) => {
     setIsPlanning(true); setPlanError(''); sessionStorage.setItem('tr-planning', '1'); activePlanRef.current = true
     try {
-      const r = await api.planTask(input, source, spec, agent)
+      const r = await api.planTask(input, source, spec, agent, workspaceDir)
       if (r.ok) {
         if (autoRun && r.task_id) autoRunRef.current = r.task_id
         const d = await api.taskRunnerStatus()
@@ -258,6 +270,17 @@ export default function ProjectsPage() {
       <div className="flex gap-2 items-center mb-3">
         <span className="text-[13px] text-muted font-medium">Agent:</span>
         <AgentSelector agents={agents} defaultAgent={defaultAgentName} value={agent} onChange={(name) => setAgent(name)} />
+        <span className="text-[13px] text-muted font-medium ml-2">Workspace:</span>
+        <Input
+          type="text"
+          aria-label="Workspace folder"
+          value={workspaceDir}
+          onChange={e => setWorkspaceDir(e.target.value)}
+          placeholder={defaultWorkspaceDir || 'Default workspace folder'}
+          title="Root folder for a NEW plan. Leave blank to use the default per-run workspace; type a path to target a specific folder. Fixed at plan time — resuming an existing run keeps its original folder."
+          disabled={anyPlanning}
+          className={`min-w-[200px] px-2.5 py-1.5 text-[13px] font-mono ${anyPlanning ? 'opacity-50 cursor-not-allowed' : ''}`}
+        />
       </div>
       {mode === 'compose' ? (
         <div className="space-y-3">

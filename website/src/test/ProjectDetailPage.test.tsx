@@ -1,7 +1,8 @@
 import { describe, it, expect, vi } from 'vitest'
-import { screen, fireEvent } from '@testing-library/react'
+import { screen, fireEvent, waitFor } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import ProjectDetailPage from '../pages/ProjectDetailPage'
+import { api } from '../api/client'
 import type { ProjectRun } from '../types'
 
 vi.mock('../pages/aidlc/DagView', () => ({ default: ({ nodes }: { nodes: unknown[] }) => <div data-testid="dag-view">{nodes.length} nodes</div> }))
@@ -68,5 +69,20 @@ describe('ProjectDetailPage', () => {
     renderWithProviders(<ProjectDetailPage run={mockRun({ spec_content: '', original_input: 'my idea' })} />)
     fireEvent.click(screen.getByText('Idea'))
     expect(screen.getByText('my idea')).toBeInTheDocument()
+  })
+
+  it('renders Export YAML button and calls exportPlanYaml on click', async () => {
+    const spy = vi.spyOn(api, 'exportPlanYaml').mockResolvedValue(undefined)
+    renderWithProviders(<ProjectDetailPage run={mockRun()} />)
+    const btn = screen.getByText('Export YAML')
+    expect(btn).toBeInTheDocument()
+    fireEvent.click(btn)
+    await waitFor(() => expect(spy).toHaveBeenCalledWith('run-1'))
+    spy.mockRestore()
+  })
+
+  it('hides Export YAML button when the run has no tasks', () => {
+    renderWithProviders(<ProjectDetailPage run={mockRun({ task_details: [] })} />)
+    expect(screen.queryByText('Export YAML')).not.toBeInTheDocument()
   })
 })

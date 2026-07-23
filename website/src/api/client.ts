@@ -755,7 +755,7 @@ export const api = {
   setLogLevel: (level: string) => post('/api/logs/level', { level }).then(j),
   // Task runner
   taskRunnerStatus: () => fetch('/api/taskrunner').then(j),
-  startTaskRunner: (spec: string, agent?: string) => post('/api/taskrunner', { spec, agent: agent || '' }).then(j),
+  startTaskRunner: (spec: string, agent?: string, workspaceDir?: string) => post('/api/taskrunner', { spec, agent: agent || '', workspace_dir: workspaceDir || '' }).then(j),
   cancelTaskRunner: (taskId?: string) => post('/api/taskrunner/cancel', taskId ? { task_id: taskId } : undefined).then(j),
   pauseTaskRun: (taskId: string) => post('/api/taskrunner/' + encodeURIComponent(taskId) + '/pause').then(j),
   deleteTaskRun: (taskId: string) => del('/api/taskrunner/' + encodeURIComponent(taskId)).then(j),
@@ -770,8 +770,8 @@ export const api = {
   refineTaskInput: (input: string) => post('/api/taskrunner/refine', { input }).then(j),
   refineStatus: () => fetch('/api/taskrunner/refine').then(j),
   refineCancel: () => post('/api/taskrunner/refine/cancel').then(j),
-  planTask: (input: string, source: string, spec?: string, agent?: string) =>
-    post('/api/taskrunner/plan', { input, source, spec: spec || '', agent: agent || '' }).then(j),
+  planTask: (input: string, source: string, spec?: string, agent?: string, workspaceDir?: string) =>
+    post('/api/taskrunner/plan', { input, source, spec: spec || '', agent: agent || '', workspace_dir: workspaceDir || '' }).then(j),
   cancelPlan: () => post('/api/taskrunner/plan/cancel').then(j),
   updatePlan: (taskId: string, steps: PlanStepInput[]) =>
     put('/api/taskrunner/' + encodeURIComponent(taskId) + '/plan', { steps }).then(j),
@@ -781,6 +781,28 @@ export const api = {
     post('/api/taskrunner/from-chat', { steps, task_id: taskId || '', original_input: originalInput || '' }).then(j),
   planContext: (taskId: string) =>
     fetch('/api/taskrunner/' + encodeURIComponent(taskId) + '/plan-context').then(j),
+  /** Download the run's plan as a YAML workflow (re-importable via the "From YAML" tab).
+   *  Fetches with the auth header, then triggers a browser download honoring the
+   *  server's sanitized Content-Disposition filename. */
+  exportPlanYaml: async (taskId: string) => {
+    const r = await get('/api/taskrunner/' + encodeURIComponent(taskId) + '/plan.yaml')
+    if (!r.ok) {
+      const t = await r.text()
+      throw new ApiError(r.status, t || `HTTP ${r.status}`)
+    }
+    const blob = await r.blob()
+    const cd = r.headers.get('Content-Disposition') || ''
+    const m = /filename="?([^";]+)"?/.exec(cd)
+    const filename = (m && m[1]) || `${taskId}.yaml`
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
+  },
   // Update
   checkUpdate: () => fetch('/api/update/check').then(j),
   changelog: () => fetch('/api/changelog').then(j),

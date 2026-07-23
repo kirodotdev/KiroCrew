@@ -73,6 +73,37 @@ describe('ProjectsPage', () => {
     expect(screen.getByPlaceholderText('Describe your task...')).toBeInTheDocument()
   })
 
+  it('shows the backend default workspace folder as a placeholder, never a prefilled value', async () => {
+    const { api: mockApi } = await import('../api/client')
+    vi.mocked(mockApi.taskRunnerStatus).mockResolvedValue({ running: false, available: true, runs: [], default_workspace_dir: '/home/u/ws' })
+    renderWithProviders(<ProjectsPage />)
+    const ws = await screen.findByPlaceholderText('/home/u/ws') as HTMLInputElement
+    expect(ws).toBeInTheDocument()
+    // Untouched field stays empty → "no override" (preserves per-run isolation).
+    expect(ws.value).toBe('')
+  })
+
+  it('threads the typed workspace dir into planTask on Run', async () => {
+    const { api: mockApi } = await import('../api/client')
+    vi.mocked(mockApi.taskRunnerStatus).mockResolvedValue({ running: false, available: true, runs: [], default_workspace_dir: '/ws/root' })
+    renderWithProviders(<ProjectsPage />)
+    const ws = await screen.findByPlaceholderText('/ws/root')
+    fireEvent.change(ws, { target: { value: '/custom/dir' } })
+    fireEvent.change(screen.getByPlaceholderText('Describe your task...'), { target: { value: 'do the thing' } })
+    fireEvent.click(screen.getByRole('button', { name: /Run/ }))
+    expect(mockApi.planTask).toHaveBeenCalledWith('do the thing', 'text', '', '', '/custom/dir')
+  })
+
+  it('sends an empty workspace (no override) when the field is untouched', async () => {
+    const { api: mockApi } = await import('../api/client')
+    vi.mocked(mockApi.taskRunnerStatus).mockResolvedValue({ running: false, available: true, runs: [], default_workspace_dir: '/ws/root' })
+    renderWithProviders(<ProjectsPage />)
+    await screen.findByPlaceholderText('/ws/root')
+    fireEvent.change(screen.getByPlaceholderText('Describe your task...'), { target: { value: 'do it' } })
+    fireEvent.click(screen.getByRole('button', { name: /Run/ }))
+    expect(mockApi.planTask).toHaveBeenCalledWith('do it', 'text', '', '', '')
+  })
+
   it('switches to From Spec mode with file upload', () => {
     renderWithProviders(<ProjectsPage />)
     fireEvent.click(screen.getByText(/From Spec/))

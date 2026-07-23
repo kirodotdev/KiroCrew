@@ -307,6 +307,9 @@ export interface ProjectRun {
 }
 export interface TaskRunnerStatus {
   running: boolean; available: boolean; runs: ProjectRun[]
+  /** Pre-fill value for the per-run workspace-folder selector: configured
+   *  taskrunner.workspace_dir if set, else the default per-run base directory. */
+  default_workspace_dir?: string
 }
 
 

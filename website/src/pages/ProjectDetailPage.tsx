@@ -10,7 +10,7 @@ import PhasedView from './aidlc/PhasedView';
 import TaskDetailPanel from './aidlc/TaskDetailPanel';
 import PixelCanvasWidget from '../components/PixelCanvasWidget';
 import { api } from '../api/client';
-import { AlertTriangle } from 'lucide-react';
+import { AlertTriangle, Download } from 'lucide-react';
 
 type Tab = 'idea' | 'tasks';
 type ViewMode = 'dag' | 'phased';
@@ -91,6 +91,13 @@ export default function ProjectDetailPage({ run, onRetry, onRefresh }: Props) {
       api.updateTask(run.task_id, index, updates),
     onSuccess: () => { onRefresh?.(); queryClient.invalidateQueries({ queryKey: ['approvals', run.task_id] }); },
   });
+  const exportMutation = useMutation({
+    mutationFn: () => api.exportPlanYaml(run.task_id),
+    onError: (e) => {
+      // eslint-disable-next-line no-console -- surface plan-export failures for debugging
+      console.error('Failed to export plan YAML:', e);
+    },
+  });
   const handleToggleApproval = useCallback(async (index: number, field: 'requires_approval' | 'force_approval', value: boolean): Promise<boolean> => {
     try {
       const updates: Record<string, boolean> = { [field]: value };
@@ -167,6 +174,16 @@ export default function ProjectDetailPage({ run, onRetry, onRefresh }: Props) {
             </>
           )}
           <div className="flex-1" />
+          {!isPlanning && (run.task_details || []).length > 0 && (
+            <button
+              onClick={() => exportMutation.mutate()}
+              disabled={exportMutation.isPending}
+              title="Export this plan as a YAML workflow — re-importable via the 'From YAML' tab"
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-[13px] rounded border border-border text-muted cursor-pointer transition-all hover:text-accent hover:border-accent ${exportMutation.isPending ? 'opacity-50 cursor-not-allowed' : ''}`}
+            >
+              <Download size={13} /> {exportMutation.isPending ? 'Exporting…' : 'Export YAML'}
+            </button>
+          )}
           {!isPlanning && <PixelCanvasWidget run={run} />}
         </div>
 
