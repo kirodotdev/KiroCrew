@@ -34,7 +34,7 @@ jobs:
       # reviewer could read it from untrusted PR content and leak a PR-write
       # token. `git diff` still works (history is already fetched via depth 0);
       # the posting step uses its own scoped GH_TOKEN.
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false

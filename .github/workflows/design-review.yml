@@ -38,7 +38,7 @@ jobs:
       # untrusted PR diff content — could otherwise read and leak it. `git diff`
       # still works (history is fetched via depth 0); the posting step uses its
       # own scoped GH_TOKEN. Mirrors codex-review.yml.
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
