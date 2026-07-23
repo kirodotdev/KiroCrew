@@ -21,13 +21,21 @@
  * For an active instance with no warm iframe (down / reconnecting after a
  * restart) it renders an in-pane error/reconnect panel; otherwise it renders
  * nothing only when nothing is warm.
+ *
+ * - **Pane readiness** (strand fix): a warm iframe is only trusted once its
+ *   embedded SPA posts `mc-embedded-ready` for the current src. Until then the
+ *   active pane shows a loading overlay that carries the tab strip (the local
+ *   header is hidden while a remote tab is active, so without it a slow or
+ *   dead load stranded the user on a black pane with no tabs). If readiness
+ *   never arrives within PANE_LOAD_TIMEOUT_MS the error panel surfaces with
+ *   Retry, which force-reloads the iframe even for an identical re-minted src.
  */
-import { useCallback, useEffect, useMemo, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, Loader2, RefreshCw } from 'lucide-react'
 import { api } from '../api/client'
 import { useAppDispatch, useAppSelector } from '../store'
-import { removeWarm, setActiveId, setUnread, setWarm } from '../store/instancesSlice'
+import { removeWarm, setActiveId, setPaneReady, setUnread, setWarm } from '../store/instancesSlice'
 import InstanceTabBar, { visibleInstanceTabs } from './InstanceTabBar'
 import { resolveTunnelOrigin } from '../lib/tunnelOrigin'
 import { TRAFFIC_LIGHT_INSET_PX } from '../lib/electron'
@@ -42,6 +50,13 @@ const REFRESH_AT_ELAPSED_FRAC = 0.8
 // reactive (auth-expired) path so a persistently-rejecting remote can't spin
 // a reconnect/reload storm.
 const REFRESH_MIN_INTERVAL_MS = 10_000
+// If the ACTIVE pane's embedded SPA hasn't announced `mc-embedded-ready`
+// within this long of its iframe (re)loading, treat the load as failed and
+// surface the error panel (with the tab strip) instead of a silent black pane.
+// Iframes report no load errors to the parent, and the backend can say
+// "connected" while the browser-side load is dead (tunnel half-up, token
+// rejected, remote gateway mid-restart) — this watchdog is the only signal.
+const PANE_LOAD_TIMEOUT_MS = 15_000
 
 /** Parse a ``<int>[hm]`` TTL (e.g. "20h", "30m") to seconds; 0 if unparseable. */
 function ttlToSeconds(ttl: string): number {
@@ -58,6 +73,9 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   const activeId = useAppSelector(s => s.instances.activeId)
   const mru = useAppSelector(s => s.instances.mru)
   const unread = useAppSelector(s => s.instances.unread)
+  // Panes whose embedded SPA has announced readiness for their CURRENT src.
+  // Tests preload partial slices, so tolerate a missing map.
+  const ready = useAppSelector(s => s.instances.ready) ?? {}
 
   // Embedded instance panes never host nested panes (single-level by design),
   // so skip the poll and render nothing — see isEmbeddedPane / InstanceTabBar.
@@ -171,7 +189,10 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
         }
       } else if (data.type === 'mc-embedded-ready') {
         // The pane just (re)mounted and asked for the current model — send it now
-        // rather than waiting for the next input-driven broadcast.
+        // rather than waiting for the next input-driven broadcast. Also record
+        // readiness: this is the parent's only proof the pane actually loaded
+        // (drives the loading overlay + load watchdog below).
+        dispatch(setPaneReady(id))
         postModelToRef.current(id)
       }
     }
@@ -210,6 +231,44 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
       void queryClient.invalidateQueries({ queryKey: ['instances'] })
     },
   })
+
+  // Load watchdog + forced reload. `timedOut[id]` flips true when the active
+  // pane's iframe has been loading for PANE_LOAD_TIMEOUT_MS without the
+  // embedded SPA announcing readiness; the render below then swaps the black
+  // pane for the error panel (which carries the tab strip, so the user is
+  // never stranded). `reloadSeq[id]` is bumped by Retry to force an iframe
+  // remount even when the backend returns the SAME cached port+token (identical
+  // src would otherwise not reload a dead frame).
+  const [timedOut, setTimedOut] = useState<Record<string, boolean>>({})
+  const [reloadSeq, setReloadSeq] = useState<Record<string, number>>({})
+  const activeWarmConn = activeId ? warm[activeId] : undefined
+  // Primitive deps for the watchdog effect (a fresh conn object identity on
+  // every setWarm would defeat the dep comparison; the src only depends on these).
+  const activeWarmPort = activeWarmConn?.port
+  const activeWarmToken = activeWarmConn?.token
+  const activeReady = activeId ? !!ready[activeId] : true
+  const activeSeq = activeId ? reloadSeq[activeId] || 0 : 0
+  useEffect(() => {
+    if (!activeId || activeWarmPort === undefined || activeReady) return
+    const id = activeId
+    const t = window.setTimeout(() => {
+      setTimedOut(prev => (prev[id] ? prev : { ...prev, [id]: true }))
+    }, PANE_LOAD_TIMEOUT_MS)
+    return () => window.clearTimeout(t)
+    // Restart the countdown whenever the pane's src (port/token) or forced
+    // reload sequence changes — each of those reloads the iframe.
+  }, [activeId, activeWarmPort, activeWarmToken, activeSeq, activeReady])
+
+  const retry = useCallback(
+    (id: string) => {
+      // Clear the stale verdict and force a reload even if the re-mint returns
+      // an identical token (setWarm would be a no-op for the iframe src).
+      setTimedOut(prev => ({ ...prev, [id]: false }))
+      setReloadSeq(prev => ({ ...prev, [id]: (prev[id] || 0) + 1 }))
+      connectMutation.mutate(id)
+    },
+    [connectMutation],
+  )
 
   // K-cap eviction drops only the least-recently-used non-active *warm iframe*
   // to free memory — it does NOT disconnect the tunnel or clear was_connected,
@@ -321,7 +380,16 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   // in the results) is treated as "no evidence of disconnection" so we never
   // flash the panel over a perfectly healthy warm iframe.
   const activeLive = !activeInst || activeInst.status?.state === 'connected'
-  const showPanel = activeId !== null && (!warm[activeId] || !activeLive)
+  // Watchdog verdict for the active pane: only meaningful while it has still
+  // not announced readiness (a late `mc-embedded-ready` clears the alarm).
+  const activeTimedOut = activeId !== null && !!timedOut[activeId] && !activeReady
+  const showPanel = activeId !== null && (!warm[activeId] || !activeLive || activeTimedOut)
+  // Loading overlay: the active pane is warm and the backend says connected,
+  // but the embedded SPA hasn't announced readiness yet. Without this the
+  // window between Retry succeeding (setWarm) and the remote SPA rendering its
+  // embedded switcher is a black pane with NO tabs — the local header is
+  // display:none while a remote tab is active, so the user was stranded.
+  const showLoading = !showPanel && activeId !== null && !!warm[activeId] && !activeReady
   if (embedded || (warmIds.length === 0 && !showPanel)) return null
 
   const nameFor = (id: string) =>
@@ -340,7 +408,9 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
     >
       {warmIds.map(id => (
         <iframe
-          key={id}
+          // reloadSeq in the key forces a remount (= reload) on Retry even when
+          // the re-minted src is byte-identical to the dead frame's.
+          key={`${id}:${reloadSeq[id] || 0}`}
           ref={el => {
             if (el) iframeRefs.current.set(id, el)
             else iframeRefs.current.delete(id)
@@ -352,6 +422,24 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
           style={{ display: id === activeId ? 'block' : 'none' }}
         />
       ))}
+      {showLoading && activeId && (
+        <div className="absolute inset-0 flex flex-col bg-bg">
+          {/* Same escape hatch as the error panel: while this overlay is up the
+              only other switcher lives inside the still-loading iframe, so the
+              strip is the user's sole way to reach Local or another instance. */}
+          <InstanceTabBar
+            variant="strip"
+            style={macInset ? { paddingLeft: TRAFFIC_LIGHT_INSET_PX } : undefined}
+          />
+          <div className="flex-1 flex items-center justify-center p-6">
+            <div className="flex flex-col items-center gap-3 text-center">
+              <Loader2 size={28} className="animate-spin text-muted" />
+              <div className="text-sm font-medium text-text">{nameFor(activeId)}</div>
+              <div className="text-xs text-muted">Loading pane…</div>
+            </div>
+          </div>
+        </div>
+      )}
       {showPanel && activeId && (
         <div className="absolute inset-0 flex flex-col bg-bg">
           {/* Escape hatch (bug: stranded on the disconnect view). While a remote
@@ -376,10 +464,18 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
               <div className="text-xs text-muted">
                 {panelConnecting
                   ? 'Connecting…'
-                  : panelState === 'error'
-                    ? 'Connection error'
-                    : 'Disconnected'}
+                  : activeTimedOut
+                    ? 'Pane failed to load'
+                    : panelState === 'error'
+                      ? 'Connection error'
+                      : 'Disconnected'}
               </div>
+              {!panelConnecting && activeTimedOut && !panelError && (
+                <div className="text-xs text-muted">
+                  The tunnel looks connected but the remote dashboard never loaded. It may be
+                  restarting — retry, or switch tabs above.
+                </div>
+              )}
               {!panelConnecting && panelError && (
                 <div className="w-full max-h-32 overflow-auto rounded-md border border-border bg-bg-hover px-3 py-2 text-left text-xs text-muted whitespace-pre-wrap break-words">
                   {panelError}
@@ -388,7 +484,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
               <button
                 type="button"
                 disabled={panelConnecting}
-                onClick={() => connectMutation.mutate(activeId)}
+                onClick={() => retry(activeId)}
                 className="mt-1 inline-flex items-center gap-1.5 text-xs py-1.5 px-3.5 rounded-md bg-accent text-accent-fg disabled:opacity-60"
               >
                 <RefreshCw size={13} className={panelConnecting ? 'animate-spin' : ''} /> Retry

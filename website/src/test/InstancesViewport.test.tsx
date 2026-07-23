@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, waitFor } from '@testing-library/react'
+import { act, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderWithProviders, createTestStore } from './helpers'
 import InstancesViewport from '../components/InstancesViewport'
@@ -313,5 +313,172 @@ describe('InstancesViewport', () => {
     await waitFor(() => expect(store.getState().instances.warm['cd-1']).toBeUndefined())
     expect(store.getState().instances.warm['cd-2']).toBeDefined()
     expect(api.disconnectInstance).not.toHaveBeenCalled()
+  })
+
+  // Explicit connected-instance mock for the readiness/watchdog tests below —
+  // earlier tests override listInstances and clearAllMocks() does NOT restore
+  // implementations, so relying on the module-level default is order-dependent.
+  const mockConnectedCd1 = () =>
+    vi.mocked(api.listInstances).mockResolvedValue({
+      instances: [
+        {
+          id: 'cd-1',
+          name: 'Cloud One',
+          ssh_host: 'cd-1-alias',
+          remote_port: 7777,
+          local_port: 7778,
+          ttl: '20h',
+          remote_bin: '',
+          status: { instance_id: 'cd-1', state: 'connected', local_port: 7778, remote_port: 7777 },
+        },
+      ],
+      warm_set_cap: 5,
+    })
+
+  it('shows a loading overlay WITH the tab strip for an active warm pane that has not announced readiness', async () => {
+    // Regression (strand bug): after Retry succeeds, setWarm mounts the iframe
+    // and the error panel (with its escape-hatch tab strip) unmounted
+    // immediately — leaving a black loading pane with NO tabs. The overlay must
+    // keep the switcher reachable until the embedded SPA is actually up.
+    mockConnectedCd1()
+    const store = createTestStore({
+      instances: { warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
+    })
+    renderWithProviders(<InstancesViewport />, { store })
+
+    expect(await screen.findByText(/Loading pane/i)).toBeInTheDocument()
+    // The full switcher renders atop the overlay: the user can always escape.
+    const bar = await screen.findByRole('tablist', { name: /Instances/i })
+    expect(bar).toBeInTheDocument()
+    // Not the error panel — no Retry while the load is still in flight.
+    expect(screen.queryByText(/Connection error/i)).toBeNull()
+  })
+
+  it('dismisses the loading overlay when the pane posts mc-embedded-ready from its tunnel origin', async () => {
+    mockConnectedCd1()
+    const store = createTestStore({
+      instances: { warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
+    })
+    renderWithProviders(<InstancesViewport />, { store })
+    expect(await screen.findByText(/Loading pane/i)).toBeInTheDocument()
+
+    // The embedded SPA announces readiness from its validated loopback origin.
+    window.dispatchEvent(
+      new MessageEvent('message', {
+        data: { type: 'mc-embedded-ready', v: 1 },
+        origin: 'http://127.0.0.1:7778',
+      }),
+    )
+    await waitFor(() => expect(store.getState().instances.ready['cd-1']).toBe(true))
+    await waitFor(() => expect(screen.queryByText(/Loading pane/i)).toBeNull())
+  })
+
+  it('ignores mc-embedded-ready from an unknown origin (no readiness, overlay stays)', async () => {
+    mockConnectedCd1()
+    const store = createTestStore({
+      instances: { warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
+    })
+    renderWithProviders(<InstancesViewport />, { store })
+    expect(await screen.findByText(/Loading pane/i)).toBeInTheDocument()
+
+    // Wrong port (no warm tunnel) and a non-loopback origin must both be dropped.
+    window.dispatchEvent(
+      new MessageEvent('message', {
+        data: { type: 'mc-embedded-ready', v: 1 },
+        origin: 'http://127.0.0.1:9999',
+      }),
+    )
+    window.dispatchEvent(
+      new MessageEvent('message', {
+        data: { type: 'mc-embedded-ready', v: 1 },
+        origin: 'https://evil.example.com',
+      }),
+    )
+    expect(store.getState().instances.ready['cd-1']).toBeUndefined()
+    expect(screen.getByText(/Loading pane/i)).toBeInTheDocument()
+  })
+
+  it('surfaces the error panel with Retry when the pane never becomes ready (load watchdog)', async () => {
+    mockConnectedCd1()
+    vi.useFakeTimers()
+    try {
+      const store = createTestStore({
+        instances: { warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
+      })
+      renderWithProviders(<InstancesViewport />, { store })
+      expect(screen.getByText(/Loading pane/i)).toBeInTheDocument()
+
+      // 15s without mc-embedded-ready -> the silent black pane becomes an
+      // actionable error panel (backend still says connected, so without the
+      // watchdog nothing would ever surface it).
+      await act(async () => {
+        vi.advanceTimersByTime(15_000)
+      })
+      expect(screen.getByText(/Pane failed to load/i)).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: /Retry/i })).toBeInTheDocument()
+    } finally {
+      vi.useRealTimers()
+    }
+    // The escape-hatch strip is on the panel (query resolves under real timers).
+    expect(await screen.findByRole('tablist', { name: /Instances/i })).toBeInTheDocument()
+  })
+
+  it('Retry after a load timeout force-reloads the iframe even for an identical token', async () => {
+    mockConnectedCd1()
+    // connectInstance returns the SAME port+token as the preloaded warm entry —
+    // the src is byte-identical, so only a keyed remount can reload a dead frame.
+    vi.mocked(api.connectInstance).mockResolvedValue({ state: 'connected', local_port: 7778, token: 'tok' })
+    vi.useFakeTimers()
+    const store = createTestStore({
+      instances: { warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
+    })
+    renderWithProviders(<InstancesViewport />, { store })
+    await act(async () => {
+      vi.advanceTimersByTime(15_000)
+    })
+    expect(screen.getByText(/Pane failed to load/i)).toBeInTheDocument()
+    const before = document.querySelector('iframe') as HTMLIFrameElement
+    // Click under real timers — userEvent/waitFor deadlock with fake ones.
+    vi.useRealTimers()
+
+    const u = userEvent.setup()
+    await u.click(screen.getByRole('button', { name: /Retry/i }))
+    await waitFor(() => expect(api.connectInstance).toHaveBeenCalledWith('cd-1'))
+    // Back to the loading overlay (verdict cleared), not the error panel.
+    await waitFor(() => expect(screen.queryByText(/Pane failed to load/i)).toBeNull())
+    expect(screen.getByText(/Loading pane/i)).toBeInTheDocument()
+    // The iframe was remounted (new element) to force the reload.
+    const after = document.querySelector('iframe') as HTMLIFrameElement
+    expect(after).not.toBe(before)
+  })
+
+  it('a late mc-embedded-ready clears a timed-out verdict without Retry', async () => {
+    mockConnectedCd1()
+    vi.useFakeTimers()
+    try {
+      const store = createTestStore({
+        instances: { warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
+      })
+      renderWithProviders(<InstancesViewport />, { store })
+      await act(async () => {
+        vi.advanceTimersByTime(15_000)
+      })
+      expect(screen.getByText(/Pane failed to load/i)).toBeInTheDocument()
+
+      // The pane was just slow — a late readiness announcement restores it.
+      await act(async () => {
+        window.dispatchEvent(
+          new MessageEvent('message', {
+            data: { type: 'mc-embedded-ready', v: 1 },
+            origin: 'http://127.0.0.1:7778',
+          }),
+        )
+      })
+      expect(store.getState().instances.ready['cd-1']).toBe(true)
+      expect(screen.queryByText(/Pane failed to load/i)).toBeNull()
+      expect(screen.queryByText(/Loading pane/i)).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

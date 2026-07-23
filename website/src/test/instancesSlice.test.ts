@@ -3,11 +3,12 @@ import reducer, {
   setWarm,
   setActiveId,
   removeWarm,
+  setPaneReady,
   setUnread,
   clearInstances,
 } from '../store/instancesSlice'
 
-const initial = { warm: {}, activeId: null, mru: [], unread: {}, host: null }
+const initial = { warm: {}, activeId: null, mru: [], unread: {}, ready: {}, host: null }
 
 describe('instancesSlice', () => {
   it('setWarm stores the conn and fronts it in mru', () => {
@@ -52,5 +53,28 @@ describe('instancesSlice', () => {
     expect(s.unread.a).toBe(4)
     s = reducer(s, clearInstances())
     expect(s).toEqual(initial)
+  })
+
+  it('setPaneReady marks the pane; setWarm with a NEW src clears it (a reload is coming)', () => {
+    let s = reducer(initial, setWarm({ id: 'a', conn: { port: 7778, token: 't1' } }))
+    s = reducer(s, setPaneReady('a'))
+    expect(s.ready.a).toBe(true)
+    // Token refresh -> new src -> the old readiness no longer applies.
+    s = reducer(s, setWarm({ id: 'a', conn: { port: 7778, token: 't2' } }))
+    expect(s.ready.a).toBeUndefined()
+  })
+
+  it('setWarm with an IDENTICAL conn preserves readiness (no reload happens)', () => {
+    let s = reducer(initial, setWarm({ id: 'a', conn: { port: 7778, token: 't1' } }))
+    s = reducer(s, setPaneReady('a'))
+    s = reducer(s, setWarm({ id: 'a', conn: { port: 7778, token: 't1' } }))
+    expect(s.ready.a).toBe(true)
+  })
+
+  it('removeWarm clears readiness alongside warm/unread', () => {
+    let s = reducer(initial, setWarm({ id: 'a', conn: { port: 7778, token: 't1' } }))
+    s = reducer(s, setPaneReady('a'))
+    s = reducer(s, removeWarm('a'))
+    expect(s.ready).toEqual({})
   })
 })

@@ -63,6 +63,10 @@ interface InstancesState {
   activeId: string | null
   mru: string[]
   unread: Record<string, number>
+  /** Panes whose embedded SPA announced `mc-embedded-ready` for the CURRENT
+   *  src (port+token). Cleared whenever the src changes (a reload is coming),
+   *  so the viewport can tell a live pane from one still loading / dead. */
+  ready: Record<string, boolean>
   host: HostModel | null
 }
 
@@ -71,6 +75,7 @@ const initialState: InstancesState = {
   activeId: null,
   mru: [],
   unread: {},
+  ready: {},
   host: null,
 }
 
@@ -79,8 +84,17 @@ const instancesSlice = createSlice({
   initialState,
   reducers: {
     setWarm(state, action: PayloadAction<{ id: string; conn: WarmConn }>) {
-      state.warm[action.payload.id] = action.payload.conn
-      state.mru = [action.payload.id, ...state.mru.filter(x => x !== action.payload.id)]
+      const { id, conn } = action.payload
+      const prev = state.warm[id]
+      // A new port/token changes the iframe src (srcFor), which reloads the
+      // pane — its previous readiness no longer describes what's on screen.
+      // Tests preload partial slices, so tolerate a missing `ready` map.
+      if (!state.ready) state.ready = {}
+      if (!prev || prev.port !== conn.port || prev.token !== conn.token) {
+        delete state.ready[id]
+      }
+      state.warm[id] = conn
+      state.mru = [id, ...state.mru.filter(x => x !== id)]
     },
     setActiveId(state, action: PayloadAction<string | null>) {
       state.activeId = action.payload
@@ -95,8 +109,14 @@ const instancesSlice = createSlice({
       const id = action.payload
       delete state.warm[id]
       delete state.unread[id]
+      if (state.ready) delete state.ready[id]
       state.mru = state.mru.filter(x => x !== id)
       if (state.activeId === id) state.activeId = null
+    },
+    /** The pane's embedded SPA mounted and announced `mc-embedded-ready`. */
+    setPaneReady(state, action: PayloadAction<string>) {
+      if (!state.ready) state.ready = {}
+      state.ready[action.payload] = true
     },
     setUnread(state, action: PayloadAction<{ id: string; count: number }>) {
       state.unread[action.payload.id] = action.payload.count
@@ -111,6 +131,13 @@ const instancesSlice = createSlice({
   },
 })
 
-export const { setWarm, setActiveId, removeWarm, setUnread, setHostModel, clearInstances } =
-  instancesSlice.actions
+export const {
+  setWarm,
+  setActiveId,
+  removeWarm,
+  setPaneReady,
+  setUnread,
+  setHostModel,
+  clearInstances,
+} = instancesSlice.actions
 export default instancesSlice.reducer
