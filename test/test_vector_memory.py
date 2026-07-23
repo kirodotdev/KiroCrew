@@ -1596,3 +1596,208 @@ class TestBackfillMissingEmbeddings:
         store.embed_fn = lambda text: [0.1] * store._embedding_dim
         # No episodic rows at all → returns 0.
         assert store.backfill_missing_embeddings() == 0
+
+
+class TestFaissIndexIdMapSync:
+    """Regression guards for the FAISS index / _faiss_id_map desync bug.
+
+    The C++ index (index.ntotal) and the parallel Python _faiss_id_map are two
+    structures that must stay in lockstep. If a mid-write add fails after the id
+    was appended (or the persisted pair drifts), later lookups return wrong
+    results or IndexError on _faiss_id_map[idx]. The write path must apply both
+    atomically (rolling back on failure) and load must detect + repair a desync.
+    """
+
+    def _fake_embed(self, dim: int):
+        def _embed(text: str):
+            seed = sum(ord(c) for c in text)
+            return [float((seed + i) % 7) + 0.1 for i in range(dim)]
+
+        return _embed
+
+    def test_write_rolls_back_id_map_when_faiss_add_fails(self, tmp_path: Path) -> None:
+        if not (_HAS_FAISS and _HAS_NUMPY):
+            pytest.skip("FAISS/numpy not available on this platform")
+
+        dim = 16
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db", embedding_dim=dim)
+        store.init()
+        store.embed_fn = self._fake_embed(dim)
+        store.build_faiss_index()
+
+        # Land one clean vector so the structures start in sync and non-empty.
+        assert store.write_episodic("first episodic memory about topic alpha beta")
+        assert store._faiss_index.ntotal == len(store._faiss_id_map)
+        baseline_ntotal = store._faiss_index.ntotal
+        baseline_ids = len(store._faiss_id_map)
+
+        # Force the FAISS add to raise mid-write. The id must be rolled back so
+        # index.ntotal stays equal to len(_faiss_id_map) (no dangling id).
+        real_add = store._faiss_index.add
+
+        def _boom(_vec):
+            raise RuntimeError("simulated FAISS add failure")
+
+        store._faiss_index.add = _boom  # type: ignore[assignment]
+        with pytest.raises(RuntimeError):
+            store.write_episodic("second episodic memory about topic gamma delta")
+        store._faiss_index.add = real_add  # type: ignore[assignment]
+
+        assert len(store._faiss_id_map) == baseline_ids
+        assert store._faiss_index.ntotal == baseline_ntotal
+        assert store._faiss_index.ntotal == len(store._faiss_id_map)
+
+    def test_load_detects_and_rebuilds_on_desync(self, tmp_path: Path) -> None:
+        if not (_HAS_FAISS and _HAS_NUMPY):
+            pytest.skip("FAISS/numpy not available on this platform")
+
+        import json
+
+        dim = 16
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db", embedding_dim=dim)
+        store.init()
+        store.embed_fn = self._fake_embed(dim)
+        store.build_faiss_index()
+        for i in range(4):
+            assert store.write_episodic(f"episodic memory number {i} about topic alpha beta")
+        store.save_faiss_index()
+        expected = store._faiss_index.ntotal
+        assert expected == len(store._faiss_id_map) == 4
+
+        # Corrupt the persisted id-map so it is shorter than the index (a desync
+        # exactly like an interrupted mid-write would leave behind).
+        id_map_path = store._faiss_path.with_suffix(".ids.json")
+        truncated = json.loads(id_map_path.read_text(encoding="utf-8"))[:2]
+        id_map_path.write_text(json.dumps(truncated), encoding="utf-8")
+
+        # A fresh store loading the corrupt pair must detect the mismatch and
+        # rebuild from SQLite (source of truth) rather than serve corrupt lookups.
+        store2 = VectorMemoryStore(db_path=tmp_path / "mem.db", embedding_dim=dim)
+        store2.init()
+        store2.embed_fn = self._fake_embed(dim)
+        assert store2.load_faiss_index() is False  # rebuilt, not loaded as-is
+        assert store2._faiss_index.ntotal == len(store2._faiss_id_map)
+        assert store2._faiss_index.ntotal == expected
+
+    def test_load_accepts_consistent_index(self, tmp_path: Path) -> None:
+        if not (_HAS_FAISS and _HAS_NUMPY):
+            pytest.skip("FAISS/numpy not available on this platform")
+
+        dim = 16
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db", embedding_dim=dim)
+        store.init()
+        store.embed_fn = self._fake_embed(dim)
+        store.build_faiss_index()
+        for i in range(3):
+            assert store.write_episodic(f"episodic memory number {i} about topic alpha beta")
+        store.save_faiss_index()
+
+        store2 = VectorMemoryStore(db_path=tmp_path / "mem.db", embedding_dim=dim)
+        store2.init()
+        store2.embed_fn = self._fake_embed(dim)
+        # In-sync pair loads as-is (True) and stays consistent.
+        assert store2.load_faiss_index() is True
+        assert store2._faiss_index.ntotal == len(store2._faiss_id_map) == 3
+
+
+class TestSearchLastAccessedLocking:
+    """Regression guard for the unlocked last_accessed_at UPDATE in the FAISS
+    search path. The metadata UPDATE must run under _db_lock (the same lock as
+    the write path) inside a single committed transaction so it neither races
+    concurrent writers nor is lost/clobbered, and does not raise 'database is
+    locked'. busy_timeout is configured at connection init.
+    """
+
+    def _fake_embed(self, dim: int):
+        def _embed(text: str):
+            seed = sum(ord(c) for c in text)
+            return [float((seed + i) % 7) + 0.1 for i in range(dim)]
+
+        return _embed
+
+    def test_busy_timeout_configured(self, tmp_path: Path) -> None:
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        store.init()
+        # busy_timeout is set in milliseconds at connection init so contention is
+        # waited out rather than immediately erroring.
+        timeout = store.db.execute("PRAGMA busy_timeout").fetchone()[0]
+        assert timeout >= 1000
+
+    def test_search_updates_last_accessed_under_lock(self, tmp_path: Path) -> None:
+        if not (_HAS_FAISS and _HAS_NUMPY):
+            pytest.skip("FAISS/numpy not available on this platform")
+
+        dim = 16
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db", embedding_dim=dim)
+        store.init()
+        store.embed_fn = self._fake_embed(dim)
+        store.build_faiss_index()
+        store.write_episodic("User decided to use PostgreSQL for the database layer")
+
+        # The FAISS search path must acquire _db_lock while writing last_accessed_at.
+        # Wrap the real RLock so we can assert it was actually held during the search.
+        real_lock = store._db_lock
+        acquisitions = {"count": 0}
+
+        class _CountingLock:
+            def __enter__(self):
+                acquisitions["count"] += 1
+                return real_lock.__enter__()
+
+            def __exit__(self, *exc):
+                return real_lock.__exit__(*exc)
+
+        store._db_lock = _CountingLock()  # type: ignore[assignment]
+        embed = self._fake_embed(dim)
+        results = store.search_episodic(
+            query_embedding=embed("PostgreSQL database"),
+            query_text="PostgreSQL database",
+            limit=5,
+        )
+        store._db_lock = real_lock  # type: ignore[assignment]
+
+        assert results, "expected at least one episodic hit"
+        # The search candidate section AND the last_accessed_at UPDATE both take
+        # the lock → at least two acquisitions (>=1 proves the UPDATE is locked).
+        assert acquisitions["count"] >= 2
+        # last_accessed_at was actually persisted.
+        row = store.db.execute(
+            "SELECT last_accessed_at FROM episodic_memories WHERE id = ?",
+            (results[0]["id"],),
+        ).fetchone()
+        assert row["last_accessed_at"] is not None
+
+    def test_concurrent_search_updates_no_lock_error(self, tmp_path: Path) -> None:
+        if not (_HAS_FAISS and _HAS_NUMPY):
+            pytest.skip("FAISS/numpy not available on this platform")
+
+        dim = 16
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db", embedding_dim=dim)
+        store.init()
+        store.embed_fn = self._fake_embed(dim)
+        store.build_faiss_index()
+        for i in range(10):
+            store.write_episodic(f"episodic memory number {i} about topic alpha beta")
+
+        errors: list[BaseException] = []
+        embed = self._fake_embed(dim)
+        q_vec = embed("topic alpha")
+
+        def _searcher(n: int) -> None:
+            try:
+                for _ in range(n):
+                    store.search_episodic(
+                        query_embedding=q_vec, query_text="topic alpha", limit=5
+                    )
+            except BaseException as exc:  # noqa: BLE001 - capture any thread crash
+                errors.append(exc)
+
+        threads = [threading.Thread(target=_searcher, args=(50,)) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        # The locked, transactional UPDATE must not surface 'database is locked'
+        # or interleave into a crash under concurrent search load.
+        assert not errors, f"concurrent search-update raised: {errors!r}"

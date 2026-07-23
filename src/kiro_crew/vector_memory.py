@@ -856,8 +856,25 @@ class VectorMemoryStore:
         id_map_path = self._faiss_path.with_suffix(".ids.json")
         if self._faiss_path.exists() and id_map_path.exists():
             try:
-                self._faiss_index = faiss.read_index(str(self._faiss_path))
+                loaded_index = faiss.read_index(str(self._faiss_path))
+                self._faiss_index = loaded_index
                 self._faiss_id_map = json.loads(id_map_path.read_text(encoding="utf-8"))
+                # Consistency gate: the persisted index and id-map can drift out of
+                # sync if a prior process was interrupted mid-write, or the two files
+                # were flushed at different points. Serving a desynced pair silently
+                # returns wrong/missing lookups and can IndexError on id resolution,
+                # so reconcile by rebuilding from SQLite (the source of truth). Read
+                # ntotal off the freshly-loaded local (typed by read_index) rather
+                # than the object|None attribute to keep the access type-clean.
+                ntotal = loaded_index.ntotal
+                if ntotal != len(self._faiss_id_map):
+                    logger.warning(
+                        "FAISS index/id-map desync (index.ntotal=%d, id_map=%d); rebuilding",
+                        ntotal,
+                        len(self._faiss_id_map),
+                    )
+                    self.build_faiss_index()
+                    return False
                 logger.info("Loaded FAISS index: %d vectors", len(self._faiss_id_map))
                 return True
             except Exception:
@@ -1023,11 +1040,19 @@ class VectorMemoryStore:
             )
             self.db.commit()
 
-            # Add to FAISS
+            # Add to FAISS. The C++ index and the Python _faiss_id_map MUST commit
+            # together — if index.ntotal ends up ahead of len(_faiss_id_map) a later
+            # lookup IndexErrors and similarity results desync. Append the id first
+            # (a cheap, reliable list op), then add the vector, and roll the id back
+            # if the add raises so the two structures stay atomically in sync.
             if embedding_blob is not None and self._faiss_index is not None:
                 vec = np.frombuffer(embedding_blob, dtype=np.float32).reshape(1, -1)
-                self._faiss_index.add(vec)  # type: ignore[attr-defined]
                 self._faiss_id_map.append(mem_id)
+                try:
+                    self._faiss_index.add(vec)  # type: ignore[attr-defined]
+                except Exception:
+                    self._faiss_id_map.pop()  # roll back partial add — keep in sync
+                    raise
                 self._faiss_writes_since_save += 1
                 if self._faiss_writes_since_save >= _FAISS_SAVE_INTERVAL:
                     self.save_faiss_index()
@@ -1106,14 +1131,21 @@ class VectorMemoryStore:
             candidates.sort(key=lambda x: x["score"], reverse=True)
             result = _mmr_rerank(candidates, limit=limit) if mmr else candidates[:limit]
 
-            # Update last_accessed_at
-            for c in result:
-                self.db.execute(
-                    "UPDATE episodic_memories SET last_accessed_at = ? WHERE id = ?",
-                    (_now_iso(), c["id"]),
-                )
+            # Update last_accessed_at under the same lock as the rest of the write
+            # path. Left unlocked this UPDATE races concurrent writers/readers of the
+            # store: transactions interleave (a write can be lost or clobbered) and,
+            # with nothing serializing access, sqlite can raise "database is locked".
+            # busy_timeout (set at connection init) waits out contention while the
+            # lock keeps this metadata write consistent with the FAISS index. RLock
+            # is reentrant, so re-acquiring here is safe regardless of caller.
             if result:
-                self.db.commit()
+                with self._db_lock:
+                    for c in result:
+                        self.db.execute(
+                            "UPDATE episodic_memories SET last_accessed_at = ? WHERE id = ?",
+                            (_now_iso(), c["id"]),
+                        )
+                    self.db.commit()
             return result
 
         # Fallback 1: stdlib cosine search over SQLite embeddings (no FAISS/numpy needed)
