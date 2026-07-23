@@ -15,7 +15,7 @@
  * ACTIVE remote pane's tunnel connection state + token auto-refresh countdown
  * (host SSH expiry lives in the title bar, not duplicated here).
  */
-import { useCallback, useMemo } from 'react'
+import { useCallback, useMemo, type CSSProperties } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { Home, Server, Loader2 } from 'lucide-react'
 import { api, ApiError, type InstanceView } from '../api/client'
@@ -189,7 +189,10 @@ function EmbeddedInstanceTabBar({ variant }: { variant: 'strip' | 'inline' }) {
   )
 }
 
-export default function InstanceTabBar({ variant = 'strip' }: { variant?: 'strip' | 'inline' } = {}) {
+export default function InstanceTabBar({
+  variant = 'strip',
+  style,
+}: { variant?: 'strip' | 'inline'; style?: CSSProperties } = {}) {
   const dispatch = useAppDispatch()
   const activeId = useAppSelector(s => s.instances.activeId)
   const warm = useAppSelector(s => s.instances.warm)
@@ -286,7 +289,7 @@ export default function InstanceTabBar({ variant = 'strip' }: { variant?: 'strip
   }
 
   return (
-    <div className={barCls(variant)} role="tablist" aria-label="Instances">
+    <div className={barCls(variant)} style={style} role="tablist" aria-label="Instances">
       <div className={`flex items-center gap-1 min-w-0 overflow-x-auto no-scrollbar ${variant === 'strip' ? 'flex-1' : ''}`}>
         <LocalTab active={activeId === null} onClick={onLocal} />
         {tabInstances.map(inst => {

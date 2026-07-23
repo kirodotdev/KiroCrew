@@ -231,6 +231,71 @@ describe('InstancesViewport', () => {
     expect(screen.queryByRole('button', { name: /Retry/i })).toBeNull()
   })
 
+  it('renders the instance tab bar on the disconnect panel so the user can escape', async () => {
+    // Regression: while a remote tab is active the local header (and its
+    // InstanceTabBar) is hidden, and the embedded switcher lives inside the
+    // dead iframe — without a strip on the panel the disconnect view was a
+    // dead end with no way to reach Local or any other instance.
+    vi.mocked(api.listInstances).mockResolvedValue({
+      instances: [
+        {
+          id: 'cd-1',
+          name: 'Cloud One',
+          ssh_host: 'cd-1-alias',
+          remote_port: 7777,
+          local_port: 0,
+          ttl: '20h',
+          remote_bin: '',
+          was_connected: true,
+          status: { instance_id: 'cd-1', state: 'error', error: 'ssh unreachable', remote_port: 7777 },
+        },
+      ],
+      warm_set_cap: 5,
+    })
+    const store = createTestStore({
+      instances: { warm: {}, activeId: 'cd-1', mru: ['cd-1'], unread: {} },
+    })
+    const u = userEvent.setup()
+    renderWithProviders(<InstancesViewport />, { store })
+
+    expect(await screen.findByText(/Connection error/i)).toBeInTheDocument()
+    // The full switcher renders atop the panel: Local + the instance tab.
+    const bar = await screen.findByRole('tablist', { name: /Instances/i })
+    expect(bar).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: /Local/i })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: /Cloud One/i })).toBeInTheDocument()
+
+    // Clicking Local escapes the disconnect view.
+    await u.click(screen.getByRole('tab', { name: /Local/i }))
+    expect(store.getState().instances.activeId).toBeNull()
+  })
+
+  it('insets the panel tab bar clear of the macOS traffic lights when macInset is set', async () => {
+    vi.mocked(api.listInstances).mockResolvedValue({
+      instances: [
+        {
+          id: 'cd-1',
+          name: 'Cloud One',
+          ssh_host: 'cd-1-alias',
+          remote_port: 7777,
+          local_port: 0,
+          ttl: '20h',
+          remote_bin: '',
+          was_connected: true,
+          status: { instance_id: 'cd-1', state: 'error', error: 'ssh unreachable', remote_port: 7777 },
+        },
+      ],
+      warm_set_cap: 5,
+    })
+    const store = createTestStore({
+      instances: { warm: {}, activeId: 'cd-1', mru: ['cd-1'], unread: {} },
+    })
+    renderWithProviders(<InstancesViewport macInset />, { store })
+
+    const bar = await screen.findByRole('tablist', { name: /Instances/i })
+    expect(bar.style.paddingLeft).toBe('84px')
+  })
+
   it('K-cap eviction drops only the warm iframe, never disconnecting the tunnel', async () => {
     vi.mocked(api.listInstances).mockResolvedValue({ instances: [], warm_set_cap: 1 })
     const store = createTestStore({

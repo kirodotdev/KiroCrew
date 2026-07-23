@@ -28,8 +28,9 @@ import { AlertTriangle, Loader2, RefreshCw } from 'lucide-react'
 import { api } from '../api/client'
 import { useAppDispatch, useAppSelector } from '../store'
 import { removeWarm, setActiveId, setUnread, setWarm } from '../store/instancesSlice'
-import { visibleInstanceTabs } from './InstanceTabBar'
+import InstanceTabBar, { visibleInstanceTabs } from './InstanceTabBar'
 import { resolveTunnelOrigin } from '../lib/tunnelOrigin'
+import { TRAFFIC_LIGHT_INSET_PX } from '../lib/electron'
 import { isEmbeddedPane } from '../lib/embedded'
 
 // Refresh the embedded token once elapsed reaches this fraction of its TTL
@@ -351,36 +352,49 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
         />
       ))}
       {showPanel && activeId && (
-        <div className="absolute inset-0 flex items-center justify-center bg-bg p-6">
-          <div className="max-w-md w-full flex flex-col items-center gap-3 text-center">
-            {panelConnecting ? (
-              <Loader2 size={28} className="animate-spin text-muted" />
-            ) : (
-              <AlertTriangle size={28} className="text-[var(--danger)]" />
-            )}
-            <div className="text-sm font-medium text-text">{nameFor(activeId)}</div>
-            <div className="text-xs text-muted">
-              {panelConnecting
-                ? 'Connecting…'
-                : panelState === 'error'
-                  ? 'Connection error'
-                  : 'Disconnected'}
-            </div>
-            {!panelConnecting && panelError && (
-              <div className="w-full max-h-32 overflow-auto rounded-md border border-border bg-bg-hover px-3 py-2 text-left text-xs text-muted whitespace-pre-wrap break-words">
-                {panelError}
+        <div className="absolute inset-0 flex flex-col bg-bg">
+          {/* Escape hatch (bug: stranded on the disconnect view). While a remote
+              tab is active the local header — and with it the only top-level
+              InstanceTabBar — is display:none, and the embedded switcher lives
+              INSIDE the (now dead/absent) iframe. Without this strip the panel
+              is a dead end: no way to reach Local or any other instance. The
+              non-embedded InstanceTabBar renders the full switcher; inset it
+              clear of the macOS traffic lights when this strip is topmost. */}
+          <InstanceTabBar
+            variant="strip"
+            style={macInset ? { paddingLeft: TRAFFIC_LIGHT_INSET_PX } : undefined}
+          />
+          <div className="flex-1 flex items-center justify-center p-6">
+            <div className="max-w-md w-full flex flex-col items-center gap-3 text-center">
+              {panelConnecting ? (
+                <Loader2 size={28} className="animate-spin text-muted" />
+              ) : (
+                <AlertTriangle size={28} className="text-[var(--danger)]" />
+              )}
+              <div className="text-sm font-medium text-text">{nameFor(activeId)}</div>
+              <div className="text-xs text-muted">
+                {panelConnecting
+                  ? 'Connecting…'
+                  : panelState === 'error'
+                    ? 'Connection error'
+                    : 'Disconnected'}
               </div>
-            )}
-            <button
-              type="button"
-              disabled={panelConnecting}
-              onClick={() => connectMutation.mutate(activeId)}
-              className="mt-1 inline-flex items-center gap-1.5 text-xs py-1.5 px-3.5 rounded-md bg-accent text-accent-fg disabled:opacity-60"
-            >
-              <RefreshCw size={13} className={panelConnecting ? 'animate-spin' : ''} /> Retry
-            </button>
-            <div className="text-[11px] text-muted">
-              This tab stays until you disconnect the instance in Settings → Instances.
+              {!panelConnecting && panelError && (
+                <div className="w-full max-h-32 overflow-auto rounded-md border border-border bg-bg-hover px-3 py-2 text-left text-xs text-muted whitespace-pre-wrap break-words">
+                  {panelError}
+                </div>
+              )}
+              <button
+                type="button"
+                disabled={panelConnecting}
+                onClick={() => connectMutation.mutate(activeId)}
+                className="mt-1 inline-flex items-center gap-1.5 text-xs py-1.5 px-3.5 rounded-md bg-accent text-accent-fg disabled:opacity-60"
+              >
+                <RefreshCw size={13} className={panelConnecting ? 'animate-spin' : ''} /> Retry
+              </button>
+              <div className="text-[11px] text-muted">
+                This tab stays until you disconnect the instance in Settings → Instances.
+              </div>
             </div>
           </div>
         </div>
