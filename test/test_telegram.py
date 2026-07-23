@@ -90,8 +90,14 @@ class FakeClient:
         return self._mid
 
     async def edit_message(
-        self, chat_id: int, message_id: int, text: str, *, parse_mode: Any = None,
-        reply_markup: Any = None, retry_plain: bool = True
+        self,
+        chat_id: int,
+        message_id: int,
+        text: str,
+        *,
+        parse_mode: Any = None,
+        reply_markup: Any = None,
+        retry_plain: bool = True,
     ) -> bool:
         self.edits.append((message_id, text, reply_markup))
         return True
@@ -105,9 +111,7 @@ class FakeClient:
     async def answer_callback(self, callback_query_id: str, text: str = "") -> None:
         self.answered.append(callback_query_id)
 
-    async def set_message_reaction(
-        self, chat_id: int, message_id: int, emoji: str
-    ) -> None:
+    async def set_message_reaction(self, chat_id: int, message_id: int, emoji: str) -> None:
         self.reactions.append((message_id, emoji))
 
     def final_text(self) -> Any:
@@ -124,9 +128,7 @@ class FakeClient:
 
 
 class _Ev:
-    def __init__(
-        self, kind: str, text: str = "", stop_reason: str = "", title: str = ""
-    ) -> None:
+    def __init__(self, kind: str, text: str = "", stop_reason: str = "", title: str = "") -> None:
         self.kind = kind
         self.text = text
         self.stop_reason = stop_reason
@@ -468,9 +470,7 @@ class TestTransportAuth:
     """A Telegram bot is globally reachable, so auth is deny-by-default."""
 
     def _msg(self, uid: str) -> InboundMessage:
-        return InboundMessage(
-            channel_type="telegram", user_id=uid, conversation_id=uid, text="hi"
-        )
+        return InboundMessage(channel_type="telegram", user_id=uid, conversation_id=uid, text="hi")
 
     def test_empty_allowlist_denies_everyone(self) -> None:
         t = TelegramTransport(FakeClient())  # type: ignore[arg-type]
@@ -655,9 +655,7 @@ class TestRenderer:
         async def _go() -> None:
             await r.on_turn_start()
             await r.dispatch(OutputEvent(kind=TEXT_CHUNK, text="Root at 86% used. "))
-            await r.dispatch(
-                OutputEvent(kind=TEXT_CHUNK, text="[STEERING steer-abc: stop]")
-            )
+            await r.dispatch(OutputEvent(kind=TEXT_CHUNK, text="[STEERING steer-abc: stop]"))
             await r.dispatch(OutputEvent(kind=STEER_CONSUMED))  # event: render no-op
             await r.dispatch(OutputEvent(kind=TEXT_CHUNK, text="BANANA"))
             await r.dispatch(OutputEvent(kind=DONE, stop_reason=""))
@@ -715,9 +713,7 @@ class TestRenderer:
         labels = [b["text"] for row in kb["inline_keyboard"] for b in row]
         assert labels == ["A", "B"]
         # The options directive never leaks into any posted text.
-        all_text = " ".join(t for t, _ in cli.sent) + " ".join(
-            t for _, t, _ in cli.edits
-        )
+        all_text = " ".join(t for t, _ in cli.sent) + " ".join(t for _, t, _ in cli.edits)
         assert "[OPTIONS" not in all_text
 
     def test_tool_only_message_not_orphaned_at_steer_boundary(self) -> None:
@@ -754,9 +750,7 @@ class TestRenderer:
         )
         markups = [m for _, m in cli.sent if m] + [m for _, _, m in cli.edits if m]
         assert len(markups) == 1
-        labels = [
-            b["text"] for row in markups[0]["inline_keyboard"] for b in row
-        ]
+        labels = [b["text"] for row in markups[0]["inline_keyboard"] for b in row]
         assert labels == ["A", "B"]
 
     def test_complete_options_straddling_length_cut_stays_intact(self) -> None:
@@ -781,14 +775,10 @@ class TestRenderer:
         # both sends and edits rather than via final_markup().
         markups = [m for _, m in cli.sent if m] + [m for _, _, m in cli.edits if m]
         assert len(markups) == 1
-        labels = [
-            b["text"] for row in markups[0]["inline_keyboard"] for b in row
-        ]
+        labels = [b["text"] for row in markups[0]["inline_keyboard"] for b in row]
         assert labels == ["A", "B"]
         # The options directive never leaks — whole or split — into any text.
-        all_text = " ".join(t for t, _ in cli.sent) + " ".join(
-            t for _, t, _ in cli.edits
-        )
+        all_text = " ".join(t for t, _ in cli.sent) + " ".join(t for _, t, _ in cli.edits)
         assert "[OPTIO" not in all_text and "NS: A | B]" not in all_text
 
     def test_double_marker_chunk_keeps_first_chip(self) -> None:
@@ -848,9 +838,7 @@ class TestRenderer:
         )
         frames = [t for t, _ in cli.sent] + [t for _, t, _ in cli.edits]
         assert all("[OPTIONS" not in f for f in frames)
-        labels = [
-            b["text"] for row in cli.final_markup()["inline_keyboard"] for b in row
-        ]
+        labels = [b["text"] for row in cli.final_markup()["inline_keyboard"] for b in row]
         assert labels == ["A", "B"]
 
     def test_length_rotation_keeps_fences_balanced(self) -> None:
@@ -1003,7 +991,9 @@ class TestDispatcher:
 
         async def _go() -> None:
             await d.handle_message(
-                InboundMessage(channel_type="telegram", user_id="7", conversation_id="7", text="hello world")
+                InboundMessage(
+                    channel_type="telegram", user_id="7", conversation_id="7", text="hello world"
+                )
             )
 
         asyncio.run(_go())
@@ -1045,7 +1035,9 @@ class TestDispatcher:
 
         async def _go() -> None:
             await d.handle_message(
-                InboundMessage(channel_type="telegram", user_id="7", conversation_id="7", text="/new")
+                InboundMessage(
+                    channel_type="telegram", user_id="7", conversation_id="7", text="/new"
+                )
             )
 
         asyncio.run(_go())
@@ -1058,7 +1050,9 @@ class TestDispatcher:
 
         async def _go() -> None:
             await d.handle_message(
-                InboundMessage(channel_type="telegram", user_id="7", conversation_id="7", text="/help")
+                InboundMessage(
+                    channel_type="telegram", user_id="7", conversation_id="7", text="/help"
+                )
             )
 
         asyncio.run(_go())
@@ -1073,7 +1067,9 @@ class TestDispatcher:
 
         async def _go() -> None:
             await d.handle_message(
-                InboundMessage(channel_type="telegram", user_id="7", conversation_id="7", text="/compact")
+                InboundMessage(
+                    channel_type="telegram", user_id="7", conversation_id="7", text="/compact"
+                )
             )
 
         asyncio.run(_go())
@@ -1089,20 +1085,26 @@ class TestDispatcher:
 
         async def _go() -> None:
             await d.handle_message(
-                InboundMessage(channel_type="telegram", user_id="7", conversation_id="7", text="/compact")
+                InboundMessage(
+                    channel_type="telegram", user_id="7", conversation_id="7", text="/compact"
+                )
             )
 
         asyncio.run(_go())
         assert sess.acquired == ["telegram:kirocrew:direct:7"]  # acquired the turn semaphore
         assert sess.released == ["telegram:kirocrew:direct:7"]  # and released it in finally
-        assert any("Compact" in s[0] for s in cli.sent) or any(
-            "Compact" in e[1] for e in cli.edits
-        )
+        assert any("Compact" in s[0] for s in cli.sent) or any("Compact" in e[1] for e in cli.edits)
 
     def test_callback_option_echoes_choice_and_redispatches(self) -> None:
         d, cli, sess = _dispatcher({7})
         cb = SimpleNamespace(
-            callback_query_id="q1", user_id=7, chat_id=7, message_id=99, data="opt:0", label="Say Hi", chat_type="private"
+            callback_query_id="q1",
+            user_id=7,
+            chat_id=7,
+            message_id=99,
+            data="opt:0",
+            label="Say Hi",
+            chat_type="private",
         )
 
         async def _go() -> None:
@@ -1125,7 +1127,13 @@ class TestDispatcher:
             fut: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
             TelegramApprovalDecider._REGISTRY[key] = fut
             cb = SimpleNamespace(
-                callback_query_id="q2", user_id=7, chat_id=7, message_id=100, data="a:rq9:1", label="", chat_type="private"
+                callback_query_id="q2",
+                user_id=7,
+                chat_id=7,
+                message_id=100,
+                data="a:rq9:1",
+                label="",
+                chat_type="private",
             )
             await d.on_callback(cb)  # type: ignore[arg-type]
             return fut.done() and fut.result() is True
@@ -1137,7 +1145,13 @@ class TestDispatcher:
         # default and popped it). An "Approve" press must NOT display "Approved".
         d, cli, _ = _dispatcher({7})
         cb = SimpleNamespace(
-            callback_query_id="q5", user_id=7, chat_id=7, message_id=101, data="a:gone:1", label="", chat_type="private"
+            callback_query_id="q5",
+            user_id=7,
+            chat_id=7,
+            message_id=101,
+            data="a:gone:1",
+            label="",
+            chat_type="private",
         )
 
         async def _go() -> None:
@@ -1151,7 +1165,13 @@ class TestDispatcher:
     def test_callback_unauthorized_user_ignored(self) -> None:
         d, cli, _ = _dispatcher({7})
         cb = SimpleNamespace(
-            callback_query_id="q3", user_id=999, chat_id=999, message_id=1, data="opt:0", label="X", chat_type="private"
+            callback_query_id="q3",
+            user_id=999,
+            chat_id=999,
+            message_id=1,
+            data="opt:0",
+            label="X",
+            chat_type="private",
         )
 
         async def _go() -> None:
@@ -1168,7 +1188,13 @@ class TestDispatcher:
         # callback isn't from a private chat (mirrors the receive() guard).
         d, cli, _ = _dispatcher({7})
         cb = SimpleNamespace(
-            callback_query_id="q4", user_id=7, chat_id=-100, message_id=1, data="opt:0", label="X", chat_type="group"
+            callback_query_id="q4",
+            user_id=7,
+            chat_id=-100,
+            message_id=1,
+            data="opt:0",
+            label="X",
+            chat_type="group",
         )
 
         async def _go() -> None:
@@ -1338,8 +1364,11 @@ class TestTelegramMidTurn:
         async def _go() -> None:
             await d.handle_message(
                 TelegramInboundMessage(
-                    channel_type="telegram", user_id="7", conversation_id="7",
-                    text="/queue check disk after", message_id=11,
+                    channel_type="telegram",
+                    user_id="7",
+                    conversation_id="7",
+                    text="/queue check disk after",
+                    message_id=11,
                 )
             )
 
@@ -1357,8 +1386,11 @@ class TestTelegramMidTurn:
         async def _go() -> None:
             await d.handle_message(
                 TelegramInboundMessage(
-                    channel_type="telegram", user_id="7", conversation_id="7",
-                    text="/steer stop now", message_id=12,
+                    channel_type="telegram",
+                    user_id="7",
+                    conversation_id="7",
+                    text="/steer stop now",
+                    message_id=12,
                 )
             )
 
@@ -1521,9 +1553,7 @@ class TestTelegramMidTurn:
         sess._busy = False  # turn ended before the mid-turn message could queue
 
         async def _go() -> bool:
-            return await d._enqueue_with_receipt(
-                "telegram:kirocrew:direct:7", 7, "late message"
-            )
+            return await d._enqueue_with_receipt("telegram:kirocrew:direct:7", 7, "late message")
 
         queued = asyncio.run(_go())
         # enqueue is a no-op once the semaphore is free -> not queued, and no
@@ -2102,3 +2132,111 @@ class TestForumCallbackGate:
 
         assert asyncio.run(_go()) is False
         assert cli.answered == []
+
+
+class TestClientHealth:
+    """get_me auth gate + on_status polling-health callback."""
+
+    def _client(self):
+        from kiro_crew.telegram.client import TelegramClient
+
+        return TelegramClient(token="12345:testtoken")
+
+    def test_get_me_returns_identity(self, monkeypatch) -> None:
+        client = self._client()
+
+        async def _call_raw(method, params, timeout=15):
+            assert method == "getMe"
+            return {"ok": True, "result": {"id": 42, "username": "kirocrew_bot"}}
+
+        monkeypatch.setattr(client, "_call_raw", _call_raw)
+        result = asyncio.run(client.get_me())
+        assert result["username"] == "kirocrew_bot"
+
+    def test_get_me_raises_auth_error_on_rejection(self, monkeypatch) -> None:
+        from kiro_crew.telegram.client import TelegramAuthError
+
+        client = self._client()
+
+        async def _call_raw(method, params, timeout=15):
+            return {"ok": False, "error_code": 401, "description": "Unauthorized"}
+
+        monkeypatch.setattr(client, "_call_raw", _call_raw)
+        try:
+            asyncio.run(client.get_me())
+            raise AssertionError("expected TelegramAuthError")
+        except TelegramAuthError as exc:
+            # The message must stay token-free: it is surfaced in settings.
+            assert "testtoken" not in str(exc)
+            assert "Unauthorized" in str(exc)
+
+    def test_get_me_propagates_transport_errors(self, monkeypatch) -> None:
+        """Offline is NOT a bad token: transport errors must not become
+        TelegramAuthError, so the gateway can degrade instead of failing."""
+        import aiohttp
+
+        client = self._client()
+
+        async def _call_raw(method, params, timeout=15):
+            raise aiohttp.ClientConnectionError("network down")
+
+        monkeypatch.setattr(client, "_call_raw", _call_raw)
+        try:
+            asyncio.run(client.get_me())
+            raise AssertionError("expected ClientConnectionError")
+        except aiohttp.ClientConnectionError:
+            pass
+
+    def test_notify_status_swallows_callback_errors(self) -> None:
+        client = self._client()
+
+        def _boom(healthy, reason):
+            raise RuntimeError("callback bug")
+
+        client.on_status = _boom
+        client._notify_status(False, "x")  # must not raise
+
+    def test_polling_loop_reports_persistent_failure_and_recovery(self, monkeypatch) -> None:
+        """3 consecutive getUpdates failures -> unhealthy; next success -> healthy."""
+        client = self._client()
+        transitions: list[tuple[bool, str]] = []
+        client.on_status = lambda healthy, reason: transitions.append((healthy, reason))
+
+        results: list[Any] = [None, None, None, []]  # 3 failures then success
+
+        async def _get_updates():
+            if not results:
+                client._closed = True
+                return []
+            return results.pop(0)
+
+        async def _no_sleep(_delay):
+            return None
+
+        monkeypatch.setattr(client, "_get_updates", _get_updates)
+        monkeypatch.setattr(asyncio, "sleep", _no_sleep)
+        asyncio.run(client._polling_loop())
+        assert transitions[0][0] is False  # reported unhealthy at threshold
+        assert "getUpdates" in transitions[0][1]
+        assert transitions[1] == (True, "")  # recovered on next success
+
+    def test_polling_loop_reports_recovery_from_offline_boot(self, monkeypatch) -> None:
+        """When the gateway seeded unhealthy (offline at startup), the FIRST
+        successful poll must flip to healthy — no failure threshold applies."""
+        client = self._client()
+        client._last_status = False  # gateway boot state: unreachable
+        transitions: list[tuple[bool, str]] = []
+        client.on_status = lambda healthy, reason: transitions.append((healthy, reason))
+
+        results: list[Any] = [[]]  # immediate success
+
+        async def _get_updates():
+            if not results:
+                client._closed = True
+                return []
+            return results.pop(0)
+
+        monkeypatch.setattr(client, "_get_updates", _get_updates)
+        asyncio.run(client._polling_loop())
+        assert transitions and transitions[0] == (True, "")
+        assert len(transitions) == 1  # deduped: repeat successes don't re-fire

@@ -341,3 +341,41 @@ timeout and retires the nonce with it.
   `config_dir/.env` (atomic 0600) with `os.environ` synced; non-secrets go to
   `config.json` under `discord`. All fields are boot-read, so
   `restart_required` is true on any actual change.
+## Telegram settings API
+
+Two dashboard-only endpoints back the `/settings?tab=telegram` panel. Like the
+Slack settings API they are registered in the dashboard route block (NOT
+`_register_mcp_routes`) so they always sit behind dashboard token auth.
+
+- `GET /api/telegram/config` — masked bot-token preview + presence boolean,
+  `enabled` flag, `allowed_user_ids` (serialized as digit strings for the tag
+  editor), `soft_threshold_pct`, and live status: `connected` (true only
+  after startup proved the token with an authenticated `getMe` and the
+  long-polling transport started; when Telegram is unreachable at boot the
+  channel still starts and reports not-connected until the first successful
+  poll — only a *rejected* token aborts startup and closes the client; the
+  polling loop updates the flag live, deduped on state change — three
+  consecutive `getUpdates` failures flip it false with a reason, the next
+  success flips it back), `connect_error` (token-free short reason:
+  `TelegramAuthError` message for a rejected token, exception class name
+  otherwise), `read_only` (true unless the request is direct-local), and
+  `configured` (token AND enabled AND non-empty allowlist — the transport
+  fails closed and rejects every message while the allowlist is empty).
+  Never returns a raw secret. Token presence considers both the
+  `TELEGRAM_BOT_TOKEN` credential and the legacy `telegram.bot_token` config
+  fallback.
+- `PUT /api/telegram/config` — requires a direct-local request (same gate as
+  the Slack save); remote gets 403. Validate-first/commit-last. Pasted tokens
+  are shape-checked (`<bot_id>:<secret>`) and verified against Telegram
+  `getMe` before storage; rejection returns 400 and writes nothing, network
+  failure saves with `verify_warning`. `bot_token_clear` must be a strict
+  boolean. The secret lands in `config_dir/.env` as `TELEGRAM_BOT_TOKEN` via
+  the same atomic 0600 write, and `os.environ` is synced afterward. Setting
+  OR clearing the token also purges the legacy `telegram.bot_token` field
+  from `config.json` — the gateway falls back to that field when `.env` is
+  empty, so leaving it behind would resurrect a removed credential on the
+  next restart. `allowed_user_ids` accepts digit strings or ints and stores
+  canonical deduplicated ints; `soft_threshold_pct` is an int in 1–100.
+  Every Telegram field is boot-read (consumed in the orchestrator's
+  constructor), so `restart_required` is true for any actual change and only
+  for actual change.

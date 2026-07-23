@@ -1543,7 +1543,22 @@ async def api_slack_config_save(request: web.Request) -> web.Response:
     read at gateway startup); the response returns ``restart_required`` so the
     UI can surface a hint. Config-only changes take effect on the next message
     or restart.
+
+    Serialized with every other config.json writer via the repository-wide
+    ``_get_config_lock()`` (also used by the MCP, memory, and agent
+    handlers) — this handler read-modify-writes the shared ``.env`` /
+    ``config.json`` stores, so interleaving with ANY other config writer
+    (including the Discord and Telegram saves) would silently lose writes.
     """
+    # circular import: agents imports from dashboard.handlers at module load
+    from kiro_crew.dashboard.handlers.agents import _get_config_lock  # noqa: F811
+
+    async with _get_config_lock():
+        return await _slack_config_save_locked(request)
+
+
+async def _slack_config_save_locked(request: web.Request) -> web.Response:
+    """Body of the Slack save; caller holds ``_get_config_lock()``."""
     from kiro_crew.agent import _atomic_json_write  # noqa: F811
     from kiro_crew.config.loader import (  # noqa: F811
         CRED_OWNER_ID,
@@ -1796,7 +1811,22 @@ async def api_discord_config_save(request: web.Request) -> web.Response:
     Every Discord field is read once at gateway startup (token, enabled flag,
     allowlist are consumed in the orchestrator's constructor), so any actual
     change returns ``restart_required`` for the UI hint.
+
+    Serialized with every other config.json writer via the repository-wide
+    ``_get_config_lock()`` (also used by the MCP, memory, and agent
+    handlers) — this handler read-modify-writes the shared ``.env`` /
+    ``config.json`` stores, so interleaving with ANY other config writer
+    (including the Slack and Telegram saves) would silently lose writes.
     """
+    # circular import: agents imports from dashboard.handlers at module load
+    from kiro_crew.dashboard.handlers.agents import _get_config_lock  # noqa: F811
+
+    async with _get_config_lock():
+        return await _discord_config_save_locked(request)
+
+
+async def _discord_config_save_locked(request: web.Request) -> web.Response:
+    """Body of the Discord save; caller holds ``_get_config_lock()``."""
     from kiro_crew.agent import _atomic_json_write  # noqa: F811
     from kiro_crew.config.loader import (  # noqa: F811
         CRED_DISCORD_BOT_TOKEN,
@@ -1940,6 +1970,279 @@ async def api_discord_config_save(request: web.Request) -> web.Response:
         resources=",".join(applied + list(env_updates.keys())),
     )
     # All Discord fields are boot-read: token/enabled/allowlist are consumed
+    # in the orchestrator's constructor and the dispatcher is built at boot.
+    return web.json_response(
+        {
+            "ok": True,
+            "restart_required": bool(env_updates) or bool(staged),
+            "verify_warning": verify_warning,
+        }
+    )
+
+
+# ── Telegram configuration API ──
+# The bot token lives in config_dir/.env as TELEGRAM_BOT_TOKEN (0600), with
+# config.json's telegram.bot_token as a legacy fallback. Non-secret config
+# (enabled, allowed_user_ids, soft_threshold_pct) lives in config.json under
+# the "telegram" key. GET returns a masked preview + presence boolean; raw
+# token values are write-only (rotate at @BotFather if ever needed).
+
+#: Loose shape check for Telegram bot tokens: "<bot_id>:<secret>" from
+#: @BotFather (e.g. "110201543:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw").
+_TELEGRAM_TOKEN_RE = re.compile(r"^\d+:[A-Za-z0-9_-]{10,}$")
+
+
+async def _validate_telegram_token(token: str) -> str | None:
+    """Check a pasted bot token against Telegram before it is stored.
+
+    Uses ``getMe`` — the cheapest authenticated Bot API call. Returns ``None``
+    when Telegram accepts the token, or Telegram's error description (e.g.
+    ``Unauthorized``) when it rejects it. Network failures propagate to the
+    caller, which treats them as "unverifiable" rather than invalid — saves
+    must not be blocked by being offline.
+    """
+    import aiohttp  # noqa: F811
+
+    timeout = aiohttp.ClientTimeout(total=_TOKEN_VERIFY_TIMEOUT)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.get(f"https://api.telegram.org/bot{token}/getMe") as resp:
+            data = await resp.json(content_type=None)
+            if isinstance(data, dict) and data.get("ok"):
+                return None
+            desc = ""
+            if isinstance(data, dict):
+                desc = str(data.get("description", "") or "")
+            return (desc or "rejected")[:60]
+
+
+async def api_telegram_config_get(request: web.Request) -> web.Response:
+    """GET /api/telegram/config — read Telegram config + masked secret status."""
+    from kiro_crew.config.loader import (  # noqa: F811
+        CRED_TELEGRAM_BOT_TOKEN,
+        KiroCrewConfig,
+    )
+
+    cfg = KiroCrewConfig.load()
+    creds = cfg.load_credentials()
+    token = creds.get(CRED_TELEGRAM_BOT_TOKEN, "") or cfg.telegram.bot_token
+    tg = cfg.telegram
+    state: DashboardState = request.app["state"]
+    return web.json_response(
+        {
+            # True only when the long-polling transport actually started this
+            # session — NOT merely "a token was present at boot".
+            "connected": bool(getattr(state, "telegram_connected", False)),
+            "connect_error": str(getattr(state, "telegram_connect_error", ""))[:120],
+            # allowed_user_ids is part of "configured": the transport fails
+            # closed and rejects every message while the allowlist is empty.
+            "configured": bool(token and tg.enabled and tg.allowed_user_ids),
+            # Remote sessions get a read-only view: config edits (PUT) are
+            # loopback-only, so the UI disables all inputs and hides Save.
+            "read_only": not is_direct_local_request(request),
+            "bot_token_set": bool(token),
+            "bot_token_preview": _mask_secret(token),
+            "enabled": bool(tg.enabled),
+            # Serialized as strings for the tag editor UI; the save path
+            # accepts digit strings and stores canonical ints.
+            "allowed_user_ids": [str(u) for u in tg.allowed_user_ids],
+            "soft_threshold_pct": int(tg.soft_threshold_pct),
+        }
+    )
+
+
+async def api_telegram_config_save(request: web.Request) -> web.Response:
+    """PUT /api/telegram/config — persist Telegram secret (.env) + config (config.json).
+
+    Every Telegram field is read once at gateway startup (token, enabled flag,
+    allowlist are consumed in the orchestrator's constructor), so any actual
+    change returns ``restart_required`` for the UI hint.
+
+    Serialized with every other config.json writer via the repository-wide
+    ``_get_config_lock()`` (also used by the MCP, memory, and agent
+    handlers) — this handler read-modify-writes the shared ``.env`` /
+    ``config.json`` stores, so interleaving with ANY other config writer
+    (including the Slack save) would silently lose writes.
+    """
+    # circular import: agents imports from dashboard.handlers at module load
+    from kiro_crew.dashboard.handlers.agents import _get_config_lock  # noqa: F811
+
+    async with _get_config_lock():
+        return await _telegram_config_save_locked(request)
+
+
+async def _telegram_config_save_locked(request: web.Request) -> web.Response:
+    """Body of the Telegram save; caller holds ``_get_config_lock()``."""
+    from kiro_crew.agent import _atomic_json_write  # noqa: F811
+    from kiro_crew.config.loader import (  # noqa: F811
+        CRED_TELEGRAM_BOT_TOKEN,
+        config_path,
+    )
+
+    caller = request.get("user", "dashboard")
+
+    def _deny(msg: str, status: int = 400) -> web.Response:
+        _sel().log_api_access(
+            caller=caller,
+            operation="telegram.config.update",
+            outcome="denied",
+            source="dashboard",
+            error=msg,
+        )
+        return web.json_response({"error": msg}, status=status)
+
+    # Remote sessions are read-only: config writes are accepted only from the
+    # machine running the gateway, so a remote or tunneled session (even with
+    # a valid dashboard token) cannot alter Telegram access or plant tokens.
+    if not is_direct_local_request(request):
+        return _deny("read-only from remote sessions (local machine only)", status=403)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return _deny("invalid JSON")
+    if not isinstance(body, dict):
+        return _deny("body must be an object")
+
+    # ── Phase 1: validate everything and stage changes. No writes happen until
+    # all validation passes, so a rejected field never leaves partial state. ──
+
+    env_updates: dict[str, str | None] = {}
+    clear_flag = body.get("bot_token_clear")
+    if clear_flag is not None and not isinstance(clear_flag, bool):
+        return _deny("bot_token_clear must be a boolean")
+    if clear_flag is True:
+        env_updates[CRED_TELEGRAM_BOT_TOKEN] = None
+    else:
+        raw = body.get("bot_token")
+        if isinstance(raw, str):
+            tok = raw.strip()
+            if tok.startswith(f"{CRED_TELEGRAM_BOT_TOKEN}="):  # accidental env line
+                tok = tok[len(CRED_TELEGRAM_BOT_TOKEN) + 1 :].strip()
+            if tok:
+                if any(ch.isspace() for ch in tok):
+                    return _deny("bot_token must not contain whitespace")
+                if not _TELEGRAM_TOKEN_RE.match(tok):
+                    return _deny(
+                        "bot_token must look like <bot_id>:<secret> from @BotFather"
+                    )
+                env_updates[CRED_TELEGRAM_BOT_TOKEN] = tok
+
+    # Config → config.json under "telegram" (staged, applied only after Phase 1).
+    # Off-loop read: a large or slow config.json must not stall the gateway
+    # event loop (chat, heartbeats). Reading under _get_config_lock() keeps
+    # the snapshot current relative to every other config writer.
+    path = config_path()
+
+    def _read_config() -> dict:
+        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+
+    try:
+        data = await asyncio.to_thread(_read_config)
+    except Exception:
+        return _deny("config.json is corrupt", status=500)
+    if not isinstance(data.get("telegram"), dict):
+        data["telegram"] = {}
+    tg_cfg = data["telegram"]
+    staged: dict[str, object] = {}
+    applied: list[str] = []
+
+    if "enabled" in body:
+        val = body.get("enabled")
+        if not isinstance(val, bool):
+            return _deny("enabled must be a boolean")
+        if val != bool(tg_cfg.get("enabled", False)):
+            staged["enabled"] = val
+            applied.append("enabled")
+
+    if "allowed_user_ids" in body:
+        raw_ids = body.get("allowed_user_ids")
+        if not isinstance(raw_ids, list):
+            return _deny("allowed_user_ids must be a list")
+        new_ids: list[int] = []
+        for item in raw_ids:
+            s = str(item).strip()
+            if not s:
+                continue
+            if not s.isdigit():
+                return _deny(f"invalid Telegram user ID: {s} (numeric IDs only)")
+            uid = int(s)
+            if uid not in new_ids:
+                new_ids.append(uid)
+        if new_ids != list(tg_cfg.get("allowed_user_ids", [])):
+            staged["allowed_user_ids"] = new_ids
+            applied.append("allowed_user_ids")
+
+    if "soft_threshold_pct" in body:
+        pct = body.get("soft_threshold_pct")
+        if not isinstance(pct, int) or isinstance(pct, bool) or not (1 <= pct <= 100):
+            return _deny("soft_threshold_pct must be an integer between 1 and 100")
+        if pct != int(tg_cfg.get("soft_threshold_pct", 80)):
+            staged["soft_threshold_pct"] = pct
+            applied.append("soft_threshold_pct")
+
+    # Whenever the .env token is set or cleared, also drop the legacy
+    # config.json ``telegram.bot_token`` fallback. The gateway (and GET above)
+    # fall back to that field when .env is empty, so leaving it behind would
+    # resurrect a removed credential on the next restart — an explicit clear
+    # must actually revoke access, and a replacement must not shadow-keep the
+    # old token. Staged here (write happens only in Phase 2).
+    legacy_token_removed = False
+    if CRED_TELEGRAM_BOT_TOKEN in env_updates and tg_cfg.get("bot_token"):
+        tg_cfg.pop("bot_token", None)
+        legacy_token_removed = True
+        applied.append("legacy_bot_token_removed")
+
+    # ── Phase 1.5: verify a newly pasted token against Telegram before storing.
+    # A token Telegram rejects fails the save right here, where the user can
+    # act on it. Network failure is NOT a rejection: the save proceeds with a
+    # warning so being offline never blocks config.
+    verify_warning = ""
+    pending_tok = env_updates.get(CRED_TELEGRAM_BOT_TOKEN)
+    if pending_tok:
+        try:
+            tg_err = await _validate_telegram_token(pending_tok)
+        except Exception:
+            verify_warning = (
+                "Telegram was unreachable, so the token was saved without verification."
+            )
+        else:
+            if tg_err:
+                return _deny(f"bot_token rejected by Telegram ({tg_err})")
+
+    # ── Phase 2: commit. All validation passed, so writes are safe. Order
+    # matters for crash safety: config.json — which carries the legacy
+    # ``bot_token`` fallback removal — is persisted FIRST, so there is no
+    # failure window in which .env was already cleared but the legacy
+    # fallback survives to silently resurrect the revoked credential on
+    # restart. The inverse failure mode (config written, then a crash before
+    # the .env update) is benign and visible: the .env token remains exactly
+    # as GET reports it, and re-running the save completes the operation. ──
+    if staged or legacy_token_removed:
+        tg_cfg.update(staged)
+        # Off-loop: the atomic write (temp file + fsync + replace) must not
+        # block the gateway event loop.
+        await asyncio.to_thread(_atomic_json_write, path, data)
+    if env_updates:
+        # Off-loop: on Windows the owner-only lockdown shells out to icacls,
+        # which must not block the event loop.
+        await asyncio.to_thread(_write_env_updates, env_updates)
+        # Keep the live process environment in sync with the new .env state
+        # (load_credentials() lets os.environ win over .env — see the Slack
+        # save handler for the full rationale).
+        for key, new_val in env_updates.items():
+            if new_val is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = new_val
+
+    _sel().log_api_access(
+        caller=caller,
+        operation="telegram.config.update",
+        outcome="ok",
+        source="dashboard",
+        resources=",".join(applied + list(env_updates.keys())),
+    )
+    # All Telegram fields are boot-read: token/enabled/allowlist are consumed
     # in the orchestrator's constructor and the dispatcher is built at boot.
     return web.json_response(
         {

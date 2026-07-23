@@ -237,6 +237,6 @@ export default defineConfig({
     emptyOutDir: true,
     // The Slack brand mark must remain a physical file. The gateway serves
     // /assets, while an inline SVG would also conflict with security review.
-    assetsInlineLimit: (filePath) => (filePath.endsWith('slack-logo.svg') || filePath.endsWith('discord-logo.svg') ? false : undefined),
+    assetsInlineLimit: (filePath) => (filePath.endsWith('slack-logo.svg') || filePath.endsWith('discord-logo.svg') || filePath.endsWith('telegram-logo.svg') ? false : undefined),
   },
 })

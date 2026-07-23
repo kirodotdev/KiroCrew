@@ -18,7 +18,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from kiro_crew.messaging.driver import APPROVAL_AUTO, APPROVAL_INTERACTIVE
-from kiro_crew.telegram.client import TelegramClient
+from kiro_crew.telegram.client import TelegramAuthError, TelegramClient
 from kiro_crew.telegram.transport import TelegramTransport
 from kiro_crew.telegram.transport_dispatch import TelegramDispatcher
 
@@ -55,6 +55,7 @@ async def maybe_start_telegram(orch: "GatewayOrchestrator") -> "TelegramClient |
     if not bot_token:
         return None
 
+    client: "TelegramClient | None" = None
     try:
         assert orch.sessions is not None and orch.ctx_builder is not None
 
@@ -91,11 +92,58 @@ async def maybe_start_telegram(orch: "GatewayOrchestrator") -> "TelegramClient |
         client.set_message_handler(transport.receive)
         dispatcher.client = client
 
+        # Prove the token with an authenticated call BEFORE reporting the
+        # channel as connected — transport.connect() only schedules the
+        # polling task, so without this a bad/revoked token would show
+        # "Connected" in settings while the bot receives nothing. A rejected
+        # token (TelegramAuthError) is fatal and lands in the except below;
+        # a transport error means we're merely offline, which is NOT a bad
+        # token: start polling anyway (it backs off and retries) and report
+        # not-connected until the first successful poll flips the status.
+        token_ok = False
+        startup_error = ""
+        try:
+            await client.get_me()
+            token_ok = True
+        except TelegramAuthError:
+            raise
+        except Exception as exc:
+            startup_error = f"Telegram unreachable at startup ({type(exc).__name__})"
+            logger.warning("%s — starting polling anyway (will retry).", startup_error)
+
         await transport.connect()  # starts the long-polling loop
+        assert client is not None  # constructed above; narrows the Optional for mypy
         if orch.dashboard_state is not None:
             orch.dashboard_state.register_channel_transport(transport)
+            orch.dashboard_state.telegram_connected = token_ok
+            orch.dashboard_state.telegram_connect_error = "" if token_ok else startup_error
+
+            # Keep the badge truthful after startup: the polling loop reports
+            # persistent getUpdates failures (e.g. token revoked mid-session)
+            # and recovery through this callback, deduped on state change.
+            state = orch.dashboard_state
+
+            def _on_status(healthy: bool, reason: str) -> None:
+                state.telegram_connected = healthy
+                state.telegram_connect_error = "" if healthy else reason[:120]
+
+            client._last_status = token_ok  # transitions relative to boot state
+            client.on_status = _on_status
         logger.info("Telegram channel started (transport path, long-polling).")
         return client
-    except Exception:
+    except Exception as exc:
+        if orch.dashboard_state is not None:
+            # TelegramAuthError carries a fixed, token-free message; for
+            # anything else surface only the exception class (aiohttp error
+            # strings can embed the request URL, which contains the token).
+            reason = str(exc) if isinstance(exc, TelegramAuthError) else type(exc).__name__
+            orch.dashboard_state.telegram_connect_error = reason[:120]
+        # Don't leak the aiohttp session (opened by getMe) when startup
+        # fails — the client is not returned, so nothing else would close it.
+        if client is not None:
+            try:
+                await client.close()
+            except Exception:
+                logger.debug("Telegram client close after failed start", exc_info=True)
         logger.exception("Failed to start Telegram channel; continuing without it.")
         return None

@@ -1341,6 +1341,13 @@ class DashboardState:
         # Short reason when the Discord channel failed to start, empty when
         # running or never attempted. Read by the settings badge.
         self.discord_connect_error: str = ""
+        # True once the Telegram channel's long-polling transport started this
+        # session (set by maybe_start_telegram). Read by the Telegram settings
+        # status badge.
+        self.telegram_connected: bool = False
+        # Short reason when the Telegram channel failed to start, empty when
+        # running or never attempted. Read by the settings badge.
+        self.telegram_connect_error: str = ""
         # Live channel transports (Telegram/WeCom/...) for channel-neutral
         # cross-surface mirror delivery — registered at boot by each channel's
         # gateway via ``register_channel_transport``. Slack keeps its dedicated

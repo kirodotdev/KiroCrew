@@ -24,6 +24,7 @@ vi.mock('../pages/settings/SecurityPanel', () => ({ SecurityPanel: () => <div da
 vi.mock('../pages/settings/NotificationsPanel', () => ({ NotificationsPanel: () => <div data-testid="notifications-panel" /> }))
 vi.mock('../pages/settings/SlackPanel', () => ({ SlackPanel: () => <div data-testid="slack-panel" /> }))
 vi.mock('../pages/settings/DiscordPanel', () => ({ DiscordPanel: () => <div data-testid="discord-panel" /> }))
+vi.mock('../pages/settings/TelegramPanel', () => ({ TelegramPanel: () => <div data-testid="telegram-panel" /> }))
 vi.mock('../pages/settings/GeneralPanel', () => ({ GeneralPanel: () => <div data-testid="general-panel" /> }))
 
 vi.mock('../store', () => ({ useAppSelector: () => '1.0.0' }))
@@ -76,5 +77,15 @@ describe('SettingsPage tabs', () => {
   it('renders the DiscordPanel when the discord tab is active', () => {
     renderAt('/settings?tab=discord')
     expect(screen.getByTestId('discord-panel')).toBeInTheDocument()
+  })
+
+  it('lists the Telegram tab', () => {
+    renderAt('/settings')
+    expect(screen.getByText('Telegram')).toBeInTheDocument()
+  })
+
+  it('renders the TelegramPanel when the telegram tab is active', () => {
+    renderAt('/settings?tab=telegram')
+    expect(screen.getByTestId('telegram-panel')).toBeInTheDocument()
   })
 })

@@ -33,6 +33,16 @@ TELEGRAM_CHUNK_LIMIT = 4000
 # Bot API base URL.
 _API_BASE = "https://api.telegram.org/bot{token}/{method}"
 
+#: Consecutive polling failures before the status callback reports unhealthy.
+_STATUS_FAILURE_THRESHOLD = 3
+
+
+class TelegramAuthError(RuntimeError):
+    """Telegram rejected an authenticated call (e.g. getMe with a bad token).
+
+    Carries a short, token-free message safe to surface in the settings UI.
+    """
+
 
 @dataclass
 class TelegramInbound:
@@ -92,6 +102,14 @@ class TelegramClient:
         self._task: asyncio.Task[None] | None = None
         self._closed = False
         self._offset: int = 0
+        # Optional health callback: called with (healthy, reason) when polling
+        # transitions to persistently-failing or recovers. Set by the gateway
+        # to keep the settings status badge truthful after startup.
+        self.on_status: Callable[[bool, str], None] | None = None
+        #: Last health state reported through on_status (None = never
+        #: reported). The gateway seeds this with the startup getMe outcome so
+        #: transitions are relative to the boot state.
+        self._last_status: bool | None = None
         # Live turn tasks — prevent GC of in-flight handlers.
         self._handler_tasks: set[asyncio.Task[None]] = set()
 
@@ -290,6 +308,57 @@ class TelegramClient:
 
     # ── Polling loop ──
 
+    async def _call_raw(self, method: str, params: dict, timeout: int = 15) -> Any:
+        """POST a Bot API method and return the parsed JSON body.
+
+        Unlike :meth:`_api`, transport errors PROPAGATE (aiohttp / timeout /
+        OSError) instead of collapsing to ``None``, so callers can distinguish
+        "Telegram said no" from "network down".
+        """
+        session = await self._ensure_session()
+        url = _API_BASE.format(token=self._token, method=method)
+        async with session.post(
+            url,
+            json=params,
+            proxy=self._proxy,
+            timeout=aiohttp.ClientTimeout(total=timeout),
+        ) as resp:
+            return await resp.json(content_type=None)
+
+    async def get_me(self) -> dict:
+        """Fetch the bot's own identity (``getMe``).
+
+        The cheapest authenticated Bot API call — used by the gateway to prove
+        the token is valid *before* reporting the channel as connected. Raises
+        :class:`TelegramAuthError` when Telegram rejects the call (e.g. 401
+        bad token); transport errors (network down) propagate as
+        aiohttp/OSError so callers can distinguish "bad token" from "offline".
+        """
+        data = await self._call_raw("getMe", {})
+        if isinstance(data, dict) and data.get("ok") and data.get("result"):
+            return data["result"]
+        desc = ""
+        if isinstance(data, dict):
+            # Telegram error descriptions are short fixed strings
+            # ("Unauthorized") — token-free and safe to surface in settings.
+            desc = str(data.get("description") or "")
+        raise TelegramAuthError(f"Telegram rejected getMe ({desc or 'invalid bot token'})")
+
+    def _notify_status(self, healthy: bool, reason: str) -> None:
+        """Invoke the health callback on state CHANGE, swallowing its errors.
+
+        Deduplicated on the last reported state so the polling loop can call
+        it unconditionally on every successful poll — only actual transitions
+        (healthy↔unhealthy) reach the callback.
+        """
+        if self.on_status is None or self._last_status == healthy:
+            return
+        self._last_status = healthy
+        try:
+            self.on_status(healthy, reason)
+        except Exception:
+            logger.debug("Telegram on_status callback failed", exc_info=True)
+
     async def _polling_loop(self) -> None:
         """Long-polling loop with exponential backoff on failure."""
         attempt = 0
@@ -301,9 +370,16 @@ class TelegramClient:
                     # etc). _api already logged it; back off like a transport
                     # error instead of hot-looping getUpdates with zero delay.
                     attempt += 1
+                    if attempt == _STATUS_FAILURE_THRESHOLD:
+                        self._notify_status(
+                            False, "getUpdates rejected by Telegram (check the bot token)"
+                        )
                     delay = min(1.0 * (2 ** (attempt - 1)), 30.0)
                     await asyncio.sleep(delay)
                     continue
+                # Deduped in _notify_status: only an actual unhealthy→healthy
+                # transition (incl. recovery from an offline boot) fires.
+                self._notify_status(True, "")
                 attempt = 0  # reset on success
                 for update in updates:
                     self._dispatch(update)
@@ -313,6 +389,10 @@ class TelegramClient:
                 if self._closed:
                     break
                 attempt += 1
+                if attempt == _STATUS_FAILURE_THRESHOLD:
+                    self._notify_status(
+                        False, f"getUpdates transport error ({type(exc).__name__})"
+                    )
                 delay = min(1.0 * (2 ** (attempt - 1)), 30.0)
                 # Log only the exception type — an aiohttp exc's str() can embed
                 # the request URL, which contains the bot token (a registered
