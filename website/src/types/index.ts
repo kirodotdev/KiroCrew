@@ -259,6 +259,18 @@ export interface Notification {
   kind: string; title: string; body: string; ts: string
   acked?: boolean; job_id?: string; task_id?: string; approval_id?: string
   slot?: string; session_key?: string; slack_link?: string
+  // RFC Phase 3: schema-v2 routing + per-channel settings stamps
+  source?: string; channel?: string; priority?: string; silenced?: boolean
+}
+
+/** One row from GET /api/notifications/channels. */
+export interface NotificationChannel {
+  channel: string
+  source: string
+  registered: boolean
+  default_priority: string | null
+  protected: boolean
+  settings: { muted?: boolean; priority?: string }
 }
 
 export interface SecretaryItem {

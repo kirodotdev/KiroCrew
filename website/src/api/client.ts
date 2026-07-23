@@ -731,6 +731,9 @@ export const api = {
   ackNotification: (ts: string) => post('/api/notifications/ack', { ts }).then(j),
   unackNotification: (ts: string) => post('/api/notifications/unack', { ts }).then(j),
   ackAllNotifications: () => post('/api/notifications/ack-all').then(j),
+  notificationChannels: () => fetch('/api/notifications/channels').then(j),
+  updateNotificationChannelSettings: (channel: string, settings: { muted?: boolean; priority?: string | null }) =>
+    put('/api/notifications/channels/settings', { channel, ...settings }).then(j),
   // Handoff
   handoffChannels: () => fetch('/api/handoff-channels').then(j) as Promise<Record<string, string> | null>,
   handoffSlot: (slot: string, channel?: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/handoff', channel ? { channel } : undefined).then(j),

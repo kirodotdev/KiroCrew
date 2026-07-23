@@ -266,11 +266,15 @@ export function useWebSocket() {
             // configured sound. The WS transport previously only dispatched the
             // Redux action (toast/badge), so notification sounds never played —
             // only the now-unmounted useSSE fired this event. Mirror useSSE.
-            try {
-              const detail: McNotificationDetail = { kind: n.kind }
-              window.dispatchEvent(new CustomEvent(MC_NOTIFICATION_EVENT, { detail }))
-            } catch (err) {
-              console.warn('mc-notification listener error', err)
+            // RFC Phase 3: muted-channel (silenced) and passive notes are
+            // feed-only — no sound.
+            if (!n.silenced && n.priority !== 'passive') {
+              try {
+                const detail: McNotificationDetail = { kind: n.kind }
+                window.dispatchEvent(new CustomEvent(MC_NOTIFICATION_EVENT, { detail }))
+              } catch (err) {
+                console.warn('mc-notification listener error', err)
+              }
             }
             break
           }

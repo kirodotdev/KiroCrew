@@ -1,16 +1,29 @@
 import { safeSetItem } from '../../utils/safeStorage'
 import { useState, useMemo, useCallback, useEffect, type ReactNode } from 'react'
-import { Bell, Check, CheckCheck, Trash2, X } from 'lucide-react'
+import { Bell, BellOff, Check, CheckCheck, Trash2, X } from 'lucide-react'
 import { useAppSelector, useAppDispatch } from '../../store'
 import { deleteNotification, clearNotifications, ackAllNotifications } from '../../store/notificationsSlice'
+import { api } from '../../api/client'
 import { EmptyState, SearchInput } from '../ui'
 import Clickable from '../Clickable'
 import { disintegrate } from '../../lib/disintegrate'
 import type { Notification } from '../../types'
 import {
   type Kind, type Category, KIND_KEYS, CATEGORIES, KINDS_STORAGE_KEY, loadActiveKinds,
-  parseTs, dateGroup, KIND_META, DEFAULT_META, fmtTime, stripMd,
+  parseTs, dateGroup, KIND_META, DEFAULT_META, fmtTime, stripMd, notePriority,
 } from './notifMeta'
+
+/** localStorage key for app channels the user has already decided on (keep or
+ *  mute) via the first-notification prompt. System channels never prompt. */
+export const SEEN_CHANNELS_STORAGE_KEY = 'mc:notif:seenChannels'
+
+function loadSeenChannels(): Set<string> {
+  try {
+    const arr = JSON.parse(localStorage.getItem(SEEN_CHANNELS_STORAGE_KEY) || '[]')
+    if (Array.isArray(arr)) return new Set(arr.filter((c): c is string => typeof c === 'string'))
+  } catch { /* fall through */ }
+  return new Set()
+}
 
 /** macOS Notification Center-style relative timestamp ("now", "35m ago", "2h ago"). */
 function fmtRelative(ts: string): string {
@@ -46,9 +59,29 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
   const items = useAppSelector(s => s.notifications.items)
   const [activeKinds, setActiveKinds] = useState<Set<Kind>>(loadActiveKinds)
   const [filter, setFilter] = useState('')
+  // Silenced (muted-channel) rows are ghosts behind an explicit filter --
+  // mute keeps history but should not clutter the default view.
+  const [showMuted, setShowMuted] = useState(false)
+  // App channels the user has already kept/muted via the first-notification
+  // prompt (persisted so the prompt shows exactly once per channel).
+  const [seenChannels, setSeenChannels] = useState<Set<string>>(loadSeenChannels)
 
   const allActive = activeKinds.size === KIND_KEYS.length
   const noneActive = activeKinds.size === 0
+
+  const markChannelSeen = useCallback((channel: string) => {
+    setSeenChannels(prev => {
+      const next = new Set(prev)
+      next.add(channel)
+      try { safeSetItem(SEEN_CHANNELS_STORAGE_KEY, JSON.stringify(Array.from(next))) } catch { /* ignore quota errors */ }
+      return next
+    })
+  }, [])
+
+  const muteChannel = useCallback((channel: string) => {
+    markChannelSeen(channel)
+    api.updateNotificationChannelSettings(channel, { muted: true }).catch(() => {})
+  }, [markChannelSeen])
 
   // Persist filter selection across reloads
   useEffect(() => {
@@ -69,8 +102,13 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
     })
   }, [])
 
+  const silencedCount = useMemo(() => items.filter(n => n.silenced).length, [items])
+
   const filtered = useMemo(() => {
     let list = [...items].reverse()
+    // Muted-channel rows stay in history but hide behind the "Show muted"
+    // filter (mute-doesn't-destroy semantics).
+    if (!showMuted) list = list.filter(n => !n.silenced)
     // When every known kind is selected, behave like the old "All" state and
     // include notifications with unknown kinds too. Otherwise filter strictly.
     if (!allActive) list = list.filter(n => activeKinds.has(n.kind as Kind))
@@ -79,7 +117,18 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
       list = list.filter(n => ((n.title || '') + (n.body || '')).toLowerCase().includes(q))
     }
     return list
-  }, [items, activeKinds, allActive, filter])
+  }, [items, activeKinds, allActive, filter, showMuted])
+
+  // First notification from a new app channel gets an inline keep/mute prompt
+  // (attached to the newest such row). System channels never prompt; a channel
+  // already decided on (or already muted server-side) doesn't either.
+  const promptTs = useMemo(() => {
+    for (const n of filtered) {
+      if (n.source && n.source !== 'system' && n.channel &&
+          !seenChannels.has(n.channel) && !n.silenced) return n.ts
+    }
+    return null
+  }, [filtered, seenChannels])
 
   const groups = useMemo(() => {
     const map = new Map<string, Notification[]>()
@@ -114,6 +163,17 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
           </button>
         )
       })}
+      {silencedCount > 0 && (
+        <button
+          type="button"
+          aria-pressed={showMuted}
+          title={showMuted ? 'Hide muted-channel notifications' : `Show ${silencedCount} muted-channel notification${silencedCount === 1 ? '' : 's'}`}
+          className={`px-2 py-1 rounded-md text-[12px] font-medium cursor-pointer border border-dashed transition-all font-body ${showMuted ? 'bg-bg-hover text-text border-border-strong' : 'bg-transparent text-muted border-border hover:text-text hover:border-border-strong'}`}
+          onClick={() => setShowMuted(v => !v)}
+        >
+          <BellOff className="lucide-inline" /> Muted ({silencedCount})
+        </button>
+      )}
     </div>
   )
   const searchRow = (
@@ -174,36 +234,72 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
               {notes.map(n => {
                 const km = KIND_META[n.kind] || DEFAULT_META
                 const active = selectedTs === n.ts
+                const prio = notePriority(n)
+                const silenced = !!n.silenced
+                // Priority tiers (RFC Phase 3): critical gets a danger edge,
+                // passive dims, silenced renders as a dashed-border ghost.
+                const macCard = silenced
+                  ? 'bg-[color-mix(in_srgb,var(--card)_35%,transparent)] backdrop-blur-xl border border-dashed border-[color-mix(in_srgb,var(--border)_70%,transparent)]'
+                  : `bg-[color-mix(in_srgb,var(--card)_55%,transparent)] backdrop-blur-2xl backdrop-saturate-150 shadow-[0_8px_24px_rgba(0,0,0,.10),0_1px_3px_rgba(0,0,0,.06)] ${active ? 'border border-accent bg-accent-subtle' : 'border border-[color-mix(in_srgb,var(--border)_55%,transparent)] hover:bg-[color-mix(in_srgb,var(--card)_70%,transparent)]'}`
+                const panelBorder = silenced ? 'border-l-muted' : prio === 'critical' ? 'border-l-danger' : km.borderColor
+                const contentDim = silenced ? 'opacity-50' : (n.acked && !active) || prio === 'passive' ? (mac ? 'opacity-55' : '') : ''
+                const promptChannel = promptTs === n.ts && n.channel && n.source
+                  ? { channel: n.channel, label: `${n.source} / ${n.channel.startsWith(`${n.source}.`) ? n.channel.slice(n.source.length + 1) : n.channel}` }
+                  : null
                 return (
-                  <div key={n.ts} data-notif-row
-                    className={mac
-                      ? `group flex items-start gap-2.5 px-3 py-2.5 rounded-2xl mb-2 transition-all bg-[color-mix(in_srgb,var(--card)_55%,transparent)] backdrop-blur-2xl backdrop-saturate-150 shadow-[0_8px_24px_rgba(0,0,0,.10),0_1px_3px_rgba(0,0,0,.06)] ${active ? 'border border-accent bg-accent-subtle' : 'border border-[color-mix(in_srgb,var(--border)_55%,transparent)] hover:bg-[color-mix(in_srgb,var(--card)_70%,transparent)]'}`
-                      : `group flex items-center gap-2 px-2.5 py-2 rounded-md mb-1 transition-all border-l-[3px] ${km.borderColor} ${active ? 'bg-accent-subtle border border-accent' : 'border border-transparent hover:bg-bg-hover hover:border-border'} ${n.acked && !active ? 'opacity-50' : ''}`}
-                  >
-                    <Clickable
-                      onClick={() => onSelect(n)}
-                      aria-label={`Open notification: ${n.title}`}
-                      className={`flex ${mac ? 'items-start' : 'items-center'} gap-2 flex-1 min-w-0 text-left cursor-pointer ${mac && n.acked && !active ? 'opacity-55' : ''}`}
+                  <div key={n.ts}>
+                    <div data-notif-row
+                      className={mac
+                        ? `group flex items-start gap-2.5 px-3 py-2.5 rounded-2xl ${promptChannel ? 'rounded-b-none mb-0' : 'mb-2'} transition-all ${macCard}`
+                        : `group flex items-center gap-2 px-2.5 py-2 rounded-md ${promptChannel ? 'rounded-b-none mb-0' : 'mb-1'} transition-all border-l-[3px] ${panelBorder} ${silenced ? 'border border-dashed border-border bg-transparent' : active ? 'bg-accent-subtle border border-accent' : 'border border-transparent hover:bg-bg-hover hover:border-border'} ${(n.acked || prio === 'passive') && !active && !silenced ? 'opacity-50' : ''} ${silenced ? 'opacity-60' : ''}`}
                     >
-                      {mac ? (
-                        <span className={`w-8 h-8 rounded-[9px] flex items-center justify-center shrink-0 text-[14px] ${km.color}`}>{km.icon}</span>
-                      ) : (
-                        <span className="text-[13px] shrink-0">{km.icon}</span>
-                      )}
-                      <div className="flex-1 min-w-0">
-                        <div className="text-[13px] font-semibold text-text-strong truncate leading-tight">{n.title}</div>
-                        <div className={`text-[12px] text-muted mt-0.5 ${mac ? 'line-clamp-2 leading-snug' : 'truncate'}`}>{stripMd(n.body || '').slice(0, mac ? 140 : 80)}</div>
+                      <Clickable
+                        onClick={() => onSelect(n)}
+                        aria-label={`Open notification: ${n.title}`}
+                        className={`flex ${mac ? 'items-start' : 'items-center'} gap-2 flex-1 min-w-0 text-left cursor-pointer ${mac ? contentDim : ''}`}
+                      >
+                        {mac ? (
+                          <span className={`w-8 h-8 rounded-[9px] flex items-center justify-center shrink-0 text-[14px] ${km.color}`}>{km.icon}</span>
+                        ) : (
+                          <span className="text-[13px] shrink-0">{km.icon}</span>
+                        )}
+                        <div className="flex-1 min-w-0">
+                          <div className={`text-[13px] font-semibold truncate leading-tight ${silenced ? 'text-muted font-normal' : 'text-text-strong'}`}>{n.title}</div>
+                          <div className={`text-[12px] text-muted mt-0.5 ${mac ? 'line-clamp-2 leading-snug' : 'truncate'}`}>{stripMd(n.body || '').slice(0, mac ? 140 : 80)}</div>
+                        </div>
+                        <div className="flex flex-col items-end gap-0.5 shrink-0">
+                          <span className={`text-[11px] text-muted ${mac ? '' : 'font-mono'}`}>{mac ? fmtRelative(n.ts) : fmtTime(n.ts)}</span>
+                          {silenced ? (
+                            <span className="text-[10px] text-muted italic flex items-center gap-1"><BellOff className="lucide-inline" /> muted</span>
+                          ) : !n.acked ? (
+                            <span className={`w-1.5 h-1.5 rounded-full animate-dot-breathe ${prio === 'critical' ? 'bg-danger' : 'bg-accent'}`} data-priority={prio} />
+                          ) : null}
+                        </div>
+                      </Clickable>
+                      <Clickable
+                        aria-label="Dismiss notification"
+                        className="opacity-0 group-hover:opacity-40 text-[11px] cursor-pointer hover:!opacity-100 hover:text-danger transition-opacity shrink-0"
+                        onClick={async e => { e?.stopPropagation(); const row = (e?.currentTarget as HTMLElement | undefined)?.closest('[data-notif-row]') as HTMLElement | null; await disintegrate(row); dispatch(deleteNotification(n.ts)) }}
+                      ><X className="lucide-inline" /></Clickable>
+                    </div>
+                    {promptChannel && (
+                      <div className={`flex items-center gap-2 px-3 py-2 border border-t-0 ${mac
+                        ? 'rounded-b-2xl mb-2 bg-accent-subtle backdrop-blur-2xl border-[color-mix(in_srgb,var(--border)_55%,transparent)]'
+                        : 'rounded-b-md mb-1 bg-accent-subtle border-border'}`}>
+                        <Bell className="lucide-inline shrink-0 text-accent" />
+                        <div className="flex-1 min-w-0 text-[12px] text-text">First notification from <span className="font-semibold">{promptChannel.label}</span>. Keep receiving these?</div>
+                        <button
+                          type="button"
+                          className="px-2.5 py-1 rounded-md text-[12px] font-semibold cursor-pointer border-none bg-accent text-card hover:opacity-90 transition-opacity font-body whitespace-nowrap"
+                          onClick={() => markChannelSeen(promptChannel.channel)}
+                        >Keep</button>
+                        <button
+                          type="button"
+                          className="px-2.5 py-1 rounded-md text-[12px] font-medium cursor-pointer bg-transparent text-muted border border-border-strong hover:text-text transition-colors font-body whitespace-nowrap"
+                          onClick={() => muteChannel(promptChannel.channel)}
+                        >Mute channel</button>
                       </div>
-                      <div className="flex flex-col items-end gap-0.5 shrink-0">
-                        <span className={`text-[11px] text-muted ${mac ? '' : 'font-mono'}`}>{mac ? fmtRelative(n.ts) : fmtTime(n.ts)}</span>
-                        {!n.acked && <span className="w-1.5 h-1.5 rounded-full bg-accent animate-dot-breathe" />}
-                      </div>
-                    </Clickable>
-                    <Clickable
-                      aria-label="Dismiss notification"
-                      className="opacity-0 group-hover:opacity-40 text-[11px] cursor-pointer hover:!opacity-100 hover:text-danger transition-opacity shrink-0"
-                      onClick={async e => { e?.stopPropagation(); const row = (e?.currentTarget as HTMLElement | undefined)?.closest('[data-notif-row]') as HTMLElement | null; await disintegrate(row); dispatch(deleteNotification(n.ts)) }}
-                    ><X className="lucide-inline" /></Clickable>
+                    )}
                   </div>
                 )
               })}

@@ -94,6 +94,17 @@ export const KIND_META: Record<string, { icon: ReactNode; color: string; label: 
 }
 export const DEFAULT_META = { icon: <Bell className="lucide-inline" />, color: 'bg-muted/15 text-muted', label: 'Notification', borderColor: 'border-l-muted' }
 
+/** RFC Phase 3 priority tiers -- visual treatment per level (mockup 3):
+ *  critical pops with a danger edge + marker, passive dims, default is
+ *  unchanged. Silenced (muted channel) is handled separately as a
+ *  dashed-border ghost behind the "Show muted" filter. */
+export const PRIORITIES = ['critical', 'default', 'passive'] as const
+export type Priority = (typeof PRIORITIES)[number]
+
+export function notePriority(n: { priority?: string }): Priority {
+  return n.priority === 'critical' || n.priority === 'passive' ? n.priority : 'default'
+}
+
 export function fmtTime(ts: string | number): string {
   const d = parseTs(ts)
   return isNaN(d.getTime()) ? 'Unknown date' : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })

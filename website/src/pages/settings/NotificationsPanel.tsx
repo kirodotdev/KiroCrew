@@ -1,5 +1,10 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import { Lock, MonitorCog, Blocks } from 'lucide-react'
 import { SettingsSection, SettingsCard, SettingsToggle, SettingsSelect } from '../../components/settings'
+import StyledSelect from '../../components/StyledSelect'
+import { Toggle } from '../../components/ui'
+import { api } from '../../api/client'
+import type { NotificationChannel } from '../../types'
 import {
   SOUND_PRESETS, type SoundPreset, type SoundCategory,
   loadSoundSettings, saveSoundSettings, playPreset,
@@ -22,6 +27,108 @@ const CATEGORY_ROWS: { key: SoundCategory; label: string; description: string }[
   { key: 'subagent',   label: 'Subagent',   description: 'Background subagent completions' },
   { key: 'taskrunner', label: 'Tasks',      description: 'Task runner completions' },
 ]
+
+const PRIORITY_SENTINEL = 'Channel default'
+const PRIORITY_OPTIONS = [PRIORITY_SENTINEL, 'critical', 'default', 'passive']
+
+/** Human label for a channel within its group (drop the source prefix apps
+ *  and system channels share with their group header). */
+function channelLabel(c: NotificationChannel): string {
+  return c.channel.startsWith(`${c.source}.`) ? c.channel.slice(c.source.length + 1) : c.channel
+}
+
+/** Per-channel notification settings (RFC Phase 3): mute + priority override,
+ *  grouped by source (System first, then apps). Protected channels render
+ *  locked. Channels with stored settings but no live registration (app
+ *  disabled) stay visible so mutes remain editable. */
+function ChannelsSection() {
+  const [channels, setChannels] = useState<NotificationChannel[] | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    api.notificationChannels()
+      .then((d: { channels?: NotificationChannel[] }) => { if (!cancelled) setChannels(d.channels || []) })
+      .catch(() => { if (!cancelled) setError('Failed to load channels') })
+    return () => { cancelled = true }
+  }, [])
+
+  const patch = (channel: string, settings: { muted?: boolean; priority?: string | null }) => {
+    // Optimistic update; the PUT is authoritative and a failure reloads.
+    setChannels(prev => prev?.map(c => {
+      if (c.channel !== channel) return c
+      const next = { ...c.settings }
+      if (settings.muted !== undefined) { if (settings.muted) next.muted = true; else delete next.muted }
+      if ('priority' in settings) { if (settings.priority) next.priority = settings.priority; else delete next.priority }
+      return { ...c, settings: next }
+    }) ?? null)
+    api.updateNotificationChannelSettings(channel, settings).catch(() => {
+      api.notificationChannels().then((d: { channels?: NotificationChannel[] }) => setChannels(d.channels || [])).catch(() => {})
+    })
+  }
+
+  if (error) return <SettingsSection title="Channels"><div className="text-[12px] text-muted">{error}</div></SettingsSection>
+  if (channels === null || channels.length === 0) return null
+
+  const sources = Array.from(new Set(channels.map(c => c.source)))
+    .sort((a, b) => (a === 'system' ? -1 : b === 'system' ? 1 : a.localeCompare(b)))
+
+  return (
+    <SettingsSection title="Channels">
+      <div className="text-[12px] text-muted -mt-1 mb-2">Mute channels or override their priority. Muted notifications stay in history but never badge, sound, or banner.</div>
+      {sources.map(source => (
+        <SettingsCard key={source}>
+          <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[.05em] text-muted pb-1 border-b border-border">
+            {source === 'system' ? <MonitorCog className="lucide-inline" /> : <Blocks className="lucide-inline" />}
+            {source}
+            {source !== 'system' && <span className="text-[10px] font-medium normal-case tracking-normal px-1.5 py-px rounded-full bg-accent-subtle text-accent">app</span>}
+          </div>
+          {channels.filter(c => c.source === source).map(c => {
+            const muted = !!c.settings.muted
+            const override = c.settings.priority
+            return (
+              <div key={c.channel} className={`flex items-center gap-2.5 py-1.5 ${muted || !c.registered ? 'opacity-60' : ''}`}>
+                <div className="flex-1 min-w-0">
+                  <div className="text-[13px] text-text flex items-center gap-1.5">
+                    {channelLabel(c)}
+                    {c.protected && <Lock className="lucide-inline text-muted" aria-label="Protected channel" />}
+                  </div>
+                  <div className="text-[11px] text-muted">
+                    {!c.registered
+                      ? 'Channel not active (app disabled) — setting retained'
+                      : c.protected
+                        ? 'Always interrupts — cannot be muted or lowered'
+                        : `Default priority: ${c.default_priority || 'default'}`}
+                  </div>
+                </div>
+                {c.protected ? (
+                  <span className="text-[11px] text-muted italic shrink-0">protected</span>
+                ) : (
+                  <>
+                    <div className="shrink-0 w-48">
+                      <StyledSelect
+                        options={PRIORITY_OPTIONS}
+                        value={override ?? PRIORITY_SENTINEL}
+                        onChange={v => patch(c.channel, { priority: v === PRIORITY_SENTINEL ? null : v })}
+                      />
+                    </div>
+                    <div className="shrink-0">
+                      <Toggle
+                        checked={!muted}
+                        onChange={on => patch(c.channel, { muted: !on })}
+                        label={`Notifications for ${c.channel}`}
+                      />
+                    </div>
+                  </>
+                )}
+              </div>
+            )
+          })}
+        </SettingsCard>
+      ))}
+    </SettingsSection>
+  )
+}
 
 export function NotificationsPanel() {
   const [settings, setSettings] = useState(() => loadSoundSettings())
@@ -46,6 +153,7 @@ export function NotificationsPanel() {
 
   return (
     <>
+      <ChannelsSection />
       <SettingsSection title="Sound">
         <SettingsCard>
           <SettingsToggle

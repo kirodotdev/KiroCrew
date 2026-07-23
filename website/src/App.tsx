@@ -518,7 +518,10 @@ function NotificationsBellButton() {
   const [selectedTs, setSelectedTs] = useState<string | null>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const popoverRef = useRef<HTMLDivElement>(null)
-  const unacked = items.filter(n => !n.acked)
+  // Badge counts attention-worthy rows only (RFC Phase 3): passive and
+  // muted-channel (silenced) rows are excluded, mirroring the backend's
+  // _unread_count semantics.
+  const unacked = items.filter(n => !n.acked && n.priority !== 'passive' && !n.silenced)
   const selected = selectedTs ? items.find(n => n.ts === selectedTs) || null : null
 
   // Close popover when navigating (e.g. detail panel's "Go to Chat" buttons)
