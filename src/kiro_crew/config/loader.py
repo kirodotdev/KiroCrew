@@ -1613,7 +1613,7 @@ class TelemetryConfig:
     written or exported (byte-identical to no telemetry), mirroring the
     ``mcp_gateway.enabled`` / ``skills.lazy_load`` opt-in convention. When
     enabled, a local-first JSONL sink under ``~/.kirocrew/metrics`` is activated;
-    remote / OTLP egress is a separate opt-in (not wired yet).
+    remote / OTLP egress is a separate opt-in requiring ``kirocrew[otlp]``.
     """
 
     enabled: bool = field(
@@ -1640,11 +1640,48 @@ class TelemetryConfig:
             "How often the local exporter flushes aggregated metrics to disk (>=1).",
         ),
     )
+    retention_days: int = field(
+        default=0,
+        metadata=_meta(
+            "Retention (days)",
+            "Prune local JSONL metric shards older than this many days on each "
+            "export cycle. 0 disables age-based pruning. Bounds on-disk telemetry "
+            "growth (rec #14: bounded retention).",
+        ),
+    )
+    max_total_mb: int = field(
+        default=0,
+        metadata=_meta(
+            "Max Total Size (MB)",
+            "Opportunistic directory budget for local metric shards. Closed shards "
+            "are pruned oldest-first; protected active writers can temporarily exceed "
+            "the budget. 0 disables the size cap (rec #14: bounded retention).",
+        ),
+    )
+    otlp_endpoint: str = field(
+        default="",
+        metadata=_meta(
+            "OTLP Endpoint",
+            "Opt-in OpenTelemetry OTLP/HTTP metrics endpoint (e.g. "
+            "http://localhost:4318/v1/metrics). EMPTY = no network egress "
+            "(default). When set, aggregated metrics are ALSO pushed to this "
+            "collector in addition to the local JSONL sink; requires the "
+            "kirocrew[otlp] package extra to be installed "
+            "(rec #1: OTLP opt-in only, no egress by default).",
+            sensitive=True,
+        ),
+    )
 
     def __post_init__(self) -> None:
         if self.export_interval_seconds < 1:
             logger.warning("export_interval_seconds %d < 1, using 1", self.export_interval_seconds)
             object.__setattr__(self, "export_interval_seconds", 1)
+        if self.retention_days < 0:
+            logger.warning("retention_days %d < 0, using 0 (no age pruning)", self.retention_days)
+            object.__setattr__(self, "retention_days", 0)
+        if self.max_total_mb < 0:
+            logger.warning("max_total_mb %d < 0, using 0 (no size cap)", self.max_total_mb)
+            object.__setattr__(self, "max_total_mb", 0)
 
 
 # ---------------------------------------------------------------------------
@@ -3219,7 +3256,12 @@ class KiroCrewConfig:
             telemetry=TelemetryConfig(
                 enabled=bool(telemetry_data.get("enabled", False)),
                 local_dir=str(telemetry_data.get("local_dir", "")),
-                export_interval_seconds=_safe_int(telemetry_data.get("export_interval_seconds", 60), 60),
+                export_interval_seconds=_safe_int(
+                    telemetry_data.get("export_interval_seconds", 60), 60
+                ),
+                retention_days=_safe_int(telemetry_data.get("retention_days", 0), 0),
+                max_total_mb=_safe_int(telemetry_data.get("max_total_mb", 0), 0),
+                otlp_endpoint=str(telemetry_data.get("otlp_endpoint", "")),
             ),
             memory=MemoryConfig(
                 embedding_provider=_coerce_embedding_provider(

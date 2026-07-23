@@ -362,6 +362,13 @@ _BYPASS_EXACT = {
     "/api/token/local",
     "/api/shutdown",
     "/api/theme/boot",
+    # Liveness/readiness probes (rec #6): orchestrators / load balancers carry
+    # no auth cookie, so these must be reachable without a token. Each exposes
+    # only liveness + coarse readiness booleans + the build version — no
+    # secrets, paths, ids, or user/session content.
+    "/api/health",
+    "/api/live",
+    "/api/ready",
 }
 
 # Anchored bypass for installed-app static UI bundles only (federated-app

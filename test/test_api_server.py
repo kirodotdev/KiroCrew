@@ -221,12 +221,21 @@ class TestStartApiServerWiring:
         )
         try:
             assert state._hook_store is not None
+            # start_api_server publishes readiness only at its final return
+            # boundary, after bind and secret persistence complete.
+            assert state.ready is True
             assert len(runner.app.middlewares) > 0
             # Auth parity with start_dashboard: token_auth_middleware MUST be
             # mounted on the headless server, not just the SEL audit logger.
             assert any(
                 getattr(mw, "_is_token_auth", False) for mw in runner.app.middlewares
             ), "start_api_server must mount token_auth_middleware"
+            routes = {
+                (route.method, route.resource.canonical)
+                for route in runner.app.router.routes()
+            }
+            for probe in ("/api/health", "/api/live", "/api/ready"):
+                assert ("GET", probe) in routes
         finally:
             await runner.cleanup()
 

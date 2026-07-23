@@ -146,3 +146,11 @@ class TestBaselineGenerator:
         )
         # And the base type is still 'string' — we didn't break the scalar type contract.
         assert entry["type"] == "string"
+
+    def test_otlp_endpoint_is_sensitive(self, tmp_path: str) -> None:
+        """Credential-bearing collector URLs are masked by schema consumers."""
+        data = _run_generator(tmp_path)
+        entries_by_path = {e["path"]: e for e in data["entries"]}
+        entry = entries_by_path.get("telemetry.otlp_endpoint")
+        assert entry is not None, "telemetry.otlp_endpoint entry missing"
+        assert entry["sensitive"] is True

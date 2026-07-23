@@ -127,7 +127,7 @@ The `local_only` parameter is accepted for backward compatibility but no longer 
 
 Request flow:
 1. If request is from loopback → pass through (always trusted)
-2. Bypass static assets (`/assets/`, `/static/`, `/logo.png`, `/manifest.json`, `/sw.js`, `/icon-*.png`, `/api/token/local`, `/api/shutdown`, `/api/theme/boot` — a GET-only, secret-free theme-boot endpoint the SPA reads before the token flow completes)
+2. Bypass static assets (`/assets/`, `/static/`, `/logo.png`, `/manifest.json`, `/sw.js`, `/icon-*.png`, `/api/token/local`, `/api/shutdown`, `/api/theme/boot` — a GET-only, secret-free theme-boot endpoint the SPA reads before the token flow completes) plus the liveness/readiness probes (`/api/health`, `/api/live`, `/api/ready` — orchestrators and load balancers carry no auth cookie, so probes must be reachable without a token; remote callers receive only liveness/readiness booleans)
 3. Extract token from `?token=` query param or `mc_token_{port}` cookie
 4. Validate signature + expiry (link window for query param, session_exp for cookie)
 5. Check IP binding
@@ -135,6 +135,39 @@ Request flow:
 7. On first query-param use: bind IP, mark consumed, set cookie with `max_age` derived from `session_exp`
 8. Log to SEL
 9. Return 403 with JSON for `/api/*`, HTML for pages — **except** non-API `GET`/`HEAD` navigations, which are served the public SPA shell (see below)
+
+#### Liveness / readiness probes (rec #6)
+
+Three unauthenticated probe endpoints sit on the token-bypass boundary because
+orchestrators / load balancers carry no auth cookie. Each returns only fixed,
+low-cardinality markers — no paths, ids, counts, secrets, or user/session
+content. **Security-boundary contract:** operators who bind the gateway to a
+non-loopback interface accept anonymous service-presence and coarse lifecycle
+disclosure on these paths. Their bypass membership, exact remote liveness
+payload, and readiness 200/503 status plus `ready` boolean are a stable public
+contract pinned by
+`test_public_probe_contract_frozen_minimal_anonymous_surface_and_statuses`;
+changing them requires an explicit public API/security migration. Other
+readiness fields are privacy-bounded diagnostics, not frozen contract keys;
+they may be added, renamed, or removed as internal checks evolve.
+
+- `GET /api/health` / `GET /api/live` — **liveness**: 200 whenever the process
+  can serve HTTP. Anonymous non-loopback callers receive only `{ok: true}`.
+  Direct-local callers additionally receive `app` + exact `version` for the
+  desktop production/nightly cross-app guard on the shared loopback port. Stays
+  200 after shutdown is requested and until the HTTP server exits.
+- `GET /api/ready` — **readiness**:
+  - *Startup* → connection failure before bind is the external not-ready
+    signal. After bind, `DashboardState.ready` remains false and the endpoint
+    returns 503 while session restoration, channel relaunch, tunnel setup, and
+    other post-bind initialization finish.
+  - *Serving* → `DashboardState.ready` is set at the same final boundary as the
+    boot-to-ready metric; the endpoint then returns 200 while required state is
+    wired and no shutdown has been requested.
+  - *Shutdown requested* → 503 with `shutting_down: true` as soon as
+    `shutdown_event` is set, while liveness remains 200 until server exit. The
+    endpoint does not itself impose or promise a minimum load-balancer drain
+    delay.
 
 #### SPA Shell Bypass (cold-start recovery)
 

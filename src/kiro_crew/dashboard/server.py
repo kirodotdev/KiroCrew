@@ -135,6 +135,10 @@ from kiro_crew.executors import subprocess_executor
 from kiro_crew.hooks import ScriptHookStore, set_global_hook_store
 from kiro_crew.instances.registry import InstancesRegistry
 from kiro_crew.instances.ssh_tunnel_manager import SshTunnelManager, TunnelState
+from kiro_crew.metrics.http_metrics import (
+    make_route_latency_middleware,
+    record_boot_to_ready,
+)
 from kiro_crew.platform import (
     async_safe_context_call,
     current_context,
@@ -1186,6 +1190,8 @@ async def start_dashboard(
     app.router.add_get("/api/sso-ttl", handlers.api_sso_ttl)
     app.router.add_get("/api/dashboard/branding", handlers.api_branding)
     app.router.add_get("/api/health", handlers.api_health)
+    app.router.add_get("/api/live", handlers.api_live)
+    app.router.add_get("/api/ready", handlers.api_ready)
     app.router.add_get("/api/theme/boot", handlers.api_theme_boot)
     app.router.add_get("/api/admin/compliance/yolo-status", handlers.api_compliance_yolo_status)
 
@@ -1947,6 +1953,11 @@ async def start_dashboard(
 
     # Explicit middleware ordering — self-documenting and immune to future insertions
     app.middlewares[:] = [
+        # Outermost: privacy-safe per-route latency (rec #1). Times the FULL
+        # in-gateway handling (all middleware + handler). Labels are limited to
+        # method / bounded route_template / status_class — never a real path,
+        # query, id, or body — so it cannot leak content or explode cardinality.
+        make_route_latency_middleware(),
         host_canonical_redirect,
         host_validation_middleware,
         no_cache_middleware,
@@ -2221,6 +2232,15 @@ async def start_dashboard(
         if tunnel_mgr:
             state.tunnel_manager = tunnel_mgr
 
+    # Boot-to-ready (rec #1): full dashboard init is complete and the server is
+    # about to accept traffic. Privacy-safe — the only labels are the fixed
+    # ``server``/``outcome`` enums. Best-effort; never blocks the return.
+    # Publish readiness at the exact boundary measured as boot-to-ready.
+    state.ready = True
+    record_boot_to_ready(
+        (time.time() - state.start_time) * 1000.0, server="dashboard"
+    )
+
     return runner, state
 
 
@@ -2373,8 +2393,13 @@ async def start_api_server(
                 )
         return await handler(request)  # type: ignore[operator]
 
-    # Explicit ordering mirrors start_dashboard: host → csrf → token → audit.
+    # Explicit ordering mirrors start_dashboard: latency → host → csrf → token → audit.
     app.middlewares[:] = [
+        # Outermost: privacy-safe, bounded-cardinality per-route latency (rec #1).
+        # The MCP routes are registered AFTER this assignment, so the middleware
+        # captures its route-template set LAZILY on the first request (by which
+        # point every route is registered) — see make_route_latency_middleware.
+        make_route_latency_middleware(),
         host_validation_middleware,
         csrf_middleware,
         token_auth_middleware(
@@ -2391,6 +2416,13 @@ async def start_api_server(
     ]
 
     _register_mcp_routes(app)
+
+    # Probe parity with the full dashboard server. Headless gateways are often
+    # the instances most likely to sit behind an orchestrator, so they must
+    # expose the same unauthenticated, secret-free liveness/readiness surface.
+    app.router.add_get("/api/health", handlers.api_health)
+    app.router.add_get("/api/live", handlers.api_live)
+    app.router.add_get("/api/ready", handlers.api_ready)
 
     # R16 F6: Deploy routes must be registered in api-only mode too, otherwise
     # the deploy_artifact MCP tool 404s in Slack-only/headless mode.
@@ -2415,5 +2447,13 @@ async def start_api_server(
         raise
 
     logger.info("API-only server listening on 127.0.0.1:%d", port)
+
+    # Boot-to-ready (rec #1): headless API server is bound and ready. Privacy-safe
+    # fixed labels only; best-effort.
+    # Publish readiness at the exact boundary measured as boot-to-ready.
+    state.ready = True
+    record_boot_to_ready(
+        (time.time() - state.start_time) * 1000.0, server="api"
+    )
 
     return runner, state

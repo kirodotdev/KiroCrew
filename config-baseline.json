@@ -19,7 +19,7 @@
         "model": "auto",
         "provider": "acp",
         "default_agent": "",
-        "sandbox": "auto",
+        "sandbox": "off",
         "sandbox_allow_no_isolation": false,
         "sandbox_allow_unsandboxed_exec": false,
         "apps_allow_third_party": true,
@@ -137,13 +137,13 @@
       "sensitive": false,
       "tags": [],
       "label": "Sandbox",
-      "help": "Sandbox mode for ACP provider.",
+      "help": "Sandbox mode for ACP provider. Default 'off' defers isolation to kiro-cli's internal agent sandbox (kiro-cli >= 2.13). Set to 'auto' to re-enable KiroCrew's OS-level sandbox (namespace on Linux, sandbox-exec on macOS). The two layers are mutually exclusive on macOS (nested seatbelt causes EPERM).",
       "hasChildren": false,
       "enumValues": [
         "auto",
         "off"
       ],
-      "defaultValue": "auto"
+      "defaultValue": "off"
     },
     {
       "path": "agent.sandbox_allow_no_isolation",
@@ -1446,7 +1446,10 @@
       "defaultValue": {
         "enabled": false,
         "local_dir": "",
-        "export_interval_seconds": 60
+        "export_interval_seconds": 60,
+        "retention_days": 0,
+        "max_total_mb": 0,
+        "otlp_endpoint": ""
       }
     },
     {
@@ -1490,6 +1493,48 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 60
+    },
+    {
+      "path": "telemetry.retention_days",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Retention (days)",
+      "help": "Prune local JSONL metric shards older than this many days on each export cycle. 0 disables age-based pruning. Bounds on-disk telemetry growth (rec #14: bounded retention).",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 0
+    },
+    {
+      "path": "telemetry.max_total_mb",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Max Total Size (MB)",
+      "help": "Opportunistic directory budget for local metric shards. Closed shards are pruned oldest-first; protected active writers can temporarily exceed the budget. 0 disables the size cap (rec #14: bounded retention).",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 0
+    },
+    {
+      "path": "telemetry.otlp_endpoint",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": true,
+      "tags": [],
+      "label": "OTLP Endpoint",
+      "help": "Opt-in OpenTelemetry OTLP/HTTP metrics endpoint (e.g. http://localhost:4318/v1/metrics). EMPTY = no network egress (default). When set, aggregated metrics are ALSO pushed to this collector in addition to the local JSONL sink; requires the kirocrew[otlp] package extra to be installed (rec #1: OTLP opt-in only, no egress by default).",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
     },
     {
       "path": "stt",
@@ -2009,8 +2054,8 @@
       "defaultValue": {
         "check_after_secs": 60.0,
         "stale_window_secs": 300.0,
-        "tool_stall_suspect_secs": 600.0,
-        "tool_stall_hard_cap_secs": 2700.0,
+        "tool_stall_suspect_secs": 10800.0,
+        "tool_stall_hard_cap_secs": 10800.0,
         "model_silent_probe_secs": 900.0,
         "wellness_sample_secs": 3.0
       }
@@ -2052,10 +2097,10 @@
       "sensitive": false,
       "tags": [],
       "label": "Tool stall suspect (s)",
-      "help": "Idle seconds before an UNKNOWN-verdict in-flight tool is cancelled and the turn routed to tool-stall recovery (continue-nudge, no re-run of the original message). WORKING tools (e.g. a matched live build child) are never cancelled regardless of duration.",
+      "help": "Idle seconds before an UNKNOWN-verdict in-flight tool is cancelled and the turn routed to tool-stall recovery (continue-nudge, no re-run of the original message). WORKING tools (e.g. a matched live build child) are never cancelled regardless of duration. Default 3h to accommodate long-running builds and MCP tools on macOS where the liveness oracle degrades (no /proc) and cannot distinguish live builds from stalls.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": 600.0
+      "defaultValue": 10800.0
     },
     {
       "path": "watchdog.tool_stall_hard_cap_secs",
@@ -2066,10 +2111,10 @@
       "sensitive": false,
       "tags": [],
       "label": "Hard cap (s)",
-      "help": "Absolute ceiling for UNKNOWN-verdict forbearance (e.g. the extended probably-thinking window). Applies ONLY to UNKNOWN verdicts — never to a WORKING session.",
+      "help": "Absolute ceiling for UNKNOWN-verdict forbearance (e.g. the extended probably-thinking window). Applies ONLY to UNKNOWN verdicts — never to a WORKING session. Default 3h.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": 2700.0
+      "defaultValue": 10800.0
     },
     {
       "path": "watchdog.model_silent_probe_secs",

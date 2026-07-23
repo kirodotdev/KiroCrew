@@ -18,6 +18,7 @@ from pathlib import Path
 from aiohttp import web
 from aiohttp.client_exceptions import ClientConnectionResetError
 
+import kiro_crew
 import kiro_crew.validation as _validation_mod
 from kiro_crew import platform_compat
 from kiro_crew.config.loader import (
@@ -29,6 +30,7 @@ from kiro_crew.config.loader import (
     config_path,
 )
 from kiro_crew.context_management import RESULT_FILE_MAX_BYTES
+from kiro_crew.dashboard.origin import is_direct_local_request
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.dashboard.token_auth import MAX_SESSION_TTL_SECS, generate_token, parse_duration
 from kiro_crew.security import SUSPICIOUS_BASH_PATTERNS
@@ -195,19 +197,76 @@ async def api_branding(request: web.Request) -> web.Response:
     )
 
 
+def _liveness_payload(request: web.Request) -> dict[str, object]:
+    """Return public liveness plus identity only for direct-local callers."""
+    payload: dict[str, object] = {"ok": True}
+    if is_direct_local_request(request):
+        # The desktop production/nightly cross-app guard calls over loopback and
+        # needs exact identity to decide whether it can reuse the shared port.
+        # Anonymous non-loopback probes get only the liveness bit, avoiding an
+        # exact-version fingerprint on the public probe boundary.
+        payload.update({"app": "kirocrew", "version": kiro_crew.__version__})
+    return payload
+
+
 async def api_health(request: web.Request) -> web.Response:
-    """GET /api/health — liveness probe; returns 200 whenever the server is up.
+    """GET /api/health — liveness, with identity for direct-local callers."""
+    return web.json_response(_liveness_payload(request))
 
-    Carries identity fields (``app``, ``version``) so the desktop shell's
-    cross-app instance guard (website/electron/instance-guard.js) can tell
-    WHICH KiroCrew-family gateway owns the shared port: the nightly app and
-    the production app share ~/.kirocrew and the port, so the port is a
-    mutex and the shell must distinguish "my family's gateway — reuse" from
-    "the other channel app's gateway — prompt to take over".
+
+async def api_live(request: web.Request) -> web.Response:
+    """GET /api/live — Kubernetes-style liveness alias for /api/health."""
+    return web.json_response(_liveness_payload(request))
+
+
+async def api_ready(request: web.Request) -> web.Response:
+    """GET /api/ready — Kubernetes-style readiness probe (Recommendation #6).
+
+    Distinct from liveness: the process may be UP (``/api/live`` 200) yet not
+    able to serve application traffic. Readiness reflects the observable
+    lifecycle state:
+
+    * **Startup** — before the socket binds, connection failure is the external
+      not-ready signal. After bind, ``DashboardState.ready`` remains false and
+      the probe returns 503 while session restoration, channel relaunch, tunnel
+      setup, and other startup work finish.
+    * **Serving** — the server publishes ``DashboardState.ready = True`` at the
+      same final boundary used by the boot-to-ready metric; readiness is then
+      200 while required state is wired and shutdown has not been requested.
+    * **Shutdown requested** — when SIGTERM/SIGINT or ``POST /api/shutdown``
+      sets the process-wide ``shutdown_event``, readiness changes to 503 while
+      ``/api/live`` remains 200 until the HTTP server exits. Supervisors that
+      poll during this interval can stop routing new work; this endpoint does
+      not itself impose or promise a minimum load-balancer drain delay.
+
+    Shutdown takes precedence over subsystem checks. The response carries only
+    fixed, low-cardinality booleans/markers — no paths, ids, counts, secrets, or
+    user/session content — so it is safe on the unauthenticated probe boundary.
     """
-    from kiro_crew import __version__
+    # Graceful-shutdown gate: as soon as a stop is requested, stop advertising
+    # readiness so traffic drains before the socket closes.
+    shutting_down = kiro_crew.shutdown_event.is_set()
 
-    return web.json_response({"ok": True, "app": "kirocrew", "version": __version__})
+    state = request.app.get("state")
+    # Boot-wired subsystems this gateway needs before it can serve dashboard
+    # traffic. Keys are stable + low-cardinality so the payload leaks nothing.
+    checks = {
+        "state": state is not None,
+        "sessions": getattr(state, "sessions", None) is not None,
+    }
+    # Require the literal bool set at the final startup boundary. This stays
+    # fail-closed for partial/mocked state objects and cannot become truthy just
+    # because the socket is already accepting probe requests.
+    startup_complete = getattr(state, "ready", False) is True
+    ready = all(checks.values()) and startup_complete and not shutting_down
+    payload: dict = {
+        "ready": ready,
+        "startup_complete": startup_complete,
+        "checks": checks,
+    }
+    if shutting_down:
+        payload["shutting_down"] = True
+    return web.json_response(payload, status=200 if ready else 503)
 
 
 async def api_theme_boot(request: web.Request) -> web.Response:

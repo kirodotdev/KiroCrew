@@ -1361,6 +1361,10 @@ class DashboardState:
         self.crons = crons
         self.lessons = lessons
         self.start_time = start_time
+        # Published only at the final boot-to-ready boundary in server.py.
+        # The socket binds earlier, so /api/ready can truthfully return 503
+        # while session restoration, channel relaunch, and tunnel setup finish.
+        self.ready: bool = False
         self.subagents = subagents
         self.channel_manager: Any = None  # lazy-init in server.py
         self.tunnel_manager: Any = None  # lazy-init in server.py (TunnelManager)

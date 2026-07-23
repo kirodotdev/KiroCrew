@@ -134,6 +134,18 @@ def _is_in_try_except_importerror(node: ast.stmt, tree: ast.Module) -> bool:
     return False
 
 
+def test_otlp_extra_declares_exact_http_exporter_version():
+    """The documented kirocrew[otlp] install path must remain usable."""
+    cfg = configparser.ConfigParser()
+    cfg.read(_setup_cfg_path())
+    requirements = [
+        line.strip()
+        for line in cfg.get("options.extras_require", "otlp").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    assert requirements == ["opentelemetry-exporter-otlp-proto-http==1.44.0"]
+
+
 def _collect_unguarded_imports(filepath: pathlib.Path) -> list[tuple[str, str]]:
     """Unguarded module-level third-party imports in a single file."""
     source = filepath.read_text(encoding="utf-8", errors="replace")

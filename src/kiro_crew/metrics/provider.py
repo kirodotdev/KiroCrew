@@ -5,6 +5,10 @@ Consent + local-first:
     a no-op recorder, so adding metric call sites is a zero-runtime-effect change
     until a host opts in (mirrors the ``mcp_gateway.enabled`` /
     ``skills.lazy_load`` default-off convention).
+  * Easy opt-in: set ``telemetry.enabled: true`` in ``~/.kirocrew/config.json``
+    OR export the ``KIROCREW_TELEMETRY`` env var (``1``/``true``/``on`` to enable,
+    ``0``/``false``/``off`` to force-disable). The env var overrides the config
+    flag and gates LOCAL collection only — it never enables network egress.
   * When on, a ``PeriodicExportingMetricReader`` drains aggregated metrics to the
     local JSONL exporter under ``~/.kirocrew/metrics``. Nothing egresses the host.
   * Remote / OTLP egress is a separate opt-in exporter (deferred; not wired here).
@@ -22,6 +26,7 @@ import`` note there.
 from __future__ import annotations
 
 import logging
+import os
 import threading
 from pathlib import Path
 from typing import Optional
@@ -85,6 +90,27 @@ _recorder: Optional[MetricsRecorder] = None
 _initialized = False
 _provider: Optional["MeterProvider"] = None
 
+# Env-var opt-in (rec #14: easy opt-in). ``KIROCREW_TELEMETRY`` lets a host turn
+# LOCAL metrics on (or force them off) without editing ~/.kirocrew/config.json —
+# handy for CI, containers, and one-off debugging. Truthy => enable, falsy =>
+# disable, unset/blank => defer to the ``telemetry.enabled`` config flag (itself
+# default False). This gates LOCAL collection ONLY: external OTLP egress still
+# requires ``telemetry.otlp_endpoint`` to be set, so merely flipping this var
+# never causes data to leave the host (egress stays off by default).
+_TELEMETRY_ENV = "KIROCREW_TELEMETRY"
+_ENV_TRUTHY = frozenset({"1", "true", "yes", "on"})
+_ENV_FALSY = frozenset({"0", "false", "no", "off"})
+
+
+def _consent_enabled(cfg: object) -> bool:
+    """Resolve the telemetry consent gate: env var overrides the config flag."""
+    raw = os.environ.get(_TELEMETRY_ENV, "").strip().lower()
+    if raw in _ENV_TRUTHY:
+        return True
+    if raw in _ENV_FALSY:
+        return False
+    return bool(getattr(cfg, "enabled", False))
+
 
 def _default_metrics_dir() -> Path:
     return config_dir() / "metrics"
@@ -105,7 +131,7 @@ def _build_recorder() -> MetricsRecorder:
         logger.warning("telemetry config load failed; metrics disabled: %s", exc)
         return MetricsRecorder(None)
 
-    if not cfg.enabled:
+    if not _consent_enabled(cfg):
         return MetricsRecorder(None)
 
     try:
@@ -115,11 +141,21 @@ def _build_recorder() -> MetricsRecorder:
             else _default_metrics_dir()
         )
         reader = PeriodicExportingMetricReader(
-            JsonlMetricExporter(directory),
+            JsonlMetricExporter(
+                directory,
+                retention_days=cfg.retention_days,
+                max_total_mb=cfg.max_total_mb,
+            ),
             export_interval_millis=float(cfg.export_interval_seconds) * 1000.0,
         )
+        readers = [reader]
+        # Opt-in OTLP egress (rec #1): only when telemetry.otlp_endpoint is set.
+        # Empty endpoint => local-only, no network egress (the default).
+        otlp_reader = _build_otlp_reader(cfg)
+        if otlp_reader is not None:
+            readers.append(otlp_reader)
         _provider = MeterProvider(
-            metric_readers=[reader],
+            metric_readers=readers,
             resource=Resource.create({"service.name": _SERVICE_NAME}),
             # Apply the latency bucket set to every histogram so bucket-derived
             # p50/p90 stay meaningful across the full startup / acquire /
@@ -133,11 +169,59 @@ def _build_recorder() -> MetricsRecorder:
                 ),
             ],
         )
-        logger.info("telemetry enabled; local JSONL sink at %s", directory)
+        logger.info(
+            "telemetry enabled; local JSONL sink at %s (otlp=%s)",
+            directory,
+            "on" if len(readers) > 1 else "off",
+        )
         return MetricsRecorder(_provider.get_meter(_SCOPE))
     except Exception as exc:
         logger.warning("telemetry init failed; metrics disabled: %s", exc)
         return MetricsRecorder(None)
+
+
+def _build_otlp_reader(cfg: object) -> Optional["PeriodicExportingMetricReader"]:
+    """Build the opt-in OTLP/HTTP metric reader, or None when not configured.
+
+    Egress is OFF by default (rec #1): this returns None unless
+    ``telemetry.otlp_endpoint`` is a non-empty string. The OTLP exporter lives
+    in the separate ``kirocrew[otlp]`` package extra (install with
+    ``pip install "kirocrew[otlp]"``), not the hard dependency set. If a host
+    opts in without installing it, we log a warning and degrade to local-only
+    rather than crashing telemetry init. The exporter only ever sees redacted, low-cardinality data points (the MetricsRecorder
+    facade sanitises attributes before they reach any reader), so opting in
+    cannot leak prompts, content, tokens, paths, user ids, or secrets.
+    """
+    endpoint = str(getattr(cfg, "otlp_endpoint", "") or "").strip()
+    if not endpoint:
+        return None
+    try:
+        from opentelemetry.exporter.otlp.proto.http.metric_exporter import (
+            OTLPMetricExporter,
+        )
+    except ImportError:
+        # Never log the configured endpoint: URLs may contain credentials in
+        # userinfo or query parameters. The setting's presence is sufficient
+        # for diagnosis without exposing its value.
+        logger.warning(
+            "telemetry.otlp_endpoint is set but opentelemetry-exporter-otlp-"
+            "proto-http is not installed; OTLP egress disabled (local-only)"
+        )
+        return None
+    try:
+        exporter = OTLPMetricExporter(endpoint=endpoint)
+        return PeriodicExportingMetricReader(
+            exporter,
+            export_interval_millis=float(
+                getattr(cfg, "export_interval_seconds", 60)
+            )
+            * 1000.0,
+        )
+    except Exception:
+        # Constructor errors may echo the credential-bearing endpoint in their
+        # message. Keep this warning fixed-text just like the missing-extra path.
+        logger.warning("OTLP exporter init failed; OTLP egress disabled (local-only)")
+        return None
 
 
 def get_recorder() -> MetricsRecorder:
