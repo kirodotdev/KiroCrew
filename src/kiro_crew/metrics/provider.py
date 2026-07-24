@@ -108,6 +108,12 @@ def _build_recorder() -> MetricsRecorder:
     if not cfg.enabled:
         return MetricsRecorder(None)
 
+    # PeriodicExportingMetricReader starts its daemon ticker thread inside
+    # __init__, so if any later step (MeterProvider construction, etc.) raises,
+    # the reader is already ticking. Hoist it here so the except can reap it —
+    # otherwise the orphaned thread keeps running and spamming export WARNINGs
+    # for the life of the process even though metrics are "disabled".
+    reader = None
     try:
         directory = (
             Path(cfg.local_dir).expanduser()
@@ -137,6 +143,15 @@ def _build_recorder() -> MetricsRecorder:
         return MetricsRecorder(_provider.get_meter(_SCOPE))
     except Exception as exc:
         logger.warning("telemetry init failed; metrics disabled: %s", exc)
+        # Reap the reader's already-started daemon thread if it outlived a
+        # failure in a later init step, so a disabled recorder leaves nothing
+        # ticking behind. shutdown() must never turn the degrade path into a
+        # raise, so swallow anything it throws.
+        if reader is not None:
+            try:
+                reader.shutdown()
+            except Exception:  # noqa: BLE001 - best-effort cleanup
+                logger.debug("metric reader shutdown after init failure failed", exc_info=True)
         return MetricsRecorder(None)
 
 
