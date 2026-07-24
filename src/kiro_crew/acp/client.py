@@ -4222,7 +4222,14 @@ class AcpClient:
     def _build_permission_event(self, msg: JsonRpcMessage) -> AcpEvent:
         request_id = msg.id if msg.id is not None else ""
         params = msg.params or {}
+        # The permission payload comes straight from the agent process. A
+        # malformed toolCall (null/list/string) or options (null/dict/string,
+        # or non-dict entries) would raise AttributeError/TypeError here — and
+        # this runs inside the prompt-turn event generator, so the crash tears
+        # down the whole turn instead of degrading to the default options.
         tool_call = params.get("toolCall", {})
+        if not isinstance(tool_call, dict):
+            tool_call = {}
         title = tool_call.get("title", "unknown")
         # The ACP toolCall carries a `kind` ("execute" for Bash, "read"/"edit"/
         # …). Carry it onto the event as display/telemetry metadata. NOTE: the
@@ -4237,12 +4244,23 @@ class AcpClient:
         # reject_tool can echo the exact id the agent advertised.
         options: list[dict[str, str]] = []
         kind_to_id: dict[str, str] = {}
-        for o in params.get("options", []):
+        raw_options = params.get("options", [])
+        if not isinstance(raw_options, list):
+            raw_options = []
+        for o in raw_options:
+            if not isinstance(o, dict):
+                continue
             opt_id = o.get("optionId") or o.get("id") or ""
             opt_label = o.get("name") or o.get("label") or ""
             opt_kind = o.get("kind") or ""
-            if not opt_id:
+            # A non-string id would crash opt_id.lower() below (and non-string
+            # label/kind would leak into the typed options list) — skip them.
+            if not isinstance(opt_id, str) or not opt_id:
                 continue
+            if not isinstance(opt_label, str):
+                opt_label = ""
+            if not isinstance(opt_kind, str):
+                opt_kind = ""
             options.append({"id": opt_id, "label": opt_label})
             if not opt_kind:
                 # Only synthesize a kind for well-known literals; unknown ids

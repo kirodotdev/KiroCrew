@@ -326,8 +326,14 @@ def build_permission_event(
         opt_id = o.get("optionId") or o.get("id") or ""
         opt_label = o.get("name") or o.get("label") or ""
         opt_kind = o.get("kind") or ""
-        if not opt_id:
+        # A truthy non-string id would crash opt_id.lower() below (and
+        # non-string label/kind would leak into the typed options list).
+        if not isinstance(opt_id, str) or not opt_id:
             continue
+        if not isinstance(opt_label, str):
+            opt_label = ""
+        if not isinstance(opt_kind, str):
+            opt_kind = ""
         options.append({"id": opt_id, "label": opt_label})
         if not opt_kind:
             opt_kind = _LEGACY_OPTION_KIND.get(opt_id.lower(), "")

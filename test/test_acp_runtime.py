@@ -2902,6 +2902,38 @@ def test_build_permission_event_raw_params_none_without_cache():
     assert event.raw_tool_params is None
 
 
+def test_build_permission_event_non_string_option_entries_skipped():
+    """The shared parser feeds AcpSessionHandle's prompt event generator; a
+    truthy non-string id (e.g. {"id": 42}) crashed opt_id.lower() in the
+    legacy-kind synthesis, tearing down the turn on the shared-runtime
+    transport — the same class of crash AcpClient's copy guards against.
+    Non-dict entries and non-string label/kind must be skipped/coerced while
+    valid entries still parse."""
+    from kiro_crew.acp._dispatch import build_permission_event
+    from kiro_crew.acp.types import METHOD_REQUEST_PERMISSION
+
+    msg = JsonRpcMessage.from_dict({
+        "id": 7,
+        "method": METHOD_REQUEST_PERMISSION,
+        "params": {
+            "toolCall": {"toolCallId": "tc-y", "title": "shell"},
+            "options": [
+                "allow",                          # non-dict
+                None,                             # non-dict
+                {"id": 42, "label": "int id"},    # non-string id → skipped
+                {"id": "allow_once", "label": 7, "kind": ["x"]},  # coerced
+                {"id": "allow_always", "label": "Always"},
+            ],
+        },
+    })
+    event, recorded = build_permission_event(msg, raw_params_cache={})  # must not raise
+    assert event.options == [
+        {"id": "allow_once", "label": ""},
+        {"id": "allow_always", "label": "Always"},
+    ]
+    assert recorded is not None
+
+
 def test_mark_dead_unregisters_protected_pid():
     """Regression (PR #21 follow-up): _mark_dead must release the sweep-protection
     shield on ANY death path (not just kill()), else the dead PID lingers in

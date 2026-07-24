@@ -4436,6 +4436,63 @@ class TestBuildPermissionEvent:
         assert len(event.options) == 2
         assert event.options[0]["id"] == "allow_once"
 
+    @pytest.mark.parametrize("bad_options", [None, "allow", 42, {"id": "allow_once"}])
+    def test_non_list_options_degrade_to_defaults(self, bad_options):
+        """The permission payload comes straight from the agent process; a
+        non-list options value made the for-loop raise TypeError (or iterate
+        dict keys), tearing down the prompt-turn event generator instead of
+        degrading to the default allow options."""
+        client = AcpClient()
+        from kiro_crew.acp.types import EVENT_PERMISSION_REQUEST, JsonRpcMessage
+
+        msg = JsonRpcMessage(
+            id=12,
+            method="session/requestPermission",
+            params={"toolCall": {"title": "rm"}, "options": bad_options},
+        )
+        event = client._build_permission_event(msg)  # must not raise
+        assert event.kind == EVENT_PERMISSION_REQUEST
+        assert len(event.options) == 2
+        assert event.options[0]["id"] == "allow_once"
+
+    @pytest.mark.parametrize("bad_toolcall", [None, "shell", ["x"], 7])
+    def test_non_dict_toolcall_degrades_to_unknown(self, bad_toolcall):
+        """A non-dict toolCall made tool_call.get(...) raise AttributeError."""
+        client = AcpClient()
+        from kiro_crew.acp.types import EVENT_PERMISSION_REQUEST, JsonRpcMessage
+
+        msg = JsonRpcMessage(
+            id=13,
+            method="session/requestPermission",
+            params={"toolCall": bad_toolcall, "options": []},
+        )
+        event = client._build_permission_event(msg)  # must not raise
+        assert event.kind == EVENT_PERMISSION_REQUEST
+        assert event.title == "unknown"
+
+    def test_non_dict_and_non_string_option_entries_skipped(self):
+        """Non-dict entries raised AttributeError on o.get(); an int optionId
+        crashed opt_id.lower() in the legacy-kind synthesis. Both must be
+        skipped while valid entries still parse."""
+        client = AcpClient()
+        from kiro_crew.acp.types import JsonRpcMessage
+
+        msg = JsonRpcMessage(
+            id=14,
+            method="session/requestPermission",
+            params={
+                "toolCall": {"title": "shell"},
+                "options": [
+                    "allow",                        # non-dict
+                    None,                           # non-dict
+                    {"id": 42, "label": "int id"},  # non-string id
+                    {"id": "allow_once", "label": "Allow once"},
+                ],
+            },
+        )
+        event = client._build_permission_event(msg)  # must not raise
+        assert event.options == [{"id": "allow_once", "label": "Allow once"}]
+
     def test_cached_tool_input_used(self):
         client = AcpClient()
         from kiro_crew.acp.types import JsonRpcMessage
