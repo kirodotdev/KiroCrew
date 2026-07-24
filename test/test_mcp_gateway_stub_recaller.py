@@ -155,3 +155,67 @@ async def test_recaller_loop_noop_when_stopped_before_key(
     stop.set()
     await asyncio.wait_for(stub_mod._recaller_loop(w, None, stop), timeout=1.0)
     assert w.frames == []
+
+
+class _CriticalSectionWriter:
+    """StreamWriter double that detects a broken write+drain critical section:
+    its drain() yields the loop, and it flags if any OTHER write() lands between
+    a given writer's write() and its drain() completing. Serializing write+drain
+    under the shared lock must prevent that."""
+
+    def __init__(self) -> None:
+        self.frames: list[dict[str, Any]] = []
+        self._in_flight = False
+        self.overlap = False
+
+    def write(self, data: bytes) -> None:
+        if self._in_flight:
+            # Another writer's write+drain was still in progress.
+            self.overlap = True
+        for line in data.split(b"\n"):
+            if line:
+                self.frames.append(json.loads(line.decode("utf-8")))
+
+    async def drain(self) -> None:
+        self._in_flight = True
+        try:
+            await asyncio.sleep(0)  # yield: a concurrent write() would overlap
+        finally:
+            self._in_flight = False
+
+
+@pytest.mark.asyncio
+async def test_write_frame_serializes_concurrent_writers() -> None:
+    """stdin_pump and _recaller_loop share one writer and both await drain().
+    Without serialization, one coroutine's write() lands inside another's
+    write+drain critical section (the interleave that corrupts the socket
+    stream). _write_frame must hold the writer's _mc_write_lock across write+
+    drain so the sections never overlap."""
+    w = _CriticalSectionWriter()
+    setattr(w, "_mc_write_lock", asyncio.Lock())
+
+    async def spam(tag: str) -> None:
+        for i in range(20):
+            await stub_mod._write_frame(w, {"type": tag, "n": i})
+
+    await asyncio.gather(spam("a"), spam("b"))
+
+    assert not w.overlap, "write+drain critical sections overlapped (not serialized)"
+    assert len(w.frames) == 40
+
+
+@pytest.mark.asyncio
+async def test_run_bridge_installs_write_lock() -> None:
+    """run_bridge must install a _mc_write_lock on the shared writer so its two
+    writer coroutines serialize. Verified by driving a minimal bridge to EOF."""
+    reader = asyncio.StreamReader()
+    reader.feed_eof()  # immediate EOF -> stdin_pump sends Unregister and exits
+    w = _CapWriter()
+    stop = asyncio.Event()
+    stdin = asyncio.StreamReader()
+    stdin.feed_eof()
+    await asyncio.wait_for(
+        stub_mod.run_bridge(reader, w, stop, stdin=stdin, stdout_writer=w),
+        timeout=2.0,
+    )
+    assert getattr(w, "_mc_write_lock", None) is not None

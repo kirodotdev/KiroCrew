@@ -371,8 +371,22 @@ def build_register_payload(args: argparse.Namespace) -> dict:
 
 
 async def _write_frame(writer: asyncio.StreamWriter, obj: dict) -> None:
-    writer.write(json.dumps(obj, separators=(",", ":")).encode("utf-8") + b"\n")
-    await writer.drain()
+    # stdin_pump and _recaller_loop both write this shared stub->gateway socket
+    # and both await drain(). Each write() here lands a WHOLE frame in one
+    # synchronous call, so frame bytes cannot interleave — the hazard is the
+    # concurrent drain(): under backpressure, FlowControlMixin._drain_helper on
+    # many deployed interpreter patch releases holds a single drain waiter
+    # (`assert waiter is None or waiter.cancelled()`), so a second concurrent
+    # drain() trips the assert, kills that pump task, and tears the bridge down
+    # (newer patch releases allow multiple waiters; older ones are common).
+    # Serialize the write+drain pair through the writer's lock — the same
+    # _mc_write_lock idiom gatewayd/backend use on their writers — which also
+    # keeps the invariant robust if a future edit splits a frame across writes.
+    lock = getattr(writer, "_mc_write_lock", None)
+    guard = lock if lock is not None else contextlib.nullcontext()
+    async with guard:
+        writer.write(json.dumps(obj, separators=(",", ":")).encode("utf-8") + b"\n")
+        await writer.drain()
 
 
 async def _read_frame(reader: asyncio.StreamReader) -> Optional[dict]:
@@ -473,6 +487,10 @@ async def run_bridge(
     # call_soon_threadsafe from the writer thread, wakes a dedicated bridge task
     # so teardown never depends on upstream traffic.
     bridge_loop = asyncio.get_running_loop()
+    # stdin_pump and _recaller_loop both write this shared stub->gateway socket;
+    # serialize their write+drain through one lock (mirrors gatewayd/backend).
+    if getattr(writer, "_mc_write_lock", None) is None:
+        setattr(writer, "_mc_write_lock", asyncio.Lock())
     writer_failed = threading.Event()
     writer_failed_evt = asyncio.Event()
 
@@ -537,8 +555,17 @@ async def run_bridge(
                     pass
                 return
             try:
-                writer.write(line if line.endswith(b"\n") else line + b"\n")
-                await writer.drain()
+                # Serialize with _recaller_loop's _write_frame writes on the
+                # same socket: the write itself is whole-frame atomic, but a
+                # second concurrent drain() under backpressure trips the
+                # single-waiter assert in FlowControlMixin._drain_helper on
+                # pre-3.12-fix interpreters, killing this pump task and tearing
+                # the bridge down (see _write_frame).
+                _lock = getattr(writer, "_mc_write_lock", None)
+                _guard = _lock if _lock is not None else contextlib.nullcontext()
+                async with _guard:
+                    writer.write(line if line.endswith(b"\n") else line + b"\n")
+                    await writer.drain()
             except (ConnectionError, BrokenPipeError):
                 return
 
@@ -746,8 +773,12 @@ async def _recaller_loop(
     never be stranded by a poll deadline. Exits on: key found (after sending
     one ``recaller`` frame) or bridge teardown (``stop_event``). Writes a
     whole frame per ``_write_frame`` (a single synchronous ``writer.write``
-    before any await), so it cannot interleave partial bytes with the stdin
-    pump sharing this ``writer``.
+    before any await), so frame BYTES cannot interleave with the stdin pump
+    sharing this ``writer`` — but the write lock in ``_write_frame`` is still
+    required: two coroutines awaiting ``drain()`` concurrently under
+    backpressure trip the single-drain-waiter assert in
+    ``FlowControlMixin._drain_helper`` on pre-3.12-fix interpreters, which
+    kills a pump task and tears the bridge down.
     """
     loop = asyncio.get_running_loop()
     interval = _RECALLER_POLL_INTERVAL_SECS
