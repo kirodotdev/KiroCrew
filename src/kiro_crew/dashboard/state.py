@@ -1020,16 +1020,26 @@ class _ChatSlot:
 
     # ── Queue helpers (dict-based queue items) ──
 
-    def queue_append(self, content: str) -> str:
-        """Append a message to the queue. Returns the generated queue ID."""
+    def queue_append(self, content: str, kind: str = "") -> str:
+        """Append a message to the queue. Returns the generated queue ID.
+
+        ``kind`` is a structural origin tag (e.g. ``"synthetic_recovery"`` for
+        runner-injected recovery instructions). Classification by metadata —
+        not by content equality — survives queue transformations and cannot
+        collide with user-typed text that happens to match an internal string.
+        Empty string = plain user/system content (default).
+        """
         qid = uuid.uuid4().hex[:12]
-        self._queue.append({"id": qid, "content": content})
+        self._queue.append({"id": qid, "content": content, "kind": kind})
         return qid
 
-    def queue_insert(self, index: int, content: str) -> str:
-        """Insert a message at a specific queue position. Returns the queue ID."""
+    def queue_insert(self, index: int, content: str, kind: str = "") -> str:
+        """Insert a message at a specific queue position. Returns the queue ID.
+
+        See :meth:`queue_append` for the ``kind`` structural origin tag.
+        """
         qid = uuid.uuid4().hex[:12]
-        self._queue.insert(index, {"id": qid, "content": content})
+        self._queue.insert(index, {"id": qid, "content": content, "kind": kind})
         return qid
 
     def queue_pop(self, index: int = 0) -> dict[str, str]:

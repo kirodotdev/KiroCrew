@@ -9075,18 +9075,114 @@ class TestEmptyResponseRetry:
         assert slot._empty_response_retries == 0
 
     @pytest.mark.asyncio
-    async def test_second_empty_response_shows_error(self, tmp_path: Path) -> None:
-        """Second consecutive empty response → error card shown."""
+    async def test_second_empty_response_auto_continues(self, tmp_path: Path) -> None:
+        """Second consecutive empty response → ONE synthetic continue nudge is
+        queued (same live session) with a transcript-visible notice. Re-sending
+        the identical prompt reproduces the identical empty generation; a
+        DIFFERENT message reliably recovers — this automates the user manually
+        typing "continue"."""
+        from kiro_crew.dashboard.chat_runner import _EMPTY_AUTO_CONTINUE_MSG
+
         state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
-        slot._empty_response_retries = 1  # already retried once
+        slot._empty_response_retries = 1  # already silently retried once
+        self._make_empty_stream(client)
+
+        calls = []
+        orig = _ChatSlot.queue_insert
+
+        def spy(self_slot, *a, **kw):
+            calls.append(a)
+            return orig(self_slot, *a, **kw)
+
+        with patch.object(_ChatSlot, "queue_insert", spy):
+            await _run_chat(state, slot, "test message")
+            for _bg_task in list(state._background_tasks):
+                _bg_task.cancel()
+
+        # The nudge (NOT the original message) is queued at the front.
+        assert (0, _EMPTY_AUTO_CONTINUE_MSG) in calls
+        assert (0, "test message") not in calls
+        # Visible recovery notice, counter advanced to the terminal rung, and
+        # the recovery turn is excluded from the cycle-complete counter reset.
+        notice_msgs = [m for m in slot.messages if m.get("role") == "notice"]
+        assert any("auto-continuing once" in m.get("content", "") for m in notice_msgs)
+        assert slot._empty_response_retries == 2
+
+    @pytest.mark.asyncio
+    async def test_auto_continue_nudge_drains_as_inject_not_user(self, tmp_path: Path) -> None:
+        """The queued nudge is runner orchestration, not user speech: when the
+        queue drains it, the transcript append MUST use the "inject" recovery
+        role (never "user" — a user-role append would persist an internal
+        instruction as user-authored history and mirror it to linked
+        channels), and it MUST NOT cancel a pending synthesis (the user did
+        not take over the conversation)."""
+        from kiro_crew.dashboard.chat_runner import _EMPTY_AUTO_CONTINUE_MSG
+
+        state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+        slot._empty_response_retries = 1  # next empty triggers the nudge rung
+        slot._pending_synthesis = True
+        self._make_empty_stream(client)
+
+        await _run_chat(state, slot, "test message")
+        # Let the REAL detached drain task run: it pops the nudge, classifies
+        # it, appends it to the transcript, and runs the (also-empty) nudge
+        # turn, which terminates the ladder at the give-up notice.
+        for _bg_task in list(state._background_tasks):
+            try:
+                await _bg_task
+            except Exception:
+                pass
+
+        nudge_msgs = [
+            m for m in slot.messages if m.get("content") == _EMPTY_AUTO_CONTINUE_MSG
+        ]
+        assert nudge_msgs, "drained nudge never reached the transcript"
+        # The nudge must NEVER carry the user role (that would persist an
+        # internal instruction as user-authored history and mirror it to
+        # linked channels) — the ORIGINAL user message keeps its user role.
+        assert all(m.get("role") == "inject" for m in nudge_msgs)
+        # Draining a synthetic recovery message is not a user takeover.
+        assert slot._pending_synthesis is True
+
+    @pytest.mark.asyncio
+    async def test_third_empty_response_shows_notice(self, tmp_path: Path) -> None:
+        """Third consecutive empty (the auto-continue nudge ALSO produced
+        nothing) → terminal notice card; the ladder is bounded, never loops."""
+        state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+        slot._empty_response_retries = 2  # re-queue + nudge both spent
         self._make_empty_stream(client)
 
         await _run_chat(state, slot, "test message")
 
         notice_msgs = [m for m in slot.messages if m.get("role") == "notice"]
         assert any("returned nothing this turn" in m.get("content", "") for m in notice_msgs)
-        # After the terminal second-empty error, the counter resets so the NEXT
-        # independent user turn gets a fresh one-retry budget (not sticky at 1).
+        # After the terminal notice, the counter resets so the NEXT independent
+        # user turn gets a fresh budget (not sticky).
+        assert slot._empty_response_retries == 0
+
+    @pytest.mark.asyncio
+    async def test_second_empty_flag_off_shows_notice(self, tmp_path: Path) -> None:
+        """With session.empty_response_auto_continue disabled, the second empty
+        surfaces the terminal notice immediately (pre-feature behavior)."""
+        state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+        slot._empty_response_retries = 1
+        self._make_empty_stream(client)
+
+        # Exercise the REAL config path (loader wiring included): persist the
+        # flag as false in a config file and point KiroCrewConfig.load() at it,
+        # rather than patching the gate function (which would pass even if the
+        # loader dropped the field — the exact regression this test guards).
+        cfg_file = tmp_path / "flag-off-config.json"
+        cfg_file.write_text(
+            '{"session": {"empty_response_auto_continue": false}}'
+        )
+        with patch(
+            "kiro_crew.config.loader.config_path", return_value=cfg_file
+        ):
+            await _run_chat(state, slot, "test message")
+
+        notice_msgs = [m for m in slot.messages if m.get("role") == "notice"]
+        assert any("returned nothing this turn" in m.get("content", "") for m in notice_msgs)
         assert slot._empty_response_retries == 0
 
     @pytest.mark.asyncio

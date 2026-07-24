@@ -153,19 +153,28 @@ from kiro_crew.validation import ValidationError, infer_use_case, validate_ask_u
 
 logger = logging.getLogger(__name__)
 
-# Re-queued after a post-token transient backend error. This CONTINUE
-# instruction (NOT the original prompt) is dispatched onto the SAME live ACP
-# session — which still holds the interrupted turn's context (original prompt,
-# partial assistant text, and any completed tool results). It tells the model to
-# resume from where it stopped rather than restart, so completed work and tool
-# side effects are never redone.
-_POSTTOKEN_RECOVER_MSG = (
-    "The previous response was interrupted partway through by a transient "
-    "backend error. The work already done above (including any completed tool "
-    "results) is preserved in the conversation. Continue from where it stopped "
-    "to finish the original request — do NOT restart from scratch and do NOT "
-    "re-run steps or tools that already completed successfully."
+# The synthetic recovery message constants live in chat_utils (single source
+# of truth shared with the queue/merge predicates — is_system_injection must
+# classify them identically to the turn logic here). Re-exported under their
+# historical names so existing imports keep working.
+from kiro_crew.dashboard.chat_utils import (  # noqa: E402
+    _EMPTY_AUTO_CONTINUE_MSG,
+    _POSTTOKEN_RECOVER_MSG,
+    _SYNTHETIC_RECOVERY_MSGS,
+    SYNTHETIC_RECOVERY_KIND,
+    is_synthetic_recovery_item,
 )
+
+
+def _empty_auto_continue_enabled() -> bool:
+    """Config gate for the empty-response auto-continue rung (default ON —
+    the recovery is bounded to one nudge per user message and always
+    transcript-visible). Fail-open to the default: a config-load hiccup must
+    not disable self-healing mid-incident."""
+    try:
+        return bool(KiroCrewConfig.load().session.empty_response_auto_continue)
+    except Exception:  # pragma: no cover — config load must not break recovery
+        return True
 
 
 def drain_pending_context(slot: "_ChatSlot") -> str:
@@ -1867,7 +1876,7 @@ async def _run_chat(
     # refresh the allowance and inherits the True flag set when recovery was
     # enqueued (finding #3). Suppressed/nested recoveries never set the flag, so
     # this reset is a no-op for them and a later real turn can still recover.
-    if message != _POSTTOKEN_RECOVER_MSG:
+    if message not in _SYNTHETIC_RECOVERY_MSGS:
         slot._posttoken_retry_used = False
     _pending_tools: dict[str, str] = {}  # tool_call_id -> tool_name
     # session_id -> {started, done, agent, task} for native kiro-cli subagents,
@@ -3990,6 +3999,29 @@ async def _run_chat(
                 slot._empty_response_retries += 1
                 slot.queue_insert(0, message)
                 _retrying_empty = True
+            elif (
+                _prompt_depth == 0
+                and slot._empty_response_retries < 2
+                and not _should_suppress_requeue(slot)
+                and _empty_auto_continue_enabled()
+            ):
+                # Second consecutive empty: the silent SAME-message re-queue
+                # also produced nothing. Re-sending the identical prompt tends
+                # to reproduce the identical empty generation, but a DIFFERENT
+                # message reliably recovers (observed repeatedly in the field —
+                # the user typing "continue" broke the pattern every time). So
+                # auto-send ONE synthetic continue nudge on the same live
+                # session, with a transcript-visible notice so the recovery is
+                # never invisible. Third empty falls through to the give-up
+                # notice below — bounded, no loop.
+                slot._empty_response_retries += 1
+                slot.append(
+                    "notice",
+                    "ℹ️ The model returned nothing twice — auto-continuing once.",
+                    "msg msg-info",
+                )
+                slot.queue_insert(0, _EMPTY_AUTO_CONTINUE_MSG, kind=SYNTHETIC_RECOVERY_KIND)
+                _retrying_empty = True
             else:
                 # Recoverable, usually-transient: the runner already silently
                 # self-retried once (first empty = silent re-queue). Surface a
@@ -4000,7 +4032,8 @@ async def _run_chat(
                 # _on_message; no explicit broadcast_ws.
                 _empty_msg = (
                     "ℹ️ The model returned nothing this turn (it was retried "
-                    "automatically). Just send your message again to continue."
+                    "and auto-continued automatically). Just send your message "
+                    "again to continue."
                 )
                 slot.append("notice", _empty_msg, "msg msg-info")
         # On an empty-response re-queue the turn produced nothing and will
@@ -4376,7 +4409,7 @@ async def _run_chat(
                 # allowance HERE — only a real enqueue burns it (finding #3).
                 await asyncio.sleep(_delay)
                 slot._posttoken_retry_used = True
-                slot.queue_insert(0, _POSTTOKEN_RECOVER_MSG)
+                slot.queue_insert(0, _POSTTOKEN_RECOVER_MSG, kind=SYNTHETIC_RECOVERY_KIND)
             # else: Stop active (_should_suppress_requeue) or nested turn
             # (_prompt_depth != 0) — do NOT requeue; partial + notice already
             # shown, so the streamed answer survives in the transcript. The
@@ -4533,6 +4566,18 @@ async def _run_chat(
                 next_msg.startswith(REFUSAL_RECOVERY_PREFIX)
                 or next_msg.startswith(STALE_RECOVERY_PREFIX)
                 or next_msg.startswith(TOOL_STALL_RECOVERY_PREFIX)
+                # Runner-injected synthetic recovery instructions (the
+                # post-transient CONTINUE and the empty-response auto-continue
+                # nudge) are orchestration, not user speech: they must drain
+                # with the "inject" transcript role — never persisted as a
+                # user-authored message — and must not cancel a pending
+                # synthesis. Classified STRUCTURALLY from the queue entry's
+                # kind tag (is_system_injection_item breaks merges on the same
+                # tag, so a tagged entry always drains alone and `consumed`
+                # carries exactly it); content equality is deliberately not
+                # used — a user pasting the recovery text verbatim must
+                # classify as a plain user message.
+                or any(is_synthetic_recovery_item(i) for i in consumed)
             )
             # User took over: a plain user message draining cancels any armed
             # post-fan-out synthesis (the user has redirected the conversation).

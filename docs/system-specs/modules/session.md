@@ -1,6 +1,6 @@
 # Session Manager Module
 
-Last Updated: 2026-07-14 (cross-platform process management via platform_compat; warm pool / model precedence / orphan-sweep companion runtimes; DM channel session-key model + dm_scope + generation reset + mid-turn steer/queue; Slack thread linking, bidirectional dashboard-Slack sync, slash commands)
+Last Updated: 2026-07-24 (Empty-response recovery ladder documented — silent same-message re-queue → ONE synthetic continue nudge (gated by session.empty_response_auto_continue, default ON) → terminal notice; bounded per user message. Prior — 2026-07-14 cross-platform process management via platform_compat; warm pool / model precedence / orphan-sweep companion runtimes; DM channel session-key model + dm_scope + generation reset + mid-turn steer/queue; Slack thread linking, bidirectional dashboard-Slack sync, slash commands)
 
 ## Overview
 
@@ -72,6 +72,39 @@ check (`dashboard/handlers/cron.py`).
 
 ## Key Behaviors
 
+- **Empty-response recovery ladder** (dashboard chat runner, depth-0 turns
+  only): a completed turn with no visible output, no refusal reasons, and no
+  cancellation is treated as a transient provider failure and recovered
+  through a bounded three-rung ladder driven by `slot._empty_response_retries`:
+  1. **first empty** → the ORIGINAL message is silently re-queued at the
+     front of the slot queue (no visible card);
+  2. **second empty** (the same-message retry also produced nothing) → ONE
+     synthetic continue nudge (`_EMPTY_AUTO_CONTINUE_MSG` — a DIFFERENT
+     message, since re-sending the identical prompt tends to reproduce the
+     identical empty generation) is queued on the SAME live session, with a
+     transcript-visible notice card ("auto-continuing once"). Gated by
+     `session.empty_response_auto_continue` (default ON; the gate fails open),
+     and suppressed while a Stop is active;
+  3. **third empty** (the nudge also produced nothing) → terminal notice card
+     asking the user to send a message; the counter resets so the next
+     genuine user turn gets a fresh budget.
+  Recovery rungs 1–2 skip persistence/consolidation/success-recording (the
+  empty turn is never saved) and preserve all other retry budgets. Synthetic
+  recovery messages (`_SYNTHETIC_RECOVERY_MSGS`: the post-transient CONTINUE
+  instruction and the empty-response nudge) are excluded from the
+  genuine-new-turn allowance reset, so a recovery turn can never refresh its
+  own budget; on the queue-drain path they classify as **recovery**
+  STRUCTURALLY — ``queue_insert`` tags the entry ``kind="synthetic_recovery"``
+  and every queue consumer (merge predicate, sub-agent hold, drain-role
+  assignment, reset-notice consumption) dispatches on that metadata, never on
+  content equality, so classification survives queue transformations and a
+  user pasting the recovery text verbatim still classifies as plain user
+  speech. The transcript append uses the `inject` role (never `user`, so an
+  internal orchestration instruction is never persisted as user-authored
+  history or mirrored to linked channels), draining one does not cancel a
+  pending synthesis, and the tag is merge-breaking so a nudge is never folded
+  into a `[N queued messages merged]` user turn. At `_prompt_depth > 0` the ladder is disabled entirely (terminal
+  notice on the first empty) to prevent nested-turn re-queue loops.
 - **Context compaction**: at ≥ configured threshold (`session.autocompact_pct`, default 90%, valid 5–90), compacts **in place** on both
   backends: kiro-cli via a `/compact` **prompt** (`session/prompt` +
   `_kiro.dev/compaction/status` watch — never the string form of

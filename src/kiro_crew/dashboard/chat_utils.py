@@ -502,6 +502,28 @@ def _edit_queued_by_id(messages: list[dict], queue_id: str, content: str) -> boo
     return False
 
 
+# Runner-injected synthetic recovery instructions (defined here — the shared
+# utils layer — so BOTH the runner's turn logic and the queue/merge predicates
+# below classify them from one source of truth; chat_runner re-exports them).
+# The post-transient CONTINUE resumes an interrupted turn; the empty-response
+# nudge breaks the repeated-empty-generation pattern. Both are orchestration,
+# not user speech.
+_POSTTOKEN_RECOVER_MSG = (
+    "The previous response was interrupted partway through by a transient "
+    "backend error. The work already done above (including any completed tool "
+    "results) is preserved in the conversation. Continue from where it stopped "
+    "to finish the original request — do NOT restart from scratch and do NOT "
+    "re-run steps or tools that already completed successfully."
+)
+_EMPTY_AUTO_CONTINUE_MSG = (
+    "Your previous turn produced no output (the model returned an empty "
+    "response twice). Continue working on the pending request from the "
+    "conversation above and respond now — do NOT restart from scratch and do "
+    "NOT re-run steps or tools that already completed successfully."
+)
+_SYNTHETIC_RECOVERY_MSGS = (_POSTTOKEN_RECOVER_MSG, _EMPTY_AUTO_CONTINUE_MSG)
+
+
 def is_system_injection(content: str) -> bool:
     """True when a queued message is a system injection (sub-agent completion
     or cron notification) rather than a plain user message.
@@ -516,12 +538,40 @@ def is_system_injection(content: str) -> bool:
     )
 
 
+#: Structural queue-entry kind for runner-injected recovery instructions.
+SYNTHETIC_RECOVERY_KIND = "synthetic_recovery"
+
+
+def is_synthetic_recovery_item(item: dict) -> bool:
+    """True when a queue ENTRY is a runner-injected synthetic recovery
+    instruction (post-transient CONTINUE / empty-response nudge).
+
+    Classification is structural — the ``kind`` tag set at ``queue_insert``
+    time — never content equality: metadata survives any queue transformation
+    (merge, prefixing, truncation) and cannot collide with a user pasting the
+    transcript-visible recovery text verbatim (which must classify as a plain
+    user message)."""
+    return item.get("kind") == SYNTHETIC_RECOVERY_KIND
+
+
+def is_system_injection_item(item: dict) -> bool:
+    """Item-aware system-injection predicate for queue-entry consumers.
+
+    Synthetic recovery instructions are orchestration, not user speech: they
+    must BREAK a user-message merge (folding one into a "[N queued messages
+    merged]" turn would flip it back into user-authored, persisted,
+    channel-mirrored history), keep draining during sub-agent runs, and never
+    consume the session-reset notice — same treatment as sub-agent completion
+    and cron injections."""
+    return is_synthetic_recovery_item(item) or is_system_injection(item["content"])
+
+
 def _dequeue_next_message(slot, merge_enabled: bool) -> tuple:
     """Drain the queue: merge non-cron messages or pop the first one."""
     if merge_enabled and len(slot._queue) > 1:
         to_merge: list[dict] = []
         for item in list(slot._queue):
-            if is_system_injection(item["content"]):
+            if is_system_injection_item(item):
                 break
             to_merge.append(item)
         if len(to_merge) > 1:
@@ -544,7 +594,7 @@ def _dequeue_next_system_message(slot) -> tuple:
     only held (user) messages remain queued.
     """
     for i, item in enumerate(slot._queue):
-        if is_system_injection(item["content"]):
+        if is_system_injection_item(item):
             popped = slot.queue_pop(i)
             return popped["content"], [popped]
     return None, []

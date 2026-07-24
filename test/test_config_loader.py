@@ -3052,3 +3052,16 @@ class TestMalformedConfigNeverBricksLoad:
             cfg.instances.probe_failure_threshold
             == defaults.instances.probe_failure_threshold
         )
+
+
+class TestEmptyResponseAutoContinueWiring:
+    """The documented kill switch must be WIRED: load() constructs SessionConfig
+    field-by-field, so an omitted kwarg silently discards a persisted false."""
+
+    def test_persisted_false_survives_load(self) -> None:
+        cfg = _load_from_dict({"session": {"empty_response_auto_continue": False}})
+        assert cfg.session.empty_response_auto_continue is False
+
+    def test_default_is_true(self) -> None:
+        cfg = _load_from_dict({})
+        assert cfg.session.empty_response_auto_continue is True
