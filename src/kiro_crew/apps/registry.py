@@ -33,7 +33,6 @@ import os
 import platform as _platform
 import re
 import shutil
-import signal
 import sys
 import time
 from pathlib import Path
@@ -441,8 +440,10 @@ async def _fetch_app_manifest(
             stderr=asyncio.subprocess.PIPE,
             env=minimal_env(),
             preexec_fn=resource_limit_preexec(),
+            start_new_session=platform_compat.IS_POSIX,
+            creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
         )
-        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=_CLONE_TIMEOUT)
+        _, stderr = await _communicate_with_timeout(proc, timeout=_CLONE_TIMEOUT)
         if proc.returncode != 0:
             logger.debug(
                 "manifest clone failed for %s: %s",
@@ -698,11 +699,30 @@ async def _communicate_with_timeout(
     proc: asyncio.subprocess.Process,
     timeout: float,
 ) -> tuple[bytes, bytes]:
-    """Communicate with a subprocess, killing it on timeout to prevent leaks."""
+    """Communicate with a subprocess, killing its whole process tree on timeout.
+
+    A timed-out ``git clone`` or ``/bin/sh -c <probe>`` can have descendants
+    (SSH, a version-probe binary, ...). Killing only the immediate child with
+    ``proc.kill()`` re-parents those grandchildren, so repeated timeouts leak
+    processes. We instead signal the child's entire process group via
+    ``platform_compat.kill_process_tree_async`` (killpg on POSIX, ``taskkill
+    /T`` on Windows) and then reap the direct child. Callers MUST spawn the
+    child with ``start_new_session`` (POSIX) / ``CREATE_NEW_PROCESS_GROUP``
+    (Windows) so the group signal targets the child's own group and not the
+    gateway's — every caller in this module does. If the group kill fails
+    (e.g. the child already exited, or it was never made a group leader) we
+    fall back to a pid-scoped ``proc.kill()`` so the child is never left
+    un-reaped.
+    """
     try:
         return await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
-        proc.kill()
+        try:
+            await platform_compat.kill_process_tree_async(
+                proc.pid, platform_compat.SIGKILL
+            )
+        except OSError:
+            proc.kill()
         await proc.wait()
         raise
 
@@ -785,6 +805,8 @@ async def _fetch_external_registry_index(
             stderr=asyncio.subprocess.PIPE,
             env=minimal_env(),
             preexec_fn=resource_limit_preexec(),
+            start_new_session=platform_compat.IS_POSIX,
+            creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
         )
         _, _ = await _communicate_with_timeout(proc, timeout=_CLONE_TIMEOUT)
         if proc.returncode != 0:
@@ -961,8 +983,10 @@ async def list_registry() -> list[dict[str, Any]]:
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
                 preexec_fn=resource_limit_preexec(),
+                start_new_session=platform_compat.IS_POSIX,
+                creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
             )
-            await asyncio.wait_for(proc.communicate(), timeout=5)
+            await _communicate_with_timeout(proc, timeout=5)
             if proc.returncode == 0:
                 detected.add(name)
                 logger.info("Detected external install: %s", name)
@@ -1453,8 +1477,10 @@ async def install_from_registry(
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
                 preexec_fn=resource_limit_preexec(),
+                start_new_session=platform_compat.IS_POSIX,
+                creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
             )
-            await asyncio.wait_for(proc.communicate(), timeout=5)
+            await _communicate_with_timeout(proc, timeout=5)
             if proc.returncode == 0:
                 return {
                     "ok": False,
@@ -1549,11 +1575,9 @@ async def install_from_registry(
             try:
                 stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=_SCRIPT_TIMEOUT)
             except asyncio.TimeoutError:
-                # Kill the entire process group (shell + children)
-                try:
-                    os.killpg(proc.pid, signal.SIGTERM)
-                except OSError:
-                    proc.kill()
+                # Kill the entire process group (shell + children), reap the
+                # child, and escalate SIGTERM -> SIGKILL if it ignores the term.
+                await _kill_process_group(proc)
                 return {
                     "ok": False,
                     "name": name,
