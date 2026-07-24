@@ -3,6 +3,8 @@ import { createPortal } from 'react-dom'
 import { Droplet, EyeOff, Ghost, RefreshCw, Undo2, VenetianMask } from 'lucide-react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { KiroGhost } from './KiroGhost'
+import { useTheme } from '../hooks/useTheme'
+import { getThemeBranding } from '../themeBranding'
 import { api } from '../api/client'
 
 interface WelcomeViewProps {
@@ -97,12 +99,22 @@ export default function WelcomeView({
 
   const currentMode = (memoryMode ?? 'persistent') as 'persistent' | 'incognito' | 'temporary'
 
+  // Per-theme brand mark: a registered theme (via the themeBranding seam) may
+  // supply its own logo — render it here too, not just in the App shell, so the
+  // welcome screen matches the active theme. Falls back to the stock KiroGhost
+  // when the theme registers no logo (the standalone build always does).
+  const { colorTheme } = useTheme()
+  const brandLogo = getThemeBranding(colorTheme)?.logo
+  const brandMark = brandLogo
+    ? <img src={brandLogo} alt="" aria-hidden="true" className="w-16 h-16 drop-shadow-lg shrink-0 animate-float rounded-md object-contain" />
+    : <KiroGhost size={64} className="drop-shadow-lg shrink-0 animate-float" />
+
   return (
     <div className="flex flex-col items-center w-full gap-6 px-8">
-      {mode === 'orchestrator' && <KiroGhost size={64} className="drop-shadow-lg shrink-0 animate-float" />}
+      {mode === 'orchestrator' && brandMark}
       <div className="text-center">
         <div className="flex items-center justify-center gap-4">
-          {mode !== 'orchestrator' && <KiroGhost size={64} className="drop-shadow-lg shrink-0 animate-float" />}
+          {mode !== 'orchestrator' && brandMark}
           <h2 className="text-5xl font-light text-text-strong tracking-tight">{mode === 'orchestrator' ? 'Autopilot' : 'What can I do for you?'}</h2>
           {mode !== 'orchestrator' && <div className="w-[64px] shrink-0" />}
         </div>

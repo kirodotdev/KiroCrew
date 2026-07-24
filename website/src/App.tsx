@@ -80,6 +80,7 @@ import BuiltinAppRoute from './apps/BuiltinAppRoute'
 import { getBuiltinIcon } from './apps/builtinIcons'
 import { getThemeBranding } from './themeBranding'
 import { getTopBarWidgets } from './apps/topBarWidgets'
+import { getCapsuleSegments } from './apps/capsuleSegments'
 import { FEATURE_REQUEST_PROMPT } from './prompts/featureRequest'
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
 import { useInstanceShortcuts } from './hooks/useInstanceShortcuts'
@@ -1492,6 +1493,25 @@ export default function App() {
                 </button>)
               }
             }
+            }
+            // Extension slot: downstream-registered capsule segments (e.g. an
+            // edition credential-TTL or spend segment) join the capsule INSIDE
+            // its border/dividers/offline-tint, after the core segments, in
+            // `order`. Each is isolated in its own ErrorBoundary (fallback=null)
+            // so a throwing segment disables only itself. Empty in stock build.
+            // Gated on !capsuleCollapsed exactly like the core readouts, so
+            // collapsing reduces the capsule to the bare connection dot rather
+            // than leaving extension segments + their dividers visible.
+            if (!capsuleCollapsed) {
+              for (const cs of getCapsuleSegments()) {
+                if (cs.hideOnMobile && isMobile) continue
+                const SegComp = cs.component
+                segments.push(
+                  <ErrorBoundary key={cs.id} scope={`capsule-segment:${cs.id}`} fallback={null}>
+                    <SegComp offline={offline} />
+                  </ErrorBoundary>
+                )
+              }
             }
             return (
               /* layout + tween (not spring: springs bounced in a prior
