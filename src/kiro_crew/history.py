@@ -15,9 +15,10 @@ import os
 import re
 import threading
 import time as _time
+from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Generic, TypeVar
 
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import KiroCrewConfig, config_dir
@@ -194,6 +195,105 @@ def _safe_key(key: str) -> str:
     return re.sub(r"[^\w\-.]", "_", key)
 
 
+#: Default upper bound on the number of distinct session keys held in the
+#: in-memory transcript / metadata caches.  The previous implementation used
+#: plain ``dict`` caches that grew one entry per session key touched and never
+#: evicted — on a gateway serving thousands of sessions the parsed message
+#: lists (each up to ~200 messages / 2 MB of source JSONL) accumulated in RAM
+#: for the lifetime of the process.  A bounded LRU keeps hot sessions resident
+#: while giving the working set a deterministic ceiling.
+_TRANSCRIPT_CACHE_MAX = 256
+
+
+_V = TypeVar("_V")
+
+
+class _LRUCache(Generic[_V]):
+    """A tiny bounded LRU cache with a dict-compatible surface.
+
+    Backed by an :class:`collections.OrderedDict`; the most recently
+    accessed key is kept at the end and eviction pops from the front
+    (least-recently-used), so eviction order is fully deterministic for a
+    given access sequence. Supports the subset of the mapping protocol the
+    caller relies on (``get`` / ``__getitem__`` / ``__setitem__`` / ``pop`` /
+    ``__contains__`` / ``__len__`` / ``clear``). Both reads (``get`` /
+    ``__getitem__``) and writes mark a key as recently used.
+
+    ``maxsize <= 0`` disables bounding (behaves like an ordinary dict) so a
+    caller can opt out without a code-path split.
+
+    Thread safety: the same :class:`ConversationLog` instance is touched from
+    the event loop *and* from worker threads (``chat_persistence`` flush /
+    restore, ``chat_regenerate`` / ``chat_rewind`` via ``asyncio.to_thread``,
+    ``handlers/cron`` and ``slack/gateway`` off-loop ``read_messages`` calls).
+    Every method therefore takes ``self._lock`` so each is atomic and the
+    compound read-modify-write sequences (``move_to_end`` + index in ``get`` /
+    ``__getitem__``; the eviction ``len()`` + ``popitem`` loop in
+    ``__setitem__``) cannot interleave with a concurrent ``pop`` / ``clear``.
+    Without it a concurrent ``pop`` landing in the bytecode gap between a
+    successful ``move_to_end`` and the following index raised ``KeyError``
+    (crashing the request/background task) instead of returning the default.
+    The operations are tiny in-memory dict ops, so lock contention is
+    negligible. A plain :class:`threading.Lock` suffices — no method calls
+    another locked method, so the lock is never re-entered.
+    """
+
+    def __init__(self, maxsize: int = _TRANSCRIPT_CACHE_MAX) -> None:
+        self._maxsize = maxsize
+        self._data: "OrderedDict[str, _V]" = OrderedDict()
+        self._lock = threading.Lock()
+
+    def get(self, key: str, default: _V | None = None) -> _V | None:
+        with self._lock:
+            try:
+                self._data.move_to_end(key)
+            except KeyError:
+                return default
+            return self._data[key]
+
+    def __getitem__(self, key: str) -> _V:
+        with self._lock:
+            self._data.move_to_end(key)
+            return self._data[key]
+
+    def __setitem__(self, key: str, value: _V) -> None:
+        with self._lock:
+            self._data[key] = value
+            self._data.move_to_end(key)
+            # Evict least-recently-used entries until within the bound.
+            if self._maxsize > 0:
+                while len(self._data) > self._maxsize:
+                    self._data.popitem(last=False)
+
+    def pop(self, key: str, default: _V | None = None) -> _V | None:
+        with self._lock:
+            return self._data.pop(key, default)
+
+    def pop_prefix(self, prefix: str) -> None:
+        """Remove every entry whose (string) key starts with *prefix*.
+
+        Used to invalidate all cached ``recent()`` windows for one session key
+        (composite keys are ``"<key>\\x00<max>\\x00<roles>"``) without touching
+        other sessions' entries. Atomic under the lock.
+        """
+        with self._lock:
+            doomed = [k for k in self._data if isinstance(k, str) and k.startswith(prefix)]
+            for k in doomed:
+                del self._data[k]
+
+    def __contains__(self, key: object) -> bool:
+        with self._lock:
+            return key in self._data
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._data)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._data.clear()
+
+
 class ConversationLog:
     """Append-only JSONL conversation store with provenance and rotation."""
 
@@ -203,12 +303,46 @@ class ConversationLog:
     _file_locks: dict[str, threading.RLock] = {}
     _file_locks_guard = threading.Lock()
 
-    def __init__(self, base_dir: Path | None = None):
+    def __init__(
+        self,
+        base_dir: Path | None = None,
+        *,
+        cache_max: int = _TRANSCRIPT_CACHE_MAX,
+    ):
         self._dir = base_dir or _sessions_dir()
-        # mtime-based message cache: key → (mtime, messages)
-        self._msg_cache: dict[str, tuple[float, list[dict]]] = {}
-        # mtime-based metadata cache: key → (mtime, metadata)
-        self._meta_cache: dict[str, tuple[float, dict]] = {}
+        # Bounded, mtime-keyed LRU caches (key → (mtime, payload)). Bounded so
+        # a long-lived gateway touching thousands of sessions cannot grow the
+        # parsed-transcript working set without limit. Eviction is
+        # least-recently-used and deterministic; writes invalidate per-key via
+        # _invalidate_cache so a stale entry can never outlive a file change.
+        self._msg_cache: _LRUCache[tuple[float, list[dict]]] = _LRUCache(cache_max)
+        self._meta_cache: _LRUCache[tuple[float, dict]] = _LRUCache(cache_max)
+        #: Bounded, mtime-keyed LRU of formatted ``recent()`` windows keyed by
+        #: (key, max_messages, roles). The tail-read fast path intentionally
+        #: never warms ``_msg_cache`` (it returns a partial view), so a session
+        #: accessed *only* via ``recent()`` — the hot per-turn context path —
+        #: would otherwise re-open and re-parse the file tail on every single
+        #: call. This memoizes the formatted window; the stored mtime guards
+        #: staleness (an append bumps the file mtime, so the entry is
+        #: recomputed on the next call). Own ``_LRUCache`` → own internal lock.
+        self._recent_cache: _LRUCache[tuple[float, list[dict]]] = _LRUCache(cache_max)
+        #: tab_id → [session keys] index for chained reads. Initialized eagerly
+        #: (no ``hasattr`` dance) and guarded by ``self._lock`` because
+        #: ``read_messages_chained`` is reachable from worker threads while the
+        #: event loop may clear it via ``invalidate_tab_id_cache`` — an
+        #: unsynchronized lazy-init/read/clear produced a transient empty index
+        #: or ``AttributeError``.
+        self._tab_id_index: dict[str, list[str]] = {}
+        #: Coarse instance lock protecting the lazily-built ``_tab_id_index``
+        #: rebuild/read/clear. The message/metadata/recent LRUs are each
+        #: internally locked; this guards the shared mutable state that lives
+        #: directly on the instance.
+        self._lock = threading.RLock()
+        #: When True, ``recent``/``recent_chained`` may satisfy a cache miss by
+        #: reading only the TAIL of the session file instead of parsing the
+        #: whole thing (recommendation #10). Correctness-neutral — see
+        #: :meth:`_read_tail_messages`.
+        self._tail_reads = True
 
     def _file_lock(self, key: str) -> threading.RLock:
         """Return the process-wide reentrant lock guarding *key*'s session file.
@@ -327,6 +461,16 @@ class ConversationLog:
         the just-flushed current-turn user message as history when the
         background flush wins the race against kiro-cli spawn.
         """
+        # Recommendation #10: recent-only access with no trailing exclusion can
+        # be served by reading just the TAIL of the file, skipping a full parse
+        # of a potentially 2 MB session log. Only taken on a cache miss (a fresh
+        # full-parse cache is already O(1) and is preferred). Returns None to
+        # signal "fall through to the full read" (missing file, or a full cache
+        # is fresh — in which case the full path is a cheap cache hit).
+        if exclude_last_n == 0 and self._tail_reads:
+            tail = self._recent_via_tail(key, max_messages, roles)
+            if tail is not None:
+                return tail
         messages = self._read_messages(key)
         if exclude_last_n > 0:
             messages = messages[:-exclude_last_n]
@@ -706,7 +850,12 @@ class ConversationLog:
         return [{"role": m["role"], "content": m["content"]} for m in candidates[-max_messages:]]
 
     def read_messages(self, key: str) -> list[dict]:
-        """Public access to session messages."""
+        """Public access to session messages.
+
+        The returned list may be the shared cached object (see
+        :meth:`_read_messages`); treat it as read-only and copy before
+        mutating.
+        """
         return self._read_messages(key)
 
     def read_messages_chained(self, key: str) -> list[dict]:
@@ -723,13 +872,18 @@ class ConversationLog:
         tid = meta.get("tab_id")
         if not tid:
             return self._read_messages(key)
-        if not hasattr(self, "_tab_id_index"):
-            self._tab_id_index: dict[str, list[str]] = {}
-        if tid not in self._tab_id_index:
-            self._rebuild_tab_id_index()
+        # Guard the lazy build/read of the shared _tab_id_index: this method is
+        # reachable from worker threads (chat_persistence restore/save) while the
+        # event loop may clear the index via invalidate_tab_id_cache(). Without
+        # the lock two threads could rebuild concurrently, or one could read a
+        # half-cleared index. Snapshot the key list under the lock, then do the
+        # (potentially slow) per-file reads outside it.
+        with self._lock:
             if tid not in self._tab_id_index:
-                self._tab_id_index[tid] = []  # sentinel: prevent repeated rebuilds
-        keys = self._tab_id_index.get(tid, [])
+                self._rebuild_tab_id_index()
+                if tid not in self._tab_id_index:
+                    self._tab_id_index[tid] = []  # sentinel: prevent repeated rebuilds
+            keys = list(self._tab_id_index.get(tid, []))
         if not keys:
             return self._read_messages(key)
         all_msgs: list[dict] = []
@@ -738,7 +892,11 @@ class ConversationLog:
         return all_msgs or self._read_messages(key)
 
     def _rebuild_tab_id_index(self) -> None:
-        """Scan all dashboard session files and build tab_id → [keys] mapping."""
+        """Scan all dashboard session files and build tab_id → [keys] mapping.
+
+        Caller MUST hold ``self._lock`` — this replaces the shared
+        ``_tab_id_index`` mapping.
+        """
         index: dict[str, list[str]] = {}
         for path in sorted(self._dir.glob("dashboard_chat-*.jsonl")):
             try:
@@ -754,7 +912,7 @@ class ConversationLog:
 
     def invalidate_tab_id_cache(self) -> None:
         """Clear the tab_id index so it's rebuilt on next chained read."""
-        if hasattr(self, "_tab_id_index"):
+        with self._lock:
             self._tab_id_index.clear()
 
     def delete_session(self, key: str) -> bool:
@@ -848,6 +1006,17 @@ class ConversationLog:
         """Read all non-metadata entries from a session JSONL file.
 
         Uses mtime-based caching to avoid re-parsing unchanged files.
+
+        .. warning::
+            On a cache hit this returns the **shared cached list object by
+            identity** (see ``test_cache_hit_returns_same_object``) — the
+            memoization that makes repeated reads O(1). Callers MUST treat the
+            result as **immutable**: mutating it in place (append/pop/sort or
+            editing a contained dict) silently corrupts the cache for every
+            future reader, and — combined with cross-thread access — for other
+            threads iterating the same list concurrently. Slice or ``list(...)``
+            it before mutating. All current callers copy/slice; this contract
+            keeps that invariant explicit.
         """
         path = self._path(key)
         if not path.exists():
@@ -875,10 +1044,131 @@ class ConversationLog:
         self._msg_cache[key] = (mtime, messages)
         return messages
 
+    #: Starting tail window (bytes) for :meth:`_read_tail_messages`. Sized to
+    #: comfortably cover a few dozen JSONL message lines in one read; grown
+    #: geometrically if it doesn't yield enough matching messages.
+    _TAIL_MIN_BYTES = 8_192
+    #: Rough average serialized-message size used to pick an initial window
+    #: from ``max_messages`` so a large request opens a proportionally larger
+    #: window on the first read.
+    _TAIL_AVG_MSG_BYTES = 512
+    #: Max window-doubling attempts before we accept whatever the window held
+    #: (it is always correct: the newest messages are always inside the tail).
+    _TAIL_MAX_GROWTHS = 6
+
+    def _recent_via_tail(
+        self, key: str, max_messages: int, roles: set[str] | None
+    ) -> list[dict] | None:
+        """Return the formatted recent window via a tail read, or None to defer.
+
+        Returns None (caller falls through to the full-read path) when the file
+        is missing OR a fresh full-parse cache already exists — in both cases
+        the full path is at least as cheap and keeps the shared cache warm.
+        Otherwise returns the last *max_messages* entries (role-filtered) as
+        ``[{role, content}]``.
+
+        The formatted window is memoized in ``_recent_cache`` keyed by
+        (key, max_messages, roles) with the file mtime, so a session accessed
+        only via ``recent()`` — which never warms ``_msg_cache`` — is served
+        O(1) from memory on subsequent turns instead of re-opening and
+        re-parsing the file tail on every call. The mtime guard makes the
+        memo self-invalidating: an :meth:`append` bumps the file mtime, so the
+        stale entry misses and is recomputed. A fresh list of fresh dicts is
+        returned each call so callers can freely mutate the result without
+        corrupting the shared entry.
+        """
+        path = self._path(key)
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            return None  # missing/unreadable → let the full path return []
+        cached = self._msg_cache.get(key)
+        if cached and cached[0] == mtime:
+            return None  # fresh full cache → full path is a cheap O(1) hit
+        rc_key = self._recent_cache_key(key, max_messages, roles)
+        rc = self._recent_cache.get(rc_key)
+        if rc is not None and rc[0] == mtime:
+            return [dict(m) for m in rc[1]]  # memo hit — no disk I/O
+        tail = self._read_tail_messages(path, max_messages, roles)
+        formatted = [{"role": m["role"], "content": m["content"]} for m in tail]
+        self._recent_cache[rc_key] = (mtime, formatted)
+        return [dict(m) for m in formatted]
+
+    @staticmethod
+    def _recent_cache_key(key: str, max_messages: int, roles: set[str] | None) -> str:
+        """Build a stable ``_recent_cache`` key from the recent() parameters.
+
+        ``\\x00`` cannot appear in a session key, so it is an unambiguous field
+        separator; roles are sorted so ``{"user", "assistant"}`` and
+        ``{"assistant", "user"}`` collapse to the same entry.
+        """
+        roles_part = ",".join(sorted(roles)) if roles else ""
+        return f"{key}\x00{max_messages}\x00{roles_part}"
+
+    def _read_tail_messages(
+        self, path: Path, max_messages: int, roles: set[str] | None
+    ) -> list[dict]:
+        """Read the last *max_messages* messages by seeking to the file tail.
+
+        Reads a bounded window from the END of the file and parses backwards,
+        growing the window geometrically until it holds at least *max_messages*
+        matching (role-filtered) messages or the window covers the whole file.
+        The newest messages always sit at EOF, so the returned slice is always
+        the true most-recent window — correctness is identical to a full parse
+        followed by ``[-max_messages:]``; only older lines beyond the window are
+        skipped, and those can never be part of the answer.
+
+        Metadata lines and lines that don't parse as JSON are ignored, matching
+        :meth:`_read_messages`. Never populates ``_msg_cache`` (the result is a
+        partial view, not the authoritative full list).
+        """
+        if max_messages <= 0:
+            return []
+        try:
+            size = path.stat().st_size
+        except OSError:
+            return []
+        window = max(self._TAIL_MIN_BYTES, max_messages * self._TAIL_AVG_MSG_BYTES * 2)
+        messages: list[dict] = []
+        for _ in range(self._TAIL_MAX_GROWTHS):
+            covered = size <= window
+            try:
+                with open(path, "rb") as f:
+                    if not covered:
+                        f.seek(size - window)
+                        f.readline()  # discard the (likely partial) first line
+                    raw = f.read().decode("utf-8", errors="replace")
+            except OSError:
+                return []
+            messages = []
+            for line in raw.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if data.get("_type") == "metadata":
+                    continue
+                if roles and data.get("role") not in roles:
+                    continue
+                messages.append(data)
+            if covered or len(messages) >= max_messages:
+                break
+            window *= 4
+        return messages[-max_messages:]
+
     def _invalidate_cache(self, key: str) -> None:
         """Invalidate caches for a key after a write operation."""
         self._msg_cache.pop(key, None)
         self._meta_cache.pop(key, None)
+        # Also drop any memoized recent() windows for this key. Necessary
+        # because housekeeping rewrites (mark_consolidated/update_metadata/
+        # rewrite_session/rotation) restore the pre-write mtime via
+        # _restore_mtime, so the recent cache's mtime guard alone would let a
+        # stale window survive a content change.
+        self._recent_cache.pop_prefix(f"{key}\x00")
 
     #: Bytes read from the end of a session file for the last-message preview.
     #: One tail block comfortably covers several trailing JSONL lines without
