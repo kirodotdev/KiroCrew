@@ -578,3 +578,54 @@ No separate workspace needed. The installed app IS the workspace.
 - Patch (1.0.x): Bug fixes, wording changes
 - Minor (1.x.0): New features, new crons, UI additions
 - Major (x.0.0): Breaking changes to state format, removed features
+## In-Process Backend for External Apps (CRITICAL — differs from builtins)
+
+External (installed) apps CAN ship a Python backend that runs inside the gateway
+process — but the contract DIFFERS from builtins (`auto_research` etc.):
+
+- Manifest: use ONLY `backend.hooks` (`"routes": "backend.routes:register_routes"`).
+  Do NOT set the `backend.routes` base-path string — that field triggers the
+  STANDALONE-PROCESS proxy, which serves dead stubs that shadow your handlers.
+- `register_routes(ctx)` receives an AppContext and MUST return `list[AppRoute]`
+  (`from kiro_crew.apps.route_registry import AppRoute`) with paths RELATIVE to
+  `/api/apps/<name>`; `{params}` land in `request.match_info`.
+- Handlers take `(request, ctx)`; gateway state is `request.app["state"]`;
+  auth-check `request.get("user") is not None` → else 401.
+- The builtin pattern (direct `app.router.add_get`) silently never dispatches for
+  external apps — the RouteRegistry catch-all (`/api/apps/{app_name}/{path:.*}`)
+  shadows it.
+- Backend hook changes need a gateway restart OR an app disable→enable cycle
+  (runtime deregister + module unload + fresh load). UI files reload without.
+- Trust: backend code runs UNSANDBOXED with full gateway privileges (SEC-012
+  warning logged; `agent.apps_allow_third_party=false` refuses it entirely).
+
+## Dev Loop for App UIs
+
+- **Preferred: dev mode** — `kirocrew app dev <name>` (off: `--off`). Serves that
+  app's UI with `Cache-Control: no-store` and watches its `ui/` dir; changes
+  broadcast `app_reload` and the dashboard hot-swaps the app in ~1s. The flag
+  lives in `installed.json` and toggles live.
+- To edit in your source tree, symlink the installed UI dir to source:
+  `mv ~/.kirocrew/apps/<n>/ui ~/.kirocrew/apps/<n>/ui.bak && ln -s <src>/ui ~/.kirocrew/apps/<n>/ui`
+  (serving containment check and the dev watcher both follow symlinks).
+  On native Windows use a directory junction instead (PowerShell):
+  `Rename-Item "$env:USERPROFILE\.kirocrew\apps\<n>\ui" ui.bak; New-Item -ItemType Junction -Path "$env:USERPROFILE\.kirocrew\apps\<n>\ui" -Target "<src>\ui"`
+  (`pathlib` resolves junctions the same way, so serving and the watcher work;
+  the lifecycle clobber below applies identically — junctions are also never
+  preserved by the install/update safe-copy).
+- **⚠️ Symlinks do NOT survive the app lifecycle.** `install_app`/`update_app`
+  (reinstall, App Store Update, registry refresh) re-copy source over the
+  installed dir with a DELIBERATE symlink-stripping safe-copy (security: blocks
+  `ui -> ~/.docker` style serving). Your symlink is silently replaced by a
+  frozen snapshot: hot reload stops, UI goes stale, no error. Symptom:
+  `ls -l ~/.kirocrew/apps/<n>/ui` shows a real dir, not a link. Fix: re-create
+  the symlink after ANY install/update, and re-check dev mode is still on.
+- Same clobber applies to locally-edited SHIPPED skills: installed skill files
+  under `~/.kirocrew/skills/` re-sync from the KiroCrew package on update —
+  durable skill changes must land in the repo (`skills/` in the KiroCrew source).
+- Validate `.mjs` before relying on a reload: `node --check ui/index.mjs` —
+  a parse error surfaces only as "Failed to load <App>: Unexpected token".
+- Avoid deep `_jsx` nesting in one expression; prefer small named components.
+- Dark mode: never pair a solid light accent bg with hardcoded dark text for
+  selected states — use a translucent accent tint (e.g. `rgba(124,58,237,.14)`)
+  with `var(--text)`/`var(--muted)`. Self-contained pills (own bg+fg) are fine.
