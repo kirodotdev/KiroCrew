@@ -68,6 +68,23 @@ REFRESH_COOKIE_PATH = "/api/auth"
 # treated as theft and the chain is revoked.
 REFRESH_GRACE_SECS = 60
 
+# Grace acceptance is CHAIN-HEAD-ONLY. We retain exactly ONE recently-consumed
+# jti per chain — the single most-recently-rotated one (the chain head) — as
+# the authenticator for a same-IP, in-window replay. An earlier design widened
+# this to a bounded history of the last N consumed jtis so several lagging tabs
+# could each authenticate a benign race; that was a deliberate weakening of the
+# RFC 6819 §5.2.2.3 reuse signal (any of the last N consumed jtis, replayed
+# same-IP within the window, resolved to the live head instead of tripping
+# chain revocation) and was flagged by the Design + Long-Term Impact reviewers.
+# The maintainer chose the STRONGER posture: only the chain head is accepted, so
+# any OLDER rotated jti replayed within the window is treated as token reuse and
+# revokes the chain. This restores an undiluted theft signal at the cost of some
+# multi-tab UX (a second stale tab racing a refresh may be logged out). The
+# single-tab / single-refresh false-revocation race (a duplicate request
+# presenting the just-consumed head) is still absorbed. Keep this behaviour and
+# the spec (``docs/system-specs/features/dashboard-token-auth.md`` — "Multi-tab
+# grace window") in sync.
+
 # Persistence file name (resolved against ``config_dir()`` lazily so
 # imports stay cheap).
 _STATE_FILE_NAME = "refresh_chains.json"
@@ -80,8 +97,16 @@ class RefreshStateManager:
     """Thread-safe state for refresh-token rotation and chain revocation.
 
     Persists consumed-``jti`` and revoked-``chain_id`` records to disk so
-    rotation history survives gateway restarts. Atomic-rename writes guard
+    reuse-detection state survives gateway restarts. Atomic-rename writes guard
     against truncation on crash.
+
+    The multi-tab grace state (``_grace_replacements``) is deliberately
+    IN-MEMORY only — it is never serialized by ``_persist()``/``_load()``.
+    A gateway restart that lands inside a 60s grace window therefore drops the
+    grace entry while ``consumed_jtis`` survives, so a lagging tab's in-flight
+    refresh could still hit reuse-detection. This is a rare, self-correcting
+    window (the user simply re-mints via the ``kirocrew token`` URL) and keeping
+    short-lived race state off disk avoids persisting live token material.
     """
 
     def __init__(self, state_path: Path | None = None) -> None:
@@ -90,9 +115,19 @@ class RefreshStateManager:
         self._consumed_jtis: dict[str, float] = {}
         # chain_id -> exp (the latest member's session_exp)
         self._revoked_chains: dict[str, float] = {}
-        # chain_id -> (jti, exp, ip, replacement_pair_json) so the multi-tab
-        # grace window can return the SAME replacement pair instead of
-        # minting yet another rotation each time the same tab retries.
+        # chain_id -> (jti, ts, ip, replacement_pair_json) for the single
+        # most-recently-consumed jti on the chain (the CHAIN HEAD). The
+        # multi-tab grace window re-serves this replacement pair instead of
+        # minting yet another rotation when the just-consumed head jti is
+        # replayed same-IP within the window.
+        #
+        # Exactly ONE entry per chain (chain-head-only): each consumption
+        # OVERWRITES the prior entry, so only the newest jti authenticates a
+        # grace replay. An older rotated jti no longer matches and is treated
+        # as token reuse — preserving the undiluted RFC 6819 §5.2.2.3 theft
+        # signal. The recorded replacement always carries the current live
+        # head token, so re-serving it can never roll a shared cookie jar back
+        # to an already-consumed jti.
         self._grace_replacements: dict[str, tuple[str, float, str, str]] = {}
         self._state_path = state_path
         self._load()
@@ -118,6 +153,10 @@ class RefreshStateManager:
         """
         with self._lock:
             self._consumed_jtis[jti] = exp
+            # Chain-head-only: record ONLY this (the newest) consumed jti as
+            # the grace authenticator, overwriting any prior entry for the
+            # chain. An older rotated jti therefore can no longer authenticate
+            # a same-IP replay — it trips reuse-detection instead.
             self._grace_replacements[chain_id] = (jti, time.time(), ip, replacement)
         self.evict_expired()
         self._persist()
@@ -146,20 +185,41 @@ class RefreshStateManager:
         ip: str,
         now: float | None = None,
     ) -> str | None:
-        """Return the cached replacement payload if the multi-tab grace applies.
+        """Return the CHAIN-HEAD replacement payload if the multi-tab grace applies.
 
-        The grace window is: same chain, same jti, same source IP, within
-        ``REFRESH_GRACE_SECS`` seconds. Returns the JSON-encoded payload that
-        should be re-served, or ``None`` if no grace applies.
+        Grace acceptance is **chain-head-only**: we retain exactly one
+        recently-consumed jti per chain — the most-recently-rotated one (the
+        chain head) — and only accept a replay of *that* jti. The presented
+        ``jti`` must equal the recorded head jti, and the replay must be from
+        the same source IP within ``REFRESH_GRACE_SECS``. If so we re-serve the
+        head's replacement pair (which carries the current live, not-yet-consumed
+        refresh token) instead of minting yet another rotation — absorbing the
+        benign single-refresh race where a duplicate request presents the
+        just-consumed head.
+
+        Any OLDER rotated jti (one the active tab has already rotated past) does
+        NOT match the head and returns ``None``, so the caller treats it as
+        token reuse and revokes the chain. This is the deliberate, stronger
+        RFC 6819 §5.2.2.3 posture chosen by the maintainer over a wider
+        multi-jti history: it keeps the theft signal undiluted at the cost of
+        some multi-tab UX (a second stale tab racing a refresh may be logged
+        out). Because only the live head pair is ever recorded and served, a
+        slow lagging response can never roll a shared cookie jar back to an
+        already-consumed jti.
+
+        Returns the JSON-encoded head payload to re-serve, or ``None`` if no
+        grace applies.
         """
         if now is None:
             now = time.time()
         with self._lock:
             entry = self._grace_replacements.get(chain_id)
-            if not entry:
+            if entry is None:
                 return None
-            cached_jti, ts, cached_ip, replacement = entry
-            if cached_jti != jti:
+            head_jti, ts, cached_ip, replacement = entry
+            # Chain-head-only: accept a replay of ONLY the single most-recently-
+            # rotated jti. Anything older is suspected reuse -> no grace.
+            if jti != head_jti:
                 return None
             if cached_ip != ip:
                 return None
@@ -178,9 +238,10 @@ class RefreshStateManager:
             for chain_id, exp in list(self._revoked_chains.items()):
                 if exp < now:
                     self._revoked_chains.pop(chain_id, None)
-            for chain_id, (_, ts, _, _) in list(self._grace_replacements.items()):
-                # Grace replacements are short-lived
-                if now - ts > REFRESH_GRACE_SECS * 2:
+            for chain_id, entry in list(self._grace_replacements.items()):
+                # Grace entries are short-lived: drop any whose recorded
+                # timestamp is older than 2x the grace window.
+                if now - entry[1] > REFRESH_GRACE_SECS * 2:
                     self._grace_replacements.pop(chain_id, None)
 
     def clear_all(self) -> None:

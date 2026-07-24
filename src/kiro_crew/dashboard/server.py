@@ -140,6 +140,7 @@ from kiro_crew.dashboard.token_auth import (
     _is_spa_shell_request,
     token_auth_middleware,
     token_embed_parent_port,
+    warm_auth_singletons,
 )
 from kiro_crew.deploy import _register_core_skills as _register_deploy_skills
 from kiro_crew.deploy.handlers import register_routes as _register_deploy_routes
@@ -2002,6 +2003,11 @@ async def start_dashboard(
 
     host_canonical_redirect = build_host_canonical_redirect(_canonical_host)
 
+    # Warm the auth singletons (signing secret + revoked-nonce store) off the
+    # event loop BEFORE building the middleware chain, so no blocking key-file
+    # I/O (or Windows icacls subprocess) lands on the loop on the first auth op.
+    await warm_auth_singletons()
+
     # Explicit middleware ordering — self-documenting and immune to future insertions
     app.middlewares[:] = [
         # Outermost: privacy-safe per-route latency (rec #1). Times the FULL
@@ -2443,6 +2449,10 @@ async def start_api_server(
                     content_type="text/plain",
                 )
         return await handler(request)  # type: ignore[operator]
+
+    # Warm the auth singletons off the event loop before building the chain
+    # (parity with start_dashboard) so no blocking key-file I/O hits the loop.
+    await warm_auth_singletons()
 
     # Explicit ordering mirrors start_dashboard: latency → host → csrf → token → audit.
     app.middlewares[:] = [

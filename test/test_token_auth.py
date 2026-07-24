@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import errno
 import os
 import socket
 import string
+import threading
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -881,6 +883,192 @@ def test_signing_secret_persisted_across_loads(tmp_path, monkeypatch) -> None:
     # Second load returns the SAME secret (persistence).
     s2 = ta._load_or_create_secret()
     assert s1 == s2
+
+
+def test_signing_secret_concurrent_first_init_converges(tmp_path, monkeypatch) -> None:
+    """Regression (PR #338 / GPT 5.6 HIGH): concurrent first-time inits MUST
+    converge on a single signing key.
+
+    ``warm_auth_singletons()`` primes the signing secret BEFORE the gateway
+    binds its port, so two fresh gateways sharing one data home can both
+    observe ``token_signing.key`` as absent at once. The old load-or-create
+    used ``O_CREAT | O_TRUNC``: each racer generated its OWN key and the last
+    writer's bytes landed on disk, while the loser kept a divergent in-memory
+    key — every token it signed was then invalid to a sibling instance / after
+    a restart (silent auth corruption). The fix makes creation exclusive
+    (``O_CREAT | O_EXCL`` + read-the-winner with bounded retry), so every racer
+    returns the ONE key that is persisted on disk.
+    """
+    from kiro_crew.dashboard import token_secret as ts
+
+    monkeypatch.setattr("kiro_crew.config.loader.config_dir", lambda: tmp_path)
+    key_file = tmp_path / ts._SECRET_KEY_FILE
+    assert not key_file.exists()
+
+    n = 8
+    barrier = threading.Barrier(n)
+    results: list[bytes] = []
+    errors: list[BaseException] = []
+    lock = threading.Lock()
+
+    def _worker() -> None:
+        try:
+            # Release all workers simultaneously to maximise the odds they all
+            # observe the key file as absent — the exact first-init race.
+            barrier.wait()
+            secret = ts._load_or_create_secret()
+        except BaseException as exc:  # noqa: BLE001 - surfaced via assert below
+            with lock:
+                errors.append(exc)
+            return
+        with lock:
+            results.append(secret)
+
+    threads = [threading.Thread(target=_worker) for _ in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert not errors, f"workers raised: {errors!r}"
+    assert len(results) == n
+    on_disk = key_file.read_bytes()
+    assert len(on_disk) >= 32
+    # Crux: every racer converged on the SINGLE key persisted on disk.
+    assert all(r == on_disk for r in results), "concurrent inits diverged from the on-disk key"
+    assert len(set(results)) == 1, "more than one distinct signing key was issued"
+    # Winner's create still locked the file down to owner-only.
+    assert (key_file.stat().st_mode & 0o777) == 0o600
+
+
+def test_signing_secret_existing_file_never_overwritten(tmp_path, monkeypatch) -> None:
+    """Regression (PR #338): warming must never overwrite or truncate an
+    existing key file.
+
+    A pre-existing valid key is read verbatim across repeated warms (multiple
+    gateway boots against the same home); its bytes, size, and inode are
+    untouched, so restarts / sibling instances keep signing with the identical
+    key.
+    """
+    from kiro_crew.dashboard import token_secret as ts
+
+    monkeypatch.setattr("kiro_crew.config.loader.config_dir", lambda: tmp_path)
+    key_file = tmp_path / ts._SECRET_KEY_FILE
+    original = b"K" * 48  # deterministic, >= 32 bytes
+    key_file.write_bytes(original)
+    os.chmod(key_file, 0o600)
+    stat_before = key_file.stat()
+
+    for _ in range(5):
+        got = ts._load_or_create_secret()
+        assert got == original, "existing key must be returned verbatim"
+
+    assert key_file.read_bytes() == original, "existing key file was mutated"
+    stat_after = key_file.stat()
+    assert stat_after.st_size == len(original), "existing key file was truncated/rewritten"
+    assert stat_after.st_ino == stat_before.st_ino, "existing key file was recreated"
+
+
+def test_signing_secret_write_failure_cleans_up_incomplete_file(
+    tmp_path, monkeypatch
+) -> None:
+    """Regression (PR #338 / GPT 5.6 HIGH): a write failure DURING exclusive
+    creation must NOT leave a poisoned short key file behind.
+
+    The exclusive creator opens ``token_signing.key`` with ``O_CREAT|O_EXCL``
+    then writes 32 bytes. If that write fails partway (ENOSPC, quota) the file
+    exists but is < 32 bytes. Previously the incomplete file was left on disk:
+    every future boot's fast-path read saw < 32 bytes, the O_EXCL create then
+    hit FileExistsError, the bounded retry budget exhausted, and the gateway
+    fell back to a FRESH ephemeral key on EVERY restart (tokens die on each
+    restart; concurrent gateways cannot validate one another) until a human
+    deleted the file by hand.
+
+    The fix removes the creator's OWN incomplete file (guarded by a
+    device+inode identity check so a racing sibling's valid key is never
+    deleted) before degrading to an ephemeral secret, so the NEXT init can
+    create a valid, persisted key.
+    """
+    from kiro_crew.dashboard import token_secret as ts
+
+    monkeypatch.setattr("kiro_crew.config.loader.config_dir", lambda: tmp_path)
+    key_file = tmp_path / ts._SECRET_KEY_FILE
+    assert not key_file.exists()
+
+    real_write = os.write
+    calls = {"n": 0}
+
+    def _failing_write(fd, data):  # type: ignore[no-untyped-def]
+        # Fail the FIRST os.write (the key-persist write inside the
+        # exclusive-create path) with ENOSPC; delegate every other write to the
+        # real syscall so the second init below can persist a real key.
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return real_write(fd, data)
+
+    monkeypatch.setattr(os, "write", _failing_write)
+
+    # (a) A write failure still yields a working (ephemeral) secret this run.
+    secret = ts._load_or_create_secret()
+    assert calls["n"] >= 1, "the faulting write path was never exercised"
+    assert len(secret) >= ts._MIN_KEY_BYTES
+
+    # (b) The creator removed its OWN incomplete file — nothing short/empty is
+    #     left behind to poison future boots.
+    assert not key_file.exists(), "incomplete key file was left on disk (poisoned)"
+
+    # Restore a working write and prove the path is no longer poisoned: the
+    # next init must create a full, durable, owner-only key and return it.
+    monkeypatch.setattr(os, "write", real_write)
+    secret2 = ts._load_or_create_secret()
+    assert key_file.exists(), "next init failed to create a key file"
+    on_disk = key_file.read_bytes()
+    assert len(on_disk) >= ts._MIN_KEY_BYTES, "next init wrote a short/incomplete key"
+    assert secret2 == on_disk, "next init did not return the persisted key"
+    assert (key_file.stat().st_mode & 0o777) == 0o600
+
+
+def test_signing_secret_incomplete_file_not_deleted_if_replaced(
+    tmp_path, monkeypatch
+) -> None:
+    """The write-failure cleanup must NOT delete a valid key that a racing
+    sibling substituted at the same path (identity guard on st_dev/st_ino).
+
+    Simulate the race deterministically: the failing write, before raising,
+    replaces the just-created (still-empty) key file with a DIFFERENT inode
+    holding a valid 32-byte key — exactly what a sibling gateway that won a
+    subsequent create would leave. The cleanup's ``os.lstat`` identity check
+    must see the mismatch and leave the sibling's key untouched.
+    """
+    from kiro_crew.dashboard import token_secret as ts
+
+    monkeypatch.setattr("kiro_crew.config.loader.config_dir", lambda: tmp_path)
+    key_file = tmp_path / ts._SECRET_KEY_FILE
+    sibling_key = b"S" * 48  # distinct, valid (>= 32 bytes)
+
+    real_write = os.write
+    calls = {"n": 0}
+
+    def _failing_write(fd, data):  # type: ignore[no-untyped-def]
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # Replace our empty file with a sibling's valid key at a NEW inode
+            # (atomic rename over the path), then fail our own write.
+            tmp = tmp_path / "sibling.key"
+            tmp.write_bytes(sibling_key)
+            os.replace(tmp, key_file)
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return real_write(fd, data)
+
+    monkeypatch.setattr(os, "write", _failing_write)
+
+    secret = ts._load_or_create_secret()
+    # We failed our write and fell back to ephemeral for THIS run...
+    assert len(secret) >= ts._MIN_KEY_BYTES
+    # ...but the sibling's valid key at the substituted inode was NOT deleted.
+    assert key_file.exists(), "identity guard wrongly deleted the sibling's key"
+    assert key_file.read_bytes() == sibling_key, "sibling's key bytes were mutated"
 
 
 def test_evict_expired_removes_old_entries() -> None:
@@ -1971,3 +2159,91 @@ def test_token_embed_parent_port_absent_forged_or_oob() -> None:
     # Out-of-range port claim is rejected.
     oob = generate_token("local-app", extra={"embed_parent_port": "70000"})
     assert token_embed_parent_port(oob) is None
+
+
+# -- Middleware warm-up: signing secret primed at construction ----------------
+
+
+def test_warm_auth_singletons_primes_both_off_loop(monkeypatch) -> None:
+    """Regression: warm_auth_singletons() must prime BOTH _get_secret() and
+    _get_revoked_store() — off the event loop (via asyncio.to_thread) — before
+    the middleware serves requests.
+
+    Both lazily do blocking file I/O on first use (read/create
+    token_signing.key + read the nonce denylist; on Windows an icacls
+    subprocess to lock the DACL). They are NO LONGER warmed synchronously in
+    the token_auth_middleware() factory, because that factory runs on the loop
+    via the async start_dashboard()/start_api_server(). The async startup paths
+    await this helper instead, so the first auth op hits warm singletons with
+    no blocking I/O on the loop.
+    """
+    import asyncio
+
+    import kiro_crew.dashboard.token_auth as _ta
+
+    calls = {"secret": 0, "store": 0}
+    real_secret = _ta._get_secret
+    real_store = _ta._get_revoked_store
+
+    def spy_secret() -> bytes:
+        calls["secret"] += 1
+        return real_secret()
+
+    def spy_store():
+        calls["store"] += 1
+        return real_store()
+
+    monkeypatch.setattr(_ta, "_get_secret", spy_secret)
+    monkeypatch.setattr(_ta, "_get_revoked_store", spy_store)
+
+    asyncio.run(_ta.warm_auth_singletons())
+
+    assert calls["secret"] >= 1, "warm_auth_singletons must warm _get_secret()"
+    assert calls["store"] >= 1, "warm_auth_singletons must warm _get_revoked_store()"
+
+
+def test_middleware_factory_does_no_blocking_warmup() -> None:
+    """Source guard: the token_auth_middleware() factory body must NOT warm the
+    auth singletons SYNCHRONOUSLY (a bare `_get_secret()` / `_get_revoked_store()`
+    statement) — that would run blocking key-file I/O on the event loop (the
+    factory is called from async start paths). Warming lives in the async
+    warm_auth_singletons() helper instead, which offloads via asyncio.to_thread.
+
+    NB: the factory's nested request-path middleware still *references*
+    `_get_revoked_store()` (e.g. `_get_revoked_store().is_revoked(...)`, and a
+    `to_thread`-wrapped revoke) — those are legitimate, not a synchronous
+    warm-up — so we check for the bare standalone warm-up STATEMENT, not mere
+    substring presence."""
+    import inspect
+
+    from kiro_crew.dashboard.token_auth import (
+        token_auth_middleware,
+        warm_auth_singletons,
+    )
+
+    factory_lines = {
+        ln.strip() for ln in inspect.getsource(token_auth_middleware).splitlines()
+    }
+    # The bare synchronous warm-up statements must be gone from the factory.
+    assert "_get_secret()" not in factory_lines
+    assert "_get_revoked_store()" not in factory_lines
+
+    # The async helper must offload BOTH warm-ups to a worker thread.
+    warm_src = inspect.getsource(warm_auth_singletons)
+    assert "asyncio.to_thread(_get_secret)" in warm_src
+    assert "asyncio.to_thread(_get_revoked_store)" in warm_src
+
+
+def test_start_paths_warm_auth_singletons_off_loop() -> None:
+    """Source guard: both async server startup paths must await
+    warm_auth_singletons() so the blocking key-file I/O is primed off the loop
+    before the middleware chain is built."""
+    import inspect
+
+    from kiro_crew.dashboard import server as _srv
+
+    for fn in (_srv.start_dashboard, _srv.start_api_server):
+        src = inspect.getsource(fn)
+        assert "await warm_auth_singletons()" in src, (
+            f"{fn.__name__} must await warm_auth_singletons() before serving"
+        )

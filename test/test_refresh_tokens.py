@@ -292,6 +292,205 @@ def test_tr_u_15e_handler_rate_limiter_empty_ip_fails_closed():
     assert auth_refresh._rate_limited("198.51.100.99", now=3.0) is False
 
 
+def test_tr_u_15f_rate_buckets_evict_stale_ips():
+    """Regression: the per-IP rate-bucket map must not grow without bound.
+
+    Every distinct source IP that ever hits /api/auth/refresh used to leave a
+    permanent entry (an empty deque once its timestamps aged past the window),
+    so a wide spread of one-shot client IPs (or a spoofed-XFF pump) slowly
+    leaked memory. The periodic sweep must evict stale/empty buckets.
+    """
+    from kiro_crew.dashboard.handlers import auth_refresh as ar
+
+    # Isolate: clear the map and force a sweep on the next call.
+    with ar._refresh_rate_lock:
+        ar._refresh_rate_buckets.clear()
+        ar._refresh_rate_last_sweep = float("-inf")
+
+    base = 5_000_000.0
+    # Two one-shot IPs each record a single call at t=base.
+    assert ar._rate_limited("192.0.2.10", now=base) is False
+    assert ar._rate_limited("192.0.2.11", now=base) is False
+    assert "192.0.2.10" in ar._refresh_rate_buckets
+    assert "192.0.2.11" in ar._refresh_rate_buckets
+
+    # Well past the window + sweep interval, a DIFFERENT IP calls in. The sweep
+    # must evict the two now-stale buckets (their only timestamp aged out) while
+    # keeping the fresh caller.
+    later = (
+        base
+        + ar._REFRESH_RATE_WINDOW_SECS
+        + ar._REFRESH_RATE_SWEEP_INTERVAL_SECS
+        + 5
+    )
+    assert ar._rate_limited("192.0.2.99", now=later) is False
+    assert "192.0.2.10" not in ar._refresh_rate_buckets
+    assert "192.0.2.11" not in ar._refresh_rate_buckets
+    assert "192.0.2.99" in ar._refresh_rate_buckets
+
+    # Cleanup so we don't leak state into sibling tests.
+    with ar._refresh_rate_lock:
+        ar._refresh_rate_buckets.clear()
+        ar._refresh_rate_last_sweep = float("-inf")
+
+
+def test_tr_u_15g_rate_buckets_hard_capped():
+    """Backstop bound: once the map is at _REFRESH_RATE_MAX_BUCKETS, a
+    previously-unseen source IP is rate-limited (fail-closed) rather than
+    admitted by evicting a live bucket. The map never grows past the cap and
+    no live bucket is dropped to make room for a newcomer."""
+    from kiro_crew.dashboard.handlers import auth_refresh as ar
+
+    with ar._refresh_rate_lock:
+        ar._refresh_rate_buckets.clear()
+        ar._refresh_rate_last_sweep = float("-inf")
+
+    base = 6_000_000.0
+    import collections as _c
+
+    # Fill exactly to the cap with live (recently-active) buckets, and freeze
+    # the sweep so only the fail-closed cap check governs new IPs.
+    with ar._refresh_rate_lock:
+        for i in range(ar._REFRESH_RATE_MAX_BUCKETS):
+            ar._refresh_rate_buckets[f"live-{i}"] = _c.deque([base])
+        ar._refresh_rate_last_sweep = base + 10 * ar._REFRESH_RATE_SWEEP_INTERVAL_SECS
+
+    # A brand-new IP at capacity is DENIED (fail-closed) and NOT inserted.
+    assert ar._rate_limited("172.16.0.1", now=base + 1) is True
+    assert "172.16.0.1" not in ar._refresh_rate_buckets
+    assert len(ar._refresh_rate_buckets) == ar._REFRESH_RATE_MAX_BUCKETS
+    # An already-known live bucket is unaffected — it was never evicted.
+    assert "live-0" in ar._refresh_rate_buckets
+    assert ar._rate_limited("live-0", now=base + 1) is False
+
+    with ar._refresh_rate_lock:
+        ar._refresh_rate_buckets.clear()
+        ar._refresh_rate_last_sweep = float("-inf")
+
+
+def test_tr_u_15h_rate_buckets_capped_per_insertion_between_sweeps():
+    """Regression (GPT 5.6 MEDIUM): the hard cap must hold on EVERY insertion,
+    not only at the throttled sweep. Fill the map to capacity, freeze the sweep
+    (so only the per-insert fail-closed cap check can bound it), then feed a
+    burst of brand-new source IPs. The map must never exceed
+    _REFRESH_RATE_MAX_BUCKETS."""
+    from kiro_crew.dashboard.handlers import auth_refresh as ar
+
+    with ar._refresh_rate_lock:
+        ar._refresh_rate_buckets.clear()
+        # Pre-fill to exactly the cap with live (recently-active) buckets.
+        import collections as _c
+
+        base = 7_000_000.0
+        for i in range(ar._REFRESH_RATE_MAX_BUCKETS):
+            ar._refresh_rate_buckets[f"cap-{i}"] = _c.deque([base])
+        # Freeze the sweep in the future so it CANNOT run during the burst —
+        # only the per-insert cap check can keep the map bounded.
+        ar._refresh_rate_last_sweep = base + 10 * ar._REFRESH_RATE_SWEEP_INTERVAL_SECS
+
+    # 200 distinct new IPs arrive within the same window (sweep frozen off).
+    for i in range(200):
+        ar._rate_limited(f"newip-{i}", now=base + 1 + i * 0.001)
+        # Invariant checked on every insert: never over the cap.
+        assert len(ar._refresh_rate_buckets) <= ar._REFRESH_RATE_MAX_BUCKETS
+
+    with ar._refresh_rate_lock:
+        ar._refresh_rate_buckets.clear()
+        ar._refresh_rate_last_sweep = float("-inf")
+
+
+def test_tr_u_15i_saturated_client_cannot_reset_bucket_via_cap_flood():
+    """Regression (Arbiter BLOCK / GPT 5.6 MEDIUM): a rate-limited client must
+    NOT be able to reset its own bucket by flooding the map to capacity.
+
+    Previously, once the map hit the cap a NEW IP evicted the
+    least-recently-active bucket. A saturated attacker never appends a
+    timestamp on denied calls, so their bucket froze at exhaustion time and
+    became the eviction victim under an XFF / botnet pump — letting them drop
+    their own exhausted bucket and re-create a fresh full allowance. The
+    fix fails closed: unseen IPs are rejected at the cap, so the attacker's
+    exhausted bucket survives and they stay limited until it ages out of the
+    window on its own.
+    """
+    from kiro_crew.dashboard.handlers import auth_refresh as ar
+
+    with ar._refresh_rate_lock:
+        ar._refresh_rate_buckets.clear()
+        ar._refresh_rate_last_sweep = float("-inf")
+
+    base = 8_000_000.0
+    attacker = "203.0.113.7"
+    # Attacker exhausts its full allowance within the window.
+    for i in range(ar._REFRESH_RATE_MAX_CALLS):
+        assert ar._rate_limited(attacker, now=base + i * 0.001) is False
+    # The next call is denied — the bucket is saturated.
+    assert ar._rate_limited(attacker, now=base + 1.0) is True
+
+    # Freeze the sweep so ageing-out cannot help the attacker, then pump a
+    # large flood of distinct source IPs. Under the old eviction-to-admit
+    # logic this would evict the attacker's frozen bucket; fail-closed rejects
+    # the flood instead and leaves the attacker's bucket intact.
+    with ar._refresh_rate_lock:
+        ar._refresh_rate_last_sweep = base + 10 * ar._REFRESH_RATE_SWEEP_INTERVAL_SECS
+    for i in range(ar._REFRESH_RATE_MAX_BUCKETS * 2):
+        ar._rate_limited(f"flood-{i}", now=base + 2.0)
+
+    # The attacker's bucket is still present and still saturated: no reset.
+    assert attacker in ar._refresh_rate_buckets
+    assert ar._rate_limited(attacker, now=base + 3.0) is True
+    assert len(ar._refresh_rate_buckets) <= ar._REFRESH_RATE_MAX_BUCKETS
+
+    with ar._refresh_rate_lock:
+        ar._refresh_rate_buckets.clear()
+        ar._refresh_rate_last_sweep = float("-inf")
+
+
+def test_tr_u_15j_new_ip_admitted_at_cap_when_stale_buckets_reclaimable():
+    """Regression (Arbiter BLOCK item 2): a legitimate new source IP must be
+    ADMITTED — not denied — when the map is at capacity but full of reclaimable
+    stale buckets.
+
+    Previously the sweep was throttled to once per window even at capacity, so
+    under a sustained flood / trusted-XFF pump (or organic IP churn) that kept
+    the map pinned at _REFRESH_RATE_MAX_BUCKETS, a previously-unseen legitimate
+    IP was denied /api/auth/refresh for up to a window even though most buckets
+    were stale and reclaimable — an availability defect inside an auth control
+    surfacing as unexplained forced logouts. The fix invokes the sweep
+    UNCONDITIONALLY when an insertion is refused at the cap, reclaiming dead
+    space exactly when it matters.
+    """
+    import collections as _c
+
+    from kiro_crew.dashboard.handlers import auth_refresh as ar
+
+    with ar._refresh_rate_lock:
+        ar._refresh_rate_buckets.clear()
+        ar._refresh_rate_last_sweep = float("-inf")
+
+    base = 9_000_000.0
+    # Fill the map to EXACTLY the cap with STALE buckets — every timestamp is
+    # older than the window, so they are all reclaimable by a sweep.
+    stale_ts = base - ar._REFRESH_RATE_WINDOW_SECS - 100
+    with ar._refresh_rate_lock:
+        for i in range(ar._REFRESH_RATE_MAX_BUCKETS):
+            ar._refresh_rate_buckets[f"stale-{i}"] = _c.deque([stale_ts])
+        # Freeze the interval throttle in the future so ONLY the unconditional
+        # cap-refusal sweep can reclaim space — proving the fix, not the throttle.
+        ar._refresh_rate_last_sweep = base + 10 * ar._REFRESH_RATE_SWEEP_INTERVAL_SECS
+
+    # A legitimate new IP arrives at capacity. Even though the interval sweep is
+    # frozen off, the cap-refusal forces a sweep, the stale buckets are
+    # reclaimed, and the newcomer is ADMITTED (not rate-limited).
+    assert ar._rate_limited("192.0.2.200", now=base) is False
+    assert "192.0.2.200" in ar._refresh_rate_buckets
+    # The stale buckets were reclaimed, so the map is no longer pinned at cap.
+    assert len(ar._refresh_rate_buckets) < ar._REFRESH_RATE_MAX_BUCKETS
+
+    with ar._refresh_rate_lock:
+        ar._refresh_rate_buckets.clear()
+        ar._refresh_rate_last_sweep = float("-inf")
+
+
 def test_tr_u_16_persistence_roundtrip(tmp_path: Path):
     """Writing to disk, reloading into a new manager preserves state."""
     state_file = tmp_path / "rt.json"
@@ -422,6 +621,118 @@ def test_tr_u_22_grace_different_ip_returns_none(isolated_state: RefreshStateMan
     # Different source IP — could be theft, no grace
     cached = isolated_state.grace_replacement("c1", "jti1", "5.6.7.8")
     assert cached is None
+
+
+def test_tr_u_22a_grace_accepts_only_chain_head(
+    isolated_state: RefreshStateManager,
+):
+    """Chain-head-only grace: after rapid rotations jti1->jti2->jti3 on one
+    chain, ONLY the most-recently-rotated jti (the chain head, jti3) may
+    authenticate a same-IP in-window replay and be re-served its live
+    replacement pair. Any OLDER rotated jti (jti1, jti2) is treated as token
+    reuse and returns None so the caller revokes the chain — the undiluted
+    RFC 6819 §5.2.2.3 theft signal chosen over a wider multi-jti grace history.
+    """
+    now = time.time()
+    r1 = json.dumps({"refreshed_at": 1, "_access_token": "A1", "_refresh_token": "R1"})
+    r2 = json.dumps({"refreshed_at": 2, "_access_token": "A2", "_refresh_token": "R2"})
+    r3 = json.dumps({"refreshed_at": 3, "_access_token": "A3", "_refresh_token": "R3"})
+    isolated_state.mark_consumed(
+        "jti1", chain_id="c1", exp=now + 30 * 86400, ip="1.2.3.4", replacement=r1
+    )
+    isolated_state.mark_consumed(
+        "jti2", chain_id="c1", exp=now + 30 * 86400, ip="1.2.3.4", replacement=r2
+    )
+    isolated_state.mark_consumed(
+        "jti3", chain_id="c1", exp=now + 30 * 86400, ip="1.2.3.4", replacement=r3
+    )
+
+    # (a) The chain head (newest consumed jti) replays successfully, served its
+    # own live replacement pair.
+    assert isolated_state.grace_replacement("c1", "jti3", "1.2.3.4") == r3
+
+    # (b) Older rotated jtis are NO LONGER accepted -> None -> caller revokes
+    # the chain (undiluted reuse signal).
+    assert isolated_state.grace_replacement("c1", "jti1", "1.2.3.4") is None
+    assert isolated_state.grace_replacement("c1", "jti2", "1.2.3.4") is None
+
+    # IP mismatch on the head is still refused (theft posture unchanged).
+    assert isolated_state.grace_replacement("c1", "jti3", "9.9.9.9") is None
+
+    # Beyond the grace window even the head stops replaying.
+    future = now + REFRESH_GRACE_SECS + 5
+    assert isolated_state.grace_replacement("c1", "jti3", "1.2.3.4", now=future) is None
+
+
+def test_tr_u_22a2_older_rotated_jti_triggers_reuse_not_replay(
+    isolated_state: RefreshStateManager,
+):
+    """Reuse-signal regression for chain-head-only grace.
+
+    Model the real handler contract: consuming jtiN records a replacement
+    carrying the NEXT minted jti (the token the client presents next). After
+    jti1->jti2->jti3->jti4 (jti4 == current live head, not yet consumed), ONLY
+    the head jti (jti3, the last consumed) may replay, and it is served the
+    live jti4 pair. Every OLDER consumed jti (jti1, jti2) returns None so the
+    handler revokes the chain — an attacker replaying a stale captured jti can
+    no longer resolve to a live session inside the window, and the served pair
+    is always the live head (never an already-consumed token).
+    """
+    now = time.time()
+    for cur, nxt in (("jti1", "jti2"), ("jti2", "jti3"), ("jti3", "jti4")):
+        isolated_state.mark_consumed(
+            cur,
+            chain_id="c1",
+            exp=now + 30 * 86400,
+            ip="1.2.3.4",
+            replacement=json.dumps({"_refresh_token": nxt}),
+        )
+
+    # Only the head (jti3, last consumed) replays; it is served the live jti4.
+    served = isolated_state.grace_replacement("c1", "jti3", "1.2.3.4")
+    assert served is not None
+    assert json.loads(served)["_refresh_token"] == "jti4"
+
+    # Older consumed jtis are rejected -> reuse signal (chain revocation).
+    assert isolated_state.grace_replacement("c1", "jti1", "1.2.3.4") is None
+    assert isolated_state.grace_replacement("c1", "jti2", "1.2.3.4") is None
+
+
+def test_tr_u_22b_single_refresh_race_still_absorbed(
+    isolated_state: RefreshStateManager,
+):
+    """The original false-revocation bug fix still holds under chain-head-only.
+
+    A single tab whose refresh POST is duplicated (network retry / double
+    fire) presents the SAME just-consumed head jti twice. The duplicate must
+    be recognised as a benign race and re-served the same replacement pair —
+    NOT revoked. Only the head is retained, so this single-refresh race (the
+    primary bug this mechanism targets) is unaffected by the tightening, and
+    re-serving stays idempotent.
+    """
+    now = time.time()
+    head = json.dumps({"refreshed_at": 1, "_access_token": "A", "_refresh_token": "R"})
+    isolated_state.mark_consumed(
+        "jtiH", chain_id="c1", exp=now + 30 * 86400, ip="1.2.3.4", replacement=head
+    )
+
+    # First replay of the just-consumed head: served the replacement (no revoke).
+    assert isolated_state.grace_replacement("c1", "jtiH", "1.2.3.4") == head
+    # Idempotent: a second duplicate within the window is served the same pair.
+    assert isolated_state.grace_replacement("c1", "jtiH", "1.2.3.4") == head
+
+
+def test_tr_u_22c_grace_isolated_per_chain(isolated_state: RefreshStateManager):
+    """A jti from one chain must never resolve under a different chain_id."""
+    now = time.time()
+    isolated_state.mark_consumed(
+        "jtiA", chain_id="cA", exp=now + 30 * 86400, ip="1.2.3.4", replacement="A"
+    )
+    isolated_state.mark_consumed(
+        "jtiB", chain_id="cB", exp=now + 30 * 86400, ip="1.2.3.4", replacement="B"
+    )
+    assert isolated_state.grace_replacement("cA", "jtiA", "1.2.3.4") == "A"
+    assert isolated_state.grace_replacement("cB", "jtiA", "1.2.3.4") is None
 
 
 # -- Cookie name helper -------------------------------------------------------

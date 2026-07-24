@@ -1100,6 +1100,26 @@ def _enforce_app_scope(request: web.Request, app_name: str, path: str) -> web.Re
     return _deny(request, "app token not permitted for this endpoint")
 
 
+async def warm_auth_singletons() -> None:
+    """Prime the signing-secret and revoked-nonce singletons OFF the event loop.
+
+    Both ``_get_secret()`` and ``_get_revoked_store()`` do blocking file I/O on
+    first use (read/create ``token_signing.key`` + read the persisted nonce
+    denylist; on Windows an ``icacls`` subprocess to lock the key file's DACL).
+    Calling them lazily from the request path — or synchronously inside the
+    ``token_auth_middleware()`` factory, which runs on the loop via the async
+    ``start_dashboard()`` / ``start_api_server()`` — would land that I/O on the
+    event loop (no-blocking-call-on-event-loop).
+
+    The async startup paths ``await`` this exactly once, BEFORE constructing
+    the middleware chain and before the server begins accepting connections, so
+    the first auth op hits the already-built singletons with no blocking I/O on
+    the loop. Idempotent: both callees memoize under a lock.
+    """
+    await asyncio.to_thread(_get_secret)
+    await asyncio.to_thread(_get_revoked_store)
+
+
 def token_auth_middleware(
     *,
     internal_paths: frozenset[str] = frozenset(),
@@ -1129,13 +1149,15 @@ def token_auth_middleware(
 
     """
 
-    # Warm the revoked-nonce store synchronously here, at middleware
-    # construction (server setup, before the event loop starts serving). Its
-    # first build runs RevokedNonceStore._load() which reads the persisted
-    # denylist file (blocking I/O); doing it now guarantees the later
-    # validate_token() calls on the event loop hit the already-built singleton
-    # and never block the loop. (no-blocking-call-on-event-loop)
-    _get_revoked_store()
+    # NOTE: the signing-secret and revoked-nonce singletons are NOT warmed
+    # here anymore. This factory is invoked from `start_dashboard()` /
+    # `start_api_server()`, which are `async def` and therefore run ON the
+    # event loop — a synchronous warm-up here (blocking key-file read + a
+    # Windows `icacls` subprocess on first create) would block the loop during
+    # startup (no-blocking-call-on-event-loop). The async startup paths instead
+    # `await warm_auth_singletons()` (which offloads to a worker thread) BEFORE
+    # constructing this middleware chain, so the first auth op still hits the
+    # already-built singletons without any blocking I/O landing on the loop.
 
     def _extract_and_validate_token(request: web.Request, _port: int) -> tuple[bool, str, str, str]:
         """Extract token from query param or cookie and validate it.

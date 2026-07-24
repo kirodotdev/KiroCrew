@@ -24,21 +24,114 @@ from __future__ import annotations
 import logging
 import os
 import threading
+import time
+from pathlib import Path
 
 from kiro_crew import platform_compat
 
 logger = logging.getLogger(__name__)
 
 _SECRET_KEY_FILE = "token_signing.key"
+_MIN_KEY_BYTES = 32
+
+# Bounded retry budget for the create-then-read interleaving window. The SOLE
+# creator opens the key file with O_EXCL, then writes 32 bytes; a racing reader
+# that opened the file in that sliver observes it empty/short and must retry to
+# see the winner's bytes. The window is a single os.write(), so a few dozen
+# short sleeps (~1s total worst case) is comfortably enough without any risk of
+# an unbounded hang.
+_CREATE_MAX_ATTEMPTS = 50
+_CREATE_BACKOFF_SECONDS = 0.02
+
+
+def _enforce_owner_only(key_path: Path) -> None:
+    """Best-effort restrict *key_path* to owner-only (0600 / owner DACL).
+
+    Fail-soft: a read-only FS / chmod failure warns (logging only the PATH,
+    never the key bytes) rather than crashing, matching the pre-existing
+    behaviour — the secret still signs tokens this session.
+    """
+    try:
+        # restrict_to_owner (fail-loud), NOT chmod_safe: chmod_safe swallows
+        # OSError, which would make this security-warning handler dead code.
+        # POSIX applies ``chmod 0o600``; Windows applies an owner-only DACL via
+        # icacls.
+        platform_compat.restrict_to_owner(key_path)
+    except OSError:
+        # Logs the key file PATH (key_path), never the key bytes.
+        logger.warning(  # nosemgrep: python-logger-credential-disclosure
+            "failed to enforce owner-only permissions on token signing key %s; "
+            "file may be readable by other users",
+            key_path,
+            exc_info=True,
+        )
+
+
+def _unlink_if_same_file(key_path: Path, created_stat: os.stat_result) -> None:
+    """Remove *key_path* only if it is still the exact file identified by
+    *created_stat* (matching ``st_dev`` + ``st_ino``).
+
+    Used to clean up a half-written key file that THIS process created via the
+    exclusive-create path but then failed to fully persist. Two safety
+    properties:
+
+    * We compare against ``os.lstat`` (which does NOT follow symlinks) so an
+      attacker cannot get us to traverse a symlink swapped in at the path.
+    * The device+inode identity match means we never delete a *valid* key that
+      a racing sibling has since created at the same path — only the exact
+      incomplete file we opened. If identity differs (or the file is already
+      gone), we leave the path untouched.
+
+    Best-effort: an unlink failure is logged (path only, never key bytes) and
+    swallowed so it never masks the original write failure — the next boot's
+    retry loop still degrades safely to an ephemeral secret.
+    """
+    try:
+        on_disk = os.lstat(key_path)
+    except OSError:
+        # Already gone (a sibling cleaned it up, or it never landed) — nothing
+        # of ours to remove.
+        return
+    if (
+        on_disk.st_dev == created_stat.st_dev
+        and on_disk.st_ino == created_stat.st_ino
+    ):
+        try:
+            os.unlink(key_path)
+        except OSError:
+            # Logs the key file PATH (key_path), never the key bytes.
+            logger.warning(  # nosemgrep: python-logger-credential-disclosure
+                "could not remove incomplete token signing key %s after a "
+                "failed create; a stale short key file may remain and should "
+                "be deleted manually",
+                key_path,
+                exc_info=True,
+            )
 
 
 def _load_or_create_secret() -> bytes:
     """Return the HMAC signing secret, persisted across restarts.
 
     See module docstring for the persistence rationale. Falls back to an
-    ephemeral secret if the key file is unwritable — tokens still work
-    within this process; they just won't survive a restart (the
-    pre-existing behaviour).
+    ephemeral secret if the key file is unwritable — tokens still work within
+    this process; they just won't survive a restart (the pre-existing
+    behaviour).
+
+    Cross-process atomicity of key *creation* is the crux here. Multiple
+    first-time gateways sharing one data home (``warm_auth_singletons()`` warms
+    this before the port bind, so two racing boots can both observe the key as
+    absent) MUST converge on a SINGLE key. A plain last-writer-wins write —
+    even an atomic temp-file + rename — is NOT sufficient: each process would
+    generate its own key, one file would survive on disk, and the loser would
+    keep an in-memory key that no longer matches the persisted file, silently
+    corrupting every token it issues for sibling instances / after a restart.
+
+    The fix: only ONE key may ever be created. We attempt an exclusive create
+    (``O_CREAT | O_EXCL``); exactly one process wins and writes the fresh key,
+    and every other process takes the ``FileExistsError`` branch and READS the
+    winner's bytes instead of generating its own. A small bounded retry loop
+    covers the create-then-read interleaving (a racing reader can momentarily
+    see the just-created, not-yet-written empty file).
     """
     # Local import: config.loader pulls in modules that import token_auth
     # (which re-exports this module), so a top-level import here risks a
@@ -48,63 +141,110 @@ def _load_or_create_secret() -> bytes:
 
     try:
         key_path = config_dir() / _SECRET_KEY_FILE
-        if key_path.exists():
-            existing = key_path.read_bytes()
-            if len(existing) >= 32:
-                # Re-enforce 0600 at load time, not just at creation: perms may
-                # have been relaxed since (backup restore, manual edit, migration)
-                # and this key signs all auth tokens/cookies.
-                try:
-                    # restrict_to_owner (fail-loud), NOT chmod_safe: chmod_safe
-                    # swallows OSError, which would make this security-warning
-                    # handler dead code. POSIX applies ``chmod 0o600``;
-                    # Windows applies an owner-only DACL via icacls — no NTFS
-                    # posture regression from the earlier IS_POSIX no-op, which
-                    # left the key signing all auth tokens/cookies world-readable.
-                    platform_compat.restrict_to_owner(key_path)
-                except OSError:
-                    # Logs the key file PATH (key_path), never the key bytes.
-                    logger.warning(  # nosemgrep: python-logger-credential-disclosure
-                        "failed to enforce owner-only permissions on token signing key %s; "
-                        "file may be readable by other users",
-                        key_path,
-                        exc_info=True,
-                    )
-                return existing
-        key = os.urandom(32)
         key_path.parent.mkdir(parents=True, exist_ok=True)
-        # Lock the DACL down BEFORE writing the secret bytes: on Windows
-        # restrict_to_owner shells out to icacls (subprocess), which is a
-        # measurable window (dozens to hundreds of ms). If we wrote the secret
-        # first, another local principal that can enumerate ~/.kirocrew could
-        # slurp it during that window. Create empty → tighten DACL → write.
-        # On POSIX the equivalent gap collapses to an in-process os.chmod
-        # syscall, but the same order is fine.
-        fd = os.open(str(key_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        try:
+
+        for _attempt in range(_CREATE_MAX_ATTEMPTS):
+            # 1) Fast path: an already-populated key file. Read the persisted
+            #    bytes VERBATIM and never regenerate, so a restart or a sibling
+            #    process signs with the identical key.
             try:
-                platform_compat.restrict_to_owner(key_path)
-            except OSError:
-                # Security-sensitive: this key signs all auth tokens/cookies,
-                # so a world-readable key file is a real exposure. Warn loudly
-                # rather than failing — the secret still works for signing this
-                # session, and the caller falls back to the ephemeral path only
-                # on unwritable file, not on chmod failure.
-                # Logs the key file PATH (key_path), never the key bytes.
-                logger.warning(  # nosemgrep: python-logger-credential-disclosure
-                    "failed to set owner-only permissions on token signing key %s; "
-                    "file may be readable by other users",
-                    key_path,
-                    exc_info=True,
+                existing = key_path.read_bytes()
+            except FileNotFoundError:
+                existing = b""
+            if len(existing) >= _MIN_KEY_BYTES:
+                # Re-enforce 0600 at load time, not just at creation: perms may
+                # have been relaxed since (backup restore, manual edit,
+                # migration) and this key signs all auth tokens/cookies.
+                _enforce_owner_only(key_path)
+                return existing
+
+            # 2) Try to become the SOLE creator. O_EXCL guarantees exactly one
+            #    process across all sharers of this data home wins the create;
+            #    everyone else hits FileExistsError and loops back to read the
+            #    winner's bytes. This is what eliminates the divergence: only
+            #    one key is ever generated.
+            try:
+                fd = os.open(
+                    str(key_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600
                 )
-            os.write(fd, key)
-        finally:
-            os.close(fd)
-        return key
+            except FileExistsError:
+                # Someone else created it (possibly not yet written). Give the
+                # writer a beat, then loop back to read their bytes.
+                time.sleep(_CREATE_BACKOFF_SECONDS)
+                continue
+
+            # We hold the exclusive create. Capture the created file's identity
+            # (device + inode) NOW, while we still hold the fd, so that if we
+            # later have to remove a half-written file we unlink ONLY the exact
+            # file this process created — never a valid key a racing sibling may
+            # have substituted at the same path in the meantime.
+            created_stat = os.fstat(fd)
+            wrote_durable_key = False
+            # Lock the DACL down BEFORE writing the secret bytes: on Windows
+            # restrict_to_owner shells out to icacls (a measurable subprocess
+            # window during which another local principal could slurp the
+            # bytes); on POSIX it collapses to an in-process chmod. Create empty
+            # → tighten → write → fsync.
+            try:
+                _enforce_owner_only(key_path)
+                key = os.urandom(_MIN_KEY_BYTES)
+                # os.write() may return a SHORT count (notably on a nearly-full
+                # disk). Loop until every byte lands; a 0-byte write is an error.
+                mv = memoryview(key)
+                while mv:
+                    n = os.write(fd, mv)
+                    if n == 0:
+                        raise OSError(
+                            "short write persisting token signing key (wrote 0 bytes)"
+                        )
+                    mv = mv[n:]
+                # Cross-restart persistence is the entire reason this file
+                # exists, so flush the bytes to stable storage before we treat
+                # the key as durable and hand it back. A failing fsync means the
+                # key is not reliably persisted — fall into the cleanup path.
+                os.fsync(fd)
+                wrote_durable_key = True
+            finally:
+                os.close(fd)
+                if not wrote_durable_key:
+                    # The exclusive create succeeded but we failed to persist a
+                    # full, durable key (ENOSPC, quota, fsync failure, ...). The
+                    # on-disk file is now short/empty; leaving it PERMANENTLY
+                    # poisons every future boot — the fast-path read sees
+                    # <32 bytes, the O_EXCL create then hits FileExistsError, the
+                    # retry budget exhausts, and every gateway falls back to a
+                    # fresh ephemeral key (tokens die on each restart, concurrent
+                    # gateways cannot validate one another) until a human deletes
+                    # it. Remove OUR incomplete file so the next init can create a
+                    # valid key cleanly. The identity guard ensures we never
+                    # delete a valid key a sibling has since substituted.
+                    _unlink_if_same_file(key_path, created_stat)
+            # Reaching here means the write + fsync completed; a failure would
+            # have propagated the OSError to the outer handler (the ephemeral
+            # fallback) after the cleanup above ran.
+            return key
+
+        # Retries exhausted: a persistently short/empty file (external
+        # corruption, or a creator that crashed after O_EXCL but before the
+        # write). Do NOT truncate-and-regenerate — that reintroduces the exact
+        # divergence race this function exists to prevent. Degrade to an
+        # ephemeral secret (works this session, not across restart), matching
+        # the unwritable-file fallback below. An operator can remove the stale
+        # file to let a fresh key be created cleanly.
+        # Logs only the key PATH (key_path) and an attempt count, never the key
+        # bytes; the Semgrep rule fires on the credential-adjacent wording in
+        # the static message string, not on any secret value.
+        logger.warning(  # nosemgrep: python-logger-credential-disclosure
+            "token signing key at %s did not converge to a valid persisted "
+            "key after %d attempts; using ephemeral secret",
+            key_path,
+            _CREATE_MAX_ATTEMPTS,
+        )
+        return os.urandom(_MIN_KEY_BYTES)
     except OSError:
         # Fall back to an ephemeral secret if the key file is unwritable.
         logger.warning("token signing key not persisted; using ephemeral secret", exc_info=True)
-        return os.urandom(32)
+        return os.urandom(_MIN_KEY_BYTES)
 
 
 _SECRET: bytes | None = None

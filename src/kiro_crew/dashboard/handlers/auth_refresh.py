@@ -50,8 +50,70 @@ logger = logging.getLogger(__name__)
 _REFRESH_RATE_WINDOW_SECS = 60.0
 _REFRESH_RATE_MAX_CALLS = 60
 
+# Bounding for the in-memory per-IP bucket map. Without eviction the
+# ``_refresh_rate_buckets`` dict grows without bound: every distinct source
+# IP that ever hits /api/auth/refresh leaves a permanent entry (an empty
+# deque once its timestamps age out), so a wide spread of client IPs (or a
+# spoofed-XFF pump) slowly leaks memory. We sweep stale/empty buckets at most
+# once per window; that reclaim path is the sole way live buckets leave the
+# map. A hard cap (``_REFRESH_RATE_MAX_BUCKETS``) then fails CLOSED: once the
+# map is full, previously-unseen source IPs are rate-limited outright rather
+# than admitted by evicting an existing bucket. We deliberately do NOT evict a
+# live bucket to make room — evicting the "least-recently-active" victim was
+# abusable (see ``_rate_limited``): a saturated attacker never appends a
+# timestamp on denied calls, so their bucket freezes at exhaustion time and
+# becomes the eviction target under an XFF/botnet pump, letting them drop their
+# own exhausted bucket and re-mint a fresh full allowance. Fail-closed removes
+# that reset path entirely. To avoid a sustained-flood / trusted-XFF
+# availability gap (a pinned-at-capacity map denying legitimate new IPs while
+# full of reclaimable stale buckets), the sweep is invoked UNCONDITIONALLY
+# when an insertion is refused at the cap — reclaiming dead space exactly when
+# it matters without dropping any still-in-window bucket.
+_REFRESH_RATE_SWEEP_INTERVAL_SECS = 60.0
+_REFRESH_RATE_MAX_BUCKETS = 4096
+
 _refresh_rate_lock = threading.Lock()
 _refresh_rate_buckets: dict[str, collections.deque[float]] = {}
+# Monotonic-ish wall-clock timestamp of the last full sweep (guarded by
+# _refresh_rate_lock). Starts at -inf so the first call always sweeps.
+_refresh_rate_last_sweep: float = float("-inf")
+
+
+def _sweep_rate_buckets(now: float, *, force: bool = False) -> None:
+    """Evict stale/empty per-IP buckets. MUST hold ``_refresh_rate_lock``.
+
+    Runs at most once per ``_REFRESH_RATE_SWEEP_INTERVAL_SECS`` unless
+    ``force`` is set. Drops any bucket whose timestamps have all aged past the
+    window (leaving it empty). This stale/empty reclaim is the ONLY way a live
+    bucket leaves the map — we never evict a bucket that still holds in-window
+    timestamps. Combined with the fail-closed hard cap in ``_rate_limited``
+    (unseen IPs are rejected once the map is full, not admitted by eviction),
+    the map is strictly bounded by ``_REFRESH_RATE_MAX_BUCKETS`` and no client
+    can force its own bucket to be dropped early.
+
+    ``force=True`` bypasses the interval throttle. It is used when an insertion
+    is refused at ``_REFRESH_RATE_MAX_BUCKETS`` so reclaimable stale space is
+    freed exactly when it matters (avoiding a sustained-flood / trusted-XFF
+    availability gap where legitimate new IPs are denied for up to a window
+    while the map is actually full of dead buckets). Because a forced sweep
+    still only drops buckets whose timestamps have ALL aged out, it does NOT
+    reopen the eviction-reset path: a saturated attacker's still-in-window
+    bucket is never reclaimed, so flooding the map to capacity cannot drop the
+    attacker's own exhausted bucket.
+    """
+    global _refresh_rate_last_sweep
+    if not force and now - _refresh_rate_last_sweep < _REFRESH_RATE_SWEEP_INTERVAL_SECS:
+        return
+    _refresh_rate_last_sweep = now
+    cutoff = now - _REFRESH_RATE_WINDOW_SECS
+    stale: list[str] = []
+    for ip, bucket in _refresh_rate_buckets.items():
+        while bucket and bucket[0] < cutoff:
+            bucket.popleft()
+        if not bucket:
+            stale.append(ip)
+    for ip in stale:
+        _refresh_rate_buckets.pop(ip, None)
 
 
 def _rate_limited(client_ip: str, now: float | None = None) -> bool:
@@ -74,7 +136,39 @@ def _rate_limited(client_ip: str, now: float | None = None) -> bool:
         now = time.time()
     cutoff = now - _REFRESH_RATE_WINDOW_SECS
     with _refresh_rate_lock:
-        bucket = _refresh_rate_buckets.setdefault(client_ip, collections.deque())
+        # Periodic sweep of stale/empty buckets so the map can't grow
+        # without bound across many distinct source IPs over time.
+        _sweep_rate_buckets(now)
+        bucket = _refresh_rate_buckets.get(client_ip)
+        if bucket is None:
+            # New source IP. Enforce the hard cap by failing CLOSED: once the
+            # map is full, reject previously-unseen IPs rather than evicting a
+            # live bucket to admit them. Eviction-to-admit was abusable — a
+            # saturated attacker's bucket freezes at exhaustion (denied calls
+            # append no timestamp), so under an XFF/botnet pump it became the
+            # "least-recently-active" eviction victim, letting the attacker
+            # drop their own exhausted bucket and re-create a fresh full
+            # allowance. Rejecting unseen IPs at the cap removes that reset
+            # path; stale buckets are reclaimed only by the periodic sweep.
+            if len(_refresh_rate_buckets) >= _REFRESH_RATE_MAX_BUCKETS:
+                # Map is at capacity. Before failing closed, reclaim stale
+                # space UNCONDITIONALLY (bypass the interval throttle — the
+                # lock is already held). Without this, the sweep is throttled
+                # to once per window even at capacity, so under a sustained
+                # flood (or trusted-XFF pump / organic IP churn) that keeps the
+                # map pinned at the cap, a legitimate previously-unseen IP is
+                # denied /api/auth/refresh for up to a window even when most
+                # buckets are stale and reclaimable — surfacing as unexplained
+                # forced logouts. Forcing the sweep here frees dead buckets
+                # exactly when it matters. It does NOT reopen the
+                # eviction-reset path: the sweep only drops buckets whose
+                # timestamps have ALL aged out, so a saturated attacker's
+                # still-in-window bucket is never reclaimed (they cannot flood
+                # the map to drop their own exhausted bucket).
+                _sweep_rate_buckets(now, force=True)
+                if len(_refresh_rate_buckets) >= _REFRESH_RATE_MAX_BUCKETS:
+                    return True
+            bucket = _refresh_rate_buckets[client_ip] = collections.deque()
         while bucket and bucket[0] < cutoff:
             bucket.popleft()
         if len(bucket) >= _REFRESH_RATE_MAX_CALLS:
