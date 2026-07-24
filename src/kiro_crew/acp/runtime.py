@@ -662,7 +662,20 @@ class AcpRuntime:
 
                 # Route responses
                 if msg.id is not None and (msg.result is not None or msg.error is not None):
-                    req_id = msg.id if isinstance(msg.id, int) else int(msg.id)
+                    # JSON-RPC allows string ids, and this runtime only ever
+                    # issues int ids — but the id in the response is agent-
+                    # controlled. int("req-1") / int([...]) raises ValueError/
+                    # TypeError, which the catch-all below turns into
+                    # _mark_dead, poisoning EVERY multiplexed session over one
+                    # unmatched frame. Same invariant as the non-dict guard
+                    # above: skip the frame, don't kill the demux.
+                    try:
+                        req_id = msg.id if isinstance(msg.id, int) else int(msg.id)
+                    except (TypeError, ValueError, OverflowError):
+                        # OverflowError: json parses 1e9999 to float("inf"),
+                        # which int() rejects differently from a bad string.
+                        logger.debug("Response with non-numeric id %r dropped", msg.id)
+                        continue
 
                     # Check awaited requests first (init, session/new, set_mode)
                     future = self._pending_requests.pop(req_id, None)

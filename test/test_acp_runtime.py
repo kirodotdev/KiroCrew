@@ -159,6 +159,52 @@ async def test_awaited_response_resolves_pending_future():
 
 
 @pytest.mark.asyncio
+async def test_non_numeric_response_id_dropped_without_killing_demux():
+    """The id in a response frame is agent-controlled. int("req-1") raised
+    ValueError, which the reader's catch-all turned into _mark_dead — poisoning
+    EVERY multiplexed session over one unmatched frame. The frame must be
+    dropped and the reader must keep routing."""
+    rt, reader, _ = _make_runtime()
+    q = _register(rt, "sA")
+    fut: asyncio.Future = asyncio.get_event_loop().create_future()
+    rt._pending_requests[7] = fut
+    task = await _start_reader(rt)
+    try:
+        # String / list / overflow ids: none int() coercible. json parses
+        # 1e9999 to float("inf"), which raises OverflowError (not ValueError).
+        _feed(reader, {"id": "req-1", "result": {"ok": True}})
+        _feed(reader, {"id": [1], "error": {"code": -1}})
+        reader.feed_data(b'{"id": 1e9999, "result": {}}\n')
+        # The reader must still be alive: a valid response and a routed
+        # notification must both be delivered after the bad frames.
+        _feed(reader, {"id": 7, "result": {"sessionId": "new1"}})
+        _feed(reader, {"method": "session/update", "params": {"sessionId": "sA"}})
+        result = await asyncio.wait_for(fut, timeout=1.0)
+        assert result == {"sessionId": "new1"}
+        msg = await asyncio.wait_for(q["sA"].get(), timeout=1.0)
+        assert msg.params["sessionId"] == "sA"
+        assert not rt._dead
+    finally:
+        await _stop_reader(task)
+
+
+@pytest.mark.asyncio
+async def test_numeric_string_response_id_still_coerced():
+    """A digit-string id ("7") keeps working — it was int()-coerced before and
+    must keep matching the pending int key after the guard."""
+    rt, reader, _ = _make_runtime()
+    fut: asyncio.Future = asyncio.get_event_loop().create_future()
+    rt._pending_requests[7] = fut
+    task = await _start_reader(rt)
+    try:
+        _feed(reader, {"id": "7", "result": {"ok": 1}})
+        result = await asyncio.wait_for(fut, timeout=1.0)
+        assert result == {"ok": 1}
+    finally:
+        await _stop_reader(task)
+
+
+@pytest.mark.asyncio
 async def test_error_response_sets_exception_on_future():
     rt, reader, _ = _make_runtime()
     fut: asyncio.Future = asyncio.get_event_loop().create_future()
