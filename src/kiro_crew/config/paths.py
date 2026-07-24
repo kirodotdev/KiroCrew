@@ -195,6 +195,19 @@ def _maybe_expire_archive_secrets() -> None:
         shred_archive_secrets_if_stale(
             archived, marker, min_age_seconds=_ARCHIVE_SECRET_GRACE_SECONDS
         )
+        # Divergent-home reconciliation leaves timestamped backups under
+        # ``~/.kiro/crew.pre-migration/`` that also hold frozen credential leaves.
+        # Give each the SAME marker-aged end-of-life as the archive so they are not
+        # a standing, ever-growing secret store (the live secrets stay in the new
+        # home; non-secret backup data is kept).
+        default_home = _default_home()
+        pre_migration_root = default_home.parent / f"{default_home.name}.pre-migration"
+        if pre_migration_root.is_dir():
+            for child in sorted(pre_migration_root.iterdir()):
+                if child.is_dir():
+                    shred_archive_secrets_if_stale(
+                        child, marker, min_age_seconds=_ARCHIVE_SECRET_GRACE_SECONDS
+                    )
     except Exception:  # pragma: no cover - defensive: never block startup
         logger.debug("archive-secret expiry sweep failed (non-fatal)", exc_info=True)
 

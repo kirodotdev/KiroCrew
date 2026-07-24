@@ -668,20 +668,52 @@ def _do_migrate(*, legacy: Path, new_home: Path, marker: Path) -> Path:
     # against the original home path).
     diverged = _legacy_files_not_identical_in(quiesced, new_home, link_base=legacy)
     if diverged:
-        # Stale destination shadowed the current legacy data. Restore the quiesced
-        # snapshot to its canonical (keystone-gated) legacy path, do NOT mark
-        # complete, and fall back to the intact legacy home so a later run / human
-        # reconciles. (The fast os.replace path — new_home did NOT pre-exist — has
-        # no shadowed files: _verify_copy already confirmed staging holds every
-        # legacy file, so the compare returns empty and this branch is not taken.)
+        # A pre-existing / divergent ``new_home`` shadowed the current legacy data
+        # during the no-overwrite merge, so it is NOT byte-identical to legacy. The
+        # legacy home holds the authoritative data — and under the prior behavior it
+        # simply REMAINED the live home in exactly this case (this branch always
+        # returned ``legacy``), leaving the customer stranded on ``~/.kirocrew`` with
+        # the move never completing. Instead, finish the relocation automatically
+        # with LEGACY AS AUTHORITATIVE: move the divergent ``new_home`` aside to a
+        # timestamped backup under the keystone-gated, owner-locked
+        # ``~/.kiro/crew.pre-migration/`` root (retained as a rollback copy; its
+        # credential leaves auto-expire on the same marker-aged schedule as the
+        # ``~/.kirocrew.archived`` rollback — see ``_maybe_expire_archive_secrets``),
+        # then promote the quiesced legacy snapshot into ``new_home`` and mark
+        # complete. This does not change WHICH data is live (legacy, exactly as
+        # before) — it only finishes the move and preserves the sidelined home as a
+        # rollback copy. (The fast os.replace path — new_home did NOT pre-exist — has
+        # no shadowed files, so the compare returns empty and this branch is skipped.)
+        if _gateway_is_live(new_home):
+            # A gateway is actively using the pre-existing new home (e.g. one
+            # launched with KIROCREW_HOME=~/.kiro/crew). Do NOT yank it aside —
+            # restore legacy and retain it for this run; retry on the next start.
+            try:
+                os.replace(quiesced, legacy)
+                restored = legacy
+            except OSError:
+                restored = quiesced
+            logger.info(
+                "data-home migration: a gateway is live on %s; retaining %s (retry next start)",
+                new_home,
+                restored,
+            )
+            return restored
+        backup_root = new_home.parent / f"{new_home.name}.pre-migration"
+        backup = backup_root / str(int(_clock_now()))
+        # Restore the quiesced snapshot to its canonical legacy path FIRST, then swap
+        # THROUGH legacy (new_home -> backup, then legacy -> new_home). This keeps the
+        # data at a CANONICAL path at every step, so no crash / power-loss window ever
+        # leaves BOTH ~/.kirocrew and ~/.kiro/crew absent: after this restore legacy
+        # holds the data; a crash after vacating new_home just replays a normal
+        # legacy->new_home migration on the next start; a crash after the promote
+        # leaves new_home populated (finalized next start). Nothing is ever stranded
+        # at the quiescing snapshot. (Same-directory rename; if the restore itself
+        # fails — near never — run on the quiesced snapshot so this process never uses
+        # the stale divergent home.)
         try:
             os.replace(quiesced, legacy)
-            restored = legacy
         except OSError:
-            # Restoring the canonical name failed (near-impossible for a
-            # same-directory rename; e.g. a racer recreated a non-empty legacy).
-            # The current data is intact under the quiesced snapshot — run on THAT
-            # so this process never uses the stale new home. Surface it loudly.
             logger.error(
                 "data-home migration diverged AND could not restore %s to %s; the current "
                 "data is preserved at %s — reconcile manually.",
@@ -689,18 +721,159 @@ def _do_migrate(*, legacy: Path, new_home: Path, marker: Path) -> Path:
                 legacy,
                 quiesced,
             )
-            restored = quiesced
+            return quiesced
+        # Close the probe->rename TOCTOU on POSIX by HOLDING the new home's gateway
+        # lock across the swap: a gateway that raced in after ``_gateway_is_live``
+        # released its probe would otherwise start writing ``new_home`` in the window
+        # before the destructive ``os.replace``. On Windows an open handle to the lock
+        # file blocks renaming its own directory, so we do NOT hold it there — the
+        # ``_gateway_is_live`` probe above is the same accepted window the legacy-home
+        # probe already relies on, and a failed rename simply retains legacy (below).
+        nh_lock_fd: int | None = None
+        if platform_compat.IS_POSIX:
+            try:
+                nh_lock_fd = os.open(str(new_home / LOCK_FILENAME), os.O_CREAT | os.O_RDWR, 0o600)
+                if not platform_compat.try_acquire_lock(nh_lock_fd, exclusive=True):
+                    os.close(nh_lock_fd)
+                    nh_lock_fd = None
+                    logger.info(
+                        "data-home migration: a gateway raced onto %s after the probe; "
+                        "retaining legacy (retry next start).",
+                        new_home,
+                    )
+                    return legacy
+            except OSError:
+                if nh_lock_fd is not None:
+                    try:
+                        os.close(nh_lock_fd)
+                    except OSError:
+                        pass
+                    nh_lock_fd = None
+        if nh_lock_fd is None and _gateway_is_live(new_home):
+            # We are NOT holding the new-home lock across the swap (Windows, where an
+            # open handle blocks renaming its own directory; or a POSIX lock we could
+            # not open). Re-probe liveness immediately before the destructive rename:
+            # if a gateway appeared on the new home AFTER the initial probe, we must
+            # not vacate a live home. Retain legacy (already restored to its canonical
+            # path) and retry next start. This NARROWS — though on Windows cannot fully
+            # close — the probe->rename window; a failed promote below already degrades
+            # safely to retain-legacy, and the next cold start reconciles cleanly.
+            logger.info(
+                "data-home migration: a gateway appeared on %s after the probe; "
+                "retaining legacy (retry next start).",
+                new_home,
+            )
+            return legacy
+        try:
+            backup_root.mkdir(parents=True, exist_ok=True)
+            os.replace(new_home, backup)
+            os.replace(legacy, new_home)
+        except OSError:
+            # Could not vacate the divergent home or promote legacy (rare). Undo any
+            # partial move; legacy is intact and PRISTINE at its canonical path (the
+            # retarget runs only AFTER a successful promote, below), so retain it and
+            # retry on the next start.
+            try:
+                if backup.exists() and not new_home.exists():
+                    os.replace(backup, new_home)
+            except OSError:
+                logger.debug("could not restore %s after failed promote", new_home, exc_info=True)
+            logger.warning(
+                "data-home migration: %d legacy file(s) differ from the pre-existing %s (e.g. "
+                "%s) and the divergent home could not be relocated; RETAINING %s and not marking "
+                "complete (will retry on next start).",
+                len(diverged),
+                new_home,
+                diverged[:3],
+                legacy,
+            )
+            return legacy
+        finally:
+            if nh_lock_fd is not None:
+                try:
+                    platform_compat.release_lock(nh_lock_fd)
+                except OSError:
+                    pass
+                try:
+                    os.close(nh_lock_fd)
+                except OSError:
+                    pass
+        # The promoted tree is now the LIVE new home (the rollback is the backup, not
+        # this tree), so retargeting its absolute intra-home symlinks IN PLACE is safe
+        # — no rollback source is mutated. Best-effort, exactly as the copy path treats
+        # ``staging``: a rare un-rewritable link (e.g. a read-only subdir) is logged,
+        # not fatal — the DATA is fully present; only a convenience link would dangle.
+        retarget_failures = _retarget_intra_home_symlinks(
+            new_home, legacy=legacy, new_home=new_home
+        )
+        if retarget_failures:
+            # The promote already succeeded (legacy is now the live new_home), so we
+            # cannot re-point these BEFORE committing without re-mutating the now-live
+            # tree — and retargeting before the promote was itself a data-loss HIGH
+            # (it mutated the pristine rollback snapshot), which is why it runs here.
+            # The DATA is fully present; only these convenience links still point at
+            # the archived legacy path and will dangle. Surface them prominently
+            # (stderr + warning) so the user can repair them, instead of silently
+            # completing with the return value discarded.
+            print(
+                f"KiroCrew: data-home migration completed, but {len(retarget_failures)} "
+                f"intra-home symlink(s) under {new_home} could not be re-pointed and may "
+                f"dangle (e.g. {retarget_failures[:3]}). Your data is intact at {new_home}; "
+                f"recreate these links if you rely on them.",
+                file=sys.stderr,
+                flush=True,
+            )
+            logger.warning(
+                "data-home migration: %d intra-home symlink(s) under %s could not be "
+                "retargeted after promote (e.g. %s); data is intact, links may dangle.",
+                len(retarget_failures),
+                new_home,
+                retarget_failures[:3],
+            )
+        # Legacy is now authoritative at new_home and the divergent home is safely
+        # backed up. The backup root (``~/.kiro/crew.pre-migration``) is on the
+        # security keystone (``security._SENSITIVE_HOME_DIRS``), so the agent's file
+        # tools cannot read its credential leaves; additionally lock it to the owner
+        # (0o700 tree + secret-leaf 0o600) to shrink exposure to other OS users /
+        # backup-sync tools, exactly as the archive is hardened.
+        _harden_archive_permissions(backup)
+        _write_breadcrumb(backup, new_home)
+        # Prominent stderr notice (mirroring the copy path's pre-copy notice): the
+        # reconcile auto-picks the legacy home as the winner and the sidelined copy's
+        # credential leaves auto-expire after the ~7-day grace. For the rare user
+        # whose pre-existing ~/.kiro/crew was actually the current side (e.g. a
+        # KIROCREW_HOME=~/.kiro/crew experimenter), surface the decision + the window
+        # + how to reclaim, so a wrong-winner pick is noticed and recoverable in time.
+        print(
+            f"KiroCrew: your existing ~/.kirocrew data differed from a pre-existing "
+            f"{new_home} and is now the active data home at {new_home}. The pre-existing "
+            f"{new_home.name} was set aside at {backup} (its credential files auto-expire "
+            f"in ~7 days). If that pre-existing home was the one you wanted, reclaim it "
+            f"from {backup} before then.",
+            file=sys.stderr,
+            flush=True,
+        )
         logger.warning(
-            "data-home migration: %d legacy file(s) differ from the destination %s (e.g. %s) — "
-            "a pre-existing/stale copy shadowed the current legacy data. RETAINING %s and NOT "
-            "marking migration complete to avoid making stale state authoritative; reconcile "
-            "manually (the legacy home holds the current data).",
+            "data-home migration: %d legacy file(s) differed from a pre-existing %s (e.g. %s); "
+            "the legacy home held the current data, so it is now authoritative at %s and the "
+            "pre-existing home was preserved at %s (recoverable rollback).",
             len(diverged),
             new_home,
             diverged[:3],
-            restored,
+            new_home,
+            backup,
         )
-        return restored
+        try:
+            marker.write_text("migrated\n", encoding="utf-8")
+        except OSError:  # pragma: no cover - defensive
+            logger.warning(
+                "promoted legacy to %s but could not write completion marker %s "
+                "(next start will re-verify)",
+                new_home,
+                marker,
+                exc_info=True,
+            )
+        return new_home
 
     # 3c. Relocate the regenerable bulk dirs (models/, cache/) from the quiesced
     #     snapshot into the new home BEFORE archiving. They were never copied, so
@@ -991,19 +1164,28 @@ def _expected_migrated_target(src_target: str, *, legacy: Path, new_home: Path) 
     return str(new_home / rel)
 
 
-def _retarget_intra_home_symlinks(staging: Path, *, legacy: Path, new_home: Path) -> None:
+def _retarget_intra_home_symlinks(staging: Path, *, legacy: Path, new_home: Path) -> list[str]:
     """Rewrite staged ABSOLUTE symlinks that point inside *legacy* to *new_home*.
 
     ``copytree(symlinks=True)`` reproduces link targets verbatim. An absolute link
     into the old home would dangle once legacy is archived, so we re-point it at
     the equivalent location under the new home (via ``_expected_migrated_target``).
     Relative links and links pointing OUTSIDE the home are left untouched.
-    Best-effort: a failure to rewrite one link is logged and skipped — the archive
-    still holds the original, and ``_verify_copy`` only checks regular files.
+    Each rewrite is ATOMIC — the replacement link is built at a per-PID temp
+    sibling and ``os.replace``-d over the original, so a failure (e.g. Windows
+    without symlink privilege) can never leave the entry deleted: it degrades to
+    "kept the old target" (a cosmetic dangle), never to a destroyed link / lost
+    data. Best-effort per link: a failure is logged and reported (see return).
 
     Uses ``os.walk(followlinks=False)`` so we never descend THROUGH a link; both
     file-position and dir-position symlink entries are handled.
+
+    Returns the list of link paths (relative to *staging* when possible) that could
+    NOT be rewritten, so a caller that must not leave a dangling intra-home link
+    (the divergence-reconcile promote) can verify before committing; the copy path
+    ignores the return (best-effort).
     """
+    failed: list[str] = []
     for root, dirs, files in os.walk(staging):
         for name in list(dirs) + files:
             entry = Path(root) / name
@@ -1013,10 +1195,32 @@ def _retarget_intra_home_symlinks(staging: Path, *, legacy: Path, new_home: Path
                 target = os.readlink(entry)
                 new_target = _expected_migrated_target(target, legacy=legacy, new_home=new_home)
                 if new_target != target:
-                    entry.unlink()
-                    entry.symlink_to(new_target)
+                    # Atomic replace: build the new link at a per-PID temp sibling,
+                    # then os.replace it over the original. This never leaves the
+                    # entry DELETED — if symlink creation fails (e.g. Windows without
+                    # symlink privilege) the original link is untouched, so a rewrite
+                    # failure degrades to "kept old target" (cosmetic dangle), never
+                    # to a destroyed link / lost data. Any orphaned temp is cleaned up.
+                    tmp = entry.with_name(f"{entry.name}.retarget.{os.getpid()}")
+                    try:
+                        if tmp.is_symlink() or tmp.exists():
+                            tmp.unlink()
+                        tmp.symlink_to(new_target)
+                        os.replace(tmp, entry)
+                    except OSError:
+                        try:
+                            if tmp.is_symlink() or tmp.exists():
+                                tmp.unlink()
+                        except OSError:
+                            pass
+                        raise
             except OSError:
                 logger.debug("could not retarget staged symlink %s", entry, exc_info=True)
+                try:
+                    failed.append(str(entry.relative_to(staging)))
+                except ValueError:
+                    failed.append(str(entry))
+    return failed
 
 
 def _symlink_diverges(src_link: Path, dest: Path, *, legacy: Path, new_home: Path) -> bool:

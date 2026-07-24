@@ -2509,6 +2509,19 @@ _SENSITIVE_HOME_DIRS += [
     f"{prefix}/{leaf}" for prefix in _CREW_HOME_PREFIXES for leaf in _CREW_SECRET_LEAVES
 ]
 
+# The divergent-home backup left by the ``~/.kirocrew`` -> ``~/.kiro/crew``
+# migration when a pre-existing ``~/.kiro/crew`` DIVERGES from legacy: the
+# sidelined home is renamed to ``~/.kiro/crew.pre-migration/<timestamp>/`` and is
+# a FULL copy of a data home, so it holds the same credential leaves + governance
+# trust root as the live home. It is a SIBLING of ``~/.kiro/crew`` (not under it),
+# so the crew-prefix leaf entries above do NOT cover it, and owner-only perms only
+# stop OTHER OS users, not the same-user agent. Gate the ENTIRE backup root as a
+# subtree (a bare directory entry, matched by prefix in ``_path_in_home_dirs``) so
+# every timestamped copy — and every secret within it — is sensitive regardless of
+# the dynamic ``<timestamp>`` leaf name. This also flows into the bash read/write
+# command regexes via ``_SENSITIVE_SEGMENT_ALT``.
+_SENSITIVE_HOME_DIRS.append(".kiro/crew.pre-migration")
+
 # ── Write-protected paths (block modification, allow reads) ──
 # Runtime config files carry security-relevant resource ceilings (concurrent
 # subagents, per-agent turn budget, warm-pool size). A prompt-injected agent
