@@ -372,3 +372,70 @@ class TestSkillsShDownloadUrl:
             assert await p.fetch_skill_bundle("") is None
 
         assert calls["n"] == 0  # malformed ids never reach the network
+
+
+class TestIsInternalUrlSSRF:
+    """The skills.sh SSRF guard (_is_internal_url), used as both a pre-connect
+    check and the redirect gate in _SafeRedirectHandler, must block the alternate
+    IPv4 encodings the OS resolver / libc inet_aton accept but
+    ipaddress.ip_address() rejects. Pre-fix those raised ValueError, were
+    swallowed, and the URL was classified "not internal" — so a 302 redirect from
+    the third-party skills.sh registry to e.g. http://2852039166/ (== the cloud
+    instance metadata endpoint 169.254.169.254) was followed, reading instance
+    credentials (SSRF-to-metadata). The docstring already claimed hex/octal/
+    decimal coverage.
+    """
+
+    # Every form below resolves to the metadata endpoint (169.254.169.254) or loopback.
+    ENCODED_INTERNAL = [
+        "http://2852039166/latest/meta-data/",  # decimal metadata endpoint
+        "http://0xa9fea9fe/",   # hex metadata endpoint
+        "http://2130706433/",   # decimal 127.0.0.1
+        "http://0x7f000001/",   # hex 127.0.0.1
+        "http://0177.0.0.1/",   # octal-leading 127.0.0.1
+        "http://127.1/",        # short-form 127.0.0.1
+        "http://[::ffff:169.254.169.254]/",  # IPv6-mapped IPv4 metadata endpoint
+    ]
+    PLAIN_INTERNAL = [
+        "http://169.254.169.254/latest/meta-data/",  # plain metadata endpoint (control)
+        "http://localhost/",
+        "http://127.0.0.1/",
+        "http://10.0.0.5/",
+        "http://192.168.1.1/",
+        "http://[::1]/",
+        "http://0.0.0.0/",  # unspecified address (is_unspecified)
+    ]
+    EXTERNAL_ALLOWED = [
+        "https://raw.githubusercontent.com/org/repo/main/SKILL.md",
+        "https://skills.sh/api/download/some-skill",
+        "https://example.com/x",
+    ]
+
+    def test_encoded_internal_ips_are_blocked(self):
+        for url in self.ENCODED_INTERNAL:
+            assert _is_internal_url(url) is True, f"SSRF bypass — not blocked: {url}"
+
+    def test_plain_internal_ips_are_blocked(self):
+        for url in self.PLAIN_INTERNAL:
+            assert _is_internal_url(url) is True, f"should be internal: {url}"
+
+    def test_external_hosts_are_allowed(self):
+        for url in self.EXTERNAL_ALLOWED:
+            assert _is_internal_url(url) is False, f"legit host wrongly blocked: {url}"
+
+    def test_missing_host_is_blocked(self):
+        # No host = suspicious = block (fail closed).
+        assert _is_internal_url("http:///no-host") is True
+
+    def test_blocked_internal_ip_emits_sel_audit(self):
+        # A blocked SSRF-to-internal-IP is a security-relevant event and must be
+        # visible to audit tooling.
+        with patch("kiro_crew.skill_providers.skillsh._audit_ssrf_blocked") as m:
+            assert _is_internal_url("http://0xa9fea9fe/") is True  # hex metadata endpoint
+            assert m.called, "blocked SSRF attempt did not emit a SEL audit event"
+
+    def test_external_host_does_not_emit_sel_audit(self):
+        # Allowed hosts must NOT spam the audit log.
+        with patch("kiro_crew.skill_providers.skillsh._audit_ssrf_blocked") as m:
+            assert _is_internal_url("https://raw.githubusercontent.com/o/r/main/S.md") is False
+            assert not m.called

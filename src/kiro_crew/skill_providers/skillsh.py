@@ -18,6 +18,7 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any
 
+from kiro_crew.security import canonicalize_ip
 from kiro_crew.skill_providers.base import SkillSearchResult
 
 logger = logging.getLogger(__name__)
@@ -279,6 +280,28 @@ def _sync_fetch_text(url: str) -> str | None:
         return None
 
 
+def _audit_ssrf_blocked(url: str, host: str, canonical_host: str) -> None:
+    """Emit a SEL audit event for a blocked SSRF-to-internal-IP attempt.
+
+    Best-effort: a security event log failure must never turn the SSRF *defense*
+    into a crash, so every error is swallowed. Imported lazily to avoid a
+    module-load cycle (sel -> ... -> skill_providers).
+    """
+    try:
+        from kiro_crew.sel import sel  # circular import: sel -> ... -> skill_providers
+
+        detail = host if host == canonical_host else f"{host} -> {canonical_host}"
+        sel().log_api_access(
+            caller="skillsh",
+            operation="ssrf_blocked",
+            outcome="blocked",
+            source="skill_provider",
+            resources=f"{detail} ({url[:120]})",
+        )
+    except Exception:  # noqa: BLE001 — auditing must never break the guard
+        logger.debug("SEL audit of blocked SSRF failed", exc_info=True)
+
+
 def _is_internal_url(url: str) -> bool:
     """Return True if the URL resolves to a private/internal/loopback address.
 
@@ -286,7 +309,8 @@ def _is_internal_url(url: str) -> bool:
     - IPv4 private ranges (10.x, 172.16.x, 192.168.x, 127.x, 169.254.x)
     - IPv6 loopback (::1), link-local (fe80::), ULA (fd00::)
     - IPv6-mapped IPv4 (::ffff:127.0.0.1)
-    - Hex/octal/decimal IP representations (0x7f000001, 0177.0.0.1, 2130706433)
+    - Hex/octal/decimal/short-form IP encodings (0x7f000001, 0177.0.0.1,
+      2130706433, 127.1) — normalized via ``canonicalize_ip`` before parsing
     - localhost hostname
 
     Called BEFORE AND AFTER redirect resolution to prevent both pre-connect
@@ -302,17 +326,39 @@ def _is_internal_url(url: str) -> bool:
         if host == "localhost":
             return True
 
-        # Try to parse as an IP address directly (handles hex, octal, decimal,
-        # IPv6, and IPv4-mapped IPv6 forms)
+        # Normalize alternate IPv4 encodings the OS resolver / libc inet_aton
+        # accept but ipaddress.ip_address() rejects — hex (0x7f000001), octal
+        # (0177.0.0.1), 32-bit decimal (2130706433), and short forms (127.1).
+        # Without this, ip_address() raises ValueError on those, we fall through
+        # to the hostname branch, and a redirect to e.g. http://2852039166/ (==
+        # 169.254.169.254, the cloud instance metadata endpoint) is treated as
+        # "not internal" — an SSRF-to-metadata credential-read bypass.
+        # canonicalize_ip (security.py) is the same hardened resolver used by the
+        # bash-command metadata gate; it returns the dotted-quad for any encoding,
+        # or the input unchanged for a real hostname.
+        canonical_host = canonicalize_ip(host)
+
+        # Try to parse as an IP address directly (now covers hex/octal/decimal/
+        # short forms via canonicalize_ip, plus IPv6 and IPv4-mapped IPv6).
         try:
-            ip = ipaddress.ip_address(host)
-            return (
+            ip = ipaddress.ip_address(canonical_host)
+            internal = (
                 ip.is_private
                 or ip.is_loopback
                 or ip.is_link_local
                 or ip.is_reserved
                 or ip.is_multicast
+                or ip.is_unspecified
             )
+            if internal:
+                # A URL naming an internal IP literal is a genuine SSRF attempt
+                # (a legitimate skills.sh/github fetch never targets one). Emit a
+                # SEL audit event so blocked attempts are visible to audit tooling
+                # — especially the metadata-via-encoded-IP redirect vector this
+                # guard closes. canonical_host may differ from host (e.g.
+                # 0xa9fea9fe -> 169.254.169.254), so log both.
+                _audit_ssrf_blocked(url, host, canonical_host)
+            return internal
         except ValueError:
             pass  # not a literal IP — it's a hostname
 

@@ -33,8 +33,22 @@ pytestmark = pytest.mark.xdist_group(name="subprocess_spawn")
 
 
 @pytest.fixture(autouse=True)
-def clean_backend():
-    """Reset cached backend between tests."""
+def clean_backend(monkeypatch):
+    """Reset cached backend between tests.
+
+    Also neutralize the host's real kiro internal-sandbox setting: on a macOS
+    dev box where ``~/.kiro/settings/amazon-internal.json`` has
+    ``{"sandbox": true}``, the darwin kiro-delegation branch in ``wrap_argv``
+    preempts the mocked ``detect_backend`` and these unit tests — which exercise
+    KiroCrew's OWN backend selection / fail-closed path — never reach the code
+    they assert on. Point the settings path at a non-existent file so delegation
+    is off by default; the dedicated delegation tests set
+    ``_KIRO_INTERNAL_SETTINGS_PATH`` explicitly and are unaffected.
+    """
+    monkeypatch.setattr(
+        "kiro_crew.sandbox._KIRO_INTERNAL_SETTINGS_PATH",
+        "/nonexistent/kirocrew-test/amazon-internal.json",
+    )
     reset_backend()
     yield
     reset_backend()

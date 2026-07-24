@@ -34,7 +34,18 @@ _EPERM_REASON = "unshare(CLONE_NEWUSER|CLONE_NEWNS) failed with errno 1 (EPERM)"
 
 @pytest.fixture(autouse=True)
 def clean_backend(monkeypatch):
-    """Reset cached backend + probe detail + warm thread; no real sleeping in retry path."""
+    """Reset cached backend + probe detail + warm thread; no real sleeping in retry path.
+
+    Also neutralize the host's real kiro internal-sandbox setting: on a macOS
+    dev box where ``~/.kiro/settings/amazon-internal.json`` has
+    ``{"sandbox": true}``, the darwin kiro-delegation branch in ``wrap_argv``
+    preempts the mocked ``detect_backend`` so the fail-closed ``RuntimeError``
+    these tests assert on never raises. Point the settings path at a
+    non-existent file so delegation is off by default.
+    """
+    monkeypatch.setattr(
+        sb, "_KIRO_INTERNAL_SETTINGS_PATH", "/nonexistent/kirocrew-test/amazon-internal.json"
+    )
     sb.reset_backend()
     sb._warm_thread = None
     monkeypatch.setattr(sb.time, "sleep", lambda _s: None)

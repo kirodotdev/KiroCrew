@@ -292,4 +292,21 @@ describe('useMessageSearch keyboard shortcuts', () => {
     act(() => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })) })
     expect(result.current.isOpen).toBe(false)
   })
+
+  it('Ctrl/Cmd+F is ignored when the keystroke originates inside the file explorer (.mc-fe-root)', () => {
+    const { result } = renderHook(() => useMessageSearch(messages, 'slot-1'))
+    // Simulate an in-file search: target lives inside a .mc-fe-root subtree.
+    const root = document.createElement('div')
+    root.className = 'mc-fe-root'
+    const inner = document.createElement('input')
+    root.appendChild(inner)
+    document.body.appendChild(root)
+    try {
+      act(() => { inner.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', metaKey: true, bubbles: true })) })
+      // Chat search must NOT open — the file explorer owns Cmd+F here.
+      expect(result.current.isOpen).toBe(false)
+    } finally {
+      document.body.removeChild(root)
+    }
+  })
 })

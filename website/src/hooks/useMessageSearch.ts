@@ -91,6 +91,14 @@ export function useMessageSearch(messages: ChatMessage[], activeSlot: string | n
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 'f') {
+        // Yield Cmd/Ctrl+F to app surfaces that own their own in-file find
+        // (e.g. the file explorer). Without this, an in-file search hijacks
+        // the key and opens the chat message-search pane instead. This
+        // document-level handler runs before the file explorer's window-level
+        // handler (bubble order), so bailing here lets that handler run.
+        // Guard the closest() call: e.target may be Document (no closest()).
+        const target = e.target as Element | null
+        if (target && typeof target.closest === 'function' && target.closest('.mc-fe-root')) return
         e.preventDefault()
         setIsOpen(true)
         setFocusNonce(n => n + 1)
