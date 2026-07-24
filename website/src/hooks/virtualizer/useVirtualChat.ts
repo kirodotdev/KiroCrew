@@ -15,9 +15,29 @@
 //   - automatic pins (RO callback + append layout effect) → `pinAuto()`
 //   - explicit pins (slot entry + scrollToBottom API) → `forcePin()`
 //
+// INVARIANT — every programmatic `scrollTop` write MUST record itself in
+// `lastWriteTopRef`. Read this before adding any code that moves the scroller.
+//
+// The stick-release guard distinguishes "the user scrolled" from "we scrolled"
+// by comparing live `scrollTop` against the value we last wrote. An unrecorded
+// write therefore looks exactly like user input and releases follow — which is
+// the historical failure mode that caused an earlier version of this guard to be
+// reverted ("smooth scroll lag causes persistent false positives"). It is safe
+// again only because pins are now instant, so there is no in-flight animation to
+// desynchronise the reference. That makes the invariant load-bearing rather than
+// hygienic: the anchor-compensation write added for #5 has to honour it too, and
+// so must any future one. Browser-verified on this branch (release held across
+// 14 streaming growth ticks with 0 spurious re-pins, re-armed on return to the
+// bottom, at devicePixelRatio 1 and 1.5) — but verification is not a substitute
+// for maintaining the invariant.
+//
 // Visual stability while scrolled up (window expansion, async widget resizes
-// above the viewport) is delegated to the browser's native CSS
-// `overflow-anchor: auto`.
+// above the viewport) uses native CSS `overflow-anchor: auto` PLUS an explicit
+// anchor-preservation pass: an upward window shift can unmount the very node the
+// browser chose as its anchor, which resets anchoring and jumps the viewport, so
+// the top visible row's offset is captured before the commit and `scrollTop` is
+// compensated after it. The CSS is retained — reliance on it is reduced, not
+// replaced.
 //
 // Render contract for callers:
 //   - Wrap the scroll container with `scrollerRef`
@@ -26,9 +46,34 @@
 //     when false render a placeholder `<div style={{ height: item.height }} />`
 //   - Place `topSentinelRef` / `bottomSentinelRef` at the list ends for
 //     window expansion.
+//
+// WHY THIS IS IN-HOUSE (build-vs-buy — recorded, not assumed)
+// ===========================================================
+// This module re-implements machinery that react-virtuoso and @tanstack/virtual
+// ship battle-tested (dynamic measurement, prefix-sum offsets, follow-output
+// pinning, anchor stability), so the choice to keep owning it needs to be a
+// decision on the record rather than a default. The chat-specific requirements a
+// drop-in library does not cover today:
+//   - Widget iframes: rows contain sandboxed iframes that lose all internal
+//     state on unmount and rebuild slowly (PROGRAMMATIC_BUILD_DELAY_MS), which
+//     is why `isSticky` exists to exempt chosen rows from windowing entirely.
+//   - Identity that is not the array index: a steered bubble's `ts` is rewritten
+//     by the server echo, so height-cache identity must key on `meta.clientTs`
+//     (see ChatPage `stableMsgKey`); a library keyed on index or item identity
+//     would orphan the measurement.
+//   - Turn regrouping: a `single` row promotes into a grouped `turn` mid-stream,
+//     changing row composition without changing the underlying messages.
+//   - Cross-session persistence: heights survive in localStorage per session,
+//     partitioned by `sessionId`, so a revisit is warm.
+// None of these is proven *fundamental* — they are integration costs, not
+// impossibilities. The maintainers' open question is therefore whether to keep
+// investing here or schedule a migration; this comment records the constraints
+// that a migration would have to satisfy, so the next scroll fix is a choice
+// rather than a default. It does NOT itself decide the direction.
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { HeightCache } from './HeightCache'
+import { attachUserScrollIntent } from '../../utils/searchScroll'
 import {
   computeWindow,
   computeJumpWindow,
@@ -36,12 +81,15 @@ import {
   expandWindowDown,
   getOffset as getOffsetFn,
   getTotalHeight,
+  OffsetIndex,
 } from './WindowCalculator'
 import {
   computeAtBottom,
   isSelfScroll,
+  SELF_SCROLL_EPSILON,
   stickAfterUserScroll,
   bottomTarget,
+  evaluateAutoPin,
 } from './FollowController'
 import type {
   UseVirtualChatOptions,
@@ -141,8 +189,19 @@ export function useVirtualChat<T>(
   const cacheSessionRef = useRef<string | null>(null)
   if (cacheRef.current === null || cacheSessionRef.current !== sessionId) {
     cacheRef.current?.flush()
-    cacheRef.current = new HeightCache(sessionId)
+    // Seed the row count so the eviction cap is size-aware from the first
+    // measurement: a session longer than the baseline floor must be allowed to
+    // retain its oldest heights, or scrolling back to the top re-enters
+    // all-estimate territory even on a revisit. `itemCount` is legitimately 0
+    // here when a slot switch changes sessionId before the transcript loads;
+    // HeightCache treats that as "unknown" and sizes the cap from the persisted
+    // blob instead, so no measurements are discarded before the real count
+    // arrives via setRowCount() below.
+    cacheRef.current = new HeightCache(sessionId, { rowCount: itemCount })
     cacheSessionRef.current = sessionId
+  } else {
+    // Transcripts grow while mounted; keep the cap in step with the row count.
+    cacheRef.current.setRowCount(itemCount)
   }
 
   // One shared ResizeObserver; Element → index map resolves heights cheaply.
@@ -175,9 +234,30 @@ export function useVirtualChat<T>(
   // Previous scrollTop during smooth-pin animation. Used to detect genuine
   // user scroll-up (scrollTop decreased) vs normal forward animation progress.
   const prevSmoothTopRef = useRef(0)
+  // Detaches the current smooth-glide abort listeners. Held in a ref so the
+  // glide can be torn down from wherever it ends: user input, natural arrival
+  // at the bottom, a replacing glide, or unmount.
+  const smoothAbortDetachRef = useRef<(() => void) | null>(null)
+  const detachSmoothAbort = useCallback(() => {
+    smoothAbortDetachRef.current?.()
+  }, [])
   // Timestamp (performance.now) of the last genuine USER scroll. Used to gate
   // RO-driven follow pins so they don't fire mid-fling — see SCROLL_SETTLE_MS.
   const lastUserScrollAtRef = useRef<number>(0)
+
+  // ---- Scroll-anchor preservation (T4/#5) ----
+  //
+  // While the user is scrolled up reading history, an UPWARD window shift
+  // mounts rows above the viewport (recomputeWindow / top-sentinel expansion).
+  // Native `overflow-anchor: auto` normally holds the viewport steady, but a
+  // scroll-path recompute can UNMOUNT the browser's chosen anchor node (rows
+  // past WINDOW_UNMOUNT_HYSTERESIS), collapsing anchoring and jumping the
+  // viewport. This ref carries the topmost visible row's key + its screen
+  // offset, captured BEFORE an upward shift; a layout effect after commit
+  // re-reads that row and corrects scrollTop by the delta. This REDUCES
+  // reliance on overflow-anchor (it does not replace it — the CSS is owned by
+  // ChatPage and left alone).
+  const anchorPendingRef = useRef<{ key: string; top: number } | null>(null)
 
   // Window range for what is currently mounted. Initial state is the TAIL of
   // the list (last ~overscan+1 items) — chat sessions always open at the
@@ -231,12 +311,54 @@ export function useVirtualChat<T>(
       const it = itemsRef.current[i]
       if (!it) return estimatedHeight
       const k = getKeyRef.current(it, i)
-      const cached = cacheRef.current!.get(k)
+      const cache = cacheRef.current!
+      // peek(), not get(): this closure feeds the BULK scans (OffsetIndex.sync,
+      // window/offset math), which touch every row. Promoting on those reads
+      // would rewrite LRU order into transcript-index order and evict rows the
+      // user just viewed. Genuine access is recorded by set() on measurement.
+      const cached = cache.peek(k)
       // Math.max(h, 1) so zero-height items still register with IO.
-      return cached !== undefined ? Math.max(cached, 1) : estimatedHeight
+      if (cached !== undefined) return Math.max(cached, 1)
+      // Unmeasured row: estimate from the running mean of MEASURED heights,
+      // capped by MAX_MEAN_PX so one pathological row cannot inflate every
+      // unmeasured historical row (#1). averageHeight() falls back to the
+      // configured estimate only while nothing has been measured at all — it
+      // deliberately does NOT hold back for a minimum sample, because measuring
+      // that gate in a browser made the drift ~7.5x worse (see HeightCache).
+      return cache.averageHeight(estimatedHeight)
     },
     [estimatedHeight],
   )
+
+  // ---- Offset index (O(log N) prefix-sum tree over row heights) ----
+  //
+  // The hot paths (per-rAF scroll window recompute, offset/total spacers, the
+  // 120ms streaming tick) used to walk all N rows via the O(N) free functions
+  // (getOffset / getTotalHeight / computeWindow), which dominated scroll frames
+  // on 5000+ row transcripts. `OffsetIndex` answers the same questions in
+  // O(log N) / O(1). It is the authoritative tree, synced HERE on an itemCount
+  // (or getH) change so the offset memos have fresh data on the same render,
+  // and additionally on height changes by `scheduleHeightSync` (the 120ms tick
+  // — the sync point OffsetIndex's own doc prescribes). It is NOT synced on the
+  // per-rAF scroll path (a same-count sync still O(N)-scans the prefix).
+  //
+  // `sessionId` is a dependency because the tree caches heights read through
+  // the (session-scoped) HeightCache: switching to a different session with the
+  // SAME item count changes neither itemCount nor getH's identity, so without
+  // this the tree would keep serving the previous transcript's heights and
+  // render wrong spacers until the next measurement tick corrected it. A
+  // session change invalidates every height, so rebuild rather than sync.
+  const offsetIndexRef = useRef<OffsetIndex | null>(null)
+  const offsetIndexSessionRef = useRef<string | null>(null)
+  const offsetIndex = useMemo(() => {
+    if (offsetIndexRef.current === null || offsetIndexSessionRef.current !== sessionId) {
+      offsetIndexRef.current = new OffsetIndex(itemCount, getH)
+      offsetIndexSessionRef.current = sessionId
+    } else {
+      offsetIndexRef.current.sync(itemCount, getH)
+    }
+    return offsetIndexRef.current
+  }, [itemCount, getH, sessionId])
 
   // Debounced height→memo sync. Cache writes (RO re-measure, measureRef seed)
   // call this instead of bumping heightVersion directly. The bump (which
@@ -246,13 +368,21 @@ export function useVirtualChat<T>(
   // (b) refuses to re-render during a continuous height oscillation (an
   // auto-height widget iframe whose content reflows when resized), which would
   // otherwise be a per-frame render storm + a spacer that jitters ±Δ.
+  //
+  // This debounced tick is also the OffsetIndex sync point (per its doc): it
+  // reconciles the tree with the batch of measurements that landed, then reads
+  // the new total in O(1) — no O(N) getTotalHeight walk ~8x/sec while
+  // streaming (#2).
   const lastSyncedTotalRef = useRef(-1)
   const heightSyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const scheduleHeightSync = useCallback(() => {
     if (heightSyncTimerRef.current) clearTimeout(heightSyncTimerRef.current)
     heightSyncTimerRef.current = setTimeout(() => {
       heightSyncTimerRef.current = null
-      const total = getTotalHeight(itemsRef.current.length, getH)
+      const idx = offsetIndexRef.current
+      if (!idx) return
+      idx.sync(itemsRef.current.length, getH)
+      const total = idx.totalHeight()
       if (Math.abs(total - lastSyncedTotalRef.current) > 1) {
         lastSyncedTotalRef.current = total
         setHeightVersion((v) => v + 1)
@@ -263,22 +393,52 @@ export function useVirtualChat<T>(
   // NOTE: `heightVersion` is an intentional manual-invalidation key in the
   // three memos below — it is not referenced in the bodies, so eslint flags it
   // as "unnecessary", but removing it reintroduces the stale-spacer bug
-  // (memos reading the mutable HeightCache via the stable `getH` never
-  // recompute on a height change). Do NOT remove it.
+  // (memos reading the mutable OffsetIndex never recompute on a height change).
+  // Do NOT remove it. `offsetIndex` has a STABLE ref identity (it is the same
+  // tree object mutated in place by sync), so it is listed for clarity but the
+  // real triggers are itemCount / heightVersion / windowRange.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const totalHeight = useMemo(() => getTotalHeight(itemCount, getH), [itemCount, getH, heightVersion])
+  const totalHeight = useMemo(() => offsetIndex.totalHeight(), [offsetIndex, itemCount, heightVersion])
   const offsetBefore = useMemo(
-    () => getOffsetFn(windowRange.start, itemCount, getH),
+    () => offsetIndex.offsetOf(windowRange.start),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [windowRange.start, itemCount, getH, heightVersion],
+    [offsetIndex, windowRange.start, itemCount, heightVersion],
   )
   // Height of all items AFTER the window — used as the bottom spacer so the
   // scroll content keeps its full size while only the window renders real DOM.
   const offsetAfter = useMemo(
-    () => Math.max(0, totalHeight - getOffsetFn(windowRange.end, itemCount, getH)),
+    () => Math.max(0, offsetIndex.totalHeight() - offsetIndex.offsetOf(windowRange.end)),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [windowRange.end, itemCount, getH, totalHeight, heightVersion],
+    [offsetIndex, windowRange.end, itemCount, totalHeight, heightVersion],
   )
+
+  // Capture the topmost visible mounted row (smallest index whose bottom edge
+  // is still below the viewport top) and its offset from the scroller's top.
+  // Used by the scroll-anchor preservation path (T4/#5). Returns null when no
+  // mounted row qualifies or the environment has no layout (jsdom).
+  const captureTopAnchor = useCallback((): { key: string; top: number } | null => {
+    const el = scrollerRef.current
+    if (!el || typeof el.getBoundingClientRect !== 'function') return null
+    const srTop = el.getBoundingClientRect().top
+    let bestIdx = Infinity
+    let bestTop = 0
+    let bestKey: string | null = null
+    for (const [node, idx] of elIndexRef.current.entries()) {
+      const rect = (node as HTMLElement).getBoundingClientRect()
+      const top = rect.top - srTop
+      // Skip rows fully above the viewport top — they aren't the anchor the
+      // user is looking at (their screen position is off-screen).
+      if (rect.bottom - srTop <= 0) continue
+      if (idx < bestIdx) {
+        const it = itemsRef.current[idx]
+        if (!it) continue
+        bestIdx = idx
+        bestTop = top
+        bestKey = getKeyRef.current(it, idx)
+      }
+    }
+    return bestKey !== null ? { key: bestKey, top: bestTop } : null
+  }, [scrollerRef])
 
   // ---- Window recomputation (pure; never touches scrollTop) ----
   //
@@ -294,13 +454,36 @@ export function useVirtualChat<T>(
   const recomputeWindow = useCallback((expandOnly = false) => {
     const el = scrollerRef.current
     if (!el) return
-    const next = computeWindow(
-      el.scrollTop,
-      el.clientHeight,
-      itemsRef.current.length,
-      getH,
-      overscan,
-    )
+    const count = itemsRef.current.length
+    const idx = offsetIndexRef.current
+    // Window bounds in O(log N) via the OffsetIndex prefix-sum tree rather than
+    // the O(N) computeWindow linear scan — this is the per-rAF scroll hot path
+    // (#2). Fall back to computeWindow only if the tree is somehow absent.
+    let next: { start: number; end: number }
+    if (count <= 0) {
+      next = { start: 0, end: 0 }
+    } else if (idx) {
+      const top = Math.max(0, el.scrollTop)
+      const bottom = top + Math.max(0, el.clientHeight)
+      const overscanN = Math.max(0, Math.floor(overscan))
+      const firstVisible = idx.indexAt(top)
+      const lastVisible = idx.indexAt(bottom)
+      next = {
+        start: Math.max(0, firstVisible - overscanN),
+        end: Math.min(count, lastVisible + 1 + overscanN),
+      }
+    } else {
+      next = computeWindow(el.scrollTop, el.clientHeight, count, getH, overscan)
+    }
+    // T4/#5: on an upward shift (window start moving up → more rows mount above
+    // the viewport) while the user is scrolled up (stick released), record the
+    // top anchor so the post-commit layout effect can hold the viewport steady.
+    // Skipped while stick is armed — the pin path owns positioning then.
+    const cur = windowRangeRef.current
+    if (next.start < cur.start && !stickRef.current) {
+      const a = captureTopAnchor()
+      if (a) anchorPendingRef.current = a
+    }
     setWindowRange((prev) => {
       let merged: { start: number; end: number }
       if (expandOnly) {
@@ -328,34 +511,145 @@ export function useVirtualChat<T>(
       if (prev.start === merged.start && prev.end === merged.end) return prev
       return merged
     })
-  }, [getH, overscan, scrollerRef])
+  }, [getH, overscan, scrollerRef, captureTopAnchor])
 
   // ---- Pin helpers (the only code that writes el.scrollTop for follow) ----
 
-  // Automatic pin: called when content changed (RO / append). When stick is
-  // armed, always scrolls to the bottom. Stick is released ONLY by the scroll
-  // handler detecting a genuine user scroll-up — never here.
-  const pinAuto = useCallback(() => {
+  // Automatic pin: called when content changed (RO / append / streaming). Now
+  // DELEGATES the decision to FollowController.evaluateAutoPin (T5) — the pure,
+  // unit-tested "race-proof core" that used to be dead code while production
+  // pinAuto implemented a divergent "always pin when stick armed" policy. The
+  // two are reconciled here: evaluateAutoPin reads the LIVE geometry and
+  // (a) never pins when stick is released, (b) releases stick synchronously if
+  // the user has scrolled up since our last write (scrollTop < lastWriteTop and
+  // still away from the bottom — the distance guard tolerates mid-stream
+  // shrink), and (c) otherwise pins to the bottom. Its at-bottom test uses the
+  // DPR-aware epsilon (T3/#4), so this and the delegated core share one gate
+  // instead of the old duplicated `0.5` literals.
+  //
+  // The pin WRITE is INSTANT (behavior:'auto'), not smooth (T3/#4): a streaming
+  // response grows the bottom target every token, and a fresh smooth scroll
+  // CANCELS the in-flight one and restarts toward the moving target, so on a
+  // tall transcript it chases the bottom and never converges. Smooth is
+  // reserved for the explicit "jump to latest" path (scrollToBottom).
+  //
+  // Delegating restored the synchronous scroll-up release that production had
+  // abandoned because SMOOTH-scroll lag produced false positives; with the
+  // instant write there is no animation lag, so scrollTop == lastWriteTop right
+  // after each pin and the guard is reliable again.
+   // ---- The single chokepoint for programmatic scroll writes ----
+  //
+  // Enforces the follow invariant STRUCTURALLY rather than by convention: you
+  // cannot move the scroller without stating how the follow guard should account
+  // for it, because `accounting` is a required argument.
+  //   - 'pin'     — we are pinning; the guard remembers this position, so the
+  //                 resulting scroll event is recognised as our own.
+  //   - 'release' — we are deliberately leaving the bottom (explicit
+  //                 navigation); reset the guard sentinel, follow is off anyway.
+  // An unaccounted write is indistinguishable from user input and would release
+  // follow spuriously — the failure mode that got an earlier version of this
+  // guard reverted. Making the argument mandatory means a future contributor has
+  // to make a choice rather than forget one.
+  const writeScrollTop = useCallback(
+    (
+      el: HTMLDivElement,
+      top: number,
+      behavior: ScrollBehavior,
+      accounting: 'pin' | 'release',
+    ) => {
+      if (typeof el.scrollTo === 'function') el.scrollTo({ top, behavior })
+      else el.scrollTop = top
+      lastWriteTopRef.current = accounting === 'pin' ? top : -1
+      // A SMOOTH pin animates toward `top` over many frames, and every
+      // intermediate scroll event carries a scrollTop that differs from the
+      // recorded target — so the passive listener would read those frames as
+      // user input and release follow, and a mid-animation append would then be
+      // skipped by auto-pin, landing short of the new bottom. Arm the
+      // smooth-pin guard so the listener tolerates the glide (it disarms on
+      // arrival, or on a genuine upward move: see the scroll handler).
+      //
+      // Only the explicit "jump to latest" path is smooth now; the streaming
+      // pin is instant (#4), which is what removed the previous setter for this
+      // guard and left this hole.
+      if (accounting === 'pin' && behavior === 'smooth') {
+        smoothPinActiveRef.current = true
+        prevSmoothTopRef.current = el.scrollTop
+        // ...but the guard must yield to REAL input. Its only other release
+        // condition is "scrollTop moved backward", which a wheel cannot satisfy
+        // while a fast animation is still driving scrollTop forward — so a user
+        // wheeling up mid-glide was ignored and still ended up pinned to the
+        // bottom (verified in a real browser). A one-shot input listener
+        // disarms the guard and releases follow, matching how the jump/search
+        // convergence polls already abort on user input.
+        const abort = () => {
+          // Stale-invocation guard: if the glide already finished, these
+          // listeners are leftovers — detach and do nothing. Without this a
+          // completed jump left handlers behind that a later, unrelated wheel
+          // would fire, releasing follow while no smooth scroll was active.
+          if (!smoothPinActiveRef.current) {
+            detachSmoothAbort()
+            return
+          }
+          smoothPinActiveRef.current = false
+          stickRef.current = false
+          lastUserScrollAtRef.current =
+            typeof performance !== 'undefined' ? performance.now() : Date.now()
+          // Releasing `stick` alone is not enough: the browser's NATIVE smooth
+          // animation keeps running and would still land at the bottom, so the
+          // user's input appears ignored. Re-issuing an instant scroll to the
+          // CURRENT position cancels the in-flight animation and freezes where
+          // they are. lastWriteTop is reset because we are releasing follow.
+          if (typeof el.scrollTo === 'function') el.scrollTo({ top: el.scrollTop, behavior: 'auto' })
+          lastWriteTopRef.current = -1
+          detachSmoothAbort()
+        }
+        // Replace any previous glide's listeners rather than stacking them:
+        // repeated jump-to-latest presses would otherwise accumulate handlers.
+        // attachUserScrollIntent is the shared input set, so a scrollbar drag
+        // or a keyboard scroll aborts the glide too — wheel/touch alone let the
+        // animation override both.
+        detachSmoothAbort()
+        const detachIntent = attachUserScrollIntent(el, abort)
+        smoothAbortDetachRef.current = () => {
+          detachIntent()
+          smoothAbortDetachRef.current = null
+        }
+      }
+    },
+    [detachSmoothAbort],
+  )
+
+ const pinAuto = useCallback(() => {
     const el = scrollerRef.current
     if (!el) return
+    // An in-flight smooth pin is OUR scroll, and mid-glide `scrollTop` sits
+    // below the recorded target while still being meaningfully away from the
+    // bottom — which is exactly evaluateAutoPin's user-scroll-up signature. A
+    // ResizeObserver tick during the glide (streaming output resizes constantly)
+    // therefore released follow and left the rest of the response behind. The
+    // scroll handler already exempts in-flight glides; this path did not.
+    //
+    // Preserve follow and do NOT write: re-issuing a smooth scroll every resize
+    // tick would cancel and restart the animation each time (the restart trap
+    // fix #4 removed). Content appended mid-glide is instead re-targeted the
+    // moment the glide lands — the arrival branch of the scroll handler runs
+    // pinAuto(), which then snaps instantly to the new bottom.
+    if (smoothPinActiveRef.current) return
     const geom = { scrollTop: el.scrollTop, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight }
-    const target = Math.max(0, geom.scrollHeight - geom.clientHeight)
-    if (!stickRef.current) return
-    // Always pin when stick is armed. The scroll handler is the sole arbiter of
-    // releasing stick (it detects genuine user scroll-up). Previous approach
-    // tried to release here via a scrollTop-vs-lastWriteTop guard, but smooth
-    // scroll lag causes persistent false positives: the animation hasn't caught
-    // up to the last target when content grows and a new pinAuto fires, so it
-    // looks like "scrollTop < lastWriteTop" even though it's just animation lag.
-    if (Math.abs(geom.scrollTop - target) > 0.5) {
-      smoothPinActiveRef.current = true
-      prevSmoothTopRef.current = geom.scrollTop
-      el.scrollTo({ top: target, behavior: 'smooth' })
-      lastWriteTopRef.current = target
-    } else {
-      lastWriteTopRef.current = target
+    const result = evaluateAutoPin({
+      stick: stickRef.current,
+      geom,
+      lastWriteTop: lastWriteTopRef.current,
+    })
+    stickRef.current = result.stick
+    if (result.pin) {
+      writeScrollTop(el, result.target, 'auto', 'pin')
+    } else if (result.stick) {
+      // Still following but already at the bottom (no write needed) — keep the
+      // self-scroll reference aligned with the current bottom.
+      lastWriteTopRef.current = result.target
     }
-  }, [scrollerRef])
+  }, [scrollerRef, writeScrollTop])
 
   // Forced pin: explicit jump-to-bottom (slot entry, scrollToBottom API,
   // jump-to-latest pill). Always lands at the bottom and (re-)arms follow.
@@ -364,9 +658,8 @@ export function useVirtualChat<T>(
     if (!el) return
     stickRef.current = followOutput
     const target = bottomTarget({ scrollTop: el.scrollTop, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight })
-    el.scrollTop = target
-    lastWriteTopRef.current = target
-  }, [followOutput, scrollerRef])
+    writeScrollTop(el, target, 'auto', 'pin')
+  }, [followOutput, scrollerRef, writeScrollTop])
 
   // Keep the tracked scroller element in sync after every commit, so the
   // observer effects below re-attach the moment the node appears (or changes).
@@ -395,7 +688,30 @@ export function useVirtualChat<T>(
       // During a smooth-pin animation, intermediate scroll events are ours —
       // don't treat them as user scrolls.
       if (smoothPinActiveRef.current) {
-        if (atBottom) smoothPinActiveRef.current = false
+        // Arrived: the glide is over, so drop its abort listeners.
+        //
+        // Arrival is measured against the value we actually WROTE
+        // (`lastWriteTopRef`), not `atBottom`. `atBottom` uses the 100px UI
+        // threshold, which the glide enters while the native animation still
+        // has up to 100px to run; disarming there left the remaining animation
+        // un-abortable, so a user grabbing the page inside that band would be
+        // scrolled to the bottom anyway. `isSelfScroll` compares against the
+        // pin target within SELF_SCROLL_EPSILON, so we disarm only once the
+        // animation has genuinely landed. `bottomAnchored` is the fallback for
+        // a pin whose target was clamped by the browser (a shrinking
+        // scrollHeight can leave scrollTop short of the requested value
+        // forever, which would otherwise leak the listeners).
+        const bottomAnchored =
+          geom.scrollHeight - (geom.scrollTop + geom.clientHeight) <= SELF_SCROLL_EPSILON
+        if (isSelfScroll(el.scrollTop, lastWriteTopRef.current) || bottomAnchored) {
+          smoothPinActiveRef.current = false
+          detachSmoothAbort()
+          // Content appended DURING the glide moved the bottom, and pinAuto
+          // deliberately declined to re-target mid-animation (restarting a
+          // smooth scroll every resize tick stutters). Now that the animation
+          // has landed, correct the shortfall instantly.
+          pinAuto()
+        }
         // If the user grabs the page mid-animation and scrolls up,
         // scrollTop moves backward. Normal forward animation progress
         // always increases scrollTop toward the target.
@@ -403,6 +719,7 @@ export function useVirtualChat<T>(
           smoothPinActiveRef.current = false
           lastUserScrollAtRef.current = performance.now()
           stickRef.current = false
+          detachSmoothAbort()
         }
         prevSmoothTopRef.current = el.scrollTop
       } else if (!isSelfScroll(el.scrollTop, lastWriteTopRef.current)) {
@@ -427,7 +744,7 @@ export function useVirtualChat<T>(
       if (rafId) cancelAnimationFrame(rafId)
       scrollRafScheduledRef.current = false
     }
-  }, [scrollerEl, bottomThreshold, followOutput, recomputeWindow])
+  }, [scrollerEl, bottomThreshold, followOutput, recomputeWindow, detachSmoothAbort, pinAuto])
 
   // ---- ResizeObserver: track mounted-item heights + follow streaming/widgets ----
   // Native overflow-anchor handles visual stability when scrolled up; this
@@ -519,6 +836,19 @@ export function useVirtualChat<T>(
         for (const entry of entries) {
           if (!entry.isIntersecting) continue
           if (entry.target === topSentinelRef.current) {
+            // T4/#5: upward expansion mounts rows above the viewport. Capture
+            // the top anchor first (while stick is released — reading history)
+            // so the compensation layout effect can hold the viewport steady.
+            //
+            // Only when there is actually room to expand: at start === 0
+            // expandWindowUp is a no-op, so a captured anchor would never be
+            // consumed by an upward shift and would instead be applied to the
+            // NEXT layout pass — a downward expansion — yanking the viewport
+            // back to a stale row.
+            if (!stickRef.current && windowRangeRef.current.start > 0) {
+              const a = captureTopAnchor()
+              if (a) anchorPendingRef.current = a
+            }
             setWindowRange((prev) => expandWindowUp(prev, overscan))
           } else if (entry.target === bottomSentinelRef.current) {
             setWindowRange((prev) => expandWindowDown(prev, itemsRef.current.length, overscan))
@@ -531,7 +861,46 @@ export function useVirtualChat<T>(
     if (topSentinelRef.current) io.observe(topSentinelRef.current)
     if (bottomSentinelRef.current) io.observe(bottomSentinelRef.current)
     return () => io.disconnect()
-  }, [overscan, scrollerEl])
+  }, [overscan, scrollerEl, captureTopAnchor])
+
+  // ---- Scroll-anchor preservation: hold the viewport steady across an
+  //      upward window shift (T4/#5) ----
+  //
+  // Runs after every windowRange commit. If recomputeWindow / top-sentinel
+  // expansion captured a top anchor (only on an upward shift while stick is
+  // released), re-read that row's screen position in the freshly-committed DOM
+  // and correct scrollTop by the delta so the row the user is looking at does
+  // not jump when rows mount/unmount above it. Skipped when stick is armed (the
+  // pin path owns positioning) or nothing was captured. The scrollTop write is
+  // recorded in lastWriteTopRef so the passive scroll listener classifies it as
+  // a self-scroll (isSelfScroll / SELF_SCROLL_EPSILON) and does not release
+  // stick or treat it as a user scroll.
+  useLayoutEffect(() => {
+    const pending = anchorPendingRef.current
+    anchorPendingRef.current = null
+    if (!pending) return
+    const el = scrollerRef.current
+    if (!el || stickRef.current || typeof el.getBoundingClientRect !== 'function') return
+    let node: HTMLElement | null = null
+    for (const [n, idx] of elIndexRef.current.entries()) {
+      const it = itemsRef.current[idx]
+      if (it && getKeyRef.current(it, idx) === pending.key) {
+        node = n as HTMLElement
+        break
+      }
+    }
+    if (!node) return
+    const srTop = el.getBoundingClientRect().top
+    const newTop = node.getBoundingClientRect().top - srTop
+    const delta = newTop - pending.top
+    if (Math.abs(delta) > 0.5) {
+      // Instant, and accounted as a 'pin' write: this is our own correction, so
+      // the follow guard must recognise the resulting scroll event as self-scroll
+      // rather than user input. Routed through the chokepoint so the accounting
+      // cannot be forgotten here (see writeScrollTop).
+      writeScrollTop(el, el.scrollTop + delta, 'auto', 'pin')
+    }
+  }, [windowRange, scrollerRef, writeScrollTop])
 
   // ---- Follow-output: pin to bottom when items append ----
   const prevItemCountRef = useRef(itemCount)
@@ -681,14 +1050,12 @@ export function useVirtualChat<T>(
         if (align === 'center') scrollTop = off - el.clientHeight / 2 + itemH / 2
         else if (align === 'end') scrollTop = off - el.clientHeight + itemH
         scrollTop = Math.max(0, Math.min(el.scrollHeight - el.clientHeight, scrollTop))
-        if (typeof el.scrollTo === 'function') el.scrollTo({ top: scrollTop, behavior })
-        else el.scrollTop = scrollTop
         // Jumping to a specific index is an explicit "stop following" intent.
         stickRef.current = false
-        lastWriteTopRef.current = -1
+        writeScrollTop(el, scrollTop, behavior, 'release')
       })
     },
-    [overscan, getH, scrollerRef],
+    [overscan, getH, scrollerRef, writeScrollTop],
   )
 
   // "Human-like" smooth scroll to a (possibly off-window) index. UNLIKE
@@ -735,11 +1102,9 @@ export function useVirtualChat<T>(
       top = Math.max(0, Math.min(el.scrollHeight - el.clientHeight, top))
       // Explicit navigation — stop following.
       stickRef.current = false
-      lastWriteTopRef.current = -1
-      if (typeof el.scrollTo === 'function') el.scrollTo({ top, behavior: 'smooth' })
-      else el.scrollTop = top
+      writeScrollTop(el, top, 'smooth', 'release')
     },
-    [getH, scrollerRef],
+    [getH, scrollerRef, writeScrollTop],
   )
 
   const scrollToBottom = useCallback(
@@ -755,10 +1120,8 @@ export function useVirtualChat<T>(
       stickRef.current = followOutput
       const pinToBottom = (b: ScrollBehavior) => {
         const target = bottomTarget({ scrollTop: el.scrollTop, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight })
-        if (typeof el.scrollTo === 'function') el.scrollTo({ top: target, behavior: b })
-        else el.scrollTop = target
         stickRef.current = followOutput
-        lastWriteTopRef.current = target
+        writeScrollTop(el, target, b, 'pin')
       }
       requestAnimationFrame(() => {
         pinToBottom(behavior)
@@ -779,7 +1142,7 @@ export function useVirtualChat<T>(
         requestAnimationFrame(settle)
       })
     },
-    [overscan, followOutput, scrollerRef],
+    [overscan, followOutput, scrollerRef, writeScrollTop],
   )
 
   // Ensure `index` is mounted (in the window) so callers can scroll to an
@@ -924,10 +1287,11 @@ export function useVirtualChat<T>(
 
   useEffect(() => {
     return () => {
+      detachSmoothAbort()
       if (heightSyncTimerRef.current) clearTimeout(heightSyncTimerRef.current)
       cacheRef.current?.flush()
     }
-  }, [])
+  }, [detachSmoothAbort])
 
   return {
     scrollerRef,

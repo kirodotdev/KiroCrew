@@ -46,6 +46,27 @@ export const DEFAULT_BOTTOM_THRESHOLD = 100
  */
 export const SELF_SCROLL_EPSILON = 2
 
+/**
+ * "At the bottom" tolerance (px) for deciding whether an auto-pin still has
+ * work to do. A flat 0.5 is UNDER one device pixel at fractional device-pixel
+ * ratios (0.67 CSS px at 150% zoom, 0.8 at 125%): the scroller's resting
+ * maximum scrollTop lands on a fractional value, so `|scrollTop - target|`
+ * stays just above 0.5 even when the viewport is visually pinned to the
+ * bottom — making the pin re-fire on every ResizeObserver tick. Scaling the
+ * epsilon to the device pixel (never below 1 CSS px) absorbs that fractional
+ * resting error. `devicePixelRatio` is read defensively so a jsdom / SSR
+ * environment that leaves it undefined falls back to 1 (→ 1.5px).
+ */
+export function atBottomEpsilon(): number {
+  const dpr =
+    typeof window !== 'undefined' &&
+    typeof window.devicePixelRatio === 'number' &&
+    window.devicePixelRatio > 0
+      ? window.devicePixelRatio
+      : 1
+  return Math.max(1, 1 / dpr + 0.5)
+}
+
 /** Live scroll geometry snapshot read from the scroller element. */
 export interface ScrollGeom {
   scrollTop: number
@@ -137,5 +158,5 @@ export function evaluateAutoPin(args: {
   ) {
     return { pin: false, stick: false, target }
   }
-  return { pin: Math.abs(geom.scrollTop - target) > 0.5, stick: true, target }
+  return { pin: Math.abs(geom.scrollTop - target) > atBottomEpsilon(), stick: true, target }
 }

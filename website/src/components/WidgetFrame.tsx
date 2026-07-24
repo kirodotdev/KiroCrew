@@ -30,12 +30,51 @@ const HEIGHT_SHRINK_DEBOUNCE_MS = 250
 // immediately as they near the viewport (one at a time, amortized across
 // frames) — building during the scroll means the content is ready by the time
 // it stops, with no skeleton→iframe flash on settle.
-const PROGRAMMATIC_BUILD_DELAY_MS = 450
+// COUPLING (read before changing this number): the scroll convergence polls in
+// `utils/searchScroll.ts` must outlast this delay, or a jump to a widget row
+// settles before the iframe has grown and lands off-target. `MIN_QUIET_MS` there
+// is calibrated above this value, and `searchScroll.coupling.test.ts` fails if
+// that relationship is ever broken — so raising this delay is safe, it will tell
+// you if the poll needs to follow. Exported for that assertion.
+export const PROGRAMMATIC_BUILD_DELAY_MS = 450
 let lastProgrammaticScrollAt = 0
 if (typeof window !== 'undefined') {
   window.addEventListener('mc-chat-scroll-jump', () => { lastProgrammaticScrollAt = Date.now() })
 }
 const BUILD_STAGGER_MS = 120
+// The stagger slot was previously unbounded, so a batch of N widgets pushed the
+// last one's build out by N * BUILD_STAGGER_MS with no ceiling. That made the
+// worst-case build wait unknowable, and the scroll convergence poll cannot be
+// calibrated against an unbounded number (a target in a late slot stays static
+// past the poll's quiet window, settles early, then resizes and moves
+// off-target). Capping the slot bounds it: beyond this many widgets the tail of
+// the batch shares the last slot, which still spreads the JIT cost across
+// several tasks without making the deadline unbounded.
+// several tasks without making the deadline unbounded. Exported so the cap's
+// effect on the actual delay is testable, not just its value.
+export const MAX_STAGGER_SLOTS = 3
+/**
+ * Worst-case delay from a programmatic jump to a widget in that batch having
+ * built. `utils/searchScroll.ts` calibrates `MIN_QUIET_MS` above this, and
+ * `searchScroll.coupling.test.ts` fails if that relationship breaks — so both
+ * numbers here are safe to change, CI will tell you if the poll must follow.
+ */
+export const MAX_WIDGET_BUILD_WAIT_MS =
+  PROGRAMMATIC_BUILD_DELAY_MS + MAX_STAGGER_SLOTS * BUILD_STAGGER_MS
+
+/**
+ * Stagger delay for the widget in slot `slot` of a jump batch, measured from
+ * `baseWait`.
+ *
+ * Extracted and exported ONLY so the cap is directly testable: with the
+ * expression inlined, deleting the `Math.min` left every coupling test green
+ * (they assert the constants' relationship, not the arithmetic that uses them)
+ * while late-slot widgets silently went back to building after convergence had
+ * already settled. `staggeredBuildWait` is asserted to plateau beyond the cap.
+ */
+export function staggeredBuildWait(baseWait: number, slot: number): number {
+  return baseWait + Math.min(slot, MAX_STAGGER_SLOTS) * BUILD_STAGGER_MS
+}
 let jumpBuildSlot = 0
 let jumpBuildResetAt = 0
 
@@ -190,7 +229,7 @@ export default function WidgetFrame({ html, title = 'Widget', slug, messageTs, w
     if (now > jumpBuildResetAt) jumpBuildSlot = 0
     const slot = jumpBuildSlot++
     jumpBuildResetAt = now + PROGRAMMATIC_BUILD_DELAY_MS
-    const wait = baseWait + slot * BUILD_STAGGER_MS
+    const wait = staggeredBuildWait(baseWait, slot)
     const id = setTimeout(() => setVisible(true), wait)
     return () => clearTimeout(id)
   }, [near, visible])

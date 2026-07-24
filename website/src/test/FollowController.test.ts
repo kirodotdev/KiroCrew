@@ -14,6 +14,7 @@ import {
   isSelfScroll,
   stickAfterUserScroll,
   evaluateAutoPin,
+  atBottomEpsilon,
   SELF_SCROLL_EPSILON,
   DEFAULT_BOTTOM_THRESHOLD,
 } from '../hooks/virtualizer/FollowController'
@@ -160,5 +161,65 @@ describe('evaluateAutoPin — the race-proof core', () => {
     expect(distanceFromBottom(geom)).toBeLessThanOrEqual(SELF_SCROLL_EPSILON)
     const r = evaluateAutoPin({ stick: true, geom, lastWriteTop: 600 })
     expect(r.stick).toBe(true)
+  })
+})
+
+// Feature: chat-virtualizer, T3/#4 — DPR-aware "at bottom" epsilon.
+//
+// A flat 0.5px gate is UNDER one device pixel at fractional device-pixel ratios
+// (0.67 CSS px at 150% zoom), so at the fractional resting scrollTop the pin
+// re-fired on every ResizeObserver tick even though the viewport was visually
+// pinned. atBottomEpsilon() scales to the device pixel (never below 1 CSS px).
+describe('atBottomEpsilon — fractional-DPR resting gate', () => {
+  const desc = Object.getOwnPropertyDescriptor(window, 'devicePixelRatio')
+  const setDpr = (v: number | undefined) => {
+    if (v === undefined) {
+      // Simulate an environment (jsdom/SSR) that leaves it undefined.
+      Object.defineProperty(window, 'devicePixelRatio', { configurable: true, value: undefined })
+    } else {
+      Object.defineProperty(window, 'devicePixelRatio', { configurable: true, value: v })
+    }
+  }
+  const restore = () => {
+    if (desc) Object.defineProperty(window, 'devicePixelRatio', desc)
+    else setDpr(1)
+  }
+
+  it('at DPR 1.5 the fractional resting max reports at-bottom → no re-pin', () => {
+    setDpr(1.5)
+    try {
+      // eps = max(1, 1/1.5 + 0.5) ≈ 1.167px — covers the 0.67 CSS px error.
+      expect(atBottomEpsilon()).toBeCloseTo(1.1667, 3)
+      // Resting scrollTop lands 0.67px short of the true bottom target (900).
+      const geom = { scrollTop: 900 - 0.67, scrollHeight: 1300, clientHeight: 400 }
+      const r = evaluateAutoPin({ stick: true, geom, lastWriteTop: 900 })
+      expect(r.stick).toBe(true)
+      expect(r.pin).toBe(false) // within epsilon — the RO tick does NOT re-fire
+      // The retired flat 0.5 literal WOULD have re-fired here (0.67 > 0.5).
+      expect(0.67).toBeGreaterThan(0.5)
+    } finally {
+      restore()
+    }
+  })
+
+  it('at DPR 1.25 the 0.8px resting error is still within epsilon', () => {
+    setDpr(1.25)
+    try {
+      expect(atBottomEpsilon()).toBeCloseTo(1.3, 5) // 1/1.25 + 0.5
+      const geom = { scrollTop: 600 - 0.8, scrollHeight: 1000, clientHeight: 400 }
+      const r = evaluateAutoPin({ stick: true, geom, lastWriteTop: 600 })
+      expect(r.pin).toBe(false)
+    } finally {
+      restore()
+    }
+  })
+
+  it('falls back to 1.5px when devicePixelRatio is undefined (jsdom/SSR guard)', () => {
+    setDpr(undefined)
+    try {
+      expect(atBottomEpsilon()).toBe(1.5) // 1/1 + 0.5
+    } finally {
+      restore()
+    }
   })
 })

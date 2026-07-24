@@ -141,7 +141,9 @@ globalThis.fetch = vi.fn().mockResolvedValue({
   json: () => Promise.resolve({}),
 }) as never
 
-import ChatPage from '../pages/ChatPage'
+import ChatPage, { virtualKeyFor, turnLeadKey } from '../pages/ChatPage'
+import type { DisplayItem } from '../pages/chat/types'
+import type { ChatMessage } from '../types'
 
 const ASSISTANT_MSG = {
   role: 'assistant',
@@ -252,5 +254,80 @@ describe('ChatPage – opening a dock panel closes the find pane', () => {
       expect(screen.getByTestId('md-panel')).toBeTruthy()
       expect(screen.queryByPlaceholderText(FIND_PLACEHOLDER)).toBeNull()
     })
+  })
+})
+
+
+// The per-message identity resolver ChatPage feeds virtualKeyFor: prefer the
+// optimistic clientTs (the #253 steer-bubble stability fix), then ts, then a
+// stable minted id for ts-less messages. Mirrors the component's stableMsgKey
+// so these unit tests exercise the real key derivation.
+const makeMsgKey = () => {
+  const ids = new WeakMap<ChatMessage, string>()
+  let seq = 0
+  return (m: ChatMessage): string => {
+    const explicit = (m.meta?.clientTs as string | undefined) || m.ts
+    if (explicit) return explicit
+    let id = ids.get(m)
+    if (!id) { id = `mid-${seq++}`; ids.set(m, id) }
+    return id
+  }
+}
+
+const single = (m: ChatMessage, idx: number): DisplayItem => ({ kind: 'single', msg: m, idx })
+const turnOf = (items: DisplayItem[]): DisplayItem =>
+  ({ kind: 'turn', items: items as never, complete: false })
+
+describe('virtualKeyFor — #253 stability extended to the virtualizer/HeightCache key', () => {
+  it('does NOT change when a steer_push echo overwrites ts with the server ts', () => {
+    const msgKey = makeMsgKey()
+    // Optimistic append: client ts, stashed as meta.clientTs by the reconcile.
+    const optimistic: ChatMessage = { role: 'user', content: 'hi', cls: '', ts: 'client-1', meta: { clientTs: 'client-1', steer: true } }
+    const before = virtualKeyFor(single(optimistic, 3), 3, msgKey)
+    // Echo reconcile swaps ts → server ts but keeps meta.clientTs.
+    const reconciled: ChatMessage = { ...optimistic, ts: 'server-2' }
+    const after = virtualKeyFor(single(reconciled, 3), 3, msgKey)
+    expect(after).toBe(before) // HeightCache entry NOT orphaned, no viewport lurch
+  })
+
+  it('is UNCHANGED when a single promotes into a grouped turn (mid-stream regroup)', () => {
+    const msgKey = makeMsgKey()
+    const lead: ChatMessage = { role: 'assistant', content: 'working…', cls: '', ts: 'a1' }
+    // Before: the assistant renders as a standalone single.
+    const asSingle = virtualKeyFor(single(lead, 5), 5, msgKey)
+    // After: working steps accumulate and collapse into a turn led by the same
+    // assistant message.
+    const tool: ChatMessage = { role: 'tool', content: '🔧 grep', cls: '', ts: 't1' }
+    const tool2: ChatMessage = { role: 'tool', content: '🔧 cat', cls: '', ts: 't2' }
+    const asTurn = virtualKeyFor(turnOf([single(lead, 5), single(tool, 6), single(tool2, 7)]), 5, msgKey)
+    expect(asTurn).toBe(asSingle) // same row identity → no remount / re-measure
+  })
+
+  it('a turn led by a group inherits the group key (stable across regroup)', () => {
+    const msgKey = makeMsgKey()
+    const grp: DisplayItem = { kind: 'group', msgs: [{ role: 'tool', content: '🔧 a', cls: '' }], startIdx: 9 } as never
+    const asGroup = virtualKeyFor(grp, 9, msgKey)
+    const asTurn = virtualKeyFor(turnOf([grp]), 9, msgKey)
+    expect(asTurn).toBe(asGroup)
+    expect(asGroup).toBe('grp-9')
+  })
+
+  it('a ts-less message keys on a stable minted id, NOT the array index', () => {
+    const msgKey = makeMsgKey()
+    // e.g. an error appended on the send-failure path — no ts, no clientTs.
+    const errless: ChatMessage = { role: 'error', content: 'boom', cls: '' }
+    // Same message object at two different positions (later rows truncated →
+    // its display index shifted) must yield the SAME key so the following rows
+    // don't mass-remount.
+    const atFive = virtualKeyFor(single(errless, 5), 5, msgKey)
+    const atNinety = virtualKeyFor(single(errless, 90), 90, msgKey)
+    expect(atNinety).toBe(atFive)
+    expect(atFive.startsWith('row-mid-')).toBe(true)
+  })
+
+  it('turnLeadKey unifies a single and its promoting turn on the same identity', () => {
+    const msgKey = makeMsgKey()
+    const lead: ChatMessage = { role: 'assistant', content: 'x', cls: '', ts: 'z9' }
+    expect(turnLeadKey({ kind: 'single', msg: lead, idx: 0 }, msgKey)).toBe('row-z9')
   })
 })

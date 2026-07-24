@@ -88,7 +88,7 @@ import { useMessageSearch } from '../hooks/useMessageSearch'
 import SearchHighlightContext, { MessageSearchScope } from '../hooks/SearchHighlightContext'
 import SearchBar from '../components/SearchBar'
 import SearchResultsList from '../components/SearchResultsList'
-import { pickSearchScrollBehavior, scrollCurrentMatchIntoView } from '../utils/searchScroll'
+import { pickSearchScrollBehavior, scrollCurrentMatchIntoView, pollRowSettled, glideOnceStep, attachUserScrollIntent } from '../utils/searchScroll'
 import QueueStack, { SubagentDeliveryProgress, isSystemDelivery } from '../components/QueueStack'
 import { runBelongsToSlot } from '../apps/workflows/runModel'
 import { TipCard, useTipTrigger } from '../components/TipCard'
@@ -202,6 +202,36 @@ export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, mode }: 
       </DropdownMenuContent>
     </DropdownMenu>
   )
+}
+
+/** Stable key for a single TurnItem — the leading row of a turn OR a top-level
+ *  single/group. A `single` and the `turn` it leads resolve to the SAME key so
+ *  a mid-stream regroup (single promoted into a grouped turn once it gains
+ *  working steps) does NOT change the row's virtual key → no remount / silent
+ *  re-measure. `msgKey` supplies the per-message identity (clientTs → ts →
+ *  minted id; never the array index — see stableMsgKey). Groups key on their
+ *  first message's start index, which is stable for surviving rows (trailing
+ *  truncation removes later groups whole rather than renumbering earlier ones). */
+export function turnLeadKey(it: TurnItem, msgKey: (m: ChatMessage) => string): string {
+  return it.kind === 'single' ? `row-${msgKey(it.msg)}` : `grp-${it.startIdx}`
+}
+
+/** Virtualizer / HeightCache key for a display row. Pure (identity injected)
+ *  so the steer-reconcile-stability and regroup-stability guarantees are
+ *  unit-testable. A `turn` inherits the key of its leading item so promoting a
+ *  single into a turn (and vice-versa) keeps the row identity — and thus its
+ *  cached height and DOM node — stable. */
+export function virtualKeyFor(
+  it: DisplayItem,
+  index: number,
+  msgKey: (m: ChatMessage) => string,
+): string {
+  if (it.kind === 'turn') {
+    const first = it.items[0]
+    if (!first) return `turn-empty-${index}`
+    return turnLeadKey(first, msgKey)
+  }
+  return turnLeadKey(it, msgKey)
 }
 
 /** Render user message content with file chips and image markdown. Handles:
@@ -1580,6 +1610,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
   // the newer target (rapid stepping / click-then-click). cancelAnimationFrame(0)
   // is a no-op, so 0 is a safe initial value.
   const navScrollRafRef = useRef(0)
+  // Cancel handle for the in-flight settle poll, so a newer navigation or an
+  // unmount terminates it rather than letting it run to the wall-clock backstop.
+  const navPollCancelRef = useRef<(() => void) | null>(null)
   const navToDisplayIndex = useCallback((
     idx: number,
     opts?: { behavior?: ScrollBehavior; align?: ScrollLogicalPosition; offset?: number },
@@ -1601,20 +1634,62 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
     // mountIndex queues a React state update (the virtualizer's window range).
     // A FAR jump REPLACES the window, so the target row is NOT painted into the
     // DOM within a single frame — one rAF then a DOM query misses it. Poll for
-    // the row across frames and scroll the instant it mounts: driven by the
-    // row's actual DOM presence (scrollToDisplayIndex returns false until it
-    // exists), not a guessed timer. While the row is missing we do nothing — we
-    // never teleport to top, which was the "far jump jumps to top, second click
-    // works" bug. Near jumps succeed on the first frame; the cap is a safety net.
-    let frames = 0
-    const MAX_FRAMES = 30 // ~0.5s ceiling
-    const attempt = () => {
-      if (scrollToDisplayIndex(idx, { ...opts, behavior })) return
-      if (++frames >= MAX_FRAMES) return
-      navScrollRafRef.current = requestAnimationFrame(attempt)
-    }
-    navScrollRafRef.current = requestAnimationFrame(attempt)
-  }, [scrollToDisplayIndex])
+    // the row and scroll once it mounts, then keep re-scrolling (re-reading the
+    // live offset each frame) until the row's measured height SETTLES — a far
+    // row must mount + measure, and a widget target keeps growing for ~450ms as
+    // its iframe builds (PROGRAMMATIC_BUILD_DELAY_MS). The OLD frame-count
+    // ceiling (~0.5s) gave up before the widget settled, so the jump silently
+    // no-op'd and only worked on a second click once cached. Condition-based
+    // instead: retry until the target reports a stable (non-estimated) height,
+    // with a ~2s wall-clock backstop so a genuinely unreachable target still
+    // terminates instead of spinning. While the row is missing we do NOTHING —
+    // we never teleport to top (the "far jump jumps to top, second click works"
+    // bug). navScrollRafRef holds the in-flight frame so a newer navigation
+    // cancels this loop (rapid stepping / click-then-click).
+    const rowEl = (): HTMLElement | null =>
+      (scrollerRef.current?.querySelector(`[data-display-index="${idx}"]`) as HTMLElement | null) ?? null
+    navPollCancelRef.current?.()
+    // The poll re-scrolls every frame for up to CONVERGE_MAX_MS (~2s). If the
+    // user tries to scroll during that window, continuing to step would drag
+    // the viewport back to the target and fight their input — so user scroll
+    // ABORTS the convergence, exactly as scrollCurrentMatchIntoView does. (The
+    // retired frame-count ceiling was short enough (~0.5s) to mask this; the
+    // longer, condition-based window makes it reachable.) The shared
+    // attachUserScrollIntent covers scrollbar drag and keyboard scrolling too,
+    // not just wheel/touch.
+    const scrollEl = scrollerRef.current
+    const onUserScroll = () => { navPollCancelRef.current?.() }
+    const detachUserScroll = attachUserScrollIntent(scrollEl ?? undefined, onUserScroll)
+    navPollCancelRef.current = pollRowSettled({
+      measure: () => {
+        const el = rowEl()
+        return el ? el.getBoundingClientRect().height : null
+      },
+      // Only the FIRST step may glide — see glideOnceStep. Re-issuing a smooth
+      // scroll cancels and restarts the animation, so stepping every frame
+      // through the quiet window would leave a NEAR jump stuttering until the
+      // poll ends (the same restart trap fix #4 removed from the streaming pin).
+      step: glideOnceStep(
+        (b) => { scrollToDisplayIndex(idx, { ...opts, behavior: b }) },
+        behavior,
+      ),
+      raf: (cb) => (navScrollRafRef.current = requestAnimationFrame(cb)),
+      now: () =>
+        typeof performance !== 'undefined' && typeof performance.now === 'function'
+          ? performance.now()
+          : Date.now(),
+      onEnd: () => { detachUserScroll(); navPollCancelRef.current = null },
+    })
+  }, [scrollToDisplayIndex, scrollerRef])
+
+  // Stop any in-flight settle poll on unmount. Without this the loop keeps
+  // ticking rAFs against a null scroller until the ~2s backstop (harmless but
+  // pointless work after the page is gone).
+  useEffect(() => () => {
+    navPollCancelRef.current?.()
+    navPollCancelRef.current = null
+    cancelAnimationFrame(navScrollRafRef.current)
+  }, [])
 
   // "Scroll to previous user message" pill — tracks topmost visible item
   const topmostIdxRef = useRef(0)
@@ -2715,16 +2790,35 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
   // and append-pin, so the legacy useStreamingScroll/useFollowOutput
   // calls below are no-ops in this configuration but are kept invoked
   // for hook-call stability.
-  const virtualKey = useCallback((it: DisplayItem, _i: number) => {
-    if (it.kind === 'turn') {
-      const first = it.items[0]
-      if (!first) return `turn-empty-${_i}`
-      return first.kind === 'single'
-        ? `turn-${first.msg.ts || first.idx}`
-        : `turn-g-${first.startIdx}`
-    }
-    return it.kind === 'single' ? `s-${it.msg.ts || it.idx}` : `g-${it.startIdx}`
+  // Per-message identity used to derive BOTH the inner bubble key (renderMessage,
+  // ~line 2848) AND the virtualizer/HeightCache key (virtualKey, below). Keeping
+  // them on the SAME identity means the #253 steer-bubble stability fix protects
+  // the virtualizer + HeightCache layer too, not just the bubble:
+  //   1. Prefer meta.clientTs — the steer_push echo overwrites `ts` (client→
+  //      server) mid-stream; keying on `ts` alone would flip the key, orphan the
+  //      cached height, revert the row to the estimate, and lurch the viewport.
+  //   2. Fall back to `ts` for ordinary messages.
+  //   3. For ts-less messages (e.g. an error appended on the send-failure path)
+  //      DON'T fall back to the array index: truncateAfterIndex / regenerate
+  //      would shift the key of every following row → mass remount + a large
+  //      scroll swing. Mint a per-message-instance id instead. Object identity
+  //      is stable across renders under Immer's structural sharing, and survives
+  //      truncation of *later* rows, so the key is stable for the message's life.
+  //      (A durable id stamped in the reducer at append would also survive a full
+  //      refetch/replace — see .scroll-handoff-c.md.)
+  const msgIdSeq = useRef(0)
+  const msgIds = useRef(new WeakMap<ChatMessage, string>())
+  const stableMsgKey = useCallback((m: ChatMessage): string => {
+    const explicit = (m.meta?.clientTs as string | undefined) || m.ts
+    if (explicit) return explicit
+    let id = msgIds.current.get(m)
+    if (!id) { id = `mid-${msgIdSeq.current++}`; msgIds.current.set(m, id) }
+    return id
   }, [])
+  const virtualKey = useCallback(
+    (it: DisplayItem, i: number) => virtualKeyFor(it, i, stableMsgKey),
+    [stableMsgKey],
+  )
 
   // (Sticky widget detection removed — widgets now unmount with the
   // window like any other item. See useVirtualChat call below for the
