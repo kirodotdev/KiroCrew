@@ -8,6 +8,14 @@
     :root {
       --accent: #8E48FF;                 /* Kiro brand purple; overridden per-user at boot */
       --backdrop: #0f1117;               /* neutral shown during the final hand-off fade */
+      /* Foreground "ink". Two variables because the two texts have different WCAG
+         bars and sit on different parts of the backdrop (see the contrast block):
+           --ink        → large "Kiro Crew" wordmark (AA large = 3:1) at the gradient centre
+           --ink-status → 14px status text + dot (AA normal = 4.5:1) at the bottom edge
+         Both default to white (dark accents) and flip to dark when the accent is light. */
+      --ink: #ffffff;
+      --ink-status: #ffffff;
+      --title-shadow: 0 6px 34px rgba(0,0,0,0.30);
       /* the app's "system" typeface option — no webfont, paints instantly offline */
       --font-body: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     }
@@ -68,7 +76,7 @@
       opacity: 0; z-index: 60;
       font-family: var(--font-body);
       font-size: 66px; font-weight: 600; letter-spacing: -0.01em;
-      color: #fff; text-shadow: 0 6px 34px rgba(0,0,0,0.30);
+      color: var(--ink); text-shadow: var(--title-shadow);
       transition: opacity 0.5s ease, transform 0.55s cubic-bezier(.2,1,.3,1);
       white-space: nowrap;
     }
@@ -79,9 +87,9 @@
       position: absolute; left: 50%; bottom: 6%; transform: translateX(-50%);
       display: inline-flex; align-items: center; gap: 9px; z-index: 50;
       font-family: var(--font-body);
-      font-size: 14px; font-weight: 600; color: rgba(255,255,255,0.92);
+      font-size: 14px; font-weight: 600; color: var(--ink-status);
     }
-    .dot { width: 7px; height: 7px; border-radius: 50%; background: #fff; animation: pulse 1s ease-in-out infinite; }
+    .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ink-status); animation: pulse 1s ease-in-out infinite; }
     @keyframes pulse { 0%,100% { opacity: .4; transform: scale(.8);} 50% { opacity: 1; transform: scale(1);} }
 
     /* Accessibility: honour reduced-motion — no bob/pop/pulse, just a calm reveal. */
@@ -111,6 +119,43 @@
       if (q && /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(q)) accent = q;
     } catch (e) {}
     document.documentElement.style.setProperty("--accent", accent);
+
+    // ── Adaptive foreground contrast ──
+    //    Choose a dark or light "ink" so the wordmark and status stay legible on
+    //    any accent, including pale ones. The two texts are evaluated separately
+    //    because they differ in size and sit on different parts of the backdrop:
+    //      • title  — large text (3:1 bar) on the gradient centre (accent 80% + white 20%)
+    //      • status — 14px text + dot (4.5:1 bar) on the ~pure accent at the bottom edge
+    //    Each keeps white unless white fails its own WCAG bar, then flips to dark.
+    (function () {
+      function toRgb(h) {
+        h = h.replace("#", "");
+        if (h.length === 3) h = h[0]+h[0] + h[1]+h[1] + h[2]+h[2];
+        return [parseInt(h.slice(0,2),16), parseInt(h.slice(2,4),16), parseInt(h.slice(4,6),16)];
+      }
+      function lum(c) {
+        var a = c.map(function (v) { v /= 255; return v <= 0.03928 ? v/12.92 : Math.pow((v+0.055)/1.055, 2.4); });
+        return 0.2126*a[0] + 0.7152*a[1] + 0.0722*a[2];
+      }
+      function ratio(a, b) { var hi = Math.max(a,b), lo = Math.min(a,b); return (hi+0.05)/(lo+0.05); }
+      try {
+        var rgb = toRgb(accent);
+        var white = lum([255, 255, 255]);
+        var dark  = "rgb(24,20,38)";
+        // The title sits at the LIGHTEST part of the backdrop — the gradient centre
+        // (accent 80% + white 20%, matching the CSS color-mix) — and is large text
+        // (66px/600), so it only needs the WCAG AA large bar of 3:1.
+        var centreLum = lum([0,1,2].map(function (i) { return Math.round(rgb[i]*0.8 + 255*0.2); }));
+        // The status line + dot sit at the bottom edge, on ~pure accent, and are 14px
+        // normal text, so they need the stricter AA normal bar of 4.5:1.
+        var accentLum = lum(rgb);
+        var root = document.documentElement.style;
+        root.setProperty("--ink",        ratio(white, centreLum) < 3.0 ? dark : "#ffffff");
+        root.setProperty("--ink-status", ratio(white, accentLum) < 4.5 ? dark : "#ffffff");
+        root.setProperty("--title-shadow",
+          ratio(white, centreLum) < 3.0 ? "0 2px 12px rgba(0,0,0,0.10)" : "0 6px 34px rgba(0,0,0,0.30)");
+      } catch (e) {}
+    })();
 
     var GHOST_SVG =
       '<div class="float"><div class="tilt"><div class="pop"><svg class="g-svg" viewBox="255 110 745 980" fill="none" aria-hidden="true">' +
