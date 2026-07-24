@@ -2,7 +2,7 @@ import { safeSetItem } from '../utils/safeStorage'
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import Clickable from '../components/Clickable'
 import { AnimatePresence, motion } from 'framer-motion'
-import { List, CalendarDays, ClipboardList, ChevronRight, Globe, Check, History, Trash2 } from 'lucide-react'
+import { List, CalendarDays, CalendarClock, Plus, ClipboardList, ChevronRight, Globe, Check, History, Trash2 } from 'lucide-react'
 import { api } from '../api/client'
 import { PageHeader, Card, CardTitle, Btn, SendBtn, Badge, SearchInput, EmptyState, Skeleton } from '../components/ui'
 import SegmentedControl from '../components/SegmentedControl'
@@ -21,6 +21,7 @@ import { useSortableTable } from '../hooks/useSortableTable'
 import SortableHeader from '../components/SortableHeader'
 import ExecutionsView from '../components/ExecutionsView'
 import { sanitizeLlmOutput } from '../utils/sanitize'
+import { SCHEDULE_PRESETS, type CronPrefill } from '../utils/schedulePresets'
 
 const RENDER_TZ_STORAGE_KEY = 'kirocrew.schedule.renderTz'
 /**
@@ -81,6 +82,7 @@ export default function SchedulePage() {
   const [cronFilter, setCronFilter] = useState('')
   const [selected, setSelected] = useState<CronJob | null>(null)
   const [creating, setCreating] = useState(false)
+  const [prefill, setPrefill] = useState<CronPrefill | null>(null)
   const [jobsView, setJobsView] = useState<'list' | 'calendar' | 'executions'>('list')
   const [renderTz, setRenderTz] = useState<string>(() => {
     try {
@@ -216,11 +218,21 @@ export default function SchedulePage() {
   }, [selectedIds, load])
   const confirmArmed = confirmText.trim().toLowerCase() === 'delete'
 
+  // Open the create panel blank (from "Create your first job" / "Add Job").
+  const openBlankCreate = useCallback(() => { setSelected(null); setPrefill(null); setCreating(true) }, [])
+  // Open the create panel seeded from a pre-canned schedule card.
+  const openPreset = useCallback((p: CronPrefill) => { setSelected(null); setPrefill(p); setCreating(true) }, [])
+
+  // When the templates empty state is showing, use an 8px bottom pad (matching
+  // the left-nav panel's m-2 edge) so the card row's bottom lines up with the
+  // sidebar's bottom. The list/table view keeps the standard pb-8.
+  const showEmptyState = !loading && !loadError && jobs.length === 0 && !creating
+
   return (
     <div className="flex flex-1 min-h-0 overflow-hidden">
       <div className="flex-1 min-w-0 flex flex-col min-h-0">
         <PageHeader title="Schedule" subtitle="Manage recurring cron jobs and scheduled tasks" />
-        <div className="flex-1 overflow-y-auto px-6 pb-8 min-h-0">
+        <div className={`flex-1 overflow-y-auto px-6 min-h-0 ${showEmptyState ? 'pb-2' : 'pb-8'}`}>
           {loadError ? (
             <div className="flex flex-col items-center justify-center py-20 text-center">
               <p className="text-danger text-sm mb-3">{loadError}</p>
@@ -229,23 +241,39 @@ export default function SchedulePage() {
           ) : loading ? (
             <div className="flex items-center justify-center py-20"><Skeleton className="h-6 w-32 rounded" /></div>
           ) : jobs.length === 0 && !creating ? (
-            <div className="flex flex-col items-center justify-center py-20 text-center">
-              <svg className="w-16 h-16 stroke-current fill-none text-muted/20 mb-4" viewBox="0 0 24 24" strokeWidth={1} strokeLinecap="round" strokeLinejoin="round">
-                <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
-                <line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/>
-                <line x1="3" y1="10" x2="21" y2="10"/>
-                <circle cx="12" cy="15" r="1.5"/>
-                <path d="M9.5 15h-2M16.5 15h-2"/>
-              </svg>
-              <div className="text-muted text-sm font-medium">No scheduled jobs yet</div>
-              <p className="text-sm text-muted max-w-[360px] mb-5 mt-2">Schedule recurring tasks to run automatically — check pipelines, generate reports, monitor services, or anything your agent can do.</p>
-              <SendBtn onClick={() => { setSelected(null); setCreating(true) }}>
-                <span className="flex items-center gap-1.5">
-                  <svg className="w-3.5 h-3.5 stroke-current fill-none" viewBox="0 0 24 24" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-                  Create your first job
-                </span>
-              </SendBtn>
-              <p className="text-[12px] text-muted mt-3">or <a href="/chat" className="text-accent hover:underline">ask in chat</a> — try "remind me to check my pipeline every morning"</p>
+            <div className="flex flex-col h-full min-h-0">
+              <div className="flex-1 flex flex-col items-center justify-center text-center min-h-0 py-8">
+                <CalendarClock className="w-16 h-16 text-muted/20 mb-4" strokeWidth={1} aria-hidden="true" />
+                <div className="text-muted text-sm font-medium">No scheduled jobs yet</div>
+                <p className="text-sm text-muted max-w-[360px] mb-5 mt-2">Schedule recurring tasks to run automatically — check pipelines, generate reports, monitor services, or anything your agent can do.</p>
+                <SendBtn onClick={openBlankCreate}>
+                  <span className="flex items-center gap-1.5">
+                    <Plus size={14} aria-hidden="true" />
+                    Create your first job
+                  </span>
+                </SendBtn>
+                <p className="text-[12px] text-muted mt-3">or <a href="/chat" className="text-accent hover:underline">ask in chat</a> — try "remind me to check my pipeline every morning"</p>
+              </div>
+
+              {/* Pre-canned schedules pinned to the bottom: click to open the
+                  create flow pre-filled. */}
+              <div className="w-full shrink-0 pt-6">
+                <div className="text-left text-[12px] font-medium uppercase tracking-[.04em] text-muted mb-3">Start from a pre-made schedule</div>
+                <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 xl:grid-cols-4">
+                  {SCHEDULE_PRESETS.map(p => (
+                    <Clickable
+                      key={p.id}
+                      onClick={() => openPreset(p.prefill)}
+                      className="group flex flex-col items-start gap-2 text-left px-5 py-5 rounded-[20px] bg-card border border-border hover:border-accent/50 hover:bg-bg-hover transition-colors focus-ring cursor-pointer"
+                    >
+                      <span className="text-accent shrink-0">{p.icon}</span>
+                      <span className="text-[15px] font-semibold text-text-strong leading-snug">{p.title}</span>
+                      <span className="text-[13px] leading-[18px] text-muted">{p.description}</span>
+                      <span className="text-[12px] text-muted/80 font-medium mt-auto">{p.cadence}</span>
+                    </Clickable>
+                  ))}
+                </div>
+              </div>
             </div>
           ) : (<>
           <div className="flex items-center gap-2 px-3 py-2.5 mb-4 rounded-lg bg-accent-subtle border border-accent/20 text-[13px] text-text">
@@ -258,7 +286,7 @@ export default function SchedulePage() {
             <div className="flex items-center justify-between w-full">
               <span className="flex items-center gap-1.5">Jobs <InfoTip text="Scheduled jobs run on the configured interval or cron expression." /></span>
               <div className="flex items-center gap-2">
-                <SendBtn onClick={() => { setSelected(null); setCreating(true) }}>
+                <SendBtn onClick={openBlankCreate}>
                   <span className="flex items-center gap-1.5">
                     <svg className="w-3.5 h-3.5 stroke-current fill-none" viewBox="0 0 24 24" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
                     Add Job
@@ -381,12 +409,13 @@ export default function SchedulePage() {
             className="shrink-0 overflow-hidden h-full"
           >
             <JobDetailPanel
-              key={selected?.id || 'new'}
+              key={selected?.id || prefill?.name || 'new'}
               job={selected || undefined}
+              prefill={!selected ? prefill || undefined : undefined}
               agents={agents}
               defaultAgent={defaultAgent}
-              onClose={() => { setSelected(null); setCreating(false) }}
-              onSaved={() => { load(); setSelected(null); setCreating(false) }}
+              onClose={() => { setSelected(null); setCreating(false); setPrefill(null) }}
+              onSaved={() => { load(); setSelected(null); setCreating(false); setPrefill(null) }}
             />
           </motion.div>
         )}
@@ -450,8 +479,8 @@ export default function SchedulePage() {
 // flex row and reflow content off-screen (mirrors DetailPanel's reserveWidth).
 const JOB_LIST_MIN = 360
 
-function JobDetailPanel({ job, agents, defaultAgent, onClose, onSaved }: {
-  job?: CronJob; agents: KiroCrewAgent[]; defaultAgent: string; onClose: () => void; onSaved: () => void
+function JobDetailPanel({ job, prefill, agents, defaultAgent, onClose, onSaved }: {
+  job?: CronJob; prefill?: CronPrefill; agents: KiroCrewAgent[]; defaultAgent: string; onClose: () => void; onSaved: () => void
 }) {
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deleting, setDeleting] = useState(false)
@@ -514,7 +543,7 @@ function JobDetailPanel({ job, agents, defaultAgent, onClose, onSaved }: {
         <div className="w-[2px] h-full bg-transparent group-hover/drag:bg-accent group-active/drag:bg-accent-hover transition-colors duration-200" />
       </div>
       <div className="flex items-center justify-between px-5 py-4 border-b border-border">
-        <span className="text-base font-semibold text-text-strong truncate">{job ? job.name : 'New Job'}</span>
+        <span className="text-base font-semibold text-text-strong truncate">{job ? job.name : (prefill?.name || 'New Job')}</span>
         <Btn aria-label="Close" onClick={onClose}>
           <svg className="w-4 h-4 stroke-current fill-none" viewBox="0 0 24 24" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
         </Btn>
@@ -549,7 +578,7 @@ function JobDetailPanel({ job, agents, defaultAgent, onClose, onSaved }: {
           <JobLogsView jobId={job.id} isRunning={job.is_running} runningSince={job.running_since} cancelError={panelError} onCancel={async () => { setPanelError(null); try { await api.cancelCron(job.id); onSaved() } catch (e: unknown) { setPanelError(e instanceof Error ? e.message : 'Failed') } }} />
         ) : (
           <>
-            <JobForm job={job} agents={agents} defaultAgent={defaultAgent} onSaved={onSaved} layout="vertical" externalSubmit submitRef={submitRef} onSavingChange={setSaving} />
+            <JobForm job={job} prefill={prefill} agents={agents} defaultAgent={defaultAgent} onSaved={onSaved} layout="vertical" externalSubmit submitRef={submitRef} onSavingChange={setSaving} />
             {panelError && <div className="text-danger text-[13px]">{panelError}</div>}
             {job?.script && (job.last_result || job.last_error) && (
               <div className="flex flex-col gap-1.5">

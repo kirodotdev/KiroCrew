@@ -133,6 +133,12 @@ Default response is a compact one-line-per-job summary (id, name, status, schedu
 
 Security: sanitize-then-truncate ordering enforced for all user-controlled fields (message <=80 chars, last_error <=200 chars, last_result <=120 chars) so credentials straddling truncation boundaries cannot leak as partial fragments.
 
+### Schedule Page Empty-State Templates
+
+When the Schedule page (`/schedule`, `SchedulePage.tsx`) has **no jobs**, the empty state renders a bottom-pinned "Start from a pre-made schedule" row of four pre-canned template cards (`SCHEDULE_PRESETS` in `frontend/src/utils/schedulePresets.tsx`): **Dependency Guardian** (weekly, Mondays 06:00), **Nightly Build Watch** (cron `0 2 * * *`), **Error Digest** (interval, every 6 hours), and **Standup Brief** (cron `45 8 * * 1-5`). Each preset carries a `CronPrefill` payload (name, message, and schedule mode + values).
+
+Clicking a card opens the **existing** create panel with those fields pre-filled — it does **not** create a job directly. This is driven by an optional `prefill?: CronPrefill` prop on `JobForm`: in **create mode** (no `job`) the prefill seeds the initial form state (name, message, `schedMode`, interval, `weekDays`, `weekTime`, `cronExpr`); in **edit mode** (a `job` is present) `prefill` is ignored. The user reviews and saves through the normal `createCron` path, so a preset-seeded job is an ordinary cron job with no special lineage. `CronPrefill.weekDays` uses JobForm's grid convention (Mon=1 … Sun=7); a test pins the weekly preset to a Monday (`dow=1`) cron so a future change to that mapping fails loudly. Cards are rendered as accessible `Clickable` elements, hug their content, and equalize to the tallest via CSS-grid stretch. In the empty state only, the scroll container uses an 8px bottom pad (`pb-2`) instead of the default `pb-8` so the card row's bottom lines up with the left-nav panel's `m-2` bottom edge; the list/table view retains the standard `pb-8`.
+
 ## Dashboard (`dashboard/`)
 
 Modular aiohttp package at `127.0.0.1:5476` (configurable). Split into:

@@ -5,6 +5,7 @@ import { Input, SendBtn } from './ui'
 import { SettingsToggle } from './settings'
 import AgentSelector, { type KiroCrewAgent } from './AgentSelector'
 import type { CronJob } from '../types'
+import type { CronPrefill } from '../utils/schedulePresets'
 import { SaveCreateLabel, CRON_SEL, expandDow } from '../utils/cronUtils'
 
 export const TIMEZONES = ['America/Los_Angeles','America/Phoenix','America/Denver','America/Chicago','America/New_York','America/Sao_Paulo','Europe/London','Europe/Berlin','Europe/Paris','Asia/Kolkata','Asia/Shanghai','Asia/Tokyo','Australia/Sydney','Pacific/Auckland','UTC']
@@ -93,6 +94,8 @@ function buildBody(
 
 interface Props {
   job?: CronJob // if provided, edit mode
+  /** Seed values for a NEW job (create mode). Ignored when `job` is set. */
+  prefill?: CronPrefill
   agents: KiroCrewAgent[]
   defaultAgent: string
   onSaved: () => void
@@ -106,10 +109,25 @@ interface Props {
   onSavingChange?: (saving: boolean) => void
 }
 
-export default function JobForm({ job, agents, defaultAgent, onSaved, layout = 'horizontal', externalSubmit, submitRef, onSavingChange }: Props) {
+export default function JobForm({ job, prefill, agents, defaultAgent, onSaved, layout = 'horizontal', externalSubmit, submitRef, onSavingChange }: Props) {
   const defaults = parseJobDefaults(job)
-  const [name, setName] = useState(defaults.name)
-  const [msg, setMsg] = useState(defaults.message)
+  // In create mode (no job), a preset can seed the prompt + schedule fields.
+  // Edit mode always reflects the job as-stored and ignores any prefill.
+  const init = !job && prefill
+    ? {
+      ...defaults,
+      name: prefill.name,
+      message: prefill.message,
+      schedMode: prefill.schedMode,
+      intVal: prefill.intVal ?? defaults.intVal,
+      intUnit: prefill.intUnit ?? defaults.intUnit,
+      weekDays: prefill.weekDays ?? defaults.weekDays,
+      weekTime: prefill.weekTime ?? defaults.weekTime,
+      cronExpr: prefill.cronExpr ?? defaults.cronExpr,
+    }
+    : defaults
+  const [name, setName] = useState(init.name)
+  const [msg, setMsg] = useState(init.message)
   const [agent, setAgent] = useState(defaults.agent)
   const [model, setModel] = useState(defaults.model)
   const { data: modelList = [] } = useQuery<{ name: string; description?: string }[]>({
@@ -124,13 +142,13 @@ export default function JobForm({ job, agents, defaultAgent, onSaved, layout = '
   const [silent, setSilent] = useState(defaults.silent)
   const [strictSchedule, setStrictSchedule] = useState(defaults.strictSchedule)
   const [hideInChat, setHideInChat] = useState(defaults.hideInChat)
-  const [schedMode, setSchedMode] = useState(defaults.schedMode)
-  const [intVal, setIntVal] = useState(defaults.intVal)
-  const [intUnit, setIntUnit] = useState(defaults.intUnit)
-  const [weekDays, setWeekDays] = useState(defaults.weekDays)
-  const [weekTime, setWeekTime] = useState(defaults.weekTime)
+  const [schedMode, setSchedMode] = useState(init.schedMode)
+  const [intVal, setIntVal] = useState(init.intVal)
+  const [intUnit, setIntUnit] = useState(init.intUnit)
+  const [weekDays, setWeekDays] = useState(init.weekDays)
+  const [weekTime, setWeekTime] = useState(init.weekTime)
   const [tz, setTz] = useState(() => job ? (job.timezone || 'UTC') : Intl.DateTimeFormat().resolvedOptions().timeZone)
-  const [cronExpr, setCronExpr] = useState(defaults.cronExpr)
+  const [cronExpr, setCronExpr] = useState(init.cronExpr)
   const [error, setError] = useState('')
   const [saving, setSavingState] = useState(false)
   const setSaving = (v: boolean) => { setSavingState(v); onSavingChange?.(v) }

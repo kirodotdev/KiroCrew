@@ -24,6 +24,8 @@ vi.mock('../api/client', () => ({
     crons: vi.fn(),
     deleteCron: vi.fn(),
     batchDeleteCron: vi.fn(),
+    createCron: vi.fn().mockResolvedValue({}),
+    models: vi.fn().mockResolvedValue([]),
     updateCron: vi.fn().mockResolvedValue({}),
     toggleCron: vi.fn().mockResolvedValue({}),
     runCron: vi.fn().mockResolvedValue({}),
@@ -188,5 +190,59 @@ describe('SchedulePage batch select + bulk delete', () => {
     expect(screen.getByRole('dialog')).toBeInTheDocument()
     await waitFor(() =>
       expect(screen.getByRole('checkbox', { name: 'Select Weekly digest' })).toBeChecked())
+  })
+})
+
+describe('SchedulePage empty-state preset cards', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('renders the 4 pre-canned schedule cards when there are no jobs', async () => {
+    const { api } = await import('../api/client')
+    vi.mocked(api).crons.mockResolvedValue({ jobs: [] })
+
+    renderWithProviders(<SchedulePage />)
+
+    await waitFor(() => expect(screen.getByText('Dependency Guardian')).toBeInTheDocument())
+    expect(screen.getByText('Nightly Build Watch')).toBeInTheDocument()
+    expect(screen.getByText('Error Digest')).toBeInTheDocument()
+    expect(screen.getByText('Standup Brief')).toBeInTheDocument()
+  })
+
+  it('clicking a preset card opens the create panel with the prompt + name prefilled', async () => {
+    const { api } = await import('../api/client')
+    vi.mocked(api).crons.mockResolvedValue({ jobs: [] })
+
+    renderWithProviders(<SchedulePage />)
+    await waitFor(() => expect(screen.getByText('Error Digest')).toBeInTheDocument())
+
+    fireEvent.click(screen.getByText('Error Digest'))
+
+    const nameInput = (await screen.findByLabelText('Name')) as HTMLInputElement
+    expect(nameInput.value).toBe('Error Digest')
+    const msgInput = screen.getByLabelText('Message') as HTMLTextAreaElement
+    expect(msgInput.value).toContain('production errors')
+  })
+
+  it('weekly preset (Dependency Guardian) creates a Monday cron', async () => {
+    const { api } = await import('../api/client')
+    vi.mocked(api).crons.mockResolvedValue({ jobs: [] })
+    vi.mocked(api).createCron.mockResolvedValue({})
+
+    renderWithProviders(<SchedulePage />)
+    await waitFor(() => expect(screen.getByText('Dependency Guardian')).toBeInTheDocument())
+
+    // Open the prefilled create panel, then save via the normal create path.
+    fireEvent.click(screen.getByText('Dependency Guardian'))
+    const createBtn = await screen.findByRole('button', { name: 'Create' })
+    fireEvent.click(createBtn)
+
+    await waitFor(() => expect(api.createCron).toHaveBeenCalled())
+    const body = vi.mocked(api).createCron.mock.calls[0][0] as Record<string, unknown>
+    // Pins JobForm's grid weekday convention (Mon=1): the Dependency Guardian
+    // preset (weekDays: [1], 06:00) must map to a Monday cron. If JobForm's
+    // day-numbering changes, this fails loudly instead of silently shifting.
+    expect(body.cron).toBe('0 6 * * 1')
   })
 })
