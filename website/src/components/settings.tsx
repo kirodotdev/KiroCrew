@@ -20,7 +20,10 @@ import { Input, Toggle } from './ui'
 
 interface SettingsToggleProps {
   label: string
-  description?: string
+  // ReactNode (not just string) so callers can pass rich copy — e.g. the
+  // Telegram forum toggle describes setup with inline <span className="font-mono">
+  // fragments. The render path already wraps it in a <div>, so any node is safe.
+  description?: React.ReactNode
   checked: boolean
   onChange: (value: boolean) => void
   disabled?: boolean

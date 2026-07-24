@@ -359,7 +359,9 @@ Slack settings API they are registered in the dashboard route block (NOT
 
 - `GET /api/telegram/config` — masked bot-token preview + presence boolean,
   `enabled` flag, `allowed_user_ids` (serialized as digit strings for the tag
-  editor), `soft_threshold_pct`, and live status: `connected` (true only
+  editor), `soft_threshold_pct`, forum per-topic config (`allow_forum` bool and
+  `allowed_forum_chat_ids` — negative supergroup chat_ids serialized as strings
+  for the tag editor), and live status: `connected` (true only
   after startup proved the token with an authenticated `getMe` and the
   long-polling transport started; when Telegram is unreachable at boot the
   channel still starts and reports not-connected until the first successful
@@ -386,6 +388,11 @@ Slack settings API they are registered in the dashboard route block (NOT
   empty, so leaving it behind would resurrect a removed credential on the
   next restart. `allowed_user_ids` accepts digit strings or ints and stores
   canonical deduplicated ints; `soft_threshold_pct` is an int in 1–100.
+  `allow_forum` must be a strict boolean; `allowed_forum_chat_ids` accepts
+  integer-like strings or ints and stores canonical deduplicated ints —
+  supergroup chat_ids are NEGATIVE (e.g. `-1001234567890`), so the validator
+  accepts a leading minus (NOT the digits-only check used for
+  `allowed_user_ids`) and rejects non-integer garbage.
   Every Telegram field is boot-read (consumed in the orchestrator's
   constructor), so `restart_required` is true for any actual change and only
   for actual change.

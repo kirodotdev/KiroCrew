@@ -98,6 +98,9 @@ export interface TelegramConfigData {
   enabled: boolean
   allowed_user_ids: string[]
   soft_threshold_pct: number
+  // Forum per-topic config. chat_ids are negative supergroup ids as strings.
+  allow_forum?: boolean
+  allowed_forum_chat_ids?: string[]
 }
 
 /** Writable Discord config fields sent to PUT /api/discord/config. */
@@ -117,6 +120,8 @@ export interface TelegramConfigSave {
   enabled: boolean
   allowed_user_ids: string[]
   soft_threshold_pct: number
+  allow_forum?: boolean
+  allowed_forum_chat_ids?: string[]
 }
 
 /** Webex config as returned by GET /api/webex/config (secret masked). */

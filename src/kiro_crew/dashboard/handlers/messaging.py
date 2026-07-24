@@ -2183,6 +2183,11 @@ async def api_telegram_config_get(request: web.Request) -> web.Response:
             # accepts digit strings and stores canonical ints.
             "allowed_user_ids": [str(u) for u in tg.allowed_user_ids],
             "soft_threshold_pct": int(tg.soft_threshold_pct),
+            # Forum per-topic config. chat_ids are serialized as strings for
+            # the tag editor UI; they are NEGATIVE (e.g. "-1001234567890"),
+            # so the save path accepts a leading minus (not a digits-only check).
+            "allow_forum": bool(tg.allow_forum),
+            "allowed_forum_chat_ids": [str(c) for c in tg.allowed_forum_chat_ids],
         }
     )
 
@@ -2316,6 +2321,36 @@ async def _telegram_config_save_locked(request: web.Request) -> web.Response:
         if pct != int(tg_cfg.get("soft_threshold_pct", 80)):
             staged["soft_threshold_pct"] = pct
             applied.append("soft_threshold_pct")
+
+    if "allow_forum" in body:
+        val = body.get("allow_forum")
+        if not isinstance(val, bool):
+            return _deny("allow_forum must be a boolean")
+        if val != bool(tg_cfg.get("allow_forum", False)):
+            staged["allow_forum"] = val
+            applied.append("allow_forum")
+
+    if "allowed_forum_chat_ids" in body:
+        raw_chat_ids = body.get("allowed_forum_chat_ids")
+        if not isinstance(raw_chat_ids, list):
+            return _deny("allowed_forum_chat_ids must be a list")
+        new_chat_ids: list[int] = []
+        for item in raw_chat_ids:
+            s = str(item).strip()
+            if not s:
+                continue
+            # Forum supergroup chat_ids are NEGATIVE (e.g. -1001234567890),
+            # so accept an optional leading minus — the digits-only check used
+            # for allowed_user_ids would wrongly reject every group id here.
+            digits = s[1:] if s.startswith("-") else s
+            if not digits.isdigit():
+                return _deny(f"invalid Telegram chat ID: {s} (integer IDs only)")
+            cid = int(s)
+            if cid not in new_chat_ids:
+                new_chat_ids.append(cid)
+        if new_chat_ids != list(tg_cfg.get("allowed_forum_chat_ids", [])):
+            staged["allowed_forum_chat_ids"] = new_chat_ids
+            applied.append("allowed_forum_chat_ids")
 
     # Whenever the .env token is set or cleared, also drop the legacy
     # config.json ``telegram.bot_token`` fallback. The gateway (and GET above)
