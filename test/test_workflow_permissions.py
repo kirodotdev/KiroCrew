@@ -70,6 +70,14 @@ class TestNightlyPermissions:
             "id-token": "write",
             "attestations": "write",
         }
+        # The Linux desktop lane publishes S3 objects (OIDC) and attests
+        # its own SLSA provenance for the exact bytes it uploads -- never
+        # contents:write.
+        assert _permission_block(lines, "  publish-linux:") == {
+            "contents": "read",
+            "id-token": "write",
+            "attestations": "write",
+        }
         # Caller job for the reusable sign-and-notarize workflow: a
         # workflow_call callee can never exceed the caller job's permissions,
         # so the caller must grant id-token explicitly. attestations:write
@@ -96,6 +104,12 @@ class TestReleasePermissions:
         assert _permission_block(lines, "  build-wheel:") is None
         assert _permission_block(lines, "  build-desktop:") is None
         assert _permission_block(lines, "  publish-cli:") == {
+            "contents": "read",
+            "id-token": "write",
+            "attestations": "write",
+        }
+        # Linux desktop lane: OIDC + in-lane provenance (see nightly note).
+        assert _permission_block(lines, "  publish-linux:") == {
             "contents": "read",
             "id-token": "write",
             "attestations": "write",
