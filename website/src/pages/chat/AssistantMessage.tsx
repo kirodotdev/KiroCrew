@@ -14,15 +14,7 @@ import type { FileChipStyle } from './ChatSettings'
 import { loadChatConfig } from './ChatSettings'
 import { useSmoothStream } from '../../hooks/useSmoothStream'
 import type { PlanStepInput } from '../../api/client'
-
-// Match an [OPTION:] / [OPTIONS:] marker anywhere on a single line. We deliberately
-// do NOT anchor to end-of-string. The model frequently appends a closing line after
-// the marker — a follow-up question, a note, or an auto-inserted comment — and an
-// end-anchored regex then fails to match, leaving the raw "[OPTION: …]" text visible
-// with no buttons (the regression this fixes). The body is single-line ([^\]\n]) so
-// it can't swallow following paragraphs. Global so we can take the LAST marker, which
-// is the actionable gate. Capture group 1 = the optional trailing "S" (multi syntax).
-const OPTION_MARKER_RE = /\[OPTION(S)?:\s*([^\]\n]+?)\s*\]/gi
+import { OPTION_MARKER_RE } from '../../utils/optionsMarker'
 const PLAN_HEADER_RE = /📋\s*Plan for:/i
 const STAGE_RE = /^Stage\s+\d+\s*:/m
 

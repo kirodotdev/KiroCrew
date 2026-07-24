@@ -1,10 +1,5 @@
 import type { ChatMessage } from '../types'
-
-// Trailing `[OPTIONS: ...]` blocks are rendered as quick-reply buttons
-// (see parseOptions / OPTIONS_RE in pages/chat/AssistantMessage.tsx) and are
-// stripped from the rendered message body — so they have no text node to
-// highlight. Keep this regex in sync with that one.
-const OPTIONS_RE = /\[OPTIONS:\s*(.+?)\]\s*$/
+import { OPTION_MARKER_RE } from './optionsMarker'
 
 // `<mcwidget>...</mcwidget>` bodies render as a sandboxed iframe (WidgetFrame).
 // Their visible text lives in a separate document the in-chat highlighter's
@@ -26,7 +21,7 @@ const MCWIDGET_RE = /<mcwidget\b[^>]*>[\s\S]*?<\/mcwidget>/gi
  */
 export function searchableText(m: ChatMessage): string {
   if (m.role === 'assistant' || m.role === 'streaming') {
-    return m.content.replace(MCWIDGET_RE, '').replace(OPTIONS_RE, '').trimEnd()
+    return m.content.replace(MCWIDGET_RE, '').replace(OPTION_MARKER_RE, '').trimEnd()
   }
   return m.content
 }

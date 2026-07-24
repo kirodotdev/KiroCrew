@@ -5,6 +5,7 @@ import type { DisplayItem, TurnItem } from './types'
 import { useSearchHighlight } from '../../hooks/SearchHighlightContext'
 import { isWorkflowRunTool } from './WorkflowRunCard'
 import { isWorkflowCompletionMessage } from './WorkflowCompletionCard'
+import { OPTION_MARKER_RE } from '../../utils/optionsMarker'
 
 // A workflow_run launch renders as its own always-visible inline card
 // (WorkflowRunCard), so it must never be folded into the collapsible tool-call
@@ -45,7 +46,7 @@ const isVisibleInline = (it: TurnItem) => isRenderable(it) || isAlwaysVisible(it
 
 /** Strip OPTIONS/markdown formatting and return plain text content length */
 function substantiveLength(text: string): number {
-  return text.replace(/\[OPTION[S]?:.*?\]/gi, '').replace(/[#*_`>\-|]/g, '').trim().length
+  return text.replace(OPTION_MARKER_RE, '').replace(/[#*_`>\-|]/g, '').trim().length
 }
 
 /**

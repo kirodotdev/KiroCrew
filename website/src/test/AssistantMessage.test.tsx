@@ -284,6 +284,28 @@ describe('parseOptions', () => {
     expect(text).toContain('later')
   })
 
+  // A label may itself contain `]`. The block terminates at the last `]` that ends the
+  // line, so "[OPTIONS: Alpha ] | Bravo ] | Charlie ]]" yields three labels each ending
+  // in `]`. Regression: the old first-`]` regex truncated the block to just "Alpha" and
+  // leaked "| Bravo ] | Charlie ]]" into the rendered text.
+  it('allows `]` inside option labels (terminates at the line-final bracket)', () => {
+    const { options, text } = parseOptions('Here are pills:\n[OPTIONS: Alpha ] | Bravo ] | Charlie ]]')
+    expect(options).toEqual(['Alpha ]', 'Bravo ]', 'Charlie ]'])
+    expect(text).toBe('Here are pills:')
+    expect(text).not.toContain('[OPTIONS:')
+  })
+
+  // ReDoS guard: untrusted model output with thousands of unterminated `[OPTIONS:`
+  // prefixes must not drive quadratic backtracking in the synchronous render path.
+  // The tempered body (utils/optionsMarker.ts) fails in O(1) per prefix.
+  it('does not catastrophically backtrack on adversarial `[OPTIONS:` input', () => {
+    const evil = '[OPTIONS:'.repeat(20000)
+    const start = Date.now()
+    const { options } = parseOptions(evil)
+    expect(options).toEqual([])
+    expect(Date.now() - start).toBeLessThan(500)
+  })
+
   it('shows "Copy link to message" button when messageTs and slotKey are provided', () => {
     render(<AssistantMessage content="Hello" isStreaming={false} slotRunning={false} messageTs="2025-05-13T14:00:00.000Z" slotKey="chat-1" slotTitle="My Chat" />)
     expect(screen.getByTitle('Copy link to message')).toBeInTheDocument()

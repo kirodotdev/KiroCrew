@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import re
 
+from kiro_crew.constants import OPTIONS_RE_LINE
+
 # Fenced code blocks — ```lang ... ``` (or unterminated, running to the end
 # of the message). Replaced with a short placeholder; the code body would
 # dominate a 80–120 char preview otherwise.
@@ -24,8 +26,10 @@ _MCWIDGET_RE = re.compile(r"<mcwidget\b[^>]*>[\s\S]*?(?:</mcwidget>|\Z)", re.IGN
 _INLINE_CODE_RE = re.compile(r"`([^`\n]+)`")
 _IMAGE_RE = re.compile(r"!\[([^\]]*)\]\([^)]*\)")
 _LINK_RE = re.compile(r"\[([^\]]+)\]\([^)]*\)")
-# Trailing (or embedded) quick-reply block — rendered as buttons, not text.
-_OPTIONS_RE = re.compile(r"\[OPTIONS:[^\]]*\]")
+# Trailing quick-reply block — rendered as buttons, not text. Reuse the canonical
+# ReDoS-hardened, line-anchored parser (constants.OPTIONS_RE_LINE) so this strip
+# can't drift from the dashboard/Slack copies and handles `]` inside a label.
+_OPTIONS_RE = OPTIONS_RE_LINE
 _HEADER_RE = re.compile(r"^#{1,6}\s+", re.MULTILINE)
 _BLOCKQUOTE_RE = re.compile(r"^\s*>\s?", re.MULTILINE)
 _BULLET_RE = re.compile(r"^\s*(?:[-*+]|\d+\.)\s+", re.MULTILINE)
