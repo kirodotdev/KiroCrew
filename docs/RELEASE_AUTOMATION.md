@@ -483,7 +483,7 @@ feed/{channel}/latest-cli.json
   "wheel_url": "https://updates.kirocrew.dev/cli/beta/0.2.0/kirocrew-0.2.0-py3-none-any.whl",
   "sha256": "…",
   "sig_url": "https://updates.kirocrew.dev/cli/beta/0.2.0/kirocrew-0.2.0-py3-none-any.whl.sig",
-  "python_requires": ">=3.9",
+  "python_requires": ">=3.10",
   "pub_date": "2026-07-18T06:15:00Z"
 }
 ```
