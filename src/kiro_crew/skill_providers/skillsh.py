@@ -77,8 +77,16 @@ class SkillsShProvider:
         if data is None:
             return []
 
-        # skills.sh returns {"skills": [...]} or a flat list — handle both
-        items = data if isinstance(data, list) else data.get("skills", [])
+        # skills.sh returns {"skills": [...]} or a flat list — handle both.
+        # Guard the scalar case too: a JSON string/number body ("maintenance",
+        # an error page) is not a list and has no .get() (AttributeError), and
+        # {"skills": null} yields a non-list -> items[:limit] raises TypeError.
+        # Either way ProviderRegistry.search would swallow it and silently zero
+        # ALL skillsh results. Coerce anything that isn't a list to [] instead.
+        raw_items = data if isinstance(data, list) else (
+            data.get("skills") if isinstance(data, dict) else None
+        )
+        items: list[Any] = raw_items if isinstance(raw_items, list) else []
         results: list[SkillSearchResult] = []
         for item in items[:limit]:
             if not isinstance(item, dict):

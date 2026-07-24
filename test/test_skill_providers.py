@@ -109,6 +109,18 @@ class TestSkillsShProvider:
             assert results == []
 
     @pytest.mark.asyncio
+    async def test_search_handles_malformed_payload(self):
+        # A scalar JSON body (string/number) is not a list and has no .get()
+        # (AttributeError pre-fix); {"skills": null} yields items=None ->
+        # items[:limit] TypeError. Both must degrade to [] rather than crash.
+        for payload in ("maintenance", 42, {"skills": None}, {"skills": "x"}, {"nope": 1}):
+            with patch(
+                "kiro_crew.skill_providers.skillsh._sync_fetch_json",
+                return_value=payload,
+            ):
+                assert await SkillsShProvider().search("docker") == []
+
+    @pytest.mark.asyncio
     async def test_fetch_content_extracts_skill_md_from_bundle(self):
         bundle = {
             "files": [
