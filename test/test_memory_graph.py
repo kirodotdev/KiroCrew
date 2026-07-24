@@ -504,14 +504,12 @@ class TestMemoryGraphResponseFormat:
         assert isinstance(data["nodes"], list)
         assert isinstance(data["edges"], list)
 
-        # Each node has required fields, including server-computed coordinates
+        # Each node has required fields
         for node in data["nodes"]:
             assert "id" in node
             assert "label" in node
             assert "group" in node
             assert "title" in node
-            assert "x" in node and isinstance(node["x"], int)
-            assert "y" in node and isinstance(node["y"], int)
 
     @pytest.mark.asyncio
     async def test_node_labels_truncated_at_60(self, tmp_path, monkeypatch):
@@ -753,71 +751,3 @@ class TestMemoryGraphHTTPIntegration:
             assert "history" in groups
             assert "lesson" in groups
             assert len(data["edges"]) > 0  # project parent->detail edges at minimum
-
-
-class TestAssignLayoutCoords:
-    """Unit tests for the server-side deterministic layout (_assign_layout_coords).
-
-    This replaced the frontend's O(n²) force-directed physics, which froze the
-    browser at thousands of nodes. The layout must be O(n), deterministic, and
-    partition nodes into per-group blocks so the client can render with physics
-    off.
-    """
-
-    @staticmethod
-    def _layout_fn():
-        mod = importlib.import_module("kiro_crew.dashboard.handlers.memory")
-        return mod._assign_layout_coords
-
-    def test_every_node_gets_integer_coords(self):
-        nodes = [{"id": str(i), "group": "semantic"} for i in range(50)]
-        self._layout_fn()(nodes)
-        for n in nodes:
-            assert isinstance(n["x"], int)
-            assert isinstance(n["y"], int)
-
-    def test_deterministic_same_input_same_coords(self):
-        layout = self._layout_fn()
-        nodes_a = [{"id": str(i), "group": "lesson"} for i in range(30)]
-        nodes_b = [{"id": str(i), "group": "lesson"} for i in range(30)]
-        layout(nodes_a)
-        layout(nodes_b)
-        assert [(n["x"], n["y"]) for n in nodes_a] == [(n["x"], n["y"]) for n in nodes_b]
-
-    def test_groups_occupy_disjoint_x_bands(self):
-        # Two different groups must not overlap horizontally — they live in
-        # separate blocks so the graph reads as color-coded clusters.
-        layout = self._layout_fn()
-        nodes = (
-            [{"id": f"p{i}", "group": "preference"} for i in range(10)]
-            + [{"id": f"s{i}", "group": "semantic"} for i in range(10)]
-        )
-        layout(nodes)
-        pref_max_x = max(n["x"] for n in nodes if n["group"] == "preference")
-        sem_min_x = min(n["x"] for n in nodes if n["group"] == "semantic")
-        assert sem_min_x > pref_max_x
-
-    def test_no_two_nodes_in_same_group_share_a_cell(self):
-        layout = self._layout_fn()
-        nodes = [{"id": str(i), "group": "history"} for i in range(40)]
-        layout(nodes)
-        coords = [(n["x"], n["y"]) for n in nodes]
-        assert len(coords) == len(set(coords)), "grid cells must be unique within a group"
-
-    def test_unknown_group_still_positioned(self):
-        # A group not in the fixed order must still get coords (nothing dropped).
-        layout = self._layout_fn()
-        nodes = [{"id": "x", "group": "mystery"}]
-        layout(nodes)
-        assert "x" in nodes[0] and "y" in nodes[0]
-
-    def test_empty_nodes_is_noop(self):
-        self._layout_fn()([])  # must not raise
-
-    def test_scales_to_thousands_without_quadratic_blowup(self):
-        # O(n) check: 4000 nodes lay out effectively instantly. (The frontend
-        # physics this replaces was ~1.9B ops at this size.)
-        layout = self._layout_fn()
-        nodes = [{"id": str(i), "group": "semantic"} for i in range(4000)]
-        layout(nodes)
-        assert all("x" in n and "y" in n for n in nodes)

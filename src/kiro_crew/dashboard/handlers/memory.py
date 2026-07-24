@@ -6,7 +6,6 @@ import asyncio
 import importlib
 import json
 import logging
-import math
 import os
 import sys
 from typing import Any
@@ -897,69 +896,44 @@ def _build_memory_graph(mem: Any, lessons: list) -> tuple[list[dict], list[dict]
     except Exception:
         pass
 
-    # --- Auto-detect edges by keyword overlap ---
-    project_names = [
-        (node_ids[k], k.split(":", 1)[1].lower())
-        for k in node_ids
-        if k.startswith("proj:") and ":" not in k.split(":", 1)[1]
-    ]
+    # --- Auto-detect edges by project-name mention ---
+    # The original rule matched the FULL project header (e.g. "KiroCrew
+    # (Public)") verbatim inside node titles, which almost never occurs —
+    # measured ~0 edges across thousands of nodes, so the graph had no structure
+    # to lay out. Match the project's SHORT name instead (leading token with any
+    # parenthetical qualifier stripped: "KiroCrew (Public)" -> "kirocrew",
+    # "kiro-cli (Rust)" -> "kiro-cli"), which is what actually shows up in
+    # semantic keys, lessons, and history lines.
+    def _project_short_name(full: str) -> str:
+        base = re.sub(r"\(.*?\)", "", full).strip()
+        parts = base.split()
+        return (parts[0] if parts else base).lower()
+
+    # Generic words that would link to a large fraction of nodes if a project
+    # were literally named after one ("Web", "App", "The …"); excluded so a
+    # common short name can't turn the graph back into a hairball.
+    edge_stopwords = {
+        "the", "and", "for", "new", "web", "app", "api", "dev", "doc", "docs",
+        "test", "tests", "main", "core", "misc", "todo", "wip", "old", "tmp",
+    }
+    project_matchers: list[tuple[str, str]] = []
+    for k in node_ids:
+        if k.startswith("proj:") and ":" not in k.split(":", 1)[1]:
+            short = _project_short_name(k.split(":", 1)[1])
+            # Require >=3 chars and not a generic stopword to avoid noisy links.
+            if len(short) >= 3 and short not in edge_stopwords:
+                project_matchers.append((node_ids[k], short))
+
     for n in nodes:
         if n["group"] in ("preference", "semantic", "lesson", "history"):
             title_lower = n["title"].lower()
-            for proj_id, proj_name in project_names:
-                if (
-                    re.search(r"\b" + re.escape(proj_name) + r"\b", title_lower)
-                    and n["id"] != proj_id
-                ):
+            for proj_id, short in project_matchers:
+                if n["id"] == proj_id:
+                    continue
+                if re.search(r"\b" + re.escape(short) + r"\b", title_lower):
                     edges.append({"from": n["id"], "to": proj_id})
 
-    # Pre-compute node positions server-side so the client never runs a layout.
-    _assign_layout_coords(nodes)
-
     return nodes, edges
-
-
-def _assign_layout_coords(nodes: list[dict]) -> None:
-    """Assign each node a deterministic (x, y) — group-partitioned grid, O(n).
-
-    Replaces the frontend's O(n²) force-directed physics (vis-network
-    ``forceAtlas2Based`` + 150 stabilization iterations), which ran on the
-    browser main thread and froze the UI at thousands of nodes. Each memory
-    group gets its own grid block laid out left-to-right, so the graph reads as
-    color-coded clusters and renders instantly with physics disabled on the
-    client. Mutates ``nodes`` in place (adds ``x``/``y`` keys).
-
-    NOTE: a plain grid is the right tool here precisely because the current
-    graph is almost entirely disconnected (edges only form on full-project-name
-    overlap, which almost never matches). If a future change introduces real
-    edge density, swap this body for a force-directed layout (e.g. a
-    numpy-vectorised Barnes-Hut pass, O(n log n)); the frontend already consumes
-    server-provided x/y, so only this function changes — no client edit needed.
-    """
-    # Fixed group order keeps the layout stable across requests.
-    group_order = ["preference", "project", "semantic", "lesson", "history"]
-    sx, sy = 220, 90  # per-node horizontal / vertical spacing
-    group_gap = 400  # blank gutter between adjacent group blocks
-
-    by_group: dict[str, list[dict]] = {}
-    for n in nodes:
-        by_group.setdefault(n.get("group", "history"), []).append(n)
-
-    # Known groups first (stable), then any unexpected group so nothing is lost.
-    ordered_groups = group_order + [g for g in by_group if g not in group_order]
-
-    x_cursor = 0
-    for group in ordered_groups:
-        members = by_group.get(group)
-        if not members:
-            continue
-        # Slightly wider than tall for a balanced, readable block.
-        cols = max(1, math.ceil(math.sqrt(len(members) * 1.6)))
-        for idx, node in enumerate(members):
-            row, col = divmod(idx, cols)
-            node["x"] = x_cursor + col * sx
-            node["y"] = row * sy
-        x_cursor += cols * sx + group_gap
 
 
 async def api_memory_graph(request: web.Request) -> web.Response:
