@@ -8,6 +8,7 @@ import type {
   SessionDoc,
 } from '../types'
 import { refreshOnce, __resetRefreshOnceForTests } from './refreshOnce'
+import { installApiTransport } from './apiTransport'
 import { queryClient } from './queryClient'
 
 export type McpPoolableServer = {
@@ -403,6 +404,12 @@ const del = (url: string, body?: object) =>
   fetch(url, { method: 'DELETE', headers: body ? { 'Content-Type': 'application/json', ..._sk } : _sk, body: body ? JSON.stringify(body) : undefined })
 const patch = (url: string, body: object) =>
   fetch(url, { method: 'PATCH', headers: { 'Content-Type': 'application/json', ..._sk }, body: JSON.stringify(body) })
+
+// Publish the blessed transport so a downstream edition can build its OWN typed
+// API module on the SAME session-key-authenticated helpers as core methods
+// (inheriting X-Session-Key + auth-recovery + ApiError), instead of forking this
+// file or writing methods on raw fetch. See api/apiTransport.ts.
+installApiTransport({ get, post, put, del, patch, j, jNullable })
 
 export interface InstanceTunnelStatus {
   instance_id: string

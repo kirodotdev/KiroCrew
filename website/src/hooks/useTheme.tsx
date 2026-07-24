@@ -8,6 +8,7 @@ import {
 } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { api } from '../api/client'
+import { reportSeamCollision } from '../apps/seamCollision'
 import { sanitizeCssValue } from '../lib/cssSanitize'
 import { safeSetItem } from '../utils/safeStorage'
 
@@ -145,6 +146,46 @@ export const THEMES: ThemeEntry[] = [
 
 /** Default color theme applied on first run when no preference is persisted. */
 export const DEFAULT_COLOR_THEME: ColorTheme = 'kiro'
+
+/**
+ * Downstream-registered built-in themes.
+ *
+ * Extension seam: a downstream edition (or plugin bundle) adds its own theme
+ * options to the theme picker via `registerTheme()` from its entry module,
+ * instead of editing the `THEMES` array on every upstream sync. These are
+ * built-in (non-`custom`) themes — the theme's CSS block ships with the
+ * edition's overlay; this registry only contributes the picker entry (value +
+ * label). The core registers none, so the stock picker shows only `THEMES`.
+ *
+ * Read via `allThemes` (`[...THEMES, ...registered, ...customThemes]`), so a
+ * registered theme appears in the picker without touching this file. Registration
+ * is expected at module-load time (edition composition), before the picker
+ * renders — this registry is not reactive.
+ */
+const REGISTERED_THEMES: ThemeEntry[] = []
+
+/**
+ * Register additional built-in theme picker entries at runtime. A duplicate
+ * `value` (already in `THEMES` or previously registered) is ignored and logs a
+ * warning, so re-entrant registration (e.g. HMR) stays idempotent.
+ */
+export function registerTheme(entries: ThemeEntry[]): void {
+  for (const entry of entries) {
+    if (
+      THEMES.some((t) => t.value === entry.value) ||
+      REGISTERED_THEMES.some((t) => t.value === entry.value)
+    ) {
+      reportSeamCollision('theme', `theme ${entry.value} already registered; ignoring duplicate`)
+      continue
+    }
+    REGISTERED_THEMES.push(entry)
+  }
+}
+
+/** All registered downstream themes, in insertion order. */
+export function getRegisteredThemes(): readonly ThemeEntry[] {
+  return REGISTERED_THEMES
+}
 
 const SYNC_EVENT = 'mc-theme-sync'
 export const CUSTOM_THEMES_CHANGED_EVENT = 'mc-custom-themes-changed'
@@ -376,7 +417,7 @@ function useThemeState(): ThemeContextValue {
   }, [colorTheme, setColorTheme, loadCustomThemes])
 
   // Combined themes list: built-in + custom
-  const allThemes: ThemeEntry[] = [...THEMES, ...customThemes]
+  const allThemes: ThemeEntry[] = [...THEMES, ...REGISTERED_THEMES, ...customThemes]
 
   const markOnboarded = useCallback(() => {
     safeSetItem('mc-onboarded', '1')

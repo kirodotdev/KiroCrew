@@ -214,15 +214,20 @@ Builtin apps no longer need manual `NAV_ITEMS` entries. The `builtinRegistry.ts`
 Additive registries let a **downstream edition** (a separate build that composes
 this SPA — e.g. an internal fork) contribute UI without copy-and-shadowing core
 files. The core registers nothing new into them, so every seam is inert in the
-stock build. There are **five** seams:
+stock build. There are **six** registry seams:
 
 | Seam | Module | Registrar → reader |
 |------|--------|--------------------|
 | Builtin page routes | `apps/builtinRegistry.ts` | `registerBuiltinComponents()` → `getBuiltinComponent()` |
 | Nav icons | `apps/builtinIcons.tsx` | `registerBuiltinIcons()` → `getBuiltinIcon()` |
 | Theme branding | `themeBranding.tsx` | `registerThemeBranding()` → `getThemeBranding()` |
+| Theme picker options | `hooks/useTheme.tsx` | `registerTheme()` → `getRegisteredThemes()` |
 | Top-bar widgets | `apps/topBarWidgets.tsx` | `registerTopBarWidgets()` → `getTopBarWidgets()` |
 | Panel nav + migration | `hooks/useKeyboardShortcuts.ts`, `components/MigrationCheck.tsx` | `registerPanelShortcut()`, `registerNonAppPrefix()` |
+
+Plus one **exported-transport** seam for edition-owned API methods (not a
+registry — see "API methods" below): `api/apiTransport.ts` exports `apiTransport`,
+and the edition builds its own typed API module on it.
 
 **Composition root.** `src/extensions.ts` is the one file an edition owns. It is
 imported first in `main.tsx` (before the store/providers/`App`), so all
@@ -251,6 +256,17 @@ chords the handler consumes before panel routing (shortcuts modal, settings,
 focus-input, MRU, chat-jump digits, arrows) — since a panel on one of those would
 be advertised but unreachable. All rejections route through `reportSeamCollision`.
 
+**Theme picker options.** `registerTheme([{ value, label }])` adds a built-in
+theme to the picker; `useTheme` reads it via `allThemes = [...THEMES,
+...registered, ...customThemes]`. The theme's CSS block ships in the edition's
+overlay — this seam only contributes the picker entry. A `value` already in
+`THEMES` or previously registered is rejected via `reportSeamCollision` (core
+wins).
+
+**API methods.** There is no registrar. An edition imports `apiTransport` from
+`api/apiTransport.ts` and writes its own fully-typed API module on it — see the
+"API methods (exported transport, not a registry)" note below for why.
+
 **Collision policy (`apps/seamCollision.ts`).** A registration whose key collides
 with a core (or already-registered) entry is resolved core-wins. It is
 **fail-loud in dev/test** (`reportSeamCollision` throws under
@@ -258,11 +274,40 @@ with a core (or already-registered) entry is resolved core-wins. It is
 and **degrades safe in production** (warn + ignore) so a shipped app never
 white-screens over a duplicate.
 
-**No API-client seam.** A `registerApiExtensions()`/`apiExt` seam was considered
-and **dropped**: unlike the five above, the core never consumes it (it would be
-written and read only by the edition), so it added public, stringly-typed surface
-for zero composition benefit. An edition's widgets define their own typed API
-helpers in their own module instead.
+**API methods (exported transport, not a registry).** Unlike the six registry
+seams, the core never *consumes* edition API methods — they are written and read
+only by the edition. A registry the core never reads would add public,
+stringly-typed (`unknown`-cast) seam surface for zero composition benefit. So
+instead of a registrar, `api/apiTransport.ts` **exports** the blessed
+`apiTransport` — the same `get`/`post`/`put`/`del`/`patch` + `j`/`jNullable` the
+core methods use (`client.ts` installs them via `installApiTransport` at module
+load). An edition builds its OWN fully-typed API module on `apiTransport`:
+
+```ts
+import { apiTransport as t } from '../api/apiTransport'
+export const editionApi = {
+  midwayTtl: () => t.get('/api/midway-ttl').then(t.j) as Promise<MidwayTtl>,
+}
+```
+
+This gives the edition the one thing it needs — the `X-Session-Key` header (the
+fail-open ephemeral-gate guard) and the auth-recovery/`ApiError` pipeline by
+construction — with full static types on the edition side and **no new *registry*
+contract**. It never forks `client.ts` and never writes raw `fetch` (which would
+silently drop the session key).
+
+`ApiTransport` (the seven helper signatures + the `j`/`jNullable` semantics) **is**
+a small, **intentionally-frozen** downstream contract — a separately-built edition
+compiles against it. There is no `CONTRACT_VERSION`-style guard on this frontend
+seam, so treat it like the backend's "CONTRACT_VERSION pinned at 1 pre-launch":
+changing a request helper's shape or `j`'s error behavior is **edition-breaking**
+(the stock build stays green — the seam is inert — so breakage surfaces only at
+runtime in the out-of-repo edition), not a free refactor. Evolve additively. Each
+`apiTransport` method is a stable wrapper that resolves the installed helper at
+call time, so an edition may import/destructure it at module-init without an
+ordering hazard vs. `extensions.ts`. Trust boundary: the transport carries the
+session key — it is for the edition composition root, **never**
+app/plugin-contributed frontend code.
 
 **`onActivate` timing.** A theme branding's `onActivate` side-effect fires on the
 first render for the initially-active theme (not only on a later switch); keep it
