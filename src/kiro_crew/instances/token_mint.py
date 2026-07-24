@@ -126,6 +126,8 @@ def _token_subcommand(
 def build_candidate_command(
     subcommand: str,
     candidates: tuple[str, ...] = REMOTE_BIN_CANDIDATES,
+    *,
+    marker_port: int | None = None,
 ) -> str:
     """Remote shell snippet that execs the first available candidate bin.
 
@@ -133,9 +135,19 @@ def build_candidate_command(
     Candidates are hard-coded literals, so double-quote embedding is safe; the
     ``$HOME`` inside each expands at remote-shell parse time. *subcommand* is
     a fixed literal or pre-validated string — never raw user input.
+
+    When *marker_port* is given, the snippet first consults the run-marker the
+    *running* gateway wrote for that port
+    (``${KIROCREW_HOME:-$HOME/.kirocrew}/run/gateway-<port>.bin``) and execs the
+    launcher it names — so mint uses the same venv as the live gateway instead of
+    whatever ``~/.local/bin/kirocrew`` happens to point at. Falls through to the
+    candidate search when the marker is absent or doesn't name an executable
+    (older remotes, or gateway not running), so nothing regresses.
+    See :mod:`kiro_crew.instances.run_marker`.
     """
     expanded = " ".join(f'"{p}"' for p in candidates)
-    return " ".join(
+    prefix = f"{_run_marker_clause(subcommand, marker_port)} " if marker_port is not None else ""
+    return prefix + " ".join(
         [
             f"for b in {expanded}; do",
             '  if [ -x "$b" ]; then',
@@ -148,19 +160,55 @@ def build_candidate_command(
     )
 
 
+def _run_marker_clause(subcommand: str, port: int) -> str:
+    """Shell prelude that execs the gateway's recorded launcher for *port*.
+
+    Reads ``${KIROCREW_HOME:-$HOME/.kirocrew}/run/gateway-<port>.bin`` (written by
+    :func:`kiro_crew.instances.run_marker.write_marker`). ``$HOME``/``$KIROCREW_HOME``
+    expand at remote-shell parse time; *port* is a bounded int (see
+    :func:`_validate_port`), so the path literal cannot inject shell syntax. Only
+    ``exec``s when the recorded path is an executable file.
+
+    Known limitation (non-interactive SSH env): the writer keys the marker off
+    the gateway process's ``config_dir()`` (its ``KIROCREW_HOME``), but this
+    prelude resolves ``${KIROCREW_HOME:-$HOME/.kirocrew}`` in the *remote* SSH
+    shell. If the remote gateway runs under a custom ``KIROCREW_HOME`` that the
+    non-interactive shell does not also export (a persistent one set in
+    ``~/.zshenv`` *is* inherited, so this is the uncommon case), the paths
+    diverge, the marker is missed, and mint falls through to the candidate search
+    — i.e. exactly today's behavior, no regression.
+    """
+    marker = f'"${{KIROCREW_HOME:-$HOME/.kirocrew}}/run/gateway-{int(port)}.bin"'
+    return " ".join(
+        [
+            f"__mk={marker};",
+            'if [ -f "$__mk" ]; then',
+            '  __kb="$(cat "$__mk" 2>/dev/null)";',
+            '  if [ -n "$__kb" ] && [ -x "$__kb" ]; then',
+            f'    exec "$__kb" {subcommand};',
+            "  fi;",
+            "fi;",
+        ]
+    )
+
+
 def build_remote_command(
     remote_bin: str,
     subcommand: str,
     candidates: tuple[str, ...] = REMOTE_BIN_CANDIDATES,
+    *,
+    marker_port: int | None = None,
 ) -> str:
     """Pick the remote command for the user's stored ``remote_bin`` (generic).
 
-    Empty / default sentinel → candidate search. Otherwise respect the custom
-    path (``~/`` → ``$HOME/``). *remote_bin* must already be charset-validated;
+    Empty / default sentinel → candidate search (optionally run-marker-first when
+    *marker_port* is given). Otherwise respect the custom path (``~/`` → ``$HOME/``)
+    verbatim — an explicit ``remote_bin`` is the user's deliberate choice and is
+    never overridden by the marker. *remote_bin* must already be charset-validated;
     *subcommand* is a fixed/validated literal.
     """
     if not remote_bin or remote_bin == DEFAULT_REMOTE_BIN:
-        return build_candidate_command(subcommand, candidates)
+        return build_candidate_command(subcommand, candidates, marker_port=marker_port)
     expanded = re.sub(r"^~/", "$HOME/", remote_bin)
     return f'"{expanded}" {subcommand}'
 
@@ -184,7 +232,12 @@ def build_remote_token_command(
     port = _validate_port(port)
     embed_parent_port = _validate_port(embed_parent_port)
     return build_remote_command(
-        remote_bin, _token_subcommand(ttl, port, embed_parent_port), candidates
+        remote_bin,
+        _token_subcommand(ttl, port, embed_parent_port),
+        candidates,
+        # Prefer the marker the gateway on this port wrote (its own venv) over the
+        # blind PATH candidate search — keyed by the same port the mint targets.
+        marker_port=port,
     )
 
 
@@ -285,6 +338,7 @@ async def run_remote_kirocrew(
     subcommand: str,
     *,
     remote_bin: str = "",
+    marker_port: int | None = None,
     timeout_secs: float = 60.0,
 ) -> tuple[int, str]:
     """Run ``kirocrew <subcommand>`` on *ssh_host* over SSH.
@@ -293,8 +347,16 @@ async def run_remote_kirocrew(
     ``(returncode, combined_stderr_tail)``; -1 on spawn failure / timeout.
     ``ssh_host`` must be validated by the caller; *subcommand* is a fixed
     literal (never raw user input). Never returns or logs secrets.
+
+    *marker_port* — when the caller knows the remote dashboard port, pass it so
+    this resolves the running gateway's own launcher via the run-marker first
+    (same fix as token mint), instead of the blind PATH candidate search. This
+    is what makes the dashboard "restart remote" action work on a host whose
+    ``~/.local/bin/kirocrew`` points at an uninstalled worktree.
     """
-    remote_command = build_remote_command(remote_bin, subcommand)
+    remote_command = build_remote_command(
+        remote_bin, subcommand, marker_port=_validate_port(marker_port)
+    )
     argv = _build_ssh_argv(ssh_host, remote_command)
     logger.info("Running 'kirocrew %s' on %s", subcommand, ssh_host)
     try:

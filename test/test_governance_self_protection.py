@@ -56,6 +56,35 @@ def test_agent_fs_write_to_policy_denied_at_gate():
     assert result.action == TOOL_DENY
 
 
+# ── run-marker exec dir (mint execs its contents unsandboxed) ─────────────────
+# The run/ dir holds paths the gateway execs outside the sandbox (sandbox
+# launcher scripts + the remote-instance run-marker mint reads over SSH). A
+# prompt-injected agent that could write there could plant an exec path — pin
+# that the whole dir is on the read+write sensitive floor.
+_RUN_EXEC_PATHS = (
+    "~/.kirocrew/run",
+    "~/.kirocrew/run/gateway-7781.bin",
+    "~/.kirocrew/run/kirocrew_sandbox_abc.py",
+)
+
+
+@pytest.mark.parametrize("path", _RUN_EXEC_PATHS)
+def test_run_exec_dir_is_sensitive(path):
+    assert security.is_sensitive_path(path)
+
+
+@pytest.mark.parametrize("path", _RUN_EXEC_PATHS)
+def test_validate_file_path_rejects_run_exec_dir(path):
+    assert validate_file_path(path) is None
+
+
+def test_agent_fs_write_to_run_marker_denied_at_gate():
+    hooks = HookManager()
+    home = os.path.expanduser("~")
+    result = hooks.on_tool_call(f"{home}/.kirocrew/run/gateway-7781.bin")
+    assert result.action == TOOL_DENY
+
+
 @pytest.mark.parametrize(
     "cmd",
     [

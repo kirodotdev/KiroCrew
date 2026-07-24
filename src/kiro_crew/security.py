@@ -2512,6 +2512,20 @@ _SENSITIVE_HOME_DIRS: list[str] = [
     ".kirocrew/token_signing.key",
     ".kirocrew/refresh_chains.json",
     ".kirocrew/.local_secret",
+    # Runtime exec dir. ``run/`` holds paths that the gateway executes OUTSIDE the
+    # agent sandbox: the sandbox launcher scripts (``sandbox.py`` execs
+    # ``python ~/.kirocrew/run/kirocrew_sandbox_*.py``) and the remote-instance
+    # run-marker ``gateway-<port>.bin`` (``instances/run_marker.py``), whose
+    # contents the SSH token-mint reads and ``exec``s on the remote host. A
+    # prompt-injected / sandboxed agent that could WRITE into this dir could point
+    # a marker (or a launcher) at an attacker-controlled binary and, on the next
+    # routine token refresh, get it executed unsandboxed — a reachable sandbox
+    # escape (owner + ``-x`` checks don't help; agent writes run as the same user).
+    # Classify the whole dir read+write, like the other trust roots above. The
+    # gateway's own writers (``run_marker.write_marker``, the sandbox launcher
+    # writer) open these paths directly and do NOT route through this gate, so
+    # legitimate startup/spawn writes still work.
+    ".kirocrew/run",
 ]
 
 # ── Write-protected paths (block modification, allow reads) ──

@@ -1623,11 +1623,7 @@ class GatewayOrchestrator:
                 ``job.env`` and have an interactive cron's spawn_run subagents
                 silently auto-approved -- an authorization bypass.
                 """
-                env = {
-                    k: v
-                    for k, v in (job.env or {}).items()
-                    if k != "KIROCREW_APPROVAL_MODE"
-                }
+                env = {k: v for k, v in (job.env or {}).items() if k != "KIROCREW_APPROVAL_MODE"}
                 if job.approval_mode == "auto":
                     env["KIROCREW_APPROVAL_MODE"] = "auto"
                 return env or None
@@ -4532,6 +4528,17 @@ class GatewayOrchestrator:
         self._init_task_runner()
         if not self._no_dashboard:
             await self._init_dashboard()
+            # Record this gateway's own kirocrew launcher, keyed by the port it
+            # serves, so a remote token-mint execs THIS install's venv instead of
+            # a stale ~/.local/bin/kirocrew that may point at an uninstalled
+            # worktree. See kiro_crew.instances.run_marker.
+            try:
+                from kiro_crew.instances import run_marker
+
+                if self._dashboard_port:
+                    run_marker.write_marker(self._dashboard_port)
+            except Exception:
+                logger.debug("Gateway run-marker write skipped", exc_info=True)
         else:
             await self._init_api_server()
 
@@ -4728,6 +4735,18 @@ class GatewayOrchestrator:
         # Block until shutdown
         await shutdown_event.wait()
         print("👻 Shutting down…")
+
+        # Drop this gateway's run-marker so a mint never execs a launcher for a
+        # port we no longer serve (best-effort; a stale marker is harmless — the
+        # next startup overwrites it, and mint would just fail to reach the down
+        # dashboard exactly as it does today).
+        try:
+            from kiro_crew.instances import run_marker
+
+            if not self._no_dashboard and self._dashboard_port:
+                run_marker.clear_marker(self._dashboard_port)
+        except Exception:
+            logger.debug("Gateway run-marker clear skipped", exc_info=True)
 
         try:
             await asyncio.wait_for(self._shutdown(), timeout=10.0)
