@@ -65,13 +65,24 @@ async def api_autonudge_start(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
+    # idle_secs/max_cycles come straight from the request body: int() raises
+    # ValueError on "abc" and TypeError on null/list, which would surface as a
+    # 500 instead of a 400. Coerce up front and reject bad input, matching the
+    # sibling handlers_instances.api_instances_add guard on the same pattern.
+    try:
+        idle_secs = int(body.get("idle_secs", 60))
+        max_cycles = int(body.get("max_cycles", 0))
+    except (TypeError, ValueError):
+        return web.json_response(
+            {"error": "idle_secs and max_cycles must be integers"}, status=400
+        )
     loop, error, status = await authorize_and_add_nudge(
         svc=svc,
         state=state,
         slot_key=(body.get("session_key") or body.get("slot_key") or ""),
         message=(body.get("message") or ""),
-        idle_secs=int(body.get("idle_secs", 60)),
-        max_cycles=int(body.get("max_cycles", 0)),
+        idle_secs=idle_secs,
+        max_cycles=max_cycles,
         stop_sentinel_path=(body.get("stop_sentinel_path") or ""),
         source="dashboard",
         caller=request.remote or "",

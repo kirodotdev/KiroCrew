@@ -562,3 +562,66 @@ async def test_dashboard_loop_does_not_self_rearm(svc, monkeypatch):
     # No new timer was armed — the finished task is still the registered one.
     assert svc._timers.get(loop.id) is timer1
     svc.stop()
+
+
+class TestAutonudgeStartIntCoercion:
+    """POST /api/autonudge passed idle_secs/max_cycles through int() with no
+    guard, so a non-numeric ("abc"), null, or list value 500'd instead of
+    returning 400 — unlike the sibling api_instances_add which guards the same
+    int(body.get(...)) pattern. These drive the real handler over aiohttp."""
+
+    def _app(self, monkeypatch, fake_svc):
+        from unittest.mock import MagicMock
+
+        from aiohttp import web
+
+        from kiro_crew.dashboard.handlers import autonudge as _handler
+
+        monkeypatch.setattr(_handler, "_autonudge_get", lambda: fake_svc)
+        state = MagicMock()
+        state._slots = {"chat-1-123": MagicMock(workspace="default")}
+        app = web.Application()
+        app["state"] = state
+        app.router.add_post("/api/autonudge", _handler.api_autonudge_start)
+        return app
+
+    @pytest.mark.asyncio
+    async def test_non_integer_idle_secs_is_400_not_500(self, monkeypatch):
+        from unittest.mock import AsyncMock, MagicMock
+
+        from aiohttp.test_utils import TestClient, TestServer
+
+        fake_svc = MagicMock()
+        fake_svc.add = AsyncMock()  # must NOT be called on bad input
+        app = self._app(monkeypatch, fake_svc)
+        async with TestClient(TestServer(app)) as client:
+            for bad in ("abc", None, ["x"]):
+                resp = await client.post(
+                    "/api/autonudge",
+                    json={"slot_key": "chat-1-123", "message": "go", "idle_secs": bad},
+                )
+                assert resp.status == 400, f"idle_secs={bad!r} gave {resp.status}"
+        fake_svc.add.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_valid_integers_still_start(self, monkeypatch):
+        from unittest.mock import AsyncMock, MagicMock
+
+        from aiohttp.test_utils import TestClient, TestServer
+
+        fake_svc = MagicMock()
+        fake_svc.add = AsyncMock(
+            return_value=NudgeLoop(
+                id="loop-1", slot_key="chat-1-123", message="go", idle_secs=30, max_cycles=2
+            )
+        )
+        app = self._app(monkeypatch, fake_svc)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/autonudge",
+                json={"slot_key": "chat-1-123", "message": "go", "idle_secs": 30, "max_cycles": 2},
+            )
+            assert resp.status == 200
+        fake_svc.add.assert_awaited_once()
+        assert fake_svc.add.await_args.kwargs["idle_secs"] == 30
+        assert fake_svc.add.await_args.kwargs["max_cycles"] == 2
