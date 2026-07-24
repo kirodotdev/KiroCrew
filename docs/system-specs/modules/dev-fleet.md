@@ -143,11 +143,67 @@ after the unit was installed.
 ## Async Runs
 
 Long-running operations (sync, provision) are tracked via `_RUNS` dict with:
-- Streamed stdout (last 500 lines kept)
+- Streamed stdout (last 500 lines kept **server-side**)
 - Watchdog deadline (30 min default, configurable via `_RUN_DEADLINE_S`)
 - Status: `running` → `done` | `timeout`
 
-Clients poll `/apps/dev-fleet/api/run?id=<run_id>` for progress.
+Clients poll `/apps/dev-fleet/api/run?id=<run_id>` for progress. The endpoint
+returns only the **last 60 lines** of `run.output` (a sliding tail window), not
+the full server-side 500-line buffer — see the accumulation note below.
+
+### Provision progress UX (frontend)
+
+A worktree being provisioned renders an inline **stepper strip** spanning the
+row's right columns (mirroring the main-row Pull+Build stepper): spinner +
+`Provisioning` label + a coarse phase tag (`venv`/`dist`, derived from
+provision.py's `[provision] creating venv …` / `[provision] building dist …`
+markers) + the last output line + elapsed time + a `log ▾`/`log ▴` toggle. The
+toggle expands a `<pre>` panel under the row showing the accumulated log
+(auto-scrolled while streaming).
+
+**Log accumulation (what "full log" actually means).** The `/run` endpoint only
+returns the last 60 output lines per poll, so a long provision scrolls early
+lines out of that window. The client therefore **accumulates** windows rather
+than replacing state each poll: `mergeLogWindow(buffer, window)` finds the
+longest suffix of the running buffer that is also a prefix of the newly polled
+window and appends only the non-overlapping remainder. This reconstructs the
+full stream across the normal case where the window advances by fewer than 60
+lines between two ~2s polls. **Honest limitation:** output that scrolls more
+than a full 60-line window between two polls (extremely fast-scrolling bursts)
+has no overlap to anchor on and those intermediate lines are lost. When that
+happens (zero overlap against a non-empty buffer), the client inserts a visible
+`[… lines missed …]` marker line into the panel so the transcript never
+silently overstates its completeness — the panel is the best client-side
+reconstruction plus an explicit gap signal, not a guaranteed-complete
+transcript. The heuristic's retirement path (a `since=<index>` cursor or raised
+tail on `/run` for a guaranteed-complete log) is tracked in issue #321.
+
+**Reattach on button-click (single-flight).** The provision endpoint is
+single-flighted per checkout: if a provision is already running it replies
+`{ok:false, error:"provision already running", run_id:<in-flight rid>}`. The
+frontend treats **any** response carrying a `run_id` as a run to attach to and
+resumes polling it — it does **not** render a failure. Only a response with no
+`run_id` is a genuine "failed to start". This makes a second Provision click
+during an in-flight build reattach to the live run instead of showing a false
+red state.
+
+**Failure persistence:** on failure/timeout the run is **not** cleared — the
+strip shows a red `✕ Provision failed (exit N)` label with the log
+auto-expanded, and both persist until the user clicks the dismiss `×`
+(dismiss also refreshes the fleet). On success it flashes a green
+`✓ Provisioned` briefly, then clears (the fleet refetch flips the row to its
+built state).
+
+**Known limitation — no reattach after a page reload.** Provision run state
+(including the persisted failed run and its log) lives only in component memory.
+A browser reload during or after a provision loses it, because the `/fleet`
+payload exposes no provision run ids to reattach to on mount (unlike sync, which
+reattaches via `sync_run_id`). The single-flight reattach above only covers a
+Provision **button-click** while a run is in flight, not a fresh page load.
+Server-backed reattach (exposing active/failed provision run ids in `/fleet` so
+the page can reattach on mount, mirroring `sync_run_id`) is tracked as follow-up
+work ([issue #321](https://github.com/kirodotdev/KiroCrew/issues/321); see also
+[issue #231](https://github.com/kirodotdev/KiroCrew/issues/231), PR #320).
 
 ## Make Live
 

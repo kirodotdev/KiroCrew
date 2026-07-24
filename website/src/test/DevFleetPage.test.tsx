@@ -6,7 +6,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { screen, waitFor, fireEvent } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 
-import DevFleetPage from '../pages/DevFleetPage'
+import DevFleetPage, { mergeLogWindow, LOG_GAP_MARKER } from '../pages/DevFleetPage'
 
 function renderPage() {
   return renderWithProviders(<DevFleetPage />, { route: '/dev-fleet' })
@@ -561,5 +561,163 @@ describe('DevFleetPage', () => {
     // Upward placement anchors via `bottom`, not `top`.
     expect(menu.style.bottom).not.toBe('')
     expect(menu.style.top).toBe('')
+  })
+
+  /* ─── Provision progress: expandable log panel + failure persistence (issue #231) ─── */
+  // 'unprov' is the only non-main has_dist:false row, so it renders the single
+  // "Provision" button. Provision polling uses real 2s sleeps, hence the
+  // generous per-test timeouts and waitFor windows below.
+  it('provision stepper shows the FULL output in an expandable log panel and the toggle opens/closes it', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation((url) => {
+      const u = typeof url === 'string' ? url : (url as Request).url
+      if (u.includes('/fleet')) return Promise.resolve(new Response(JSON.stringify(FLEET), { status: 200 }))
+      if (u.includes('/disk')) return Promise.resolve(new Response(JSON.stringify({ total_mb: 51200 }), { status: 200 }))
+      if (u.includes('/pod/provision')) return Promise.resolve(new Response(JSON.stringify({ ok: true, run_id: 'run-p' }), { status: 200 }))
+      // Stays 'running' so the streaming stepper + toggle are observable.
+      if (u.includes('/run?id=run-p')) return Promise.resolve(new Response(JSON.stringify({ status: 'running', output: ['[provision] creating venv for unprov', 'Collecting deps', '[provision] building dist for unprov'] }), { status: 200 }))
+      return Promise.resolve(new Response('{}', { status: 200 }))
+    })
+    renderPage()
+    await waitFor(() => expect(screen.getByText('unprov')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Provision'))
+    // The row-spanning stepper replaces the tiny inline pill immediately.
+    await waitFor(() => expect(screen.getByText('Provisioning')).toBeInTheDocument())
+    // Open the log panel; it renders the WHOLE output, not just the last line.
+    fireEvent.click(screen.getByLabelText('Toggle provision log'))
+    // 'Collecting deps' is a NON-last line -> it exists only in the full panel
+    // (the inline strip shows just the last line), proving full-output capture.
+    await waitFor(() => expect(screen.getByText(/Collecting deps/)).toBeInTheDocument(), { timeout: 4000 })
+    // Toggling closed removes the panel again.
+    fireEvent.click(screen.getByLabelText('Toggle provision log'))
+    await waitFor(() => expect(screen.queryByText(/Collecting deps/)).toBeNull())
+  }, 15000)
+
+  it('failed provision PERSISTS with an auto-expanded log and a working dismiss', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation((url) => {
+      const u = typeof url === 'string' ? url : (url as Request).url
+      if (u.includes('/fleet')) return Promise.resolve(new Response(JSON.stringify(FLEET), { status: 200 }))
+      if (u.includes('/disk')) return Promise.resolve(new Response(JSON.stringify({ total_mb: 51200 }), { status: 200 }))
+      if (u.includes('/pod/provision')) return Promise.resolve(new Response(JSON.stringify({ ok: true, run_id: 'run-f' }), { status: 200 }))
+      if (u.includes('/run?id=run-f')) return Promise.resolve(new Response(JSON.stringify({ status: 'done', exit_code: 1, output: ['npm ERR! boom', 'FATAL: npm run build failed'] }), { status: 200 }))
+      return Promise.resolve(new Response('{}', { status: 200 }))
+    })
+    renderPage()
+    await waitFor(() => expect(screen.getByText('unprov')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Provision'))
+    // The persistent strip is proven by its dismiss button (the toast has no
+    // this uniquely targets the persisted stepper) survives instead of vanishing.
+    await waitFor(() => expect(screen.getByLabelText('Dismiss provision status')).toBeInTheDocument(), { timeout: 4000 })
+    // The log auto-expands on failure: a non-last output line shows in the panel.
+    expect(screen.getByText(/npm ERR! boom/)).toBeInTheDocument()
+    // Dismiss clears the persisted stepper and restores the Provision entry point.
+    fireEvent.click(screen.getByLabelText('Dismiss provision status'))
+    await waitFor(() => expect(screen.queryByLabelText('Dismiss provision status')).toBeNull())
+    expect(screen.getByText('Provision')).toBeInTheDocument()
+  }, 15000)
+
+  it('successful provision flashes a green Provisioned status then clears back to the Provision button', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation((url) => {
+      const u = typeof url === 'string' ? url : (url as Request).url
+      if (u.includes('/fleet')) return Promise.resolve(new Response(JSON.stringify(FLEET), { status: 200 }))
+      if (u.includes('/disk')) return Promise.resolve(new Response(JSON.stringify({ total_mb: 51200 }), { status: 200 }))
+      if (u.includes('/pod/provision')) return Promise.resolve(new Response(JSON.stringify({ ok: true, run_id: 'run-s' }), { status: 200 }))
+      if (u.includes('/run?id=run-s')) return Promise.resolve(new Response(JSON.stringify({ status: 'done', exit_code: 0, output: ['[provision] done'] }), { status: 200 }))
+      return Promise.resolve(new Response('{}', { status: 200 }))
+    })
+    renderPage()
+    await waitFor(() => expect(screen.getByText('unprov')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Provision'))
+    // Brief green success flash (stepper span and/or toast).
+    await waitFor(() => expect(screen.getAllByText('Provisioned').length).toBeGreaterThan(0), { timeout: 4000 })
+    // The stepper auto-clears (~2.5s), so the row returns to its Provision entry
+    // point — a toast-independent proof the transient success state cleared.
+    await waitFor(() => expect(screen.getByText('Provision')).toBeInTheDocument(), { timeout: 6000 })
+  }, 15000)
+
+  // FINDING 1: the single-flight guard returns {ok:false, run_id:<in-flight>}
+  // when a provision is already running. That must RESUME polling that run, not
+  // render a false red "Provision failed" state.
+  it('single-flight response (ok:false + run_id) resumes polling instead of failing', async () => {
+    let polledInflight = false
+    vi.spyOn(globalThis, 'fetch').mockImplementation((url) => {
+      const u = typeof url === 'string' ? url : (url as Request).url
+      if (u.includes('/fleet')) return Promise.resolve(new Response(JSON.stringify(FLEET), { status: 200 }))
+      if (u.includes('/disk')) return Promise.resolve(new Response(JSON.stringify({ total_mb: 51200 }), { status: 200 }))
+      // Guard reply: already running -> ok:false but carries the in-flight rid.
+      if (u.includes('/pod/provision')) return Promise.resolve(new Response(JSON.stringify({ ok: false, error: 'provision already running', run_id: 'run-inflight' }), { status: 200 }))
+      if (u.includes('/run?id=run-inflight')) {
+        polledInflight = true
+        return Promise.resolve(new Response(JSON.stringify({ status: 'running', output: ['[provision] creating venv for unprov', 'Collecting deps'] }), { status: 200 }))
+      }
+      return Promise.resolve(new Response('{}', { status: 200 }))
+    })
+    renderPage()
+    await waitFor(() => expect(screen.getByText('unprov')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Provision'))
+    // Reattaches to the in-flight run: it actually polls the in-flight run id
+    // (proving it resumed rather than bailing on the ok:false response)...
+    await waitFor(() => expect(polledInflight).toBe(true), { timeout: 4000 })
+    // ...the streaming stepper is shown, and the false-failure copy never appears.
+    expect(screen.getByText('Provisioning')).toBeInTheDocument()
+    expect(screen.queryByText('Provision failed to start')).toBeNull()
+    expect(screen.queryByText(/Provision failed/)).toBeNull()
+  }, 15000)
+
+  // FINDING 3: /api/run tail-truncates to the last ~60 lines, so early output
+  // scrolls out of later windows. The client accumulates windows, so an early
+  // line remains visible even after it has left the server's window.
+  it('accumulates log output across polls so early lines survive the server window', async () => {
+    let call = 0
+    vi.spyOn(globalThis, 'fetch').mockImplementation((url) => {
+      const u = typeof url === 'string' ? url : (url as Request).url
+      if (u.includes('/fleet')) return Promise.resolve(new Response(JSON.stringify(FLEET), { status: 200 }))
+      if (u.includes('/disk')) return Promise.resolve(new Response(JSON.stringify({ total_mb: 51200 }), { status: 200 }))
+      if (u.includes('/pod/provision')) return Promise.resolve(new Response(JSON.stringify({ ok: true, run_id: 'run-acc' }), { status: 200 }))
+      if (u.includes('/run?id=run-acc')) {
+        call++
+        // The window slides forward each poll; 'line-early-1' is only present
+        // in the first window and is gone by the final one.
+        if (call === 1) return Promise.resolve(new Response(JSON.stringify({ status: 'running', output: ['line-early-1', 'line-2', 'line-3'] }), { status: 200 }))
+        if (call === 2) return Promise.resolve(new Response(JSON.stringify({ status: 'running', output: ['line-2', 'line-3', 'line-4'] }), { status: 200 }))
+        return Promise.resolve(new Response(JSON.stringify({ status: 'done', exit_code: 1, output: ['line-3', 'line-4', 'line-5'] }), { status: 200 }))
+      }
+      return Promise.resolve(new Response('{}', { status: 200 }))
+    })
+    renderPage()
+    await waitFor(() => expect(screen.getByText('unprov')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Provision'))
+    // Ends in failure so the accumulated log auto-expands and persists.
+    await waitFor(() => expect(screen.getByLabelText('Dismiss provision status')).toBeInTheDocument(), { timeout: 10000 })
+    // Both the earliest line (window 1, only ever in the first poll) and the
+    // latest (final window) are present, proving windows were merged not
+    // replaced. 'line-early-1' is unique to the panel; 'line-5' also shows in
+    // the inline last-line strip, hence getAllByText.
+    expect(screen.getByText(/line-early-1/)).toBeInTheDocument()
+    expect(screen.getAllByText(/line-5/).length).toBeGreaterThan(0)
+  }, 20000)
+})
+
+// FINDING 3 (unit): the overlap-merge algorithm behind client-side log
+// accumulation — dedupes the overlapping suffix/prefix and appends the rest.
+describe('mergeLogWindow', () => {
+  it('returns the window when the buffer is empty', () => {
+    expect(mergeLogWindow([], ['a', 'b'])).toEqual(['a', 'b'])
+  })
+  it('returns the buffer unchanged when the window is empty', () => {
+    expect(mergeLogWindow(['a', 'b'], [])).toEqual(['a', 'b'])
+  })
+  it('appends only the non-overlapping remainder of an advancing window', () => {
+    // buffer suffix ['b','c'] == window prefix ['b','c'] -> append only ['d'].
+    expect(mergeLogWindow(['a', 'b', 'c'], ['b', 'c', 'd'])).toEqual(['a', 'b', 'c', 'd'])
+  })
+  it('concatenates fully when there is no overlap (window jumped past a full window)', () => {
+    expect(mergeLogWindow(['a', 'b'], ['x', 'y'])).toEqual(['a', 'b', LOG_GAP_MARKER, 'x', 'y'])
+  })
+  it('adds nothing when the window is a subset already at the buffer tail', () => {
+    expect(mergeLogWindow(['a', 'b', 'c'], ['b', 'c'])).toEqual(['a', 'b', 'c'])
+  })
+  it('handles repeated lines by matching the longest suffix/prefix overlap', () => {
+    // Longest suffix of buffer that prefixes the window is ['x','x'] (len 2).
+    expect(mergeLogWindow(['x', 'x', 'x'], ['x', 'x', 'y'])).toEqual(['x', 'x', 'x', 'y'])
   })
 })

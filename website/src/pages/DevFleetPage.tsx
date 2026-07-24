@@ -15,7 +15,7 @@ import { addNotification } from '../store/notificationsSlice'
 import { setPendingInput } from '../store/chatSlice'
 import {
   Server, RefreshCw, Play, Square, ExternalLink, ChevronRight, Trash2,
-  LoaderCircle, Check, Video,
+  LoaderCircle, Check, Video, X,
   Ellipsis, RotateCw, FileText, GitCommit, Rocket,
 } from 'lucide-react'
 import * as api from './devFleetApi'
@@ -66,6 +66,71 @@ function syncPhaseFromLines(lines: string[], prev: number): number {
 
 function filterStepMarkers(lines: string[]): string[] {
   return lines.filter((l) => !STEP_MARKER_RE.test(l))
+}
+
+/* ─── Provision progress model (issue #231) ─── */
+// The last non-blank output line — the "current activity" shown inline.
+function lastLine(lines: string[] | undefined): string {
+  if (!lines) return ''
+  for (let i = lines.length - 1; i >= 0; i--) { if (lines[i]?.trim()) return lines[i] }
+  return ''
+}
+
+// Coarse phase tag derived from provision.py's markers ("[provision] creating
+// venv …" then "[provision] building dist …"). Scans newest→oldest so the tag
+// reflects the current step; returns null when nothing recognizable is in view.
+function provPhase(lines: string[] | undefined): string | null {
+  if (!lines) return null
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const l = (lines[i] || '').toLowerCase()
+    if (l.includes('building dist') || l.includes('npm run build') || l.includes('vite') || l.includes('tsc ')) return 'dist'
+    if (l.includes('creating venv') || l.includes('pip install') || l.includes('venv')) return 'venv'
+  }
+  return null
+}
+
+// The /api/run endpoint returns only the last ~60 output lines (server-side
+// tail). Long provisions scroll early lines out of that window, so we
+// accumulate client-side: merge each polled window into the running buffer by
+// finding the longest suffix of the buffer that is also a prefix of the new
+// window, then appending only the non-overlapping remainder. Robust to the
+// window sliding forward between polls; the only unrecoverable case is output
+// that scrolls more than a full window between two polls -- detected via zero
+// overlap and surfaced with a visible LOG_GAP_MARKER line (documented in
+// dev-fleet.md as an honest limitation).
+export const LOG_GAP_MARKER = '[\u2026 lines missed \u2026]'
+
+export function mergeLogWindow(buffer: string[], window: string[]): string[] {
+  if (!window.length) return buffer
+  if (!buffer.length) return window.slice()
+  const max = Math.min(buffer.length, window.length)
+  let overlap = 0
+  for (let k = max; k > 0; k--) {
+    let match = true
+    for (let i = 0; i < k; i++) {
+      if (buffer[buffer.length - k + i] !== window[i]) { match = false; break }
+    }
+    if (match) { overlap = k; break }
+  }
+  if (overlap === 0) {
+    // Zero overlap with a non-empty buffer means the server's tail window slid
+    // completely past what we last saw -- lines were (or may have been) missed.
+    // Insert a visible gap marker so the panel never overstates completeness.
+    return buffer.concat([LOG_GAP_MARKER], window)
+  }
+  return buffer.concat(window.slice(overlap))
+}
+
+// Auto-scrolling <pre> for the FULL provision log (mirrors the sync log panel's
+// styling). Sticks to the bottom while output is still streaming.
+function ProvLogPre({ lines, streaming }: { lines: string[]; streaming: boolean }) {
+  const ref = useRef<HTMLPreElement | null>(null)
+  useEffect(() => {
+    if (streaming && ref.current) ref.current.scrollTop = ref.current.scrollHeight
+  }, [lines, streaming])
+  return (
+    <pre ref={ref} style={{ margin: '2px 0 8px 32px', padding: '8px 10px', maxHeight: 180, overflow: 'auto', fontSize: 11, lineHeight: 1.45, background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 8, whiteSpace: 'pre-wrap', wordBreak: 'break-all' } as CSSProperties}>{lines.join('\n') || '(no output yet)'}</pre>
+  )
 }
 
 function syncPercent(phase: number, phaseAtMs: number | undefined): number {
@@ -230,6 +295,10 @@ interface Worktree {
 }
 interface FleetData { worktrees: Worktree[]; error?: string; sync_run_id?: string; build_pending?: boolean; gateway_service_active?: boolean }
 interface SyncRun { rid: string; status: 'running' | 'done' | 'error'; phase: number; phaseAt?: number; lines: string[]; startedAt: number; exit?: number | null; last?: string }
+// Provision run state (issue #231): the FULL output is kept (not just the last
+// line) so the expandable log panel can show everything, and a failed run
+// persists (failed=true) until the user dismisses it rather than vanishing.
+interface ProvRun { status: 'starting' | 'running' | 'done' | 'failed'; lines: string[]; startedAt: number; exit?: number | null; failed?: boolean; done?: boolean }
 interface RebaseResult { kind: 'ok' | 'conflict' | 'error'; text: string }
 
 /* ─── Detail Panel (expanded row) ─── */
@@ -378,7 +447,9 @@ export default function DevFleetPage() {
   const [detail, setDetail] = useState<Record<string, any>>({})
   const [detailLoading, setDetailLoading] = useState<Record<string, boolean>>({})
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const [prov, setProv] = useState<Record<string, any>>({})
+  const [prov, setProv] = useState<Record<string, ProvRun | null>>({})
+  const [provLogOpen, setProvLogOpen] = useState<Record<string, boolean>>({})
+  const provDoneTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
   const [rebaseResult, setRebaseResult] = useState<Record<string, RebaseResult>>({})
   const [podLogs, setPodLogs] = useState<Record<string, string>>({})
   const [podLogsLoading, setPodLogsLoading] = useState<Record<string, boolean>>({})
@@ -399,6 +470,13 @@ export default function DevFleetPage() {
     if (rid) cancelledRunsRef.current.add(rid)
     setSyncRun(null); setSyncLogOpen(false)
   }
+  function dismissProv(name: string) {
+    clearTimeout(provDoneTimersRef.current[name])
+    setProv((p) => { const n = { ...p }; delete n[name]; return n })
+    setProvLogOpen((o) => { const n = { ...o }; delete n[name]; return n })
+    invalidateFleet()
+  }
+  function toggleProvLog(name: string) { setProvLogOpen((o) => ({ ...o, [name]: !o[name] })) }
   const [confirmReq, setConfirmReq] = useState<{ title: string; desc: ReactNode; confirmLabel?: string; danger?: boolean; width?: number; resolve: (v: boolean) => void } | null>(null)
   const [restarting, setRestarting] = useState(false)
   const [pruneDialog, setPruneDialog] = useState<{ candidates: { name: string; code?: string }[]; kept: { name: string; code?: string }[]; scanned: number } | null>(null)
@@ -434,11 +512,13 @@ export default function DevFleetPage() {
 
   /* ─── Tick for elapsed counter ─── */
   const [, setTick] = useState(0)
+  // Elapsed counter ticks while a sync OR any provision is actively running.
+  const provTicking = Object.values(prov).some((p) => !!p && (p.status === 'running' || p.status === 'starting'))
   useEffect(() => {
-    if (!syncRun || syncRun.status !== 'running') return
+    if ((!syncRun || syncRun.status !== 'running') && !provTicking) return
     const t = setInterval(() => setTick((n) => n + 1), 1000)
     return () => clearInterval(t)
-  }, [syncRun?.status]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [syncRun?.status, provTicking]) // eslint-disable-line react-hooks/exhaustive-deps
 
   async function pollSyncRun(rid: string, startedAt: number) {
     let phase = 0
@@ -529,27 +609,84 @@ export default function DevFleetPage() {
     navigate('/chat?autoSend=1&newSession=1')
   }
 
+  // Poll a single provision run to completion, accumulating the server's
+  // sliding 60-line output window into a full client-side buffer
+  // (mergeLogWindow) so the "full log" panel keeps early output. Shared by a
+  // fresh provision and by reattaching to an already-in-flight run.
+  async function pollProvisionRun(name: string, rid: string, startedAt: number) {
+    let acc: string[] = []
+    for (let i = 0; i < 900; i++) {
+      await sleep(2000)
+      if (!pollAliveRef.current) return
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let run: any = null; try { run = await api.get('/run?id=' + rid) } catch { continue }
+      if (!run) continue
+      acc = mergeLogWindow(acc, run.output || [])
+      const lines = acc
+      if (run.status === 'done') {
+        const ok = run.exit_code === 0
+        notify(ok ? 'Provisioned' : 'Provision failed (exit ' + run.exit_code + ')', { type: ok ? 'success' : 'error' })
+        if (ok) {
+          // Flash a brief green "Provisioned", then clear (as before). The
+          // fleet refetch flips the row to its built state in the meantime.
+          setProv((p) => ({ ...p, [name]: { status: 'done', done: true, lines, startedAt, exit: 0 } }))
+          invalidateFleet()
+          provDoneTimersRef.current[name] = setTimeout(() => {
+            setProv((p) => { const n = { ...p }; delete n[name]; return n })
+            setProvLogOpen((o) => { const n = { ...o }; delete n[name]; return n })
+          }, 2500)
+        } else {
+          // FAILURE PERSISTENCE: keep the run, auto-expand the log, hold until
+          // the user dismisses it — a multi-minute failed provision must not
+          // vanish into an empty row (issue #231).
+          setProv((p) => ({ ...p, [name]: { status: 'failed', failed: true, lines, startedAt, exit: run.exit_code } }))
+          setProvLogOpen((o) => ({ ...o, [name]: true }))
+          invalidateFleet()
+        }
+        return
+      }
+      if (run.status !== 'running') {
+        notify(run.status === 'timeout' ? 'Provision timed out' : 'Provision failed (' + run.status + ')', { type: 'error' })
+        setProv((p) => ({ ...p, [name]: { status: 'failed', failed: true, lines: lines.length ? lines : ['Provision ' + run.status], startedAt, exit: run.exit_code ?? null } }))
+        setProvLogOpen((o) => ({ ...o, [name]: true }))
+        invalidateFleet()
+        return
+      }
+      setProv((p) => ({ ...p, [name]: { status: 'running', lines, startedAt } }))
+    }
+    // Poll budget exhausted (e.g. run id lost across a gateway restart): keep
+    // the failed marker + accumulated log so the user has something to act on.
+    notify('Provision polling timed out \u2014 check pod logs', { type: 'error' })
+    setProv((p) => ({ ...p, [name]: { status: 'failed', failed: true, lines: acc.length ? acc : ['Provision polling timed out \u2014 check pod logs'], startedAt, exit: null } }))
+    setProvLogOpen((o) => ({ ...o, [name]: true }))
+    invalidateFleet()
+  }
+
   async function provision(name: string) {
-    setProv((p) => ({ ...p, [name]: { status: 'starting', last: 'starting\u2026' } }))
+    const startedAt = Date.now()
+    clearTimeout(provDoneTimersRef.current[name])
+    setProvLogOpen((o) => { const n = { ...o }; delete n[name]; return n })
+    setProv((p) => ({ ...p, [name]: { status: 'starting', lines: [], startedAt } }))
     try {
       const r = await api.post<{ ok?: boolean; run_id?: string }>('/pod/provision', { name })
-      if (!r?.ok || !r.run_id) { notify('Provision failed', { type: 'error' }); setProv((p) => ({ ...p, [name]: null })); return }
-      const rid = r.run_id
-      for (let i = 0; i < 900; i++) {
-        await sleep(2000)
-        if (!pollAliveRef.current) return
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        let run: any = null; try { run = await api.get('/run?id=' + rid) } catch { continue }
-        if (!run) continue; setProv((p) => ({ ...p, [name]: { status: run.status, last: (run.output || []).slice(-1)[0] || '' } }))
-        if (run.status === 'done') { notify(run.exit_code === 0 ? 'Provisioned' : 'Provision failed (exit ' + run.exit_code + ')', { type: run.exit_code === 0 ? 'success' : 'error' }); setProv((p) => ({ ...p, [name]: null })); invalidateFleet(); return }
-        if (run.status !== 'running') { notify(run.status === 'timeout' ? 'Provision timed out' : 'Provision failed (' + run.status + ')', { type: 'error' }); setProv((p) => ({ ...p, [name]: null })); invalidateFleet(); return }
+      // The single-flight guard replies {ok:false, run_id:<in-flight rid>} when
+      // a provision for this checkout is already running — that is NOT a
+      // failure. Reattach to the existing run instead of rendering a false red
+      // "Provision failed" state. Only a response with no run id to attach to
+      // is a genuine failure (issue #231 / PR #320).
+      if (!r?.run_id) {
+        notify('Provision failed to start', { type: 'error' })
+        setProv((p) => ({ ...p, [name]: { status: 'failed', failed: true, lines: ['Provision failed to start'], startedAt, exit: null } }))
+        setProvLogOpen((o) => ({ ...o, [name]: true }))
+        return
       }
-      // Poll budget exhausted (e.g. run id lost across a gateway restart):
-      // clear the chip so the retry control reappears, and refresh state.
-      notify('Provision polling timed out \u2014 check pod logs', { type: 'error' })
-      setProv((p) => ({ ...p, [name]: null }))
-      invalidateFleet()
-    } catch (e: unknown) { notify((e as Error)?.message || String(e), { type: 'error' }); setProv((p) => ({ ...p, [name]: null })) }
+      await pollProvisionRun(name, r.run_id, startedAt)
+    } catch (e: unknown) {
+      const msg = (e as Error)?.message || String(e)
+      notify(msg, { type: 'error' })
+      setProv((p) => ({ ...p, [name]: { status: 'failed', failed: true, lines: [msg], startedAt, exit: null } }))
+      setProvLogOpen((o) => ({ ...o, [name]: true }))
+    }
   }
 
   async function removeWorktree(name: string, d: Worktree) {
@@ -772,10 +909,9 @@ export default function DevFleetPage() {
     }
     const out: ReactNode[] = []
     if (!w.has_dist) {
-      const pr = prov[w.name]
-      out.push(pr
-        ? <span key="p" style={{ fontSize: 11, color: 'var(--warn)', display: 'inline-flex', alignItems: 'center', gap: 4 } as CSSProperties}><LoaderCircle size={12} className="lucide-inline" />{pr.last || 'provisioning\u2026'}</span>
-        : <Btn key="prov" onClick={() => provision(w.name)}>Provision</Btn>)
+      // Active/failed provisioning is rendered as a row-spanning stepper (see
+      // renderProvStepper), so this branch only offers the entry-point button.
+      out.push(<Btn key="prov" onClick={() => provision(w.name)}>Provision</Btn>)
     } else if (w.running) {
       out.push(<Btn key="open" onClick={() => act(w.name, 'open')}>{iconLabel(<ExternalLink size={13} className="lucide-inline" />, 'Open')}</Btn>)
     }
@@ -836,6 +972,47 @@ export default function DevFleetPage() {
     )
   }
 
+  /* ─── Provision stepper (inline at a worktree row, issue #231) ─── */
+  function renderProvStepper(w: Worktree) {
+    const pr = prov[w.name]
+    if (!pr) return null
+    const mono: CSSProperties = { fontFamily: 'ui-monospace, monospace', fontVariantNumeric: 'tabular-nums', fontSize: 11, color: 'var(--muted)' }
+    const open = !!provLogOpen[w.name]
+    const logToggle = (
+      <Clickable aria-label="Toggle provision log" onClick={() => toggleProvLog(w.name)} style={{ background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: 11, padding: 2 } as CSSProperties}>{open ? 'log \u25B4' : 'log \u25BE'}</Clickable>
+    )
+    if (pr.failed) {
+      return (
+        <div style={{ gridColumn: '4 / -1', display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 } as CSSProperties}>
+          <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--danger)', flexShrink: 0, display: 'inline-flex', alignItems: 'center', gap: 4 }}><X size={12} className="lucide-inline" />{'Provision failed' + (pr.exit != null ? ' (exit ' + pr.exit + ')' : '')}</span>
+          <span style={{ ...mono, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 } as CSSProperties} title={lastLine(pr.lines)}>{lastLine(pr.lines)}</span>
+          {logToggle}
+          <Clickable aria-label="Dismiss provision status" onClick={() => dismissProv(w.name)} style={{ background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: 14, padding: 2 } as CSSProperties}>&times;</Clickable>
+        </div>
+      )
+    }
+    if (pr.done) {
+      return (
+        <div style={{ gridColumn: '4 / -1', display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 } as CSSProperties}>
+          <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--ok)', display: 'inline-flex', alignItems: 'center', gap: 4 }}><Check size={12} className="lucide-inline" /> Provisioned</span>
+        </div>
+      )
+    }
+    // starting / running
+    const phase = provPhase(pr.lines)
+    const last = lastLine(pr.lines)
+    return (
+      <div style={{ gridColumn: '4 / -1', display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 } as CSSProperties}>
+        <LoaderCircle size={12} className="lucide-inline" style={{ color: 'var(--accent)', flexShrink: 0 } as CSSProperties} />
+        <span style={{ fontSize: 11, fontWeight: 600, flexShrink: 0 }}>Provisioning</span>
+        {phase ? <span style={{ fontSize: 10, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--accent)', background: 'var(--accent-subtle, rgba(99,102,241,0.14))', borderRadius: 5, padding: '1px 6px', flexShrink: 0 } as CSSProperties}>{phase}</span> : null}
+        <span style={{ ...mono, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 } as CSSProperties} title={last}>{last || 'starting\u2026'}</span>
+        <span style={mono}>{fmtElapsed(Date.now() - pr.startedAt)}</span>
+        {logToggle}
+      </div>
+    )
+  }
+
   const columnHeader = (
     <div style={{ display: 'grid', gridTemplateColumns: '16px 84px minmax(0,1fr) 64px 48px 44px 212px', gap: 8, alignItems: 'center', padding: '2px 0 4px', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--muted)' } as CSSProperties}>
       <span /><span>Pod</span><span>Worktree</span><span>PR</span><span title="Commits behind main">Behind</span><span title="Last commit activity">Updated</span><span style={{ textAlign: 'right' }}>Actions</span>
@@ -847,6 +1024,8 @@ export default function DevFleetPage() {
     const mut: CSSProperties = { fontSize: 12.5, color: 'var(--muted)', fontVariantNumeric: 'tabular-nums', fontFamily: 'ui-monospace, SF Mono, Menlo, monospace' }
     const prUrl = w.pr?.url || ''
     const isMainWithStepper = w.is_main && syncRun
+    const pr = prov[w.name]
+    const provActive = !w.is_main && !!pr
     return (
       <div key={w.name}>
         <div style={{ display: 'grid', gridTemplateColumns: '16px 84px minmax(0,1fr) 64px 48px 44px 212px', gap: 8, alignItems: 'center', padding: '5px 0', borderTop: '1px solid var(--border)', minHeight: 30 } as CSSProperties}>
@@ -861,7 +1040,7 @@ export default function DevFleetPage() {
             {w.is_live ? <Badge variant="aim" className="text-[10px] px-1.5 py-0" title="The live gateway on this port runs from this checkout">live</Badge> : null}
             {w.summary ? <span title={w.summary} style={{ fontSize: 11.5, color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0, flex: '0 1 auto' } as CSSProperties}>{w.summary}</span> : null}
           </div>
-          {isMainWithStepper ? renderSyncStepper() : (
+          {isMainWithStepper ? renderSyncStepper() : provActive ? renderProvStepper(w) : (
             <>
               {rs && prUrl ? <a href={prUrl} target="_blank" rel="noopener noreferrer" title={w.pr?.title || rs.word} style={{ textDecoration: 'none' }}><Badge variant={rs.variant}>{rs.word}</Badge></a> : <span style={{ ...mut, opacity: 0.5 }}>&mdash;</span>}
               <span style={{ ...mut, opacity: (w.behind ?? 0) > 0 ? 1 : 0.5 }} title={(w.behind ?? 0) > 0 ? w.behind + ' commits behind main' : 'up to date with main'}>{(w.behind ?? 0) > 0 ? '\u2193' + w.behind : '\u2014'}</span>
@@ -872,6 +1051,9 @@ export default function DevFleetPage() {
         </div>
         {w.is_main && syncRun && syncLogOpen ? (
           <pre style={{ margin: '2px 0 8px 32px', padding: '8px 10px', maxHeight: 180, overflow: 'auto', fontSize: 11, lineHeight: 1.45, background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 8, whiteSpace: 'pre-wrap', wordBreak: 'break-all' } as CSSProperties}>{filterStepMarkers(syncRun.lines || []).join('\n') || '(no output yet)'}</pre>
+        ) : null}
+        {provActive && provLogOpen[w.name] && pr ? (
+          <ProvLogPre lines={pr.lines || []} streaming={pr.status === 'running' || pr.status === 'starting'} />
         ) : null}
         {open && detailLoading[w.name] ? <ContentSkeleton rows={3} /> : null}
         {open && detail[w.name] ? (
