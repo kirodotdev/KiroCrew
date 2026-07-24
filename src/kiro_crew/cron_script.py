@@ -101,6 +101,10 @@ def _resolve_safe_pgid(proc: subprocess.Popen) -> int | None:
     - The resolved pgid must be > 1 (same ``kill(-1)`` footgun) and must not
       be our own process group (suicide / killing the gateway tree).
     """
+    if not platform_compat.IS_POSIX:
+        # Windows has no process groups (os.getpgid/os.killpg don't exist);
+        # callers fall back to platform_compat.kill_process_tree (taskkill /T).
+        return None
     pid = getattr(proc, "pid", None)
     if type(pid) is not int or pid <= 1:
         logger.error("kill guard: refusing non-int/reserved pid %r", pid)
@@ -137,15 +141,25 @@ def kill_running_process(job_id: str) -> bool:
         except (ProcessLookupError, PermissionError, OSError):
             pgid = None
     if pgid is None:
-        # Already gone (or unsignallable) — fall back to the direct handle.
-        try:
-            proc.terminate()
-        except Exception:
-            # Signal never delivered: clear the cancelled flag so a natural
-            # completion is not misreported as a cancellation.
-            with _PROCS_LOCK:
-                _CANCELLED_PROC_JOBS.discard(job_id)
-            return False
+        # Already gone (or unsignallable) on POSIX; on Windows there are no
+        # process groups, so reap the whole tree via taskkill /T
+        # (platform_compat) before falling back to a single-process terminate.
+        killed_tree = False
+        if not platform_compat.IS_POSIX:
+            try:
+                platform_compat.kill_process_tree(proc.pid, platform_compat.SIGTERM)
+                killed_tree = True
+            except (OSError, ProcessLookupError):
+                killed_tree = False
+        if not killed_tree:
+            try:
+                proc.terminate()
+            except Exception:
+                # Signal never delivered: clear the cancelled flag so a natural
+                # completion is not misreported as a cancellation.
+                with _PROCS_LOCK:
+                    _CANCELLED_PROC_JOBS.discard(job_id)
+                return False
 
     def _escalate() -> None:
         time.sleep(_KILL_ESCALATION_GRACE_SECS)
@@ -165,6 +179,14 @@ def _kill_proc_group(proc: subprocess.Popen) -> None:
             os.killpg(pgid, signal.SIGKILL)
             return
         except (ProcessLookupError, PermissionError, OSError):
+            pass
+    # Windows (pgid is always None there): reap the tree via taskkill /T before
+    # the single-process fallback so children don't orphan.
+    if not platform_compat.IS_POSIX:
+        try:
+            platform_compat.kill_process_tree(proc.pid, platform_compat.SIGKILL)
+            return
+        except (OSError, ProcessLookupError):
             pass
     try:
         proc.kill()

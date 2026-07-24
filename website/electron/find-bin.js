@@ -18,9 +18,23 @@ const ARCH_DIR_SUFFIX = { arm64: "arm64", x64: "x64" };
  * @param {string} dirname - `__dirname` of the calling module
  * @param {string} [arch] - CPU arch selecting the backend tree in universal
  *   bundles (defaults to `process.arch`)
- * @returns {string} Absolute path to the binary, or `"kirocrew"`
+ * @param {boolean} [isWindows] - whether the host is Windows (defaults to
+ *   `process.platform === "win32"`). On Windows the backend ships as a real
+ *   `kirocrew.exe` console script under `Scripts\` (venv) — Node's `spawn()`
+ *   does no PATHEXT resolution for a bare name, so an absolute `.exe` path is
+ *   required.
+ * @returns {string} Absolute path to the binary, or `"kirocrew"` /
+ *   `"kirocrew.exe"` (Windows) as a PATH fallback
  */
-function findKirocrewBin(fs, os, path, resourcesPath, dirname, arch = process.arch) {
+function findKirocrewBin(
+  fs,
+  os,
+  path,
+  resourcesPath,
+  dirname,
+  arch = process.arch,
+  isWindows = process.platform === "win32"
+) {
   const home = os.homedir();
   const candidates = [];
   // 0. Universal-bundle layout: arch-suffixed backend trees, selected by the
@@ -33,6 +47,26 @@ function findKirocrewBin(fs, os, path, resourcesPath, dirname, arch = process.ar
     candidates.push(
       path.join(resourcesPath || "", "backend-dist", archBackend, "bin", "kirocrew"),
       path.resolve(dirname, "backend-dist", archBackend, "bin", "kirocrew")
+    );
+  }
+  // 0b. Windows layout: a pip/venv install exposes `kirocrew.exe` under
+  //     `Scripts\` (not the POSIX `bin/kirocrew` launcher). Probed before the
+  //     POSIX candidates so a native Windows source install resolves to an
+  //     absolute `.exe` that `spawn()` can launch without a shell. On POSIX
+  //     these are skipped entirely so mac/Linux behavior is unchanged.
+  if (isWindows) {
+    candidates.push(
+      // Bundled Windows backend (python-build-standalone → Scripts\kirocrew.exe)
+      path.join(resourcesPath || "", "backend-dist", "kirocrew-backend", "Scripts", "kirocrew.exe"),
+      path.resolve(dirname, "backend-dist", "kirocrew-backend", "Scripts", "kirocrew.exe"),
+      // Source checkout: repo-root `.venv` — electron/ is <repo>/website/electron,
+      // so the venv is two levels up; one level up covers a <repo>/website venv.
+      path.resolve(dirname, "..", "..", ".venv", "Scripts", "kirocrew.exe"),
+      path.resolve(dirname, "..", ".venv", "Scripts", "kirocrew.exe"),
+      // One-liner installer venv, and toolbox / local pip Scripts dirs.
+      path.join(home, ".kirocrew-app", ".venv", "Scripts", "kirocrew.exe"),
+      path.join(home, ".toolbox", "bin", "kirocrew.exe"),
+      path.join(home, ".local", "bin", "kirocrew.exe")
     );
   }
   candidates.push(
@@ -62,7 +96,7 @@ function findKirocrewBin(fs, os, path, resourcesPath, dirname, arch = process.ar
       if (e.code !== "ENOENT") console.warn(`kirocrew candidate ${bin}: ${e.code}`);
     }
   }
-  return "kirocrew"; // fall back to PATH
+  return isWindows ? "kirocrew.exe" : "kirocrew"; // fall back to PATH
 }
 
 module.exports = { findKirocrewBin };

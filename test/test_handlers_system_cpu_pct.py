@@ -91,9 +91,34 @@ class TestCollectSystemMetricsCpuFallback:
         back to the ps lifetime-average to populate cpu_pct."""
         _reset()
         with (
+            patch.object(hs.sys, "platform", "linux"),
             patch.object(hs, "_system_cpu_pct_from_proc_stat", return_value=None),
             patch.object(hs.subprocess, "check_output", return_value=b"%CPU\n10.0\n5.0\n"),
             patch.object(hs.os, "cpu_count", return_value=1),
         ):
             data = hs._collect_system_metrics()
         assert data["cpu_pct"] == 15.0
+
+    def test_windows_uses_getsystemtimes(self) -> None:
+        """On Windows the handler uses platform_compat.system_cpu_percent
+        (GetSystemTimes delta) instead of /proc/stat or ps."""
+        _reset()
+        hs._last_win_cpu_pct = 0.0
+        with (
+            patch.object(hs.sys, "platform", "win32"),
+            patch.object(hs.platform_compat, "system_cpu_percent", return_value=42.0),
+        ):
+            data = hs._collect_system_metrics()
+        assert data["cpu_pct"] == 42.0
+
+    def test_windows_reuses_last_on_first_none_sample(self) -> None:
+        """The first GetSystemTimes sample returns None (no delta); the handler
+        reuses the last-known value rather than flashing to 0."""
+        _reset()
+        hs._last_win_cpu_pct = 17.0
+        with (
+            patch.object(hs.sys, "platform", "win32"),
+            patch.object(hs.platform_compat, "system_cpu_percent", return_value=None),
+        ):
+            data = hs._collect_system_metrics()
+        assert data["cpu_pct"] == 17.0

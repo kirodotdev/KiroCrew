@@ -74,9 +74,40 @@ describe("findKirocrewBin", () => {
     assert.equal(result, binPath);
   });
 
-  it("falls back to bare 'kirocrew' when no candidates are executable", () => {
-    const result = findKirocrewBin(none, fakeOs, path, RESOURCES, DIRNAME);
+  it("falls back to bare 'kirocrew' when no candidates are executable (POSIX)", () => {
+    const result = findKirocrewBin(none, fakeOs, path, RESOURCES, DIRNAME, "x64", false);
     assert.equal(result, "kirocrew");
+  });
+
+  it("falls back to bare 'kirocrew.exe' when no candidates are executable (Windows)", () => {
+    const result = findKirocrewBin(none, fakeOs, path, RESOURCES, DIRNAME, "x64", true);
+    assert.equal(result, "kirocrew.exe");
+  });
+
+  it("finds the venv Scripts\\kirocrew.exe two levels up from electron/ on Windows", () => {
+    const venvExe = path.resolve(DIRNAME, "..", "..", ".venv", "Scripts", "kirocrew.exe");
+    const fakeFs = only(venvExe);
+    const result = findKirocrewBin(fakeFs, fakeOs, path, RESOURCES, DIRNAME, "x64", true);
+    assert.equal(result, venvExe);
+  });
+
+  it("finds the bundled Windows backend Scripts\\kirocrew.exe on Windows", () => {
+    const bundledExe = path.join(
+      RESOURCES, "backend-dist", "kirocrew-backend", "Scripts", "kirocrew.exe"
+    );
+    const fakeFs = only(bundledExe);
+    const result = findKirocrewBin(fakeFs, fakeOs, path, RESOURCES, DIRNAME, "x64", true);
+    assert.equal(result, bundledExe);
+  });
+
+  it("does not probe Windows .exe candidates on POSIX", () => {
+    const probed = [];
+    const fakeFs = {
+      accessSync: (p) => { probed.push(p); throw new Error("ENOENT"); },
+      constants: { X_OK: fs.constants.X_OK },
+    };
+    findKirocrewBin(fakeFs, fakeOs, path, RESOURCES, DIRNAME, "x64", false);
+    assert.deepStrictEqual(probed.filter((p) => p.endsWith(".exe")), []);
   });
 
   it("returns first match when multiple candidates exist", () => {
