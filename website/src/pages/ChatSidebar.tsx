@@ -1801,9 +1801,12 @@ function ChatSidebar({
               ) : null}
             </div>
             <div className="text-[13px] font-semibold leading-snug line-clamp-2 break-words text-text" title={s.title && s.title !== s.key ? s.title : s.key}>
-              {s.forked_from && slots.some(x => x.key === s.forked_from!.replace(/^dashboard:/, '')) && (
-                <span className="text-accent mr-0.5" title="Forked child session">↳</span>
-              )}
+              {/* No separate fork glyph: forked titles already carry the
+                  persisted "↳ " marker (chat_fork.py _FORK_TITLE_MARKER). Keeping
+                  the arrow in the title text — rather than as a UI-only glyph —
+                  means it pre-fills the rename box (setRenameValue at the
+                  onRename handler) so users can edit or drop it when they rename.
+                  A separate ↳ glyph also double-stacked into "↳↳ Fork of …". */}
               {renamingSlot === s.key && renameScope === scope ? (
                 <Input ref={renameInputRef} className="w-full bg-transparent border border-accent rounded px-1 py-0 text-text-strong outline-none text-[13px] select-text" value={renameValue} onChange={e => setRenameValue(e.target.value)} {...ime.bindEnter<HTMLInputElement>({ onEnter: () => { (document.activeElement as HTMLInputElement)?.blur() }, onEscape: () => { cancelRenameRef.current = true; setRenamingSlot(null) }, onBlur: () => { if (!cancelRenameRef.current && renameValue.trim()) { dispatch(sseSlotTitle({ key: s.key, title: renameValue.trim() })); api.renameSlot(s.key, renameValue.trim()).catch(() => { queryClient.invalidateQueries({ queryKey: ['chat-slots'] }) }) } cancelRenameRef.current = false; setRenamingSlot(null) } })} onMouseDown={e => e.stopPropagation()} />
               ) : (s.title && s.title !== s.key ? s.title : s.key)}
