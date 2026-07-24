@@ -38,6 +38,14 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew import agent_state, platform_compat
+from kiro_crew.agent_files import (
+    AGENT_FILENAME,
+)
+from kiro_crew.agent_files import HEARTBEAT_AGENT_FILENAME as _HEARTBEAT_AGENT_FILENAME
+from kiro_crew.agent_files import KNOWLEDGE_AGENT_FILENAME as _KNOWLEDGE_AGENT_FILENAME
+from kiro_crew.agent_files import LITE_AGENT_FILENAME as _LITE_AGENT_FILENAME
+from kiro_crew.agent_files import RESEARCH_AGENT_FILENAME as _RESEARCH_AGENT_FILENAME
+from kiro_crew.browser.setup import converge_playwright_servers
 from kiro_crew.config import config_path as _mc_config_path
 from kiro_crew.env import augmented_path
 from kiro_crew.mcp_utils import mcp_server_alias
@@ -84,7 +92,7 @@ def _atomic_json_write(path: Path, data: dict) -> None:
 
 
 KIRO_AGENTS_DIR = Path.home() / ".kiro" / "agents"
-AGENT_FILENAME = "kirocrew.json"
+# AGENT_FILENAME imported from agent_files (single source of truth).
 _MAIN_AGENT_NAME = "kirocrew"
 # Cheap Claude Code model for KiroCrew's background agents (lite / heartbeat).
 # Stored in the agent_state sidecar, never in the kiro spec (deny_unknown_fields).
@@ -1837,6 +1845,16 @@ def rebuild_agent_config(*, clean: bool = False) -> Path:
     # their stale @refs are normalized too. See mcp_server_alias.
     _normalize_mcp_server_keys(config)
 
+    # Converge every Playwright-proxy entry onto the single canonical
+    # ``playwright-mcp`` server, keyed by resolved launch target. Runs on EVERY
+    # rebuild (not just gateway boot) so a slash-free legacy proxy key —
+    # e.g. ``playwright-proxy-mcp`` re-injected from ~/.kirocrew/mcp.json by the
+    # merges above — cannot survive to spawn a second backend. Slash-free legacy
+    # keys are invisible to _normalize_mcp_server_keys (which only rewrites
+    # slash-containing keys), so this launch-target-keyed pass closes the
+    # duplicate for them.
+    converge_playwright_servers(config)
+
     # Sync shared (user-installed) servers to tools/allowedTools.
     # These are explicitly installed by the user via `aim mcp install` or
     # manual mcp.json edits — unlike managed servers, they should always
@@ -1946,9 +1964,6 @@ def rebuild_agent_config(*, clean: bool = False) -> Path:
     return path
 
 
-_LITE_AGENT_FILENAME = "kirocrew-lite.json"
-
-
 # Backward-compat alias — callers may still use the old name.
 install_agent = rebuild_agent_config
 
@@ -1994,8 +2009,6 @@ def _install_lite_agent_fallback() -> None:
     agent_state.set_cc_model("kirocrew-lite", _BACKGROUND_CC_MODEL)
 
 
-_KNOWLEDGE_AGENT_FILENAME = "kirocrew-knowledge.json"
-
 _KNOWLEDGE_SYSTEM_PROMPT = (
     "You are a knowledge extraction specialist for KiroCrew's Knowledge Library. "
     "Your job is to analyze documents and extract structured information.\n\n"
@@ -2032,8 +2045,6 @@ def _install_knowledge_agent() -> None:
     _atomic_json_write(path, config)
     logger.info("Installed knowledge agent config: %s", path)
 
-
-_RESEARCH_AGENT_FILENAME = "kirocrew-research.json"
 
 _RESEARCH_SYSTEM_PROMPT = """# KiroCrew Research Worker
 
@@ -2127,8 +2138,6 @@ def _install_research_agent() -> None:
     _atomic_json_write(path, config)
     logger.info("Installed research agent config: %s", path)
 
-
-_HEARTBEAT_AGENT_FILENAME = "kirocrew-heartbeat.json"
 
 _HEARTBEAT_SYSTEM_PROMPT = """# KiroCrew Heartbeat Worker
 

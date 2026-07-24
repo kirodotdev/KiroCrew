@@ -6,7 +6,6 @@ import asyncio
 import errno
 import faulthandler
 import importlib
-import json
 import logging
 import os
 import time
@@ -25,12 +24,7 @@ from kiro_crew.apps.hooks_integration import (
     on_gateway_startup,
 )
 from kiro_crew.apps.manager import cleanup_migrated_builtin, register_builtin_apps
-from kiro_crew.browser.setup import (
-    get_extension_token,
-    has_playwright_extension,
-    patch_mcp_extension,
-    patch_mcp_headless,
-)
+from kiro_crew.browser.setup import migrate_owned_playwright_registration
 from kiro_crew.config import config_dir
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.constants import env_flag_enabled
@@ -464,30 +458,16 @@ def _register_dist_static_routes(app: web.Application, dist_dir: Path) -> None:
 
 
 def _migrate_playwright_to_proxy() -> None:
-    """Migrate existing mcp.json from direct npm-playwright-mcp to proxy."""
-    mcp_json = Path.home() / ".kiro" / "settings" / "mcp.json"
-    if not mcp_json.exists():
-        return
-    try:
-        data = json.loads(mcp_json.read_text(encoding="utf-8"))
-        servers = data.get("mcpServers", {})
-        entry = servers.get("npm:@playwright/mcp")
-        if not isinstance(entry, dict):
-            return
-        cmd = entry.get("command", "")
-        if "mcp-playwright-proxy" in cmd or "kirocrew" in cmd:
-            return
-        if has_playwright_extension():
-            token = get_extension_token() or ""
-            if token:
-                patch_mcp_extension(token)
-            else:
-                patch_mcp_headless()
-        else:
-            patch_mcp_headless()
-        logger.info("Migrated Playwright MCP to proxy in mcp.json")
-    except (json.JSONDecodeError, OSError):
-        pass
+    """Converge KiroCrew's own Playwright MCP registration to one canonical server.
+
+    Delegates to :func:`migrate_owned_playwright_registration`, which rewrites a
+    legacy or slash-keyed browse entry in ``~/.kiro/settings/mcp.json`` to the
+    canonical slash-free alias (``playwright-mcp``) proxy entry and sweeps the
+    KiroCrew-generated agent configs so a duplicate proxy entry collapses onto
+    the one canonical server. This self-heals an existing machine on a plain
+    gateway restart rather than waiting for a full agent rebuild.
+    """
+    migrate_owned_playwright_registration()
 
 
 def _precompute_telemetry(state: "DashboardState") -> None:

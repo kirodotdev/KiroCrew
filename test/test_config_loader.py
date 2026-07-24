@@ -2855,6 +2855,13 @@ class TestKnowledgePoolIdleTtl:
         assert cfg.knowledge.pool_idle_ttl_secs == 300
 
     def test_string_falls_back_to_default(self) -> None:
+        # `kirocrew config set` coerces numeric strings to real JSON numbers via
+        # cli_config._parse_value BEFORE writing, so a numeric field never
+        # legitimately arrives as a string. A string here is malformed input and
+        # falls back to the default (strict-parse contract). Loader-side coercion
+        # is deliberately NOT added: it would only run when the optional
+        # jsonschema dep is installed (undeclared), making the behavior differ
+        # between installs.
         cfg = _load_from_dict({"knowledge": {"pool_idle_ttl_secs": "60"}})
         assert cfg.knowledge.pool_idle_ttl_secs == 300
 
