@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import importlib.util
 import inspect
 import json
@@ -426,7 +427,10 @@ def _cleanup_app_crons_from_scheduler(app_name: str) -> int:
     svc = CronService(base_dir=config_dir())
     svc._load()
     try:
-        removed = deregister_app_crons_from_service(app_name, svc)
+        # deregister_app_crons_from_service is async (routes through the async
+        # CronSDK mutators). The CLI is a loop-less process, so drive it with a
+        # one-shot event loop. No scheduler is running here, so nothing is armed.
+        removed = asyncio.run(deregister_app_crons_from_service(app_name, svc))
         sel().log_api_access(
             caller="cli",
             operation="app_crons_deregister",

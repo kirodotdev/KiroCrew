@@ -75,7 +75,7 @@ def _run_callback(gw, job, stream_result="done"):
             svc.start = AsyncMock()
             return svc
 
-        mock_cron_cls.side_effect = capture_cron
+        mock_cron_cls.create = AsyncMock(side_effect=capture_cron)
 
         async def _init_and_run():
             await gw._init_cron()
@@ -279,7 +279,7 @@ def _run_callback_raising(gw, job, exc):
             svc.start = AsyncMock()
             return svc
 
-        mock_cron_cls.side_effect = capture_cron
+        mock_cron_cls.create = AsyncMock(side_effect=capture_cron)
 
         async def _init_and_run():
             await gw._init_cron()

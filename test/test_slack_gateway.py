@@ -928,6 +928,7 @@ class TestInitCron:
             mock_cs_inst.start = AsyncMock()
             mock_cs_inst.start_reaper = MagicMock()
             mock_cs.return_value = mock_cs_inst
+            mock_cs.create = AsyncMock(return_value=mock_cs_inst)
             await orch._init_cron()
         assert orch.cron_svc is not None
         mock_cs_inst.start.assert_not_awaited()
@@ -944,6 +945,7 @@ class TestInitCron:
             mock_cs_inst.start = AsyncMock()
             mock_cs_inst.start_reaper = MagicMock()
             mock_cs.return_value = mock_cs_inst
+            mock_cs.create = AsyncMock(return_value=mock_cs_inst)
             await orch._init_cron()
         mock_cs_inst.start.assert_awaited_once()
         mock_cs_inst.start_reaper.assert_called_once()
@@ -971,10 +973,11 @@ class TestInitCron:
             mock_cs_inst.register_active_session_key = MagicMock()
             mock_cs_inst.clear_active_session_key = MagicMock()
             mock_cs.return_value = mock_cs_inst
+            mock_cs.create = AsyncMock(return_value=mock_cs_inst)
             await orch._init_cron()
 
         # Extract the callback
-        callback = mock_cs.call_args[1]["on_job"]
+        callback = mock_cs.create.call_args[1]["on_job"]
 
         job = MagicMock()
         job.script = ""
@@ -1032,9 +1035,10 @@ class TestInitCron:
             mock_cs_inst.register_active_session_key = MagicMock()
             mock_cs_inst.clear_active_session_key = MagicMock()
             mock_cs.return_value = mock_cs_inst
+            mock_cs.create = AsyncMock(return_value=mock_cs_inst)
             await orch._init_cron()
 
-        callback = mock_cs.call_args[1]["on_job"]
+        callback = mock_cs.create.call_args[1]["on_job"]
 
         job = MagicMock()
         job.script = ""
@@ -1093,9 +1097,10 @@ class TestInitCron:
             mock_cs_inst.register_active_session_key = MagicMock()
             mock_cs_inst.clear_active_session_key = MagicMock()
             mock_cs.return_value = mock_cs_inst
+            mock_cs.create = AsyncMock(return_value=mock_cs_inst)
             await orch._init_cron()
 
-        callback = mock_cs.call_args[1]["on_job"]
+        callback = mock_cs.create.call_args[1]["on_job"]
 
         job = MagicMock()
         job.script = ""
@@ -1548,9 +1553,10 @@ class TestCronFailurePaths:
             mock_cs_inst.register_active_session_key = MagicMock()
             mock_cs_inst.clear_active_session_key = MagicMock()
             mock_cs.return_value = mock_cs_inst
+            mock_cs.create = AsyncMock(return_value=mock_cs_inst)
             await orch._init_cron()
 
-        callback = mock_cs.call_args[1]["on_job"]
+        callback = mock_cs.create.call_args[1]["on_job"]
 
         job = MagicMock()
         job.script = ""
@@ -1611,9 +1617,10 @@ class TestCronFailurePaths:
             mock_cs_inst.register_active_session_key = MagicMock()
             mock_cs_inst.clear_active_session_key = MagicMock()
             mock_cs.return_value = mock_cs_inst
+            mock_cs.create = AsyncMock(return_value=mock_cs_inst)
             await orch._init_cron()
 
-        callback = mock_cs.call_args[1]["on_job"]
+        callback = mock_cs.create.call_args[1]["on_job"]
 
         job = MagicMock()
         job.script = ""
@@ -1674,9 +1681,10 @@ class TestCronFailurePaths:
             mock_cs_inst.register_active_session_key = MagicMock()
             mock_cs_inst.clear_active_session_key = MagicMock()
             mock_cs.return_value = mock_cs_inst
+            mock_cs.create = AsyncMock(return_value=mock_cs_inst)
             await orch._init_cron()
 
-        callback = mock_cs.call_args[1]["on_job"]
+        callback = mock_cs.create.call_args[1]["on_job"]
 
         job = MagicMock()
         job.script = ""
@@ -1989,9 +1997,10 @@ class TestCronSuccessReminder:
             mock_cs_inst.register_active_session_key = MagicMock()
             mock_cs_inst.clear_active_session_key = MagicMock()
             mock_cs.return_value = mock_cs_inst
+            mock_cs.create = AsyncMock(return_value=mock_cs_inst)
             await orch._init_cron()
 
-        callback = mock_cs.call_args[1]["on_job"]
+        callback = mock_cs.create.call_args[1]["on_job"]
 
         job = MagicMock()
         job.script = ""
@@ -3034,9 +3043,10 @@ class TestCronAcpRetry:
             mock_cs_inst.register_active_session_key = MagicMock()
             mock_cs_inst.clear_active_session_key = MagicMock()
             mock_cs.return_value = mock_cs_inst
+            mock_cs.create = AsyncMock(return_value=mock_cs_inst)
             await orch._init_cron()
 
-        callback = mock_cs.call_args[1]["on_job"]
+        callback = mock_cs.create.call_args[1]["on_job"]
 
         job = MagicMock()
         job.script = ""
@@ -3490,9 +3500,10 @@ class TestCronAckedItems:
             mock_cs_inst.register_active_session_key = MagicMock()
             mock_cs_inst.clear_active_session_key = MagicMock()
             mock_cs.return_value = mock_cs_inst
+            mock_cs.create = AsyncMock(return_value=mock_cs_inst)
             await orch._init_cron()
 
-        callback = mock_cs.call_args[1]["on_job"]
+        callback = mock_cs.create.call_args[1]["on_job"]
 
         job = MagicMock()
         job.script = ""
@@ -3789,9 +3800,10 @@ class TestCronSlackDeliveryFailure:
             mock_cs_inst.register_active_session_key = MagicMock()
             mock_cs_inst.clear_active_session_key = MagicMock()
             mock_cs.return_value = mock_cs_inst
+            mock_cs.create = AsyncMock(return_value=mock_cs_inst)
             await orch._init_cron()
 
-        callback = mock_cs.call_args[1]["on_job"]
+        callback = mock_cs.create.call_args[1]["on_job"]
 
         job = MagicMock()
         job.script = ""

@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable
 import aiohttp
 
 from kiro_crew.config.loader import ACTIVATION_REVIEW
+from kiro_crew.cron import CronStoreBusy
 from kiro_crew.security import redact_and_truncate, redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 from kiro_crew.slack.allowlist import (
@@ -1607,7 +1608,12 @@ async def _handle_cron_ack(payload: dict, action: dict, channel: str, msg_ts: st
         return
     await ack_button(payload, channel, msg_ts)
     msg_text = payload.get("message", {}).get("text", "")[:200]
-    _orch.cron_svc.ack_job(job_id, msg_text)
+    try:
+        await _orch.cron_svc.ack_job_async(job_id, msg_text)
+    except CronStoreBusy:
+        # Ack is best-effort context bookkeeping; a transiently-contended store
+        # must not fail the Slack interaction. The button already acked visually.
+        logger.warning("cron ack skipped: store busy (job %s)", job_id)
     if _orch.dashboard_state:
         for n in _orch.dashboard_state._notification_log:
             if n.get("job_id") == job_id and not n.get("acked"):

@@ -297,9 +297,10 @@ async def test_run_job_returns_false_when_already_executing() -> None:
     svc._executing = {"j1"}
     svc._job_run_meta = {}
     svc._running_tasks = {}
+    svc._loop = None
     svc._file = None
 
-    with patch.object(svc, "_sync"):
+    with patch.object(svc, "_synced_snapshot", lambda include_disabled=True: list(svc._jobs)):
         result = await svc.run_job("j1")
     assert result is False
 
@@ -313,12 +314,15 @@ async def test_run_job_stores_manual_trigger_meta() -> None:
     svc._executing = set()
     svc._job_run_meta = {}
     svc._running_tasks = {}
+    svc._loop = None
     svc._file = None
 
     async def fake_run(job):
         pass
 
-    with patch.object(svc, "_sync"), patch.object(svc, "_run_job_isolated", side_effect=fake_run):
+    with patch.object(svc, "_run_job_isolated", side_effect=fake_run), patch.object(
+        svc, "_synced_snapshot", lambda include_disabled=True: list(svc._jobs)
+    ):
         await svc.run_job("j1")
 
     assert "j1" in svc._job_run_meta

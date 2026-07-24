@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -51,6 +52,7 @@ class TestDashboardCronsTimezone:
         mock_state = MagicMock()
         mock_state.has_slot.return_value = False
         mock_state.crons.list_jobs.return_value = [job]
+        mock_state.crons.list_jobs_async = AsyncMock(return_value=[job])
         mock_state.crons.is_running.return_value = False
         mock_state.crons.running_since.return_value = None
 
@@ -77,6 +79,7 @@ class TestDashboardCronsTimezone:
         mock_state = MagicMock()
         mock_state.has_slot.return_value = False
         mock_state.crons.list_jobs.return_value = [job]
+        mock_state.crons.list_jobs_async = AsyncMock(return_value=[job])
         mock_state.crons.is_running.return_value = False
         mock_state.crons.running_since.return_value = None
 
@@ -129,7 +132,7 @@ class TestSlackCronListTimezone:
             "kiro_crew.slack.handler.get_local_tz",
             return_value=("America/New_York", ZoneInfo("America/New_York")),
         ), patch("kiro_crew.slack.handler.compute_next_run_ts", return_value=None):
-            result = _handle_cron_command("cron list", svc, "C123", "t123")
+            result = asyncio.run(_handle_cron_command("cron list", svc, "C123", "t123"))
         assert result is not None
         assert "UTC" in result
 
@@ -140,6 +143,6 @@ class TestSlackCronListTimezone:
             "kiro_crew.slack.handler.get_local_tz",
             return_value=("America/New_York", ZoneInfo("America/New_York")),
         ), patch("kiro_crew.slack.handler.compute_next_run_ts", return_value=None):
-            result = _handle_cron_command("cron list", svc, "C123", "t123")
+            result = asyncio.run(_handle_cron_command("cron list", svc, "C123", "t123"))
         assert result is not None
         assert "EDT" in result or "EST" in result

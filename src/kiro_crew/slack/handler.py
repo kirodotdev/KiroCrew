@@ -44,7 +44,13 @@ from kiro_crew.context import (
     compress_thread_history,
     window_for_provider_client,
 )
-from kiro_crew.cron import CronService, compute_next_run_ts, format_schedule, get_local_tz
+from kiro_crew.cron import (
+    CronService,
+    CronStoreBusy,
+    compute_next_run_ts,
+    format_schedule,
+    get_local_tz,
+)
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.history import ConversationLog, HistoryConsolidator
 from kiro_crew.hooks import (
@@ -2334,7 +2340,7 @@ async def maybe_handle_keyword_command(
 
     # ── Natural language cron: intercept wakeup patterns ──
     if cron_service:
-        cron_reply = _handle_cron_command(text, cron_service, channel, reply_ts)
+        cron_reply = await _handle_cron_command(text, cron_service, channel, reply_ts)
         if cron_reply:
             await slack.post_message(channel, cron_reply, reply_ts)
             if conversation_log and not _is_slack_restricted(session_key):
@@ -4336,8 +4342,8 @@ def _build_approval_blocks(event: LLMEvent, is_dm: bool = True, source: str = ""
     return blocks
 
 
-def _remove_all_jobs(cron_service: CronService) -> str:
-    """Remove all cron jobs and return a summary."""
+async def _remove_all_jobs(cron_service: CronService) -> str:
+    """Remove all cron jobs and return a summary (event-loop-safe)."""
     jobs = cron_service.list_jobs(include_disabled=True)
     if not jobs:
         return "No cron jobs to remove."
@@ -4348,8 +4354,14 @@ def _remove_all_jobs(cron_service: CronService) -> str:
         # does for j.message (j.id is a generated UUID, left as-is).
         safe_name, _ = redact_credentials(redact_exfiltration_urls(j.name)[0])
         lines.append(f"- `{j.id}` — {safe_name}")
-    for j in jobs:
-        cron_service.remove_job(j.id)
+    # One batch lock/reload/save, offloaded to a worker thread — never parks the
+    # Slack gateway loop. A transiently-contended store yields the same retryable
+    # "busy" reply as the single-job remove/pause/resume paths rather than
+    # aborting the Slack message handler.
+    try:
+        await cron_service.remove_jobs([j.id for j in jobs])
+    except CronStoreBusy:
+        return "⏳ Cron store busy — try again in a moment."
     return f"✅ Removed {len(lines)} cron job(s):\n" + "\n".join(lines)
 
 
@@ -4386,10 +4398,16 @@ def _do_spawn(task: str, manager: SubagentManager, session_key: str = "") -> str
     return f"🚀 Spawned subagent `{info.id}`\n_{task[:100]}_"
 
 
-def _handle_cron_command(
+async def _handle_cron_command(
     text: str, cron_service: CronService, channel: str, thread_ts: str
 ) -> str | None:
-    """Handle cron keyword commands. Returns reply or None."""
+    """Handle cron keyword commands. Returns reply or None.
+
+    Async so the store mutators (remove/pause/resume) run through the
+    event-loop-safe ``*_async`` variants instead of parking the Slack gateway
+    loop on the store lock; a contended store yields a "busy, retry" reply
+    rather than a stall.
+    """
     t = text.strip().lower()
     parts = t.split()
 
@@ -4444,18 +4462,30 @@ def _handle_cron_command(
 
     if action == "remove":
         if job_id == "all":
-            return _remove_all_jobs(cron_service)
-        if cron_service.remove_job(job_id):
+            return await _remove_all_jobs(cron_service)
+        try:
+            removed = await cron_service.remove_job_async(job_id)
+        except CronStoreBusy:
+            return "⏳ Cron store busy — try again in a moment."
+        if removed:
             return f"✅ Removed cron job `{job_id}`"
         return f"❌ Job `{job_id}` not found"
 
     if action == "pause":
-        if cron_service.enable_job(job_id, enabled=False):
+        try:
+            paused = await cron_service.enable_job_async(job_id, enabled=False)
+        except CronStoreBusy:
+            return "⏳ Cron store busy — try again in a moment."
+        if paused:
             return f"⏸️ Paused cron job `{job_id}`"
         return f"❌ Job `{job_id}` not found"
 
     if action == "resume":
-        if cron_service.enable_job(job_id, enabled=True):
+        try:
+            resumed = await cron_service.enable_job_async(job_id, enabled=True)
+        except CronStoreBusy:
+            return "⏳ Cron store busy — try again in a moment."
+        if resumed:
             return f"▶️ Resumed cron job `{job_id}`"
         return f"❌ Job `{job_id}` not found"
 

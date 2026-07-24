@@ -6,7 +6,7 @@ crons, taskrunner, send-message, notifications).
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aiohttp import web
@@ -28,6 +28,7 @@ def _make_state(tmp_path, **kwargs):
             sessions=MagicMock(count=0),
             crons=MagicMock(
                 list_jobs=MagicMock(return_value=[]),
+                list_jobs_async=AsyncMock(return_value=[]),
                 status=MagicMock(return_value={}),
             ),
             lessons=MagicMock(load_all=MagicMock(return_value=[])),
@@ -214,6 +215,7 @@ class TestStartApiServerWiring:
             sessions=MagicMock(count=0),
             crons=MagicMock(
                 list_jobs=MagicMock(return_value=[]),
+                list_jobs_async=AsyncMock(return_value=[]),
                 status=MagicMock(return_value={}),
             ),
             lessons=MagicMock(load_all=MagicMock(return_value=[])),
@@ -277,6 +279,7 @@ class TestApiServerAuth:
             sessions=MagicMock(count=0),
             crons=MagicMock(
                 list_jobs=MagicMock(return_value=[]),
+                list_jobs_async=AsyncMock(return_value=[]),
                 status=MagicMock(return_value={}),
             ),
             lessons=MagicMock(load_all=MagicMock(return_value=[])),

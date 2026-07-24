@@ -26,6 +26,7 @@ from kiro_crew.apps.manager import app_dir, get_app, get_app_manifest
 from kiro_crew.apps.manifest import AppManifest
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import config_dir
+from kiro_crew.cron import CronStoreBusy
 from kiro_crew.cron_script import resolve_script_path
 from kiro_crew.sel import sel
 
@@ -371,11 +372,16 @@ def load_app_cron_defs(app_name: str) -> list[dict[str, Any]]:
         return []
 
 
-def register_app_crons_with_service(app_name: str, cron_service: Any) -> list[str]:
+async def register_app_crons_with_service(app_name: str, cron_service: Any) -> list[str]:
     """Promote persisted app cron defs into the running CronService.
 
     Reads ``app-crons.json`` and registers each job via :class:`CronSDK`,
     which tags ownership as ``created_by="app:{app_name}"``.
+
+    ASYNC: awaits ``CronSDK.add_job_async``, which offloads each store-lock spin
+    to a worker thread — so this can be awaited directly on the gateway event
+    loop (no ``asyncio.to_thread`` wrapper, no caller-side timer re-arm) without
+    parking the loop. Timer arming is owned by CronService.
 
     Idempotent — jobs already present (by name) are skipped.
     """
@@ -449,7 +455,7 @@ def register_app_crons_with_service(app_name: str, cron_service: Any) -> list[st
                 )
                 continue
         try:
-            sdk.add_job(
+            await sdk.add_job_async(
                 name=name,
                 message=d.get("message", ""),
                 every_secs=d.get("every"),  # JSON "every" → Python "every_secs"
@@ -491,21 +497,45 @@ def register_app_crons_with_service(app_name: str, cron_service: Any) -> list[st
     return newly_registered
 
 
-def deregister_app_crons_from_service(app_name: str, cron_service: Any) -> int:
+async def deregister_app_crons_from_service(app_name: str, cron_service: Any) -> int:
     """Remove app-owned cron jobs from the running CronService.
 
     Mirrors :func:`register_app_crons_with_service`. Uses :class:`CronSDK`,
     which only removes jobs tagged ``created_by="app:{app_name}"`` — other
     apps' jobs are unaffected.
 
+    ASYNC: awaits ``CronSDK.remove_all_async``, which removes all owned jobs in
+    ONE atomic ``CronService.remove_jobs_by_owner`` transaction (owned set
+    selected against the in-lock reloaded on-disk state, store-lock spin
+    offloaded to a worker thread) — all-or-nothing, never a partial removal that
+    orphans still-ENABLED app jobs, and never a cache-only snapshot that could
+    miss a cross-process creation. Awaitable directly on the gateway loop.
+
     Idempotent — safe to call when no jobs are registered (returns ``0``).
     Returns the number of jobs removed.
+
+    Propagates :class:`CronStoreBusy` (re-raised) so a contended cleanup is
+    REPORTED to the disable/uninstall caller as a failure rather than masked as
+    a successful ``0`` while owned jobs stay enabled and keep executing.
     """
     if cron_service is None:
         return 0
     sdk = CronSDK(app_name, cron_service)
     try:
-        return sdk.remove_all()
+        return await sdk.remove_all_async()
+    except CronStoreBusy as exc:
+        logger.warning(
+            "App %s: cron cleanup could not complete — store busy: %s",
+            app_name, exc,
+        )
+        sel().log_api_access(
+            caller="app_bridge",
+            operation="app_crons_deregister",
+            outcome="failed",
+            resources=app_name,
+            error=str(exc),
+        )
+        raise
     except Exception as exc:
         logger.warning(
             "App %s: failed to remove crons from scheduler (%s): %s",

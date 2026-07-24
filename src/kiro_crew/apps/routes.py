@@ -68,6 +68,7 @@ from kiro_crew.apps.registry import (
 from kiro_crew.apps.version import check_min_version as _check_min_version_str
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import KiroCrewConfig, config_dir, config_path
+from kiro_crew.cron import CronStoreBusy
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.sel import sel
 
@@ -607,6 +608,36 @@ async def handle_register_external(request: web.Request) -> web.Response:
     return web.json_response(resp, status=201)
 
 
+_CRON_CLEANUP_ATTEMPTS = 3
+_CRON_CLEANUP_BACKOFF_SECS = 0.5
+
+
+async def _deregister_crons_with_retry(name: str, cron_service: Any) -> int:
+    """Remove an app's cron jobs, retrying a contended store before giving up.
+
+    ``deregister_app_crons_from_service`` already spins on the store lock for a
+    bounded window and raises :class:`CronStoreBusy` if it never wins. On the
+    uninstall path that exception ABORTS the uninstall (a 409), so a single
+    unlucky collision with a concurrent mutator would surface to the user as a
+    failed uninstall. Retry the whole atomic removal a few times with a short
+    backoff first: contention is transient, and each attempt is all-or-nothing,
+    so a retry can never partially remove jobs. Re-raises ``CronStoreBusy`` if
+    every attempt loses.
+    """
+    for attempt in range(1, _CRON_CLEANUP_ATTEMPTS + 1):
+        try:
+            return await deregister_app_crons_from_service(name, cron_service)
+        except CronStoreBusy:
+            if attempt == _CRON_CLEANUP_ATTEMPTS:
+                raise
+            logger.info(
+                "Cron cleanup for %s: store busy (attempt %d/%d), retrying",
+                name, attempt, _CRON_CLEANUP_ATTEMPTS,
+            )
+            await asyncio.sleep(_CRON_CLEANUP_BACKOFF_SECS)
+    raise AssertionError("unreachable")  # pragma: no cover
+
+
 async def handle_uninstall_preview(request: web.Request) -> web.Response:
     """GET /api/apps/{name}/uninstall/preview — preview uninstall impact.
 
@@ -657,10 +688,15 @@ async def handle_uninstall_app(request: web.Request) -> web.Response:
     """POST /api/apps/{name}/uninstall — uninstall an app.
 
     1. Check lifecycle field (locked → 400)
-    2. Run onUninstall script (if declared)
-    3. Stop backend + deregister resources (gateway-managed only)
-    4. Clean removable dependencies (unless keep_dependencies=true)
-    5. Remove app files (preserve data/ if keep_data=true)
+    2. Cron cleanup precondition (gateway-managed; abort with retryable 409 if
+       the cron store stays busy — runs FIRST, before anything destructive)
+    3. Run onUninstall script (if declared)
+    4. Stop backend + deregister resources (gateway-managed only)
+    5. Clean removable dependencies (unless keep_dependencies=true)
+    6. Remove app files (preserve data/ if keep_data=true)
+
+    Steps 2–6 run inside the per-app lifecycle lock so the whole teardown is
+    atomic and the cron precondition can abort before any irreversible action.
     """
     name = request.match_info["name"]
     info = get_app(name)
@@ -690,30 +726,38 @@ async def handle_uninstall_app(request: web.Request) -> web.Response:
     except Exception:
         pass
 
-    # Step 1: Run onUninstall script
-    on_uninstall = (manifest.get("setup") or {}).get("onUninstall", "")
-    if on_uninstall:
-        script_output = await _run_lifecycle_script(
-            name, on_uninstall, timeout=120,
-            extra_env={"KEEP_DATA": "1" if keep_data else "0"},
-        )
-        if script_output.get("output"):
-            from kiro_crew.security import redact_credentials, redact_exfiltration_urls
-            cleaned, _ = redact_exfiltration_urls(script_output["output"])
-            cleaned, _ = redact_credentials(cleaned)
-            uninstall_log.append(cleaned)
-        if script_output.get("failed"):
-            uninstall_log.append("onUninstall script failed (exit code non-zero)")
-
-    # Per-app lifecycle lock, held across deregistration → dependency cleanup
-    # → file removal, so this sequence cannot interleave with a concurrent
-    # install/update of the same app (which holds the same lock across copy →
-    # registration → backend start). Without it, an install could re-register
-    # and start a backend between our deregister and our file removal.
+    # Per-app lifecycle lock, WIDENED to wrap the ENTIRE uninstall sequence:
+    # cron-cleanup precondition → onUninstall script → backend stop →
+    # deregistration → dependency cleanup → file removal. Previously the lock
+    # was taken only AFTER the onUninstall script had already run. It is now
+    # taken FIRST, deliberately, because:
+    #   (a) the cron-cleanup precondition below must be able to abort BEFORE
+    #       any destructive action (see its comment), which requires it — and
+    #       therefore the lock — to precede the onUninstall script; and
+    #   (b) the onUninstall script may itself be destructive (it can wipe app
+    #       data), so holding the lock across it stops a racing enable/update
+    #       of the same app from starting a backend mid-teardown.
+    # Cost: a concurrent same-app lifecycle op now waits up to the onUninstall
+    # timeout — acceptable, since those ops genuinely conflict and the lock is
+    # per-app (other apps are unaffected).
     async with app_lifecycle_lock(name):
-        # Step 2: Deregister resources (gateway-managed only)
+        # Step 1: Cron cleanup is the FIRST uninstall precondition, run BEFORE
+        # the (possibly destructive, non-idempotent) onUninstall script and
+        # BEFORE the backend is stopped. Uninstall is irreversible: below this
+        # point deregister_app() drops the per-app cron manifest and Step 5
+        # deletes the app directory. If owned jobs are still persisted and
+        # ENABLED at that moment they become permanent orphans — nothing
+        # remains that knows they belong to a removed app, and the scheduler
+        # keeps firing their command / script / agent payload indefinitely.
+        # So a contended store ABORTS the uninstall with a retryable 409 having
+        # changed NOTHING: no script run, no backend stopped, no manifest
+        # touched. Only then is the "app is still installed; retry" message
+        # literally true AND the retry safe — the non-idempotent onUninstall
+        # has not executed, so re-running the uninstall cannot double-apply a
+        # destructive teardown. "Durably disable the jobs instead" is not a
+        # fallback: disabling is itself a store mutation needing the very lock
+        # that is contended.
         if resources == "gateway":
-            await asyncio.get_running_loop().run_in_executor(subprocess_executor(), stop_app_backend, name)
             # Clean up app-declared cron jobs from the scheduler before the
             # per-app cron manifest is removed by deregister_app(). Mirrors the
             # cleanup that on_app_disable performs on the disable path.
@@ -721,13 +765,44 @@ async def handle_uninstall_app(request: web.Request) -> web.Response:
             cron_service = getattr(state, "crons", None) if state else None
             if cron_service is not None:
                 try:
-                    removed = deregister_app_crons_from_service(name, cron_service)
+                    # deregister_app_crons_from_service is async: it awaits the
+                    # CronSDK mutation API (per-job store-lock spin offloaded to
+                    # a worker thread), so the loop is never parked and timer
+                    # arming is owned by CronService (no caller-side drain).
+                    # It removes all owned jobs in ONE atomic transaction, so on
+                    # CronStoreBusy nothing was removed — the abort below leaves
+                    # no partially-cleaned state.
+                    removed = await _deregister_crons_with_retry(name, cron_service)
                     sel().log_api_access(
                         caller="dashboard",
                         operation="app_crons_deregister",
                         outcome="completed",
                         resources=f"app={name} removed={removed}",
                     )
+                except CronStoreBusy as exc:
+                    logger.warning(
+                        "Uninstall of %s ABORTED: cron cleanup could not "
+                        "complete (store busy) and continuing would orphan "
+                        "still-enabled app jobs: %s", name, exc,
+                    )
+                    sel().log_api_access(
+                        caller="dashboard",
+                        operation="app_uninstall",
+                        outcome="denied",
+                        resources=f"app={name}",
+                        error=f"cron cleanup failed, uninstall aborted: {exc}",
+                    )
+                    return web.json_response({
+                        "error": (
+                            f"cron cleanup for {name!r} could not complete "
+                            "(cron store busy) — uninstall aborted so the "
+                            "app's scheduled jobs are not orphaned. The app is "
+                            "still installed; retry the uninstall."
+                        ),
+                        "retryable": True,
+                        "app": name,
+                        "log": uninstall_log,
+                    }, status=409)
                 except Exception as exc:
                     logger.warning("Cron cleanup failed for %s on uninstall: %s", name, exc)
                     sel().log_api_access(
@@ -737,9 +812,31 @@ async def handle_uninstall_app(request: web.Request) -> web.Response:
                         resources=name,
                         error=str(exc),
                     )
+
+        # Step 2: Run onUninstall script. Reached only once cron cleanup has
+        # succeeded (or there were no crons / no cron service), so a
+        # non-idempotent teardown never runs on an uninstall that will be
+        # retried.
+        on_uninstall = (manifest.get("setup") or {}).get("onUninstall", "")
+        if on_uninstall:
+            script_output = await _run_lifecycle_script(
+                name, on_uninstall, timeout=120,
+                extra_env={"KEEP_DATA": "1" if keep_data else "0"},
+            )
+            if script_output.get("output"):
+                from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+                cleaned, _ = redact_exfiltration_urls(script_output["output"])
+                cleaned, _ = redact_credentials(cleaned)
+                uninstall_log.append(cleaned)
+            if script_output.get("failed"):
+                uninstall_log.append("onUninstall script failed (exit code non-zero)")
+
+        # Step 3: Stop backend + deregister resources (gateway-managed only)
+        if resources == "gateway":
+            await asyncio.get_running_loop().run_in_executor(subprocess_executor(), stop_app_backend, name)
             deregister_app(name)
 
-        # Step 3: Clean dependencies (atomic classify + ledger update)
+        # Step 4: Clean dependencies (atomic classify + ledger update)
         cleaned_deps: list[str] = []
         if not keep_dependencies:
             deps_data = manifest.get("dependencies", {})
@@ -766,7 +863,7 @@ async def handle_uninstall_app(request: web.Request) -> web.Response:
                 if cleaned_deps:
                     uninstall_log.append(f"Cleaned {len(cleaned_deps)} dependency(ies)")
 
-        # Step 4: Remove files. Off-loop: rmtree of a large installed tree is
+        # Step 5: Remove files. Off-loop: rmtree of a large installed tree is
         # blocking filesystem I/O. (uninstall_app shares the
         # ``.{name}-data-tmp`` move-aside path with install/update — covered
         # by the lifecycle lock held above.)
@@ -779,7 +876,7 @@ async def handle_uninstall_app(request: web.Request) -> web.Response:
     invalidate_app_secret_cache(name)
     _unregister_notification_channels(request, name)
 
-    # Step 5: Clean up workspace (each registry app has its own workspace)
+    # Step 6: Clean up workspace (each registry app has its own workspace)
     if is_registry_source(info.get("source", "")):
         app_reg_name = registry_name_from_source(info.get("source", ""))
         if app_reg_name:

@@ -73,13 +73,13 @@ class TestCronCreateHideInChat:
 
 
 class TestCronUpdateHideInChat:
-    """PATCH /api/crons/{id} must forward hide_in_chat to update_job."""
+    """PATCH /api/crons/{id} must forward hide_in_chat to update_job_async."""
 
     def _update_request(self, body: dict, job_id: str = "abc123") -> MagicMock:
         state = MagicMock()
         mock_job = MagicMock()
         mock_job.id = job_id
-        state.crons.update_job.return_value = mock_job
+        state.crons.update_job_async = AsyncMock(return_value=mock_job)
         request = MagicMock()
         request.app = {"state": state}
         request.match_info = {"job_id": job_id}
@@ -91,7 +91,7 @@ class TestCronUpdateHideInChat:
         request = self._update_request({"hide_in_chat": True})
         resp = await api_cron_update(request)
         assert resp.status == 200
-        _, kwargs = request.app["state"].crons.update_job.call_args
+        _, kwargs = request.app["state"].crons.update_job_async.call_args
         assert kwargs.get("hide_in_chat") is True
 
     @pytest.mark.asyncio
@@ -99,5 +99,5 @@ class TestCronUpdateHideInChat:
         request = self._update_request({"hide_in_chat": False})
         resp = await api_cron_update(request)
         assert resp.status == 200
-        _, kwargs = request.app["state"].crons.update_job.call_args
+        _, kwargs = request.app["state"].crons.update_job_async.call_args
         assert kwargs.get("hide_in_chat") is False

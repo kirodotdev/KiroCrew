@@ -21,7 +21,7 @@ def _make_request(body: dict, job_id: str = "abc123") -> MagicMock:
     mock_state = MagicMock()
     mock_job = MagicMock()
     mock_job.id = job_id
-    mock_state.crons.update_job.return_value = mock_job
+    mock_state.crons.update_job_async = AsyncMock(return_value=mock_job)
 
     request = MagicMock()
     request.app = {"state": mock_state}
@@ -39,11 +39,11 @@ class TestCronUpdateAgent:
         resp = await api_cron_update(request)
 
         assert resp.status == 200
-        update_job = request.app["state"].crons.update_job
-        update_job.assert_called_once()
-        _, kwargs = update_job.call_args
+        update_job_async = request.app["state"].crons.update_job_async
+        update_job_async.assert_called_once()
+        _, kwargs = update_job_async.call_args
         assert kwargs.get("agent_id") == "bxt-brain-leader"
-        # Never pass 'agent' through to update_job (it is not an accepted kwarg).
+        # Never pass 'agent' through to update_job_async (it is not an accepted kwarg).
         assert "agent" not in kwargs
 
     @pytest.mark.asyncio
@@ -54,7 +54,7 @@ class TestCronUpdateAgent:
         resp = await api_cron_update(request)
 
         assert resp.status == 200
-        _, kwargs = request.app["state"].crons.update_job.call_args
+        _, kwargs = request.app["state"].crons.update_job_async.call_args
         assert kwargs.get("agent_id") == "bxt-brain-worker"
 
     @pytest.mark.asyncio
@@ -65,7 +65,7 @@ class TestCronUpdateAgent:
         resp = await api_cron_update(request)
 
         assert resp.status == 200
-        _, kwargs = request.app["state"].crons.update_job.call_args
+        _, kwargs = request.app["state"].crons.update_job_async.call_args
         assert kwargs.get("agent_id") == "winner"
 
     @pytest.mark.asyncio
@@ -76,7 +76,7 @@ class TestCronUpdateAgent:
         resp = await api_cron_update(request)
 
         assert resp.status == 200
-        _, kwargs = request.app["state"].crons.update_job.call_args
+        _, kwargs = request.app["state"].crons.update_job_async.call_args
         # Empty string is a legitimate update value (clear the agent).
         assert kwargs.get("agent_id") == ""
 
@@ -97,7 +97,7 @@ class TestCronUpdateAgent:
         resp = await api_cron_update(request)
 
         assert resp.status == 200
-        _, kwargs = request.app["state"].crons.update_job.call_args
+        _, kwargs = request.app["state"].crons.update_job_async.call_args
         assert kwargs.get("name") == "renamed"
         assert kwargs.get("message") == "new msg"
         assert kwargs.get("agent_id") == "bxt-brain-leader"
@@ -113,7 +113,7 @@ class TestCronUpdateAgent:
         resp = await api_cron_update(request)
 
         assert resp.status == 200
-        _, kwargs = request.app["state"].crons.update_job.call_args
+        _, kwargs = request.app["state"].crons.update_job_async.call_args
         assert "agent_id" not in kwargs
 
     @pytest.mark.asyncio
@@ -124,7 +124,7 @@ class TestCronUpdateAgent:
         resp = await api_cron_update(request)
 
         assert resp.status == 200
-        _, kwargs = request.app["state"].crons.update_job.call_args
+        _, kwargs = request.app["state"].crons.update_job_async.call_args
         assert kwargs.get("agent_id") == "bxt-brain-leader"
 
     @pytest.mark.asyncio
@@ -135,7 +135,7 @@ class TestCronUpdateAgent:
         resp = await api_cron_update(request)
 
         assert resp.status == 200
-        _, kwargs = request.app["state"].crons.update_job.call_args
+        _, kwargs = request.app["state"].crons.update_job_async.call_args
         assert kwargs.get("agent_id") == "bxt-brain-worker"
 
     @pytest.mark.asyncio
@@ -146,19 +146,19 @@ class TestCronUpdateAgent:
         resp = await api_cron_update(request)
 
         assert resp.status == 200
-        _, kwargs = request.app["state"].crons.update_job.call_args
+        _, kwargs = request.app["state"].crons.update_job_async.call_args
         assert kwargs.get("agent_id") == ""
 
     @pytest.mark.asyncio
     async def test_job_not_found_returns_404(self):
-        """When update_job returns None (unknown job_id), handler returns 404."""
+        """When update_job_async returns None (unknown job_id), handler returns 404."""
         request = _make_request({"agent": "bxt-brain-leader"}, job_id="missing")
-        request.app["state"].crons.update_job.return_value = None
+        request.app["state"].crons.update_job_async = AsyncMock(return_value=None)
 
         resp = await api_cron_update(request)
 
         assert resp.status == 404
         # Kwargs are still built and passed; the 404 comes from the return value, not input validation.
-        request.app["state"].crons.update_job.assert_called_once()
-        _, kwargs = request.app["state"].crons.update_job.call_args
+        request.app["state"].crons.update_job_async.assert_called_once()
+        _, kwargs = request.app["state"].crons.update_job_async.call_args
         assert kwargs.get("agent_id") == "bxt-brain-leader"

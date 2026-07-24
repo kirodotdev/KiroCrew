@@ -28,6 +28,7 @@ def _make_gw():
     gw._running_script_ids = set()
     gw._no_crons = False
     gw.cron_svc = MagicMock()
+    gw.cron_svc.remove_job_async = AsyncMock(return_value=True)
     gw.sessions.get_or_create = AsyncMock(return_value=(MagicMock(), True, False))
     gw.sessions.release = MagicMock()
     gw.sessions.reset = AsyncMock()
@@ -77,9 +78,10 @@ async def _run_script_callback(gw, job, script_result):
             captured_cb = on_job
             svc = MagicMock()
             svc.start = AsyncMock()
+            svc.remove_job_async = AsyncMock(return_value=True)
             return svc
 
-        mock_cron_cls.side_effect = capture_cron
+        mock_cron_cls.create = AsyncMock(side_effect=capture_cron)
 
         async def _init_and_run():
             await gw._init_cron()
@@ -102,9 +104,10 @@ async def _run_command_callback(gw, job, cmd_result):
             captured_cb = on_job
             svc = MagicMock()
             svc.start = AsyncMock()
+            svc.remove_job_async = AsyncMock(return_value=True)
             return svc
 
-        mock_cron_cls.side_effect = capture_cron
+        mock_cron_cls.create = AsyncMock(side_effect=capture_cron)
 
         async def _init_and_run():
             await gw._init_cron()
@@ -140,7 +143,44 @@ class TestScriptExecution:
         result, _ = await _run_script_callback(gw, job, {"status": "done", "message": "CR merged"})
         assert "CR merged" in (result or "")
         assert job.last_result == "CR merged"
-        gw.cron_svc.remove_job.assert_called_once_with("sj1")
+        gw.cron_svc.remove_job_async.assert_called_once_with("sj1")
+
+    @pytest.mark.asyncio
+    async def test_done_busy_store_defers_removal_not_dropped(self):
+        """A busy store on the Done removal must hand off to defer_removal, not
+        silently drop it (Arbiter BLOCK item 1). Otherwise the completed job
+        lingers enabled and re-fires."""
+        from kiro_crew.cron import CronStoreBusy
+
+        gw = _make_gw()
+        job = _make_script_job()
+        captured_cb = None
+
+        with patch("kiro_crew.slack.gateway.CronService") as mock_cron_cls, \
+             patch("kiro_crew.slack.gateway.run_script_sandboxed",
+                   return_value={"status": "done", "message": "CR merged"}), \
+             patch("kiro_crew.slack.gateway.resolve_script_path"), \
+             patch("kiro_crew.slack.gateway.sel"):
+
+            def capture_cron(on_job=None, **kw):
+                nonlocal captured_cb
+                captured_cb = on_job
+                svc = MagicMock()
+                svc.start = AsyncMock()
+                # First removal attempt hits a contended store.
+                svc.remove_job_async = AsyncMock(side_effect=CronStoreBusy("busy"))
+                svc.defer_removal = MagicMock()
+                return svc
+
+            mock_cron_cls.create = AsyncMock(side_effect=capture_cron)
+
+            await gw._init_cron()
+            assert captured_cb is not None
+            await captured_cb(job)
+
+        gw.cron_svc.remove_job_async.assert_called_once_with("sj1")
+        # The removal was queued for deferred drain, not dropped.
+        gw.cron_svc.defer_removal.assert_called_once_with("sj1")
 
     @pytest.mark.asyncio
     async def test_report_does_not_remove_job(self):
@@ -149,7 +189,7 @@ class TestScriptExecution:
         result, _ = await _run_script_callback(gw, job, {"status": "report", "message": "DRB passed"})
         assert "DRB passed" in (result or "")
         assert job.last_result == "DRB passed"
-        gw.cron_svc.remove_job.assert_not_called()
+        gw.cron_svc.remove_job_async.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_error_increments_failures(self):
@@ -179,9 +219,10 @@ class TestScriptExecution:
                 captured_cb = on_job
                 svc = MagicMock()
                 svc.start = AsyncMock()
+                svc.remove_job_async = AsyncMock(return_value=True)
                 return svc
 
-            mock_cron_cls.side_effect = capture_cron
+            mock_cron_cls.create = AsyncMock(side_effect=capture_cron)
 
             async def _init_and_run():
                 await gw._init_cron()
@@ -329,6 +370,7 @@ def _make_gw_for_llm():
     gw._running_script_ids = set()
     gw._no_crons = False
     gw.cron_svc = MagicMock()
+    gw.cron_svc.remove_job_async = AsyncMock(return_value=True)
     gw._cfg = MagicMock()
     gw._cfg.agent.provider = "acp"
     gw._cfg.hooks = {}
@@ -374,9 +416,10 @@ async def _run_llm_callback(gw, job, *, get_or_create_side_effect=None):
             captured_cb = on_job
             svc = MagicMock()
             svc.start = AsyncMock()
+            svc.remove_job_async = AsyncMock(return_value=True)
             return svc
 
-        mock_cron_cls.side_effect = capture_cron
+        mock_cron_cls.create = AsyncMock(side_effect=capture_cron)
         await gw._init_cron()
         assert captured_cb is not None
         result = await captured_cb(job)

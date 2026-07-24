@@ -12,7 +12,7 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew import model_registry
-from kiro_crew.cron import is_valid_timezone
+from kiro_crew.cron import CronStoreBusy, is_valid_timezone
 from kiro_crew.dashboard.cron_inject import (
     hydrate_slot_from_history,
     inject_cron_result_to_dashboard,
@@ -48,6 +48,13 @@ from ._shared import (
 )
 
 logger = logging.getLogger(__name__)
+
+# 409 Conflict body returned when a cron-store mutator times out waiting for the
+# store lock (CronStoreBusy). Contention is transient (a large atomic save on
+# network storage, the CLI process, or the off-loop batch worker), so the client
+# should retry rather than treat it as a hard failure. See CronService mutators.
+_CRON_BUSY_STATUS = 409
+_CRON_BUSY_BODY = {"error": "cron store busy, please retry", "retryable": True}
 
 
 def _sel():
@@ -251,6 +258,8 @@ async def api_crons_create(request: web.Request) -> web.Response:
     if timezone_val and not is_valid_timezone(timezone_val):
         safe_tz, _ = redact_credentials(redact_exfiltration_urls(timezone_val)[0])
         return web.json_response({"error": f"invalid timezone: {safe_tz!r}"}, status=400)
+    strict_schedule = body.get("strict_schedule", False)
+    hide_in_chat = body.get("hide_in_chat", False)
     # Validate model BEFORE add_job so an invalid value never leaves an
     # orphaned job behind (a retried create would then duplicate it).
     model_raw = body.get("model")
@@ -273,41 +282,40 @@ async def api_crons_create(request: web.Request) -> web.Response:
             # "auto" sentinel (canonical key with no pinned provider id):
             # explicit inherit — same as leaving model unset.
             model_val = ""
+    # Build the job FULLY-FORMED in a single locked add_job_async transaction.
+    # Passing every optional field into the locked build+persist (rather than
+    # mutating the returned job and calling a bare, unlocked `_save()`) closes
+    # the data-loss race: two concurrent creates could interleave at the
+    # `await`, and the unlocked save could overwrite the other request's job.
+    add_kwargs: dict[str, Any] = {
+        "channel": channel,
+        "agent_id": (agent_id or ""),
+        "model": model_val,
+        "silent": bool(silent),
+        "timezone": (timezone_val or ""),
+        "strict_schedule": bool(strict_schedule),
+        "hide_in_chat": bool(hide_in_chat),
+    }
+    if approval_mode:
+        add_kwargs["approval_mode"] = approval_mode
     if every:
         try:
             every = int(every)
         except (ValueError, TypeError):
             return web.json_response({"error": "'every' must be an integer"}, status=400)
-        job = state.crons.add_job(
-            name, message, every_secs=every, channel=channel, timezone=timezone_val
-        )
+        try:
+            job = await state.crons.add_job_async(name, message, every_secs=every, **add_kwargs)
+        except CronStoreBusy:
+            return web.json_response(_CRON_BUSY_BODY, status=_CRON_BUSY_STATUS)
     elif cron_expr:
-        job = state.crons.add_job(
-            name, message, cron_expr=cron_expr, channel=channel, timezone=timezone_val
-        )
+        try:
+            job = await state.crons.add_job_async(
+                name, message, cron_expr=cron_expr, **add_kwargs
+            )
+        except CronStoreBusy:
+            return web.json_response(_CRON_BUSY_BODY, status=_CRON_BUSY_STATUS)
     else:
         return web.json_response({"error": "schedule, every, or cron required"}, status=400)
-    strict_schedule = body.get("strict_schedule", False)
-    hide_in_chat = body.get("hide_in_chat", False)
-    # timezone/skip_dates are now folded into add_job's SINGLE first _save()
-    # (the persistence owner validates + persists them atomically), so the
-    # dashboard create path no longer does a post-hoc timezone fold — that
-    # second save left a crash/concurrent-read window where a job could persist
-    # WITHOUT its timezone, the exact hole add_job's contract now closes.
-    if agent_id or model_val or approval_mode or silent or strict_schedule or hide_in_chat:
-        if agent_id:
-            job.agent_id = agent_id
-        if model_val:
-            job.model = model_val
-        if approval_mode:
-            job.approval_mode = approval_mode
-        if silent:
-            job.silent = True
-        if strict_schedule:
-            job.strict_schedule = True
-        if hide_in_chat:
-            job.hide_in_chat = True
-        state.crons._save()
     state.push_refresh("crons")
     return web.json_response({"ok": True, "id": job.id})
 
@@ -316,7 +324,10 @@ async def api_cron_delete(request: web.Request) -> web.Response:
     """DELETE /api/crons/{id} — remove a cron job."""
     state: DashboardState = request.app["state"]
     job_id = request.match_info["job_id"]
-    ok = state.crons.remove_job(job_id)
+    try:
+        ok = await state.crons.remove_job_async(job_id)
+    except CronStoreBusy:
+        return web.json_response(_CRON_BUSY_BODY, status=_CRON_BUSY_STATUS)
     if ok:
         await state.crons.get_history().delete_job_history(job_id)
         state.push_refresh("crons")
@@ -461,7 +472,9 @@ async def api_cron_update(request: web.Request) -> web.Response:
     if not kwargs:
         return web.json_response({"error": "no fields to update"}, status=400)
     try:
-        job = state.crons.update_job(job_id, **kwargs)
+        job = await state.crons.update_job_async(job_id, **kwargs)
+    except CronStoreBusy:
+        return web.json_response(_CRON_BUSY_BODY, status=_CRON_BUSY_STATUS)
     except ValueError as e:
         return web.json_response({"error": str(e)}, status=400)
     if not job:
@@ -568,7 +581,10 @@ async def api_cron_enable(request: web.Request) -> web.Response:
     except Exception:
         body = {}
     enabled = body.get("enabled", True)
-    ok = state.crons.enable_job(job_id, enabled=enabled)
+    try:
+        ok = await state.crons.enable_job_async(job_id, enabled=enabled)
+    except CronStoreBusy:
+        return web.json_response(_CRON_BUSY_BODY, status=_CRON_BUSY_STATUS)
     if ok:
         state.push_refresh("crons")
     return web.json_response({"ok": ok})
@@ -584,7 +600,10 @@ async def api_cron_ack(request: web.Request) -> web.Response:
         body = {}
     summary = body.get("summary", "acknowledged")
     notification_ts = body.get("ts", "")
-    ok = state.crons.ack_job(job_id, summary)
+    try:
+        ok = await state.crons.ack_job_async(job_id, summary)
+    except CronStoreBusy:
+        return web.json_response(_CRON_BUSY_BODY, status=_CRON_BUSY_STATUS)
     if notification_ts:
         await state.ack_notification(notification_ts)
     return web.json_response({"ok": ok})
@@ -852,7 +871,12 @@ async def api_crons(request: web.Request) -> web.Response:
     from kiro_crew.cron import compute_next_run_ts, format_schedule, get_local_tz  # noqa: F811
 
     state: DashboardState = request.app["state"]
-    jobs = state.crons.list_jobs(include_disabled=True)
+    # Freshness-guaranteed list for the user-facing GET: offloads a locked
+    # _sync() + snapshot to a worker thread so a cron just created by a separate
+    # process (CLI / MCP) shows up immediately, without ever blocking the event
+    # loop with the store read/hash. The hot per-connection status push and the
+    # other mutation handlers keep using the cache-only list_jobs().
+    jobs = await state.crons.list_jobs_async(include_disabled=True)
     now = time.time()
     tz_name, _ = get_local_tz()
     data = [

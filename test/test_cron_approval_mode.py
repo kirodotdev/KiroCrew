@@ -82,7 +82,7 @@ class TestCronApprovalModeGateway:
                 svc.start = AsyncMock()
                 return svc
 
-            mock_cron_cls.side_effect = capture_cron
+            mock_cron_cls.create = AsyncMock(side_effect=capture_cron)
 
             async def _init_and_run():
                 await gw._init_cron()
@@ -164,7 +164,7 @@ class TestCronApprovalModeExtraEnv:
                 svc.start = AsyncMock()
                 return svc
 
-            mock_cron_cls.side_effect = capture_cron
+            mock_cron_cls.create = AsyncMock(side_effect=capture_cron)
 
             async def _init_and_run():
                 await gw._init_cron()
@@ -663,6 +663,7 @@ class TestNoCronsFlag:
             svc = MagicMock()
             svc.start = AsyncMock()
             mock_cls.return_value = svc
+            mock_cls.create = AsyncMock(return_value=svc)
             asyncio.run(gw._init_cron())
             svc.start.assert_not_called()
             assert gw.cron_svc is svc  # still instantiated, just not started
@@ -673,6 +674,7 @@ class TestNoCronsFlag:
             svc = MagicMock()
             svc.start = AsyncMock()
             mock_cls.return_value = svc
+            mock_cls.create = AsyncMock(return_value=svc)
             asyncio.run(gw._init_cron())
             svc.start.assert_called_once()
 

@@ -26,6 +26,7 @@ from kiro_crew import model_registry
 from kiro_crew.config.loader import DASHBOARD_PORT, config_dir
 from kiro_crew.cron import (
     CronService,
+    CronStoreBusy,
     compute_next_run_ts,
     format_schedule,
     get_local_tz,
@@ -1038,6 +1039,8 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                 timezone=tz,
                 skip_dates=skip_dates,
             )
+        except CronStoreBusy:
+            return "Error: cron store busy, please retry"
         except ValueError as e:
             return f"Error: {e}"
         agent = args.get("agent", "")
@@ -1171,6 +1174,8 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             return "Error: no fields to update"
         try:
             updated = svc.update_job(jid, **kwargs)
+        except CronStoreBusy:
+            return "Error: cron store busy, please retry"
         except ValueError as e:
             return f"Error: {e}"
         if not updated:
@@ -1187,7 +1192,11 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
 
     if name == "cron_remove":
         jid = args["job_id"]
-        if svc.remove_job(jid):
+        try:
+            removed = svc.remove_job(jid)
+        except CronStoreBusy:
+            return "Error: cron store busy, please retry"
+        if removed:
             return f"Removed job: {jid}"
         return f"Job not found: {jid}"
 
@@ -1228,19 +1237,30 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                 outcome="cli_admin",
                 resources=f"count={len(jobs)}",
             )
-        for j in jobs:
-            svc.remove_job(j.id)
+        try:
+            for j in jobs:
+                svc.remove_job(j.id)
+        except CronStoreBusy:
+            return "Error: cron store busy, please retry"
         return f"Removed {len(jobs)} job(s)."
 
     if name == "cron_pause":
         jid = args["job_id"]
-        if svc.enable_job(jid, enabled=False):
+        try:
+            paused = svc.enable_job(jid, enabled=False)
+        except CronStoreBusy:
+            return "Error: cron store busy, please retry"
+        if paused:
             return f"Paused job: {jid}"
         return f"Job not found: {jid}"
 
     if name == "cron_resume":
         jid = args["job_id"]
-        if svc.enable_job(jid, enabled=True):
+        try:
+            resumed = svc.enable_job(jid, enabled=True)
+        except CronStoreBusy:
+            return "Error: cron store busy, please retry"
+        if resumed:
             return f"Resumed job: {jid}"
         return f"Job not found: {jid}"
 

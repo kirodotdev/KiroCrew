@@ -16,7 +16,7 @@ class TestCronCreateChannel:
         mock_job = MagicMock()
         mock_job.id = "abc"
         mock_job.agent_id = ""
-        mock_state.crons.add_job.return_value = mock_job
+        mock_state.crons.add_job_async = AsyncMock(return_value=mock_job)
         request = MagicMock()
         request.app = {"state": mock_state}
         request.json = AsyncMock(
@@ -24,8 +24,8 @@ class TestCronCreateChannel:
         )
         resp = await api_crons_create(request)
         assert resp.status == 200
-        mock_state.crons.add_job.assert_called_once()
-        call_kwargs = mock_state.crons.add_job.call_args
+        mock_state.crons.add_job_async.assert_called_once()
+        call_kwargs = mock_state.crons.add_job_async.call_args
         assert (
             call_kwargs[1].get("channel") == "C0AP77JJSN6"
             or call_kwargs.kwargs.get("channel") == "C0AP77JJSN6"
@@ -41,4 +41,4 @@ class TestCronCreateChannel:
         )
         resp = await api_crons_create(request)
         assert resp.status == 400
-        mock_state.crons.add_job.assert_not_called()
+        mock_state.crons.add_job_async.assert_not_called()

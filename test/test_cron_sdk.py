@@ -14,6 +14,21 @@ from hypothesis import strategies as st
 
 from kiro_crew.apps.cron_sdk import CronSDK
 
+
+def _run(value: Any) -> Any:
+    """Passthrough for the synchronous CronSDK mutation API.
+
+    The public ``CronSDK`` mutation methods (``add_job`` / ``remove_job`` /
+    ``update_job`` / ``remove_all``) are synchronous (they preserve the
+    published App Kit contract; loop-native callers use the ``*_async``
+    siblings). These unit tests exercise them against a mock service on a
+    loop-less thread, so ``sdk.add_job(...)`` already returns its result
+    directly — this wrapper simply returns it (kept so call sites read
+    uniformly and any raised ``ValueError`` still surfaces from the argument
+    evaluation).
+    """
+    return value
+
 # ---------------------------------------------------------------------------
 # Mock CronService and CronJob
 # ---------------------------------------------------------------------------
@@ -44,8 +59,11 @@ class MockCronService:
         self._next_id = 1
 
     def add_job(self, **kwargs: Any) -> MockCronJob:
-        # Mirror CronService.add_job register-paused semantics: enabled=False
-        # creates the job already paused (user_paused=True) at creation.
+        # Mirror CronService.add_job / _build_job: enabled=False creates the job
+        # already paused (user_paused=True), and the mutable list/dict fields
+        # are normalized to concrete empties (never None).
+        kwargs["agent_sequence"] = list(kwargs.get("agent_sequence") or [])
+        kwargs["env"] = dict(kwargs.get("env") or {})
         job = MockCronJob(
             id=f"job-{self._next_id}",
             user_paused=not kwargs.get("enabled", True),
@@ -54,6 +72,9 @@ class MockCronService:
         self._next_id += 1
         self._jobs.append(job)
         return job
+
+    async def add_job_async(self, **kwargs: Any) -> MockCronJob:
+        return self.add_job(**kwargs)
 
     def list_jobs(self, include_disabled: bool = False) -> list[MockCronJob]:
         if include_disabled:
@@ -67,6 +88,36 @@ class MockCronService:
                 return True
         return False
 
+    async def remove_job_async(self, job_id: str) -> bool:
+        return self.remove_job(job_id)
+
+    def remove_jobs_sync(self, job_ids: list[str]) -> tuple[list[str], list[str]]:
+        removed: list[str] = []
+        missing: list[str] = []
+        present = {j.id for j in self._jobs}
+        targets = {jid for jid in job_ids if jid in present}
+        for jid in job_ids:
+            (removed if jid in present else missing).append(jid)
+        if targets:
+            self._jobs = [j for j in self._jobs if j.id not in targets]
+        return removed, missing
+
+    async def remove_jobs(self, job_ids: list[str]) -> tuple[list[str], list[str]]:
+        return self.remove_jobs_sync(list(job_ids))
+
+    def remove_jobs_by_owner_sync(self, owner_prefix: str) -> list[str]:
+        removed = [
+            j.id for j in self._jobs
+            if getattr(j, "created_by", "") == owner_prefix
+        ]
+        if removed:
+            targets = set(removed)
+            self._jobs = [j for j in self._jobs if j.id not in targets]
+        return removed
+
+    async def remove_jobs_by_owner(self, owner_prefix: str) -> list[str]:
+        return self.remove_jobs_by_owner_sync(owner_prefix)
+
     def update_job(self, job_id: str, **kwargs: Any) -> MockCronJob | None:
         for j in self._jobs:
             if j.id == job_id:
@@ -75,8 +126,8 @@ class MockCronService:
                 return j
         return None
 
-    def _save(self) -> None:
-        pass
+    async def update_job_async(self, job_id: str, **kwargs: Any) -> MockCronJob | None:
+        return self.update_job(job_id, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -132,7 +183,7 @@ class TestCronJobCreation:
         svc = MockCronService()
         sdk = CronSDK(app_name, svc)
 
-        job = sdk.add_job(
+        job = _run(sdk.add_job(
             name=job_name,
             message="test",
             cron_expr="* * * * *",
@@ -140,7 +191,7 @@ class TestCronJobCreation:
             env=env,
             persistent_session=persistent,
             silent=silent,
-        )
+        ))
 
         assert job.created_by == f"app:{app_name}"
         assert job.agent_sequence == agent_seq
@@ -153,12 +204,12 @@ class TestCronJobCreation:
         svc = MockCronService()
         sdk = CronSDK("my-app", svc)
 
-        job = sdk.add_job(
+        job = _run(sdk.add_job(
             name="my-app/nightly-run",
             message="",
             cron_expr="0 22 * * *",
             enabled=False,
-        )
+        ))
 
         assert job.enabled is False
         assert job.user_paused is True
@@ -168,7 +219,7 @@ class TestCronJobCreation:
         svc = MockCronService()
         sdk = CronSDK("my-app", svc)
 
-        job = sdk.add_job(name="my-app/refresh", message="go", cron_expr="* * * * *")
+        job = _run(sdk.add_job(name="my-app/refresh", message="go", cron_expr="* * * * *"))
 
         assert job.enabled is True
         assert getattr(job, "user_paused", False) is False
@@ -178,15 +229,15 @@ class TestCronJobCreation:
         svc = MockCronService()
         sdk = CronSDK("my-app", svc)
 
-        job = sdk.add_job(
+        job = _run(sdk.add_job(
             name="my-app/nightly-run",
             message="",
             cron_expr="0 22 * * *",
             enabled=False,
-        )
+        ))
         assert job.enabled is False
 
-        updated = sdk.update_job(job.id, enabled=True, user_paused=False)
+        updated = _run(sdk.update_job(job.id, enabled=True, user_paused=False))
 
         assert updated is not None
         assert updated.enabled is True
@@ -217,10 +268,10 @@ class TestCronOwnershipEnforcement:
         sdk_a = CronSDK(app_a, svc)
         sdk_b = CronSDK(app_b, svc)
 
-        job = sdk_a.add_job(name="test-job", message="msg", cron_expr="* * * * *")
+        job = _run(sdk_a.add_job(name="test-job", message="msg", cron_expr="* * * * *"))
 
         with pytest.raises(PermissionError):
-            sdk_b.remove_job(job.id)
+            _run(sdk_b.remove_job(job.id))
 
         # Job still exists
         assert len(sdk_a.list_jobs()) == 1
@@ -236,10 +287,10 @@ class TestCronOwnershipEnforcement:
         sdk_a = CronSDK(app_a, svc)
         sdk_b = CronSDK(app_b, svc)
 
-        job = sdk_a.add_job(name="test-job", message="msg", cron_expr="* * * * *")
+        job = _run(sdk_a.add_job(name="test-job", message="msg", cron_expr="* * * * *"))
 
         with pytest.raises(PermissionError):
-            sdk_b.update_job(job.id, message="hacked")
+            _run(sdk_b.update_job(job.id, message="hacked"))
 
         # Job unchanged
         assert svc._jobs[0].message == "msg"
@@ -275,9 +326,9 @@ class TestCronListFiltering:
         sdk_b = CronSDK(app_b, svc)
 
         for i in range(n_a):
-            sdk_a.add_job(name=f"a-job-{i}", message="a", cron_expr="* * * * *")
+            _run(sdk_a.add_job(name=f"a-job-{i}", message="a", cron_expr="* * * * *"))
         for i in range(n_b):
-            sdk_b.add_job(name=f"b-job-{i}", message="b", cron_expr="* * * * *")
+            _run(sdk_b.add_job(name=f"b-job-{i}", message="b", cron_expr="* * * * *"))
 
         assert len(sdk_a.list_jobs()) == n_a
         assert len(sdk_b.list_jobs()) == n_b
@@ -302,10 +353,10 @@ class TestCronRemoveAll:
         sdk = CronSDK(app_name, svc)
 
         for i in range(n_jobs):
-            sdk.add_job(name=f"job-{i}", message="msg", cron_expr="* * * * *")
+            _run(sdk.add_job(name=f"job-{i}", message="msg", cron_expr="* * * * *"))
 
         assert len(sdk.list_jobs()) == n_jobs
-        removed = sdk.remove_all()
+        removed = _run(sdk.remove_all())
         assert removed == n_jobs
         assert len(sdk.list_jobs()) == 0
 
@@ -320,10 +371,10 @@ class TestCronRemoveAll:
         sdk_a = CronSDK(app_a, svc)
         sdk_b = CronSDK(app_b, svc)
 
-        sdk_a.add_job(name="a-job", message="a", cron_expr="* * * * *")
-        sdk_b.add_job(name="b-job", message="b", cron_expr="* * * * *")
+        _run(sdk_a.add_job(name="a-job", message="a", cron_expr="* * * * *"))
+        _run(sdk_b.add_job(name="b-job", message="b", cron_expr="* * * * *"))
 
-        sdk_a.remove_all()
+        _run(sdk_a.remove_all())
         assert len(sdk_a.list_jobs()) == 0
         assert len(sdk_b.list_jobs()) == 1
 
@@ -347,12 +398,12 @@ class TestCronVettingDenyPath:
         sdk = CronSDK("evil-app", svc)
 
         with pytest.raises(ValueError, match="cron command rejected"):
-            sdk.add_job(
+            _run(sdk.add_job(
                 name="exfil",
                 message="",
                 command="cat ~/.aws/credentials",
                 cron_expr="* * * * *",
-            )
+            ))
 
         # Deny-by-default: nothing was added to the service.
         assert svc._jobs == []
@@ -380,12 +431,12 @@ class TestCronVettingDenyPath:
         sdk = CronSDK("evil-app", svc)
 
         with pytest.raises(ValueError, match="cron script rejected"):
-            sdk.add_job(
+            _run(sdk.add_job(
                 name="exfil",
                 message="",
                 script="~/.kirocrew/crons/evil.py:run",
                 cron_expr="* * * * *",
-            )
+            ))
 
         # Deny-by-default: nothing was added to the service.
         assert svc._jobs == []
@@ -407,12 +458,12 @@ class TestCronVettingDenyPath:
         sdk = CronSDK("evil-app", svc)
 
         with pytest.raises(ValueError, match="cron script rejected"):
-            sdk.add_job(
+            _run(sdk.add_job(
                 name="escape",
                 message="",
                 script="/etc/passwd:run",
                 cron_expr="* * * * *",
-            )
+            ))
 
         # Deny-by-default: nothing was added to the service.
         assert svc._jobs == []

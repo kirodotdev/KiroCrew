@@ -70,7 +70,7 @@ from kiro_crew.config.loader import (
 from kiro_crew.constants import CHAT_TURN_TIMEOUT, DATA_WARNING
 from kiro_crew.context import ContextBuilder
 from kiro_crew.context_management import summarize_result
-from kiro_crew.cron import CronJob, CronService, build_cron_session_context
+from kiro_crew.cron import CronJob, CronService, CronStoreBusy, build_cron_session_context
 from kiro_crew.cron_script import resolve_script_path, run_command_sandboxed, run_script_sandboxed
 from kiro_crew.dashboard import start_dashboard
 from kiro_crew.dashboard.chat_runner import _run_chat
@@ -1331,7 +1331,19 @@ class GatewayOrchestrator:
             except Exception as notify_exc:
                 logger.warning("Cron '%s' delivery failed: %s", job.name, notify_exc)
             if remove and delivered and self.cron_svc:
-                self.cron_svc.remove_job(job.id)
+                try:
+                    await self.cron_svc.remove_job_async(job.id)
+                except CronStoreBusy:
+                    # No caller to retry this fire-and-forget removal, so hand
+                    # it to the service's deferred-removal queue: the job is
+                    # disabled in memory immediately (can't re-fire) and the
+                    # next timer tick drains it from disk under the store lock.
+                    self.cron_svc.defer_removal(job.id)
+                    logger.warning(
+                        "Cron '%s': store busy, queued one-shot removal for "
+                        "the next timer tick",
+                        job.name,
+                    )
 
         async def _cron_callback(job: CronJob) -> str | None:
             # helper picks stable vs ephemeral session key and
@@ -2161,7 +2173,7 @@ class GatewayOrchestrator:
                             self.cron_svc.clear_active_session_key(job.id)
                 # Restore per-job env vars (single-agent path) — now handled via extra_env passthrough
 
-        self.cron_svc = CronService(base_dir=config_dir(), on_job=_cron_callback)
+        self.cron_svc = await CronService.create(base_dir=config_dir(), on_job=_cron_callback)
         if self.dashboard_state:
             self.cron_svc.set_refresh_callback(self.dashboard_state.push_refresh)
         if self._no_crons:

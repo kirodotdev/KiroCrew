@@ -6,8 +6,7 @@ asyncio timer.  Each job fires a callback (typically posting to Slack via ACP).
 
 Cross-process safety: the CLI and gateway run as separate processes sharing
 the same ``crons.json``.  All read-modify-write cycles use advisory file
-locking (fcntl), and mtime-based ``_sync()``
-detects external file changes
+locking (fcntl), and a content-digest ``_sync()`` detects external file changes
 before every mutation.  Job execution releases the lock so long-running jobs
 don't block the CLI.
 
@@ -22,6 +21,7 @@ Supports three schedule types:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import random
@@ -46,6 +46,7 @@ from croniter import croniter  # type: ignore[import-untyped]
 
 from kiro_crew import cron_script, platform_compat, sel, shutdown_event
 from kiro_crew.config.loader import KiroCrewConfig, config_dir
+from kiro_crew.constants import env_flag_enabled
 from kiro_crew.cron_history import CronHistoryStore, CronRunRecord
 from kiro_crew.executors import subprocess_executor
 
@@ -62,7 +63,80 @@ _TIMER_POLL_SECS = 30  # check for due cron-expr jobs
 _AUTO_PAUSE_THRESHOLD = 5  # consecutive failures before a script/command cron auto-pauses
 _REAPER_INTERVAL = 60  # seconds between reaper sweeps
 _REAPER_RESET_TIMEOUT = 30.0  # max seconds for session reset in reaper
-_MAX_SKIP_DATE_LOOKAHEAD = 52  # weekly cron × 1 year — cap iterations when advancing past skip_dates
+# Bound skip_date advancement by a WALL-CLOCK horizon rather than an iteration
+# count. An iteration cap couples the bound to schedule granularity: sized for a
+# weekly cron (old 52) it broke daily crons; re-sized for daily it would then
+# break sub-daily (e.g. a */5 cron does 288 fires/day and would exhaust a
+# daily-sized cap within days). Bounding by wall-clock time removes the coupling
+# entirely — a daily cron and a */5 cron both simply look ~2 years ahead for the
+# next non-skipped fire. A large absolute iteration ceiling remains ONLY as an
+# anti-infinite-loop safety net for a pathological all-skipped sub-minute
+# schedule; realistic skip_dates lists are short (hand-entered) and exit far
+# sooner, so the horizon is the binding constraint in every practical case.
+_MAX_SKIP_DATE_HORIZON_SECS = 2 * 365 * 24 * 3600  # ~2 years of look-ahead
+_MAX_SKIP_DATE_LOOKAHEAD = 500_000  # absolute safety ceiling (anti-infinite-loop)
+
+# Bounded non-blocking acquire for the cron-store advisory lock (see
+# CronService._file_lock). The spin never parks the event loop in an
+# uninterruptible kernel wait; it fails fast after the timeout instead.
+_FILE_LOCK_TIMEOUT_SECS = 10.0  # max wall-time to wait for the store lock
+_FILE_LOCK_POLL_SECS = 0.02  # sleep between non-blocking acquire attempts
+
+
+class CronStoreBusy(TimeoutError):
+    """Raised when a cron-store mutator cannot acquire the store lock in time.
+
+    This is the DEFINED failure contract of the store mutators (:meth:`add_job`,
+    :meth:`update_job`, :meth:`remove_job`, :meth:`enable_job`, :meth:`ack_job`,
+    :meth:`unack_job` and their ``*_async`` variants): under sustained lock
+    contention they raise this instead of blocking forever. It subclasses
+    :class:`TimeoutError` so the existing ``except TimeoutError`` guards (the
+    reaper sweep, the timer tick, the read-path degrade) keep catching it, while
+    giving the public scheduling boundaries a named, greppable type to translate
+    into a clean *retryable* error — HTTP 409 at the dashboard handlers, a
+    structured ``Error:`` string at the MCP tools, a "store busy, try again"
+    reply at the Slack surfaces — rather than surfacing an opaque 500 / tool
+    crash. Contention is transient (a large atomic save on network storage, the
+    CLI process, or the off-loop batch-remove worker holding the lock), so the
+    correct caller response is to retry, not to fail permanently.
+    """
+
+
+# ── Loop-safety guard (Design Review finding 4 / Arbiter item 3) ────────────
+# The store lock (``CronService._file_lock``) must NEVER be acquired on a thread
+# that has a running asyncio event loop: the bounded ``time.sleep`` spin would
+# park that loop under contention. The invariant is upheld structurally —
+# loop-resident callers use the ``*_async`` mutators (which ``asyncio.to_thread``
+# the lock+save) and the synchronous ``CronSDK`` facade offloads to a worker
+# thread when a loop is running — but conventions drift as new writers are
+# added. ``_file_lock`` therefore MACHINE-ENFORCES the rule: on entry it detects
+# a running loop on the current thread and, when strict mode is enabled, RAISES
+# so a regression is caught in CI rather than silently re-freezing the loop.
+#
+# Gating mirrors the repo's other strict rails (e.g. KIROCREW_STRICT_ON_LOOP_
+# PERSIST): OFF by default it degrades to a throttled warning (so no production
+# path is broken by an unforeseen legitimate on-loop caller, and existing tests
+# that seed jobs via the sync mutators from an async body keep passing); the CI
+# loop-safety regression test flips it ON to prove the guard fires and that the
+# sanctioned async / offloaded-sync paths do NOT trip it. Operators can export
+# KIROCREW_STRICT_LOOP_SAFETY=1 to escalate the warning to a hard failure fleet-
+# wide.
+_STRICT_LOOP_SAFETY_ENV = "KIROCREW_STRICT_LOOP_SAFETY"
+_loop_safety_warned = False
+
+
+class CronLoopSafetyError(RuntimeError):
+    """Raised when the cron store lock is acquired on a running event loop.
+
+    Signals a loop-park hazard: a synchronous ``_file_lock`` acquisition on a
+    thread with a live asyncio loop would block that loop in the bounded lock
+    spin under contention (the ``no-blocking-call-on-event-loop`` class this
+    module exists to eliminate). The fix is to use the ``*_async`` mutator
+    variant (``add_job_async`` et al.), or — from the synchronous ``CronSDK``
+    facade — to let it offload to a worker thread. Only raised under strict
+    mode (``KIROCREW_STRICT_LOOP_SAFETY``); otherwise the guard warns.
+    """
+
 
 # Jitter bounds (seconds) to spread job execution and avoid traffic spikes
 _JITTER_HOURLY_MAX = 5 * 60    # 0–5 minutes for hourly jobs
@@ -390,15 +464,29 @@ def compute_next_run_ts(job: CronJob, now: float | None = None) -> float | None:
             tz = _job_tz(job)
             base = datetime.fromtimestamp(now, tz=tz)
             cron = croniter(sched.cron_expr, base)
-            # Advance past any skip_dates
+            # Advance past any skip_dates, bounded by a wall-clock horizon so the
+            # bound does not depend on schedule granularity (a daily and a */5
+            # cron both look ~2 years ahead). The iteration count is only a hard
+            # safety ceiling against a pathological all-skipped sub-minute config.
+            horizon = now + _MAX_SKIP_DATE_HORIZON_SECS
             for _ in range(_MAX_SKIP_DATE_LOOKAHEAD):
                 nxt = cron.get_next(float)
                 if not job.skip_dates:
                     return nxt
+                if nxt > horizon:
+                    logger.warning(
+                        "No valid next run within ~2y horizon for job %s (all dates skipped)",
+                        job.id,
+                    )
+                    return None
                 local_date = datetime.fromtimestamp(nxt, tz=tz).strftime("%Y-%m-%d")
                 if local_date not in job.skip_dates:
                     return nxt
-            logger.warning("No valid next run within %d iterations for job %s (all dates skipped)", _MAX_SKIP_DATE_LOOKAHEAD, job.id)
+            logger.warning(
+                "No valid next run within %d-iteration safety cap for job %s (all dates skipped)",
+                _MAX_SKIP_DATE_LOOKAHEAD,
+                job.id,
+            )
             return None
     except Exception:
         logger.warning("Failed to compute next run for job %s", job.id, exc_info=True)
@@ -428,6 +516,8 @@ class CronService:
         self,
         base_dir: Path | None = None,
         on_job: Callable[[CronJob], Awaitable[str | None]] | None = None,
+        *,
+        _defer_initial_load: bool = False,
     ):
         self._dir = base_dir or _DEFAULT_DIR
         self._path = self._dir / _CRONS_FILE
@@ -435,7 +525,36 @@ class CronService:
         self._jobs: list[CronJob] = []
         self._timer_task: asyncio.Task[None] | None = None
         self._running = False
+        # The event loop this service is bound to, captured in create()/start()
+        # (the gateway's loop). _arm_timer() uses it to re-arm the timer THREAD-
+        # SAFELY when it is reached OFF the loop — inside an asyncio.to_thread
+        # worker running a locked core whose _sync()->_load() wants to re-arm —
+        # by handing the arm back to the loop via loop.call_soon_threadsafe(
+        # self._arm_timer). Arming is therefore an IN-SERVICE guarantee owned by
+        # CronService: no caller (mutator, app hook, SDK, or route) has to
+        # remember to drain a deferred arm, so no off-loop mutation path can
+        # silently leave the timer un-armed (the "scheduled job never fires"
+        # failure class this module exists to prevent). Stays None in genuinely
+        # loop-less processes (CLI, MCP server, apps SDK, tests), where there is
+        # no scheduler loop to arm.
+        self._loop: asyncio.AbstractEventLoop | None = None
         self._last_mtime: float = 0.0
+        # Fingerprint of the store as last LOADED, used by _sync to decide
+        # whether the on-disk file changed. mtime alone is insufficient: on
+        # filesystems with coarse (1s) mtime granularity — or simply two writes
+        # within the same clock tick — a second external write lands with an
+        # EQUAL st_mtime, so the old `mtime > self._last_mtime` check skipped
+        # the reload and silently dropped that update. A (mtime_ns, size) tuple
+        # improves on that but still collides when an external write preserves
+        # BOTH the coarse timestamp and the byte length (e.g. renaming a job to
+        # an equal-length name), which would again drop the update and let the
+        # next _save overwrite it. The authoritative signal is therefore a
+        # content DIGEST derived from the same bytes we parse; mtime_ns/size are
+        # retained for diagnostics. _save refreshes all three so we never reload
+        # our own write.
+        self._last_mtime_ns: int = 0
+        self._last_size: int = -1
+        self._last_digest: bytes = b""
         self._executing: set[str] = set()  # job IDs currently running
         self._running_tasks: dict[str, asyncio.Task[None]] = {}  # strong refs to prevent GC
         self._job_start_times: dict[str, float] = {}  # job ID → epoch start
@@ -443,6 +562,13 @@ class CronService:
         self._cancelled_jobs: set[str] = set()  # job IDs cancelled by the user
         self._job_jitter: dict[str, float] = {}  # job ID → jitter seconds applied
         self._job_run_meta: dict[str, tuple[float, str]] = {}  # job_id → (start_time, trigger)
+        # Job IDs whose one-shot (delete_after_run / Done) removal was DEFERRED
+        # because remove_job_async hit a contended store (CronStoreBusy). The
+        # timer tick drains these under the store lock in a worker thread (see
+        # defer_removal / _drain_pending_removals_locked / _tick_scan_locked) so
+        # a completed one-shot is always
+        # eventually removed and can never re-fire in the meantime.
+        self._pending_removals: set[str] = set()
         # job_id → active session_key for the in-flight run.
         # Populated by the dispatcher (gateway callback) so the reaper can
         # target per-run ephemeral keys when persistent_session=False.
@@ -458,12 +584,77 @@ class CronService:
             cron_max_records_per_job=_cfg.cron_max_records_per_job,
             cron_max_index_records=_cfg.cron_max_index_records,
         )
+        # Populate the in-memory snapshot from disk once at construction.
+        # The read paths (list_jobs / get_job) are CACHE-ONLY — they perform no
+        # filesystem I/O on the hot event-loop path (see list_jobs). They used
+        # to lazily _load() on first read via _sync(); loop-less callers that
+        # construct a service and read immediately without start() (the MCP and
+        # CLI processes, tests) relied on that. An initial load here restores
+        # the "a fresh service reflects on-disk state" invariant without
+        # putting any I/O back on the gateway's hot read path (the gateway
+        # constructs its service once at startup, off any hot loop, and
+        # start() reloads anyway). No timer is armed: _running is still False.
+        #
+        # BUT the initial _load() itself read_bytes()+blake2b-hashes the WHOLE
+        # crons.json — synchronous filesystem I/O. For genuinely-sync, loop-less
+        # processes (CLI, MCP server, apps SDK, tests) that is fine: there is no
+        # event loop to park. The async gateway, however, constructs its
+        # CronService INSIDE its running startup coroutine, so a plain
+        # constructor _load() would block the sole event loop (chat, WS, timers,
+        # heartbeat) on that read — violating no-blocking-call-on-event-loop.
+        # Loop contexts therefore MUST construct via the async factory
+        # CronService.create(), which passes _defer_initial_load=True (skipping
+        # the load here) and instead runs _load() in a worker thread via
+        # asyncio.to_thread. Enforced mechanically by
+        # test_cron_locking_regression.py::TestConstructionLoadOffLoop.
+        if not _defer_initial_load:
+            self._load()
 
     # ── Lifecycle ──
 
+    @classmethod
+    async def create(
+        cls,
+        base_dir: Path | None = None,
+        on_job: Callable[[CronJob], Awaitable[str | None]] | None = None,
+    ) -> "CronService":
+        """Async factory for event-loop contexts (the gateway).
+
+        Equivalent to ``CronService(...)`` but SAFE to call from a running
+        event loop: the plain constructor performs its initial ``_load()`` —
+        a whole-file ``read_bytes()`` + blake2b hash of ``crons.json`` —
+        synchronously, which would block the sole gateway loop (chat, WS,
+        timers, heartbeat) during async startup. This factory constructs with
+        ``_defer_initial_load=True`` (so the constructor does no store I/O) and
+        then runs that initial ``_load()`` in a worker thread via
+        ``asyncio.to_thread``. ``_running`` is still ``False`` at this point, so
+        ``_load()`` arms no timer — running it off-loop is safe.
+
+        Genuinely-sync, loop-less processes (CLI, MCP server, apps SDK, tests)
+        must keep using the plain constructor, which loads inline.
+        """
+        self = cls(base_dir=base_dir, on_job=on_job, _defer_initial_load=True)
+        # Bind to the gateway loop so off-loop mutation paths (async mutators'
+        # worker cores, app-hook/SDK calls offloaded via asyncio.to_thread) can
+        # re-arm the timer thread-safely — see _arm_timer / __init__ _loop.
+        self._loop = asyncio.get_running_loop()
+        await asyncio.to_thread(self._load)
+        return self
+
     async def start(self) -> None:
-        """Load jobs and start the timer loop."""
-        self._load()
+        """Load jobs and start the timer loop.
+
+        ``_load()`` is offloaded to a worker thread (``asyncio.to_thread``):
+        ``start()`` is always awaited on the gateway event loop, and the load
+        does a whole-file read+hash of ``crons.json`` — synchronous filesystem
+        I/O that must never run on the loop. ``_running`` is still ``False``
+        here, so the load arms no timer; ``_arm_timer()`` is called explicitly
+        on the loop afterwards.
+        """
+        # Bind to the running loop (idempotent if create() already did) so any
+        # off-loop re-arm during this service's lifetime self-heals to it.
+        self._loop = asyncio.get_running_loop()
+        await asyncio.to_thread(self._load)
         self._running = True
         await self._history.rotate_all()
         self._arm_timer()
@@ -506,9 +697,19 @@ class CronService:
         while True:
             await asyncio.sleep(_REAPER_INTERVAL)
             now = time.time()
+            # Snapshot the job list CACHE-ONLY — no store lock, no _sync, no
+            # disk I/O on the loop (same rationale as list_jobs/get_job). The
+            # batch-remove worker (remove_jobs → asyncio.to_thread) builds a
+            # NEW list and swaps self._jobs by an atomic reference assignment,
+            # so this comprehension iterates one coherent list object (either
+            # the pre- or post-swap list, never a half-rebuilt one) and can
+            # never tear. The reaper only needs the in-memory view to map
+            # running task ids → timeouts; cross-process freshness is
+            # irrelevant to force-killing a locally-running task.
+            jobs_by_id = {j.id: j for j in self._jobs}
             for job_id, started in list(self._job_start_times.items()):
                 elapsed = now - started
-                job = next((j for j in self._jobs if j.id == job_id), None)
+                job = jobs_by_id.get(job_id)
                 deadline = max(min(job.timeout_secs, 86400), _JOB_TIMEOUT_SECS) if job else _JOB_TIMEOUT_SECS
                 jitter_allowance = self._job_jitter.get(job_id, 0.0)
                 if elapsed <= deadline + jitter_allowance:
@@ -560,17 +761,32 @@ class CronService:
             task.cancel()
         self._executing.discard(job_id)
 
-        # Update job state and persist.
-        by_id = {j.id: j for j in self._jobs}
-        job = by_id.get(job_id)
+        # Update job state and persist. The persist goes through the locked
+        # worker-thread merge helper (offloaded via asyncio.to_thread) — NOT a
+        # bare on-loop self._save() — so it re-syncs under the store lock and
+        # cannot clobber a concurrent add/update worker's just-written job
+        # list, and its bounded lock spin never parks the event loop this
+        # coroutine runs on. See _merge_terminal_state_locked.
+        job = next((j for j in self._jobs if j.id == job_id), None)
         if job:
-            job.last_status = "error"
-            job.last_error = (
+            last_error = (
                 f"Reaped after {int(elapsed)}s (exceeded {deadline}s deadline)"
             )
-            job.last_run_ts = time.time()
+            last_run_ts = time.time()
+            # Reflect into the in-memory snapshot for the history record below
+            # and any immediate reader; the authoritative persist is the locked
+            # merge, which re-derives the disk copy after _sync().
+            job.last_status = "error"
+            job.last_error = last_error
+            job.last_run_ts = last_run_ts
             try:
-                self._save()
+                await asyncio.to_thread(
+                    self._merge_terminal_state_locked,
+                    job_id,
+                    last_status="error",
+                    last_error=last_error,
+                    last_run_ts=last_run_ts,
+                )
             except Exception:
                 logger.exception("Reaper: failed to persist state for cron %s", job_id)
             # Record timeout in history
@@ -759,13 +975,27 @@ class CronService:
             task.cancel()
         self._executing.discard(job_id)
 
-        # 4. Update job state, persist, and record history.
+        # 4. Update job state, persist, and record history. The persist goes
+        # through the locked worker-thread merge helper (offloaded via
+        # asyncio.to_thread) — NOT a bare on-loop self._save() — so it re-syncs
+        # under the store lock and cannot clobber a concurrent add/update
+        # worker; the bounded spin never parks this loop-side coroutine.
         if job:
+            last_error = f"Cancelled by user after {int(elapsed)}s"
+            last_run_ts = time.time()
+            # In-memory snapshot for the history record / immediate readers;
+            # the locked merge is authoritative.
             job.last_status = "error"
-            job.last_error = f"Cancelled by user after {int(elapsed)}s"
-            job.last_run_ts = time.time()
+            job.last_error = last_error
+            job.last_run_ts = last_run_ts
             try:
-                self._save()
+                await asyncio.to_thread(
+                    self._merge_terminal_state_locked,
+                    job_id,
+                    last_status="error",
+                    last_error=last_error,
+                    last_run_ts=last_run_ts,
+                )
             except Exception:
                 logger.exception("Cancel: failed to persist state for cron %s", job_id)
             try:
@@ -820,8 +1050,18 @@ class CronService:
         created_by: str = "",
         approval_mode: str = "",
         enabled: bool = True,
+        agent_id: str = "",
+        model: str = "",
+        silent: bool = False,
         timezone: str = "",
         skip_dates: list[str] | None = None,
+        strict_schedule: bool = False,
+        hide_in_chat: bool = False,
+        command: str = "",
+        script: str = "",
+        agent_sequence: list[str] | None = None,
+        env: dict[str, str] | None = None,
+        persistent_session: bool = True,
     ) -> CronJob:
         """Add a new job. Provide one of ``every_secs``, ``at_ts``, or ``cron_expr``.
 
@@ -832,16 +1072,92 @@ class CronService:
 
         ``timezone``/``skip_dates`` are validated HERE, at the persistence
         owner, and folded into the job before its single ``_save()`` -- so no
-        caller can strand a half-populated or invalid job on disk for *these
-        two calendar-validity-sensitive fields*, and every create path (MCP,
-        apps SDK, dashboard, CLI) shares one check. Other first-save fields
-        (``agent_id``/``model``/``session_key``/``strict_schedule``/
-        ``hide_in_chat``/``silent``) are still folded by callers after
-        ``add_job`` returns; totalizing the invariant over those fields is
-        tracked in issue #391 (delivered by the concurrent ``fix/cron-locking``
-        rework, PR #331, which consolidates every first-save field into a single
-        locked build+persist). Until then this guarantee is scoped to the two
-        fields named above.
+        caller can strand a half-populated or invalid job on disk, and every
+        create path (MCP, apps SDK, dashboard, CLI) shares one check. This
+        rework (PR #331) consolidates **every** first-save field
+        (``agent_id``/``model``/``silent``/``strict_schedule``/``hide_in_chat``,
+        ``command``/``script``/``agent_sequence``/``env``/``persistent_session``)
+        into the same single locked build+persist, totalizing over all fields
+        the invariant that issue #391 tracked.
+
+        Synchronous variant: the lock+save runs INLINE and so must only be
+        called from a loop-less context (CLI / MCP server process / a worker
+        thread) — the ``_file_lock`` loop-safety guard rejects it on a running
+        event loop. On the gateway loop use :meth:`add_job_async`. Accepts the
+        same full field set as :meth:`add_job_async` so a caller (e.g. the
+        synchronous ``CronSDK`` facade) can persist a fully-formed, owner-tagged
+        job in the single locked transaction with no follow-up unlocked
+        ``_save()``.
+        """
+        job = self._build_job(
+            name,
+            message,
+            every_secs=every_secs,
+            at_ts=at_ts,
+            cron_expr=cron_expr,
+            channel=channel,
+            thread_ts=thread_ts,
+            delete_after_run=delete_after_run,
+            created_by=created_by,
+            approval_mode=approval_mode,
+            enabled=enabled,
+            agent_id=agent_id,
+            model=model,
+            silent=silent,
+            timezone=timezone,
+            skip_dates=skip_dates,
+            strict_schedule=strict_schedule,
+            hide_in_chat=hide_in_chat,
+            command=command,
+            script=script,
+            agent_sequence=agent_sequence,
+            env=env,
+            persistent_session=persistent_session,
+        )
+        self._persist_add_locked(job)
+        self._arm_timer()
+        logger.info("Added cron job '%s' (%s)", name, job.id)
+        return job
+
+    def _build_job(
+        self,
+        name: str,
+        message: str,
+        every_secs: int | None = None,
+        at_ts: float | None = None,
+        cron_expr: str | None = None,
+        channel: str | None = None,
+        thread_ts: str | None = None,
+        delete_after_run: bool = False,
+        created_by: str = "",
+        approval_mode: str = "",
+        enabled: bool = True,
+        agent_id: str = "",
+        model: str = "",
+        silent: bool = False,
+        timezone: str = "",
+        skip_dates: list[str] | None = None,
+        strict_schedule: bool = False,
+        hide_in_chat: bool = False,
+        command: str = "",
+        script: str = "",
+        agent_sequence: list[str] | None = None,
+        env: dict[str, str] | None = None,
+        persistent_session: bool = True,
+    ) -> CronJob:
+        """Validate inputs and construct the :class:`CronJob` (no I/O, no lock).
+
+        Shared by :meth:`add_job` and :meth:`add_job_async` so both perform
+        identical validation on the event loop before any disk work. Raises
+        ``ValueError`` on an invalid schedule or approval mode.
+
+        The optional presentation/routing fields (``agent_id``, ``model``,
+        ``silent``, ``timezone``, ``strict_schedule``, ``hide_in_chat``) are set
+        here so the job is persisted **fully-formed** in the single locked
+        transaction. This closes the create-then-mutate-then-unlocked-``_save``
+        window the dashboard create handler used to have (two concurrent creates
+        could interleave at the ``await`` and the unlocked save could clobber the
+        other request's job).
         """
         valid_approval_modes = ("", "auto")
         if approval_mode not in valid_approval_modes:
@@ -863,7 +1179,7 @@ class CronService:
         else:
             raise ValueError("Must provide every_secs, at_ts, or cron_expr")
 
-        job = CronJob(
+        return CronJob(
             id=uuid.uuid4().hex[:8],
             name=name,
             message=message,
@@ -876,13 +1192,102 @@ class CronService:
             delete_after_run=delete_after_run,
             created_by=created_by,
             approval_mode=approval_mode,
+            agent_id=agent_id,
+            model=str(model or "").strip(),
+            silent=silent,
             timezone=timezone,
             skip_dates=skip_dates,
+            strict_schedule=strict_schedule,
+            hide_in_chat=hide_in_chat,
+            command=command,
+            script=script,
+            agent_sequence=list(agent_sequence) if agent_sequence else [],
+            env=dict(env) if env else {},
+            persistent_session=persistent_session,
         )
+
+    def _persist_add_locked(self, job: CronJob) -> None:
+        """Lock/reload/append/save for a new job — the thread-safe disk core.
+
+        Does NO timer work (``_arm_timer`` needs the event loop), so
+        :meth:`add_job_async` can run it in an executor thread. Raises
+        :class:`CronStoreBusy` if the store lock stays contended past the
+        timeout. Mirrors the :meth:`_remove_jobs_locked` batch precedent.
+        """
         with self._file_lock():
             self._sync()
             self._jobs.append(job)
             self._save()
+
+    async def add_job_async(
+        self,
+        name: str,
+        message: str,
+        every_secs: int | None = None,
+        at_ts: float | None = None,
+        cron_expr: str | None = None,
+        channel: str | None = None,
+        thread_ts: str | None = None,
+        delete_after_run: bool = False,
+        created_by: str = "",
+        approval_mode: str = "",
+        enabled: bool = True,
+        agent_id: str = "",
+        model: str = "",
+        silent: bool = False,
+        timezone: str = "",
+        skip_dates: list[str] | None = None,
+        strict_schedule: bool = False,
+        hide_in_chat: bool = False,
+        command: str = "",
+        script: str = "",
+        agent_sequence: list[str] | None = None,
+        env: dict[str, str] | None = None,
+        persistent_session: bool = True,
+    ) -> CronJob:
+        """Event-loop-safe :meth:`add_job`: the lock+save runs off the loop.
+
+        The gateway's aiohttp/Slack handlers run on the sole asyncio event loop;
+        calling the sync :meth:`add_job` there parks the loop in the bounded lock
+        spin under contention. This builds+validates on the loop (no I/O),
+        offloads the lock+persist to a worker thread via ``asyncio.to_thread``
+        (the disk core is thread-safe — flock on separate fds mutually excludes
+        in-process too), then re-arms the timer back on the loop. Raises
+        :class:`CronStoreBusy` (retryable) on sustained contention; the public
+        boundaries translate it to a clean 409 / structured error.
+
+        Optional presentation/routing fields (``agent_id``, ``model``,
+        ``silent``, ``timezone``, ``strict_schedule``, ``hide_in_chat``) are
+        applied during the single locked build+persist so callers never need a
+        follow-up unlocked ``_save()`` (which could race a concurrent create and
+        drop a job).
+        """
+        job = self._build_job(
+            name,
+            message,
+            every_secs=every_secs,
+            at_ts=at_ts,
+            cron_expr=cron_expr,
+            channel=channel,
+            thread_ts=thread_ts,
+            delete_after_run=delete_after_run,
+            created_by=created_by,
+            approval_mode=approval_mode,
+            enabled=enabled,
+            agent_id=agent_id,
+            model=model,
+            silent=silent,
+            timezone=timezone,
+            skip_dates=skip_dates,
+            strict_schedule=strict_schedule,
+            hide_in_chat=hide_in_chat,
+            command=command,
+            script=script,
+            agent_sequence=agent_sequence,
+            env=env,
+            persistent_session=persistent_session,
+        )
+        await asyncio.to_thread(self._persist_add_locked, job)
         self._arm_timer()
         logger.info("Added cron job '%s' (%s)", name, job.id)
         return job
@@ -892,6 +1297,37 @@ class CronService:
 
         Accepted kwargs: name, message, every_secs, cron_expr, agent_id, channel,
         approval_mode, silent, skip_dates, timezone, thread_ts, model.
+
+        Raises :class:`CronStoreBusy` if the store lock is contended past the
+        timeout; see :meth:`update_job_async` for the event-loop-safe variant.
+        """
+        job = self._update_job_locked(job_id, **kwargs)
+        if job is not None:
+            self._arm_timer()
+        return job
+
+    async def update_job_async(self, job_id: str, **kwargs: Any) -> CronJob | None:
+        """Event-loop-safe :meth:`update_job`: the lock+save runs off the loop.
+
+        Offloads the lock/reload/mutate/save core to a worker thread, then
+        re-arms the timer on the loop. Raises :class:`CronStoreBusy` (retryable)
+        on sustained contention.
+        """
+        job = await asyncio.to_thread(self._update_job_locked_kw, job_id, kwargs)
+        if job is not None:
+            self._arm_timer()
+        return job
+
+    def _update_job_locked_kw(self, job_id: str, kwargs: dict[str, Any]) -> CronJob | None:
+        """``asyncio.to_thread`` shim so kwargs cross the thread boundary as a dict."""
+        return self._update_job_locked(job_id, **kwargs)
+
+    def _update_job_locked(self, job_id: str, **kwargs: Any) -> CronJob | None:
+        """Lock/reload/mutate/save core of :meth:`update_job` (no timer work).
+
+        Returns the updated job, or ``None`` when the id is absent. Raises
+        :class:`CronStoreBusy` on lock contention and ``ValueError`` on invalid
+        input. Safe to run in an executor thread (does no ``_arm_timer``).
         """
         with self._file_lock():
             self._sync()
@@ -970,20 +1406,110 @@ class CronService:
                 elif "every_secs" in kwargs and kwargs["every_secs"]:
                     job.schedule = CronSchedule(kind="every", every_secs=int(kwargs["every_secs"]))
                 self._save()
-                self._arm_timer()
                 logger.info("Updated cron job %s", job_id)
                 return job
         return None
 
     def remove_job(self, job_id: str) -> bool:
-        """Remove a job by ID."""
+        """Remove a job by ID.
+
+        Raises :class:`CronStoreBusy` on lock contention; see
+        :meth:`remove_job_async` for the event-loop-safe variant.
+        """
+        ok = self._remove_job_locked(job_id)
+        if ok:
+            self._arm_timer()
+        return ok
+
+    async def remove_job_async(self, job_id: str) -> bool:
+        """Event-loop-safe :meth:`remove_job`: the lock+save runs off the loop.
+
+        Raises :class:`CronStoreBusy` (retryable) on sustained contention.
+        """
+        ok = await asyncio.to_thread(self._remove_job_locked, job_id)
+        if ok:
+            self._arm_timer()
+        return ok
+
+    def defer_removal(self, job_id: str) -> None:
+        """Queue a one-shot job for removal on the next timer tick.
+
+        Called on the event loop when an immediate :meth:`remove_job_async` for
+        a completed ``delete_after_run`` / Done job raised :class:`CronStoreBusy`
+        (the store lock stayed contended past the timeout). There is otherwise
+        no caller to retry a fire-and-forget removal, so without this the
+        finished job would linger ENABLED with its recurring schedule and
+        re-fire on the next tick — duplicate execution and a duplicate
+        user-visible notification.
+
+        Two-layer guarantee:
+
+        * **Immediate** — the job is disabled IN MEMORY right now so the very
+          next :meth:`_on_timer` due-scan skips it (covers the window where the
+          store is unchanged and ``_sync`` does not reload).
+        * **Durable** — the id is recorded so :meth:`_drain_pending_removals_locked`,
+          invoked from the timer tick's worker-thread transaction while it
+          already holds the store lock (:meth:`_tick_scan_locked`), deletes it
+          from disk. The drain runs BEFORE the due-scan, so even a
+          ``_sync`` reload that re-enables the job (``enabled`` is derived from
+          persisted pause flags, not the removal intent) cannot let it fire.
+
+        Idempotent and cheap; safe to call for an id already queued.
+        """
+        for job in self._jobs:
+            if job.id == job_id:
+                job.enabled = False
+                break
+        self._pending_removals.add(job_id)
+
+    def _drain_pending_removals_locked(self) -> None:
+        """Delete jobs queued via :meth:`defer_removal`. MUST hold the store lock.
+
+        Called from :meth:`_tick_scan_locked` (the timer tick's worker-thread
+        transaction) inside its ``_file_lock`` block, so the delete+save is
+        serialized against every other
+        mutator exactly like the other locked cores. Removes only the queued
+        ids still present after the tick's ``_sync``; saves once iff something
+        was actually removed (an all-missing queue never rewrites the file).
+        An id no longer present was already removed elsewhere, so dropping it
+        is correct.
+
+        Cross-thread safety: this drain runs in the timer tick's WORKER thread
+        while :meth:`defer_removal` adds ids from the EVENT-LOOP thread. The
+        queue is claimed with a single-bytecode tuple swap
+        (``pending, self._pending_removals = self._pending_removals, set()``),
+        which is atomic under the GIL. A concurrent ``defer_removal`` add
+        therefore lands EITHER in ``pending`` (drained now) OR in the fresh
+        replacement set (drained next tick) — it can never fall into the gap
+        between a read and a reset and be silently erased. ``present`` is
+        computed AFTER the swap so the intersection sees the post-swap job
+        list, and the in-memory disable performed by ``defer_removal`` keeps
+        even an id deferred to the next tick from re-firing meanwhile.
+        """
+        if not self._pending_removals:
+            return
+        # Atomic claim-and-reset (see docstring) — do NOT split into a read
+        # (``& present``) followed by ``.clear()``; an id added between those
+        # two steps would be erased without ever being deleted from disk, so
+        # the completed one-shot would re-fire and re-notify.
+        pending, self._pending_removals = self._pending_removals, set()
+        present = {j.id for j in self._jobs}
+        to_remove = pending & present
+        if not to_remove:
+            return
+        self._jobs = [j for j in self._jobs if j.id not in to_remove]
+        self._save()
+        for jid in to_remove:
+            logger.info("Removed deferred one-shot cron job %s", jid)
+
+    def _remove_job_locked(self, job_id: str) -> bool:
+        """Lock/reload/mutate/save core of :meth:`remove_job` (no timer work)."""
         with self._file_lock():
             self._sync()
             before = len(self._jobs)
             self._jobs = [j for j in self._jobs if j.id != job_id]
             if len(self._jobs) < before:
                 self._save()
-                self._arm_timer()
                 logger.info("Removed cron job %s", job_id)
                 return True
         return False
@@ -1031,8 +1557,118 @@ class CronService:
             self._arm_timer()
         return removed, missing
 
+    def remove_jobs_sync(self, job_ids: list[str]) -> tuple[list[str], list[str]]:
+        """Synchronous sibling of :meth:`remove_jobs` — ONE atomic locked batch.
+
+        Removes every id in ``job_ids`` under a SINGLE :meth:`_remove_jobs_locked`
+        lock/reload/save transaction (not a per-id loop), so a contended store
+        either removes them all or removes none and raises :class:`CronStoreBusy`
+        — there is no partial-removal state that could leave some jobs orphaned
+        and still enabled. Returns ``(removed_ids, missing_ids)``.
+
+        Synchronous: only for loop-less callers / the offloaded ``CronSDK``
+        facade (the ``_file_lock`` loop-safety guard rejects it on a running
+        loop). On the loop use :meth:`remove_jobs`.
+        """
+        removed, missing = self._remove_jobs_locked(list(job_ids))
+        if removed:
+            self._arm_timer()
+        return removed, missing
+
+    def _remove_jobs_by_owner_locked(self, owner_prefix: str) -> list[str]:
+        """Select AND remove every job owned by ``owner_prefix`` under ONE lock.
+
+        Sync core of :meth:`remove_jobs_by_owner` — lock/reload/select/mutate/
+        save only, no timer work (so it is safe in an executor thread;
+        ``_arm_timer`` needs the event loop). The critical property over
+        passing in a pre-computed id list: the ownership SELECTION happens
+        AFTER the in-lock ``_sync()`` reload, against the authoritative on-disk
+        state — not against a possibly-stale in-memory/cache snapshot taken
+        before the lock. A job created by this owner in another process since
+        the last cache refresh is therefore still seen and removed, closing the
+        cross-process orphan window where a cache-only ``list_jobs()`` id
+        snapshot would miss it and leave it ENABLED after the app is deleted.
+
+        All-or-nothing within the single ``_file_lock`` transaction: a contended
+        store raises :class:`CronStoreBusy` before any mutation. Returns the
+        list of removed ids.
+        """
+        removed: list[str] = []
+        with self._file_lock():
+            self._sync()
+            removed = [
+                j.id for j in self._jobs
+                if getattr(j, "created_by", "") == owner_prefix
+            ]
+            if removed:
+                targets = set(removed)
+                self._jobs = [j for j in self._jobs if j.id not in targets]
+                self._save()
+                logger.info(
+                    "Removed %d cron job(s) owned by %s", len(removed), owner_prefix
+                )
+        return removed
+
+    async def remove_jobs_by_owner(self, owner_prefix: str) -> list[str]:
+        """Remove every job owned by ``owner_prefix`` under ONE lock, off-loop.
+
+        Selects and removes in a SINGLE :meth:`_remove_jobs_by_owner_locked`
+        lock/reload/select/save transaction — the owner scan runs against the
+        in-lock reloaded on-disk state, so a job another process created for
+        this owner since the last cache refresh is still removed (no
+        cross-process orphan window). All-or-nothing; propagates
+        :class:`CronStoreBusy` on a contended store. The disk work runs in a
+        worker thread; only ``_arm_timer`` runs back on the loop, and only when
+        something was actually removed. Returns the removed ids.
+        """
+        removed = await asyncio.to_thread(self._remove_jobs_by_owner_locked, owner_prefix)
+        if removed:
+            self._arm_timer()
+        return removed
+
+    def remove_jobs_by_owner_sync(self, owner_prefix: str) -> list[str]:
+        """Synchronous sibling of :meth:`remove_jobs_by_owner` — ONE atomic
+        locked select+remove batch.
+
+        Selects and removes every job whose ``created_by == owner_prefix``
+        under a SINGLE :meth:`_remove_jobs_by_owner_locked` transaction (the
+        owner scan runs on the in-lock reloaded state, so a cross-process
+        creation is still caught). All-or-nothing; raises
+        :class:`CronStoreBusy` on a contended store.
+
+        Synchronous: only for loop-less callers / the offloaded ``CronSDK``
+        facade (the ``_file_lock`` loop-safety guard rejects it on a running
+        loop). On the loop use :meth:`remove_jobs_by_owner`. Returns the removed
+        ids.
+        """
+        removed = self._remove_jobs_by_owner_locked(owner_prefix)
+        if removed:
+            self._arm_timer()
+        return removed
+
     def enable_job(self, job_id: str, enabled: bool = True) -> bool:
-        """Enable or disable a job by ID."""
+        """Enable or disable a job by ID.
+
+        Raises :class:`CronStoreBusy` on lock contention; see
+        :meth:`enable_job_async` for the event-loop-safe variant.
+        """
+        ok = self._enable_job_locked(job_id, enabled)
+        if ok:
+            self._arm_timer()
+        return ok
+
+    async def enable_job_async(self, job_id: str, enabled: bool = True) -> bool:
+        """Event-loop-safe :meth:`enable_job`: the lock+save runs off the loop.
+
+        Raises :class:`CronStoreBusy` (retryable) on sustained contention.
+        """
+        ok = await asyncio.to_thread(self._enable_job_locked, job_id, enabled)
+        if ok:
+            self._arm_timer()
+        return ok
+
+    def _enable_job_locked(self, job_id: str, enabled: bool = True) -> bool:
+        """Lock/reload/mutate/save core of :meth:`enable_job` (no timer work)."""
         with self._file_lock():
             self._sync()
             for job in self._jobs:
@@ -1054,13 +1690,31 @@ class CronService:
                         # permission — audit it like the auto-pause transition.
                         job._audit_pause_change("auto_pause_cleared")
                     self._save()
-                    self._arm_timer()
                     logger.info("%s cron job %s", "Enabled" if enabled else "Disabled", job_id)
                     return True
         return False
 
     def ack_job(self, job_id: str, summary: str) -> bool:
-        """Acknowledge a cron notification — stores summary for future context."""
+        """Acknowledge a cron notification — stores summary for future context.
+
+        Raises :class:`CronStoreBusy` on lock contention; see
+        :meth:`ack_job_async` for the event-loop-safe variant.
+        """
+        return self._ack_job_locked(job_id, summary)
+
+    async def ack_job_async(self, job_id: str, summary: str) -> bool:
+        """Event-loop-safe :meth:`ack_job`: the lock+save runs off the loop.
+
+        Raises :class:`CronStoreBusy` (retryable) on sustained contention.
+        """
+        ok = await asyncio.to_thread(self._ack_job_locked, job_id, summary)
+        # ack itself changes no schedule. If the worker's _sync() reloaded an
+        # external change, its _load() re-armed the timer thread-safely via the
+        # bound loop (see _arm_timer) — no drain needed here.
+        return ok
+
+    def _ack_job_locked(self, job_id: str, summary: str) -> bool:
+        """Lock/reload/mutate/save core of :meth:`ack_job`."""
         with self._file_lock():
             self._sync()
             for job in self._jobs:
@@ -1073,7 +1727,24 @@ class CronService:
         return False
 
     def unack_job(self, job_id: str) -> bool:
-        """Remove the most recent acked item from a cron job."""
+        """Remove the most recent acked item from a cron job.
+
+        Raises :class:`CronStoreBusy` on lock contention; see
+        :meth:`unack_job_async` for the event-loop-safe variant.
+        """
+        return self._unack_job_locked(job_id)
+
+    async def unack_job_async(self, job_id: str) -> bool:
+        """Event-loop-safe :meth:`unack_job`: the lock+save runs off the loop.
+
+        Raises :class:`CronStoreBusy` (retryable) on sustained contention.
+        """
+        ok = await asyncio.to_thread(self._unack_job_locked, job_id)
+        # See ack_job_async: any external-change re-arm self-heals in the worker.
+        return ok
+
+    def _unack_job_locked(self, job_id: str) -> bool:
+        """Lock/reload/mutate/save core of :meth:`unack_job`."""
         with self._file_lock():
             self._sync()
             for job in self._jobs:
@@ -1124,12 +1795,27 @@ class CronService:
 
     async def run_job(self, job_id: str) -> bool:
         """Manually trigger a job via _run_job_isolated (records history)."""
-        self._sync()
-        job = None
-        for j in self._jobs:
-            if j.id == job_id:
-                job = j
-                break
+        # Refresh the store off the loop, then resolve + claim on the loop.
+        #
+        # Pre-fix this ran `async with self._afile_lock(): self._sync()` on the
+        # event loop, so a manual trigger paid the whole-file read_bytes() +
+        # blake2b hash of crons.json on the loop (the same on-loop-_sync() cost
+        # the timer tick was flagged for). The locked _sync() + snapshot now
+        # runs in a worker thread (_synced_snapshot via asyncio.to_thread);
+        # _executing / _job_run_meta are loop-owned, so the find + claim stays
+        # on the loop, with NO await between the snapshot read and the claim so
+        # it is atomic against every other loop task (the timer due-scan).
+        #
+        # The only residual, pre-existing and benign, race is against the
+        # batch-remove worker: it may delete the job on its own thread in the
+        # instant between our snapshot and our spawn, so a manual run can
+        # execute a just-removed job ONCE (non-destructive — it is not
+        # persisted, and the next scan won't see it). The old lock-held claim
+        # narrowed but never closed this window; the batch-remove worker holds
+        # the SAME flock, so our claim could not have observed a delete mid-way
+        # regardless. Degrades to the in-memory snapshot under lock contention.
+        snapshot = await asyncio.to_thread(self._synced_snapshot, True)
+        job = next((j for j in snapshot if j.id == job_id), None)
         if not job:
             return False
         if job.id in self._executing:
@@ -1150,11 +1836,24 @@ class CronService:
         return True
 
     def list_jobs(self, include_disabled: bool = False) -> list[CronJob]:
-        """List jobs, optionally including disabled ones."""
-        self._sync()
-        if include_disabled:
-            return list(self._jobs)
-        return [j for j in self._jobs if j.enabled]
+        """List jobs from the in-memory snapshot — CACHE-ONLY, never touches disk.
+
+        This is a hot path: it is called directly on the gateway event loop by
+        the dashboard WebSocket status push, the dashboard REST handlers, the
+        Slack handlers, the apps SDK, and MCP tools. It performs NO filesystem
+        I/O — no lock-file open, no ``read_bytes()``, no digest hash — so a
+        large ``crons.json`` can never freeze the loop with synchronous I/O
+        (the ``no-blocking-call-on-event-loop`` rule). ``list(self._jobs)`` is
+        never torn: CPython swaps the list reference atomically.
+
+        Cross-process freshness is maintained OFF the loop: the timer tick
+        (``_on_timer``, every ≤``_TIMER_POLL_SECS``) and every mutator
+        ``_sync()`` the in-memory snapshot under the store lock, so an external
+        write is picked up within one poll interval. Callers that need to
+        observe a cross-process write *immediately* use :meth:`list_jobs_async`,
+        which offloads a locked ``_sync()`` + snapshot to a worker thread.
+        """
+        return self._snapshot(list(self._jobs), include_disabled)
 
     def count_enabled_from_disk(self) -> int:
         """Count enabled jobs by reading ``crons.json`` directly — thread-safe.
@@ -1193,9 +1892,60 @@ class CronService:
         return count
 
     def get_job(self, job_id: str) -> CronJob | None:
-        """Find a job by its id. Returns the CronJob, or None if not found."""
-        self._sync()
+        """Find a job by its id in the in-memory snapshot — CACHE-ONLY, no disk I/O.
+
+        See :meth:`list_jobs` for the cache-only rationale and the
+        off-loop freshness contract. Use :meth:`get_job_async` when a
+        guaranteed cross-process-fresh read is required.
+        """
         for job in self._jobs:
+            if job.id == job_id:
+                return job
+        return None
+
+    @staticmethod
+    def _snapshot(jobs: list[CronJob], include_disabled: bool) -> list[CronJob]:
+        """Filter a job snapshot by the ``include_disabled`` flag."""
+        if include_disabled:
+            return jobs
+        return [j for j in jobs if j.enabled]
+
+    def _synced_snapshot(self, include_disabled: bool) -> list[CronJob]:
+        """Refresh from disk under the store lock, then snapshot. WORKER-THREAD ONLY.
+
+        Runs the blocking read/hash/parse + bounded lock spin OFF the event
+        loop (via :meth:`list_jobs_async` / :meth:`get_job_async` /
+        :meth:`run_job` -> ``asyncio.to_thread``). Degrades to the current
+        in-memory snapshot if the store is too contended to lock, so a read
+        never raises :class:`CronStoreBusy` into a caller. A worker-thread
+        ``_sync()`` may reach ``_arm_timer``, which hands the (re)arm back to
+        the bound event loop thread-safely (see :meth:`_arm_timer`), so no
+        caller-side drain is required.
+        """
+        try:
+            with self._file_lock():
+                self._sync()
+        except CronStoreBusy:
+            pass  # too contended for a guaranteed-fresh read — use the cache
+        return self._snapshot(list(self._jobs), include_disabled)
+
+    async def list_jobs_async(self, include_disabled: bool = False) -> list[CronJob]:
+        """Freshness-guaranteed :meth:`list_jobs`: offloads a locked sync to a worker.
+
+        For the rare loop-side caller that must observe a write made by another
+        process (CLI/MCP) *right now* rather than within the ≤``_TIMER_POLL_SECS``
+        timer refresh. The read/hash/parse and the bounded lock spin run in an
+        ``asyncio.to_thread`` worker so the event loop is never blocked; the
+        deferred timer arm (if the worker's ``_sync()`` reloaded an external
+        change) is drained back on the loop.
+        """
+        jobs = await asyncio.to_thread(self._synced_snapshot, include_disabled)
+        return jobs
+
+    async def get_job_async(self, job_id: str) -> CronJob | None:
+        """Freshness-guaranteed :meth:`get_job` — see :meth:`list_jobs_async`."""
+        jobs = await asyncio.to_thread(self._synced_snapshot, True)
+        for job in jobs:
             if job.id == job_id:
                 return job
         return None
@@ -1240,7 +1990,43 @@ class CronService:
         return min(delay, _TIMER_POLL_SECS)
 
     def _arm_timer(self) -> None:
-        if self._timer_task and not self._timer_task.done():
+        # Re-arming creates/cancels asyncio tasks, which is only legal on the
+        # event loop thread. When this is reached OFF the loop — a locked core
+        # running in an asyncio.to_thread worker whose _sync()->_load() wants to
+        # re-arm, an app-hook/SDK mutation offloaded via asyncio.to_thread, or a
+        # purely synchronous (CLI/test) context — there is no running loop here.
+        # Creating a task would raise RuntimeError, and a blind cancel could
+        # stop the existing timer WITHOUT rearming it, silently halting every
+        # scheduled job. So off-loop we cancel/create nothing and instead hand
+        # the arm back to the bound event loop (captured in create()/start())
+        # via loop.call_soon_threadsafe(self._arm_timer): the arm then runs ON
+        # the loop and (re)arms for real. Arming is thus owned by the service —
+        # no caller has to remember a drain step. In a genuinely loop-less
+        # process (self._loop is None) there is no scheduler to arm.
+        try:
+            loop: asyncio.AbstractEventLoop | None = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop is None:
+            bound = self._loop
+            if bound is not None and not bound.is_closed():
+                bound.call_soon_threadsafe(self._arm_timer)
+            return
+        current = asyncio.current_task()
+        # Never cancel the timer task if we ARE that task. The tick's own
+        # `finally` re-arms while the tick coroutine is still executing, so a
+        # blind `self._timer_task.cancel()` there fires a CancelledError back
+        # into the running tick — aborting the in-flight `_on_timer` dispatch
+        # (dropping any due jobs not yet spawned) and leaving a half-processed
+        # sweep. We skip the cancel in that self-referential case and simply
+        # create the replacement task below; the finishing tick exits normally.
+        # A *different* caller rescheduling while the tick merely waits on
+        # shutdown_event still cancels correctly (current is not the timer task).
+        if (
+            self._timer_task
+            and not self._timer_task.done()
+            and self._timer_task is not current
+        ):
             self._timer_task.cancel()
         if not self._running:
             return
@@ -1266,16 +2052,53 @@ class CronService:
 
         self._timer_task = asyncio.create_task(_tick())
 
+    def _tick_scan_locked(self) -> list[CronJob]:
+        """Locked store refresh + deferred-removal drain + snapshot. WORKER-THREAD ONLY.
+
+        The timer tick's blocking work — the bounded ``_file_lock`` spin, the
+        ``_sync()`` that ``read_bytes()`` + blake2b-hashes the WHOLE
+        ``crons.json``, and the deferred one-shot delete+save — runs here so it
+        can be offloaded off the event loop via ``asyncio.to_thread`` (see
+        :meth:`_on_timer`). Returns a snapshot of the current jobs; the loop
+        then runs the mutation-free, ``_executing``-aware due-scan against it.
+
+        Drains deferred removals BEFORE snapshotting so a completed
+        ``delete_after_run`` job whose immediate removal hit a busy store (see
+        :meth:`defer_removal`) is deleted here and can never appear due — even
+        though the ``_sync`` above may have re-derived it as enabled. If the
+        store is too contended to lock this tick, degrades to the in-memory
+        snapshot without draining (the next tick retries; ``defer_removal``'s
+        in-memory disable keeps a completed one-shot from re-firing meanwhile).
+        A worker-thread ``_sync()`` reload may reach ``_arm_timer``, which hands
+        the (re)arm back to the bound event loop thread-safely (see
+        :meth:`_arm_timer`) — no caller-side drain is required.
+        """
+        try:
+            with self._file_lock():
+                self._sync()
+                self._drain_pending_removals_locked()
+        except CronStoreBusy:
+            logger.debug("Cron timer tick: store busy, using in-memory snapshot")
+        return list(self._jobs)
+
     async def _on_timer(self) -> None:
-        """Fire due jobs as independent tasks (non-blocking)."""
-        with self._file_lock():
-            self._sync()
-            now = time.time()
-            due = [
-                j
-                for j in self._jobs
-                if j.enabled and j.id not in self._executing and self._is_due(j, now)
-            ]
+        """Fire due jobs as independent tasks (non-blocking).
+
+        The locked store refresh + deferred-removal drain + snapshot is
+        offloaded to a worker thread (:meth:`_tick_scan_locked`) so a large or
+        slow ``crons.json`` can never freeze the gateway loop with the
+        ``_sync()`` ``read_bytes()`` + blake2b hash on every tick (the
+        ``no-blocking-call-on-event-loop`` rule). The mutation-free due-scan —
+        which reads loop-owned ``self._executing`` — then runs on the loop
+        against the returned snapshot.
+        """
+        snapshot = await asyncio.to_thread(self._tick_scan_locked)
+        now = time.time()
+        due = [
+            j
+            for j in snapshot
+            if j.enabled and j.id not in self._executing and self._is_due(j, now)
+        ]
 
         if not due:
             return
@@ -1341,7 +2164,20 @@ class CronService:
                 job.last_run_ts = started_at
             if not reaped and not cancelled:
                 try:
-                    self._merge_job_result(job)
+                    # Offload the lock+sync+save merge to a worker thread:
+                    # _merge_job_result enters the bounded sync _file_lock,
+                    # whose spin does time.sleep(poll) for up to
+                    # _FILE_LOCK_TIMEOUT_SECS under contention. Calling it
+                    # directly here — on the gateway event loop, since
+                    # _run_job_isolated is a loop task — would park the whole
+                    # loop (chat, heartbeat, timer) for that window. to_thread
+                    # is safe for the same reason the batch-remove path uses it
+                    # (flock on separate fds mutually excludes in-process too,
+                    # and the self._jobs reassignment is an atomic reference
+                    # swap). CronStoreBusy (a TimeoutError) on sustained
+                    # contention is caught below and logged — the merge is
+                    # best-effort and the next run / reaper re-persists.
+                    await asyncio.to_thread(self._merge_job_result, job)
                 except Exception:
                     logger.exception("Failed to merge result for job '%s'", job.name)
                 # Record history
@@ -1479,7 +2315,15 @@ class CronService:
             job.enabled = False
 
     def _merge_job_result(self, job: CronJob) -> None:
-        """Merge a single job's runtime state back to disk."""
+        """Merge a single job's runtime state back to disk.
+
+        Enters the bounded sync :meth:`_file_lock` (which spins with
+        ``time.sleep`` under contention) and may raise :class:`CronStoreBusy`.
+        MUST NOT be called directly on the gateway event loop — its sole
+        loop-side caller, :meth:`_run_job_isolated`, offloads it via
+        ``asyncio.to_thread`` so the spin never parks the loop. Sync/CLI
+        contexts with no running loop may call it directly.
+        """
         with self._file_lock():
             self._sync()
             by_id = {j.id: j for j in self._jobs}
@@ -1512,44 +2356,248 @@ class CronService:
                 self._jobs = [j for j in self._jobs if j.id != job.id]
             self._save()
 
+    def _merge_terminal_state_locked(
+        self,
+        job_id: str,
+        *,
+        last_status: str,
+        last_error: str,
+        last_run_ts: float,
+    ) -> None:
+        """Persist a job's terminal runtime state under the store lock.
+
+        Used for the reaper timeout (:meth:`_force_reap`) and user cancel
+        (:meth:`cancel`) paths, which previously mutated the in-memory job and
+        called a bare, unlocked ``self._save()`` directly on the event loop —
+        the lost-update race GPT flagged: between a concurrent
+        ``add_job_async``/``update_job_async`` worker's ``_sync`` and its
+        ``_save``, this unlocked save re-serialized a stale ``self._jobs`` and
+        silently dropped the just-added/updated job from ``crons.json``.
+
+        WORKER-THREAD ONLY. Mirrors :meth:`_merge_job_result`: enters the
+        bounded sync :meth:`_file_lock` (whose spin does ``time.sleep`` and may
+        raise :class:`CronStoreBusy`), ``_sync()``s FIRST so any concurrent
+        worker's persisted job list is reloaded, then applies the terminal
+        fields to the disk copy and ``_save()``s — the whole read-modify-write
+        is one lock transaction. Both loop-side callers offload it via
+        ``asyncio.to_thread`` so the spin never parks the gateway loop. A
+        missing id (removed meanwhile) is a no-op.
+        """
+        with self._file_lock():
+            self._sync()
+            by_id = {j.id: j for j in self._jobs}
+            target = by_id.get(job_id)
+            if target is None:
+                return
+            target.last_status = last_status
+            target.last_error = last_error
+            target.last_run_ts = last_run_ts
+            self._save()
+
     # ── Persistence ──
 
+    @staticmethod
+    def _guard_off_event_loop() -> None:
+        """Enforce that the store lock is never acquired on a running loop.
+
+        Detects a running asyncio event loop on the CURRENT thread — the
+        loop-park hazard. Under strict mode (``KIROCREW_STRICT_LOOP_SAFETY``)
+        it raises :class:`CronLoopSafetyError`; otherwise it emits a single
+        throttled warning so an unforeseen legitimate caller is never broken in
+        production while the signal is still surfaced. Sanctioned loop-resident
+        paths never reach here on the loop thread: the ``*_async`` mutators run
+        the lock in an ``asyncio.to_thread`` worker, and the synchronous
+        :class:`~kiro_crew.apps.cron_sdk.CronSDK` facade offloads to a worker
+        thread when a loop is running — in both cases this executes on a worker
+        with no running loop, so the guard passes.
+        """
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return  # loop-less thread/process — safe, the intended sync path
+        if env_flag_enabled(_STRICT_LOOP_SAFETY_ENV):
+            raise CronLoopSafetyError(
+                "CronService store lock acquired on a thread with a running "
+                "event loop — use the *_async mutator variant (add_job_async, "
+                "remove_job_async, …) or the offloaded CronSDK facade instead "
+                "of the synchronous mutator on the loop."
+            )
+        global _loop_safety_warned
+        if not _loop_safety_warned:
+            _loop_safety_warned = True
+            logger.warning(
+                "CronService store lock acquired on the event loop thread — "
+                "this can park the loop under contention. Use the *_async "
+                "mutator variants. Set %s=1 to make this a hard failure.",
+                _STRICT_LOOP_SAFETY_ENV,
+            )
+
     @contextmanager
-    def _file_lock(self) -> Iterator[None]:
+    def _file_lock(
+        self, *, timeout: float = _FILE_LOCK_TIMEOUT_SECS, poll: float = _FILE_LOCK_POLL_SECS
+    ) -> Iterator[None]:
         """Cross-process advisory lock on the cron store.
 
-        Uses fcntl.flock for cross-process locking.
+        Acquires the lock with a NON-BLOCKING ``try_acquire_lock`` in a bounded
+        spin instead of a blocking ``fcntl.flock(LOCK_EX)``. A blocking flock
+        parks the calling thread in an uninterruptible kernel wait for as long
+        as another holder keeps the lock — and every store *mutator*
+        (:meth:`add_job`, :meth:`update_job`, :meth:`remove_job`,
+        :meth:`enable_job`, …) takes this lock directly on the gateway's
+        asyncio event loop. A single slow holder (a large atomic save on
+        network storage, the CLI process, or the off-loop batch-remove worker)
+        would therefore freeze the ENTIRE event loop — every unrelated session,
+        timer, and reaper — until it released.
+
+        The non-blocking spin polls with a short ``time.sleep`` between
+        attempts (releasing the GIL so worker threads make progress) and raises
+        :class:`CronStoreBusy` (a :class:`TimeoutError` subclass) after
+        ``timeout`` rather than blocking indefinitely. flock on separate open
+        descriptions mutually excludes within a single process too, so this
+        still serializes the loop-side mutators against the ``asyncio.to_thread``
+        batch-remove and mutator workers.
+
+        The loop-resident mutator boundaries do NOT call this directly on the
+        event loop — they use the ``*_async`` mutator variants (``add_job_async``
+        et al.), which offload this lock+save to a worker thread and translate a
+        raised :class:`CronStoreBusy` into a clean retryable error. The bounded
+        sync path here still serves the CLI/MCP server processes (no event loop
+        to park) and remains a strict improvement over the old unbounded flock.
+
+        The ``no-blocking-call-on-event-loop`` invariant is MACHINE-ENFORCED:
+        :meth:`_guard_off_event_loop` raises :class:`CronLoopSafetyError` (strict
+        mode) or warns (default) if this is entered on a thread with a running
+        asyncio loop — so a future writer that calls a sync mutator on the loop
+        is caught rather than silently re-freezing it (Design Review finding 4 /
+        Arbiter item 3).
         """
+        self._guard_off_event_loop()
         self._dir.mkdir(parents=True, exist_ok=True)
         lock = self._dir / ".crons.lock"
         fd = lock.open("w")
+        deadline = time.monotonic() + timeout
         try:
-            with platform_compat.file_lock(fd.fileno(), exclusive=True):
+            while not platform_compat.try_acquire_lock(fd.fileno(), exclusive=True):
+                if time.monotonic() >= deadline:
+                    raise CronStoreBusy(
+                        f"Could not acquire cron store lock within {timeout:g}s"
+                    )
+                time.sleep(poll)
+            try:
                 yield
+            finally:
+                platform_compat.release_lock(fd.fileno())
         finally:
             fd.close()
 
+    def _record_fingerprint(self) -> None:
+        """Snapshot the store file's fingerprint as the last-loaded state.
+
+        Called after a successful load and after a save so :meth:`_sync` treats
+        the current on-disk contents as already in memory and only reloads on a
+        genuine external change. Records a content digest (authoritative) plus
+        the (mtime_ns, size) tuple (diagnostic) from the bytes now on disk.
+        """
+        try:
+            st = self._path.stat()
+            raw = self._path.read_bytes()
+        except OSError:
+            self._reset_fingerprint()
+            return
+        self._last_mtime = st.st_mtime
+        self._last_mtime_ns = st.st_mtime_ns
+        self._last_size = st.st_size
+        self._last_digest = hashlib.blake2b(raw, digest_size=16).digest()
+
+    def _reset_fingerprint(self) -> None:
+        """Clear the fingerprint so the next :meth:`_sync` forces a reload."""
+        self._last_mtime = 0.0
+        self._last_mtime_ns = 0
+        self._last_size = -1
+        self._last_digest = b""
+
     def _sync(self) -> None:
-        """Reload from disk if the file was modified externally."""
+        """Reload from disk if the file changed externally.
+
+        Compares a content DIGEST rather than only ``(mtime_ns, size)``: an
+        external atomic write can preserve both the coarse timestamp and the
+        byte length while changing content (e.g. renaming a job to an
+        equal-length name), which an mtime/size fingerprint misses — the stale
+        in-memory state would then be re-saved over the external change, losing
+        it. The bytes read here are the same bytes :meth:`_load` parses when a
+        reload is needed, so the file is read at most once per changed sync.
+
+        ─────────────────────────────────────────────────────────────────────
+        EXHAUSTIVE AUDIT — every ``_sync()`` caller and raw store-``read``
+        site in this module, classified by whether it can run on the gateway
+        event loop. INVARIANT: **no ``_sync()`` / whole-file ``read_bytes()`` +
+        hash ever runs on the loop.** All blocking store I/O is either in a
+        worker thread (``asyncio.to_thread``) or in a loop-less process
+        (CLI / MCP). Enforced mechanically by
+        ``test_cron_locking_regression.py::TestReadPathsLocked`` (on-loop reads
+        AND the timer tick must not touch the store on the loop).
+
+        ``_sync()`` callers
+          • _persist_add_locked / _update_job_locked_kw / _remove_job_locked /
+            _remove_jobs_locked / _enable_job_locked / _ack_job_locked /
+            _unack_job_locked  → OFF-LOOP: reached from the loop only via their
+            ``*_async`` wrappers, which ``await asyncio.to_thread(...)``; also
+            called directly by loop-less CLI/MCP/app-SDK processes.
+          • _synced_snapshot  → OFF-LOOP (worker): the body of
+            list_jobs_async / get_job_async / run_job's offloaded refresh.
+          • _tick_scan_locked  → OFF-LOOP (worker): the timer tick's
+            (``_on_timer``) offloaded lock+sync+drain+snapshot transaction.
+          • _merge_job_result  → OFF-LOOP on the gateway (``_run_job_isolated``
+            calls it via ``asyncio.to_thread``); loop-less CLI/MCP may call it
+            directly.
+          • run_job  → now OFF-LOOP: its former on-loop ``_sync()`` moved into
+            the ``_synced_snapshot`` offload; the ``_executing`` claim stays on
+            the loop and does NO store I/O.
+
+        Raw store ``read_bytes()`` sites
+          • _record_fingerprint (post-load/save) / _sync / _load  → all reached
+            only through the OFF-LOOP ``_sync()`` callers above (or a loop-less
+            process). None on the loop.
+          • initial ``_load()`` (construction / ``start()``)  → the plain
+            constructor loads INLINE (loop-less CLI/MCP/apps-SDK/tests only —
+            no loop to park). Loop contexts (the gateway) build via the async
+            factory ``CronService.create()``, which sets
+            ``_defer_initial_load=True`` and runs ``_load()`` via
+            ``asyncio.to_thread``; ``start()`` likewise offloads its ``_load()``.
+            ``_running`` is False during both, so neither arms a timer off-loop.
+            OFF-LOOP on the gateway.
+
+        Cache-only (NO store I/O at all — never lock, read, or hash)
+          • list_jobs / get_job  → on-loop hot paths; return the atomically-
+            swapped in-memory snapshot.
+          • _reaper_loop's ``jobs_by_id`` snapshot  → on-loop; cache-only,
+            same atomic-reference-swap rationale as list_jobs.
+        ─────────────────────────────────────────────────────────────────────
+        """
         if not self._path.exists():
             return
         try:
-            mtime = self._path.stat().st_mtime
+            raw = self._path.read_bytes()
         except OSError:
             return
-        if mtime > self._last_mtime:
+        if hashlib.blake2b(raw, digest_size=16).digest() != self._last_digest:
             logger.info("Cron file changed externally, reloading")
-            self._load()
+            self._load(_preread=raw)
 
-    def _load(self) -> None:
-        """Deserialize jobs from crons.json and record mtime for sync tracking."""
+    def _load(self, _preread: bytes | None = None) -> None:
+        """Deserialize jobs from crons.json and record the fingerprint.
+
+        ``_preread`` lets :meth:`_sync` hand in the bytes it already read for
+        the change check so the file is not read twice for one reload.
+        """
         if not self._path.exists():
             self._jobs = []
-            self._last_mtime = 0.0
+            self._reset_fingerprint()
             return
         try:
-            self._last_mtime = self._path.stat().st_mtime
-            data = json.loads(self._path.read_text())
+            st = self._path.stat()
+            raw = _preread if _preread is not None else self._path.read_bytes()
+            data = json.loads(raw)
             self._jobs = [
                 CronJob(
                     id=j["id"],
@@ -1611,10 +2659,20 @@ class CronService:
                 )
                 for j in data.get("jobs", [])
             ]
+            # Fingerprint from the stat taken BEFORE the read: if a writer
+            # replaced the file between our stat and read we may have loaded the
+            # newer content under an older fingerprint, which only costs one
+            # redundant reload on the next _sync — never a lost update. The
+            # digest is taken from the exact bytes we parsed so _sync compares
+            # like for like.
+            self._last_mtime = st.st_mtime
+            self._last_mtime_ns = st.st_mtime_ns
+            self._last_size = st.st_size
+            self._last_digest = hashlib.blake2b(raw, digest_size=16).digest()
         except (json.JSONDecodeError, KeyError) as exc:
             logger.warning("Failed to load cron store: %s", exc)
             self._jobs = []
-            self._last_mtime = 0.0
+            self._reset_fingerprint()
 
         # Restore timers for active jobs loaded from disk
         if self._running:
@@ -1624,7 +2682,38 @@ class CronService:
                 logger.info("Restored %d cron timer(s) from disk", restored)
 
     def _save(self) -> None:
-        """Atomic write (tmp → rename) and update mtime tracking."""
+        """Atomic write (tmp → rename) and update mtime tracking.
+
+        WRITE-PATH AUDIT — every ``_save()`` call site and every structural
+        ``self._jobs`` mutation, each classified locked/unlocked and
+        on-loop/off-loop. INVARIANT: every writer holds :meth:`_file_lock` and
+        is reached from the gateway event loop ONLY via ``asyncio.to_thread``
+        (or runs in a genuinely loop-less CLI/MCP process). No bare on-loop
+        ``_save()`` remains. Keep this table in sync when adding a writer.
+
+        ============================  ==========  ================================
+        Writer (method)               Locked?     Loop entry
+        ============================  ==========  ================================
+        _persist_add_locked           _file_lock  add_job_async → to_thread; sync CLI/MCP
+        _update_job_locked            _file_lock  update_job_async → to_thread; sync CLI/MCP
+        _remove_job_locked            _file_lock  remove_job_async → to_thread; sync CLI/MCP
+        _remove_jobs_locked           _file_lock  remove_jobs → to_thread
+        _enable_job_locked            _file_lock  enable_job_async → to_thread; sync CLI/MCP
+        _ack_job_locked               _file_lock  ack_job_async → to_thread; sync
+        _unack_job_locked             _file_lock  unack_job_async → to_thread; sync
+        _merge_job_result             _file_lock  _run_job_isolated → to_thread; sync
+        _merge_terminal_state_locked  _file_lock  _force_reap / cancel → to_thread
+        _drain_pending_removals_locked  (caller)  _tick_scan_locked holds _file_lock (→ to_thread)
+        _load (self._jobs = …)          (caller)  _sync() under _file_lock; else construction/start off-loop
+        ============================  ==========  ================================
+
+        In-memory-only job field writes that DON'T call ``_save()`` and are
+        persisted later under lock: ``defer_removal`` (sets ``enabled=False``
+        so the next due-scan skips it; the durable delete happens in the locked
+        ``_drain_pending_removals_locked``), and the pre-persist snapshot writes
+        in ``_force_reap``/``cancel`` (authoritative persist is the offloaded
+        ``_merge_terminal_state_locked``).
+        """
         self._dir.mkdir(parents=True, exist_ok=True)
         data = {
             "version": _STORE_VERSION,
@@ -1680,4 +2769,6 @@ class CronService:
         from kiro_crew.atomic_write import atomic_write
 
         atomic_write(self._path, json.dumps(data, indent=2))
-        self._last_mtime = self._path.stat().st_mtime
+        # Refresh the (mtime_ns, size) fingerprint so _sync recognizes this as
+        # our own write and does not reload it back over the in-memory state.
+        self._record_fingerprint()

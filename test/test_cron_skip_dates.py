@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from kiro_crew.cron import (
-    _MAX_SKIP_DATE_LOOKAHEAD,
+    _MAX_SKIP_DATE_HORIZON_SECS,
     CronJob,
     CronSchedule,
     CronService,
@@ -230,12 +230,16 @@ class TestComputeNextRunTsSkipDates:
 
     def test_all_dates_skipped_returns_none(self) -> None:
 
-        # Create skip_dates for every Friday for the next 52 weeks
-
+        # The binding constraint is the ~2y wall-clock horizon, not the absolute
+        # iteration ceiling. Skip every Friday from the first fire through past
+        # the horizon so compute_next_run_ts exhausts the horizon and returns
+        # None. (Iterating _MAX_SKIP_DATE_LOOKAHEAD weeks would overflow datetime
+        # past year 9999 -- the horizon is what actually bounds the search.)
         base_date = datetime(2026, 5, 29, tzinfo=timezone.utc)  # first Friday
+        horizon_weeks = _MAX_SKIP_DATE_HORIZON_SECS // (7 * 24 * 3600)
         skip_dates = [
             (base_date + timedelta(weeks=i)).strftime("%Y-%m-%d")
-            for i in range(_MAX_SKIP_DATE_LOOKAHEAD)
+            for i in range(horizon_weeks + 4)  # cover the horizon plus a margin
         ]
         synthetic_now = timegm((2026, 5, 28, 12, 0, 0, 0, 0, 0))
         job = self._make_cron_job(

@@ -22,6 +22,7 @@ from kiro_crew.apps.cron_sdk import CronSDK
 from kiro_crew.apps.lifecycle import LifecycleDispatcher
 from kiro_crew.apps.manager import app_dir, list_apps
 from kiro_crew.apps.route_registry import RouteRegistry
+from kiro_crew.cron import CronStoreBusy
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
@@ -98,13 +99,12 @@ async def on_app_enable(
 
     # Promote app-declared crons into the running scheduler.
     try:
-        # Runs on the event loop: registration ends in CronService.add_job ->
-        # _arm_timer -> asyncio.create_task, which REQUIRES a running loop and
-        # raises RuntimeError on a worker thread — leaving a half-persisted,
-        # unowned cron behind. The vetting/persistence I/O is a few
-        # app-declared crons at enable time (not a hot path), so keep the whole
-        # call on the loop rather than offloading and losing timer arming.
-        registered = register_app_crons_with_service(app_name, cron_service)
+        # register_app_crons_with_service is async: it awaits the async CronSDK
+        # mutation API, which offloads each bounded store-lock spin (whose
+        # contention spin does time.sleep) to a worker thread. Awaiting it here
+        # never parks the gateway loop, and timer arming is owned by CronService
+        # (no caller-side re-arm needed).
+        registered = await register_app_crons_with_service(app_name, cron_service)
         if registered:
             result["crons_registered"] = registered
         sel().log_api_access(
@@ -201,10 +201,32 @@ async def on_app_disable(app_name: str, app_info: dict[str, Any]) -> dict[str, A
     if permissions.get("cron"):
         # We need the cron_service — get it from the lifecycle dispatcher
         if _lifecycle_dispatcher and _lifecycle_dispatcher._cron_service:
-            sdk = CronSDK(app_name, _lifecycle_dispatcher._cron_service)
-            removed = sdk.remove_all()
-            if removed:
-                result["cron_cleanup"] = f"removed {removed} job(s)"
+            cron_service = _lifecycle_dispatcher._cron_service
+            sdk = CronSDK(app_name, cron_service)
+            # remove_all_async removes every owned job in ONE atomic
+            # CronService.remove_jobs transaction (store-lock spin offloaded to
+            # a worker thread; timer arming owned by CronService) — all-or-
+            # nothing, never a partial removal that orphans still-enabled jobs.
+            # A contended store raises CronStoreBusy; REPORT it (rather than
+            # crash the disable or claim a false success) so the caller sees the
+            # cleanup did not complete and the app's jobs may still be enabled.
+            try:
+                removed = await sdk.remove_all_async()
+                if removed:
+                    result["cron_cleanup"] = f"removed {removed} job(s)"
+            except CronStoreBusy as exc:
+                logger.warning(
+                    "App %s: cron cleanup could not complete on disable — "
+                    "store busy: %s", app_name, exc,
+                )
+                result["cron_cleanup"] = "failed: cron store busy — jobs may still be enabled"
+                sel().log_api_access(
+                    caller="gateway",
+                    operation="app_crons_deregister",
+                    outcome="failed",
+                    resources=app_name,
+                    error=str(exc),
+                )
 
     return result
 
@@ -231,11 +253,10 @@ async def on_gateway_startup(*, cron_service: Any = None, broadcast_fn: Any = No
         # Reconcile app-declared crons into the running scheduler.
         if cron_service is not None:
             try:
-                # On the event loop (see on_app_enable): registration ends in
-                # CronService.add_job -> _arm_timer -> asyncio.create_task,
-                # which needs a running loop. Startup reconciles apps
-                # sequentially, so this awaited call cannot starve peers.
-                registered = register_app_crons_with_service(name, cron_service)
+                # Async register: awaits the CronSDK mutation API (bounded
+                # store-lock spin offloaded to a worker thread), so the gateway
+                # loop is never parked; timer arming is owned by CronService.
+                registered = await register_app_crons_with_service(name, cron_service)
                 if registered:
                     logger.info(
                         "Startup: registered %d cron(s) for app %s: %s",

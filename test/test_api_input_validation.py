@@ -22,7 +22,7 @@ def _crons_request(body: object) -> MagicMock:
     mock_job = MagicMock()
     mock_job.id = "job-1"
     mock_job.agent_id = ""
-    mock_state.crons.add_job.return_value = mock_job
+    mock_state.crons.add_job_async = AsyncMock(return_value=mock_job)
     request = MagicMock()
     request.app = {"state": mock_state}
     request.json = AsyncMock(return_value=body)
@@ -50,7 +50,7 @@ class TestCronCreateTypeValidation:
         request = _crons_request({"name": "test", "message": ["cat /etc/passwd", "rm -rf /"], "every": 60})
         resp = await api_crons_create(request)
         assert resp.status == 400
-        request.app["state"].crons.add_job.assert_not_called()
+        request.app["state"].crons.add_job_async.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_name_integer_returns_400_not_500(self):
@@ -58,7 +58,7 @@ class TestCronCreateTypeValidation:
         request = _crons_request({"name": 12345, "message": "test", "every": 60})
         resp = await api_crons_create(request)
         assert resp.status == 400
-        request.app["state"].crons.add_job.assert_not_called()
+        request.app["state"].crons.add_job_async.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_message_dict_returns_400(self):
@@ -77,7 +77,7 @@ class TestCronCreateTypeValidation:
         request = _crons_request({"name": "test", "message": "do the thing", "every": 300})
         resp = await api_crons_create(request)
         assert resp.status == 200
-        request.app["state"].crons.add_job.assert_called_once()
+        request.app["state"].crons.add_job_async.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_channel_non_string_returns_400(self):

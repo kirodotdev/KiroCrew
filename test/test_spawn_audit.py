@@ -148,6 +148,14 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "cli.py::_node_ok",
         "cli.py::main",
         "cli_chat.py::_tui",
+        # NOT a subprocess spawn: the AST heuristic matches ``asyncio.run`` (attr
+        # ``run`` on base ``asyncio``), here used only to drive the now-async
+        # ``deregister_app_crons_from_service`` coroutine from the loop-less CLI
+        # disable/uninstall path. No child process is created; the sole input is
+        # the operator-typed app name. Same classification as the other
+        # ``asyncio.run`` sites below (cli_doctor.py::_doctor, workflows
+        # server.py::handle_run).
+        "cli_commands.py::_cleanup_app_crons_from_scheduler",
         "cli_doctor.py::_doctor",
         "cli_doctor.py::_doctor_mcp_tools",
         "cli_server.py::_logs_cmd",

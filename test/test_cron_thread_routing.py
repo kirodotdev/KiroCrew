@@ -78,7 +78,7 @@ def _run_callback(gateway, job, stream_result="done"):
             service.start = AsyncMock()
             return service
 
-        mock_cron_cls.side_effect = capture_cron
+        mock_cron_cls.create = AsyncMock(side_effect=capture_cron)
 
         async def _init_and_run():
             await gateway._init_cron()

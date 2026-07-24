@@ -22,6 +22,7 @@ from kiro_crew.browser.setup import (
     patch_mcp_headless,
 )
 from kiro_crew.constants import CHAT_TURN_TIMEOUT
+from kiro_crew.cron import CronStoreBusy
 from kiro_crew.dashboard.chat_persistence import _rehydrate_slot_from_history
 from kiro_crew.dashboard.chat_utils import _remove_queued_by_id
 from kiro_crew.dashboard.origin import is_direct_local_request, is_loopback
@@ -422,7 +423,12 @@ async def api_notification_unack(request: web.Request) -> web.Response:
     # If this is a cron notification, also remove the last acked item from the job
     for n in state._notification_log:
         if n.get("ts") == ts and n.get("kind") == "cron" and n.get("job_id"):
-            state.crons.unack_job(n["job_id"])
+            try:
+                await state.crons.unack_job_async(n["job_id"])
+            except CronStoreBusy:
+                # Store transiently contended — the notification-level unack
+                # below still succeeds; the acked-item trim is best-effort.
+                logger.warning("unack_job skipped: cron store busy (job %s)", n["job_id"])
             break
     ok = await state.unack_notification(ts)
     return web.json_response({"ok": ok})

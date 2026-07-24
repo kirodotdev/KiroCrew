@@ -20,7 +20,7 @@ class TestCronCreateApprovalMode:
         mock_job.agent_id = ""
         mock_job.approval_mode = ""
         mock_job.silent = False
-        mock_state.crons.add_job.return_value = mock_job
+        mock_state.crons.add_job_async = AsyncMock(return_value=mock_job)
         request = MagicMock()
         request.app = {"state": mock_state}
         request.json = AsyncMock(return_value=body)
@@ -33,8 +33,8 @@ class TestCronCreateApprovalMode:
         )
         resp = await api_crons_create(request)
         assert resp.status == 200
-        job = request.app["state"].crons.add_job.return_value
-        assert job.approval_mode == "auto"
+        _, kwargs = request.app["state"].crons.add_job_async.call_args
+        assert kwargs.get("approval_mode") == "auto"
 
     @pytest.mark.asyncio
     async def test_invalid_approval_mode_rejected(self):
@@ -43,15 +43,15 @@ class TestCronCreateApprovalMode:
         )
         resp = await api_crons_create(request)
         assert resp.status == 400
-        request.app["state"].crons.add_job.assert_not_called()
+        request.app["state"].crons.add_job_async.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_silent_flag_set(self):
         request = self._make_request({"name": "t", "message": "m", "every": 300, "silent": True})
         resp = await api_crons_create(request)
         assert resp.status == 200
-        job = request.app["state"].crons.add_job.return_value
-        assert job.silent is True
+        _, kwargs = request.app["state"].crons.add_job_async.call_args
+        assert kwargs.get("silent") is True
 
     @pytest.mark.asyncio
     async def test_no_approval_mode_accepted(self):
@@ -72,8 +72,13 @@ class TestCronCreateTimezonePersistenceOwner:
     ``timezone`` AFTER ``add_job`` via ``job.timezone = ...`` + a SECOND
     ``_save()`` — leaving a crash/concurrent-read window where a job persists
     WITHOUT its timezone, the exact hole ``add_job``'s docstring claims to
-    close. The dashboard caller must instead pass ``timezone`` THROUGH
-    ``add_job`` so it lands in the single first ``_save()``.
+    close. The dashboard caller must instead pass ``timezone`` THROUGH the
+    create call so it lands in the single first ``_save()``.
+
+    Post-rebase over PR #331: the create path is now the event-loop-safe
+    ``add_job_async`` (single locked build+persist, all fields folded in) — so
+    the same intent is asserted against ``add_job_async`` and the absence of any
+    handler-side ``_save()``.
     """
 
     def _make_request(self, body: dict):
@@ -81,7 +86,7 @@ class TestCronCreateTimezonePersistenceOwner:
         mock_state.has_slot.return_value = False
         mock_job = MagicMock()
         mock_job.id = "abc"
-        mock_state.crons.add_job.return_value = mock_job
+        mock_state.crons.add_job_async = AsyncMock(return_value=mock_job)
         request = MagicMock()
         request.app = {"state": mock_state}
         request.json = AsyncMock(return_value=body)
@@ -94,9 +99,9 @@ class TestCronCreateTimezonePersistenceOwner:
         )
         resp = await api_crons_create(request)
         assert resp.status == 200
-        # timezone reaches add_job (folded into the single first _save), NOT a
-        # post-hoc job.timezone assignment.
-        _, kwargs = state.crons.add_job.call_args
+        # timezone reaches the create call (folded into the single first _save),
+        # NOT a post-hoc job.timezone assignment.
+        _, kwargs = state.crons.add_job_async.call_args
         assert kwargs.get("timezone") == "America/New_York"
 
     @pytest.mark.asyncio
@@ -106,13 +111,14 @@ class TestCronCreateTimezonePersistenceOwner:
         )
         resp = await api_crons_create(request)
         assert resp.status == 200
-        _, kwargs = state.crons.add_job.call_args
+        _, kwargs = state.crons.add_job_async.call_args
         assert kwargs.get("timezone") == "Europe/London"
 
     @pytest.mark.asyncio
     async def test_no_post_hoc_timezone_only_save_not_called_for_tz_alone(self):
-        """When timezone is the ONLY non-add_job field, the post-hoc block must
-        no longer fire a second ``_save()`` (timezone is handled by add_job)."""
+        """When timezone is the ONLY non-schedule field, the handler must not
+        fire a post-hoc ``_save()`` (timezone is folded into the single locked
+        ``add_job_async`` build+persist)."""
         request, state = self._make_request(
             {"name": "t", "message": "m", "every": 300, "timezone": "UTC"}
         )
@@ -133,7 +139,7 @@ class TestCronCreateModel:
         mock_job.approval_mode = ""
         mock_job.silent = False
         mock_job.model = ""
-        mock_state.crons.add_job.return_value = mock_job
+        mock_state.crons.add_job_async = AsyncMock(return_value=mock_job)
         request = MagicMock()
         request.app = {"state": mock_state}
         request.json = AsyncMock(return_value=body)
@@ -146,8 +152,8 @@ class TestCronCreateModel:
         )
         resp = await api_crons_create(request)
         assert resp.status == 200
-        job = request.app["state"].crons.add_job.return_value
-        assert job.model != ""
+        _, kwargs = request.app["state"].crons.add_job_async.call_args
+        assert kwargs.get("model", "") != ""
 
     @pytest.mark.asyncio
     async def test_empty_model_accepted(self):
@@ -190,8 +196,8 @@ class TestCronCreateModel:
         )
         resp = await api_crons_create(request)
         assert resp.status == 200
-        job = request.app["state"].crons.add_job.return_value
-        assert job.model == "glm-4.7"
+        _, kwargs = request.app["state"].crons.add_job_async.call_args
+        assert kwargs.get("model") == "glm-4.7"
 
     @pytest.mark.asyncio
     async def test_non_string_model_rejected(self):
@@ -235,6 +241,7 @@ class TestCronListFields:
         mock_state = MagicMock()
         mock_state.has_slot.return_value = False
         mock_state.crons.list_jobs.return_value = [mock_job]
+        mock_state.crons.list_jobs_async = AsyncMock(return_value=[mock_job])
         mock_state.crons.running_since.return_value = None
         mock_state.crons.is_running.return_value = False
 

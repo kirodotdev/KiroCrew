@@ -1,6 +1,7 @@
 """Tests for _handle_cron_command next_run display in Slack keyword handler."""
 from __future__ import annotations
 
+import asyncio
 import re
 import time
 from unittest.mock import patch
@@ -35,7 +36,7 @@ class TestHandleCronListNextRun:
         cron_service._jobs = [_make_job()]
         now = time.time()
         with patch("kiro_crew.slack.handler.compute_next_run_ts", return_value=now + 7200):
-            result = _handle_cron_command("cron list", cron_service, "C123", "t123")
+            result = asyncio.run(_handle_cron_command("cron list", cron_service, "C123", "t123"))
         assert result is not None
         assert "⏭ in" in result
         assert re.search(r"⏭ in \d+h", result)
@@ -43,7 +44,7 @@ class TestHandleCronListNextRun:
     def test_no_next_run_for_disabled(self, cron_service: CronService) -> None:
         cron_service._jobs = [_make_job(enabled=False)]
         with patch("kiro_crew.slack.handler.compute_next_run_ts", return_value=None):
-            result = _handle_cron_command("cron list", cron_service, "C123", "t123")
+            result = asyncio.run(_handle_cron_command("cron list", cron_service, "C123", "t123"))
         assert result is not None
         assert "⏭" not in result
 
@@ -51,7 +52,7 @@ class TestHandleCronListNextRun:
         cron_service._jobs = [_make_job()]
         now = time.time()
         with patch("kiro_crew.slack.handler.compute_next_run_ts", return_value=now + 3 * 86400 + 7200):
-            result = _handle_cron_command("cron list", cron_service, "C123", "t123")
+            result = asyncio.run(_handle_cron_command("cron list", cron_service, "C123", "t123"))
         assert result is not None
         assert "⏭ in 3d" in result
 
@@ -59,7 +60,7 @@ class TestHandleCronListNextRun:
         cron_service._jobs = [_make_job()]
         now = time.time()
         with patch("kiro_crew.slack.handler.compute_next_run_ts", return_value=now + 1800):
-            result = _handle_cron_command("cron list", cron_service, "C123", "t123")
+            result = asyncio.run(_handle_cron_command("cron list", cron_service, "C123", "t123"))
         assert result is not None
         assert "⏭ in" in result
         assert re.search(r"⏭ in \d+m", result)
@@ -68,7 +69,7 @@ class TestHandleCronListNextRun:
         cron_service._jobs = [_make_job()]
         now = time.time()
         with patch("kiro_crew.slack.handler.compute_next_run_ts", return_value=now + 30):
-            result = _handle_cron_command("cron list", cron_service, "C123", "t123")
+            result = asyncio.run(_handle_cron_command("cron list", cron_service, "C123", "t123"))
         assert result is not None
         assert "⏭ in <1m" in result
 
@@ -76,7 +77,7 @@ class TestHandleCronListNextRun:
         cron_service._jobs = [_make_job()]
         now = time.time()
         with patch("kiro_crew.slack.handler.compute_next_run_ts", return_value=now - 5):
-            result = _handle_cron_command("cron list", cron_service, "C123", "t123")
+            result = asyncio.run(_handle_cron_command("cron list", cron_service, "C123", "t123"))
         assert result is not None
         assert "⏭ now" in result
 
@@ -89,7 +90,7 @@ class TestHandleCronListNextRun:
                    return_value=("[URL_REDACTED]", True)) as mock_url, \
              patch("kiro_crew.slack.handler.redact_credentials",
                    return_value=("[REDACTED]", True)) as mock_cred:
-            result = _handle_cron_command("cron list", cron_service, "C123", "t123")
+            result = asyncio.run(_handle_cron_command("cron list", cron_service, "C123", "t123"))
         mock_url.assert_any_call(job.message)
         mock_cred.assert_any_call("[URL_REDACTED]")
         assert result is not None
@@ -107,7 +108,7 @@ class TestHandleCronListNextRun:
                    return_value=("[URL_REDACTED]", True)) as mock_url, \
              patch("kiro_crew.slack.handler.redact_credentials",
                    return_value=("[REDACTED]", True)) as mock_cred:
-            result = _handle_cron_command("cron remove all", cron_service, "C123", "t123")
+            result = asyncio.run(_handle_cron_command("cron remove all", cron_service, "C123", "t123"))
         mock_url.assert_any_call(job.name)
         mock_cred.assert_any_call("[URL_REDACTED]")
         assert result is not None
