@@ -53,6 +53,10 @@ _proc_cpu_pct: float = 0.0
 _prev_sys_cpu: dict[str, float] = {"busy": 0.0, "total": 0.0}
 _sys_cpu_pct: float = 0.0
 
+# Last-known Windows system CPU % (GetSystemTimes delta returns None on the
+# first sample; reuse the previous value so the header doesn't flash to 0).
+_last_win_cpu_pct: float = 0.0
+
 # Cached static system info (computed once)
 _STATIC_SYSTEM_INFO: dict[str, object] | None = None
 
@@ -230,6 +234,10 @@ def _get_static_system_info() -> dict[str, object]:
                         break
         except Exception:
             pass
+    elif sys.platform == "win32":
+        mem = platform_compat.system_memory()
+        if mem:
+            info["mem_total_gb"] = round(mem[0] / (1024**3), 1)
 
     _STATIC_SYSTEM_INFO = info
     return info
@@ -285,6 +293,15 @@ def _collect_system_metrics() -> dict[str, object]:
             mem_total: float = round(total_bytes / (1024**3), 1)
             data["mem_free_gb"] = mem_free
             data["mem_used_gb"] = round(mem_total - mem_free, 1)
+        elif sys.platform == "win32":
+            mem = platform_compat.system_memory()
+            if mem:
+                total_bytes, avail_bytes = mem
+                mem_total = round(total_bytes / (1024**3), 1)
+                mem_free = round(avail_bytes / (1024**3), 1)
+                data["mem_total_gb"] = mem_total
+                data["mem_free_gb"] = mem_free
+                data["mem_used_gb"] = round(mem_total - mem_free, 1)
         else:
             with open("/proc/meminfo") as f:
                 meminfo: dict[str, int] = {}
@@ -329,16 +346,24 @@ def _collect_system_metrics() -> dict[str, object]:
         pass
     # Prefer the /proc/stat interval delta (no subprocess, counts iowait+steal);
     # fall back to the ps lifetime-average on non-Linux or the first sample.
-    cpu_pct = _system_cpu_pct_from_proc_stat()
-    if cpu_pct is None:
-        try:
-            ps_cpu = subprocess.check_output(
-                ["ps", "-A", "-o", "%cpu"], timeout=2, stderr=subprocess.DEVNULL
-            ).decode()
-            total_cpu = sum(float(x) for x in ps_cpu.strip().splitlines()[1:] if x.strip())
-            cpu_pct = min(100.0, round(total_cpu / cores, 1))
-        except Exception:
-            cpu_pct = 0
+    # Windows has no /proc or ps — use the GetSystemTimes delta via ctypes.
+    if sys.platform == "win32":
+        global _last_win_cpu_pct
+        win_cpu = platform_compat.system_cpu_percent()
+        if win_cpu is not None:
+            _last_win_cpu_pct = win_cpu
+        cpu_pct = _last_win_cpu_pct
+    else:
+        cpu_pct = _system_cpu_pct_from_proc_stat()
+        if cpu_pct is None:
+            try:
+                ps_cpu = subprocess.check_output(
+                    ["ps", "-A", "-o", "%cpu"], timeout=2, stderr=subprocess.DEVNULL
+                ).decode()
+                total_cpu = sum(float(x) for x in ps_cpu.strip().splitlines()[1:] if x.strip())
+                cpu_pct = min(100.0, round(total_cpu / cores, 1))
+            except Exception:
+                cpu_pct = 0
     data["cpu_pct"] = cpu_pct
 
     # Local IP address

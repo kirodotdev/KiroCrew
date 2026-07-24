@@ -458,9 +458,14 @@ class AcpRuntime:
             # POSIX: setsid so kill() can killpg the whole tree. Windows:
             # start_new_session is silently ignored; CREATE_NEW_PROCESS_GROUP
             # makes the child tree taskkill /T-reapable (see platform_compat
-            # spawn-isolation note).
+            # spawn-isolation note). CREATE_NO_WINDOW suppresses the console
+            # window Windows would otherwise pop for this console child spawned
+            # from the windowless gateway (0 on POSIX, so no effect there).
             start_new_session=platform_compat.IS_POSIX,
-            creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
+            creationflags=(
+                platform_compat.CREATE_NEW_PROCESS_GROUP
+                | platform_compat._SUBPROCESS_NO_WINDOW
+            ),
             env=env,
             preexec_fn=session_host_preexec(),
         )

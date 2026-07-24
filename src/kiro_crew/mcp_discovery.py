@@ -987,6 +987,19 @@ async def probe_server(server: McpServerInfo) -> McpServerInfo:
                         probe_pid,
                         exc_info=True,
                     )
+        elif proc is not None and platform_compat.IS_WINDOWS:
+            # Windows has no process groups; reap the probe's whole tree via
+            # taskkill /T so the launcher's grandchildren (npx/node -> real MCP
+            # server) don't leak one tree per failed probe per discovery cycle.
+            probe_pid = proc.pid
+            if isinstance(probe_pid, int) and probe_pid > 1:
+                try:
+                    platform_compat.kill_process_tree(probe_pid, platform_compat.SIGKILL)
+                except (ProcessLookupError, OSError):
+                    logger.debug(
+                        "Probe tree reap failed for %s (pid %s)",
+                        server.name, probe_pid, exc_info=True,
+                    )
         if sandbox_cleanup:
             Path(sandbox_cleanup).unlink(missing_ok=True)
 

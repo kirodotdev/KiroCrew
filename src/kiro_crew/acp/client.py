@@ -1774,7 +1774,10 @@ class AcpClient:
             limit=_STDOUT_BUFFER_LIMIT,
             env=env,
             start_new_session=platform_compat.IS_POSIX,
-            creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
+            creationflags=(
+                platform_compat.CREATE_NEW_PROCESS_GROUP
+                | platform_compat._SUBPROCESS_NO_WINDOW
+            ),
             preexec_fn=session_host_preexec(),
         )
         self._pid = self._process.pid

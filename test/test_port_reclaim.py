@@ -240,7 +240,13 @@ async def test_probe_healthy_false_for_wedged_socket() -> None:
 @pytest.mark.asyncio
 async def test_terminate_returns_true_when_already_gone(monkeypatch) -> None:
     signals: list[tuple[int, int]] = []
+    # Patch BOTH delivery primitives so the test is platform agnostic: POSIX
+    # _signal calls os.kill, Windows _signal calls kill_process_tree.
     monkeypatch.setattr(pr.os, "kill", lambda pid, sig: signals.append((pid, sig)))
+    monkeypatch.setattr(
+        pr.platform_compat, "kill_process_tree",
+        lambda pid, sig: signals.append((pid, sig)),
+    )
     # Patch the liveness check used inside _terminate_pids.
     import kiro_crew.cli_server as cli_server
 
@@ -249,13 +255,12 @@ async def test_terminate_returns_true_when_already_gone(monkeypatch) -> None:
     ok = await pr._terminate_pids([1234], term_wait=0.1, kill_wait=0.1, poll=0.01)
     assert ok is True
     # Only SIGTERM sent; no escalation needed.
-    assert signals == [(1234, pr.signal.SIGTERM)]
+    assert signals == [(1234, pr.platform_compat.SIGTERM)]
 
 
 @pytest.mark.asyncio
 async def test_terminate_escalates_to_sigkill(monkeypatch) -> None:
     signals: list[tuple[int, int]] = []
-    monkeypatch.setattr(pr.os, "kill", lambda pid, sig: signals.append((pid, sig)))
     import kiro_crew.cli_server as cli_server
 
     # Survives SIGTERM, dies after SIGKILL is issued.
@@ -266,16 +271,17 @@ async def test_terminate_escalates_to_sigkill(monkeypatch) -> None:
 
     def _kill(pid: int, sig: int) -> None:
         signals.append((pid, sig))
-        if sig == pr.signal.SIGKILL:
+        if sig == pr.platform_compat.SIGKILL:
             state["alive"] = False
 
     monkeypatch.setattr(pr.os, "kill", _kill)
+    monkeypatch.setattr(pr.platform_compat, "kill_process_tree", _kill)
     monkeypatch.setattr(cli_server, "_pid_exited", _exited)
 
     ok = await pr._terminate_pids([1234], term_wait=0.05, kill_wait=0.2, poll=0.01)
     assert ok is True
-    assert (1234, pr.signal.SIGTERM) in signals
-    assert (1234, pr.signal.SIGKILL) in signals
+    assert (1234, pr.platform_compat.SIGTERM) in signals
+    assert (1234, pr.platform_compat.SIGKILL) in signals
 
 
 @pytest.mark.asyncio
@@ -284,5 +290,28 @@ async def test_terminate_returns_false_on_permission_error(monkeypatch) -> None:
         raise PermissionError("not allowed")
 
     monkeypatch.setattr(pr.os, "kill", _kill)
+    monkeypatch.setattr(pr.platform_compat, "kill_process_tree", _kill)
     ok = await pr._terminate_pids([1], term_wait=0.05, kill_wait=0.05, poll=0.01)
     assert ok is False
+
+
+# ---------------------------------------------------------------------------
+# _listeners_on_port - cross-platform lookup (POSIX lsof / Windows netstat)
+# ---------------------------------------------------------------------------
+
+
+def test_listeners_windows_uses_find_listening_pids(monkeypatch) -> None:
+    """On Windows the listener lookup routes through
+    platform_compat.find_listening_pids (netstat -ano), not lsof."""
+    monkeypatch.setattr(pr.platform_compat, "IS_WINDOWS", True)
+    monkeypatch.setattr(pr.platform_compat, "listening_pid_tool_available", lambda: True)
+    monkeypatch.setattr(pr.platform_compat, "find_listening_pids", lambda port: [4242])
+    assert pr._listeners_on_port(5476) == [4242]
+
+
+def test_listeners_windows_tool_absent_returns_none(monkeypatch) -> None:
+    """When netstat is unavailable on Windows the lookup returns None so the
+    caller degrades to wait/retry rather than mis-reporting no holder."""
+    monkeypatch.setattr(pr.platform_compat, "IS_WINDOWS", True)
+    monkeypatch.setattr(pr.platform_compat, "listening_pid_tool_available", lambda: False)
+    assert pr._listeners_on_port(5476) is None
