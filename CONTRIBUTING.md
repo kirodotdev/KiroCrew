@@ -41,6 +41,25 @@ The dashboard is at `http://localhost:5476`.
 **Dashboard-only mode**: skip Slack tokens during `kirocrew setup` to run
 without Slack.
 
+## Development Skills (agents and humans)
+
+The contributor workflow is codified as agent-loadable skills in
+[`skills/kirocrew-dev/`](skills/kirocrew-dev/) — the canonical definition of
+how code gets written, tested, and reviewed here:
+
+- **`kirocrew-worktree-dev`** — the HARD RULE workflow: every change in a git
+  worktree, the blocking build gates, the built-dist gotcha, preview paths.
+- **`prepare-pr`** — drives working-tree changes to a review-ready PR
+  (commit → sync → squash → open → poll CI/review bots → fix findings).
+- **`babysit`** — same-session monitoring loop that keeps a PR moving through
+  CI and review rounds.
+
+An agent contributing to KiroCrew loads this suite and follows the same
+worktree → build gate → prepare-pr → review loop human contributors use, so
+the PR process stays consistent regardless of who is writing the code. If you
+change the workflow, change it THERE — those files are the single source of
+truth (with `.github/workflows/ci.yml` canonical for the gate list).
+
 ## Building
 
 ### Backend

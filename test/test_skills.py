@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from kiro_crew.config.loader import KiroCrewConfig, SkillsConfig
@@ -177,6 +179,147 @@ class TestSkillsLoader:
         )
         os.utime(skill_file, ns=(pinned, pinned))
         assert any(s["description"] == "Refined" for s in loader.list_skills())
+
+
+class TestRepoScope:
+    """``repo_scope:`` frontmatter mechanically suppresses a skill unless the
+    CWD (or an ancestor) contains the named relative path — the loader-enforced
+    gate for repo-specific skills with destructive instructions (PR #353
+    arbiter: prose scope guards are probabilistic; containment must be
+    mechanical before shipping to every install)."""
+
+    def _write_skill(self, root: Path, name: str, scope: str | None) -> None:
+        d = root / name
+        d.mkdir(parents=True)
+        fm = f"---\nname: {name}\ntriggers: zebra quokka\n"
+        if scope:
+            fm += f"repo_scope: {scope}\n"
+        (d / "SKILL.md").write_text(fm + "---\nbody")
+
+    def test_scoped_skill_suppressed_outside_repo(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        skills = tmp_path / "skills"
+        self._write_skill(skills, "repo-only", "src/kiro_crew")
+        loader = SkillsLoader(skills_path=skills, install_builtins=False)
+        outside = tmp_path / "elsewhere"
+        outside.mkdir()
+        monkeypatch.chdir(outside)
+        assert loader.get_triggered_skills("zebra quokka") == []
+
+    def test_scoped_skill_eligible_inside_repo(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        skills = tmp_path / "skills"
+        self._write_skill(skills, "repo-only", "src/kiro_crew")
+        loader = SkillsLoader(skills_path=skills, install_builtins=False)
+        repo = tmp_path / "checkout"
+        (repo / "src" / "kiro_crew").mkdir(parents=True)
+        subdir = repo / "website"
+        subdir.mkdir()
+        monkeypatch.chdir(subdir)  # ancestor contains src/kiro_crew
+        assert loader.get_triggered_skills("zebra quokka") == ["repo-only"]
+
+    def test_unscoped_skill_unaffected(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        skills = tmp_path / "skills"
+        self._write_skill(skills, "anywhere", None)
+        loader = SkillsLoader(skills_path=skills, install_builtins=False)
+        outside = tmp_path / "elsewhere"
+        outside.mkdir()
+        monkeypatch.chdir(outside)
+        assert loader.get_triggered_skills("zebra quokka") == ["anywhere"]
+
+    def test_traversal_scope_fails_closed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # ".." in the scope must never widen the check — fails closed.
+        skills = tmp_path / "skills"
+        self._write_skill(skills, "sneaky", "../..")
+        loader = SkillsLoader(skills_path=skills, install_builtins=False)
+        monkeypatch.chdir(tmp_path)
+        assert loader.get_triggered_skills("zebra quokka") == []
+
+
+class TestRelocatedSkillCleanup:
+    """Skills moved into skills/kirocrew-dev/ must have their old FLAT copies
+    removed from loader discovery on existing installs — otherwise an upgrade
+    leaves two divergent copies matched nondeterministically by trigger overlap
+    (the dual-copy drift PR #353's arbiter blocked). The flat copy may carry
+    USER EDITS (the mtime-preserving sync deliberately protects those), so it
+    is never deleted: its SKILL.md is renamed to SKILL.md.pre-relocation —
+    undiscoverable, but every byte preserved. Quarantine only happens when the
+    nested replacement is verifiably present."""
+
+    def test_flat_copy_quarantined_when_nested_present(self, tmp_path: Path) -> None:
+        from kiro_crew.skills import _ensure_builtin_skills
+
+        base = tmp_path / "skills"
+        old = base / "prepare-pr"
+        old.mkdir(parents=True)
+        (old / "SKILL.md").write_text("---\nname: prepare-pr\n---\nUSER-EDITED flat copy")
+        (old / "scripts").mkdir()
+        (old / "scripts" / "helper.py").write_text("# user script")
+        new = base / "kirocrew-dev" / "prepare-pr"
+        new.mkdir(parents=True)
+        (new / "SKILL.md").write_text("---\nname: prepare-pr\n---\nnested copy")
+
+        _ensure_builtin_skills(base)
+
+        # No longer discoverable as a skill...
+        assert not (old / "SKILL.md").exists()
+        # ...but nothing was deleted: user edits and scripts preserved on disk.
+        quarantined = old / "SKILL.md.pre-relocation"
+        assert quarantined.read_text().endswith("USER-EDITED flat copy")
+        assert (old / "scripts" / "helper.py").exists()
+        assert (new / "SKILL.md").exists()
+
+    def test_repeated_migration_never_overwrites_prior_quarantine(
+        self, tmp_path: Path
+    ) -> None:
+        # HIGH regression (GPT 5.6): a rollback/reinstall can recreate
+        # SKILL.md AFTER a prior migration quarantined a user-edited copy.
+        # The second migration must NOT os.replace over the first quarantine
+        # — both preserved copies must survive under distinct names.
+        from kiro_crew.skills import _ensure_builtin_skills
+
+        base = tmp_path / "skills"
+        old = base / "prepare-pr"
+        old.mkdir(parents=True)
+        new = base / "kirocrew-dev" / "prepare-pr"
+        new.mkdir(parents=True)
+        (new / "SKILL.md").write_text("---\nname: prepare-pr\n---\nnested copy")
+
+        # First migration quarantines the user's original edits.
+        (old / "SKILL.md").write_text("---\nname: prepare-pr\n---\nFIRST user edit")
+        _ensure_builtin_skills(base)
+        first = old / "SKILL.md.pre-relocation"
+        assert first.read_text().endswith("FIRST user edit")
+
+        # Rollback recreates SKILL.md with different content; migration re-runs.
+        (old / "SKILL.md").write_text("---\nname: prepare-pr\n---\nSECOND rollback copy")
+        _ensure_builtin_skills(base)
+
+        # Both preserved copies survive; nothing was overwritten.
+        assert first.read_text().endswith("FIRST user edit")
+        second = old / "SKILL.md.pre-relocation.2"
+        assert second.read_text().endswith("SECOND rollback copy")
+        assert not (old / "SKILL.md").exists()
+
+    def test_flat_copy_untouched_when_nested_missing(self, tmp_path: Path) -> None:
+        # Fail-safe: if the nested replacement never synced, the flat copy is
+        # the ONLY working copy — it must stay discoverable.
+        from kiro_crew.skills import _ensure_builtin_skills
+
+        base = tmp_path / "skills"
+        old = base / "babysit"
+        old.mkdir(parents=True)
+        (old / "SKILL.md").write_text("---\nname: babysit\n---\nonly copy")
+
+        _ensure_builtin_skills(base)
+
+        assert (old / "SKILL.md").exists(), "sole copy must stay discoverable"
 
 
 class TestTriggeredSkills:

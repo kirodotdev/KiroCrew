@@ -138,16 +138,21 @@ Run the full quality cycle before committing:
 black src/kiro_crew test && isort src/kiro_crew test
 flake8 src/kiro_crew test
 mypy src/kiro_crew
-python -m pytest                 # full suite: -n auto worksteal, --cov (from setup.cfg)
+python -m pytest                 # full suite: -n auto --dist loadgroup, --cov (from setup.cfg)
 ```
 
 **Gotcha — `setup.cfg` hardcodes `--cov` in `addopts`.** Coverage adds heavy
-overhead and conflicts with selective runs. For fast iteration, override it:
+overhead and conflicts with selective runs. For fast iteration, override it —
+but PRESERVE the xdist flags (`-n auto --dist loadgroup`) on any multi-test
+run: `loadgroup` is what keeps `@pytest.mark.xdist_group`-serialized tests on
+one worker, and a bare `addopts=` override silently drops it, producing flaky
+races misdiagnosed as real failures. (Single-file/single-test runs execute
+serially, so dropping xdist there is fine.)
 
 ```bash
-# Only tests affected by your changes:
-python -m pytest --testmon --override-ini="addopts=-v --ignore=build/private --durations=5 --color=yes" -q
-# Single file / keyword:
+# Only tests affected by your changes (multi-test: keep the xdist flags):
+python -m pytest --testmon --override-ini="addopts=-v --ignore=build/private -n auto --dist loadgroup --durations=5 --color=yes" -q
+# Single file / keyword (serial — no xdist needed):
 python -m pytest test/test_dashboard_chat.py --override-ini="addopts=" -p no:cacheprovider -q
 python -m pytest -k "flush_segment" --override-ini="addopts=" -p no:cacheprovider -q
 ```

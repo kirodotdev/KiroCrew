@@ -72,13 +72,16 @@ npm run test     # vitest unit/integration tests
 For faster iteration during development, use `pytest-testmon` to run only tests affected by changed files instead of the full suite. This uses dependency tracking to skip unaffected tests.
 
 ```bash
-# Fast iteration — only tests affected by your changes (no coverage overhead):
-python -m pytest --testmon --override-ini="addopts=-v --ignore=build/private --durations=5 --color=yes" -q 2>&1 | tail -25
+# Fast iteration — only tests affected by your changes (no coverage overhead).
+# Multi-test runs MUST keep the xdist flags (-n auto --dist loadgroup):
+# loadgroup keeps @pytest.mark.xdist_group-serialized tests on one worker, and
+# a bare addopts override silently drops it, producing flaky races.
+python -m pytest --testmon --override-ini="addopts=-v --ignore=build/private -n auto --dist loadgroup --durations=5 --color=yes" -q 2>&1 | tail -25
 
 # Only previously failed tests:
-python -m pytest --lf --override-ini="addopts=-v --ignore=build/private --durations=5 --color=yes" -q
+python -m pytest --lf --override-ini="addopts=-v --ignore=build/private -n auto --dist loadgroup --durations=5 --color=yes" -q
 
-# Specific test file only:
+# Specific test file only (serial — xdist not needed for one file):
 python -m pytest test/test_dashboard_chat.py --override-ini="addopts=-v --ignore=build/private --durations=5 --color=yes" -q
 
 # Specific test by keyword:
@@ -558,7 +561,7 @@ Apps can register gateway-level hooks via the App SDK:
 
 - Frontend: jscpd duplication check — copy-paste code fails the build
 - Frontend: vitest coverage emitted as cobertura XML
-- Backend: pytest-timeout enforced, xdist worksteal mode for parallel execution
+- Backend: pytest-timeout enforced, xdist loadgroup mode for parallel execution (`--dist loadgroup` so `xdist_group`-marked tests serialize on one worker)
 - Backend: security-critical modules require 80%+ coverage
 
 ## Gateway Test Harness

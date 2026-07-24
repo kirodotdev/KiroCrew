@@ -260,12 +260,53 @@ def _ensure_builtin_skills(base: Path) -> None:
 
     # Remove known stale builtin skills (replaced by MCP tools)
     stale_builtins = {"learn", "subagent", "cron", "kirocrew-core"}
+    # Skills RELOCATED into the kirocrew-dev/ folder (the KiroCrew development
+    # suite). Without this, an upgraded install keeps BOTH the old flat copy
+    # and the new nested copy — two divergent copies of the same skill matched
+    # nondeterministically by trigger overlap (the exact drift PR #353's
+    # arbiter blocked). The flat copy is NOT deleted (it may carry user edits
+    # the mtime-preserving sync deliberately protects): its SKILL.md is renamed
+    # to SKILL.md.pre-relocation, which removes it from loader discovery while
+    # preserving every byte on disk for the user to reconcile. Only done when
+    # the nested replacement is verifiably present, so a failed/partial sync
+    # never disables the only copy.
+    relocated = {
+        "prepare-pr": "kirocrew-dev/prepare-pr",
+        "babysit": "kirocrew-dev/babysit",
+        "kirocrew-worktree-dev": "kirocrew-dev/kirocrew-worktree-dev",
+    }
     if base.exists():
         for name in stale_builtins:
             stale = base / name
             if stale.is_dir():
                 shutil.rmtree(stale)
                 logger.info("Removed stale builtin skill: %s", name)
+        for old_name, new_name in relocated.items():
+            old_skill_md = base / old_name / "SKILL.md"
+            if old_skill_md.is_file() and (base / new_name / "SKILL.md").exists():
+                try:
+                    # Never overwrite an earlier quarantine (a rollback or
+                    # reinstall can recreate SKILL.md after a prior migration;
+                    # os.replace would silently destroy the preserved copy).
+                    # Pick the first unused numbered name instead.
+                    quarantine = old_skill_md.with_name("SKILL.md.pre-relocation")
+                    counter = 2
+                    while quarantine.exists():
+                        quarantine = old_skill_md.with_name(
+                            f"SKILL.md.pre-relocation.{counter}"
+                        )
+                        counter += 1
+                    os.replace(old_skill_md, quarantine)
+                    logger.info(
+                        "Skill %s relocated to %s; flat copy quarantined at %s "
+                        "(preserved on disk, no longer loaded)",
+                        old_name, new_name, quarantine,
+                    )
+                except OSError:
+                    logger.warning(
+                        "could not quarantine relocated skill's flat copy %s",
+                        old_skill_md, exc_info=True,
+                    )
 
 
 def skills_dir() -> Path:
@@ -697,12 +738,46 @@ class SkillsLoader:
         """
         return [s for s in self.list_skills() if s["key"].startswith(f"{AUTO_SKILL_NAMESPACE}/")]
 
+    @staticmethod
+    def _repo_scope_satisfied(relpath: str) -> bool:
+        """Mechanical gate for repo-scoped skills (``repo_scope:`` frontmatter).
+
+        A skill carrying ``repo_scope: <relpath>`` is only eligible for
+        injection when the current working directory (or an ancestor) contains
+        *relpath* — e.g. ``repo_scope: src/kiro_crew`` restricts a skill to
+        sessions actually working inside the KiroCrew source tree. This is the
+        loader-enforced counterpart to a prose "ignore this skill elsewhere"
+        scope guard: prose depends on probabilistic LLM obedience, while this
+        check runs before the skill ever reaches the context (PR #353 arbiter:
+        destructive repo-dev instructions must be mechanically contained).
+
+        Fails CLOSED on any error — a repo-scoped skill is suppressed unless
+        its scope is positively confirmed.
+        """
+        rel = relpath.strip().strip("/")
+        if not rel or ".." in rel.split("/"):
+            return False
+        try:
+            cwd = Path.cwd().resolve()
+        except OSError:
+            return False
+        for candidate in (cwd, *cwd.parents):
+            try:
+                if (candidate / rel).exists():
+                    return True
+            except OSError:
+                continue
+        return False
+
     def get_always_skills(self) -> list[str]:
         """Return names of skills marked ``always: true`` in frontmatter."""
         result: list[str] = []
         for name, skill_file in self._iter():
             meta = self._cached_frontmatter(skill_file)
             if meta.get("always", "").lower() == "true":
+                scope = meta.get("repo_scope", "")
+                if scope and not self._repo_scope_satisfied(scope):
+                    continue
                 result.append(name)
         return result
 
@@ -729,6 +804,12 @@ class SkillsLoader:
                 continue
             triggers = meta.get("triggers", "")
             if not triggers:
+                continue
+            # Repo-scoped skills are mechanically suppressed outside their
+            # repo — word-overlap can fire on ordinary user phrasing, and a
+            # prose scope guard alone is probabilistic (PR #353 arbiter).
+            scope = meta.get("repo_scope", "")
+            if scope and not self._repo_scope_satisfied(scope):
                 continue
 
             # Split into positive and negative triggers
