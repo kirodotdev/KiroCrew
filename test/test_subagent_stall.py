@@ -54,11 +54,19 @@ async def test_not_flagged_before_start():
 
 @pytest.mark.asyncio
 async def test_flagged_when_idle_beyond_threshold():
+    """Two-sweep confirmation (scale dampening): the first sweep past the
+    idle threshold marks a suspect (no event); the second consecutive sweep
+    flags stalled and emits the event + slow-command record."""
     mgr = _make_manager(stall_idle_secs=120)
     now = 1_000.0
     info = _info(turns=1, last_activity=now - 200)
     with patch("kiro_crew.subagent.record_slow_command") as rec:
         await mgr._maybe_flag_stall("a1b2c3d4", info, now)
+        # Sweep 1: suspect only — no flag, no event, no record.
+        assert info.stalled is False and info._stall_suspect_at > 0
+        mgr._fire_event.assert_not_called()
+        rec.assert_not_called()
+        await mgr._maybe_flag_stall("a1b2c3d4", info, now + 60)
     assert info.stalled is True  # surfaced, but not terminated
     mgr._fire_event.assert_awaited_once()
     etype, _info_arg, extra = mgr._fire_event.await_args.args
@@ -111,6 +119,7 @@ async def test_slow_command_record_fields():
     info = _info(
         turns=3, tool_count=5, last_tool="fs_read", last_activity=now - 200,
         started=now - 260, parent_session_key="dashboard:main",
+        _stall_suspect_at=now - 60,  # sweep 1 already suspected (2-sweep rule)
     )
     with patch("kiro_crew.subagent.record_slow_command") as rec:
         await mgr._maybe_flag_stall("a1b2c3d4", info, now)
@@ -129,7 +138,8 @@ async def test_flag_never_reaps():
     mgr = _make_manager(stall_idle_secs=120)
     mgr._force_reap = AsyncMock()
     now = 1_000.0
-    info = _info(turns=1, started=now - 5_000, last_activity=now - 5_000)
+    info = _info(turns=1, started=now - 5_000, last_activity=now - 5_000,
+                 _stall_suspect_at=now - 60)  # sweep 1 already suspected (2-sweep rule)
     with patch("kiro_crew.subagent.record_slow_command"):
         await mgr._maybe_flag_stall("a1b2c3d4", info, now)
     assert info.stalled is True

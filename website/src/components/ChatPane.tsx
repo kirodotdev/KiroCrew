@@ -8,7 +8,7 @@ import ChatMessageList from '../app-sdk/ChatMessageList'
 import ToolCallLine from '../pages/chat/ToolCallLine'
 import type { ChatMessage } from '../types'
 import ChatInput from './ChatInput'
-import QueueStack from './QueueStack'
+import QueueStack, { SubagentDeliveryProgress, isSystemDelivery } from './QueueStack'
 import SubagentProgressBar from '../pages/chat/SubagentProgressBar'
 import AgentDropdownList from './AgentDropdownList'
 import ModelDropdownList from './ModelDropdownList'
@@ -93,8 +93,12 @@ export default function ChatPane({
   const title = paneSlot?.title || slotKey
   const displayMode = approvalMode === 'yolo' ? 'yolo' : paneSlot?.trust ? 'trust' : paneSlot?.trust_reads ? 'trust_reads' : 'normal'
   // Queued messages render in the QueueStack, not inline in the message list.
+  // System sub-agent deliveries collapse into one progress line instead of
+  // interactive (edit/cancel) queue cards.
   const messages = allMessages.filter((m) => m.role !== 'queued')
-  const queuedMessages = allMessages.filter((m) => m.role === 'queued')
+  const allQueued = allMessages.filter((m) => m.role === 'queued')
+  const queuedMessages = allQueued.filter((m) => !isSystemDelivery(m))
+  const systemDeliveryCount = allQueued.length - queuedMessages.length
 
   // Pickers — same hooks/data sources ChatPage uses, but selection targets THIS slot.
   const { agents: installedAgents, defaultAgent } = useAgents(0)
@@ -296,6 +300,7 @@ export default function ChatPane({
 
         <SubagentProgressBar slot={slotKey} />
 
+        <SubagentDeliveryProgress count={systemDeliveryCount} />
         {queuedMessages.length > 0 && (
           <QueueStack messages={queuedMessages} onCancel={onCancelQueued} onInterrupt={onInterruptQueued} />
         )}

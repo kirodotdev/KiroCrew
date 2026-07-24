@@ -227,6 +227,9 @@ def _list_tools() -> list[dict[str, Any]]:
                 "Tasks are automatically batched if they exceed the concurrency limit."
                 + _cap_hint
                 + " WAIT for all completion events before responding to the user."
+                " If result batches from a previous spawn are still arriving,"
+                " do not start a new spawn until all of them have been"
+                " delivered and processed."
             ),
             "inputSchema": {
                 "type": "object",
@@ -2119,16 +2122,25 @@ def _http_error_body(exc: urllib.error.HTTPError) -> dict:
     except Exception:
         raw = ""
     message = raw or str(exc)
+    counted = False
     if raw:
         try:
             parsed = json.loads(raw)
             if isinstance(parsed, dict) and "error" in parsed:
                 message = str(parsed["error"])
+                # Preserve api_spawn's "this rejection was already counted"
+                # marker (wave-liveness reconcile) — it must survive the
+                # error-body flattening or spawn_run would double-reconcile
+                # in-process rejections and close waves early.
+                counted = bool(parsed.get("counted"))
         except Exception:
             pass
     message, _ = redact_exfiltration_urls(message)
     message, _ = redact_credentials(message)
-    return {"error": message}
+    out: dict = {"error": message}
+    if counted:
+        out["counted"] = True
+    return out
 
 
 def _get(path: str) -> dict:
@@ -2701,9 +2713,16 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         # spawn stuck on the interactive approval path a cron has no
         # responder for.
         approval_mode = os.environ.get("KIROCREW_APPROVAL_MODE", "")
+        # Batch/wave identity: one id per multi-task spawn_run call so the
+        # gateway can digest completions (one injection turn per wave instead
+        # of N) and emit batch lifecycle events at 60-100-agent scale.
+        batch_id = uuid.uuid4().hex[:12] if len(task_list) > 1 else ""
         for i, t in enumerate(task_list):
             a = agents_list[i] if agents_list else agent
             body: dict[str, Any] = {"task": t, "agent": a, "parent_session": parent_session}
+            if batch_id:
+                body["batch_id"] = batch_id
+                body["batch_total"] = len(task_list)
             if max_turns:
                 body["max_turns"] = max_turns
             if cwd:
@@ -2715,6 +2734,25 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             d = _post("/api/spawn", body)
             if d.get("error"):
                 errors.append(f"{t[:60]}: {d['error']}")
+                # Wave-liveness reconcile (Opus MEDIUM + Design Review
+                # CONCERN 1): every sibling's batch_total counts THIS member,
+                # but its submission never reached mgr.spawn (transport
+                # error / timeout / pre-spawn HTTP rejection) unless the
+                # response says "counted". Un-reconciled, the wave's
+                # submitted < expected forever — the digest never closes and
+                # held sibling results strand until restart. Best-effort: if
+                # this POST also fails, the gateway reaper's stuck-wave
+                # sweep is the backstop.
+                if batch_id and not d.get("counted"):
+                    try:
+                        _post("/api/spawn/lost", {
+                            "batch_id": batch_id,
+                            "batch_total": len(task_list),
+                            "reason": str(d.get("error", ""))[:300],
+                            "parent_session": parent_session,
+                        })
+                    except Exception:
+                        pass  # reaper backstop covers delivery failure
                 continue
             agent_ids.append(d.get("id", "?"))
             agent_names.append(a)

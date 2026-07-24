@@ -20,6 +20,10 @@ logger = logging.getLogger(__name__)
 
 _WS_STATUS_INTERVAL = 5  # seconds between dashboard status pushes
 _WS_COUNTS_CACHE_TTL = 30  # seconds between refreshing lesson/cron counts
+# Reconnect replay: more subagent frames than this collapse into ONE
+# subagent_snapshot_batch frame (scale plumbing — a per-agent burst at
+# 60-100 agents saturates the socket the moment a client reconnects).
+SUBAGENT_REPLAY_BATCH_THRESHOLD = 8
 
 SIDE_RESULT_EVENT = "chat.side_result"
 SIDE_KIND = "side"
@@ -232,6 +236,14 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
                             t, _ = redact_credentials(t)
                             return t
 
+                        # Collect every replay frame first; below the scale
+                        # threshold they are sent individually (byte-identical
+                        # to the legacy behavior), above it they collapse into
+                        # ONE subagent_snapshot_batch frame — at 60-100 agents
+                        # a per-agent replay burst saturates the socket the
+                        # moment a client reconnects.
+                        _replay: list[dict] = []
+
                         # Native kiro-cli subagents run inside dashboard chat
                         # slots, not the global SubagentManager. Replay their
                         # slot-owned in-flight state before manager snapshots.
@@ -242,7 +254,7 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
                             try:
                                 if native.get("done"):
                                     _err = native.get("error")
-                                    await ws.send_json(
+                                    _replay.append(
                                         {
                                             "type": "subagent_done",
                                             "data": {
@@ -259,7 +271,7 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
                                         }
                                     )
                                 else:
-                                    await ws.send_json(
+                                    _replay.append(
                                         {
                                             "type": "subagent_snapshot",
                                             "data": {
@@ -276,12 +288,12 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
                             except Exception:
                                 pass
 
-                        # Send snapshot of managed subagents + done events for completed ones
+                        # Snapshot of managed subagents + done events for completed ones
                         if state.subagents:
                             for a in state.subagents.running:
                                 try:
                                     slot = a.parent_session_key.removeprefix("dashboard:")
-                                    await ws.send_json(
+                                    _replay.append(
                                         {
                                             "type": "subagent_snapshot",
                                             "data": {
@@ -299,14 +311,14 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
                                     )
                                 except Exception:
                                     pass
-                            # Send done events for completed subagents so
+                            # Done events for completed subagents so
                             # reconnecting clients can transition stale cards.
                             for a in state.subagents.all_agents:
                                 if not a.done:
                                     continue
                                 slot = a.parent_session_key.removeprefix("dashboard:")
                                 try:
-                                    await ws.send_json(
+                                    _replay.append(
                                         {
                                             "type": "subagent_done",
                                             "data": {
@@ -323,6 +335,16 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
                                     )
                                 except Exception:
                                     pass
+                        try:
+                            if len(_replay) > SUBAGENT_REPLAY_BATCH_THRESHOLD:
+                                await ws.send_json(
+                                    {"type": "subagent_snapshot_batch", "data": {"items": _replay}}
+                                )
+                            else:
+                                for _frame in _replay:
+                                    await ws.send_json(_frame)
+                        except Exception:
+                            pass
                     elif msg_type == "unsubscribe_subagents":
                         state.unsubscribe_subagents(ws)
                 except (json.JSONDecodeError, Exception):

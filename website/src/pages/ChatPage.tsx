@@ -82,7 +82,7 @@ import SearchHighlightContext, { MessageSearchScope } from '../hooks/SearchHighl
 import SearchBar from '../components/SearchBar'
 import SearchResultsList from '../components/SearchResultsList'
 import { pickSearchScrollBehavior, scrollCurrentMatchIntoView } from '../utils/searchScroll'
-import QueueStack from '../components/QueueStack'
+import QueueStack, { SubagentDeliveryProgress, isSystemDelivery } from '../components/QueueStack'
 import { runBelongsToSlot } from '../apps/workflows/runModel'
 import { TipCard, useTipTrigger } from '../components/TipCard'
 import { useVoiceInput, voiceInputSupported } from '../hooks/useVoiceInput'
@@ -2628,7 +2628,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
     topmostIdxRef.current = 0
   }, [activeSlot])
 
-  const queuedMessages = useMemo(() => messages.filter(m => m.role === 'queued'), [messages])
+  const allQueuedMessages = useMemo(() => messages.filter(m => m.role === 'queued'), [messages])
+  // System sub-agent deliveries collapse into one progress line; only
+  // user-typed queued messages get the interactive (edit/cancel) card stack.
+  const queuedMessages = useMemo(() => allQueuedMessages.filter(m => !isSystemDelivery(m)), [allQueuedMessages])
+  const systemDeliveryCount = allQueuedMessages.length - queuedMessages.length
 
   // Mid-turn steer: inject the composer content into the RUNNING turn instead
   // of queueing for the next one. Mirrors send()'s payload prep so pending
@@ -3441,6 +3445,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
               )}
               {!activityOpen && <SubagentProgressBar slot={activeSlot} />}
               {!activityOpen && <WorkflowProgressBar slot={activeSlot} />}
+              <SubagentDeliveryProgress count={systemDeliveryCount} />
               <QueueStack messages={queuedMessages} onCancel={handleCancelQueued} onInterrupt={handleInterruptQueued} onEdit={handleEditQueued} fuseBelow={followUpOptions.length === 0 && !knowledgeFetch.pendingKnowledge} />
               {flyingQuote && <FlyingQuote text={flyingQuote.text} from={flyingQuote.from} targetRef={inputAreaRef} onComplete={() => setFlyingQuote(null)} />}
               <div ref={inputAreaRef} className="relative z-10">

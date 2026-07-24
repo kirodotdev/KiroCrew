@@ -100,6 +100,15 @@ async def api_spawn(request: web.Request) -> web.Response:
     max_turns = cleaned.get("max_turns") or 0
     cwd = cleaned.get("cwd") or ""
     model = cleaned.get("model") or ""
+    # Batch/wave identity (transport-layer params from spawn_run MCP, like
+    # approval_mode/silent above): validated inline, bounded, never LLM-schema.
+    batch_id = str(body.get("batch_id", "") or "")[:32]
+    if batch_id and not batch_id.isalnum():
+        return web.json_response({"error": "batch_id must be alphanumeric"}, status=400)
+    try:
+        batch_total = max(0, min(int(body.get("batch_total", 0) or 0), 1000))
+    except (TypeError, ValueError):
+        batch_total = 0
     info = state.subagents.spawn(
         task,
         parent_session_key=parent_session,
@@ -109,14 +118,59 @@ async def api_spawn(request: web.Request) -> web.Response:
         model=model or None,
         approval_mode=approval_mode or None,
         silent=silent,
+        batch_id=batch_id,
+        batch_total=batch_total,
     )
     if not info:
+        # Reached mgr.spawn (submission COUNTED at the top of spawn()) but
+        # refused for capacity — tell the client so it does NOT reconcile
+        # this member as a lost submission (double-count would close the
+        # wave early).
         return web.json_response(
-            {"error": f"capacity reached ({state.subagents.max_concurrent})"}, status=429
+            {"error": f"capacity reached ({state.subagents.max_concurrent})",
+             "counted": True}, status=429
         )
     if info.done and info.error:
-        return web.json_response({"error": info.error}, status=400)
+        # Rejected INSIDE mgr.spawn: already counted as submitted and (for
+        # batch members) announced through the completion consumer
+        # (_announce_rejection). "counted" tells spawn_run's client-side
+        # reconcile to skip this member.
+        return web.json_response({"error": info.error, "counted": True}, status=400)
     return web.json_response({"id": info.id, "task": task, "status": "spawned"})
+
+
+async def api_spawn_lost(request: web.Request) -> web.Response:
+    """POST /api/spawn/lost — reconcile a batch member whose spawn POST failed.
+
+    Called by ``spawn_run`` (mcp_core) when a member's ``POST /api/spawn``
+    died before reaching the handler (transport error, timeout) or was
+    rejected BEFORE ``mgr.spawn`` ran (validation 400 / 503) — i.e. the
+    response carried no ``counted`` flag. Every sibling's ``batch_total``
+    already counts the lost member, so without this reconcile the wave's
+    ``submitted < expected`` forever and held digest results strand until
+    restart (Opus MEDIUM + Design Review CONCERN 1). The reaper's stuck-wave
+    sweep is the backstop when even this call cannot be delivered.
+    """
+    state: DashboardState = request.app["state"]
+    if not state.subagents:
+        return web.json_response({"error": "subagents not available"}, status=503)
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON"}, status=400)
+    batch_id = str(body.get("batch_id", "") or "")[:32]
+    if not batch_id or not batch_id.isalnum():
+        return web.json_response({"error": "valid batch_id required"}, status=400)
+    try:
+        batch_total = max(0, min(int(body.get("batch_total", 0) or 0), 1000))
+    except (TypeError, ValueError):
+        batch_total = 0
+    reason = str(body.get("reason", "") or "spawn submission failed")[:300]
+    parent_session = str(body.get("parent_session", "") or "")
+    state.subagents.record_lost_submission(
+        batch_id, batch_total, reason, parent_session_key=parent_session
+    )
+    return web.json_response({"status": "reconciled", "batch_id": batch_id})
 
 
 def _redact(text: str) -> str:
@@ -282,6 +336,55 @@ async def api_spawn_list(request: web.Request) -> web.Response:
             entry["elapsed"] = round(time.time() - info.started)
         agents.append(entry)
     return web.json_response({"agents": agents})
+
+
+async def api_spawn_retry(request: web.Request) -> web.Response:
+    """POST /api/spawn/{agent_id}/retry — re-spawn a FAILED subagent's task.
+
+    Backs the chip's "Retry failed (N)" batch control. Only terminal failed
+    agents are retryable (never running ones — that would double the work —
+    and never user-stopped ones — the user killed that work on purpose).
+    Spawns a fresh agent with the original task/agent/parent (new id; the old
+    terminal card stays for history). Batch identity is NOT carried over: the
+    retry is a standalone spawn, so a wave's digest accounting (already
+    completed) is never reopened.
+    """
+    state: DashboardState = request.app["state"]
+    if not state.subagents:
+        return web.json_response({"error": "subagents not available"}, status=503)
+    agent_id = request.match_info["agent_id"]
+    if agent_id.startswith("native:"):
+        return web.json_response(
+            {"error": "native subagents run inside the parent turn and cannot be retried"},
+            status=400,
+        )
+    old = state.subagents.get(agent_id)
+    if not old:
+        return web.json_response({"error": "not found"}, status=404)
+    if not old.done:
+        return web.json_response({"error": "agent is still running"}, status=409)
+    if old.outcome != "failed":
+        return web.json_response(
+            {"error": f"only failed agents can be retried (outcome={old.outcome})"},
+            status=409,
+        )
+    info = state.subagents.spawn(
+        old._raw_task or old.task,
+        parent_session_key=old.parent_session_key,
+        agent=old.agent,
+        max_turns=old.max_turns,
+        cwd=old.cwd,
+        model=old.model or None,
+        approval_mode=old.approval_mode or None,
+        silent=old.silent,
+    )
+    if not info:
+        return web.json_response(
+            {"error": f"capacity reached ({state.subagents.max_concurrent})"}, status=429
+        )
+    if info.done and info.error:
+        return web.json_response({"error": info.error}, status=400)
+    return web.json_response({"id": info.id, "retried_from": agent_id, "status": "spawned"})
 
 
 async def api_spawn_delete(request: web.Request) -> web.Response:

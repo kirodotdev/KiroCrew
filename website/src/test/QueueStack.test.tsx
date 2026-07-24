@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
-import QueueStack from '../components/QueueStack'
+import QueueStack, { SubagentDeliveryProgress, isSystemDelivery } from '../components/QueueStack'
 import type { ChatMessage } from '../types'
 
 // QueueStack renders framer-motion cards; we only exercise the inline
@@ -63,5 +63,28 @@ describe('QueueStack inline edit', () => {
     fireEvent.keyDown(input, { key: 'Enter' })
     fireEvent.blur(input)  // committedRef guard must swallow this
     expect(onEdit).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('system sub-agent delivery handling', () => {
+  it('isSystemDelivery matches per-agent and batch completion announces only', () => {
+    expect(isSystemDelivery(queued('[Subagent completion event]\nAgent `x` completed', 'q1'))).toBe(true)
+    expect(isSystemDelivery(queued('[Subagent batch completion event]\nWave finished', 'q2'))).toBe(true)
+    expect(isSystemDelivery(queued('please also check the docs', 'q3'))).toBe(false)
+    expect(isSystemDelivery(queued('tell me about [Subagent completion event]', 'q4'))).toBe(false)
+  })
+
+  it('SubagentDeliveryProgress renders a non-interactive count line', () => {
+    render(<SubagentDeliveryProgress count={42} />)
+    const el = screen.getByTestId('subagent-delivery-progress')
+    expect(el.textContent).toContain('42 sub-agent results ready')
+    // Non-interactive: no buttons, no inputs — nothing to cancel or edit.
+    expect(el.querySelector('button')).toBeNull()
+    expect(el.querySelector('input')).toBeNull()
+  })
+
+  it('SubagentDeliveryProgress renders nothing at zero', () => {
+    render(<SubagentDeliveryProgress count={0} />)
+    expect(screen.queryByTestId('subagent-delivery-progress')).toBeNull()
   })
 })

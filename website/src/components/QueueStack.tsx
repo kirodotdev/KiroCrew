@@ -1,7 +1,38 @@
 import { useState, useRef, useEffect, memo } from 'react'
 import { AnimatePresence, motion, useMotionValue, useSpring } from 'framer-motion'
-import { Hourglass, ChevronUp, X, Zap, Pencil, Check } from 'lucide-react'
+import { Hourglass, ChevronUp, X, Zap, Pencil, Check, Bot, Loader2 } from 'lucide-react'
 import type { ChatMessage } from '../types'
+
+/** System-injected sub-agent completion deliveries waiting for the busy slot.
+ *  These are NOT user messages: they must not be editable/cancellable (either
+ *  would silently lose a finished agent's result) and rendering each as a
+ *  queue card is noise at scale — they collapse into one progress line
+ *  (SubagentDeliveryProgress) instead of the interactive QueueStack. */
+export function isSystemDelivery(m: ChatMessage): boolean {
+  const c = m.content || ''
+  return c.startsWith('[Subagent completion event]') || c.startsWith('[Subagent batch completion event]')
+}
+
+/** One quiet, non-interactive line summarizing held sub-agent deliveries —
+ *  "the results are in; they'll be processed when the current turn finishes". */
+export function SubagentDeliveryProgress({ count }: { count: number }) {
+  if (count <= 0) return null
+  return (
+    <div
+      className="mx-auto w-full px-5"
+      style={{ maxWidth: 'var(--mc-content-width, 900px)' }}
+      data-testid="subagent-delivery-progress"
+    >
+      <div className="mb-1 flex items-center gap-2 rounded-md bg-accent/5 border border-accent/15 px-3 py-1.5 text-[12px] font-mono text-muted">
+        <Bot size={13} className="text-accent/70 shrink-0" />
+        <Loader2 size={12} className="animate-spin text-accent/70 shrink-0" />
+        <span>
+          {count} sub-agent result{count > 1 ? 's' : ''} ready — processing after the current turn
+        </span>
+      </div>
+    </div>
+  )
+}
 
 const MAX_PEEK = 2
 const CARD_H = 40

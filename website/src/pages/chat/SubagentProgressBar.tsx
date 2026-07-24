@@ -1,12 +1,17 @@
 import { useState, useRef, useEffect, useMemo, useCallback, memo } from 'react'
-import { Bot, X, AlertTriangle, Loader2 } from 'lucide-react'
+import { Bot, X, AlertTriangle, Loader2, CheckCircle, AlertCircle, Square, RotateCcw } from 'lucide-react'
 import { useAppSelector, useAppDispatch } from '../../store'
-import { openActivityToTab, sseSubagentDone } from '../../store/chatSlice'
+import { openActivityToTab, selectSubagent, sseSubagentDone } from '../../store/chatSlice'
 import { api } from '../../api/client'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
 import type { SubagentActivity } from '../../types'
 
 const EMPTY_SUBAGENTS: Record<string, SubagentActivity> = {}
+
+/** Max agent rows rendered in the chip — exceptions (stalled/retrying) sort
+ *  first, the healthy remainder collapses into a summary row. Bounds chip DOM
+ *  at 60-100 concurrent agents without a virtualization dependency. */
+const CHIP_MAX_ROWS = 8
 
 /** Minimal shape of the `/api/spawn` list response consumed for reconciliation. */
 interface SpawnListAgent {
@@ -24,12 +29,30 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
   // (dashboardSlice.subagentRunning only updates on subagent_status which fires at completion)
   const dispatch = useAppDispatch()
   const subagents = useAppSelector(s => slot === s.chat.activeSlot ? s.chat.subagents : s.chat.slotActivity[slot ?? '']?.subagents ?? EMPTY_SUBAGENTS)
-  const activeList = useMemo(() => Object.values(subagents).filter(a => a.status === 'running' || a.status === 'tool' || a.status === 'pending'), [subagents])
+  const all = useMemo(() => Object.values(subagents), [subagents])
+  // Exception-first ordering: retrying/stalled agents need eyes; the healthy
+  // majority collapses behind the summary row at scale.
+  const activeList = useMemo(() => {
+    const act = all.filter(a => a.status === 'running' || a.status === 'tool' || a.status === 'pending')
+    const rank = (a: SubagentActivity) => (a.retrying ? 0 : a.stalled ? 1 : a.status === 'pending' ? 2 : 3)
+    return act.sort((x, y) => rank(x) - rank(y))
+  }, [all])
   const running = activeList.length
-  const anyStalled = useMemo(() => activeList.some(a => a.stalled), [activeList])
+  // Histogram counts across the WHOLE wave (terminal agents included) so a
+  // failure mid-wave is visible in the header instead of silently dropping
+  // out of the running-only list.
+  const counts = useMemo(() => ({
+    done: all.filter(a => a.status === 'done').length,
+    failed: all.filter(a => a.status === 'error').length,
+    stopped: all.filter(a => a.status === 'stopped').length,
+    stalled: activeList.filter(a => a.stalled).length,
+  }), [all, activeList])
+  const failedIds = useMemo(() => all.filter(a => a.status === 'error' && !a.id.startsWith('native:')).map(a => a.id), [all])
   const activeListRef = useRef(activeList)
   activeListRef.current = activeList
   const hasActive = running > 0
+  const visibleList = activeList.slice(0, CHIP_MAX_ROWS)
+  const hiddenCount = activeList.length - visibleList.length
   // Only running/tool agents are cancellable via spawnDelete; pending agents
   // (awaiting approval) are resolved through the approval reject path instead.
   const stoppableCount = useMemo(() => activeList.filter(a => a.status === 'running' || a.status === 'tool').length, [activeList])
@@ -42,6 +65,15 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
   const stopAll = useCallback(() => {
     activeListRef.current.forEach(a => { if (a.status === 'running' || a.status === 'tool') stopAgent(a.id) })
   }, [stopAgent])
+  const [retrying, setRetrying] = useState(false)
+  const retryFailed = useCallback(() => {
+    setRetrying(true)
+    Promise.allSettled(failedIds.map(id => api.spawnRetry(id))).finally(() => setRetrying(false))
+  }, [failedIds])
+  const openAgent = useCallback((id: string) => {
+    dispatch(selectSubagent(id))
+    dispatch(openActivityToTab('subagents'))
+  }, [dispatch])
   const [, setTick] = useState(0)
   // 1Hz tick to update elapsed timers + 30s reconciliation to clear phantom agents
   useEffect(() => {
@@ -65,25 +97,39 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
       <div className="mb-1 rounded-md bg-accent/10 border border-accent/20 animate-slide-up overflow-hidden">
         <div className="flex items-center gap-2 px-3 py-1.5 text-[13px] font-mono">
           <Bot size={14} className="text-accent shrink-0" />
-          <span className="text-text-strong font-medium">{running} agent{running > 1 ? 's' : ''} running</span>
-          {anyStalled && (
-            <span className="ml-auto shrink-0 inline-flex items-center gap-1 text-warn" title="No activity — possibly stalled">
-              <AlertTriangle size={12} /> stalled
-            </span>
-          )}
-          {stoppableCount > 0 && (
-            <button
-              className={`${anyStalled ? '' : 'ml-auto '}shrink-0 flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded border border-danger/40 text-danger/70 hover:bg-danger-subtle hover:text-danger cursor-pointer transition-all bg-transparent`}
-              onClick={stopAll}
-              aria-label={stoppableCount > 1 ? 'Stop all running subagents' : 'Stop running subagent'}
-            >
-              <X size={11} /> Stop{stoppableCount > 1 ? ' all' : ''}
-            </button>
-          )}
+          {/* Histogram header: whole-wave counts so mid-wave failures stay visible */}
+          <span className="text-text-strong font-medium flex items-center gap-2 min-w-0" data-testid="subagent-histogram">
+            <span className="inline-flex items-center gap-1" data-testid="subagent-running-count"><Loader2 size={12} className="animate-spin text-accent" /> {running}</span>
+            {counts.done > 0 && <span className="inline-flex items-center gap-1 text-ok"><CheckCircle size={12} /> {counts.done}</span>}
+            {counts.failed > 0 && <span className="inline-flex items-center gap-1 text-danger"><AlertCircle size={12} /> {counts.failed}</span>}
+            {counts.stopped > 0 && <span className="inline-flex items-center gap-1 text-muted"><Square size={12} /> {counts.stopped}</span>}
+            {counts.stalled > 0 && <span className="inline-flex items-center gap-1 text-warn" title="No activity — possibly stalled"><AlertTriangle size={12} /> {counts.stalled}</span>}
+          </span>
+          <span className="ml-auto shrink-0 flex items-center gap-1.5">
+            {failedIds.length > 0 && (
+              <button
+                className="shrink-0 flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded border border-accent/40 text-accent/80 hover:bg-accent/10 hover:text-accent cursor-pointer transition-all bg-transparent disabled:opacity-50"
+                onClick={retryFailed}
+                disabled={retrying}
+                aria-label={`Retry ${failedIds.length} failed subagent${failedIds.length > 1 ? 's' : ''}`}
+              >
+                <RotateCcw size={11} className={retrying ? 'animate-spin' : ''} /> Retry failed ({failedIds.length})
+              </button>
+            )}
+            {stoppableCount > 0 && (
+              <button
+                className="shrink-0 flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded border border-danger/40 text-danger/70 hover:bg-danger-subtle hover:text-danger cursor-pointer transition-all bg-transparent"
+                onClick={stopAll}
+                aria-label={stoppableCount > 1 ? 'Stop all running subagents' : 'Stop running subagent'}
+              >
+                <X size={11} /> Stop{stoppableCount > 1 ? ' all' : ''}
+              </button>
+            )}
+          </span>
         </div>
         <div className="px-3 pb-2 space-y-0.5">
-          {activeList.map((a, i) => {
-            const isLast = i === activeList.length - 1
+          {visibleList.map((a, i) => {
+            const isLast = i === visibleList.length - 1 && hiddenCount === 0
             const taskPreview = sanitizeLlmOutput((a.task || '').slice(0, 80)) + ((a.task || '').length > 80 ? '…' : '')
             const agentLabel = taskPreview || sanitizeLlmOutput(a.agent || 'agent')
             const elapsed = Math.round((Date.now() - a.startedAt) / 1000)
@@ -93,7 +139,7 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
                 <button
                   type="button"
                   className="min-w-0 flex-1 flex items-start gap-1.5 rounded-sm text-left text-[12px] text-muted font-mono hover:bg-accent/5 transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
-                  onClick={() => dispatch(openActivityToTab('subagents'))}
+                  onClick={() => openAgent(a.id)}
                   aria-label={`Open ${agentLabel} in subagents sidebar`}
                 >
                   <span aria-hidden="true" className="shrink-0 text-border select-none">{isLast ? '└─' : '├─'}</span>
@@ -128,6 +174,18 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
               </div>
             )
           })}
+          {hiddenCount > 0 && (
+            <button
+              type="button"
+              data-testid="subagent-overflow-row"
+              className="w-full flex items-center gap-1.5 rounded-sm text-left text-[12px] text-muted/60 font-mono hover:bg-accent/5 transition-colors cursor-pointer bg-transparent border-none"
+              onClick={() => dispatch(openActivityToTab('subagents'))}
+              aria-label={`Show ${hiddenCount} more running subagents in the sidebar`}
+            >
+              <span aria-hidden="true" className="shrink-0 text-border select-none">└─</span>
+              <span>+ {hiddenCount} more running normally…</span>
+            </button>
+          )}
         </div>
       </div>
     </div>

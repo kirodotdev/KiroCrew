@@ -229,6 +229,8 @@ from kiro_crew.dashboard.handlers.messaging import (  # noqa: E402, F401
     api_spawn_clear,
     api_spawn_delete,
     api_spawn_list,
+    api_spawn_lost,
+    api_spawn_retry,
     api_spawn_status,
     api_telegram_config_get,
     api_telegram_config_save,

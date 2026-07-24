@@ -161,6 +161,9 @@ interface ChatState {
   voicePlaying: boolean
   voiceAudio: string | null  // base64 stitched MP3 for replay
   subagents: Record<string, SubagentActivity>
+  /** Agent id the user picked from the chip — the Activity Subagents tab
+   *  scrolls to, expands, and auto-loads this card (1-click transcript). */
+  selectedSubagentId: string | null
   toolLog: ToolActivity[]
   /** Live dynamic-workflow runs keyed by run_id. Populated from
    *  `workflow_run_event` WS broadcasts; consumed by WorkflowProgressBar. */
@@ -212,6 +215,7 @@ const initialState: ChatState = {
   voicePlaying: false,
   voiceAudio: null,
   subagents: {},
+  selectedSubagentId: null,
   toolLog: [],
   workflowRuns: {},
   activityOpen: false,
@@ -1003,6 +1007,52 @@ const chatSlice = createSlice({
       // Prototype-pollution guard is centralized in getSlotSub.
       const a = getSlotSub(state, slot, id)
       if (a) a.stalled = action.payload.stalled
+    },
+    /** One coalesced ~1s frame carrying the latest delta per agent (scale
+     *  plumbing — replaces per-event tool/stalled/retrying frames when many
+     *  agents run). Field presence decides what to apply; latest wins. */
+    sseSubagentBatchUpdate(state, action: PayloadAction<{ updates: { id: string; slot: string; tool?: string; tool_count?: number; stalled?: boolean; attempt?: number }[] }>) {
+      for (const u of action.payload.updates || []) {
+        const a = getSlotSub(state, u.slot, u.id)
+        if (!a) continue
+        // Order matters: retrying (attempt) applies FIRST so a tool field in
+        // the same merged entry — meaning work resumed — clears it last.
+        if (typeof u.attempt === 'number') { a.retrying = true; a.stalled = false }
+        if (typeof u.tool === 'string' && u.tool) { a.lastTool = u.tool; if (a.status === 'running') a.status = 'tool'; a.retrying = false }
+        if (typeof u.tool_count === 'number') a.toolCount = u.tool_count
+        if (typeof u.stalled === 'boolean') a.stalled = u.stalled
+      }
+    },
+    /** One coalesced ~1s frame of concatenated streaming text per agent
+     *  (subscriber-only, mirrors sseSubagentChunk semantics). */
+    sseSubagentBatchChunks(state, action: PayloadAction<{ chunks: { id: string; slot: string; text: string }[] }>) {
+      for (const c of action.payload.chunks || []) {
+        const a = getSlotSub(state, c.slot, c.id)
+        if (!a) continue
+        a.retrying = false
+        a.streaming += c.text
+        if (a.streaming.length > 50_000) {
+          a.streaming = '…(truncated)\n' + a.streaming.slice(-40_000)
+        }
+      }
+    },
+    /** Chip row click → the Activity tab scrolls to/expands this agent. */
+    selectSubagent(state, action: PayloadAction<string | null>) {
+      state.selectedSubagentId = action.payload
+    },
+    /** "Dismiss done": drop terminal cards for a slot (backend clear is the
+     *  caller's job via DELETE /api/spawn; this trims the local view). */
+    clearTerminalSubagents(state, action: PayloadAction<{ slot: string }>) {
+      const slot = action.payload.slot
+      if (isUnsafeKey(slot)) return
+      const subs = slot !== state.activeSlot
+        ? state.slotActivity[safeKey(slot)]?.subagents
+        : state.subagents
+      if (!subs) return
+      for (const id of Object.keys(subs)) {
+        const st = subs[id]?.status
+        if (st === 'done' || st === 'error' || st === 'stopped') delete subs[id]
+      }
     },
     sseSubagentDone(state, action: PayloadAction<{ slot: string; id: string; elapsed: number; error?: string; stopped?: boolean; outcome?: 'completed' | 'failed' | 'stopped'; task?: string; agent?: string; result?: string }>) {
       if (isUnsafeKey(action.payload.slot) || isUnsafeKey(action.payload.id)) return
@@ -1855,6 +1905,7 @@ export const {
   removeThinking, removeByApprovalId, resolveByApprovalId, clearPendingPermissions, setSlotRunning, setSlotStopping, startLocalTurn, syncSlotRunningFromServer, setSlotState, setSlotStatusDetail, setStopPressedAt, clearMessages, truncateAfterIndex, replaceMessages, hydrateSlotMessages, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage,
   sseContextUsage, setVoicePlaying, setVoiceAudio,
   toggleActivity, openActivityToTab, openActivityPanel, openActivityToTool, clearFocusToolCallId, clearSubagentsForSnapshot, sseSubagentPending, markSubagentApproving, sseSubagentSpawn, sseSubagentChunk, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone,
+  sseSubagentBatchUpdate, sseSubagentBatchChunks, selectSubagent, clearTerminalSubagents,
   sseSubagentSnapshot, sseToolActivity, sseToolResult, sseActivityEvent,
   sseWorkflowEvent, clearWorkflowRun,
   sseSideResult, sideClose, sideOptimisticAppend, sideOptimisticRollback,

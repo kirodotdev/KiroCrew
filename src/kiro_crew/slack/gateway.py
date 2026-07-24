@@ -163,10 +163,32 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.state import _ChatSlot
     from kiro_crew.discord.client import DiscordClient
     from kiro_crew.providers.base import LLMProvider
+    from kiro_crew.subagent_scale import SubagentEventCoalescer
     from kiro_crew.task_models import Task
     from kiro_crew.telegram.client import TelegramClient
     from kiro_crew.webex.client import WebexClient
     from kiro_crew.wechat.client import WeComClient
+
+# Chunked wave-digest size: every multi-task wave delivers its completed
+# results to the parent in digest CHUNKS of this many members (queue-style —
+# each chunk is one injection turn), with a final partial chunk when the wave
+# closes. A 60-agent wave = 6 digest turns spread across the wave's runtime
+# instead of 60 per-agent turns (the parent-context flood at scale) or one
+# straggler-gated mega-digest at the very end. Single-task spawns have no
+# batch identity and keep the plain per-agent injection.
+# Tunable via KIROCREW_SUBAGENT_DIGEST_CHUNK_SIZE. Guarded parse: a malformed
+# value must never crash gateway import — fall back to the default and clamp
+# to a sane positive range.
+
+
+def _digest_chunk_size() -> int:
+    try:
+        return max(1, min(int(os.environ.get("KIROCREW_SUBAGENT_DIGEST_CHUNK_SIZE", "10")), 1000))
+    except (TypeError, ValueError):
+        return 10
+
+
+SUBAGENT_DIGEST_CHUNK_SIZE = _digest_chunk_size()
 
 logger = logging.getLogger(__name__)
 
@@ -585,6 +607,9 @@ class GatewayOrchestrator:
         # as an inert None so other modules referencing it degrade gracefully.
         self.secretary_svc: object | None = None
         self.subagent_mgr: SubagentManager | None = None
+        self._subagent_coalescer_inst: "SubagentEventCoalescer | None" = None
+        # Wave accounting for the completion digest (batch_id -> progress).
+        self._batch_progress: dict[str, dict] = {}
         self._cron_injecting: dict[str, int] = {}  # parent_key → pending injection count
         self._running_script_ids: set[str] = (
             set()
@@ -2870,6 +2895,29 @@ class GatewayOrchestrator:
         except Exception:
             logger.debug("MCP server listing failed", exc_info=True)
 
+    def _subagent_coalescer(self) -> "SubagentEventCoalescer":
+        """Lazily construct the scale coalescer (needs dashboard_state +
+        subagent_mgr, both wired after __init__)."""
+        if self._subagent_coalescer_inst is None:
+            from kiro_crew.subagent_scale import SubagentEventCoalescer
+
+            _state = self.dashboard_state
+
+            def _bcast_all(t: str, d: dict) -> None:
+                if _state:
+                    _state.broadcast_ws(t, d)
+
+            def _bcast_subs(t: str, d: dict) -> None:
+                if _state:
+                    _state.broadcast_ws_subagent_subscribers(t, d)
+
+            self._subagent_coalescer_inst = SubagentEventCoalescer(
+                _bcast_all,
+                _bcast_subs,
+                lambda: self.subagent_mgr.running_count if self.subagent_mgr else 0,
+            )
+        return self._subagent_coalescer_inst
+
     def _init_subagents(self) -> None:
         """Initialize the subagent manager."""
 
@@ -3165,6 +3213,193 @@ class GatewayOrchestrator:
             )
 
             parent_key = info.parent_session_key
+
+            # ── Batch accounting + wave digest (scale plumbing) ──
+            # Every batch member is accounted here (the single completion
+            # consumer for all terminal paths). Waves larger than the digest
+            # threshold deliver ONE consolidated injection turn when the wave
+            # finishes, instead of N per-agent turns — at 60-100 agents the
+            # per-agent turns are the parent-context flood (N full LLM turns)
+            # and bury the 2 failures among 58 successes.
+            # (Type guards: test doubles pass MagicMock infos whose attrs are
+            # truthy mocks — only real str/int batch identity participates.)
+            _batch_id = getattr(info, "batch_id", "")
+            _batch_total = getattr(info, "batch_total", 0)
+            if not isinstance(_batch_id, str):
+                _batch_id = ""
+            if not isinstance(_batch_total, int):
+                _batch_total = 0
+            if _batch_id:
+                bp = self._batch_progress.setdefault(
+                    _batch_id,
+                    {"total": _batch_total, "done": 0, "ok": 0,
+                     "err": 0, "stopped": 0, "fail_lines": [], "ok_lines": [],
+                     "guard_msgs": [], "held_ok_ids": [],
+                     # Chunked delivery bookkeeping: "flushed" = members whose
+                     # results have already been delivered in a prior chunk;
+                     # "chunks" = digest chunks emitted so far.
+                     "flushed": 0, "chunks": 0},
+                )
+                bp["done"] += 1
+                # Fold EVERY member's orchestration escalation into the wave
+                # digest — held members return before the announce is sent, so
+                # without accumulation only the last member's guard_msg would
+                # survive and a mid-wave "you MUST ask the user" ceiling would
+                # be silently dropped (Opus MEDIUM / Arbiter item 3).
+                if guard_msg:
+                    bp["guard_msgs"].append(guard_msg)
+                _oc = info.outcome
+                bp["stopped" if _oc == "stopped" else "err" if _oc == "failed" else "ok"] += 1
+                # Exception-first digest content: failures/stops carry detail,
+                # successes are one pointer line (full output stays on disk).
+                if _oc == "completed":
+                    bp["ok_lines"].append(
+                        f"— `{info.id}` ✅ {task_text[:80]}" + (
+                            f"\n  → {result_path}" if result_path else ""
+                        )
+                    )
+                else:
+                    bp["fail_lines"].append(
+                        f"— `{info.id}` {status} {emoji} · {task_text[:80]}\n"
+                        f"  {detail[:400]}{'…' if len(detail) > 400 else ''}"
+                    )
+                _last = bp["total"] > 0 and bp["done"] >= bp["total"]
+                if not _last:
+                    # Robustness: a wave member that failed AT SPAWN never
+                    # reaches this consumer, so done can never hit total.
+                    # Completion is decided by THIS batch's outstanding
+                    # members only (running OR still queued behind the
+                    # stagger gate) — an unrelated agent under the same
+                    # parent must neither hold the digest hostage nor
+                    # release it early (GPT 5.6 round-1 HIGH).
+                    try:
+                        _last = bool(
+                            self.subagent_mgr
+                            and not self.subagent_mgr.batch_members_pending(_batch_id)
+                        )
+                    except Exception:
+                        _last = False
+                if _last:
+                    self._batch_progress.pop(_batch_id, None)
+                    # Prune per-wave bookkeeping for ALL wave sizes (bounds
+                    # _seen_batches / _batch_submitted growth — Opus LOW).
+                    try:
+                        if self.subagent_mgr:
+                            self.subagent_mgr.finalize_batch(_batch_id)
+                    except Exception:
+                        logger.debug("finalize_batch failed", exc_info=True)
+                    try:
+                        if self.dashboard_state:
+                            self.dashboard_state.broadcast_ws(
+                                "batch_finished",
+                                {
+                                    "batch_id": _batch_id,
+                                    "slot": parent_key.removeprefix("dashboard:"),
+                                    "total": bp["total"], "ok": bp["ok"],
+                                    "err": bp["err"], "stopped": bp["stopped"],
+                                },
+                            )
+                    except Exception:
+                        logger.debug("batch_finished broadcast failed", exc_info=True)
+                if bp["total"] > 1:
+                    # ── Chunked wave delivery ── completed results feed the
+                    # parent queue-style: every SUBAGENT_DIGEST_CHUNK_SIZE
+                    # completions flush ONE digest chunk (an injection turn);
+                    # the final member flushes the remaining partial chunk.
+                    # This bounds each digest's size AND gives the parent
+                    # incremental signal — one straggler no longer withholds
+                    # every sibling's result for its entire runtime (Design
+                    # Review CONCERN 1).
+                    _pending = bp["done"] - bp["flushed"]
+                    _flush = _last or _pending >= SUBAGENT_DIGEST_CHUNK_SIZE
+                    if not _flush:
+                        # Held for the next chunk — the terminal WS event,
+                        # tracker accounting, and stats above already ran;
+                        # only the per-agent injection turn is suppressed.
+                        # Restart safety (Arbiter item 1): flag the member so
+                        # the run loop SKIPS mark_delivered — its result is
+                        # not in the parent's context yet, and a "delivered"
+                        # tombstone would hide it from orphan reconciliation.
+                        # If the gateway restarts mid-chunk, PR #298's orphan
+                        # path finds these undelivered results and delivers a
+                        # recovery digest; in normal operation they are marked
+                        # delivered when their chunk flushes.
+                        info._digest_held = True
+                        if _oc == "completed":
+                            bp["held_ok_ids"].append(info.id)
+                        logger.info(
+                            "Subagent %s: completion held for digest chunk (%d/%d done)",
+                            info.id, bp["done"], bp["total"],
+                        )
+                        return
+                    # Chunk fires now. Do NOT settle the held members'
+                    # delivery tombstones here — composition precedes routing,
+                    # and marking "delivered" before the chunk is handed off
+                    # would re-open the restart-loss window (GPT 5.6 HIGH).
+                    # Stash the ids on the flushing member: the run loop
+                    # settles them only after _on_done (which includes the
+                    # routing below) returns without raising.
+                    info._digest_settle_ids = list(bp.get("held_ok_ids", []))
+                    _failures = bp["fail_lines"]
+                    _oks = bp["ok_lines"]
+                    _digest_body = "\n".join(_failures + _oks)
+                    if len(_digest_body) > 60_000:
+                        _digest_body = _digest_body[:60_000] + "\n…(digest truncated)"
+                    # Deduped union of this chunk's members' escalation
+                    # guards — not just the flushing member's (Arbiter item 3).
+                    _guards = "".join(dict.fromkeys(bp.get("guard_msgs", [])))
+                    bp["chunks"] += 1
+                    bp["flushed"] = bp["done"]
+                    _chunk_k = bp["chunks"]
+                    # Total chunks: full chunks + one final partial. Completion
+                    # order fills chunks to exactly CHUNK_SIZE, so this is
+                    # ceil(total / chunk_size).
+                    _chunk_j = max(
+                        _chunk_k,
+                        -(-bp["total"] // SUBAGENT_DIGEST_CHUNK_SIZE),
+                    )
+                    _footer = (
+                        "Failures are listed first. Full outputs are on disk — "
+                        "read the result paths on demand; do NOT re-run "
+                        "completed agents."
+                    )
+                    if _last:
+                        # Final chunk: release the spawn-discipline gate.
+                        announce = (
+                            f"[Subagent batch completion event]\n"
+                            f"Batch results {_chunk_k}/{_chunk_j} — wave finished: "
+                            f"{bp['ok']} ✅ · {bp['err']} ❌ · "
+                            f"{bp['stopped']} ⏹ of {bp['total']} agents. "
+                            f"All results delivered.\n"
+                            f"This run is complete. Finish processing all "
+                            f"results before spawning any follow-up "
+                            f"sub-agents.\n"
+                            f"{_footer}\n\n{_digest_body}{_guards}"
+                        )
+                    else:
+                        # Non-final chunk: spawn-discipline guidance — the
+                        # parent wakes mid-wave, so it must not start new
+                        # spawns that would interleave with the batches still
+                        # arriving from this run.
+                        _remaining = max(0, bp["total"] - bp["done"])
+                        announce = (
+                            f"[Subagent batch completion event]\n"
+                            f"Batch results {_chunk_k}/{_chunk_j} — "
+                            f"{bp['done']} of {bp['total']} delivered, "
+                            f"{_remaining} still running.\n"
+                            f"Process these results now, but do NOT spawn new "
+                            f"sub-agents yet — more result batches from this "
+                            f"run are still arriving, and spawning now will "
+                            f"interleave with them.\n"
+                            f"{_footer}\n\n{_digest_body}{_guards}"
+                        )
+                        # Reset per-chunk buffers for the next chunk. (On the
+                        # final chunk bp was already popped from
+                        # _batch_progress above — nothing to reset.)
+                        bp["fail_lines"] = []
+                        bp["ok_lines"] = []
+                        bp["guard_msgs"] = []
+                        bp["held_ok_ids"] = []
 
             # ── Route completion back to the originating session ──
             # Dashboard → dashboard only (no Slack)
@@ -3667,6 +3902,12 @@ class GatewayOrchestrator:
                 return
             slot_name = info.parent_session_key.removeprefix("dashboard:")
             base = {"id": info.id, "slot": slot_name}
+            # Batch identity rides every frame when present so the UI can
+            # group/aggregate a wave without a lookup table. (Type guard:
+            # test doubles pass MagicMock infos.)
+            _ebid = getattr(info, "batch_id", "")
+            if isinstance(_ebid, str) and _ebid:
+                base["batch_id"] = _ebid
             if etype == "subagent_injection_failed":
                 # Show error in UI + queue for LLM context on next turn.
                 slot = self.dashboard_state.get_slot(slot_name)
@@ -3697,10 +3938,19 @@ class GatewayOrchestrator:
                     )
                 self.dashboard_state.broadcast_ws(etype, {**base, **extra})
             elif etype == "subagent_chunk":
-                # Heavy data — only to subscribed clients
+                # Heavy data — only to subscribed clients. At scale (>threshold
+                # active agents) the coalescer absorbs it into the ~1s
+                # subagent_batch_chunks frame instead of a per-event frame.
+                if self._subagent_coalescer().handle(etype, {**base, **extra}):
+                    return
                 self.dashboard_state.broadcast_ws_subagent_subscribers(etype, {**base, **extra})
             else:
-                # Lightweight status events — broadcast to all
+                # Lightweight status events — broadcast to all. High-frequency
+                # deltas (tool/stalled/retrying) coalesce at scale into ONE
+                # subagent_batch_update frame per tick; lifecycle events
+                # (spawn/done/recovering/batch_*) always pass through.
+                if self._subagent_coalescer().handle(etype, {**base, **extra}):
+                    return
                 self.dashboard_state.broadcast_ws(etype, {**base, **extra})
                 # subagents_running flips truth value exactly at spawn/done —
                 # push (debounced) so slots-stream consumers stay live.

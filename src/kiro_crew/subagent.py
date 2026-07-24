@@ -207,6 +207,17 @@ def _done_result(text: str) -> str:
 _TIMEOUT_SECS = 1800  # 30 minutes
 _TURN_LIMIT = 100
 _REAPER_INTERVAL = 60  # seconds between reaper sweeps
+# Wave liveness backstop: a wave with lost submissions (submitted < expected,
+# all registered members terminal, nothing queued) is force-reconciled after
+# this many seconds without submission progress, so held digest results can
+# never strand indefinitely (Opus MEDIUM + Design Review CONCERN 1).
+# Deliberately generous — 30 min, symmetric with the per-agent hard ceiling:
+# nothing else waits on this timer (it only fires when zero members run, zero
+# are queued, and submissions stopped arriving), and layers 1+2 (the counted
+# marker + the /api/spawn/lost reconcile) catch nearly every loss immediately;
+# this sweep exists solely for the double-transport-failure tail, where extra
+# latency is irrelevant next to permanent wedging.
+_WAVE_STUCK_SECS = 1800
 _RESET_TIMEOUT = 30.0  # max seconds for session reset in finally block
 _RECOVERY_SLOT_WAIT_SECS = 60.0  # max seconds cancel-recovery waits for a free slot
 _STARTUP_TIMEOUT_SECS = 120  # max seconds a subagent may sit pre-first-turn with no runtime before the startup watchdog reaps it
@@ -784,7 +795,27 @@ class SubagentInfo:
     tool_count: int = 0  # count of observed tool calls (incl. auto-approved); drives running-card progress
     last_activity: float = field(default_factory=time.time)  # time.time() of last stream event; drives idle-stall detection
     stalled: bool = False  # True while the reaper has flagged this subagent as idle/stalled (UI signal)
+    _stall_suspect_at: float = 0.0  # first reaper sweep that saw the idle threshold exceeded; 2-sweep confirmation (scale dampening)
     _awaiting_approval: bool = False  # True while blocked on a human tool-approval prompt; exempt from idle-stall
+    # Batch/wave identity: set when this spawn is part of a multi-task wave
+    # (spawn_run tasks=[...]) so scale plumbing can digest completions and
+    # emit batch lifecycle events. Empty for standalone spawns.
+    batch_id: str = ""
+    batch_total: int = 0
+    # True when this member's per-agent injection was HELD for the wave digest
+    # (gateway _subagent_done). The run loop must then SKIP mark_delivered():
+    # the result is not yet in the parent's context, and a "delivered"
+    # tombstone would exclude it from orphan reconciliation — a gateway
+    # restart mid-wave would silently lose every held completion (Arbiter
+    # item 1). The gateway marks held members delivered when the digest fires.
+    _digest_held: bool = False
+    # Set by the gateway on the wave's FINAL member only: the held OK member
+    # ids whose delivery tombstones must be settled once the digest has been
+    # successfully handed off (i.e. after _on_done returns without raising —
+    # the same contract as the per-agent mark_delivered). Settling these at
+    # digest COMPOSITION would re-open the restart-loss window between
+    # composing and routing (GPT 5.6 HIGH).
+    _digest_settle_ids: list[str] = field(default_factory=list)
     max_turns: int = 0
     reaped: bool = False
     streaming_text: str = ""
@@ -927,6 +958,19 @@ class SubagentManager:
         # dropping them made a queued headless/auto spawn hit the deny-by-default gate and
         # a queued silent spawn emit output. See _drain_queue.
         self._queue: list[dict[str, Any]] = []
+        # Batch ids whose spawn_batch_started event has already fired.
+        self._seen_batches: set[str] = set()
+        # Submission accounting per wave: batch_id -> (submitted, expected).
+        # Guards the wave digest against firing before every member's POST has
+        # arrived — a fast-failing first member must not let the completion
+        # fallback see "no pending members" while later submissions are still
+        # in flight (Arbiter item 2). Pruned by finalize_batch().
+        self._batch_submitted: dict[str, list[int]] = {}
+        # Wave liveness: last submission-progress time.time() per batch_id.
+        # Drives the reaper's stuck-wave backstop (a wave with lost
+        # submissions and no progress is force-reconciled). Pruned by
+        # finalize_batch alongside _batch_submitted.
+        self._batch_progress_ts: dict[str, float] = {}
         self._reaper_task: asyncio.Task | None = None  # type: ignore[type-arg]
         # Cache global approval_mode at init to avoid disk I/O on every
         # parentless spawn (cron, webhooks).
@@ -1366,6 +1410,12 @@ class SubagentManager:
             await asyncio.sleep(_REAPER_INTERVAL)
             now = time.time()
             self._sample_live_costs()
+            # Wave liveness backstop: reconcile waves wedged by submissions
+            # lost before the process boundary (see _sweep_stuck_waves).
+            try:
+                self._sweep_stuck_waves(now)
+            except Exception:
+                logger.debug("Reaper: stuck-wave sweep failed", exc_info=True)
             try:
                 compact_cost_log()  # periodic FIFO trim (also bounds a long-running gateway)
             except Exception:
@@ -1473,6 +1523,16 @@ class SubagentManager:
             return
         idle = now - info.last_activity
         if not info.stalled and idle > self._stall_idle_secs:
+            # Two-sweep confirmation (scale dampening): at 60-100 concurrent
+            # agents a single-window trip ambers several healthy-slow agents at
+            # any moment, training users to ignore the badge. Require the idle
+            # threshold to hold across TWO consecutive reaper sweeps before
+            # flagging — a stream event between sweeps resets the suspicion
+            # (_touch_activity clears both flags). Adds at most one sweep
+            # interval (~60s) of latency to a genuine stall.
+            if info._stall_suspect_at <= 0.0:
+                info._stall_suspect_at = now
+                return
             info.stalled = True
             logger.warning(
                 "Reaper: subagent %s idle %.0fs (no stream activity) — marking stalled",
@@ -1857,6 +1917,9 @@ class SubagentManager:
         cwd: str = "",
         approval_mode: str | None = None,
         silent: bool = False,
+        batch_id: str = "",
+        batch_total: int = 0,
+        _from_queue: bool = False,
     ) -> SubagentInfo | None:
         """Spawn a subagent for *task*.
 
@@ -1900,6 +1963,20 @@ class SubagentManager:
         Returns:
             SubagentInfo | None: Agent metadata, or None if at capacity.
         """
+        # Submission accounting (Arbiter item 2): count this member as
+        # submitted BEFORE any rejection or queue/registration branching. A
+        # member refused below (empty task, low memory, bad cwd, governance)
+        # never registers and never completes — if it weren't counted here,
+        # batch_members_pending() would see submitted < expected FOREVER and
+        # the wave digest would never fire, permanently stranding every
+        # sibling's held result (GPT 5.6 HIGH). A queued member re-enters
+        # spawn() via _drain_queue — never double-count it.
+        if batch_id and not _from_queue:
+            _bs = self._batch_submitted.setdefault(
+                batch_id, [0, max(0, int(batch_total))]
+            )
+            _bs[0] += 1
+            self._batch_progress_ts[batch_id] = time.time()
         # --- Task guard: refuse empty/whitespace-only tasks (defense in depth).
         # The HTTP handler (api_spawn) and MCP tool schemas validate too, but
         # direct Python callers reach this choke point unvalidated. An empty
@@ -1922,13 +1999,16 @@ class SubagentManager:
                 )
             except Exception:
                 logger.debug("SEL audit failed for empty-task rejection", exc_info=True)
-            return SubagentInfo(
+            return self._announce_rejection(SubagentInfo(
                 id=uuid.uuid4().hex[:8],
                 task="",
                 agent=agent,
+                parent_session_key=parent_session_key,
                 done=True,
                 error="spawn refused: task must be a non-empty string",
-            )
+                batch_id=batch_id,
+                batch_total=max(0, int(batch_total)),
+            ))
 
         # --- Redact task once for all SubagentInfo storage (raw task kept for kiro-cli prompt) ---
         _redacted_task = redact_credentials(redact_exfiltration_urls(task)[0])[0]
@@ -1959,10 +2039,13 @@ class SubagentManager:
                 id=uuid.uuid4().hex[:8],
                 task=_redacted_task,
                 agent=agent,
+                parent_session_key=parent_session_key,
                 done=True,
                 error=f"spawn refused: only {avail_gb:.1f} GB memory available (need {min_mem:.0f} GB)",
+                batch_id=batch_id,
+                batch_total=max(0, int(batch_total)),
             )
-            return info
+            return self._announce_rejection(info)
 
         # --- CWD validation: reject bad paths before consuming a slot ---
         resolved_cwd = ""
@@ -1989,10 +2072,13 @@ class SubagentManager:
                     id=uuid.uuid4().hex[:8],
                     task=_redacted_task,
                     agent=agent,
+                    parent_session_key=parent_session_key,
                     done=True,
                     error=f"spawn refused: {cwd_err}",
+                    batch_id=batch_id,
+                    batch_total=max(0, int(batch_total)),
                 )
-                return info
+                return self._announce_rejection(info)
 
         # --- Governance: spawn capability gate (blast-radius containment) ---
         # A policy/profile may disable sub-agent spawning entirely, or bound it
@@ -2010,13 +2096,16 @@ class SubagentManager:
                 error=gov_spawn_err,
                 metadata={"agent": agent, "task": _redacted_task[:120]},
             )
-            return SubagentInfo(
+            return self._announce_rejection(SubagentInfo(
                 id=uuid.uuid4().hex[:8],
                 task=_redacted_task,
                 agent=agent,
+                parent_session_key=parent_session_key,
                 done=True,
                 error=f"spawn refused by governance: {gov_spawn_err}",
-            )
+                batch_id=batch_id,
+                batch_total=max(0, int(batch_total)),
+            ))
 
         now = time.monotonic()
         should_queue, slot_free = self._should_stagger_queue(now)
@@ -2033,6 +2122,8 @@ class SubagentManager:
                     "cwd": resolved_cwd,
                     "approval_mode": approval_mode,
                     "silent": silent,
+                    "batch_id": batch_id,
+                    "batch_total": batch_total,
                 }
             )
             logger.info(
@@ -2050,16 +2141,22 @@ class SubagentManager:
                     asyncio.get_event_loop().call_later(delay, self._drain_queue)
                 except RuntimeError:
                     pass  # no running loop (sync/test context)
-            info = SubagentInfo(id=f"q{len(self._queue)}", task=_redacted_task, agent=agent)
+            info = SubagentInfo(
+                id=f"q{len(self._queue)}", task=_redacted_task, agent=agent,
+                batch_id=batch_id, batch_total=max(0, int(batch_total)),
+            )
             return info
 
         if agent:
             agent, err = _validate_agent(agent)
             if err:
                 info = SubagentInfo(
-                    id=uuid.uuid4().hex[:8], task=_redacted_task, agent="", done=True, error=err
+                    id=uuid.uuid4().hex[:8], task=_redacted_task, agent="",
+                    parent_session_key=parent_session_key,
+                    done=True, error=err,
+                    batch_id=batch_id, batch_total=max(0, int(batch_total)),
                 )
-                return info
+                return self._announce_rejection(info)
 
         agent_id: str = uuid.uuid4().hex[:8]
         info = SubagentInfo(
@@ -2074,11 +2171,29 @@ class SubagentManager:
             allowed_tools=list(allowed_tools) if allowed_tools else [],
             bare=bare,
             cwd=resolved_cwd,
+            batch_id=batch_id,
+            batch_total=max(0, int(batch_total)),
         )
         info._raw_task = task  # unredacted prompt for kiro-cli execution
         self._agents[agent_id] = info
         self._running_count += 1
         self._last_spawn_ts = time.monotonic()  # stagger gate: one start per interval
+        # Batch lifecycle: announce the wave ONCE, on its first member to
+        # actually start (queued members haven't started yet — the event marks
+        # execution begin, and the UI uses it to key batch progress).
+        if batch_id and batch_id not in self._seen_batches:
+            self._seen_batches.add(batch_id)
+            try:
+                loop = asyncio.get_event_loop()
+                loop.create_task(
+                    self._fire_event(
+                        "spawn_batch_started",
+                        info,
+                        {"batch_id": batch_id, "count": info.batch_total},
+                    )
+                )
+            except RuntimeError:
+                pass  # no running loop (sync/test context)
 
         # Check parent session trust (approval_policy="auto") set by dashboard trust toggle.
         parent_trusted = (
@@ -2134,7 +2249,13 @@ class SubagentManager:
                     outcome="rejected_spawn",
                     metadata={"subagent_id": agent_id, "reason": "no_approval_mechanism"},
                 )
-                return info
+                # Batch members must still reach the gateway's completion
+                # consumer (GPT 5.6 HIGH): this is a REGISTERED rejection
+                # (done=True in _agents), so batch_members_pending() already
+                # counts it as complete — without an announce, a wave whose
+                # final member lands here closes with no event and every held
+                # sibling digest strands forever.
+                return self._announce_rejection(info)
         elif self._on_spawn_approval:
             self._tasks[agent_id] = asyncio.create_task(self._spawn_with_approval(info))
         else:
@@ -2166,6 +2287,31 @@ class SubagentManager:
             await self._on_done(info)
         except Exception:
             logger.exception("Subagent announce failed for %s", info.id)
+
+    def _announce_rejection(self, info: SubagentInfo) -> SubagentInfo:
+        """Route a terminal spawn rejection through the done callback.
+
+        A rejected batch member is counted as submitted (top of ``spawn``)
+        but never registers and never reaches ``_run``'s completion path.
+        Without an announce, the gateway's wave accounting never sees its
+        terminal state — and when the rejection is the wave's FINAL
+        submission, no later completion event re-evaluates the wave, so
+        every sibling result already held for the digest strands forever
+        (GPT 5.6 HIGH). Announcing lets ``_subagent_done`` count the member
+        as failed and release the digest when it closes the wave.
+
+        Non-batch rejections skip the announce: the caller already receives
+        the error synchronously in the returned info, and injecting a
+        completion turn for them would double-report.
+        """
+        if info.batch_id and self._on_done:
+            try:
+                self._tasks[f"reject-{info.id}"] = asyncio.ensure_future(
+                    self._safe_announce(info)
+                )
+            except RuntimeError:
+                pass  # no running loop (sync/test context)
+        return info
 
     def _should_stagger_queue(self, now: float) -> tuple[bool, bool]:
         """Decide whether a spawn arriving at *now* must be queued.
@@ -2208,7 +2354,7 @@ class SubagentManager:
         # free, it starts immediately and updates _last_spawn_ts. Forward the FULL
         # kwarg set so approval_mode / silent / model / allowed_tools / bare survive
         # the queue round-trip.
-        self.spawn(**params)
+        self.spawn(**params, _from_queue=True)
         if self._queue and self._running_count < self._max_concurrent:
             try:
                 asyncio.get_event_loop().call_later(
@@ -2307,6 +2453,149 @@ class SubagentManager:
     def all_agents(self) -> list[SubagentInfo]:
         """Return all tracked subagents (running and done)."""
         return list(self._agents.values())
+
+    def batch_members_pending(self, batch_id: str) -> bool:
+        """True while ANY member of *batch_id* is still outstanding — running
+        (registered, not done), queued behind the stagger gate (not yet
+        registered), OR not yet submitted (sibling POSTs still in flight —
+        Arbiter item 2: a fast-failing first member must not finalize the
+        wave and emit a partial digest before the rest of the batch even
+        arrives). The wave digest must also not be held hostage by unrelated
+        agents under the same parent (GPT 5.6 round-1 HIGH)."""
+        if not batch_id:
+            return False
+        _bs = self._batch_submitted.get(batch_id)
+        if _bs is not None and _bs[1] > 0 and _bs[0] < _bs[1]:
+            return True  # submissions still in flight
+        if any(
+            a.batch_id == batch_id and not a.done for a in self._agents.values()
+        ):
+            return True
+        return any(p.get("batch_id") == batch_id for p in self._queue)
+
+    def finalize_batch(self, batch_id: str) -> None:
+        """Prune per-wave bookkeeping once the wave digest has fired.
+
+        Bounds `_seen_batches` / `_batch_submitted` growth (Opus LOW): without
+        this, long-lived gateways accrete an entry per wave forever.
+        """
+        if not batch_id:
+            return
+        self._seen_batches.discard(batch_id)
+        self._batch_submitted.pop(batch_id, None)
+        self._batch_progress_ts.pop(batch_id, None)
+
+    def record_lost_submission(
+        self, batch_id: str, batch_total: int, reason: str,
+        parent_session_key: str = "",
+    ) -> None:
+        """Reconcile a wave member whose spawn submission was LOST before it
+        reached :meth:`spawn` (transport error / timeout / pre-spawn HTTP
+        rejection in ``api_spawn``).
+
+        Every sibling POST carried ``batch_total`` counting the lost member,
+        but ``spawn()`` never ran for it — so ``submitted < expected``
+        forever, ``batch_members_pending()`` stays True, the digest chunk
+        never fires, and held sibling results strand until a gateway restart
+        (Opus MEDIUM + Design Review CONCERN 1). This helper counts the lost
+        member as submitted AND announces a synthetic terminal member through
+        the single completion consumer, so the wave's accounting sees a
+        failure line and can close.
+
+        Idempotent-ish by construction: each call reconciles exactly one lost
+        member; callers invoke it once per lost submission.
+        """
+        if not batch_id:
+            return
+        _bs = self._batch_submitted.setdefault(
+            batch_id, [0, max(0, int(batch_total))]
+        )
+        _bs[0] += 1
+        self._batch_progress_ts[batch_id] = time.time()
+        try:
+            sel().log_tool_invocation(
+                session_key=parent_session_key or "",
+                source="subagent",
+                tool_name="spawn_run",
+                outcome="submission_lost",
+                metadata={"batch_id": batch_id, "reason": reason[:200]},
+            )
+        except Exception:
+            logger.debug("SEL audit failed for lost submission", exc_info=True)
+        info = SubagentInfo(
+            id=uuid.uuid4().hex[:8],
+            task="(submission lost before spawn)",
+            agent="",
+            parent_session_key=parent_session_key,
+            done=True,
+            error=f"spawn submission lost: {reason[:300]}",
+            batch_id=batch_id,
+            batch_total=max(0, int(batch_total)),
+        )
+        if self._on_done:
+            try:
+                self._tasks[f"lost-{info.id}"] = asyncio.ensure_future(
+                    self._safe_announce(info)
+                )
+            except RuntimeError:
+                pass  # no running loop (sync/test context)
+
+    def _sweep_stuck_waves(self, now: float) -> None:
+        """Reaper backstop: force-reconcile waves wedged by lost submissions.
+
+        A wave is STUCK when ``submitted < expected``, every registered
+        member is terminal, nothing of the wave sits in the spawn queue, and
+        there has been no submission progress for ``_WAVE_STUCK_SECS``. The
+        count-driven ``batch_members_pending()`` can never close such a wave
+        on its own — no future completion event will arrive. Reconciling via
+        :meth:`record_lost_submission` (once per sweep per wave — waves with
+        multiple losses converge across sweeps) re-enters the completion
+        consumer so held sibling results deliver instead of stranding until
+        restart. Also bounds the ``_batch_submitted``/``_batch_progress_ts``
+        leak in the stuck case (Opus MEDIUM + Design Review CONCERN 1).
+        """
+        for batch_id, _bs in list(self._batch_submitted.items()):
+            if _bs[1] <= 0 or _bs[0] >= _bs[1]:
+                continue  # complete or unbounded — not wedged by lost POSTs
+            last = self._batch_progress_ts.get(batch_id, 0.0)
+            if now - last < _WAVE_STUCK_SECS:
+                continue  # still within the grace window
+            members = [
+                a for a in self._agents.values() if a.batch_id == batch_id
+            ]
+            if any(not a.done for a in members):
+                continue  # live members will re-evaluate the wave on completion
+            if any(p.get("batch_id") == batch_id for p in self._queue):
+                continue  # queued members still pending — not stuck
+            parent = members[0].parent_session_key if members else ""
+            logger.warning(
+                "Reaper: wave %s stuck (%d/%d submitted, no progress for %.0fs)"
+                " — reconciling one lost submission",
+                batch_id, _bs[0], _bs[1], now - last,
+            )
+            self.record_lost_submission(
+                batch_id,
+                _bs[1],
+                f"submission never arrived (wave stuck > {_WAVE_STUCK_SECS}s"
+                " — reconciled by reaper liveness backstop)",
+                parent_session_key=parent,
+            )
+
+    def _settle_digest_holds(self, info: SubagentInfo) -> None:
+        """Settle delivery tombstones for wave members whose injection was
+        held for this member's digest. Called ONLY after ``_on_done`` returned
+        without raising — the digest has been handed off, so marking the held
+        members delivered no longer risks the restart-loss window (GPT 5.6
+        HIGH: settling at digest composition, before routing, would).
+        """
+        for _hid in info._digest_settle_ids:
+            try:
+                mark_delivered(_hid)
+            except Exception:
+                logger.debug(
+                    "Failed to settle held subagent %s", _hid, exc_info=True
+                )
+        info._digest_settle_ids = []
 
     def get(self, agent_id: str) -> SubagentInfo | None:
         """Get agent info by ID."""
@@ -2455,12 +2744,22 @@ class SubagentManager:
         if self._on_done and not info.reaped and not info._recovering:
             try:
                 await asyncio.wait_for(self._on_done(info), timeout=_ON_DONE_TIMEOUT)
+                # Wave-digest settling: _on_done returned without raising, so
+                # the digest (if this was the wave's final member) has been
+                # handed off. Only NOW settle the held members' delivery
+                # tombstones — a routing failure or crash above leaves them
+                # undelivered and visible to orphan reconciliation.
+                self._settle_digest_holds(info)
                 # Retain result.txt for a TTL grace window instead of deleting it
                 # now, so the parent can read the full transcript (spawn_status /
                 # read / grep) after the completion event. A "delivered" tombstone
                 # excludes it from orphan reconciliation; the reaper prunes it after
                 # agent.subagent_result_ttl_secs (default 1h).
-                if not info.error:
+                # Digest-held wave members are NOT marked here: their result has
+                # not reached the parent yet. The gateway marks them delivered
+                # when the wave digest actually fires, so a restart mid-wave
+                # leaves them visible to orphan reconciliation (Arbiter item 1).
+                if not info.error and not info._digest_held:
                     try:
                         mark_delivered(info.id)
                     except Exception:
@@ -2664,6 +2963,7 @@ class SubagentManager:
         running-card drops the "stalled" warning the moment work resumes.
         """
         info.last_activity = time.time()
+        info._stall_suspect_at = 0.0  # activity resets the 2-sweep confirmation
         if info.stalled:
             info.stalled = False
             await self._fire_event("subagent_stalled", info, {"stalled": False})
