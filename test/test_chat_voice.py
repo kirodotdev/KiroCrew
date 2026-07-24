@@ -130,6 +130,30 @@ class TestVoiceConfig:
             assert mock_vc.provider == "piper"
 
     @pytest.mark.asyncio
+    async def test_put_config_unhashable_engine_does_not_500(self, tmp_path, monkeypatch):
+        # `body["engine"] in VALID_ENGINES` (a frozenset) raises
+        # TypeError: unhashable type on a JSON list/dict value, 500ing the PUT.
+        # The provider check above was already guarded; engine was missed.
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        mock_vc = MagicMock(
+            global_enabled=False, provider="piper", default_voice="Ruth",
+            default_engine="generative", default_rate="100%", default_pitch="0%",
+            aws_profile="", region="", piper_binary="", piper_model="",
+            piper_model_config="", piper_length_scale=1.0,
+        )
+        monkeypatch.setattr("kiro_crew.dashboard.chat_voice._vc", mock_vc)
+        cfg_path = tmp_path / "config.json"
+        cfg_path.write_text(json.dumps({}))
+        monkeypatch.setattr("kiro_crew.dashboard.chat_voice.config_path", lambda: cfg_path)
+        state = _make_state(tmp_path)
+        async with TestClient(TestServer(_make_voice_app(state))) as client:
+            for bad in ({"engine": ["neural"]}, {"engine": {"x": 1}}):
+                resp = await client.put("/api/voice/config", json=bad)
+                assert resp.status == 200  # not a 500
+            # Unhashable/non-str engine ignored — unchanged
+            assert mock_vc.default_engine == "generative"
+
+    @pytest.mark.asyncio
     async def test_put_config_ignores_invalid_length_scale(self, tmp_path, monkeypatch):
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         mock_vc = MagicMock(

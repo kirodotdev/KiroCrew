@@ -70,7 +70,9 @@ async def api_voice_config(request: web.Request) -> web.Response:
         _vc.provider = body["provider"]
     if "voice" in body:
         _vc.default_voice = str(body["voice"])
-    if "engine" in body and body["engine"] in VALID_ENGINES:
+    # Same as provider above: ``in VALID_ENGINES`` raises TypeError on an
+    # unhashable JSON value (list/dict), 500ing the PUT — require a str first.
+    if "engine" in body and isinstance(body["engine"], str) and body["engine"] in VALID_ENGINES:
         _vc.default_engine = body["engine"]
     if "rate" in body:
         _vc.default_rate = str(body["rate"])
