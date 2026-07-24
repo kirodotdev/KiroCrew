@@ -180,3 +180,38 @@ class TestBrandingEndpoint:
             resp = await api_branding(req)
         body = json.loads(resp.body)
         assert body["bot_name"] == "Jarvis"
+
+
+class TestLogoAssetInvariant:
+    """The dashboard-served logo and the PWA 512 icon are the same image.
+
+    ``src/kiro_crew/static/kirocrew-logo.png`` (served at ``/logo.png`` for the
+    sidebar, favicon, and notification avatar) is kept byte-identical to
+    ``website/public/icon-512.png`` (the PWA/manifest 512 icon) by hand — they
+    are two copies of one brand mark. Nothing else asserts that equality, so an
+    icon update that touches one copy and forgets the other would silently ship
+    a mismatched favicon vs. installed-app icon. This guard fails that drift in
+    CI. If the two are intentionally decoupled in future, delete this test in
+    the same change.
+    """
+
+    def test_logo_matches_pwa_512_icon(self):
+        import hashlib
+        from pathlib import Path
+
+        repo_root = Path(__file__).resolve().parents[1]
+        served = repo_root / "src" / "kiro_crew" / "static" / "kirocrew-logo.png"
+        pwa = repo_root / "website" / "public" / "icon-512.png"
+        # Skip rather than fail on a python-only checkout that lacks website/.
+        if not pwa.is_file():
+            import pytest
+
+            pytest.skip("website/public not present (python-only checkout)")
+        assert served.is_file(), f"missing served logo at {served}"
+        served_sha = hashlib.sha256(served.read_bytes()).hexdigest()
+        pwa_sha = hashlib.sha256(pwa.read_bytes()).hexdigest()
+        assert served_sha == pwa_sha, (
+            "kirocrew-logo.png and icon-512.png diverged — update both copies of "
+            "the brand mark together (they are served as /logo.png and the PWA "
+            "512 icon respectively)."
+        )
