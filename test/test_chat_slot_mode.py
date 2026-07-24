@@ -34,7 +34,7 @@ class TestChatSlotMode:
         slot = _ChatSlot("test")
         assert slot.mode == ""
         state = _mock_state(slot)
-        with patch("kiro_crew.dashboard.chat_folders._save_slot_to_history"):
+        with patch("kiro_crew.dashboard.chat_folders.save_slot_off_loop"):
             async with TestClient(TestServer(_make_app(state))) as client:
                 resp = await client.patch(
                     "/api/chat/slots/test/mode",
@@ -51,7 +51,7 @@ class TestChatSlotMode:
         slot = _ChatSlot("test")
         slot.mode = "orchestrator"
         state = _mock_state(slot)
-        with patch("kiro_crew.dashboard.chat_folders._save_slot_to_history"):
+        with patch("kiro_crew.dashboard.chat_folders.save_slot_off_loop"):
             async with TestClient(TestServer(_make_app(state))) as client:
                 resp = await client.patch(
                     "/api/chat/slots/test/mode",
@@ -66,7 +66,7 @@ class TestChatSlotMode:
     async def test_invalid_mode_rejected(self):
         slot = _ChatSlot("test")
         state = _mock_state(slot)
-        with patch("kiro_crew.dashboard.chat_folders._save_slot_to_history"):
+        with patch("kiro_crew.dashboard.chat_folders.save_slot_off_loop"):
             async with TestClient(TestServer(_make_app(state))) as client:
                 resp = await client.patch(
                     "/api/chat/slots/test/mode",
@@ -80,7 +80,7 @@ class TestChatSlotMode:
     @pytest.mark.asyncio
     async def test_slot_not_found(self):
         state = _mock_state()  # no slot
-        with patch("kiro_crew.dashboard.chat_folders._save_slot_to_history"):
+        with patch("kiro_crew.dashboard.chat_folders.save_slot_off_loop"):
             async with TestClient(TestServer(_make_app(state))) as client:
                 resp = await client.patch(
                     "/api/chat/slots/nonexistent/mode",
@@ -93,7 +93,7 @@ class TestChatSlotMode:
         slot = _ChatSlot("test")
         slot.mode = "orchestrator"
         state = _mock_state(slot)
-        with patch("kiro_crew.dashboard.chat_folders._save_slot_to_history"):
+        with patch("kiro_crew.dashboard.chat_folders.save_slot_off_loop"):
             async with TestClient(TestServer(_make_app(state))) as client:
                 resp = await client.patch(
                     "/api/chat/slots/test/mode",
@@ -113,7 +113,7 @@ class TestChatSlotMode:
         assert slot.running
         state = _mock_state(slot)
         try:
-            with patch("kiro_crew.dashboard.chat_folders._save_slot_to_history"):
+            with patch("kiro_crew.dashboard.chat_folders.save_slot_off_loop"):
                 async with TestClient(TestServer(_make_app(state))) as client:
                     resp = await client.patch(
                         "/api/chat/slots/test/mode",
@@ -134,7 +134,7 @@ class TestChatSlotMode:
         slot.mode = "orchestrator"
         slot._auto_run = True
         state = _mock_state(slot)
-        with patch("kiro_crew.dashboard.chat_folders._save_slot_to_history"):
+        with patch("kiro_crew.dashboard.chat_folders.save_slot_off_loop"):
             async with TestClient(TestServer(_make_app(state))) as client:
                 resp = await client.patch(
                     "/api/chat/slots/test/mode",

@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.history import append_if_absent_off_loop
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 if TYPE_CHECKING:
@@ -51,11 +52,24 @@ def inject_cron_result_to_dashboard(
             # execution key).
             log_key = f"cron:{job.id}"
             if state.conversation_log is not None:
-                existing = state.conversation_log.read_messages(log_key)
-                if not any(m.get("content") == context for m in existing):
-                    state.conversation_log.append(
-                        log_key, "assistant", context, agent=job.agent_id or None
-                    )
+                # append_if_absent performs the duplicate check under the SAME
+                # per-session cross-process lock as the write itself, so the
+                # existence test and the append are one atomic critical section.
+                # The previous unlocked read_messages() + append_off_loop left a
+                # TOCTOU window in which a concurrent slot save (or a cron
+                # re-fire) could land the identical result between the check and
+                # the fire-and-forget append — duplicating it on disk and
+                # replaying it twice to the follow-up agent turn after a restart.
+                # append_off_loop dispatches to a worker thread (patient acquire)
+                # and swallows lock/I/O errors — the slot above already carries
+                # the message.
+                append_if_absent_off_loop(
+                    state.conversation_log,
+                    log_key,
+                    "assistant",
+                    context,
+                    agent=job.agent_id or None,
+                )
     state.push_slots_update()
 
 

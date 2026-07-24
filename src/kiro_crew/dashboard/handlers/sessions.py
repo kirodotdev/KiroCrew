@@ -417,7 +417,9 @@ async def api_session_delete(request: web.Request) -> web.Response:
     key = request.match_info["key"]
     if not state.conversation_log:
         return web.json_response({"error": "no conversation log"}, status=400)
-    ok = state.conversation_log.delete_session(key)
+    # delete_session enters _locked (flock acquire + os.close); offload off the
+    # loop so a wedged cross-process peer can't freeze chat/WS/heartbeat.
+    ok = await asyncio.to_thread(state.conversation_log.delete_session, key)
     if ok:
         try:
             await _remove_slot_for_history_key(state, key)
@@ -508,7 +510,9 @@ async def api_sessions_clear(request: web.Request) -> web.Response:
             skipped += 1
             continue
         try:
-            if state.conversation_log.delete_session(key):
+            # delete_session enters _locked (flock + os.close) — offload off the
+            # event loop so a wedged peer can't stall the bulk clear on it.
+            if await asyncio.to_thread(state.conversation_log.delete_session, key):
                 cleanup_tasks.append(_remove_slot_for_history_key(state, key))
                 count += 1
             else:

@@ -16,7 +16,7 @@ from typing import Any
 
 from aiohttp import web
 
-from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
+from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.sel import sel
 
@@ -117,7 +117,7 @@ async def api_chat_tag_delete(request: web.Request) -> web.Response:
     for slot in state._slots.values():
         if tid in slot.tags:
             slot.tags = [t for t in slot.tags if t != tid]
-            _save_slot_to_history(state, slot, force=True)
+            await save_slot_off_loop(state, slot, force=True)
     # Strip from sidebar columns (flat list of column dicts).
     changed_boards = False
     for col in state._tag_boards:
@@ -159,7 +159,7 @@ async def api_chat_slot_tags(request: web.Request) -> web.Response:
         if isinstance(tid, str) and tid in valid_ids and tid not in new_tags:
             new_tags.append(tid)
     slot.tags = new_tags
-    _save_slot_to_history(state, slot, force=True)
+    await save_slot_off_loop(state, slot, force=True)
     state.push_slots_update()
     sel().log_api_access(
         caller="dashboard", operation="chat.slot_tags",
@@ -339,7 +339,7 @@ async def api_chat_slot_drop(request: web.Request) -> web.Response:
     target_id = status_tags[0]["id"]
     kept = [t for t in slot.tags if t in tag_index and not tag_index[t].get("status")]
     slot.tags = kept + [target_id]
-    _save_slot_to_history(state, slot, force=True)
+    await save_slot_off_loop(state, slot, force=True)
     state.push_slots_update()
     sel().log_api_access(
         caller="dashboard", operation="chat.slot_drop",

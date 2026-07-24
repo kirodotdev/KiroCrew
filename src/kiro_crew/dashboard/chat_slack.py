@@ -8,7 +8,7 @@ from aiohttp import web
 
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard import state as dashboard_state
-from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
+from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
 from kiro_crew.dashboard.chat_utils import _history_key_for
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.security import redact_and_truncate
@@ -271,7 +271,7 @@ async def api_chat_slot_handoff(request: web.Request) -> web.Response:
         return web.json_response({"error": "no conversation log"}, status=500)
 
     try:
-        _save_slot_to_history(state, slot)
+        await save_slot_off_loop(state, slot)
     except Exception:
         pass
 

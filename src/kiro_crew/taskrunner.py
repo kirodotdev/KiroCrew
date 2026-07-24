@@ -1188,14 +1188,46 @@ class TaskRunner:
     def _log_task(self, history_key: str, run: Project, task: Task) -> None:
         if not self._conversation_log:
             return
+        spec_name = Path(run.spec_path).name if run.spec_path else run.task_id
+        user_msg = f"[Task: {spec_name}] Task {task.index}: {task.title}"
+        result_summary = task.result[:2000] if task.result else "Task completed."
+        log = self._conversation_log
+
+        def _do() -> None:
+            # Both appends run on ONE worker thread so they persist IN ORDER —
+            # two independent append_off_loop dispatches could interleave on the
+            # default executor and reorder the transcript — and take the patient
+            # off-loop cross-process lock acquire path.
+            log.append(history_key, "user", user_msg)
+            log.append(history_key, "assistant", result_summary)
+
+        # _log_task is invoked from async task_executor code running ON the
+        # event loop. A direct append there hits _locked's fail-fast on-loop
+        # path (raises HistoryLockTimeout under benign contention, silently
+        # swallowed) and risks a synchronous disk write on the loop. Offload to
+        # a worker thread so it takes the blocking off-loop acquire and can
+        # neither stall the loop nor drop the write under contention.
         try:
-            spec_name = Path(run.spec_path).name if run.spec_path else run.task_id
-            user_msg = f"[Task: {spec_name}] Task {task.index}: {task.title}"
-            self._conversation_log.append(history_key, "user", user_msg)
-            result_summary = task.result[:2000] if task.result else "Task completed."
-            self._conversation_log.append(history_key, "assistant", result_summary)
-        except Exception:
-            logger.debug("Failed to log task to conversation history", exc_info=True)
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop is None:
+            try:
+                _do()
+            except Exception:
+                logger.debug(
+                    "Failed to log task to conversation history", exc_info=True
+                )
+            return
+
+        def _report(fut: "asyncio.Future[None]") -> None:
+            exc = fut.exception()
+            if exc is not None:
+                logger.debug(
+                    "Failed to log task to conversation history: %r", exc
+                )
+
+        loop.run_in_executor(None, _do).add_done_callback(_report)
 
     # ── Learn from Failures ──
 

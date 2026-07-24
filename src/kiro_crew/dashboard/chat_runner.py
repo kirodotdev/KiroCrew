@@ -41,7 +41,7 @@ from kiro_crew.context_management import (
     strip_plan_markers,
     validate_plan_format,
 )
-from kiro_crew.dashboard.chat_persistence import _build_history_prefix, _save_slot_to_history
+from kiro_crew.dashboard.chat_persistence import _build_history_prefix, save_slot_off_loop
 from kiro_crew.dashboard.chat_title import (
     _extract_and_redact_plan_metadata,
     _maybe_auto_title,
@@ -4017,7 +4017,7 @@ async def _run_chat(
             # Attach accumulated file changes to last assistant message before persist
             _flush_file_changes(slot)
             # Save to history and trigger memory consolidation
-            _save_slot_to_history(state, slot)
+            await save_slot_off_loop(state, slot)
             # Reset ALL retry budgets once the cycle completes (success OR the
             # terminal second-empty error) so each new user turn gets fresh budgets.
             # Guarded by _retrying_empty so the empty re-queue iteration preserves

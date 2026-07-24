@@ -10,7 +10,7 @@ import uuid
 
 from aiohttp import web
 
-from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
+from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_PERMISSION_REQUEST, EVENT_TEXT_CHUNK
@@ -364,7 +364,7 @@ async def api_chat_folder_delete(request: web.Request) -> web.Response:
     for slot in state._slots.values():
         if slot.folder_id == fid:
             slot.folder_id = ""
-            _save_slot_to_history(state, slot, force=True)
+            await save_slot_off_loop(state, slot, force=True)
     state.save_folders()
     state.push_slots_update()
     sel().log_api_access(
@@ -393,7 +393,7 @@ async def api_chat_slot_folder(request: web.Request) -> web.Response:
         slot._folder_changed = True  # re-inject [FOLDER] breadcrumb on next turn
     slot.folder_id = folder_id
     _unhide_folder(state, folder_id)
-    _save_slot_to_history(state, slot, force=True)
+    await save_slot_off_loop(state, slot, force=True)
     state.push_slots_update()
     sel().log_api_access(
         caller="dashboard", operation="chat.slot_folder",
@@ -415,7 +415,7 @@ async def api_chat_slot_pin(request: web.Request) -> web.Response:
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
     slot.pinned = bool(body.get("pinned", False))
-    _save_slot_to_history(state, slot, force=True)
+    await save_slot_off_loop(state, slot, force=True)
     state.push_slots_update()
     sel().log_api_access(
         caller="dashboard", operation="chat.slot_pin",
@@ -455,7 +455,7 @@ async def api_chat_slot_mode(request: web.Request) -> web.Response:
     # prevent stale "Go All" state from triggering on re-entry.
     if mode != "orchestrator" and getattr(slot, "_auto_run", False):
         slot._auto_run = False
-    _save_slot_to_history(state, slot, force=True)
+    await save_slot_off_loop(state, slot, force=True)
     state.push_slots_update()
     sel().log_api_access(
         caller="dashboard", operation="chat.slot_mode",

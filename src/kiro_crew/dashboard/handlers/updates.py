@@ -334,9 +334,20 @@ async def _restart_gateway(state: DashboardState) -> None:
     # kiro_crew.dashboard.handlers (which re-exports this module), so this
     # must stay inline to avoid an import cycle at module load.
     from kiro_crew.dashboard.chat import save_all_slots_to_history
+    from kiro_crew.executors import subprocess_executor
 
     try:
-        save_all_slots_to_history(state)
+        # Offload the synchronous per-slot save (per-session lock + disk I/O)
+        # to the bounded subprocess_executor with a deadline: on the event loop
+        # a contended session raises HistoryLockTimeout and a wedged disk would
+        # block the restart, so a slot's final save must run off-loop and be
+        # time-bounded rather than stall (or silently drop) here.
+        await asyncio.wait_for(
+            asyncio.get_running_loop().run_in_executor(
+                subprocess_executor(), save_all_slots_to_history, state
+            ),
+            timeout=5.0,
+        )
     except Exception:
         logger.debug("History save before restart failed", exc_info=True)
     try:

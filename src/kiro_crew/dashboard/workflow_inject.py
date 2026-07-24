@@ -18,6 +18,7 @@ import re
 from typing import Any, Callable, Optional
 
 from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.history import append_if_absent_off_loop
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 # Matches absolute POSIX paths to a file with an extension (artifacts a workflow
@@ -158,7 +159,24 @@ def inject_workflow_result(
             # Persist so a follow-up chat turn has the result as context.
             try:
                 if state.conversation_log is not None:
-                    state.conversation_log.append(session_key, "assistant", msg)
+                    # inject_workflow_result runs on the event loop (invoked from
+                    # the workflow runner's on_done inside an asyncio task), so
+                    # offload the lock-backed disk append to a worker thread —
+                    # otherwise the on-loop _locked path drops it under any
+                    # concurrent holder. The slot.append above already surfaces
+                    # the result to the live UI; this is the durable replay copy.
+                    #
+                    # Use append_if_absent (not a plain append): slot.append has
+                    # already put this message into the DIRTY in-memory slot, so
+                    # a periodic slot save may serialize it to disk before this
+                    # durable copy runs. A plain append would then write it a
+                    # SECOND time and the workflow result would be replayed twice
+                    # after a restart. append_if_absent does the existence check
+                    # under the SAME per-session lock the slot save takes, so the
+                    # write collapses to a no-op when the save already landed it.
+                    append_if_absent_off_loop(
+                        state.conversation_log, session_key, "assistant", msg
+                    )
             except Exception:  # noqa: BLE001
                 pass
             # Auto-run the launching agent on the fresh result, but ONLY in the

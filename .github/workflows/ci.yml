@@ -331,4 +331,10 @@ jobs:
         # every turn is deterministic and offline: no Kiro/model calls, no cost.
         env:
           KIROCREW_E2E_REQUIRE: "1"
+          # CI-enforced on-loop persistence invariant: the e2e gateway boots with
+          # strict mode so any un-offloaded session-JSONL mutator that enters
+          # ``_locked`` on the event loop raises ``OnLoopPersistError`` and fails
+          # this gate at PR time (setup.py test_e2e also sets this; declared here
+          # for discoverability). See docs/system-specs/modules/history.md.
+          KIROCREW_STRICT_ON_LOOP_PERSIST: "1"
         run: python setup.py test_e2e

@@ -23,6 +23,7 @@ Dependency direction is ``wechat -> messaging`` (allowed).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from typing import TYPE_CHECKING, Any
@@ -218,7 +219,9 @@ class WeComDispatcher:
             # fall through to the except and re-record the successful turn). ──
             self.sessions.record_success(session_key)
             try:
-                self._persist_turn(session_key, text, accumulated, is_new)
+                await asyncio.to_thread(
+                    self._persist_turn, session_key, text, accumulated, is_new
+                )
             except Exception:
                 logger.warning(
                     "WeCom: persist_turn failed session=%s", session_key, exc_info=True

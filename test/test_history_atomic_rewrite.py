@@ -62,7 +62,9 @@ class TestMarkConsolidatedOffloaded:
         mark_thread_id: dict[str, int] = {}
 
         log = MagicMock()
-        log.get_unconsolidated.return_value = ([{"role": "user", "content": "hi"}], 1)
+        log.snapshot_for_consolidation.return_value = (
+            [{"role": "user", "content": "hi"}], 1, 0
+        )
         log.get_metadata.return_value = {}
         log.mark_consolidated.side_effect = lambda *a, **k: mark_thread_id.__setitem__(
             "id", threading.get_ident()

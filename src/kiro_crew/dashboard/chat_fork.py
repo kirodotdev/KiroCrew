@@ -7,7 +7,7 @@ import logging
 from aiohttp import web
 
 from kiro_crew.config.loader import KiroCrewConfig
-from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
+from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
 from kiro_crew.dashboard.chat_utils import _history_key_for, _sync_dashboard_slots
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -139,7 +139,29 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
             if new_msgs:
                 all_messages.extend(new_msgs)
         if slot._dirty:
-            _save_slot_to_history(state, slot)
+            # Persist with best_effort=False so a lock timeout / I/O failure
+            # PROPAGATES instead of being swallowed. The fork treats disk as the
+            # source of truth (it re-reads the full history above) and clears
+            # ``_dirty`` below — which also disables the periodic retry that
+            # would otherwise re-flush the slot. Clearing ``_dirty`` after a
+            # silently-dropped save would strand the unwritten source messages
+            # and lose them permanently on the next gateway restart. Only mark
+            # the slot clean once the durable write is CONFIRMED; on failure,
+            # abort the fork (leaving ``_dirty`` set) rather than fork from a
+            # partially-persisted source.
+            try:
+                await save_slot_off_loop(state, slot, best_effort=False)
+            except Exception:
+                logger.warning(
+                    "chat_fork: durable save of source slot=%s failed; "
+                    "aborting fork to avoid losing unwritten messages",
+                    slot.key, exc_info=True,
+                )
+                return web.json_response(
+                    {"error": "could not persist source session before fork; "
+                              "please retry"},
+                    status=503,
+                )
             slot._resumed_count = len(slot.messages)
             slot._dirty = False
         if not all_messages:
@@ -203,7 +225,7 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
             cls = "msg msg-u" if role == "user" else "msg msg-a"
             new_slot.append(role, content, cls, ts=m.get("ts", ""), meta=m.get("meta"), broadcast=False)
         new_slot.drain()
-        _save_slot_to_history(state, new_slot)
+        await save_slot_off_loop(state, new_slot)
         new_slot._resumed_count = len(new_slot.messages)
     except Exception:
         state._slots.pop(new_slot.key, None)

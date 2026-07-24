@@ -31,8 +31,8 @@ from kiro_crew.dashboard.chat_persistence import (
     _attach_variants,
     _redact_meta,
     _redact_meta_for_role,
-    _save_slot_to_history,
     get_reasoning_effort_values,
+    save_slot_off_loop,
 )
 from kiro_crew.dashboard.chat_runner import _run_chat
 from kiro_crew.dashboard.chat_title import _maybe_auto_title
@@ -1227,7 +1227,7 @@ async def api_chat_slot_delete(request: web.Request) -> web.Response:
         except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
             pass
     try:
-        _save_slot_to_history(state, slot, closed=True)
+        await save_slot_off_loop(state, slot, closed=True, best_effort=False)
     except Exception:
         # Save failed — restore slot so data isn't lost
         logger.error("Failed to save slot %s to history, restoring", name, exc_info=True)
@@ -1333,7 +1333,7 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
         if not removed:
             continue
         try:
-            _save_slot_to_history(state, removed, closed=True)
+            await save_slot_off_loop(state, removed, closed=True, best_effort=False)
         except Exception:
             logger.error("Cleanup: failed to archive slot %s", name, exc_info=True)
             state._slots[name] = removed
@@ -1415,7 +1415,15 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
     # advertise an agent we couldn't actually switch to.
     if state.conversation_log:
         try:
-            state.conversation_log.update_metadata(_history_key_for(name), {"agent": agent_name})
+            # update_metadata enters _locked (flock + os.close); those are
+            # blocking-on-loop-prohibited, so offload to a worker thread rather
+            # than run them on the event loop (a wedged peer must never freeze
+            # chat/WS/heartbeat).
+            await asyncio.to_thread(
+                state.conversation_log.update_metadata,
+                _history_key_for(name),
+                {"agent": agent_name},
+            )
         except Exception:
             logger.warning("Failed to persist agent for slot %s", name, exc_info=True)
     state.push_slots_update()
@@ -1908,22 +1916,13 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
         slot.forked_from = meta["forked_from"]
     # Clear closed flag so session restores on next gateway restart
     if meta.get("closed"):
+        # Offload to a worker thread: clear_closed takes the per-session
+        # cross-process lock (so it can't race an append / rewrite and lose
+        # data), and on the event loop that lock fails fast under contention —
+        # the patient off-loop acquire path avoids both a loop-blocking disk
+        # write and a dropped edit. Best-effort: resume proceeds regardless.
         try:
-            path = state.conversation_log._path(history_key)
-            if path.exists():
-                lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
-                if lines:
-                    first_line_data = json.loads(lines[0])
-                    first_line_data.pop("closed", None)
-                    lines[0] = json.dumps(first_line_data) + "\n"
-                    atomic_tmp = path.with_name(path.name + ".tmp")
-                    try:
-                        atomic_tmp.write_text("".join(lines), encoding="utf-8")
-                        atomic_tmp.replace(path)
-                        state.conversation_log._meta_cache.pop(history_key, None)
-                    except Exception:
-                        atomic_tmp.unlink(missing_ok=True)
-                        raise
+            await asyncio.to_thread(state.conversation_log.clear_closed, history_key)
         except Exception:
             logger.warning("Failed to clear closed flag for %s", history_key, exc_info=True)
     all_messages = state.conversation_log.read_messages_chained(history_key)

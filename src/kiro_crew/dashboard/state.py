@@ -886,9 +886,12 @@ class _ChatSlot:
         # message lines, OLDER than the in-memory window) + a fresh re-serialize
         # of the whole window. The prefix is never rewritten, so a restart that
         # loaded only a recent window can no longer destroy older history. This
-        # caches the prefix bytes keyed by (path-mtime, _disk_older_count) so a
-        # 5s flush is O(window), not O(file). See chat_persistence._save_*.
-        self._frozen_prefix_cache: tuple[float, int, str] | None = None
+        # caches the prefix bytes keyed by (path-mtime, path-size,
+        # _disk_older_count) so a 5s flush is O(window), not O(file). The
+        # (mtime, size) pair also doubles as the "did another process write this
+        # file since we last saved?" signal that gates the cross-process
+        # foreign-append merge. See chat_persistence._save_*.
+        self._frozen_prefix_cache: tuple[float, int, int, str, list[str]] | None = None
         # Set by rewind/regenerate after they TRUNCATE the window. While set,
         # _save_slot_to_history takes the archive-safe rewrite path so the
         # dropped tail is archived — even if the inline rewrite save failed

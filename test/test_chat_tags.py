@@ -252,7 +252,7 @@ class TestTagVocabulary:
             col = await (await client.post(
                 "/api/chat/tag-columns", json={"tag_ids": [tag["id"], other["id"]], "mode": "any"}
             )).json()
-            with patch("kiro_crew.dashboard.chat_tags._save_slot_to_history"):
+            with patch("kiro_crew.dashboard.chat_tags.save_slot_off_loop"):
                 resp = await client.delete(f"/api/chat/tags/{tag['id']}")
             assert resp.status == 200
             assert tag["id"] not in {t["id"] for t in state._tags}
@@ -285,7 +285,7 @@ class TestSlotTags:
             t2 = await (await client.post("/api/chat/tags", json={"name": "T2"})).json()
             slot = _ChatSlot("s1")
             state._slots["s1"] = slot
-            with patch("kiro_crew.dashboard.chat_tags._save_slot_to_history"):
+            with patch("kiro_crew.dashboard.chat_tags.save_slot_off_loop"):
                 resp = await client.put(
                     "/api/chat/slots/s1/tags",
                     json={"tags": [t1["id"], "ghost", t1["id"], t2["id"], 7]},
@@ -512,7 +512,7 @@ class TestDrop:
             col = await (await client.post(
                 "/api/chat/tag-columns", json={"tag_ids": [done["id"]], "mode": "any"}
             )).json()
-            with patch("kiro_crew.dashboard.chat_tags._save_slot_to_history"):
+            with patch("kiro_crew.dashboard.chat_tags.save_slot_off_loop"):
                 resp = await client.post("/api/chat/slots/s1/drop", json={"column_id": col["id"]})
             data = await resp.json()
             assert data["ok"] is True
@@ -676,7 +676,7 @@ class TestDropOnMixedColumn:
                 "/api/chat/tag-columns",
                 json={"tag_ids": [done["id"], spike["id"]], "mode": "all"},
             )).json()
-            with patch("kiro_crew.dashboard.chat_tags._save_slot_to_history"):
+            with patch("kiro_crew.dashboard.chat_tags.save_slot_off_loop"):
                 resp = await client.post("/api/chat/slots/s1/drop", json={"column_id": col["id"]})
             data = await resp.json()
             assert data["ok"] is True

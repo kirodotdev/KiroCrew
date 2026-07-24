@@ -296,7 +296,9 @@ class DiscordDispatcher:
             # ── Post-turn bookkeeping (each guarded — see Telegram). ──
             self.sessions.record_success(session_key)
             try:
-                self._persist_turn(session_key, text, accumulated, is_new)
+                await asyncio.to_thread(
+                    self._persist_turn, session_key, text, accumulated, is_new
+                )
             except Exception:
                 logger.warning(
                     "Discord: persist_turn failed session=%s",

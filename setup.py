@@ -49,6 +49,20 @@ class E2eTestCommand(Command):
         base = os.path.dirname(os.path.abspath(__file__))
         env = dict(os.environ)
         env["KIROCREW_E2E"] = "1"
+        # Turn the on-loop persistence discipline into a CI-ENFORCED invariant
+        # (not just a dev-only convention). The e2e harness spawns a REAL gateway
+        # subprocess and drives real chat turns through it; ``spawn_feature_gateway``
+        # inherits this ``env``. With strict mode on, ANY session-JSONL mutator that
+        # enters ``ConversationLog._locked`` on the gateway event loop (i.e. a raw
+        # on-loop call that skipped the ``*_off_loop`` helpers) raises
+        # ``OnLoopPersistError`` immediately, failing the e2e gate at PR time —
+        # instead of silently losing transcript data under real production
+        # contention. Bare unit pytest deliberately stays non-strict (its async
+        # harness legitimately drives mutators on the loop as a convenience); the
+        # allowlist guard in test/test_history_locking_remediation.py adds a
+        # deterministic static check that no NEW un-offloaded production call-site
+        # appears regardless of e2e coverage.
+        env["KIROCREW_STRICT_ON_LOOP_PERSIST"] = "1"
         cmd = [
             sys.executable, "-m", "pytest",
             os.path.join("test", "test_e2e_smoke.py"),

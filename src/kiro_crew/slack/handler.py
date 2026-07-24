@@ -1745,7 +1745,9 @@ async def _handle_slash_command(
             _thread_agents.pop(session_key, None)
             if conversation_log:
                 try:
-                    conversation_log.update_metadata(session_key, {"agent": ""})
+                    await asyncio.to_thread(
+                        conversation_log.update_metadata, session_key, {"agent": ""}
+                    )
                 except Exception:
                     logger.debug("Failed to clear agent in conversation log", exc_info=True)
             sel().log_tool_invocation(
@@ -1770,7 +1772,9 @@ async def _handle_slash_command(
         _thread_agents[session_key] = resolved
         if conversation_log:
             try:
-                conversation_log.update_metadata(session_key, {"agent": resolved})
+                await asyncio.to_thread(
+                    conversation_log.update_metadata, session_key, {"agent": resolved}
+                )
             except Exception:
                 logger.debug("Failed to persist agent to conversation log", exc_info=True)
         sel().log_tool_invocation(
@@ -1808,7 +1812,9 @@ async def _handle_slash_command(
             _thread_projects.pop(session_key, None)
             if conversation_log:
                 try:
-                    conversation_log.update_metadata(session_key, {"project": ""})
+                    await asyncio.to_thread(
+                        conversation_log.update_metadata, session_key, {"project": ""}
+                    )
                 except Exception:
                     logger.debug("Failed to clear project in conversation log", exc_info=True)
             sel().log_tool_invocation(
@@ -1850,7 +1856,9 @@ async def _handle_slash_command(
         _thread_projects[session_key] = resolved
         if conversation_log:
             try:
-                conversation_log.update_metadata(session_key, {"project": resolved})
+                await asyncio.to_thread(
+                    conversation_log.update_metadata, session_key, {"project": resolved}
+                )
             except Exception:
                 logger.debug("Failed to persist project to conversation log", exc_info=True)
         sel().log_tool_invocation(
@@ -1984,7 +1992,9 @@ async def _handle_slash_command(
             _mark_titled(session_key, "manual")
             if conversation_log and not _is_slack_restricted(session_key):
                 try:
-                    conversation_log.set_title(session_key, title_text[:80])
+                    await asyncio.to_thread(
+                        conversation_log.set_title, session_key, title_text[:80]
+                    )
                 except Exception:
                     logger.debug(
                         "Failed to set conversation log title for %s", session_key, exc_info=True
@@ -3846,7 +3856,9 @@ async def _maybe_auto_title_slack(
         await slack.set_thread_title(channel, session_key, title)
         if conversation_log:
             try:
-                conversation_log.set_title(session_key, title)
+                await asyncio.to_thread(
+                    conversation_log.set_title, session_key, title
+                )
             except Exception:
                 logger.debug(
                     "Failed to set conversation log title for %s", session_key, exc_info=True
