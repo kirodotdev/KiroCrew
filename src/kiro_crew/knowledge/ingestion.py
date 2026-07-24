@@ -73,6 +73,25 @@ def _redact(text: str | None) -> str | None:
     return text
 
 
+def _coerce_chunk_param(value: object, default: int, minimum: int) -> int:
+    """Coerce a per-source chunk_size/chunk_overlap property to a usable int.
+
+    Source ``properties`` are user-editable JSON (the dashboard add_source API
+    accepts an arbitrary ``properties`` object), so these may hold a
+    non-numeric string ("abc", "1.5"), NaN, or a nonsensical number. int()
+    raises ValueError/TypeError on those — and by the time the chunker is
+    built the ingestion job row already exists, so the crash aborts the ingest
+    and strands the job in 'processing'. Fall back to the default instead, and
+    treat values below ``minimum`` (e.g. a zero/negative target_size, which
+    breaks the recursive splitter) as absent.
+    """
+    try:
+        coerced = int(value)  # type: ignore[call-overload]
+    except (TypeError, ValueError):
+        return default
+    return coerced if coerced >= minimum else default
+
+
 def _job_status(processed: int, total: int) -> str:
     if processed == 0 and total > 0:
         return 'failed'
@@ -213,14 +232,46 @@ class IngestionPipeline:
             (job_id, source_id, now, now))
         self.store.db.commit()
 
+        # The job row above is persisted as 'processing' BEFORE any fallible
+        # work runs, and nothing below ever wrote 'failed' on an uncaught
+        # exception — so any crash between here and finalize (chunker,
+        # extractor, DB error) stranded the job in 'processing' forever and
+        # the folder-watcher retried the file every scan. Mark the job failed
+        # on the way out and re-raise; callers keep seeing the original error.
+        try:
+            return await self._ingest_file_body(
+                job_id=job_id, source_id=source_id, props=props, meta=meta,
+                ext=ext, text=text, uri=uri, content_hash=content_hash,
+                display_name=display_name, namespace=namespace,
+                existing=existing, old_item_ids=old_item_ids,
+                _old_item_ids=_old_item_ids, path=path, on_progress=on_progress,
+            )
+        except Exception:
+            try:
+                self.store.db.execute(
+                    "UPDATE ingestion_jobs SET status = 'failed', updated_at = ? WHERE id = ?",
+                    (datetime.now().isoformat(), job_id))
+                self.store.db.execute(
+                    "UPDATE sources SET sync_status = 'error' WHERE id = ?", (source_id,))
+                self.store.db.commit()
+            except Exception:  # noqa: BLE001 - never mask the original error
+                logger.warning("failed to mark ingestion job %s failed", job_id, exc_info=True)
+            raise
+
+    async def _ingest_file_body(self, *, job_id, source_id, props, meta, ext, text,
+                                uri, content_hash, display_name, namespace,
+                                existing, old_item_ids, _old_item_ids, path,
+                                on_progress) -> str | None:
+        """Chunk/extract/store/finalize — split out so ingest_file can mark the
+        pre-inserted job row 'failed' on ANY exception in one place."""
         # 4. Chunk (use per-source chunk size if configured)
         chunker = self.chunker
         chunk_size = props.get("chunk_size")
         chunk_overlap = props.get("chunk_overlap")
         if chunk_size or chunk_overlap:
             chunker = HeadingAwareChunker(
-                target_size=int(chunk_size) if isinstance(chunk_size, (int, float, str)) else CHUNK_TOKEN_SIZE,
-                overlap=int(chunk_overlap) if isinstance(chunk_overlap, (int, float, str)) else CHUNK_OVERLAP,
+                target_size=_coerce_chunk_param(chunk_size, CHUNK_TOKEN_SIZE, minimum=1),
+                overlap=_coerce_chunk_param(chunk_overlap, CHUNK_OVERLAP, minimum=0),
             )
         is_markdown = ext in MARKDOWN_EXTS
         # Chunking is CPU-bound (recursive separator splitting); offloaded so a

@@ -302,3 +302,110 @@ class TestSensitivePathGuard:
         sel_spy.log_tool_invocation.assert_called_once()
         assert sel_spy.log_tool_invocation.call_args.kwargs["outcome"] == "denied"
         assert "sensitive_path" in sel_spy.log_tool_invocation.call_args.kwargs["resources"]
+
+
+class TestChunkPropsCoercion:
+    """Per-source chunk_size/chunk_overlap come from the user-editable source
+    ``properties`` JSON (the dashboard add_source API accepts an arbitrary
+    ``properties`` object). ``int("abc")`` raised ValueError AFTER the
+    ingestion-job row was inserted, so a malformed value aborted the ingest and
+    stranded the job in 'processing'. Malformed values must fall back to the
+    defaults and the ingest must complete."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("bad_size", ["abc", "1.5", "", "  "])
+    async def test_malformed_chunk_size_falls_back_and_ingests(
+            self, pipeline, kstore, tmp_path, monkeypatch, bad_size):
+        _set_limit_mb(monkeypatch, 100.0)
+        doc = tmp_path / "doc.md"
+        doc.write_text("# Title\n\nsome body text for chunking\n")
+        sid = kstore.add_source(
+            name="doc.md", source_type="local_file", uri=str(doc.resolve()),
+            properties={"chunk_size": bad_size, "chunk_overlap": bad_size},
+        )
+        job_id = await pipeline.ingest_file(str(doc), source_id=sid)
+        assert job_id is not None
+        row = kstore.db.execute(
+            "SELECT status FROM ingestion_jobs WHERE id = ?", (job_id,)).fetchone()
+        assert row["status"] == "completed"
+
+    @pytest.mark.asyncio
+    async def test_nonpositive_chunk_size_falls_back(
+            self, pipeline, kstore, tmp_path, monkeypatch):
+        """A negative target_size breaks the recursive splitter — treat it as
+        absent (fall back to the default) rather than building a chunker that
+        can't make progress."""
+        _set_limit_mb(monkeypatch, 100.0)
+        built: list = []
+        real_chunker = ingestion_mod.HeadingAwareChunker
+
+        def _spy(*args, **kwargs):
+            c = real_chunker(*args, **kwargs)
+            built.append(c)
+            return c
+
+        monkeypatch.setattr(ingestion_mod, "HeadingAwareChunker", _spy)
+        doc = tmp_path / "doc0.md"
+        doc.write_text("# Title\n\nbody\n")
+        sid = kstore.add_source(
+            name="doc0.md", source_type="local_file", uri=str(doc.resolve()),
+            properties={"chunk_size": -5, "chunk_overlap": -1},
+        )
+        job_id = await pipeline.ingest_file(str(doc), source_id=sid)
+        assert job_id is not None
+        row = kstore.db.execute(
+            "SELECT status FROM ingestion_jobs WHERE id = ?", (job_id,)).fetchone()
+        assert row["status"] == "completed"
+        assert built, "per-source chunker was not built"
+        from kiro_crew.knowledge.chunker import CHUNK_OVERLAP, CHUNK_TOKEN_SIZE
+        assert built[-1].target_size == CHUNK_TOKEN_SIZE
+        assert built[-1].overlap == CHUNK_OVERLAP
+
+    @pytest.mark.asyncio
+    async def test_any_post_insert_exception_marks_job_failed(
+            self, pipeline, kstore, tmp_path, monkeypatch):
+        """The job row is persisted as 'processing' BEFORE any fallible work.
+        Any exception between the insert and finalize (chunker, extractor, DB)
+        previously stranded the job in 'processing' forever, and the folder
+        watcher retried the file every scan. It must be marked 'failed' and
+        the source 'error', while the original exception still propagates."""
+        _set_limit_mb(monkeypatch, 100.0)
+        pipeline.extractor.extract_batch = AsyncMock(
+            side_effect=RuntimeError("extractor pool down"))
+        doc = tmp_path / "boom.md"
+        doc.write_text("# Title\n\nbody\n")
+        sid = kstore.add_source(
+            name="boom.md", source_type="local_file", uri=str(doc.resolve()))
+        with pytest.raises(RuntimeError, match="extractor pool down"):
+            await pipeline.ingest_file(str(doc), source_id=sid)
+        job = kstore.db.execute(
+            "SELECT status FROM ingestion_jobs WHERE source_id = ?", (sid,)).fetchone()
+        assert job["status"] == "failed"
+        src = kstore.db.execute(
+            "SELECT sync_status FROM sources WHERE id = ?", (sid,)).fetchone()
+        assert src["sync_status"] == "error"
+
+    @pytest.mark.asyncio
+    async def test_valid_chunk_size_still_respected(
+            self, pipeline, kstore, tmp_path, monkeypatch):
+        _set_limit_mb(monkeypatch, 100.0)
+        built: list = []
+        real_chunker = ingestion_mod.HeadingAwareChunker
+
+        def _spy(*args, **kwargs):
+            c = real_chunker(*args, **kwargs)
+            built.append(c)
+            return c
+
+        monkeypatch.setattr(ingestion_mod, "HeadingAwareChunker", _spy)
+        doc = tmp_path / "docv.md"
+        doc.write_text("# Title\n\nbody\n")
+        sid = kstore.add_source(
+            name="docv.md", source_type="local_file", uri=str(doc.resolve()),
+            properties={"chunk_size": "128", "chunk_overlap": 7},
+        )
+        job_id = await pipeline.ingest_file(str(doc), source_id=sid)
+        assert job_id is not None
+        assert built, "per-source chunker was not built"
+        assert built[-1].target_size == 128
+        assert built[-1].overlap == 7
