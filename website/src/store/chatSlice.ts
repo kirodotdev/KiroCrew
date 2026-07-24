@@ -971,6 +971,7 @@ const chatSlice = createSlice({
       // __proto__/constructor/prototype ids) so no call site can forget it.
       const a = getSlotSub(state, action.payload.slot, action.payload.id)
       if (a) {
+        a.retrying = false
         a.streaming += action.payload.text
         if (a.streaming.length > 50_000) {
           a.streaming = '…(truncated)\n' + a.streaming.slice(-40_000)
@@ -985,7 +986,17 @@ const chatSlice = createSlice({
         a.lastTool = action.payload.tool; a.status = 'tool'
         if (typeof action.payload.tool_count === 'number') a.toolCount = action.payload.tool_count
         a.stalled = false
+        a.retrying = false
       }
+    },
+    sseSubagentRetrying(state, action: PayloadAction<{ slot: string; id: string; attempt?: number }>) {
+      // Fired for both transient-backend retries (subagent_retrying) and the
+      // one-shot cancel auto-continue (subagent_recovering): the agent is
+      // still alive and recovering — show ⟳ instead of letting it look hung.
+      const { slot, id } = action.payload
+      if (id === '__proto__' || id === 'constructor' || id === 'prototype') return
+      const a = getSlotSubs(state, slot)?.[id]
+      if (a) { a.retrying = true; a.stalled = false }
     },
     sseSubagentStalled(state, action: PayloadAction<{ slot: string; id: string; stalled: boolean; idle_secs?: number }>) {
       const { slot, id } = action.payload
@@ -993,7 +1004,7 @@ const chatSlice = createSlice({
       const a = getSlotSub(state, slot, id)
       if (a) a.stalled = action.payload.stalled
     },
-    sseSubagentDone(state, action: PayloadAction<{ slot: string; id: string; elapsed: number; error?: string; task?: string; agent?: string; result?: string }>) {
+    sseSubagentDone(state, action: PayloadAction<{ slot: string; id: string; elapsed: number; error?: string; stopped?: boolean; outcome?: 'completed' | 'failed' | 'stopped'; task?: string; agent?: string; result?: string }>) {
       if (isUnsafeKey(action.payload.slot) || isUnsafeKey(action.payload.id)) return
       const subs = action.payload.slot !== state.activeSlot
         ? (state.slotActivity[safeKey(action.payload.slot)] ??= { toolLog: [], subagents: {} }).subagents
@@ -1009,10 +1020,20 @@ const chatSlice = createSlice({
         }
       }
       const isNative = action.payload.id.startsWith('native:')
+      // Canonical terminal classification: `outcome` is the single source
+      // (spec: docs/system-specs/modules/subagent.md). `stopped`/`error`
+      // derivation is kept ONLY as a fallback for old payloads that predate
+      // the field (reconnect replays from a pre-upgrade gateway).
+      const doneStatus: 'stopped' | 'error' | 'done' =
+        action.payload.outcome === 'stopped' ? 'stopped'
+          : action.payload.outcome === 'failed' ? 'error'
+            : action.payload.outcome === 'completed' ? 'done'
+              : action.payload.stopped ? 'stopped' : (action.payload.error ? 'error' : 'done')
       if (a) {
-        a.status = action.payload.error ? 'error' : 'done'
+        a.status = doneStatus
+        a.retrying = false
         a.elapsed = action.payload.elapsed
-        a.error = action.payload.error
+        a.error = doneStatus === 'stopped' ? undefined : action.payload.error
         a.streaming = ''
         if (action.payload.task && !a.task) a.task = action.payload.task
         if (action.payload.agent && !a.agent) a.agent = action.payload.agent
@@ -1023,12 +1044,12 @@ const chatSlice = createSlice({
           id: action.payload.id,
           task: action.payload.task || '',
           agent: action.payload.agent || 'kirocrew',
-          status: action.payload.error ? 'error' : 'done',
+          status: doneStatus,
           streaming: '',
           lastTool: '',
           startedAt: Date.now() - action.payload.elapsed * 1000,
           elapsed: action.payload.elapsed,
-          error: action.payload.error,
+          error: doneStatus === 'stopped' ? undefined : action.payload.error,
           result: isNative ? action.payload.result : undefined,
         }
       }
@@ -1833,7 +1854,7 @@ export const {
   setActiveSlot, clearSlotState, setPendingInput, setQuestionCard, clearQuestionCard, appendMessage, appendSlotMessage, updateStreamingMessage, finalizeAssistant,
   removeThinking, removeByApprovalId, resolveByApprovalId, clearPendingPermissions, setSlotRunning, setSlotStopping, startLocalTurn, syncSlotRunningFromServer, setSlotState, setSlotStatusDetail, setStopPressedAt, clearMessages, truncateAfterIndex, replaceMessages, hydrateSlotMessages, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage,
   sseContextUsage, setVoicePlaying, setVoiceAudio,
-  toggleActivity, openActivityToTab, openActivityPanel, openActivityToTool, clearFocusToolCallId, clearSubagentsForSnapshot, sseSubagentPending, markSubagentApproving, sseSubagentSpawn, sseSubagentChunk, sseSubagentTool, sseSubagentStalled, sseSubagentDone,
+  toggleActivity, openActivityToTab, openActivityPanel, openActivityToTool, clearFocusToolCallId, clearSubagentsForSnapshot, sseSubagentPending, markSubagentApproving, sseSubagentSpawn, sseSubagentChunk, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone,
   sseSubagentSnapshot, sseToolActivity, sseToolResult, sseActivityEvent,
   sseWorkflowEvent, clearWorkflowRun,
   sseSideResult, sideClose, sideOptimisticAppend, sideOptimisticRollback,

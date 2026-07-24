@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useMemo, useCallback, memo } from 'react'
-import { Bot, X, AlertTriangle } from 'lucide-react'
+import { Bot, X, AlertTriangle, Loader2 } from 'lucide-react'
 import { useAppSelector, useAppDispatch } from '../../store'
 import { openActivityToTab, sseSubagentDone } from '../../store/chatSlice'
 import { api } from '../../api/client'
@@ -102,7 +102,12 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
                       <span className="min-w-0 flex-1 truncate text-text">{agentLabel}</span>
                       <span className="shrink-0 tabular-nums text-muted/50">{elapsed}s{typeof a.toolCount === 'number' && a.toolCount > 0 ? ` · ${a.toolCount} tool${a.toolCount > 1 ? 's' : ''}` : ''}</span>
                     </span>
-                    {a.stalled ? (
+                    {a.retrying ? (
+                      <span className="text-info flex items-center gap-1">
+                        <Loader2 size={11} className="shrink-0 animate-spin" />
+                        <span className="truncate">backend hiccup — retrying…</span>
+                      </span>
+                    ) : a.stalled ? (
                       <span className="text-warn flex items-center gap-1">
                         <AlertTriangle size={11} className="shrink-0" />
                         <span className="truncate">stalled{a.lastTool ? ` at ${sanitizeLlmOutput(a.lastTool)}` : ''} — no activity</span>

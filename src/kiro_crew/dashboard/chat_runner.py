@@ -4313,6 +4313,12 @@ async def _run_chat(
             # continues) instead of double-running a side-effecting tool. We allow
             # EXACTLY ONE such retry per turn (_posttoken_retry_used one-shot).
             #
+            # PARITY NOTE: the subagent path carries a hand-maintained copy of
+            # this ladder (subagent.py `_stream_with_transient_retry`) with
+            # intentionally identical semantics — same activity predicate,
+            # same one-shot post-activity rule. A fix to either copy's
+            # predicate or budget rules must be mirrored in the other.
+            #
             # ACCEPTED TRADEOFF (finding #1, owner decision — do NOT re-add a
             # tool-call fail-fast guard): a mid-stream 5xx is rare, and the
             # CONTINUE instruction explicitly tells the model to resume rather

@@ -2037,6 +2037,12 @@ class DashboardState:
                             "done": True,
                             "elapsed": float(info.get("elapsed") or 0.0),
                             "error": info.get("error"),
+                            "stopped": bool(info.get("stopped")),
+                            "outcome": (
+                                "stopped"
+                                if info.get("stopped")
+                                else ("failed" if info.get("error") else "completed")
+                            ),
                             "result": str(info.get("result") or ""),
                             "done_at": done_at,
                         }

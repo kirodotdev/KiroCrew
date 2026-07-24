@@ -3047,8 +3047,16 @@ class GatewayOrchestrator:
                 return None  # unreachable, but satisfies type checker
 
             await _broadcast_subagent_status(info, "done")
-            status = "failed" if info.error else "completed"
-            emoji = "❌" if info.error else "✅"
+            # Three-way outcome: a user stop is neutral — neither a success nor
+            # a failure. The record contract keeps ``error`` unset for stops, so
+            # every consumer below must branch on ``user_stopped`` explicitly
+            # rather than inferring success from an empty error.
+            if info.user_stopped:
+                status, emoji = "stopped by user", "⏹"
+            elif info.error:
+                status, emoji = "failed", "❌"
+            else:
+                status, emoji = "completed", "✅"
             title = f"Subagent `{info.id}` {emoji}"
 
             # ── Orchestration guard: track failures (only in orchestrator mode) ──
@@ -3076,7 +3084,14 @@ class GatewayOrchestrator:
                         logger.info("Orchestration stopped, ignoring subagent result %s", info.id)
                         return
                     task_key = info.task[:80]
-                    if info.error:
+                    if info.user_stopped:
+                        # User stop: neither success nor failure. Recording it
+                        # as success would let orchestration/synthesis advance
+                        # on work the user explicitly killed and permanently
+                        # skew success stats; recording it as failure would
+                        # trigger retry-guidance guards for a deliberate act.
+                        pass
+                    elif info.error:
                         if tracker.record_failure(task_key):
                             guard_msg = (
                                 f"\n\n⚠️ [SYSTEM] Task '{task_key}' has failed "
@@ -3117,7 +3132,14 @@ class GatewayOrchestrator:
             # transcript on demand (read / grep / spawn_status) instead of re-running
             # the subagent.
             result_path = info.result_path or ""
-            if info.error:
+            if info.user_stopped:
+                _partial = info.result or ""
+                detail = (
+                    "Stopped by the user before completing. Do NOT treat this as "
+                    "a finished result or retry it unprompted."
+                    + (f"\n\nPartial output:\n{_partial}" if _partial else "")
+                )
+            elif info.error:
                 detail = f"Error: {info.error}"
             elif result_path and (info.result_truncated or _is_orchestrator):
                 detail = summarize_result(info.result, result_path)
@@ -3685,6 +3707,53 @@ class GatewayOrchestrator:
                 if etype in ("subagent_spawn", "subagent_done"):
                     _schedule_slots_push()
 
+        async def _orphan_notify(parent_session: str, msg: str) -> bool:
+            """Inject an orphan notification into the parent dashboard slot.
+
+            Mirrors the subagent_injection_failed delivery: visible transcript
+            card + queue into ``slot._pending_subagent_failures`` so the LLM
+            drains it (as a digest with any other pending failures) on its next
+            turn. Returns False when the slot no longer exists so the manager
+            falls through to the owner-DM path. ``msg`` is redacted by the
+            manager before delivery; re-redact defensively anyway.
+            """
+            if not self.dashboard_state or not parent_session.startswith("dashboard:"):
+                return False
+            slot_name = parent_session.removeprefix("dashboard:")
+            slot = self.dashboard_state.get_slot(slot_name)
+            if not slot:
+                return False
+            safe_msg, _ = redact_exfiltration_urls(msg)
+            safe_msg, _ = redact_credentials(safe_msg)
+            slot.append("assistant", safe_msg, "msg msg-a")
+            slot._pending_subagent_failures.append(safe_msg)
+            self.dashboard_state.push_slots_update()
+            logger.info("Orphan notification injected into slot %s", slot_name)
+            return True
+
+        async def _orphan_dm(msg: str) -> bool:
+            """Owner-DM fallback for orphan notifications (bell + Slack DM)."""
+            safe_msg, _ = redact_exfiltration_urls(msg)
+            safe_msg, _ = redact_credentials(safe_msg)
+            delivered = False
+            if self.dashboard_state:
+                try:
+                    self.dashboard_state.notify(
+                        "subagent", "Sub-agent orphaned by restart", safe_msg
+                    )
+                    delivered = True
+                except Exception:
+                    logger.debug("Orphan bell notification failed", exc_info=True)
+            try:
+                if self.slack and self._owner_id:
+                    ch = await self.slack.open_dm(self._owner_id)
+                    if ch:
+                        await self.slack.post_message(ch, safe_msg)
+                        delivered = True
+            except Exception as exc:
+                logger.warning("Failed to send orphan notification to Slack DM: %s", exc)
+            return delivered
+
         self.subagent_mgr = SubagentManager(
             sessions=self.sessions,
             ctx_builder=self.ctx_builder,
@@ -3697,6 +3766,8 @@ class GatewayOrchestrator:
             on_spawn_approval=_spawn_approve,
             is_yolo=_is_yolo,
             on_event=_subagent_event,
+            on_orphan_notify=_orphan_notify,
+            on_orphan_dm=_orphan_dm,
             completion_keep=self._cfg.agent.completion_keep,
             completion_keep_chars=self._cfg.agent.completion_keep_chars,
         )

@@ -274,6 +274,8 @@ async def api_spawn_list(request: web.Request) -> web.Response:
         if info.done:
             entry["result"] = _redact(info.result)
             entry["error"] = _redact(info.error) if info.error else ""
+            entry["stopped"] = info.user_stopped
+            entry["outcome"] = info.outcome
         else:
             entry["turns"] = info.turns
             entry["last_tool"] = _redact(info.last_tool)
@@ -293,6 +295,26 @@ async def api_spawn_delete(request: web.Request) -> web.Response:
             # Can't actually kill the kiro-cli internal sub-agent, but we can
             # close the Activity card so it stops showing "Starting..."
             state._native_cards.pop(agent_id, None)
+            # Persist the stop on the slot-owned tracker record so WS replay
+            # (native_subagent_snapshots) reconstructs this card as STOPPED for
+            # reconnecting clients — not as still-running or completed.
+            try:
+                _slot = state.get_slot(card_info["slot"])
+                _rec = (
+                    _slot._native_subagent_tracker.get(card_info.get("session_id", ""))
+                    if _slot is not None
+                    else None
+                )
+                if _rec is not None and not _rec.get("done"):
+                    _rec["done"] = True
+                    _rec["done_at"] = time.time()
+                    _rec["elapsed"] = time.time() - card_info.get("started", time.time())
+                    _rec["error"] = None
+                    _rec["stopped"] = True
+                    _rec["outcome"] = "stopped"
+                    _rec["result"] = "(cancelled)"
+            except Exception:
+                logger.debug("native cancel: tracker update failed for %s", agent_id, exc_info=True)
             # User-initiated cancellation is an auditable action (parity with
             # the managed path, which audits inside SubagentManager.cancel()).
             try:
@@ -311,7 +333,8 @@ async def api_spawn_delete(request: web.Request) -> web.Response:
                     "id": agent_id,
                     "slot": card_info["slot"],
                     "elapsed": time.time() - card_info.get("started", time.time()),
-                    "error": "Cancelled by user",
+                    "error": None,
+                    "stopped": True,
                     "task": "",
                     "agent": "",
                     "result": "(cancelled)",
