@@ -1,3 +1,23 @@
+/** Alpha-aware theme color backed by a CSS variable.
+ *
+ * Theme tokens are CSS custom properties (hex strings resolved at runtime),
+ * so Tailwind cannot inline an alpha channel the way it does for static
+ * palette colors. Without an `<alpha-value>` hook, every opacity-modifier
+ * utility on these tokens (`border-border/30`, `text-muted/50`,
+ * `bg-accent/10`, …) is silently DROPPED from the build — borders then fall
+ * back to Preflight's default #e5e7eb, which renders as glaring white lines
+ * in dark mode, and translucent fills/text simply lose their styling.
+ *
+ * The fix: when Tailwind supplies an alpha (`text-muted/50` → alpha 0.5),
+ * emit a color-mix() that applies that opacity to the runtime var. Plain
+ * usage (`text-muted`) keeps emitting `var(--muted)` unchanged. color-mix
+ * is already a hard dependency of this config (see info-subtle below).
+ */
+const withAlpha = (cssVar) => ({ opacityValue }) =>
+  opacityValue === undefined
+    ? `var(${cssVar})`
+    : `color-mix(in srgb, var(${cssVar}) calc(${opacityValue} * 100%), transparent)`
+
 /** @type {import('tailwindcss').Config} */
 export default {
   content: ['./index.html', './src/**/*.{ts,tsx}'],
@@ -5,55 +25,55 @@ export default {
   theme: {
     extend: {
       colors: {
-        bg: 'var(--bg)',
-        'bg-accent': 'var(--bg-accent)',
-        'bg-elevated': 'var(--bg-elevated)',
-        'bg-hover': 'var(--bg-hover)',
-        card: 'var(--card)',
-        'card-fg': 'var(--card-fg)',
-        chrome: 'var(--chrome)',
-        text: 'var(--text)',
-        'text-strong': 'var(--text-strong)',
-        muted: 'var(--muted)',
-        'muted-fg': 'var(--muted-fg)',
-        'muted-strong': 'var(--muted-strong)',
-        border: 'var(--border)',
-        'border-strong': 'var(--border-strong)',
-        accent: 'var(--accent)',
-        'accent-fg': 'var(--accent-fg)',
-        'accent-hover': 'var(--accent-hover)',
-        'accent-subtle': 'var(--accent-subtle)',
-        'accent-glow': 'var(--accent-glow)',
-        ring: 'var(--ring)',
-        ok: 'var(--ok)',
-        'ok-fg': 'var(--ok-fg)',
-        'ok-subtle': 'var(--ok-subtle)',
-        warn: 'var(--warn)',
-        'warn-fg': 'var(--warn-fg)',
-        'warn-subtle': 'var(--warn-subtle)',
-        danger: 'var(--danger)',
-        'danger-fg': 'var(--danger-fg)',
-        'danger-subtle': 'var(--danger-subtle)',
-        info: 'var(--info)',
-        'info-fg': 'var(--info-fg)',
+        bg: withAlpha('--bg'),
+        'bg-accent': withAlpha('--bg-accent'),
+        'bg-elevated': withAlpha('--bg-elevated'),
+        'bg-hover': withAlpha('--bg-hover'),
+        card: withAlpha('--card'),
+        'card-fg': withAlpha('--card-fg'),
+        chrome: withAlpha('--chrome'),
+        text: withAlpha('--text'),
+        'text-strong': withAlpha('--text-strong'),
+        muted: withAlpha('--muted'),
+        'muted-fg': withAlpha('--muted-fg'),
+        'muted-strong': withAlpha('--muted-strong'),
+        border: withAlpha('--border'),
+        'border-strong': withAlpha('--border-strong'),
+        accent: withAlpha('--accent'),
+        'accent-fg': withAlpha('--accent-fg'),
+        'accent-hover': withAlpha('--accent-hover'),
+        'accent-subtle': withAlpha('--accent-subtle'),
+        'accent-glow': withAlpha('--accent-glow'),
+        ring: withAlpha('--ring'),
+        ok: withAlpha('--ok'),
+        'ok-fg': withAlpha('--ok-fg'),
+        'ok-subtle': withAlpha('--ok-subtle'),
+        warn: withAlpha('--warn'),
+        'warn-fg': withAlpha('--warn-fg'),
+        'warn-subtle': withAlpha('--warn-subtle'),
+        danger: withAlpha('--danger'),
+        'danger-fg': withAlpha('--danger-fg'),
+        'danger-subtle': withAlpha('--danger-subtle'),
+        info: withAlpha('--info'),
+        'info-fg': withAlpha('--info-fg'),
         // Matches the warn/danger/ok "-subtle" pattern, but derived from
         // --info via color-mix so every theme gets a translucent info fill
         // without adding a per-theme var. Consumed by _SYNC_TONES.info in
         // ArtifactDetailPage; without it `bg-info-subtle` mapped to no color
         // and the info-tone sync banner rendered a transparent background.
         'info-subtle': 'color-mix(in srgb, var(--info) 12%, transparent)',
-        aim: 'var(--aim)',
-        'aim-fg': 'var(--aim-fg)',
-        'aim-subtle': 'var(--aim-subtle)',
-        clarify: 'var(--clarify)',
-        'clarify-subtle': 'var(--clarify-subtle)',
-        'diff-add': 'var(--diff-add)',
-        'diff-add-text': 'var(--diff-add-text)',
-        'diff-del': 'var(--diff-del)',
-        'diff-del-text': 'var(--diff-del-text)',
-        'diff-hunk': 'var(--diff-hunk)',
-        'diff-hunk-text': 'var(--diff-hunk-text)',
-        'diff-meta-text': 'var(--diff-meta-text)',
+        aim: withAlpha('--aim'),
+        'aim-fg': withAlpha('--aim-fg'),
+        'aim-subtle': withAlpha('--aim-subtle'),
+        clarify: withAlpha('--clarify'),
+        'clarify-subtle': withAlpha('--clarify-subtle'),
+        'diff-add': withAlpha('--diff-add'),
+        'diff-add-text': withAlpha('--diff-add-text'),
+        'diff-del': withAlpha('--diff-del'),
+        'diff-del-text': withAlpha('--diff-del-text'),
+        'diff-hunk': withAlpha('--diff-hunk'),
+        'diff-hunk-text': withAlpha('--diff-hunk-text'),
+        'diff-meta-text': withAlpha('--diff-meta-text'),
       },
       fontFamily: {
         body: ['var(--font-body)'],

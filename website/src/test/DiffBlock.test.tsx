@@ -173,4 +173,41 @@ describe('DiffBlock', () => {
     await waitFor(() => expect(screen.getByText('Open')).toBeInTheDocument())
     expect(screen.queryByTitle(/Open .*\/wrong\/path.*in side panel/)).toBeNull()
   })
+
+  describe('line-number gutter width', () => {
+    // Regression: gutters were hardcoded to w-[3.5ch], which fits only 3
+    // digits. Diffs at line 1000+ overflowed the column — the old/new
+    // numbers visually collided ("10081008") and the column separator was
+    // drawn through the digits. The gutter must scale with the widest
+    // line number in the diff.
+    const gutterSpans = (container: HTMLElement) =>
+      Array.from(container.querySelectorAll('span'))
+        .filter(s => (s as HTMLElement).style.width.endsWith('ch')) as HTMLElement[]
+
+    it('keeps the compact 3.5ch gutter for small line numbers', () => {
+      const { container } = render(<DiffBlock code={simpleDiff} complete={true} />)
+      const spans = gutterSpans(container)
+      expect(spans.length).toBeGreaterThan(0)
+      for (const s of spans) expect(s.style.width).toBe('3.5ch')
+    })
+
+    it('widens the gutter to fit 4-digit line numbers', () => {
+      const bigDiff = `--- a/file.ts\n+++ b/file.ts\n@@ -1008,4 +1008,3 @@\n context1\n-removed1\n-removed2\n context2`
+      const { container } = render(<DiffBlock code={bigDiff} complete={true} />)
+      const spans = gutterSpans(container)
+      expect(spans.length).toBeGreaterThan(0)
+      // 4 digits + 1.5ch padding
+      for (const s of spans) expect(s.style.width).toBe('5.5ch')
+    })
+
+    it('widens the gutter in side-by-side view too', () => {
+      const bigDiff = `--- a/file.ts\n+++ b/file.ts\n@@ -12345,3 +12345,3 @@\n context1\n-old\n+new\n context2`
+      const { container } = render(<DiffBlock code={bigDiff} complete={true} />)
+      fireEvent.click(screen.getByTitle('Split view'))
+      const spans = gutterSpans(container)
+      expect(spans.length).toBeGreaterThan(0)
+      // 5 digits + 1.5ch padding
+      for (const s of spans) expect(s.style.width).toBe('6.5ch')
+    })
+  })
 })

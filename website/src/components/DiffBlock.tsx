@@ -115,6 +115,20 @@ export default memo(function DiffBlock({ code, complete, onFileOpen, pathHint, s
   const filePath = useMemo(() => extractFilePath(lines) ?? pathHint ?? null, [lines, pathHint])
   const [fileExists, setFileExists] = useState(false)
   const hasLineNums = lines.some(l => l.oldNum !== undefined || l.newNum !== undefined)
+  // Gutter width must fit the widest line number. A fixed 3.5ch fits only
+  // 3 digits — at 4+ digits (line 1000+) the numbers overflow the column,
+  // the old/new gutters visually collide ("10081008") and the column
+  // separator is drawn through the digits. +1.5ch covers the pr-1 padding
+  // and keeps small diffs at the previous 3.5ch minimum.
+  const gutterCh = useMemo(() => {
+    let digits = 2
+    for (const l of lines) {
+      if (l.oldNum !== undefined) digits = Math.max(digits, String(l.oldNum).length)
+      if (l.newNum !== undefined) digits = Math.max(digits, String(l.newNum).length)
+    }
+    return digits + 1.5
+  }, [lines])
+  const gutterStyle = { width: `${gutterCh}ch` }
 
   // Stash onFileOpen in a ref so the effect below only depends on filePath.
   // If onFileOpen were a direct dep, every parent re-render that produced a
@@ -145,8 +159,8 @@ export default memo(function DiffBlock({ code, complete, onFileOpen, pathHint, s
     if (line.type === 'meta') return null
     return (
     <div key={key} className={`ft-drow flex text-[13px] font-mono leading-relaxed min-w-fit ${DIFF_BG[line.type]}`}>
-      {hasLineNums && <span className="select-none text-muted/50 text-right w-[3.5ch] shrink-0 pr-1 border-r border-border/30">{line.type === 'add' ? '' : (line.oldNum ?? '')}</span>}
-      {hasLineNums && <span className="select-none text-muted/50 text-right w-[3.5ch] shrink-0 pr-1 border-r border-border/30">{line.type === 'del' ? '' : (line.newNum ?? '')}</span>}
+      {hasLineNums && <span style={gutterStyle} className="select-none text-muted/50 text-right shrink-0 pr-1 border-r border-border/30">{line.type === 'add' ? '' : (line.oldNum ?? '')}</span>}
+      {hasLineNums && <span style={gutterStyle} className="select-none text-muted/50 text-right shrink-0 pr-1 border-r border-border/30">{line.type === 'del' ? '' : (line.newNum ?? '')}</span>}
       <span className={`select-none w-[2ch] text-center shrink-0 ${DIFF_FG[line.type]}`}>{SIGN[line.type]}</span>
       <span className={`px-2 flex-1 ${DIFF_FG[line.type]}`}>{line.type === 'hunk' ? line.content : (line.content || ' ')}</span>
     </div>
@@ -195,12 +209,12 @@ export default memo(function DiffBlock({ code, complete, onFileOpen, pathHint, s
             return (
               <div key={i} className="flex text-[13px] font-mono leading-relaxed">
                 <div className={`w-1/2 flex overflow-hidden border-r border-border/30 ${left ? DIFF_BG[lType] : ''}`}>
-                  {hasLineNums && <span className="select-none text-muted/50 text-right w-[3.5ch] shrink-0 pr-1 border-r border-border/30">{left?.oldNum ?? ''}</span>}
+                  {hasLineNums && <span style={gutterStyle} className="select-none text-muted/50 text-right shrink-0 pr-1 border-r border-border/30">{left?.oldNum ?? ''}</span>}
                   <span className={`select-none w-[2ch] text-center shrink-0 ${left ? DIFF_FG[lType] : 'text-muted'}`}>{left ? (SIGN[lType] || ' ') : ' '}</span>
                   <span className={`px-2 flex-1 whitespace-pre ${left ? DIFF_FG[lType] : 'text-muted'}`}>{left?.content || ' '}</span>
                 </div>
                 <div className={`w-1/2 flex overflow-hidden ${right ? DIFF_BG[rType] : ''}`}>
-                  {hasLineNums && <span className="select-none text-muted/50 text-right w-[3.5ch] shrink-0 pr-1 border-r border-border/30">{right?.newNum ?? ''}</span>}
+                  {hasLineNums && <span style={gutterStyle} className="select-none text-muted/50 text-right shrink-0 pr-1 border-r border-border/30">{right?.newNum ?? ''}</span>}
                   <span className={`select-none w-[2ch] text-center shrink-0 ${right ? DIFF_FG[rType] : 'text-muted'}`}>{right ? (SIGN[rType] || ' ') : ' '}</span>
                   <span className={`px-2 flex-1 whitespace-pre ${right ? DIFF_FG[rType] : 'text-muted'}`}>{right?.content || ' '}</span>
                 </div>
