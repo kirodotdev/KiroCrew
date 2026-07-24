@@ -25,6 +25,14 @@ contextBridge.exposeInMainWorld("electronAPI", {
   setThemeAccent: (hex) => ipcRenderer.send("theme-accent-changed", String(hex || "")),
   // Dev mode IPC: renderer signals main process to show/hide DevTools menu item.
   setDevMode: (enabled) => ipcRenderer.send("dev-mode-changed", !!enabled),
+  // App-menu navigation: main.js sends an in-app path ("/settings",
+  // "/settings?tab=about") when the user picks Settings…/About from the
+  // native application menu; the SPA routes to it (see App.tsx).
+  onNavigate: (cb) => {
+    const handler = (_e, path) => cb(path);
+    ipcRenderer.on("navigate", handler);
+    return () => ipcRenderer.removeListener("navigate", handler);
+  },
   onFullScreenChanged: (callback) => {
     const handler = (_event, isFullScreen) => callback(!!isFullScreen);
     ipcRenderer.on("fullscreen-changed", handler);

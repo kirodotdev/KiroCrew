@@ -1153,6 +1153,16 @@ export default function App() {
     const electronAPI = (window as Window & { electronAPI?: { setDevMode?: (v: boolean) => void } }).electronAPI
     electronAPI?.setDevMode?.(devMode)
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  // Native app-menu navigation (Settings…, About): the Electron main process
+  // sends an in-app path; route to it. Accept only plain absolute app paths —
+  // rejects protocol-relative ("//host") and external URLs by construction.
+  useEffect(() => {
+    const electronAPI = (window as Window & { electronAPI?: { onNavigate?: (cb: (path: string) => void) => () => void } }).electronAPI
+    if (!electronAPI?.onNavigate) return
+    return electronAPI.onNavigate(path => {
+      if (typeof path === 'string' && /^\/(?!\/)/.test(path)) navigate(path)
+    })
+  }, [navigate])
   // Dismiss the dev-page notification dot once the user visits /developer
   useEffect(() => {
     if (location.pathname === '/developer') setDevPageSeen(true)

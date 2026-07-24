@@ -48,6 +48,7 @@
     },
     "files": [
       "main.js",
+      "app-menu.js",
       "zoom.js",
       "instance-guard.js",
       "context-menu.js",
