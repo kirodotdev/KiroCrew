@@ -97,7 +97,10 @@ async def api_skills_discover(request: web.Request) -> web.Response:
     query = request.query.get("q", "").strip()
     provider_filter = request.query.get("provider", "").strip() or None
     try:
-        limit = min(int(request.query.get("limit", "20")), 50)
+        # Clamp BOTH ends: the upper-only min() let limit<=0 through, where
+        # merged[:limit] / items[:limit] silently drop results (limit=-1) or
+        # return nothing (limit=0), and &limit=-1 hit the provider URL.
+        limit = max(1, min(int(request.query.get("limit", "20")), 50))
     except ValueError:
         limit = 20
 
