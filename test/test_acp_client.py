@@ -1439,6 +1439,17 @@ class TestAcpClientExtractChunk:
         )
         assert client._extract_text_chunk(msg) == (None, False)
 
+    @pytest.mark.parametrize("bad_update", [None, "chunk", [1], 7])
+    def test_non_dict_update_returns_none(self, tmp_path, bad_update):
+        """The update value comes straight from the agent process; a non-dict
+        raised AttributeError on update.get() inside the prompt-turn dispatch
+        path, tearing down the whole turn."""
+        client = AcpClient(work_dir=tmp_path)
+        from kiro_crew.acp.types import JsonRpcMessage
+
+        msg = JsonRpcMessage(method="session/update", params={"update": bad_update})
+        assert client._extract_text_chunk(msg) == (None, False)  # must not raise
+
 
 class TestAcpClientTrackToolCall:
     def test_tracks_tool_call(self, tmp_path):
@@ -1457,6 +1468,17 @@ class TestAcpClientTrackToolCall:
         )
         client._track_tool_call(msg)
         assert ("tool_use", "execute_bash") in client.last_prompt_stats.tool_calls
+
+    @pytest.mark.parametrize("bad_update", [None, "call", [1], 7])
+    def test_non_dict_update_ignored(self, tmp_path, bad_update):
+        """Same boundary as _extract_text_chunk: non-dict update must be a
+        no-op, not an AttributeError in the dispatch path."""
+        client = AcpClient(work_dir=tmp_path)
+        from kiro_crew.acp.types import JsonRpcMessage
+
+        msg = JsonRpcMessage(method="session/update", params={"update": bad_update})
+        client._track_tool_call(msg)  # must not raise
+        assert client.last_prompt_stats.tool_calls == []
 
 
 class TestAcpClientTrackMetadata:
@@ -4266,6 +4288,16 @@ class TestWaitForCompaction:
 
 class TestExtractToolEvent:
     """Tests for _extract_tool_event covering various tool_call shapes."""
+
+    @pytest.mark.parametrize("bad_update", [None, "call", [1], 7])
+    def test_non_dict_update_returns_none(self, bad_update):
+        """Non-dict update raised AttributeError on update.get() in the
+        prompt-turn dispatch path — must be a clean None instead."""
+        client = AcpClient()
+        from kiro_crew.acp.types import JsonRpcMessage
+
+        msg = JsonRpcMessage(method="session/update", params={"update": bad_update})
+        assert client._extract_tool_event(msg) is None  # must not raise
 
     def test_basic_tool_call(self):
         client = AcpClient()

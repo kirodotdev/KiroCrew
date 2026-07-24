@@ -3669,6 +3669,11 @@ class AcpClient:
         """
         params = msg.params or {}
         update = params.get("update", {})
+        # The update comes straight from the agent process; a non-dict value
+        # (null/list/string) would raise AttributeError here, inside the
+        # prompt-turn dispatch path — same boundary rule as _track_usage_update.
+        if not isinstance(update, dict):
+            return None, False
         kind = update.get("sessionUpdate")
         if kind == UPDATE_AGENT_MESSAGE_CHUNK:
             content = update.get("content", {})
@@ -3896,6 +3901,8 @@ class AcpClient:
         """Track tool calls in stats (used by send_message/send_message_stream)."""
         params = msg.params or {}
         update = params.get("update", {})
+        if not isinstance(update, dict):
+            return
         if update.get("sessionUpdate") == UPDATE_TOOL_CALL:
             title = update.get("title", "unknown")
             kind = update.get("kind", "unknown")
@@ -3905,6 +3912,8 @@ class AcpClient:
     def _extract_tool_event(self, msg: JsonRpcMessage) -> AcpEvent | None:
         params = msg.params or {}
         update = params.get("update", {})
+        if not isinstance(update, dict):
+            return None
         if update.get("sessionUpdate") == UPDATE_TOOL_CALL:
             title = update.get("title", "unknown")
             kind = update.get("kind", "unknown")
