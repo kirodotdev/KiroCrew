@@ -9,8 +9,10 @@ import { safeSetItem } from '../utils/safeStorage'
 export const SOUND_PRESETS = ['chime', 'ding', 'blip', 'pop'] as const
 export type SoundPreset = typeof SOUND_PRESETS[number] | 'none'
 
-/** Category mirrors Notification.kind values used by NotificationsPage. */
-export const SOUND_CATEGORIES = ['all', 'cron', 'approval', 'hook', 'heartbeat', 'subagent', 'taskrunner'] as const
+/** Category mirrors Notification.kind values used by NotificationsPage, plus
+ * the frontend-synthesized 'turn' kind (agent finished a turn — see
+ * TURN_DONE_KIND in notificationEvent.ts; sound-only, never in the feed). */
+export const SOUND_CATEGORIES = ['all', 'turn', 'cron', 'approval', 'hook', 'heartbeat', 'subagent', 'taskrunner'] as const
 export type SoundCategory = typeof SOUND_CATEGORIES[number]
 
 export interface SoundSettings {

@@ -155,6 +155,12 @@ describe('presetForKind', () => {
   it('falls back to "chime" when perCategory.all is missing', () => {
     expect(presetForKind('anything', { ...base, perCategory: {} })).toBe('chime')
   })
+
+  it('resolves the turn category with override and fallback', () => {
+    expect(presetForKind('turn', base)).toBe('chime') // no override -> all
+    expect(presetForKind('turn', { ...base, perCategory: { ...base.perCategory, turn: 'blip' } })).toBe('blip')
+    expect(presetForKind('turn', { ...base, perCategory: { ...base.perCategory, turn: 'none' } })).toBe('none')
+  })
 })
 
 // -- playPreset ---------------------------------------------------------------

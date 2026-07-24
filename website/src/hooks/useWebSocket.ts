@@ -4,7 +4,7 @@ import { useAppDispatch } from '../store'
 import { store } from '../store'
 import { sseStatus, sseConnected, sseDisconnected, sseSlots, setChannelTrusted, sseSlotTitle, triggerRefresh, fetchSlots, markSlotUnread, setUpdateProgress, sseSubagentStatus, sseSubagentText, touchSlotActivity, type SubagentDetail } from '../store/dashboardSlice'
 import { addNotification, ackNotificationByTs, unackNotificationByTs, removeNotificationByTs, fetchNotifications } from '../store/notificationsSlice'
-import { MC_NOTIFICATION_EVENT, type McNotificationDetail } from './notificationEvent'
+import { MC_NOTIFICATION_EVENT, TURN_DONE_KIND, shouldChimeOnTurnDone, type McNotificationDetail } from './notificationEvent'
 import { fetchHistory, missedChunkMarker, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, refreshSlot, warmSlotCache, sseContextUsage, clearMessages, setVoicePlaying, setVoiceAudio, resolveByApprovalId, clearSubagentsForSnapshot, sseSubagentPending, sseSubagentSpawn, sseSubagentChunk, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentSnapshot, sseToolActivity, sseToolResult, sseActivityEvent, sseSideResult, sseWorkflowEvent, setSlotStatusDetail, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, appendSlotMessage, setQuestionCard } from '../store/chatSlice'
 import { api } from '../api/client'
 import { sanitizeLlmOutput } from '../utils/sanitize'
@@ -526,6 +526,25 @@ export function useWebSocket() {
             flushChunks()
             if (data.slot) chunkBufRef.current.delete(data.slot)
             dispatch(sseChatMessage({ ...data, role: '_done' }))
+            // Turn-complete chime: sound-only (no feed entry, no toast). Plays
+            // only when the user isn't watching the reply land — background
+            // slot, hidden tab, or unfocused window — and never during
+            // reconnect catch-up replay. Preset/volume/mute resolve in
+            // useNotificationSound via the 'turn' category.
+            if (shouldChimeOnTurnDone({
+              slot: data.slot,
+              activeSlot: store.getState().chat.activeSlot,
+              reconnecting: reconnectingRef.current,
+              hidden: document.hidden,
+              focused: document.hasFocus(),
+            })) {
+              try {
+                const detail: McNotificationDetail = { kind: TURN_DONE_KIND }
+                window.dispatchEvent(new CustomEvent(MC_NOTIFICATION_EVENT, { detail }))
+              } catch (err) {
+                console.warn('mc-notification listener error', err)
+              }
+            }
             if (data.slot && data.slot !== store.getState().chat.activeSlot && !reconnectingRef.current) {
               dispatch(markSlotUnread(data.slot))
               // #2: warm the per-slot cache so switching to this background
