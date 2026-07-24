@@ -33,6 +33,34 @@ const isUnsafeKey = (key: string): boolean =>
  *  reach the prototype. Real keys pass through unchanged. */
 const safeKey = (key: string): string => (isUnsafeKey(key) ? `unsafe-key:${key}` : key)
 
+/** One queued-message entry as normalized by `fetchSlotDetail` from the backend
+ *  slot-detail `queue` field. */
+type SlotQueueItem = { content: string; queueId: string; ts: string }
+
+/** SINGLE hydration path for the slot-detail `queue` field — the one place that
+ *  turns backend queue entries into `queued` message bubbles. Every reducer that
+ *  consumes a `fetchSlotDetail` payload (`switchSlot`, `warmSlotCache`,
+ *  `refreshSlot`) routes through here so the hydration cannot be hand-copied and
+ *  drift apart. That drift is exactly what dropped queued messages before:
+ *  `switchSlot` and `warmSlotCache` mirrored the same literal, and a field added
+ *  to one was silently forgotten in the other. Centralizing it means a new
+ *  slot-detail payload field is added once and consumed everywhere.
+ *
+ *  Existing `queued` bubbles are stripped first so re-hydration is idempotent —
+ *  a `queue_push` WS event may have appended a bubble during the HTTP fetch, and
+ *  the server `queue` field is the canonical set. Returns a NEW array; queued
+ *  bubbles are always appended last (after history), matching prior behavior. */
+function hydrateQueuedBubbles(
+  list: ChatMessage[],
+  queue: SlotQueueItem[] | undefined,
+): ChatMessage[] {
+  const base = list.filter((m) => m.role !== 'queued')
+  for (const { content, queueId, ts } of queue ?? []) {
+    base.push({ role: 'queued', content, cls: 'msg msg-queued', ts, meta: { queueId } })
+  }
+  return base
+}
+
 /** Single-sourced "N chunk(s) missed" degradation marker. Shared by the reducer's
  *  defensive non-batched path and the useWebSocket flush buffer (the live path)
  *  so the marker text and gap arithmetic cannot drift between the two copies.
@@ -620,6 +648,17 @@ function getSlotSubs(state: ChatState, slot: string) {
   return slot !== state.activeSlot ? state.slotActivity[slot]?.subagents : state.subagents
 }
 
+/** Central, fail-closed accessor for a single subagent entry by wire-supplied
+ *  id. Applies the `isUnsafeKey` prototype-pollution guard once, here, so no
+ *  reducer that indexes the subagents map by an external id has to remember the
+ *  incantation — forgetting is impossible at the call site. A hostile
+ *  `__proto__`/`constructor`/`prototype` id resolves to `undefined` (frame
+ *  dropped) rather than to `Object.prototype`. */
+function getSlotSub(state: ChatState, slot: string, id: string): SubagentActivity | undefined {
+  if (isUnsafeKey(id)) return undefined
+  return getSlotSubs(state, slot)?.[id]
+}
+
 /**
  * Live "sub-agents running" signal for a slot, derived from the
  * subagent_spawn/tool/done WS events (the only real-time source — see the
@@ -928,7 +967,9 @@ const chatSlice = createSlice({
       }
     },
     sseSubagentChunk(state, action: PayloadAction<{ slot: string; id: string; text: string }>) {
-      const a = getSlotSubs(state, action.payload.slot)?.[action.payload.id]
+      // Prototype-pollution guard is centralized in getSlotSub (fail-closed on
+      // __proto__/constructor/prototype ids) so no call site can forget it.
+      const a = getSlotSub(state, action.payload.slot, action.payload.id)
       if (a) {
         a.streaming += action.payload.text
         if (a.streaming.length > 50_000) {
@@ -938,10 +979,8 @@ const chatSlice = createSlice({
     },
     sseSubagentTool(state, action: PayloadAction<{ slot: string; id: string; tool: string; turns?: number; tool_count?: number }>) {
       const { slot, id } = action.payload
-      // Guard the user-controlled id against prototype-pollution keys before
-      // indexing (id === '__proto__' would resolve to Object.prototype).
-      if (id === '__proto__' || id === 'constructor' || id === 'prototype') return
-      const a = getSlotSubs(state, slot)?.[id]
+      // Prototype-pollution guard is centralized in getSlotSub.
+      const a = getSlotSub(state, slot, id)
       if (a) {
         a.lastTool = action.payload.tool; a.status = 'tool'
         if (typeof action.payload.tool_count === 'number') a.toolCount = action.payload.tool_count
@@ -950,8 +989,8 @@ const chatSlice = createSlice({
     },
     sseSubagentStalled(state, action: PayloadAction<{ slot: string; id: string; stalled: boolean; idle_secs?: number }>) {
       const { slot, id } = action.payload
-      if (id === '__proto__' || id === 'constructor' || id === 'prototype') return
-      const a = getSlotSubs(state, slot)?.[id]
+      // Prototype-pollution guard is centralized in getSlotSub.
+      const a = getSlotSub(state, slot, id)
       if (a) a.stalled = action.payload.stalled
     },
     sseSubagentDone(state, action: PayloadAction<{ slot: string; id: string; elapsed: number; error?: string; task?: string; agent?: string; result?: string }>) {
@@ -1209,11 +1248,23 @@ const chatSlice = createSlice({
         : state.toolLog
       if (!log) return
       const tid = action.payload.tool_call_id
-      for (let i = log.length - 1; i >= 0; i--) {
-        if (log[i].type === 'tool' && (!tid || log[i].tool_call_id === tid || !log[i].tool_call_id)) {
-          log[i].output = action.payload.output; break
+      // Prefer an exact tool_call_id match when a tid is supplied. Only if no
+      // entry carries that id do we fall back to the most-recent id-less tool
+      // entry. The old single-pass `... || !log[i].tool_call_id` clause let a
+      // supplied tid latch onto an unrelated id-less tool sitting later in the
+      // log, attaching the output to the wrong tool bubble.
+      let target = -1
+      if (tid) {
+        for (let i = log.length - 1; i >= 0; i--) {
+          if (log[i].type === 'tool' && log[i].tool_call_id === tid) { target = i; break }
         }
       }
+      if (target === -1) {
+        for (let i = log.length - 1; i >= 0; i--) {
+          if (log[i].type === 'tool' && (!tid || !log[i].tool_call_id)) { target = i; break }
+        }
+      }
+      if (target >= 0) log[target].output = action.payload.output
     },
     /** Handle chat messages pushed via global SSE/WS (works after refresh). */
     /** Accumulate streamed model reasoning (`chat_thinking` WS event) into a
@@ -1574,13 +1625,12 @@ const chatSlice = createSlice({
         state.pendingTurnSlot = null
         state.slotHasMore = hasMore
         state.slotOldestIndex = hasMore ? total - messages.length : 0
-        // Hydrate queued messages from backend queue field
-        // Clear any WS-delivered queued messages first to avoid duplicates
-        // (a queue_push WS event may have arrived during the HTTP fetch)
-        state.messages = state.messages.filter(m => m.role !== 'queued')
-        for (const { content, queueId, ts } of queue) {
-          state.messages.push({ role: 'queued', content, cls: 'msg msg-queued', ts, meta: { queueId } })
-        }
+        // Hydrate queued messages from the backend queue field through the
+        // single shared path (hydrateQueuedBubbles) so this reducer cannot drift
+        // from warmSlotCache/refreshSlot. It strips any WS-delivered queued
+        // bubbles first (a queue_push may have arrived during the fetch) so the
+        // server queue set stays canonical and non-duplicated.
+        state.messages = hydrateQueuedBubbles(state.messages, queue)
         // Update cache and clear loading state
         state.slotMessages[safeKey(key)] = state.messages
         state.slotLoading = false
@@ -1596,7 +1646,7 @@ const chatSlice = createSlice({
       })
       .addCase(refreshSlot.fulfilled, (state, action) => {
         if (!action.payload) return
-        const { key, messages, running, hasMore, total } = action.payload
+        const { key, messages, running, hasMore, total, queue } = action.payload
         if (isUnsafeKey(key)) return
         if (state.activeSlot !== key) return  // user switched away
         // Merge permission messages: prefer state perms (have frontend resolved flags)
@@ -1628,6 +1678,13 @@ const chatSlice = createSlice({
         // Reasoning is client-only (never persisted server-side); re-insert it so
         // a finished turn's thinking block survives this refresh.
         state.messages = mergePreservedThinking(state.messages, sorted)
+        // Re-hydrate queued bubbles through the SAME shared path as
+        // switchSlot/warmSlotCache. The merge above is rebuilt from server
+        // history + preserved perms/thinking and carries no `queued` bubbles, so
+        // without this a refresh (e.g. the one fired on chat_done) would vanish a
+        // user's pending queued messages. Routing all three slot-detail reducers
+        // through hydrateQueuedBubbles is what stops them drifting apart again.
+        state.messages = hydrateQueuedBubbles(state.messages, queue)
         state.slotRunning = running
         state.slotStopping = action.payload.stopping ?? false
         state.pendingTurnSlot = null
@@ -1636,7 +1693,7 @@ const chatSlice = createSlice({
       })
       .addCase(warmSlotCache.fulfilled, (state, action) => {
         if (!action.payload) return
-        const { key, messages } = action.payload
+        const { key, messages, queue } = action.payload
         if (isUnsafeKey(key)) return
         // Slot became active between dispatch and fulfilment — switchSlot now
         // owns its messages, so leave the cache for it to manage.
@@ -1652,12 +1709,20 @@ const chatSlice = createSlice({
             localResolved.set(m.meta.approval_id as string, m.meta.resolved)
           }
         }
-        state.slotMessages[safeKey(key)] = messages.map(m => {
+        const hydrated = messages.map(m => {
           const aid = m.role === 'permission' ? (m.meta?.approval_id as string | undefined) : undefined
           return aid && localResolved.has(aid)
             ? { ...m, meta: { ...m.meta, resolved: localResolved.get(aid) } }
             : m
         })
+        // Hydrate queued bubbles through the single shared path
+        // (hydrateQueuedBubbles). Without this, warming a background slot's cache
+        // dropped its pending queued bubbles, so switching to that slot rendered
+        // the completed history minus anything the user had queued behind the
+        // in-flight turn (the bubbles only reappeared on a later full fetch).
+        // Routing every slot-detail reducer through the one helper is what keeps
+        // this from silently diverging from switchSlot/refreshSlot again.
+        state.slotMessages[safeKey(key)] = hydrateQueuedBubbles(hydrated, queue)
         // Clear the per-slot run indicator (the _done frame already idles it;
         // this is belt-and-braces for the fetch-completes-after-_done ordering).
         const run = (state.slotRun[safeKey(key)] ??= { state: 'idle' })
