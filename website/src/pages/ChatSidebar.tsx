@@ -1856,9 +1856,10 @@ function ChatSidebar({
                       </span>
                     )}
                     {link.state === 'closed' && <span className="capitalize text-danger">{link.state}</span>}
-                    {link.ci === 'running' && <Loader2 className="lucide-inline shrink-0 animate-spin" aria-label="Checks running" />}
-                    {link.ci === 'passed' && <Check className="lucide-inline shrink-0 text-ok" aria-label="Checks passed" />}
-                    {link.ci === 'failed' && <X className="lucide-inline shrink-0 text-danger" aria-label="Checks failed" />}
+                    {/* CI status is moot once the PR is merged — the merge icon is the terminal signal. */}
+                    {link.state !== 'merged' && link.ci === 'running' && <Loader2 className="lucide-inline shrink-0 animate-spin" aria-label="Checks running" />}
+                    {link.state !== 'merged' && link.ci === 'passed' && <Check className="lucide-inline shrink-0 text-ok" aria-label="Checks passed" />}
+                    {link.state !== 'merged' && link.ci === 'failed' && <X className="lucide-inline shrink-0 text-danger" aria-label="Checks failed" />}
                   </span>
                 ))}
                 {typeof s.source_links_total === 'number' && s.source_links_total > s.source_links.length && (

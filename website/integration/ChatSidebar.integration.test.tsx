@@ -116,6 +116,27 @@ describe('ChatSidebar Folder Grouping', () => {
     expect(githubChip).not.toHaveTextContent('Merged')
   })
 
+  it('hides CI status icons on merged pull request chips', async () => {
+    const slotsWithSources = [
+      {
+        ...baseSlots[0],
+        source_links: [
+          { provider: 'github' as const, number: 284, url: 'https://github.com/kirodotdev/KiroCrew/pull/284', state: 'merged' as const, ci: 'passed' as const },
+          { provider: 'github' as const, number: 285, url: 'https://github.com/kirodotdev/KiroCrew/pull/285', state: 'open' as const, ci: 'passed' as const },
+        ],
+      },
+    ]
+    renderWithProviders(<ChatSidebar {...defaultProps} slots={slotsWithSources} />)
+
+    const mergedChip = (await screen.findByText('#284')).closest('span')
+    const openChip = screen.getByText('#285').closest('span')
+    // Merged chip keeps the merge icon but drops the CI check — merged is terminal.
+    expect(mergedChip?.querySelector('[aria-label="Merged"]')).toBeInTheDocument()
+    expect(mergedChip?.querySelector('[aria-label="Checks passed"]')).not.toBeInTheDocument()
+    // Open chip still shows its CI status.
+    expect(openChip?.querySelector('[aria-label="Checks passed"]')).toBeInTheDocument()
+  })
+
   it('shows new folder action in the create menu', async () => {
     const user = userEvent.setup()
     renderWithProviders(<ChatSidebar {...defaultProps} />)
