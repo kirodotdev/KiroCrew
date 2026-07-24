@@ -42,7 +42,7 @@ import ThinkingBlock from './chat/ThinkingBlock'
 import type { DisplayItem, TurnItem } from './chat/types'
 import { useScrollManager } from './chat/useScrollManager'
 import { useVirtualChat } from '../hooks/virtualizer/useVirtualChat'
-import { parseFiles, buildRelMap, prepareSendPayload } from '../utils/fileTokens'
+import { parseFiles, prepareSendPayload, resolveFileSegment, buildFileLabels, findUnreferencedAttachments } from '../utils/fileTokens'
 import { type PasteBlock, expandAll as expandPasteTokens, findTokenRanges, pruneBlocks as pruneBlocksUtil, saveStoredPaste, recollapsePastes } from '../utils/pasteTokens'
 import { extractPromptFromToken, extractSlackContextFromToken } from '../utils/tokenPrompt'
 // Roles that fold into a collapsible group in the turn view. Thinking is NOT
@@ -112,7 +112,7 @@ import OverlayDrawer from '../components/OverlayDrawer'
 import { loadChatConfig, CONTENT_WIDTH, type ChatConfig } from './chat/ChatSettings'
 import { useKnowledgeFetch, extractKnowledgeQuery, expandKnowledgeBlock } from './chat/useKnowledgeFetch'
 import { KnowledgePicker } from './chat/KnowledgePicker'
-import { ShieldCheck, BookOpen, Handshake, Rocket, EyeOff, Loader, PanelLeftOpen, PanelLeftClose, Pen, ChevronDown, ChevronRight, Plug, ArrowDown, ArrowUp, MessageSquare, MessageSquareDot, Sparkles, VenetianMask, Clock, Undo2, Check, Columns2, ExternalLink, PanelRight } from 'lucide-react'
+import { ShieldCheck, BookOpen, Handshake, Rocket, EyeOff, Loader, PanelLeftOpen, PanelLeftClose, Pen, ChevronDown, ChevronRight, Plug, ArrowDown, ArrowUp, MessageSquare, MessageSquareDot, Sparkles, VenetianMask, Clock, Undo2, Check, Columns2, ExternalLink, PanelRight, Paperclip } from 'lucide-react'
 
 import InfoTip from '../components/InfoTip'
 import { FileCard } from '../components/FileCard'
@@ -299,6 +299,26 @@ function renderUserContentInner(content: string, meta: Record<string, unknown> |
     const seg = text.slice(lastIdx)
     if (seg) out.push(renderInlineSegment(seg, meta, onFileOpen, 'tend'))
   }
+
+  // Attachments never referenced by any segment (e.g. an upload with no inline
+  // token in the caption) belong to the MESSAGE, not any one segment — render
+  // them once here as cards so a multi-segment paste message can't duplicate
+  // them (see resolveFileSegment: cardPaths is deliberately segment-scoped).
+  // findUnreferencedAttachments owns the referenced/unreferenced decision with
+  // the SAME original-list token indexing resolveFileSegment uses (single
+  // source of truth; token N indexes the original list, not image-filtered).
+  const orderedFiles = parseFiles(text, meta)
+  const unreferenced = orderedFiles.length ? findUnreferencedAttachments(text, orderedFiles) : []
+  if (unreferenced.length) {
+    const labels = buildFileLabels(unreferenced)
+    out.push(
+      <div key="msg-cards" className="flex flex-col gap-1.5 mt-1">
+        {unreferenced.map((p, i) => (
+          <FileAttachmentCard key={`msg-c${i}`} fullPath={p} label={labels.get(p) || p} onFileOpen={onFileOpen} />
+        ))}
+      </div>,
+    )
+  }
   return knowledgeBadge ? <>{knowledgeBadge}{out}</> : out
 }
 
@@ -310,89 +330,136 @@ function renderInlineSegment(content: string, meta: Record<string, unknown> | un
   if (!parsedFiles.length) {
     return <span key={keyBase} style={{ whiteSpace: 'pre-wrap' }}>{content}</span>
   }
-  const metaFiles = (meta?.files || []) as string[]
-  let display = content
-  const tokenMap = new Map<string, string>()
-  if (!metaFiles.length) {
-    const basenames = parsedFiles.map(p => p.split('/').pop() || p)
-    const dupes = new Set(basenames.filter((n, i) => basenames.indexOf(n) !== i))
-    display = display.replace(/\[attached_file \d+\] (\S+)/g, (_, p: string) => {
-      const name = p.split('/').pop() || p
-      const displayName = dupes.has(name) ? p.split('/').slice(-2).join('/') : name
-      tokenMap.set(displayName, p)
-      return `@${displayName}`
-    })
-  } else {
-    buildRelMap(parsedFiles, display).forEach((fullPath, suffix) => tokenMap.set(suffix, fullPath))
+  // Inline-flow variant (adjacent to a paste chip): keep everything inline.
+  // Non-image attachments referenced in the text render as inline chips; any
+  // standalone-token upload in this segment also renders as an inline chip
+  // appended to it (this path can't host block cards without breaking the
+  // inline flow). Never-referenced attachments are handled once at message
+  // level. Pass the ORIGINAL ordered list so token indices line up.
+  const { display, mentionMap, cardPaths, labels } = resolveFileSegment(content, parsedFiles)
+  if (!mentionMap.size && !cardPaths.length) {
+    return <span key={keyBase} style={{ whiteSpace: 'pre-wrap' }}>{display}</span>
   }
-  if (!tokenMap.size) return <span key={keyBase} style={{ whiteSpace: 'pre-wrap' }}>{display}</span>
 
-  const keys = [...tokenMap.keys()].slice(0, 20)
+  const keys = [...mentionMap.keys()].slice(0, 20)
   const tokPattern = keys.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')
-  const parts = display.split(new RegExp(`(@(?:${tokPattern}))(?=\\s|$)`, 'g'))
+  const parts = tokPattern
+    ? display.split(new RegExp(`(@(?:${tokPattern}))(?=\\s|$)`, 'g'))
+    : [display]
+  const chipCls = 'inline-flex items-center px-1.5 py-0.5 mx-0.5 rounded bg-accent/15 text-accent text-[12px] font-mono cursor-pointer hover:bg-accent/25 transition-colors'
   return (
     <span key={keyBase} style={{ whiteSpace: 'pre-wrap' }}>
       {parts.map((part, i) => {
         const tok = part.match(/^@(.+)$/)?.[1]
-        const fullPath = tok && tokenMap.get(tok)
+        const fullPath = tok && mentionMap.get(tok)
         if (fullPath) {
           return (
-            <Clickable key={`${keyBase}-f${i}`} className="inline-flex items-center px-1.5 py-0.5 mx-0.5 rounded bg-accent/15 text-accent text-[12px] font-mono cursor-pointer hover:bg-accent/25 transition-colors" title={fullPath} onClick={() => onFileOpen(fullPath)} aria-label={`Open file ${fullPath}`}>@{tok}</Clickable>
+            <Clickable key={`${keyBase}-f${i}`} className={chipCls} title={fullPath} onClick={() => onFileOpen(fullPath)} aria-label={`Open file ${fullPath}`}>@{tok}</Clickable>
           )
         }
         return <span key={`${keyBase}-p${i}`}>{part}</span>
       })}
+      {cardPaths.map((p, i) => (
+        <Clickable key={`${keyBase}-uc${i}`} className={chipCls} title={p} onClick={() => onFileOpen(p)} aria-label={`Open file ${p}`}>@{labels.get(p) || p}</Clickable>
+      ))}
     </span>
   )
 }
 
-/** File-chip + markdown rendering for a text segment (no paste tokens inside). */
+/** Block card for a single user-attached (non-image) file. Clickable to open
+ *  the file via the shared onFileOpen callback. Styled after the agent-side
+ *  download card (see components/FileCard.tsx) but carries no size/mime — a
+ *  user attachment only has a path here. */
+function FileAttachmentCard({ fullPath, label, onFileOpen }: { fullPath: string; label: string; onFileOpen: (path: string) => void }) {
+  return (
+    <Clickable
+      className="flex items-center gap-2.5 max-w-full bg-card border border-border rounded-lg px-3 py-2 text-sm no-underline text-text hover:border-accent transition-colors cursor-pointer animate-scale-in"
+      title={fullPath}
+      onClick={() => onFileOpen(fullPath)}
+      aria-label={`Open file ${fullPath}`}
+    >
+      <Paperclip size={15} className="shrink-0 text-muted" />
+      <span className="font-medium truncate">{label}</span>
+    </Clickable>
+  )
+}
+
+/** File-card + markdown rendering for a text segment (no paste tokens inside).
+ *
+ *  Attachment display is resolved by the shared resolveFileSegment helper
+ *  (utils/fileTokens.ts), the single owner of attachment-marker knowledge —
+ *  the same helper backs renderInlineSegment, so the two paths never diverge.
+ *  It ALWAYS rewrites the LLM-facing `[attached_file N] /path` plumbing to an
+ *  `@label` token (so raw tokens never leak as text) and recovers pre-existing
+ *  `@relative` mentions. This handles the persisted-message shape where the
+ *  server stores the token form in `content` AND keeps `meta.files` at once.
+ *  Files referenced inline stay inline chips; the rest become block cards.
+ *  Images keep their inline `![image](path)` markdown and are excluded here. */
 function renderFileSegment(content: string, meta: Record<string, unknown> | undefined, onFileOpen: (path: string) => void, keyBase: string) {
   const parsedFiles = parseFiles(content, meta)
-  const metaFiles = (meta?.files || []) as string[]
 
-  // No files — always render markdown (user messages support bold, code, links, etc.)
+  // No attachments — plain markdown (bold, code, links, etc.).
   // softBreaks: preserve Shift+Enter line breaks as <br> (see MarkdownRenderer).
   if (!parsedFiles.length) {
     return <MarkdownRenderer content={content} softBreaks />
   }
 
-  let display = content
-  const tokenMap = new Map<string, string>()
+  // Pass the ORIGINAL ordered list (images included) so [attached_file N] token
+  // indices line up; resolveFileSegment filters images out of its output.
+  const { display, mentionMap, cardPaths, labels } = resolveFileSegment(content, parsedFiles)
 
-  if (!metaFiles.length) {
-    // Replayed history: two-pass basename disambiguation
-    const basenames = parsedFiles.map(p => p.split('/').pop() || p)
-    const dupes = new Set(basenames.filter((n, i) => basenames.indexOf(n) !== i))
-    display = display.replace(/\[attached_file \d+\] (\S+)/g, (_, p: string) => {
-      const name = p.split('/').pop() || p
-      const displayName = dupes.has(name) ? p.split('/').slice(-2).join('/') : name
-      tokenMap.set(displayName, p)
-      return `@${displayName}`
-    })
-  } else {
-    // Fresh message: reuse shared suffix-matching
-    buildRelMap(parsedFiles, display).forEach((fullPath, suffix) => tokenMap.set(suffix, fullPath))
+  // renderFileSegment handles the WHOLE message (non-paste path), so every
+  // attachment belongs to this segment. Cards = standalone-upload tokens in the
+  // text PLUS any attachment never referenced at all (e.g. optimistic
+  // empty-caption bubble whose content carries no token yet). The
+  // never-referenced set is computed by the shared findUnreferencedAttachments
+  // (same original-list indexing), deduped against tokens already carded here.
+  const carded = new Set(cardPaths)
+  const allCardPaths = [
+    ...cardPaths,
+    ...findUnreferencedAttachments(display, parsedFiles).filter(p => !carded.has(p)),
+  ]
+
+  const cards = allCardPaths.length ? (
+    <div key={`${keyBase}-cards`} className="flex flex-col gap-1.5 mt-1 first:mt-0">
+      {allCardPaths.map((p, i) => (
+        <FileAttachmentCard key={`${keyBase}-c${i}`} fullPath={p} label={labels.get(p) || p} onFileOpen={onFileOpen} />
+      ))}
+    </div>
+  ) : null
+
+  // No inline @-mentions: caption (if any) is plain markdown, then the cards.
+  if (!mentionMap.size) {
+    const caption = display.trim()
+    return <>{caption ? <MarkdownRenderer key={`${keyBase}-cap`} content={caption} softBreaks /> : null}{cards}</>
   }
 
-  if (!tokenMap.size) return display
-
-  // Cap tokens to prevent ReDoS from many alternations
-  const keys = [...tokenMap.keys()].slice(0, 20)
+  // Inline-mention path: the caption keeps files inline, so render it as a
+  // single inline flow — text runs as whitespace-preserving spans (NOT block
+  // MarkdownRenderer, which wraps each run in a <p> and would break the line
+  // around the chip) and each @token as an inline chip. Block markdown (bold,
+  // lists) inside a caption that also carries an inline mention renders as
+  // literal text — a rare combination, same trade-off as renderInlineSegment.
+  // Cap tokens to prevent ReDoS from many alternations.
+  const keys = [...mentionMap.keys()].slice(0, 20)
   const tokPattern = keys.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')
   const parts = display.split(new RegExp(`(@(?:${tokPattern}))(?=\\s|$)`, 'g'))
-
-  return parts.map((part, i) => {
-    const tok = part.match(/^@(.+)$/)?.[1]
-    const fullPath = tok && tokenMap.get(tok)
-    if (fullPath) {
-      return (
-        <Clickable key={`${keyBase}-f${i}`} className="inline-flex items-center px-1.5 py-0.5 mx-0.5 rounded bg-accent/15 text-accent text-[12px] font-mono cursor-pointer hover:bg-accent/25 transition-colors"
-          title={fullPath} onClick={() => onFileOpen(fullPath)} aria-label={`Open file ${fullPath}`}>@{tok}</Clickable>
-      )
-    }
-    return part ? <MarkdownRenderer key={`${keyBase}-m${i}`} content={part.trim()} softBreaks /> : null
-  })
+  const body = (
+    <span key={`${keyBase}-body`} style={{ whiteSpace: 'pre-wrap' }}>
+      {parts.map((part, i) => {
+        const tok = part.match(/^@(.+)$/)?.[1]
+        const fullPath = tok && mentionMap.get(tok)
+        if (fullPath) {
+          return (
+            <Clickable key={`${keyBase}-f${i}`} className="inline-flex items-center px-1.5 py-0.5 mx-0.5 rounded bg-accent/15 text-accent text-[12px] font-mono cursor-pointer hover:bg-accent/25 transition-colors"
+              title={fullPath} onClick={() => onFileOpen(fullPath)} aria-label={`Open file ${fullPath}`}>@{tok}</Clickable>
+          )
+        }
+        return part ? <span key={`${keyBase}-p${i}`}>{part}</span> : null
+      })}
+    </span>
+  )
+  return <>{body}{cards}</>
 }
 
 export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?: string; embedded?: boolean; embedMode?: 'chat' | 'sessions'; popout?: boolean } = {}) {
