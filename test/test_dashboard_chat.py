@@ -6913,6 +6913,30 @@ class TestRegenerateAndVariants:
             assert resp.status == 400
 
     @pytest.mark.asyncio
+    async def test_edit_resend_non_dict_body_is_400_not_500(self, tmp_path, monkeypatch):
+        # api_chat_slot_edit_resend parsed the body but never checked
+        # isinstance(dict); a valid-JSON array/scalar reached body.get("index")
+        # and raised AttributeError -> 500. Must be 400, like switch_variant.
+        from kiro_crew.dashboard.chat import api_chat_slot_edit_resend
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.get_or_create_slot("s1")
+        app = web.Application()
+        app["state"] = state
+        app.router.add_post(
+            "/api/chat/slots/{slot}/edit-resend", api_chat_slot_edit_resend
+        )
+        async with TestClient(TestServer(app)) as client:
+            for bad in ("[1, 2]", '"hi"', "42"):
+                resp = await client.post(
+                    "/api/chat/slots/s1/edit-resend",
+                    data=bad,
+                    headers={"Content-Type": "application/json"},
+                )
+                assert resp.status == 400, f"body={bad!r} gave {resp.status}"
+
+    @pytest.mark.asyncio
     async def test_regenerate_clears_pending_on_task_error(self, tmp_path, monkeypatch):
         """If _run_chat raises, _pending_variants must be cleared to prevent leak."""
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)

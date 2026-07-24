@@ -187,6 +187,11 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
+    # A valid-JSON but non-object body (array/scalar) has no .get(), so
+    # body.get("index") would raise AttributeError -> 500. Reject it as a 400,
+    # matching the guard in api_chat_slot_switch_variant above.
+    if not isinstance(body, dict):
+        return web.json_response({"error": "invalid JSON"}, status=400)
 
     index = body.get("index")
     ts = body.get("ts")
@@ -201,8 +206,11 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
         msgs = slot.messages
 
         if ts:
-            index = next((i for i, m in enumerate(msgs) if m.get("ts") == ts and m.get("role") == "user"), -1)
-            if index < 0:
+            index = next(
+                (i for i, m in enumerate(msgs) if m.get("ts") == ts and m.get("role") == "user"),
+                -1,
+            )
+            if not isinstance(index, int) or index < 0:
                 return web.json_response({"error": "user message not found for ts"}, status=400)
         elif isinstance(index, int) and 0 <= index < len(msgs):
             if msgs[index].get("role") != "user":
