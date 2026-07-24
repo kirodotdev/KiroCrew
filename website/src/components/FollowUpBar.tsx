@@ -1,5 +1,5 @@
 import { memo, useRef, useState, useEffect, useCallback } from 'react'
-import { ChevronLeft, ChevronRight, Zap } from 'lucide-react'
+import { ChevronLeft, ChevronRight, ArrowUp } from 'lucide-react'
 
 export type FollowUpLayout = 'multiline' | 'scroll'
 
@@ -130,13 +130,13 @@ function Chip({ option, isPicked, picked, quickSend, onSelect, onSend, className
       {mainChip}
       <button
         type="button"
-        aria-label={`Send "${option}" now`}
-        title={`Send "${option}" now`}
+        aria-label={`Send now: ${option}`}
+        title="Send now"
         onMouseDown={(e) => e.preventDefault()}
         onClick={(e) => { e.stopPropagation(); if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null }; onSend?.(isPicked ? undefined : option) }}
         className={sendSegmentClassName(isPicked)}
       >
-        <Zap size={13} />
+        <ArrowUp size={13} />
       </button>
     </span>
   )
