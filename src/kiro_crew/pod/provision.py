@@ -82,10 +82,58 @@ def ensure_venv(checkout: Path) -> bool:
     if _run([py, "-m", "venv", str(venv_dir)], checkout) != 0:
         return False
     pip = venv_dir / "bin" / "pip"
+    # Upgrade pip first — `pip install --group` (PEP 735) needs pip >= 25.1, and a
+    # fresh `python -m venv` ships an older pip on many hosts.
     _run([str(pip), "install", "--quiet", "--upgrade", "pip"], checkout)
-    if _run([str(pip), "install", "--editable", str(checkout)], checkout) != 0:
-        return False
+    # Install runtime deps AND the PEP 735 `dev` dependency-group (pytest, flake8,
+    # isort, mypy, …) so the documented build gate can run inside the pod venv
+    # (issue #230). If `--group` is unsupported (pip < 25.1) the command exits
+    # nonzero, so fall back to a runtime-only editable install and warn — never
+    # hard-fail provisioning just because the dev extras could not be installed.
+    if _run(
+        [str(pip), "install", "--editable", str(checkout), "--group", "dev"],
+        checkout,
+    ) != 0:
+        _say(
+            "[provision] `pip install --group dev` failed (pip < 25.1?) — falling "
+            "back to a runtime-only editable install; dev tools (pytest/flake8) "
+            "were skipped, so the build gate can't run in this venv"
+        )
+        if _run([str(pip), "install", "--editable", str(checkout)], checkout) != 0:
+            return False
     return has_venv(checkout)
+
+
+def _has_node_modules(website: Path) -> bool:
+    """True when ``website/`` already has installed npm deps (with ``tsc``), so the
+    install step can be skipped on the fast idempotent path. ``tsc`` is the build's
+    key binary; its presence stands in for "deps are installed"."""
+    return (website / "node_modules" / ".bin" / "tsc").exists()
+
+
+def ensure_node_modules(website: Path) -> bool:
+    """Install ``website/`` npm dependencies if missing (issue #229).
+
+    A fresh worktree has no ``website/node_modules`` (gitignored), so ``npm run
+    build`` dies with ``tsc: command not found``. Install deps first: prefer
+    ``npm ci`` (clean, lockfile-exact) and, if that fails (e.g. lockfile drift),
+    fall back to ``npm install --no-package-lock``. The ``--no-package-lock``
+    flag keeps the fallback NON-MUTATING: it installs into ``node_modules``
+    without rewriting the tracked ``website/package-lock.json`` — provisioning
+    must never dirty tracked files (accidental lockfile churn would block
+    prune/rebase). Skips entirely when ``node_modules`` is already present, so
+    re-provisioning stays fast. Returns True when deps are ready."""
+    if _has_node_modules(website):
+        return True
+    _say("[provision] installing website npm deps (node_modules missing)…")
+    if _run(["npm", "ci"], website) == 0:
+        return True
+    _say(
+        "[provision] `npm ci` failed (lockfile drift?) — falling back to "
+        "`npm install --no-package-lock` (non-mutating: won't rewrite the "
+        "tracked package-lock.json)"
+    )
+    return _run(["npm", "install", "--no-package-lock"], website) == 0
 
 
 def build_dist(checkout: Path) -> bool:
@@ -102,6 +150,11 @@ def build_dist(checkout: Path) -> bool:
         f"[provision] building dist for {checkout.name} "
         f"(slow — Vite SPA build, several minutes)…"
     )
+    # A fresh worktree has no website/node_modules (gitignored); install deps
+    # before building or `npm run build` dies with `tsc: command not found`.
+    if not ensure_node_modules(website):
+        _say("FATAL: failed to install website npm deps")
+        return False
     if _run(["npm", "run", "build"], website) != 0:
         _say("FATAL: npm run build failed")
         return False

@@ -108,6 +108,29 @@ re-check `runtime.active_names` after the CLI returns and fail closed
 (`pod not active after start` / `pod still active after shutdown`) — a CLI exit 0
 is never taken as proof of the state change, in either direction.
 
+### Provisioning Dependency Install
+
+`provision.ensure_venv` and `provision.build_dist` install the dependencies each
+step needs before using them, so provisioning a **fresh** worktree (no
+`.venv`, no gitignored `website/node_modules`) does not fail on missing tools:
+
+- **venv (`ensure_venv`)** — after `python -m venv`, upgrades pip, then runs
+  `pip install --editable <checkout> --group dev` so the PEP 735 `dev`
+  dependency-group (pytest, flake8, isort, mypy, …) is present and the build
+  gate can run inside the pod venv (issue #230). `pip --group` needs pip
+  ≥ 25.1; if the command exits nonzero (older pip) it falls back to a
+  runtime-only `pip install --editable <checkout>` and `_say`s a warning that
+  dev tools were skipped — provisioning never hard-fails just because the dev
+  extras could not be installed.
+- **dist (`build_dist`)** — before `npm run build`, calls
+  `ensure_node_modules(website)`: if `website/node_modules/.bin/tsc` is missing
+  it runs `npm ci` (falling back to a NON-MUTATING `npm install
+  --no-package-lock` on lockfile drift — the flag keeps the fallback from
+  rewriting the tracked `website/package-lock.json`, so provisioning never
+  dirties the worktree), otherwise
+  it skips (fast idempotent path). Without this, a fresh worktree's `npm run
+  build` dies with `tsc: command not found` (issue #229).
+
 ### Pod Unit ExecStart Self-Heal
 
 On `pod up`, if the installed systemd unit template's `ExecStart` binary no longer exists

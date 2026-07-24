@@ -379,6 +379,119 @@ class TestProvisionBuildPaths:
         assert prov._find_python() == "/opt/python3.12"
 
 
+class TestProvisionDependencyInstall:
+    """Dependency-gap fixes: npm deps before dist build (#229), dev extras in
+    the venv with graceful fallback for old pip (#230)."""
+
+    def _venv_seeding_run(self, co: Path, calls: list[list[str]], group_fails: bool = False):
+        """Return a fake _run that records calls and materializes the venv bin on
+        `python -m venv`, so has_venv() passes. Optionally fail `--group` cmds."""
+
+        def fake_run(cmd: list[str], cwd: Path) -> int:
+            calls.append(cmd)
+            if cmd[1:3] == ["-m", "venv"]:
+                b = co / ".venv" / "bin"
+                b.mkdir(parents=True, exist_ok=True)
+                (b / "kirocrew").write_text("#!/bin/sh\n")
+                (b / "kirocrew").chmod(0o755)
+            if group_fails and "--group" in cmd:
+                return 1
+            return 0
+
+        return fake_run
+
+    # ---- #229: website npm deps ----
+
+    def test_npm_ci_when_node_modules_missing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        website = tmp_path / "wt" / "website"
+        website.mkdir(parents=True)
+        calls: list[list[str]] = []
+        monkeypatch.setattr(prov, "_run", lambda cmd, cwd: calls.append(cmd) or 0)
+        assert prov.ensure_node_modules(website) is True
+        assert ["npm", "ci"] in calls
+        # ci succeeded → no fallback (non-mutating install never runs)
+        assert ["npm", "install", "--no-package-lock"] not in calls
+
+    def test_node_modules_skipped_when_present(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        website = tmp_path / "wt" / "website"
+        (website / "node_modules" / ".bin").mkdir(parents=True)
+        (website / "node_modules" / ".bin" / "tsc").write_text("#!/bin/sh\n")
+
+        def boom(cmd: list[str], cwd: Path) -> int:
+            raise AssertionError(f"must not run npm when node_modules present: {cmd}")
+
+        monkeypatch.setattr(prov, "_run", boom)
+        assert prov.ensure_node_modules(website) is True
+
+    def test_npm_install_fallback_when_ci_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        website = tmp_path / "wt" / "website"
+        website.mkdir(parents=True)
+        calls: list[list[str]] = []
+
+        def fake_run(cmd: list[str], cwd: Path) -> int:
+            calls.append(cmd)
+            return 1 if cmd == ["npm", "ci"] else 0  # ci fails, install succeeds
+
+        monkeypatch.setattr(prov, "_run", fake_run)
+        assert prov.ensure_node_modules(website) is True
+        # Fallback must be NON-MUTATING: --no-package-lock so the tracked
+        # website/package-lock.json is never rewritten (would dirty the worktree).
+        assert ["npm", "ci"] in calls
+        assert ["npm", "install", "--no-package-lock"] in calls
+        assert ["npm", "install"] not in calls  # plain (mutating) install never runs
+
+    def test_build_dist_installs_node_modules_before_build(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        co = tmp_path / "wt"
+        website = co / "website"
+        website.mkdir(parents=True)
+        calls: list[list[str]] = []
+
+        def fake_run(cmd: list[str], cwd: Path) -> int:
+            calls.append(cmd)
+            if cmd == ["npm", "run", "build"]:
+                (website / "dist").mkdir(parents=True, exist_ok=True)
+                (website / "dist" / "index.html").write_text("<html>")
+            return 0
+
+        monkeypatch.setattr(prov, "_run", fake_run)
+        assert prov.build_dist(co) is True
+        assert calls.index(["npm", "ci"]) < calls.index(["npm", "run", "build"])
+
+    # ---- #230: venv dev extras ----
+
+    def test_pip_group_dev_attempted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        co = tmp_path / "wt"
+        co.mkdir()
+        monkeypatch.setattr(prov, "_find_python", lambda version="3.12": "/usr/bin/python3.12")
+        calls: list[list[str]] = []
+        monkeypatch.setattr(prov, "_run", self._venv_seeding_run(co, calls))
+        assert prov.ensure_venv(co) is True
+        assert any(c[-2:] == ["--group", "dev"] for c in calls)
+
+    def test_pip_group_dev_fallback_on_old_pip(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        co = tmp_path / "wt"
+        co.mkdir()
+        monkeypatch.setattr(prov, "_find_python", lambda version="3.12": "/usr/bin/python3.12")
+        calls: list[list[str]] = []
+        monkeypatch.setattr(prov, "_run", self._venv_seeding_run(co, calls, group_fails=True))
+        assert prov.ensure_venv(co) is True
+        assert any("--group" in c for c in calls)  # attempted --group dev
+        pip = str(co / ".venv" / "bin" / "pip")
+        assert [pip, "install", "--editable", str(co)] in calls  # then fell back
+
+
 class TestPodEnv:
     def test_scrubs_slack_and_nonaws_tokens_keeps_aws(
         self, cfg: PodConfig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
