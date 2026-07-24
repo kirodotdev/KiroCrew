@@ -207,12 +207,23 @@ class RefreshStateManager:
             )
             return
         with self._lock:
+            # A single corrupt `exp` (e.g. "abc" or null) must not brick the
+            # store: float() raises TypeError/ValueError, and this runs in the
+            # RefreshStateManager constructor, so an unguarded coercion made
+            # _get_state() — and thus EVERY /api/auth/refresh call — 500 until
+            # the file was hand-repaired. Skip the malformed entry instead.
             for entry in data.get("consumed_jtis", []):
                 if isinstance(entry, dict) and "jti" in entry and "exp" in entry:
-                    self._consumed_jtis[str(entry["jti"])] = float(entry["exp"])
+                    try:
+                        self._consumed_jtis[str(entry["jti"])] = float(entry["exp"])
+                    except (TypeError, ValueError):
+                        logger.warning("refresh_tokens: dropping consumed_jti with bad exp: %r", entry)
             for entry in data.get("revoked_chains", []):
                 if isinstance(entry, dict) and "chain_id" in entry and "exp" in entry:
-                    self._revoked_chains[str(entry["chain_id"])] = float(entry["exp"])
+                    try:
+                        self._revoked_chains[str(entry["chain_id"])] = float(entry["exp"])
+                    except (TypeError, ValueError):
+                        logger.warning("refresh_tokens: dropping revoked_chain with bad exp: %r", entry)
 
     def _persist(self) -> None:
         if self._state_path is None:

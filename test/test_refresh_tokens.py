@@ -330,6 +330,38 @@ def test_tr_i_17_corrupted_state_file_starts_empty(tmp_path: Path):
     assert mgr.is_consumed("anything") is False
 
 
+def test_tr_i_17a_malformed_exp_entry_is_skipped_not_fatal(tmp_path: Path):
+    """A single entry with a bad `exp` (valid JSON, non-numeric) must not brick
+    the store. float(exp) raises in the constructor's _load, so an unguarded
+    coercion made _get_state() — and every /api/auth/refresh call — 500 until
+    the file was hand-repaired. The bad entry is dropped; good ones survive."""
+    import json
+
+    state_file = tmp_path / "rt.json"
+    good_exp = time.time() + 86400
+    state_file.write_text(
+        json.dumps(
+            {
+                "consumed_jtis": [
+                    {"jti": "bad", "exp": "not-a-number"},
+                    {"jti": "alsobad", "exp": None},
+                    {"jti": "good", "exp": good_exp},
+                ],
+                "revoked_chains": [
+                    {"chain_id": "badchain", "exp": "nope"},
+                    {"chain_id": "goodchain", "exp": good_exp},
+                ],
+            }
+        )
+    )
+    mgr = RefreshStateManager(state_path=state_file)  # must not raise
+    assert mgr.is_consumed("good") is True
+    assert mgr.is_consumed("bad") is False
+    assert mgr.is_consumed("alsobad") is False
+    assert mgr.is_chain_revoked("goodchain") is True
+    assert mgr.is_chain_revoked("badchain") is False
+
+
 def test_tr_u_18_concurrent_writers(tmp_path: Path):
     """TR-U-18: 10 threads each marking a unique jti — no data loss.
 
