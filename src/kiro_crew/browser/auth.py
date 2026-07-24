@@ -106,7 +106,10 @@ def parse_netscape_cookies(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return []
     cookies: list[dict[str, Any]] = []
-    for line in path.read_text().splitlines():
+    # errors="replace": a single non-UTF-8 byte anywhere in the jar would
+    # otherwise raise UnicodeDecodeError and abort parsing of ALL cookies.
+    # Degrade the bad byte to U+FFFD on its line instead.
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
         line = line.strip()
         if not line:
             continue
@@ -129,8 +132,15 @@ def parse_netscape_cookies(path: Path) -> list[dict[str, Any]]:
             "httpOnly": http_only,
             "sameSite": "None" if is_secure else "Lax",
         }
-        expires = parts[4]
-        cookie["expires"] = int(expires) if expires.isdigit() and int(expires) > 0 else -1
+        # str.isdigit() is True for unicode digits ("²", "٣") that int()
+        # rejects, so the old `isdigit() and int(...)` gate still raised
+        # ValueError on those. Guard the coercion and degrade a malformed or
+        # non-positive expiry to a session cookie (-1).
+        try:
+            parsed_exp = int(parts[4])
+        except ValueError:
+            parsed_exp = -1
+        cookie["expires"] = parsed_exp if parsed_exp > 0 else -1
         cookies.append(cookie)
     return cookies
 
