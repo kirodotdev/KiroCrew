@@ -2229,6 +2229,38 @@ class TestContextFooter:
         assert "ctx" not in text
 
 
+class TestToSlackMrkdwnTruncation:
+    """The >SLACK_MAX_TEXT truncation used `rfind("\\n") or SLACK_MAX_TEXT`,
+    which misreads rfind's int return: -1 (no newline) is truthy so text[:-1]
+    keeps ~39000 chars and Slack rejects the message; a newline at index 0
+    falls through to the cap. The result must always be safely under the limit."""
+
+    def test_no_newline_long_text_truncates_under_limit(self):
+        from kiro_crew.slack.format import SLACK_MAX_TEXT, to_slack_mrkdwn
+
+        # A single long line with NO newline (minified JSON / base64 / long URL).
+        text = "x" * (SLACK_MAX_TEXT + 5000)
+        out = to_slack_mrkdwn(text)
+        # Pre-fix: rfind -> -1, text[:-1] leaves ~SLACK_MAX_TEXT+4999 chars.
+        assert len(out) < SLACK_MAX_TEXT + 200  # body cut to cap + short notice
+        assert "truncated" in out
+
+    def test_leading_newline_does_not_truncate_to_empty(self):
+        from kiro_crew.slack.format import SLACK_MAX_TEXT, to_slack_mrkdwn
+
+        # Newline only at index 0 of the window: rfind -> 0, `0 or CAP` -> CAP
+        # pre-fix (accidentally correct), but the explicit check keeps it robust.
+        text = "\n" + "y" * (SLACK_MAX_TEXT + 1000)
+        out = to_slack_mrkdwn(text)
+        assert len(out) < SLACK_MAX_TEXT + 200
+        assert "truncated" in out
+
+    def test_short_text_is_untouched(self):
+        from kiro_crew.slack.format import to_slack_mrkdwn
+
+        assert to_slack_mrkdwn("hello world") == "hello world"
+
+
 class TestToSlackMrkdwnKeepTables:
     """Tests for the keep_tables parameter in to_slack_mrkdwn."""
 
