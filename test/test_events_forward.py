@@ -493,6 +493,9 @@ class TestRouteMessageFallbackRecovery:
         mock_orch.conv_log = None
         mock_orch.slack = None
         mock_orch._session_tasks = {}
+        # No sub-agents in this test — leave the subagent-busy gate a no-op
+        # (an AsyncMock here would return a truthy coroutine and wrongly queue).
+        mock_orch.subagent_mgr = None
         mock_seen = MagicMock()
         mock_seen.check_and_add = lambda x: False
         mock_seen.check = lambda x: False  # SeenCache.check: unseen
