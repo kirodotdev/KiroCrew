@@ -1,10 +1,61 @@
 # KiroCrewWebsite — Agent Guidelines
 
-KiroCrew dashboard frontend — React + TypeScript SPA. Built assets are bundled into `KiroCrew/src/kiro_crew/static/dist/`.
+This is the **single source of truth** for frontend work in `website/` (the
+backend has its own `AGENTS.md` at the repo root). KiroCrew dashboard frontend —
+React + TypeScript SPA. Production builds output to `website/dist/`, staged into
+`KiroCrew/src/kiro_crew/static/dist/` and served by the Python backend.
 
 ## Stack
 
-React 18, Redux Toolkit (`@reduxjs/toolkit`), React Query (`@tanstack/react-query`), React Router v7 (`react-router-dom`), Framer Motion (`framer-motion`), Tailwind CSS 3, Lucide React (`lucide-react`), DOMPurify, highlight.js, TypeScript, Vite 5.
+React 18, Redux Toolkit (`@reduxjs/toolkit`), React Query (`@tanstack/react-query`), React Router v7 (`react-router-dom`), Framer Motion (`framer-motion`), Tailwind CSS 3, Lucide React (`lucide-react`), DOMPurify, highlight.js, Monaco, TypeScript, Vite 5.
+
+## Build / dev / test
+
+```bash
+npm install
+npm run build        # tsc -b + vite build → website/dist   (this is the real typecheck)
+npm run dev          # Vite dev server on :3000, proxies /api to backend :5476
+npm run check        # typecheck + lint + tests
+npm run test         # vitest (website + electron)
+npm run lint         # eslint src
+```
+
+After building, stage the bundle so the backend serves it:
+`cp -R website/dist ../src/kiro_crew/static/dist`.
+
+**Gotcha — `npm run typecheck` is a FALSE PASS.** It runs `tsc --noEmit`, but the
+root `tsconfig.json` has `files: []` + project references, so `--noEmit` checks
+**zero files** and always passes. **Always use `tsc -b`** (which `npm run build`
+runs) to actually type-check. Don't trust a green `npm run typecheck` alone.
+
+**Gotcha — localStorage polyfill in tests.** `website/integration/setup.ts`
+installs an in-memory `localStorage`/`sessionStorage` polyfill. Required: Node
+25's native `--localstorage-file` storage shadows jsdom's spec-complete `Storage`
+and lacks `.clear()`. The polyfill puts methods on `Storage.prototype` so
+quota-error spies still work — don't remove it or move methods off the prototype.
+
+## This is a public OSS fork — don't reintroduce internal couplings
+
+When changing the frontend, **do not reintroduce**:
+- Build/infra: `npm-pretty-much`, Brazil, AIM, CodeArtifact registries,
+  Coverlay/jscpd-as-a-build-gate. The public build is plain **npm + Vite**;
+  `website/.npmrc` pins the **public** registry (`registry.npmjs.org`).
+- Identity/telemetry: live Cognito pools or RUM app ids (`src/rum.ts` is a no-op
+  telemetry stub — keep it inert), `aws-rum-web`. The backend is KiroACP
+  (`kiro-cli`) only; the frontend never needs an ACP adapter as a web dependency.
+- Removed product surfaces: internal feature-app pages/tabs/API-client methods and
+  the credential-TTL card on the Overview page. They were deleted with their
+  backend; don't re-add the UI (a downstream edition re-adds them additively via
+  the extension seams below — never by editing core).
+
+> Stale references: `website/Config` and `website/AUTOSDE.yaml` are leftover
+> internal files not used by the public build — ignore them, and treat any
+> "brazil-build"/"Coverlay" mentions as historical.
+
+## Browser support
+
+Chrome, Firefox, Safari, Edge. Use standard Web APIs only; guard browser-specific
+ones (e.g. `typeof Notification !== 'undefined'`).
 
 ## Icons: Lucide Only, No Emoji
 

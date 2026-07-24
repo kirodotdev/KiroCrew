@@ -3779,7 +3779,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             f"/api/artifacts/{slug}/comments",
             {
                 # Store the body verbatim; agent provenance is the structured
-                # is_agent flag (no emoji persisted into the body — CLAUDE.md).
+                # is_agent flag (no emoji persisted into the body — AGENTS.md).
                 "text": text,
                 "scope": scope,
                 "is_agent": True,
@@ -3804,7 +3804,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             f"/api/artifacts/{slug}/comments/{parent_id}/reply",
             {
                 # Store the body verbatim; agent provenance is the structured
-                # is_agent flag (no emoji persisted into the body — CLAUDE.md).
+                # is_agent flag (no emoji persisted into the body — AGENTS.md).
                 "text": text,
                 "is_agent": True,
                 "author": "agent",

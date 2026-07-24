@@ -3594,7 +3594,7 @@ async def api_artifact_edit_comment(request: web.Request) -> web.Response:
 
     # Agent provenance is the structured is_agent flag, not a body prefix — an
     # edit stores the body verbatim (no emoji stamped into the text; the
-    # dashboard renders a lucide Bot icon from is_agent per CLAUDE.md).
+    # dashboard renders a lucide Bot icon from is_agent per AGENTS.md).
 
     # Push the edit to the provider in place when its origin provider supports
     # it (Chorus). Others edit locally only. Gated by the same capabilities.publish

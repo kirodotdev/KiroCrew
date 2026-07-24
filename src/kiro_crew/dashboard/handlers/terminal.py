@@ -47,7 +47,7 @@ _SCROLLBACK_MAX = 50 * 1024  # 50KB ring buffer per session for reconnect replay
 
 # Fail-fast message + SEL reason for the Windows-unsupported path. Kept as a
 # module constant so the POST create-session handler and the WebSocket open
-# handler return byte-identical wording (avoids drift; CLAUDE.md forbids
+# handler return byte-identical wording (avoids drift; AGENTS.md forbids
 # scattered business-logic string literals).
 _UNSUPPORTED_PLATFORM_MSG = "The web terminal is not supported on Windows."
 _UNSUPPORTED_PLATFORM_REASON = "unsupported_platform"

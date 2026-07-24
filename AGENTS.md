@@ -1,5 +1,120 @@
 # Rules for AI Assistants
 
+This is the **single source of truth** for working in this repository (the
+frontend has its own `website/AGENTS.md`). Read it before non-trivial changes.
+
+## What this is
+
+KiroCrew is an open-source personal AI agent that runs on your own machine —
+chat from Slack, a web dashboard, or the CLI; run multi-step tasks unattended;
+schedule cron jobs; persist memory across sessions. It drives an LLM through the
+KiroACP provider — the ACP adapter running the `kiro-cli` backend over the ACP
+JSON-RPC protocol — plus MCP tools.
+
+- **Backend:** Python package `kiro_crew` in `src/kiro_crew/`.
+- **Frontend:** React + TS + Vite SPA in `website/`; built `dist/` is staged into
+  `src/kiro_crew/static/dist/` and served by the backend.
+- **Distribution:** public GitHub → `pip install` (backend) + `npm`/Vite
+  (frontend). Plain setuptools — **no Brazil, no internal build tooling.**
+- **Data home:** `~/.kiro/crew` (nested under kiro-cli's `~/.kiro/`); the legacy
+  `~/.kirocrew` is auto-migrated. Override with `KIROCREW_HOME`.
+
+## This is a public OSS fork — do not re-introduce internal couplings
+
+This repo is the de-Amazoned public fork of an internal package. When adding or
+changing code, **never reintroduce** any of the following:
+
+- Build/infra: Brazil (`Config`, `AUTOSDE.yaml`, `CODE_APPROVERS.yaml`),
+  `npm-pretty-much`, toolbox bundler, AIM hooks, CodeArtifact registries. Use
+  setuptools + public PyPI / public npm only.
+- Services/auth: enterprise SSO, MCS, Kerberos, federated login, device-posture
+  tunnels, Cognito/RUM ids, builder-mcp, `arcc`, Quip, internal ticketing. The
+  internal marker names have been scrubbed from code, comments, and docs — do not
+  reintroduce them. `scripts/scrub-lint.sh` gates the scanned source roots
+  (`src/`, `website/src/`, `scripts/`, `config/`, `packaging/`, top-level); `docs/`
+  is allowlisted (it legitimately describes platform-seam / SSO-marker concepts)
+  so keep docs clean by convention.
+- These subsystems are **stubbed** (`sso_status.py`, `browser/auth.py`,
+  `dashboard/handlers/sso_login.py`, `tunnel/manager.py`, `aim_agents.py`): their
+  public symbols are preserved as no-ops so the import graph stays intact — keep
+  them stubbed.
+- KiroCrew is **KiroACP-only**: the sole provider is the ACP adapter driving
+  `kiro-cli` (`agent.provider` is fixed to `acp`; kiro-cli REQUIRED). The
+  standalone `ClaudeCodeProvider`/`BedrockProvider`/`cc_agent`/`mirror` modules,
+  the `claude_code`/`bedrock` factory branches, the `cc_*`/`bedrock_*` config
+  fields, and the `[aws]` extra are gone. The dormant `ACP_BACKEND_CLAUDE` /
+  `_is_claude` seam in `acp/client.py` is intentionally kept so an internal
+  companion can re-register Claude Code — do NOT delete it, and do NOT re-add the
+  public registration glue.
+- OSS-flipped defaults (keep): embeddings are **always-on and in-process**
+  (vendored llama-cpp-python under `_vendor/`; Qwen3 GGUF over sha256-pinned HTTPS
+  from the KiroCrew CDN, override via `KIROCREW_EMBED_MODEL_URL` /
+  `memory.embed_model_url`; the `EmbeddingBackend` seam keeps other runtimes
+  possible); voice TTS defaults to **Piper** (local); Slack enterprise gate is
+  default-open (opt-in allowlist via `slack.allowed_enterprise_ids`); `boto3` /
+  `amazon-transcribe` are optional lazy imports for STT (`pip install
+  kirocrew[voice]`).
+
+**Keep** the generic security controls (not internal-specific): AKIA/ASIA
+credential redaction, destructive-command deny patterns, `~/.aws` / `~/.ssh`
+sensitive-path blocking, SEL audit log. The deny patterns are first-class
+`DeniedCommandRule` records (`BUILTIN_DENIED_RULES`, **137 rules**) enforced only
+at the `hooks.py` PreToolUse gate; default-ON but user-configurable from Settings
+→ Security, with the governance `commands` scope as the un-opt-out-able enterprise
+force-pin. See `docs/system-specs/modules/security.md`.
+
+**Fork-initiated UX divergences (do not let an upstream sync re-introduce):** the
+artifact **Iterate** button is hidden (`SHOW_ARTIFACT_ITERATE` in
+`ArtifactDetailPage.tsx`), the **Channels** app is hidden from the App Store, the
+**Board** app is removed, and the Voice panel adds a local **Piper** TTS provider.
+These are launch product choices tracked out-of-tree with the upstream sync tooling.
+
+## Platform layer: CPP seam + Governance (read before touching `platform/`)
+
+`src/kiro_crew/platform/` is the **Composed Platform Providers (CPP)** edition
+seam **and** the two-level **Governance model** — load-bearing generic core
+infrastructure that survives the upstream sync. Full map:
+`docs/system-specs/modules/platform-context.md` + `.../governance.md` and the
+"Platform layer" section below.
+
+- **CPP:** the core defines extension-point Protocols (`interfaces.py`) and ships a
+  `Default*` adapter for each; `PlatformContext` (`context.py`) is the frozen
+  bundle, read via `current_context()`. The core **never** imports a companion or
+  branches on edition. `CONTRACT_VERSION` is **pinned at 1 pre-launch**.
+- **Governance:** `governance.py` + `governance_profiles.py`. `effective = POLICY ∩
+  PROFILE`, tightest-wins; the PreToolUse gate denies a tool/MCP call even if the
+  kiro agent granted it. The evaluator is scope-name-agnostic — adding a scope is a
+  `SCOPE_CATALOG` data change, never an evaluator edit.
+- **Keystone (do NOT weaken):** `security_policy.json`, `profiles/`, and
+  `admission_policy.json` under the data home are in `security._SENSITIVE_HOME_DIRS`
+  so the agent cannot read/write its own ceiling — the single mechanism that makes
+  the ceiling un-disableable. When editing `security.py`'s sensitive-path or
+  bash-command matchers, keep these covered (incl. write/extract verbs).
+- Keep the `ACP_BACKEND_CLAUDE` seam and `platform/` extension points intact; don't
+  add public registration glue, and keep the stubs stubbed.
+
+## Build / install
+
+```bash
+# Frontend first (so the dashboard is bundled), then backend:
+cd website && npm install && npm run build      # → website/dist
+cp -R website/dist ../src/kiro_crew/static/dist  # stage into the package
+cd .. && pip install -e ".[voice]"               # editable; [voice] = STT extras
+# Or: make build   (frontend build + dist staging + venv install)
+```
+
+`kirocrew` and `kirocrew-browse` are installed onto `PATH`. Self-update is
+`git pull` + rebuild + `pip install -e .` + execv restart.
+
+## Platform support
+
+macOS, Linux (x86_64 and ARM/Graviton), **and Windows** (native). Route every
+POSIX-only process/signal/metrics/file-lock call through
+`kiro_crew.platform_compat` — never raw `os.getuid`/`os.killpg`/`os.getpgid`/
+`signal.SIG*`/`fcntl`/`os.kill(pid, 0)` (the last *terminates* the target on
+Windows). See `docs/WINDOWS_INSTALL.md` and the "Platform Support" shim table
+below. Verify process/signal/file-lock/metrics changes on macOS + Linux.
+
 ## Specification Management
 
 When working on code changes:
@@ -22,7 +137,7 @@ When creating task specifications:
 
 ### Dev Mode
 
-Set `KIROCREW_HOME=.kirocrew-dev` to use an isolated data directory in the repo root (gitignored). This keeps dev data (contacts, lessons, config) separate from your real `~/.kirocrew`. Data files are visible in the IDE for easy inspection.
+Set `KIROCREW_HOME=.kirocrew-dev` to use an isolated data directory in the repo root (gitignored). This keeps dev data (contacts, lessons, config) separate from your real `~/.kiro/crew`. Data files are visible in the IDE for easy inspection.
 
 Set `KIROCREW_PORT=6777` so dev and production gateways can run side by side. Pass the same env var to `./dev-frontend.sh` so the Vite proxy points at the dev backend.
 
@@ -176,7 +291,7 @@ Jane Doe (janedoe), John Smith (jsmith)
 | Error handling | Custom exceptions in `acp/client.py`; return error strings at tool boundaries |
 | Async | Use `asyncio` throughout; `async def` for all I/O operations |
 | Dataclasses | Use `@dataclass` for data containers |
-| Constants | No hardcoded strings/values in business logic. Protocol strings in `acp/types.py`, timeouts in `acp/client.py`, UX strings in `slack/handler.py`, credential keys in `config/loader.py`, hook results in `hooks.py`, memory paths in `memory.py`, lesson limits in `learn.py`, cron limits in `cron.py`, MCP protocol version in `mcp_cron.py`, MCP protocol version in `mcp_core.py`, dashboard port in `dashboard.py`, built-in skills in `skills/*/SKILL.md`, provider event kinds in `providers/base.py`, session limits in `history.py`, context budgets in `context.py` (preferences 1k, projects 2k, history 6k, lessons 1k, conversation 8k, cross-tab 2k, per-message 800, total 50k), task states in `task.py`, heartbeat intervals in `heartbeat.py`, subagent limits in `subagent.py`, agent config in `agents/defaults.json`, shutdown signal in `__init__.py`, slot message cap (5000) in `dashboard/state.py`, JSONL rotation (2MB) in `history.py`, usage cache (600s) in `dashboard/handlers.py`, webhook hook limits (max 6 concurrent, 50KB message, 600s default / 3600s max timeout) in `dashboard/handlers.py`, embed cache (128) in `embeddings.py` |
+| Constants | No hardcoded strings/values in business logic. Protocol strings in `acp/types.py`, timeouts in `acp/client.py`, UX strings in `slack/handler.py`, credential keys in `config/loader.py`, hook results in `hooks.py`, memory paths in `memory.py`, lesson limits in `learn.py`, cron limits in `cron.py`, MCP protocol version in `mcp_cron.py`, MCP protocol version in `mcp_core.py`, dashboard port in `dashboard/origin.py`, built-in skills in `skills/*/SKILL.md`, provider event kinds in `providers/base.py`, session limits in `history.py`, context budgets in `context.py` (preferences 1k, projects 2k, history 6k, lessons 1k, conversation 8k, cross-tab 2k, per-message 800, total 50k), task states in `task.py`, heartbeat intervals in `heartbeat.py`, subagent limits in `subagent.py`, agent config in `agents/defaults.json`, shutdown signal in `__init__.py`, slot message cap (5000) in `dashboard/state.py`, JSONL rotation (2MB) in `history.py`, usage cache (600s) in `dashboard/handlers/usage.py`, webhook hook limits (max 6 concurrent, 50KB message, 600s default / 3600s max timeout) in `dashboard/handlers/hooks.py`, embed cache (128) in `embeddings.py` |
 | Naming | Module-level constants: `UPPER_SNAKE_CASE`. Private constants: `_UPPER_SNAKE_CASE` |
 | Icons | **Never use emojis in the UI.** Use `lucide-react` components with `className="lucide-inline"`. See `website/AGENTS.md` for full icon conventions. |
 
@@ -196,7 +311,7 @@ Jane Doe (janedoe), John Smith (jsmith)
   - `"acp"` (required): spawns `kiro-cli acp --agent <name>`
 - Config-driven provider selection: `"provider": "acp"` (kiro-cli) is fixed/required
 - Tool permissions auto-approved in phase 1; interactive approval in phase 3
-- Config loaded from `~/.kirocrew/config.json` with dataclass defaults
+- Config loaded from `~/.kiro/crew/config.json` with dataclass defaults
 - CLI uses `argparse` (stdlib only, no external deps)
 - Minimal dependencies — prefer stdlib over third-party packages
 
@@ -242,7 +357,7 @@ Jane Doe (janedoe), John Smith (jsmith)
 | `_vendor/` | Vendored llama-cpp-python 0.3.34 (MIT) + per-platform native libs — never edit by hand; see `_vendor/README.md` for the upgrade procedure. Excluded from all linters |
 | `session_map.py` | Session key → CWD/provider persistence (split from session.py) |
 | `session_pid.py` | PID tracking for ACP processes (split from session.py) |
-| `optimizer.py` | Native prompt optimizer (Cmd+Shift+Enter) |
+| `dashboard/handlers/optimizer.py` | Native prompt optimizer (Cmd+Shift+Enter) |
 | `subagent_persistence.py` | Folder-per-agent persistence for orphan recovery |
 | `doc_parser.py` | Stdlib-only .docx/.pdf/.pptx text extraction |
 | `seed.py` | Gateway seed fixtures for reproducible testing |
@@ -252,9 +367,7 @@ Jane Doe (janedoe), John Smith (jsmith)
 | `cli_doctor.py` | CLI doctor diagnostics (split from cli.py) |
 | `cli_server.py` | CLI gateway/server commands (split from cli.py) |
 | `cli_setup.py` | CLI setup wizard (split from cli.py) |
-| `chat_runner.py` | Chat execution logic (split from chat.py) |
-| `chat_context.py` | Chat context assembly (split from chat.py) |
-| `chat_tools.py` | Chat tool handling (split from chat.py) |
+| `dashboard/chat_runner.py` | Chat execution logic (split from `dashboard/chat.py`) |
 | `platform/` | **Composed Platform Providers (CPP) seam + Governance model** — see the dedicated section below. |
 
 ### Platform layer: Composed Platform Providers (CPP) + Governance
@@ -286,9 +399,9 @@ trust root for the security ceiling. Full spec:
 `effective = POLICY ∩ PROFILE`, tightest-wins. Level 1 POLICY is the
 enterprise security ceiling (`GovernanceCeiling`, loaded at boot from the
 trust-root path — `KIROCREW_SECURITY_POLICY` env, else
-`~/.kirocrew/security_policy.json`; **never** merged from `config.json`); once
+`~/.kiro/crew/security_policy.json`; **never** merged from `config.json`); once
 present the app + agent cannot weaken it. Level 2 PROFILE
-(`~/.kirocrew/profiles/<name>.json`) is a per-surface/app/task narrow-only
+(`~/.kiro/crew/profiles/<name>.json`) is a per-surface/app/task narrow-only
 ceiling KiroCrew enforces at its OWN PreToolUse gate — it denies a tool/MCP call
 even if the kiro agent config granted it. Every control is one of four
 archetypes (ScopedRuleset / OrdinalControl / CapabilityGate / ScopedMap), each
@@ -302,7 +415,7 @@ change, never an evaluator edit.
 This single mechanism is what makes the ceiling un-disableable — do not weaken it.
 
 **Denied commands** are first-class `DeniedCommandRule` records
-(`BUILTIN_DENIED_RULES`, 130 rules) enforced **only** at the `hooks.py` PreToolUse
+(`BUILTIN_DENIED_RULES`, 137 rules) enforced **only** at the `hooks.py` PreToolUse
 gate — not injected into `~/.kiro/agents/*.json` (the `agent._enforce_denied_commands`
 path + `autoAllowReadonly` are retired; read-only auto-approve moved into
 `hooks.py` after the deny/governance checks). They are default-ON but
@@ -468,7 +581,7 @@ skills/                  ← on-demand skill definitions (edit without rebuildin
 
 - `KIROCREW_PROJECT_DIR` env var points to the project root
 - Auto-detected from CWD at CLI startup (walks up looking for `agents/` + `skills/`)
-- Saved to `~/.kirocrew/project_dir` during `kirocrew setup` so it works from any directory
+- Saved to `~/.kiro/crew/project_dir` during `kirocrew setup` so it works from any directory
 - Falls back to bundled copies in the Python package if project dir not found
 
 #### Skill Loading
@@ -569,7 +682,7 @@ For integration tests and eval harnesses, use composable CLI flags:
 kirocrew gateway --test-mode                    # bundle: ephemeral port + json-ready + reads approval
 kirocrew gateway --port auto --json-ready       # OS-assigned port, prints KIROCREW_READY:{port,token,pid,home}
 kirocrew gateway --approval reads               # auto-approve read-only tools
-kirocrew gateway --approval yolo                # auto-approve ALL tools (requires KIROCREW_HOME != ~/.kirocrew)
+kirocrew gateway --approval yolo                # auto-approve ALL tools (requires KIROCREW_HOME != ~/.kiro/crew)
 ```
 
 Safety: `--approval yolo` refuses to start unless `KIROCREW_HOME` is explicitly set to a non-default path.
