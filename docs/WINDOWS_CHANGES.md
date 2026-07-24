@@ -129,6 +129,19 @@ change is scoped to Windows or preserves the existing macOS and Linux behavior.
   * The injected drag region is skipped on Windows since the native title bar
     already moves the window.
 
+## Console window suppression (Windows)
+
+On Windows a console child launched from the windowless gateway pops a console
+window, and the gateway periodically recycles the agent and its MCP servers
+(heartbeat, session pool, health), so blank windows flashed repeatedly. Fixed by
+adding the no-window creation flag to the spawns we control.
+
+* `acp/runtime.py` and `acp/client.py`. The `kiro-cli` spawns now pass
+  `platform_compat._SUBPROCESS_NO_WINDOW` (CREATE_NO_WINDOW, 0 on POSIX)
+  alongside CREATE_NEW_PROCESS_GROUP, so no console window appears and the MCP
+  servers `kiro-cli` spawns inherit the windowless context.
+* `website/electron/main.js`. The gateway spawn passes `windowsHide: true`.
+
 * `test/find-bin.test.js`. Made the fallback test platform deterministic by
   passing an explicit `isWindows` value and added Windows candidate and fallback
   cases. All 21 tests pass.

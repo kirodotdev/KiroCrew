@@ -355,6 +355,9 @@ function spawnGateway(resolve) {
         const child = spawn(bin, ["gateway", "--no-open"], {
           stdio: ["ignore", childOut, childOut],
           detached: false,
+          // Windows: don't pop a console window for the gateway (a console app)
+          // spawned from this GUI process. No-op on macOS/Linux.
+          windowsHide: true,
           env: {
             ...cleanEnv,
             // Windows source layout puts agents/ + skills/ at the repo root
