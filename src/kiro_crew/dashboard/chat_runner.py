@@ -1071,6 +1071,32 @@ def _retain_terminal_native(
     return {sid: info for sid, info in terminal}
 
 
+def _native_crew_should_auto_approve(native_tracker, state, slot) -> bool:
+    """Return True only when a native crew subagent is ACTIVE *and* an
+    auto-approve condition holds — otherwise deny (CWE-1188 secure default).
+
+    Active-crew is a NECESSARY precondition: with no live native subagent the
+    parent turn is not blocked on a crew tool, so this path must never
+    auto-approve — regardless of the ``auto_approve_subagent_tools`` hook,
+    ``slot._trust``, or yolo. Only when a crew is active do those signals grant
+    approval; with all three false the tool still falls through to the normal
+    interactive/trust gate rather than being silently approved here.
+    """
+    has_active_crew = bool(native_tracker) and any(
+        not info.get("done") for info in native_tracker.values()
+    )
+    if not has_active_crew:
+        return False
+    return bool(
+        (
+            state.context_builder
+            and state.context_builder.hooks.auto_approve_subagent_tools
+        )
+        or getattr(slot, "_trust", False)
+        or state.is_yolo_active()
+    )
+
+
 def _matches_trusted_pattern(tool_title: str, patterns: set[str]) -> str | None:
     """Return the matched pattern if tool_title matches any trusted pattern.
 
@@ -3121,52 +3147,42 @@ async def _run_chat(
                 # Native crew auto-approve: when a native subagent (crew pipeline)
                 # is active and the session is configured to auto-approve subagent
                 # tools, approve immediately to avoid deadlocking the blocked
-                # parent turn.
-                _has_active_crew = _native_tracker and any(
-                    not info.get("done") for info in _native_tracker.values()
-                )
-                if _has_active_crew:
-                    _should_auto = (
-                        (
-                            state.context_builder
-                            and state.context_builder.hooks.auto_approve_subagent_tools
-                        )
-                        or getattr(slot, "_trust", False)
-                        or state.is_yolo_active()
+                # parent turn. Deny-by-default (CWE-1188): with no active crew this
+                # predicate is False no matter the trust flags, so the tool falls
+                # through to the normal interactive/trust gate below.
+                if _native_crew_should_auto_approve(_native_tracker, state, slot):
+                    logger.debug(
+                        "Native crew auto-approve: %s (request_id=%s)",
+                        event.title,
+                        event.request_id,
                     )
-                    if _should_auto:
-                        logger.debug(
-                            "Native crew auto-approve: %s (request_id=%s)",
-                            event.title,
-                            event.request_id,
-                        )
-                        await client.approve_tool(event.request_id)
-                        _tool_title = _broadcast_auto_tool(state, slot, event)
-                        # Defense-in-depth: re-redact before this second external
-                        # surface (activity feed + sel log). event.title is
-                        # LLM-controlled display text; _broadcast_auto_tool already
-                        # redacts, so both passes are idempotent.
-                        _tool_title, _ = redact_exfiltration_urls(_tool_title)
-                        _tool_title, _ = redact_credentials(_tool_title)
-                        state.broadcast_ws(
-                            "activity_event",
-                            {
-                                "slot": slot.key,
-                                "kind": "permission",
-                                "text": f"Auto-approved (crew): {_tool_title}",
-                            },
-                        )
-                        sel().log_tool_invocation(
-                            session_key=session_key,
-                            agent=slot.agent or "kirocrew",
-                            source="dashboard",
-                            tool_name=_tool_title,
-                            tool_kind=event.tool_kind,
-                            outcome="auto_approved",
-                            request_id=event.request_id,
-                            metadata={"reason": "native_crew"},
-                        )
-                        continue
+                    await client.approve_tool(event.request_id)
+                    _tool_title = _broadcast_auto_tool(state, slot, event)
+                    # Defense-in-depth: re-redact before this second external
+                    # surface (activity feed + sel log). event.title is
+                    # LLM-controlled display text; _broadcast_auto_tool already
+                    # redacts, so both passes are idempotent.
+                    _tool_title, _ = redact_exfiltration_urls(_tool_title)
+                    _tool_title, _ = redact_credentials(_tool_title)
+                    state.broadcast_ws(
+                        "activity_event",
+                        {
+                            "slot": slot.key,
+                            "kind": "permission",
+                            "text": f"Auto-approved (crew): {_tool_title}",
+                        },
+                    )
+                    sel().log_tool_invocation(
+                        session_key=session_key,
+                        agent=slot.agent or "kirocrew",
+                        source="dashboard",
+                        tool_name=_tool_title,
+                        tool_kind=event.tool_kind,
+                        outcome="auto_approved",
+                        request_id=event.request_id,
+                        metadata={"reason": "native_crew"},
+                    )
+                    continue
                 # Session-trusted patterns: auto-approve commands matching user globs.
                 # Security: match against the ACTUAL command from tool_input (not
                 # event.title which is LLM-controlled display text). For shell tools,

@@ -23,7 +23,7 @@ def _sel():
     return _pkg.sel()
 
 
-def _gate_auto_approve(
+async def _gate_auto_approve(
     request: web.Request, requested: bool, claimed_source, endpoint: str
 ) -> bool:
     """Provenance gate for per-run auto-approve, shared by every launch endpoint.
@@ -48,17 +48,42 @@ def _gate_auto_approve(
     if requested and (request_app != "" or (claimed_source is not None and claimed_source != "dashboard")):
         granted = False
     if requested:
-        _sel().log_tool_invocation(
-            session_key="dashboard",
-            source="taskrunner",
-            tool_name="auto_approve_grant",
-            outcome="granted" if granted else "denied",
-            metadata={
-                "endpoint": endpoint,
-                "claimed_source": str(claimed_source),
-                "request_app": str(request_app),
-            },
-        )
+        try:
+            # Offloaded to a worker thread: critical=True writes SYNCHRONOUSLY and
+            # RAISES on a sink failure (so an unwritable/full SEL store reaches the
+            # except below and fails the grant closed — the default critical=False
+            # only queues the write and would swallow an async failure). Running
+            # that synchronous flush inline would block the gateway event loop
+            # (no-blocking-call-on-event-loop), so it is awaited via to_thread:
+            # off the loop, yet the await still propagates a write failure here.
+            # The whole call — INCLUDING the _sel() lookup (which may lazily
+            # initialize the log) — runs in the worker so nothing touches the loop.
+            await asyncio.to_thread(
+                lambda: _sel().log_tool_invocation(
+                    session_key="dashboard",
+                    source="taskrunner",
+                    tool_name="auto_approve_grant",
+                    outcome="granted" if granted else "denied",
+                    metadata={
+                        "endpoint": endpoint,
+                        "claimed_source": str(claimed_source),
+                        "request_app": str(request_app),
+                    },
+                    critical=True,
+                )
+            )
+        except Exception:
+            # The audit write is a fallible side-effect. Contain it HERE so the
+            # invariant holds for EVERY caller (current and future) rather than
+            # relying on each endpoint to remember to wrap the gate in try/except
+            # (CWE-755 — an unsanitized traceback would otherwise escape as a
+            # 500). Fail closed: a grant we could not audit is downgraded to
+            # denied, never silently honored.
+            logger.exception(
+                "auto_approve grant audit-write failed for endpoint=%s; failing closed",
+                endpoint,
+            )
+            return False
     return granted
 
 
@@ -147,7 +172,7 @@ async def api_taskrunner_start(request: web.Request) -> web.Response:
         claimed_source = body.get("source")
         source = claimed_source if claimed_source in allowed_sources else "dashboard"
         # Deny-by-default (`is True`) + shared provenance gate (dashboard-context only).
-        auto_approve = _gate_auto_approve(
+        auto_approve = await _gate_auto_approve(
             request, body.get("auto_approve") is True, claimed_source, endpoint="start"
         )
         task_id = await state.task_runner.start_background(
@@ -566,8 +591,11 @@ async def api_taskrunner_execute_plan(request: web.Request) -> web.Response:
     workspace_dir = body.get("workspace_dir", "")
     # Same provenance gate as /start: an app/proxy-embedded caller cannot mint
     # trust on the resume/execute path either (no source claim here — the run
-    # already exists — so only the dashboard-context check applies).
-    auto_approve = _gate_auto_approve(
+    # already exists — so only the dashboard-context check applies). The gate
+    # contains its own fallible audit write (fails closed to auto_approve=False),
+    # so no CWE-755 try/except is needed at the call site — the invariant lives
+    # in the gate, not here.
+    auto_approve = await _gate_auto_approve(
         request, body.get("auto_approve") is True, None, endpoint="execute"
     )
     try:

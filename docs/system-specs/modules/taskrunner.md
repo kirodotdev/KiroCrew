@@ -450,6 +450,23 @@ Two guardrails remain intact for a trusted run:
 
 The mid-stream context-overflow check still runs before final approval.
 
+### Provenance gate & fail-closed audit (`_gate_auto_approve`)
+
+Every launch endpoint (`/start`, `/execute`) routes the requested `auto_approve`
+through the shared async `_gate_auto_approve()` provenance gate before honoring
+it. Per-run trust is a human-at-the-dashboard decision, so a grant is honored
+ONLY for a dashboard-context request (`request["app"] == ""`); an app/proxy
+caller cannot mint trust even while claiming `source: "dashboard"`.
+
+The grant decision is **SEL-audited fail-closed**. The audit is written
+`critical=True` (a synchronous, raise-on-failure write) but **offloaded via
+`asyncio.to_thread`** so the synchronous flush does not block the gateway event
+loop while the `await` still surfaces a write failure. The write is contained in
+the gate itself (not per-endpoint), so if the grant cannot be persisted to the
+SEL trail it is **downgraded to denied** — an un-auditable grant is never
+honored — and no unsanitized exception escapes as an HTTP 500 (CWE-755). This
+invariant holds for every current and future launch caller.
+
 Hardening measures scope the trust tightly. It is not the global `SafetyOverride`
 singleton (which would leak trust to every session), but the authoritative grant
 IS held by `SafetyOverride` — as a **task-scoped grant** — so per-run trust is

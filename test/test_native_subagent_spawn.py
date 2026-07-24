@@ -14,6 +14,7 @@ import pytest
 
 from kiro_crew.dashboard.chat_runner import (
     _append_native_output,
+    _native_crew_should_auto_approve,
     _native_done_result,
     _native_subagent_close_all,
     _native_subagent_sync,
@@ -972,3 +973,73 @@ class TestRetainTerminalNative:
     def test_empty_when_no_done(self):
         tracker = {"r": {"id": "native:r", "done": False, "started": 0.0}}
         assert _retain_terminal_native(tracker) == {}
+
+
+class TestNativeCrewAutoApproveGate:
+    """Gate for the native-crew auto-approve path in chat_runner (CWE-1188).
+
+    Secure default: a tool is auto-approved on this path ONLY when a native crew
+    subagent is ACTIVE *and* at least one trust signal (auto_approve_subagent_tools
+    hook / slot._trust / yolo) is set. With no active crew — or with all signals
+    false — the predicate is False and the tool falls through to the normal
+    interactive/trust gate instead of being silently approved.
+    """
+
+    def _state(self, *, hook=False, yolo=False):
+        state = MagicMock()
+        state.context_builder = MagicMock()
+        state.context_builder.hooks.auto_approve_subagent_tools = hook
+        state.is_yolo_active.return_value = yolo
+        return state
+
+    def _slot(self, *, trust=False):
+        slot = MagicMock()
+        slot._trust = trust
+        return slot
+
+    def test_no_active_crew_all_conditions_false_denies(self):
+        # The core negative case: no crew active AND every trust signal false →
+        # NOT auto-approved.
+        state = self._state(hook=False, yolo=False)
+        slot = self._slot(trust=False)
+        assert _native_crew_should_auto_approve({}, state, slot) is False
+
+    def test_no_active_crew_all_done_denies(self):
+        # A tracker with only finished subagents is not "active".
+        tracker = {"s1": {"done": True}, "s2": {"done": True}}
+        state = self._state(hook=False, yolo=False)
+        slot = self._slot(trust=False)
+        assert _native_crew_should_auto_approve(tracker, state, slot) is False
+
+    def test_no_active_crew_ignores_trust_signals(self):
+        # Active-crew is a NECESSARY precondition: even with yolo/trust/hook all
+        # ON, no active crew means this path must not auto-approve.
+        state = self._state(hook=True, yolo=True)
+        slot = self._slot(trust=True)
+        assert _native_crew_should_auto_approve({}, state, slot) is False
+
+    def test_active_crew_all_conditions_false_denies(self):
+        # Deny-by-default: an active crew alone does not grant approval — a trust
+        # signal must also be present.
+        tracker = {"s1": {"done": False}}
+        state = self._state(hook=False, yolo=False)
+        slot = self._slot(trust=False)
+        assert _native_crew_should_auto_approve(tracker, state, slot) is False
+
+    def test_active_crew_with_hook_approves(self):
+        tracker = {"s1": {"done": False}}
+        state = self._state(hook=True, yolo=False)
+        slot = self._slot(trust=False)
+        assert _native_crew_should_auto_approve(tracker, state, slot) is True
+
+    def test_active_crew_with_slot_trust_approves(self):
+        tracker = {"s1": {"done": False}}
+        state = self._state(hook=False, yolo=False)
+        slot = self._slot(trust=True)
+        assert _native_crew_should_auto_approve(tracker, state, slot) is True
+
+    def test_active_crew_with_yolo_approves(self):
+        tracker = {"s1": {"done": False}}
+        state = self._state(hook=False, yolo=True)
+        slot = self._slot(trust=False)
+        assert _native_crew_should_auto_approve(tracker, state, slot) is True

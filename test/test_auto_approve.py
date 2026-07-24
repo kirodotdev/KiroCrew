@@ -494,3 +494,43 @@ class TestAutoApproveProvenanceGating:
     async def test_execute_app_embedded_ignored(self) -> None:
         # The /execute endpoint must enforce the SAME gate as /start.
         assert await self._execute_auto_approve_passed(request_app="someapp") is False
+
+    @pytest.mark.asyncio
+    async def test_execute_gate_audit_failure_fails_closed(self) -> None:
+        """A SEL/audit failure inside the provenance gate is CONTAINED in the
+        gate itself (CWE-755): it neither leaks an unsanitized traceback as a 500
+        nor grants trust. The gate fails closed to ``auto_approve=False`` and the
+        plan proceeds without auto-approval.
+
+        Regression guard: the containment invariant lives in ``_gate_auto_approve``
+        (so every current and future caller is protected), NOT in a per-endpoint
+        try/except that a later adopter could forget to add.
+        """
+        runner = MagicMock()
+        runner.execute_plan = AsyncMock(return_value=None)
+        app = web.Application()
+        app["state"] = SimpleNamespace(task_runner=runner)
+        req = make_mocked_request(
+            "POST", "/api/taskrunner/t1/execute", app=app, match_info={"task_id": "t1"},
+            headers={"Content-Length": "32"},
+        )
+        req["app"] = ""  # dashboard context → requested trust is honored, so the gate audits
+        req.json = AsyncMock(return_value={"auto_approve": True})
+
+        boom = MagicMock()
+        boom.log_tool_invocation.side_effect = RuntimeError("sel backend down: SECRET-INTERNAL-DETAIL")
+        with patch("kiro_crew.dashboard.handlers.taskrunner._sel", return_value=boom):
+            resp = await api_taskrunner_execute_plan(req)
+
+        # No unsanitized 500 escapes; the request succeeds.
+        assert resp.status == 200
+        # The raw exception text must not leak to the client.
+        assert "SECRET-INTERNAL-DETAIL" not in resp.body.decode()
+        # Fail closed: trust was NOT granted despite the request asking for it,
+        # and the plan still ran (without auto-approval).
+        runner.execute_plan.assert_called_once()
+        assert runner.execute_plan.call_args.kwargs["auto_approve"] is False
+        # The audit MUST be requested SYNCHRONOUSLY (critical=True) so a real
+        # (async) SEL write failure reaches this fail-closed handler rather than
+        # being swallowed by the background writer after the gate has returned.
+        assert boom.log_tool_invocation.call_args.kwargs["critical"] is True
