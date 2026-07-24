@@ -14,16 +14,17 @@
  * stays testable without an Electron runtime.
  */
 
-// Default update feed host: the public distribution CDN (CloudFront + OAC
-// over the kirocrew-updates bucket). The feed is a STATIC JSON file at
-// <base>/<channel>/latest-mac.json written by CI after notarization; the
-// artifact it points at lives under desktop/<channel>/<version>/ on the
-// same CDN. There is no 200/204 server endpoint: safeCheck() fetches the
-// feed itself and compares versions CLIENT-SIDE, engaging Squirrel.Mac only
-// when the feed version differs from the running app. (Squirrel treats any
-// 200 feed response as "update available", so gating on the client compare
-// is what prevents a re-download loop against a static file.)
-const DEFAULT_FEED_BASE = "https://d28nxu9if70cmc.cloudfront.net/feed";
+// Default update feed host: updates.crew.kiro.dev, the pointer hostname of
+// the public distribution CDN (CloudFront + OAC over the kirocrew-updates
+// bucket). The feed is a STATIC JSON file at <base>/<channel>/latest-mac.json
+// written by CI after notarization; the artifact URLs inside it point at the
+// byte hostname (download.crew.kiro.dev, CI's CLI_CDN_BASE). There is no
+// 200/204 server endpoint: safeCheck() fetches the feed itself and compares
+// versions CLIENT-SIDE, engaging Squirrel.Mac only when the feed version
+// differs from the running app. (Squirrel treats any 200 feed response as
+// "update available", so gating on the client compare is what prevents a
+// re-download loop against a static file.)
+const DEFAULT_FEED_BASE = "https://updates.crew.kiro.dev/feed";
 const CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000; // every 4h while running
 const LAUNCH_CHECK_DELAY_MS = 30 * 1000; // let startup settle first
 const FORCE_EXIT_AFTER_MS = 5 * 1000; // failsafe: guarantee exit after quitAndInstall

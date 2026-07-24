@@ -29,8 +29,10 @@ overwritten.
 - `kirocrew-updates-…` (private + CloudFront OAC, public trust domain):
   `cli/{channel}/{version}/`, `desktop/{channel}/{version}/`,
   `feed/{channel}/latest-mac.json`, served at
-  `https://d28nxu9if70cmc.cloudfront.net` (`updates.kirocrew.dev` is not
-  yet provisioned)
+  `https://updates.crew.kiro.dev` (pointers: feeds, pip index) and
+  `https://download.crew.kiro.dev` (artifact bytes) -- aliases of the
+  same distribution; the auto-assigned
+  `https://d28nxu9if70cmc.cloudfront.net` keeps working
 
 **Feed (as built) — static file, no Lambda:** `sign-and-notarize.yml` writes
 `feed/{channel}/latest-mac.json` directly after the spctl gate. There is no
@@ -42,8 +44,8 @@ delta. Schema:
 ```json
 {
   "version": "0.1.0-nightly.20260721061155",
-  "url": "https://d28nxu9if70cmc.cloudfront.net/desktop/nightly/0.1.0-nightly.20260721061155/KiroCrew.zip",
-  "dmg": "https://d28nxu9if70cmc.cloudfront.net/desktop/nightly/0.1.0-nightly.20260721061155/KiroCrew.dmg",
+  "url": "https://download.crew.kiro.dev/desktop/nightly/0.1.0-nightly.20260721061155/KiroCrew.zip",
+  "dmg": "https://download.crew.kiro.dev/desktop/nightly/0.1.0-nightly.20260721061155/KiroCrew.dmg",
   "name": "0.1.0-nightly.20260721061155",
   "pub_date": "2026-07-21T06:22:13Z"
 }

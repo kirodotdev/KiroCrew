@@ -186,9 +186,12 @@ All infrastructure is managed as code (CDK).
 
 ### Download and feed URL design
 
-One CloudFront domain serves everything (currently the auto-assigned
-`d28nxu9if70cmc.cloudfront.net`; the future home is the `crew.kiro.dev`
-subdomain). Every public URL is one of exactly two classes:
+One CloudFront distribution serves everything. The advertised homes are
+`updates.crew.kiro.dev` for pointers and `download.crew.kiro.dev` for
+artifact bytes (one hostname per URL class below, host-scoped inside the
+`crew.kiro.dev` zone so the apex stays free for the product site); the
+auto-assigned `d28nxu9if70cmc.cloudfront.net` keeps serving as an alias.
+Every public URL is one of exactly two classes:
 
 - Immutable versioned keys: long-cached, written once, never republished.
   A version's bytes can never change after publish, so edge caches can
@@ -223,9 +226,9 @@ Rules that make the scheme work:
    index, keeping PyPI available for dependency resolution.
 
 Worked example, stable channel: a human installs from
-`https://d28nxu9if70cmc.cloudfront.net/desktop/stable/latest/KiroCrew.dmg`;
+`https://download.crew.kiro.dev/desktop/stable/latest/KiroCrew.dmg`;
 a server installs with `pip install kirocrew --extra-index-url
-https://d28nxu9if70cmc.cloudfront.net/feed/stable/simple/`.
+https://updates.crew.kiro.dev/feed/stable/simple/`.
 
 ### Buckets and CDN
 
@@ -245,18 +248,20 @@ pointers must never be served stale. The distribution speaks HTTP/2 and 3,
 redirects to HTTPS, allows GET/HEAD only, and writes access logs to a
 dedicated bucket with an IA/Glacier/expiry lifecycle.
 
-The domain is the auto-assigned `*.cloudfront.net`, exported to CI as the
-`CLI_CDN_BASE` variable. The public home will be the `crew.kiro.dev`
-subdomain, following the convention Kiro's other distribution surfaces
-use (`cli.kiro.dev` is the closest analog). KiroCrew owns the
-`crew.kiro.dev` hosted zone and iterates on its records freely; the
-kiro.dev apex carries a one-line NS delegation to the zone's
-nameservers. Rollout is phased: the zone and alias records first, then
-(once the delegation resolves) the DNS-validated certificate in
-us-east-1 and the domain attach on the distribution. The scheme is
-base-URL-agnostic (the client's feed base is configurable and CI reads
-the base from a variable), so the cutover changes no path shapes and the
-`*.cloudfront.net` URLs keep working.
+The advertised hostnames are `updates.crew.kiro.dev` (pointers) and
+`download.crew.kiro.dev` (artifact bytes), following the convention
+Kiro's other distribution surfaces use (`cli.kiro.dev` is the closest
+analog). KiroCrew owns the `crew.kiro.dev` hosted zone and iterates on
+its records freely; the kiro.dev apex carries a one-line NS delegation
+to the zone's nameservers, and a DNS-validated certificate covering the
+zone's apex and wildcard is attached to the distribution. Splitting the
+two URL classes across hostnames means future protective policy on the
+byte surface (rate rules, geo/redirect layers) or a physical origin
+split can never touch the availability-critical feed path, with no
+client-visible migration. The scheme stays base-URL-agnostic (the
+client's feed base is configurable and CI reads its artifact base from
+the `CLI_CDN_BASE` variable), so no path shape ever changed and the
+auto-assigned `*.cloudfront.net` URLs keep working as aliases.
 
 ### Identity and trust boundaries
 
