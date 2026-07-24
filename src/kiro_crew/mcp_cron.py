@@ -21,11 +21,17 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
-from zoneinfo import available_timezones
 
 from kiro_crew import model_registry
 from kiro_crew.config.loader import DASHBOARD_PORT, config_dir
-from kiro_crew.cron import CronService, compute_next_run_ts, format_schedule, get_local_tz
+from kiro_crew.cron import (
+    CronService,
+    compute_next_run_ts,
+    format_schedule,
+    get_local_tz,
+    is_valid_skip_date,
+    is_valid_timezone,
+)
 from kiro_crew.cron_script import resolve_script_path
 from kiro_crew.cron_trigger import trigger_cron_job
 from kiro_crew.mcp_core import _resolve_session_key
@@ -1005,6 +1011,19 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                 # "auto" sentinel (canonical key with no pinned provider id):
                 # explicit inherit — same as leaving model unset.
                 model_arg = ""
+        # Pre-check here only to return a REDACTED, user-facing message (the
+        # authoritative calendar-validity enforcement now lives in add_job at
+        # the persistence owner, so any create caller is covered and the values
+        # land in the job's FIRST _save() -- no orphaned/half-populated job).
+        skip_dates = args.get("skip_dates", [])
+        tz = args.get("timezone", "")
+        if tz and not is_valid_timezone(tz):
+            safe_tz = redact(tz)
+            return f"Error: invalid timezone: {safe_tz!r}"
+        if skip_dates:
+            for d in skip_dates:
+                if not is_valid_skip_date(d):
+                    return f"Error: invalid skip_date: {redact(str(d))!r} (expected YYYY-MM-DD)"
         try:
             thread_ts = (args.get("thread_ts") or "").strip() or None
             job = svc.add_job(
@@ -1016,6 +1035,8 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                 channel=channel,
                 thread_ts=thread_ts,
                 delete_after_run=bool(at_ts),
+                timezone=tz,
+                skip_dates=skip_dates,
             )
         except ValueError as e:
             return f"Error: {e}"
@@ -1033,15 +1054,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             job.model = model_arg
         if session_key:
             job.session_key = session_key
-        skip_dates = args.get("skip_dates", [])
-        tz = args.get("timezone", "")
-        if skip_dates:
-            job.skip_dates = skip_dates
-        if tz:
-            if tz not in available_timezones():
-                safe_tz = redact(tz)
-                return f"Error: invalid timezone: {safe_tz!r}"
-            job.timezone = tz
+        # timezone/skip_dates are persisted by add_job's first _save() above.
         # persistent_session: only override the default (True) when explicitly provided.
         # Type is enforced by validation.py CRON_ADD_SCHEMA (FieldSpec ... bool),
         # so we do NOT accept raw-truthy values here — only a real bool.
@@ -1074,8 +1087,6 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             or approval_mode
             or model_arg
             or session_key
-            or skip_dates
-            or tz
             or persistent_session_explicit
             or minimal_context_explicit
             or hide_in_chat_explicit
@@ -1112,10 +1123,15 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         if "silent" in args:
             kwargs["silent"] = args["silent"]
         if "skip_dates" in args:
-            kwargs["skip_dates"] = args["skip_dates"]
+            sd = args["skip_dates"]
+            if sd:
+                for d in sd:
+                    if not is_valid_skip_date(d):
+                        return f"Error: invalid skip_date: {redact(str(d))!r} (expected YYYY-MM-DD)"
+            kwargs["skip_dates"] = sd
         if "timezone" in args:
             tz_val = args["timezone"]
-            if tz_val and tz_val not in available_timezones():
+            if tz_val and not is_valid_timezone(tz_val):
                 safe_tz = redact(tz_val)
                 return f"Error: invalid timezone: {safe_tz!r}"
             kwargs["timezone"] = tz_val

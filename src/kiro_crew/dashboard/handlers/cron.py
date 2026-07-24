@@ -8,11 +8,11 @@ import logging
 import time
 from datetime import datetime, timezone
 from typing import Any
-from zoneinfo import available_timezones
 
 from aiohttp import web
 
 from kiro_crew import model_registry
+from kiro_crew.cron import is_valid_timezone
 from kiro_crew.dashboard.cron_inject import (
     hydrate_slot_from_history,
     inject_cron_result_to_dashboard,
@@ -248,7 +248,7 @@ async def api_crons_create(request: web.Request) -> web.Response:
     if approval_mode and approval_mode not in {"", "auto"}:
         return web.json_response({"error": "invalid approval_mode"}, status=400)
     silent = body.get("silent", False)
-    if timezone_val and timezone_val not in available_timezones():
+    if timezone_val and not is_valid_timezone(timezone_val):
         safe_tz, _ = redact_credentials(redact_exfiltration_urls(timezone_val)[0])
         return web.json_response({"error": f"invalid timezone: {safe_tz!r}"}, status=400)
     # Validate model BEFORE add_job so an invalid value never leaves an
@@ -278,14 +278,23 @@ async def api_crons_create(request: web.Request) -> web.Response:
             every = int(every)
         except (ValueError, TypeError):
             return web.json_response({"error": "'every' must be an integer"}, status=400)
-        job = state.crons.add_job(name, message, every_secs=every, channel=channel)
+        job = state.crons.add_job(
+            name, message, every_secs=every, channel=channel, timezone=timezone_val
+        )
     elif cron_expr:
-        job = state.crons.add_job(name, message, cron_expr=cron_expr, channel=channel)
+        job = state.crons.add_job(
+            name, message, cron_expr=cron_expr, channel=channel, timezone=timezone_val
+        )
     else:
         return web.json_response({"error": "schedule, every, or cron required"}, status=400)
     strict_schedule = body.get("strict_schedule", False)
     hide_in_chat = body.get("hide_in_chat", False)
-    if agent_id or model_val or approval_mode or silent or timezone_val or strict_schedule or hide_in_chat:
+    # timezone/skip_dates are now folded into add_job's SINGLE first _save()
+    # (the persistence owner validates + persists them atomically), so the
+    # dashboard create path no longer does a post-hoc timezone fold — that
+    # second save left a crash/concurrent-read window where a job could persist
+    # WITHOUT its timezone, the exact hole add_job's contract now closes.
+    if agent_id or model_val or approval_mode or silent or strict_schedule or hide_in_chat:
         if agent_id:
             job.agent_id = agent_id
         if model_val:
@@ -294,8 +303,6 @@ async def api_crons_create(request: web.Request) -> web.Response:
             job.approval_mode = approval_mode
         if silent:
             job.silent = True
-        if timezone_val:
-            job.timezone = timezone_val
         if strict_schedule:
             job.strict_schedule = True
         if hide_in_chat:
@@ -447,7 +454,7 @@ async def api_cron_update(request: web.Request) -> web.Response:
         kwargs["every_secs"] = body["every"]
     if "timezone" in body:
         tz_val = (body["timezone"] or "").strip()
-        if tz_val and tz_val not in available_timezones():
+        if tz_val and not is_valid_timezone(tz_val):
             safe_tz, _ = redact_credentials(redact_exfiltration_urls(tz_val)[0])
             return web.json_response({"error": f"invalid timezone: {safe_tz!r}"}, status=400)
         kwargs["timezone"] = tz_val

@@ -75,6 +75,44 @@ Jobs can define `skip_dates` — a list of dates (YYYY-MM-DD) on which the job s
 
 Jobs receive random jitter by default (0-5min hourly, 0-59min daily) to spread load. Set `strict_schedule: true` on a job to disable jitter entirely — the job fires at the exact cron/interval time.
 
+### Create-path persistence-owner validation (`timezone` / `skip_dates`)
+
+`CronService.add_job()`/`update_job()` in `cron.py` are the **persistence
+owner** for cron creation/mutation. They validate `timezone` and `skip_dates`
+**before** the job's single `_save()`, and fold both fields into that first
+persist — so no create path (MCP `cron_add`, apps `cron_sdk`, dashboard, CLI)
+can strand a half-populated or invalid job on disk for these two
+calendar-validity-sensitive fields:
+
+- **Timezone** is checked with `cron.is_valid_timezone()` — a single cached
+  `ZoneInfo(tz)` constructor lookup, NOT `available_timezones()` (which
+  recursively walks the tzdata tree and opens many files, blocking the async
+  dashboard PATCH event loop). An invalid IANA name raises `ValueError` and
+  **nothing is persisted**.
+- **Skip dates** are checked with `cron.is_valid_skip_date()`, which requires
+  the parsed value to round-trip **exactly** back to `%Y-%m-%d`. This rejects
+  non-padded inputs like `"2026-1-1"` that `strptime` accepts but that render
+  as `"2026-01-01"` at fire-time comparison and would therefore silently never
+  match. An invalid entry raises `ValueError` and nothing is persisted.
+
+Because validation precedes the single locked persist, a `cron_add` with an
+invalid `timezone`/`skip_dates` returns an error **and leaves no job on disk**,
+so a retried create cannot duplicate a previously-stranded job (the earlier bug:
+validation ran *after* the immediate `_save()`, so the invalid job persisted and
+a retry duplicated it). `mcp_cron.cron_add` keeps only a thin pre-check to
+return a *redacted* user-facing error message and passes the values through to
+`add_job` for the authoritative check.
+
+**Scope (field-partial invariant).** This owner-level guarantee currently covers
+`timezone` and `skip_dates`. The other first-save fields (`agent_id`, `model`,
+`session_key`, `strict_schedule`, `hide_in_chat`, `silent`) are still applied by
+the dashboard and MCP create handlers as a post-hoc fold + a second `_save()`
+after `add_job` returns. Totalizing the invariant over all first-save fields
+(so every create is a single fully-formed locked persist) is tracked in
+**issue #391** and delivered by the concurrent `fix/cron-locking` rework
+(PR #331), which consolidates every first-save field into one
+`_build_job`/`_persist_add_locked` transaction.
+
 ### App-Manifest Cron `enabled` Flag (register-paused contract)
 
 App manifests (`app.json`) may declare crons with `"enabled": false` — a cron
