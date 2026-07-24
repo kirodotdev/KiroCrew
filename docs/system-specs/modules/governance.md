@@ -92,8 +92,18 @@ evaluator edits.
 1. `KIROCREW_SECURITY_POLICY` env path — fleet hot-override, highest.
 2. companion-bundled resource (the `amazon` edition packages it; the public core
    passes `None`).
-3. `~/.kirocrew/security_policy.json` — standalone operator-authored.
+3. `~/.kiro/crew/security_policy.json` — standalone operator-authored.
 4. none → `None` → editable secure-defaults (ungoverned ceiling).
+
+The home path (step 3) is resolved through the **lazy `_policy_home_path()`
+accessor**, never a module-level `config_dir()` capture — so importing
+`platform.governance` (or `platform.admission`, whose `_policy_default_path()` /
+`_seed_marker_path()` / `_checksum_path()` follow the same pattern) never
+triggers `config_dir()` and thus never fires the one-time data-home migration as
+an import side effect. The migration runs only at the single chosen point
+(`ensure_data_home()` in the CLI prologue, before any `asyncio.run`), keeping the
+platform layer side-effect-free load-bearing infrastructure. Tests patch these
+accessors, not captured constants.
 
 A **present-but-unreadable / invalid** policy raises `PlatformCompositionError`
 (fail-closed to strictest), mirroring `admission.load_admission_policy`. Parsing
@@ -116,8 +126,8 @@ Under *"secure by default, not by mandate"* there is **no compiled-in floor** �
 the entire posture is operator-editable. The only invariant is the
 **agent-vs-operator split**: the agent cannot edit the policy/profile files.
 This is enforced solely by adding them to `security._SENSITIVE_HOME_DIRS`
-(`~/.kirocrew/security_policy.json`, `~/.kirocrew/profiles`,
-`~/.kirocrew/admission_policy.json`) — `is_sensitive_path` is the shared
+(`~/.kiro/crew/security_policy.json`, `~/.kiro/crew/profiles`,
+`~/.kiro/crew/admission_policy.json`) — `is_sensitive_path` is the shared
 read+write gate across every surface. `assert_governance_paths_protected()` is a
 boot integrity check that fails closed if a refactor ever drops them.
 

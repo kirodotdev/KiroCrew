@@ -213,7 +213,7 @@ class TestApprovalYoloSafetyRail:
 
     def test_yolo_refused_when_resolves_to_default_home(self, monkeypatch, capsys):
         # Point KIROCREW_HOME at the literal default; rail must catch it.
-        monkeypatch.setenv("KIROCREW_HOME", str(Path.home() / ".kirocrew"))
+        monkeypatch.setenv("KIROCREW_HOME", str(Path.home() / ".kiro" / "crew"))
         with pytest.raises(SystemExit) as exc:
             _resolve_gateway_args(_ns(approval="yolo"))
         assert exc.value.code == 2
@@ -221,12 +221,25 @@ class TestApprovalYoloSafetyRail:
         assert "main gateway home" in captured.err
 
     def test_yolo_refused_via_tilde_expansion(self, monkeypatch, capsys):
-        # `~/.kirocrew` expands then resolves to the same path as Path.home() / .kirocrew.
-        monkeypatch.setenv("KIROCREW_HOME", "~/.kirocrew")
+        # `~/.kiro/crew` expands then resolves to the same path as
+        # Path.home() / .kiro / crew.
+        monkeypatch.setenv("KIROCREW_HOME", "~/.kiro/crew")
         with pytest.raises(SystemExit) as exc:
             _resolve_gateway_args(_ns(approval="yolo"))
         assert exc.value.code == 2
         # Confirm we hit the same-as-default branch (not the resolve-failure branch).
+        captured = capsys.readouterr()
+        assert "main gateway home" in captured.err
+
+    def test_yolo_refused_when_resolves_to_legacy_home(self, monkeypatch, capsys):
+        # GPT 5.6 HIGH regression: after the data-home move, the rail must reject the
+        # LEGACY ~/.kirocrew too, not just ~/.kiro/crew. On an unmigrated/downgraded
+        # install the legacy home still holds the LIVE data, so yolo against it is
+        # exactly as destructive as against the new home.
+        monkeypatch.setenv("KIROCREW_HOME", str(Path.home() / ".kirocrew"))
+        with pytest.raises(SystemExit) as exc:
+            _resolve_gateway_args(_ns(approval="yolo"))
+        assert exc.value.code == 2
         captured = capsys.readouterr()
         assert "main gateway home" in captured.err
 
@@ -304,14 +317,14 @@ class TestIsReadOnlyTool:
     @pytest.mark.parametrize(
         "title",
         [
-            "read_or_write",       # read prefix masking write
-            "read_and_delete",     # read prefix masking delete
-            "find_and_replace",    # find prefix masking replace
-            "search_replace",      # search prefix masking replace
-            "get_or_create",       # get prefix masking create
-            "list_and_remove",     # list prefix masking remove
-            "fetch_and_update",    # fetch prefix masking update
-            "query_and_modify",    # query prefix masking modify
+            "read_or_write",  # read prefix masking write
+            "read_and_delete",  # read prefix masking delete
+            "find_and_replace",  # find prefix masking replace
+            "search_replace",  # search prefix masking replace
+            "get_or_create",  # get prefix masking create
+            "list_and_remove",  # list prefix masking remove
+            "fetch_and_update",  # fetch prefix masking update
+            "query_and_modify",  # query prefix masking modify
         ],
     )
     def test_compound_read_write_verbs_rejected(self, title):

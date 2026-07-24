@@ -370,7 +370,7 @@ class TestSingleton:
 
     def test_sel_accessor(self, sel_dir):
         """The module-level sel() function returns the singleton."""
-        with patch("kiro_crew.sel._DEFAULT_DIR", sel_dir):
+        with patch("kiro_crew.sel._default_dir", lambda: sel_dir):
             instance = sel()
             assert isinstance(instance, SecurityEventLog)
 

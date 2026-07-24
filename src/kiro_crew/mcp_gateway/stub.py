@@ -68,7 +68,7 @@ _CONFIG_SNAPSHOT_PLACEHOLDER = "0" * 64
 def _default_socket_path() -> str:
     """Resolve the default gateway socket under KIROCREW_HOME (0700 dir)."""
     home = os.environ.get("KIROCREW_HOME")
-    base = Path(home) if home else Path(os.environ.get("HOME", "")) / ".kirocrew"
+    base = Path(home) if home else Path(os.environ.get("HOME", "")) / ".kiro" / "crew"
     return str(base / "mc-mcp-gateway.sock")
 
 
@@ -644,7 +644,7 @@ async def run_bridge(
 
 def _fallback_log_path() -> Path:
     home = os.environ.get("KIROCREW_HOME")
-    base = Path(home) if home else Path(os.environ.get("HOME", "")) / ".kirocrew"
+    base = Path(home) if home else Path(os.environ.get("HOME", "")) / ".kiro" / "crew"
     return base / "logs" / "stub_fallback.jsonl"
 
 

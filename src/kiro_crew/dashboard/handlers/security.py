@@ -2,7 +2,7 @@
 
 The 6 CRUD endpoints let a user disable/enable individual built-in denied
 commands, disable them all at once, and add/remove their own patterns. Opt-out
-state lives in the KEYSTONE file ``~/.kirocrew/denied_commands.json`` (on
+state lives in the KEYSTONE file ``<config_dir>/denied_commands.json`` (on
 ``security._SENSITIVE_HOME_DIRS`` — the agent cannot read OR write it), NOT in
 the agent-readable ``config.json``. The file root IS the opt-out object:
 

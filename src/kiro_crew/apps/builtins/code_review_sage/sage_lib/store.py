@@ -2,8 +2,9 @@
 """Code Review Sage — app-local store + self-heal data layout.
 
 This module is the deterministic, token-free backbone of the app. It owns the
-on-disk layout under ``~/.kirocrew/apps/code-review-sage/data/`` and is safe to
-run on every action (idempotent self-heal — pain point #1 in the design doc).
+on-disk layout under ``<config_dir>/apps/code-review-sage/data/`` (i.e.
+``~/.kiro/crew/apps/code-review-sage/data/`` by default) and is safe to run on
+every action (idempotent self-heal — pain point #1 in the design doc).
 
 Layout (design §5.1):
 
@@ -27,7 +28,31 @@ import json
 import os
 from pathlib import Path
 
+# Canonical KiroCrew data-root accessor. Imported at module top but kept guarded
+# so the store stays importable standalone (outside the KiroCrew runtime) — the
+# fallback mirrors ``config_dir()``'s default of ``~/.kiro/crew``, honoring
+# ``KIROCREW_HOME`` when it is set.
+try:
+    from kiro_crew.config.paths import config_dir as _config_dir
+except ImportError:  # pragma: no cover - standalone fallback
+    _config_dir = None  # type: ignore[assignment]
+
 APP_NAME = "code-review-sage"
+
+
+def crew_home() -> Path:
+    """Resolve the active KiroCrew data root.
+
+    Delegates to ``kiro_crew.config.paths.config_dir()`` when the runtime is
+    importable (so it follows the ``~/.kiro/crew`` root and honors
+    ``KIROCREW_HOME`` uniformly, including the one-time legacy-home migration).
+    Falls back to a standalone resolution when run outside the KiroCrew package.
+    """
+    if _config_dir is not None:
+        return _config_dir()
+    home = os.environ.get("KIROCREW_HOME")
+    return Path(home) if home else Path.home() / ".kiro" / "crew"
+
 
 # Sensitive-path globs feed the deterministic blast-radius extractor (design §3,
 # component 2). Kept here so the single config is the tunable source of truth.
@@ -76,12 +101,10 @@ DEFAULT_CONFIG: dict[str, object] = {
 def app_root() -> Path:
     """Resolve the installed app root under the KiroCrew home dir.
 
-    Honors ``KIROCREW_HOME`` (the canonical override used by
-    ``kiro_crew.config.paths``); defaults to ``~/.kirocrew``. Kept free of a
-    hard ``kiro_crew`` import so the store stays importable standalone."""
-    home = os.environ.get("KIROCREW_HOME")
-    base = Path(home) if home else Path.home() / ".kirocrew"
-    return base / "apps" / APP_NAME
+    Derives from ``crew_home()`` (``config_dir()`` → ``~/.kiro/crew`` by
+    default, honoring ``KIROCREW_HOME``); ``crew_home`` keeps a standalone
+    fallback so the store stays importable outside the KiroCrew runtime."""
+    return crew_home() / "apps" / APP_NAME
 
 
 def data_dir(root: Path | None = None) -> Path:

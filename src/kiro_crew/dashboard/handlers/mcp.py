@@ -13,6 +13,7 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew import platform_compat
+from kiro_crew.config.paths import config_dir
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.mcp_utils import mcp_server_alias
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -847,7 +848,7 @@ async def api_mcp_server_detail(request: web.Request) -> web.Response:
 
 # ─── Batched scope apply ────────────────────────────────────────────────
 
-_KIROCREW_MCP_JSON = Path.home() / ".kirocrew" / "mcp.json"
+_KIROCREW_MCP_JSON = config_dir() / "mcp.json"
 
 
 def _extra_mcp_scopes() -> list:
@@ -912,10 +913,11 @@ def _atomic_write(path: Path, data: dict) -> None:
 def _find_server_spec_anywhere(name: str) -> dict | None:
     """Locate a server's full spec from any known source.
 
-    Search order matches the KiroCrew merge: agent config → ~/.kirocrew/mcp.json
-    → kiro global → edition-contributed provider scopes.  Returns a shallow copy
-    with ``disabled`` stripped (the caller decides whether to disable in its
-    target scope).
+    Search order matches the KiroCrew merge: agent config → <data home>/mcp.json
+    (``config_dir()/mcp.json``, i.e. ~/.kiro/crew/mcp.json) → kiro global →
+    edition-contributed provider scopes.  Returns a shallow copy with
+    ``disabled`` stripped (the caller decides whether to disable in its target
+    scope).
     """
     candidates = [
         Path.home() / ".kiro" / "agents" / "kirocrew.json",
@@ -935,7 +937,7 @@ def _scope_has_entry(name: str, path: Path) -> bool:
 
 
 def _set_kirocrew_entry(name: str, *, enabled: bool, spec: dict | None = None) -> str:
-    """Set the server's ``disabled`` state in ``~/.kirocrew/mcp.json``.
+    """Set the server's ``disabled`` state in ``<data home>/mcp.json``.
 
     When ``enabled`` is True and ``spec`` is provided, upserts the full spec
     (used for preservation copies).  When enabled is False, adds/updates the
@@ -981,7 +983,7 @@ def _set_kirocrew_entry(name: str, *, enabled: bool, spec: dict | None = None) -
 
 
 def _remove_kirocrew_entry(name: str) -> bool:
-    """Delete the server from ``~/.kirocrew/mcp.json`` entirely.  Returns True on change."""
+    """Delete the server from ``<data home>/mcp.json`` entirely.  Returns True on change."""
     data = _load_json_or_empty(_KIROCREW_MCP_JSON)
     servers = data.get("mcpServers", {})
     if name not in servers:
@@ -1048,7 +1050,7 @@ def _set_scope_entry(path: Path, name: str, *, enabled: bool, spec: dict | None 
 
 def _set_tool_overrides(name: str, tool_overrides: dict[str, bool]) -> list[str]:
     """Apply per-tool enable/disable overrides to a server's entry in
-    ``~/.kirocrew/mcp.json``.
+    ``<data home>/mcp.json``.
 
     ``tool_overrides`` maps tool name → desired enabled state.  Disabled
     tools are added to the entry's ``disabledTools`` list; re-enabling
@@ -1112,7 +1114,7 @@ async def api_mcp_apply(request: web.Request) -> web.Response:
     Each change is processed in the order MC → Kiro → CC, with a
     preservation step first: if the user is removing the server from its
     only source AND MC is desired on, the full spec is copied into
-    ``~/.kirocrew/mcp.json`` before the removal so MC keeps its config.
+    ``<data home>/mcp.json`` before the removal so MC keeps its config.
 
     After all changes are written, ``rebuild_agent_config`` is called once
     so the provider-native agent files (``~/.kiro/agents/kirocrew.json`` and
@@ -1217,7 +1219,7 @@ async def api_mcp_apply(request: web.Request) -> web.Response:
 
             # Preservation rule: if MC is desired ON and both globals are
             # going to lose the entry (or never had it), copy the spec into
-            # ~/.kirocrew/mcp.json so MC keeps its config via the merge.
+            # <data home>/mcp.json so MC keeps its config via the merge.
             preserved_spec: dict | None = None
             if desired_mc and not desired_kiro and not any(desired_extra.values()):
                 has_mc = _scope_has_entry(name, _KIROCREW_MCP_JSON)
@@ -1253,11 +1255,11 @@ async def api_mcp_apply(request: web.Request) -> web.Response:
                     spec=resolved_spec,
                 )
 
-            # ── Per-tool overrides (disabledTools in ~/.kirocrew/mcp.json) ──
+            # ── Per-tool overrides (disabledTools in <data home>/mcp.json) ──
             tool_overrides = change.get("toolOverrides")
             if isinstance(tool_overrides, dict) and tool_overrides:
                 # Apply the same allowlist as server names — tool names are
-                # persisted to ~/.kirocrew/mcp.json and later consumed by
+                # persisted to <data home>/mcp.json and later consumed by
                 # kiro-cli / other components, so reject anything that
                 # could smuggle argv-injection chars or path traversal
                 # into downstream reads.  Invalid names are filtered out

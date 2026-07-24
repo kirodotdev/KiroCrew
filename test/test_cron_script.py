@@ -23,6 +23,27 @@ from kiro_crew.cron_script import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _crons_dir_tracks_patched_home(monkeypatch):
+    """Keep ``cron_script.config_dir()`` pointed at ``<patched home>/.kirocrew``.
+
+    The data home moved from the top-level ``~/.kirocrew`` to ``~/.kiro/crew``
+    (``config_dir()``), and ``resolve_script_path`` now derives its allowed
+    ``crons/`` dir from ``config_dir()`` rather than ``Path.home()/".kirocrew"``.
+    These tests patch ``Path.home()`` per-test and write scripts under
+    ``<home>/.kirocrew/crons`` — but ``config_dir()`` reads ``KIROCREW_HOME``
+    (pinned to a *different* tmp dir by the conftest ``_isolate_kirocrew_home``
+    fixture), so without this redirect the allowed dir would never match.
+    Redirect ``config_dir`` to ``Path.home()/".kirocrew"`` (evaluated lazily, so
+    it tracks whatever ``Path.home()`` each test patches) — preserving the
+    existing ``.kirocrew/crons`` layout the tests build. Tests that patch
+    ``cron_script.config_dir`` themselves still win (applied later).
+    """
+    monkeypatch.setattr(
+        "kiro_crew.cron_script.config_dir", lambda: Path.home() / ".kirocrew"
+    )
+
+
 class TestResolveScriptPath:
     """Tests for resolve_script_path validation."""
 

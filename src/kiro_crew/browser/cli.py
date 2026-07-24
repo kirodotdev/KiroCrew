@@ -18,9 +18,9 @@ from __future__ import annotations
 import json
 import os
 import sys
-from pathlib import Path
 
 from kiro_crew.browser import setup as _setup
+from kiro_crew.config.paths import config_dir
 
 
 def main() -> None:
@@ -90,13 +90,13 @@ def _cmd_setup() -> None:
     print("Generating Playwright MCP config...")
     _setup.ensure_playwright_installed()
     _setup.generate_playwright_config()
-    print("Done. Wrote Playwright MCP config to ~/.kirocrew/playwright-config.json.")
+    print(f"Done. Wrote Playwright MCP config to {config_dir() / 'playwright-config.json'}.")
     print("Install the public @playwright/mcp package separately (e.g. npx @playwright/mcp).")
 
 
 def _cmd_extension(action: str) -> None:
     """Enable or disable Playwright Chrome extension mode."""
-    kirocrew_dir = Path.home() / ".kirocrew"
+    kirocrew_dir = config_dir()
     kirocrew_dir.mkdir(parents=True, exist_ok=True)
     flag_file = kirocrew_dir / "playwright-extension-mode"
     token_file = kirocrew_dir / "playwright-extension-token"

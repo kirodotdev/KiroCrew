@@ -17,6 +17,7 @@ import shutil
 import sys
 from pathlib import Path
 
+from kiro_crew.config.paths import _default_home
 from kiro_crew.pod.config import (
     DEFAULT_BASE_PORT,
     DEFAULT_LIVE_PORT,
@@ -88,7 +89,7 @@ def _environment_block(cfg: PodConfig) -> str:
     home = Path.home()
     candidates = [
         ("KIROCREW_POD_ROOT", str(cfg.pod_root), str(home / ".kirocrew-pods")),
-        ("KIROCREW_POD_ENV_DIR", str(cfg.pods_dir), str(home / ".kirocrew" / "pods")),
+        ("KIROCREW_POD_ENV_DIR", str(cfg.pods_dir), str(_default_home() / "pods")),
         (
             "KIROCREW_POD_ARTIFACTS_DIR",
             str(cfg.artifacts_dir),

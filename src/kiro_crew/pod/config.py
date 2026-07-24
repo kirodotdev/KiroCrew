@@ -12,6 +12,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from kiro_crew.config.paths import _default_home
+
 # The canonical live gateway port a pod must never bind. Overridable for hosts
 # that run their live plane elsewhere.
 DEFAULT_LIVE_PORT = 5476
@@ -74,7 +76,11 @@ class PodConfig:
     def load(cls) -> "PodConfig":
         home = Path.home()
         pod_root = _env_path("KIROCREW_POD_ROOT", home / ".kirocrew-pods")
-        pods_dir = _env_path("KIROCREW_POD_ENV_DIR", home / ".kirocrew" / "pods")
+        # Pod env files are HOST-side state, so they follow the data-home move to
+        # ~/.kiro/crew. Use the DEFAULT home (not config_dir()) so a pod process
+        # that has its own isolated KIROCREW_HOME set can't redirect the host's
+        # pod registry into the pod's throwaway home.
+        pods_dir = _env_path("KIROCREW_POD_ENV_DIR", _default_home() / "pods")
         artifacts_dir = _env_path("KIROCREW_POD_ARTIFACTS_DIR", pod_root / ".e2e-artifacts")
         default_path = os.pathsep.join(
             [

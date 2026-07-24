@@ -21,10 +21,29 @@ from typing import Any
 from kiro_crew import platform_compat
 from kiro_crew.agent_files import OWNED_CC_AGENT_FILES, OWNED_KIRO_AGENT_FILES
 from kiro_crew.atomic_write import atomic_write
-from kiro_crew.browser.auth import SSO_COOKIE_PATH, parse_netscape_cookies
+from kiro_crew.browser.auth import parse_netscape_cookies
+from kiro_crew.config.paths import config_dir
 from kiro_crew.mcp_utils import mcp_server_alias
 
 logger = logging.getLogger(__name__)
+
+# Optional test/override hook. Left ``None`` at import — NOT a
+# ``config_dir()`` capture — so importing this module never triggers the
+# one-time data-home migration as an import side effect (the migration must fire
+# only at ``ensure_data_home()`` in the CLI prologue). Internal code resolves the
+# cookie path through ``_cookie_path()``; tests that need a fixed path set this
+# attribute (``monkeypatch.setattr(setup, "SSO_COOKIE_PATH", tmp)``).
+SSO_COOKIE_PATH: "Path | None" = None
+
+
+def _cookie_path() -> Path:
+    """Resolve the cookie-jar path, honoring a test-set ``SSO_COOKIE_PATH``."""
+    if SSO_COOKIE_PATH is not None:
+        return SSO_COOKIE_PATH
+    from kiro_crew.browser import auth as _auth
+
+    return _auth.cookie_path()
+
 
 # The public npm package name for the Playwright MCP server. Used only as the
 # input to ``mcp_server_alias`` to derive the canonical slash-free key
@@ -110,13 +129,13 @@ def has_playwright_extension() -> bool:
     instead of launching a separate headless browser, which reuses whatever
     session and extensions the real Chrome already has.
     """
-    flag_file = Path.home() / ".kirocrew" / "playwright-extension-mode"
+    flag_file = config_dir() / "playwright-extension-mode"
     return flag_file.exists()
 
 
 def get_extension_token() -> str | None:
     """Read the stored Playwright extension token."""
-    token_file = Path.home() / ".kirocrew" / "playwright-extension-token"
+    token_file = config_dir() / "playwright-extension-token"
     if token_file.exists():
         return token_file.read_text().strip() or None
     return None
@@ -133,15 +152,15 @@ def get_playwright_mcp_env() -> dict[str, str]:
 
 
 def generate_playwright_config() -> Path:
-    """Generate ~/.kirocrew/playwright-config.json with correct absolute paths.
+    """Generate ``<config_dir>/playwright-config.json`` with absolute paths.
 
     The open-source build ships a generic Chromium config with no
     enterprise auth-server allowlist.
     """
-    config_path = Path.home() / ".kirocrew" / "playwright-config.json"
+    config_path = config_dir() / "playwright-config.json"
     config_path.parent.mkdir(parents=True, exist_ok=True)
 
-    storage_state = str(Path.home() / ".kirocrew" / "playwright-storage-state.json")
+    storage_state = str(config_dir() / "playwright-storage-state.json")
 
     config = {
         "browser": {
@@ -169,14 +188,15 @@ def refresh_storage_state() -> dict[str, Any]:
     a Playwright-compatible storage-state file. Returns a not-available result
     when no cookie source exists, which is the default in the open-source build.
     """
-    if not SSO_COOKIE_PATH.exists():
+    cookie_path = _cookie_path()
+    if not cookie_path.exists():
         return {"ok": False, "error": "browser auth not available in OSS"}
 
-    cookies = parse_netscape_cookies(SSO_COOKIE_PATH)
+    cookies = parse_netscape_cookies(cookie_path)
     if not cookies:
         return {"ok": False, "error": "no cookies parsed"}
 
-    storage_state_path = Path.home() / ".kirocrew" / "playwright-storage-state.json"
+    storage_state_path = config_dir() / "playwright-storage-state.json"
     storage_state_path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(str(storage_state_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:
@@ -201,7 +221,7 @@ def get_playwright_mcp_args() -> list[str]:
     if has_playwright_extension():
         args.append("--extension")
         return args
-    config_path = Path.home() / ".kirocrew" / "playwright-config.json"
+    config_path = config_dir() / "playwright-config.json"
     if config_path.exists():
         args.extend(["--config", str(config_path)])
     if is_headed():
@@ -636,7 +656,7 @@ def patch_mcp_headless() -> None:
     try:
         data = json.loads(mcp_json.read_text(encoding="utf-8"))
         servers = data.setdefault("mcpServers", {})
-        config_path = str(Path.home() / ".kirocrew" / "playwright-config.json")
+        config_path = str(config_dir() / "playwright-config.json")
         entry = {
             "command": _kirocrew_bin(),
             "args": ["mcp-playwright-proxy", "--config", config_path],
@@ -654,11 +674,12 @@ def inject_cookies_via_playwright(cookie_file: str | None = None) -> dict[str, A
     """Parse the browser cookie file and return cookies in Playwright format.
 
     Args:
-        cookie_file: Path to Netscape cookie file. Defaults to SSO_COOKIE_PATH.
+        cookie_file: Path to Netscape cookie file. Defaults to the resolved
+            browser cookie path (``_cookie_path()``).
 
     Returns:
         Dict with "cookies" list and "count" integer.
     """
-    path = Path(cookie_file) if cookie_file is not None else SSO_COOKIE_PATH
+    path = Path(cookie_file) if cookie_file is not None else _cookie_path()
     cookies = parse_netscape_cookies(path)
     return {"cookies": cookies, "count": len(cookies)}

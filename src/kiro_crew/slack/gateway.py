@@ -4629,7 +4629,7 @@ class GatewayOrchestrator:
                 "port": self._dashboard_port,
                 "token": ready_token,
                 "pid": os.getpid(),
-                "home": os.environ.get("KIROCREW_HOME", str(Path.home() / ".kirocrew")),
+                "home": str(config_dir()),
             }
             print(f"KIROCREW_READY:{json.dumps(ready_payload)}", flush=True)
 

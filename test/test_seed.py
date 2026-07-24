@@ -438,6 +438,27 @@ def test_seed_main_home_rail_refuses(
     assert not target.exists()
 
 
+def test_seed_new_home_rail_refuses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``$KIROCREW_HOME=~/.kiro/crew`` (the post-move default home) is refused
+    too — the guardrail protects the CURRENT main gateway home, not just the
+    pre-move legacy ``~/.kirocrew``.
+    """
+    fake_home = tmp_path / "fake_home"
+    fake_home.mkdir()
+    monkeypatch.setenv("HOME", str(fake_home))
+    target = fake_home / ".kiro" / "crew"
+    monkeypatch.setenv("KIROCREW_HOME", str(target))
+
+    with pytest.raises(seed_mod.SeedError) as excinfo:
+        seed_mod.seed("empty")
+
+    assert excinfo.value.code == seed_mod.EXIT_GUARDRAIL
+    assert "refusing to seed main gateway home" in str(excinfo.value)
+    assert not target.exists()
+
+
 def test_seed_main_home_rail_refuses_even_with_replace(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

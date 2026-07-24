@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.config.loader import KiroCrewConfig, config_dir
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.skills import skills_dir
@@ -728,7 +728,7 @@ def _blocks_reads_session(state: DashboardState, request: "Any") -> bool:
 
 
 def _session_has_persisted_history(slot_name: str) -> bool:
-    """Return True iff the slot has a JSONL file in ~/.kirocrew/sessions/.
+    """Return True iff the slot has a JSONL file in the data home's sessions/.
 
     This is a positive signal that the session was previously established
     as non-ephemeral: ephemeral (incognito/temporary) sessions never write
@@ -765,7 +765,7 @@ def _session_has_persisted_history(slot_name: str) -> bool:
         # path parsing, and leading dots that could target hidden
         # per-directory files outside the intended session namespace.
         return False
-    sess_dir = Path.home() / ".kirocrew" / "sessions"
+    sess_dir = config_dir() / "sessions"
     if not sess_dir.exists():
         return False
     # Match the resolution order used by slack/interactions.py when

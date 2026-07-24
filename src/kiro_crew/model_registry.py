@@ -33,7 +33,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 from pathlib import Path
 from typing import Any
@@ -147,14 +146,19 @@ _SUPPLEMENTARY_WINDOWS: dict[str, int] = {
 
 
 def _kiro_windows_cache_path() -> Path:
-    """Path to the persisted kiro-window sidecar under KIROCREW_HOME.
+    """Path to the persisted kiro-window sidecar under the data home.
 
     Resolved lazily (not at import) so tests / KIROCREW_HOME overrides are
     honoured, and so a home-resolution failure never breaks module import.
+    Routes through ``config_dir()`` (deferred import of the stdlib-only
+    ``config.paths`` leaf to avoid a cycle) so it follows the data-home move to
+    ``~/.kiro/crew`` instead of writing to the now-archived legacy ``~/.kirocrew``
+    — where no reader would ever consult it and which would re-create the very
+    directory the migration just archived.
     """
-    home = os.environ.get("KIROCREW_HOME")
-    base = Path(home) if home else Path.home() / ".kirocrew"
-    return base / "model_windows.json"
+    from kiro_crew.config.paths import config_dir
+
+    return config_dir() / "model_windows.json"
 
 
 def _load_kiro_windows() -> None:

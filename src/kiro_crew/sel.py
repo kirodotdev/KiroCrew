@@ -9,7 +9,7 @@ Records structured JSON events for every tool/MCP action with:
 - Downstream service (MCP server name if applicable)
 - HMAC-SHA256 integrity chain (each entry signs over previous hash)
 
-Storage: ``~/.kirocrew/security_events.jsonl`` (append-only JSONL)
+Storage: ``<config_dir>/security_events.jsonl`` (append-only JSONL)
 Retention: configurable, default 365 days per Amazon Security Event Logging Standard.
 """
 
@@ -31,10 +31,24 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from kiro_crew import platform_compat
+from kiro_crew.config.paths import config_dir
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_DIR = Path.home() / ".kirocrew"
+
+def _default_dir() -> Path:
+    """Resolve the SEL default dir lazily.
+
+    Deferred (not a module-level ``config_dir()`` capture) so importing
+    :mod:`kiro_crew.sel` never triggers the one-time data-home migration as an
+    import side effect — the migration must fire only at the single chosen point
+    (``ensure_data_home()`` in the CLI prologue), not whenever a transitive
+    import first loads this module. Resolving on each call is cheap: the first
+    ``config_dir()`` of the process caches the resolved home.
+    """
+    return config_dir()
+
+
 _SEL_FILE = "security_events.jsonl"
 _RETENTION_DAYS = 365
 _HMAC_KEY_FILE = "sel_hmac.key"
@@ -101,7 +115,7 @@ class SecurityEventLog:
         # tests that read the raw log file immediately after logging; production
         # uses the async writer for off-hot-path appends.
         self._sync = sync
-        self._dir = base_dir or _DEFAULT_DIR
+        self._dir = base_dir or _default_dir()
         self._path = self._dir / _SEL_FILE
         # _lock guards _last_hash + the file append (held only inside the writer
         # thread and by synchronous fallbacks / prune, never by enqueuing callers).
@@ -878,11 +892,11 @@ def sel_hmac_key_path() -> Path:
     directory when one is initialized (tests and embedded deployments pass a
     ``base_dir``); otherwise falls back to the same default the singleton
     would use. Dependent protocols must resolve the key through this accessor
-    rather than re-deriving the path (e.g. via ``config_dir()``, which honors
-    ``KIROCREW_HOME`` while ``_DEFAULT_DIR`` does not — resolving differently
-    would split the trust root under isolated-home deployments).
+    rather than re-deriving the path (e.g. via ``config_dir()``; ``_default_dir()``
+    honors ``KIROCREW_HOME`` the same way, so resolving through the shared
+    accessor keeps the trust root single under isolated-home deployments).
     """
     inst = SecurityEventLog._instance
     if inst is not None and getattr(inst, "_initialized", False):
         return inst._dir / _HMAC_KEY_FILE
-    return _DEFAULT_DIR / _HMAC_KEY_FILE
+    return _default_dir() / _HMAC_KEY_FILE

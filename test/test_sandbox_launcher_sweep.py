@@ -30,9 +30,18 @@ from kiro_crew.sandbox import (
 
 @pytest.fixture()
 def fake_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    """Redirect HOME so ~/.kirocrew/run/ resolves under tmp_path."""
+    """Redirect HOME so the sandbox run dir resolves under ``tmp_path/.kirocrew``.
+
+    The run dir moved from ``os.path.expanduser("~")/".kirocrew"/"run"`` to
+    ``config_dir()/run`` (data home now ``~/.kiro/crew``). ``config_dir()`` reads
+    ``KIROCREW_HOME`` (pinned to a different tmp dir by conftest), so also
+    redirect ``sandbox.config_dir`` to ``tmp_path/".kirocrew"`` — keeping the
+    ``.kirocrew/run`` layout these tests assert. ``expanduser``/``HOME`` are still
+    patched for the non-run-dir ``~`` lookups in this module.
+    """
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr("os.path.expanduser", lambda p: str(tmp_path) + p[1:] if p.startswith("~") else p)
+    monkeypatch.setattr("kiro_crew.sandbox.config_dir", lambda: tmp_path / ".kirocrew")
     return tmp_path
 
 

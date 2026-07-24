@@ -7,11 +7,10 @@ import json
 import logging
 import os
 import time
-from pathlib import Path
 
 from aiohttp import web
 
-from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.config.loader import KiroCrewConfig, config_dir
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.validation import sanitize_string
@@ -252,7 +251,7 @@ async def api_hook_test(request: web.Request) -> web.Response:
 _HOOK_SESSION_PREFIX = "hook:"
 _HOOK_TIMEOUT_DEFAULT = 599  # ~10 min — prime to avoid thundering herd with cron intervals
 _HOOK_TIMEOUT_MAX = 3593  # ~1 hour — prime for same reason
-_HOOK_STORE_PATH = Path.home() / ".kirocrew" / "hooks.json"
+_HOOK_STORE_PATH = config_dir() / "hooks.json"
 _HOOK_MESSAGE_MAX_LEN = 49_999  # ~50K chars — leave 1 char headroom
 _HOOK_MAX_CONCURRENT = 6
 _hook_semaphore = asyncio.Semaphore(_HOOK_MAX_CONCURRENT)

@@ -1,7 +1,7 @@
 """Spill-to-file for oversized MCP tool responses.
 
 When a tool/call result exceeds ``response_spill_threshold_bytes``, the full
-text payload is written to a sidecar file under ``~/.kirocrew/mcp_spill/`` and
+text payload is written to a sidecar file under ``<config_dir>/mcp_spill/`` and
 the in-band response is truncated to the first 16 KiB plus a marker telling
 the agent where to find the full content. Non-tool-result frames, errors, and
 small responses pass through untouched.
@@ -22,6 +22,8 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
+from kiro_crew.config.paths import config_dir
+
 logger = logging.getLogger(__name__)
 
 # Truncation prefix size — first 16 KiB of the original text content kept
@@ -41,8 +43,7 @@ _ID_REGEX = re.compile(rb'"id"\s*:\s*("(?:[^"\\]|\\.)*?"|\d+)')
 
 def _spill_dir() -> Path:
     """Return the spill directory path (does NOT create it)."""
-    mc_home = os.environ.get("KIROCREW_HOME") or os.path.expanduser("~/.kirocrew")
-    return Path(mc_home) / _SPILL_DIR_NAME
+    return config_dir() / _SPILL_DIR_NAME
 
 
 def _sanitize_server_name(name: str) -> str:
@@ -152,7 +153,7 @@ def maybe_spill_response(
 
         spill_dir = _spill_dir()
         # Never operate through a symlinked spill dir (agent-swappable): an
-        # attacker-planted link would redirect the write outside ~/.kirocrew.
+        # attacker-planted link would redirect the write outside the data home.
         if spill_dir.is_symlink():
             logger.warning("spill dir is a symlink — refusing to spill")
             return line

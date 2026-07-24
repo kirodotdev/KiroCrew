@@ -22,7 +22,7 @@ from aiohttp import web
 from aiohttp.client_exceptions import ClientConnectionResetError
 from aiohttp.multipart import BodyPartReader
 
-from kiro_crew.config.loader import KiroCrewConfig, WorkspaceConfig
+from kiro_crew.config.loader import KiroCrewConfig, WorkspaceConfig, config_dir
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.security import (
@@ -708,9 +708,9 @@ async def api_upload(request: web.Request) -> web.Response:
     return web.json_response({"paths": paths})
 
 
-_SCREENSHOT_DIR = Path.home() / ".kirocrew" / "screenshots"
+_SCREENSHOT_DIR = config_dir() / "screenshots"
 
-_UPLOAD_DIR = Path.home() / ".kirocrew" / "uploads"
+_UPLOAD_DIR = config_dir() / "uploads"
 _MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB per file
 _MAX_UPLOAD_FILES = 20  # max files per request
 _ALLOWED_IMAGE_EXT = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}
@@ -810,7 +810,7 @@ async def api_upload_file(request: web.Request) -> web.Response:
     """POST /api/upload/file — cross-platform multipart file upload.
 
     Accepts multipart form data with one or more 'file' fields.
-    Saves files to ~/.kirocrew/uploads/ and returns server-side paths
+    Saves files to the data home's uploads/ and returns server-side paths
     that ACP's _send_prompt() can detect for image inlining.
     """
 
@@ -1881,7 +1881,7 @@ async def api_file_search(request: web.Request) -> web.Response:
         proj = os.environ.get("KIROCREW_PROJECT_DIR", "")
         if proj and os.path.isdir(proj):
             search_roots.append(proj)
-        mc_workspace = os.path.expanduser("~/.kirocrew/workspace")
+        mc_workspace = str(config_dir() / "workspace")
         if os.path.isdir(mc_workspace):
             search_roots.append(mc_workspace)
         home = os.path.expanduser("~")

@@ -31,6 +31,7 @@ from kiro_crew.acp.types import (
 from kiro_crew.autonudge import get_instance
 from kiro_crew.config.loader import (
     KiroCrewConfig,
+    config_dir,
     resolve_agent_bindings,
 )
 from kiro_crew.constants import CHAT_TURN_TIMEOUT
@@ -1589,7 +1590,7 @@ async def _handle_goal_command(
             body = "Usage: `/goal <objective>` or `/goal --max N <objective>`."
         else:
             _slug = re.sub(r"[^A-Za-z0-9._-]", "_", slot.key)
-            _sentinel = str(Path.home() / ".kirocrew" / "goal-stop" / f"{_slug}.stop")
+            _sentinel = str(config_dir() / "goal-stop" / f"{_slug}.stop")
             Path(_sentinel).unlink(missing_ok=True)
             _nudge = (
                 f"Goal: {_objective}\n"

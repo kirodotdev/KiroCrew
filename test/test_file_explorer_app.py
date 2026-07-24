@@ -89,6 +89,36 @@ class TestIsSensitive:
     def test_kirocrew_is_sensitive(self, tmp_tree):
         assert server._is_sensitive(tmp_tree / ".kirocrew" / ".env") is True
 
+    def test_crew_home_nonsafe_file_is_sensitive(self, tmp_tree):
+        # config.json (Slack tokens) is NOT a safe subdir → blocked under all
+        # three crew-home spellings.
+        assert server._is_sensitive(tmp_tree / ".kiro" / "crew" / "config.json") is True
+        assert server._is_sensitive(tmp_tree / ".kirocrew.archived" / "config.json") is True
+
+    def test_crew_home_marker_match_is_case_insensitive(self, tmp_tree):
+        # SECURITY regression: on a case-INSENSITIVE filesystem (macOS/Windows)
+        # ~/.KIRO/crew/config.json opens the same inode as ~/.kiro/crew but
+        # Path.resolve() keeps the typed case. A case-SENSITIVE marker match would
+        # let the uppercase path slip past deny-by-default and leak the crew
+        # home's non-keystone files (config.json Slack tokens, sessions, PII).
+        # _crew_home_index must casefold both sides so all spellings are blocked.
+        for variant in (
+            tmp_tree / ".KIRO" / "crew" / "config.json",
+            tmp_tree / ".kiro" / "CREW" / "config.json",
+            tmp_tree / ".KiRo" / "CrEw" / "sessions" / "s.json",
+            tmp_tree / ".KIROCREW" / "config.json",
+            tmp_tree / ".KIROCREW.ARCHIVED" / ".env",
+        ):
+            assert server._is_sensitive(variant) is True, variant
+
+    def test_crew_home_safe_subdir_still_allowed(self, tmp_tree):
+        # The fix must not over-block: a genuine safe subdir stays accessible.
+        assert server._is_sensitive(tmp_tree / ".kiro" / "crew" / "workspace" / "a.txt") is False
+
+    def test_crew_home_root_detection_case_insensitive(self, tmp_tree):
+        assert server._is_crew_home_root(tmp_tree / ".KIRO" / "crew") is True
+        assert server._is_crew_home_root(tmp_tree / ".kiro" / "crew") is True
+
     def test_regular_file_not_sensitive(self, tmp_tree):
         assert server._is_sensitive(tmp_tree / "file.txt") is False
 
@@ -515,8 +545,10 @@ class TestAutoSdeRound1Findings:
 
     def test_rg_glob_set_has_no_nonnegated_kirocrew_globs(self, tmp_tree):
         """#17: the rg command for an outside-root search contains only
-        NEGATED .kirocrew globs (a non-negated glob would allowlist-restrict
-        the entire search)."""
+        NEGATED crew-home globs (a non-negated glob would allowlist-restrict
+        the entire search). The data home now spans three prefixes — the current
+        ~/.kiro/crew, the archived rollback copy, and the pre-move legacy
+        ~/.kirocrew — so all three variants must appear and all must be negated."""
         captured: dict = {}
 
         def fake_wrap(cmd):
@@ -531,9 +563,13 @@ class TestAutoSdeRound1Findings:
         cmd = captured.get("cmd")
         assert cmd, "wrap_argv never called — _search_rg did not build an rg command"
         globs = [cmd[i + 1] for i, a in enumerate(cmd[:-1]) if a == "--glob"]
-        kirocrew_globs = [g for g in globs if ".kirocrew" in g]
-        assert kirocrew_globs == ["!**/.kirocrew/**"], kirocrew_globs
-        assert all(g.startswith("!") for g in kirocrew_globs)
+        crew_globs = [g for g in globs if ".kiro/crew" in g or ".kirocrew" in g]
+        assert crew_globs == [
+            "!**/.kiro/crew/**",
+            "!**/.kirocrew.archived/**",
+            "!**/.kirocrew/**",
+        ], crew_globs
+        assert all(g.startswith("!") for g in crew_globs)
 
     def test_rg_no_kirocrew_globs_when_root_inside_safe_subdir(self, tmp_tree):
         """#17: searching inside .kirocrew/workspace adds no .kirocrew globs

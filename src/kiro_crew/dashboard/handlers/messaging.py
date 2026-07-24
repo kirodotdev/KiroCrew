@@ -1433,8 +1433,10 @@ async def api_browser_config_get(request: web.Request) -> web.Response:
 
 async def api_browser_config_save(request: web.Request) -> web.Response:
     """PUT /api/browser/config — save browser extension mode and token."""
+    from kiro_crew.config.loader import config_dir  # noqa: F811
+
     body = await request.json()
-    kirocrew_dir = Path.home() / ".kirocrew"
+    kirocrew_dir = config_dir()
     kirocrew_dir.mkdir(parents=True, exist_ok=True)
     flag_file = kirocrew_dir / "playwright-extension-mode"
     token_file = kirocrew_dir / "playwright-extension-token"

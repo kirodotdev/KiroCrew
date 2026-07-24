@@ -124,3 +124,28 @@ class TestLessonStoreSecurity:
         with patch("kiro_crew.security.is_sensitive_path", return_value=False):
             store = LessonStore(base_dir=tmp_path)
         assert store._dir == tmp_path
+
+
+class TestImportPurity:
+    def test_importing_learn_never_calls_config_dir(self) -> None:
+        # Single-point-migration invariant (PR #309): the one-time blocking
+        # legacy-home migration fires ONLY at ensure_data_home() in the CLI
+        # prologue. learn is eagerly imported by cli_server, slack/gateway,
+        # context, taskrunner, and cli_commands — a module-scope config_dir()
+        # call here would fire the migration as an import side effect
+        # (potentially on the asyncio event loop). _DEFAULT_DIR must therefore
+        # be a pure literal; config_dir() is resolved lazily in
+        # LessonStore.__init__.
+        import importlib
+        from unittest.mock import patch
+
+        import kiro_crew.learn as learn_mod
+
+        with patch(
+            "kiro_crew.config.loader.config_dir",
+            side_effect=AssertionError("config_dir() called at learn import scope"),
+        ):
+            importlib.reload(learn_mod)
+        # Restore the module to its normal state for other tests.
+        importlib.reload(learn_mod)
+        assert learn_mod._DEFAULT_DIR == Path.home() / ".kiro" / "crew"

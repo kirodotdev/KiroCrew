@@ -15,7 +15,7 @@ from pathlib import Path
 from aiohttp import web
 
 from kiro_crew.artifacts import get_default_store
-from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.config.loader import KiroCrewConfig, config_dir
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.knowledge.agent_fetch import fetch_url_content
 from kiro_crew.knowledge.artifact_ingest import ArtifactKnowledgeSync
@@ -68,7 +68,7 @@ def _pipeline(request: web.Request):
 
 def _create_embedder(app):
     """Create embedder from KiroCrew config. Returns None if disabled/unavailable."""
-    cfg_path = Path.home() / ".kirocrew" / "config.json"
+    cfg_path = config_dir() / "config.json"
     try:
         cfg = json.loads(cfg_path.read_text()) if cfg_path.exists() else {}
     except Exception:
@@ -1332,7 +1332,7 @@ async def search_for_context(request: web.Request) -> web.Response:
     if not q:
         return web.json_response({"error": "q parameter required"}, status=400)
 
-    cfg_path = Path.home() / ".kirocrew" / "config.json"
+    cfg_path = config_dir() / "config.json"
     try:
         cfg = json.loads(cfg_path.read_text()) if cfg_path.exists() else {}
     except Exception:

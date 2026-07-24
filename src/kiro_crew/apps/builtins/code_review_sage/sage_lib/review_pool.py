@@ -177,15 +177,14 @@ def _review_work_dir() -> Optional[str]:
     """Working directory for a review worker = the installed app root, so the
     gate/deep prompts' RELATIVE paths (`sage_lib/pipeline.py`, `data/results/<id>.json`)
     resolve to exactly where the driver reads/writes. Without this the worker's
-    default cwd (~/.kirocrew/workspace) sends the result record to the wrong dir
+    default cwd (<config_dir>/workspace) sends the result record to the wrong dir
     and the driver sees "gate produced no verdict". Falls back to the AcpClient
     default if the app root can't be resolved."""
     try:
         return str(store.app_root())
     except Exception:
         try:
-            base = os.environ.get("KIROCREW_HOME") or str(Path.home() / ".kirocrew")
-            return str(Path(base) / "apps" / "code-review-sage")
+            return str(store.crew_home() / "apps" / "code-review-sage")
         except Exception:
             return None
 

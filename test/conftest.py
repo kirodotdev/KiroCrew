@@ -163,9 +163,18 @@ def _isolate_kirocrew_home(tmp_path_factory, monkeypatch):
     ``KIROCREW_HOME`` via ``monkeypatch.setenv`` still wins (its value is applied
     later and reverted independently). The guard only changes behavior for tests
     that did NOT isolate the home themselves — exactly the leak we want to close.
+
+    Also reset ``config.paths._resolved_home`` to ``None``: ``config_dir()`` now
+    caches the resolved data home in that module global for the process lifetime
+    (so the one-time ~/.kirocrew -> ~/.kiro/crew migration runs at most once).
+    Under xdist a worker runs many tests in one process, so a value cached by an
+    earlier test (which may have patched ``Path.home`` / cleared ``KIROCREW_HOME``)
+    would otherwise leak into a later test that resolves the default home. Reset
+    per test so each resolves fresh against its own patched environment.
     """
     home = tmp_path_factory.mktemp("kirocrew-home")
     monkeypatch.setenv("KIROCREW_HOME", str(home))
+    monkeypatch.setattr("kiro_crew.config.paths._resolved_home", None)
 
 
 @pytest.fixture(autouse=True)
@@ -391,21 +400,26 @@ def _clean_slack_thread_state():
 def _isolate_sel_default_dir(tmp_path_factory):
     """Redirect the Security Event Log default dir to a session-local tmp dir.
 
-    SEL's default singleton writes to the real ``~/.kirocrew/security_events.jsonl``
-    (``_DEFAULT_DIR = Path.home()/".kirocrew"``, non-atomic append). Tests that
-    emit events via the default ``sel()`` would otherwise pollute that real file
-    and, under ``pytest -n auto``, share it across worker processes. Redirect the
-    module-level default to a per-session tmp dir. Session-scoped so we don't
-    churn SEL's background writer thread per test; tests that manage their own
-    ``SecurityEventLog`` (test_sel.py resets ``_instance`` + passes ``base_dir``)
-    are unaffected.
+    SEL's default singleton writes to the real security_events.jsonl under the
+    data home (``_default_dir()`` → ``config_dir()``, non-atomic append). Tests
+    that emit events via the default ``sel()`` would otherwise pollute that real
+    file and, under ``pytest -n auto``, share it across worker processes. Redirect
+    the module-level default accessor to a per-session tmp dir. Session-scoped so
+    we don't churn SEL's background writer thread per test; tests that manage
+    their own ``SecurityEventLog`` (test_sel.py resets ``_instance`` + passes
+    ``base_dir``) are unaffected.
+
+    Patches the ``_default_dir()`` accessor (not a captured constant): the module
+    now resolves its default lazily so importing ``kiro_crew.sel`` never triggers
+    the one-time data-home migration as an import side effect.
     """
-    orig_dir = _sel._DEFAULT_DIR
+    orig_fn = _sel._default_dir
     orig_inst = _sel.SecurityEventLog._instance
-    _sel._DEFAULT_DIR = tmp_path_factory.mktemp("sel")
+    _sel_dir = tmp_path_factory.mktemp("sel")
+    _sel._default_dir = lambda: _sel_dir
     _sel.SecurityEventLog._instance = None
     yield
-    _sel._DEFAULT_DIR = orig_dir
+    _sel._default_dir = orig_fn
     _sel.SecurityEventLog._instance = orig_inst
 
 

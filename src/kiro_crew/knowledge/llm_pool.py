@@ -12,9 +12,9 @@ import os
 import shutil
 import time
 from abc import ABC, abstractmethod
-from pathlib import Path
 from typing import Optional
 
+from kiro_crew.config.paths import config_dir
 from kiro_crew.sandbox import cgroup_scope_argv, resource_limit_preexec, wrap_argv
 
 try:
@@ -60,14 +60,17 @@ _VALID_SANDBOX_MODES = frozenset({"auto", "standard", "strict", "cc", "off"})
 
 
 def _read_config() -> dict:
-    """Read ``~/.kirocrew/config.json`` once; ``{}`` on any error.
+    """Read the data home's ``config.json`` once; ``{}`` on any error.
+
+    ``config_dir()`` resolves to ``~/.kiro/crew`` (or ``$KIROCREW_HOME``), so
+    this reads ``<data home>/config.json``.
 
     Synchronous disk read — call from a thread (e.g. ``asyncio.to_thread``) when
     on the event loop, then thread the returned dict into the pure parsers below
     so worker construction never blocks the loop.
     """
     try:
-        config_path = Path.home() / ".kirocrew" / "config.json"
+        config_path = config_dir() / "config.json"
         if config_path.exists():
             data = json.loads(config_path.read_text())
             if isinstance(data, dict):

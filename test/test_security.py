@@ -1939,6 +1939,9 @@ class TestIsSensitivePath:
         assert is_sensitive_path("~/.gnupg/private-keys-v1.d") is True
 
     def test_kirocrew_env(self) -> None:
+        # The data home moved to ~/.kiro/crew; the legacy ~/.kirocrew stays gated
+        # (migration leaves a rollback copy that still holds real secret bytes).
+        assert is_sensitive_path("~/.kiro/crew/.env") is True
         assert is_sensitive_path("~/.kirocrew/.env") is True
 
     def test_browser_auth_cookie_paths(self) -> None:
@@ -1947,24 +1950,31 @@ class TestIsSensitivePath:
         # not read them through the shared gate, or a prompt-injected turn could
         # exfiltrate live browser sessions.
         home = str(Path.home())
+        assert is_sensitive_path("~/.kiro/crew/browser-cookies.txt") is True
+        assert is_sensitive_path("~/.kiro/crew/playwright-storage-state.json") is True
+        assert is_sensitive_path(f"{home}/.kiro/crew/browser-cookies.txt") is True
+        assert is_sensitive_path(f"{home}/.kiro/crew/playwright-storage-state.json") is True
+        # Legacy pre-move home is still gated.
         assert is_sensitive_path("~/.kirocrew/browser-cookies.txt") is True
-        assert is_sensitive_path("~/.kirocrew/playwright-storage-state.json") is True
-        assert is_sensitive_path(f"{home}/.kirocrew/browser-cookies.txt") is True
         assert is_sensitive_path(f"{home}/.kirocrew/playwright-storage-state.json") is True
 
     def test_sel_hmac_key(self) -> None:
         # security-review finding cdf82704: the SEL HMAC signing key is the trust root of
         # the tamper-evident audit chain. If an audited agent could fs_read it,
         # it could forge the entire chain, so it must be sensitive (read-blocked).
+        assert is_sensitive_path("~/.kiro/crew/sel_hmac.key") is True
         assert is_sensitive_path("~/.kirocrew/sel_hmac.key") is True
 
     def test_security_events_log(self) -> None:
         # security-review finding cdf82704: the SEL audit log itself must not be
         # readable/rewritable by the audited agent (tamper of the evidence trail).
+        assert is_sensitive_path("~/.kiro/crew/security_events.jsonl") is True
         assert is_sensitive_path("~/.kirocrew/security_events.jsonl") is True
 
     def test_sel_files_absolute_path(self) -> None:
         home = str(Path.home())
+        assert is_sensitive_path(f"{home}/.kiro/crew/sel_hmac.key") is True
+        assert is_sensitive_path(f"{home}/.kiro/crew/security_events.jsonl") is True
         assert is_sensitive_path(f"{home}/.kirocrew/sel_hmac.key") is True
         assert is_sensitive_path(f"{home}/.kirocrew/security_events.jsonl") is True
 
@@ -1974,36 +1984,45 @@ class TestIsSensitivePath:
         # governed agent that could rewrite/delete it could neuter its own
         # admission ceiling — it must be read/write blocked via the shared gate.
         home = str(Path.home())
+        assert is_sensitive_path("~/.kiro/crew/app_admission.json") is True
+        assert is_sensitive_path(f"{home}/.kiro/crew/app_admission.json") is True
         assert is_sensitive_path("~/.kirocrew/app_admission.json") is True
-        assert is_sensitive_path(f"{home}/.kirocrew/app_admission.json") is True
 
     def test_token_signing_key(self) -> None:
         # token_signing.key (dashboard/token_secret.py) signs every
         # dashboard access + refresh token. An agent that could fs_read it could
         # forge auth tokens for itself, so it must be read-blocked like the SEL
         # HMAC key above.
+        assert is_sensitive_path("~/.kiro/crew/token_signing.key") is True
         assert is_sensitive_path("~/.kirocrew/token_signing.key") is True
 
     def test_refresh_chains_json(self) -> None:
         # refresh_chains.json (dashboard/refresh_tokens.py) stores
         # refresh-token chain state used to mint new access tokens.
+        assert is_sensitive_path("~/.kiro/crew/refresh_chains.json") is True
         assert is_sensitive_path("~/.kirocrew/refresh_chains.json") is True
 
     def test_local_secret(self) -> None:
         # .local_secret is the shared internal-auth secret used to
         # authenticate MCP/cron/hook callbacks back into the gateway
         # (mcp_core.py, cron_script.py, mcp_shared.py, etc.).
+        assert is_sensitive_path("~/.kiro/crew/.local_secret") is True
         assert is_sensitive_path("~/.kirocrew/.local_secret") is True
 
     def test_dashboard_secrets_absolute_path(self) -> None:
         home = str(Path.home())
+        assert is_sensitive_path(f"{home}/.kiro/crew/token_signing.key") is True
+        assert is_sensitive_path(f"{home}/.kiro/crew/refresh_chains.json") is True
+        assert is_sensitive_path(f"{home}/.kiro/crew/.local_secret") is True
         assert is_sensitive_path(f"{home}/.kirocrew/token_signing.key") is True
         assert is_sensitive_path(f"{home}/.kirocrew/refresh_chains.json") is True
         assert is_sensitive_path(f"{home}/.kirocrew/.local_secret") is True
 
-    def test_non_sel_kirocrew_file_not_blocked(self) -> None:
+    def test_non_sel_crew_file_not_blocked(self) -> None:
         # Regression guard: the SEL additions must not over-block routine
-        # ~/.kirocrew reads (config.json, sessions.db) that operators/tools need.
+        # crew-home reads (config.json, sessions.db) that operators/tools need.
+        assert is_sensitive_path("~/.kiro/crew/config.json") is False
+        assert is_sensitive_path("~/.kiro/crew/sessions.db") is False
         assert is_sensitive_path("~/.kirocrew/config.json") is False
         assert is_sensitive_path("~/.kirocrew/sessions.db") is False
 
@@ -2110,21 +2129,27 @@ class TestIsSensitiveBashCommand:
     def test_cat_sel_hmac_key_blocked(self) -> None:
         # security-review finding cdf82704: reading the SEL HMAC key via bash is blocked
         # (adding it to _SENSITIVE_HOME_DIRS also arms the bash-read matcher).
-        result = is_sensitive_bash_command("cat ~/.kirocrew/sel_hmac.key")
+        result = is_sensitive_bash_command("cat ~/.kiro/crew/sel_hmac.key")
         assert result is not None and "blocked" in result.lower()
+        legacy = is_sensitive_bash_command("cat ~/.kirocrew/sel_hmac.key")
+        assert legacy is not None and "blocked" in legacy.lower()
 
     def test_cat_security_events_log_blocked(self) -> None:
-        result = is_sensitive_bash_command("cat ~/.kirocrew/security_events.jsonl")
+        result = is_sensitive_bash_command("cat ~/.kiro/crew/security_events.jsonl")
         assert result is not None and "blocked" in result.lower()
+        legacy = is_sensitive_bash_command("cat ~/.kirocrew/security_events.jsonl")
+        assert legacy is not None and "blocked" in legacy.lower()
 
     def test_write_app_admission_policy_blocked(self) -> None:
         # Keystone invariant: a tee/rm to the admission ceiling is blocked
         # (adding app_admission.json to _SENSITIVE_HOME_DIRS also arms the
         # bash write/extract matcher, so the agent cannot delete or rewrite it).
-        tee = is_sensitive_bash_command("echo '{}' | tee ~/.kirocrew/app_admission.json")
+        tee = is_sensitive_bash_command("echo '{}' | tee ~/.kiro/crew/app_admission.json")
         assert tee is not None and "blocked" in tee.lower()
-        rm = is_sensitive_bash_command("rm -f ~/.kirocrew/app_admission.json")
+        rm = is_sensitive_bash_command("rm -f ~/.kiro/crew/app_admission.json")
         assert rm is not None and "blocked" in rm.lower()
+        legacy = is_sensitive_bash_command("rm -f ~/.kirocrew/app_admission.json")
+        assert legacy is not None and "blocked" in legacy.lower()
 
     def test_colon_separated_sensitive_path_blocked(self) -> None:
         # H-p5: a sensitive path after ':' / VAR=val:path / a
@@ -2137,6 +2162,7 @@ class TestIsSensitiveBashCommand:
         # H-p9: file-materialising git verbs still blocked.
         assert is_sensitive_bash_command("git checkout -- ~/.aws/credentials") is not None
         assert is_sensitive_bash_command("git restore ~/.ssh/id_rsa") is not None
+        assert is_sensitive_bash_command("git mv x ~/.kiro/crew/profiles/p.json") is not None
         assert is_sensitive_bash_command("git mv x ~/.kirocrew/profiles/p.json") is not None
 
     def test_readonly_git_non_sensitive_path_allowed(self) -> None:
@@ -2147,15 +2173,20 @@ class TestIsSensitiveBashCommand:
         assert is_sensitive_bash_command("git show HEAD") is None
 
     def test_extract_into_trust_root_subdir_blocked(self) -> None:
-        # H-p6: extraction into ANY ~/.kirocrew descendant (not just
+        # H-p6: extraction into ANY crew-home descendant (not just
         # the root or /profiles) can drop files downstream tooling reads.
+        assert is_sensitive_bash_command("tar -xf evil.tar -C ~/.kiro/crew/foo/") is not None
+        assert is_sensitive_bash_command("unzip -d ~/.kiro/crew/foo/ evil.zip") is not None
+        assert is_sensitive_bash_command("tar -xf e.tar -C ~/.kiro/crew") is not None
+        # Legacy pre-move home is still gated.
         assert is_sensitive_bash_command("tar -xf evil.tar -C ~/.kirocrew/foo/") is not None
-        assert is_sensitive_bash_command("unzip -d ~/.kirocrew/foo/ evil.zip") is not None
         assert is_sensitive_bash_command("tar -xf e.tar -C ~/.kirocrew") is not None
 
-    def test_normal_kirocrew_access_not_overblocked(self) -> None:
+    def test_normal_crew_access_not_overblocked(self) -> None:
         # Regression guard: the broadened rules must not block routine
-        # non-sensitive ~/.kirocrew access (config.json, sessions.db).
+        # non-sensitive crew-home access (config.json, sessions.db).
+        assert is_sensitive_bash_command("cat ~/.kiro/crew/config.json") is None
+        assert is_sensitive_bash_command("sqlite3 ~/.kiro/crew/sessions.db .tables") is None
         assert is_sensitive_bash_command("cat ~/.kirocrew/config.json") is None
         assert is_sensitive_bash_command("sqlite3 ~/.kirocrew/sessions.db .tables") is None
 

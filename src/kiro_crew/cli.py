@@ -41,11 +41,12 @@ from typing import NoReturn
 from kiro_crew import __version__, platform_compat
 from kiro_crew.apps.builtins import BUILTIN_NAMES as _BUILTIN_NAMES
 from kiro_crew.browser.cli import run_browse
-from kiro_crew.config import KiroCrewConfig, config_dir
+from kiro_crew.config import KiroCrewConfig, config_dir, ensure_data_home
 from kiro_crew.config.loader import (
     DASHBOARD_PORT,
     build_provider_factory,
 )
+from kiro_crew.config.paths import _default_home, _legacy_home
 from kiro_crew.constants import env_flag_enabled
 from kiro_crew.crash_guard import install as _install_crash_guard
 from kiro_crew.dashboard.state import set_build_info
@@ -493,23 +494,36 @@ def _resolve_gateway_args(args: argparse.Namespace) -> dict:
         if not home_env:
             print(
                 "👻 --approval yolo refused: KIROCREW_HOME must be explicitly set "
-                "to an isolated path (not the default ~/.kirocrew).",
+                "to an isolated path (not the default ~/.kiro/crew).",
                 file=sys.stderr,
             )
             sys.exit(2)
         try:
             home_resolved = Path(home_env).expanduser().resolve()
-            main_home = (Path.home() / ".kirocrew").resolve()
+            # Compare against BOTH default (non-override) gateway homes. Do NOT use
+            # config_dir() here: KIROCREW_HOME is already set, so config_dir() would
+            # return the override itself and the rail would always fire. We must
+            # reject the legacy ~/.kirocrew too, not just ~/.kiro/crew: on an
+            # unmigrated or downgraded install the legacy home still holds the LIVE
+            # data, so KIROCREW_HOME=~/.kirocrew would otherwise enable unrestricted
+            # tool approval against the real gateway home. Mirrors seed.py's
+            # _protected_homes().
+            protected_homes: set[Path] = set()
+            for home in (_default_home(), _legacy_home()):
+                try:
+                    protected_homes.add(home.resolve())
+                except OSError:
+                    protected_homes.add(home)
         except OSError as exc:
             print(
                 f"👻 --approval yolo refused: failed to resolve KIROCREW_HOME: {exc}",
                 file=sys.stderr,
             )
             sys.exit(2)
-        if home_resolved == main_home:
+        if home_resolved in protected_homes:
             print(
-                "👻 --approval yolo refused: KIROCREW_HOME resolves to the main "
-                f"gateway home ({main_home}). Set KIROCREW_HOME to an isolated "
+                "👻 --approval yolo refused: KIROCREW_HOME resolves to a main "
+                f"gateway home ({home_resolved}). Set KIROCREW_HOME to an isolated "
                 "path before re-running.",
                 file=sys.stderr,
             )
@@ -642,7 +656,7 @@ def _consolidate_cmd(args) -> None:
         print(f"Consolidating session: {session_key}")
         asyncio.run(_run([session_key]))
 
-    print("\nDone. Check ~/.kirocrew/skills/auto/ for new skills.")
+    print("\nDone. Check ~/.kiro/crew/skills/auto/ for new skills.")
 
 
 def main() -> None:
@@ -775,7 +789,7 @@ Examples:
             "gateway (dev tool). Fixture must exist under "
             "src/kiro_crew/tests_fixtures/. The gateway then runs normally "
             "against the populated $KIROCREW_HOME. Refuses when "
-            "$KIROCREW_HOME is the main gateway home (~/.kirocrew) or "
+            "$KIROCREW_HOME is the main gateway home (~/.kiro/crew) or "
             "when the target is non-empty (use --seed-replace to wipe + re-seed)."
         ),
     )
@@ -785,7 +799,7 @@ Examples:
         help=(
             "When used with --seed, wipe $KIROCREW_HOME (rmtree) before "
             "copying the fixture. Ignored without --seed. Does NOT "
-            "override the main-gateway-home rail — ~/.kirocrew is refused "
+            "override the main-gateway-home rail — ~/.kiro/crew is refused "
             "regardless."
         ),
     )
@@ -948,7 +962,7 @@ Examples:
         help="Run a script cron locally with real MCP tools; notifications are captured and printed instead of delivered",
     )
     cron_preview.add_argument(
-        "script", help="Script path in module:function format (e.g. ~/.kirocrew/crons/my.py:run)"
+        "script", help="Script path in module:function format (e.g. ~/.kiro/crew/crons/my.py:run)"
     )
     cron_preview.add_argument("--message", "-m", default="", help="ctx.message value")
     cron_preview.add_argument(
@@ -1650,6 +1664,19 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
         _rc = seed_cmd(args)
         if _rc != 0:
             sys.exit(_rc)
+
+    # Resolve (and, on first launch of an upgraded install, MIGRATE) the data home
+    # NOW — synchronously, on the main thread, before any subcommand starts an
+    # asyncio loop. The legacy→~/.kiro/crew migration blocks (copytree + os.walk
+    # under a file lock); running it here guarantees it never lands on the event
+    # loop via a lazy first config_dir() inside an async-facing constructor, where
+    # it would freeze the loop and could trip the stall watchdog
+    # (no-blocking-call-on-event-loop). Idempotent + process-cached, so every later
+    # config_dir() is a cheap lookup. Placed AFTER the --seed guard (seeding needs
+    # an empty target) and before KiroCrewConfig.load()/the log handler, both of
+    # which call config_dir(). Skipped for the seed path above, which set up its
+    # own $KIROCREW_HOME (an override → migration is a no-op there anyway).
+    ensure_data_home()
 
     if args.verbose >= 2:
         level = logging.DEBUG

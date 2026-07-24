@@ -125,11 +125,17 @@ jobs:
           # security.py's sensitive floor AND in the governance boot-integrity
           # required tuple. Fast tripwire — the authoritative controls are
           # security.py + governance.py + their unit tests.
-          if ! grep -q '".kirocrew/denied_commands.json"' src/kiro_crew/security.py; then
-            echo "::error::denied_commands.json must be in security._SENSITIVE_HOME_DIRS (agent must not read/write its own deny ceiling)"
+          #
+          # The data home moved to ~/.kiro/crew, so security.py now GENERATES the
+          # sensitive floor by expanding each secret leaf (denied_commands.json
+          # among them, in _CREW_SECRET_LEAVES) under every crew-home prefix
+          # (_CREW_HOME_PREFIXES). Assert the leaf is in that list; the governance
+          # boot tuple carries the resolved ".kiro/crew/denied_commands.json".
+          if ! grep -q '"denied_commands.json"' src/kiro_crew/security.py; then
+            echo "::error::denied_commands.json must be in security._SENSITIVE_HOME_DIRS (via _CREW_SECRET_LEAVES; agent must not read/write its own deny ceiling)"
             exit 1
           fi
-          if ! grep -q '".kirocrew/denied_commands.json"' src/kiro_crew/platform/governance.py; then
+          if ! grep -q '".kiro/crew/denied_commands.json"' src/kiro_crew/platform/governance.py; then
             echo "::error::denied_commands.json must be in the governance boot-integrity required tuple"
             exit 1
           fi

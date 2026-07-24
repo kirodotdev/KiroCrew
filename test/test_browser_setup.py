@@ -192,6 +192,10 @@ class TestGeneratePlaywrightConfig:
         assert "storageState" in config["browser"]["contextOptions"]
 
     def test_storage_state_path_is_absolute(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        # The config path now derives from config_dir(), which reads KIROCREW_HOME
+        # first (the conftest autouse fixture pins it). Clear it so config_dir()
+        # resolves from the patched Path.home -> ~/.kiro/crew under tmp_path.
+        monkeypatch.delenv("KIROCREW_HOME", raising=False)
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         config_path = generate_playwright_config()
         config = json.loads(config_path.read_text())
@@ -200,17 +204,20 @@ class TestGeneratePlaywrightConfig:
         assert "playwright-storage-state.json" in storage_state
 
     def test_config_written_to_kirocrew_dir(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        # Data home moved from top-level ~/.kirocrew to ~/.kiro/crew (config_dir()).
+        monkeypatch.delenv("KIROCREW_HOME", raising=False)
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         config_path = generate_playwright_config()
-        assert ".kirocrew" in str(config_path)
+        assert ".kiro/crew" in str(config_path)
         assert config_path.name == "playwright-config.json"
 
     def test_parent_dir_created_if_missing(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.delenv("KIROCREW_HOME", raising=False)
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        kirocrew_dir = tmp_path / ".kirocrew"
-        assert not kirocrew_dir.exists()
+        crew_dir = tmp_path / ".kiro" / "crew"
+        assert not crew_dir.exists()
         generate_playwright_config()
-        assert kirocrew_dir.exists()
+        assert crew_dir.exists()
 
     def test_config_pins_chromium_channel(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         # Without this pin @playwright/mcp defaults launchOptions.channel to the
@@ -295,10 +302,13 @@ class TestGetPlaywrightMcpArgsWithConfig:
     def test_includes_config_flag_when_file_exists(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
+        # Data home moved to ~/.kiro/crew (config_dir()); clear KIROCREW_HOME so
+        # config_dir() resolves from the patched Path.home under tmp_path.
+        monkeypatch.delenv("KIROCREW_HOME", raising=False)
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         monkeypatch.setattr(setup_mod, "is_headed", lambda: False)
         # Create the config file
-        config_path = tmp_path / ".kirocrew" / "playwright-config.json"
+        config_path = tmp_path / ".kiro" / "crew" / "playwright-config.json"
         config_path.parent.mkdir(parents=True, exist_ok=True)
         config_path.write_text("{}")
         args = get_playwright_mcp_args()
@@ -306,6 +316,7 @@ class TestGetPlaywrightMcpArgsWithConfig:
         assert str(config_path) in args
 
     def test_no_config_flag_when_file_absent(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.delenv("KIROCREW_HOME", raising=False)
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         monkeypatch.setattr(setup_mod, "is_headed", lambda: False)
         args = get_playwright_mcp_args()

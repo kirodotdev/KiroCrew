@@ -71,7 +71,7 @@ The not-yet items are tracked as Windows feature-parity follow-ups.
 
 ## Secret-at-rest posture on Windows
 
-Files under `%USERPROFILE%\.kirocrew` that hold auth material — the token
+Files under `%USERPROFILE%\.kiro\crew` that hold auth material — the token
 signing key, refresh-token state, per-app secrets, snapshot tarballs, and the
 cron internal-secret temp file — are locked down to the current user via an
 owner-only NTFS DACL (inheritance stripped, `S-1-3-4:F` = Owner Rights full

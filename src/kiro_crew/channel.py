@@ -20,6 +20,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
+from kiro_crew.config.paths import config_dir
+
 logger = logging.getLogger(__name__)
 
 _MAX_AGENTS = 3
@@ -413,8 +415,6 @@ class Channel:
 class ChannelManager:
     """Create and manage persistent agent channels."""
 
-    _CHANNELS_DIR = os.path.expanduser("~/.kirocrew/channels")
-
     def __init__(
         self,
         broadcast_fn: Any = None,
@@ -426,8 +426,11 @@ class ChannelManager:
         self._broadcast_fn = broadcast_fn
         self._max_channels = max_channels
         self._max_agents = max_agents
-        if channels_dir is not None:
-            self._CHANNELS_DIR = channels_dir
+        # Resolve the channels dir lazily in __init__ (not as a class attr) so
+        # merely importing this module never triggers config_dir() and its
+        # one-time data-home migration as an import side effect — that must fire
+        # only at the single chosen point (ensure_data_home() in the CLI prologue).
+        self._CHANNELS_DIR = channels_dir or str(config_dir() / "channels")
         self._load_all()
 
     def _save_channel(self, channel: Channel) -> None:

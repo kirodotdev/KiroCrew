@@ -33,6 +33,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
+from kiro_crew.config.paths import config_dir
 from kiro_crew.platform.context import PlatformCompositionError
 from kiro_crew.platform.governance import (
     Bind,
@@ -44,7 +45,13 @@ from kiro_crew.platform.governance import (
 
 logger = logging.getLogger(__name__)
 
-_PROFILES_DIR = Path.home() / ".kirocrew" / "profiles"
+# Optional override slot for the profiles dir. Left ``None`` at import — NOT a
+# module-level ``config_dir()`` capture — so importing this trust-root module
+# never fires ``config_dir()`` (and thus the one-time data-home migration) as an
+# import side effect; the migration must run only at the single chosen point
+# (``ensure_data_home()`` in the CLI prologue). ``_profiles_dir()`` resolves the
+# real path lazily; tests set this attribute to redirect it.
+_PROFILES_DIR: "Path | None" = None
 
 
 def audit_governance_degraded(
@@ -152,8 +159,15 @@ HOST_SESSION_KEY = "_host"
 
 
 def _profiles_dir() -> Path:
-    """The profiles directory (indirection so tests can monkeypatch the module)."""
-    return _PROFILES_DIR
+    """The profiles directory, resolved lazily (honors a test-set ``_PROFILES_DIR``).
+
+    Resolving ``config_dir()`` here rather than at module scope keeps importing
+    this module free of the data-home-migration import side effect (see
+    ``_PROFILES_DIR`` above). Tests that need a fixed dir set ``_PROFILES_DIR``.
+    """
+    if _PROFILES_DIR is not None:
+        return _PROFILES_DIR
+    return config_dir() / "profiles"
 
 
 def _infer_surface(session_key: str) -> str:

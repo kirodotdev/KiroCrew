@@ -48,6 +48,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, List, Optional
 
+from kiro_crew.config.paths import config_dir
+
 if TYPE_CHECKING:
     import importlib.metadata
 
@@ -56,7 +58,29 @@ logger = logging.getLogger(__name__)
 # Where a managed fleet drops the admission policy. Env wins so a fleet push can
 # point at a managed, read-only location.
 _POLICY_ENV = "KIROCREW_ADMISSION_POLICY"
-_POLICY_DEFAULT_PATH = Path.home() / ".kirocrew" / "admission_policy.json"
+_POLICY_DEFAULT_LEAF = "admission_policy.json"
+
+
+def _policy_default_path() -> Path:
+    """Resolve the default admission-policy path lazily.
+
+    Deferred (not a module-level ``config_dir()`` capture) so importing this
+    trust-root module never fires ``config_dir()`` — and thus the one-time
+    data-home migration — as an import side effect. The migration must happen
+    only at the single chosen point (``ensure_data_home()`` in the CLI prologue).
+    Callers (and tests) resolve through these accessors rather than a captured
+    module-level constant.
+    """
+    return config_dir() / _POLICY_DEFAULT_LEAF
+
+
+def _seed_marker_path() -> Path:
+    return _policy_default_path().parent / ".migrations" / "admission_policy_seeded"
+
+
+def _checksum_path() -> Path:
+    return _policy_default_path().parent / ".migrations" / "admission_policy.sha256"
+
 
 # The manifest a plugin ships (read import-free from its distribution files).
 _MANIFEST_FILENAME = "kirocrew_plugin.json"
@@ -176,14 +200,13 @@ class AdmissionDecision:
     manifest: Optional[PluginManifest] = None
 
 
-# One-shot marker: records that the first-run seed already ran, so a DELETION of
-# the seeded policy afterward is NOT silently re-seeded (it must fail closed).
-_SEED_MARKER = _POLICY_DEFAULT_PATH.parent / ".migrations" / "admission_policy_seeded"
-
-# Sidecar sha256 of the SEEDED default policy, written by seed_default_policy and
-# verified (advisorily) at load.  Only exists for the file WE seeded — env-
-# override / fleet-managed policies carry no sidecar contract.
-_CHECKSUM_PATH = _POLICY_DEFAULT_PATH.parent / ".migrations" / "admission_policy.sha256"
+# One-shot marker (``_SEED_MARKER``) and seeded-policy sha256 sidecar
+# (``_CHECKSUM_PATH``) are resolved lazily via the module ``__getattr__`` above
+# (derived from ``_policy_default_path()``), for the same import-side-effect
+# reason. ``_SEED_MARKER`` records that the first-run seed already ran, so a
+# DELETION of the seeded policy afterward is NOT silently re-seeded (fail
+# closed); ``_CHECKSUM_PATH`` exists only for the file WE seeded — env-override /
+# fleet-managed policies carry no sidecar contract.
 
 # The permissive policy body seeded at first run.  ``mode=open`` + ``approved``
 # absent (None) reproduces today's admit-any-non-banned behavior, so a fresh
@@ -231,25 +254,28 @@ def seed_default_policy() -> bool:
     cannot re-seed / clobber.  Best-effort: returns True only when it wrote the
     seed; never raises (first-run is best-effort).
     """
+    seed_marker = _seed_marker_path()
+    default_path = _policy_default_path()
+    checksum_path = _checksum_path()
     try:
-        if _SEED_MARKER.exists():
+        if seed_marker.exists():
             return False
         env_set = bool(os.environ.get(_POLICY_ENV, "").strip())
         wrote = False
-        if not env_set and not _POLICY_DEFAULT_PATH.exists():
+        if not env_set and not default_path.exists():
             body_text = json.dumps(_DEFAULT_POLICY_BODY, indent=2) + "\n"
-            _POLICY_DEFAULT_PATH.parent.mkdir(parents=True, exist_ok=True)
-            _POLICY_DEFAULT_PATH.write_text(body_text, encoding="utf-8")
+            default_path.parent.mkdir(parents=True, exist_ok=True)
+            default_path.write_text(body_text, encoding="utf-8")
             # Record the integrity baseline for the file we just wrote so a later
             # modification is detectable at load (advisory — see load below).
-            _CHECKSUM_PATH.parent.mkdir(parents=True, exist_ok=True)
-            _CHECKSUM_PATH.write_text(
+            checksum_path.parent.mkdir(parents=True, exist_ok=True)
+            checksum_path.write_text(
                 hashlib.sha256(body_text.encode("utf-8")).hexdigest() + "\n",
                 encoding="utf-8",
             )
             wrote = True
-        _SEED_MARKER.parent.mkdir(parents=True, exist_ok=True)
-        _SEED_MARKER.write_text(
+        seed_marker.parent.mkdir(parents=True, exist_ok=True)
+        seed_marker.write_text(
             datetime.now(tz=timezone.utc).isoformat() + "\n", encoding="utf-8"
         )
         return wrote
@@ -326,16 +352,17 @@ def _verify_seed_integrity(policy_bytes: bytes) -> None:
     value here is DETECTION + observability, not enforcement.  No sidecar (older
     seed / manually-created file) → nothing to verify.  Never raises.
     """
+    checksum_path = _checksum_path()
     try:
-        if not _CHECKSUM_PATH.exists():
+        if not checksum_path.exists():
             return
-        expected = _CHECKSUM_PATH.read_text(encoding="utf-8").strip()
+        expected = checksum_path.read_text(encoding="utf-8").strip()
         actual = hashlib.sha256(policy_bytes).hexdigest()
         if not hmac.compare_digest(expected, actual):
             logger.error(
                 "admission policy at %s does not match its seed checksum "
                 "(modified since first-run); recording integrity event",
-                _POLICY_DEFAULT_PATH,
+                _policy_default_path(),
             )
             # Detection only: record for the audit trail but do
             # NOT drive the dashboard to "degraded".  The seeded policy is
@@ -372,11 +399,12 @@ def load_admission_policy() -> AdmissionPolicy:
     likewise fail-closed.
     """
     raw = os.environ.get(_POLICY_ENV, "").strip()
+    default_path = _policy_default_path()
     path: Optional[Path] = None
     if raw:
         path = Path(raw)
-    elif _POLICY_DEFAULT_PATH.exists():
-        path = _POLICY_DEFAULT_PATH
+    elif default_path.exists():
+        path = default_path
     if path is None:
         # No env override and no file at the default path.  Something the
         # first-run seed (or a managed fleet) should have placed is absent —
@@ -384,7 +412,7 @@ def load_admission_policy() -> AdmissionPolicy:
         logger.error(
             "no admission policy found (env %s unset, %s absent); failing closed",
             _POLICY_ENV,
-            _POLICY_DEFAULT_PATH,
+            default_path,
         )
         _record_admission_posture("unverified")
         _audit_admission_fail_closed("no_policy_file")
@@ -400,7 +428,7 @@ def load_admission_policy() -> AdmissionPolicy:
         _audit_admission_fail_closed("unreadable")
         return _fail_closed_policy()
     # Advisory integrity check on the file WE seeded (not env-override paths).
-    if path == _POLICY_DEFAULT_PATH:
+    if path == default_path:
         _verify_seed_integrity(raw_text.encode("utf-8"))
     policy = AdmissionPolicy.from_dict(data)
     _record_admission_posture(_posture_of(policy))

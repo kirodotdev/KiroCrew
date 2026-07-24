@@ -46,6 +46,7 @@ from kiro_crew.agent_files import KNOWLEDGE_AGENT_FILENAME as _KNOWLEDGE_AGENT_F
 from kiro_crew.agent_files import LITE_AGENT_FILENAME as _LITE_AGENT_FILENAME
 from kiro_crew.agent_files import RESEARCH_AGENT_FILENAME as _RESEARCH_AGENT_FILENAME
 from kiro_crew.browser.setup import converge_playwright_servers
+from kiro_crew.config import config_dir
 from kiro_crew.config import config_path as _mc_config_path
 from kiro_crew.env import augmented_path
 from kiro_crew.mcp_utils import mcp_server_alias
@@ -138,10 +139,24 @@ def _shipped_prompt() -> Path:
     return _BUNDLED_CFG_DIR / "prompt.md"
 
 
-# User overrides
-_USER_DIR = Path.home() / ".kirocrew"
-_USER_PROMPT = _USER_DIR / "prompt.md"
-_USER_OVERRIDES = _USER_DIR / "agent.json"
+# User overrides. Resolved via lazy accessors (NOT module-level config_dir()
+# captures): importing agent.py — which cli.py does transitively at import time
+# via cli_doctor — must NOT fire config_dir(), or it would create $KIROCREW_HOME
+# before main() reaches its `gateway --seed` guard (whose copytree needs an empty
+# target) AND trigger the one-time migration off the single ensure_data_home()
+# point. Accessors keep every use lazy; the process-cached config_dir() makes
+# repeated calls cheap.
+def _user_dir() -> Path:
+    return config_dir()
+
+
+def _user_prompt_path() -> Path:
+    return _user_dir() / "prompt.md"
+
+
+def _user_overrides_path() -> Path:
+    return _user_dir() / "agent.json"
+
 
 # kirocrew binary path — resolved lazily to handle gateway restarts
 # where PATH may not include the virtualenv at import time.
@@ -397,9 +412,14 @@ def ensure_kirocrew_on_path(bin_dir: Path | None = None) -> str | None:
 
 
 # One-time migrations performed automatically on gateway first-run (so the
-# desktop app, which never runs `kirocrew setup`, still gets them).
-_MIGRATIONS_DIR = _USER_DIR / ".migrations"
-_STALE_MCP_PURGE_MARKER = _MIGRATIONS_DIR / "stale_managed_mcp_purged"
+# desktop app, which never runs `kirocrew setup`, still gets them). Lazy
+# accessors (same import-side-effect reason as _user_dir above).
+def _migrations_dir() -> Path:
+    return _user_dir() / ".migrations"
+
+
+def _stale_mcp_purge_marker() -> Path:
+    return _migrations_dir() / "stale_managed_mcp_purged"
 
 
 def run_first_run_setup() -> None:
@@ -439,7 +459,8 @@ def run_first_run_setup() -> None:
         logger.warning("First-run: admission policy seed failed", exc_info=True)
 
     # 3. Stale managed-MCP purge — one-time, marker-guarded.
-    if _STALE_MCP_PURGE_MARKER.exists():
+    stale_marker = _stale_mcp_purge_marker()
+    if stale_marker.exists():
         return
     try:
         from kiro_crew.mcp_cleanup import clean_stale_managed_mcp  # noqa: PLC0415
@@ -449,8 +470,8 @@ def run_first_run_setup() -> None:
             logger.info("First-run: purged stale managed MCP entries: %s", removed)
         # Mark done even when nothing was removed, so the global mcp.json is
         # never re-read/rewritten on later starts.
-        _MIGRATIONS_DIR.mkdir(parents=True, exist_ok=True)
-        _STALE_MCP_PURGE_MARKER.write_text(
+        _migrations_dir().mkdir(parents=True, exist_ok=True)
+        stale_marker.write_text(
             datetime.now(timezone.utc).isoformat() + "\n", encoding="utf-8"
         )
     except Exception:
@@ -464,7 +485,7 @@ def _prompt_path(mode: str = "") -> Path:
     The conductor_skill config is independent — it controls agent routing, not the prompt.
     """
     if mode == "orchestrator":
-        user_orch = _USER_DIR / "prompt-orchestrator.md"
+        user_orch = _user_dir() / "prompt-orchestrator.md"
         if user_orch.is_file():
             return user_orch
         proj = _project_dir()
@@ -476,8 +497,9 @@ def _prompt_path(mode: str = "") -> Path:
         if bundled_orch.is_file():
             return bundled_orch
 
-    if _USER_PROMPT.is_file():
-        return _USER_PROMPT
+    user_prompt = _user_prompt_path()
+    if user_prompt.is_file():
+        return user_prompt
     return _shipped_prompt()
 
 
@@ -622,7 +644,7 @@ def _all_skill_paths() -> list[str]:
         if kiro_proj.is_dir() and not is_sensitive_path(str(kiro_proj)):
             paths.add(str(kiro_proj))
     # User-created skills (KiroCrew convention)
-    user_skills = Path.home() / ".kirocrew" / "skills"
+    user_skills = config_dir() / "skills"
     if user_skills.is_dir():
         paths.add(str(user_skills))
     # Open-standard global location: ``~/.kiro/skills/`` — canonical home for
@@ -1298,7 +1320,7 @@ def build_agent_config() -> dict:
     bundled hooks always run first and cannot be removed.
     """
     config = _load_json(_shipped_defaults())
-    config = _deep_merge(config, _load_json(_USER_OVERRIDES))
+    config = _deep_merge(config, _load_json(_user_overrides_path()))
 
     # Ensure hooks always come from the bundled config,
     # even if the project-level defaults.json is stale.
@@ -1728,7 +1750,7 @@ def rebuild_agent_config(*, clean: bool = False) -> Path:
     # Uses update() to merge into existing specs, preserving user-set fields
     # like autoApprove while letting kirocrew's command/args/env win.
     # Skip managed servers for the same reason as above.
-    kirocrew_mcp = _load_json(_USER_DIR / "mcp.json").get("mcpServers", {})
+    kirocrew_mcp = _load_json(_user_dir() / "mcp.json").get("mcpServers", {})
     for name, spec in kirocrew_mcp.items():
         if isinstance(spec, dict) and name not in managed_names:
             mcps = config.setdefault("mcpServers", {})

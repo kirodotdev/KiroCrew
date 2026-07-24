@@ -2650,18 +2650,25 @@ class TestConfigWriteProtection:
     def test_config_json_is_write_protected(self) -> None:
         from kiro_crew.security import is_sensitive_write_path
 
+        # Data home moved to ~/.kiro/crew; the legacy ~/.kirocrew stays gated too.
+        assert is_sensitive_write_path("~/.kiro/crew/config.json")
+        assert is_sensitive_write_path(str(Path.home() / ".kiro" / "crew" / "config.json"))
         assert is_sensitive_write_path("~/.kirocrew/config.json")
         assert is_sensitive_write_path(str(Path.home() / ".kirocrew" / "config.json"))
 
     def test_config_local_json_is_write_protected(self) -> None:
         from kiro_crew.security import is_sensitive_write_path
 
+        assert is_sensitive_write_path("~/.kiro/crew/config.local.json")
+        assert is_sensitive_write_path(str(Path.home() / ".kiro" / "crew" / "config.local.json"))
         assert is_sensitive_write_path("~/.kirocrew/config.local.json")
         assert is_sensitive_write_path(str(Path.home() / ".kirocrew" / "config.local.json"))
 
     def test_config_json_reads_still_allowed(self) -> None:
         from kiro_crew.security import is_sensitive_bash_command, is_sensitive_path
 
+        assert is_sensitive_path("~/.kiro/crew/config.json") is False
+        assert is_sensitive_bash_command("cat ~/.kiro/crew/config.json") is None
         assert is_sensitive_path("~/.kirocrew/config.json") is False
         assert is_sensitive_bash_command("cat ~/.kirocrew/config.json") is None
 
@@ -2669,11 +2676,13 @@ class TestConfigWriteProtection:
         from kiro_crew.security import is_sensitive_write_path
 
         assert is_sensitive_write_path("~/.aws/credentials")
+        assert is_sensitive_write_path("~/.kiro/crew/security_policy.json")
         assert is_sensitive_write_path("~/.kirocrew/security_policy.json")
 
     def test_non_config_kirocrew_file_not_write_protected(self) -> None:
         from kiro_crew.security import is_sensitive_write_path
 
+        assert is_sensitive_write_path("~/.kiro/crew/sessions.db") is False
         assert is_sensitive_write_path("~/.kirocrew/sessions.db") is False
 
 

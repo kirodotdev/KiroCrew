@@ -4,6 +4,10 @@ All notable changes to KiroCrew are documented in this file.
 
 ## [Unreleased]
 
+### Features
+
+- **Data home moved under ~/.kiro/** — KiroCrew now stores its data in ~/.kiro/crew (was ~/.kirocrew), aligning with other Kiro apps. Existing installs migrate automatically on first launch: data is copied to the new location and the old ~/.kirocrew is renamed to ~/.kirocrew.archived as a rollback copy. Re-downloadable bulk content (embedding models, caches) is excluded from the copy and the archive — the new home regenerates it — so the migration stays fast and doesn't leave a permanent duplicate of hundreds of MB. The archive is locked to your user account and its credential files auto-expire 7 days after migration (the live secrets stay in the new home). To downgrade, stop KiroCrew and rename ~/.kirocrew.archived back to ~/.kirocrew within that window; once the new home is confirmed working, delete the archive (`kirocrew doctor` shows its size and the cleanup command). Set KIROCREW_HOME to override.
+
 ### Changes
 
 - **Slack challenge-and-redirect REMOVED** — Inbound Slack messages are now processed inline and reach the agent directly (gated by the user allowlist and Enterprise Grid origin check), instead of being intercepted and turned into a presigned dashboard-session link for every message. The challenge-and-redirect flow was an internal-only security posture and is not needed for external/open-source usage. The `send_channel_challenge()` helper and the `_CHALLENGE_REDIRECT_ENABLED` gate were removed; the explicit `/kirocrew dashboard` link command is unchanged.

@@ -83,7 +83,7 @@ def _data_filter(info: tarfile.TarInfo, _dest: str = "") -> tarfile.TarInfo | No
 
 
 def _default_snapshot_dir() -> str:
-    """Return snapshot directory from config, falling back to ~/.kirocrew/snapshots."""
+    """Return snapshot directory from config, falling back to <config_dir>/snapshots."""
     try:
         from kiro_crew.config.loader import KiroCrewConfig
 
@@ -92,7 +92,12 @@ def _default_snapshot_dir() -> str:
             return str(Path(d).expanduser())
     except Exception:
         pass
-    return str(Path.home() / ".kirocrew" / "snapshots")
+    try:
+        from kiro_crew.config.paths import config_dir
+
+        return str(config_dir() / "snapshots")
+    except Exception:
+        return str(Path.home() / ".kiro" / "crew" / "snapshots")
 
 
 def _audit(event_type: str, resources: str) -> None:
@@ -140,7 +145,7 @@ COMPONENT_HELP = {
 
 def _mc_dir() -> Path:
     # Use the shared resolver so snapshot/restore honor the documented
-    # KIROCREW_HOME override (and the same ~/.kirocrew default) as every other
+    # KIROCREW_HOME override (and the same ~/.kiro/crew default) as every other
     # module. Previously this read an undocumented KIROCREW_DIR, which made
     # snapshots silently target the real home even when state was relocated.
     from kiro_crew.config.loader import config_dir
@@ -240,7 +245,7 @@ def snapshot_main(
         )
         total_mb = total_bytes / (1024 * 1024)
         if total_mb > 500:
-            print(f"⚠️  ~/.kirocrew is {total_mb:.0f} MB — snapshot may be large and slow")
+            print(f"⚠️  {mc} is {total_mb:.0f} MB — snapshot may be large and slow")
 
     # WAL checkpoint
     if (mc / "memory.db").is_file():

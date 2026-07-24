@@ -115,12 +115,10 @@ def test_managed_servers_survive_in_frozen_app(tmp_path, monkeypatch):
         stack.enter_context(
             patch("kiro_crew.agent._shipped_defaults", return_value=cfg_dir / "defaults.json")
         )
+        _missing_overrides = tmp_path / "missing_overrides.json"
+        stack.enter_context(patch.multiple("kiro_crew.agent", _BUNDLED_CFG_DIR=cfg_dir))
         stack.enter_context(
-            patch.multiple(
-                "kiro_crew.agent",
-                _BUNDLED_CFG_DIR=cfg_dir,
-                _USER_OVERRIDES=tmp_path / "missing_overrides.json",
-            )
+            patch("kiro_crew.agent._user_overrides_path", return_value=_missing_overrides)
         )
         stack.enter_context(
             patch("kiro_crew.agent._prompt_path", return_value=cfg_dir / "prompt.md")
@@ -252,8 +250,8 @@ def _sandbox_first_run(tmp_path, monkeypatch, exe):
     mig = tmp_path / ".migrations"
     marker = mig / "stale_managed_mcp_purged"
     mcp = tmp_path / ".kiro" / "settings" / "mcp.json"
-    monkeypatch.setattr(agent, "_MIGRATIONS_DIR", mig)
-    monkeypatch.setattr(agent, "_STALE_MCP_PURGE_MARKER", marker)
+    monkeypatch.setattr(agent, "_migrations_dir", lambda: mig)
+    monkeypatch.setattr(agent, "_stale_mcp_purge_marker", lambda: marker)
     monkeypatch.setattr(mcp_cleanup, "_KIRO_MCP_JSON", mcp)
     _simulate_frozen_app(monkeypatch, exe)
     return marker, mcp

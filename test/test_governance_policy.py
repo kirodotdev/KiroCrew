@@ -295,8 +295,9 @@ class TestScopedMap:
 class TestLoader:
     def test_absent_returns_none(self, monkeypatch, tmp_path):
         monkeypatch.delenv("KIROCREW_SECURITY_POLICY", raising=False)
+        _nope = tmp_path / "nope.json"
         monkeypatch.setattr(
-            "kiro_crew.platform.governance._POLICY_HOME_PATH", tmp_path / "nope.json"
+            "kiro_crew.platform.governance._policy_home_path", lambda: _nope
         )
         assert load_security_policy() is None
 
@@ -324,14 +325,17 @@ class TestLoader:
         monkeypatch.delenv("KIROCREW_SECURITY_POLICY", raising=False)
         home = tmp_path / "security_policy.json"
         home.write_text(json.dumps(_policy_body()))
-        monkeypatch.setattr("kiro_crew.platform.governance._POLICY_HOME_PATH", home)
+        monkeypatch.setattr(
+            "kiro_crew.platform.governance._policy_home_path", lambda: home
+        )
         ceiling = load_security_policy()
         assert ceiling is not None
 
     def test_bundled_loader_precedence(self, monkeypatch, tmp_path):
         monkeypatch.delenv("KIROCREW_SECURITY_POLICY", raising=False)
+        _nope = tmp_path / "nope.json"
         monkeypatch.setattr(
-            "kiro_crew.platform.governance._POLICY_HOME_PATH", tmp_path / "nope.json"
+            "kiro_crew.platform.governance._policy_home_path", lambda: _nope
         )
         called = {}
 
