@@ -1,3 +1,7 @@
+// Extension composition root — the one file a downstream edition owns. Imported
+// FIRST (before store/providers/App) so seam registrations run before render.
+// Empty in the stock build. See website/src/extensions.ts.
+import './extensions'
 import React, { StrictMode, Suspense, lazy } from 'react'
 import { createRoot } from 'react-dom/client'
 import { Provider } from 'react-redux'

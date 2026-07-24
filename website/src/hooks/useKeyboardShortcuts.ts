@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useAppDispatch, useAppSelector } from '../store'
 import { switchSlot, deleteSlot } from '../store/chatSlice'
 import { loadChatConfig } from '../pages/chat/ChatSettings'
+import { reportSeamCollision } from '../apps/seamCollision'
 
 export const SHORTCUTS_ENABLED_KEY = 'mc-keyboard-shortcuts'
 export const SHORTCUTS_ENABLED_EVENT = 'mc-keyboard-shortcuts-changed'
@@ -81,6 +82,87 @@ export const DEFAULT_SHORTCUTS: ShortcutDef[] = [
  * the handler claims can never drift apart.
  */
 export const INSTANCE_SHORTCUTS = DEFAULT_SHORTCUTS.filter(s => s.group === 'Instances')
+
+/**
+ * The core Alt+<key> panel-navigation chords. Single source of truth for both
+ * the handler dispatch and the extension-seam duplicate guard, so a downstream
+ * registration can never shadow a core panel.
+ */
+export const CORE_PANEL_MAP: Record<string, string> = {
+  KeyC: '/chat',
+  KeyN: '/notifications',
+  KeyP: '/projects',
+  KeyS: '/schedule',
+}
+
+/**
+ * Alt (no-shift) codes the handler consumes BEFORE it reaches panel routing.
+ * A downstream panel registered on one of these would be advertised in the
+ * shortcuts modal yet never fire (the earlier branch returns first), so they
+ * are reserved: the core panel chords, plus the non-shift Alt actions the
+ * handler dispatches ahead of the panelMap block (shortcuts modal, settings,
+ * focus-input, MRU toggle) and the Alt+digit chat-jumps. Keep in sync with the
+ * handler's pre-panel branches below.
+ *
+ * Exported so `extensionSeams.test.tsx` can guard the sync: a drift test parses
+ * this module's handler for the codes it consumes before the panelMap block and
+ * asserts each is reserved here, so a new pre-panel chord added without updating
+ * this set fails CI rather than silently shadowing a downstream panel.
+ */
+export const RESERVED_PANEL_CODES: ReadonlySet<string> = new Set<string>([
+  ...Object.keys(CORE_PANEL_MAP),
+  'KeyK', // shortcuts modal (Alt+K)
+  'Comma', // settings (Alt+,)
+  'Enter', // focus text input (Alt+Enter)
+  'Backquote', // MRU toggle (Alt+`)
+  'ArrowLeft',
+  'ArrowRight', // prev/next chat
+  'Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5',
+  'Digit6', 'Digit7', 'Digit8', 'Digit9', // chat jump
+])
+
+/** Map a KeyboardEvent.code to the display key the shortcuts modal shows. */
+function _displayKeyForCode(code: string): string {
+  if (code.startsWith('Key')) return code.slice(3).toLowerCase()
+  if (code.startsWith('Digit')) return code.slice(5)
+  return code
+}
+
+/**
+ * Panel-navigation extension seam. A downstream edition that adds a navigable
+ * panel registers its Alt+<key> chord here (from the extensions.ts composition
+ * root, at module-load time) instead of editing this file's panel map +
+ * `DEFAULT_SHORTCUTS` on every upstream sync. Registering advertises the chord
+ * in the shortcuts modal AND makes the handler navigate to it. The core
+ * registers none.
+ *
+ * The chord is identified solely by KeyboardEvent.code; the displayed key is
+ * DERIVED from it (`_displayKeyForCode`) so the advertised chord can never
+ * diverge from the handled one. A registration whose code collides with a core
+ * panel chord, an already-registered extension, OR any Alt chord the handler
+ * consumes before panel routing (`RESERVED_PANEL_CODES` — otherwise the panel
+ * would be unreachable) routes through `reportSeamCollision`: fail-loud in
+ * dev/test, warn-and-ignore in production (core/first wins).
+ */
+const EXTRA_PANEL_ROUTES: Record<string, string> = {}
+
+export function registerPanelShortcut(entry: { code: string; path: string; label: string }): void {
+  if (RESERVED_PANEL_CODES.has(entry.code) || entry.code in EXTRA_PANEL_ROUTES) {
+    reportSeamCollision(
+      'shortcuts',
+      `panel shortcut ${entry.code} is reserved or already registered; ignoring`,
+    )
+    return
+  }
+  EXTRA_PANEL_ROUTES[entry.code] = entry.path
+  DEFAULT_SHORTCUTS.push({
+    id: `nav-${entry.path.replace(/^\//, '')}`,
+    key: _displayKeyForCode(entry.code),
+    alt: true,
+    label: entry.label,
+    group: 'Panel Navigation',
+  })
+}
 
 const isMac = () => typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform)
 
@@ -299,8 +381,11 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
     // Skip remaining shortcuts if user is in an input field
     if (isInput) return
 
-    // Panel navigation
-    const panelMap: Record<string, string> = { KeyC: '/chat', KeyN: '/notifications', KeyP: '/projects', KeyS: '/schedule' }
+    // Panel navigation (core panels + any downstream-registered ones). Core
+    // entries are spread last so a stray extension can never shadow them —
+    // registerPanelShortcut already rejects core-colliding codes, this is
+    // belt-and-suspenders.
+    const panelMap: Record<string, string> = { ...EXTRA_PANEL_ROUTES, ...CORE_PANEL_MAP }
     if (!e.shiftKey && panelMap[code]) {
       e.preventDefault()
       navigate(panelMap[code])

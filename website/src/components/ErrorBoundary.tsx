@@ -43,7 +43,11 @@ export default class ErrorBoundary extends Component<Props, State> {
 
   render() {
     if (!this.state.error) return this.props.children
-    if (this.props.fallback) return this.props.fallback
+    // Use 'in' rather than truthiness so an explicit `fallback={null}` renders
+    // nothing (the extension-slot case: a faulty contribution disappears
+    // instead of showing the default error card), while an omitted fallback
+    // still falls through to the default UI below.
+    if ('fallback' in this.props) return this.props.fallback
 
     // The root fallback can render when ThemeProvider itself crashed -- before
     // the data-theme attribute and CSS variables (--text-strong, --accent, ...)

@@ -9,8 +9,9 @@
  * Components are lazy-loaded so they don't bloat the initial bundle.
  */
 import { lazy, type ComponentType } from 'react'
+import { reportSeamCollision } from './seamCollision'
 
-type LazyComponent = React.LazyExoticComponent<ComponentType<Record<string, never>>>
+export type LazyComponent = React.LazyExoticComponent<ComponentType<Record<string, never>>>
 
 /**
  * Registry mapping route paths (from app manifest ui.pages[].route)
@@ -30,6 +31,52 @@ export const BUILTIN_COMPONENT_REGISTRY: Record<string, LazyComponent> = {
   '/code-review-sage': lazy(() => import('./code-review-sage/CodeReviewSagePage')),
   '/workflows': lazy(() => import('./workflows/WorkflowsPage')),
   '/dev-fleet': lazy(() => import('../pages/DevFleetPage')),
+}
+
+/**
+ * Register additional builtin route → component mappings at runtime.
+ *
+ * This is the extension seam for a downstream edition that bundles its own
+ * builtin pages: instead of editing (and re-diffing) this file on every upstream
+ * sync, the edition calls this once from the extensions.ts composition root
+ * (loaded before App mounts; routes resolve lazily on navigation, so this
+ * registry does not need to be reactive). Existing entries are never
+ * overwritten silently — a duplicate route is a no-op and logs a warning, so
+ * the core's own registrations always win.
+ *
+ * A route must be a single, plain top-level path segment: `BuiltinAppRoute`
+ * resolves the catch-all `/:builtinApp` from ONE path parameter, and only the
+ * `location.pathname` — never the query or hash — is matched against the
+ * registry. So anything that isn't a bare segment would register but never
+ * resolve: `/reports/daily` (extra segment → matches `/reports`),
+ * `/reports?daily` or `/reports#x` (the `?daily`/`#x` isn't in the pathname →
+ * matches `/reports`), or whitespace/`.`/`..`. All redirect to chat — the
+ * silent-vanish failure the seams guard against. The pattern therefore requires
+ * a leading alphanumeric then only URL-path-safe chars (`A-Za-z0-9._~-`) and NO
+ * second `/`, `?`, `#`, or whitespace; `.`/`..` are excluded by the mandatory
+ * alphanumeric first char. A non-conforming route routes through
+ * `reportSeamCollision` (fail-loud dev/test, warn-and-ignore prod), same as a
+ * duplicate.
+ */
+const _BUILTIN_ROUTE_RE = /^\/[A-Za-z0-9][A-Za-z0-9._~-]*$/
+
+export function registerBuiltinComponents(entries: Record<string, LazyComponent>): void {
+  for (const [route, component] of Object.entries(entries)) {
+    if (!_BUILTIN_ROUTE_RE.test(route)) {
+      reportSeamCollision(
+        'builtinRegistry',
+        `route ${route} is not a single plain path segment ` +
+          `(/^\\/[A-Za-z0-9][A-Za-z0-9._~-]*$/); BuiltinAppRoute can never ` +
+          `resolve it — ignoring`,
+      )
+      continue
+    }
+    if (route in BUILTIN_COMPONENT_REGISTRY) {
+      reportSeamCollision('builtinRegistry', `route ${route} already registered; ignoring duplicate`)
+      continue
+    }
+    BUILTIN_COMPONENT_REGISTRY[route] = component
+  }
 }
 
 /**

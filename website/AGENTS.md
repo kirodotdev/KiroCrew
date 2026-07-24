@@ -208,3 +208,62 @@ Builtin apps no longer need manual `NAV_ITEMS` entries. The `builtinRegistry.ts`
 1. Create `src/pages/apps/MyApp/index.tsx`
 2. Export default component
 3. Add route config to `builtinRegistry.ts`
+
+### Frontend extension seams
+
+Additive registries let a **downstream edition** (a separate build that composes
+this SPA — e.g. an internal fork) contribute UI without copy-and-shadowing core
+files. The core registers nothing new into them, so every seam is inert in the
+stock build. There are **five** seams:
+
+| Seam | Module | Registrar → reader |
+|------|--------|--------------------|
+| Builtin page routes | `apps/builtinRegistry.ts` | `registerBuiltinComponents()` → `getBuiltinComponent()` |
+| Nav icons | `apps/builtinIcons.tsx` | `registerBuiltinIcons()` → `getBuiltinIcon()` |
+| Theme branding | `themeBranding.tsx` | `registerThemeBranding()` → `getThemeBranding()` |
+| Top-bar widgets | `apps/topBarWidgets.tsx` | `registerTopBarWidgets()` → `getTopBarWidgets()` |
+| Panel nav + migration | `hooks/useKeyboardShortcuts.ts`, `components/MigrationCheck.tsx` | `registerPanelShortcut()`, `registerNonAppPrefix()` |
+
+**Composition root.** `src/extensions.ts` is the one file an edition owns. It is
+imported first in `main.tsx` (before the store/providers/`App`), so all
+registration runs before render. The core ships it **empty and must keep it
+empty** — `extensionSeams.test.tsx` asserts the stock body is `export {}` (plus
+comments) and that importing it registers nothing. This guards a silent-erasure
+hazard: the file is core-tracked but edition-owned, so a core registration added
+here would be deleted by an edition's overlay on the next sync with no collision
+and no throw. Put core registrations in the seed maps, never here. Registries are
+read at module-load / first-render and are **not reactive** — register here, not
+after mount.
+
+**Builtin routes.** `registerBuiltinComponents()` accepts only a single, plain
+top-level path segment (`/^\/[A-Za-z0-9][A-Za-z0-9._~-]*$/`) — `BuiltinAppRoute`
+resolves the catch-all `/:builtinApp` from one path parameter and matches only
+`location.pathname`, never the query/hash. So a multi-segment (`/reports/daily`),
+query (`/reports?daily`), hash (`/reports#x`), whitespace, or `.`/`..` route
+would register but never resolve (navigation redirects to chat). A non-conforming
+route routes through `reportSeamCollision`.
+
+**Panel shortcuts.** `registerPanelShortcut({ code, path, label })` identifies the
+chord solely by `KeyboardEvent.code`; the displayed key is derived from it, so the
+advertised chord can never diverge from the handled one. Beyond core panel chords
+and prior extensions, it also rejects any code in `RESERVED_PANEL_CODES` — the Alt
+chords the handler consumes before panel routing (shortcuts modal, settings,
+focus-input, MRU, chat-jump digits, arrows) — since a panel on one of those would
+be advertised but unreachable. All rejections route through `reportSeamCollision`.
+
+**Collision policy (`apps/seamCollision.ts`).** A registration whose key collides
+with a core (or already-registered) entry is resolved core-wins. It is
+**fail-loud in dev/test** (`reportSeamCollision` throws under
+`import.meta.env.DEV`) so a colliding upstream sync is caught at build/test time,
+and **degrades safe in production** (warn + ignore) so a shipped app never
+white-screens over a duplicate.
+
+**No API-client seam.** A `registerApiExtensions()`/`apiExt` seam was considered
+and **dropped**: unlike the five above, the core never consumes it (it would be
+written and read only by the edition), so it added public, stringly-typed surface
+for zero composition benefit. An edition's widgets define their own typed API
+helpers in their own module instead.
+
+**`onActivate` timing.** A theme branding's `onActivate` side-effect fires on the
+first render for the initially-active theme (not only on a later switch); keep it
+idempotent and cheap. Inert in the stock build (no theme registers one).

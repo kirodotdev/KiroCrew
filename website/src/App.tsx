@@ -26,7 +26,7 @@ import { ZoomProvider } from './hooks/ZoomProvider'
 import { api, isAuthBannerShown } from './api/client'
 import { safeSetItem } from './utils/safeStorage'
 import { gcOrphanedStorage } from './utils/storageGc'
-import { Rocket, Menu, Bell, Users, BookOpen, BookOpenText, MessageSquareDot, Code, RefreshCw, Package, Loader2, Download, Hammer, XCircle, Check, AlertTriangle, CheckCircle, X, Inbox, Gamepad2, AudioWaveform, ClipboardCheck, Brain, FolderTree, FlaskConical, ScanSearch, ChevronUp, MoreHorizontal, Coins, Contact, PanelLeftClose, Globe, LayoutGrid, Lightbulb, ExternalLink, SquareTerminal } from 'lucide-react'
+import { Rocket, Menu, Bell, Code, RefreshCw, Package, Loader2, Download, Hammer, XCircle, Check, AlertTriangle, CheckCircle, X, AudioWaveform, ChevronUp, MoreHorizontal, Coins, PanelLeftClose, Globe, LayoutGrid, Lightbulb, ExternalLink, SquareTerminal } from 'lucide-react'
 import { GithubIcon, DiscordIcon } from './components/BrandIcon'
 import { Toggle } from './components/ui'
 import OnboardingFlow from './components/OnboardingFlow'
@@ -77,6 +77,9 @@ import AppDetailPage from './pages/AppDetailPage'
 import MigrationPage from './pages/MigrationPage'
 import MigrationCheck from './components/MigrationCheck'
 import BuiltinAppRoute from './apps/BuiltinAppRoute'
+import { getBuiltinIcon } from './apps/builtinIcons'
+import { getThemeBranding } from './themeBranding'
+import { getTopBarWidgets } from './apps/topBarWidgets'
 import { FEATURE_REQUEST_PROMPT } from './prompts/featureRequest'
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
 import { useInstanceShortcuts } from './hooks/useInstanceShortcuts'
@@ -143,21 +146,6 @@ export function calculateTopbarSearchLayout(brandWidth: number, actionsWidth: nu
 }
 
 // Icon mapping for builtin apps (manifest icon name → React element)
-const BUILTIN_ICONS: Record<string, React.ReactElement> = {
-  Users: <Users size={16} />,
-  Inbox: <Inbox size={16} />,
-  Gamepad2: <Gamepad2 size={16} />,
-  MessageSquareDot: <MessageSquareDot size={16} />,
-  ClipboardCheck: <ClipboardCheck size={16} />,
-  BookOpen: <BookOpen size={16} />,
-  BookOpenText: <BookOpenText size={16} />,
-  Brain: <Brain size={16} />,
-  FolderTree: <FolderTree size={16} />,
-  FlaskConical: <FlaskConical size={16} />,
-  ScanSearch: <ScanSearch size={16} />,
-  Contact: <Contact size={16} />,
-}
-
 // Apps-nav fetch resilience (see refreshAppNav). The dashboard loads
 // `/api/apps` once on mount; right after a `kirocrew update` the gateway is
 // mid-restart (cold backend, apps-dir scan) and that first request can fail or
@@ -751,7 +739,7 @@ export default function App() {
     )
   }, [isPopout, isEmbed, navigate, dispatch])
 
-  const { colorTheme, onboarded, markOnboarded } = useTheme()
+  const { colorTheme, theme: resolvedMode, onboarded, markOnboarded } = useTheme()
   // The E2E Playwright suite depends on this onboarding gate: playwright/auth.setup.ts
   // seeds localStorage['mc-onboarded']='1' so the first-run "Choose your look" modal
   // never overlays the shell and intercepts every spec's interactions. If this flag is
@@ -769,9 +757,37 @@ export default function App() {
   // it expires so the user does not have to re-mint via `kirocrew token`
   // URL every ~20h. See KiroCrew docs/token-refresh/REQUIREMENTS.md
   useRefreshScheduler()
-  const isLumon = colorTheme === 'lumon'
-  const botName = isLumon ? 'LumonClaw' : _botName
-  const avatar = isLumon ? '/static/lumon-logo.png' : _avatar
+  // Per-theme branding (bot name, logo, favicon, top-bar decoration, overlays,
+  // activation side-effect) comes from the theme-branding registry so the shell
+  // never hard-codes `colorTheme === 'x' ? …` chains. Falls back to the
+  // configured branding when the active theme registers none.
+  const branding = getThemeBranding(colorTheme)
+  const botName = branding?.botName ?? _botName
+  const avatar = branding?.logo ?? _avatar
+  // Swap the browser favicon to the active theme's brand mark (falls back to
+  // the default /logo.png when the theme declares none). The core has no
+  // per-theme favicon of its own; this drives registered theme brandings.
+  useEffect(() => {
+    const link = document.querySelector<HTMLLinkElement>('link[rel~="icon"]')
+    if (link) link.href = branding?.favicon ?? '/logo.png'
+  }, [branding])
+  // Fire a theme's activation side-effect (e.g. a boot chime) on each off→on
+  // switch to that theme. Generic via the branding registry; the effect itself
+  // is owned by the theme's registration, so the core stays silent by default.
+  const prevColorThemeRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (colorTheme !== prevColorThemeRef.current) {
+      prevColorThemeRef.current = colorTheme
+      // Guarded: a registered theme's activation side-effect (owned by the
+      // downstream edition) must not crash the effect / shell if it throws.
+      try {
+        branding?.onActivate?.()
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error('[themeBranding] onActivate threw', err)
+      }
+    }
+  }, [colorTheme]) // eslint-disable-line react-hooks/exhaustive-deps
   useRumPageView()
   useNotificationSound()
   const [navCollapsed, setNavCollapsed] = useState(() => localStorage.getItem('mc-nav') === '1')
@@ -860,12 +876,13 @@ export default function App() {
             // nav. Fall back to a page-relative ui/ icon (installed apps), then
             // the builtin lucide glyph, then the generic package icon.
             const customIconUrl = a.manifest?.iconUrl || ''
+            const builtinIcon = isBuiltin ? getBuiltinIcon(iconName) : undefined
             const baseIcon = customIconUrl
               ? <AppIcon iconUrl={customIconUrl} icon={iconName} size={16} />
               : page.iconUrl
                 ? <img src={'/apps/' + a.name + '/ui/' + page.iconUrl} alt="" className="w-4 h-4 rounded-sm object-contain" />
-                : isBuiltin && BUILTIN_ICONS[iconName]
-                  ? BUILTIN_ICONS[iconName]
+                : builtinIcon
+                  ? builtinIcon
                   : <Package size={16} />
             // Orphaned apps get a warn-colored icon to signal migration needed
             const icon = isOrphaned
@@ -1380,7 +1397,28 @@ export default function App() {
             <span className="text-[13px] truncate">⌘K — Search for anything…</span>
           </button>
         )}
+        {/* Theme decoration: the active theme's center top-bar element (e.g. a
+            scanner sweep), chosen by resolved mode. Absent unless a registered
+            theme declares one; the flex:1 spacer keeps the actions right-aligned.
+            Wrapped in a slot-level ErrorBoundary (fallback=null) so a faulty
+            registered extension disables only itself instead of crashing the
+            whole shell via the root boundary. */}
+        {(() => {
+          if (branding?.topBarHideOnMobile && isMobile) return null
+          const TB = resolvedMode === 'light' ? branding?.topBar?.light : branding?.topBar?.dark
+          return TB ? (
+            <ErrorBoundary key={`${colorTheme}:${resolvedMode}`} scope="theme-topbar" fallback={null}>
+              <div className="flex-1 min-w-0 h-full"><TB /></div>
+            </ErrorBoundary>
+          ) : null
+        })()}
         <div ref={topbarActionsRef} className="flex items-center gap-1.5 relative ml-auto">
+          {/* Theme decoration: extra aside control (e.g. a stardate / clock). */}
+          {branding?.topBarAside && !(branding?.topBarHideOnMobile && isMobile) && (
+            <ErrorBoundary key={`${colorTheme}:${resolvedMode}`} scope="theme-aside" fallback={null}>
+              <branding.topBarAside />
+            </ErrorBoundary>
+          )}
           {/* Unified readout capsule — connection dot . system metrics .
               kiro-credits usage pooled into one bordered pill. Offline: the
               whole capsule tints danger (red border + subtle red bg + red
@@ -1468,6 +1506,16 @@ export default function App() {
               </motion.div>
             )
           })()}
+          {/* Extension slot: downstream-registered top-bar widgets (e.g. a
+              credential-TTL capsule or spend pill). Empty in the stock build.
+              Each widget is isolated in its own ErrorBoundary (fallback=null) so
+              a throwing widget disables only itself, not the shell or its
+              sibling widgets. */}
+          {getTopBarWidgets().map(w => (
+            <ErrorBoundary key={w.id} scope={`topbar-widget:${w.id}`} fallback={null}>
+              <w.component />
+            </ErrorBoundary>
+          ))}
           {/* Request a Feature — its own bordered pill (28px tall, 12px radius),
               separated from the readout capsule (item 2.3). */}
           {!isMobile && (
@@ -1616,7 +1664,7 @@ export default function App() {
               aria-expanded={!effectiveCollapsed}
             >
               <span className="flex items-center gap-2.5 min-w-0">
-                <img src={avatar} alt="" aria-hidden="true" className={`${isLumon ? 'w-auto h-10' : 'w-10 h-10'} rounded-md shrink-0 object-contain transition-transform duration-300 group-hover:rotate-[-8deg]`} />
+                <img src={avatar} alt="" aria-hidden="true" className={`${branding?.logoClass ?? 'w-10 h-10'} rounded-md shrink-0 object-contain transition-transform duration-300 group-hover:rotate-[-8deg]`} />
                 <AnimatePresence initial={false}>
                   {!effectiveCollapsed && (
                     <motion.span
@@ -1934,6 +1982,16 @@ export default function App() {
       onClose={commandPalette.close}
       openShortcuts={toggleShortcutsModal}
     />
+    {/* Theme decoration: always-mounted decorative overlays (widgets,
+        transitions) contributed by the active theme's branding. Absent unless
+        a registered theme declares them. Each overlay is isolated in its own
+        ErrorBoundary (fallback=null) so a throwing overlay disables only itself,
+        not the shell or its siblings. */}
+    {branding?.overlays?.map((Overlay, i) => (
+      <ErrorBoundary key={`${colorTheme}:${i}`} scope={`theme-overlay:${i}`} fallback={null}>
+        <Overlay />
+      </ErrorBoundary>
+    ))}
     <Lightbox />
     </ZoomProvider>
   )

@@ -22,12 +22,21 @@ interface AppEntry {
   }
 }
 
-// Routes that can never host a builtin app — skip query entirely
+// Routes that can never host a migratable app — skip query entirely.
 const NON_APP_PREFIXES = ['/chat', '/settings', '/orchestrated', '/capabilities', '/apps/migrate', '/apps/detail']
+
+// Extension seam: a downstream edition registers its own non-app route
+// prefixes (e.g. a bundled panel) so the migration banner never probes them —
+// instead of editing (and re-diffing) NON_APP_PREFIXES on every upstream sync.
+const EXTRA_NON_APP_PREFIXES: string[] = []
+
+export function registerNonAppPrefix(prefix: string): void {
+  if (!EXTRA_NON_APP_PREFIXES.includes(prefix)) EXTRA_NON_APP_PREFIXES.push(prefix)
+}
 
 export default function MigrationCheck() {
   const location = useLocation()
-  const isAppRoute = !NON_APP_PREFIXES.some(p => location.pathname === p || location.pathname.startsWith(p + '/'))
+  const isAppRoute = ![...NON_APP_PREFIXES, ...EXTRA_NON_APP_PREFIXES].some(p => location.pathname === p || location.pathname.startsWith(p + '/'))
 
   const { data: migratedApps = [] } = useQuery<AppEntry[], Error, AppEntry[]>({
     queryKey: ['apps'],
