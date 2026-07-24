@@ -11,6 +11,7 @@ import type { SubagentActivity, ToolActivity, SessionDoc } from '../../types'
 import type { TouchedFile } from '../../hooks/useTouchedFiles'
 import { getInlineDraft, setInlineDraft, clearInlineDraft } from '../../hooks/usePanelTabs'
 import type { ExtractedLink } from '../../utils/extractChatLinks'
+import { dedupResourceLinks, resourceKey } from '../../utils/extractChatLinks'
 import type { PullRequestLink } from '../../utils/pullRequestLinks'
 import PullRequestPanel from '../../components/PullRequestPanel'
 import { useAppSelector, useAppDispatch } from '../../store'
@@ -733,8 +734,8 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
         // keep every other link — including cr-classified hosts (Bitbucket,
         // self-hosted, code reviews) that the Changes parser can't render, so
         // they stay reachable in Resources instead of vanishing from the panel.
-        const sourceUrls = new Set((sources || []).map(s => s.url.replace(/\/+$/, '')))
-        const resourceLinks = (navLinks || []).filter(l => !sourceUrls.has(l.url.replace(/\/+$/, '')))
+        const sourceUrls = new Set((sources || []).map(s => resourceKey(s.url)))
+        const resourceLinks = dedupResourceLinks((navLinks || []).filter(l => !sourceUrls.has(resourceKey(l.url))))
         return (
           <div className="flex-1 flex flex-col overflow-hidden">
             <div className="flex-1 overflow-y-auto py-2">
