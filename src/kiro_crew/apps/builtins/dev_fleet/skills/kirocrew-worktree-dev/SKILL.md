@@ -138,6 +138,13 @@ gh pr create --base main --title "feat: <description>" --body "<details>"
   first. CI is for confirmation, not discovery.
 - Address review comments in the worktree, amend or add commits, force-push the
   branch.
+- **QA media (screenshots / demo videos): review-then-attach.** Deliver the
+  media to the user for review first; once the user approves it, attach it to
+  the PR automatically without asking again — commit under
+  `temp-screenshots/<feature>/`, amend into the single commit, force-push, and
+  embed commit-SHA-pinned raw URLs in the PR body (images inline, mp4 as a
+  labelled link). Full recipe: the **pod-e2e** skill → "Attach approved QA
+  media to the PR".
 
 ## Why these rules exist (gotchas they prevent)
 

@@ -44,6 +44,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, Mapping, Optional, Protocol, Tuple, runtime_checkable
 
+from kiro_crew.config.paths import config_dir
 from kiro_crew.platform.context import PlatformCompositionError
 
 logger = logging.getLogger(__name__)
@@ -54,7 +55,21 @@ logger = logging.getLogger(__name__)
 # companion-bundled resource (precedence step 2) is resolved separately by the
 # caller that knows the active edition (see ``load_security_policy``).
 _POLICY_ENV = "KIROCREW_SECURITY_POLICY"
-_POLICY_HOME_PATH = Path.home() / ".kirocrew" / "security_policy.json"
+_POLICY_HOME_LEAF = "security_policy.json"
+
+
+def _policy_home_path() -> Path:
+    """Resolve the standalone security-policy path lazily.
+
+    Deferred (not a module-level ``config_dir()`` capture) so importing this
+    trust-root module never fires ``config_dir()`` — and thus the one-time
+    data-home migration — as an import side effect. The migration must happen
+    only at the single chosen point (``ensure_data_home()`` in the CLI prologue);
+    the platform layer is documented as side-effect-free load-bearing infra.
+    Callers (and tests) go through this accessor rather than a captured constant.
+    """
+    return config_dir() / _POLICY_HOME_LEAF
+
 
 # Schema version this loader understands.  A file declaring a different version
 # fails closed rather than being parsed under guessed semantics.
@@ -1203,12 +1218,13 @@ def load_security_policy(
         if bundled is not None:
             return parse_policy(bundled)
 
-    if _POLICY_HOME_PATH.exists():
+    home_path = _policy_home_path()
+    if home_path.exists():
         try:
-            data = _read_json_file(_POLICY_HOME_PATH)
+            data = _read_json_file(home_path)
         except Exception as exc:
             raise PlatformCompositionError(
-                f"security policy at {_POLICY_HOME_PATH} is unreadable: {exc}"
+                f"security policy at {home_path} is unreadable: {exc}"
             ) from exc
         return parse_policy(data)
 
@@ -1426,13 +1442,17 @@ def assert_governance_paths_protected() -> None:
     # import path; only the boot check needs it.
     from kiro_crew import security
 
+    # The data home moved to ~/.kiro/crew; check the CURRENT home's trust-root
+    # paths are gated (the legacy ~/.kirocrew forms remain in the keystone too,
+    # but a fresh install only ever writes the new home, so that is what the boot
+    # integrity check must assert).
     required = (
-        ".kirocrew/security_policy.json",
-        ".kirocrew/profiles",
-        ".kirocrew/admission_policy.json",
+        ".kiro/crew/security_policy.json",
+        ".kiro/crew/profiles",
+        ".kiro/crew/admission_policy.json",
         # Denied-command opt-out ceiling — the agent must not be able to write
         # its own deny opt-out state (would let it disable the deny gate).
-        ".kirocrew/denied_commands.json",
+        ".kiro/crew/denied_commands.json",
     )
     sensitive = set(security._SENSITIVE_HOME_DIRS)  # noqa: SLF001 — boot integrity check
     missing = [p for p in required if p not in sensitive]

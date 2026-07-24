@@ -26,11 +26,24 @@ import logging
 from pathlib import Path
 from typing import Any, Callable, Optional, Protocol, runtime_checkable
 
+from kiro_crew.config.paths import config_dir
+
 logger = logging.getLogger(__name__)
 
 # Path of a Netscape cookie jar, if the user maintains one. Kept generic; the
-# default location is under the KiroCrew home and nothing requires it to exist.
-SSO_COOKIE_PATH = Path.home() / ".kirocrew" / "browser-cookies.txt"
+# default location is under the KiroCrew home (``config_dir()``).
+#
+# Resolved lazily via ``_default_cookie_path()`` (not a module-level
+# ``config_dir()`` capture) so importing this module never triggers the one-time
+# data-home migration as an import side effect — that must fire only at the
+# single chosen point (``ensure_data_home()`` in the CLI prologue). Callers go
+# through ``cookie_path()`` / ``_default_cookie_path()``.
+_COOKIE_LEAF = "browser-cookies.txt"
+
+
+def _default_cookie_path() -> Path:
+    return config_dir() / _COOKIE_LEAF
+
 
 _NOT_AVAILABLE = {"available": False, "reason": "not available in OSS"}
 
@@ -98,7 +111,7 @@ def _delegate(method: str, default: Callable[[], Any]) -> Any:
 
 
 def cookie_path() -> Path:
-    return _delegate("cookie_path", lambda: SSO_COOKIE_PATH)
+    return _delegate("cookie_path", _default_cookie_path)
 
 
 def parse_netscape_cookies(path: Path) -> list[dict[str, Any]]:

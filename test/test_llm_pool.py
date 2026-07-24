@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -19,6 +20,26 @@ from kiro_crew.knowledge.llm_pool import (
     _get_sandbox_mode,
     _read_config,
 )
+
+
+@pytest.fixture(autouse=True)
+def _config_dir_tracks_patched_home(monkeypatch):
+    """Keep ``llm_pool.config_dir()`` pointed at ``<patched home>/.kirocrew``.
+
+    The data home moved from ``~/.kirocrew`` to ``~/.kiro/crew`` (``config_dir()``),
+    and ``_read_config`` now reads ``config_dir()/config.json`` rather than
+    ``Path.home()/".kirocrew"/"config.json"``. These tests patch
+    ``llm_pool.Path.home`` per-test and write ``config.json`` under
+    ``<home>/.kirocrew`` — but ``config_dir()`` reads ``KIROCREW_HOME`` (pinned to
+    a *different* tmp dir by the conftest ``_isolate_kirocrew_home`` fixture), so
+    without this redirect the config would never be found. Redirect
+    ``config_dir`` to ``Path.home()/".kirocrew"`` (evaluated lazily, so it tracks
+    whatever ``Path.home()`` each test patches), preserving the existing
+    ``.kirocrew/config.json`` layout the tests build.
+    """
+    monkeypatch.setattr(
+        "kiro_crew.knowledge.llm_pool.config_dir", lambda: Path.home() / ".kirocrew"
+    )
 
 # ---------------------------------------------------------------------------
 # Fixtures — mock workers that don't spawn real processes
@@ -296,28 +317,28 @@ class TestLLMPoolBatchErrors:
 
 class TestProviderDetection:
     def test_default_is_acp(self, tmp_path):
-        with patch("kiro_crew.knowledge.llm_pool.Path.home", return_value=tmp_path):
+        with patch("pathlib.Path.home", return_value=tmp_path):
             assert _get_provider_type() == "acp"
 
     def test_reads_claude_code_from_config(self, tmp_path):
         config = tmp_path / ".kirocrew" / "config.json"
         config.parent.mkdir(parents=True)
         config.write_text('{"agent": {"provider": "claude_code"}}')
-        with patch("kiro_crew.knowledge.llm_pool.Path.home", return_value=tmp_path):
+        with patch("pathlib.Path.home", return_value=tmp_path):
             assert _get_provider_type() == "claude_code"
 
     def test_reads_acp_from_config(self, tmp_path):
         config = tmp_path / ".kirocrew" / "config.json"
         config.parent.mkdir(parents=True)
         config.write_text('{"agent": {"provider": "acp"}}')
-        with patch("kiro_crew.knowledge.llm_pool.Path.home", return_value=tmp_path):
+        with patch("pathlib.Path.home", return_value=tmp_path):
             assert _get_provider_type() == "acp"
 
     def test_handles_malformed_config(self, tmp_path):
         config = tmp_path / ".kirocrew" / "config.json"
         config.parent.mkdir(parents=True)
         config.write_text("not json")
-        with patch("kiro_crew.knowledge.llm_pool.Path.home", return_value=tmp_path):
+        with patch("pathlib.Path.home", return_value=tmp_path):
             assert _get_provider_type() == "acp"
 
 
@@ -333,14 +354,14 @@ class TestSandboxMode:
     least-privilege; these lock in the restored behaviour."""
 
     def test_default_is_off(self, tmp_path):
-        with patch("kiro_crew.knowledge.llm_pool.Path.home", return_value=tmp_path):
+        with patch("pathlib.Path.home", return_value=tmp_path):
             assert _get_sandbox_mode() == "off"
 
     def test_reads_sandbox_from_config(self, tmp_path):
         config = tmp_path / ".kirocrew" / "config.json"
         config.parent.mkdir(parents=True)
         config.write_text('{"agent": {"sandbox": "off"}}')
-        with patch("kiro_crew.knowledge.llm_pool.Path.home", return_value=tmp_path):
+        with patch("pathlib.Path.home", return_value=tmp_path):
             assert _get_sandbox_mode() == "off"
 
     def test_unparseable_config_defaults_off(self, tmp_path):
@@ -349,7 +370,7 @@ class TestSandboxMode:
         config = tmp_path / ".kirocrew" / "config.json"
         config.parent.mkdir(parents=True)
         config.write_text("not json")
-        with patch("kiro_crew.knowledge.llm_pool.Path.home", return_value=tmp_path):
+        with patch("pathlib.Path.home", return_value=tmp_path):
             assert _get_sandbox_mode() == "off"
 
     def test_unknown_mode_falls_back_to_auto_fail_secure(self, tmp_path):
@@ -359,7 +380,7 @@ class TestSandboxMode:
         config = tmp_path / ".kirocrew" / "config.json"
         config.parent.mkdir(parents=True)
         config.write_text('{"agent": {"sandbox": "bogus"}}')
-        with patch("kiro_crew.knowledge.llm_pool.Path.home", return_value=tmp_path):
+        with patch("pathlib.Path.home", return_value=tmp_path):
             assert _get_sandbox_mode() == "auto"
 
     @pytest.mark.parametrize("mode", ["auto", "standard", "strict", "cc", "off"])
@@ -367,7 +388,7 @@ class TestSandboxMode:
         config = tmp_path / ".kirocrew" / "config.json"
         config.parent.mkdir(parents=True)
         config.write_text(json.dumps({"agent": {"sandbox": mode}}))
-        with patch("kiro_crew.knowledge.llm_pool.Path.home", return_value=tmp_path):
+        with patch("pathlib.Path.home", return_value=tmp_path):
             assert _get_sandbox_mode() == mode
 
     def test_accepts_prereadm_config_dict(self):
@@ -385,28 +406,28 @@ class TestSandboxMode:
 
 class TestReadConfig:
     def test_missing_file_returns_empty(self, tmp_path):
-        with patch("kiro_crew.knowledge.llm_pool.Path.home", return_value=tmp_path):
+        with patch("pathlib.Path.home", return_value=tmp_path):
             assert _read_config() == {}
 
     def test_reads_dict(self, tmp_path):
         config = tmp_path / ".kirocrew" / "config.json"
         config.parent.mkdir(parents=True)
         config.write_text('{"agent": {"provider": "claude_code"}}')
-        with patch("kiro_crew.knowledge.llm_pool.Path.home", return_value=tmp_path):
+        with patch("pathlib.Path.home", return_value=tmp_path):
             assert _read_config() == {"agent": {"provider": "claude_code"}}
 
     def test_malformed_returns_empty(self, tmp_path):
         config = tmp_path / ".kirocrew" / "config.json"
         config.parent.mkdir(parents=True)
         config.write_text("not json")
-        with patch("kiro_crew.knowledge.llm_pool.Path.home", return_value=tmp_path):
+        with patch("pathlib.Path.home", return_value=tmp_path):
             assert _read_config() == {}
 
     def test_non_dict_json_returns_empty(self, tmp_path):
         config = tmp_path / ".kirocrew" / "config.json"
         config.parent.mkdir(parents=True)
         config.write_text("[1, 2, 3]")
-        with patch("kiro_crew.knowledge.llm_pool.Path.home", return_value=tmp_path):
+        with patch("pathlib.Path.home", return_value=tmp_path):
             assert _read_config() == {}
 
     def test_parsers_accept_config_dict(self):
@@ -441,7 +462,7 @@ class TestReadConfig:
         config = tmp_path / ".kirocrew" / "config.json"
         config.parent.mkdir(parents=True)
         config.write_text('{"agent": "acp", "knowledge": 7}')
-        with patch("kiro_crew.knowledge.llm_pool.Path.home", return_value=tmp_path):
+        with patch("pathlib.Path.home", return_value=tmp_path):
             data = _read_config()
         assert data["agent"] == {}
         assert data["knowledge"] == {}
@@ -454,7 +475,7 @@ class TestReadConfig:
         config.write_text('{"agent": {"sandbox": "off"}}')
         mock_client = AsyncMock()
         mock_client.is_ready = True
-        with patch("kiro_crew.knowledge.llm_pool.Path.home", return_value=tmp_path), \
+        with patch("pathlib.Path.home", return_value=tmp_path), \
              patch("kiro_crew.knowledge.llm_pool.AcpClient", return_value=mock_client) as mk:
             worker = AcpWorker()
             await worker.start()
@@ -466,7 +487,7 @@ class TestReadConfig:
         # isolation to kiro-cli's internal agent sandbox (kiro-cli >= 2.13).
         mock_client = AsyncMock()
         mock_client.is_ready = True
-        with patch("kiro_crew.knowledge.llm_pool.Path.home", return_value=tmp_path), \
+        with patch("pathlib.Path.home", return_value=tmp_path), \
              patch("kiro_crew.knowledge.llm_pool.AcpClient", return_value=mock_client) as mk:
             worker = AcpWorker()
             await worker.start()
@@ -485,7 +506,7 @@ class TestLLMPoolStart:
         config.parent.mkdir(parents=True)
         config.write_text('{"agent": {"provider": "acp"}}')
 
-        with patch("kiro_crew.knowledge.llm_pool.Path.home", return_value=tmp_path):
+        with patch("pathlib.Path.home", return_value=tmp_path):
             pool = LLMPool(pool_size=2)
 
             # Mock _create_worker to avoid spawning real processes
@@ -510,7 +531,7 @@ class TestLLMPoolStart:
         config.parent.mkdir(parents=True)
         config.write_text('{"agent": {"provider": "acp"}}')
 
-        with patch("kiro_crew.knowledge.llm_pool.Path.home", return_value=tmp_path):
+        with patch("pathlib.Path.home", return_value=tmp_path):
             pool = LLMPool(pool_size=1)
             call_count = 0
 
@@ -540,7 +561,7 @@ class TestLLMPoolContextManager:
         config.parent.mkdir(parents=True)
         config.write_text('{"agent": {"provider": "acp"}}')
 
-        with patch("kiro_crew.knowledge.llm_pool.Path.home", return_value=tmp_path):
+        with patch("pathlib.Path.home", return_value=tmp_path):
             pool = LLMPool(pool_size=1)
 
             async def _mock_create():
@@ -610,7 +631,7 @@ class TestAcpWorker:
         stale = AsyncMock()
         fresh = AsyncMock()
         fresh.is_ready = True
-        with patch("kiro_crew.knowledge.llm_pool.Path.home", return_value=tmp_path), \
+        with patch("pathlib.Path.home", return_value=tmp_path), \
              patch("kiro_crew.knowledge.llm_pool.AcpClient", return_value=fresh):
             worker = AcpWorker()
             worker._client = stale
@@ -625,7 +646,7 @@ class TestAcpWorker:
         stale.shutdown.side_effect = RuntimeError("boom")
         fresh = AsyncMock()
         fresh.is_ready = True
-        with patch("kiro_crew.knowledge.llm_pool.Path.home", return_value=tmp_path), \
+        with patch("pathlib.Path.home", return_value=tmp_path), \
              patch("kiro_crew.knowledge.llm_pool.AcpClient", return_value=fresh):
             worker = AcpWorker()
             worker._client = stale
@@ -643,7 +664,7 @@ class TestAcpWorker:
         fresh._pid = 7777
         registered: list[int] = []
         unregistered: list[int] = []
-        with patch("kiro_crew.knowledge.llm_pool.Path.home", return_value=tmp_path), \
+        with patch("pathlib.Path.home", return_value=tmp_path), \
              patch("kiro_crew.knowledge.llm_pool.AcpClient", return_value=fresh), \
              patch("kiro_crew.knowledge.llm_pool.register_protected_pid",
                    side_effect=registered.append), \
@@ -667,7 +688,7 @@ class TestAcpWorker:
         second._pid = 200
         registered: list[int] = []
         unregistered: list[int] = []
-        with patch("kiro_crew.knowledge.llm_pool.Path.home", return_value=tmp_path), \
+        with patch("pathlib.Path.home", return_value=tmp_path), \
              patch("kiro_crew.knowledge.llm_pool.AcpClient", side_effect=[first, second]), \
              patch("kiro_crew.knowledge.llm_pool.register_protected_pid",
                    side_effect=registered.append), \
@@ -745,28 +766,28 @@ class TestIdleTtlConfig:
     and rejection of bad/typed-wrong values back to the default."""
 
     def test_default_is_300(self, tmp_path):
-        with patch("kiro_crew.knowledge.llm_pool.Path.home", return_value=tmp_path):
+        with patch("pathlib.Path.home", return_value=tmp_path):
             assert _get_idle_ttl() == DEFAULT_IDLE_TTL_SECS == 300.0
 
     def test_reads_value_from_config(self, tmp_path):
         config = tmp_path / ".kirocrew" / "config.json"
         config.parent.mkdir(parents=True)
         config.write_text('{"knowledge": {"pool_idle_ttl_secs": 60}}')
-        with patch("kiro_crew.knowledge.llm_pool.Path.home", return_value=tmp_path):
+        with patch("pathlib.Path.home", return_value=tmp_path):
             assert _get_idle_ttl() == 60.0
 
     def test_zero_disables(self, tmp_path):
         config = tmp_path / ".kirocrew" / "config.json"
         config.parent.mkdir(parents=True)
         config.write_text('{"knowledge": {"pool_idle_ttl_secs": 0}}')
-        with patch("kiro_crew.knowledge.llm_pool.Path.home", return_value=tmp_path):
+        with patch("pathlib.Path.home", return_value=tmp_path):
             assert _get_idle_ttl() == 0.0
 
     def test_negative_falls_back_to_default(self, tmp_path):
         config = tmp_path / ".kirocrew" / "config.json"
         config.parent.mkdir(parents=True)
         config.write_text('{"knowledge": {"pool_idle_ttl_secs": -5}}')
-        with patch("kiro_crew.knowledge.llm_pool.Path.home", return_value=tmp_path):
+        with patch("pathlib.Path.home", return_value=tmp_path):
             assert _get_idle_ttl() == DEFAULT_IDLE_TTL_SECS
 
     def test_bool_falls_back_to_default(self, tmp_path):
@@ -774,14 +795,14 @@ class TestIdleTtlConfig:
         config = tmp_path / ".kirocrew" / "config.json"
         config.parent.mkdir(parents=True)
         config.write_text('{"knowledge": {"pool_idle_ttl_secs": true}}')
-        with patch("kiro_crew.knowledge.llm_pool.Path.home", return_value=tmp_path):
+        with patch("pathlib.Path.home", return_value=tmp_path):
             assert _get_idle_ttl() == DEFAULT_IDLE_TTL_SECS
 
     def test_string_falls_back_to_default(self, tmp_path):
         config = tmp_path / ".kirocrew" / "config.json"
         config.parent.mkdir(parents=True)
         config.write_text('{"knowledge": {"pool_idle_ttl_secs": "600"}}')
-        with patch("kiro_crew.knowledge.llm_pool.Path.home", return_value=tmp_path):
+        with patch("pathlib.Path.home", return_value=tmp_path):
             assert _get_idle_ttl() == DEFAULT_IDLE_TTL_SECS
 
 
@@ -877,7 +898,7 @@ class TestIdleReaper:
 
         pool._create_worker = _fake_create  # type: ignore[assignment]
         # No config on disk → idle_ttl defaults to 300 (>0) → a reaper is armed.
-        with patch("kiro_crew.knowledge.llm_pool.Path.home", return_value=tmp_path):
+        with patch("pathlib.Path.home", return_value=tmp_path):
             idx, worker = await pool.acquire()
 
         assert pool._started is True
@@ -900,7 +921,7 @@ class TestIdleReaper:
             return w
 
         pool._create_worker = _fake_create  # type: ignore[assignment]
-        with patch("kiro_crew.knowledge.llm_pool.Path.home", return_value=tmp_path):
+        with patch("pathlib.Path.home", return_value=tmp_path):
             await pool.start()
         assert pool._reaper_task is not None
         task = pool._reaper_task

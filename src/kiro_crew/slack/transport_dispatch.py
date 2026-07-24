@@ -25,6 +25,7 @@ from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.hooks import HOOK_REPLY, TOOL_AUTO_APPROVE, TOOL_DENY
 from kiro_crew.llm_helpers import save_conversation_turn
 from kiro_crew.messaging.driver import APPROVAL_INTERACTIVE, TurnDriver
+from kiro_crew.messaging.identity import publish_turn_identity
 from kiro_crew.messaging.link import canonical_key
 from kiro_crew.platform import current_context
 from kiro_crew.sel import sel
@@ -250,6 +251,9 @@ async def handle_message_transport(
         if is_new:
             await sessions.set_channel(session_key, channel)
         sessions.set_slack_link(session_key, reply_ts, channel)
+        # Publish this turn's session identity so managed MCP tools resolve
+        # X-Session-Key; one shared writer lives in messaging.identity. (#232)
+        await publish_turn_identity(sessions, session_key)
 
         # ── Build message with context ──
         if context_builder:

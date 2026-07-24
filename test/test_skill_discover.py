@@ -68,7 +68,7 @@ class FakeProvider:
 def _state_with_skills_loader(fake_home: Path):
     from kiro_crew.skills import SkillsLoader
 
-    skills_dir = fake_home / ".kirocrew" / "skills"
+    skills_dir = fake_home / ".kiro" / "crew" / "skills"
     skills_dir.mkdir(parents=True, exist_ok=True)
     state = MagicMock(_slots={}, context_builder=None)
     state._standalone_skills = SkillsLoader(

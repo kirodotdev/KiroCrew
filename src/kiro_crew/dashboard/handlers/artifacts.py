@@ -640,15 +640,27 @@ def _set_pinned_and_reload(slug: str, pinned: bool) -> Any:
     return store.get(slug)
 
 
-def _scan_session_docs(
-    conversation_log: Any, saved_map: dict[str, str], session_key: str | None = None
+def _collect_session_docs(
+    conversation_log: Any,
+    saved_map: dict[str, str],
+    session_key: str | None = None,
 ) -> list[dict[str, Any]]:
     """Scan ALL sessions for non-code document file-changes (blocking).
 
     Returns one entry per distinct document path (latest session wins), each
-    ``{path, name, updated_at, session_key, message_ts, saved}``. ``saved`` is
-    True when the path already backs a real (materialized) artifact. Sorted
+    ``{path, name, updated_at, session_key, session_title, message_ts, saved,
+    slug}`` — with the **TRUE on-disk path** (never redacted). ``saved`` is True
+    when the path already backs a real (materialized) artifact. Sorted
     newest-first. Runs OFF the event loop — reads every session's jsonl.
+
+    INTERNAL ONLY — the raw ``path``/``name``/``session_title`` may contain a
+    credential-shaped substring. Callers that reach an external surface MUST go
+    through :func:`_scan_session_docs`, which redacts the display fields. The
+    authorization scan (:func:`_recorded_doc_identities`) uses this raw result
+    directly because it must ``stat`` the true path — redaction there would
+    corrupt a path that merely contains a credential-shaped substring (e.g. a
+    temp dir ``/var/folders/.../<hash>/``), silently emptying the materialize
+    allowlist so a legitimate document could not be saved.
     """
     best: dict[str, dict[str, Any]] = {}
     try:
@@ -708,28 +720,43 @@ def _scan_session_docs(
                     }
 
     out: list[dict[str, Any]] = []
+    for e in sorted(best.values(), key=lambda d: d["_mtime"], reverse=True):
+        mt = e.pop("_mtime")
+        raw_path = e["path"]
+        e["updated_at"] = datetime.fromtimestamp(mt).isoformat() if mt else ""
+        # saved/slug are keyed by the real source_path.
+        e["saved"] = raw_path in saved_map
+        e["slug"] = saved_map.get(raw_path, "")
+        out.append(e)
+    return out
+
+
+def _scan_session_docs(
+    conversation_log: Any,
+    saved_map: dict[str, str],
+    session_key: str | None = None,
+) -> list[dict[str, Any]]:
+    """Display-safe session-doc scan for the ``/session-docs`` API.
+
+    Wraps :func:`_collect_session_docs` and redacts every display field
+    (``path``, ``name``, ``session_title``) through the credential/exfiltration
+    redactors before the result leaves the process. Redaction is identity for
+    normal content, so ordinary paths still round-trip through ``/materialize``;
+    a path that actually contains a secret becomes intentionally unmatchable
+    (safe to refuse). Redaction lives HERE — at the one boundary that reaches an
+    external surface — so no shared flag can accidentally expose a raw path.
+    """
 
     def _redact(text: str) -> str:
         cleaned, _ = redact_credentials(text or "")
         cleaned, _ = redact_exfiltration_urls(cleaned)
         return cleaned
 
-    for e in sorted(best.values(), key=lambda d: d["_mtime"], reverse=True):
-        mt = e.pop("_mtime")
-        raw_path = e["path"]
-        e["updated_at"] = datetime.fromtimestamp(mt).isoformat() if mt else ""
-        # Compute saved/slug against the RAW path (saved_map is keyed by the
-        # real source_path) BEFORE redacting the display fields below.
-        e["saved"] = raw_path in saved_map
-        e["slug"] = saved_map.get(raw_path, "")
-        # Redact every display field per the credential/exfiltration blocking
-        # rule. Redaction is identity for normal content, so ordinary paths
-        # still round-trip through /materialize; a path that actually contains
-        # a secret becomes intentionally unmatchable (safe to refuse).
-        e["path"] = _redact(raw_path)
+    out = _collect_session_docs(conversation_log, saved_map, session_key)
+    for e in out:
+        e["path"] = _redact(e["path"])
         e["name"] = _redact(e["name"])
         e["session_title"] = _redact(e["session_title"])
-        out.append(e)
     return out
 
 
@@ -753,7 +780,12 @@ def _recorded_doc_identities(conversation_log: Any) -> set[tuple[int, int]]:
     entries are skipped.
     """
     out: set[tuple[int, int]] = set()
-    for e in _scan_session_docs(conversation_log, {}):
+    # Use the RAW collector (not _scan_session_docs): this is an in-process
+    # authorization scan whose result never reaches an external surface, and it
+    # must ``stat`` the TRUE path — a credential-shaped substring in the path
+    # (e.g. a temp-dir hash) would otherwise be redacted to a non-existent path
+    # and silently empty the allowlist, refusing a legitimate materialize.
+    for e in _collect_session_docs(conversation_log, {}):
         expanded = os.path.expanduser(e["path"])
         if not os.path.isabs(expanded):
             continue

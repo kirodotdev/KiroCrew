@@ -16,6 +16,7 @@ from aiohttp import web
 
 from kiro_crew import model_registry
 from kiro_crew.acp.types import TurnUsage
+from kiro_crew.config.paths import config_dir
 from kiro_crew.hooks import validate_file_path
 
 logger = logging.getLogger(__name__)
@@ -49,7 +50,7 @@ _TOKEN_CACHE: dict[str, Any] = {}
 _TOKEN_CACHE_KEY: tuple[tuple[str, float, int], ...] | None = None
 _TOKEN_CACHE_TS: float = 0.0
 _TOKEN_CACHE_TTL = 120  # 2 min
-_TOKEN_USAGE_DIR = Path.home() / ".kirocrew" / "usage" / "tokens"
+_TOKEN_USAGE_DIR = config_dir() / "usage" / "tokens"
 _TOKEN_HISTORY_DAYS = 30
 
 
@@ -128,7 +129,7 @@ def _write_token_record(record: dict[str, Any], now: datetime) -> None:
 
 def persist_token_record(slot_key: str, model: str, event: object, provider: str = "") -> None:
     """Append a token usage record to today's shard under
-    ``~/.kirocrew/usage/tokens/YYYY-MM-DD.jsonl`` (synchronous).
+    ``<data home>/usage/tokens/YYYY-MM-DD.jsonl`` (synchronous).
 
     The ``provider`` field tags the source LLM backend (acp,
     claude_code, bedrock) so the dashboard chart can filter by provider.
@@ -164,7 +165,7 @@ async def persist_token_record_async(
 def _parse_token_history() -> dict[str, Any]:
     """Parse token usage from the daily-sharded usage directory.
 
-    Reads ``~/.kirocrew/usage/tokens/YYYY-MM-DD.jsonl`` shards. Only shards
+    Reads ``<data home>/usage/tokens/YYYY-MM-DD.jsonl`` shards. Only shards
     inside the 30-day window are opened, so read cost stays O(window)
     regardless of total history.
 

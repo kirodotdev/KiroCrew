@@ -51,7 +51,7 @@ BENIGN_COMMANDS = [
     "aws s3 ls s3://my-bucket/",
     "ls -la /tmp",
     "git status",
-    "python3 ~/.kirocrew/crons/report.py",
+    "python3 ~/.kiro/crew/crons/report.py",
 ]
 
 
@@ -150,15 +150,17 @@ def test_vet_script_file_missing_file_errors(tmp_path):
 
 
 class TestCronAddScriptGuard:
-    """End-to-end: a malicious script under ~/.kirocrew/crons is rejected by cron_add."""
+    """End-to-end: a malicious script under <config_dir>/crons is rejected by cron_add."""
 
     def _setup_home(self, monkeypatch, tmp_path):
-        # resolve_script_path() restricts to Path.home()/.kirocrew/crons, so point
-        # Path.home at tmp_path; KIROCREW_HOME drives the CronService store.
+        # resolve_script_path() restricts to config_dir()/crons; with
+        # KIROCREW_HOME=tmp_path, config_dir() returns tmp_path, so the allowed
+        # crons dir is tmp_path/crons. KIROCREW_HOME also drives the CronService
+        # store.
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
         monkeypatch.delenv("KIROCREW_CHANNEL_ID", raising=False)
         monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
-        crons_dir = tmp_path / ".kirocrew" / "crons"
+        crons_dir = tmp_path / "crons"
         crons_dir.mkdir(parents=True, exist_ok=True)
         return crons_dir
 

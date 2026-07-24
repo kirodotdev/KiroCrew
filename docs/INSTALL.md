@@ -149,11 +149,38 @@ of `kirocrew`.
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `KIROCREW_HOME` | `~/.kirocrew` | Data directory (config, credentials, databases) |
+| `KIROCREW_HOME` | `~/.kiro/crew` | Data directory (config, credentials, databases) |
 | `KIROCREW_PORT` | `5476` | Port the gateway / dashboard listens on |
 
-- Config file: `~/.kirocrew/config.json` (manage via `kirocrew config get/set/edit`).
-- Credentials: `~/.kirocrew/.env` (`SLACK_APP_TOKEN`, `SLACK_BOT_TOKEN`, `KIROCREW_OWNER_ID`).
+- Config file: `~/.kiro/crew/config.json` (manage via `kirocrew config get/set/edit`).
+- Credentials: `~/.kiro/crew/.env` (`SLACK_APP_TOKEN`, `SLACK_BOT_TOKEN`, `KIROCREW_OWNER_ID`).
+
+> **Data home moved under `~/.kiro/`.** KiroCrew now stores its data in
+> `~/.kiro/crew` (was the top-level `~/.kirocrew`), sharing the `~/.kiro/` base
+> with other Kiro-family apps. An existing `~/.kirocrew` install migrates
+> automatically on first launch — its data (config, credentials, session
+> history, databases) is copied into `~/.kiro/crew` and the old directory is
+> renamed to `~/.kirocrew.archived` as a rollback copy. Re-downloadable bulk
+> content (the embedding `models/` and rebuildable `cache/`) is **not** copied
+> or archived — the new home regenerates it on first start. Set `KIROCREW_HOME`
+> to relocate the data home (e.g. outside `~/.kiro/` entirely).
+>
+> **Rolling back (downgrade).** A release older than the move knows nothing of
+> `~/.kiro/crew`; on downgrade it finds no `~/.kirocrew` and starts empty — this
+> looks like data loss but is not. To roll back, first stop KiroCrew, then
+> restore the archived copy:
+>
+> ```bash
+> mv ~/.kirocrew.archived ~/.kirocrew   # the old release reads this again
+> ```
+>
+> The old release re-downloads the embedding model on its next start. The
+> archive is locked to your user account and its credential files (`.env`, signing
+> keys) are **auto-removed after 7 days** — so roll back within that window to
+> keep the archived tokens, or just re-enter your Slack tokens on the downgraded
+> release. Once you are satisfied the new `~/.kiro/crew` home works, delete the
+> whole archive to reclaim disk (`rm -rf ~/.kirocrew.archived`). `kirocrew doctor`
+> reports the archive's size and this cleanup command under **Data Home**.
 
 > **Note:** `KIROCREW_PORT` is an environment variable (validated at CLI entry),
 > not a config key; it sets the port the gateway / dashboard binds to. You can

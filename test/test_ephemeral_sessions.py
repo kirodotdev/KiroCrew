@@ -9,6 +9,7 @@ from __future__ import annotations
 import json as _json
 import os
 import time
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -798,10 +799,30 @@ class TestBlocksReadsContext:
 
 class TestSessionSlotRecovery:
     """learn_add must accept keys whose slot was evicted from memory but whose
-    JSONL file still exists in ~/.kirocrew/sessions/ — this covers the long-lived
-    Slack thread / reopened dashboard tab cases where the MCP subprocess holds a
-    stale KIROCREW_SESSION_KEY env var that maps to a swept slot.
+    JSONL file still exists in the data home's sessions/ — this covers the
+    long-lived Slack thread / reopened dashboard tab cases where the MCP
+    subprocess holds a stale KIROCREW_SESSION_KEY env var that maps to a swept
+    slot.
     """
+
+    @pytest.fixture(autouse=True)
+    def _persisted_history_dir_tracks_patched_home(self, monkeypatch):
+        """Point ``_shared.config_dir()`` at ``<patched home>/.kirocrew``.
+
+        The data home moved from ``~/.kirocrew`` to ``~/.kiro/crew``
+        (``config_dir()``); ``_session_has_persisted_history`` now probes
+        ``config_dir()/sessions`` rather than ``Path.home()/".kirocrew"/"sessions"``.
+        Each test here patches ``Path.home()`` and seeds JSONL under
+        ``<home>/.kirocrew/sessions``, but ``config_dir()`` reads ``KIROCREW_HOME``
+        (a different tmp dir pinned by conftest), so redirect ``_shared``'s
+        ``config_dir`` to ``Path.home()/".kirocrew"`` (lazy, tracks the per-test
+        ``Path.home`` patch) to keep the seeded layout authoritative. Applied
+        first so a test's own patches still win.
+        """
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers._shared.config_dir",
+            lambda: Path.home() / ".kirocrew",
+        )
 
     def _write_sessions_jsonl(self, tmp_path, stem: str) -> None:
         sess_dir = tmp_path / ".kirocrew" / "sessions"

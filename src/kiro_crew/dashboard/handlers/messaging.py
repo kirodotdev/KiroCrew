@@ -274,6 +274,8 @@ async def api_spawn_list(request: web.Request) -> web.Response:
         if info.done:
             entry["result"] = _redact(info.result)
             entry["error"] = _redact(info.error) if info.error else ""
+            entry["stopped"] = info.user_stopped
+            entry["outcome"] = info.outcome
         else:
             entry["turns"] = info.turns
             entry["last_tool"] = _redact(info.last_tool)
@@ -293,6 +295,26 @@ async def api_spawn_delete(request: web.Request) -> web.Response:
             # Can't actually kill the kiro-cli internal sub-agent, but we can
             # close the Activity card so it stops showing "Starting..."
             state._native_cards.pop(agent_id, None)
+            # Persist the stop on the slot-owned tracker record so WS replay
+            # (native_subagent_snapshots) reconstructs this card as STOPPED for
+            # reconnecting clients — not as still-running or completed.
+            try:
+                _slot = state.get_slot(card_info["slot"])
+                _rec = (
+                    _slot._native_subagent_tracker.get(card_info.get("session_id", ""))
+                    if _slot is not None
+                    else None
+                )
+                if _rec is not None and not _rec.get("done"):
+                    _rec["done"] = True
+                    _rec["done_at"] = time.time()
+                    _rec["elapsed"] = time.time() - card_info.get("started", time.time())
+                    _rec["error"] = None
+                    _rec["stopped"] = True
+                    _rec["outcome"] = "stopped"
+                    _rec["result"] = "(cancelled)"
+            except Exception:
+                logger.debug("native cancel: tracker update failed for %s", agent_id, exc_info=True)
             # User-initiated cancellation is an auditable action (parity with
             # the managed path, which audits inside SubagentManager.cancel()).
             try:
@@ -311,7 +333,8 @@ async def api_spawn_delete(request: web.Request) -> web.Response:
                     "id": agent_id,
                     "slot": card_info["slot"],
                     "elapsed": time.time() - card_info.get("started", time.time()),
-                    "error": "Cancelled by user",
+                    "error": None,
+                    "stopped": True,
                     "task": "",
                     "agent": "",
                     "result": "(cancelled)",
@@ -1410,8 +1433,10 @@ async def api_browser_config_get(request: web.Request) -> web.Response:
 
 async def api_browser_config_save(request: web.Request) -> web.Response:
     """PUT /api/browser/config — save browser extension mode and token."""
+    from kiro_crew.config.loader import config_dir  # noqa: F811
+
     body = await request.json()
-    kirocrew_dir = Path.home() / ".kirocrew"
+    kirocrew_dir = config_dir()
     kirocrew_dir.mkdir(parents=True, exist_ok=True)
     flag_file = kirocrew_dir / "playwright-extension-mode"
     token_file = kirocrew_dir / "playwright-extension-token"
@@ -2183,6 +2208,11 @@ async def api_telegram_config_get(request: web.Request) -> web.Response:
             # accepts digit strings and stores canonical ints.
             "allowed_user_ids": [str(u) for u in tg.allowed_user_ids],
             "soft_threshold_pct": int(tg.soft_threshold_pct),
+            # Forum per-topic config. chat_ids are serialized as strings for
+            # the tag editor UI; they are NEGATIVE (e.g. "-1001234567890"),
+            # so the save path accepts a leading minus (not a digits-only check).
+            "allow_forum": bool(tg.allow_forum),
+            "allowed_forum_chat_ids": [str(c) for c in tg.allowed_forum_chat_ids],
         }
     )
 
@@ -2316,6 +2346,36 @@ async def _telegram_config_save_locked(request: web.Request) -> web.Response:
         if pct != int(tg_cfg.get("soft_threshold_pct", 80)):
             staged["soft_threshold_pct"] = pct
             applied.append("soft_threshold_pct")
+
+    if "allow_forum" in body:
+        val = body.get("allow_forum")
+        if not isinstance(val, bool):
+            return _deny("allow_forum must be a boolean")
+        if val != bool(tg_cfg.get("allow_forum", False)):
+            staged["allow_forum"] = val
+            applied.append("allow_forum")
+
+    if "allowed_forum_chat_ids" in body:
+        raw_chat_ids = body.get("allowed_forum_chat_ids")
+        if not isinstance(raw_chat_ids, list):
+            return _deny("allowed_forum_chat_ids must be a list")
+        new_chat_ids: list[int] = []
+        for item in raw_chat_ids:
+            s = str(item).strip()
+            if not s:
+                continue
+            # Forum supergroup chat_ids are NEGATIVE (e.g. -1001234567890),
+            # so accept an optional leading minus — the digits-only check used
+            # for allowed_user_ids would wrongly reject every group id here.
+            digits = s[1:] if s.startswith("-") else s
+            if not digits.isdigit():
+                return _deny(f"invalid Telegram chat ID: {s} (integer IDs only)")
+            cid = int(s)
+            if cid not in new_chat_ids:
+                new_chat_ids.append(cid)
+        if new_chat_ids != list(tg_cfg.get("allowed_forum_chat_ids", [])):
+            staged["allowed_forum_chat_ids"] = new_chat_ids
+            applied.append("allowed_forum_chat_ids")
 
     # Whenever the .env token is set or cleared, also drop the legacy
     # config.json ``telegram.bot_token`` fallback. The gateway (and GET above)

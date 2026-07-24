@@ -1,7 +1,7 @@
 import { safeSetItem } from '../utils/safeStorage'
 import { createSlice, createAsyncThunk, createSelector, type PayloadAction } from '@reduxjs/toolkit'
 import { api } from '../api/client'
-import { sanitizeLlmOutput } from '../utils/sanitize'
+import { sanitizeLlmOutput, isUnsafeKey } from '../utils/sanitize'
 import type { StatusData, ChatSlot } from '../types'
 import type { SessionColorMode, PaletteName, DefaultColorSetting, IntensityName } from '../utils/sessionColors'
 
@@ -156,7 +156,9 @@ const dashboardSlice = createSlice({
     },
     sseSubagentStatus(state, action: PayloadAction<{ running: number; slot: string; agents?: SubagentDetail[] }>) {
       const { slot, running, agents } = action.payload
-      if (!slot) return
+      // `slot` is an untrusted key from the SSE payload; __proto__/constructor/
+      // prototype would write through Object.prototype in the else-branch below.
+      if (!slot || isUnsafeKey(slot)) return
       if (running <= 0) {
         delete state.subagentRunning[slot]
         delete state.subagentDetails[slot]
@@ -173,6 +175,12 @@ const dashboardSlice = createSlice({
     },
     sseSubagentText(state, action: PayloadAction<{ slot: string; id: string; text: string }>) {
       const { slot, id, text } = action.payload
+      // Both `slot` and `id` are untrusted keys from the SSE payload. A value of
+      // __proto__/constructor/prototype would pollute Object.prototype via the
+      // `state.subagentText[slot][id] = ...` assignment below — and the
+      // `subagentRunning[slot]` check does NOT stop `slot="__proto__"` because
+      // it resolves truthily through the prototype chain. Guard both keys.
+      if (isUnsafeKey(slot) || isUnsafeKey(id)) return
       if (!slot || !state.subagentRunning[slot]) return
       if (!state.subagentText[slot]) state.subagentText[slot] = {}
       const cur = (state.subagentText[slot][id] || '') + sanitizeLlmOutput(text)

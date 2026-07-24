@@ -31,6 +31,7 @@ from kiro_crew.acp.types import (
 from kiro_crew.autonudge import get_instance
 from kiro_crew.config.loader import (
     KiroCrewConfig,
+    config_dir,
     resolve_agent_bindings,
 )
 from kiro_crew.constants import CHAT_TURN_TIMEOUT
@@ -99,7 +100,7 @@ from kiro_crew.dashboard.state import (
     should_queue_refusal_recovery,
     unsafe_bash_reason,
 )
-from kiro_crew.executors import maintenance_executor, run_in_embed_pool
+from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.hooks import (
     HOOK_EVENT_AGENT_SPAWN,
     HOOK_EVENT_POST_TOOL_USE,
@@ -120,6 +121,7 @@ from kiro_crew.llm_helpers import (
     record_interaction_event,
     transient_retry_delay,
 )
+from kiro_crew.messaging.identity import publish_turn_identity
 from kiro_crew.messaging.link import SLACK_NAMESPACE
 from kiro_crew.messaging.renderer import chunk_text
 from kiro_crew.metrics.provider import get_recorder
@@ -145,7 +147,6 @@ from kiro_crew.security import (
     redact_exfiltration_urls,
 )
 from kiro_crew.sel import sel
-from kiro_crew.session_pid_sig import publish_session_pid
 from kiro_crew.slack.handler import post_linked_approval, resolve_linked_approval
 from kiro_crew.stats import Stats
 from kiro_crew.validation import ValidationError, infer_use_case, validate_ask_user_question
@@ -1589,7 +1590,7 @@ async def _handle_goal_command(
             body = "Usage: `/goal <objective>` or `/goal --max N <objective>`."
         else:
             _slug = re.sub(r"[^A-Za-z0-9._-]", "_", slot.key)
-            _sentinel = str(Path.home() / ".kirocrew" / "goal-stop" / f"{_slug}.stop")
+            _sentinel = str(config_dir() / "goal-stop" / f"{_slug}.stop")
             Path(_sentinel).unlink(missing_ok=True)
             _nudge = (
                 f"Goal: {_objective}\n"
@@ -2153,19 +2154,9 @@ async def _run_chat(
         except Exception:  # pragma: no cover — never let UI surfacing kill chat init
             logger.warning("Failed to surface pending MCP OAuth requests", exc_info=True)
 
-        # Publish the session_pid_<pid>.txt mapping (plus HMAC sidecar) so MCP
-        # tools can resolve identity. Keyed by kiro-cli PID to avoid races
-        # between concurrent sessions. Offloaded: publish does a key read plus
-        # two atomic_write() replacements — blocking filesystem work that must
-        # not run on the event loop (no-blocking-call-on-event-loop).
-        try:
-            pid = state.sessions.get_pid(session_key)
-            if isinstance(pid, int):
-                await asyncio.get_running_loop().run_in_executor(
-                    maintenance_executor(), publish_session_pid, pid, session_key
-                )
-        except Exception:
-            pass
+        # Publish this turn's session identity so managed MCP tools resolve
+        # X-Session-Key; one shared writer lives in messaging.identity. (#232)
+        await publish_turn_identity(state.sessions, session_key)
 
         # ── @prompt expansion: resolve @name to SOP/prompt content ──
         prompt_expanded = False
@@ -4322,6 +4313,12 @@ async def _run_chat(
             # transient recovers safely (the model reads prior tool results and
             # continues) instead of double-running a side-effecting tool. We allow
             # EXACTLY ONE such retry per turn (_posttoken_retry_used one-shot).
+            #
+            # PARITY NOTE: the subagent path carries a hand-maintained copy of
+            # this ladder (subagent.py `_stream_with_transient_retry`) with
+            # intentionally identical semantics — same activity predicate,
+            # same one-shot post-activity rule. A fix to either copy's
+            # predicate or budget rules must be mirrored in the other.
             #
             # ACCEPTED TRADEOFF (finding #1, owner decision — do NOT re-add a
             # tool-call fail-fast guard): a mid-stream 5xx is rare, and the

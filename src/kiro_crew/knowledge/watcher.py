@@ -26,6 +26,12 @@ logger = logging.getLogger(__name__)
 
 FOLDER_SOURCE_TYPES = {"local_folder", "obsidian_vault"}
 
+# Stale-item count at which the watcher's self-heal rebuild logs a prominent
+# warning before starting: a count this large usually means an embedder
+# signature change invalidated the whole corpus, and the ensuing full re-embed
+# can run for a long time on a big knowledge base.
+_LARGE_REBUILD_WARN_THRESHOLD = 1000
+
 
 class KnowledgeWatcher:
     """Polls registered local_file sources for file changes and re-ingests."""
@@ -165,9 +171,20 @@ class KnowledgeWatcher:
         sig = embedder_signature(embedder)
         # Stale count excludes items in retry backoff (recently-failed) so a
         # perpetually-failing item can't drive a fresh rebuild every scan.
-        stale = count_stale_items(self.store, sig)
+        # OFFLOADED: this COUNT(*) scans the items table (no index on
+        # embedding_sig); on a large KB under WAL contention from a concurrent
+        # embedder it can stall for tens of seconds, and an inline call would
+        # block the event loop past the loop-watchdog threshold and crash-loop
+        # the gateway (observed on a ~1.3GB KB after an embedder-sig change).
+        stale = await asyncio.to_thread(count_stale_items, self.store, sig)
         if not stale:
             return
+        if stale >= _LARGE_REBUILD_WARN_THRESHOLD:
+            logger.warning(
+                "Watcher self-heal: %d items have a stale embedding sig (likely an "
+                "embedder signature change) — starting a full background re-embed. "
+                "This may take a while on a large knowledge base.", stale,
+            )
         # Atomically claim the single-flight slot (sweeps crashed leftovers, guards
         # against racing the dashboard trigger). None -> a rebuild is already running.
         # Offloaded: the BEGIN IMMEDIATE write-lock acquisition (busy_timeout up to
@@ -183,12 +200,9 @@ class KnowledgeWatcher:
     async def _run_reembed_job(self, embedder, job_id: str) -> None:
         try:
             processed = await rebuild_embeddings(self.store, embedder, job_id=job_id)
-            self.store.db.execute(
-                "UPDATE ingestion_jobs SET status = 'completed', items_processed = ?, "
-                "updated_at = ? WHERE id = ?",
-                (processed, datetime.now().isoformat(), job_id),
-            )
-            self.store.db.commit()
+            # OFFLOADED: single-row write, but a commit can block up to the
+            # busy_timeout behind a concurrent writer — keep it off the loop.
+            await asyncio.to_thread(self._finalize_reembed_job, job_id, processed)
             sel().log_tool_invocation(
                 session_key="watcher",
                 agent="knowledge-watcher",
@@ -208,6 +222,10 @@ class KnowledgeWatcher:
             # Best-effort finalize: if this UPDATE itself raises (e.g. db locked while
             # cancelling), it must not replace the CancelledError -- asyncio shutdown
             # has to see the cancel, so guard the SQL and re-raise unconditionally.
+            # Deliberately NOT offloaded: awaiting to_thread inside a CancelledError
+            # handler can be re-cancelled before the write lands, breaking the
+            # single-flight finalize guarantee; a single-row best-effort write is
+            # an acceptable inline cost on this error path.
             try:
                 self.store.db.execute(
                     "UPDATE ingestion_jobs SET status = ?, error = ?, updated_at = ? WHERE id = ?",
@@ -228,6 +246,19 @@ class KnowledgeWatcher:
                 )
             if is_cancel:
                 raise
+
+    def _finalize_reembed_job(self, job_id: str, processed: int) -> None:
+        """Mark a self-heal rebuild job completed (runs on a worker thread).
+
+        ``store.db`` is a per-thread connection, so the write and its commit stay
+        on this thread's own connection.
+        """
+        self.store.db.execute(
+            "UPDATE ingestion_jobs SET status = 'completed', items_processed = ?, "
+            "updated_at = ? WHERE id = ?",
+            (processed, datetime.now().isoformat(), job_id),
+        )
+        self.store.db.commit()
 
     @staticmethod
     def _parse_props(raw) -> dict:

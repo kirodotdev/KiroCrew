@@ -234,11 +234,12 @@ export interface ChatMessage {
 
 export interface SubagentActivity {
   id: string; task: string; agent: string
-  status: 'pending' | 'running' | 'tool' | 'done' | 'error'
+  status: 'pending' | 'running' | 'tool' | 'done' | 'error' | 'stopped'
   streaming: string; lastTool: string
   startedAt: number; elapsed: number; error?: string
   toolCount?: number      // observed tool calls (incl. auto-approved) — running-card progress
   stalled?: boolean       // reaper flagged this subagent as idle/stalled
+  retrying?: boolean      // transient-backend retry (or cancel auto-continue) in flight
   approval_id?: string
   approving?: boolean
   /** Inline terminal output for native (`native:*`) cards only. Native cards

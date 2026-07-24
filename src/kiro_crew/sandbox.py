@@ -13,7 +13,7 @@ The parent KiroCrew process is completely unaffected — isolation applies
 only to the spawned child.  Falls back gracefully to no sandbox when the
 OS mechanism is unavailable (logged as warning).
 
-Config: ``"sandbox": "auto" | "off"`` in ``~/.kirocrew/config.json``.
+Config: ``"sandbox": "auto" | "off"`` in ``~/.kiro/crew/config.json``.
 ``"auto"`` (default) uses namespace sandbox on Linux, seatbelt on macOS.
 """
 
@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from kiro_crew import platform_compat
+from kiro_crew.config.paths import config_dir
 from kiro_crew.constants import KIROCREW_SPAWNED_ENV, KIROCREW_SPAWNED_VALUE
 from kiro_crew.platform import current_context
 
@@ -55,7 +56,7 @@ logger = logging.getLogger(__name__)
 # Any file older than this threshold is garbage regardless of PID liveness.
 _LAUNCHER_MAX_AGE_SECONDS = 3600
 
-# Legacy sandbox launcher directory (before migration to ~/.kirocrew/run/).
+# Legacy sandbox launcher directory (before migration to <config_dir>/run/).
 _LEGACY_LAUNCHER_DIR = "/tmp"
 
 # Sensitive directories to hide from the agent subprocess tree.
@@ -105,6 +106,12 @@ _CC_FILES: list[str] = [
     ".pypirc",
     ".netrc",
     ".git-credentials",
+    # KiroCrew's channel-credential file. The data home moved to ~/.kiro/crew,
+    # so the live .env is now ~/.kiro/crew/.env; the legacy ~/.kirocrew/.env and
+    # the archived rollback copy are kept covered too (a not-yet-migrated box, or
+    # the archived copy, still holds real secret bytes).
+    ".kiro/crew/.env",
+    ".kirocrew.archived/.env",
     ".kirocrew/.env",
 ]
 
@@ -533,7 +540,7 @@ def _build_launcher_script(
     env_prefixes = list(_SENSITIVE_ENV_PREFIXES)
     if sandbox_level in ("cc", "strict"):
         # Block agent subprocesses from reading credentials via os.environ
-        # (the file-level bind-mount of ~/.kirocrew/.env hides them on disk;
+        # (the file-level bind-mount of ~/.kiro/crew/.env hides them on disk;
         # config/loader.py seeds them into os.environ for trusted children
         # only — sandboxed agents must not see them either way).
         env_prefixes = env_prefixes + list(_AGENT_DENIED_ENV_KEYS)
@@ -556,8 +563,8 @@ def _build_launcher_script(
 """Namespace sandbox launcher — spawned by KiroCrew."""
 import sys
 # Harden against stdlib shadowing. This launcher runs as
-# ``python ~/.kirocrew/run/kirocrew_sandbox_*.py``, so CPython prepends the
-# script's own directory (sys.path[0], typically ~/.kirocrew/run/) to sys.path.
+# ``python <config_dir>/run/kirocrew_sandbox_*.py``, so CPython prepends the
+# script's own directory (sys.path[0], typically <config_dir>/run/) to sys.path.
 # A stray sibling module left in that directory by another process — e.g.
 # struct.py, os.py — then shadows the real stdlib and crashes the imports below
 # (seen in the wild: "ImportError: cannot import name 'calcsize' from
@@ -657,7 +664,7 @@ def main():
         _libc.mount(None, b"/", None, _MS_REC | _MS_PRIVATE, None)
 
         # Pick a tmpfs-backed source dir for bind-mount empty files/dirs. Same-fs
-        # binds (e.g. /tmp on ext4 over ~/.kirocrew/.env on ext4) can corrupt the
+        # binds (e.g. /tmp on ext4 over ~/.kiro/crew/.env on ext4) can corrupt the
         # target's host directory entry via a kernel propagation race when the
         # private NS is torn down — leaving the host file pointing at the empty
         # source inode permanently. Cross-fs binds use distinct inode spaces and
@@ -960,8 +967,8 @@ if __name__ == "__main__":
 
 
 def _ensure_run_dir() -> str:
-    """Create ~/.kirocrew/run/ with mode 0o700, falling back to system tmpdir on failure."""
-    run_dir = os.path.join(os.path.expanduser("~"), ".kirocrew", "run")
+    """Create ``<config_dir>/run/`` with mode 0o700, falling back to tmpdir on failure."""
+    run_dir = str(config_dir() / "run")
     try:
         os.makedirs(run_dir, mode=0o700, exist_ok=True)
         # exist_ok does not re-apply mode on existing dirs — enforce explicitly.
@@ -1086,8 +1093,8 @@ def _build_seatbelt_profile(sandbox_level: str = "strict") -> str:
 # spawn, so on macOS the layers are mutually exclusive:
 # kiro's internal sandbox ON  -> KiroCrew's seatbelt OFF for kiro-cli spawns
 # kiro's internal sandbox OFF -> KiroCrew's seatbelt ON (unchanged default)
-# (``~/.kiro`` is the kiro-cli backend's own directory, distinct from
-# ``~/.kirocrew``; the filename is the literal kiro-cli ships.)
+# (``~/.kiro/settings`` is the kiro-cli backend's own directory, distinct from
+# KiroCrew's data home ``~/.kiro/crew``; the filename is the literal kiro-cli ships.)
 _KIRO_INTERNAL_SETTINGS_PATH = "~/.kiro/settings/amazon-internal.json"
 _KIRO_INTERNAL_SANDBOX_KEY = "sandbox"
 
@@ -1273,7 +1280,7 @@ def _sandbox_env_unset_args(sandbox_level: str, strip_python_env: bool) -> list[
 
 
 def cleanup_stale_sandbox_profiles(*, legacy_dir: str | None = None) -> int:
-    """Remove orphan sandbox files from ~/.kirocrew/run/ and legacy /tmp.
+    """Remove orphan sandbox files from <config_dir>/run/ and legacy /tmp.
 
     A file is removed when EITHER:
       - The tagged PID is dead (os.kill probe fails), OR
@@ -1283,7 +1290,7 @@ def cleanup_stale_sandbox_profiles(*, legacy_dir: str | None = None) -> int:
         where the gateway PID is always alive for current-generation files).
 
     Also sweeps legacy /tmp/kirocrew_sandbox_*.py files that predate the
-    migration to ~/.kirocrew/run/ — these have no PID segment, so only the
+    migration to <config_dir>/run/ — these have no PID segment, so only the
     age threshold applies.
 
     Called from the periodic cleanup sweep in session.py, offloaded to the
@@ -1295,10 +1302,10 @@ def cleanup_stale_sandbox_profiles(*, legacy_dir: str | None = None) -> int:
     now = time.time()
     if legacy_dir is None:
         legacy_dir = _LEGACY_LAUNCHER_DIR
-    run_dir = os.path.join(os.path.expanduser("~"), ".kirocrew", "run")
+    run_dir = str(config_dir() / "run")
     removed = 0
 
-    # ── Sweep ~/.kirocrew/run/ (PID + age) ──
+    # ── Sweep <config_dir>/run/ (PID + age) ──
     if os.path.isdir(run_dir):
         for entry in os.listdir(run_dir):
             if not entry.startswith("kirocrew_sandbox_"):
@@ -1464,7 +1471,7 @@ def _warn_no_isolation(mode: str) -> None:
         "~/.aws, ~/.ssh and other secrets are readable by it and only the "
         "bypassable app-level security.py checks remain. Install a supported "
         "sandbox (Linux user namespaces, or macOS < 26 sandbox-exec), or set "
-        "agent.sandbox_allow_no_isolation=true in ~/.kirocrew/config.json to "
+        "agent.sandbox_allow_no_isolation=true in ~/.kiro/crew/config.json to "
         "acknowledge the risk and silence this warning.",
         mode,
     )
@@ -1713,7 +1720,7 @@ def wrap_argv(
                 guidance = (
                     "If this host genuinely lacks a sandbox backend, set "
                     "agent.sandbox_allow_unsandboxed_exec=true in "
-                    "~/.kirocrew/config.json to explicitly allow unsandboxed "
+                    "~/.kiro/crew/config.json to explicitly allow unsandboxed "
                     "execution, or install a supported sandbox backend "
                     "(Linux user namespaces, or macOS sandbox-exec). "
                 )

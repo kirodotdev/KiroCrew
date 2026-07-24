@@ -2,6 +2,13 @@ import { useMemo } from 'react'
 import type { ContentBlock } from '../types'
 
 const FENCE_OPEN = /^(`{3,})(\w*)\s*$/
+// Escape ALL regex metacharacters before interpolating a captured fence run
+// into a dynamic RegExp. The capture is currently backtick-only, but a
+// complete escape (not a single-char `\`` replace) keeps the sanitization
+// sound if FENCE_OPEN ever widens, and is the form static analysis recognizes.
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
 const FENCE_CLOSE_RE = (() => {
   const cache = new Map<string, RegExp>()
   return (tick: string) => {
@@ -227,7 +234,7 @@ export function parseBlocks(raw: string, streaming: boolean): ContentBlock[] {
         const fenceMatch = FENCE_OPEN.exec(line)
         if (fenceMatch) {
           flushMd()
-          fenceTick = fenceMatch[1].replace(/`/g, '\\`')
+          fenceTick = escapeRegExp(fenceMatch[1])
           fenceLang = fenceMatch[2] || ''
           fenceLen = fenceMatch[1].length
           fenceNestable = NESTABLE_LANGS.has(fenceLang.toLowerCase())
@@ -286,7 +293,7 @@ export function parseBlocks(raw: string, streaming: boolean): ContentBlock[] {
         const fenceMatch = FENCE_OPEN.exec(line)
         if (fenceMatch) {
           widgetBuf.push(line)
-          widgetFenceTick = fenceMatch[1].replace(/`/g, '\\`')
+          widgetFenceTick = escapeRegExp(fenceMatch[1])
           state = 'widget-fence'
           break
         }

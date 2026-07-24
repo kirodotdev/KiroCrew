@@ -1057,11 +1057,15 @@ BUILTIN_DENIED_RULES: list[DeniedCommandRule] = [
     ),
     DeniedCommandRule(
         id="sensitive-file-read-cat-kirocrew-env",
-        pattern=".*cat.*/\\.kirocrew/\\.env.*",
+        # The data home moved to ~/.kiro/crew; match the LIVE ~/.kiro/crew/.env
+        # plus the archived rollback copy and the pre-move legacy home, so this
+        # deny layer no longer guards only a path that holds no live secrets.
+        pattern=".*cat.*/(?:\\.kiro/crew|\\.kirocrew\\.archived|\\.kirocrew)/\\.env.*",
         category="sensitive-file-read",
         description=(
-            "Blocks using cat to read ~/.kirocrew/.env, which holds KiroCrew's own secrets and "
-            "environment credentials."
+            "Blocks using cat to read KiroCrew's own credential file (~/.kiro/crew/.env, "
+            "the archived rollback copy, or the pre-move ~/.kirocrew/.env), which holds "
+            "KiroCrew's own secrets and environment credentials."
         ),
     ),
     DeniedCommandRule(
@@ -2433,85 +2437,76 @@ _SENSITIVE_HOME_DIRS: list[str] = [
     ".local/share/amazon-q",
     "Library/Application Support/kiro-cli",
     "Library/Application Support/amazon-q",
-    ".kirocrew/.env",
-    # Browser-auth cookie jar + the Playwright storage-state it is converted into
-    # both hold reusable authenticated-session cookies (the OSS browser-auth stub
-    # reads a Netscape cookie jar the user exports; ``browser/setup.py`` writes the
-    # storage state 0600). Agent file tools must not read them through the shared
-    # gate, or a prompt-injected turn could exfiltrate live browser sessions. The
-    # browser helpers open these paths directly (not via is_sensitive_path), so
-    # legitimate cookie injection still works.
-    ".kirocrew/browser-cookies.txt",
-    ".kirocrew/playwright-storage-state.json",
-    # Security Event Log trust root. The SEL is a
-    # tamper-evident, HMAC-SHA256-chained audit trail (``sel.py``): each entry
-    # signs over the previous entry's hash using the key in ``sel_hmac.key``.
-    # An audited agent that could fs_read the key could forge/rewrite the entire
-    # chain and erase evidence of its own actions, and one that could read/rewrite
-    # ``security_events.jsonl`` could tamper with the log directly. Both are the
-    # governed subject's own audit root, so — like ``.kirocrew/.env`` — they must
-    # never be readable OR writable through the shared file gate
-    # (``is_sensitive_path``). The gateway's own SEL writer/reader (``sel.py``,
-    # ``session_health.py``) opens these files directly and does NOT route through
-    # this gate, so legitimate audit logging still works. (Deeper hardening — an
-    # out-of-process signer that never exposes the key to the agent's namespace —
-    # is documented future work; this closes the read/rewrite path.)
-    ".kirocrew/sel_hmac.key",
-    ".kirocrew/security_events.jsonl",
-    # App admission trust root (keystone invariant). ``apps/admission.py`` loads
-    # ``config_dir()/app_admission.json`` as the SOLE fleet-controlled App Kit
-    # admission ceiling (kill-switch / allowlist / require_signature) — the one
-    # thing an app can never source itself. An absent file falls open (admit), so
-    # a governed agent that could fs_write/tee/rm this file could delete or neuter
-    # its own admission ceiling and re-admit a banned/unsigned app. Like the SEL
-    # trust roots above, it is the governed subject's own ceiling and must never be
-    # readable OR writable through the shared file gate (``is_sensitive_path``).
-    # The gateway's own loader (``apps.admission.load_app_admission_policy``) opens
-    # it directly via ``path.read_text`` and does NOT route through this gate, so
-    # legitimate policy loading still works.
-    ".kirocrew/app_admission.json",
-    # Governance trust-root files (KEYSTONE of the two-level governance model).
-    # Under "secure by default, not by mandate" the ONLY thing preventing a
-    # prompt-injected agent from rewriting its own ceiling is that it cannot
-    # WRITE these files — and is_sensitive_path() is the shared read+write gate
-    # (hooks.on_tool_call, validate_file_path, artifacts) across every surface.
-    # The agent (the governed subject) is blocked; the operator (trust root)
-    # edits them out-of-band.  admission_policy.json is the existing plugin
-    # trust root; security_policy.json + profiles/ are the new governance ones.
-    ".kirocrew/security_policy.json",
-    ".kirocrew/profiles",
-    ".kirocrew/admission_policy.json",
-    # Denied-command opt-out state (KEYSTONE). ``denied_commands.json`` holds the
-    # user's opt-out from the built-in deny ceiling
-    # (``{disable_all, disabled_ids, user_added}``). It is a security ceiling: if
-    # an auto-approved / YOLO agent shell could WRITE it, it could set
-    # ``disable_all=true`` and, after a restart, defeat the whole deny gate. It
-    # therefore lives OUTSIDE the agent-readable ``config.json`` and on this
-    # read+write floor, so the agent (the governed subject) can neither read nor
-    # write its own ceiling via ANY shell form — inheriting the full
-    # ``is_sensitive_path`` gate (variable-indirection, symlinks, KIROCREW_HOME,
-    # interpreters, casefold, realpath) instead of a bespoke bash matcher. The
-    # operator edits it out-of-band via the dashboard ``/api/security/…``
-    # endpoints, which open the file directly and do NOT route through this gate,
-    # so legitimate opt-out changes still work.
-    ".kirocrew/denied_commands.json",
-    # KiroCrew's own dashboard-auth secrets. ``token_signing.key``
-    # (dashboard/token_secret.py) signs every access + refresh token;
-    # ``refresh_chains.json`` (dashboard/refresh_tokens.py) stores refresh-token
-    # chain state; ``.local_secret`` (server.py / cli_commands.py / mcp_core.py /
-    # cron_script.py / mcp_shared.py) is the shared internal-auth secret used to
-    # authenticate MCP/cron/hook callbacks back into the gateway. These are this
-    # host's own crown-jewel credentials: like the SEL trust root (sel_hmac.key),
-    # the app-admission root, and the governance security_policy.json above, an
-    # agent that could fs_read them could forge dashboard auth tokens or
-    # impersonate internal callers. All legitimate readers (token_secret.py,
-    # refresh_tokens.py, cli_commands.py, mcp_core.py, cron_script.py,
-    # mcp_shared.py, mcp_playwright_proxy.py, cli_server.py, mcp_cron.py) open
-    # these files directly via ``Path.read_text()``/``open()`` and do NOT route
-    # through this gate, so legitimate token minting/verification still works.
-    ".kirocrew/token_signing.key",
-    ".kirocrew/refresh_chains.json",
-    ".kirocrew/.local_secret",
+]
+
+# ── KiroCrew's own data-home secrets & governance trust-root ──
+# These leaves live directly under KiroCrew's data home and must never be
+# readable OR writable through the shared file gate (``is_sensitive_path``):
+#
+#   .env                          channel/API credentials (Slack/Discord/…)
+#   browser-cookies.txt           reusable browser-auth session cookies …
+#   playwright-storage-state.json … and the Playwright storage-state they become
+#   sel_hmac.key                  Security Event Log HMAC key — signs the
+#   security_events.jsonl         tamper-evident audit chain (``sel.py``)
+#   app_admission.json            App Kit admission ceiling (apps/admission.py)
+#   security_policy.json          governance ceiling (KEYSTONE, governance.py)
+#   profiles                      per-surface governance profiles
+#   admission_policy.json         signed-plugin admission trust root
+#   denied_commands.json          denied-command opt-out ceiling — if an
+#                                 auto-approved/YOLO agent shell could WRITE it,
+#                                 it could set ``disable_all=true`` and defeat
+#                                 the whole deny gate after a restart, so it must
+#                                 be neither readable nor writable via any shell
+#                                 form (operator edits it out-of-band via the
+#                                 dashboard ``/api/security/…`` endpoints)
+#   token_signing.key             dashboard access/refresh token signing key
+#   refresh_chains.json           refresh-token chain state
+#   .local_secret                 internal MCP/cron/hook callback auth secret
+#
+# An agent that could fs_read any of these could forge auth tokens, impersonate
+# internal callers, exfiltrate live sessions, or rewrite its OWN security
+# ceiling; one that could fs_write them could neuter its governance/admission
+# limits. Every legitimate reader/writer (token_secret.py, refresh_tokens.py,
+# sel.py, apps/admission.py, governance.py, cli_commands.py, mcp_core.py, …)
+# opens these directly (NOT via this gate), so real functionality is unaffected.
+#
+# Each leaf is expanded under EVERY known crew data-home prefix so the secret is
+# gated identically whether it lives in the current home (``~/.kiro/crew``), the
+# archived rollback copy left by the ``~/.kirocrew`` -> ``~/.kiro/crew``
+# migration (``~/.kirocrew.archived`` — the copy still holds real secret bytes),
+# or a not-yet-migrated pre-move legacy home (``~/.kirocrew``). Keeping one leaf
+# list means a new secret is added once and covered in all three locations.
+_CREW_HOME_PREFIXES: tuple[str, ...] = (".kiro/crew", ".kirocrew.archived", ".kirocrew")
+_CREW_SECRET_LEAVES: list[str] = [
+    ".env",
+    "browser-cookies.txt",
+    "playwright-storage-state.json",
+    "sel_hmac.key",
+    "security_events.jsonl",
+    "app_admission.json",
+    "security_policy.json",
+    "profiles",
+    "admission_policy.json",
+    "denied_commands.json",
+    "token_signing.key",
+    "refresh_chains.json",
+    ".local_secret",
+    # Runtime exec dir. ``run/`` holds paths the gateway executes OUTSIDE the
+    # agent sandbox: the sandbox launcher scripts (``sandbox.py`` execs
+    # ``python <home>/run/kirocrew_sandbox_*.py``) and the remote-instance
+    # run-marker ``gateway-<port>.bin`` (``instances/run_marker.py``), whose
+    # contents the SSH token-mint reads and ``exec``s on the remote host. A
+    # prompt-injected / sandboxed agent that could WRITE into this dir could point
+    # a marker (or a launcher) at an attacker-controlled binary and, on the next
+    # routine token refresh, get it executed unsandboxed — a reachable sandbox
+    # escape (owner + ``-x`` checks don't help; agent writes run as the same user).
+    # Classify the whole dir read+write, like the other trust roots above. The
+    # gateway's own writers open these paths directly and do NOT route through this
+    # gate, so legitimate startup/spawn writes still work.
+    "run",
+]
+_SENSITIVE_HOME_DIRS += [
+    f"{prefix}/{leaf}" for prefix in _CREW_HOME_PREFIXES for leaf in _CREW_SECRET_LEAVES
 ]
 
 # ── Write-protected paths (block modification, allow reads) ──
@@ -2534,8 +2529,9 @@ _SENSITIVE_HOME_DIRS: list[str] = [
 # ceiling and lives on the read+write keystone floor in ``denied_commands.json``
 # above, so no bash-level write matcher is needed for it.)
 _WRITE_PROTECTED_HOME_PATHS: list[str] = [
-    ".kirocrew/config.json",
-    ".kirocrew/config.local.json",
+    f"{prefix}/{leaf}"
+    for prefix in _CREW_HOME_PREFIXES
+    for leaf in ("config.json", "config.local.json")
 ]
 
 # Regex for bash commands that read sensitive paths.
@@ -2695,36 +2691,54 @@ def _path_in_home_dirs(path_str: str, home_dirs: list[str], base_dir: str | None
     # its realpath.  On macOS the per-user temp/home prefix can itself be
     # reached via OS symlinks (``/var`` → ``/private/var``); folding both roots
     # in means a resolved candidate under either spelling is still matched.
-    sensitive_targets: set[str] = {os.path.join(home, d).casefold() for d in home_dirs}
+    #
+    # ``home_dirs`` entries are authored with POSIX "/" separators, and some are
+    # multi-segment now (e.g. ".kiro/crew/security_policy.json"). Split on "/"
+    # and re-join with ``os.path.join`` so the target uses the running OS's
+    # separator — otherwise on Windows the target keeps a literal "/" in the
+    # leaf while the candidate forms (realpath/normpath) are all-backslash, they
+    # never compare equal, and the keystone would silently stop gating its own
+    # secrets. On POSIX a single-segment entry splits to a 1-element list, so
+    # this is a no-op there.
+
+    def _anchor(root: str, d: str) -> str:
+        return os.path.join(root, *d.split("/")).casefold()
+
+    sensitive_targets: set[str] = {_anchor(home, d) for d in home_dirs}
     home_real = os.path.realpath(home)
     if home_real.casefold() != home.casefold():
-        sensitive_targets |= {os.path.join(home_real, d).casefold() for d in home_dirs}
+        sensitive_targets |= {_anchor(home_real, d) for d in home_dirs}
     # When KIROCREW_HOME points to a non-default path, the keystone secrets
     # (token_signing.key, refresh_chains.json, .local_secret, sel_hmac.key,
-    # security_policy.json etc.) live there — NOT under ~/.kirocrew. Without
-    # this expansion any ".kirocrew/X" entry in the home_dirs list would miss
-    # the real file location, letting the agent read/write its own signing key
-    # or governance ceiling via the custom KIROCREW_HOME. Expand each entry
-    # prefixed with ".kirocrew" using the env-override root ADDITIONALLY (the
-    # ~/~ root stays so both locations are always covered).
+    # security_policy.json etc.) live directly under it — NOT under any of the
+    # default crew home prefixes (~/.kiro/crew, ~/.kirocrew.archived,
+    # ~/.kirocrew). Without this expansion any "<crew-prefix>/X" entry in the
+    # home_dirs list would miss the real file location, letting the agent
+    # read/write its own signing key or governance ceiling via the custom
+    # KIROCREW_HOME. Strip whichever crew prefix an entry carries and re-anchor
+    # the leaf under the env-override root ADDITIONALLY (the ~/-rooted default
+    # forms stay, so every location is always covered).
     kiro_home_env = os.environ.get("KIROCREW_HOME")
     if kiro_home_env:
         try:
             kiro_home = str(Path(kiro_home_env).expanduser().resolve())
         except (OSError, ValueError):
             kiro_home = os.path.abspath(os.path.expanduser(kiro_home_env))
-        _kiro_prefix = ".kirocrew" + os.sep
         for d in home_dirs:
-            if d.startswith(_kiro_prefix) or d == ".kirocrew":
-                tail = d[len(".kirocrew") :]  # includes leading / or is ""
-                full = os.path.join(kiro_home, tail.lstrip(os.sep)) if tail else kiro_home
-                sensitive_targets.add(full.casefold())
-                # Also add the resolved form in case the env value itself has
-                # symlinks (matches the home/home_real duality above).
-                try:
-                    sensitive_targets.add(os.path.realpath(full).casefold())
-                except (OSError, ValueError):
-                    pass
+            for _prefix in _CREW_HOME_PREFIXES:
+                # Compare with POSIX separators (home_dirs entries are authored
+                # that way) so this matches regardless of the running os.sep.
+                if d == _prefix or d.startswith(_prefix + "/"):
+                    leaf = d[len(_prefix) :].lstrip("/")
+                    full = os.path.join(kiro_home, *leaf.split("/")) if leaf else kiro_home
+                    sensitive_targets.add(full.casefold())
+                    # Also add the resolved form in case the env value itself has
+                    # symlinks (matches the home/home_real duality above).
+                    try:
+                        sensitive_targets.add(os.path.realpath(full).casefold())
+                    except (OSError, ValueError):
+                        pass
+                    break
 
     # Case-fold both sides for the membership test.  On a case-insensitive
     # filesystem (macOS APFS/HFS+ default — a supported platform) the OS opens
@@ -2770,15 +2784,20 @@ def is_sensitive_write_path(path_str: str, base_dir: str | None = None) -> bool:
 
 
 # Archive/extraction destination flags (tar -C, unzip -d, rsync dest) pointing
-# INTO the governance trust-root parent ``~/.kirocrew`` — an extraction there can
-# drop/overwrite ``security_policy.json`` or a ``profiles/`` entry even though the
-# bare ``~/.kirocrew`` dir is not itself a sensitive-path entry.  Match the
-# destination-dir form specifically so normal ``~/.kirocrew`` access (sessions.db,
-# config.json) is not over-blocked.
+# INTO the governance trust-root parent (the crew data home) — an extraction
+# there can drop/overwrite ``security_policy.json`` or a ``profiles/`` entry even
+# though the bare home dir is not itself a sensitive-path entry.  Match the
+# destination-dir form specifically so normal home access (sessions.db,
+# config.json) is not over-blocked.  Covers every crew home root: the current
+# ``~/.kiro/crew``, the archived rollback copy ``~/.kirocrew.archived``, and a
+# pre-move legacy ``~/.kirocrew``.
+_CREW_HOME_ALT = "|".join(re.escape("/" + p) for p in _CREW_HOME_PREFIXES)
 _EXTRACT_INTO_TRUST_ROOT_RE = re.compile(
     r"-(?:C|d)\s+(?:~|\$HOME|/home/[^/\s]+|/Users/[^/\s]+|"
     + re.escape(str(Path.home()))
-    + r")/\.kirocrew(?:/[^\s]*)?(?:\s|$|['\"])",
+    + r")(?:"
+    + _CREW_HOME_ALT
+    + r")(?:/[^\s]*)?(?:\s|$|['\"])",
     re.IGNORECASE,
 )
 

@@ -13,6 +13,12 @@
  *   import { registerTopBarWidgets }     from './apps/topBarWidgets'
  *   import { registerPanelShortcut }     from './hooks/useKeyboardShortcuts'
  *   import { registerNonAppPrefix }      from './components/MigrationCheck'
+ *   import { registerTheme }             from './hooks/useTheme'
+ *
+ * For edition-owned API methods there is no registrar — the edition imports the
+ * blessed `apiTransport` (`./api/apiTransport`) and builds its own typed API
+ * module on it (the core never consumes edition API methods, so a registry would
+ * add stringly-typed surface for no composition benefit).
  *
  * The core ships this file EMPTY — the stock build registers nothing and every
  * seam is inert. A downstream edition overlays / owns this one file to inject

@@ -215,3 +215,29 @@ no dist → build-or-`--provision`.
 This skill only ever talks to pod ports (78xx). It must never restart or touch
 the live gateway. If the derived port ever resolves to the production port the
 orchestrator refuses and exits.
+
+## Attach approved QA media to the PR (MANDATORY workflow)
+
+QA screenshots and demo videos follow a **review-then-attach** contract:
+
+1. **Deliver to the user first.** Send the screenshots/video for review (after
+   the usual frame inspection for overlays -- first-run modals, toasts, theme
+   pickers). Never attach media the user has not seen.
+2. **Wait for explicit approval of the media.** A silent user is NOT approval.
+3. **On approval, attach to the PR automatically -- do NOT ask again.**
+   - Copy the approved files into `<worktree>/temp-screenshots/<feature>/`
+     (top-level ephemeral dir; NEVER under `docs/` or `src/kiro_crew/**` --
+     those trees ship in the wheel/sdist and desktop DMG).
+   - Stage `temp-screenshots/<feature>/`, **amend into the PR's single
+     commit**, and force-push with lease (standalone push command naming the
+     feature branch).
+   - Update the PR body with **commit-SHA-pinned** raw URLs:
+     - Images inline: `![alt](https://github.com/<owner>/<repo>/raw/<sha>/temp-screenshots/<feature>/<name>.png)`
+       -- put the 2-3 most telling shots inline, fold the rest into `<details>`.
+     - Videos: GitHub does not inline-play raw blob mp4s -- add a labelled link
+       line instead: `[Demo video (Ns, XMB)](https://github.com/<owner>/<repo>/raw/<sha>/temp-screenshots/<feature>/<name>.mp4)`.
+   - After ANY later amend, re-pin every media URL to the new SHA.
+   - Verify the body update landed (`gh api repos/<o>/<r>/pulls/<n> --jq .body | grep temp-screenshots`).
+4. **Batch to minimize approval resets.** A force-push resets PR approvals --
+   attach media BEFORE asking the user to approve the PR itself, and fold the
+   media amend into any pending code amend rather than pushing twice.

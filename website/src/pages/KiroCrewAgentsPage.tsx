@@ -94,7 +94,7 @@ function WorkspaceModal({
               {/* Native input associated via htmlFor+id; label-has-for's nesting requirement is a false positive. */}
               {/* eslint-disable-next-line jsx-a11y/label-has-for */}
               <label htmlFor="ws-dir" className="text-[11px] text-muted uppercase tracking-wider font-medium">Directory</label>
-              <InfoTip text="Subdirectory inside ~/.kirocrew where this workspace stores its data (chat history, lessons, projects). Each workspace gets its own isolated directory." />
+              <InfoTip text="Subdirectory inside ~/.kiro/crew where this workspace stores its data (chat history, lessons, projects). Each workspace gets its own isolated directory." />
             </div>
             <Input id="ws-dir" placeholder="workspace" value={wsDir} onChange={e => { setDirTouched(true); setWsDir(e.target.value) }} />
           </div>

@@ -1,5 +1,6 @@
 import { Link2, List } from 'lucide-react'
 import type { ExtractedLink } from '../../utils/extractChatLinks'
+import { dedupResourceLinks } from '../../utils/extractChatLinks'
 import type { ChatSection } from '../../hooks/useChatNavigation'
 import Clickable from '../../components/Clickable'
 
@@ -37,6 +38,7 @@ const TYPE_LABELS: Record<string, string> = {
  *  floating overlay (ChatNavPanel); the overlay shell was dropped when nav
  *  was merged into the activity sidebar. */
 export default function ChatNavContent({ links, sections, onScrollToSection, resolving }: ChatNavContentProps) {
+  const resourceLinks = dedupResourceLinks(links)
   return (
     <div className="flex-1 overflow-y-auto px-3 py-2 flex flex-col gap-2">
       {/* Key Resources */}
@@ -45,9 +47,9 @@ export default function ChatNavContent({ links, sections, onScrollToSection, res
           <Link2 size={11} /> Resources
           {resolving && <span className="ml-auto text-[10px] text-accent animate-pulse">resolving…</span>}
         </div>
-        {links.length > 0 ? (
+        {resourceLinks.length > 0 ? (
           <div className="flex flex-col gap-0.5">
-            {links.map((link, i) => (
+            {resourceLinks.map((link, i) => (
               <a
                 key={i}
                 href={link.url}

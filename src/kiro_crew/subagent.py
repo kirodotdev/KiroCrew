@@ -45,6 +45,11 @@ from kiro_crew.hooks import (
     fire_tool_hooks,
     safe_read_file,
 )
+from kiro_crew.llm_helpers import (
+    TRANSIENT_RETRIES,
+    acp_error_is_transient,
+    transient_retry_delay,
+)
 from kiro_crew.providers.base import (
     EVENT_COMPLETE,
     EVENT_PERMISSION_REQUEST,
@@ -203,8 +208,35 @@ _TIMEOUT_SECS = 1800  # 30 minutes
 _TURN_LIMIT = 100
 _REAPER_INTERVAL = 60  # seconds between reaper sweeps
 _RESET_TIMEOUT = 30.0  # max seconds for session reset in finally block
+_RECOVERY_SLOT_WAIT_SECS = 60.0  # max seconds cancel-recovery waits for a free slot
 _STARTUP_TIMEOUT_SECS = 120  # max seconds a subagent may sit pre-first-turn with no runtime before the startup watchdog reaps it
 _ON_DONE_TIMEOUT = 1200.0  # outer cap: max total seconds for semaphore wait + injection
+
+# Continuation prompt sent when a transient backend error interrupted a turn
+# AFTER output had already streamed. Mirrors the main path's post-token
+# CONTINUE recovery (PR #91): the partial is preserved (result_text keeps
+# accumulating), and the model is asked to finish rather than restart.
+_TRANSIENT_CONTINUE_MSG = (
+    "[system] Your previous response was interrupted by a transient backend "
+    "error. The output you already produced was preserved. Continue exactly "
+    "where you stopped and finish the task — do not repeat completed work."
+)
+
+# Prefix injected on the one-shot auto-continue after an unexpected (non-user)
+# cancellation, when the first attempt showed ANY activity (text chunk or tool
+# call). Mirrors the main path's cancelled-turn preamble (PR #173). The respawn
+# runs on a FRESH session (the original was reset in the old task's finally),
+# so this preamble is the only vehicle for the replay-safety warning: a
+# mutating tool may have executed on the first attempt before any text
+# streamed, and blindly re-running the bare prompt would re-execute it.
+_CANCEL_RESUME_PREFIX = (
+    "[system] Your previous attempt at this task was interrupted before "
+    "completion (unexpected cancellation). Partial output may have been "
+    "recorded, and tools may have ALREADY EXECUTED with side effects (files "
+    "written, messages sent, commands run). Verify current state before "
+    "repeating any side-effecting action — do not blindly redo work that "
+    "already completed. Continue the task and produce a complete result.\n\n"
+)
 
 # Inner cap: max seconds for a single injected continuation turn
 # (stream_and_collect). When the last spawn_run subagent completes, the gateway
@@ -787,6 +819,35 @@ class SubagentInfo:
     # on the _shared_provider directly.
     _session_sharing: bool = False
     _shared_provider: Any = None  # AcpSessionProvider when _session_sharing=True
+    # ── Turn-resilience state (subagent parity with the main-agent guards) ──
+    # True when the user explicitly stopped this agent (DELETE /api/spawn/{id}).
+    # Renders as a neutral "stopped" terminal state (not an error) and
+    # preserves whatever partial output was streamed.
+    user_stopped: bool = False
+    # One-shot budget for auto-continue after an UNEXPECTED (non-user, non-
+    # shutdown) asyncio cancellation — mirrors the main path's cancel recovery.
+    _cancel_retry_used: bool = False
+    # True between an unexpected cancellation and the recovery respawn; the
+    # _run finally block skips terminal finalization (subagent_done, on_done)
+    # while set so the agent is not reported done mid-recovery.
+    _recovering: bool = False
+
+    @property
+    def outcome(self) -> str:
+        """Canonical three-way terminal outcome: 'stopped' | 'failed' | 'completed'.
+
+        THE single source of truth for terminal-state classification. Consumers
+        MUST use this (or the ``outcome`` field carried on every subagent_done
+        emission) instead of re-deriving from ``error``-nullability — the
+        legacy ``error ? failed : completed`` idiom silently misreports a
+        user-stopped agent as completed. ``stopped``/``error`` remain on the
+        wire for compatibility.
+        """
+        if self.user_stopped:
+            return "stopped"
+        if self.error:
+            return "failed"
+        return "completed"
 
 
 # Callback: (subagent_info) -> None
@@ -828,6 +889,8 @@ class SubagentManager:
         on_spawn_approval: SpawnApprovalCallback | None = None,
         is_yolo: Callable[[], bool] | None = None,
         on_event: SubagentEventCallback | None = None,
+        on_orphan_notify: Callable[[str, str], Awaitable[bool]] | None = None,
+        on_orphan_dm: Callable[[str], Awaitable[bool]] | None = None,
         completion_keep: str = "head",
         completion_keep_chars: int = COMPLETION_KEEP_DEFAULT_CHARS,
     ):
@@ -844,6 +907,14 @@ class SubagentManager:
         self._on_spawn_approval = on_spawn_approval
         self._is_yolo = is_yolo
         self._on_event = on_event
+        # Orphan-notification delivery (gateway-wired). ``on_orphan_notify``
+        # injects a message into the parent dashboard slot (returns True on
+        # success); ``on_orphan_dm`` is the owner-DM / notification fallback.
+        self._on_orphan_notify = on_orphan_notify
+        self._on_orphan_dm = on_orphan_dm
+        # Set by cancel_all() so shutdown-driven task cancellations never
+        # trigger the one-shot unexpected-cancel auto-continue.
+        self._shutting_down = False
         self._completion_keep = completion_keep
         self._completion_keep_chars = completion_keep_chars
         self._running_count = 0
@@ -968,6 +1039,12 @@ class SubagentManager:
                 return
             logger.info("Reconciling %d orphaned subagent(s)", len(orphans))
             processed = 0
+            # DM-fallback messages are DIGESTED: collected across the whole
+            # scan and delivered as ONE message at the end — a restart with N
+            # in-flight agents must never produce N pings. (The session-
+            # injection path batches naturally via the parent slot's pending-
+            # failures drain.)
+            dm_pending: list[str] = []
             for state in orphans:
                 agent_id = state.get("id", "")
                 if not agent_id or agent_id in self._agents:
@@ -1033,9 +1110,13 @@ class SubagentManager:
                         "Reconciled orphan %s: recovery=%s, pid=%s, has_result=%s",
                         agent_id, recovery, pid, has_result,
                     )
-                    # Notify user about the orphaned agent
+                    # Notify user about the orphaned agent. Injection happens
+                    # per-orphan (it rides the parent slot's batched pending-
+                    # failures queue); DM fallback is deferred to the digest.
                     try:
-                        await self._notify_orphan(agent_id, state, recovery, has_result)
+                        undelivered = await self._notify_orphan(agent_id, state, recovery, has_result)
+                        if undelivered:
+                            dm_pending.append(undelivered)
                     except Exception:
                         logger.debug("Notification failed for orphan %s", agent_id, exc_info=True)
                 except Exception:
@@ -1045,6 +1126,20 @@ class SubagentManager:
                 processed += 1
                 if processed % 50 == 0:
                     await asyncio.sleep(0)
+
+            # Single digest for everything the injection path couldn't deliver.
+            if dm_pending:
+                if len(dm_pending) == 1:
+                    digest = dm_pending[0]
+                else:
+                    digest = (
+                        f"[Subagent restart digest] {len(dm_pending)} subagent(s) "
+                        f"orphaned by a gateway restart:\n\n" + "\n\n".join(dm_pending)
+                    )
+                try:
+                    await self._send_orphan_slack_dm(digest)
+                except Exception:
+                    logger.debug("Orphan digest DM failed", exc_info=True)
         except Exception:
             logger.warning("Orphan reconciliation failed", exc_info=True)
 
@@ -1079,11 +1174,13 @@ class SubagentManager:
 
     async def _notify_orphan(
         self, agent_id: str, state: dict, recovery: str, has_result: bool
-    ) -> None:
+    ) -> str | None:
         """Notify user about an orphaned subagent.
 
-        1. Try session injection if parent session still exists
-        2. Fall back to Slack DM via send_message MCP tool
+        1. Try session injection if parent session still exists (delivered
+           messages return ``None``).
+        2. Otherwise return the redacted message so the caller can batch all
+           undelivered notifications into a SINGLE digest DM — never N pings.
         """
         task_preview = (state.get("task", "") or "")[:100]
         parent_session = state.get("parent_session", "")
@@ -1126,35 +1223,55 @@ class SubagentManager:
                         )
                     except Exception:
                         pass
-                    return
+                    return None
             except Exception:
                 logger.debug("Injection failed for orphan %s", agent_id, exc_info=True)
 
-        # Fallback: Slack DM
-        try:
-            await self._send_orphan_slack_dm(msg)
-        except Exception:
-            logger.debug("Slack DM fallback failed for orphan %s", agent_id, exc_info=True)
+        # Undelivered: hand back for the caller's single digest DM.
+        return msg
 
     async def _try_inject_orphan_notification(self, parent_session: str, msg: str) -> bool:
         """Try to inject a message into the parent dashboard session.
 
-        Returns True if injection succeeded.
+        Delegates to the gateway-wired ``on_orphan_notify`` callback, which
+        appends the (already-redacted) message to the parent slot's transcript
+        and queues it into ``slot._pending_subagent_failures`` so the LLM
+        learns about the orphan on its next turn. Returns True if delivered.
         """
-        # This hooks into the existing dashboard session injection mechanism.
-        # For now, return False to always fall through to Slack DM.
-        # Full injection requires access to the dashboard slot, which is
-        # wired up at a higher level (gateway.py). This will be connected
-        # when the notification plumbing is integrated.
-        return False
+        if self._on_orphan_notify is None:
+            return False
+        try:
+            delivered = bool(await self._on_orphan_notify(parent_session, msg))
+        except Exception:
+            logger.debug("on_orphan_notify raised for %s", parent_session, exc_info=True)
+            return False
+        if delivered:
+            try:
+                sel().log_api_access(
+                    caller=parent_session,
+                    operation="subagent.orphan_notification_injected",
+                    outcome="ok",
+                    source="subagent",
+                )
+            except Exception:
+                logger.debug("SEL audit for orphan injection failed", exc_info=True)
+        return delivered
 
     async def _send_orphan_slack_dm(self, msg: str) -> None:
-        """Send orphan notification via Slack DM (best-effort).
+        """Deliver an orphan notification via the owner DM / notification path.
 
-        TODO: Wire into the gateway's Slack client once available at this layer.
-        Currently logs the notification for debugging.
+        Delegates to the gateway-wired ``on_orphan_dm`` callback (Slack DM +
+        dashboard notification). Falls back to a log line when no callback is
+        wired (e.g. slack-only setups constructed without the gateway hooks).
         """
-        logger.warning("Orphan notification (Slack DM pending): %s", msg[:200])
+        if self._on_orphan_dm is not None:
+            try:
+                delivered = bool(await self._on_orphan_dm(msg))
+                if delivered:
+                    return
+            except Exception:
+                logger.debug("on_orphan_dm raised", exc_info=True)
+        logger.warning("Orphan notification (no delivery channel wired): %s", msg[:200])
 
     def _live_shared_count(self, pid: int | None) -> int:
         """Count live session-shared subagents sharing runtime *pid* (>= 1).
@@ -1449,19 +1566,27 @@ class SubagentManager:
 
         task = self._tasks.pop(agent_id, None)
         if task and not task.done():
-            task.cancel()
+            # Marker BEFORE cancel (intentional-cancel contract): reaped must
+            # be visible when the task's CancelledError arm runs, or the
+            # recovery scheduler would classify this reap as an unexpected
+            # external cancel and respawn the run we are killing.
+            info.reaped = True
+            self._cancel_task_intentionally(task, info, reason=reason or "reaped")
 
         freed_slot = False
         if not info.done:
             info.done = True
-            if not info.error:
+            if not info.error and not info.user_stopped:
+                # A user stop is neutral — never synthesize a reap error for it.
                 if reason == "startup_timeout":
                     info.error = f"Failed to start within {self._startup_deadline}s (no runtime launched, no turn produced) [{_timeout_context(info, include_elapsed=False)}]"
                 else:
                     info.error = f"Reaped after {int(elapsed)}s (exceeded {self._default_timeout}s deadline) [{_timeout_context(info, include_elapsed=False)}]"
             self._running_count = max(0, self._running_count - 1)
             freed_slot = True
-            Stats().inc_subagent_failed()
+            if not info.user_stopped:
+                # A user-initiated stop is a neutral outcome, not a failure.
+                Stats().inc_subagent_failed()
             self._write_tombstone(info, reason or "reaped")
             self._record_cost(info)
         info.reaped = True
@@ -1501,6 +1626,8 @@ class SubagentManager:
             {
                 "elapsed": elapsed,
                 "error": _redact(info.error) if info.error else None,
+                "stopped": info.user_stopped,
+                "outcome": info.outcome,
                 "task": _redact(info.task),
                 "agent": _redact(info.agent),
                 "result": _done_result(info.result),
@@ -2203,10 +2330,62 @@ class SubagentManager:
             logger.warning("Subagent %s timed out", info.id)
         except asyncio.CancelledError:
             if not info.reaped:
-                info.done = True
-                info.error = "cancelled"
-                Stats().inc_subagent_failed()
-                self._write_tombstone(info, "cancelled")
+                if (
+                    not info.user_stopped
+                    and not self._shutting_down
+                    and not info._cancel_retry_used
+                    and info.tool_count == 0
+                ):
+                    # UNEXPECTED cancellation (not user Stop, not shutdown):
+                    # one-shot auto-continue, mirroring the main path's
+                    # unexpected-cancel recovery (PR #173). Skip terminal
+                    # finalization (via _recovering) and respawn on a fresh
+                    # task — this task is being cancelled and cannot continue.
+                    #
+                    # SIDE-EFFECT GATE (tool_count == 0): the respawn runs on a
+                    # FRESH session with no ledger of prior tool calls, so the
+                    # model cannot verify which side effects (files written,
+                    # messages sent, commands run) already happened — a
+                    # preamble alone cannot make re-running safe. Once any tool
+                    # has executed, we finalize with the partial preserved
+                    # instead of respawning. Text-only activity is safe to
+                    # resume (the partial is preserved and re-presented).
+                    info._cancel_retry_used = True
+                    info._recovering = True
+                    logger.warning(
+                        "Subagent %s unexpectedly cancelled — scheduling one-shot auto-continue",
+                        info.id,
+                    )
+                    try:
+                        sel().log_tool_invocation(
+                            session_key=session_key,
+                            source="subagent",
+                            tool_name="cancel_auto_continue",
+                            outcome="scheduled",
+                            metadata={"subagent_id": info.id},
+                        )
+                    except Exception:
+                        logger.debug("SEL audit for cancel recovery failed", exc_info=True)
+                    self._schedule_cancel_recovery(info)
+                else:
+                    info.done = True
+                    if info.tool_count > 0 and not info.user_stopped and not self._shutting_down:
+                        # Auto-continue deliberately suppressed (side-effect
+                        # gate above): be explicit so the parent/user knows the
+                        # run was interrupted and NOT resumed, and why.
+                        info.error = (
+                            "cancelled (auto-continue suppressed: tools already "
+                            "executed — resuming on a fresh session could repeat "
+                            "side effects)"
+                        )
+                    else:
+                        info.error = "cancelled"
+                    # Preserve whatever streamed before the cancel as a partial
+                    # result (delivered with the failure).
+                    if not info.result and info.streaming_text:
+                        info.result = info.streaming_text
+                    Stats().inc_subagent_failed()
+                    self._write_tombstone(info, "cancelled")
             logger.info("Subagent %s cancelled", info.id)
         except Exception as exc:
             if not info.reaped:
@@ -2218,20 +2397,26 @@ class SubagentManager:
         finally:
             if not info.reaped:
                 # Fire WS event immediately so Activity Viewer updates
-                # before the slow reset + on_done path.
-                info.elapsed = time.time() - info.started
-                self._record_cost(info)
-                await self._fire_event(
-                    "subagent_done",
-                    info,
-                    {
-                        "elapsed": info.elapsed,
-                        "error": _redact(info.error) if info.error else None,
-                        "task": _redact(info.task),
-                        "agent": _redact(info.agent),
-                        "result": _done_result(info.result),
-                    },
-                )
+                # before the slow reset + on_done path. Skipped while
+                # _recovering: a cancel-recovery respawn is pending and the
+                # agent must not be reported done (the respawned run's own
+                # finally will finalize).
+                if not info._recovering:
+                    info.elapsed = time.time() - info.started
+                    self._record_cost(info)
+                    await self._fire_event(
+                        "subagent_done",
+                        info,
+                        {
+                            "elapsed": info.elapsed,
+                            "error": _redact(info.error) if info.error else None,
+                            "stopped": info.user_stopped,
+                            "outcome": info.outcome,
+                            "task": _redact(info.task),
+                            "agent": _redact(info.agent),
+                            "result": _done_result(info.result),
+                        },
+                    )
                 try:
                     if info._session_sharing:
                         # Session-sharing subagents: destroy the session handle
@@ -2267,7 +2452,7 @@ class SubagentManager:
                         logger.exception("Subagent %s: reset failed", info.id)
             self._tasks.pop(info.id, None)
 
-        if self._on_done and not info.reaped:
+        if self._on_done and not info.reaped and not info._recovering:
             try:
                 await asyncio.wait_for(self._on_done(info), timeout=_ON_DONE_TIMEOUT)
                 # Retain result.txt for a TTL grace window instead of deleting it
@@ -2314,6 +2499,163 @@ class SubagentManager:
             except Exception:
                 logger.exception("Subagent announce failed for %s", info.id)
 
+    def _schedule_cancel_recovery(self, info: SubagentInfo) -> None:
+        """Respawn *info*'s run on a fresh task after an unexpected cancellation.
+
+        Called from ``_run``'s CancelledError handler — the current task is
+        being cancelled and cannot continue itself, so the continuation runs on
+        a new task. One-shot: gated by ``info._cancel_retry_used`` at the call
+        site. The original run's finally block still performs session cleanup
+        (release/reset) but skips terminal finalization while ``_recovering``.
+
+        **Cancellation-source contract.** This branch exists for cancellations
+        that arrive from OUTSIDE the manager's own lifecycle — in practice the
+        parent task tree being torn down around a live subagent (e.g. a
+        dashboard slot reset/removal cancelling background tasks, or an event
+        during gateway component re-init) — mirroring the main path's
+        unexpected-cancel recovery (PR #173). Every INTENTIONAL cancel site in
+        this module sets a terminal marker before cancelling, and the recovery
+        branch defers to all of them: ``cancel()`` sets ``user_stopped``,
+        ``cancel_all()`` sets ``_shutting_down``, and ``_force_reap`` sets
+        ``reaped`` (checked before the recovery branch). Any NEW code path that
+        cancels a subagent task on purpose MUST set one of those markers first,
+        or the cancel will be treated as unexpected and recovered once.
+
+        Coordination is explicit, not timed: ``_resume`` awaits the ORIGINAL
+        task object to fully complete (its finally does session release/reset,
+        slot decrement, and pops the task registry) before respawning. This
+        guarantees the old finally can neither pop the new task out of
+        ``self._tasks`` nor emit a duplicate completion, and the respawn never
+        starts against a session whose reset is still in flight. The respawn
+        then re-acquires a slot by waiting for capacity (the old finally's
+        ``_drain_queue`` may have admitted a queued spawn into the freed slot),
+        so the concurrency ceiling is never exceeded.
+
+        The pending ``_resume`` task itself is registered in ``self._tasks``
+        (under ``"<id>:recovery"``) so ``cancel_all()`` reaches it during
+        shutdown — a recovery can never outlive or escape manager teardown.
+        """
+        orig_task = asyncio.current_task()
+        recovery_key = f"{info.id}:recovery"
+
+        async def _resume() -> None:
+            try:
+                # Explicit handshake: wait for the original task's finally
+                # (session release/reset, slot decrement, task-registry pop)
+                # to fully complete before respawning. The finally is bounded
+                # (_RESET_TIMEOUT-capped reset), so add slack on top of it.
+                if orig_task is not None:
+                    await asyncio.wait({orig_task}, timeout=_RESET_TIMEOUT + 60)
+                    if not orig_task.done():
+                        logger.error(
+                            "Subagent %s cancel-recovery: original task did not "
+                            "finish teardown in time — aborting recovery",
+                            info.id,
+                        )
+                        raise RuntimeError("original task teardown timed out")
+                if info.done or info.reaped or self._shutting_down:
+                    info._recovering = False
+                    return
+                # Re-acquire a slot through capacity, not blind increment:
+                # the old finally freed our slot and may have drained a queued
+                # spawn into it. Wait (bounded) for a free slot so recovery
+                # never pushes the pool past max_concurrent.
+                deadline = time.time() + _RECOVERY_SLOT_WAIT_SECS
+                while self._running_count >= self._max_concurrent:
+                    if time.time() >= deadline or self._shutting_down:
+                        raise RuntimeError("no free slot for recovery respawn")
+                    await asyncio.sleep(0.25)
+                if info.done or info.reaped or self._shutting_down:
+                    info._recovering = False
+                    return
+                info._recovering = False
+                # Claim the slot and launch the respawn ATOMICALLY (no await
+                # between capacity check, increment, and create_task). An await
+                # in that window would let a finishing subagent's _drain_queue
+                # admit a queued spawn into the same slot and push the pool
+                # past max_concurrent. The respawned _run owns the slot from
+                # here (its finally decrements). The informational
+                # subagent_recovering emit happens after, where a cancellation
+                # can no longer leak the counter.
+                self._running_count += 1
+                self._tasks[info.id] = asyncio.create_task(self._run(info))
+                try:
+                    await self._fire_event("subagent_recovering", info, {"attempt": 1})
+                except Exception:
+                    logger.debug("subagent_recovering emit failed for %s", info.id, exc_info=True)
+            except Exception:
+                logger.exception("Subagent %s cancel-recovery respawn failed", info.id)
+                info._recovering = False
+                if not info.done and not info.reaped:
+                    # Full terminal finalization — the UI must never be left on
+                    # a running card and the parent must still hear about the
+                    # failure (with any partial result) even when the respawn
+                    # itself could not happen.
+                    info.done = True
+                    info.error = "cancelled (recovery failed)"
+                    info.elapsed = time.time() - info.started
+                    Stats().inc_subagent_failed()
+                    self._write_tombstone(info, "cancelled")
+                    self._record_cost(info)
+                    try:
+                        await self._fire_event(
+                            "subagent_done",
+                            info,
+                            {
+                                "elapsed": info.elapsed,
+                                "error": _redact(info.error),
+                                "stopped": False,
+                                "outcome": "failed",
+                                "task": _redact(info.task),
+                                "agent": _redact(info.agent),
+                                "result": _done_result(info.result),
+                            },
+                        )
+                    except Exception:
+                        logger.debug("subagent_done emit failed for %s", info.id, exc_info=True)
+                    if self._on_done:
+                        try:
+                            await asyncio.wait_for(self._on_done(info), timeout=_ON_DONE_TIMEOUT)
+                        except Exception:
+                            logger.warning(
+                                "Subagent %s: recovery-failure delivery failed",
+                                info.id,
+                                exc_info=True,
+                            )
+            finally:
+                # Whether respawned, aborted, or cancelled: this pending
+                # recovery is no longer outstanding.
+                _reg = self._tasks.get(recovery_key)
+                if _reg is asyncio.current_task():
+                    self._tasks.pop(recovery_key, None)
+
+        async def _resume_guarded() -> None:
+            try:
+                await _resume()
+            except asyncio.CancelledError:
+                # The pending recovery itself was cancelled (cancel_all during
+                # shutdown, or manager teardown). Terminal by default — a
+                # cancelled recovery NEVER re-recovers; just make sure the
+                # record isn't left in limbo.
+                info._recovering = False
+                _live = self._tasks.get(info.id)
+                if _live is not None and not _live.done():
+                    # Respawn already launched — the live run owns the record
+                    # (its own CancelledError arm is terminal: one-shot flag is
+                    # spent). Don't finalize over it.
+                    raise
+                if not info.done and not info.reaped:
+                    info.done = True
+                    info.error = "cancelled"
+                    info.elapsed = time.time() - info.started
+                    Stats().inc_subagent_failed()
+                    self._write_tombstone(info, "cancelled")
+                raise
+
+        _t = asyncio.create_task(_resume_guarded())
+        self._tasks[recovery_key] = _t
+        _t.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
+
     async def _touch_activity(self, info: SubagentInfo) -> None:
         """Record stream activity for idle-stall detection.
 
@@ -2345,6 +2687,7 @@ class SubagentManager:
                 pid=info._pid,
                 turns=info.turns,
                 last_tool=info.last_tool,
+                outcome=info.outcome,
             )
         except Exception:
             logger.debug("Failed to write tombstone for %s", info.id, exc_info=True)
@@ -2481,6 +2824,19 @@ class SubagentManager:
         named_agent = bool(info.agent and _AGENT_NAME_RE.fullmatch(info.agent))
         raw_task = info._raw_task or info.task
         message = raw_task if named_agent else (_SYSTEM_PREFIX + raw_task)
+        if info._cancel_retry_used and (
+            info.streaming_text or info.tool_count > 0
+        ):
+            # One-shot auto-continue after an unexpected cancellation: tell the
+            # model the prior attempt was interrupted so it completes the task
+            # instead of assuming a fresh start. Same activity predicate as
+            # the transient-retry path (GPT 5.6 HIGH): a mutating tool may
+            # have executed BEFORE the first text chunk, so tool_count must
+            # trigger the preamble too — a bare original prompt after tool
+            # activity invites duplicate side effects. (info.tool_count and
+            # streaming_text persist across the respawn; _run_inner never
+            # resets them.)
+            message = _CANCEL_RESUME_PREFIX + message
         # Scale the injected-context budget to this subagent's model window (a
         # subagent can be pinned to a smaller model). Resolved from the live
         # client; None ⇒ 1M reference.
@@ -2546,7 +2902,80 @@ class SubagentManager:
         # when EVENT_TOOL_RESULT arrives (which only carries tool_call_id and output).
         # Mirrors kiro_crew.dashboard.chat_runner._pending_tools.
         _pending_tools: dict[str, str] = {}
-        async for event in client.stream(full_message):
+
+        async def _stream_with_transient_retry():
+            """Yield stream events, retrying transient backend errors.
+
+            Parity with the main path's retry ladder (chat_runner B1/B2):
+            - Pre-token (no text streamed yet): re-send the SAME prompt on the
+              same live session, up to TRANSIENT_RETRIES with exp backoff.
+            - Post-token (partial already streamed): send a CONTINUE prompt so
+              the preserved partial is finished, not duplicated.
+            Non-transient errors and exhausted budgets propagate unchanged
+            (handled by _run's generic exception arm → error tombstone).
+            """
+            attempts = 0
+            # One-shot post-activity allowance, mirroring the main path's
+            # ``_posttoken_retry_used`` rule (dashboard/chat_runner.py ~L4324):
+            # each continuation turn issued AFTER observed activity is an
+            # independent opportunity for the model to repeat a side-effecting
+            # tool, so post-activity recovery gets exactly ONE attempt.
+            # TRANSIENT_RETRIES applies only while zero activity was observed
+            # (replaying the bare prompt is side-effect-free by definition).
+            # PARITY NOTE: this ladder and chat_runner's are two copies with
+            # intentionally identical semantics — a fix to either's activity
+            # predicate or budget rules must be mirrored in the other.
+            post_activity_attempts = 0
+            msg = full_message
+            while True:
+                try:
+                    async for _ev in client.stream(msg):
+                        yield _ev
+                    return
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    if not acp_error_is_transient(exc):
+                        raise
+                    # Post-activity: continue instead of re-running. "Activity"
+                    # is ANY text chunk, approved tool turn, or auto-allowed
+                    # tool call — a mutating tool may have executed before the
+                    # first text chunk, and replaying the full prompt would
+                    # re-run it (duplicate writes/messages). Only a turn with
+                    # zero observed activity resends the original prompt.
+                    _had_activity = bool(result_text) or turns > 0 or info.tool_count > 0
+                    if _had_activity:
+                        if post_activity_attempts >= 1:
+                            raise
+                        post_activity_attempts += 1
+                    elif attempts >= TRANSIENT_RETRIES:
+                        raise
+                    attempts += 1
+                    delay = transient_retry_delay(attempts)
+                    logger.warning(
+                        "Subagent %s: transient backend error (attempt %d/%d), "
+                        "retrying in %.1fs: %s",
+                        info.id, attempts, TRANSIENT_RETRIES, delay, exc,
+                    )
+                    await self._fire_event(
+                        "subagent_retrying",
+                        info,
+                        {"attempt": attempts, "max": TRANSIENT_RETRIES},
+                    )
+                    try:
+                        sel().log_api_access(
+                            caller=info.parent_session_key or f"subagent:{info.id}",
+                            operation="subagent.transient_retry",
+                            outcome="retrying",
+                            source="subagent",
+                            resources=f"subagent_id={info.id},attempt={attempts}",
+                        )
+                    except Exception:
+                        logger.debug("SEL audit for transient retry failed", exc_info=True)
+                    await asyncio.sleep(delay)
+                    msg = _TRANSIENT_CONTINUE_MSG if _had_activity else full_message
+
+        async for event in _stream_with_transient_retry():
             # Refresh the activity clock for EVERY event kind (thinking chunks,
             # tool-call updates, etc.) before dispatch, so idle-stall detection
             # only trips on a genuine no-event hang — not on an event kind this
@@ -2855,24 +3284,87 @@ class SubagentManager:
         from kiro_crew.providers.acp import is_claude_backend
         return is_claude_backend(provider)
 
+    def _cancel_task_intentionally(
+        self,
+        task: "asyncio.Task",  # type: ignore[type-arg]
+        info: "SubagentInfo | None" = None,
+        *,
+        reason: str,
+    ) -> None:
+        """The single sanctioned chokepoint for INTENTIONALLY cancelling a
+        manager-owned subagent task.
+
+        Enforces the intentional-cancel contract mechanically instead of by
+        docstring: a terminal marker MUST already be visible before the cancel
+        is issued (``info.user_stopped`` / ``info.reaped`` / ``info.done`` /
+        ``self._shutting_down``), otherwise ``_run``'s CancelledError arm
+        classifies the cancel as unexpected and auto-respawns the run — a
+        zombie respawn of work this call site meant to kill. A source-scan
+        test asserts every raw ``.cancel()`` on a managed run task in this
+        module routes through here.
+
+        Missing marker → loud error + the recovery budget is consumed
+        defensively (``_cancel_retry_used``) so a mis-marked intentional
+        cancel can never zombie-respawn; the cancel still proceeds.
+        """
+        marked = self._shutting_down or (
+            info is not None
+            and (info.user_stopped or info.reaped or info.done)
+        )
+        if not marked:
+            logger.error(
+                "Intentional cancel (reason=%s) issued WITHOUT a terminal "
+                "marker — consuming the recovery budget defensively to "
+                "prevent a zombie auto-respawn. Fix the call site: set "
+                "user_stopped/reaped/done or _shutting_down BEFORE cancelling.",
+                reason,
+            )
+            if info is not None:
+                info._cancel_retry_used = True
+        task.cancel()
+
     async def cancel(self, agent_id: str) -> bool:
-        """Cancel a single running subagent. Returns True if found and cancelled."""
+        """Cancel a single running subagent. Returns True if found and cancelled.
+
+        User-initiated stop is a neutral terminal state, not an error: partial
+        output is preserved on the info record (and remains in result.txt), the
+        tombstone is written as ``user_stop``, and the ``subagent_done`` event
+        carries ``stopped: true`` so the UI renders a neutral "stopped" card.
+        """
         info = self._agents.get(agent_id)
         if not info or info.done:
             return False
-        info.error = "Cancelled by user"
-        await self._force_reap(agent_id, info, time.time() - info.started)
+        info.user_stopped = True
+        # Neutral semantics live in the RECORD, not just the live event: a user
+        # stop leaves ``error`` unset so every consumer (reconnect snapshots,
+        # tombstones, /api/spawn listing, orphan reconciliation) derives the
+        # same neutral "stopped" status without having to cross-check
+        # ``user_stopped``. _force_reap is also user_stopped-aware and will not
+        # synthesize a reap error for this path.
+        # Preserve whatever streamed before the stop as a partial result.
+        if not info.result and info.streaming_text:
+            info.result = info.streaming_text
+        # _force_reap emits the (single) stopped-aware ``subagent_done`` event
+        # and drives _on_done delivery — no second event here.
+        await self._force_reap(agent_id, info, time.time() - info.started, reason="user_stop")
         return True
 
     async def cancel_all(self) -> None:
         """Cancel all running subagents and wait for cleanup."""
+        # Shutdown-driven cancellations must never trigger the one-shot
+        # unexpected-cancel auto-continue (the loop is going away).
+        self._shutting_down = True
         if self._reaper_task and not self._reaper_task.done():
             self._reaper_task.cancel()
             self._reaper_task = None
         tasks_to_await: list[asyncio.Task] = []  # type: ignore[type-arg]
         for agent_id, task in list(self._tasks.items()):
             if not task.done():
-                task.cancel()
+                # _shutting_down (set above) is the terminal marker for this
+                # site; the chokepoint enforces the contract mechanically.
+                self._cancel_task_intentionally(
+                    task, self._agents.get(agent_id), reason="shutdown"
+                )
                 tasks_to_await.append(task)
         if tasks_to_await:
             await asyncio.gather(*tasks_to_await, return_exceptions=True)

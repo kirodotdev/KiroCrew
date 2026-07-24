@@ -115,13 +115,17 @@ async def api_taskrunner_start(request: web.Request) -> web.Response:
     if not spec_path:
         return web.json_response({"error": "spec path required"}, status=400)
 
-    # Validate non-inline paths against traversal
+    # Validate non-inline paths against traversal, then forward the *validated*
+    # resolved path (not the raw input) to the sink below so the guard and the
+    # use share one value — no gap where spec_path could differ from what was
+    # checked, and the containment guard is visible to static analysis.
     if not spec_path.startswith("__inline__:"):
         resolved = Path(spec_path).resolve()
         if ".." in Path(spec_path).parts or not resolved.is_file():
             return web.json_response({"error": "invalid spec path"}, status=400)
         if is_sensitive_path(str(resolved)):
             return web.json_response({"error": "access denied"}, status=403)
+        spec_path = str(resolved)
 
     # Handle inline spec content
     if spec_path.startswith("__inline__:"):

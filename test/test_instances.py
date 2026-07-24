@@ -235,6 +235,43 @@ class TestTokenMint:
         with pytest.raises(TokenMintError):
             build_remote_token_command("", ttl="20h", port=99999)
 
+    def test_token_command_prefers_run_marker_for_port(self):
+        from kiro_crew.instances.token_mint import (
+            build_candidate_command,
+            build_remote_token_command,
+        )
+
+        # empty remote_bin + port -> run-marker clause runs BEFORE the candidate
+        # ladder, keyed by the same port, and execs the recorded launcher.
+        cmd = build_remote_token_command("", ttl="20h", port=7879)
+        assert '"${KIROCREW_HOME:-$HOME/.kirocrew}/run/gateway-7879.bin"' in cmd
+        assert 'exec "$__kb" token --ttl 20h --port 7879;' in cmd
+        assert cmd.index("__mk=") < cmd.index("for b in ")  # marker tried first
+        # it still falls through to the candidate ladder (older remotes/no marker)
+        assert 'exec "$b" token --ttl 20h --port 7879;' in cmd
+
+        # no port -> no marker clause (can't key it); pure candidate ladder.
+        no_port = build_remote_token_command("", ttl="20h")
+        assert "__mk=" not in no_port and "gateway-" not in no_port
+
+        # explicit custom remote_bin is never overridden by the marker.
+        custom = build_remote_token_command("~/bin/kirocrew", ttl="20h", port=7879)
+        assert "__mk=" not in custom
+        assert '"$HOME/bin/kirocrew" token --ttl 20h --port 7879' in custom
+
+        # generic candidate builder: marker only when a port is supplied.
+        assert "__mk=" not in build_candidate_command("restart")
+        assert "gateway-7880.bin" in build_candidate_command("token", marker_port=7880)
+
+        # the sibling remote-exec path (restart, via run_remote_kirocrew) also
+        # prefers the marker when the caller passes the remote port.
+        from kiro_crew.instances.token_mint import build_remote_command
+
+        restart = build_remote_command("", "restart", marker_port=7781)
+        assert "gateway-7781.bin" in restart and 'exec "$__kb" restart;' in restart
+        # ...unless an explicit custom remote_bin is set (never overridden).
+        assert "__mk=" not in build_remote_command("~/bin/kirocrew", "restart", marker_port=7781)
+
     def test_ssh_argv_shape(self):
         from kiro_crew.instances.token_mint import _build_ssh_argv
 
@@ -275,6 +312,49 @@ class TestTokenMint:
         monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
         with pytest.raises(tm.TokenMintError):
             asyncio.run(tm.mint_remote_token("cd-1", ttl="20h"))
+
+
+# ── gateway run-marker (mint prefers the running gateway's install) ───────────
+
+
+class TestRunMarker:
+    def test_write_read_clear(self, tmp_path, monkeypatch):
+        import sys
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        from kiro_crew.instances import run_marker
+
+        # Fabricate a venv layout: <venv>/bin/{python,kirocrew}
+        bindir = tmp_path / "venv" / "bin"
+        bindir.mkdir(parents=True)
+        launcher = bindir / "kirocrew"
+        launcher.write_text("#!/bin/sh\n")
+        launcher.chmod(0o755)
+        monkeypatch.setattr(sys, "executable", str(bindir / "python"))
+
+        assert run_marker.gateway_launcher_path() == str(launcher)
+
+        run_marker.write_marker(7879)
+        marker = run_marker.marker_path(7879)
+        assert marker.read_text().strip() == str(launcher)
+
+        run_marker.clear_marker(7879)
+        assert not marker.exists()
+        run_marker.clear_marker(7879)  # clearing a missing marker is a no-op
+
+    def test_no_marker_when_launcher_absent(self, tmp_path, monkeypatch):
+        import sys
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        from kiro_crew.instances import run_marker
+
+        bindir = tmp_path / "venv2" / "bin"
+        bindir.mkdir(parents=True)  # no sibling 'kirocrew' launcher
+        monkeypatch.setattr(sys, "executable", str(bindir / "python"))
+
+        assert run_marker.gateway_launcher_path() is None
+        run_marker.write_marker(7000)
+        assert not run_marker.marker_path(7000).exists()
 
 
 # ── injection-safe validation ────────────────────────────────────────────────
@@ -1565,13 +1645,14 @@ class TestSelfHealRefreshRestart:
         reg.add(name="Bad", ssh_host="-obadhost", instance_id="bad")
         calls = {}
 
-        async def fake_run(host, sub, *, remote_bin="", timeout_secs=60.0):
-            calls["a"] = (host, sub)
+        async def fake_run(host, sub, *, remote_bin="", marker_port=None, timeout_secs=60.0):
+            calls["a"] = (host, sub, marker_port)
             return (0, "")
 
         monkeypatch.setattr(stm, "run_remote_kirocrew", fake_run)
         r = asyncio.run(mgr.restart_remote("cd-1"))
-        assert r["ok"] and calls["a"] == ("cd-1-alias", "restart")
+        # remote_port defaults to 7777 → threaded so restart uses the marker resolver.
+        assert r["ok"] and calls["a"] == ("cd-1-alias", "restart", 7777)
         # validation failure
         r = asyncio.run(mgr.restart_remote("bad"))
         assert not r["ok"] and "invalid ssh settings" in r["message"]

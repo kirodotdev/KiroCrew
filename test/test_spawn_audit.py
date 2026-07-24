@@ -108,6 +108,26 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # and only fill the API path (bounded to api.github.com). NOT sandboxed
         # because gh needs the host's own authenticated credentials.
         "apps/builtins/code_review_sage/sage_lib/pipeline.py::list_open_prs",
+        # Issue Radar GitHub access — same rationale as list_open_prs above.
+        # ALL gh calls funnel through ONE chokepoint, _gh_run: a fixed `gh api`
+        # list-argv (never shell=True). gh supplies the host's OWN authenticated
+        # token, so it CANNOT be sandbox-routed (the sandbox would hide
+        # ~/.config/gh + the keychain, breaking auth). As defense-in-depth WITHIN
+        # this benign classification, _gh_run resolves a trusted canonical `gh`
+        # (never a shim on the agent-writable front of PATH) and passes a MINIMAL
+        # env (PATH/HOME/XDG + gh's own auth/network vars), so unrelated secrets
+        # (AWS/Slack/SSH) never reach the child. The only agent-reachable inputs:
+        #   • owner/repo — validated to ^[A-Za-z0-9._-]+$ + a github.com host
+        #     allowlist by github_client.parse_github_repo_url at /connect, and
+        #     read routes additionally gate on store.is_repo_connected, so only
+        #     an already-validated pair ever reaches the argv;
+        #   • the issue number — coerced via int() before it reaches the path;
+        #   • write bodies (label names / state reasons) — sent as a JSON stdin
+        #     body (--input -), never argv; the DELETE label name is URL-encoded
+        #     into the path.
+        # The jq filters are hardcoded module constants, and `gh api` is bounded
+        # to api.github.com, so no binary/cwd/host is agent-selected.
+        "apps/builtins/issue_radar/backend/github_client.py::_gh_run",
         "apps/builtins/workflows/server.py::handle_run",
         # _start_run's worker spawns argv that is ALWAYS pre-wrapped by its
         # callers through sandboxed_spawn_argv (sync wraps each step with

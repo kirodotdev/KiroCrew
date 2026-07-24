@@ -116,12 +116,72 @@ SENSITIVE_DIRS = {
     ".git-credentials",
 }
 
-# .kirocrew subdirectories that are safe for the file explorer to access.
-# Everything else under .kirocrew/ is blocked (keys, tokens, DB, sessions).
+# KiroCrew data-home subdirectories that are safe for the file explorer to
+# access. Everything else under the data home is blocked (keys, tokens, DB,
+# sessions).
 _KIROCREW_SAFE_SUBDIRS = {
     "workspace", "uploads", "skills", "artifacts", "apps",
     "app-sources", "workflows", "pods", "logs", "crons",
 }
+
+# The KiroCrew data home has moved from the top-level ~/.kirocrew to ~/.kiro/crew
+# (nested under kiro-cli's ~/.kiro). The granular deny-by-default listing policy
+# must recognize the home wherever it lives: the current ~/.kiro/crew, the
+# archived rollback copy ~/.kirocrew.archived, and a pre-move legacy ~/.kirocrew.
+# Each marker is the tuple of trailing path segments that identify the home dir;
+# the segment(s) AFTER the marker are matched against _KIROCREW_SAFE_SUBDIRS.
+# Note ~/.kiro alone is NOT a marker — that is kiro-cli's own dir (agents,
+# sessions, settings), gated separately by the shared is_sensitive_path().
+# Markers are stored casefolded and matched casefold-insensitively (see
+# _crew_home_index): on a case-INSENSITIVE filesystem (macOS APFS/HFS+ default,
+# Windows) ``~/.KIRO/crew/config.json`` opens the SAME inode as ``~/.kiro/crew``
+# but ``Path.resolve()`` preserves the caller's typed case, so a case-sensitive
+# match would let an uppercase ``?path=`` slip past this deny-by-default gate and
+# expose the crew home's non-keystone files (config.json's Slack tokens,
+# sessions, contacts). The shared is_sensitive_path() already casefolds for the
+# same reason; this mirrors it so the two gates agree.
+_CREW_HOME_MARKERS: tuple[tuple[str, ...], ...] = (
+    (".kiro", "crew"),
+    (".kirocrew.archived",),
+    (".kirocrew",),
+)
+_CREW_HOME_MARKERS_CF: tuple[tuple[str, ...], ...] = tuple(
+    tuple(seg.casefold() for seg in marker) for marker in _CREW_HOME_MARKERS
+)
+
+
+def _crew_home_index(parts: tuple[str, ...]) -> int:
+    """Return the index of the segment JUST AFTER a crew-home marker in *parts*.
+
+    e.g. for ``(..., ".kiro", "crew", "skills")`` returns the index of
+    ``"skills"``; for ``(..., ".kirocrew", "config.json")`` the index of
+    ``"config.json"``. Returns -1 when no crew-home marker is present. The
+    longest (most specific) marker wins so ``.kiro/crew`` is preferred over any
+    shorter match.
+
+    Matching is CASE-INSENSITIVE (casefold): on macOS/Windows the on-disk crew
+    home is reachable under any letter case, and ``Path.resolve()`` keeps the
+    typed case, so a case-sensitive compare here would be a deny-by-default
+    bypass. Both the parts and the markers are casefolded before comparison.
+    """
+    cf_parts = tuple(p.casefold() for p in parts)
+    for marker in _CREW_HOME_MARKERS_CF:
+        n = len(marker)
+        for i in range(len(cf_parts) - n + 1):
+            if cf_parts[i : i + n] == marker:
+                return i + n
+    return -1
+
+
+def _is_crew_home_root(p: Path) -> bool:
+    """True if *p* is itself a crew data-home root (its parts END at a marker)."""
+    return _crew_home_index(p.parts) == len(p.parts)
+
+
+def _under_crew_home(p: Path) -> bool:
+    """True if *p* is at or under any crew data-home root."""
+    return _crew_home_index(p.parts) != -1
+
 
 # Binary extensions short-circuited from /read content fetch
 BINARY_EXTS = {
@@ -221,6 +281,31 @@ def _is_within(path: Path, root: Path) -> bool:
         return False
 
 
+def _contain_in_allowed_roots(path: Path, *, operation: str) -> Path:
+    """Resolve *path* and confirm it lands inside an allowed root, else 403.
+
+    The single sanitizer for user-derived paths that bypass ``_safe_path`` (the
+    crew-home tree-list special case): ``resolve()`` collapses ``..`` traversal
+    and follows symlinks, then containment is checked against ``ALLOWED_ROOTS``.
+    A violation is SEL-audited and raises ``PathError`` — so the RETURNED path is
+    always inside the allow-list and safe to stat/read. Callers must use the
+    returned value, never the original, so no untrusted path reaches a
+    filesystem operation.
+    """
+    # ``resolve()`` collapses ``..``/symlinks; the very next statement raises
+    # unless the result is inside ALLOWED_ROOTS, so this function IS the
+    # sanitizer and its return value is contained. CodeQL's py/path-injection
+    # query does not model the ``relative_to``-based containment guard as a
+    # barrier, so it flags this resolve of a user-derived path — the same
+    # false-positive the codebase suppresses at ``security.is_sensitive_path``'s
+    # resolve(). Suppress at the barrier itself; no read/write happens here.
+    resolved = path.resolve()  # lgtm[py/path-injection]
+    if not any(_is_within(resolved, root) for root in ALLOWED_ROOTS):
+        _sel_audit(operation, str(path), outcome="denied")
+        raise PathError(f"path not allowed: {path}", 403)
+    return resolved
+
+
 def _is_sensitive(p: Path) -> bool:
     """Check if path is a sensitive credential location.
 
@@ -228,20 +313,22 @@ def _is_sensitive(p: Path) -> bool:
     ``SENSITIVE_DIRS`` set so the access-deny gate can never be narrower than
     the listing-hide filter.
 
-    For ``.kirocrew/``, a granular policy applies: only subdirectories listed in
+    For the KiroCrew data home (``~/.kiro/crew``, plus the archived/legacy
+    variants), a granular policy applies: only subdirectories listed in
     ``_KIROCREW_SAFE_SUBDIRS`` are accessible; everything else (keys, tokens,
     DB, sessions) is blocked.
     """
     if any(part in SENSITIVE_DIRS for part in p.parts):
         return True
-    # Granular .kirocrew policy: block unless the path descends into a safe subdir.
-    if ".kirocrew" in p.parts:
-        idx = list(p.parts).index(".kirocrew")
-        # .kirocrew/ root itself is blocked (deny-by-default). Listing endpoints
+    # Granular data-home policy: block unless the path descends into a safe
+    # subdir of the crew home (~/.kiro/crew or the archived/legacy variants).
+    after = _crew_home_index(p.parts)
+    if after != -1:
+        # The home root itself is blocked (deny-by-default). Listing endpoints
         # use _kirocrew_safe_children() to enumerate only safe subdirs.
-        if idx + 1 >= len(p.parts):
+        if after >= len(p.parts):
             return True
-        next_part = p.parts[idx + 1]
+        next_part = p.parts[after]
         if next_part not in _KIROCREW_SAFE_SUBDIRS:
             return True
     return is_sensitive_path(str(p))
@@ -254,6 +341,10 @@ def _kirocrew_safe_children(kirocrew_dir: Path) -> list[dict]:
     callers get back only entries that are in ``_KIROCREW_SAFE_SUBDIRS``.
     Sensitive file names (config.json, *.key, memory.db) are never exposed.
     """
+    # Re-contain at entry so the iterdir() sink consumes the RETURN of a raising
+    # ALLOWED_ROOTS barrier (idempotent — callers already pass a contained Path;
+    # this makes the containment legible to CodeQL py/path-injection).
+    kirocrew_dir = _contain_in_allowed_roots(kirocrew_dir, operation="tree_list")
     out: list[dict] = []
     try:
         children = sorted(kirocrew_dir.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower()))
@@ -329,6 +420,11 @@ def _entry_meta(p: Path, *, with_size: bool = True) -> dict:
 def _list_dir(p: Path, depth: int = 1, ignore: bool = True) -> tuple[list[dict], bool]:
     """List directory contents up to ``depth`` levels (1 = immediate children).
     Returns (entries, truncated)."""
+    # Re-contain the listing root so iterdir() consumes the RETURN of a raising
+    # ALLOWED_ROOTS barrier (idempotent for the contained Path callers pass;
+    # makes the containment legible to CodeQL py/path-injection). Descent into
+    # subdirs is already gated by the _is_within check in walk().
+    p = _contain_in_allowed_roots(p, operation="tree_list")
     out: list[dict] = []
     count = [0]
 
@@ -348,10 +444,15 @@ def _list_dir(p: Path, depth: int = 1, ignore: bool = True) -> tuple[list[dict],
                 break
             if child.name in SENSITIVE_DIRS:
                 continue
-            # Deny-by-default for .kirocrew root listings: show ONLY the safe
-            # subdirs. Even exposing the *names* of credential material
-            # (config.json, *.key, memory.db) is an information leak.
-            if d.name == ".kirocrew" and child.name not in _KIROCREW_SAFE_SUBDIRS:
+            # Deny-by-default for the crew data-home root listing: show ONLY the
+            # safe subdirs. Even exposing the *names* of credential material
+            # (config.json, *.key, memory.db) is an information leak. ``d`` is
+            # the crew home when its own path parts end exactly at a marker (so
+            # the next-segment index points one past the end).
+            if (
+                _crew_home_index(d.parts) == len(d.parts)
+                and child.name not in _KIROCREW_SAFE_SUBDIRS
+            ):
                 continue
             if ignore and child.name in IGNORE_DIRS:
                 continue
@@ -371,6 +472,10 @@ def _list_dir(p: Path, depth: int = 1, ignore: bool = True) -> tuple[list[dict],
 def _is_binary_file(p: Path) -> bool:
     if p.suffix.lower() in BINARY_EXTS:
         return True
+    # Re-contain so the read sink consumes the RETURN of a raising ALLOWED_ROOTS
+    # barrier (idempotent for the _safe_path'd Path the caller passes; makes the
+    # containment legible to CodeQL py/path-injection).
+    p = _contain_in_allowed_roots(p, operation="file_read")
     # Sniff first 8KB for NUL bytes
     try:
         chunk = safe_read_file_bytes(str(p))
@@ -409,6 +514,12 @@ def _guess_mime(p: Path) -> str:
 
 def _git_repo_root(p: Path) -> Path | None:
     """Walk up to find a .git directory."""
+    # Re-contain the start dir so the .exists() probes consume the RETURN of a
+    # raising ALLOWED_ROOTS barrier (idempotent for the _safe_path'd Path the
+    # caller passes; makes the containment legible to CodeQL py/path-injection).
+    # The discovered repo root is separately re-contained by the caller before
+    # any git command runs against it.
+    p = _contain_in_allowed_roots(p, operation="git_status")
     for cand in [p] + list(p.parents):
         if (cand / ".git").exists():
             return cand
@@ -499,6 +610,10 @@ def _search(root: Path, query: str, include: str = "", exclude: str = "") -> lis
 
 
 def _search_rg(root: Path, query: str, include: str, exclude: str) -> list[dict]:
+    # Re-contain so the search root passed to the rg argv is the RETURN of a
+    # raising ALLOWED_ROOTS barrier (idempotent for the _safe_path'd caller
+    # value; makes the containment legible to CodeQL py/path-injection).
+    root = _contain_in_allowed_roots(root, operation="file_search")
     cmd = [
         "rg",
         "--json",
@@ -523,16 +638,19 @@ def _search_rg(root: Path, query: str, include: str, exclude: str) -> list[dict]
     # Sensitive exclusions LAST — always enforced, cannot be overridden by user globs
     for sd in SENSITIVE_DIRS:
         cmd += ["--glob", f"!**/{sd}"]
-    # .kirocrew handling. NOTE: in ripgrep, the presence of ANY non-negated
+    # Crew data-home handling. NOTE: in ripgrep, the presence of ANY non-negated
     # --glob turns the glob set into an allowlist (only matching files are
     # searched), so we must use ONLY negated globs here or every file outside
-    # .kirocrew would be silently excluded from results.
-    #  - Root inside a .kirocrew safe subdir: no glob needed — the request-path
+    # the data home would be silently excluded from results.
+    #  - Root inside a crew-home safe subdir: no glob needed — the request-path
     #    gate (_is_sensitive) already confirmed the subtree is safe.
-    #  - Root outside .kirocrew: exclude the whole .kirocrew tree
+    #  - Root outside the crew home: exclude the whole data-home tree
     #    (deny-by-default; safe subdirs are reachable by searching them
-    #    directly, which takes the branch above).
-    if ".kirocrew" not in root.parts:
+    #    directly, which takes the branch above). Cover all home spellings:
+    #    ~/.kiro/crew, the archived rollback copy, and the legacy home.
+    if not _under_crew_home(root):
+        cmd += ["--glob", "!**/.kiro/crew/**"]
+        cmd += ["--glob", "!**/.kirocrew.archived/**"]
         cmd += ["--glob", "!**/.kirocrew/**"]
     cmd += ["--", query, str(root)]
     try:
@@ -582,6 +700,11 @@ def _search_rg(root: Path, query: str, include: str, exclude: str) -> list[dict]
 
 
 def _search_python(root: Path, query: str, include: str, exclude: str) -> list[dict]:
+    # Re-contain the walk root so os.walk() + the per-file read sink below
+    # consume the RETURN of a raising ALLOWED_ROOTS barrier (idempotent for the
+    # _safe_path'd Path the caller passes; makes the containment legible to
+    # CodeQL py/path-injection — walked descendants clear transitively).
+    root = _contain_in_allowed_roots(root, operation="file_search")
     deadline = time.monotonic() + SEARCH_TIMEOUT_SEC
     pattern = re.compile(re.escape(query), re.IGNORECASE)
     inc_pats = [g.strip() for g in include.split(",") if g.strip()] if include else []
@@ -596,18 +719,18 @@ def _search_python(root: Path, query: str, include: str, exclude: str) -> list[d
             break
         # In-place prune ignored dirs
         dirnames[:] = [d for d in dirnames if d not in IGNORE_DIRS and d not in SENSITIVE_DIRS]
-        # .kirocrew deny-by-default: match rg behavior.
-        # - If search root is OUTSIDE .kirocrew: skip entirely (rg blocks all).
+        # Crew data-home deny-by-default: match rg behavior.
+        # - If search root is OUTSIDE the crew home: skip entirely (rg blocks all).
         # - If search root is INSIDE a safe subdir: allow safe subdirs only.
         dp = Path(dirpath)
-        if dp.name == ".kirocrew":
-            if ".kirocrew" not in root.parts:
+        if _is_crew_home_root(dp):
+            if not _under_crew_home(root):
                 # Root is outside — deny-by-default, match rg behavior
                 dirnames[:] = []
             else:
-                # Root is inside .kirocrew — allow safe subdirs only
+                # Root is inside the crew home — allow safe subdirs only
                 dirnames[:] = [d for d in dirnames if d in _KIROCREW_SAFE_SUBDIRS]
-            filenames[:] = []  # never surface .kirocrew root files
+            filenames[:] = []  # never surface crew-home root files
         for fn in filenames:
             if len(out) >= MAX_SEARCH_RESULTS:
                 return out
@@ -755,21 +878,27 @@ class FileExplorerHandler(BaseHTTPRequestHandler):
         depth = int((qs.get("depth") or ["1"])[0])
         depth = max(1, min(depth, 4))
         ignore = (qs.get("ignore") or ["1"])[0] not in {"0", "false"}
-        # Special case: .kirocrew/ root — deny-by-default blocks it in _safe_path,
-        # but we expose only safe children via the dedicated helper.
-        # SECURITY: still enforce ALLOWED_ROOTS to prevent path traversal via
-        # crafted paths like /tmp/attacker/.kirocrew or symlinks.
+        # Special case: crew data-home root — deny-by-default blocks it in
+        # _safe_path, but we expose only safe children via the dedicated helper.
+        # SECURITY: the user-derived path is fully sanitized BEFORE any filesystem
+        # access — ``_expand`` + ``.resolve()`` collapse ``..`` and symlinks, and
+        # ``_contain_in_allowed_roots`` rejects anything outside ALLOWED_ROOTS and
+        # raises. Only the returned, containment-checked path is ever stat'd or
+        # read (``.exists()``/``.is_dir()``/``_kirocrew_safe_children``), so no
+        # untrusted value reaches a filesystem operation (closes CodeQL
+        # py/path-injection: the guard dominates every path use below).
         expanded = _expand(raw)
-        if expanded.name == ".kirocrew" and expanded.exists() and expanded.is_dir():
-            # Resolve symlinks before checking ALLOWED_ROOTS — prevents a symlink
-            # named .kirocrew (inside allowed root) pointing outside.
-            resolved = expanded.resolve()
-            if not any(_is_within(resolved, root) for root in ALLOWED_ROOTS):
-                _sel_audit("tree_list", str(expanded), outcome="denied")
-                raise PathError(f"path not allowed: {expanded}", 403)
-            _sel_audit("tree_list", str(resolved))
-            entries = _kirocrew_safe_children(resolved)
-            return self._json(200, {"path": str(resolved), "entries": entries, "truncated": False})
+        if _is_crew_home_root(expanded):
+            resolved = _contain_in_allowed_roots(expanded, operation="tree_list")
+            # ``resolved`` is the return of the raising ALLOWED_ROOTS barrier, so
+            # it is contained; CodeQL doesn't trace the barrier across the call,
+            # so suppress its py/path-injection flag on these stat-only ops.
+            if resolved.exists() and resolved.is_dir():  # lgtm[py/path-injection]
+                _sel_audit("tree_list", str(resolved))
+                entries = _kirocrew_safe_children(resolved)
+                return self._json(
+                    200, {"path": str(resolved), "entries": entries, "truncated": False}
+                )
         p = _safe_path(raw, must_exist=True)
         if not p.is_dir():
             raise PathError(f"not a directory: {p}", 400)
@@ -896,14 +1025,17 @@ class FileExplorerHandler(BaseHTTPRequestHandler):
             parent_str = os.path.dirname(expanded) or "/"
             prefix = os.path.basename(expanded)
 
+        # Route through the shared raising barrier so the SAME contained,
+        # resolved Path flows to iterdir() below — CodeQL recognizes the barrier
+        # return value as sanitized (py/path-injection).
         try:
-            parent = Path(parent_str).resolve()
+            parent = _contain_in_allowed_roots(Path(parent_str), operation="complete")
+        except PathError:
+            raise
         except OSError:
             return self._json(200, {"entries": []})
 
         # Path safety
-        if not any(_is_within(parent, root) for root in ALLOWED_ROOTS):
-            raise PathError(f"path not allowed: {parent}", 403)
         if _is_sensitive(parent):
             _sel_audit("access_denied", str(parent), outcome="denied")
             return self._json(200, {"entries": []})
@@ -926,9 +1058,9 @@ class FileExplorerHandler(BaseHTTPRequestHandler):
                 continue
             if name in SENSITIVE_DIRS:
                 continue
-            # Deny-by-default for .kirocrew root: only safe subdir names may
-            # appear in completions (see _list_dir for rationale).
-            if parent.name == ".kirocrew" and name not in _KIROCREW_SAFE_SUBDIRS:
+            # Deny-by-default for the crew data-home root: only safe subdir names
+            # may appear in completions (see _list_dir for rationale).
+            if _is_crew_home_root(parent) and name not in _KIROCREW_SAFE_SUBDIRS:
                 continue
             if plower and not name.lower().startswith(plower):
                 continue

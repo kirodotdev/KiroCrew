@@ -50,13 +50,19 @@ def _make_memory_db(path: Path, *, semantic: list[str], episodic: list[str]) -> 
 
 @pytest.fixture
 def homes(tmp_path, monkeypatch):
-    """Point Path.home() at a tmp dir so both ~/.meshclaw and ~/.kirocrew are sandboxed."""
+    """Point Path.home() at a tmp dir so both ~/.meshclaw and the KiroCrew data
+    home are sandboxed. The KiroCrew home moved to ``~/.kiro/crew`` (config_dir()),
+    so the transfer engine's target — ``kirocrew_dir()`` → ``config_dir()`` — now
+    resolves there. Reset the process-lifetime resolved-home cache so config_dir()
+    re-resolves against the patched Path.home() rather than a value cached by an
+    earlier test in this xdist worker."""
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.delenv("KIROCREW_HOME", raising=False)
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    monkeypatch.setattr("kiro_crew.config.paths._resolved_home", None)
     src = home / ".meshclaw"
-    dst = home / ".kirocrew"
+    dst = home / ".kiro" / "crew"
     return home, src, dst
 
 
@@ -151,7 +157,9 @@ def test_path_rewrite_in_crons(homes):
     mm.migrate()
     crons = (dst / "crons.json").read_text(encoding="utf-8")
     assert ".meshclaw" not in crons
-    assert ".kirocrew" in crons
+    # Paths are rewritten to the current data home (~/.kiro/crew), not the
+    # pre-move ~/.kirocrew.
+    assert ".kiro/crew" in crons
 
 
 def test_backup_created_when_target_nonempty(homes):

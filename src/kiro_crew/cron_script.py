@@ -1,13 +1,13 @@
 """Code-based cron scripts — deterministic Python as cron callbacks.
 
-Scripts under ~/.kirocrew/crons/ are LLM-writeable by design. The sandbox +
+Scripts under ``<config_dir>/crons/`` are LLM-writeable by design. The sandbox +
 path-restriction prevents filesystem escape, but the LLM can register
 self-written scripts. Mitigations: SEL audit trail on every invocation,
 is_sensitive_path() blocks credential files, auto-pause after 5 consecutive
 failures, concurrent execution guard prevents double-fire.
 
 Usage:
-    # ~/.kirocrew/crons/my_monitor.py
+    # <config_dir>/crons/my_monitor.py
     from kiro_crew.cron_script import Skip, Done
 
     def run(ctx):
@@ -36,7 +36,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew import platform_compat
-from kiro_crew.config.loader import read_local_secret
+from kiro_crew.config.loader import config_dir, read_local_secret
 from kiro_crew.sandbox import (
     _AGENT_DENIED_ENV_KEYS,
     cgroup_scope_argv,
@@ -510,8 +510,8 @@ def _resolve_mcp_server(name: str) -> tuple[str, ...] | None:
 def resolve_script_path(script_path: str) -> tuple[str, str]:
     """Validate and resolve a script path. Returns (file_path, func_name).
 
-    Scripts must be files under ~/.kirocrew/crons/.
-    Format: "~/.kirocrew/crons/file.py:function" or "/absolute/path.py:function"
+    Scripts must be files under ``<config_dir>/crons/``.
+    Format: "<config_dir>/crons/file.py:function" or "/absolute/path.py:function"
     """
     if ":" not in script_path:
         raise ValueError(f"Invalid script path '{script_path}': expected 'path.py:func'")
@@ -522,7 +522,7 @@ def resolve_script_path(script_path: str) -> tuple[str, str]:
         raise FileNotFoundError(f"Script file not found: {file_path}")
     if is_sensitive_path(str(file_path)):
         raise PermissionError(f"Script path blocked by security policy: {file_path}")
-    allowed_dir = (Path.home() / ".kirocrew" / "crons").resolve()
+    allowed_dir = (config_dir() / "crons").resolve()
     if not file_path.is_relative_to(allowed_dir):
         raise PermissionError(f"Script must be under {allowed_dir}, got: {file_path}")
     return str(file_path), func_name

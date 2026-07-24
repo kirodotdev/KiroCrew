@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useSyncExternalStore } from 'react'
 import type { Artifact } from '../types'
 import { safeSetItem } from '../utils/safeStorage'
+import { secureRandomId } from '../utils/secureId'
 
 /** Singleton "view" tabs (opened from the + menu, one instance each). */
 export type ViewKind = 'changes' | 'files' | 'artifacts' | 'subagents' | 'workflows' | 'logs' | 'side'
@@ -335,7 +336,12 @@ export function usePanelTabs(slotKey: string | null = null) {
       setActive(last.id)
       return last.sessionId ?? ''
     }
-    const sessionId = Math.random().toString(36).slice(2, 14)
+    // Cryptographically-strong id — a terminal session id is a security token
+    // that addresses a live PTY, so it must not come from Math.random().
+    // secureRandomId() uses crypto.randomUUID in a secure context and a
+    // crypto.getRandomValues fallback when the dashboard is served over plain
+    // HTTP from a non-loopback address (where randomUUID is undefined).
+    const sessionId = secureRandomId()
     upsert({
       id: `terminal:${sessionId}`, kind: 'terminal',
       title: opts?.cwd ? basename(opts.cwd) : 'Terminal',

@@ -19,6 +19,23 @@ from kiro_crew.platform.admission import (
 from kiro_crew.platform.discovery import PluginAdmissionError, discover_companion_context
 
 
+def _patch_admission_paths(monkeypatch, adm, tmp_path, policy_path=None):
+    """Point admission's lazy path accessors at a temp tree.
+
+    The module now resolves ``_POLICY_DEFAULT_PATH`` / ``_SEED_MARKER`` /
+    ``_CHECKSUM_PATH`` through the ``_policy_default_path()`` / ``_seed_marker_path()``
+    / ``_checksum_path()`` accessors (so importing the trust-root module never
+    triggers ``config_dir()``/migration). Patch the accessors, not captured
+    constants.
+    """
+    pol = policy_path if policy_path is not None else tmp_path / "admission_policy.json"
+    seed = tmp_path / ".migrations" / "seeded"
+    checksum = tmp_path / ".migrations" / "policy.sha256"
+    monkeypatch.setattr(adm, "_policy_default_path", lambda: pol)
+    monkeypatch.setattr(adm, "_seed_marker_path", lambda: seed)
+    monkeypatch.setattr(adm, "_checksum_path", lambda: checksum)
+
+
 class _FakeEntryPoint:
     """Stands in for an importlib.metadata.EntryPoint without a real dist.
 
@@ -316,8 +333,9 @@ class TestPolicyLoading:
     def test_no_policy_fails_closed(self, monkeypatch, tmp_path):
         """an absent policy file must fail closed, not admit-all."""
         monkeypatch.delenv("KIROCREW_ADMISSION_POLICY", raising=False)
+        _nope = tmp_path / "nope.json"
         monkeypatch.setattr(
-            "kiro_crew.platform.admission._POLICY_DEFAULT_PATH", tmp_path / "nope.json"
+            "kiro_crew.platform.admission._policy_default_path", lambda: _nope
         )
         from kiro_crew.platform.admission import load_admission_policy
 
@@ -344,9 +362,7 @@ class TestPolicyLoading:
         import kiro_crew.platform.admission as adm
 
         monkeypatch.delenv("KIROCREW_ADMISSION_POLICY", raising=False)
-        monkeypatch.setattr(adm, "_POLICY_DEFAULT_PATH", tmp_path / "admission_policy.json")
-        monkeypatch.setattr(adm, "_SEED_MARKER", tmp_path / ".migrations" / "seeded")
-        monkeypatch.setattr(adm, "_CHECKSUM_PATH", tmp_path / ".migrations" / "policy.sha256")
+        _patch_admission_paths(monkeypatch, adm, tmp_path)
 
         assert adm.seed_default_policy() is True
         policy = adm.load_admission_policy()
@@ -359,9 +375,7 @@ class TestPolicyLoading:
 
         monkeypatch.delenv("KIROCREW_ADMISSION_POLICY", raising=False)
         pol = tmp_path / "admission_policy.json"
-        monkeypatch.setattr(adm, "_POLICY_DEFAULT_PATH", pol)
-        monkeypatch.setattr(adm, "_SEED_MARKER", tmp_path / ".migrations" / "seeded")
-        monkeypatch.setattr(adm, "_CHECKSUM_PATH", tmp_path / ".migrations" / "policy.sha256")
+        _patch_admission_paths(monkeypatch, adm, tmp_path, policy_path=pol)
 
         assert adm.seed_default_policy() is True
         pol.unlink()  # attacker/accident deletes the file
@@ -381,9 +395,7 @@ class TestPolicyLoading:
 
         monkeypatch.delenv("KIROCREW_ADMISSION_POLICY", raising=False)
         pol = tmp_path / "admission_policy.json"
-        monkeypatch.setattr(adm, "_POLICY_DEFAULT_PATH", pol)
-        monkeypatch.setattr(adm, "_SEED_MARKER", tmp_path / ".migrations" / "seeded")
-        monkeypatch.setattr(adm, "_CHECKSUM_PATH", tmp_path / ".migrations" / "policy.sha256")
+        _patch_admission_paths(monkeypatch, adm, tmp_path, policy_path=pol)
 
         adm.seed_default_policy()
         body = json.loads(pol.read_text())
@@ -404,7 +416,8 @@ class TestPolicyLoading:
         from kiro_crew.platform import governance_health as gh
 
         monkeypatch.delenv("KIROCREW_ADMISSION_POLICY", raising=False)
-        monkeypatch.setattr(adm, "_POLICY_DEFAULT_PATH", tmp_path / "nope.json")
+        _nope = tmp_path / "nope.json"
+        monkeypatch.setattr(adm, "_policy_default_path", lambda: _nope)
         gh.reset()
         adm.load_admission_policy()
         assert gh.governance_status() == "degraded"
@@ -471,9 +484,7 @@ class TestDiscoveryGate:
         import kiro_crew.platform.admission as adm
 
         monkeypatch.delenv("KIROCREW_ADMISSION_POLICY", raising=False)
-        monkeypatch.setattr(adm, "_POLICY_DEFAULT_PATH", tmp_path / "admission_policy.json")
-        monkeypatch.setattr(adm, "_SEED_MARKER", tmp_path / ".migrations" / "seeded")
-        monkeypatch.setattr(adm, "_CHECKSUM_PATH", tmp_path / ".migrations" / "policy.sha256")
+        _patch_admission_paths(monkeypatch, adm, tmp_path)
 
         sentinel = object()
         ep = _FakeEntryPoint(name="amazon", loaded=lambda _cfg: sentinel)

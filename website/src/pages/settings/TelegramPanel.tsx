@@ -31,6 +31,26 @@ const TELEGRAM_SPEC: BotChannelSpec = {
   thresholdDescription: 'Prompt to /compact or /new when the session context passes this percentage.',
   emptyAllowlistHint:
     'No allowed user IDs: the bot rejects every message (fail closed). Add your numeric Telegram user ID below.',
+  forum: {
+    toggleLabel: 'Serve forum Topics as per-Topic sessions',
+    toggleDescription: (
+      <>
+        Route each Topic of an allow-listed supergroup to its own agent session
+        (Slack-thread style). Create a supergroup, turn on <span className="font-mono">Topics</span>,
+        add the bot, then list the supergroup&apos;s <span className="font-mono">chat_id</span> below.
+        The General topic and ordinary (non-forum) groups are always denied.
+      </>
+    ),
+    allowlistLabel: 'Allowed supergroup chat IDs',
+    allowlistDescription:
+      'Numeric supergroup chat_ids permitted to run forum-topic sessions. These are negative ' +
+      '(e.g. -1001234567890) — find one by adding a bot like @getidsbot to the group. ' +
+      'Empty = deny all groups (fail closed).',
+    allowlistPlaceholder: '-1001234567890',
+    emptyHint:
+      'Forum enabled but no allow-listed chats: all forum traffic is denied. Add your supergroup ' +
+      'chat_id (a negative number like -100…).',
+  },
   getConfig: api.getTelegramConfig,
   saveConfig: api.saveTelegramConfig,
   // The backend updates connected/connect_error live (polling health), so

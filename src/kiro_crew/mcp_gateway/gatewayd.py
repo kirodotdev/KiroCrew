@@ -1155,9 +1155,7 @@ def _audit_peer_identity_resolved(caller: str, peer_pid: int, stub_uuid: str) ->
         logger.debug("SEL audit emit for peer identity resolution failed", exc_info=True)
 
 
-def _audit_peer_identity_denied(
-    reason: str, peer_pid: int | None, stub_uuid: str
-) -> None:
+def _audit_peer_identity_denied(reason: str, peer_pid: int | None, stub_uuid: str) -> None:
     """SEL audit: a key-less peer whose credentials could not be positively
     attested was refused server-side identity resolution (potential
     unauthorized identity acquisition). Deny arm of
@@ -1200,10 +1198,14 @@ def _apply_claim(frame: dict[str, Any]) -> dict[str, Any]:
         logger.warning(
             "claim matched ZERO connections: pid=%d session_key=%s — "
             "stub identity will stay stale (possible pid-index mismatch)",
-            pid, updated_caller.session_key,
+            pid,
+            updated_caller.session_key,
         )
         _audit_caller_claimed(
-            "", updated_caller.session_key, "pid-index", "noop",
+            "",
+            updated_caller.session_key,
+            "pid-index",
+            "noop",
             f"claim pid={pid} matched no indexed connection",
         )
         return {"type": "claim-noop", "updated": 0, "connections": 0}
@@ -1520,15 +1522,14 @@ async def _handle_connection(
             try:
                 # subprocess_executor: a /proc read can block indefinitely on
                 # a D-state target; isolate it from the default pools.
-                resolved_session_key, peer_host_pids = (
-                    await asyncio.get_running_loop().run_in_executor(
-                        subprocess_executor(), _resolve_peer_identity, peer_pid
-                    )
+                (
+                    resolved_session_key,
+                    peer_host_pids,
+                ) = await asyncio.get_running_loop().run_in_executor(
+                    subprocess_executor(), _resolve_peer_identity, peer_pid
                 )
             except Exception:  # graceful degradation: identity stays empty
-                logger.exception(
-                    "peer identity resolution failed for peer_pid=%d", peer_pid
-                )
+                logger.exception("peer identity resolution failed for peer_pid=%d", peer_pid)
                 resolved_session_key, peer_host_pids = "", []
             if resolved_session_key:
                 caller = CallerContext(
@@ -1543,7 +1544,8 @@ async def _handle_connection(
                 _audit_peer_identity_resolved(resolved_session_key, peer_pid, stub_uuid)
                 logger.info(
                     "peer-resolved session_key for stub %s via peer_pid=%d",
-                    stub_uuid, peer_pid,
+                    stub_uuid,
+                    peer_pid,
                 )
 
     # Claim-push index: record the runtime process tree that owns this stub
@@ -1558,9 +1560,7 @@ async def _handle_connection(
     # verified — deny-by-default preserved).
     stub_pids = _register_pids(register)
     indexed_pids = stub_pids + [p for p in peer_host_pids if p not in stub_pids]
-    conn = _StubConn(
-        stub_uuid, indexed_pids, pool_key.human_readable(), caller
-    )
+    conn = _StubConn(stub_uuid, indexed_pids, pool_key.human_readable(), caller)
     _conn_index_add(conn)
 
     # Provisional backend_id: the real pid isn't known until the backend
@@ -2439,8 +2439,7 @@ def _zombie_diagnostic_path() -> Path:
     ``tail -f`` follows both heartbeat (gatewayd.log) and any detected
     zombie state.
     """
-    mc_home = os.environ.get("KIROCREW_HOME") or os.path.expanduser("~/.kirocrew")
-    return Path(mc_home) / "logs" / "gatewayd_zombie_diagnostic.jsonl"
+    return _config_dir() / "logs" / "gatewayd_zombie_diagnostic.jsonl"
 
 
 def _count_open_fds() -> int:
@@ -2728,6 +2727,20 @@ async def _amain(argv: Optional[list[str]] = None) -> int:
 
 def main() -> None:
     """Sync entry point for ``python -m kiro_crew.mcp_gateway.gatewayd``."""
+    # Resolve (and, on first launch of an upgraded install, MIGRATE) the data home
+    # NOW — synchronously, on the main thread, before the event loop starts below.
+    # This is a SEPARATE process entrypoint from cli.main() (the MCP-gateway daemon
+    # is spawned directly as ``python -m kiro_crew.mcp_gateway.gatewayd``), so its
+    # migration cache starts empty; without this, the first config_dir() would fire
+    # lazily on the event loop (e.g. via _zombie_diagnostic_path() or the pool's
+    # cfg_dir lookup) and the blocking legacy→~/.kiro/crew migration (copytree +
+    # os.walk under a file lock) would freeze the loop and could trip the stall
+    # watchdog (no-blocking-call-on-event-loop). Idempotent + process-cached, so
+    # every later config_dir() is a cheap lookup; a fresh install with no legacy
+    # home just creates the directory.
+    from kiro_crew.config.paths import ensure_data_home
+
+    ensure_data_home()
     try:
         rc = asyncio.run(_amain())
     except KeyboardInterrupt:

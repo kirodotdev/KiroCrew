@@ -311,3 +311,88 @@ def test_get_masks_token_and_reports_state(tmp_path: Path, monkeypatch) -> None:
     assert body["connected"] is False
     assert body["enabled"] is True
     assert body["allowed_user_ids"] == ["42"]
+
+
+def test_get_returns_forum_fields_as_strings(tmp_path: Path, monkeypatch) -> None:
+    """GET serializes forum config; negative chat_ids come back as strings."""
+    import kiro_crew.dashboard.handlers.messaging as mod
+
+    cfg = tmp_path / "config.json"
+    cfg.write_text(
+        '{"telegram": {"enabled": true, "allowed_user_ids": [42], '
+        '"allow_forum": true, "allowed_forum_chat_ids": [-1001234567890]}}',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(loader, "env_path", lambda: tmp_path / ".env")
+    monkeypatch.setattr(loader, "config_path", lambda: cfg)
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.setattr(mod, "is_direct_local_request", lambda req: True)
+
+    class _State:
+        telegram_connected = False
+        telegram_connect_error = ""
+
+    req = make_mocked_request("GET", "/api/telegram/config", app={"state": _State()})
+    resp = asyncio.run(mod.api_telegram_config_get(req))
+    assert resp.status == 200
+    body = json.loads(resp.text)
+    assert body["allow_forum"] is True
+    # Serialized as strings for the tag editor, preserving the leading minus.
+    assert body["allowed_forum_chat_ids"] == ["-1001234567890"]
+
+
+def test_save_persists_forum_fields_with_negative_ids(tmp_path: Path, monkeypatch) -> None:
+    """PUT accepts allow_forum + negative chat_ids and stores canonical ints."""
+    import kiro_crew.dashboard.handlers.messaging as mod
+
+    _accept_token(monkeypatch, mod)
+    (status_body, _) = _client_put(
+        mod,
+        monkeypatch,
+        tmp_path,
+        {
+            "allow_forum": True,
+            # String and int forms, negative supergroup ids, plus a duplicate.
+            "allowed_forum_chat_ids": ["-1001234567890", -1009876543210, "-1001234567890"],
+        },
+    )
+    status, body = status_body
+    assert status == 200
+    assert body["restart_required"] is True
+    cfg = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
+    assert cfg["telegram"]["allow_forum"] is True
+    # Canonical, deduplicated ints (order preserved, minus retained).
+    assert cfg["telegram"]["allowed_forum_chat_ids"] == [-1001234567890, -1009876543210]
+
+
+def test_save_rejects_non_boolean_allow_forum(tmp_path: Path, monkeypatch) -> None:
+    """allow_forum must be a strict boolean; a string is rejected before write."""
+    import kiro_crew.dashboard.handlers.messaging as mod
+
+    _accept_token(monkeypatch, mod)
+    (status_body, _) = _client_put(mod, monkeypatch, tmp_path, {"allow_forum": "true"})
+    status, body = status_body
+    assert status == 400
+    assert "allow_forum" in body["error"]
+    assert not (tmp_path / "config.json").exists()  # nothing staged/written
+
+
+def test_save_rejects_garbage_forum_chat_ids(tmp_path: Path, monkeypatch) -> None:
+    """Non-integer chat ids (and a bare minus) are rejected; nothing written."""
+    import kiro_crew.dashboard.handlers.messaging as mod
+
+    _accept_token(monkeypatch, mod)
+    for bad in ("@supergroup", "-", "12.5", "-100abc"):
+        (status_body, _) = _client_put(
+            mod, monkeypatch, tmp_path, {"allowed_forum_chat_ids": [bad]}
+        )
+        status, body = status_body
+        assert status == 400, f"chat_id={bad!r} should be rejected"
+        assert "chat ID" in body["error"]
+
+    # A non-list value is rejected too.
+    (status_body, _) = _client_put(
+        mod, monkeypatch, tmp_path, {"allowed_forum_chat_ids": "-100"}
+    )
+    assert status_body[0] == 400
+    assert "must be a list" in status_body[1]["error"]

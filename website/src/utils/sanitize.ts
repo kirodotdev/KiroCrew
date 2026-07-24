@@ -78,3 +78,13 @@ export function sanitizeExfiltrationUrls(text: string): string {
 export function sanitizeLlmOutput(text: string): string {
   return sanitizeExfiltrationUrls(sanitizeCredentials(text))
 }
+
+/** True for the three object keys that, when used to index a plain object,
+ *  mutate ``Object.prototype`` instead of the object (prototype pollution).
+ *  Reducers that index a state map with an id sourced from SSE/LLM payloads
+ *  must early-return on these before the assignment. The literal ``===`` form
+ *  (not a Set/array membership test) is what CodeQL's
+ *  ``js/prototype-polluting-assignment`` query recognizes as a sanitizer. */
+export function isUnsafeKey(key: string): boolean {
+  return key === '__proto__' || key === 'constructor' || key === 'prototype'
+}

@@ -714,8 +714,13 @@ class TestSubagentReaper:
         assert reaper.cancelled() or reaper.done()
 
     @pytest.mark.asyncio
-    async def test_cancel_preserves_error_message(self) -> None:
-        """cancel() sets 'Cancelled by user' and _force_reap does not overwrite it."""
+    async def test_cancel_is_neutral_no_error_synthesized(self) -> None:
+        """cancel() leaves error unset and _force_reap does not synthesize one.
+
+        Neutral user-stop semantics live in the record itself: every consumer
+        (reconnect snapshots, tombstones, /api/spawn) derives 'stopped', never
+        'error', without cross-checking user_stopped.
+        """
         from kiro_crew.subagent import SubagentInfo
 
         sessions = _mock_sessions()
@@ -741,7 +746,8 @@ class TestSubagentReaper:
 
         assert result is True
         assert info.done is True
-        assert info.error == "Cancelled by user"
+        assert not info.error  # neutral stop: no error on the record
+        assert info.user_stopped is True
         assert manager._running_count == 0
         on_done.assert_awaited_once_with(info)
 

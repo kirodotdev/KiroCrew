@@ -361,8 +361,7 @@ def _candidate_ports() -> list[int]:
 
     _add(os.environ.get("KIROCREW_PORT"))
     try:
-        home = os.environ.get("KIROCREW_HOME") or os.path.expanduser("~/.kirocrew")
-        cfg = Path(home) / "config.json"
+        cfg = store.crew_home() / "config.json"
         if cfg.exists():
             _d = json.loads(cfg.read_text(encoding="utf-8")).get("dashboard") or {}
             url = _d.get("url") or ""
@@ -410,9 +409,8 @@ def _gateway_base() -> str:
 
 def _local_secret() -> str:
     """Read the gateway IPC secret (same mechanism the MCP server uses)."""
-    home = os.environ.get("KIROCREW_HOME") or os.path.expanduser("~/.kirocrew")
     try:
-        return (Path(home) / ".local_secret").read_text(encoding="utf-8").strip()
+        return (store.crew_home() / ".local_secret").read_text(encoding="utf-8").strip()
     except Exception:
         return ""
 

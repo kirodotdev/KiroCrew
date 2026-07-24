@@ -4,10 +4,16 @@ from __future__ import annotations
 
 import re
 
+from kiro_crew.constants import OPTIONS_RE_LINE
+
 SLACK_MAX_TEXT = 39_000
 
-# Pattern: [OPTIONS: choice1 | choice2 | choice3]
-_OPTIONS_RE = re.compile(r"\[OPTIONS:\s*(.+?)\]\s*$", re.MULTILINE)
+# [OPTIONS: choice1 | choice2 | ...] — the marker ends a LINE here, so use the
+# MULTILINE/single-line canonical parser. Defined once in constants.py (shared
+# with dashboard/state.py and the renderer surfaces) so the ReDoS-hardened
+# grammar can never drift between copies; see OPTIONS_RE_LINE for the full
+# rationale. Per-choice whitespace is stripped by extract_options().
+_OPTIONS_RE = OPTIONS_RE_LINE
 
 # Action ID prefix for OPTIONS buttons
 OPTIONS_ACTION_PREFIX = "options_choice_"

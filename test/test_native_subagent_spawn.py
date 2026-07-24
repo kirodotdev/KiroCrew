@@ -530,10 +530,51 @@ class TestNativeCancelHandler:
         assert "native:s1" not in state._native_cards
         dones = _ws_calls(state)["subagent_done"]
         assert dones[0]["id"] == "native:s1"
-        assert dones[0]["error"] == "Cancelled by user"
+        assert dones[0]["error"] is None
+        assert dones[0]["stopped"] is True
         audit_kwargs = m_sel.return_value.log_tool_invocation.call_args[1]
         assert audit_kwargs["tool_name"] == "cancel_native_subagent"
         assert audit_kwargs["outcome"] == "cancelled_by_user"
+
+    @pytest.mark.asyncio
+    async def test_cancel_native_card_marks_tracker_stopped_for_replay(self):
+        """Cancelling a native card persists the stop on the slot tracker so a
+        reconnecting client's WS replay reconstructs it as STOPPED — not as
+        still-running or successfully completed."""
+        from unittest.mock import MagicMock, patch
+
+        from kiro_crew.dashboard.handlers.messaging import api_spawn_delete
+        from kiro_crew.dashboard.state import DashboardState
+
+        state = _make_state()
+        slot = _make_slot()
+        slot._native_subagent_tracker["s1"] = {
+            "id": "native:s1",
+            "task": "summarize",
+            "agent": "worker",
+            "done": False,
+            "started": 100.0,
+        }
+        state.get_slot = MagicMock(return_value=slot)
+        state._slots = {"slot-1": slot}
+        state._native_cards = {
+            "native:s1": {"slot": "slot-1", "session_id": "s1", "started": 100.0}
+        }
+        with patch("kiro_crew.dashboard.handlers.messaging._sel") as m_sel:
+            m_sel.return_value.log_tool_invocation = MagicMock()
+            await api_spawn_delete(self._request(state, "native:s1"))
+
+        rec = slot._native_subagent_tracker["s1"]
+        assert rec["done"] is True
+        assert rec["stopped"] is True
+        assert rec["error"] is None
+        assert rec["result"] == "(cancelled)"
+
+        snaps = DashboardState.native_subagent_snapshots(state)
+        assert len(snaps) == 1
+        assert snaps[0]["done"] is True
+        assert snaps[0]["stopped"] is True
+        assert snaps[0]["error"] is None
 
     @pytest.mark.asyncio
     async def test_cancel_unknown_native_card_404(self):

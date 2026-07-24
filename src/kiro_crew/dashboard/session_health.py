@@ -14,11 +14,12 @@ sees no interruption.
 
 from __future__ import annotations
 
-import os
 import re
 import time
 from pathlib import Path
 from typing import Dict, List, Tuple
+
+from kiro_crew.config.paths import config_dir
 
 # Only consider log lines from the last STALL_WINDOW_SECONDS to avoid flagging
 # long-resolved incidents. 10 minutes is wide enough to catch a stuck session
@@ -82,8 +83,7 @@ def _line_age_seconds(line: str, file_mtime: float) -> float:
 def compute_session_health(log_path: Path | None = None, now: float | None = None) -> Dict[str, dict]:
     """Return ``{slot_key: {reason, since_ts}}`` for slots flagged as stalled."""
     if log_path is None:
-        home = Path(os.environ.get("KIROCREW_HOME") or Path.home() / ".kirocrew")
-        log_path = home / "gateway.log"
+        log_path = config_dir() / "gateway.log"
     if not log_path.exists():
         return {}
     if now is None:

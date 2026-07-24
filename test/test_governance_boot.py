@@ -26,7 +26,8 @@ def test_contract_version_current():
 
 def test_standalone_no_policy_is_none(monkeypatch, tmp_path):
     monkeypatch.delenv("KIROCREW_SECURITY_POLICY", raising=False)
-    monkeypatch.setattr("kiro_crew.platform.governance._POLICY_HOME_PATH", tmp_path / "nope.json")
+    _nope = tmp_path / "nope.json"
+    monkeypatch.setattr("kiro_crew.platform.governance._policy_home_path", lambda: _nope)
     ctx = build_default_context(KiroCrewConfig.load())
     assert ctx.governance is None
     assert ctx.contract_version == CONTRACT_VERSION

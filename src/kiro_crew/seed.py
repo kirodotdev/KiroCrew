@@ -30,6 +30,7 @@ except ImportError:  # pragma: no cover — KiroCrew targets py3.10.
 # would mean the KiroCrew install itself is broken — there's no scenario
 # where it's optional. ``_safe_audit`` still handles *runtime* SEL failures
 # (read-only ``$HOME``, HMAC-key write failure) via its broad except.
+from kiro_crew.config.paths import _default_home, _legacy_home
 from kiro_crew.sel import sel
 
 # Exit codes — pinned in PRD acceptance. Only 0 and 2 are reachable in 1.A;
@@ -165,19 +166,34 @@ def _resolve_fixture(name: str) -> Path:
     return candidate
 
 
-def _main_home() -> Path:
-    """Return the resolved path to the main gateway home (``~/.kirocrew``).
+def _protected_homes() -> set[Path]:
+    """Return the resolved gateway homes we refuse to seed into, ever.
 
-    ``Path.home() / ".kirocrew"``, then ``expanduser().resolve()`` to
-    collapse any symlinks along the way. This is the path we refuse to
-    seed into under any circumstance — even with ``--seed-replace`` — because
-    clobbering the dev's live gateway state is the single most destructive
-    outcome this tool could produce.
+    These are the paths that could hold a dev's LIVE gateway state, so seeding
+    into them — even with ``--seed-replace`` — is the single most destructive
+    outcome this tool could produce and is always refused:
 
-    Extracted as a helper so tests can monkeypatch ``Path.home()`` via
-    ``$HOME`` and exercise the guardrail on synthetic ``~/.kirocrew`` paths.
+    * ``_default_home()`` → ``~/.kiro/crew`` — the current main gateway home.
+    * ``_legacy_home()`` → ``~/.kirocrew`` — the pre-move home. A box that
+      hasn't migrated yet (or was rolled back) still keeps its real data here,
+      so it must stay protected until the user removes it themselves.
+
+    Each is ``.resolve()``-d to collapse symlinks along the way.
+
+    Uses ``_default_home()`` / ``_legacy_home()`` rather than ``config_dir()`` on
+    purpose: seeding requires ``$KIROCREW_HOME`` to be set, so ``config_dir()``
+    would return that override itself and the guardrail equality check would
+    always fire. The guardrail must compare against the DEFAULT (non-override)
+    homes. Extracted as a helper so tests can monkeypatch ``Path.home()`` via
+    ``$HOME`` and exercise the guardrail on synthetic default-home paths.
     """
-    return (Path.home() / ".kirocrew").expanduser().resolve()
+    homes: set[Path] = set()
+    for home in (_default_home(), _legacy_home()):
+        try:
+            homes.add(home.resolve())
+        except OSError:
+            homes.add(home)
+    return homes
 
 
 def _resolve_target(*, for_main_home_check: bool = False) -> Path:
@@ -185,7 +201,7 @@ def _resolve_target(*, for_main_home_check: bool = False) -> Path:
 
     ``expanduser()`` is applied so ``KIROCREW_HOME=~/dev`` works. Pass
     ``for_main_home_check=True`` to additionally ``resolve()`` the path so
-    a symlinked ``KIROCREW_HOME`` pointing at ``~/.kirocrew`` is caught by
+    a symlinked ``KIROCREW_HOME`` pointing at ``~/.kiro/crew`` is caught by
     the main-home guardrail. The unresolved form is used for ``copytree`` /
     ``rmtree`` because a non-existent target is valid input to those.
     """
@@ -200,14 +216,14 @@ def _resolve_target(*, for_main_home_check: bool = False) -> Path:
     if for_main_home_check:
         # ``resolve(strict=False)`` tolerates non-existent targets while
         # still collapsing any symlinks that DO exist along the way. That
-        # catches ``$KIROCREW_HOME -> ~/.kirocrew`` even when the symlink
+        # catches ``$KIROCREW_HOME -> ~/.kiro/crew`` even when the symlink
         # target doesn't exist yet on some platforms.
         #
         # On resolution failure (broken symlink chain, permission error,
         # exotic cross-mount issues) we MUST fail closed — falling back
         # to the unresolved path would silently bypass the main-home
         # guardrail: if the unresolved path is actually a symlink to
-        # ``~/.kirocrew`` that ``resolve()`` couldn't evaluate, the
+        # ``~/.kiro/crew`` that ``resolve()`` couldn't evaluate, the
         # guardrail comparison won't match, and ``--seed-replace`` would
         # then ``rmtree`` the dev's live gateway home. That's the one
         # outcome this tool must never produce.
@@ -228,7 +244,7 @@ def seed(fixture_name: str, *, replace: bool = False) -> None:
     Raises ``SeedError`` on guardrail violations. Enforces, in order:
 
     1. **Main-home guardrail** — refuses when ``$KIROCREW_HOME`` resolves to
-       ``~/.kirocrew`` (the dev's live gateway home). This guardrail is
+       ``~/.kiro/crew`` (the dev's live gateway home). This guardrail is
        ABSOLUTE: ``replace=True`` does NOT override it. Clobbering the
        main gateway is the one outcome we never want to enable.
     2. **Non-empty guardrail** — refuses when the target exists and contains
@@ -249,11 +265,11 @@ def seed(fixture_name: str, *, replace: bool = False) -> None:
     # ``copytree`` / ``rmtree`` work. ``resolve()`` would rewrite a symlinked
     # ``$KIROCREW_HOME`` into its target and we'd copy/rmtree the wrong
     # location; conversely, the raw path can't be trusted for the main-home
-    # guardrail because ``KIROCREW_HOME=~/my-link`` where ``my-link -> ~/.kirocrew``
+    # guardrail because ``KIROCREW_HOME=~/my-link`` where ``my-link -> ~/.kiro/crew``
     # would bypass the string compare. Two calls keeps each value's purpose
     # explicit at the cost of one extra ``os.environ`` lookup — acceptable.
     dst_resolved = _resolve_target(for_main_home_check=True)
-    if dst_resolved == _main_home():
+    if dst_resolved in _protected_homes():
         raise SeedError(
             f"refusing to seed main gateway home: {dst_resolved}. "
             "Point $KIROCREW_HOME at a separate dev directory "

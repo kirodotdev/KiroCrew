@@ -451,15 +451,13 @@ _SESSION_PID_TOKEN = re.compile(r"session_pid_(\{|\*|<)")
 
 #: file (relative to src/kiro_crew) -> declared role / namespace assumption
 _REGISTERED_CALL_SITES: dict[str, str] = {
-    "dashboard/chat_runner.py": (
-        "writer via session_pid_sig.publish_session_pid — keys the "
-        "session_pid_<pid>.txt file (plus HMAC sidecar) by the HOST pid of "
-        "the spawned session process"
-    ),
-    "slack/handler.py": (
-        "writer via session_pid_sig.publish_session_pid — keys the "
-        "session_pid_<pid>.txt file (plus HMAC sidecar) by the HOST pid of "
-        "the spawned session process"
+    "messaging/identity.py": (
+        "SOLE per-turn writer — publish_turn_identity() calls "
+        "session_pid_sig.publish_session_pid to key the session_pid_<pid>.txt "
+        "file (plus HMAC sidecar) by the spawned session's HOST pid. Every "
+        "turn-running surface (dashboard, native Slack, and each channel "
+        "transport_dispatch) calls this one helper instead of copy-pasting the "
+        "publish block — the per-surface duplication that caused #232"
     ),
     "session_pid_sig.py": (
         "canonical owner of the file contract — writer, strict verifier, "
@@ -532,4 +530,40 @@ def test_session_pid_call_sites_are_registered() -> None:
     assert not stale, (
         f"Registered session_pid call site(s) no longer reference the token: "
         f"{sorted(stale)}. Remove them from _REGISTERED_CALL_SITES."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Class-level publisher guard (#232)
+# ---------------------------------------------------------------------------
+# The "missing X-Session-Key" HTTP 400 was a channel-turn *publisher* gap: a
+# surface that runs an agent turn but never publishes the session_pid mapping
+# leaves managed MCP tools (learn_add, cron management, ...) unable to resolve
+# the caller's session identity. Telegram was the reported case; discord,
+# slack, webex and wechat transport dispatch shared the exact same gap. The fix
+# centralizes publication in messaging.identity.publish_turn_identity so every
+# turn-running surface shares one writer. This guard DYNAMICALLY discovers all
+# channel transport-dispatch surfaces (glob, not a hard-coded list) and fails
+# if any of them — including a newly added channel — does not call the shared
+# helper, so the class-level fix cannot silently regress one surface at a time.
+
+
+def test_every_channel_transport_dispatch_publishes_identity() -> None:
+    src = _src_root()
+    dispatchers = sorted(src.glob("*/transport_dispatch.py"))
+    assert dispatchers, (
+        "no */transport_dispatch.py surfaces discovered — the channel dispatch "
+        "layout changed; update this guard so it keeps covering every surface."
+    )
+    missing = [
+        str(p.relative_to(src))
+        for p in dispatchers
+        if "publish_turn_identity" not in p.read_text(encoding="utf-8")
+    ]
+    assert not missing, (
+        "channel transport-dispatch surface(s) run a turn without publishing "
+        f"per-turn session identity: {missing}. Every channel turn must call "
+        "messaging.identity.publish_turn_identity so managed MCP tools resolve "
+        "X-Session-Key; otherwise they fail with HTTP 400 'missing "
+        "X-Session-Key' from that channel (#232)."
     )

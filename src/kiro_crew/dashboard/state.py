@@ -22,6 +22,7 @@ from aiohttp import web
 from kiro_crew.acp.types import STOP_REASON_CANCELLED
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import DASHBOARD_PORT, config_dir
+from kiro_crew.constants import OPTIONS_RE_LINE
 from kiro_crew.dashboard.side_state import SideState
 from kiro_crew.knowledge.store import KnowledgeStore
 from kiro_crew.notifications.bus import (
@@ -566,11 +567,14 @@ def build_tool_stall_recovery_prompt(
     return "\n".join(lines)
 
 
-# Anchor the closing ']' to end-of-line so the non-greedy body expands past a
-# literal ']' inside option text (e.g. "Fix [x] logging") instead of truncating
-# at the first inner bracket. Mirrors slack/format.py's _OPTIONS_RE so both the
-# dashboard pills and Slack buttons parse OPTIONS identically.
-_OPTIONS_RE = re.compile(r"\[OPTIONS:\s*(.+?)\]\s*$", re.MULTILINE)
+# [OPTIONS: a | b | c] — the marker ends a LINE here, so use the MULTILINE/
+# single-line canonical parser. Defined once in constants.py (shared with
+# slack/format.py and the renderer surfaces) so the ReDoS-hardened grammar can
+# never drift between copies; see OPTIONS_RE_LINE for the full rationale
+# (tempered body, ``\n`` exclusion under MULTILINE). Per-choice whitespace is
+# stripped by the caller; dashboard pills and Slack buttons parse OPTIONS
+# identically because they share this exact object.
+_OPTIONS_RE = OPTIONS_RE_LINE
 
 
 def _redact(text: str) -> str:
@@ -2037,6 +2041,12 @@ class DashboardState:
                             "done": True,
                             "elapsed": float(info.get("elapsed") or 0.0),
                             "error": info.get("error"),
+                            "stopped": bool(info.get("stopped")),
+                            "outcome": (
+                                "stopped"
+                                if info.get("stopped")
+                                else ("failed" if info.get("error") else "completed")
+                            ),
                             "result": str(info.get("result") or ""),
                             "done_at": done_at,
                         }

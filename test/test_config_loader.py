@@ -2650,18 +2650,25 @@ class TestConfigWriteProtection:
     def test_config_json_is_write_protected(self) -> None:
         from kiro_crew.security import is_sensitive_write_path
 
+        # Data home moved to ~/.kiro/crew; the legacy ~/.kirocrew stays gated too.
+        assert is_sensitive_write_path("~/.kiro/crew/config.json")
+        assert is_sensitive_write_path(str(Path.home() / ".kiro" / "crew" / "config.json"))
         assert is_sensitive_write_path("~/.kirocrew/config.json")
         assert is_sensitive_write_path(str(Path.home() / ".kirocrew" / "config.json"))
 
     def test_config_local_json_is_write_protected(self) -> None:
         from kiro_crew.security import is_sensitive_write_path
 
+        assert is_sensitive_write_path("~/.kiro/crew/config.local.json")
+        assert is_sensitive_write_path(str(Path.home() / ".kiro" / "crew" / "config.local.json"))
         assert is_sensitive_write_path("~/.kirocrew/config.local.json")
         assert is_sensitive_write_path(str(Path.home() / ".kirocrew" / "config.local.json"))
 
     def test_config_json_reads_still_allowed(self) -> None:
         from kiro_crew.security import is_sensitive_bash_command, is_sensitive_path
 
+        assert is_sensitive_path("~/.kiro/crew/config.json") is False
+        assert is_sensitive_bash_command("cat ~/.kiro/crew/config.json") is None
         assert is_sensitive_path("~/.kirocrew/config.json") is False
         assert is_sensitive_bash_command("cat ~/.kirocrew/config.json") is None
 
@@ -2669,11 +2676,13 @@ class TestConfigWriteProtection:
         from kiro_crew.security import is_sensitive_write_path
 
         assert is_sensitive_write_path("~/.aws/credentials")
+        assert is_sensitive_write_path("~/.kiro/crew/security_policy.json")
         assert is_sensitive_write_path("~/.kirocrew/security_policy.json")
 
     def test_non_config_kirocrew_file_not_write_protected(self) -> None:
         from kiro_crew.security import is_sensitive_write_path
 
+        assert is_sensitive_write_path("~/.kiro/crew/sessions.db") is False
         assert is_sensitive_write_path("~/.kirocrew/sessions.db") is False
 
 
@@ -2855,6 +2864,13 @@ class TestKnowledgePoolIdleTtl:
         assert cfg.knowledge.pool_idle_ttl_secs == 300
 
     def test_string_falls_back_to_default(self) -> None:
+        # `kirocrew config set` coerces numeric strings to real JSON numbers via
+        # cli_config._parse_value BEFORE writing, so a numeric field never
+        # legitimately arrives as a string. A string here is malformed input and
+        # falls back to the default (strict-parse contract). Loader-side coercion
+        # is deliberately NOT added: it would only run when the optional
+        # jsonschema dep is installed (undeclared), making the behavior differ
+        # between installs.
         cfg = _load_from_dict({"knowledge": {"pool_idle_ttl_secs": "60"}})
         assert cfg.knowledge.pool_idle_ttl_secs == 300
 

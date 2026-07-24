@@ -44,7 +44,7 @@ def fake_home(tmp_path, monkeypatch):
     """Pin $HOME to tmp_path so Path.home() returns a writable sandbox.
 
     Also clears KIROCREW_HOME so ``skills_dir()`` resolves to
-    ``<tmp>/.kirocrew/skills`` rather than any value leaked from the
+    ``<tmp>/.kiro/crew/skills`` rather than any value leaked from the
     surrounding build environment.
     """
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -541,7 +541,7 @@ class TestExpandAgentGlobs:
 
 class TestListSkillTree:
     def test_returns_files_and_dirs(self, fake_home):
-        skill = fake_home / ".kirocrew" / "skills" / "demo"
+        skill = fake_home / ".kiro" / "crew" / "skills" / "demo"
         skill.mkdir(parents=True)
         (skill / "SKILL.md").write_text("---\n---\n")
         (skill / "helper.sh").write_text("echo hi\n")
@@ -555,7 +555,7 @@ class TestListSkillTree:
         assert ("references/doc.md", "file") in kinds
 
     def test_caps_at_max_entries(self, fake_home):
-        skill = fake_home / ".kirocrew" / "skills" / "huge"
+        skill = fake_home / ".kiro" / "crew" / "skills" / "huge"
         skill.mkdir(parents=True)
         for i in range(SKILL_TREE_MAX_ENTRIES + 50):
             (skill / f"f{i:04d}.txt").write_text("x")
@@ -563,7 +563,7 @@ class TestListSkillTree:
         assert len(out) == SKILL_TREE_MAX_ENTRIES
 
     def test_empty_skill_dir_returns_empty(self, fake_home):
-        skill = fake_home / ".kirocrew" / "skills" / "empty"
+        skill = fake_home / ".kiro" / "crew" / "skills" / "empty"
         skill.mkdir(parents=True)
         assert list_skill_tree(skill) == []
 
@@ -573,7 +573,7 @@ class TestListSkillTree:
 
 class TestReadSkillFile:
     def test_reads_file_inside_skill(self, fake_home):
-        skill = fake_home / ".kirocrew" / "skills" / "demo"
+        skill = fake_home / ".kiro" / "crew" / "skills" / "demo"
         skill.mkdir(parents=True)
         (skill / "SKILL.md").write_text("hello\n")
         content, err = read_skill_file(skill, "SKILL.md")
@@ -581,7 +581,7 @@ class TestReadSkillFile:
         assert content == "hello\n"
 
     def test_rejects_path_traversal(self, fake_home):
-        skill = fake_home / ".kirocrew" / "skills" / "demo"
+        skill = fake_home / ".kiro" / "crew" / "skills" / "demo"
         skill.mkdir(parents=True)
         (skill / "SKILL.md").write_text("x")
         outside = fake_home / "secret.txt"
@@ -590,26 +590,26 @@ class TestReadSkillFile:
         assert err == "invalid path"
 
     def test_rejects_absolute_path(self, fake_home):
-        skill = fake_home / ".kirocrew" / "skills" / "demo"
+        skill = fake_home / ".kiro" / "crew" / "skills" / "demo"
         skill.mkdir(parents=True)
         _, err = read_skill_file(skill, "/etc/passwd")
         assert err == "invalid path"
 
     def test_rejects_oversized_file(self, fake_home, monkeypatch):
-        skill = fake_home / ".kirocrew" / "skills" / "demo"
+        skill = fake_home / ".kiro" / "crew" / "skills" / "demo"
         skill.mkdir(parents=True)
         (skill / "big.txt").write_bytes(b"x" * (SKILL_FILE_MAX_BYTES + 1))
         _, err = read_skill_file(skill, "big.txt")
         assert err and err.startswith("file too large")
 
     def test_missing_file_returns_not_found(self, fake_home):
-        skill = fake_home / ".kirocrew" / "skills" / "demo"
+        skill = fake_home / ".kiro" / "crew" / "skills" / "demo"
         skill.mkdir(parents=True)
         _, err = read_skill_file(skill, "no-such.txt")
         assert err == "not found"
 
     def test_directory_target_rejected(self, fake_home):
-        skill = fake_home / ".kirocrew" / "skills" / "demo"
+        skill = fake_home / ".kiro" / "crew" / "skills" / "demo"
         skill.mkdir(parents=True)
         (skill / "subdir").mkdir()
         _, err = read_skill_file(skill, "subdir")
@@ -621,7 +621,7 @@ class TestReadSkillFile:
 
 class TestResolveSkillRoot:
     def test_kirocrew_skill(self, fake_home):
-        skill_dir = _write_skill(fake_home / ".kirocrew" / "skills", "foo")
+        skill_dir = _write_skill(fake_home / ".kiro" / "crew" / "skills", "foo")
         state = MagicMock(_slots={})
         out = _resolve_skill_root("foo", state)
         assert out == skill_dir.resolve()
@@ -633,7 +633,7 @@ class TestResolveSkillRoot:
         assert out == skill_dir.resolve()
 
     def test_path_traversal_rejected(self, fake_home):
-        _write_skill(fake_home / ".kirocrew" / "skills", "ok")
+        _write_skill(fake_home / ".kiro" / "crew" / "skills", "ok")
         state = MagicMock(_slots={})
         assert _resolve_skill_root("../etc", state) is None
         assert _resolve_skill_root("/abs/path", state) is None
@@ -667,7 +667,7 @@ class TestResolveSkillRoot:
         An over-strict symlink guard that required the candidate's parent
         to *be* the root 404'd every nested skill even though the GET
         ``/api/skills`` listing (via SkillsLoader) surfaced them fine."""
-        skill_dir = _write_skill(fake_home / ".kirocrew" / "skills", "utils/multi-badger")
+        skill_dir = _write_skill(fake_home / ".kiro" / "crew" / "skills", "utils/multi-badger")
         state = MagicMock(_slots={})
         out = _resolve_skill_root("utils/multi-badger", state)
         assert out == skill_dir.resolve()
@@ -682,7 +682,7 @@ class TestResolveSkillRoot:
     def test_kirocrew_skill_honors_kirocrew_home(self, tmp_path, monkeypatch):
         """``_resolve_skill_root`` must resolve kirocrew skills under the
         active config home (``skills_dir()``), not a hardcoded
-        ``~/.kirocrew``.  An isolated dev gateway sets KIROCREW_HOME to a
+        ``~/.kiro/crew``.  An isolated dev gateway sets KIROCREW_HOME to a
         separate directory; the tree/file endpoints must follow it."""
         home_dir = tmp_path / "real-home"
         home_dir.mkdir()
@@ -697,8 +697,8 @@ class TestResolveSkillRoot:
         state = MagicMock(_slots={})
         out = _resolve_skill_root("isolated-skill", state)
         assert out == skill_dir.resolve()
-        # And nothing was created under the real ~/.kirocrew.
-        assert not (home_dir / ".kirocrew" / "skills" / "isolated-skill").exists()
+        # And nothing was created under the real ~/.kiro/crew.
+        assert not (home_dir / ".kiro" / "crew" / "skills" / "isolated-skill").exists()
 
     def test_symlinked_intermediate_dir_escape_rejected(self, fake_home, tmp_path):
         """Security: a leaf skill symlink is allowed (AIM installs), but a
@@ -709,7 +709,7 @@ class TestResolveSkillRoot:
         outside.mkdir(parents=True)
         (outside / "SKILL.md").write_text("---\nname: x\n---\nsecret")
 
-        skills_root = fake_home / ".kirocrew" / "skills"
+        skills_root = fake_home / ".kiro" / "crew" / "skills"
         skills_root.mkdir(parents=True)
         # ``evil`` is a symlinked intermediate dir → points at ../../outside.
         (skills_root / "evil").symlink_to(tmp_path / "outside")
@@ -763,7 +763,7 @@ class TestEndpoints:
         (skill_dir / "helper.sh").write_text("#!/bin/sh\n")
 
         state = MagicMock(_slots={}, context_builder=None)
-        # SkillsLoader will use ~/.kirocrew/skills (empty here) — fine.
+        # SkillsLoader will use ~/.kiro/crew/skills (empty here) — fine.
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.get("/api/skills/kiro-user/demo/-/tree")
             assert resp.status == 200
@@ -856,7 +856,7 @@ class TestEndpoints:
         from kiro_crew.skills import SkillsLoader
 
         # A real skill literally named ``utils/tree`` under the kirocrew root.
-        _write_skill(fake_home / ".kirocrew" / "skills", "utils/tree", description="edge")
+        _write_skill(fake_home / ".kiro" / "crew" / "skills", "utils/tree", description="edge")
 
         app = web.Application()
         # Seed a *real* SkillsLoader so api_skill_detail can load the skill —

@@ -18,6 +18,7 @@ __all__ = [
     "config_dir",
     "config_local_path",
     "config_path",
+    "ensure_data_home",
     "env_path",
     "resolve_agent_config_path",
 ]
@@ -28,6 +29,7 @@ if TYPE_CHECKING:  # imported for type checkers only; no runtime loader import
         config_dir,
         config_local_path,
         config_path,
+        ensure_data_home,
         env_path,
         resolve_agent_config_path,
     )

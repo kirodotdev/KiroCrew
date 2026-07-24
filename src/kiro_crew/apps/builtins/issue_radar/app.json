@@ -1,0 +1,42 @@
+{
+  "name": "issue-radar",
+  "version": "0.1.0",
+  "displayName": "Issue Radar",
+  "description": "An issue triage assistant that remembers. Browse, filter, and triage GitHub issues with AI-suggested labels and per-issue investigation notes \u2014 with findings kept in a local ledger so nothing gets re-investigated.",
+  "author": "kirocrew",
+  "tags": [
+    "github",
+    "issue-triage",
+    "open-source",
+    "developer-tools"
+  ],
+  "defaultEnabled": false,
+  "permissions": {
+    "api": [
+      "/api/apps/issue-radar",
+      "/api/apps/issue-radar/*"
+    ],
+    "network": true,
+    "storage": true
+  },
+  "dependencies": {
+    "commands": ["gh"]
+  },
+  "backend": {
+    "routes": "backend.routes:register_routes"
+  },
+  "ui": {
+    "pages": [
+      {
+        "route": "/issue-radar",
+        "label": "Issue Radar",
+        "icon": "Radar"
+      }
+    ]
+  },
+  "iconUrl": "/app-assets/issue-radar/icon.svg",
+  "heroImage": "/app-assets/issue-radar/hero-light.svg",
+  "heroImageDark": "/app-assets/issue-radar/hero-dark.svg",
+  "heroImageDetail": "/app-assets/issue-radar/hero-detail-light.svg",
+  "heroImageDetailDark": "/app-assets/issue-radar/hero-detail-dark.svg"
+}

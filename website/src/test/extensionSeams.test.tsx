@@ -31,6 +31,11 @@ import {
   DEFAULT_SHORTCUTS,
   RESERVED_PANEL_CODES,
 } from '../hooks/useKeyboardShortcuts'
+import { registerTheme, getRegisteredThemes } from '../hooks/useTheme'
+import { apiTransport } from '../api/apiTransport'
+// Importing the client installs the blessed transport (installApiTransport runs
+// at client module load), so `apiTransport` is populated for the test below.
+import '../api/client'
 
 const Dummy = () => null
 
@@ -196,6 +201,51 @@ describe('panel shortcut — nav seam', () => {
     // And every code the parser DID recover must be reserved.
     const missing = [...consumed].filter(c => !RESERVED_PANEL_CODES.has(c))
     expect(missing).toEqual([])
+  })
+})
+
+describe('theme — picker-option seam', () => {
+  it('is empty in the stock build until registered', () => {
+    const before = getRegisteredThemes().length
+    registerTheme([{ value: 'seam-theme-opt', label: '🧪 Seam Theme' }])
+    expect(getRegisteredThemes().length).toBe(before + 1)
+    expect(getRegisteredThemes().some(t => t.value === 'seam-theme-opt')).toBe(true)
+  })
+
+  it('throws on a value already in core THEMES; core wins', () => {
+    expect(() => registerTheme([{ value: 'kiro', label: 'Hijack' }])).toThrow(/already registered/)
+  })
+
+  it('throws on a duplicate registered value in dev/test', () => {
+    registerTheme([{ value: 'seam-theme-dup', label: '🧪 Dup' }])
+    expect(() => registerTheme([{ value: 'seam-theme-dup', label: '🧪 Dup2' }])).toThrow(
+      /already registered/,
+    )
+    expect(getRegisteredThemes().filter(t => t.value === 'seam-theme-dup').length).toBe(1)
+  })
+})
+
+describe('apiTransport — exported blessed transport (not a registry)', () => {
+  it('exposes the core session-key helpers an edition builds its API module on', () => {
+    // These are the same helpers the core `api` methods use, so an edition
+    // method built on them inherits X-Session-Key + auth-recovery + ApiError by
+    // construction (never raw fetch, which would drop the session key). `put`
+    // must be present — an edition PUT route otherwise falls back to raw fetch.
+    for (const key of ['get', 'post', 'put', 'del', 'patch', 'j', 'jNullable'] as const) {
+      expect(typeof apiTransport[key]).toBe('function')
+    }
+  })
+
+  it('methods are stable wrappers — destructuring at module-init must not throw', () => {
+    // extensions.ts is imported before client.ts in main.tsx, so an edition
+    // that destructures the transport at its own module-init could reach it
+    // before install. The wrappers resolve at CALL time, so destructuring is
+    // always safe (no import-ordering hazard); only calling before install
+    // would error, which never happens after startup.
+    expect(() => {
+      const { get, post, put } = apiTransport
+      return [get, post, put]
+    }).not.toThrow()
   })
 })
 

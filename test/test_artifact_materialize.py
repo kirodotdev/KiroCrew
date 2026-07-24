@@ -153,6 +153,22 @@ def test_recorded_doc_identities_skips_missing_and_relative(tmp_path):
     assert len(ids) == 1
 
 
+def test_redaction_lives_at_the_api_boundary_only():
+    """Design-hardening regression: redaction is enforced structurally, not by a
+    shared flag. The external ``_scan_session_docs`` MUST redact a
+    credential-shaped path; the internal ``_collect_session_docs`` (used by the
+    authorization scan) MUST preserve the TRUE path so it can be ``stat``'d."""
+    cred_path = "/tmp/AKIAIOSFODNN7EXAMPLE/report.md"
+    log = _FakeLog([cred_path])
+    # API boundary: the path is redacted (never leaks a credential substring).
+    api = h._scan_session_docs(log, {})
+    assert api[0]["path"] != cred_path
+    assert "AKIAIOSFODNN7EXAMPLE" not in api[0]["path"]
+    # Internal collector: the true path is preserved (authorization can stat it).
+    raw = h._collect_session_docs(log, {})
+    assert raw[0]["path"] == cred_path
+
+
 class _BadTimestampLog:
     """Session log whose ``modified`` values are non-numeric / non-finite."""
 
@@ -171,9 +187,14 @@ class _BadTimestampLog:
         return [{"meta": {"file_changes": [{"path": self._doc}]}}]
 
 
-def test_scan_session_docs_survives_bad_timestamps(tmp_path):
+def test_collect_session_docs_survives_bad_timestamps(tmp_path):
     doc = _write_doc(tmp_path, "ts.md")
-    out = h._scan_session_docs(_BadTimestampLog(doc), {})
+    # Use the RAW collector so the assertion compares the true path, not the
+    # redacted display field: a tmp_path whose parent dir contains a
+    # credential-shaped segment (e.g. macOS ``/var/folders/<hash>/``) would
+    # otherwise be redacted and fail an equality check that is really about
+    # *discovery*, not display.
+    out = h._collect_session_docs(_BadTimestampLog(doc), {})
     # The document is still discovered despite malformed timestamps.
     assert [e["path"] for e in out] == [doc]
 

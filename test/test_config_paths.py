@@ -22,15 +22,22 @@ from kiro_crew.config import paths
 
 
 class TestConfigDir:
-    """``config_dir()`` resolves ~/.kirocrew, honoring KIROCREW_HOME."""
+    """``config_dir()`` resolves ~/.kiro/crew, honoring KIROCREW_HOME."""
 
-    def test_default_is_home_dotkirocrew(
+    @pytest.fixture(autouse=True)
+    def _reset_resolved_home(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # config_dir() caches the resolved data home in a module global for the
+        # process lifetime; reset it so each test resolves fresh against its own
+        # patched Path.home / KIROCREW_HOME rather than a value another test cached.
+        monkeypatch.setattr(paths, "_resolved_home", None)
+
+    def test_default_is_home_dotkiro_crew(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         monkeypatch.delenv("KIROCREW_HOME", raising=False)
         monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
         result = paths.config_dir()
-        assert result == tmp_path / ".kirocrew"
+        assert result == tmp_path / ".kiro" / "crew"
         assert result.is_dir()  # created on access
 
     def test_kirocrew_home_override(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -43,11 +50,11 @@ class TestConfigDir:
     def test_kirocrew_home_system_dir_is_ignored(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        # A system directory must be refused and fall back to ~/.kirocrew.
+        # A system directory must be refused and fall back to ~/.kiro/crew.
         monkeypatch.setenv("KIROCREW_HOME", "/usr")
         monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
         result = paths.config_dir()
-        assert result == tmp_path / ".kirocrew"
+        assert result == tmp_path / ".kiro" / "crew"
 
 
 class TestConfigPackageDir:

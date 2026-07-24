@@ -52,19 +52,20 @@ def _run_install(tmp_path: Path, cfg_dir: Path, managed_mcps: dict | None = None
     if not mc_config.exists():
         mc_config.write_text(json.dumps({"agent": {"kiro_hooks_autoimport": False}}))
 
+    _user_home = tmp_path / "kirocrew_home"
     patches = [
         patch.multiple(
             "kiro_crew.agent",
             KIRO_AGENTS_DIR=kiro_dir,
             _BUNDLED_CFG_DIR=cfg_dir,
             _KIROCREW_BIN="/usr/bin/kirocrew",
-            _USER_DIR=tmp_path / "kirocrew_home",
             _MANAGED_MCP_SERVERS=(
                 managed_mcps if managed_mcps is not None else _DEFAULT_MANAGED_MCPS
             ),
             _KIRO_MCP_JSON=tmp_path / "fake_kiro_mcp.json",
             _CC_MCP_JSON=tmp_path / "fake_cc_mcp.json",
         ),
+        patch("kiro_crew.agent._user_dir", lambda: _user_home),
         patch("kiro_crew.agent._prompt_path", return_value=prompt),
         patch("kiro_crew.agent._shipped_defaults", return_value=cfg_dir / "defaults.json"),
         patch("kiro_crew.agent._project_dir", return_value=None),
@@ -3251,17 +3252,18 @@ def _run_install_mcp_merge(
         kc_home.mkdir(parents=True, exist_ok=True)
         (kc_home / "mcp.json").write_text(json.dumps({"mcpServers": kirocrew_servers}))
 
+    _user_home = tmp_path / "kirocrew_home"
     patches = [
         patch.multiple(
             "kiro_crew.agent",
             KIRO_AGENTS_DIR=kiro_dir,
             _BUNDLED_CFG_DIR=cfg_dir,
             _KIROCREW_BIN="/usr/bin/kirocrew",
-            _USER_DIR=tmp_path / "kirocrew_home",
             _MANAGED_MCP_SERVERS=_DEFAULT_MANAGED_MCPS,
             _KIRO_MCP_JSON=kiro_mcp,
             _CC_MCP_JSON=cc_mcp,
         ),
+        patch("kiro_crew.agent._user_dir", lambda: _user_home),
         patch("kiro_crew.agent._prompt_path", return_value=prompt),
         patch("kiro_crew.agent._shipped_defaults", return_value=cfg_dir / "defaults.json"),
         patch("kiro_crew.agent._project_dir", return_value=None),

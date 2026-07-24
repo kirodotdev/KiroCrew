@@ -1232,6 +1232,84 @@ class TestInitSubagents:
         assert orch.dashboard_state.push_slots_update.call_count == 0
 
 
+class TestSubagentDoneStoppedClassification:
+    """A user-stopped subagent (error-free record) must never be classified as
+    a successful completion by _subagent_done — not in the announce text and
+    not in the orchestration tracker."""
+
+    def _capture_on_done(self, orch):
+        with patch("kiro_crew.slack.handler.is_yolo_mode", return_value=False):
+            with patch("kiro_crew.slack.gateway.SubagentManager") as mock_sm:
+                mock_sm_inst = MagicMock()
+                mock_sm_inst.start_reaper = MagicMock()
+                mock_sm.return_value = mock_sm_inst
+                orch._init_subagents()
+                return mock_sm.call_args.kwargs["on_done"]
+
+    def _stopped_info(self):
+        from kiro_crew.subagent import SubagentInfo
+
+        info = SubagentInfo(
+            id="stop1",
+            task="long research task",
+            parent_session_key="dashboard:gone",
+        )
+        info.done = True
+        info.user_stopped = True
+        info.error = None
+        info.result = "partial notes so far"
+        return info
+
+    @pytest.mark.asyncio
+    async def test_stopped_agent_notification_says_stopped_not_completed(self):
+        """Slot-gone path: title carries ⏹ and body frames a stop with partial
+        output — never 'completed ✅'."""
+        orch = _make_orchestrator()
+        orch.sessions = _mock_sessions()
+        orch.ctx_builder = MagicMock()
+        orch.ctx_builder.hooks = MagicMock()
+        orch.dashboard_state = _mock_dashboard_state()
+        orch.dashboard_state.get_slot = MagicMock(return_value=None)  # slot gone
+        on_done = self._capture_on_done(orch)
+
+        await on_done(self._stopped_info())
+
+        orch.dashboard_state.notify.assert_called_once()
+        args = orch.dashboard_state.notify.call_args
+        title, body = args.args[1], args.args[2]
+        assert "⏹" in title
+        assert "✅" not in title
+        assert "Stopped by the user" in body
+        assert "partial notes so far" in body
+
+    @pytest.mark.asyncio
+    async def test_stopped_agent_records_neither_success_nor_failure(self):
+        """Orchestrator mode: a user stop must not advance orchestration —
+        no record_success (killed work is not done work) and no
+        record_failure (a deliberate stop is not a retryable failure)."""
+        orch = _make_orchestrator()
+        orch.sessions = _mock_sessions()
+        orch.ctx_builder = MagicMock()
+        orch.ctx_builder.hooks = MagicMock()
+        orch.dashboard_state = _mock_dashboard_state()
+
+        tracker = MagicMock()
+        tracker.stopped = False
+        slot = MagicMock()
+        slot.mode = "orchestrator"
+        slot._orch_tracker = tracker
+        slot.running = False
+        orch.dashboard_state.get_slot = MagicMock(return_value=slot)
+        on_done = self._capture_on_done(orch)
+        # Injection path launches _run_chat on the idle slot — stub it out.
+        with patch("kiro_crew.slack.gateway._run_chat", new_callable=AsyncMock):
+            await on_done(self._stopped_info())
+            await asyncio.sleep(0)
+
+        tracker.record_success.assert_not_called()
+        tracker.record_failure.assert_not_called()
+
+
 class TestSubagentFinalSummaryDirective:
     """Fix 2 (B1): the LAST sub-agent completion ARMS a one-shot synthesis turn
     (slot._pending_synthesis) in chat mode; earlier completions do not."""

@@ -47,7 +47,13 @@ _EXCLUDE_DIRS = {
     ".claude",
     ".testmondata",
     # Secret-bearing / local-only dirs — never ship these off-box.
+    # ``.kiro`` is the Kiro-family base (kiro-cli SSO tokens/sessions AND
+    # KiroCrew's own data home ~/.kiro/crew after the data-root move); excluding
+    # the whole ``.kiro`` segment covers both. The legacy ~/.kirocrew and its
+    # archived rollback copy stay listed for not-yet-migrated / rolled-back trees.
+    ".kiro",
     ".kirocrew",
+    ".kirocrew.archived",
     ".kirocrew-dev",
     ".aws",
     ".ssh",

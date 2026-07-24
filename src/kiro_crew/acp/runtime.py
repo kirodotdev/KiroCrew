@@ -257,7 +257,14 @@ class AcpRuntime:
         max_rss_mb: float = _DEFAULT_MAX_RSS_MB,
         model: str | None = None,
     ):
-        self._work_dir = Path(work_dir) if work_dir else Path.home() / ".kirocrew" / "workspace"
+        if work_dir:
+            self._work_dir = Path(work_dir)
+        else:
+            # config.paths is a stdlib-only leaf: importing it here can't
+            # re-enter the config.loader -> providers.acp -> acp.client cycle.
+            from kiro_crew.config.paths import config_dir
+
+            self._work_dir = config_dir() / "workspace"
         self._agent = agent
         if model is not None:
             if not MODEL_ID_RE.match(model):

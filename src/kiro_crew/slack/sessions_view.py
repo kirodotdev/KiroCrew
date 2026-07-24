@@ -22,9 +22,9 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable
-from pathlib import Path
 from typing import TYPE_CHECKING
 
+from kiro_crew.config.paths import config_dir
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.slack.blocks import session_task_card
 
@@ -36,7 +36,7 @@ if TYPE_CHECKING:
 # Constants
 # ---------------------------------------------------------------------------
 
-_SESSIONS_DIR = Path.home() / ".kirocrew" / "sessions"
+_SESSIONS_DIR = config_dir() / "sessions"
 _SESSIONS_MAX_MSG_CHARS = 4000
 _SESSIONS_MAX_PREVIEW = 5
 _SESSIONS_DEFAULT_LIMIT = 10
@@ -97,7 +97,7 @@ def _collect_recent_sessions(
     limit: int = _SESSIONS_DEFAULT_LIMIT,
     kind: "str | Iterable[str] | None" = None,
 ) -> list[dict]:
-    """Read JSONLs under ``~/.kirocrew/sessions/`` and return a sorted list.
+    """Read JSONLs under ``<config_dir>/sessions/`` and return a sorted list.
 
     Each row: ``{key, title, agent, mtime, active, kind, msgs}`` where
     ``msgs`` is a list of ``{"role": str, "content": str}`` dicts (last

@@ -18,6 +18,9 @@ export interface BotChannelConfigData {
   allowed_user_ids: string[]
   allowed_thread_ids?: string[]
   soft_threshold_pct: number
+  /** Telegram forum per-topic config (optional; only Telegram sends these). */
+  allow_forum?: boolean
+  allowed_forum_chat_ids?: string[]
 }
 
 /** Writable fields shared by every bot-token channel save endpoint. */
@@ -28,6 +31,8 @@ export interface BotChannelConfigSave {
   allowed_user_ids: string[]
   allowed_thread_ids?: string[]
   soft_threshold_pct: number
+  allow_forum?: boolean
+  allowed_forum_chat_ids?: string[]
 }
 
 /** Everything channel-specific: names, copy, endpoints, and guide content. */
@@ -66,6 +71,20 @@ export interface BotChannelSpec {
     help: ReactNode
     warning: ReactNode
   }
+  /**
+   * Optional forum/per-topic config (Telegram supergroups). When present, the
+   * panel renders an allow_forum toggle plus a chat-id tag editor; channels
+   * that omit it (Discord, Webex) are unaffected and never send forum fields.
+   */
+  forum?: {
+    toggleLabel: string
+    toggleDescription: ReactNode
+    allowlistLabel: string
+    allowlistDescription: string
+    allowlistPlaceholder: string
+    /** Fail-closed hint shown when the toggle is on but the list is empty. */
+    emptyHint: string
+  }
   /** API calls. */
   getConfig: () => Promise<BotChannelConfigData>
   saveConfig: (body: Partial<BotChannelConfigSave>) => Promise<{ ok: boolean; restart_required: boolean; verify_warning: string }>
@@ -78,6 +97,8 @@ type Draft = {
   allowed_user_ids: string[]
   allowed_thread_ids: string[]
   soft_threshold_pct: string
+  allow_forum: boolean
+  allowed_forum_chat_ids: string[]
 }
 
 function draftFrom(c: BotChannelConfigData): Draft {
@@ -86,6 +107,8 @@ function draftFrom(c: BotChannelConfigData): Draft {
     allowed_user_ids: [...c.allowed_user_ids],
     allowed_thread_ids: [...(c.allowed_thread_ids ?? [])],
     soft_threshold_pct: String(c.soft_threshold_pct),
+    allow_forum: !!c.allow_forum,
+    allowed_forum_chat_ids: [...(c.allowed_forum_chat_ids ?? [])],
   }
 }
 
@@ -203,6 +226,10 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
       soft_threshold_pct: pct,
     }
     if (spec.threadAllowlist) payload.allowed_thread_ids = draft.allowed_thread_ids
+    if (spec.forum) {
+      payload.allow_forum = draft.allow_forum
+      payload.allowed_forum_chat_ids = draft.allowed_forum_chat_ids
+    }
     if (botClear) payload.bot_token_clear = true
     else if (botToken.trim()) payload.bot_token = botToken.trim()
     saveMut.mutate(payload)
@@ -328,6 +355,40 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
           )}
         </SettingsCard>
       </SettingsSection>
+
+      {/* ── Forum topics (optional; Telegram supergroups) ── */}
+      {spec.forum && (
+        <SettingsSection title="Forum topics">
+          <SettingsCard>
+            <SettingsToggle
+              label={spec.forum.toggleLabel}
+              description={spec.forum.toggleDescription}
+              checked={draft.allow_forum}
+              onChange={v => upd({ allow_forum: v })}
+              disabled={ro}
+            />
+            <div className="border-t border-border mt-4 pt-4">
+              <TagListEditor
+                label={spec.forum.allowlistLabel}
+                description={spec.forum.allowlistDescription}
+                values={draft.allowed_forum_chat_ids}
+                placeholder={spec.forum.allowlistPlaceholder}
+                onChange={v => upd({ allowed_forum_chat_ids: v })}
+                // Supergroup chat_ids are negative — allow an optional leading
+                // minus (a digits-only check would reject every valid id).
+                validate={v => /^-?\d+$/.test(v)}
+                readOnly={ro}
+              />
+              {draft.allow_forum && draft.allowed_forum_chat_ids.length === 0 && (
+                <p className="text-[12px] text-warn mt-2 mb-0 flex items-start gap-1.5">
+                  <AlertTriangle size={13} className="flex-none mt-0.5" />
+                  <span>{spec.forum.emptyHint}</span>
+                </p>
+              )}
+            </div>
+          </SettingsCard>
+        </SettingsSection>
+      )}
 
       {/* ── Behavior ── */}
       <SettingsSection title="Behavior">

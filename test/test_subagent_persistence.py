@@ -994,7 +994,12 @@ class TestOrphanNotification:
 
     @pytest.mark.asyncio
     async def test_slack_dm_fallback_called(self, agent_root):
-        """When injection returns False, Slack DM fallback is called."""
+        """When injection returns False, the message is returned for the caller's digest.
+
+        _notify_orphan no longer DMs per orphan — undelivered messages are
+        handed back so _reconcile_orphans can batch them into ONE digest DM
+        (a restart with N in-flight agents must never produce N pings).
+        """
         from unittest.mock import AsyncMock, MagicMock, patch
 
         from kiro_crew.subagent import SubagentManager
@@ -1009,10 +1014,10 @@ class TestOrphanNotification:
 
         with patch.object(manager, "_try_inject_orphan_notification", new_callable=AsyncMock, return_value=False), \
              patch.object(manager, "_send_orphan_slack_dm", new_callable=AsyncMock) as mock_dm:
-            await manager._notify_orphan("notif3", state, "delivered", True)
+            msg = await manager._notify_orphan("notif3", state, "delivered", True)
 
-        mock_dm.assert_awaited_once()
-        msg = mock_dm.call_args[0][0]
+        mock_dm.assert_not_awaited()  # DM happens once, at digest time
+        assert msg is not None
         assert "notif3" in msg
         assert "orphaned by gateway restart" in msg
 

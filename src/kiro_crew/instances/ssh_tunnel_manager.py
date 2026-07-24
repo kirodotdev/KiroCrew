@@ -983,11 +983,14 @@ class SshTunnelManager:
     async def restart_remote(self, instance_id: str) -> dict:
         """Restart the remote KiroCrew gateway over SSH.
 
-        Uses the remote ``kirocrew restart`` (itself systemd/launchd-aware), run
-        via the bin-candidate ladder. Validates ``ssh_host``/``remote_bin``
-        first. After a restart the remote dashboard port bounces, so the local
-        tunnel's health probe detects the drop and self-heals (Stage 2) — no
-        manual reconnect needed. Returns ``{ok, message}``.
+        Uses the remote ``kirocrew restart`` (itself systemd/launchd-aware),
+        resolved via the run-marker first (the running gateway's own launcher,
+        keyed by ``remote_port``) and falling back to the bin-candidate ladder —
+        so restart works even when ``~/.local/bin/kirocrew`` points at an
+        uninstalled worktree. Validates ``ssh_host``/``remote_bin`` first. After a
+        restart the remote dashboard port bounces, so the local tunnel's health
+        probe detects the drop and self-heals (Stage 2) — no manual reconnect
+        needed. Returns ``{ok, message}``.
         """
         inst = self._registry.get(instance_id)
         if inst is None:
@@ -997,7 +1000,9 @@ class SshTunnelManager:
             remote_bin = validate_remote_bin(inst.remote_bin)
         except SshValidationError as e:
             return {"ok": False, "message": f"invalid ssh settings: {e}"}
-        rc, err = await run_remote_kirocrew(ssh_host, "restart", remote_bin=remote_bin)
+        rc, err = await run_remote_kirocrew(
+            ssh_host, "restart", remote_bin=remote_bin, marker_port=inst.remote_port
+        )
         if rc == 0:
             logger.info("Restarted remote gateway for %s", instance_id)
             return {"ok": True, "message": "remote gateway restart requested"}

@@ -1,7 +1,7 @@
 """Rewrite kiro agent JSON so MCP servers route through the broker.
 
 The rewriter reads ``~/.kiro/agents/*.json`` and writes modified copies into
-the overlay directory (``~/.kirocrew/mcp-gateway/agents/``). The host
+the overlay directory (``<config_dir>/mcp-gateway/agents/``). The host
 filesystem remains untouched — the sandbox layer bind-mounts the overlay
 over ``~/.kiro/agents/`` inside each kiro-cli session's mount namespace.
 
@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew.atomic_write import atomic_write
+from kiro_crew.config.paths import config_dir
 from kiro_crew.mcp_gateway.hashing import hash_command
 from kiro_crew.mcp_utils import mcp_server_alias
 
@@ -437,7 +438,7 @@ def rewrite_agents(
 
     Args:
         source_dir: Usually ``~/.kiro/agents/``.
-        overlay_dir: Usually ``~/.kirocrew/mcp-gateway/agents/``. Created
+        overlay_dir: Usually ``<config_dir>/mcp-gateway/agents/``. Created
             if missing. Cleared of stale files not in ``source_dir``.
         socket_path: Absolute path to the gateway unix socket.
         work_dir: Default cwd passed to the stub (and used in PoolKey
@@ -792,12 +793,12 @@ def is_wrapped_entry(entry: Any) -> bool:
 def default_overlay_dir() -> Path:
     """Return ``$KIROCREW_HOME/mcp-gateway/agents`` (follows ``config_dir``)."""
     home = os.environ.get("KIROCREW_HOME")
-    base = Path(home) if home else Path.home() / ".kirocrew"
+    base = Path(home) if home else config_dir()
     return base / "mcp-gateway" / "agents"
 
 
 def default_socket_path() -> Path:
     """Return the default gateway unix socket path."""
     home = os.environ.get("KIROCREW_HOME")
-    base = Path(home) if home else Path.home() / ".kirocrew"
+    base = Path(home) if home else config_dir()
     return base / "mcp-gateway" / "gateway.sock"

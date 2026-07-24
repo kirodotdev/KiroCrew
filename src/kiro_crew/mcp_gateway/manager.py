@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from kiro_crew.config.paths import config_dir
 from kiro_crew.env import resolve_krb5_ccname
 from kiro_crew.mcp_gateway.pool import READ_BUFFER_LIMIT_BYTES
 from kiro_crew.sandbox import _SENSITIVE_ENV_PREFIXES as _SANDBOX_SENSITIVE_ENV_PREFIXES
@@ -363,7 +364,7 @@ class GatewayManager:
     def _gatewayd_log_path() -> Path:
         """Return the path gatewayd stdout/stderr get redirected to."""
         home = os.environ.get("KIROCREW_HOME")
-        base = Path(home) if home else Path.home() / ".kirocrew"
+        base = Path(home) if home else config_dir()
         return base / "logs" / "mcp-gatewayd.stdout"
 
     async def ping(self) -> bool:

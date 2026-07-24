@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import patch
 
 from kiro_crew.acp.types import EVENT_COMPACTION_STATUS, EVENT_COMPLETE, EVENT_TEXT_CHUNK
 from kiro_crew.messaging.link import ChannelLink, dashboard_mirror_key
@@ -189,6 +190,7 @@ class FakeSessions:
         self.queued: list = []
         self._gp = FakeProvider()
         self.mirror_links: dict[str, Any] = {}
+        self._pid: Any = None
 
     async def get_or_create(self, key: str, *, agent: Any = None, channel_id: Any = None) -> Any:
         self.last_agent = agent
@@ -213,6 +215,9 @@ class FakeSessions:
 
     def get_provider(self, key: str) -> Any:
         return self._gp
+
+    def get_pid(self, key: str) -> Any:
+        return self._pid
 
     def is_busy(self, key: str) -> bool:
         return self._busy
@@ -461,6 +466,27 @@ class TestExtractOptions:
         body, opts = _extract_options("text so far [OPTIONS: Ye")
         assert "[OPTIONS" not in body
         assert opts == []
+
+    def test_unterminated_options_tag_is_not_redos(self) -> None:
+        # Regression (py/polynomial-redos): a plain greedy ``.*`` body could
+        # consume a "[" that ALSO starts the outer "[OPTIONS:" literal, so over
+        # text with many "[OPTIONS:" prefixes search() re-explored the body from
+        # each position — polynomial. The tempered body
+        # (?:[^[]|\[(?!OPTIONS:))* forbids only a re-occurring "[OPTIONS:", so
+        # the body is unambiguous (linear). A whitespace-padded unterminated tag
+        # and many repeated "[OPTIONS:" prefixes (the real pump) must both return
+        # promptly.
+        import time
+
+        for evil in (
+            "[OPTIONS:" + ("\t" * 200_000) + "x",
+            "[OPTIONS:" * 100_000 + "x",
+        ):
+            start = time.perf_counter()
+            body, opts = _extract_options(evil)
+            elapsed = time.perf_counter() - start
+            assert elapsed < 1.0, f"_extract_options took {elapsed:.2f}s (possible ReDoS)"
+            assert opts == []
 
 
 # ── transport.py: deny-by-default auth + capabilities + inbound ─────────────
@@ -2240,3 +2266,34 @@ class TestClientHealth:
         asyncio.run(client._polling_loop())
         assert transitions and transitions[0] == (True, "")
         assert len(transitions) == 1  # deduped: repeat successes don't re-fire
+
+
+class TestTelegramSessionPidPublish:
+    """#232: a Telegram turn must publish its session identity so managed MCP
+    tools (learn_add, cron management, ...) can resolve ``X-Session-Key`` from
+    a Telegram-originated turn. Publication is centralized in
+    ``messaging.identity.publish_turn_identity``; this asserts Telegram dispatch
+    delegates to that shared writer (DM + forum). Regression guard for the
+    ``missing X-Session-Key`` 400. The publish semantics themselves (pid guard,
+    executor offload) are covered in test_messaging_identity.py.
+    """
+
+    def test_telegram_turn_delegates_identity_publish(self) -> None:
+        d, _cli, sess = _dispatcher({7})
+        sess._pid = 4242  # SessionManager.get_pid -> kiro-cli host PID
+
+        async def _go() -> None:
+            with patch(
+                "kiro_crew.telegram.transport_dispatch.publish_turn_identity"
+            ) as pub:
+                await d.handle_message(
+                    InboundMessage(
+                        channel_type="telegram",
+                        user_id="7",
+                        conversation_id="7",
+                        text="hi",
+                    )
+                )
+                pub.assert_awaited_once_with(sess, "telegram:kirocrew:direct:7")
+
+        asyncio.run(_go())

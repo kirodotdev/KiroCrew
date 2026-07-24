@@ -25,6 +25,7 @@ from aiohttp import web
 
 import kiro_crew
 from kiro_crew import platform_compat
+from kiro_crew.config.paths import config_dir
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.embeddings import get_shared_embedder, model_file_present
 from kiro_crew.platform import current_context
@@ -95,7 +96,7 @@ _IN_MEMORY_SALT: bytes = secrets.token_bytes(32)
 def _get_telemetry_salt() -> bytes:
     """Return a per-install random salt, generating one on first run."""
     try:
-        salt_file = Path.home() / ".kirocrew" / "telemetry_salt"
+        salt_file = config_dir() / "telemetry_salt"
         if salt_file.exists():
             data = salt_file.read_bytes()
             if len(data) == 32:

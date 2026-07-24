@@ -24,8 +24,14 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew.config.loader import config_dir
+from kiro_crew.config.paths import MIGRATION_MARKER_NAME
 
 logger = logging.getLogger(__name__)
+
+# Internal sentinels the data-home layer writes into the home (not user data):
+# the ``config_dir()`` fresh-install completion marker. A home containing only
+# these is treated as empty by the backup check.
+_INTERNAL_SENTINELS: frozenset[str] = frozenset({MIGRATION_MARKER_NAME})
 
 # ── What to migrate ──────────────────────────────────────────────────────────
 
@@ -192,17 +198,47 @@ def _is_skipped(name: str) -> bool:
 
 
 def _rewrite_paths(text: str, src: Path, dst: Path) -> str:
-    """Rewrite absolute MeshClaw paths in copied JSON text to the target home."""
-    return text.replace(str(src), str(dst)).replace("/.meshclaw/", "/.kirocrew/")
+    """Rewrite absolute MeshClaw paths in copied JSON text to the target home.
+
+    First swap the exact source-home prefix for the resolved target home. Then a
+    fallback pass rewrites any residual ``/.meshclaw/`` substring (a differently
+    rooted legacy path the exact-prefix swap missed) to the target home's home-
+    relative form. The data home moved to ``~/.kiro/crew``, so the fallback is
+    derived from ``dst`` (``/.kiro/crew/``) rather than a hardcoded ``/.kirocrew/``
+    — hardcoding the old top-level name would rewrite paths into a home KiroCrew
+    no longer reads.
+    """
+    text = text.replace(str(src), str(dst))
+    try:
+        dst_rel = dst.relative_to(Path.home())
+        fallback = f"/{dst_rel.as_posix()}/"
+    except ValueError:
+        fallback = f"/{dst.name}/"
+    return text.replace("/.meshclaw/", fallback)
 
 
 def _backup_target(dst: Path) -> Path | None:
-    """Snapshot the current KiroCrew home next to it.  Returns backup path."""
-    if not dst.is_dir() or not any(dst.iterdir()):
+    """Snapshot the current KiroCrew home next to it.  Returns backup path.
+
+    Treats a home containing ONLY internal sentinels (the data-home migration's
+    ``.data-home-ready`` marker) as empty — that marker is written by
+    ``config_dir()`` on a fresh install and is not user data worth backing up;
+    without this, resolving ``kirocrew_dir()`` alone would make an otherwise-empty
+    target look non-empty and trigger a spurious backup.
+    """
+    if not dst.is_dir():
         return None
+    real_entries = [c for c in dst.iterdir() if c.name not in _INTERNAL_SENTINELS]
+    if not real_entries:
+        return None
+    # Collision-safe: a same-second second call must not hit "File exists" on the
+    # timestamped path (copytree refuses an existing dest). Add a uniquifier.
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     backup = dst.parent / f"{dst.name}.backup-{ts}"
-    # copytree refuses an existing dest; backup paths are timestamped so unique.
+    n = 1
+    while backup.exists():
+        backup = dst.parent / f"{dst.name}.backup-{ts}-{n}"
+        n += 1
     shutil.copytree(dst, backup, symlinks=True, ignore_dangling_symlinks=True)
     return backup
 

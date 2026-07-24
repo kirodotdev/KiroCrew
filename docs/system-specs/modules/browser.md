@@ -61,7 +61,7 @@ Playwright MCP handles all browser interaction. KiroCrew only handles enterprise
 | File | Purpose |
 |------|---------|
 | `browser/auth.py` | SSO cookies, federated SSO, KRB5CCNAME, health checks, URL validation |
-| `browser/setup.py` | AIM install, config generation, storage state refresh, MCP config patching |
+| `browser/setup.py` | Plugin-manager install, config generation, storage state refresh, MCP config patching |
 | `browser/cli.py` | `kirocrew browse` CLI: setup, auth health/refresh/inject/federate, extension on/off |
 | `mcp_playwright_proxy.py` | Stdio proxy: intercepts Playwright MCP responses, compresses accessibility trees |
 | `skills/browser-auth/SKILL.md` | Agent skill for auth + Playwright MCP workflow |
@@ -79,12 +79,62 @@ Playwright MCP's `browser_snapshot` returns full accessibility trees (50-100K to
 - Compresses to compact outline: only interactive elements (links, buttons, inputs, headings, images) with refs
 - ~95% token reduction on heavy pages
 
-**Registration:** The proxy is auto-registered in `mcp.json` via:
-- `kirocrew setup` — new installs get the proxy from the start
-- Gateway startup — `_migrate_playwright_to_proxy()` auto-migrates existing `npm-playwright-mcp` entries
-- Settings → Browser save — `patch_mcp_extension()`/`patch_mcp_headless()` always write the proxy command
+**Registration (one canonical server, no duplicates):** kiro-cli splits an agent
+`@server` reference on `/`, so a slash-containing key like `@playwright/mcp` is
+mis-parsed as `@server/tool` and exposes none of the server's tools. The proxy is
+therefore always registered under the **slash-free canonical alias**
+`playwright-mcp` (`mcp_server_alias("@playwright/mcp")`), and every writer drops
+the superseded keys it historically used so exactly one Playwright entry survives:
 
-**Source:** `src/kiro_crew/mcp_playwright_proxy.py`
+- `kirocrew setup` — new installs get the canonical proxy entry from the start.
+- `patch_mcp_extension()` / `patch_mcp_headless()` — write the entry under the
+  canonical alias, after `_drop_superseded_playwright()` removes any legacy proxy
+  key (`@playwright/mcp`, `playwright-proxy-mcp`) **and** KiroCrew's legacy
+  *direct* `npm:@playwright/mcp` entry (that `npm:`-prefixed key is a KiroCrew
+  install artifact; a user's own direct server under the bare `@playwright/mcp`
+  key is left untouched — authorship is by launch target, not key name).
+- Gateway startup — `_migrate_playwright_to_proxy()` delegates to
+  `migrate_owned_playwright_registration()`, which converges KiroCrew's own
+  browse entry in `~/.kiro/settings/mcp.json` to the canonical key — including
+  upgrading a legacy *direct* `npm:@playwright/mcp` entry (from installs predating
+  the compression proxy) to the proxy — converges KiroCrew's own
+  `~/.kirocrew/mcp.json` at the SOURCE (so a stale proxy key there is healed once,
+  not re-injected into every rebuild), and sweeps the KiroCrew-generated agent
+  configs (the exact `kirocrew*` filenames it writes, not a bare `*.json` glob, so
+  a user's own agents are never rewritten) so a duplicate proxy entry collapses
+  onto the one canonical server. This self-heals an existing machine on a plain
+  restart.
+- Every agent-config rebuild — `converge_playwright_servers()` runs right after
+  key normalization in `build_agent_config` as a BACKSTOP (the owned source files
+  are healed at boot above; this catches anything re-merged mid-rebuild),
+  collapsing any Playwright-proxy entry by *resolved launch target* (an entry that
+  invokes `mcp-playwright-proxy`). This catches a slash-free legacy key (e.g.
+  `playwright-proxy-mcp`) that key normalization — which only rewrites
+  slash-containing keys — cannot fold. Convergence keeps the canonical key
+  (unless a user's own *direct*, non-proxy server already occupies it — then the
+  proxy is left under its own non-conflicting key rather than clobbering the user
+  entry), rewrites dropped `@refs` in `tools`/`allowedTools`, and never touches a
+  user-declared, non-proxy server. Together with discovery read-folding and pool
+  launch-target dedupe, all surfaces agree on the single `playwright-mcp` server,
+  so no second backend, dashboard row, or probe is derived.
+
+**Ownership signals (authorship of an MCP entry).** `~/.kiro/settings/mcp.json` is
+co-owned with kiro-cli, and kiro-cli validates it (and agent specs) with
+`deny_unknown_fields`, so an in-spec ownership sentinel is impossible. KiroCrew
+therefore records the MCP keys it writes in an out-of-band sidecar manifest
+`~/.kirocrew/owned-mcp-keys.json` (`_record_owned_mcp_key`, mode 0600), written by
+`patch_mcp_extension()` / `patch_mcp_headless()`. Drop/converge decisions consult
+this manifest **first** (`_load_owned_mcp_keys`); the `mcp-playwright-proxy`
+launch-target heuristic (`_spec_is_proxy`) and the `npm:@playwright/mcp` legacy-key
+rule remain the fallback for entries written by installs that predate the
+manifest. This stops the unmarked-entry population from growing so future
+migrations rely less on forensic heuristics on a destructive, every-restart path.
+*Follow-up:* extend the manifest to the agent-config writers and to all
+drop/converge sites (currently the sidecar sweep still keys on the owned-filename
+allowlist + launch target), and consider consolidating the per-surface
+convergence passes behind one canonicalizing `mcp_utils` accessor.
+
+**Source:** `src/kiro_crew/mcp_playwright_proxy.py`, `src/kiro_crew/browser/setup.py`
 
 ### Live Browse Mirror
 

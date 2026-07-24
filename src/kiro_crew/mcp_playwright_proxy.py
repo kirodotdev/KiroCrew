@@ -173,12 +173,15 @@ def _gateway_frame_url() -> str:
 def _internal_secret() -> str:
     """Read the per-session IPC secret the gateway requires on internal paths.
 
-    Same source as ``mcp_core._internal_secret`` (``$KIROCREW_HOME/.local_secret``,
-    default ``~/.kirocrew``). Read directly to avoid importing the gateway into
-    this stdio proxy. Returns "" if unreadable — the POST then fails the gate and
-    is silently dropped (frames are best-effort).
+    Same source as ``mcp_core._internal_secret`` (``<config_dir>/.local_secret``,
+    which honors ``$KIROCREW_HOME`` and defaults to ``~/.kiro/crew``). The path is
+    resolved via the stdlib-only ``config.paths`` leaf to avoid importing the
+    gateway into this stdio proxy. Returns "" if unreadable — the POST then fails
+    the gate and is silently dropped (frames are best-effort).
     """
-    home = os.environ.get("KIROCREW_HOME", os.path.expanduser("~/.kirocrew"))
+    from kiro_crew.config.paths import config_dir
+
+    home = str(config_dir())
     try:
         with open(os.path.join(home, ".local_secret"), encoding="utf-8") as f:
             return f.read().strip()

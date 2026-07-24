@@ -25,6 +25,7 @@ from typing import Any
 import aiohttp
 
 from kiro_crew import platform_compat
+from kiro_crew.config.paths import config_dir
 from kiro_crew.env import augmented_path
 from kiro_crew.hooks import safe_read_file
 from kiro_crew.mcp_utils import mcp_server_alias
@@ -34,7 +35,7 @@ from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 logger = logging.getLogger(__name__)
 
 # How long to wait for MCP handshake before marking server as unreachable.
-# Configurable via dashboard.mcp_probe_timeout_secs in ~/.kirocrew/config.json.
+# Configurable via dashboard.mcp_probe_timeout_secs in <config_dir>/config.json.
 _PROBE_TIMEOUT_SECS = 15  # fallback if config not loaded yet
 
 
@@ -69,7 +70,7 @@ SCOPE_CC_GLOBAL = "ccGlobal"
 # scanning a file it can no longer manage (which would surface un-uninstallable
 # "zombie" servers).
 _MCP_SOURCES: tuple[tuple[Path, str], ...] = (
-    (Path.home() / ".kirocrew" / "mcp.json", SCOPE_KIROCREW),
+    (config_dir() / "mcp.json", SCOPE_KIROCREW),
     (Path.home() / ".kiro" / "settings" / "mcp.json", SCOPE_KIRO_GLOBAL),
 )
 

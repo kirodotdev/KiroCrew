@@ -12,7 +12,8 @@ This module provides:
 2. Rotation: keeps last N dumps, removes oldest on startup.
 3. Newest-dump detection for doctor/startup surfacing.
 
-Dump directory: ``$KIROCREW_HOME/logs/crash-dumps/``
+Dump directory: ``<data home>/logs/crash-dumps/`` (data home = ``config_dir()``,
+i.e. ``~/.kiro/crew`` or ``$KIROCREW_HOME``)
 Filename pattern: ``loopstall-<ISO timestamp>.txt``
 """
 
@@ -24,6 +25,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import IO
+
+from kiro_crew.config.paths import config_dir
 
 logger = logging.getLogger(__name__)
 
@@ -38,9 +41,12 @@ _active_dump_file: IO[str] | None = None
 
 
 def get_dumps_dir() -> Path:
-    """Resolve the crash-dumps directory under $KIROCREW_HOME/logs/."""
-    home = Path(os.environ.get("KIROCREW_HOME", Path.home() / ".kirocrew"))
-    d = home / "logs" / _DUMP_DIR_NAME
+    """Resolve the crash-dumps directory under the data home's ``logs/``.
+
+    ``config_dir()`` resolves to ``~/.kiro/crew`` (or ``$KIROCREW_HOME`` when
+    set), so dumps land in ``<data home>/logs/crash-dumps/``.
+    """
+    d = config_dir() / "logs" / _DUMP_DIR_NAME
     d.mkdir(parents=True, exist_ok=True)
     return d
 

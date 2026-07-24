@@ -49,3 +49,14 @@ def test_bracket_inside_option_text():
 
 def test_bracket_at_end_of_each_option():
     assert _parse_options("[OPTIONS: a[1] | b[2]]") == ["a[1]", "b[2]"]
+
+
+def test_body_does_not_span_newlines():
+    # The MULTILINE body must stay single-line: text mentioning "[OPTIONS:"
+    # mid-line with a LATER line ending in "]" must NOT be parsed as one span
+    # (that would emit bogus pills from unrelated prose). The tempered body
+    # excludes \n (``[^[\n]``) so a real [OPTIONS:] block is still detected
+    # while cross-line spans are not.
+    assert _parse_options("Earlier [OPTIONS: draft\nmore prose ]") == []
+    # A genuine single-line block after mid-text prose still parses.
+    assert _parse_options("Earlier [OPTIONS text.\nNow:\n[OPTIONS: A | B]") == ["A", "B"]

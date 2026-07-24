@@ -1222,7 +1222,14 @@ class AcpClient:
         mcp_gateway_socket: str | Path | None = None,
         permission_mode: str | None = None,
     ):
-        self._work_dir = Path(work_dir) if work_dir else Path.home() / ".kirocrew" / "workspace"
+        if work_dir:
+            self._work_dir = Path(work_dir)
+        else:
+            # config.paths is a stdlib-only leaf: importing it here can't
+            # re-enter the config.loader -> providers.acp -> acp.client cycle.
+            from kiro_crew.config.paths import config_dir
+
+            self._work_dir = config_dir() / "workspace"
         self._model = model or DEFAULT_MODEL
         self._agent = agent
         self._sandbox_mode = sandbox_mode
@@ -4079,7 +4086,7 @@ class AcpClient:
         "grep"), then a follow-up `tool_call_update` once `chunk.input` is
         fully streamed — that update carries the populated `rawInput` and a
         refined `title`/`kind` from the upstream `toolInfoFromToolUse`
-        (e.g. `"ls /local/home/hugocost/.kirocrew/workspace"`).
+        (e.g. `"ls /local/home/hugocost/.kiro/crew/workspace"`).
 
         We yield an EVENT_TOOL_CALL_UPDATE so the dashboard can patch the
         existing pill / persisted message in place — see the matching

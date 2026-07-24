@@ -678,7 +678,7 @@ class TestCleanupStaleSandboxProfiles:
         stale_file = run_dir / "kirocrew_sandbox_99999_abc123.sb"
         stale_file.write_text("(version 1)")
 
-        with patch("kiro_crew.sandbox.os.path.expanduser", return_value=str(tmp_path)):
+        with patch("kiro_crew.sandbox.config_dir", return_value=tmp_path / ".kirocrew"):
             with patch(
                 "kiro_crew.sandbox.platform_compat.pid_exists", return_value=False
             ):
@@ -696,7 +696,7 @@ class TestCleanupStaleSandboxProfiles:
         live_file = run_dir / f"kirocrew_sandbox_{os.getpid()}_xyz789.sb"
         live_file.write_text("(version 1)")
 
-        with patch("kiro_crew.sandbox.os.path.expanduser", return_value=str(tmp_path)):
+        with patch("kiro_crew.sandbox.config_dir", return_value=tmp_path / ".kirocrew"):
             removed = cleanup_stale_sandbox_profiles(legacy_dir=str(tmp_path / "nonexistent"))
 
         assert live_file.exists()
@@ -711,7 +711,7 @@ class TestCleanupStaleSandboxProfiles:
         other_file = run_dir / "something_else.txt"
         other_file.write_text("keep me")
 
-        with patch("kiro_crew.sandbox.os.path.expanduser", return_value=str(tmp_path)):
+        with patch("kiro_crew.sandbox.config_dir", return_value=tmp_path / ".kirocrew"):
             removed = cleanup_stale_sandbox_profiles(legacy_dir=str(tmp_path / "nonexistent"))
 
         assert other_file.exists()

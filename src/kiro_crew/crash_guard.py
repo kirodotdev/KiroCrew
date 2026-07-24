@@ -33,8 +33,10 @@ _CRASH_LOG: Path | None = None
 
 
 def _crash_log_path() -> Path:
-    """Resolve the crash log path — always under ~/.kirocrew/logs/."""
-    logs_dir = Path(os.environ.get("KIROCREW_HOME", Path.home() / ".kirocrew")) / "logs"
+    """Resolve the crash log path — always under ``<config_dir>/logs/``."""
+    from kiro_crew.config.paths import config_dir
+
+    logs_dir = config_dir() / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
     return logs_dir / "crash.log"
 

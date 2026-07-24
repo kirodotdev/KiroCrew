@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback, type ReactNode } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Bot, ScrollText, FileText, X, Lock, CheckCircle, AlertCircle, Loader as LoaderIcon, Ban, Handshake, Wrench, MessageSquare, Workflow, Star, Component, GitPullRequest, ArrowLeft } from 'lucide-react'
+import { Bot, ScrollText, FileText, X, Lock, CheckCircle, AlertCircle, Loader as LoaderIcon, Ban, Handshake, Wrench, MessageSquare, Workflow, Star, Component, GitPullRequest, ArrowLeft, Square } from 'lucide-react'
 import { api } from '../../api/client'
 import MarkdownPanel, { type MarkdownPanelHandle } from '../../components/MarkdownPanel'
 import { fileReadUrl } from '../../utils/fileReadUrl'
@@ -11,6 +11,7 @@ import type { SubagentActivity, ToolActivity, SessionDoc } from '../../types'
 import type { TouchedFile } from '../../hooks/useTouchedFiles'
 import { getInlineDraft, setInlineDraft, clearInlineDraft } from '../../hooks/usePanelTabs'
 import type { ExtractedLink } from '../../utils/extractChatLinks'
+import { dedupResourceLinks, resourceKey } from '../../utils/extractChatLinks'
 import type { PullRequestLink } from '../../utils/pullRequestLinks'
 import PullRequestPanel from '../../components/PullRequestPanel'
 import { useAppSelector, useAppDispatch } from '../../store'
@@ -27,6 +28,7 @@ const STATUS = {
   tool: <Wrench size={12} className="text-amber-400" />,
   done: <CheckCircle size={12} className="text-green-400" />,
   error: <AlertCircle size={12} className="text-danger" />,
+  stopped: <Square size={12} className="text-muted" />,
 } as const
 
 // Keyed by extractChatLinks' LinkType, which is 'cr' | 'other' only — the OSS
@@ -76,7 +78,7 @@ function SubagentPane({ a, onClick }: { a: SubagentActivity; onClick: () => void
   const bodyRef = useRef<HTMLPreElement>(null)
   const autoScroll = useRef(true)
   const isPending = a.status === 'pending'
-  const isDone = a.status === 'done' || a.status === 'error'
+  const isDone = a.status === 'done' || a.status === 'error' || a.status === 'stopped'
   // Native cards have no SubagentManager record to lazy-load from disk; their
   // output arrives inline on the done event (a.result).
   const isNative = a.id.startsWith('native:')
@@ -147,7 +149,7 @@ function SubagentPane({ a, onClick }: { a: SubagentActivity; onClick: () => void
           : {})}
       >
         <span>{STATUS[a.status]}</span>
-        <span className="text-[13px] font-semibold text-text">Subagent {isPending ? 'Pending Approval' : a.status === 'tool' ? 'Running Tool' : a.status === 'running' ? (a.streaming ? 'Running' : 'Starting…') : a.status === 'done' ? 'Complete' : a.error?.includes('Cancelled') ? 'Cancelled' : 'Error'}</span>
+        <span className="text-[13px] font-semibold text-text">Subagent {isPending ? 'Pending Approval' : a.status === 'tool' ? 'Running Tool' : a.status === 'running' ? (a.streaming ? 'Running' : 'Starting…') : a.status === 'done' ? 'Complete' : a.status === 'stopped' ? 'Stopped' : a.error?.includes('Cancelled') ? 'Cancelled' : 'Error'}</span>
         {a.agent && <code className="text-[11px] text-muted/50 bg-bg-hover px-1.5 py-0.5 rounded">{a.agent}</code>}
         {!isPending && <span className="text-[11px] text-muted/40 ml-auto font-mono">{fmtElapsed}</span>}
         {isRunning && <button className="text-[11px] px-1.5 py-0.5 rounded border border-danger/40 text-danger/70 hover:bg-danger-subtle hover:text-danger cursor-pointer transition-all" onClick={onCancel}><X className="lucide-inline" /> Cancel</button>}
@@ -733,8 +735,8 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
         // keep every other link — including cr-classified hosts (Bitbucket,
         // self-hosted, code reviews) that the Changes parser can't render, so
         // they stay reachable in Resources instead of vanishing from the panel.
-        const sourceUrls = new Set((sources || []).map(s => s.url.replace(/\/+$/, '')))
-        const resourceLinks = (navLinks || []).filter(l => !sourceUrls.has(l.url.replace(/\/+$/, '')))
+        const sourceUrls = new Set((sources || []).map(s => resourceKey(s.url)))
+        const resourceLinks = dedupResourceLinks((navLinks || []).filter(l => !sourceUrls.has(resourceKey(l.url))))
         return (
           <div className="flex-1 flex flex-col overflow-hidden">
             <div className="flex-1 overflow-y-auto py-2">

@@ -2399,7 +2399,7 @@ def _current_session_thread_ts() -> str | None:
     """Read the current session's thread_ts from the most recent session_pid file."""
     try:
         pid_files = sorted(
-            (Path.home() / ".kirocrew").glob("session_pid_*.txt"),
+            config_dir().glob("session_pid_*.txt"),
             key=lambda f: f.stat().st_mtime,
             reverse=True,
         )
@@ -2677,7 +2677,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             spawn_lines.append(
                 "⚠ parent_session UNRESOLVED — these subagents are orphaned: "
                 "completion events will NOT arrive in this conversation. "
-                "Poll spawn_list and read ~/.kirocrew/subagents/<id>/result.txt "
+                "Poll spawn_list and read ~/.kiro/crew/subagents/<id>/result.txt "
                 "instead. (Identity plumbing issue — check KIROCREW_HOST_PID / "
                 "session_pid / claim-push.)"
             )
@@ -2717,7 +2717,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                 spawn_lines.append(
                     "All tasks queued — parent_session UNRESOLVED, so completion "
                     "events will NOT arrive: poll spawn_list and read "
-                    "~/.kirocrew/subagents/<id>/result.txt instead."
+                    "~/.kiro/crew/subagents/<id>/result.txt instead."
                 )
         return "\n".join(spawn_lines)
 
@@ -3134,7 +3134,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         context_summary = str(args.get("context_summary", ""))
         session_key = f"hook:{hook_id}"
         # Persist hook registration
-        hook_file = Path.home() / ".kirocrew" / "hooks.json"
+        hook_file = config_dir() / "hooks.json"
         hook_file.parent.mkdir(parents=True, exist_ok=True)
         lock_path = hook_file.parent / "hooks.json.lock"
         with open(lock_path, "w") as lock_fd:
