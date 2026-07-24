@@ -17,6 +17,7 @@ from __future__ import annotations
 import difflib
 import json
 import logging
+import math
 from pathlib import Path
 from typing import Any
 
@@ -667,13 +668,38 @@ def parse_session_update(
     return events
 
 
-def parse_usage_update(update: dict[str, Any]) -> tuple[int | None, int | None]:
-    """Parse a ``usage_update`` into ``(used, size)`` token counts.
+def _token_count(value: Any) -> int | float | None:
+    """Validate an agent-supplied token count; None for anything unusable.
+
+    The value comes straight from the agent process. Non-numbers (str/list/
+    bool) would crash comparisons or division downstream; json parses NaN/
+    Infinity literals to non-finite floats that pass isinstance but crash
+    int(); and an arbitrary-precision int beyond float range makes
+    math.isfinite itself raise OverflowError. All of those run inside the
+    prompt-turn dispatch path, so a malformed value must degrade to "absent",
+    never raise.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        if not math.isfinite(value):
+            return None
+    except OverflowError:
+        return None
+    return value
+
+
+def parse_usage_update(update: dict[str, Any]) -> tuple[int | float | None, int | float | None]:
+    """Parse a ``usage_update`` into validated ``(used, size)`` token counts.
 
     kiro-cli's working path (``AcpClient``) reads a FLAT shape (``update.used`` /
     ``update.size``); ``runtime.py`` had drifted to a nested ``update.usage.*``
     read. This reconciles to flat-primary with a nested fallback so both classes
     read identically regardless of which shape kiro emits.
+
+    Values are validated via ``_token_count`` so BOTH consumers
+    (``AcpClient._track_usage_update`` and ``AcpSessionHandle._handle_update``)
+    are safe against malformed payloads at one chokepoint.
     """
     if not isinstance(update, dict):
         return None, None
@@ -686,7 +712,7 @@ def parse_usage_update(update: dict[str, Any]) -> tuple[int | None, int | None]:
                 used = nested.get("used")
             if size is None:
                 size = nested.get("size")
-    return used, size
+    return _token_count(used), _token_count(size)
 
 
 # Re-export the method names so callers can use a single import site for the

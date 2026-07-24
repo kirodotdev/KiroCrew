@@ -1328,6 +1328,38 @@ async def test_dispatch_usage_update():
         await _stop_reader(task)
 
 
+@pytest.mark.parametrize(
+    "used,size",
+    [
+        ("5000", "10000"),   # numeric strings
+        (float("inf"), 10000),
+        (float("nan"), float("nan")),
+        (10**400, 10000),    # bignum: math.isfinite itself raises OverflowError
+        ([5000], {"n": 1}),
+        (True, True),
+    ],
+)
+def test_handle_update_malformed_usage_is_noop(used, size):
+    """The session-handle path consumes the same agent-supplied usage_update as
+    AcpClient. parse_usage_update validates at the shared chokepoint, so a
+    malformed used/size must be a no-op here too — not a TypeError/
+    OverflowError inside the prompt-turn dispatch."""
+    rt, _, _ = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    msg = JsonRpcMessage(
+        method=METHOD_SESSION_UPDATE,
+        params={
+            "sessionId": "sA",
+            "update": {"sessionUpdate": "usage_update", "used": used, "size": size},
+        },
+    )
+    events = handle._handle_update(msg)  # must not raise
+    assert events == []
+    assert handle.last_prompt_stats.context_pct == 0.0
+    assert handle.last_prompt_stats.context_used_tokens == 0
+
+
 @pytest.mark.asyncio
 async def test_dispatch_metadata_credits():
     """_kiro.dev/metadata meteringUsage(unit=credit) accumulates into last_prompt_stats

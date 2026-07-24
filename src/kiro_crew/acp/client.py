@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import AsyncGenerator, AsyncIterator
 
 from kiro_crew import model_registry, platform_compat
+from kiro_crew.acp._dispatch import parse_usage_update
 from kiro_crew.acp.liveness import VERDICT_UNKNOWN, VERDICT_WORKING, LivenessOracle
 from kiro_crew.acp.types import (
     ACP_BACKEND_CLAUDE,
@@ -3692,8 +3693,12 @@ class AcpClient:
         update = params.get("update", {})
         kind = update.get("sessionUpdate") if isinstance(update, dict) else None
         if kind == UPDATE_USAGE:
-            used = update.get("used")
-            size = update.get("size")
+            # used/size come straight from the agent process; a malformed
+            # value (string, list, bool, NaN/Infinity, bignum beyond float
+            # range) must degrade to "absent" rather than raise mid-turn.
+            # parse_usage_update validates both fields at the shared
+            # chokepoint used by AcpSessionHandle._handle_update too.
+            used, size = parse_usage_update(update)
             if used is not None and size and size > 0:
                 self.last_prompt_stats.context_pct = round((used / size) * 100, 1)
                 # Keep the raw counts so the dashboard token text uses the real

@@ -1500,6 +1500,45 @@ class TestAcpClientTrackUsageUpdate:
         assert stats.context_used_tokens == 0
         assert stats.context_window_tokens == 0
 
+    @pytest.mark.parametrize(
+        "used,size",
+        [
+            ("50000", "200000"),  # numeric strings: `size > 0` raises TypeError
+            (50000, "200000"),
+            ([50000], 200000),
+            (50000, {"n": 1}),
+            (True, True),  # bools are ints but nonsense as token counts
+            # json parses NaN/Infinity literals to non-finite floats, which
+            # pass an isinstance check but crash int() (ValueError/OverflowError).
+            (float("nan"), 200000),
+            (50000, float("inf")),
+            (float("inf"), float("nan")),
+            # An arbitrary-precision int beyond float range makes
+            # math.isfinite itself raise OverflowError.
+            (10**400, 200000),
+            (50000, 10**400),
+        ],
+    )
+    def test_non_numeric_used_size_treated_as_absent(self, tmp_path, used, size):
+        """used/size come straight from the agent process; a non-numeric value
+        raised TypeError on `size > 0` / `used / size` inside the prompt-turn
+        dispatch path, tearing down the whole turn. Malformed values must be
+        treated like absent ones."""
+        client = AcpClient(work_dir=tmp_path)
+        client._track_usage_update(self._usage_msg(used, size))  # must not raise
+        stats = client.last_prompt_stats
+        assert stats.context_pct == 0.0
+        assert stats.context_used_tokens == 0
+        assert stats.context_window_tokens == 0
+
+    def test_float_used_size_still_tracked(self, tmp_path):
+        client = AcpClient(work_dir=tmp_path)
+        client._track_usage_update(self._usage_msg(50000.0, 200000.0))
+        stats = client.last_prompt_stats
+        assert stats.context_pct == 25.0
+        assert stats.context_used_tokens == 50000
+        assert stats.context_window_tokens == 200000
+
     def test_tokens_carry_forward_across_prompt_reset(self, tmp_path):
         # The per-prompt reset preserves the last known pct + token counts so
         # the dashboard ring/text doesn't flicker to 0 at the start of a turn.
