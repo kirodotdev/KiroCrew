@@ -26,16 +26,26 @@ def _capability_manager() -> "CapabilityManager":
     Lives in the shared layer (not a leaf handler) so every consumer —
     ``agents.py`` handlers, ``mcp.py`` uninstall, and the skill/prompt listers
     here — imports it DOWNWARD with no circular dependency. Operations-based: the
-    edition owns its CLI grammar, output parsing, and error translation. Fails closed to
-    an unavailable ``DefaultCapabilityManager`` so ``/api/capability/*`` degrade
-    to 503 rather than crashing.
+    edition owns its CLI grammar, output parsing, and error translation. Fails
+    closed to an unavailable ``DefaultCapabilityManager`` so ``/api/capability/*``
+    degrade to 503 rather than crashing.
+
+    The returned manager is ALREADY LIVENESS-bounded: the context wraps every
+    ``CapabilityManager`` in ``BoundedCapabilityManager`` at composition time
+    (``PlatformContext.__post_init__``), so the ``asyncio.wait_for`` mutation
+    bound is inherited by every reader of ``current_context().capability_manager``
+    — not just callers who route through this accessor. The fallback
+    ``DefaultCapabilityManager`` is bound here too so a context-lookup failure
+    degrades to a wrapped (still unavailable) manager, keeping the return type
+    uniform.
     """
+    from kiro_crew.platform.capability_bound import bind_capability_manager
     from kiro_crew.platform.context import current_context, safe_context_call
     from kiro_crew.platform.defaults import DefaultCapabilityManager
 
     return safe_context_call(
         lambda: current_context().capability_manager,
-        fallback_factory=DefaultCapabilityManager,
+        fallback_factory=lambda: bind_capability_manager(DefaultCapabilityManager()),
         log_message="capability_manager lookup failed; treating as unavailable",
     )
 

@@ -45,6 +45,23 @@ def _is_valid_mcp_name(name: str) -> bool:
 
 _GLOBAL_MCP_JSON = Path.home() / ".kiro" / "settings" / "mcp.json"
 
+# Max per-request changes accepted by /api/mcp/apply. The capability-manager
+# uninstalls run OFF the MCP file lock (deferred, bounded-concurrent, under one
+# phase deadline), so the cap no longer guards lock-hold time — it bounds
+# request latency and memory (result list size) for a single apply call. The
+# dashboard applies at most one change per visible server, so this is generous.
+_MCP_APPLY_MAX_CHANGES = 200
+
+# Bounded concurrency for the deferred capability-manager uninstall phase, so a
+# large batch neither serializes (timeout×N) nor floods the companion with N
+# simultaneous subprocesses.
+_MCP_DEFERRED_UNINSTALL_CONCURRENCY = 8
+
+# Hard ceiling for the whole uninstall phase's deadline. The budget scales with
+# the number of concurrency waves (so a legitimate multi-wave batch isn't
+# cancelled mid-wave) but never exceeds this, bounding request latency.
+_MCP_DEFERRED_UNINSTALL_MAX_BUDGET = 300
+
 # File-based lock for mcp.json — shared with bridges.py so that app
 # registration and dashboard MCP handlers coordinate properly.
 # Uses fcntl.flock on a sidecar .lock file (works cross-process too).
@@ -90,6 +107,68 @@ class _McpFileLock:
 def _get_mcp_lock() -> _McpFileLock:
     """Return an MCP config file lock (compatible with bridges.py)."""
     return _McpFileLock()
+
+
+class _McpFileLockSync:
+    """Synchronous sibling of :class:`_McpFileLock` for the guaranteed-cleanup
+    sweep.
+
+    The sweep is dispatched to a worker thread via ``run_in_executor`` (see the
+    ``api_mcp_apply`` finally), so this blocking ``acquire_lock`` runs OFF the
+    event loop — it must not, and does not, block the loop thread. Running it on
+    a worker thread is what makes the cleanup both deadlock-free and
+    run-to-completion: (a) the event loop stays free, so any other task that
+    currently holds the MCP lock can resume and release it (a loop-blocking
+    acquire here would wedge that release → deadlock); and (b) a worker thread is
+    not cancelled when the request task is, so the purge finishes even when the
+    apply was cancelled mid-flight.
+    """
+
+    def __enter__(self) -> None:
+        _GLOBAL_MCP_JSON.parent.mkdir(parents=True, exist_ok=True)
+        _MCP_LOCK_PATH.touch(exist_ok=True)
+        fd = open(_MCP_LOCK_PATH, "r+")
+        try:
+            platform_compat.acquire_lock(fd.fileno(), exclusive=True)
+        except BaseException:
+            fd.close()
+            raise
+        self._fd = fd
+
+    def __exit__(self, *args: Any) -> None:
+        try:
+            platform_compat.release_lock(self._fd.fileno())
+        finally:
+            self._fd.close()
+
+
+def _get_mcp_lock_sync() -> _McpFileLockSync:
+    """Return a SYNCHRONOUS MCP config file lock (used by the cleanup sweep)."""
+    return _McpFileLockSync()
+
+
+# ── Process-wide /api/mcp/apply mutex ───────────────────────────────────
+# The file lock (`_get_mcp_lock`) serializes individual filesystem WRITES, but
+# an apply is a two-phase TRANSACTION (Phase 1: companion `uninstall_mcp` off the
+# lock; Phase 2: config writes under the lock). Two concurrent applies can
+# interleave across that boundary — A uninstalls a package and removes its
+# config, B then re-adds the same server from a preserved spec — leaving config
+# pointing at a removed package. This coarse async mutex spans BOTH phases so
+# apply calls are fully serialized; the narrower file lock is retained inside for
+# cross-process coordination with bridges.py. Bound to the running loop
+# (Python 3.10 compat), mirroring agents.py::_get_config_lock.
+_apply_lock: asyncio.Lock | None = None
+_apply_lock_loop: asyncio.AbstractEventLoop | None = None
+
+
+def _get_apply_lock() -> asyncio.Lock:
+    """Return the /api/mcp/apply mutex bound to the current event loop."""
+    global _apply_lock, _apply_lock_loop
+    loop = asyncio.get_running_loop()
+    if _apply_lock is None or _apply_lock_loop is not loop:
+        _apply_lock = asyncio.Lock()
+        _apply_lock_loop = loop
+    return _apply_lock
 
 
 def _write_mcp_json(data: dict) -> None:
@@ -767,8 +846,6 @@ async def api_mcp_remove(request: web.Request) -> web.Response:
 # MCP server registration (generic REST)
 # ---------------------------------------------------------------------------
 
-_CAPABILITY_UNINSTALL_TIMEOUT = 60
-
 
 async def api_mcp_server_detail(request: web.Request) -> web.Response:
     """PUT/DELETE /api/mcp/servers/{name} — register or remove an MCP server.
@@ -1048,6 +1125,98 @@ def _set_scope_entry(path: Path, name: str, *, enabled: bool, spec: dict | None 
     return "removed"
 
 
+def _purge_server_config(name: str) -> dict[str, str]:
+    """Remove a server's config from EVERY scope + rendered agent file.
+
+    The config-side half of an uninstall, factored out so the normal
+    per-change path and the guaranteed-cleanup sweep (see ``api_mcp_apply``)
+    run byte-identical removal logic. Idempotent: each helper it calls is a
+    read-modify-write that no-ops when the entry is already absent, so running
+    it a second time (e.g. the sweep re-purging a name the loop already handled)
+    changes nothing. MUST be called under the MCP file lock. Returns the
+    per-scope action labels for the response outcome.
+    """
+    actions: dict[str, str] = {}
+    actions["kirocrew"] = "removed" if _remove_kirocrew_entry(name) else "noop"
+    actions["kiroGlobal"] = _set_scope_entry(_GLOBAL_MCP_JSON, name, enabled=False)
+    for scope in _extra_mcp_scopes():
+        actions[f"{scope.id}Global"] = _set_scope_entry(
+            scope.global_json, name, enabled=False
+        )
+    # Also strip the entry directly from the rendered agent files so the next
+    # rebuild doesn't resurrect it via the "start from existing agent config"
+    # base. Without this the additive merge keeps the entry around.
+    _remove_from_agent_file(Path.home() / ".kiro" / "agents" / "kirocrew.json", name)
+    for scope in _extra_mcp_scopes():
+        if scope.agent_mcp_file is not None:
+            _remove_from_agent_file(scope.agent_mcp_file, name)
+    return actions
+
+
+def _sweep_dangling_uninstalls(
+    uninstall_names: list[str],
+    purged_names: set[str],
+) -> None:
+    """Purge the config of every REQUESTED uninstall the apply loop did not reach.
+
+    The compensation for package-first ordering: Phase 1 removes the companion
+    package before Phase 2 removes its persisted config, so if the apply is
+    interrupted between them (an earlier change's write raised, OR the request
+    task was cancelled — e.g. gateway shutdown / client disconnect — during
+    Phase 1, before the Phase-2 lock is ever taken) the config would dangle at
+    an already-removed package.
+
+    Sweeps by REQUEST, not by companion outcome. Phase 2's own uninstall branch
+    removes config unconditionally for every ``uninstall`` change (it does not
+    consult ``capability_results``), so the sweep mirrors that: any requested
+    uninstall the loop did not reach (not in ``purged_names``) gets its config
+    removed. Keying on the request — rather than on a ``capability_results`` entry
+    that a cancellation could leave unset the instant AFTER the companion removed
+    the package — closes the "package gone, result unrecorded, config kept"
+    window at the root. Removing config for a requested uninstall is the user's
+    intent anyway, and errs toward the BENIGN failure direction (config gone,
+    package possibly orphaned-but-harmless — recoverable by reinstall) rather
+    than the harmful one (config kept, package gone → broken at every session).
+
+    SYNCHRONOUS by design and dispatched to a worker thread by the caller (the
+    ``api_mcp_apply`` finally does ``run_in_executor`` + awaits the future to
+    completion, shielding it across cancellation). Running the whole
+    acquire→purge→release off the event loop is what makes it both
+    deadlock-free (the loop stays free so a task holding the MCP lock can release
+    it) and run-to-completion (a worker thread is not cancelled when the request
+    task is). It uses its OWN synchronous lock, so it is correct whether or not
+    the caller still holds the async lock (the Phase-2 ``async with`` has already
+    exited by the time we reach here, and on a Phase-1 cancel it was never taken).
+    Idempotent (``_purge_server_config`` no-ops on absent entries), so a name
+    already purged by the loop (in ``purged_names``) is skipped and a re-run is
+    cheap.
+    """
+    to_sweep = [n for n in uninstall_names if n not in purged_names]
+    if not to_sweep:
+        return
+    # Best-effort: this runs from the apply's finally, so it must NEVER raise —
+    # a failure here (even the lock acquire) would replace a successful apply's
+    # response with a 500, or mask the original exception being unwound. Guard
+    # the WHOLE body (lock acquire included), not just each purge; a miss self-
+    # heals on the next idempotent apply.
+    try:
+        with _get_mcp_lock_sync():
+            for uname in to_sweep:
+                _purge_server_config(uname)
+                logger.warning(
+                    "mcp apply interrupted before purging config for requested "
+                    "uninstall %r; swept it in guaranteed cleanup to avoid a "
+                    "dangling config→removed-package reference",
+                    uname,
+                )
+    except Exception:
+        logger.exception(
+            "guaranteed-cleanup sweep failed (%s); config may reference a removed "
+            "package until the next apply",
+            to_sweep,
+        )
+
+
 def _set_tool_overrides(name: str, tool_overrides: dict[str, bool]) -> list[str]:
     """Apply per-tool enable/disable overrides to a server's entry in
     ``<data home>/mcp.json``.
@@ -1091,7 +1260,23 @@ def _set_tool_overrides(name: str, tool_overrides: dict[str, bool]) -> list[str]
 
 
 async def api_mcp_apply(request: web.Request) -> web.Response:
-    """POST /api/mcp/apply — batched per-scope apply for MCP servers.
+    """POST /api/mcp/apply — serialize the two-phase apply under the apply mutex.
+
+    Thin wrapper: the apply is a Phase-1 (companion uninstall, off the file lock)
+    + Phase-2 (config writes, under the file lock) TRANSACTION, and the file lock
+    only serializes individual writes — not the phase boundary. Without a mutex
+    two concurrent applies can interleave so one re-adds a server from a preserved
+    spec after another removed its package, leaving config pointing at a removed
+    package. ``_get_apply_lock`` (a process-wide async mutex spanning BOTH phases)
+    closes that; the narrower file lock is retained inside ``_do_mcp_apply`` for
+    cross-process coordination with bridges.py.
+    """
+    async with _get_apply_lock():
+        return await _do_mcp_apply(request)
+
+
+async def _do_mcp_apply(request: web.Request) -> web.Response:
+    """The batched per-scope apply body (runs under the apply mutex).
 
     Request body::
 
@@ -1128,183 +1313,288 @@ async def api_mcp_apply(request: web.Request) -> web.Response:
     changes = body.get("changes")
     if not isinstance(changes, list):
         return web.json_response({"error": "changes must be a list"}, status=400)
+    if len(changes) > _MCP_APPLY_MAX_CHANGES:
+        return web.json_response(
+            {"error": f"too many changes (max {_MCP_APPLY_MAX_CHANGES})"}, status=400
+        )
 
     results: list[dict] = []
 
-    async with _get_mcp_lock():
-        for change in changes:
-            name = str(change.get("name", "")).strip()
-            if not name:
-                results.append({"error": "empty name", "change": change})
-                continue
-            # Defense-in-depth: name flows into subprocess argv (aim mcp
-            # uninstall) and filesystem paths via scope helpers.  Even
-            # though we use list-form subprocess (no shell), reject names
-            # that contain argv-injection chars or path traversal.
-            if not _is_valid_mcp_name(name):
-                results.append({"error": "invalid name", "name": name})
-                sel().log_api_access(
-                    caller="dashboard",
-                    operation="mcp_apply_rejected_name",
-                    outcome="denied",
-                    resources=name[:64],
-                )
-                continue
+    # ── Phase 1 (BEFORE the MCP file lock): companion package uninstalls ──
+    # Run capability-manager uninstalls FIRST, off the lock, so:
+    #  (a) a slow companion op never holds the process-wide lock (no timeout×N
+    #      stall of every other MCP handler), and
+    #  (b) the package is removed BEFORE its scope-file config entries are (config
+    #      removal is the LAST step, under the lock below). If a concurrent apply
+    #      re-adds the same server, it can't leave persisted MCP config pointing
+    #      at an already-removed package — the config write is serialized under
+    #      the lock and is last-writer-wins (TOCTOU fix, GPT 5.6 HIGH).
+    # Package-first flips the partial-failure DIRECTION toward the harmful one
+    # (package gone, config persists → the server fails at every subsequent
+    # session start), so BOTH phases run inside one outer try/finally: on ANY
+    # exit — a Phase-2 write error, OR a CancelledError raised during Phase 1
+    # itself (gateway shutdown / client disconnect, before the Phase-2 lock is
+    # ever taken) — the finally sweeps (shielded, re-acquiring the lock) the
+    # config of every package Phase 1 CONFIRMED removed, closing the window down
+    # to the irreducible hard-kill case, which self-heals idempotently on the
+    # next apply. See platform-context.md → "uninstall ordering & the crash
+    # window".
+    # Deduped, bounded-concurrent, under ONE phase-level deadline; results are
+    # merged into each uninstall change's outcome inside the locked loop.
+    capability_results: dict[str, dict[str, str]] = {}
+    uninstall_names = sorted(
+        {
+            n
+            for c in changes
+            if isinstance(c, dict)
+            and c.get("uninstall")
+            and (n := str(c.get("name", "")).strip())
+            and _is_valid_mcp_name(n)
+        }
+    )
+    # Names whose config the locked loop has already purged — so the
+    # guaranteed-cleanup sweep does not redundantly re-purge them.
+    purged_names: set[str] = set()
 
-            outcome: dict[str, Any] = {"name": name, "actions": {}}
+    try:
+        if uninstall_names:
+            from kiro_crew.dashboard.handlers._shared import _capability_manager
+            from kiro_crew.platform.capability_bound import (
+                CAPABILITY_UNINSTALL_TIMEOUT as _CAPABILITY_UNINSTALL_TIMEOUT,
+            )
 
-            # ── Uninstall path: wipe from all scopes and (best-effort) AIM ──
-            if change.get("uninstall"):
-                outcome["actions"]["kirocrew"] = (
-                    "removed" if _remove_kirocrew_entry(name) else "noop"
+            mgr = _capability_manager()
+            if mgr.available():
+                sem = asyncio.Semaphore(_MCP_DEFERRED_UNINSTALL_CONCURRENCY)
+
+                async def _run_one_uninstall(uname: str) -> None:
+                    async with sem:
+                        try:
+                            res = await mgr.uninstall_mcp(uname)
+                            capability_results[uname] = {
+                                "capability": "uninstalled" if res.ok else "uninstall_failed"
+                            }
+                        except asyncio.CancelledError:
+                            # Never mask cancellation as a companion error: the op
+                            # may or may not have completed, so leave the result
+                            # unset (the outer finally sweeps only CONFIRMED
+                            # "uninstalled" names) and let cancellation propagate.
+                            raise
+                        except Exception as exc:
+                            # Error strings may include env vars / AWS keys / URLs
+                            # surfaced by failing operations; scrub before returning.
+                            _urls_clean, _ = redact_exfiltration_urls(str(exc))
+                            _redacted, _ = redact_credentials(_urls_clean)
+                            capability_results[uname] = {"capability_error": _redacted}
+
+                waves = (
+                    len(uninstall_names) + _MCP_DEFERRED_UNINSTALL_CONCURRENCY - 1
+                ) // _MCP_DEFERRED_UNINSTALL_CONCURRENCY
+                budget = min(
+                    _CAPABILITY_UNINSTALL_TIMEOUT * max(waves, 1),
+                    _MCP_DEFERRED_UNINSTALL_MAX_BUDGET,
                 )
-                outcome["actions"]["kiroGlobal"] = _set_scope_entry(
-                    _GLOBAL_MCP_JSON, name, enabled=False
-                )
-                for scope in _extra_mcp_scopes():
-                    outcome["actions"][f"{scope.id}Global"] = _set_scope_entry(
-                        scope.global_json, name, enabled=False
+                try:
+                    await asyncio.wait_for(
+                        asyncio.gather(*(_run_one_uninstall(n) for n in uninstall_names)),
+                        timeout=budget,
                     )
-                # Also strip the entry directly from the rendered agent files
-                # so the next rebuild doesn't resurrect it via the
-                # "start from existing agent config" base.  Without this the
-                # additive merge keeps the entry around.
-                _remove_from_agent_file(
-                    Path.home() / ".kiro" / "agents" / "kirocrew.json", name
-                )
-                for scope in _extra_mcp_scopes():
-                    if scope.agent_mcp_file is not None:
-                        _remove_from_agent_file(scope.agent_mcp_file, name)
-                # Best-effort capability-manager uninstall (don't block on failure)
-                from kiro_crew.dashboard.handlers._shared import _capability_manager
+                except asyncio.TimeoutError:
+                    # Don't silently drop the status: stamp every uninstall that
+                    # didn't finish as "timed_out" so the API response signals the
+                    # core↔companion drift (config removed, package maybe not) rather
+                    # than reporting a clean success with no capability key.
+                    logger.warning(
+                        "capability uninstalls exceeded the %ss phase budget; marking "
+                        "unfinished as timed_out and proceeding to scope writes",
+                        budget,
+                    )
+                    for uname in uninstall_names:
+                        capability_results.setdefault(uname, {"capability": "timed_out"})
 
-                mgr = _capability_manager()
-                if mgr.available():
-                    try:
-                        res = await mgr.uninstall_mcp(name)
-                        outcome["actions"]["capability"] = (
-                            "uninstalled" if res.ok else "uninstall_failed"
-                        )
-                    except Exception as exc:
-                        # Error strings may include env vars / AWS keys /
-                        # URLs surfaced by failing operations; scrub them
-                        # before returning to the dashboard.  Both redact
-                        # helpers return (cleaned_text, warnings); we only
-                        # surface the cleaned text.
-                        _urls_clean, _ = redact_exfiltration_urls(str(exc))
-                        _redacted, _ = redact_credentials(_urls_clean)
-                        outcome["actions"]["capability_error"] = _redacted
-                sel().log_api_access(
-                    caller="dashboard",
-                    operation="mcp_uninstall",
-                    outcome="ok",
-                    resources=name,
-                )
-                results.append(outcome)
-                continue
-
-            # ── Scope toggles: compute desired + apply preservation ──
-            desired_mc = bool(change.get("kirocrew", True))
-            desired_kiro = bool(change.get("kiroGlobal", False))
-            extra_scopes = _extra_mcp_scopes()
-            # An omitted ``f"{id}Global"`` field means "preserve current presence"
-            # — the OSS frontend never sends it, so defaulting to False would
-            # delete a companion-contributed scope's entry on any unrelated apply
-            # (a Kiro/MC toggle or a tool-override change). Only an explicit value
-            # from an edition frontend changes a contributed scope.
-            desired_extra = {
-                s.id: bool(change.get(f"{s.id}Global", _scope_has_entry(name, s.global_json)))
-                for s in extra_scopes
-            }
-
-            # Preservation rule: if MC is desired ON and both globals are
-            # going to lose the entry (or never had it), copy the spec into
-            # <data home>/mcp.json so MC keeps its config via the merge.
-            preserved_spec: dict | None = None
-            if desired_mc and not desired_kiro and not any(desired_extra.values()):
-                has_mc = _scope_has_entry(name, _KIROCREW_MCP_JSON)
-                if not has_mc:
-                    preserved_spec = _find_server_spec_anywhere(name)
-
-            # Apply MC first — flipping MC green needs the entry to exist or
-            # the disabled override removed.  Flipping MC gray writes
-            # disabled:true, preserving config for later re-enable.
-            outcome["actions"]["kirocrew"] = _set_kirocrew_entry(
-                name,
-                enabled=desired_mc,
-                spec=preserved_spec,
-            )
-
-            # Apply Kiro and CC (add/remove from their respective globals).
-            # Resolve the spec ONCE before any scope mutation — otherwise
-            # the kiro removal can vacate the only source that had the
-            # spec, and the CC add would get "missing_spec" even though
-            # the user clearly intended it to move over.
-            resolved_spec = _find_server_spec_anywhere(name)
-            outcome["actions"]["kiroGlobal"] = _set_scope_entry(
-                _GLOBAL_MCP_JSON,
-                name,
-                enabled=desired_kiro,
-                spec=resolved_spec,
-            )
-            for scope in extra_scopes:
-                outcome["actions"][f"{scope.id}Global"] = _set_scope_entry(
-                    scope.global_json,
-                    name,
-                    enabled=desired_extra[scope.id],
-                    spec=resolved_spec,
-                )
-
-            # ── Per-tool overrides (disabledTools in <data home>/mcp.json) ──
-            tool_overrides = change.get("toolOverrides")
-            if isinstance(tool_overrides, dict) and tool_overrides:
-                # Apply the same allowlist as server names — tool names are
-                # persisted to <data home>/mcp.json and later consumed by
-                # kiro-cli / other components, so reject anything that
-                # could smuggle argv-injection chars or path traversal
-                # into downstream reads.  Invalid names are filtered out
-                # silently and audited separately.
-                sanitized: dict[str, bool] = {}
-                rejected: list[str] = []
-                for k, v in tool_overrides.items():
-                    tool_name = str(k)
-                    if _is_valid_mcp_name(tool_name):
-                        sanitized[tool_name] = bool(v)
-                    else:
-                        rejected.append(tool_name[:64])
-                if rejected:
-                    outcome["actions"]["tools_rejected"] = rejected
+        async with _get_mcp_lock():
+            for change in changes:
+                name = str(change.get("name", "")).strip()
+                if not name:
+                    results.append({"error": "empty name", "change": change})
+                    continue
+                # Defense-in-depth: name flows into subprocess argv (aim mcp
+                # uninstall) and filesystem paths via scope helpers.  Even
+                # though we use list-form subprocess (no shell), reject names
+                # that contain argv-injection chars or path traversal.
+                if not _is_valid_mcp_name(name):
+                    results.append({"error": "invalid name", "name": name})
                     sel().log_api_access(
                         caller="dashboard",
-                        operation="mcp_apply_rejected_tool_name",
+                        operation="mcp_apply_rejected_name",
                         outcome="denied",
-                        resources=f"{name}:{','.join(rejected)[:128]}",
+                        resources=name[:64],
                     )
-                if sanitized:
-                    changed_tools = _set_tool_overrides(name, sanitized)
-                    if changed_tools:
-                        outcome["actions"]["tools"] = changed_tools
+                    continue
 
-            # Audit the scope-toggle decision.  Changing scope presence
-            # controls which MCP servers (and therefore tools) are
-            # reachable from KiroCrew sessions — a permission-shaping
-            # event that belongs in the SEL log alongside uninstalls.
-            sel().log_api_access(
-                caller="dashboard",
-                operation="mcp_scope_apply",
-                outcome="ok",
-                resources=(
-                    f"{name} "
-                    f"mc={'on' if desired_mc else 'off'} "
-                    f"kiro={'on' if desired_kiro else 'off'}"
-                    + "".join(
-                        f" {sid}={'on' if on else 'off'}"
-                        for sid, on in desired_extra.items()
+                outcome: dict[str, Any] = {"name": name, "actions": {}}
+
+                # ── Uninstall path: wipe from all scopes and (best-effort) AIM ──
+                if change.get("uninstall"):
+                    # Config removal is the LAST mutation (package-then-config
+                    # ordering); _purge_server_config strips every scope + agent
+                    # file idempotently.
+                    outcome["actions"].update(_purge_server_config(name))
+                    purged_names.add(name)
+                    # Companion package removal already ran in Phase 1 (before the
+                    # lock); merge its recorded result here.
+                    if name in capability_results:
+                        outcome["actions"].update(capability_results[name])
+                    sel().log_api_access(
+                        caller="dashboard",
+                        operation="mcp_uninstall",
+                        outcome="ok",
+                        resources=name,
                     )
-                ),
-            )
+                    results.append(outcome)
+                    continue
 
-            results.append(outcome)
+                # ── Scope toggles: compute desired + apply preservation ──
+                desired_mc = bool(change.get("kirocrew", True))
+                desired_kiro = bool(change.get("kiroGlobal", False))
+                extra_scopes = _extra_mcp_scopes()
+                # An omitted ``f"{id}Global"`` field means "preserve current presence"
+                # — the OSS frontend never sends it, so defaulting to False would
+                # delete a companion-contributed scope's entry on any unrelated apply
+                # (a Kiro/MC toggle or a tool-override change). Only an explicit value
+                # from an edition frontend changes a contributed scope.
+                desired_extra = {
+                    s.id: bool(change.get(f"{s.id}Global", _scope_has_entry(name, s.global_json)))
+                    for s in extra_scopes
+                }
+
+                # Preservation rule: if MC is desired ON and both globals are
+                # going to lose the entry (or never had it), copy the spec into
+                # <data home>/mcp.json so MC keeps its config via the merge.
+                preserved_spec: dict | None = None
+                if desired_mc and not desired_kiro and not any(desired_extra.values()):
+                    has_mc = _scope_has_entry(name, _KIROCREW_MCP_JSON)
+                    if not has_mc:
+                        preserved_spec = _find_server_spec_anywhere(name)
+
+                # Apply MC first — flipping MC green needs the entry to exist or
+                # the disabled override removed.  Flipping MC gray writes
+                # disabled:true, preserving config for later re-enable.
+                outcome["actions"]["kirocrew"] = _set_kirocrew_entry(
+                    name,
+                    enabled=desired_mc,
+                    spec=preserved_spec,
+                )
+
+                # Apply Kiro and CC (add/remove from their respective globals).
+                # Resolve the spec ONCE before any scope mutation — otherwise
+                # the kiro removal can vacate the only source that had the
+                # spec, and the CC add would get "missing_spec" even though
+                # the user clearly intended it to move over.
+                resolved_spec = _find_server_spec_anywhere(name)
+                outcome["actions"]["kiroGlobal"] = _set_scope_entry(
+                    _GLOBAL_MCP_JSON,
+                    name,
+                    enabled=desired_kiro,
+                    spec=resolved_spec,
+                )
+                for scope in extra_scopes:
+                    outcome["actions"][f"{scope.id}Global"] = _set_scope_entry(
+                        scope.global_json,
+                        name,
+                        enabled=desired_extra[scope.id],
+                        spec=resolved_spec,
+                    )
+
+                # ── Per-tool overrides (disabledTools in <data home>/mcp.json) ──
+                tool_overrides = change.get("toolOverrides")
+                if isinstance(tool_overrides, dict) and tool_overrides:
+                    # Apply the same allowlist as server names — tool names are
+                    # persisted to <data home>/mcp.json and later consumed by
+                    # kiro-cli / other components, so reject anything that
+                    # could smuggle argv-injection chars or path traversal
+                    # into downstream reads.  Invalid names are filtered out
+                    # silently and audited separately.
+                    sanitized: dict[str, bool] = {}
+                    rejected: list[str] = []
+                    for k, v in tool_overrides.items():
+                        tool_name = str(k)
+                        if _is_valid_mcp_name(tool_name):
+                            sanitized[tool_name] = bool(v)
+                        else:
+                            rejected.append(tool_name[:64])
+                    if rejected:
+                        outcome["actions"]["tools_rejected"] = rejected
+                        sel().log_api_access(
+                            caller="dashboard",
+                            operation="mcp_apply_rejected_tool_name",
+                            outcome="denied",
+                            resources=f"{name}:{','.join(rejected)[:128]}",
+                        )
+                    if sanitized:
+                        changed_tools = _set_tool_overrides(name, sanitized)
+                        if changed_tools:
+                            outcome["actions"]["tools"] = changed_tools
+
+                # Audit the scope-toggle decision.  Changing scope presence
+                # controls which MCP servers (and therefore tools) are
+                # reachable from KiroCrew sessions — a permission-shaping
+                # event that belongs in the SEL log alongside uninstalls.
+                sel().log_api_access(
+                    caller="dashboard",
+                    operation="mcp_scope_apply",
+                    outcome="ok",
+                    resources=(
+                        f"{name} "
+                        f"mc={'on' if desired_mc else 'off'} "
+                        f"kiro={'on' if desired_kiro else 'off'}"
+                        + "".join(
+                            f" {sid}={'on' if on else 'off'}"
+                            for sid, on in desired_extra.items()
+                        )
+                    ),
+                )
+
+                results.append(outcome)
+    finally:
+        # Guaranteed cleanup for the package-first crash window: sweep the config
+        # of every REQUESTED uninstall the loop did NOT purge. This finally pairs
+        # with the OUTER try that wraps BOTH phases, so it runs even when a
+        # CancelledError is raised during Phase 1 — before the Phase-2 lock is
+        # ever taken (the gateway-shutdown / client-disconnect case) — not only on
+        # a Phase-2 write error. It sweeps by REQUEST (not by companion outcome),
+        # matching Phase 2's own unconditional config removal, so a cancellation
+        # that lands the instant after the companion removed a package but before
+        # its result was recorded still gets that config purged.
+        #
+        # The sweep (a blocking acquire→purge→release) runs in a WORKER THREAD via
+        # run_in_executor, which satisfies both constraints at once:
+        #   - deadlock-free: the blocking file-lock acquire is OFF the event loop,
+        #     so if another aiohttp task currently holds the MCP lock the loop
+        #     stays free to resume it and let it release (a loop-blocking acquire
+        #     here would wedge that release — the no-blocking-call-on-event-loop
+        #     rule and a real deadlock);
+        #   - runs-to-completion: a worker thread is not cancelled when this
+        #     request task is, and we await the future to completion before
+        #     re-raising, so the config is made consistent even on cancellation
+        #     (an un-awaited/shield-only future would run orphaned and loop
+        #     teardown could destroy it mid-write).
+        _loop = asyncio.get_running_loop()
+        _sweep_future = _loop.run_in_executor(
+            None,
+            _sweep_dangling_uninstalls,
+            uninstall_names,
+            purged_names,
+        )
+        try:
+            await asyncio.shield(_sweep_future)
+        except asyncio.CancelledError:
+            # We're unwinding a cancellation: the executor thread is already
+            # running and cannot be cancelled, so wait for it to finish the purge
+            # before propagating (shield stopped the await from cancelling the
+            # future; this second await blocks until the thread returns).
+            await _sweep_future
+            raise
 
     # ── Rebuild agent artifacts once all scope writes complete ──
     rebuild_ok = False

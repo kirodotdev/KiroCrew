@@ -412,9 +412,19 @@ class AgentCatalogProvider(Protocol):
         agent of the same name wins. Each row is a plain dict with the
         ``AgentInfo`` fields (``name`` required; ``filename``, ``description``,
         ``model``, ``skills``, ``mcp_servers``, ``source``, ``package``
-        optional). Lets an edition surface agents that are not materialized as
-        on-disk config files. The public Default returns ``[]`` (discovery is
-        the on-disk scan only).
+        optional).
+
+        EXECUTABLE INVARIANT: every returned agent MUST be spawnable — the
+        edition guarantees a resolvable agent configuration exists for its
+        ``name`` (materialized on disk under ``~/.kiro/agents`` or otherwise
+        resolvable by the ACP backend). ``list_agents()`` is the single source
+        consumed as an executable-agent allowlist by ``_do_agents_sync()``
+        (which PERSISTS rows into ``config.json``'s ``cfg.agents``),
+        ``subagent._validate_agent()`` (spawn allowlist), and conductor
+        generation, so a catalog-only row with no config behind it would be
+        persisted and offered for spawning yet fail at ACP ``session/set_mode``.
+        Do NOT return non-executable/catalog-only rows here. The public Default
+        returns ``[]`` (discovery is the on-disk scan only).
         """
         ...
 
@@ -466,6 +476,26 @@ class CapabilityManager(Protocol):
     ``/api/capability/*`` handlers report "not available" (HTTP 503); a companion
     implements registry-backed MCP/skill/agent management. Every op is ``async``
     (it does I/O) and MUST NOT be called when ``available()`` is ``False``.
+
+    LIVENESS: operations MUST be internally time-bounded — a slow companion op
+    must not stall MCP handlers, so an edition's ops must not block
+    indefinitely. As defense-in-depth the core also wraps every async op with
+    ``asyncio.wait_for`` (differentiated bounds: tight for uninstall, generous
+    for install so a legitimate cold package-manager download is not cancelled
+    mid-mutation, and a tight read bound on ``list_*``/``registry`` — the
+    dashboard polls those, so a stalled unbounded read would accumulate pending
+    gateway tasks, the same wedge class this prevents). Only the sync
+    ``available()`` probe is unwrapped (it does no I/O). That wrapper
+    (``platform.capability_bound.BoundedCapabilityManager``)
+    is applied at CONTEXT COMPOSITION — ``PlatformContext.__post_init__`` binds
+    every ``CapabilityManager`` once — so EVERY reader of
+    ``current_context().capability_manager`` inherits the bound, whether it routes
+    through the dashboard ``_capability_manager()`` accessor or reads the context
+    directly (a subagent, conductor, MCP-tool, or apps-backend consumer). The bind
+    is idempotent, so the companion's ``dataclasses.replace`` composition path does
+    not double-wrap. The core additionally runs ``/api/mcp/apply`` companion
+    ``uninstall_mcp`` calls in a phase BEFORE it takes the process-wide MCP file
+    lock, so no companion op is awaited while the lock is held.
     """
 
     def available(self) -> bool:

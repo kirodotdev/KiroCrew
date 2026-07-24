@@ -1102,6 +1102,8 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
         discovered_names = {a.name for a in discovered_agents}
 
         # Add new agents
+        from kiro_crew.agent import KIRO_AGENTS_DIR  # noqa: F811
+
         mc_kiro_agents = {a.kiro_agent for a in cfg.agents.values()}
         for disc in discovered_agents:
             if (
@@ -1109,6 +1111,26 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
                 and disc.name not in cfg.agents
                 and disc.source != "kirocrew"
             ):
+                # EXECUTABLE INVARIANT enforcement (mirrors the seam-boundary
+                # LIVENESS bound in platform.capability_bound —
+                # BoundedCapabilityManager): a builtin_agents() row MUST be
+                # spawnable. The core can only verify the on-disk case
+                # (~/.kiro/agents/<name>.json); an edition may also make a
+                # row ACP-resolvable WITHOUT an on-disk file, so we WARN rather
+                # than hard-drop — dropping a legitimately ACP-resolvable agent
+                # would itself be a correctness bug. The warning turns an
+                # otherwise silent spawn-time (ACP session/set_mode) failure into
+                # an actionable log line pointing at the offending seam row.
+                if not (KIRO_AGENTS_DIR / f"{disc.name}.json").exists():
+                    logger.warning(
+                        "syncing agent %r (source=%s) with no on-disk config at "
+                        "%s — if it is not ACP-resolvable it will persist into "
+                        "config.json and fail at spawn (builtin_agents EXECUTABLE "
+                        "INVARIANT)",
+                        disc.name,
+                        disc.source,
+                        KIRO_AGENTS_DIR / f"{disc.name}.json",
+                    )
                 cfg.agents[disc.name] = KiroCrewAgentConfig(
                     kiro_agent=disc.name,
                     description=disc.description,

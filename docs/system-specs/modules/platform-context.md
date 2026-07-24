@@ -524,8 +524,15 @@ is byte-identical) with no `CONTRACT_VERSION` bump.
   `safe_context_call`), de-duped by name so an on-disk agent of the same name
   wins. Each row is a plain dict of `AgentInfo` fields (`name` required;
   `filename`/`description`/`model`/`skills`/`mcp_servers`/`source`/`package`
-  optional), letting an edition surface agents not materialized as on-disk config
-  files. Default `[]` (discovery is the on-disk scan only). **Split out of
+  optional). **EXECUTABLE INVARIANT:** every returned row MUST be spawnable —
+  the edition guarantees a resolvable agent config exists for its `name`
+  (materialized under `~/.kiro/agents` or otherwise resolvable by the ACP
+  backend). `list_agents()` is the single executable-agent allowlist consumed by
+  `_do_agents_sync()` (which PERSISTS rows into `config.json`'s `cfg.agents`),
+  `subagent._validate_agent()` (spawn), and conductor generation, so a
+  catalog-only row with no config behind it would be persisted and offered for
+  spawning yet fail at ACP `session/set_mode` — do NOT return non-executable
+  rows. Default `[]` (discovery is the on-disk scan only). **Split out of
   `McpToolingProvider` into its own Protocol** — agent-catalog contribution is a
   distinct concern from MCP tooling; each edition hook lands on its own interface
   rather than accreting onto the nearest existing one.
@@ -549,7 +556,79 @@ is byte-identical) with no `CONTRACT_VERSION` bump.
   `async install_skill/uninstall_skill(package)` → `CapabilityResult(ok, message)`
   (the manager translates its own errors — the core never matches
   package-manager error strings, and **no Amazon-internal `version_set` field is
-  exposed** on the op or the public `/api/capability/skills/install` schema);
+  exposed** on the op or the public `/api/capability/skills/install` schema;
+  **LIVENESS:** operations MUST be internally time-bounded — a slow companion
+  op must not stall MCP handlers. As defense-in-depth the core also wraps every
+  mutation op with `asyncio.wait_for` via
+  `platform.capability_bound.BoundedCapabilityManager`, applied at **context
+  composition** (`PlatformContext.__post_init__` binds every `CapabilityManager`
+  once, idempotently — so the companion's `dataclasses.replace` path is not
+  double-wrapped). Applying it at the seam — not at the dashboard accessor
+  `_capability_manager()` — means EVERY reader of
+  `current_context().capability_manager` inherits the bound, whether it goes
+  through that accessor or reads the context directly (a subagent, conductor,
+  MCP-tool, or apps-backend consumer), so a future non-dashboard call site cannot
+  silently obtain an unbounded manager and reintroduce the hang class. Bounds are
+  DIFFERENTIATED: tight `CAPABILITY_UNINSTALL_TIMEOUT` (60s) for uninstall,
+  generous `CAPABILITY_INSTALL_TIMEOUT` (600s) for install so a legitimate cold
+  package-manager download is not cancelled mid-mutation (which could leave
+  partial state), and a tight `CAPABILITY_READ_TIMEOUT` (30s) on the async READ
+  ops (`list_mcp`/`list_skills`/`list_agents`/`registry`) — the dashboard POLLS
+  those list endpoints, so a stalled unbounded read would accumulate pending
+  gateway tasks on every poll (the same wedge class the bound exists to prevent),
+  even though reads mutate nothing. Only the synchronous `available()` probe is
+  unwrapped (no I/O). `/api/mcp/apply` orders the two mutations to be both
+  lock-safe and race-safe: it runs the companion `uninstall_mcp` calls FIRST, in
+  a phase BEFORE acquiring the process-wide MCP file lock (`_get_mcp_lock`) —
+  deduped by name, bounded-concurrent (`_MCP_DEFERRED_UNINSTALL_CONCURRENCY`)
+  under ONE phase-level `asyncio.wait_for` deadline — then removes the scope-file
+  config entries under the lock. So no slow companion op is awaited while the
+  lock is held (no timeout×N stall, and the batch is capped by
+  `_MCP_APPLY_MAX_CHANGES`), AND the package is removed before its config is
+  (config removal is the last, lock-serialized step). Because the apply is a
+  two-phase TRANSACTION and the file lock only serializes individual writes (not
+  the phase boundary), the whole apply additionally runs under a process-wide
+  async apply mutex (`_get_apply_lock`, spanning BOTH phases) so two concurrent
+  applies cannot interleave (one re-adding a server from a preserved spec after
+  another removed its package); the narrower file lock is retained inside for
+  cross-process coordination with `bridges.py`;
+
+  > **Uninstall ordering & the crash window.** Package-first ordering (chosen
+  > for the concurrent-re-add TOCTOU fix above) flips the partial-failure
+  > DIRECTION from benign (config removed, package orphaned-but-harmless) to
+  > harmful (package removed, config persists → the server fails at every
+  > subsequent session start until re-applied). The core closes this: BOTH phases
+  > run inside one outer `try`, whose `finally` calls a guaranteed-cleanup sweep
+  > (`_sweep_dangling_uninstalls`) that re-purges — via the shared, idempotent
+  > `_purge_server_config` — the config of every REQUESTED uninstall the locked
+  > loop did not reach. It sweeps by REQUEST, matching Phase 2's own uninstall
+  > branch (which removes config unconditionally, without consulting the companion
+  > outcome): keying on the request rather than on a `capability_results` entry
+  > closes the window where a cancellation lands the instant AFTER the companion
+  > removed a package but BEFORE its result was recorded (which would otherwise
+  > leave config dangling). Removing config for a requested uninstall is the user's
+  > intent and errs toward the BENIGN failure direction (config gone, package
+  > possibly orphaned-but-harmless — recoverable by reinstall) rather than the
+  > harmful one. Wrapping BOTH phases (not just the locked loop) is load-bearing: a
+  > `CancelledError` raised DURING Phase 1 — gateway shutdown / client disconnect,
+  > before the Phase-2 lock is ever taken — must still trigger the sweep. The sweep
+  > is a blocking acquire→purge→release (its own `_McpFileLockSync`) dispatched to
+  > a **worker thread** via `run_in_executor`, and the `finally` awaits that future
+  > to completion (shielded) before re-raising. Running it off the event loop
+  > satisfies two constraints at once: (1) **deadlock-free** — a loop-blocking
+  > acquire here would wedge any other task that holds the MCP lock (it could never
+  > resume to release it), violating `no-blocking-call-on-event-loop`; off the loop
+  > the lock-holder resumes normally; and (2) **runs-to-completion** — a worker
+  > thread is not cancelled when the request task is, and awaiting the future
+  > before re-raising means the purge finishes even on cancellation (an
+  > un-awaited/shield-only future would run orphaned and loop teardown could
+  > destroy it mid-write). This narrows the window to the irreducible hard-kill
+  > case (SIGKILL / power loss between the Phase-1 op and the config write), which
+  > is itself self-healing: the same package-then-config apply is idempotent, so a
+  > re-apply (or a manual uninstall) converges the state. `list_mcp` is a pass-
+  > through read and does NOT auto-reconcile — the sweep + idempotent re-apply are
+  > the recovery path.
+
   `async registry() -> List[Dict]` (the manager parses its own registry output
   into entries; the core passes them through as `{"servers": [...]}`). The public
   `DefaultCapabilityManager.available()` is `False` → the handlers return HTTP 503;

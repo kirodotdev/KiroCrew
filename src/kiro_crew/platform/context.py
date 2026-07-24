@@ -133,6 +133,33 @@ class PlatformContext:
     # need no change beyond opting in.
     governance: "Optional[GovernanceCeiling]" = None
 
+    def __post_init__(self) -> None:
+        """Enforce the ``CapabilityManager`` LIVENESS bound at composition time.
+
+        Every ``CapabilityManager`` is wrapped ONCE here in
+        ``BoundedCapabilityManager`` so that EVERY reader of
+        ``current_context().capability_manager`` — the dashboard handlers AND any
+        future non-dashboard consumer that follows the documented CPP pattern of
+        reading the context directly — inherits the ``asyncio.wait_for`` mutation
+        bound. Enforcing it at the seam (where the Protocol declares the contract)
+        rather than at a leaf dashboard accessor closes the gap where a new call
+        site could obtain an unbounded manager and reintroduce the hang class the
+        bound exists to prevent.
+
+        Runs on the single constructor AND the companion's ``dataclasses.replace``
+        path (``replace`` re-invokes ``__init__``); ``bind_capability_manager`` is
+        idempotent, so a ``replace`` that carries an already-bounded manager
+        forward is not double-wrapped. The frozen dataclass forbids normal
+        assignment, so the wrap is installed via ``object.__setattr__``.
+        """
+        # Deferred import: keep this module import-light and avoid any chance of
+        # a cycle through the interfaces/adapters at platform package load.
+        from kiro_crew.platform.capability_bound import bind_capability_manager
+
+        object.__setattr__(
+            self, "capability_manager", bind_capability_manager(self.capability_manager)
+        )
+
     @property
     def is_enterprise(self) -> bool:
         return self.profile == PROFILE_ENTERPRISE
