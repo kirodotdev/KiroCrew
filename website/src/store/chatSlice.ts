@@ -867,6 +867,22 @@ const chatSlice = createSlice({
     /** Clear after the matching pill has consumed the focus signal, so the same trigger
      *  doesn't re-fire on subsequent re-renders. */
     clearFocusToolCallId(state) { state.focusToolCallId = null },
+    /** Drop the previous connection's ephemeral subagent view before the gateway
+     *  replays its authoritative running/done snapshot. Without this reset, an
+     *  empty replay leaves agents from a restarted gateway visible indefinitely.
+     *  Pending spawn-approval cards are preserved: the subscribe_subagents replay
+     *  only re-emits native + managed running/done agents, so a card still
+     *  awaiting approval has no backend SubagentInfo to hydrate it and would be
+     *  lost (its approve/reject UI along with it) on a mid-approval reconnect. */
+    clearSubagentsForSnapshot(state) {
+      const keepPending = (subs: Record<string, SubagentActivity> | undefined): Record<string, SubagentActivity> => {
+        const kept: Record<string, SubagentActivity> = {}
+        if (subs) for (const [id, a] of Object.entries(subs)) if (a.status === 'pending') kept[id] = a
+        return kept
+      }
+      state.subagents = keepPending(state.subagents)
+      for (const activity of Object.values(state.slotActivity)) activity.subagents = keepPending(activity.subagents)
+    },
     sseSubagentPending(state, action: PayloadAction<{ slot: string; id: string; task: string; approval_id: string }>) {
       if (isUnsafeKey(action.payload.slot) || isUnsafeKey(action.payload.id)) return
       const entry: SubagentActivity = {
@@ -945,10 +961,7 @@ const chatSlice = createSlice({
         : state.subagents
       let a = subs[action.payload.id]
       if (!a) {
-        // Cross-slot fallback: the card may live under a different slot key
-        // than the done event's slot (e.g. the parent session was reset, or
-        // the pending card was created under the activeSlot fallback). Find
-        // it by id anywhere so the card doesn't stay stuck "running" forever.
+        // Cross-slot fallback: the card may live under a different slot key.
         if (state.subagents[action.payload.id]) a = state.subagents[action.payload.id]
         else {
           for (const sa of Object.values(state.slotActivity)) {
@@ -956,14 +969,30 @@ const chatSlice = createSlice({
           }
         }
       }
+      const isNative = action.payload.id.startsWith('native:')
       if (a) {
         a.status = action.payload.error ? 'error' : 'done'
         a.elapsed = action.payload.elapsed
         a.error = action.payload.error
         a.streaming = ''
         if (action.payload.task && !a.task) a.task = action.payload.task
+        if (action.payload.agent && !a.agent) a.agent = action.payload.agent
+        if (isNative && action.payload.result !== undefined) a.result = action.payload.result
       }
-      else { subs[safeKey(action.payload.id)] = { id: action.payload.id, task: action.payload.task || '', agent: action.payload.agent || 'kirocrew', status: action.payload.error ? 'error' : 'done', streaming: '', lastTool: '', startedAt: Date.now() - action.payload.elapsed * 1000, elapsed: action.payload.elapsed, error: action.payload.error } }
+      else {
+        subs[action.payload.id] = {
+          id: action.payload.id,
+          task: action.payload.task || '',
+          agent: action.payload.agent || 'kirocrew',
+          status: action.payload.error ? 'error' : 'done',
+          streaming: '',
+          lastTool: '',
+          startedAt: Date.now() - action.payload.elapsed * 1000,
+          elapsed: action.payload.elapsed,
+          error: action.payload.error,
+          result: isNative ? action.payload.result : undefined,
+        }
+      }
     },
     sseSideResult(state, action: PayloadAction<{ slot: string; run_id: string; role: 'user' | 'assistant'; content: string; ts?: number; is_error?: boolean; final?: boolean }>) {
       const { slot, run_id, role, content, ts, is_error, final } = action.payload
@@ -1046,6 +1075,9 @@ const chatSlice = createSlice({
         ? (state.slotActivity[safeKey(d.slot)] ??= { toolLog: [], subagents: {} }).subagents
         : state.subagents
       const existing = subs[d.id]
+      // Live events can interleave with replay because subscription starts before
+      // snapshots are sent. Never let a stale running snapshot demote a terminal card.
+      if (existing?.status === 'done' || existing?.status === 'error') return
       subs[safeKey(d.id)] = {
         id: d.id, task: d.task, agent: d.agent || 'kirocrew',
         status: d.last_tool ? 'tool' : 'running', streaming: d.streaming, lastTool: d.last_tool,
@@ -1736,7 +1768,7 @@ export const {
   setActiveSlot, clearSlotState, setPendingInput, setQuestionCard, clearQuestionCard, appendMessage, appendSlotMessage, updateStreamingMessage, finalizeAssistant,
   removeThinking, removeByApprovalId, resolveByApprovalId, clearPendingPermissions, setSlotRunning, setSlotStopping, startLocalTurn, syncSlotRunningFromServer, setSlotState, setSlotStatusDetail, setStopPressedAt, clearMessages, truncateAfterIndex, replaceMessages, hydrateSlotMessages, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage,
   sseContextUsage, setVoicePlaying, setVoiceAudio,
-  toggleActivity, openActivityToTab, openActivityPanel, openActivityToTool, clearFocusToolCallId, sseSubagentPending, markSubagentApproving, sseSubagentSpawn, sseSubagentChunk, sseSubagentTool, sseSubagentStalled, sseSubagentDone,
+  toggleActivity, openActivityToTab, openActivityPanel, openActivityToTool, clearFocusToolCallId, clearSubagentsForSnapshot, sseSubagentPending, markSubagentApproving, sseSubagentSpawn, sseSubagentChunk, sseSubagentTool, sseSubagentStalled, sseSubagentDone,
   sseSubagentSnapshot, sseToolActivity, sseToolResult, sseActivityEvent,
   sseWorkflowEvent, clearWorkflowRun,
   sseSideResult, sideClose, sideOptimisticAppend, sideOptimisticRollback,

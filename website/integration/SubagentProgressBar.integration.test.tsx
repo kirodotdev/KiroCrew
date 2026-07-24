@@ -87,25 +87,31 @@ describe('SubagentProgressBar', () => {
     expect(screen.getByText('3 agents running')).toBeInTheDocument()
   })
 
-  it('expands to show task previews on click', async () => {
-    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+  it('shows task previews without an extra expansion step', () => {
     const store = storeWithActiveSlot()
     renderWithProviders(<SubagentProgressBar slot={SLOT} />, { store })
 
     act(() => { store.dispatch(sseSubagentSpawn(makeAgent('a1', 'Search the entire codebase for uses of SessionManager'))) })
 
-    const btn = screen.getByRole('button', { name: /1 subagent running/i })
-    expect(btn).toHaveAttribute('aria-expanded', 'false')
-
-    await user.click(btn)
-
-    expect(btn).toHaveAttribute('aria-expanded', 'true')
     expect(screen.getByText(/Search the entire codebase/)).toBeInTheDocument()
-    expect(screen.getByText('└─')).toBeInTheDocument()
+    expect(screen.getAllByTestId('subagent-row')).toHaveLength(1)
   })
 
-  it('shows tree connectors for multiple agents', async () => {
+  it('opens the subagents sidebar when an agent row is clicked', async () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    const store = storeWithActiveSlot()
+    renderWithProviders(<SubagentProgressBar slot={SLOT} />, { store })
+
+    act(() => { store.dispatch(sseSubagentSpawn(makeAgent('a1', 'Search codebase'))) })
+
+    expect(screen.queryByText('View agents')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /open search codebase in subagents sidebar/i }))
+
+    expect(store.getState().chat.activityOpen).toBe(true)
+    expect(store.getState().chat.activityTab).toBe('subagents')
+  })
+
+  it('shows one summary row for each active agent', () => {
     const store = storeWithActiveSlot()
     renderWithProviders(<SubagentProgressBar slot={SLOT} />, { store })
 
@@ -114,14 +120,12 @@ describe('SubagentProgressBar', () => {
       store.dispatch(sseSubagentSpawn(makeAgent('a2', 'Task two')))
     })
 
-    await user.click(screen.getByRole('button', { name: /2 subagents running/i }))
-
-    expect(screen.getByText('├─')).toBeInTheDocument()
-    expect(screen.getByText('└─')).toBeInTheDocument()
+    expect(screen.getAllByTestId('subagent-row')).toHaveLength(2)
+    expect(screen.getByText('Task one')).toBeInTheDocument()
+    expect(screen.getByText('Task two')).toBeInTheDocument()
   })
 
-  it('shows current tool when agent is using a tool', async () => {
-    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+  it('shows current tool when agent is using a tool', () => {
     const store = storeWithActiveSlot()
     renderWithProviders(<SubagentProgressBar slot={SLOT} />, { store })
 
@@ -129,8 +133,6 @@ describe('SubagentProgressBar', () => {
       store.dispatch(sseSubagentSpawn(makeAgent('a1', 'Search codebase')))
       store.dispatch(sseSubagentTool({ slot: SLOT, id: 'a1', tool: 'readFile' }))
     })
-
-    await user.click(screen.getByRole('button', { name: /1 subagent running/i }))
 
     expect(screen.getByText('→ readFile')).toBeInTheDocument()
   })
@@ -202,15 +204,12 @@ describe('SubagentProgressBar', () => {
     expect(store.getState().chat.subagents['real1']?.status).toBe('running')
   })
 
-  it('truncates task preview to 80 characters', async () => {
-    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+  it('truncates task preview to 80 characters', () => {
     const store = storeWithActiveSlot()
     renderWithProviders(<SubagentProgressBar slot={SLOT} />, { store })
 
     const longTask = 'A'.repeat(100)
     act(() => { store.dispatch(sseSubagentSpawn(makeAgent('a1', longTask))) })
-
-    await user.click(screen.getByRole('button', { name: /1 subagent running/i }))
 
     // Should show 80 chars + ellipsis
     const preview = screen.getByText(/^A+…$/)

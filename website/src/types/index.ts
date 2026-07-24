@@ -223,6 +223,11 @@ export interface SubagentActivity {
   stalled?: boolean       // reaper flagged this subagent as idle/stalled
   approval_id?: string
   approving?: boolean
+  /** Inline terminal output for native (`native:*`) cards only. Native cards
+   *  cannot lazy-load from disk (no SubagentManager record), so the bounded
+   *  done-event result is stored here. Managed cards leave this unset and use
+   *  the on-demand DiskLoader to keep Redux memory bounded. */
+  result?: string
 }
 
 export interface ToolActivity {

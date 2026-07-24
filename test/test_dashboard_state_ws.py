@@ -119,6 +119,8 @@ class TestChatSlotStopState:
         slot = _ChatSlot("s1")
         assert slot._stop_state == "idle"
         assert slot._stopping is False
+        assert slot._native_subagent_tracker == {}
+        assert slot._native_subagent_output == {}
 
     def test_stopping_property_reflects_stop_state(self) -> None:
         from kiro_crew.dashboard.state import _ChatSlot
@@ -220,9 +222,7 @@ class TestCompactCallbackWiring:
         assert "92%" in added["content"]
 
     @pytest.mark.asyncio
-    async def test_callback_broadcasts_context_usage_reset(
-        self, state: DashboardState
-    ) -> None:
+    async def test_callback_broadcasts_context_usage_reset(self, state: DashboardState) -> None:
         ws = MagicMock(closed=False)
         ws.send_str = AsyncMock()
         state.register_ws(ws)
@@ -247,9 +247,7 @@ class TestCompactCallbackWiring:
         state.register_ws(ws)
         state.get_or_create_slot("chat-1")
         # _ChatSlot uses __slots__, so monkeypatch at the class level.
-        monkeypatch.setattr(
-            _ChatSlot, "append", MagicMock(side_effect=RuntimeError("append boom"))
-        )
+        monkeypatch.setattr(_ChatSlot, "append", MagicMock(side_effect=RuntimeError("append boom")))
         cb = self._captured_callback(state)
 
         await cb("dashboard:chat-1", 92.0, success=True)
@@ -266,8 +264,10 @@ class TestCompactCallbackWiring:
         cb = self._captured_callback(state)
         # Force broadcast to raise — append should still land, callback should return cleanly
         with pytest.MonkeyPatch.context() as mp:
+
             def boom(*a, **kw):
                 raise RuntimeError("ws boom")
+
             mp.setattr(state, "broadcast_ws", boom)
 
             await cb("dashboard:chat-1", 92.0, success=True)

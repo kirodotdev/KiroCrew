@@ -7,13 +7,24 @@ reconciles one Activity card per sub-agent (spawn / done) from that list.
 
 from __future__ import annotations
 
+import time
 from unittest.mock import MagicMock
 
 import pytest
 
 from kiro_crew.dashboard.chat_runner import (
+    _append_native_output,
+    _native_done_result,
     _native_subagent_close_all,
     _native_subagent_sync,
+    _retain_terminal_native,
+)
+from kiro_crew.dashboard.state import (
+    NATIVE_SUBAGENT_DONE_TRUNC_MARKER,
+    NATIVE_SUBAGENT_OUTPUT_HARD,
+    NATIVE_SUBAGENT_TERMINAL_KEEP,
+    DashboardState,
+    native_subagent_output_tail,
 )
 
 
@@ -26,6 +37,8 @@ def _make_state():
 def _make_slot():
     slot = MagicMock()
     slot.key = "slot-1"
+    slot._native_subagent_tracker = {}
+    slot._native_subagent_output = {}
     return slot
 
 
@@ -73,6 +86,52 @@ class TestNativeSubagentSync:
         assert by_id["native:s1"]["task"] == "summarize README"
         assert by_id["native:s1"]["agent"] == "gpu-multiagent-worker"
         assert len(tracker) == 3
+
+    def test_active_card_is_available_to_reconnect_snapshot(self):
+        state = _make_state()
+        slot = _make_slot()
+        state._slots = {slot.key: slot}
+        tracker = slot._native_subagent_tracker
+        _native_subagent_sync(
+            state,
+            slot,
+            [_sub("s1", "readme", "worker", "summarize README", "working", "reading")],
+            tracker,
+            slot._native_subagent_output,
+        )
+        slot._native_subagent_output["native:s1"] = ["→ read README.md\n"]
+
+        assert DashboardState.native_subagent_snapshots(state) == [
+            {
+                "id": "native:s1",
+                "slot": "slot-1",
+                "task": "summarize README",
+                "agent": "worker",
+                "done": False,
+                "streaming": "→ read README.md\n",
+                "last_tool": "reading",
+                "started": tracker["s1"]["started"],
+            }
+        ]
+
+        # After termination the card must still hydrate on reconnect — now as a
+        # terminal (done) record, not dropped — because a socket that dropped
+        # around completion would otherwise never see it again this turn.
+        _native_subagent_sync(
+            state,
+            slot,
+            [_sub("s1", "readme", "worker", "summarize README", "terminated")],
+            tracker,
+            slot._native_subagent_output,
+        )
+        snaps = DashboardState.native_subagent_snapshots(state)
+        assert len(snaps) == 1
+        done = snaps[0]
+        assert done["id"] == "native:s1"
+        assert done["done"] is True
+        assert done["error"] is None
+        assert "read README.md" in str(done["result"])
+        assert done["elapsed"] == tracker["s1"]["elapsed"]
 
     def test_spawn_is_idempotent_across_updates(self):
         state = _make_state()
@@ -123,18 +182,24 @@ class TestNativeSubagentSync:
         assert "git log -1" in result
         assert "commit abc123" in result
 
-    def test_done_result_truncated_to_8000(self):
+    def test_done_result_keeps_newest_tail_with_marker(self):
+        # Over the cap, keep the NEWEST 8000 chars and prefix an explicit
+        # truncation marker so the dropped head is signalled (finding 3).
         state = _make_state()
         slot = _make_slot()
         tracker: dict = {}
-        card_output = {"native:s1": ["x" * 10000]}
+        card_output = {"native:s1": ["A" * 2000 + "B" * 8000]}
         _native_subagent_sync(
             state, slot, [_sub("s1", "n", "w", "q", "working")], tracker, card_output
         )
         _native_subagent_sync(
             state, slot, [_sub("s1", "n", "w", "q", "terminated")], tracker, card_output
         )
-        assert len(_ws_calls(state)["subagent_done"][0]["result"]) <= 8000
+        result = _ws_calls(state)["subagent_done"][0]["result"]
+        assert result.startswith(NATIVE_SUBAGENT_DONE_TRUNC_MARKER)
+        body = result[len(NATIVE_SUBAGENT_DONE_TRUNC_MARKER) :]
+        assert len(body) == 8000
+        assert set(body) == {"B"}  # newest content only; older 'A' head dropped
 
     def test_done_fires_once(self):
         state = _make_state()
@@ -150,9 +215,7 @@ class TestNativeSubagentSync:
         slot = _make_slot()
         tracker: dict = {}
         _native_subagent_sync(state, slot, [_sub("s1", "n", "w", "q", "working")], tracker)
-        _native_subagent_sync(
-            state, slot, [_sub("s1", "n", "w", "q", "failed", "boom")], tracker
-        )
+        _native_subagent_sync(state, slot, [_sub("s1", "n", "w", "q", "failed", "boom")], tracker)
         done = _ws_calls(state)["subagent_done"][0]
         assert done["error"] == "boom"
 
@@ -177,7 +240,8 @@ class TestNativeSubagentSync:
         state = _make_state()
         slot = _make_slot()
         _native_subagent_sync(
-            state, slot,
+            state,
+            slot,
             [_sub("s1", "n", "role", "key AKIAIOSFODNN7EXAMPLE here", "working")],
             {},
         )
@@ -236,7 +300,9 @@ class TestEmptyTaskSkip:
         state = _make_state()
         state._native_cards = {}
         tracker: dict = {}
-        _native_subagent_sync(state, _make_slot(), [_sub("s1", "", "worker", "", "working")], tracker)
+        _native_subagent_sync(
+            state, _make_slot(), [_sub("s1", "", "worker", "", "working")], tracker
+        )
         assert "subagent_spawn" not in _ws_calls(state)
         # Marked done so subsequent updates never re-process it
         assert tracker["s1"]["done"] is True
@@ -267,14 +333,19 @@ class TestStalenessTimeout:
         past = _time.time() - now_offset
         return {
             "gone": {
-                "started": past, "done": False, "agent": "w", "task": "t",
+                "started": past,
+                "done": False,
+                "agent": "w",
+                "task": "t",
                 "last_activity": past,
             }
         }
 
     def test_disappeared_stale_card_auto_closed(self):
         state = _make_state()
-        state._native_cards = {"native:gone": {"slot": "slot-1", "session_id": "gone", "started": 0}}
+        state._native_cards = {
+            "native:gone": {"slot": "slot-1", "session_id": "gone", "started": 0}
+        }
         tracker = self._stale_tracker()
         # Empty subagents list — 'gone' not reported anymore
         _native_subagent_sync(state, _make_slot(), [], tracker)
@@ -316,7 +387,13 @@ class TestStalenessTimeout:
         state._native_cards = {}
         recent = _time.time() - 5.0
         tracker = {
-            "s1": {"started": recent, "done": False, "agent": "w", "task": "t", "last_activity": recent}
+            "s1": {
+                "started": recent,
+                "done": False,
+                "agent": "w",
+                "task": "t",
+                "last_activity": recent,
+            }
         }
         _native_subagent_sync(state, _make_slot(), [], tracker)
         assert "subagent_done" not in _ws_calls(state)
@@ -394,8 +471,9 @@ class TestNativeCardFeedRedaction:
         from kiro_crew.dashboard.chat_runner import _native_card_feed
 
         out = _native_card_feed({"c1": ["a" * 5000, "b" * 5000]}, "c1")
-        assert len(out) <= 8000
-        assert out.startswith("a")
+        assert len(out) <= 8000 + len(NATIVE_SUBAGENT_DONE_TRUNC_MARKER)
+        assert out.startswith(NATIVE_SUBAGENT_DONE_TRUNC_MARKER)
+        assert out.endswith("b" * 5000)
 
     def test_feed_empty_when_no_output(self):
         from kiro_crew.dashboard.chat_runner import _native_card_feed
@@ -408,13 +486,16 @@ class TestNativeCardFeedRedaction:
 
         from kiro_crew.dashboard.chat_runner import _native_card_feed
 
-        with patch(
-            "kiro_crew.dashboard.chat_runner.redact_exfiltration_urls",
-            return_value=("URLS_REDACTED", 0),
-        ) as m_urls, patch(
-            "kiro_crew.dashboard.chat_runner.redact_credentials",
-            return_value=("FULLY_REDACTED", 0),
-        ) as m_creds:
+        with (
+            patch(
+                "kiro_crew.dashboard.chat_runner.redact_exfiltration_urls",
+                return_value=("URLS_REDACTED", 0),
+            ) as m_urls,
+            patch(
+                "kiro_crew.dashboard.chat_runner.redact_credentials",
+                return_value=("FULLY_REDACTED", 0),
+            ) as m_creds,
+        ):
             out = _native_card_feed({"c1": ["secret output"]}, "c1")
         m_urls.assert_called_once_with("secret output")
         m_creds.assert_called_once_with("URLS_REDACTED")
@@ -479,3 +560,374 @@ class TestNativeCancelHandler:
             resp = await api_spawn_delete(self._request(state, "native:s1"))
         # SEL failure must never break the cancel response
         assert json.loads(resp.text)["ok"] is True
+
+
+class TestTailJoin:
+    def test_returns_full_output_under_limit(self):
+        assert native_subagent_output_tail(["ab", "cd", "ef"], limit=100) == "abcdef"
+
+    def test_returns_only_trailing_chars_over_limit(self):
+        # Matches the old `"".join(chunks)[-limit:]` semantics exactly, without
+        # materializing the full accumulated output.
+        chunks = ["a" * 30_000, "b" * 30_000, "c" * 30_000]
+        joined_tail = "".join(chunks)[-40_000:]
+        assert native_subagent_output_tail(chunks, limit=40_000) == joined_tail
+        assert len(native_subagent_output_tail(chunks, limit=40_000)) == 40_000
+
+    def test_stops_walking_once_limit_covered(self):
+        # Once the accumulated tail covers the limit, earlier chunks are never
+        # walked. The final chunk alone fills the 100-char window, so neither the
+        # "EARLIEST" marker nor the middle chunk appear in the result.
+        chunks = ["EARLIEST", "b" * 100, "c" * 100]
+        result = native_subagent_output_tail(chunks, limit=100)
+        assert result == "c" * 100
+        assert "EARLIEST" not in result
+        assert "b" not in result
+
+    def test_empty_and_nonpositive_limit(self):
+        assert native_subagent_output_tail([]) == ""
+        assert native_subagent_output_tail(["abc"], limit=0) == ""
+
+    def test_snapshot_streaming_is_bounded_to_tail(self):
+        state = _make_state()
+        slot = _make_slot()
+        state._slots = {slot.key: slot}
+        tracker = slot._native_subagent_tracker
+        _native_subagent_sync(
+            state,
+            slot,
+            [_sub("s1", "readme", "worker", "q", "working", "reading")],
+            tracker,
+            slot._native_subagent_output,
+        )
+        slot._native_subagent_output["native:s1"] = ["x" * 50_000, "TAIL"]
+        streaming = DashboardState.native_subagent_snapshots(state)[0]["streaming"]
+        assert len(streaming) == 40_000
+        assert streaming.endswith("TAIL")
+
+
+class TestNativeTerminalHydration:
+    """Reconnect must restore native cards that finished while the socket was
+    down (parent turn still running), instead of silently dropping them."""
+
+    def test_disconnected_completion_is_replayed_as_done(self):
+        # A native subagent that spawned and then completed mid-turn must appear
+        # in the reconnect snapshot as a terminal record carrying its frozen
+        # elapsed/error/result, so the client can rebuild the done card.
+        state = _make_state()
+        slot = _make_slot()
+        state._slots = {slot.key: slot}
+        tracker = slot._native_subagent_tracker
+        co = slot._native_subagent_output
+        _native_subagent_sync(state, slot, [_sub("s1", "n", "w", "q", "working")], tracker, co)
+        co["native:s1"] = ["\u2192 git log\n", "commit abc123\n"]
+        _native_subagent_sync(state, slot, [_sub("s1", "n", "w", "q", "terminated")], tracker, co)
+        snaps = DashboardState.native_subagent_snapshots(state)
+        assert len(snaps) == 1
+        rec = snaps[0]
+        assert rec["done"] is True
+        assert rec["id"] == "native:s1"
+        assert rec["error"] is None
+        assert "commit abc123" in str(rec["result"])
+        assert float(rec["elapsed"]) >= 0.0
+
+    def test_failed_completion_replays_error(self):
+        state = _make_state()
+        slot = _make_slot()
+        state._slots = {slot.key: slot}
+        tracker = slot._native_subagent_tracker
+        _native_subagent_sync(state, slot, [_sub("s1", "n", "w", "q", "working")], tracker)
+        _native_subagent_sync(state, slot, [_sub("s1", "n", "w", "q", "failed", "boom")], tracker)
+        rec = DashboardState.native_subagent_snapshots(state)[0]
+        assert rec["done"] is True
+        assert rec["error"] == "boom"
+
+    def test_running_and_done_coexist_for_reconnect(self):
+        # Mixed state: one card still running, one already done. Both hydrate.
+        state = _make_state()
+        slot = _make_slot()
+        state._slots = {slot.key: slot}
+        tracker = slot._native_subagent_tracker
+        _native_subagent_sync(
+            state,
+            slot,
+            [_sub("s1", "n", "w", "q", "working"), _sub("s2", "n", "w", "q", "working")],
+            tracker,
+        )
+        _native_subagent_sync(
+            state,
+            slot,
+            [_sub("s1", "n", "w", "q", "working"), _sub("s2", "n", "w", "q", "terminated")],
+            tracker,
+        )
+        snaps = {s["id"]: s for s in DashboardState.native_subagent_snapshots(state)}
+        assert snaps["native:s1"]["done"] is False
+        assert snaps["native:s2"]["done"] is True
+
+    def test_slot_isolation(self):
+        # A done card in one slot and a running card in another must each
+        # replay under their own slot key with no cross-contamination.
+        state = _make_state()
+        slot_a = _make_slot()
+        slot_a.key = "slot-a"
+        slot_b = _make_slot()
+        slot_b.key = "slot-b"
+        state._slots = {"slot-a": slot_a, "slot-b": slot_b}
+        _native_subagent_sync(
+            state, slot_a, [_sub("a1", "n", "w", "q", "working")], slot_a._native_subagent_tracker
+        )
+        _native_subagent_sync(
+            state,
+            slot_a,
+            [_sub("a1", "n", "w", "q", "terminated")],
+            slot_a._native_subagent_tracker,
+        )
+        _native_subagent_sync(
+            state, slot_b, [_sub("b1", "n", "w", "q", "working")], slot_b._native_subagent_tracker
+        )
+        by_id = {s["id"]: s for s in DashboardState.native_subagent_snapshots(state)}
+        assert by_id["native:a1"]["slot"] == "slot-a"
+        assert by_id["native:a1"]["done"] is True
+        assert by_id["native:b1"]["slot"] == "slot-b"
+        assert by_id["native:b1"]["done"] is False
+
+    def test_terminal_cards_survive_turn_exit_then_clear_next_turn(self):
+        # Turn teardown retains terminal (done) cards (chat_runner finally uses
+        # _retain_terminal_native) so a reconnect after the parent turn exits
+        # still sees them; the next turn's fresh tracker clears them.
+        state = _make_state()
+        slot = _make_slot()
+        state._slots = {slot.key: slot}
+        tracker = slot._native_subagent_tracker
+        _native_subagent_sync(state, slot, [_sub("s1", "n", "w", "q", "working")], tracker)
+        _native_subagent_sync(state, slot, [_sub("s1", "n", "w", "q", "terminated")], tracker)
+        assert len(DashboardState.native_subagent_snapshots(state)) == 1
+        # Socket down through parent completion: the finally block retains
+        # terminal (done) cards (dropping running cards + output buffers) so a
+        # reconnect in the idle gap after the parent turn exits still replays
+        # them. A fresh tracker at the next turn start clears them — no
+        # cross-turn leak (finding 2).
+        slot._native_subagent_tracker = _retain_terminal_native(tracker)
+        slot._native_subagent_output = {}
+        after = DashboardState.native_subagent_snapshots(state)
+        assert len(after) == 1
+        assert after[0]["done"] is True
+        # Next turn reassigns a fresh tracker → terminal cards gone (no leak).
+        slot._native_subagent_tracker = {}
+        assert DashboardState.native_subagent_snapshots(state) == []
+
+    def test_stale_done_card_pruned_on_read(self):
+        # A done card older than the read-side TTL is not replayed, so a very
+        # late reconnect on an abandoned slot sees no stale completions.
+        state = _make_state()
+        slot = _make_slot()
+        state._slots = {slot.key: slot}
+        slot._native_subagent_tracker = {
+            "s1": {
+                "id": "native:s1",
+                "started": 0.0,
+                "done": True,
+                "agent": "w",
+                "task": "t",
+                "elapsed": 1.0,
+                "error": None,
+                "result": "r",
+                "done_at": time.time() - 10_000,
+            }
+        }
+        assert DashboardState.native_subagent_snapshots(state) == []
+
+    def test_terminal_retention_is_bounded(self):
+        # A native crew that completes many sub-agents in one turn must not
+        # replay every terminal card; retention caps to the most recent N.
+        state = _make_state()
+        slot = _make_slot()
+        state._slots = {slot.key: slot}
+        tracker = slot._native_subagent_tracker
+        n = NATIVE_SUBAGENT_TERMINAL_KEEP + 10
+        _base = time.time()
+        for i in range(n):
+            tracker[f"s{i}"] = {
+                "id": f"native:s{i}",
+                "started": 0.0,
+                "done": True,
+                "agent": "w",
+                "task": "t",
+                "elapsed": 1.0,
+                "error": None,
+                "result": "r",
+                "done_at": _base + i,  # recent, ascending completion time
+            }
+        snaps = DashboardState.native_subagent_snapshots(state)
+        assert len(snaps) == NATIVE_SUBAGENT_TERMINAL_KEEP
+        # The most recently completed (largest done_at) are the ones retained.
+        kept = {s["id"] for s in snaps}
+        assert f"native:s{n - 1}" in kept
+        assert "native:s0" not in kept
+
+    def test_running_cards_not_capped_by_terminal_limit(self):
+        # Running cards always replay; only terminal cards are capped.
+        state = _make_state()
+        slot = _make_slot()
+        state._slots = {slot.key: slot}
+        tracker = slot._native_subagent_tracker
+        for i in range(NATIVE_SUBAGENT_TERMINAL_KEEP + 5):
+            tracker[f"r{i}"] = {
+                "id": f"native:r{i}",
+                "started": 0.0,
+                "done": False,
+                "agent": "w",
+                "task": "t",
+                "last_tool": "",
+            }
+        snaps = DashboardState.native_subagent_snapshots(state)
+        assert len(snaps) == NATIVE_SUBAGENT_TERMINAL_KEEP + 5
+        assert all(s["done"] is False for s in snaps)
+
+
+class TestAppendNativeOutput:
+    """`_append_native_output` keeps a bounded rolling buffer so a noisy native
+    sub-agent can't grow the feed or the completion join without limit."""
+
+    def test_below_cap_accumulates_verbatim(self):
+        buf: list[str] = []
+        total = 0
+        for chunk in ["ab", "cd", "ef"]:
+            total = _append_native_output(buf, chunk, total)
+        assert buf == ["ab", "cd", "ef"]
+        assert total == 6
+        assert "".join(buf) == "abcdef"
+
+    def test_collapses_once_past_hard_ceiling(self):
+        buf: list[str] = []
+        total = 0
+        # Push well past the hard ceiling in many small chunks.
+        for _ in range(200):
+            total = _append_native_output(buf, "x" * 1000, total)
+        # Buffer stays bounded by the hard ceiling (collapses to the CAP tail
+        # once it grows past HARD); length never runs away.
+        assert total <= NATIVE_SUBAGENT_OUTPUT_HARD
+        assert sum(len(c) for c in buf) <= NATIVE_SUBAGENT_OUTPUT_HARD
+        assert total == len("".join(buf))
+
+    def test_preserves_trailing_tail_exactly(self):
+        # After bounding, the retained content is always the trailing tail, so
+        # snapshot semantics (native_subagent_output_tail last 40 KB) are unaffected.
+        buf: list[str] = []
+        total = 0
+        # Distinct trailing marker after a large volume of filler.
+        for _ in range(90):
+            total = _append_native_output(buf, "f" * 1000, total)
+        total = _append_native_output(buf, "TAILMARKER", total)
+        joined = "".join(buf)
+        assert joined.endswith("TAILMARKER")
+        # Bounded by the hard ceiling between collapses.
+        assert len(joined) <= NATIVE_SUBAGENT_OUTPUT_HARD
+        # The last 40 KB tail is intact regardless of collapse state.
+        assert native_subagent_output_tail(buf, 40_000).endswith("TAILMARKER")
+        assert len(native_subagent_output_tail(buf, 40_000)) == 40_000
+
+    def test_bounded_buffer_keeps_done_result_within_cap(self):
+        # The done result is the trailing 8 KB of the (now bounded) buffer,
+        # prefixed with a truncation marker when the head is dropped.
+        buf: list[str] = []
+        total = 0
+        for _ in range(200):
+            total = _append_native_output(buf, "y" * 1000, total)
+        done_result = _native_done_result(buf)
+        assert len(done_result) <= 8000 + len(NATIVE_SUBAGENT_DONE_TRUNC_MARKER)
+        assert done_result.endswith("y" * 100)
+
+    def test_hard_ceiling_bounds_peak_memory(self):
+        # Between collapses the buffer never exceeds the hard ceiling by more
+        # than a single incoming chunk.
+        buf: list[str] = []
+        total = 0
+        peak = 0
+        for _ in range(500):
+            total = _append_native_output(buf, "z" * 100, total)
+            peak = max(peak, sum(len(c) for c in buf))
+        assert peak <= NATIVE_SUBAGENT_OUTPUT_HARD + 100
+
+
+class TestNativeDoneResult:
+    """`_native_done_result` sends the NEWEST 8 KB of a card's feed, with an
+    explicit marker when older output is dropped (finding 3)."""
+
+    def test_under_cap_verbatim(self):
+        assert _native_done_result(["hello ", "world"]) == "hello world"
+
+    def test_none_is_empty(self):
+        assert _native_done_result(None) == ""
+        assert _native_done_result([]) == ""
+
+    def test_over_cap_keeps_newest_tail_with_marker(self):
+        chunks = ["OLD" + "x" * 100, "y" * 9000]
+        result = _native_done_result(chunks)
+        assert result.startswith(NATIVE_SUBAGENT_DONE_TRUNC_MARKER)
+        body = result[len(NATIVE_SUBAGENT_DONE_TRUNC_MARKER) :]
+        assert len(body) == 8000
+        assert body == ("OLD" + "x" * 100 + "y" * 9000)[-8000:]
+        assert "OLD" not in body  # oldest head dropped
+
+    def test_exactly_at_cap_is_verbatim(self):
+        chunks = ["c" * 8000]
+        assert _native_done_result(chunks) == "c" * 8000  # no marker at the cap
+
+
+class TestRetainTerminalNative:
+    """Turn-exit retention keeps only terminal (done) cards, bounded + stale-
+    pruned, so a reconnect after the parent turn exits still replays them
+    without leaking across turns (finding 2)."""
+
+    def _done(self, sid, done_at):
+        return {
+            "id": f"native:{sid}",
+            "started": 0.0,
+            "done": True,
+            "agent": "w",
+            "task": "t",
+            "elapsed": 1.0,
+            "error": None,
+            "result": "r",
+            "done_at": done_at,
+        }
+
+    def test_keeps_only_done_records(self):
+        now = time.time()
+        tracker = {
+            "s1": self._done("s1", now),
+            "s2": {
+                "id": "native:s2",
+                "started": now,
+                "done": False,
+                "agent": "w",
+                "task": "t",
+                "last_tool": "",
+            },
+        }
+        retained = _retain_terminal_native(tracker, now=now)
+        assert set(retained) == {"s1"}
+
+    def test_prunes_stale_by_ttl(self):
+        now = time.time()
+        tracker = {
+            "fresh": self._done("fresh", now - 10),
+            "stale": self._done("stale", now - 10_000),  # older than the TTL
+        }
+        retained = _retain_terminal_native(tracker, now=now)
+        assert set(retained) == {"fresh"}
+
+    def test_bounded_to_keep_most_recent(self):
+        now = time.time()
+        tracker = {
+            f"s{i}": self._done(f"s{i}", now - (100 - i)) for i in range(NATIVE_SUBAGENT_TERMINAL_KEEP + 5)
+        }
+        retained = _retain_terminal_native(tracker, now=now)
+        assert len(retained) == NATIVE_SUBAGENT_TERMINAL_KEEP
+        assert f"s{NATIVE_SUBAGENT_TERMINAL_KEEP + 4}" in retained  # newest kept
+        assert "s0" not in retained  # oldest dropped
+
+    def test_empty_when_no_done(self):
+        tracker = {"r": {"id": "native:r", "done": False, "started": 0.0}}
+        assert _retain_terminal_native(tracker) == {}

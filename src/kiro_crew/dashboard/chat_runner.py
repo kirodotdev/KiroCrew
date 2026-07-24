@@ -79,6 +79,12 @@ from kiro_crew.dashboard.handlers.usage import persist_token_record_async
 from kiro_crew.dashboard.state import (
     CRON_NOTIFY_PREFIX,
     CRON_NOTIFY_RE,
+    NATIVE_SUBAGENT_DONE_RESULT_CAP,
+    NATIVE_SUBAGENT_DONE_TRUNC_MARKER,
+    NATIVE_SUBAGENT_OUTPUT_HARD,
+    NATIVE_SUBAGENT_OUTPUT_TAIL,
+    NATIVE_SUBAGENT_TERMINAL_KEEP,
+    NATIVE_SUBAGENT_TERMINAL_TTL_SECS,
     REFUSAL_RECOVERY_PREFIX,
     STALE_RECOVERY_PREFIX,
     SUBAGENT_COMPLETION_PREFIX,
@@ -785,19 +791,37 @@ def _mask_quoted_separators(text: str) -> tuple[str, dict[str, str]]:
 # ``subagent`` tool call's ``stages`` — the list_update gives authoritative
 # per-sub-agent identity/status that the stages payload lacked.
 
-
 _NATIVE_SUBAGENT_STALE_SECS = 120.0  # auto-close cards with no progress after 2 min
 
 
-def _native_card_feed(card_output, card_id: str) -> str:
-    """Join a native card's accumulated feed, truncate, and redact.
+def _native_done_result(chunks: "list[str] | None") -> str:
+    """Return the newest bounded native-card output with a truncation marker."""
+    joined = "".join(chunks or [])
+    if len(joined) <= NATIVE_SUBAGENT_DONE_RESULT_CAP:
+        return joined
+    return NATIVE_SUBAGENT_DONE_TRUNC_MARKER + joined[-NATIVE_SUBAGENT_DONE_RESULT_CAP:]
 
-    Defense in depth: card_output entries are redacted at append time, but
-    never trust LLM output at the broadcast boundary — re-apply both
-    redactions before the payload leaves the process. Single choke point for
-    every ``subagent_done`` result broadcast on the native card path.
-    """
-    feed = "".join((card_output or {}).get(card_id, []))[:8000]
+
+def _append_native_output(
+    buf: list[str],
+    text: str,
+    total: int,
+    cap: int = NATIVE_SUBAGENT_OUTPUT_TAIL,
+    hard: int = NATIVE_SUBAGENT_OUTPUT_HARD,
+) -> int:
+    """Append output and collapse it to the newest tail past the hard ceiling."""
+    buf.append(text)
+    total += len(text)
+    if total > hard:
+        tail = "".join(buf)[-cap:]
+        buf[:] = [tail]
+        total = len(tail)
+    return total
+
+
+def _native_card_feed(card_output, card_id: str) -> str:
+    """Build, bound, and redact native output at the broadcast boundary."""
+    feed = _native_done_result((card_output or {}).get(card_id))
     if feed:
         feed, _ = redact_exfiltration_urls(feed)
         feed, _ = redact_credentials(feed)
@@ -863,8 +887,13 @@ def _native_subagent_sync(state, slot, subagents, tracker, card_output=None) -> 
                 )
                 continue
             tracker[sid] = {
-                "started": now, "done": False, "agent": agent, "task": task,
+                "id": card_id,
+                "started": now,
+                "done": False,
+                "agent": agent,
+                "task": task,
                 "last_activity": now,
+                "last_tool": "",
             }
             # Register in state-level dict so DELETE /api/spawn can cancel native cards.
             _register_native_card(state, card_id, slot.key, sid)
@@ -894,23 +923,30 @@ def _native_subagent_sync(state, slot, subagents, tracker, card_output=None) -> 
                 err = err[:200]
             info["done"] = True
             _feed = _native_card_feed(card_output, card_id)
+            _elapsed = time.time() - info["started"]
+            _result = _feed or "(output in chat)"
+            info["elapsed"] = _elapsed
+            info["error"] = err
+            info["result"] = _result
+            info["done_at"] = time.time()
             _unregister_native_card(state, card_id)
             state.broadcast_ws(
                 "subagent_done",
                 {
                     "id": card_id,
                     "slot": slot.key,
-                    "elapsed": time.time() - info["started"],
+                    "elapsed": _elapsed,
                     "error": err,
                     "task": info["task"],
                     "agent": info["agent"],
-                    "result": _feed or "(output in chat)",
+                    "result": _result,
                 },
             )
         elif smsg and smsg.lower() != "running":
             # Surface a non-generic status message as the card's current tool.
             tool, _ = redact_exfiltration_urls(smsg)
             tool, _ = redact_credentials(tool)
+            info["last_tool"] = tool[:80]
             state.broadcast_ws(
                 "subagent_tool",
                 {"id": card_id, "slot": slot.key, "tool": tool[:80]},
@@ -931,17 +967,24 @@ def _native_subagent_sync(state, slot, subagents, tracker, card_output=None) -> 
             info["done"] = True
             _cid = f"native:{_redact_tool_field(sid)}"
             _feed = _native_card_feed(card_output, _cid)
+            _elapsed = now - info["started"]
+            _error = "timed out (no activity)"
+            _result = _feed or "(no output received)"
+            info["elapsed"] = _elapsed
+            info["error"] = _error
+            info["result"] = _result
+            info["done_at"] = now
             _unregister_native_card(state, _cid)
             state.broadcast_ws(
                 "subagent_done",
                 {
                     "id": _cid,
                     "slot": slot.key,
-                    "elapsed": now - info["started"],
-                    "error": "timed out (no activity)",
+                    "elapsed": _elapsed,
+                    "error": _error,
                     "task": info.get("task", ""),
                     "agent": info.get("agent", ""),
-                    "result": _feed or "(no output received)",
+                    "result": _result,
                 },
             )
             logger.info(
@@ -975,19 +1018,46 @@ def _native_subagent_close_all(state, slot, tracker, card_output=None) -> None:
         info["done"] = True
         _cid = f"native:{_redact_tool_field(sid)}"
         _feed = _native_card_feed(card_output, _cid)
+        _elapsed = time.time() - info.get("started", time.time())
+        _result = _feed or "(output in chat)"
+        info["elapsed"] = _elapsed
+        info["error"] = None
+        info["result"] = _result
+        info["done_at"] = time.time()
         _unregister_native_card(state, _cid)
         state.broadcast_ws(
             "subagent_done",
             {
                 "id": _cid,
                 "slot": slot.key,
-                "elapsed": time.time() - info.get("started", time.time()),
+                "elapsed": _elapsed,
                 "error": None,
                 "task": info.get("task", ""),
                 "agent": info.get("agent", ""),
-                "result": _feed or "(output in chat)",
+                "result": _result,
             },
         )
+
+
+def _retain_terminal_native(
+    tracker: "dict[str, dict]",
+    keep: int = NATIVE_SUBAGENT_TERMINAL_KEEP,
+    ttl_secs: float = NATIVE_SUBAGENT_TERMINAL_TTL_SECS,
+    now: "float | None" = None,
+) -> "dict[str, dict]":
+    """Retain recent terminal records for bounded post-turn reconnect replay."""
+    current = time.time() if now is None else now
+    terminal = [
+        (sid, info)
+        for sid, info in tracker.items()
+        if info.get("done")
+        and info.get("id")
+        and (current - float(info.get("done_at") or 0.0)) <= ttl_secs
+    ]
+    if keep >= 0 and len(terminal) > keep:
+        terminal.sort(key=lambda item: float(item[1].get("done_at") or 0.0), reverse=True)
+        terminal = terminal[:keep]
+    return {sid: info for sid, info in terminal}
 
 
 def _matches_trusted_pattern(tool_title: str, patterns: set[str]) -> str | None:
@@ -1801,7 +1871,9 @@ async def _run_chat(
     _pending_tools: dict[str, str] = {}  # tool_call_id -> tool_name
     # session_id -> {started, done, agent, task} for native kiro-cli subagents,
     # reconciled from `_kiro.dev/subagent/list_update` (one card per sub-agent).
+    # The slot holds the same live dict so reconnect snapshots can restore cards.
     _native_tracker: dict[str, dict] = {}
+    slot._native_subagent_tracker = _native_tracker
     # inner tool_call_id -> native card id, from `_kiro.dev/session/update`, so a
     # sub-agent's tool calls stream onto its own card.
     _native_tc_card: dict[str, str] = {}
@@ -1813,6 +1885,8 @@ async def _run_chat(
     # published frontend replaces a card's live `streaming` text with `result`
     # on done, so we persist the feed here and send it as the done `result`.
     _native_card_output: dict[str, list[str]] = {}
+    slot._native_subagent_output = _native_card_output
+    _native_card_output_len: dict[str, int] = {}
     needs_session_reset = False
     saw_compaction = False
     _produced_visible_output = False
@@ -2572,7 +2646,11 @@ async def _run_chat(
                     _ntool, _ = redact_exfiltration_urls(_raw or event.title or "")
                     _ntool, _ = redact_credentials(_ntool)
                     _ntool = _ntool[:80]
-                    _native_card_output.setdefault(_nat_card, []).append(f"\u2192 {_ntool}\n")
+                    _native_card_output_len[_nat_card] = _append_native_output(
+                        _native_card_output.setdefault(_nat_card, []),
+                        f"\u2192 {_ntool}\n",
+                        _native_card_output_len.get(_nat_card, 0),
+                    )
                     state.broadcast_ws(
                         "subagent_chunk",
                         {"id": _nat_card, "slot": slot.key, "text": f"\u2192 {_ntool}\n"},
@@ -2736,7 +2814,11 @@ async def _run_chat(
                     _native_result_seen.add(event.tool_call_id)
                     _nout, _ = redact_exfiltration_urls(event.tool_output)
                     _nout, _ = redact_credentials(_nout)
-                    _native_card_output.setdefault(_nat_card_r, []).append(f"{_nout[:4000]}\n")
+                    _native_card_output_len[_nat_card_r] = _append_native_output(
+                        _native_card_output.setdefault(_nat_card_r, []),
+                        f"{_nout[:4000]}\n",
+                        _native_card_output_len.get(_nat_card_r, 0),
+                    )
                     state.broadcast_ws(
                         "subagent_chunk",
                         {"id": _nat_card_r, "slot": slot.key, "text": f"{_nout[:4000]}\n"},
@@ -3570,6 +3652,11 @@ async def _run_chat(
                     _card_id = f"native:{_redact_tool_field(_sid)}"
                     _txt, _ = redact_exfiltration_urls(event.text)
                     _txt, _ = redact_credentials(_txt)
+                    _native_card_output_len[_card_id] = _append_native_output(
+                        _native_card_output.setdefault(_card_id, []),
+                        _txt,
+                        _native_card_output_len.get(_card_id, 0),
+                    )
                     state.broadcast_ws(
                         "subagent_chunk",
                         {"id": _card_id, "slot": slot.key, "text": _txt},
@@ -4309,6 +4396,14 @@ async def _run_chat(
         slot.append("error", _err_text, "msg msg-err")
         await state.sessions.record_failure(session_key)
     finally:
+        # Completion can be bypassed by cancellation, provider errors, or timeouts.
+        # Close cards idempotently and retain only bounded terminal records for
+        # reconnect replay until the next turn installs a fresh tracker.
+        try:
+            _native_subagent_close_all(state, slot, _native_tracker, _native_card_output)
+        finally:
+            slot._native_subagent_tracker = _retain_terminal_native(_native_tracker)
+            slot._native_subagent_output = {}
         slot._batch_rejected = False
         # Steer handle: turn is over, drop the live client ref so a late steer
         # can't target a dead session (the route also re-checks running state).

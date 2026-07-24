@@ -202,14 +202,56 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
                         state.unsubscribe_logs(ws)
                     elif msg_type == "subscribe_subagents":
                         state.subscribe_subagents(ws)
-                        # Send snapshot of active subagents + done events for completed ones
+
+                        def _r(t: str) -> str:
+                            t, _ = redact_exfiltration_urls(t)
+                            t, _ = redact_credentials(t)
+                            return t
+
+                        # Native kiro-cli subagents run inside dashboard chat
+                        # slots, not the global SubagentManager. Replay their
+                        # slot-owned in-flight state before manager snapshots.
+                        # Running cards replay as snapshots; cards that finished
+                        # while the socket was down replay as done events so the
+                        # terminal card + output survive the reconnect clear.
+                        for native in state.native_subagent_snapshots():
+                            try:
+                                if native.get("done"):
+                                    _err = native.get("error")
+                                    await ws.send_json(
+                                        {
+                                            "type": "subagent_done",
+                                            "data": {
+                                                "id": native["id"],
+                                                "slot": native["slot"],
+                                                "elapsed": native["elapsed"],
+                                                "error": _r(str(_err)) if _err else None,
+                                                "task": _r(str(native["task"])),
+                                                "agent": _r(str(native["agent"])),
+                                                "result": _r(str(native["result"])),
+                                            },
+                                        }
+                                    )
+                                else:
+                                    await ws.send_json(
+                                        {
+                                            "type": "subagent_snapshot",
+                                            "data": {
+                                                "id": native["id"],
+                                                "slot": native["slot"],
+                                                "task": _r(str(native["task"])),
+                                                "agent": _r(str(native["agent"])),
+                                                "streaming": _r(str(native["streaming"])),
+                                                "last_tool": _r(str(native["last_tool"])),
+                                                "started": native["started"],
+                                            },
+                                        }
+                                    )
+                            except Exception:
+                                pass
+
+                        # Send snapshot of managed subagents + done events for completed ones
                         if state.subagents:
-
-                            def _r(t: str) -> str:
-                                t, _ = redact_exfiltration_urls(t)
-                                t, _ = redact_credentials(t)
-                                return t
-
                             for a in state.subagents.running:
                                 try:
                                     slot = a.parent_session_key.removeprefix("dashboard:")

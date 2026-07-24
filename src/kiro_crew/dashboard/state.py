@@ -53,6 +53,33 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Native kiro-cli subagent reconnect policy. The slot state, writer, and replay
+# path all import these bounds so retention cannot drift between modules.
+NATIVE_SUBAGENT_OUTPUT_TAIL = 40_000
+NATIVE_SUBAGENT_OUTPUT_HARD = 80_000
+NATIVE_SUBAGENT_DONE_RESULT_CAP = 8_000
+NATIVE_SUBAGENT_DONE_TRUNC_MARKER = "…(earlier output truncated)\n"
+NATIVE_SUBAGENT_TERMINAL_KEEP = 50
+NATIVE_SUBAGENT_TERMINAL_TTL_SECS = 3600.0
+
+
+def native_subagent_output_tail(
+    chunks: list[str], limit: int = NATIVE_SUBAGENT_OUTPUT_TAIL
+) -> str:
+    """Join only the trailing ``limit`` characters of native-card output."""
+    if limit <= 0:
+        return ""
+    collected: list[str] = []
+    total = 0
+    for chunk in reversed(chunks):
+        collected.append(chunk)
+        total += len(chunk)
+        if total >= limit:
+            break
+    collected.reverse()
+    return "".join(collected)[-limit:]
+
+
 # Running build's git (branch, short_commit). Resolved ONCE by the CLI gateway
 # entrypoint via set_build_info() — AFTER KIROCREW_PROJECT_DIR is detected and
 # BEFORE asyncio.run() starts the loop. Deliberately NOT resolved at import time:
@@ -703,6 +730,8 @@ class _ChatSlot:
         "_browse_mode",
         "_side",
         "_acp_client",
+        "_native_subagent_tracker",
+        "_native_subagent_output",
         "_pending_steers",
     )
 
@@ -872,6 +901,10 @@ class _ChatSlot:
         # dashboard steer handler) reach the running session's client to inject
         # a mid-turn steer. None when idle.
         self._acp_client = None
+        # Native kiro-cli subagents run inside the parent ACP turn. Keep their
+        # live and terminal state on the slot so reconnects can hydrate cards.
+        self._native_subagent_tracker: dict[str, dict[str, Any]] = {}
+        self._native_subagent_output: dict[str, list[str]] = {}
         # Mid-turn steers handed to the backend but not yet confirmed consumed
         # (no steering_consumed / EVENT_STEER_CONSUMED echo yet). Appended by
         # the dashboard steer handler BEFORE the steer RPC's await (so a turn
@@ -1968,6 +2001,64 @@ class DashboardState:
     def get_slot(self, name: str) -> _ChatSlot | None:
         """Look up a slot by name without creating it. Returns None if absent."""
         return self._slots.get(name)
+
+    def native_subagent_snapshots(
+        self,
+        terminal_limit: int = NATIVE_SUBAGENT_TERMINAL_KEEP,
+        ttl_secs: float = NATIVE_SUBAGENT_TERMINAL_TTL_SECS,
+    ) -> list[dict[str, object]]:
+        """Return bounded native running and terminal cards for WS replay.
+
+        DashboardState owns the slot record shape. The WebSocket layer consumes
+        these transport-ready snapshots without reaching into private slot data.
+        """
+        now = time.time()
+        running: list[dict[str, object]] = []
+        done: list[dict[str, object]] = []
+        for slot in list(self._slots.values()):
+            output = slot._native_subagent_output
+            for info in list(slot._native_subagent_tracker.values()):
+                card_id = str(info.get("id") or "")
+                if not card_id:
+                    continue
+                base: dict[str, object] = {
+                    "id": card_id,
+                    "slot": slot.key,
+                    "task": str(info.get("task") or ""),
+                    "agent": str(info.get("agent") or ""),
+                }
+                if info.get("done"):
+                    done_at = float(info.get("done_at") or 0.0)
+                    if done_at and (now - done_at) > ttl_secs:
+                        continue
+                    done.append(
+                        {
+                            **base,
+                            "done": True,
+                            "elapsed": float(info.get("elapsed") or 0.0),
+                            "error": info.get("error"),
+                            "result": str(info.get("result") or ""),
+                            "done_at": done_at,
+                        }
+                    )
+                else:
+                    running.append(
+                        {
+                            **base,
+                            "done": False,
+                            "streaming": native_subagent_output_tail(output.get(card_id, [])),
+                            "last_tool": str(info.get("last_tool") or ""),
+                            "started": float(info.get("started") or now),
+                        }
+                    )
+        if terminal_limit >= 0 and len(done) > terminal_limit:
+            def snapshot_done_at(snapshot: dict[str, object]) -> float:
+                value = snapshot.get("done_at")
+                return float(value) if isinstance(value, (int, float)) else 0.0
+
+            done.sort(key=snapshot_done_at, reverse=True)
+            done = done[:terminal_limit]
+        return running + done
 
     def has_slot(self, name: str) -> bool:
         """Check if a slot exists by name."""

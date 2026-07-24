@@ -6,7 +6,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createTestStore } from './helpers'
 import { useWebSocket } from '../hooks/useWebSocket'
 import { api } from '../api/client'
-import chatReducer from '../store/chatSlice'
+import chatReducer, { sseSubagentSpawn, sseSubagentPending, sseSubagentDone } from '../store/chatSlice'
 import type { RootState } from '../store'
 
 // Track markSlotUnread dispatches
@@ -84,6 +84,138 @@ describe('useWebSocket reconnect unread suppression', () => {
       createElement(QueryClientProvider, { client: qc }, children)
     )
   }
+
+  it('clears stale subagents before authoritative snapshot replay', () => {
+    vi.useFakeTimers()
+    testStore = createTestStore({
+      chat: { ...chatReducer(undefined, { type: '@@INIT' }), activeSlot: 'chat-active' },
+    })
+    testStore.dispatch(sseSubagentSpawn({ slot: 'chat-active', id: 'stale-active', task: 'Old active task', agent: 'kirocrew' }))
+    testStore.dispatch(sseSubagentSpawn({ slot: 'chat-other', id: 'stale-background', task: 'Old background task', agent: 'kirocrew' }))
+
+    const { unmount } = renderHook(() => useWebSocket(), { wrapper })
+    const ws1 = WS_INSTANCES[0]
+    act(() => { ws1.simulateOpen() })
+
+    expect(testStore.getState().chat.subagents).toEqual({})
+    expect(testStore.getState().chat.slotActivity['chat-other']?.subagents).toEqual({})
+
+    act(() => {
+      ws1.simulateMessage({
+        type: 'subagent_snapshot',
+        data: { id: 'live-1', slot: 'chat-active', task: 'Live task', agent: 'kirocrew', streaming: '', last_tool: '', started: Date.now() / 1000 },
+      })
+    })
+    expect(testStore.getState().chat.subagents['live-1']?.status).toBe('running')
+
+    act(() => { ws1.onclose?.(new CloseEvent('close')) })
+    act(() => { vi.advanceTimersByTime(2000) })
+    const ws2 = WS_INSTANCES[1]
+    act(() => { ws2.simulateOpen() })
+
+    expect(testStore.getState().chat.subagents).toEqual({})
+
+    act(() => {
+      ws2.simulateMessage({
+        type: 'subagent_snapshot',
+        data: { id: 'live-2', slot: 'chat-active', task: 'Current live task', agent: 'kirocrew', streaming: '', last_tool: '', started: Date.now() / 1000 },
+      })
+    })
+    expect(testStore.getState().chat.subagents['live-2']?.status).toBe('running')
+    expect(testStore.getState().chat.subagents['live-1']).toBeUndefined()
+
+    unmount()
+    vi.useRealTimers()
+  })
+
+  it('preserves pending spawn-approval cards through the reconnect clear', () => {
+    vi.useFakeTimers()
+    testStore = createTestStore({
+      chat: { ...chatReducer(undefined, { type: '@@INIT' }), activeSlot: 'chat-active' },
+    })
+    // A running card (has a backend record, will be re-hydrated by replay) and a
+    // pending spawn-approval card (no backend SubagentInfo yet, so nothing replays it).
+    testStore.dispatch(sseSubagentSpawn({ slot: 'chat-active', id: 'stale-running', task: 'Old task', agent: 'kirocrew' }))
+    testStore.dispatch(sseSubagentPending({ slot: 'chat-active', id: 'spawn:pending-1', task: 'Awaiting approval', approval_id: 'appr-1' }))
+
+    const { unmount } = renderHook(() => useWebSocket(), { wrapper })
+    const ws1 = WS_INSTANCES[0]
+    act(() => { ws1.simulateOpen() })
+
+    // Running card is cleared; the pending approval card survives with its approval_id intact.
+    expect(testStore.getState().chat.subagents['stale-running']).toBeUndefined()
+    const pending = testStore.getState().chat.subagents['spawn:pending-1']
+    expect(pending?.status).toBe('pending')
+    expect(pending?.approval_id).toBe('appr-1')
+
+    unmount()
+    vi.useRealTimers()
+  })
+
+  it('hydrates a native card that completed while disconnected as a terminal done card', () => {
+    vi.useFakeTimers()
+    testStore = createTestStore({
+      chat: { ...chatReducer(undefined, { type: '@@INIT' }), activeSlot: 'chat-active' },
+    })
+    // A native card is live before the drop.
+    testStore.dispatch(sseSubagentSpawn({ slot: 'chat-active', id: 'native:s1', task: 'Summarize', agent: 'worker' }))
+
+    const { unmount } = renderHook(() => useWebSocket(), { wrapper })
+    const ws1 = WS_INSTANCES[0]
+    act(() => { ws1.simulateOpen() })
+    // Reconnect clears the (now stale) running card.
+    act(() => { ws1.onclose?.(new CloseEvent('close')) })
+    act(() => { vi.advanceTimersByTime(2000) })
+    const ws2 = WS_INSTANCES[1]
+    act(() => { ws2.simulateOpen() })
+    expect(testStore.getState().chat.subagents['native:s1']).toBeUndefined()
+
+    // The gateway replays the completion (it finished while the socket was down)
+    // as a subagent_done — the terminal card must be rebuilt, not lost.
+    act(() => {
+      ws2.simulateMessage({
+        type: 'subagent_done',
+        data: { slot: 'chat-active', id: 'native:s1', elapsed: 3, task: 'Summarize', agent: 'worker', result: 'done feed' },
+      })
+    })
+    const done = testStore.getState().chat.subagents['native:s1']
+    expect(done?.status).toBe('done')
+    expect(done?.elapsed).toBe(3)
+    expect(done?.task).toBe('Summarize')
+    // Native cards cannot lazy-load from disk, so the replayed result must be
+    // preserved inline on the rebuilt terminal card (finding 1).
+    expect(done?.result).toBe('done feed')
+
+    // Subscription starts before replay, so a live completion can arrive before
+    // a stale running snapshot captured for the same card. Terminal state is
+    // monotonic and must retain its result and elapsed time.
+    act(() => {
+      ws2.simulateMessage({
+        type: 'subagent_snapshot',
+        data: { id: 'native:s1', slot: 'chat-active', task: 'Summarize', agent: 'worker', streaming: 'stale', last_tool: 'read', started: Date.now() / 1000 },
+      })
+    })
+    const afterStaleSnapshot = testStore.getState().chat.subagents['native:s1']
+    expect(afterStaleSnapshot?.status).toBe('done')
+    expect(afterStaleSnapshot?.elapsed).toBe(3)
+    expect(afterStaleSnapshot?.result).toBe('done feed')
+
+    unmount()
+    vi.useRealTimers()
+  })
+
+  it('stores done result inline for native cards but not managed cards', () => {
+    testStore = createTestStore({
+      chat: { ...chatReducer(undefined, { type: '@@INIT' }), activeSlot: 'chat-active' },
+    })
+    // Native card: result stored inline (no SubagentManager record to disk-load).
+    testStore.dispatch(sseSubagentDone({ slot: 'chat-active', id: 'native:s9', elapsed: 2, task: 'T', agent: 'w', result: 'native feed' }))
+    expect(testStore.getState().chat.subagents['native:s9']?.result).toBe('native feed')
+    // Managed card: result left unset so the memory-friendly DiskLoader path is
+    // preserved even though the event carries a (potentially large) result.
+    testStore.dispatch(sseSubagentDone({ slot: 'chat-active', id: 'mgr-1', elapsed: 2, task: 'T', agent: 'w', result: 'x'.repeat(50000) }))
+    expect(testStore.getState().chat.subagents['mgr-1']?.result).toBeUndefined()
+  })
 
   it('suppresses markSlotUnread during reconnect catch-up window', async () => {
     vi.useFakeTimers()

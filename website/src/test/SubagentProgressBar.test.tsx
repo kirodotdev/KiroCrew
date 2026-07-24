@@ -44,7 +44,6 @@ describe('SubagentProgressBar — in-chat stop controls', () => {
     // 1 running + 1 pending: only the running agent is stoppable.
     renderBar(makeStore(['a1'], 'p1'))
     // Header reflects the total active count (running + pending).
-    fireEvent.click(screen.getByLabelText('2 subagents running'))
     // Exactly one per-row stop button (the running agent, not the pending one).
     const rowStops = screen.getAllByLabelText(/^Stop subagent/)
     expect(rowStops).toHaveLength(1)
@@ -71,7 +70,6 @@ describe('SubagentProgressBar — in-chat stop controls', () => {
   it('renders no stop controls when every active agent is pending (stoppableCount === 0)', () => {
     renderBar(makeStore([], 'p1'))
     // The pending agent still shows in the header, but offers no stop affordance.
-    fireEvent.click(screen.getByLabelText('1 subagent running'))
     expect(screen.queryByLabelText(/^Stop/)).toBeNull()
     expect(api.spawnDelete).not.toHaveBeenCalled()
   })

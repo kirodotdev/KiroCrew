@@ -74,6 +74,9 @@ function SubagentPane({ a, onClick }: { a: SubagentActivity; onClick: () => void
   const autoScroll = useRef(true)
   const isPending = a.status === 'pending'
   const isDone = a.status === 'done' || a.status === 'error'
+  // Native cards have no SubagentManager record to lazy-load from disk; their
+  // output arrives inline on the done event (a.result).
+  const isNative = a.id.startsWith('native:')
   const [collapsed, setCollapsed] = useState(isDone)
   // Auto-collapse when transitioning to done (not on mount)
   const wasDone = useRef(isDone)
@@ -168,7 +171,7 @@ function SubagentPane({ a, onClick }: { a: SubagentActivity; onClick: () => void
       <div className="px-3 pb-2">
         <div className="text-[10px] text-muted/40 uppercase tracking-wider mb-1">Output</div>
         <pre ref={bodyRef} onScroll={onScroll} className="px-2.5 py-2 bg-bg rounded-md text-[12px] font-mono whitespace-pre-wrap break-all max-h-[240px] overflow-y-auto text-muted/80 leading-relaxed">
-          {a.streaming || (isDone ? <DiskLoader id={a.id} /> : <span className="text-muted/30 italic">Waiting for output…</span>)}
+          {a.streaming || a.result || (isDone ? (isNative ? <span className="text-muted/30 italic">(output shown in chat)</span> : <DiskLoader id={a.id} />) : <span className="text-muted/30 italic">Waiting for output…</span>)}
           {a.lastTool && <div className="text-accent mt-1"><Wrench className="lucide-inline" /> {a.lastTool}</div>}
         </pre>
       </div>

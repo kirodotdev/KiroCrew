@@ -5,7 +5,7 @@ import { store } from '../store'
 import { sseStatus, sseConnected, sseDisconnected, sseSlots, setChannelTrusted, sseSlotTitle, triggerRefresh, fetchSlots, markSlotUnread, setUpdateProgress, sseSubagentStatus, sseSubagentText, touchSlotActivity, type SubagentDetail } from '../store/dashboardSlice'
 import { addNotification, ackNotificationByTs, unackNotificationByTs, removeNotificationByTs, fetchNotifications } from '../store/notificationsSlice'
 import { MC_NOTIFICATION_EVENT, type McNotificationDetail } from './notificationEvent'
-import { fetchHistory, missedChunkMarker, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, refreshSlot, warmSlotCache, sseContextUsage, clearMessages, setVoicePlaying, setVoiceAudio, resolveByApprovalId, sseSubagentPending, sseSubagentSpawn, sseSubagentChunk, sseSubagentTool, sseSubagentStalled, sseSubagentDone, sseSubagentSnapshot, sseToolActivity, sseToolResult, sseActivityEvent, sseSideResult, sseWorkflowEvent, setSlotStatusDetail, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, appendSlotMessage, setQuestionCard } from '../store/chatSlice'
+import { fetchHistory, missedChunkMarker, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, refreshSlot, warmSlotCache, sseContextUsage, clearMessages, setVoicePlaying, setVoiceAudio, resolveByApprovalId, clearSubagentsForSnapshot, sseSubagentPending, sseSubagentSpawn, sseSubagentChunk, sseSubagentTool, sseSubagentStalled, sseSubagentDone, sseSubagentSnapshot, sseToolActivity, sseToolResult, sseActivityEvent, sseSideResult, sseWorkflowEvent, setSlotStatusDetail, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, appendSlotMessage, setQuestionCard } from '../store/chatSlice'
 import { api } from '../api/client'
 import { sanitizeLlmOutput } from '../utils/sanitize'
 import type { StatusData, ChatSlot, Notification } from '../types'
@@ -215,6 +215,7 @@ export function useWebSocket() {
         if (active) dispatch(refreshSlot(active))
         // Eagerly subscribe to subagent events so chunks arrive even when
         // Activity Panel isn't open — final result still comes via done event.
+        dispatch(clearSubagentsForSnapshot())
         ws.send(JSON.stringify({ type: 'subscribe_subagents' }))
         subagentSubRef.current = true
         if (logCbRef.current) ws.send(JSON.stringify({ type: 'subscribe_logs' }))
@@ -225,6 +226,7 @@ export function useWebSocket() {
       dispatch(fetchSlots())
       dispatch(fetchNotifications()).then(() => syncPendingApprovals())
       // Eagerly subscribe to subagent events on first connect too.
+      dispatch(clearSubagentsForSnapshot())
       ws.send(JSON.stringify({ type: 'subscribe_subagents' }))
       subagentSubRef.current = true
     }
@@ -467,7 +469,7 @@ export function useWebSocket() {
             dispatch(sseSubagentStalled(data as { slot: string; id: string; stalled: boolean; idle_secs?: number }))
             break
           case 'subagent_done':
-            dispatch(sseSubagentDone(data as { slot: string; id: string; elapsed: number; error?: string }))
+            dispatch(sseSubagentDone(data as { slot: string; id: string; elapsed: number; error?: string; task?: string; agent?: string; result?: string }))
             break
           case 'app_reload':
             // App dev-mode live reload: the gateway watched a dev-flagged app's
