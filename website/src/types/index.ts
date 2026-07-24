@@ -181,6 +181,21 @@ export interface McpDiscoverInstallResult {
   enabled?: boolean
 }
 
+/** A raw mcp.json server spec (stdio command/args/env OR remote url). */
+export interface McpCustomSpec {
+  command?: string
+  args?: string[]
+  env?: Record<string, string>
+  url?: string
+}
+
+/** GET /api/mcp/custom/{name} — full editable spec (env included). */
+export interface McpCustomSpecResponse {
+  name: string
+  spec: McpCustomSpec
+  enabled: boolean
+}
+
 export interface McpScopePresence {
   kirocrew: boolean
   kiroGlobal: boolean
@@ -195,6 +210,9 @@ export interface McpServer {
   status: string; error?: string; tools?: string[]
   source: string; enabled: boolean; disabledTools?: string[]
   presence?: McpScopePresence
+  /** True when the entry lives in KiroCrew's own mcp.json — the scope the
+   *  Edit JSON action reads and writes (consent-disabled rows included). */
+  kirocrewManaged?: boolean
 }
 
 export interface McpApplyChange {

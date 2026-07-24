@@ -424,6 +424,9 @@ async def api_mcp_servers(request: web.Request) -> web.Response:
         global_mcps = data.get("mcpServers", {})
     except (FileNotFoundError, json.JSONDecodeError):
         pass
+    # KiroCrew-scope entries: disabled state (consent-disabled installs and
+    # custom adds live only here) + which rows the JSON editor can manage.
+    kirocrew_mcps = _load_json_or_empty(_KIROCREW_MCP_JSON).get("mcpServers", {})
     result: list[dict] = []
     for s in servers:
         d = s.to_dict()
@@ -434,7 +437,13 @@ async def api_mcp_servers(request: web.Request) -> web.Response:
             d["tools"] = cached.get("tools", d["tools"])
             d["error"] = cached.get("error", d["error"])
         spec = global_mcps.get(s.name, {})
-        is_disabled = isinstance(spec, dict) and spec.get("disabled")
+        kc_spec = kirocrew_mcps.get(s.name)
+        d["kirocrewManaged"] = isinstance(kc_spec, dict)
+        is_disabled = (
+            (isinstance(spec, dict) and spec.get("disabled"))
+            or (isinstance(kc_spec, dict) and kc_spec.get("disabled"))
+            or s.disabled
+        )
         d["enabled"] = not is_disabled
         if is_disabled:
             d["status"] = "disabled"
@@ -1057,6 +1066,34 @@ def _set_kirocrew_entry(name: str, *, enabled: bool, spec: dict | None = None) -
 
     _atomic_write(_KIROCREW_MCP_JSON, data)
     return action
+
+
+def _get_kirocrew_entry(name: str) -> dict | None:
+    """The raw entry for ``name`` from ``<data home>/mcp.json`` (or None)."""
+    data = _load_json_or_empty(_KIROCREW_MCP_JSON)
+    entry = data.get("mcpServers", {}).get(name)
+    return dict(entry) if isinstance(entry, dict) else None
+
+
+def _replace_kirocrew_spec(name: str, spec: dict) -> bool:
+    """Replace the full spec of an existing KiroCrew-managed entry.
+
+    Preserves the entry's ``disabled`` state -- editing a spec is not
+    consent to run it (mirrors the discover-install consent stance).
+    Returns False when the name is not in ``<data home>/mcp.json`` (the
+    caller decides how to report servers managed elsewhere).
+    """
+    data = _load_json_or_empty(_KIROCREW_MCP_JSON)
+    servers = data.setdefault("mcpServers", {})
+    existing = servers.get(name)
+    if not isinstance(existing, dict):
+        return False
+    entry = {k: v for k, v in spec.items() if k != "disabled"}
+    if existing.get("disabled") is True:
+        entry["disabled"] = True
+    servers[name] = entry
+    _atomic_write(_KIROCREW_MCP_JSON, data)
+    return True
 
 
 def _remove_kirocrew_entry(name: str) -> bool:

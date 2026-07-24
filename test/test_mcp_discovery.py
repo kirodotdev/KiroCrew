@@ -225,8 +225,14 @@ class TestListServers:
         assert "enabled-srv" in names
         assert "disabled-srv" not in names
 
-    def test_list_skips_disabled_mcp_json_servers(self, tmp_path, monkeypatch) -> None:
-        """Disabled servers in mcp.json are also excluded."""
+    def test_list_surfaces_kirocrew_disabled_servers_as_disabled_rows(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """KiroCrew-scope disabled entries get a row marked disabled.
+
+        Consent-disabled installs/custom adds land with ``disabled: true``
+        in the KiroCrew scope; the table's enable action is the consent
+        step, so the row must exist (previously these were invisible)."""
         monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
         monkeypatch.setattr("kiro_crew.mcp_discovery.Path.home", lambda: tmp_path)
         mcp_json = tmp_path / "mcp.json"
@@ -242,9 +248,59 @@ class TestListServers:
         )
         monkeypatch.setattr("kiro_crew.mcp_discovery._MCP_JSON_PATHS", (mcp_json,))
         servers = list_servers()
-        names = {s.name for s in servers}
-        assert "active" in names
-        assert "inactive" not in names
+        by_name = {s.name: s for s in servers}
+        assert "active" in by_name
+        assert by_name["active"].disabled is False
+        # The disabled entry is present but flagged — and never probed.
+        assert "inactive" in by_name
+        assert by_name["inactive"].disabled is True
+        assert by_name["inactive"].presence["kirocrew"] is False
+
+    def test_kirocrew_disabled_row_survives_agent_mirror(self, tmp_path, monkeypatch) -> None:
+        """The row still surfaces when config sync mirrored the disable.
+
+        Custom-add/install config sync writes the consent-disabled entry
+        into the agent file as ``disabled: true`` too. That mirror is the
+        SAME signal, not an independent user override — without this the
+        freshly added server is invisible (live bug: weather-tools)."""
+        agent_dir = tmp_path / "agents"
+        agent_dir.mkdir()
+        (agent_dir / "defaults.json").write_text(
+            json.dumps({"mcpServers": {"pending": {"command": "a", "disabled": True}}})
+        )
+        mcp_json = tmp_path / "mcp.json"
+        mcp_json.write_text(
+            json.dumps({"mcpServers": {"pending": {"command": "a", "disabled": True}}})
+        )
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
+        monkeypatch.setattr("kiro_crew.mcp_discovery._MCP_JSON_PATHS", (mcp_json,))
+        monkeypatch.setattr("kiro_crew.mcp_discovery.Path.home", lambda: tmp_path)
+        servers = [s for s in list_servers() if s.name == "pending"]
+        assert len(servers) == 1
+        assert servers[0].disabled is True
+
+    @pytest.mark.asyncio
+    async def test_probe_all_never_probes_disabled_rows(self, tmp_path, monkeypatch) -> None:
+        """Consent-disabled rows are excluded from probing — a probe would
+        spawn the server process the user has not yet consented to run."""
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
+        monkeypatch.setattr("kiro_crew.mcp_discovery.Path.home", lambda: tmp_path)
+        mcp_json = tmp_path / "mcp.json"
+        mcp_json.write_text(
+            json.dumps({"mcpServers": {"pending": {"command": "definitely-not-run", "disabled": True}}})
+        )
+        monkeypatch.setattr("kiro_crew.mcp_discovery._MCP_JSON_PATHS", (mcp_json,))
+        probed: list[str] = []
+
+        async def fake_probe(server):
+            probed.append(server.name)
+            return server
+
+        monkeypatch.setattr("kiro_crew.mcp_discovery.probe_server", fake_probe)
+        from kiro_crew.mcp_discovery import probe_all
+
+        await probe_all()
+        assert "pending" not in probed
 
     def test_disabled_in_agent_blocks_mcp_json(self, tmp_path, monkeypatch) -> None:
         """Server disabled in agent config is not re-added from mcp.json."""

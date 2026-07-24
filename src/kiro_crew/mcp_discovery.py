@@ -190,6 +190,10 @@ class McpServerInfo:
         }
     )
     disabled_tools: list[str] = field(default_factory=list)
+    # True for a row surfaced from a scope entry carrying ``disabled: true``
+    # (consent-disabled installs/custom adds). Disabled rows are NEVER probed
+    # — probing spawns the server process, which is what consent gates.
+    disabled: bool = False
 
     @property
     def is_remote(self) -> bool:
@@ -213,6 +217,8 @@ class McpServerInfo:
                 d["headers"] = self.headers
         if self.disabled_tools:
             d["disabledTools"] = self.disabled_tools
+        if self.disabled:
+            d["disabled"] = True
         return d
 
 
@@ -445,6 +451,20 @@ def list_servers() -> list[McpServerInfo]:
             # overwrite the (empty) default on a later iteration.
             if not spec.get("disabled") and name not in servers and name not in disabled_in_agent:
                 servers[name] = _server_from_spec(name, spec, "mcp.json")
+            elif scope == SCOPE_KIROCREW and spec.get("disabled") and name not in servers:
+                # Consent-disabled entries (registry installs and custom adds
+                # land with ``disabled: true`` until the user enables them)
+                # live ONLY in the KiroCrew scope. They must still get a row:
+                # the enable action in this table IS the consent step the
+                # install flow points at — an invisible server can never be
+                # consented to. The row is marked disabled and excluded from
+                # probing (see probe_all).  ``disabled_in_agent`` is NOT
+                # consulted here: config sync mirrors this very entry into the
+                # agent file as ``disabled: true``, so the agent-side flag is
+                # the same signal, not an independent user override.
+                info = _server_from_spec(name, spec, "mcp.json")
+                info.disabled = True
+                servers[name] = info
 
             # Per-tool disables: first-scope-wins.  Use "disabledTools" in
             # spec (key presence) rather than truthiness so an explicit
@@ -929,8 +949,12 @@ _PROBE_MAX_CONCURRENCY = 5
 
 
 async def probe_all() -> list[McpServerInfo]:
-    """Discover and probe all configured MCP servers (bounded concurrency)."""
-    servers = list_servers()
+    """Discover and probe all configured MCP servers (bounded concurrency).
+
+    Consent-disabled rows are excluded: probing spawns the server process,
+    and a disabled server must never run until the user enables it.
+    """
+    servers = [s for s in list_servers() if not s.disabled]
     if not servers:
         return []
     # Per-call semaphore: bounds the fan-out within this discovery pass while

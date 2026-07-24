@@ -1,12 +1,13 @@
 import { useState, useMemo, useRef, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { RefreshCw, Plug, AlertTriangle, Check, ChevronRight, Zap, X, Download } from 'lucide-react'
+import { RefreshCw, Plug, AlertTriangle, Check, ChevronRight, Zap, X, Download, Braces } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { api } from '../../api/client'
 import { Card, Btn, Badge, SearchInput, ContentSkeleton } from '../../components/ui'
 import InfoTip from '../../components/InfoTip'
 import { useProvider } from '../../providers'
 import McpBrowserModal from '../../components/McpBrowserModal'
+import McpCustomServerModal from '../../components/McpCustomServerModal'
 import type { McpServer, McpApplyChange, McpScopePresence, McpGlobalScope } from '../../types'
 import { useSortableTable } from '../../hooks/useSortableTable'
 import SortableHeader from '../../components/SortableHeader'
@@ -92,6 +93,9 @@ export default function McpTab() {
   // Multi-provider server browser (Add Server button) — discovery lives in
   // the modal so the installed config stays the page's primary content.
   const [browserOpen, setBrowserOpen] = useState(false)
+  // Manual JSON management: add-custom modal + per-server spec editor.
+  const [customOpen, setCustomOpen] = useState(false)
+  const [editTarget, setEditTarget] = useState<string | null>(null)
   const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set())
   const [pending, setPending] = useState<Record<string, PendingChange>>({})
   // Per-server per-tool pending overrides.  Key = server name, value = map
@@ -278,6 +282,7 @@ export default function McpTab() {
       MCP Servers ({servers.length})
       <InfoTip text={`MCP servers across KiroCrew and your interactive ${provider.displayName}/Kiro globals. The KiroCrew badge shows if it'll load in KiroCrew sessions; the Globals badge shows if it's shared to your interactive Kiro global. Click to toggle, then Apply.`} />
       <span className="ml-auto flex items-center gap-2">
+        <Btn onClick={() => setCustomOpen(true)}><Braces size={14} /> Add Custom</Btn>
         <Btn primary onClick={() => setBrowserOpen(true)}><Download size={14} /> Add Server</Btn>
       </span>
     </h4>
@@ -375,7 +380,7 @@ export default function McpTab() {
                 </td>
                 <td className="px-2.5 py-2 border-b border-border text-sm">
                   <Badge variant={s.status === 'ok' ? 'ok' : s.status === 'error' ? 'err' : 'warn'}>
-                    {s.status === 'ok' ? 'Online' : s.status === 'error' ? 'Error' : s.status === 'outdated' ? 'Outdated' : 'Unknown'}
+                    {s.status === 'ok' ? 'Online' : s.status === 'error' ? 'Error' : s.status === 'outdated' ? 'Outdated' : s.status === 'disabled' ? 'Disabled' : 'Unknown'}
                   </Badge>
                 </td>
                 <td className="px-2.5 py-2 border-b border-border text-[13px] w-full">
@@ -403,7 +408,12 @@ export default function McpTab() {
                   {pendingUninstall ? (
                     <Btn onClick={() => revertRow(s.name)}>Undo</Btn>
                   ) : (
-                    <Btn danger onClick={() => stageUninstall(s.name)}>Uninstall</Btn>
+                    <div className="flex gap-1 justify-end">
+                      {s.kirocrewManaged && (
+                        <Btn onClick={() => setEditTarget(s.name)} aria-label={`Edit JSON for ${s.name}`} title="Edit the server's JSON spec"><Braces size={13} /></Btn>
+                      )}
+                      <Btn danger onClick={() => stageUninstall(s.name)}>Uninstall</Btn>
+                    </div>
                   )}
                 </td>
               </tr>
@@ -414,5 +424,7 @@ export default function McpTab() {
     </Card>
 
     <McpBrowserModal open={browserOpen} onClose={() => setBrowserOpen(false)} />
+    <McpCustomServerModal open={customOpen} onClose={() => setCustomOpen(false)} />
+    <McpCustomServerModal open={editTarget !== null} onClose={() => setEditTarget(null)} editName={editTarget} />
   </>)
 }

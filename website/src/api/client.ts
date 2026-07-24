@@ -666,6 +666,15 @@ export const api = {
   /** Install a discovered MCP server. Throws ApiError(409) on name collision. */
   mcpDiscoverInstall: (provider: string, id: string) =>
     post('/api/mcp/discover/install', { provider, id }).then(j) as Promise<import('../types').McpDiscoverInstallResult>,
+
+  mcpCustomAdd: (servers: Record<string, import('../types').McpCustomSpec>, enable: boolean) =>
+    post('/api/mcp/custom', { servers, enable }).then(j) as Promise<{ ok: boolean; added: string[]; enabled: boolean }>,
+
+  mcpCustomGet: (name: string) =>
+    get(`/api/mcp/custom/${encodeURIComponent(name)}`).then(j) as Promise<import('../types').McpCustomSpecResponse>,
+
+  mcpCustomUpdate: (name: string, spec: import('../types').McpCustomSpec) =>
+    put(`/api/mcp/custom/${encodeURIComponent(name)}`, { spec }).then(j) as Promise<{ ok: boolean; name: string }>,
   mcpActive: (agent?: string) => fetch('/api/mcp/active' + (agent ? `?agent=${encodeURIComponent(agent)}` : '')).then(j),
   mcpProbe: () => post('/api/mcp/probe').then(j),
   mcpSync: () => post('/api/mcp/sync').then(j),
