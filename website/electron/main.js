@@ -84,6 +84,7 @@ const HEALTH_URL = `${BACKEND_URL}/api/status`;
 const POLL_INTERVAL_MS = 500;
 const MAX_WAIT_MS = 30_000; // 30s max wait for backend
 const IS_MAC = process.platform === "darwin";
+const IS_WIN = process.platform === "win32";
 // The dashboard view fills the whole content area on all platforms. On macOS
 // the window is frameless (titleBarStyle:"hidden") and the dashboard's own
 // 42px header doubles as the title bar: an injected drag region makes it
@@ -96,6 +97,17 @@ const { attachContextMenu } = require("./context-menu");
 // Set app name for macOS menu bar and dock. Nightly ships as a separate
 // side-by-side app, so its menu bar must say so.
 app.name = identityFamily(app.getVersion()) === "nightly" ? "Kiro Crew Nightly" : "Kiro Crew";
+
+// Windows taskbar identity. Without an explicit AppUserModelID, Windows groups
+// the app under the generic Electron host (wrong icon in the taskbar/jumplist,
+// pinning targets Electron rather than KiroCrew). Match the packaged appId
+// (build.appId = "com.amazon.kiro.crew"); nightly gets a distinct id so it
+// pins/groups side-by-side with stable, mirroring the app.name split above.
+if (IS_WIN) {
+  const appUserModelId = identityFamily(app.getVersion()) === "nightly"
+    ? "com.amazon.kiro.crew.nightly" : "com.amazon.kiro.crew";
+  app.setAppUserModelId(appUserModelId);
+}
 
 // Single-instance lock. On macOS LaunchServices reuses the already-running .app
 // when the user relaunches from the Dock / Spotlight, so a second instance is
@@ -284,6 +296,28 @@ function startGateway() {
   });
 }
 
+// Resolve the KiroCrew project root (the tree that ships `agents/` + `skills/`)
+// for the gateway's KIROCREW_PROJECT_DIR. The bundled app keeps these alongside
+// the Electron files (Resources/), i.e. one level up from `electron/`; a source
+// checkout has them at the repo root, two levels up (<repo>/website/electron).
+// Probe both and pick the first that actually contains the markers so a source
+// run doesn't mis-point at `website/`. Falls back to the legacy one-level-up
+// path when neither has markers (preserves prior behavior).
+function resolveProjectDir() {
+  const candidates = [
+    path.resolve(__dirname, ".."),
+    path.resolve(__dirname, "..", ".."),
+  ];
+  for (const c of candidates) {
+    try {
+      if (fs.existsSync(path.join(c, "agents")) && fs.existsSync(path.join(c, "skills"))) {
+        return c;
+      }
+    } catch { /* ignore and try next */ }
+  }
+  return path.resolve(__dirname, "..");
+}
+
 function spawnGateway(resolve) {
         // Ensure ~/.kirocrew/ directory exists before starting gateway
         // (gateway generates .local_secret itself on startup via O_CREAT|O_TRUNC)
@@ -323,7 +357,10 @@ function spawnGateway(resolve) {
           detached: false,
           env: {
             ...cleanEnv,
-            KIROCREW_PROJECT_DIR: path.resolve(__dirname, ".."),
+            // Windows source layout puts agents/ + skills/ at the repo root
+            // (two levels up from electron/), so resolve by markers there.
+            // macOS/Linux keep the original one-level-up path unchanged.
+            KIROCREW_PROJECT_DIR: IS_WIN ? resolveProjectDir() : path.resolve(__dirname, ".."),
             // Keep CPython bytecode caches OUT of the signed app bundle.
             // Without this, the embedded interpreter writes __pycache__/*.pyc
             // next to the bundled sources on first import, breaking the
@@ -602,8 +639,19 @@ function setupWindowContents(win, backendUrl) {
   win.webContents = view.webContents;
 
   function applyTitle() {
-    const suffix = customName || getRemoteHostConfig(store, port)?.defaultName || `[:${port}]`;
-    win.setTitle(`Kiro Crew ${suffix}`);
+    const remoteName = getRemoteHostConfig(store, port)?.defaultName;
+    if (!IS_WIN) {
+      // macOS/Linux behavior unchanged: always show the [:port] suffix.
+      const suffix = customName || remoteName || `[:${port}]`;
+      win.setTitle(`Kiro Crew ${suffix}`);
+      return;
+    }
+    // Windows: the bare "[:5476]" read as part of the product name and confused
+    // users, so the primary local window is just "Kiro Crew"; keep the suffix
+    // only for a non-default (remote/secondary) window.
+    let suffix = customName || remoteName || "";
+    if (!suffix && port && String(port) !== "5476") suffix = `[:${port}]`;
+    win.setTitle(suffix ? `Kiro Crew ${suffix}` : "Kiro Crew");
   }
 
   win._mcSetCustomName = (name) => { customName = name; applyTitle(); };
@@ -637,27 +685,33 @@ function setupWindowContents(win, backendUrl) {
   view.webContents.on("page-title-updated", (e) => { e.preventDefault(); applyTitle(); });
 
   view.webContents.on("did-finish-load", () => {
-    view.webContents.insertCSS(`
-      #electron-drag-bar {
-        position: fixed;
-        top: 0; left: 0; right: 0;
-        height: 42px;
-        -webkit-app-region: drag;
-        z-index: 99999;
-        pointer-events: none;
-      }
-      a, button, input, select, textarea,
-      [role="button"], [tabindex], iframe {
-        -webkit-app-region: no-drag;
-      }
-    `);
-    view.webContents.executeJavaScript(`
-      if (!document.getElementById('electron-drag-bar')) {
-        const bar = document.createElement('div');
-        bar.id = 'electron-drag-bar';
-        document.body.prepend(bar);
-      }
-    `);
+    // macOS + Linux only: the frameless window needs an injected drag region so
+    // the dashboard header can move the window. Windows uses a native title bar,
+    // which already provides dragging — injecting an app-region bar over the
+    // header would only risk swallowing clicks, so skip it there.
+    if (!IS_WIN) {
+      view.webContents.insertCSS(`
+        #electron-drag-bar {
+          position: fixed;
+          top: 0; left: 0; right: 0;
+          height: 42px;
+          -webkit-app-region: drag;
+          z-index: 99999;
+          pointer-events: none;
+        }
+        a, button, input, select, textarea,
+        [role="button"], [tabindex], iframe {
+          -webkit-app-region: no-drag;
+        }
+      `);
+      view.webContents.executeJavaScript(`
+        if (!document.getElementById('electron-drag-bar')) {
+          const bar = document.createElement('div');
+          bar.id = 'electron-drag-bar';
+          document.body.prepend(bar);
+        }
+      `);
+    }
     // Sync window background to theme color (visible in tab bar padding area)
     view.webContents.executeJavaScript(
       `getComputedStyle(document.documentElement).getPropertyValue('--bg').trim()`
@@ -754,9 +808,23 @@ function createWindow() {
     height: state.height,
     minWidth: 550,
     minHeight: 600,
-    titleBarStyle: "hidden",
     backgroundColor: "#0f1117",
   };
+  // macOS + Linux: frameless — the dashboard's 42px header doubles as the title
+  // bar (drag region injected below; macOS insets the native traffic lights).
+  // Windows: use the STANDARD native title bar + caption buttons (a Window
+  // Controls Overlay floats its buttons over the header content).
+  if (!IS_WIN) opts.titleBarStyle = "hidden";
+  if (IS_WIN) opts.autoHideMenuBar = true;
+  // Window + taskbar icon (Windows only): running unpackaged (`electron .`)
+  // otherwise shows the default Electron icon. macOS takes its icon from the
+  // .app bundle and Linux from the .desktop/AppImage, so leave those untouched.
+  if (IS_WIN) {
+    const iconFile = identityFamily(app.getVersion()) === "nightly"
+      && fs.existsSync(path.join(__dirname, "icon-nightly.png"))
+      ? "icon-nightly.png" : "icon.png";
+    opts.icon = path.join(__dirname, iconFile);
+  }
   // Inset the native traffic lights into the dashboard's 42px header row.
   // Kept in sync with zoom by positionTrafficLights().
   if (IS_MAC) opts.trafficLightPosition = trafficLightPositionForZoom(1);

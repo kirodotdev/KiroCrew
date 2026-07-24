@@ -45,13 +45,6 @@ _MAX_SESSIONS = 12
 _ORPHAN_TIMEOUT_S = 900  # 15 min with no WS → reap PTY (grace window for reload/network drops; in-app nav keeps the WS alive)
 _SCROLLBACK_MAX = 50 * 1024  # 50KB ring buffer per session for reconnect replay
 
-# Fail-fast message + SEL reason for the Windows-unsupported path. Kept as a
-# module constant so the POST create-session handler and the WebSocket open
-# handler return byte-identical wording (avoids drift; CLAUDE.md forbids
-# scattered business-logic string literals).
-_UNSUPPORTED_PLATFORM_MSG = "The web terminal is not supported on Windows."
-_UNSUPPORTED_PLATFORM_REASON = "unsupported_platform"
-
 
 def _redact_terminal(data: bytes | bytearray) -> bytes:
     """Strip credentials/exfiltration URLs from PTY output before it reaches a
@@ -79,7 +72,8 @@ class _TerminalSession:
 
     session_id: str
     master_fd: int
-    proc: asyncio.subprocess.Process
+    proc: "asyncio.subprocess.Process | None" = None
+    winpty: object | None = None  # WindowsPty (ConPTY) backend on Windows
     cols: int = 80
     rows: int = 24
     created_at: float = field(default_factory=time.monotonic)
@@ -213,8 +207,59 @@ def _session_title(sess: "_TerminalSession") -> str | None:
     return None
 
 
+def _sess_alive(sess: "_TerminalSession") -> bool:
+    """Whether the session's child process is still running (either backend)."""
+    if sess.winpty is not None:
+        try:
+            return bool(sess.winpty.isalive())  # type: ignore[attr-defined]
+        except Exception:
+            return False
+    if sess.proc is not None:
+        return sess.proc.returncode is None
+    return False
+
+
+def _sess_pid(sess: "_TerminalSession") -> int | None:
+    """PID of the session's child process (either backend), or None."""
+    if sess.winpty is not None:
+        return getattr(sess.winpty, "pid", None)
+    return sess.proc.pid if sess.proc is not None else None
+
+
 async def _kill_session(sess: _TerminalSession) -> None:
     """Kill PTY process and close FDs for a session."""
+    # Windows ConPTY backend: terminate the pseudo-console child and close its
+    # handles. Offloaded to the subprocess pool so a wedged TerminateProcess /
+    # ClosePseudoConsole can never stall the event loop (same rationale as the
+    # POSIX os.close offload below).
+    if sess.winpty is not None:
+        wp = sess.winpty
+        sess.winpty = None
+        if sess.reader_task is not None:
+            sess.reader_task.cancel()
+            try:
+                await sess.reader_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        loop = asyncio.get_running_loop()
+        pid = getattr(wp, "pid", 0)
+        # Reap the whole console tree (the shell + anything it spawned) via
+        # taskkill /T so a background child can't outlive the closed terminal.
+        if pid:
+            try:
+                await platform_compat.kill_process_tree_async(
+                    pid, platform_compat.SIGTERM
+                )
+            except (OSError, ProcessLookupError):
+                pass
+        # Free the pseudo-console + handles (TerminateProcess is a backstop).
+        try:
+            await loop.run_in_executor(
+                subprocess_executor(), wp.terminate,  # type: ignore[attr-defined]
+            )
+        except (OSError, RuntimeError):
+            pass
+        return
     # Close master_fd first — unblocks reader_task's os.read() in executor.
     #
     # os.close() on a PTY master fd can BLOCK in the kernel: when the far-end
@@ -328,7 +373,7 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
 
     # Check if reconnecting to existing session
     existing = registry.get(session_id)
-    if existing and existing.proc.returncode is not None:
+    if existing and not _sess_alive(existing):
         # Process died — clean up stale entry
         await _kill_session(existing)
         del registry[session_id]
@@ -376,24 +421,44 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
             operation="terminal.ws.reconnect",
             outcome="ok",
             source="dashboard",
-            resources=f"session={session_id},pid={sess.proc.pid}",
+            resources=f"session={session_id},pid={_sess_pid(sess)}",
         )
-    elif not platform_compat.IS_POSIX:
-        # PTY/fork are POSIX-only; the web terminal is unavailable on Windows.
-        if placeholder:
+    elif platform_compat.IS_WINDOWS:
+        # Windows: spawn a ConPTY-backed shell (PowerShell by default). There is
+        # no POSIX pty/fork; kiro_crew.conpty drives the Win32 pseudo-console via
+        # ctypes (stdlib, no extra dependency).
+        from kiro_crew.conpty import WindowsPty
+
+        shell = str(cfg.get("shell") or "powershell.exe")
+        cwd = _resolve_cwd(cfg, request.query.get("cwd"))
+        if not os.path.isdir(cwd):
+            cwd = os.path.expanduser("~")
+        env = {**os.environ, "KIROCREW_TERMINAL": "1"}
+        argv = [shell, "-NoLogo"] if "powershell" in shell.lower() else [shell]
+        try:
+            wp = WindowsPty(argv, cwd=cwd, env=env, cols=80, rows=24)
+        except Exception as exc:
             registry.pop(session_id, None)  # type: ignore[arg-type]
+            _sel().log_api_access(
+                caller=caller, operation="terminal.ws.open",
+                outcome="error", source="dashboard",
+                resources=f"conpty_spawn_failed={exc}",
+            )
+            if not ws.closed:
+                await ws.send_str(json.dumps(
+                    {"type": "error", "message": f"Failed to start terminal: {exc}"}
+                ))
+                await ws.close()
+            return ws
+        sess = _TerminalSession(
+            session_id=session_id, master_fd=-1, proc=None, winpty=wp, ws=ws,
+        )
+        registry[session_id] = sess
         _sel().log_api_access(
             caller=caller, operation="terminal.ws.open",
-            outcome="denied", source="dashboard",
-            resources=_UNSUPPORTED_PLATFORM_REASON,
+            outcome="ok", source="dashboard",
+            resources=f"session={session_id},pid={wp.pid},shell={shell}",
         )
-        if not ws.closed:
-            await ws.send_str(json.dumps({
-                "type": "error",
-                "message": _UNSUPPORTED_PLATFORM_MSG,
-            }))
-            await ws.close()
-        return ws
     else:
         # Spawn new PTY
         master_fd, worker_fd = _pty.openpty()
@@ -469,11 +534,12 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
     async def read_pty():
         try:
             loop = asyncio.get_running_loop()
+            if sess.winpty is not None:
+                reader = lambda: sess.winpty.read(4096)  # noqa: E731
+            else:
+                reader = lambda: os.read(sess.master_fd, 4096)  # noqa: E731
             while True:
-                data = await loop.run_in_executor(
-                    None,
-                    lambda: os.read(sess.master_fd, 4096),
-                )
+                data = await loop.run_in_executor(None, reader)
                 if not data:
                     break
                 sess.scrollback.extend(data)
@@ -493,12 +559,17 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
         async for msg in ws:
             if msg.type == web.WSMsgType.BINARY:
                 try:
-                    await asyncio.get_running_loop().run_in_executor(
-                        None,
-                        os.write,
-                        sess.master_fd,
-                        msg.data,
-                    )
+                    if sess.winpty is not None:
+                        await asyncio.get_running_loop().run_in_executor(
+                            None, sess.winpty.write, msg.data,
+                        )
+                    else:
+                        await asyncio.get_running_loop().run_in_executor(
+                            None,
+                            os.write,
+                            sess.master_fd,
+                            msg.data,
+                        )
                 except OSError:
                     break
             elif msg.type == web.WSMsgType.TEXT:
@@ -514,14 +585,20 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
                         continue
                     sess.cols = cols
                     sess.rows = rows
-                    try:
-                        fcntl.ioctl(
-                            sess.master_fd,
-                            termios.TIOCSWINSZ,
-                            struct.pack("HHHH", rows, cols, 0, 0),
-                        )
-                    except OSError:
-                        pass
+                    if sess.winpty is not None:
+                        try:
+                            sess.winpty.resize(cols, rows)
+                        except OSError:
+                            pass
+                    else:
+                        try:
+                            fcntl.ioctl(
+                                sess.master_fd,
+                                termios.TIOCSWINSZ,
+                                struct.pack("HHHH", rows, cols, 0, 0),
+                            )
+                        except OSError:
+                            pass
                 elif ctrl.get("type") == "ping":
                     if not ws.closed:
                         async with sess.send_lock:
@@ -564,23 +641,6 @@ async def api_terminal_create(request: web.Request) -> web.Response:
             resources="feature_disabled",
         )
         return web.Response(status=403, text="Terminal panel disabled")
-
-    if platform_compat.IS_WINDOWS:
-        # PTY/fork are POSIX-only; on Windows we fail fast at session-create so
-        # the frontend surfaces the "not supported" error immediately instead of
-        # opening a WebSocket that dies during PTY spawn. Same wording as the WS
-        # handler's error frame so the frontend rendering is uniform. A ConPTY
-        # backend is deferred.
-        _sel().log_api_access(
-            caller=caller, operation="terminal.session.create",
-            outcome="denied", source="dashboard",
-            resources=_UNSUPPORTED_PLATFORM_REASON,
-        )
-        return web.json_response(
-            {"error": _UNSUPPORTED_PLATFORM_MSG,
-             "reason": _UNSUPPORTED_PLATFORM_REASON},
-            status=501,
-        )
 
     registry = _get_registry(request)
     cfg = _get_config(request)
@@ -747,8 +807,8 @@ async def api_terminal_list(request: web.Request) -> web.Response:
         sessions.append(
             {
                 "session_id": sid,
-                "pid": sess.proc.pid if sess.proc else None,
-                "alive": sess.proc.returncode is None if sess.proc else False,
+                "pid": _sess_pid(sess),
+                "alive": _sess_alive(sess),
                 "cols": sess.cols,
                 "rows": sess.rows,
                 "connected": sess.ws is not None and not sess.ws.closed,
@@ -782,7 +842,7 @@ async def reap_orphaned_terminals(app: web.Application) -> None:
                 if sess.last_ws_disconnect and (now - sess.last_ws_disconnect) > _ORPHAN_TIMEOUT_S:
                     to_remove.append(sid)
                 # Reap if process died
-                elif sess.proc.returncode is not None:
+                elif not _sess_alive(sess):
                     to_remove.append(sid)
             for sid in to_remove:
                 removed = registry.pop(sid, None)

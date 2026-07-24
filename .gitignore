@@ -93,6 +93,8 @@ test_plan_atomic_writes_subagent_progress.md
 website/electron/backend-dist/
 website/electron/dist/
 website/electron/node_modules/
+# Generated launcher icon (created from icon.png when making the desktop shortcut)
+website/electron/KiroCrew.ico
 tui/
 mise.toml
 

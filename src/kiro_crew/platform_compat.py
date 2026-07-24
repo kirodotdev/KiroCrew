@@ -1071,6 +1071,91 @@ def proc_cpu_seconds() -> float:
 
 
 # ---------------------------------------------------------------------------
+# System-wide metrics (Windows). POSIX callers read /proc or sysctl directly;
+# Windows has neither, so route through Win32 via ctypes.
+# ---------------------------------------------------------------------------
+
+# Prev-sample state for the Windows system-CPU delta (GetSystemTimes).
+_prev_win_sys_cpu: dict[str, float] = {"idle": 0.0, "total": 0.0}
+
+
+def system_memory() -> "tuple[int, int] | None":
+    """Return (total_bytes, available_bytes) of physical RAM on Windows.
+
+    Uses ``GlobalMemoryStatusEx``. Returns ``None`` on non-Windows (POSIX
+    callers read ``/proc/meminfo`` or ``sysctl hw.memsize`` themselves) or on
+    any failure, so the caller can fall back.
+    """
+    if not IS_WINDOWS:
+        return None
+    try:
+
+        class MEMORYSTATUSEX(ctypes.Structure):  # noqa: N801 — Windows struct
+            _fields_ = [
+                ("dwLength", wintypes.DWORD),
+                ("dwMemoryLoad", wintypes.DWORD),
+                ("ullTotalPhys", ctypes.c_ulonglong),
+                ("ullAvailPhys", ctypes.c_ulonglong),
+                ("ullTotalPageFile", ctypes.c_ulonglong),
+                ("ullAvailPageFile", ctypes.c_ulonglong),
+                ("ullTotalVirtual", ctypes.c_ulonglong),
+                ("ullAvailVirtual", ctypes.c_ulonglong),
+                ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+            ]
+
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        stat = MEMORYSTATUSEX()
+        stat.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+        if kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
+            return int(stat.ullTotalPhys), int(stat.ullAvailPhys)
+        return None
+    except Exception:
+        return None
+
+
+def system_cpu_percent() -> "float | None":
+    """Return system-wide CPU utilization percent since the previous call.
+
+    Windows only, via ``GetSystemTimes`` (idle/kernel/user FILETIMEs; the
+    kernel time INCLUDES idle). Returns ``None`` on non-Windows, the first
+    (pre-delta) sample, or failure. Stateful — keeps the previous sample in a
+    module global, so callers should poll it periodically.
+    """
+    if not IS_WINDOWS:
+        return None
+    try:
+
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        idle = wintypes.FILETIME()
+        kernel = wintypes.FILETIME()
+        user = wintypes.FILETIME()
+        if not kernel32.GetSystemTimes(
+            ctypes.byref(idle), ctypes.byref(kernel), ctypes.byref(user)
+        ):
+            return None
+
+        def _ticks(ft: "wintypes.FILETIME") -> float:
+            return float((ft.dwHighDateTime << 32) | ft.dwLowDateTime)
+
+        idle_t = _ticks(idle)
+        # kernel already includes idle, so kernel+user is the full busy+idle.
+        total_t = _ticks(kernel) + _ticks(user)
+        prev_idle = _prev_win_sys_cpu["idle"]
+        prev_total = _prev_win_sys_cpu["total"]
+        _prev_win_sys_cpu["idle"] = idle_t
+        _prev_win_sys_cpu["total"] = total_t
+        if prev_total <= 0:
+            return None  # first sample, no delta yet
+        dtotal = total_t - prev_total
+        if dtotal <= 0:
+            return None
+        busy = dtotal - (idle_t - prev_idle)
+        return min(100.0, max(0.0, round(busy / dtotal * 100.0, 1)))
+    except Exception:
+        return None
+
+
+# ---------------------------------------------------------------------------
 # strftime portability
 # ---------------------------------------------------------------------------
 

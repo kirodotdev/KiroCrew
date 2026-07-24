@@ -1141,16 +1141,13 @@ def _pid_alive(pid: int) -> bool:
     uid — alive, not gone — so it must NOT be conflated with
     ``ProcessLookupError``. Treating EPERM as "gone" would skip the SIGKILL of a
     SIGTERM-ignoring orphan whose credentials changed.
+
+    Routed through ``platform_compat.pid_exists`` — a raw ``os.kill(pid, 0)``
+    on Windows does NOT probe liveness (sig 0 is CTRL_C_EVENT there); the shim
+    uses ``OpenProcess`` on Windows and the identical ``os.kill(pid, 0)`` /
+    EPERM-is-alive logic on POSIX, so POSIX behavior is unchanged.
     """
-    try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except OSError:
-        return False
+    return platform_compat.pid_exists(pid)
 
 
 def _read_pidfile() -> dict[str, dict[str, Any]]:

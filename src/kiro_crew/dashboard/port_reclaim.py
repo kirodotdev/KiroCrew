@@ -27,8 +27,9 @@ Safety
 Reclaim is deliberately conservative — it terminates a holder **only** when all
 of these hold:
 
-* the holder is identifiable via ``lsof`` (else we cannot know who to signal →
-  fall back to the old wait/retry);
+* the holder is identifiable via the port->PID lookup (``lsof`` on POSIX,
+  ``netstat -ano`` on Windows) — else we cannot know who to signal → fall back
+  to the old wait/retry;
 * the holder is a *KiroCrew gateway* process — reusing the same structural
   command-line check that gates ``kirocrew stop`` (:func:`_is_kirocrew_process`)
   so we never signal an unrelated process that merely grabbed the port; and
@@ -51,9 +52,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import signal
 import subprocess
 from collections.abc import Awaitable, Callable
+
+from kiro_crew import platform_compat
 
 logger = logging.getLogger("kiro_crew.dashboard.port_reclaim")
 
@@ -67,12 +69,21 @@ RECLAIM_FAILED = "reclaim_failed"  # holder identified as stale but could not be
 
 
 def _listeners_on_port(port: int) -> list[int] | None:
-    """PIDs holding a ``LISTEN`` socket on *port*, via ``lsof``.
+    """PIDs holding a ``LISTEN`` socket on *port*.
 
     Returns the (de-duplicated) list of PIDs, an empty list when nothing is
-    listening, or ``None`` when ``lsof`` is unavailable so the caller can fall
-    back to plain wait/retry instead of guessing.
+    listening, or ``None`` when the lookup tool is unavailable so the caller can
+    fall back to plain wait/retry instead of guessing. POSIX uses ``lsof``;
+    Windows has no ``lsof`` and parses ``netstat -ano`` through
+    ``platform_compat.find_listening_pids`` instead.
     """
+    if platform_compat.IS_WINDOWS:
+        # ``find_listening_pids`` folds a missing tool into an empty list, so
+        # distinguish "netstat absent" (None -> wait/retry) from "genuinely no
+        # listener" ([]), mirroring the lsof-missing branch below.
+        if not platform_compat.listening_pid_tool_available():
+            return None
+        return platform_compat.find_listening_pids(port)
     try:
         out = subprocess.check_output(
             ["lsof", "-ti", f"TCP:{port}", "-sTCP:LISTEN"],
@@ -157,6 +168,23 @@ async def _terminate_pids(
     from kiro_crew.cli_server import _pid_exited
 
     def _signal(pid: int, sig: int) -> bool:
+        if platform_compat.IS_WINDOWS:
+            # No POSIX signals for a detached console-less gateway. taskkill /T
+            # (kill_process_tree) reaps the gateway's kiro-cli / MCP children too
+            # — a single-PID kill would orphan them and leak trees. Mirrors the
+            # Windows branch of `kirocrew stop`.
+            try:
+                platform_compat.kill_process_tree(pid, sig)
+            except ProcessLookupError:
+                pass  # already gone — success for our purposes
+            except PermissionError:
+                return False
+            except OSError:
+                # Generic taskkill failure — re-check liveness rather than
+                # guessing denied vs already-exited.
+                if platform_compat.pid_exists(pid):
+                    return False
+            return True
         try:
             os.kill(pid, sig)
         except ProcessLookupError:
@@ -166,14 +194,14 @@ async def _terminate_pids(
         return True
 
     for pid in pids:
-        if not _signal(pid, signal.SIGTERM):
+        if not _signal(pid, platform_compat.SIGTERM):
             return False
     if await _wait_all_exited(pids, term_wait, poll, _pid_exited):
         return True
 
     # Escalate to SIGKILL for any survivor.
     for pid in pids:
-        if not _pid_exited(pid) and not _signal(pid, signal.SIGKILL):
+        if not _pid_exited(pid) and not _signal(pid, platform_compat.SIGKILL):
             return False
     return await _wait_all_exited(pids, kill_wait, poll, _pid_exited)
 

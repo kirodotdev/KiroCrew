@@ -33,7 +33,6 @@ import os
 import platform as _platform
 import re
 import shutil
-import signal
 import sys
 import time
 from pathlib import Path
@@ -1549,10 +1548,16 @@ async def install_from_registry(
             try:
                 stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=_SCRIPT_TIMEOUT)
             except asyncio.TimeoutError:
-                # Kill the entire process group (shell + children)
+                # Kill the entire process tree (shell + children). Route through
+                # platform_compat so Windows uses taskkill /T — a raw os.killpg
+                # raises AttributeError there (os.killpg is POSIX-only), which
+                # the OSError guard would NOT catch, leaking the tree and
+                # skipping the proc.kill() fallback.
                 try:
-                    os.killpg(proc.pid, signal.SIGTERM)
-                except OSError:
+                    await platform_compat.kill_process_tree_async(
+                        proc.pid, platform_compat.SIGTERM
+                    )
+                except (OSError, ProcessLookupError):
                     proc.kill()
                 return {
                     "ok": False,
