@@ -45,6 +45,17 @@ logger = logging.getLogger(__name__)
 # that source type lands.
 PERSISTENT_SOURCE_TYPES = frozenset({"local_folder", "obsidian_vault", "quip"})
 
+# Aggregate sources bundle MANY logical documents under ONE sources row
+# (auto-ingested artifacts store every artifact's chunks under a single
+# source_type="artifact", file_path=None row, grouped per-slug only in
+# artifact_item_state). They must NOT be treated as one whole-source dedup unit:
+# _build_doc would hash only the FIRST item, and a single artifact matching a
+# watched folder file would make the aggregate the dedup loser, so
+# _delete_doc -> delete_source_cascade would wipe EVERY artifact's KB entry.
+# Excluding them from enumerate_docs is the surgical fix (per-slug dedup is a
+# larger follow-up).
+_AGGREGATE_SOURCE_TYPES = frozenset({"artifact"})
+
 # Tier-2 fuzzy match floor. Validated against a live KB: true duplicates and
 # version-drift copies land at cosine >= 0.95, while same-topic-but-different docs
 # top out around 0.89 -- so 0.95 separates them with margin.
@@ -310,6 +321,10 @@ def enumerate_docs(store) -> list[DocRef]:
             "SELECT id, name, source_type, updated_at FROM sources").fetchall():
         if s["id"] in folder_source_ids:
             continue  # its documents are enumerated per-file above
+        if s["source_type"] in _AGGREGATE_SOURCE_TYPES:
+            # Aggregate row bundling many artifacts — a single whole-source
+            # DocRef here risks delete_source_cascade wiping them all.
+            continue
         item_ids = [r["id"] for r in store.db.execute(
             "SELECT id FROM items WHERE source_id = ?", (s["id"],)).fetchall()]
         doc = _build_doc(
@@ -438,6 +453,15 @@ def find_duplicates(store, docs: list[DocRef], threshold: float) -> list[DedupAc
 
 def _delete_doc(store, doc: DocRef) -> None:
     """Hard-delete a losing document's KB entry. Never touches the file on disk."""
+    if doc.source_type in _AGGREGATE_SOURCE_TYPES:
+        # Belt-and-suspenders: never cascade-delete an aggregate source (it
+        # bundles many artifacts). enumerate_docs already excludes these, but a
+        # future caller building a DocRef directly must not be able to wipe the
+        # whole Artifacts library because one artifact duplicated a folder file.
+        logger.warning(
+            "dedup: refusing to delete aggregate source %s (type=%s)",
+            doc.source_id, doc.source_type)
+        return
     if doc.file_path is None:
         # Whole-source document (upload / chat / manual): remove its source + items.
         store.delete_source_cascade(doc.source_id)
@@ -511,6 +535,15 @@ def _build_doc_for(store, source_id: str, file_path: str | None) -> DocRef | Non
         "SELECT name, source_type, updated_at FROM sources WHERE id = ?",
         (source_id,)).fetchone()
     if not s:
+        return None
+    # Aggregate sources are not dedup units (see enumerate_docs): a whole-
+    # aggregate DocRef keyed on the first item's hash misrepresents the many
+    # artifacts inside. Without this, every artifact save produced phantom
+    # DedupActions that _delete_doc silently refused — and if the aggregate
+    # ever WON a pair, a legitimate upload was hard-deleted against a hash
+    # representing one artifact out of many. Per-item file_path builds are
+    # fine; it is only the whole-source build that lies about identity.
+    if file_path is None and s["source_type"] in _AGGREGATE_SOURCE_TYPES:
         return None
     if file_path is not None:
         row = store.db.execute(

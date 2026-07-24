@@ -463,10 +463,15 @@ adding a parallel watcher (see `kiro_crew.knowledge.artifact_ingest`):
   SEL audit event), mirroring the folder-watcher file-read guard.
 - **Dedup tie-in.** A file-backed artifact whose `source_path` is also inside a
   synced folder source is the same document under two sources (the aggregate
-  `artifact` source and the folder's `local_file` source). The live Knowledge
-  dedup sweep collapses the pair once both copies share a `content_hash` (the
-  persistent folder copy wins over the artifact copy), so the overlap
-  self-resolves rather than needing special-casing here.
+  `artifact` source and the folder's `local_file` source). The aggregate
+  `artifact` source is **excluded from dedup entirely** (`enumerate_docs` and
+  `_build_doc_for` skip `_AGGREGATE_SOURCE_TYPES`, and `_delete_doc` refuses a
+  cascade on them): treating the whole aggregate as one dedup unit keyed on a
+  single item's hash both misidentified it and — when it lost a pair — cascade-
+  deleted the user's entire artifact library. The artifact↔folder overlap
+  therefore persists (both copies remain retrievable) until per-artifact-slug
+  dedup is built; that is a recorded, intentional trade against silent data
+  loss on the hard-delete path.
 
 ## Companion Chat
 

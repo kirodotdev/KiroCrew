@@ -205,6 +205,37 @@ class TestDedupSweep:
             "SELECT COUNT(*) FROM folder_file_state").fetchone()[0] == 1  # folder kept
         store.db.close()
 
+    def test_artifact_aggregate_source_never_wiped_by_dedup(self, tmp_path):
+        # The auto-ingested "artifact" source bundles EVERY artifact's chunks
+        # under one file_path=None row. Pre-fix, if a single artifact's content
+        # matched a watched folder file, the aggregate lost the dedup and
+        # delete_source_cascade wiped ALL artifacts. It must be excluded from
+        # dedup: the artifact source and all its items survive intact.
+        store = _mk_store(tmp_path)
+        art_sid = store.add_source(
+            name="Artifacts", source_type="artifact", uri="artifact://all"
+        )
+        # Two artifacts under the one aggregate source; the first duplicates a
+        # folder file (same content_hash), the second is unique.
+        store.add_item(
+            title="notes", content="body", item_type="document", source_id=art_sid,
+            content_hash="H1", embedding=floats_to_bytes([1.0, 0.0, 0.0, 0.0]))
+        store.add_item(
+            title="other", content="body2", item_type="document", source_id=art_sid,
+            content_hash="H2", embedding=floats_to_bytes([0.0, 1.0, 0.0, 0.0]))
+        store.db.commit()
+        _add_folder_file(store, "/p/notes.md", "H1", [1.0, 0.0, 0.0, 0.0])
+
+        dedup_sweep(store, apply=True)
+
+        # The aggregate source row and BOTH artifact items still exist.
+        assert store.db.execute(
+            "SELECT COUNT(*) FROM sources WHERE id = ?", (art_sid,)).fetchone()[0] == 1
+        remaining = store.db.execute(
+            "SELECT COUNT(*) FROM items WHERE source_id = ?", (art_sid,)).fetchone()[0]
+        assert remaining == 2, "artifact items must not be cascade-deleted by dedup"
+        store.db.close()
+
     def test_fuzzy_collapses_near_duplicate(self, tmp_path):
         store = _mk_store(tmp_path)
         _add_upload(store, "Plan.docx", "H1", [1.0, 0.0, 0.0, 0.0])
@@ -310,4 +341,37 @@ class TestDedupDocument:
         up_sid, _ = _add_upload(store, "Doc.docx", "H1", [1.0, 0.0, 0.0, 0.0])
         assert dedup_document(store, up_sid, apply=True) == []
         assert _n_uploads(store) == 1
+        store.db.close()
+
+    def test_aggregate_source_is_not_a_dedup_unit_on_ingest_path(self, tmp_path):
+        # dedup_document(source_id) runs on EVERY artifact save (ingestion.py's
+        # per-ingest targeted dedup). _build_doc_for used to construct a whole-
+        # aggregate DocRef keyed on the first item's hash: every duplicating
+        # save produced phantom DedupActions that _delete_doc silently refused,
+        # and if the aggregate ever WON the pair, the legitimate upload was
+        # deleted against a hash representing one artifact of many. The
+        # aggregate must be excluded at the DocRef layer: no actions, and
+        # neither side deleted.
+        store = _mk_store(tmp_path)
+        art_sid = store.add_source(
+            name="Artifacts", source_type="artifact", uri="artifact://all"
+        )
+        store.add_item(
+            title="notes", content="body", item_type="document", source_id=art_sid,
+            content_hash="H1", embedding=floats_to_bytes([1.0, 0.0, 0.0, 0.0]))
+        store.db.commit()
+        # A one-shot upload duplicating that artifact's content. The upload is
+        # OLDER than the aggregate (mtime-like recency), so pre-fix the
+        # aggregate WON the pair and the legitimate upload was hard-deleted.
+        up_sid, _ = _add_upload(store, "notes.md", "H1", [1.0, 0.0, 0.0, 0.0])
+        store.db.execute("UPDATE sources SET updated_at = '2099-01-01T00:00:00' WHERE id = ?",
+                         (art_sid,))
+        store.db.commit()
+
+        # Ingest-path dedup fired FOR the aggregate (as ingestion.py does on
+        # every artifact save): no phantom actions, nothing deleted.
+        assert dedup_document(store, art_sid, apply=True) == []
+        assert _n_uploads(store) == 1, "legitimate upload must survive"
+        assert store.db.execute(
+            "SELECT COUNT(*) FROM items WHERE source_id = ?", (art_sid,)).fetchone()[0] == 1
         store.db.close()
