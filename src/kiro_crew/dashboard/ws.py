@@ -25,6 +25,31 @@ SIDE_RESULT_EVENT = "chat.side_result"
 SIDE_KIND = "side"
 
 
+async def _load_status_counts(state: DashboardState) -> tuple[int, int]:
+    """Return ``(cron_count, lesson_count)`` loaded OFF the event loop.
+
+    ``LessonStore.load_all()`` performs blocking file I/O (JSONL ``stat()`` +
+    ``read_text()``) and the cron count comes from a direct read-only parse of
+    ``crons.json`` (``count_enabled_from_disk``). The WS status pusher runs on
+    the event loop, so computing these inline would stall the loop — and with
+    it EVERY other WebSocket / coroutine on the gateway — for the duration of
+    that disk latency (seconds on a slow/large home dir or a contended NFS
+    mount). Offload both to a worker thread so the loop stays responsive; the
+    pusher is a periodic background task, so the extra thread hop is free.
+
+    NOTE: this deliberately uses ``count_enabled_from_disk`` rather than
+    ``list_jobs``. ``list_jobs`` calls ``_sync()`` → ``_load()`` → ``_arm_timer()``,
+    and ``_arm_timer`` calls ``asyncio.create_task`` — with no running loop in a
+    worker thread that raises ``RuntimeError``, and since ``_arm_timer`` cancels
+    the existing timer first it would silently stop all scheduled cron jobs.
+    ``count_enabled_from_disk`` is a pure read that never mutates loop-owned
+    state or the timer, so it is safe off-thread.
+    """
+    crons = await asyncio.to_thread(state.crons.count_enabled_from_disk)
+    lessons = await asyncio.to_thread(state.lessons.load_all)
+    return crons, len(lessons)
+
+
 def broadcast_side_result(
     state: DashboardState,
     *,
@@ -121,10 +146,9 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
         try:
             while not ws.closed and not shutdown_event.is_set():
                 now = time.time()
-                # Refresh lesson/cron counts every 30s (not every 5s)
+                # Refresh lesson/cron counts every 30s (not every 5s).
                 if now - _counts_ts > _WS_COUNTS_CACHE_TTL:
-                    _cached_crons = len(state.crons.list_jobs())
-                    _cached_lessons = len(state.lessons.load_all())
+                    _cached_crons, _cached_lessons = await _load_status_counts(state)
                     _counts_ts = now
                 data = {
                     **state.status_snapshot(

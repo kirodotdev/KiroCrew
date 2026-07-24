@@ -94,6 +94,41 @@ check (`dashboard/handlers/cron.py`).
   memory, leaving the new ACP process with zero history.
 - **Per-session semaphore**: serializes concurrent messages on the same
   thread key. `get_or_create()` acquires; caller must `release()` when done.
+- **Post-semaphore revalidation** (`_reacquire_and_validate`): the per-session
+  semaphore may be held for a full turn, so it is ALWAYS acquired with the
+  global `self._lock` RELEASED (pinning the lock across that wait would freeze
+  session creation for every key and reintroduce a lock-ordering deadlock).
+  Because a session can be recycled/removed or its backing process can die
+  while a caller waits on the semaphore, every reuse path re-checks identity +
+  liveness AFTER acquiring it, through the single shared helper
+  `_reacquire_and_validate(key, sess)`. Its contract: it returns `True` with
+  the semaphore **still held** (caller MUST `release`), or `False` having
+  **already released** it (session went stale — caller evicts via
+  `_evict_stale_session` and cold-starts). Cancellation while parked on
+  `self._lock` after the acquire releases the semaphore before propagating, so
+  the key never stays permanently locked. Liveness uses
+  `_provider_effectively_alive` (a dead Claude-Code `per_session` process
+  counts as alive — it reconnects lazily on the next `stream()`).
+  Consolidating this acquire→relock→revalidate dance in ONE place is
+  deliberate: a divergent copy is exactly how the stale-provider bug class gets
+  reintroduced. ALL three multiplexing reuse paths route through it — the
+  `get_or_create` fast path, its won-by-another-coroutine race path, and
+  `open_task_session` (both its fast path AND its lost-race branch, where a task
+  step that loses the registration race would otherwise wait a turn on the
+  winner's semaphore and be multiplexed onto a recycled/dead runtime). A stale
+  winner triggers a bounded cold-start retry (`_WON_RACE_MAX_RETRIES`). The
+  only bare `semaphore.acquire()` sites are: the helper itself; a
+  brand-new session the caller just created and registered (no recycle window);
+  and `try_acquire` (a non-blocking, no-`await`-suspension atomic take used by
+  out-of-band `/compact`, which returns `False` on contention rather than
+  waiting, so it has no stale-while-waiting window).
+- **Agent-model resolution cache** (`_resolve_agent_model`, class-level
+  `_agent_model_cache`): the per-agent model pin resolved from agent JSON is
+  cached but invalidated on BOTH the agents-dir mtime changing (a new agent
+  JSON appearing bumps the dir mtime) AND a TTL (`_AGENT_MODEL_CACHE_TTL`, for
+  in-place edits that leave the dir mtime unchanged). Without invalidation an
+  early `"auto"` miss (agent JSON not yet present) would be pinned forever, so a
+  later create/edit of the agent config would never be observed.
 - **Idle cleanup**: expires sessions after `session.timeout_secs` (default
   60min). Never expires `BACKGROUND_KEY`. Dashboard per-tab sessions
   (`dashboard:{slot_key}`) idle-expire like any other session.

@@ -309,6 +309,12 @@ _CIRCUIT_BREAKER_THRESHOLD = 5
 _BG_RECYCLE_PCT = 70.0  # recycle at 70% — well before overflow
 _BG_BLIND_RECYCLE_PROMPTS = 40  # recycle after 40 prompts if no metadata
 
+# TTL (seconds) for the per-agent model resolution cache. Bounds how long a
+# stale resolution — especially the "auto" miss for an agent whose JSON is
+# created/edited after first lookup — can survive an in-place file edit that
+# does not bump the agents-dir mtime.
+_AGENT_MODEL_CACHE_TTL = 30.0
+
 # Persistent session keys — never expired by idle cleanup
 _PERSISTENT_KEYS = frozenset({BACKGROUND_KEY, HEARTBEAT_KEY})
 
@@ -962,6 +968,67 @@ class SessionManager:
         # Fall back OUTSIDE the lock (get_subagent_runtime takes the same lock).
         return await self.get_subagent_runtime(parent_session_key, agent=agent)
 
+    async def _reacquire_and_validate(self, key: str, sess: "_Session") -> bool:
+        """Acquire ``sess``'s per-session semaphore, then re-validate under lock.
+
+        Shared post-semaphore re-check for all three multiplexing paths
+        (``get_or_create`` fast path + won-race path, ``open_task_session``).
+        Acquires the semaphore with ``self._lock`` RELEASED — it can be held for
+        a whole turn, and pinning the global lock across that wait would freeze
+        session creation for EVERY key — then re-takes ``self._lock`` and checks
+        the session is still the registered one AND its provider is effectively
+        alive (``_provider_effectively_alive`` treats a dead CC ``per_session``
+        process as alive; it reconnects lazily on the next ``stream()``).
+
+        Returns True with the semaphore STILL HELD (the caller MUST ``release``
+        it), or False having ALREADY released it because the session was
+        recycled/removed or its provider died during the wait.
+
+        Keeping this acquire→relock→check→release-on-stale sequence in ONE place
+        is deliberate: holding the semaphore across the ``_lock`` acquire would
+        reintroduce the lock-ordering deadlock every copy of this dance exists to
+        avoid, and a divergent copy is exactly how the stale-provider bug class
+        this audit remediates gets reintroduced.
+        """
+        await sess.semaphore.acquire()
+        try:
+            async with self._lock:
+                still_valid = self._sessions.get(key) is sess and _provider_effectively_alive(
+                    sess.provider
+                )
+        except BaseException:
+            # Cancelled (or errored) while awaiting self._lock AFTER acquiring the
+            # semaphore. The caller never receives the held-semaphore contract, so
+            # release it here — otherwise the key stays permanently locked and
+            # every subsequent step for it deadlocks. Covers asyncio.CancelledError
+            # (a BaseException on 3.8+), hence the broad catch + re-raise.
+            sess.semaphore.release()
+            raise
+        if not still_valid:
+            sess.semaphore.release()
+        return still_valid
+
+    async def _evict_stale_session(self, key: str, sess: "_Session") -> None:
+        """Evict ``sess`` if still registered under ``key`` and shut it down.
+
+        The post-stale cleanup shared by the paths that cold-start a replacement
+        (``get_or_create`` fast path and ``open_task_session``). The caller has
+        ALREADY released the semaphore (see :meth:`_reacquire_and_validate`);
+        this re-takes ``self._lock`` only to remove-if-ours, then shuts the dead
+        provider down OFF the lock. If the entry is no longer ours, another
+        coroutine already recycled it and owns its teardown, so we leave it be.
+        """
+        dead: LLMProvider | None = None
+        async with self._lock:
+            if self._sessions.get(key) is sess:
+                del self._sessions[key]
+                dead = sess.provider
+        if dead is not None:
+            try:
+                await dead.shutdown()
+            except Exception:
+                logger.warning("Failed to shut down stale provider for %s", key, exc_info=True)
+
     async def open_task_session(
         self,
         parent_session_key: str,
@@ -970,6 +1037,7 @@ class SessionManager:
         agent: str | None = None,
         cwd: str | None = None,
         approval_policy: str = "",
+        _won_race_retries: int = 0,
     ) -> tuple[LLMProvider, bool, bool]:
         """Open a task-runner session multiplexed onto the run's shared runtime.
 
@@ -1004,8 +1072,21 @@ class SessionManager:
                 if approval_policy:
                     existing.approval_policy = approval_policy
         if existing is not None:
-            await existing.semaphore.acquire()
-            return existing.provider, False, False
+            # Acquire the per-session semaphore with self._lock RELEASED — it can
+            # be held for a whole turn, and pinning the global lock across that
+            # wait would freeze open_task_session / get_or_create for EVERY key.
+            # Re-validate after acquiring, mirroring get_or_create: while we
+            # waited on the semaphore another coroutine may have recycled/removed
+            # this session, or its provider's process may have died. Handing back
+            # a stale/dead provider here would multiplex a task step onto a
+            # terminated runtime; instead fall through to the cold path.
+            if await self._reacquire_and_validate(key, existing):
+                return existing.provider, False, False
+            # Stale between fast-path claim and acquire: the semaphore has
+            # already been released by the re-validate; if the dead entry is
+            # still ours, evict it and shut the dead provider down before
+            # cold-starting a replacement below.
+            await self._evict_stale_session(key, existing)
 
         # Cold path: open a fresh session on the run's shared runtime. Runtime
         # I/O (get_subagent_runtime spawn + create_session) is kept OUTSIDE the
@@ -1015,6 +1096,7 @@ class SessionManager:
         provider = AcpSessionProvider(handle, runtime)
 
         dup: LLMProvider | None = None
+        won_race_sess: "_Session | None" = None
         async with self._lock:
             _existing = self._sessions.get(key)
             if _existing is not None:
@@ -1033,13 +1115,47 @@ class SessionManager:
                     agent=agent or "",
                 )
                 self._sessions[key] = sess
+                won_race_sess = sess
         if dup is not None:
             try:
                 await dup.shutdown()  # terminate the redundant session on the shared runtime
             except Exception:
                 logger.debug("open_task_session: duplicate session teardown failed", exc_info=True)
+            # Lost the same-key race: acquire the WINNER's semaphore through the
+            # shared helper, NOT a bare acquire. While we wait a full turn on the
+            # winner's semaphore it may be recycled or its runtime may die;
+            # handing back sess.provider unchecked would multiplex this task step
+            # onto a dead/recycled runtime — the exact stale-provider bug class
+            # this consolidation exists to kill (see _reacquire_and_validate).
+            if await self._reacquire_and_validate(key, sess):
+                return sess.provider, False, False
+            # Stale winner: the semaphore was already released by the re-validate.
+            # Evict the dead entry if still ours, then retry the cold start from
+            # the top (bounded, mirroring get_or_create's won-race retry).
+            await self._evict_stale_session(key, sess)
+            if _won_race_retries >= _WON_RACE_MAX_RETRIES:
+                raise RuntimeError(
+                    f"open_task_session({key!r}) exceeded {_WON_RACE_MAX_RETRIES} "
+                    "won-race retries — session kept going stale between acquire "
+                    "and re-validate"
+                )
+            return await self.open_task_session(
+                parent_session_key,
+                session_key,
+                agent=agent,
+                cwd=cwd,
+                approval_policy=approval_policy,
+                _won_race_retries=_won_race_retries + 1,
+            )
+        # We won the race: sess is the fresh session we just created and
+        # registered above, so a bare acquire is correct here — there is no
+        # window for another coroutine to recycle a session we only just made
+        # (matches get_or_create's new-session acquire). The revalidate helper
+        # is reserved for reused/won-by-another sessions that waited on a
+        # possibly-recycled runtime.
+        assert won_race_sess is sess
         await sess.semaphore.acquire()
-        return sess.provider, dup is None, False
+        return sess.provider, True, False
 
     def _get_session_agent(self, session_key: str) -> str:
         """Return the agent name for an active session, or empty string."""
@@ -1499,16 +1615,41 @@ class SessionManager:
 
     @staticmethod
     def _resolve_agent_model(agent: str) -> str:
-        """Resolve model from agent config file. Cached at class level."""
+        """Resolve model from agent config file. Cached at class level with
+        mtime + TTL invalidation.
+
+        The cache MUST NOT pin a resolution forever — in particular the
+        ``"auto"`` miss (agent JSON absent, or present with no explicit model).
+        A later create/edit of the agent's JSON has to be observed:
+
+        - **mtime**: the agents-dir mtime is bumped by any add/remove/rename of
+          a ``*.json`` file, so a newly-created agent config invalidates the
+          whole cache immediately.
+        - **TTL**: an in-place edit of an existing file does not change the dir
+          mtime, so entries also expire after ``_AGENT_MODEL_CACHE_TTL`` seconds
+          and are re-resolved.
+        """
+        from kiro_crew.agent import KIRO_AGENTS_DIR
+
+        try:
+            dir_mtime = KIRO_AGENTS_DIR.stat().st_mtime
+        except OSError:
+            dir_mtime = 0.0
+        now = time.monotonic()
+
         if not hasattr(SessionManager, "_agent_model_cache"):
             SessionManager._agent_model_cache = {}  # type: ignore[attr-defined]
         cache = SessionManager._agent_model_cache  # type: ignore[attr-defined]
-        if agent in cache:
-            return cache[agent]
+
+        entry = cache.get(agent)
+        if entry is not None:
+            cached_model, cached_mtime, cached_ts = entry
+            if cached_mtime == dir_mtime and (now - cached_ts) < _AGENT_MODEL_CACHE_TTL:
+                return cached_model
+
+        model = "auto"
         try:
             import json as _json
-
-            from kiro_crew.agent import KIRO_AGENTS_DIR
 
             for af in KIRO_AGENTS_DIR.glob("*.json"):
                 try:
@@ -1517,12 +1658,11 @@ class SessionManager:
                     continue
                 if ad.get("name") == agent or af.stem == agent:
                     model = ad.get("model", "auto")
-                    cache[agent] = model
-                    return model
+                    break
         except Exception:
             pass
-        cache[agent] = "auto"
-        return "auto"
+        cache[agent] = (model, dir_mtime, now)
+        return model
 
     async def recycle_background(self) -> None:
         """Check background session context and recycle if too full.
@@ -1736,40 +1876,16 @@ class SessionManager:
         # while we waited on the semaphore — if so, fall through to cold-start.
         if _claimed is not None:
             sess, was_new = _claimed
-            await sess.semaphore.acquire()
-            async with self._lock:
-                _current = self._sessions.get(key)
-                # _provider_effectively_alive treats a dead CC per_session
-                # process as alive (reconnects lazily), matching the in-lock
-                # live-path policy, so a process that dies during the semaphore
-                # wait isn't needlessly evicted.
-                _still_valid = _current is sess and _provider_effectively_alive(sess.provider)
-            if _still_valid:
+            if await self._reacquire_and_validate(key, sess):
                 return sess.provider, was_new, False
-            # Stale between claim and acquire — clean up and cold-start. If the
-            # entry is still ours but the provider died, remove it and shut the
-            # dead provider down (mirrors the live-path stale handling above);
-            # otherwise another coroutine already recycled it. Then set
-            # `factory` for the cold-start path, which the `if _claimed is None`
-            # block skipped when we claimed a then-live session.
-            #
-            # Ordering note: we release the semaphore BEFORE re-taking _lock to
-            # evict. That opens a brief window where another _bg caller can claim
-            # this same dead `sess` — but it converges safely: that racer runs
-            # this same re-validate, finds the provider dead, and cold-starts too.
-            # Holding the semaphore across the _lock acquire would re-introduce
-            # the very lock-ordering deadlock this whole block exists to avoid.
-            sess.semaphore.release()
-            _dead_provider = None
-            async with self._lock:
-                if self._sessions.get(key) is sess:
-                    del self._sessions[key]
-                    _dead_provider = sess.provider
-            if _dead_provider is not None:
-                try:
-                    await _dead_provider.shutdown()
-                except Exception:
-                    logger.warning("Failed to shut down stale provider for %s", key, exc_info=True)
+            # Stale between claim and acquire — the semaphore has already been
+            # released by the re-validate. If the entry is still ours but the
+            # provider died, evict it and shut the dead provider down (mirrors
+            # the live-path stale handling above); otherwise another coroutine
+            # already recycled it. Then set `factory` for the cold-start path,
+            # which the `if _claimed is None` block skipped when we claimed a
+            # then-live session.
+            await self._evict_stale_session(key, sess)
             if not self._provider_factory:
                 raise RuntimeError("No provider factory configured")
             factory = self._provider_factory
@@ -2063,22 +2179,10 @@ class SessionManager:
                     logger.warning(
                         "Failed to shut down duplicate provider for %s", key, exc_info=True
                     )
-            await _won_race_sess.semaphore.acquire()
-            # Re-validate after acquiring, mirroring the fast path: the winning
-            # session may have been recycled/reaped while we waited on its
-            # semaphore. Check identity AND liveness (a CC per_session process
-            # that died is NOT stale — it reconnects lazily on next stream()).
-            # If no longer valid, release and retry from the top (cold-starts
-            # cleanly) rather than handing back a stale/dead provider.
-            async with self._lock:
-                _wsess = _won_race_sess
-                _still_valid = self._sessions.get(key) is _wsess and _provider_effectively_alive(
-                    _wsess.provider
-                )
-            if _still_valid:
+            if await self._reacquire_and_validate(key, _won_race_sess):
                 return _won_race_sess.provider, False, False
-            _won_race_sess.semaphore.release()
-            # Stale winner: retry from the top (cold-starts cleanly). Bounded so
+            # Stale winner: the semaphore has already been released by the
+            # re-validate; retry from the top (cold-starts cleanly). Bounded so
             # a pathological recycle race can't recurse without limit.
             if _won_race_retries >= _WON_RACE_MAX_RETRIES:
                 raise RuntimeError(

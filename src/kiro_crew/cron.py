@@ -366,6 +366,21 @@ def compute_next_run_ts(job: CronJob, now: float | None = None) -> float | None:
     return None
 
 
+def _record_is_enabled(j: dict[str, Any]) -> bool:
+    """Single owner for the effective-enabled predicate of a serialized job.
+
+    A job is enabled when it is neither user-paused nor auto-paused, with the
+    legacy ``!enabled`` fallback for stores written before those fields existed.
+    Both ``_load`` (the scheduler deserialization path) and
+    ``count_enabled_from_disk`` (the off-thread dashboard count) MUST route
+    through here so the semantics have exactly one implementation and cannot
+    drift when a future pause-state change lands in only one reader.
+    """
+    user_paused = j.get("user_paused", not j.get("enabled", True))
+    auto_paused = j.get("auto_paused", False)
+    return not user_paused and not auto_paused
+
+
 class CronService:
     """Background service for managing and executing scheduled jobs."""
 
@@ -1062,6 +1077,42 @@ class CronService:
             return list(self._jobs)
         return [j for j in self._jobs if j.enabled]
 
+    def count_enabled_from_disk(self) -> int:
+        """Count enabled jobs by reading ``crons.json`` directly — thread-safe.
+
+        Unlike :meth:`list_jobs` (which calls ``_sync()`` → ``_load()`` →
+        ``_arm_timer()``), this performs ONLY a read-only file parse. It never
+        mutates loop-owned state (``self._jobs``, ``self._last_mtime``) and
+        never touches the asyncio timer, so it is safe to invoke from a worker
+        thread via ``asyncio.to_thread``.
+
+        This exists specifically for the dashboard WS status pusher, which needs
+        an enabled-job count off the event loop: routing ``list_jobs`` through a
+        worker thread would run ``_arm_timer()`` (which calls
+        ``asyncio.create_task``) with no running loop in that thread, raising
+        ``RuntimeError`` — and because ``_arm_timer`` cancels the existing timer
+        first, that would silently stop all scheduled jobs until restart.
+
+        Enabled semantics come from the shared ``_record_is_enabled`` predicate
+        (the single owner used by ``_load`` too): a job is enabled when it is
+        neither user-paused nor auto-paused (with the legacy ``!enabled``
+        fallback for stores written before those fields existed). A slightly stale count is
+        acceptable here — the caller caches it and the atomic tmp→rename write
+        in ``_save`` guarantees a concurrent read sees a whole file, never a
+        partial one.
+        """
+        if not self._path.exists():
+            return 0
+        try:
+            data = json.loads(self._path.read_text())
+        except (OSError, json.JSONDecodeError):
+            return 0
+        count = 0
+        for j in data.get("jobs", []):
+            if _record_is_enabled(j):
+                count += 1
+        return count
+
     def get_job(self, job_id: str) -> CronJob | None:
         """Find a job by its id. Returns the CronJob, or None if not found."""
         self._sync()
@@ -1440,9 +1491,10 @@ class CronService:
                     # restart: the failing run sets auto_paused=True, and a
                     # recurring job's `enabled` is otherwise never persisted, so a
                     # naive `enabled` read would resurrect the job on reload.
-                    # user_paused/auto_paused fall back to legacy !enabled for
-                    # stores written before either field existed.
-                    enabled=not j.get("user_paused", not j.get("enabled", True)) and not j.get("auto_paused", False),
+                    # The predicate (incl. the legacy !enabled fallback) has one
+                    # owner, `_record_is_enabled`, shared with
+                    # count_enabled_from_disk so the two readers cannot drift.
+                    enabled=_record_is_enabled(j),
                     user_paused=j.get("user_paused", not j.get("enabled", True)),
                     auto_paused=j.get("auto_paused", False),
                     last_run_ts=j.get("last_run_ts"),
