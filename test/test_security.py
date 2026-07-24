@@ -230,6 +230,39 @@ class TestRedactCredentials:
         assert "[REDACTED: credential]" in result
         assert len(warnings) == 1
 
+    @pytest.mark.parametrize(
+        "secret",
+        [
+            "ghp_" "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef12",  # GitHub classic PAT
+            "sk-ant-api03-" "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOP",  # Anthropic
+            "sk-proj-" "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234",  # OpenAI
+            "sk_live_" "51HG7aBcDeFgHiJkLmNoPqRsTuVwXyZ",  # Stripe live
+            "xoxb-" "1234567890-abcdefghijklmnop",  # Slack bot token
+        ],
+    )
+    def test_warning_does_not_leak_secret_prefix(self, secret: str) -> None:
+        """The warnings list must carry NO secret bytes — only length metadata.
+
+        Regression for the pentest finding: the plaintext branch previously
+        emitted ``matched[:20]``, leaking a 12-16 char slice of the real secret
+        (a fingerprint of exactly which key matched) into a list that sinks
+        expect to be safe to log/surface. High-entropy API-key prefixes
+        (``ghp_``, ``sk-ant-``, ``sk-proj-``, ``sk_live_``, ``xoxb-``) are the
+        worst case; assert none of the raw secret survives in any warning.
+        """
+        text = f"KEY={secret}"
+        _, warnings = redact_credentials(text)
+        assert len(warnings) == 1
+        joined = " ".join(warnings)
+        # The full secret must not appear, and neither may any leading slice of
+        # it beyond the (non-secret) provider prefix — assert the whole value
+        # and its first 20 chars (the old leak window) are both absent.
+        assert secret not in joined
+        assert secret[:20] not in joined
+        # Positive: the warning still reports the redaction with a length.
+        assert "Redacted credential pattern" in joined
+        assert f"{len(secret)} chars" in joined
+
     def test_redacts_db_uri_with_embedded_password(self) -> None:
         text = "DATABASE_URL=postgres://admin:SuperSecret123@db.example.com:5432/prod"
         result, _ = redact_credentials(text)

@@ -3630,7 +3630,15 @@ def redact_credentials(text: str) -> tuple[str, list[str]]:
         matched = m.group()
         tag = _REDACTED_CREDENTIAL_TAG
         result = result.replace(matched, tag, 1)
-        warnings.append(f"Redacted credential pattern: {matched[:20]}...")
+        # Emit ONLY non-sensitive metadata (length). Do NOT slice any part of
+        # `matched` into the warning: `_CREDENTIAL_PATTERNS` matches the raw
+        # secret value itself (e.g. `ghp_…`, `sk-ant-…`), so even a short prefix
+        # is genuine plaintext key material — a fixed-length token prefix leaves
+        # ~12-16 secret chars in a 20-char slice. The warnings list is a
+        # redaction-subsystem output expected to be safe to log/surface, so it
+        # must carry no secret bytes. Mirrors the base64 / bare-secret branches
+        # below, which already log length only.
+        warnings.append(f"Redacted credential pattern ({len(matched)} chars)")
 
     # 2. Detect and redact base64-encoded credentials
     for m in _B64_CHUNK_RE.finditer(text):
