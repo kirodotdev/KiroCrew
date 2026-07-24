@@ -183,6 +183,54 @@ def _is_asgi_entry(entry: Any) -> bool:
         return False
 
 
+def _is_shell_entry(entry: Path) -> bool:
+    """Heuristic: is this entry point a shell launcher script?
+
+    True for a ``.sh`` file, or an extensionless executable whose first line
+    is a non-Python shebang (e.g. ``bin/<name>`` with
+    ``#!/usr/bin/env bash``). Files with any other extension (``.py``,
+    ``.js``, ...) and python-shebang launchers are NOT shell entries — they
+    keep their existing interpreter branches.
+    """
+    name = entry.name
+    if name.endswith(".sh"):
+        return True
+    if "." in name:
+        return False  # some other extension — not a bare launcher
+    if not os.access(entry, os.X_OK):
+        return False
+    try:
+        with open(entry, "rb") as fh:
+            first_line = fh.readline(256)
+    except OSError:
+        return False
+    return first_line.startswith(b"#!") and b"python" not in first_line
+
+
+def _shebang_argv(entry: Path) -> list[str]:
+    """Interpreter argv from a script's shebang, or ``["/bin/sh"]`` fallback.
+
+    A non-executable script can't rely on kernel shebang exec, so re-create
+    it: parse ``#!<interp> [arg]`` and return ``[interp, arg]`` (the kernel
+    passes at most one argument; whitespace-splitting covers the
+    ``#!/usr/bin/env bash`` form). Running bash source under ``/bin/sh``
+    breaks on bash-isms like ``set -euo pipefail`` wherever sh is dash, so
+    /bin/sh is only the last resort for a script with no shebang at all.
+    """
+    try:
+        with open(entry, "rb") as fh:
+            first = fh.readline(256)
+    except OSError:
+        return ["/bin/sh"]
+    if not first.startswith(b"#!"):
+        return ["/bin/sh"]
+    try:
+        parts = first[2:].decode("utf-8", "strict").strip().split()
+    except UnicodeDecodeError:
+        return ["/bin/sh"]
+    return parts if parts else ["/bin/sh"]
+
+
 # ---------------------------------------------------------------------------
 # Lifecycle
 # ---------------------------------------------------------------------------
@@ -579,6 +627,38 @@ def _start_app_backend_body(app_name: str, manifest) -> AppProcess | None:
         python_bin = sys.executable
         cmd = [python_bin, "-m", entry_point]
         cwd = str(Path(__file__).resolve().parent.parent.parent)
+
+    # --- Exec (shell-launcher) backend ---
+    # Explicit `backend.type: "exec"` (exec the entry point file as-is — also
+    # the escape hatch for compiled/binary launchers the auto-detect can't
+    # identify), a `.sh` entry point, or an extensionless executable with a
+    # non-Python shebang (e.g. `bin/<name>` with `#!/usr/bin/env bash` — the
+    # common launcher-script pattern) is executed directly rather than
+    # falling through to the Python branch (which would run bash source under
+    # the Python interpreter and die on `set -euo pipefail`). Same
+    # wrap_argv() sandbox + cgroup scope as every other branch.
+    elif backend_type == "exec" or (not backend_type and _is_shell_entry(entry)):
+        if not platform_compat.IS_POSIX:
+            # Exec backends rely on POSIX shebang exec and /bin/sh — neither
+            # exists on native Windows. Fail fast with a clear message instead
+            # of an undefined Popen crash.
+            logger.error(
+                "App %s declares an exec (shell launcher) backend (%s) which "
+                "is not supported on native Windows. Use a Python or Node "
+                "entry point instead.",
+                app_name,
+                entry_str,
+            )
+            return None
+        if os.access(entry, os.X_OK):
+            cmd = [entry_str]
+        else:
+            # Not executable (e.g. lost the exec bit in transit) — the kernel
+            # won't honor the shebang, so invoke its interpreter explicitly.
+            # /bin/sh only for a script with no shebang at all (bash source
+            # under dash-as-sh dies on `set -euo pipefail`).
+            cmd = [*_shebang_argv(entry), entry_str]
+        cwd = str(root)
 
     # --- ASGI (Python) backend ---
     elif backend_type == "asgi" or (

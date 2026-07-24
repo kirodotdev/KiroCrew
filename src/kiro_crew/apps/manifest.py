@@ -265,7 +265,7 @@ class BackendConfig:
     port: str = "auto"  # "auto" or a specific port number
     healthCheck: str = "/health"  # health check endpoint path  # noqa: N815
     routes: str = ""  # base route path, e.g. /api/apps/oncall-watchtower
-    type: str = ""  # "python", "asgi", "node", or "" (auto-detect)
+    type: str = ""  # "python", "asgi", "node", "exec", or "" (auto-detect)
     hooks: HooksConfig = field(default_factory=HooksConfig)
 
     def to_dict(self) -> dict[str, Any]:

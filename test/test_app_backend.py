@@ -12,6 +12,7 @@ import pytest
 from kiro_crew.apps.backend import (
     AppProcess,
     _find_free_port,
+    _is_shell_entry,
     get_app_process,
     list_app_processes,
     start_app_backend,
@@ -195,6 +196,53 @@ class TestBackendLifecycle:
 
     def test_stop_not_running(self, app_env):
         assert stop_app_backend("nonexistent") is False
+
+    @_needs_sandbox_spawn
+    @pytest.mark.skipif(sys.platform == "win32", reason="shell launchers are POSIX-only")
+    def test_start_and_stop_shell_launcher(self, tmp_path, app_env):
+        """An extensionless bash launcher entrypoint is exec'd directly, not fed
+        to the Python interpreter (the common `bin/<name>` launcher pattern)."""
+        name = "shell-app"
+        src = tmp_path / "source" / name
+        src.mkdir(parents=True)
+        (src / APP_MANIFEST_FILENAME).write_text(json.dumps({
+            "name": name, "version": "1.0.0",
+            "displayName": "Shell App", "description": "bash launcher backend",
+            "author": "tester",
+            "backend": {
+                "entryPoint": "bin/shell-app",
+                "port": "auto",
+                "healthCheck": "/health",
+            },
+        }))
+        (src / "bin").mkdir()
+        launcher = src / "bin" / "shell-app"
+        # Bash launcher that would die instantly under a Python interpreter
+        # (`set -euo pipefail` is a SyntaxError), then execs a tiny server.
+        launcher.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            f'exec "{sys.executable}" -c \''
+            "import http.server, os\n"
+            "port = int(os.environ.get(\"PORT\", 9100))\n"
+            "class H(http.server.BaseHTTPRequestHandler):\n"
+            "    def do_GET(self):\n"
+            "        self.send_response(200)\n"
+            "        self.end_headers()\n"
+            "        self.wfile.write(b\"ok\")\n"
+            "    def log_message(self, *a):\n"
+            "        pass\n"
+            "http.server.HTTPServer((\"127.0.0.1\", port), H).serve_forever()\n"
+            "'\n"
+        )
+        launcher.chmod(0o755)
+        install_app(src)
+        ap = start_app_backend(name)
+        assert ap is not None
+        assert ap.port > 0
+        assert ap.pid > 0
+        stopped = stop_app_backend(name)
+        assert stopped is True
 
     @_needs_sandbox_spawn
     def test_get_process(self, tmp_path, app_env):
@@ -496,6 +544,161 @@ class TestBackendLifecycle:
         assert result is None
         # The stale placeholder is gone, so a fresh start_app_backend can spawn again.
         assert "wedged-app" not in bmod._processes
+
+
+class TestShellEntryDetection:
+    """Unit coverage for _is_shell_entry (shell launcher heuristic)."""
+
+    def _write(self, tmp_path, name, content, executable=True):
+        f = tmp_path / name
+        f.write_text(content)
+        if executable:
+            f.chmod(0o755)
+        return f
+
+    def test_sh_suffix_is_shell(self, tmp_path):
+        f = self._write(tmp_path, "run.sh", "#!/bin/sh\necho hi\n", executable=False)
+        assert _is_shell_entry(f) is True
+
+    def test_extensionless_bash_shebang_is_shell(self, tmp_path):
+        f = self._write(tmp_path, "my-launcher", "#!/usr/bin/env bash\nset -euo pipefail\n")
+        assert _is_shell_entry(f) is True
+
+    def test_python_shebang_launcher_is_not_shell(self, tmp_path):
+        f = self._write(tmp_path, "launcher", "#!/usr/bin/env python3\nprint('hi')\n")
+        assert _is_shell_entry(f) is False
+
+    def test_py_extension_is_not_shell(self, tmp_path):
+        f = self._write(tmp_path, "server.py", "#!/usr/bin/env bash\n")
+        assert _is_shell_entry(f) is False
+
+    def test_extensionless_non_executable_is_not_shell(self, tmp_path):
+        f = self._write(tmp_path, "launcher", "#!/bin/bash\n", executable=False)
+        assert _is_shell_entry(f) is False
+
+    def test_extensionless_no_shebang_is_not_shell(self, tmp_path):
+        f = self._write(tmp_path, "launcher", "echo hi\n")
+        assert _is_shell_entry(f) is False
+
+
+class TestShellDispatch:
+    """Dispatch-level coverage: the shell branch selects the right argv without
+    a real spawn. Complements the e2e launcher test (which only covers the
+    auto-detect path) with the explicit ``backend.type: "exec"`` route and the
+    /bin/sh fallback for a non-executable ``.sh`` entry."""
+
+    def _dispatch_cmd(self, tmp_path, monkeypatch, name, entry_rel, content, *,
+                      executable, backend_type=""):
+        """Install an app, then capture the argv the dispatch builds."""
+        import kiro_crew.apps.backend as bmod
+        from kiro_crew.apps.manager import get_app_manifest
+
+        src = tmp_path / "source" / name
+        src.mkdir(parents=True)
+        backend: dict = {"entryPoint": entry_rel, "port": "auto"}
+        if backend_type:
+            backend["type"] = backend_type
+        (src / APP_MANIFEST_FILENAME).write_text(json.dumps({
+            "name": name, "version": "1.0.0",
+            "displayName": name, "description": "shell dispatch test",
+            "author": "tester",
+            "backend": backend,
+        }))
+        entry = src / entry_rel
+        entry.parent.mkdir(parents=True, exist_ok=True)
+        entry.write_text(content)
+        if executable:
+            entry.chmod(0o755)
+        install_app(src)
+
+        captured: dict = {}
+
+        def _capture_wrap(cmd, **kwargs):
+            captured["cmd"] = list(cmd)
+            return cmd, None
+
+        class _ReachedSpawn(Exception):
+            pass
+
+        def _sentinel(*a, **k):
+            raise _ReachedSpawn()
+
+        # Neutralize the sandbox wrap so the test isolates DISPATCH (its
+        # purpose) from sandbox availability, and stop before any real spawn.
+        monkeypatch.setattr(bmod, "wrap_argv", _capture_wrap)
+        monkeypatch.setattr(bmod.subprocess, "Popen", _sentinel)
+        manifest = get_app_manifest(name)
+        assert manifest is not None
+        with pytest.raises(_ReachedSpawn):
+            bmod._start_app_backend_body(name, manifest)
+        return captured["cmd"]
+
+    def test_explicit_backend_type_exec_routes_to_shell_branch(
+            self, tmp_path, app_env, monkeypatch):
+        # A launcher the auto-detect can NOT identify (extensionless, no
+        # shebang — the stand-in for a compiled/ELF binary) must still hit the
+        # shell branch when the manifest declares `"type": "exec"` explicitly.
+        cmd = self._dispatch_cmd(
+            tmp_path, monkeypatch, "explicit-shell", "bin/launcher",
+            "echo hi\n", executable=True, backend_type="exec",
+        )
+        assert len(cmd) == 1
+        assert cmd[0].endswith("bin/launcher")
+
+    def test_non_executable_sh_entry_falls_back_to_bin_sh(self, tmp_path, app_env,
+                                                          monkeypatch):
+        # A shebang-less `.sh` entry that lost its exec bit is run via /bin/sh
+        # as the last resort.
+        cmd = self._dispatch_cmd(
+            tmp_path, monkeypatch, "sh-fallback", "run.sh",
+            "echo hi\n", executable=False,
+        )
+        assert cmd[0] == "/bin/sh"
+        assert len(cmd) == 2
+        assert cmd[1].endswith("run.sh")
+
+    def test_non_executable_bash_entry_honors_shebang(self, tmp_path, app_env,
+                                                      monkeypatch):
+        # A non-executable launcher with a bash shebang must run under ITS
+        # declared interpreter, not /bin/sh — bash-isms like
+        # `set -euo pipefail` die under dash-as-sh (Debian/Ubuntu).
+        cmd = self._dispatch_cmd(
+            tmp_path, monkeypatch, "bash-shebang", "run.sh",
+            "#!/usr/bin/env bash\nset -euo pipefail\necho hi\n",
+            executable=False,
+        )
+        assert cmd[:2] == ["/usr/bin/env", "bash"]
+        assert cmd[2].endswith("run.sh")
+
+    def test_shell_backend_refused_on_non_posix(self, tmp_path, app_env,
+                                                monkeypatch):
+        # On native Windows (IS_POSIX False) the shell branch must fail fast
+        # with a logged error and return None — never reach Popen with a
+        # shebang-dependent argv or the nonexistent /bin/sh.
+        import kiro_crew.apps.backend as bmod
+        from kiro_crew.apps.manager import get_app_manifest
+
+        name = "win-shell-refused"
+        src = tmp_path / "source" / name
+        src.mkdir(parents=True)
+        (src / APP_MANIFEST_FILENAME).write_text(json.dumps({
+            "name": name, "version": "1.0.0",
+            "displayName": name, "description": "non-posix guard test",
+            "author": "tester",
+            "backend": {"entryPoint": "run.sh", "port": "auto",
+                        "type": "exec"},
+        }))
+        (src / "run.sh").write_text("#!/bin/sh\necho hi\n")
+        install_app(src)
+
+        def _boom(*a, **k):  # pragma: no cover - must not be reached
+            raise AssertionError("Popen must not be called on non-POSIX")
+
+        monkeypatch.setattr(bmod.subprocess, "Popen", _boom)
+        monkeypatch.setattr(bmod.platform_compat, "IS_POSIX", False)
+        manifest = get_app_manifest(name)
+        assert manifest is not None
+        assert bmod._start_app_backend_body(name, manifest) is None
 
 
 class TestBootAdmissionRevet:

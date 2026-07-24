@@ -149,7 +149,13 @@ and detail cards. The path form depends on how the app is distributed:
 | `backend.port` | string | `"auto"` | Port number or `"auto"` for auto-assignment |
 | `backend.healthCheck` | string | `"/health"` | Health check endpoint path |
 | `backend.routes` | string | | Base route path for the backend |
-| `backend.type` | string | `""` | Backend runtime: `"python"`, `"asgi"`, `"node"`, or `""` (auto-detect from `entryPoint`) |
+| `backend.type` | string | `""` | Backend runtime: `"python"`, `"asgi"`, `"node"`, `"exec"` (execute the entry point file as-is), or `""` (auto-detect from `entryPoint` — a `.sh` file or an extensionless executable with a non-Python shebang is treated as a shell launcher) |
+
+> **Note:** the shell-launcher auto-detect reads the entry point's shebang
+> line, so a compiled/binary launcher (e.g. an ELF executable) cannot be
+> auto-detected — declare `"type": "exec"` explicitly for those. Exec
+> backends are POSIX-only: on native Windows the backend is refused at spawn
+> with a logged error (use a Python or Node entry point instead).
 
 App backends are accessible through the Gateway's reverse proxy at
 `/apps/{name}/api/{path}`, which avoids CORS issues for dashboard UI pages.
