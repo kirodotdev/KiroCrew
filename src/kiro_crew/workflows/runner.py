@@ -45,7 +45,7 @@ from .registry import (
     start_background_run,
 )
 from .schema import run_with_schema
-from .validate import validate
+from .validate import CORE_CTX_SURFACE, check_ctx_surface, validate
 
 # Optional dependency (gate F1): the SEL security event log lives in the app
 # layer, and the workflows engine must stay importable as a standalone unit
@@ -186,6 +186,7 @@ class _RunContext:
         concurrency: Optional[int],
         author: str = "",
         runner: str = "",
+        session_key: str = "",
         audit: Optional[AuditFn] = None,
         ports: Optional[dict] = None,
         on_event: Optional[Callable[[WorkflowEvent], None]] = None,
@@ -196,6 +197,11 @@ class _RunContext:
         self.now = now
         self.owner_dm = owner_dm
         self.budget = budget
+        # Originating session key (dashboard slot / channel key) for this run.
+        # Threaded from start()/run_background() so session-bound native ports
+        # (e.g. ``ctx.nudge`` → AutoNudge) know which session to act on. Empty
+        # when the run was not launched from a nudge-able session.
+        self._session_key = session_key
 
         # KiroCrew-native ports (M4) — injected per run; None when the host did
         # not grant/wire them (the frozen contract allows None, like AppContext).
@@ -371,7 +377,25 @@ class _RunContext:
     def nudge(self, *, idle_secs: int, message: str, max_cycles: int = 0) -> "_NoOpContextManager":
         if self._nudge_fn is None:
             raise RuntimeError("ctx.nudge is not available for this run (no nudge port wired)")
-        self._nudge_fn(idle_secs=idle_secs, message=message, max_cycles=max_cycles)
+
+        def _notify(msg: str) -> None:
+            # Surface arm/skip/deny outcomes in the run's event stream so the
+            # Workflows UI shows what happened (never a silent no-op). Late
+            # events (arm resolves after the run ends) are best-effort.
+            try:
+                self._record(self._stream.log(self.now, message=msg))
+            except Exception:  # noqa: BLE001 - visibility must never break the run
+                pass
+
+        # The port is session-agnostic (shared across runs); pass THIS run's
+        # originating session key so it arms a nudge loop on the right session.
+        self._nudge_fn(
+            session_key=self._session_key,
+            idle_secs=idle_secs,
+            message=message,
+            max_cycles=max_cycles,
+            notify=_notify,
+        )
         return _NoOpContextManager()
 
     async def approve(self, prompt: str) -> bool:
@@ -408,6 +432,7 @@ class WorkflowRunner:
         audit: Optional[AuditFn] = None,
         ports: Optional[dict] = None,
         on_complete: Optional[Callable[[], Awaitable[None]]] = None,
+        pre_terminal: Optional[Callable[[], Awaitable[None]]] = None,
     ) -> None:
         self._agent_fn = agent_fn
         self._timeout_secs = timeout_secs
@@ -421,6 +446,10 @@ class WorkflowRunner:
         # session pool (agent_pool) so its warm sessions are released exactly when
         # the run ends. Best-effort — a teardown failure never changes the outcome.
         self._on_complete = on_complete
+        # Optional async hook awaited BEFORE each terminal event is emitted, so
+        # session-bound side effects (e.g. in-flight ctx.nudge arms) can land
+        # their outcome logs inside the event stream's contract (terminal last).
+        self._pre_terminal = pre_terminal
 
     async def run(
         self,
@@ -430,6 +459,7 @@ class WorkflowRunner:
         now: str,
         args: Optional[dict] = None,
         owner_dm: str = "",
+        session_key: str = "",
         budget_total: Optional[int] = None,
         script_hash: str = "",
         author: str = "",
@@ -541,6 +571,7 @@ class WorkflowRunner:
                 now=now,
                 args=args,
                 owner_dm=owner_dm,
+                session_key=session_key,
                 budget_total=budget_total,
                 author=author,
                 on_event=on_event,
@@ -576,6 +607,7 @@ class WorkflowRunner:
             now=now,
             args=args,
             owner_dm=owner_dm,
+            session_key=session_key,
             budget_total=budget_total,
             author=author,
             on_event=on_event,
@@ -594,6 +626,7 @@ class WorkflowRunner:
         now: str,
         args: dict,
         owner_dm: str,
+        session_key: str,
         budget_total: Optional[int],
         author: str,
         on_event: Optional[Callable[[WorkflowEvent], None]],
@@ -623,6 +656,24 @@ class WorkflowRunner:
                 source=source,
             )
 
+        # Host-aware ctx-surface enforcement: reject scripts referencing
+        # primitives THIS host did not wire, before exec — closing the
+        # advertised-but-unwired class at the enforcement layer (a hand-written
+        # or rerun script would otherwise pass static validation and die
+        # mid-run with ``RuntimeError("... no ... port wired")``).
+        available = CORE_CTX_SURFACE | {n for n, f in self._ports.items() if f is not None}
+        surface_errors = check_ctx_surface(source, available)
+        if surface_errors:
+            emit(stream.run_failed(now, error="; ".join(surface_errors), where="validate"))
+            return RunResult(
+                run_id,
+                ok=False,
+                result=None,
+                events=events,
+                error="; ".join(surface_errors),
+                source=source,
+            )
+
         # 2. Build the run context + restricted exec namespace.
         ctx = _RunContext(
             run_id=run_id,
@@ -636,6 +687,7 @@ class WorkflowRunner:
             concurrency=self._concurrency,
             author=author,
             runner=owner_dm or run_id,
+            session_key=session_key,
             audit=self._audit,
             ports=self._ports,
             on_event=on_event,
@@ -644,6 +696,17 @@ class WorkflowRunner:
         )
         ctx._events = events  # share the sink so phase/log/agent events land in order
         safe_globals = build_safe_globals(ctx)
+
+        async def _pre_terminal() -> None:
+            """Drain session-bound side effects (ctx.nudge arms) BEFORE the
+            terminal event: the event-stream contract says terminal events are
+            last, so outcome logs must precede run_finished/failed/cancelled.
+            Best-effort — teardown must never mask the run outcome."""
+            if self._pre_terminal is not None:
+                try:
+                    await self._pre_terminal()
+                except Exception:  # noqa: BLE001
+                    pass
 
         # 3. exec the module (defines `workflow`) then await it under a wall clock.
         started = time.monotonic()
@@ -671,6 +734,7 @@ class WorkflowRunner:
                     await run_task
                 except (asyncio.CancelledError, Exception):  # noqa: BLE001
                     pass
+                await _pre_terminal()
                 emit(
                     stream.run_failed(
                         now, error=f"run exceeded {self._timeout_secs}s", where="ceiling"
@@ -685,22 +749,26 @@ class WorkflowRunner:
             # in-flight script and report it as cancelled.
             if task is not None and not task.done():
                 task.cancel()
+            await _pre_terminal()
             emit(stream.run_cancelled(now, reason="cancelled"))
             return RunResult(
                 run_id, ok=False, result=None, events=events, error="cancelled", source=source
             )
         except BudgetExceeded as exc:
+            await _pre_terminal()
             emit(stream.run_failed(now, error=str(exc), where="ceiling"))
             return RunResult(
                 run_id, ok=False, result=None, events=events, error=str(exc), source=source
             )
         except Exception as exc:  # script raised — captured, not propagated
+            await _pre_terminal()
             emit(stream.run_failed(now, error=repr(exc), where="exec"))
             return RunResult(
                 run_id, ok=False, result=None, events=events, error=repr(exc), source=source
             )
 
         duration = time.monotonic() - started
+        await _pre_terminal()
         emit(stream.run_finished(now, result=result, duration_s=duration))
         # B10: record successful completion with a result hash (never the raw data).
         self._audit(
@@ -783,6 +851,7 @@ class WorkflowRunner:
                     now=now,
                     args=args,
                     owner_dm=owner_dm,
+                    session_key=session_key,
                     budget_total=budget_total,
                     script_hash=script_hash,
                     author=author,

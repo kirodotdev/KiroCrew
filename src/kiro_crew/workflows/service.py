@@ -20,9 +20,11 @@ authoring-reliability gates (G1/G2) cover this shape.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Callable, Optional
 
+from kiro_crew import autonudge
 from kiro_crew.llm_helpers import ToolApprovalPolicy, stream_and_collect
 
 from .agent_exec import build_agent_fn
@@ -49,15 +51,14 @@ agents. Reply with ONLY the Python module (no prose, no code fence). It MUST be:
 Rules (the sandbox REJECTS violations): no imports; no open/eval/exec/__import__;
 no dunder access; no time/random/uuid (use ctx.now / ctx.args). Use ONLY the ctx
 surface: await ctx.agent(prompt, schema=?, label=?, phase=?), await ctx.parallel([..]),
-await ctx.pipeline(items, *stages), await ctx.workflow(name, args?), ctx.phase(t),
-ctx.log(m), ctx.nudge(idle_secs=?, message=?), ctx.budget, ctx.args, and (if
-available) ctx.cron/ctx.memory/ctx.learn/await ctx.approve/await ctx.send_slack/
-await ctx.send_message.
+await ctx.pipeline(items, *stages), ctx.phase(t), ctx.log(m),
+ctx.nudge(idle_secs=?, message=?), ctx.budget, ctx.args. Nothing else exists on
+ctx in this runtime — any other ctx attribute or method fails at runtime, so do
+not invent one.
 
 ASYNC vs SYNC — get this right or the script crashes at runtime:
   * AWAIT these (they are async): ctx.agent(...), ctx.parallel(...),
-    ctx.pipeline(...), ctx.workflow(...), ctx.approve(...), ctx.send_slack(...),
-    ctx.send_message(...).
+    ctx.pipeline(...).
   * Do NOT await these (they are SYNCHRONOUS and return a context manager):
     ctx.phase(title), ctx.log(msg), ctx.nudge(...). NEVER
     ``await ctx.phase("read")`` (awaiting raises TypeError immediately).
@@ -105,7 +106,7 @@ helper functions. There is NO json module — return plain dicts/lists directly.
 Before you reply, RE-READ your script and fix these specific failure modes: (1) any
 ``await ctx.phase/log/nudge`` (those are sync — drop the await); (2) any subscript,
 ``.get()``, or attribute access on an awaited
-ctx.agent/parallel/pipeline/workflow/approve result that is not first bound to a
+ctx.agent/parallel/pipeline result that is not first bound to a
 variable and None-guarded; (3) any use of a name that
 is not a listed builtin, ctx, or a helper you defined. Reply ONLY when the script
 is clean on all three.
@@ -130,6 +131,7 @@ class WorkflowService:
         persist: bool = True,
         store: Any = None,
         pool_agents: bool = True,
+        nudge_authorizer: Optional[Callable[..., Any]] = None,
     ) -> None:
         # Durable store (FIX-21): runs are mirrored to disk so they survive gateway
         # restarts. Pass persist=False (or store=None) to keep a purely in-memory
@@ -145,6 +147,15 @@ class WorkflowService:
         if on_event is not None:
             self.registry.set_on_event(on_event)
         self._sessions = sessions
+        # Injected by the gateway: an async ``(*, slot_key, message, idle_secs,
+        # max_cycles) -> None`` that runs the SHARED authorize_and_add_nudge
+        # chokepoint (ownership/allowlist checks + message limit + SEL audit)
+        # before arming an AutoNudge loop. None in tests / non-dashboard hosts →
+        # ``ctx.nudge`` degrades to a logged no-op. Strong refs to in-flight arm
+        # tasks are held here BUCKETED PER RUN (run_id → tasks) so each run's
+        # teardown drains its own arms before the terminal transition.
+        self._nudge_authorizer = nudge_authorizer
+        self._nudge_tasks: dict[str, set[Any]] = {}
         self._now_fn = now_fn or (lambda: "1970-01-01T00:00:00Z")
         self._concurrency = concurrency
         # When True, each run's ``ctx.agent()`` calls reuse a small WARM session
@@ -179,7 +190,149 @@ class WorkflowService:
         self._seq += 1
         return f"wf_{self._seq:06d}"
 
+    def _nudge_port(
+        self,
+        *,
+        run_id: str,
+        session_key: str,
+        idle_secs: int,
+        message: str,
+        max_cycles: int = 0,
+        notify: Optional[Callable[[str], None]] = None,
+    ) -> None:
+        """Wire ``ctx.nudge`` → AutoNudge: arm a same-session monitoring loop on
+        the workflow's ORIGINATING session (dashboard slot / channel).
+
+        SECURITY: ``session_key`` is caller-influenced (workflow endpoints derive
+        it from the ``X-Session-Key`` header), so this MUST NOT arm a loop
+        directly — it delegates to the gateway-injected ``nudge_authorizer``,
+        which runs the same authorize_and_add_nudge chokepoint the REST handler
+        uses (dashboard-slot existence, Slack routability, Discord allowlist +
+        current-session match, 8000-char limit, SEL audit). Without that, a
+        workflow could spoof another session's key and mint a loop on it.
+
+        VISIBILITY: every outcome — armed, skipped, denied, failed — is reported
+        through ``notify`` (the runner passes a ctx-log emitter), so the run's
+        event stream shows what actually happened instead of a silent no-op the
+        user mistakes for an armed monitor. Best-effort semantics otherwise
+        unchanged: a monitoring convenience never crashes a completed
+        orchestration.
+
+        Called synchronously from inside the running workflow coroutine, so the
+        async authorizer is scheduled as a task on the live loop (a strong ref is
+        kept so it isn't GC'd).
+        """
+
+        def _say(msg: str) -> None:
+            if notify is None:
+                return
+            try:
+                notify(msg)
+            except Exception:  # noqa: BLE001 - visibility must never break the run
+                logger.debug("ctx.nudge notify failed", exc_info=True)
+
+        authorizer = self._nudge_authorizer
+        if authorizer is None:
+            logger.warning("workflow ctx.nudge skipped: no nudge authorizer wired")
+            _say("ctx.nudge NOT armed: no nudge authorizer wired in this runtime")
+            return
+        binding = autonudge.binding_key_for(session_key)
+        if not binding:
+            logger.warning(
+                "workflow ctx.nudge skipped: session %r is not nudge-able", session_key
+            )
+            _say(
+                f"ctx.nudge NOT armed: originating session {session_key!r} is not "
+                "nudge-able (only dashboard/Slack/Discord sessions can be nudged)"
+            )
+            return
+
+        async def _arm() -> None:
+            try:
+                error = await authorizer(
+                    slot_key=binding,
+                    message=message,
+                    idle_secs=idle_secs,
+                    max_cycles=max_cycles,
+                )
+            except asyncio.CancelledError:
+                # Drain timeout at run teardown cancelled this wrapper while the
+                # underlying (shielded, service-supervised) add may still land.
+                # Record the indeterminacy in the run BEFORE the terminal event
+                # so the stream never implies a resolved outcome it doesn't have.
+                _say(
+                    "ctx.nudge outcome undetermined: the run ended before arming "
+                    "completed — the loop may still arm (check the AutoNudge panel)"
+                )
+                raise
+            except Exception:  # noqa: BLE001 - arming must never break the run
+                logger.warning("workflow ctx.nudge: failed to arm loop", exc_info=True)
+                _say("ctx.nudge NOT armed: internal error while arming the loop")
+                return
+            if error:
+                _say(f"ctx.nudge NOT armed: {error}")
+            else:
+                _say(
+                    f"ctx.nudge armed: monitoring loop on this session "
+                    f"(idle {int(idle_secs)}s"
+                    + (f", max {int(max_cycles)} cycles" if max_cycles else "")
+                    + ")"
+                )
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:  # pragma: no cover - workflows always run in a loop
+            logger.warning("workflow ctx.nudge skipped: no running event loop")
+            return
+        task = loop.create_task(_arm())
+        # Retain a strong ref until completion (asyncio may GC a bare task),
+        # bucketed PER RUN so the run's teardown can drain its own arms before
+        # the terminal transition (outcome logs land in the run record, and no
+        # arm outlives the run / gateway shutdown unsupervised).
+        bucket = self._nudge_tasks.setdefault(run_id, set())
+        bucket.add(task)
+        task.add_done_callback(bucket.discard)
+
+    async def _drain_nudge_tasks(self, run_id: str, timeout: float = 10.0) -> None:
+        """Await the run's in-flight ctx.nudge arms before its terminal transition.
+
+        Bounded: a stuck arm is cancelled after ``timeout`` so run teardown can
+        never wedge. Draining (rather than cancelling outright) is deliberate —
+        the arm is authorize+add with shield-protected persistence, so awaiting
+        yields a definite, SEL-audited, run-logged outcome, while cancelling
+        mid-authorize would reintroduce partial-arm ambiguity. A cancelled run
+        whose arm already landed keeps the documented "mutation may have already
+        landed" semantics.
+        """
+        tasks = self._nudge_tasks.pop(run_id, set())
+        pending = [t for t in tasks if not t.done()]
+        if not pending:
+            return
+        _done, still_pending = await asyncio.wait(pending, timeout=timeout)
+        for t in still_pending:  # pragma: no cover - defensive bound
+            t.cancel()
+            logger.warning("workflow %s: cancelled stuck ctx.nudge arm at teardown", run_id)
+        if still_pending:
+            # Let the cancelled wrappers run their CancelledError handlers NOW so
+            # their "outcome undetermined" events land BEFORE the terminal event.
+            # The underlying shielded add stays supervised by AutoNudgeService.
+            await asyncio.gather(*still_pending, return_exceptions=True)
+
     def _runner(self, run_id: str) -> WorkflowRunner:
+        # M4 native ports wired for every run of this service. ``nudge`` bridges
+        # ``ctx.nudge`` to AutoNudge (the port is session-agnostic — the runner
+        # supplies each run's originating session_key at call time; the closure
+        # binds run_id so arms are tracked per run and drained at teardown).
+        def _nudge(**kw: Any) -> None:
+            self._nudge_port(run_id=run_id, **kw)
+
+        ports = {"nudge": _nudge}
+
+        async def _drain() -> None:
+            # Awaited by the runner BEFORE each terminal event: nudge outcome
+            # logs land inside the stream contract (terminal events are last).
+            await self._drain_nudge_tasks(run_id)
+
         if self._pool_agents:
             try:
                 # Size the warm pool to the run's fan-out cap so a fully-parallel
@@ -191,10 +344,19 @@ class WorkflowService:
                     max_workers=workers,
                     max_starting=min(workers, 2),
                 )
+
+                async def _teardown_pooled() -> None:
+                    # Safety net (drain is a no-op if pre_terminal already ran;
+                    # covers pre-exec failure paths), then release the pool.
+                    await self._drain_nudge_tasks(run_id)
+                    await pool.shutdown()
+
                 return WorkflowRunner(
                     agent_fn=agent_fn,
                     concurrency=self._concurrency,
-                    on_complete=pool.shutdown,
+                    ports=ports,
+                    pre_terminal=_drain,
+                    on_complete=_teardown_pooled,
                 )
             except Exception:  # noqa: BLE001 - never let pooling break run start
                 logger.warning(
@@ -203,7 +365,17 @@ class WorkflowService:
                     exc_info=True,
                 )
         agent_fn = build_agent_fn(self._sessions, run_id=run_id)
-        return WorkflowRunner(agent_fn=agent_fn, concurrency=self._concurrency)
+
+        async def _teardown() -> None:
+            await self._drain_nudge_tasks(run_id)
+
+        return WorkflowRunner(
+            agent_fn=agent_fn,
+            concurrency=self._concurrency,
+            ports=ports,
+            pre_terminal=_drain,
+            on_complete=_teardown,
+        )
 
     async def author(
         self,

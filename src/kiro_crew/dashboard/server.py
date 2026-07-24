@@ -24,6 +24,8 @@ from kiro_crew.apps.hooks_integration import (
     on_gateway_startup,
 )
 from kiro_crew.apps.manager import cleanup_migrated_builtin, register_builtin_apps
+from kiro_crew.autonudge import get_instance as _autonudge_get
+from kiro_crew.autonudge_authz import authorize_and_add_nudge
 from kiro_crew.browser.setup import migrate_owned_playwright_registration
 from kiro_crew.config import config_dir
 from kiro_crew.config.loader import KiroCrewConfig
@@ -1124,12 +1126,36 @@ async def start_dashboard(
                 logger.debug("workflow on_done injection failed", exc_info=True)
 
         _wf_concurrency = 4
+
+        async def _wf_nudge_authorizer(
+            *, slot_key: str, message: str, idle_secs: int, max_cycles: int
+        ) -> str | None:
+            """Route a workflow ``ctx.nudge`` through the SHARED authorize/audit
+            chokepoint before arming an AutoNudge loop — same ownership/allowlist
+            checks, message limit, and SEL audit as ``POST /api/autonudge`` (so a
+            caller-influenced session key can't spoof another session's loop).
+            Returns the rejection reason (or None on success) so the workflow
+            port can surface the outcome in the run's event stream."""
+            _loop, error, _status = await authorize_and_add_nudge(
+                svc=_autonudge_get(),
+                state=state,
+                slot_key=slot_key,
+                message=message,
+                idle_secs=idle_secs,
+                max_cycles=max_cycles,
+                source="workflow",
+            )
+            if error is not None:
+                logger.info("workflow ctx.nudge not armed for %s: %s", slot_key, error)
+            return error
+
         state.workflow_service = WorkflowService(
             sessions=sessions,
             on_done=_wf_on_done,
             on_event=_wf_on_event,
             now_fn=lambda: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             concurrency=_wf_concurrency,
+            nudge_authorizer=_wf_nudge_authorizer,
         )
         logger.info(
             "WorkflowService ready (dynamic workflows, max parallel agents=%s)", _wf_concurrency

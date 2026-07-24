@@ -62,8 +62,14 @@ async def test_d1_cron_port_invoked() -> None:
 async def test_d2_nudge_port_invoked() -> None:
     seen = {}
 
-    def nudge_fn(*, idle_secs, message, max_cycles):
-        seen.update(idle_secs=idle_secs, message=message, max_cycles=max_cycles)
+    def nudge_fn(*, session_key, idle_secs, message, max_cycles, notify=None):
+        seen.update(
+            session_key=session_key,
+            idle_secs=idle_secs,
+            message=message,
+            max_cycles=max_cycles,
+            has_notify=notify is not None,
+        )
 
     script = (
         'META = {"name": "n"}\n'
@@ -71,9 +77,19 @@ async def test_d2_nudge_port_invoked() -> None:
         "    ctx.nudge(idle_secs=120, message='still there?')\n"
         "    return 'ok'\n"
     )
-    res = await _runner({"nudge": nudge_fn}).run(script, run_id="wf_n", now=NOW)
+    res = await _runner({"nudge": nudge_fn}).run(
+        script, run_id="wf_n", now=NOW, session_key="dashboard:chat-1-9"
+    )
     assert res.ok, res.error
-    assert seen == {"idle_secs": 120, "message": "still there?", "max_cycles": 0}
+    # The run's originating session_key is threaded through to the port, along
+    # with a notify emitter so outcomes surface in the run event stream.
+    assert seen == {
+        "session_key": "dashboard:chat-1-9",
+        "idle_secs": 120,
+        "message": "still there?",
+        "max_cycles": 0,
+        "has_notify": True,
+    }
 
 
 # --------------------------------------------------------------------------- #

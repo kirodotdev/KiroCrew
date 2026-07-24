@@ -149,6 +149,99 @@ CTX_CONTEXT_MANAGER_METHODS = frozenset({"phase", "log", "nudge"})
 # attribute 'get'`` / ``not subscriptable`` class of runtime crash.
 NULLABLE_CTX_METHODS = frozenset({"agent", "parallel", "pipeline", "workflow", "approve"})
 
+# The ctx surface implemented directly on the run context with NO host wiring
+# required — always available in every runtime. Everything else (``nudge``,
+# ``approve``, ``send_slack``, ``send_message``, ``cron``, ``memory``, ``learn``,
+# ``knowledge``, and the M5 ``workflow``) needs a host-wired port and is only
+# legal when the executing runner actually wires it: the runner passes its
+# wired-port names to ``check_ctx_surface`` at run time (enforcement layer), so
+# a script referencing an unwired primitive fails validation with a clear error
+# instead of crashing mid-run with ``RuntimeError("... no ... port wired")``.
+CORE_CTX_SURFACE = frozenset(
+    {
+        "agent",
+        "parallel",
+        "pipeline",
+        "phase",
+        "log",
+        "budget",
+        "args",
+        "now",
+        "owner_dm",
+        "agent_results",
+    }
+)
+
+
+def check_ctx_surface(source: str, available: "frozenset[str] | set[str]") -> list[str]:
+    """Return an error per reference to an unavailable attribute on the WORKFLOW
+    CONTEXT parameter — SCOPE-AWARE: a shadowed ``ctx`` name is not the context.
+
+    The host-aware half of the advertised-but-unwired guard: static ``validate``
+    cannot know which ports a given runtime wires, so the runner calls this at
+    the exec boundary with ``CORE_CTX_SURFACE | <its wired port names>``. Only
+    references bound to the ``workflow`` entrypoint's context parameter are
+    checked; a helper whose OWN parameter or local happens to share the name
+    (e.g. ``def read(ctx): return ctx.get("key")`` called with a dict) is out of
+    scope — flagging it would retroactively reject previously-valid scripts.
+    Helpers that receive the REAL context are under-enforced by design: their
+    misuse still fails at run time with the explicit unwired-port RuntimeError.
+    A syntactically invalid source returns ``[]`` — ``validate`` rejects it.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return []
+    entry = next(
+        (
+            n
+            for n in tree.body
+            if isinstance(n, (ast.AsyncFunctionDef, ast.FunctionDef)) and n.name == ENTRYPOINT
+        ),
+        None,
+    )
+    if entry is None or not entry.args.args:
+        return []
+    ctx_name = entry.args.args[0].arg
+    errors: list[str] = []
+    seen: set[tuple[str, int]] = set()
+
+    def _shadows(node: ast.AST) -> bool:
+        """True when *node* (a function/lambda) rebinds ``ctx_name``."""
+        args = node.args  # type: ignore[attr-defined]
+        params = list(args.args) + list(args.posonlyargs) + list(args.kwonlyargs)
+        if args.vararg is not None:
+            params.append(args.vararg)
+        if args.kwarg is not None:
+            params.append(args.kwarg)
+        return any(a.arg == ctx_name for a in params)
+
+    def _walk(node: ast.AST) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                if _shadows(child):
+                    continue  # ctx is rebound inside — not the workflow context
+                _walk(child)
+                continue
+            if (
+                isinstance(child, ast.Attribute)
+                and isinstance(child.value, ast.Name)
+                and child.value.id == ctx_name
+                and child.attr not in available
+            ):
+                key = (child.attr, child.lineno)
+                if key not in seen:
+                    seen.add(key)
+                    errors.append(
+                        f"line {child.lineno}: ctx.{child.attr} is not available in this "
+                        f"runtime (no wired port) — available ctx surface: "
+                        f"{', '.join(sorted(available))}"
+                    )
+            _walk(child)
+
+    _walk(entry)
+    return errors
+
 
 @dataclass
 class ValidationResult:

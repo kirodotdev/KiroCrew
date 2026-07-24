@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
+from kiro_crew import autonudge_authz as _autonudge_mod
 from kiro_crew.autonudge import AutoNudgeService, NudgeLoop
-from kiro_crew.dashboard.handlers import autonudge as _autonudge_mod
 from kiro_crew.dashboard.handlers.autonudge import render_nudge_message
 
 
@@ -183,6 +183,7 @@ async def test_skip_when_delivery_returns_false(svc, monkeypatch):
 
     import kiro_crew.autonudge as _an
 
+    real_sleep = asyncio.sleep  # capture before patching
     sleep_calls: list[float] = []
     gate = asyncio.Event()  # never set — blocks the re-armed timer's sleep
 
@@ -203,16 +204,20 @@ async def test_skip_when_delivery_returns_false(svc, monkeypatch):
     svc._on_fire = on_fire_skip
     await svc.start()
     loop = await svc.add(slot_key="chat-1-123", message="go", idle_secs=60)
-    t1 = svc._timers[loop.id]
-    await t1
+    # add() now yields internally (offloaded persist), so the first timer cycle
+    # may complete before add() returns — wait for the fire + self-heal re-arm
+    # instead of capturing/awaiting the first timer task.
+    for _ in range(500):
+        if len(fired) >= 1 and len(sleep_calls) >= 2:
+            break
+        await real_sleep(0.005)
     # Callback ran, delivery skipped → cycle_count must not bump, loop alive.
     assert len(fired) == 1
     assert svc._loops[loop.id].cycle_count == 0
     assert svc._loops[loop.id].last_fire_ts == 0.0
     assert svc._loops[loop.id].active is True
-    # Self-heal: a NEW timer task is armed (not the completed t1).
+    # Self-heal: a NEW timer is armed and parked on the gated backoff sleep.
     assert loop.id in svc._timers
-    assert svc._timers[loop.id] is not t1
     assert not svc._timers[loop.id].done()
     # First sleep used the full idle; the re-arm used the shorter backoff.
     assert sleep_calls[0] == 60
@@ -229,6 +234,7 @@ async def test_fire_callback_exception_does_not_deactivate(svc, monkeypatch):
 
     import kiro_crew.autonudge as _an
 
+    real_sleep = asyncio.sleep  # capture before patching
     sleep_calls: list[float] = []
     gate = asyncio.Event()  # never set — blocks the re-armed timer's sleep
 
@@ -246,14 +252,17 @@ async def test_fire_callback_exception_does_not_deactivate(svc, monkeypatch):
     svc._on_fire = on_fire_raise
     await svc.start()
     loop = await svc.add(slot_key="chat-1-123", message="go", idle_secs=60)
-    t1 = svc._timers[loop.id]
-    await t1
+    # First cycle may complete before add() returns (offloaded persist yields);
+    # wait for the fire + self-heal re-arm to be observable.
+    for _ in range(500):
+        if len(sleep_calls) >= 2:
+            break
+        await real_sleep(0.005)
     refreshed = svc._loops[loop.id]
     assert refreshed.cycle_count == 0  # exception treated as not-delivered
     assert refreshed.active is True  # loop still alive
-    # Self-heal: timer re-armed with a fresh task (not the completed t1).
+    # Self-heal: timer re-armed and parked on the gated backoff sleep.
     assert loop.id in svc._timers
-    assert svc._timers[loop.id] is not t1
     assert not svc._timers[loop.id].done()
     svc._cancel_timer(loop.id)  # cleanup
 
@@ -392,8 +401,11 @@ async def test_failure_streak_resets_on_delivery(svc, monkeypatch):
 async def test_fire_removed_loop_does_not_rearm_orphan(svc, monkeypatch):
     """If _on_fire removes the loop (e.g. slot missing) and returns False, the
     re-arm path must NOT resurrect it with a fresh timer (orphan)."""
+    import asyncio as _asyncio
+
     import kiro_crew.autonudge as _an
 
+    real_sleep = _asyncio.sleep  # capture before patching
     sleep_calls: list[float] = []
 
     async def _sleep(secs):
@@ -402,14 +414,22 @@ async def test_fire_removed_loop_does_not_rearm_orphan(svc, monkeypatch):
 
     monkeypatch.setattr(_an.asyncio, "sleep", _sleep)
 
+    removed = _asyncio.Event()
+
     async def on_fire_self_remove(loop):
         await svc.remove(loop.id)  # slot gone — fire path drops the loop
+        removed.set()
         return False
 
     svc._on_fire = on_fire_self_remove
     await svc.start()
     loop = await svc.add(slot_key="chat-1-123", message="go", idle_secs=60)
-    await svc._timers[loop.id]
+    # First cycle may complete before add() returns (offloaded persist yields);
+    # wait for the fire-path removal instead of awaiting the timer task.
+    for _ in range(500):
+        if removed.is_set() and loop.id not in svc._timers:
+            break
+        await real_sleep(0.005)
     # Loop was removed by the fire path and must stay gone — no resurrection.
     assert loop.id not in svc._loops
     assert loop.id not in svc._timers

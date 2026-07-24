@@ -65,6 +65,27 @@ def is_channel_key(key: str) -> bool:
     return key.startswith(_CHANNEL_KEY_PREFIXES)
 
 
+def binding_key_for(session_key: str) -> str | None:
+    """Map a session key to its AutoNudge binding (slot) key, or ``None`` if the
+    session is not nudge-able.
+
+    ``dashboard:chat-N-TS`` → bare slot key ``chat-N-TS`` (the autonudge layer
+    keys dashboard loops on the bare slot key); ``slack:``/``discord:`` session
+    keys pass through unchanged (channel-bound loops). Anything else
+    (``cron:``, ``hook:``, ``subagent:`` ...) is not a nudge-able session.
+
+    Single source of truth shared by the ``monitor_start`` MCP tool and the
+    workflow ``ctx.nudge`` port so both agree on what "nudge-able" means.
+    """
+    if not session_key:
+        return None
+    if session_key.startswith("dashboard:"):
+        return session_key.split(":", 1)[1]
+    if session_key.startswith(("slack:", "discord:")):
+        return session_key
+    return None
+
+
 def enabled() -> bool:
     """Feature flag — on by default. Set ``KIROCREW_AUTONUDGE=0`` to disable."""
     return os.environ.get("KIROCREW_AUTONUDGE", "1").lower() not in ("0", "false", "no")
@@ -139,6 +160,10 @@ class AutoNudgeService:
         # backoff + once-per-streak failure logging). Not persisted; resets on
         # a delivered fire, on removal, and on restart.
         self._rearm_fail_count: dict[str, int] = {}
+        # Strong refs to in-flight shielded add() tasks: keeps a detached
+        # mutation supervised (no GC, failures logged) even when every awaiting
+        # caller was cancelled. Discarded on completion.
+        self._inflight_adds: set = set()
         self._observers: list[Callable[[str, NudgeLoop | None], None]] = []
         self._lock = asyncio.Lock()
 
@@ -156,23 +181,30 @@ class AutoNudgeService:
             self._loops[loop.id] = loop
         logger.info("AutoNudge: loaded %d loops", len(self._loops))
 
-    def _save(self) -> None:
+    def _serialize_state(self) -> dict:
+        """Snapshot the store payload ON THE CALLER'S THREAD.
+
+        Loop state is mutated only under the service lock on the event loop, so
+        the serialization must happen there too — a worker thread iterating
+        ``self._loops`` concurrently with a mutation would race. The returned
+        payload is immutable-by-convention and safe to hand to an executor.
+        """
+        return {
+            "version": _STORE_VERSION,
+            "loops": [asdict(lp) for lp in self._loops.values()],
+        }
+
+    def _write_state(self, payload: dict) -> None:
         # Atomic write: serialize to a temp file in the same dir, fsync, then
         # os.replace() onto the target path. Eliminates the truncate-before-
         # flock race that plain open(path, "w") has — readers always see either
         # the old complete file or the new complete file, never a partial one.
+        # Blocking (fsync) — async callers offload this to an executor.
         self._path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp_path = tempfile.mkstemp(dir=self._path.parent, suffix=".tmp")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                json.dump(
-                    {
-                        "version": _STORE_VERSION,
-                        "loops": [asdict(lp) for lp in self._loops.values()],
-                    },
-                    fh,
-                    indent=2,
-                )
+                json.dump(payload, fh, indent=2)
                 fh.flush()
                 os.fsync(fh.fileno())
             os.replace(tmp_path, self._path)
@@ -180,6 +212,9 @@ class AutoNudgeService:
             with contextlib.suppress(OSError):
                 os.unlink(tmp_path)
             raise
+
+    def _save(self) -> None:
+        self._write_state(self._serialize_state())
 
     # ── Observer hook (for WS broadcasts) ──
 
@@ -226,12 +261,54 @@ class AutoNudgeService:
         max_cycles: int = 0,
         stop_sentinel_path: str = "",
     ) -> NudgeLoop:
+        # CANCELLATION SAFETY: the mutate+persist runs as a SHIELDED task. If
+        # the awaiting caller is cancelled mid-write, a bare await would release
+        # ``_lock`` while the executor write is still running — a subsequent
+        # add/update could persist newer state first and then be clobbered by
+        # this operation's stale snapshot (lost update after restart). Shielding
+        # keeps the inner task (and the lock) alive until the write completes,
+        # so writes remain strictly serialized; the cancelled caller still sees
+        # CancelledError, with the arm possibly landed (same "mutation may have
+        # already landed" semantics as other cancellation-uncertain mutations).
+        # The inner task is retained in ``_inflight_adds`` (discarded when done)
+        # so it stays SUPERVISED — strongly referenced and completion-logged —
+        # even if every awaiting caller has been cancelled.
+        inner: "asyncio.Task[NudgeLoop]" = asyncio.ensure_future(
+            self._add_locked(
+                slot_key,
+                message,
+                idle_secs=idle_secs,
+                max_cycles=max_cycles,
+                stop_sentinel_path=stop_sentinel_path,
+            )
+        )
+        self._inflight_adds.add(inner)
+
+        def _finish(t: "asyncio.Task[NudgeLoop]") -> None:
+            self._inflight_adds.discard(t)
+            if not t.cancelled() and t.exception() is not None:
+                logger.warning("AutoNudge: detached add() failed", exc_info=t.exception())
+
+        inner.add_done_callback(_finish)
+        return await asyncio.shield(inner)
+
+    async def _add_locked(
+        self,
+        slot_key: str,
+        message: str,
+        *,
+        idle_secs: int,
+        max_cycles: int,
+        stop_sentinel_path: str,
+    ) -> NudgeLoop:
         idle_secs = max(_MIN_IDLE_SECS, min(_MAX_IDLE_SECS, int(idle_secs)))
         async with self._lock:
             # One loop per slot — replace any existing loop on this slot.
+            # persist=False: the offloaded write below persists the combined
+            # removal+add atomically, avoiding a duplicate blocking save here.
             existing = self._find_by_slot(slot_key)
             if existing:
-                self.remove_sync(existing.id)
+                self.remove_sync(existing.id, persist=False)
             loop = NudgeLoop(
                 id=uuid.uuid4().hex[:8],
                 slot_key=slot_key,
@@ -242,7 +319,15 @@ class AutoNudgeService:
                 stop_sentinel_path=stop_sentinel_path,
             )
             self._loops[loop.id] = loop
-            self._save()
+            # Persist WITHOUT blocking the event loop (no-blocking-call rule:
+            # _write_state fsyncs, and a wedged disk must not freeze the
+            # gateway). Snapshot under the lock (mutation safety), write on a
+            # worker thread, and await it so a persistence failure still
+            # propagates to the caller before the loop is reported armed.
+            payload = self._serialize_state()
+            await asyncio.get_running_loop().run_in_executor(
+                None, self._write_state, payload
+            )
             self._arm_timer(loop)
         self._emit("added", loop)
         logger.info("AutoNudge: added loop %s on slot %s (idle=%ds)", loop.id, slot_key, idle_secs)
@@ -277,13 +362,16 @@ class AutoNudgeService:
         self._emit("updated", loop)
         return loop
 
-    def remove_sync(self, loop_id: str) -> None:
+    def remove_sync(self, loop_id: str, *, persist: bool = True) -> None:
+        """Remove a loop. ``persist=False`` skips the blocking save — used by
+        async callers that snapshot+offload the write themselves right after."""
         loop = self._loops.pop(loop_id, None)
         if loop is None:
             return
         self._cancel_timer(loop_id)
         self._rearm_fail_count.pop(loop_id, None)
-        self._save()
+        if persist:
+            self._save()
         self._emit("removed", loop)
 
     async def remove(self, loop_id: str) -> None:

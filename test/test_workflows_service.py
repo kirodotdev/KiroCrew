@@ -413,8 +413,13 @@ async def test_default_service_pools_agents() -> None:
 
 
 async def test_pool_agents_false_uses_per_call_sessions() -> None:
-    """Opt-out restores the original per-call path (no pool teardown wired)."""
+    """Opt-out restores the per-call agent path. Every runner still carries an
+    ``on_complete`` teardown (it drains the run's ctx.nudge arms before the
+    terminal transition) — pool_agents only controls the warm-pool wiring."""
     svc = WorkflowService(sessions=FakeSessions([]), pool_agents=False)
     assert svc._pool_agents is False
     runner = svc._runner("wf_probe")
-    assert runner._on_complete is None
+    # Nudge-drain teardown is wired even without a pool; it must be awaitable
+    # and a no-op when the run armed no nudges.
+    assert runner._on_complete is not None
+    await runner._on_complete()  # no nudge tasks → returns immediately

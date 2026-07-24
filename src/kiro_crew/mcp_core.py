@@ -38,6 +38,7 @@ from urllib.parse import quote, urlencode, urlparse
 from kiro_crew import platform_compat
 from kiro_crew.agent_discovery import list_agents
 from kiro_crew.artifacts import _infer_kind
+from kiro_crew.autonudge import binding_key_for
 from kiro_crew.config.loader import KiroCrewConfig, config_dir, outbox_dir
 from kiro_crew.context_management import COMPLETION_KEEP_DEFAULT_CHARS, summarize_result
 from kiro_crew.dashboard.origin import parse_dashboard_url
@@ -2273,12 +2274,11 @@ def _autonudge_binding_key(sk: str) -> str | None:
     layer keys dashboard loops on the bare slot key); ``slack:``/``discord:``
     session keys pass through unchanged (channel-bound loops). Anything else
     (``cron:``, ``hook:``, ``subagent:`` ...) is not a nudge-able session.
+
+    Delegates to ``autonudge.binding_key_for`` so the MCP tool and the workflow
+    ``ctx.nudge`` port share one definition of "nudge-able".
     """
-    if sk.startswith("dashboard:"):
-        return sk.split(":", 1)[1]
-    if sk.startswith(("slack:", "discord:")):
-        return sk
-    return None
+    return binding_key_for(sk)
 
 
 def _artifact_ref_link(slug: str, name: str) -> str:
