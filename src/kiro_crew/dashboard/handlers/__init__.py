@@ -174,6 +174,9 @@ from kiro_crew.dashboard.handlers.mcp import (  # noqa: E402, F401
     api_mcp_toggle_all,
     api_mcp_toggle_tool,
 )
+from kiro_crew.dashboard.handlers.mcp_apps import (  # noqa: E402, F401
+    api_mcp_apps_call,
+)
 from kiro_crew.dashboard.handlers.memory import (  # noqa: E402, F401
     _get_vector_store,
     _redact_memory_field,

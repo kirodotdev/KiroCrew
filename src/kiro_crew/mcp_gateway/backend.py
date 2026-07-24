@@ -14,6 +14,8 @@ Milestone 3 when the full bridge ships.
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import contextlib
 import json
 import logging
@@ -31,6 +33,12 @@ from kiro_crew.mcp_caller import (
     CALLER_META_KEY,
     CallerContext,
     build_caller_meta,
+)
+from kiro_crew.mcp_gateway.apps import (
+    append_marker,
+    extract_declared_ui_uris,
+    extract_ui_resource_uri,
+    write_spool,
 )
 from kiro_crew.mcp_gateway.pool import READ_BUFFER_LIMIT_BYTES, RESPONSE_SPILL_THRESHOLD_BYTES
 from kiro_crew.mcp_gateway.spill import maybe_spill_response
@@ -189,6 +197,21 @@ class _PendingRequest:
     # server-emitted ``notifications/progress`` can be routed back to the
     # owning stub instead of broadcast across co-pooled tenants.
     progress_token: Any = None
+    # MCP Apps: captured at forward time so the response-interception path can
+    # populate the spool record without the original request params (which are
+    # not otherwise retained). ``session_key`` is the authoritative caller id;
+    # ``tool_name`` is ``params.name`` for a tools/call. Both empty for
+    # non-tools/call requests and gateway-internal sentinels.
+    session_key: str = ""
+    tool_name: str = ""
+    # The tools/call ``params.arguments`` object, captured so an intercepted
+    # app render can forward the ORIGINATING inputs to the app (SEP-1865
+    # ``ui/notifications/tool-input``). ``None`` for non-tools/call requests.
+    tool_arguments: Optional[dict] = None
+    # Set only on the gateway-originated ``resources/read`` pending (stub_uuid
+    # == ``_APPS_STUB_SENTINEL``): the future the stdout pump resolves with the
+    # backend's resources/read response so the parked fetch coroutine wakes.
+    apps_future: Optional["asyncio.Future[dict[str, Any]]"] = None
 
 
 def _strip_caller_meta(msg: dict[str, Any]) -> dict[str, Any]:
@@ -223,6 +246,66 @@ def _strip_caller_meta(msg: dict[str, Any]) -> dict[str, Any]:
         params["_meta"] = meta
     else:
         del params["_meta"]
+    out["params"] = params
+    return out
+
+
+# MCP Apps (SEP-1865): extension key + MIME profile the gateway advertises to
+# backends when the feature flag is on. kiro-cli sends empty client
+# capabilities, so UI-enabled tools would otherwise degrade to text-only.
+# The gateway is the actual Apps host (it fetches/renders the ui:// resource
+# out-of-band), so it — not kiro-cli — advertises the capability.
+MCP_APPS_EXTENSION_KEY = "io.modelcontextprotocol/ui"
+MCP_APPS_MIME_TYPE = "text/html;profile=mcp-app"
+MCP_APPS_ENV_FLAG = "KIROCREW_MCP_APPS"
+
+# Sentinel ``stub_uuid`` for a gateway-originated ``resources/read`` issued to
+# fetch a ui:// app resource. Its response is routed to the parked future in
+# :meth:`Backend._read_ui_resource` instead of any stub — mirrors the
+# ``"__init__"`` sentinel used for the gateway-driven initialize handshake.
+_APPS_STUB_SENTINEL = "__apps__"
+
+# Deadline for the out-of-band ``resources/read`` round-trip. On timeout the
+# original tools/call response is delivered unmodified — the app render is
+# best-effort and MUST NOT wedge or drop the tool result.
+_APPS_RESOURCE_READ_TIMEOUT_SECS = 10.0
+
+
+def _mcp_apps_enabled() -> bool:
+    """Feature gate for MCP Apps capability injection (default OFF).
+
+    Read per-call (not cached at import) so tests and the gateway can toggle
+    without a daemon restart.
+    """
+    return os.environ.get(MCP_APPS_ENV_FLAG, "").strip().lower() in ("1", "true", "yes")
+
+
+def _inject_client_extensions(msg: dict[str, Any]) -> dict[str, Any]:
+    """Return ``msg`` with ``capabilities.extensions["io.modelcontextprotocol/ui"]``
+    deep-merged into an ``initialize`` frame — or ``msg`` unchanged when the
+    MCP Apps flag is off or the frame is not a well-formed initialize.
+
+    Copy discipline mirrors :func:`_strip_caller_meta`: every dict on the
+    mutated path (``params`` → ``capabilities`` → ``extensions``) is shallow-
+    copied before mutation so the stub's captured frame is never aliased.
+    Pre-existing extension entries are preserved; an existing ui-extension
+    entry is left untouched (the caller declared it deliberately).
+    """
+    if not _mcp_apps_enabled():
+        return msg
+    params = msg.get("params")
+    if not isinstance(params, dict):
+        return msg
+    out = dict(msg)
+    params = dict(params)
+    caps_raw = params.get("capabilities")
+    caps = dict(caps_raw) if isinstance(caps_raw, dict) else {}
+    ext_raw = caps.get("extensions")
+    extensions = dict(ext_raw) if isinstance(ext_raw, dict) else {}
+    if MCP_APPS_EXTENSION_KEY not in extensions:
+        extensions[MCP_APPS_EXTENSION_KEY] = {"mimeTypes": [MCP_APPS_MIME_TYPE]}
+    caps["extensions"] = extensions
+    params["capabilities"] = caps
     out["params"] = params
     return out
 
@@ -341,6 +424,25 @@ class Backend:
     # Tracked (with a discard done-callback) so a task is not GC'd before it
     # runs; still-pending emits are simply dropped on shutdown (best-effort).
     _metric_tasks: set["asyncio.Task[None]"] = field(default_factory=set)
+
+    # Background tasks driving an MCP Apps ui:// fetch + delayed delivery (one
+    # per intercepted tools/call). Tracked (discard-on-done) so a task is not
+    # GC'd mid-flight; still-pending ones are dropped on shutdown (best-effort).
+    _apps_tasks: set["asyncio.Task[None]"] = field(default_factory=set)
+    # Tool-name -> declared ui:// resource uri, harvested from every
+    # tools/list response (SEP-1865's primary association form lives on the
+    # tool DECLARATION; some servers omit it from call results). Consulted as
+    # a fallback by _maybe_intercept_ui_result. Backend-scoped: entries are
+    # only ever produced by THIS backend's own tools/list responses.
+    #
+    # GLOBAL (not per-session) by design: the tool→ui:// association is a
+    # STATIC property of the server's tool definition — identical for every
+    # caller. kiro-cli harvests it on the post-initialize tools/list (which
+    # carries no per-turn caller) while the eventual tools/call carries a later
+    # session identity, so harvest-session and call-session legitimately differ
+    # (see test_declared_only_server_still_intercepted). Keying this map per
+    # session would drop the association and break rendering.
+    _apps_declared_uris: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         # Serialize concurrent writes to the SHARED backend stdin. Every
@@ -484,15 +586,27 @@ class Backend:
                 msg = dict(msg)  # shallow copy — we mutate id + maybe _meta
                 msg["id"] = fid
                 progress_token = None
+                tool_name = ""
+                tool_arguments = None
                 _params = msg.get("params")
                 if isinstance(_params, dict):
                     _meta = _params.get("_meta")
                     if isinstance(_meta, dict):
                         progress_token = _meta.get("progressToken")
+                    if method == "tools/call":
+                        _name = _params.get("name")
+                        if isinstance(_name, str):
+                            tool_name = _name
+                        _args = _params.get("arguments")
+                        if isinstance(_args, dict):
+                            tool_arguments = _args
                 self._pending_requests[fid] = _PendingRequest(
                     stub_uuid=stub_uuid, original_id=orig_id, method=str(method or ""),
                     t_start_ms=time.monotonic() * 1000.0,
                     progress_token=progress_token,
+                    session_key=(caller.session_key if caller is not None else ""),
+                    tool_name=tool_name,
+                    tool_arguments=tool_arguments,
                 )
             elif method == "notifications/cancelled":
                 # A cancellation is a notification (method, no top-level id);
@@ -565,6 +679,10 @@ class Backend:
         # forwarded request, but ``initialize`` returns early through this
         # path — without this a stub could forge _meta.kirocrew.caller at init.
         forward_msg = _strip_caller_meta(msg)
+        # MCP Apps: advertise the ui extension to the backend (no-op unless
+        # the KIROCREW_MCP_APPS flag is on). Must follow the strip so the
+        # injected frame is our copy, never the stub's.
+        forward_msg = _inject_client_extensions(forward_msg)
         forward_msg["id"] = fid
         self.touch()
         try:
@@ -637,6 +755,9 @@ class Backend:
             # taken before forward_from_stub's strip, so it can still carry a
             # forged flat CALLER_META_KEY.
             forward_msg = _strip_caller_meta(init_msg)
+            # MCP Apps: same injection as _handle_initialize so a respawned
+            # backend sees the identical ui capability (flag-gated no-op).
+            forward_msg = _inject_client_extensions(forward_msg)
             forward_msg["id"] = fid
             self.touch()
             try:
@@ -694,6 +815,14 @@ class Backend:
         async with self._inbox_lock:
             inboxes = dict(self._stub_inboxes)
         for fid, pending in list(self._pending_requests.items()):
+            if pending.stub_uuid == _APPS_STUB_SENTINEL:
+                # Wake a parked ui:// fetch immediately so its coroutine falls
+                # back to delivering the original response rather than blocking
+                # for the full resources/read timeout after the backend died.
+                fut = pending.apps_future
+                if fut is not None and not fut.done():
+                    fut.set_exception(BackendGone(f"backend gone: {reason}"))
+                continue
             if pending.stub_uuid == "__init__":
                 # Each queued initialize waiter gets its own rejection so
                 # the originating stub sees an error against its own id.
@@ -858,6 +987,22 @@ class Backend:
                 })
             if pending.stub_uuid == "__init__":
                 await self._on_upstream_initialize(msg)
+                return
+            if pending.stub_uuid == _APPS_STUB_SENTINEL:
+                # Gateway-originated resources/read reply for an MCP Apps
+                # ui:// fetch — hand it to the parked fetch coroutine, never a
+                # stub. (Already popped above so it is removed exactly once.)
+                fut = pending.apps_future
+                if fut is not None and not fut.done():
+                    fut.set_result(msg)
+                return
+            # MCP Apps interception: a tools/call result carrying a ui://
+            # resource is parked (the response is held off the stub) while an
+            # out-of-band resources/read fetches the app payload. When it
+            # returns True the (marked) response is delivered asynchronously by
+            # a background task, so DO NOT deliver here.
+            if await self._maybe_intercept_ui_result(pending, msg):
+                self.touch()
                 return
             rewritten = dict(msg)
             rewritten["id"] = pending.original_id
@@ -1095,6 +1240,196 @@ class Backend:
                 if pending is not None and pending.stub_uuid != "__init__":
                     return pending.stub_uuid
         return None
+
+    async def _maybe_intercept_ui_result(
+        self, pending: _PendingRequest, msg: dict[str, Any]
+    ) -> bool:
+        """Decide whether ``msg`` (a completed tools/call response) carries an
+        MCP Apps ui:// resource that must be fetched + spooled before delivery.
+
+        Returns ``True`` when interception was *initiated* — a background task
+        now owns delivering the (marked) response to the stub, so the caller
+        must NOT deliver it. Returns ``False`` (the common/off path) when the
+        caller should deliver the response normally right now. Never raises:
+        any classification hiccup falls back to normal delivery.
+        """
+        if not _mcp_apps_enabled():
+            return False
+        # App-originated callbacks (the app-call relay forwards a tools/call on
+        # a ``__app_call__*`` stub) must NEVER be re-intercepted: if the called
+        # tool itself declares a ui:// resource, re-spooling would replace the
+        # app's real result with an internal marker string and mint a stray
+        # spool record. The render/spool path is only for MODEL-originated tool
+        # results; app callbacks return verbatim to the requesting app.
+        if pending.stub_uuid.startswith("__app_call__"):
+            return False
+        # Passive harvest: tool declarations are the SEP-1865 PRIMARY place a
+        # server associates a tool with its ui:// resource (the real
+        # pdf-server and Excalidraw declare it ONLY here, not on results).
+        # Every tools/list response that flows through updates the map.
+        if pending.method == "tools/list":
+            result = msg.get("result")
+            if isinstance(result, dict):
+                try:
+                    declared = extract_declared_ui_uris(result)
+                except Exception:  # pragma: no cover — defensive; extract is total
+                    declared = {}
+                # REPLACE (never merge): each tools/list is the server's
+                # complete current declaration set — merging would keep a
+                # WITHDRAWN tool→ui association alive until backend restart,
+                # so later successful calls would still render the withdrawn
+                # app resource.
+                self._apps_declared_uris = declared
+            return False
+        if pending.method != "tools/call":
+            return False
+        result = msg.get("result")
+        if not isinstance(result, dict):
+            return False
+        if result.get("isError"):
+            # A FAILED tool call must never spawn an app render (nor mint a
+            # live spool capability) — checked before EITHER association form
+            # (result-side _meta.ui or the tools/list declaration) is read.
+            return False
+        try:
+            resource_uri = extract_ui_resource_uri(result)
+        except Exception:  # pragma: no cover — defensive; extract is total
+            logger.debug("mcp-apps: extract_ui_resource_uri raised", exc_info=True)
+            return False
+        if resource_uri is None:
+            # Fall back to the uri the tool DECLARED in tools/list (the
+            # SEP-1865 primary form real servers use).
+            resource_uri = self._apps_declared_uris.get(pending.tool_name)
+        if resource_uri is None:
+            return False
+        task = asyncio.create_task(
+            self._fetch_and_deliver_ui(pending, msg, resource_uri)
+        )
+        self._apps_tasks.add(task)
+        task.add_done_callback(self._apps_tasks.discard)
+        return True
+
+    async def _fetch_and_deliver_ui(
+        self, pending: _PendingRequest, msg: dict[str, Any], resource_uri: str
+    ) -> None:
+        """Out-of-band fetch of a ui:// resource, spool it, mark the tools/call
+        response, and deliver the (possibly-marked) response to the stub.
+
+        On ANY failure/timeout the ORIGINAL response is delivered unmodified
+        and a warning logged — the app render is best-effort and must never
+        wedge or drop the tool result. Runs as a background task so the shared
+        stdout pump is never blocked awaiting the resources/read round-trip.
+        """
+        response = dict(msg)
+        response["id"] = pending.original_id
+        try:
+            contents = await self._read_ui_resource(resource_uri)
+            html, csp, permissions = self._parse_ui_contents(contents)
+            result = msg.get("result")
+            structured = result.get("structuredContent") if isinstance(result, dict) else None
+            content = result.get("content") if isinstance(result, dict) else None
+            spool_id = await asyncio.to_thread(write_spool, {
+                "server": self.pool_key.server_name,
+                "tool": pending.tool_name,
+                "session_key": pending.session_key,
+                # Exact-identity binding for the app→gateway callback: the
+                # callback resolves its backend EXCLUSIVELY by this digest, so
+                # an app can only ever call back into the same pool partition
+                # (same credentials/sandbox/approval identity) that produced
+                # it — never a co-pooled tenant's backend for the same server.
+                "pool_digest": self.pool_key.stable_hash(),
+                "html": html,
+                "csp": csp,
+                "permissions": permissions,
+                "structured_content": structured,
+                # Originating tools/call inputs + full result content, so the
+                # app initializes from its REAL state (SEP-1865 tool-input /
+                # tool-result notifications) instead of empty placeholders.
+                "tool_input": pending.tool_arguments,
+                "result_content": content if isinstance(content, list) else None,
+            })
+            if isinstance(result, dict):
+                response["result"] = append_marker(result, spool_id)
+            logger.info(
+                "mcp-apps: spooled ui resource %s for tool=%s server=%s id=%s",
+                resource_uri, pending.tool_name or "?",
+                self.pool_key.server_name, spool_id,
+            )
+        except Exception as exc:  # noqa: BLE001 — best-effort; deliver original
+            logger.warning(
+                "mcp-apps: ui fetch/spool failed for %s (tool=%s); delivering "
+                "original response unmodified: %s",
+                resource_uri, pending.tool_name or "?", exc,
+            )
+            response = dict(msg)
+            response["id"] = pending.original_id
+        await self._deliver_to_stub(pending.stub_uuid, response)
+
+    async def _read_ui_resource(self, resource_uri: str) -> list[Any]:
+        """Issue a gateway-originated ``resources/read`` for ``resource_uri`` to
+        this backend and return its ``result.contents`` list.
+
+        Parks a future under a ``_APPS_STUB_SENTINEL`` pending entry (same
+        gateway-id mechanism the initialize handshake uses) so the stdout pump
+        resolves it. Bounded by :data:`_APPS_RESOURCE_READ_TIMEOUT_SECS`.
+        """
+        fid = self._next_forward_id()
+        fut: "asyncio.Future[dict[str, Any]]" = asyncio.get_running_loop().create_future()
+        self._pending_requests[fid] = _PendingRequest(
+            stub_uuid=_APPS_STUB_SENTINEL, original_id=None, method="resources/read",
+            t_start_ms=time.monotonic() * 1000.0, apps_future=fut,
+        )
+        request = {
+            "jsonrpc": "2.0",
+            "id": fid,
+            "method": "resources/read",
+            "params": {"uri": resource_uri},
+        }
+        try:
+            await _write_json_line(self.stdin, request)
+            response = await asyncio.wait_for(fut, timeout=_APPS_RESOURCE_READ_TIMEOUT_SECS)
+        finally:
+            # Resolved path already popped it in _route_backend_line; this
+            # covers the timeout/write-failure path so no stale entry lingers.
+            self._pending_requests.pop(fid, None)
+        if "error" in response:
+            raise RuntimeError(f"resources/read error: {response['error']}")
+        result = response.get("result")
+        if not isinstance(result, dict):
+            raise RuntimeError(f"resources/read malformed result: {response!r}")
+        contents = result.get("contents")
+        if not isinstance(contents, list) or not contents:
+            raise RuntimeError("resources/read returned no contents")
+        return contents
+
+    def _parse_ui_contents(self, contents: list[Any]) -> tuple[str, Any, Any]:
+        """Extract ``(html, csp, permissions)`` from a resources/read
+        ``contents`` list. Requires ``contents[0].mimeType`` to equal
+        :data:`MCP_APPS_MIME_TYPE`; reads inline ``text`` or base64 ``blob``;
+        pulls ``csp``/``permissions`` from ``contents[0]._meta.ui``."""
+        first = contents[0]
+        if not isinstance(first, dict):
+            raise RuntimeError("resources/read contents[0] is not an object")
+        mime = first.get("mimeType")
+        if mime != MCP_APPS_MIME_TYPE:
+            raise RuntimeError(
+                f"unexpected mimeType {mime!r} (want {MCP_APPS_MIME_TYPE!r})"
+            )
+        text = first.get("text")
+        if isinstance(text, str):
+            html = text
+        elif isinstance(first.get("blob"), str):
+            try:
+                html = base64.b64decode(first["blob"], validate=True).decode("utf-8")
+            except (binascii.Error, ValueError, UnicodeDecodeError) as exc:
+                raise RuntimeError(f"invalid base64 blob: {exc}") from exc
+        else:
+            raise RuntimeError("resources/read contents[0] has neither text nor blob")
+        meta = first.get("_meta")
+        ui = meta.get("ui") if isinstance(meta, dict) else None
+        if not isinstance(ui, dict):
+            ui = {}
+        return html, ui.get("csp"), ui.get("permissions")
 
     def _spawn_metric_task(self, record: dict[str, Any]) -> None:
         """Schedule a best-effort latency-metric emit off the stdout-pump

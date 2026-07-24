@@ -780,6 +780,23 @@ class BackendPool:
         async with self._lock:
             return self._backends.get(digest)
 
+    async def get_by_digest(self, digest: str) -> Optional["Backend"]:
+        """Return the ALIVE backend whose PoolKey digest is exactly ``digest``.
+
+        Used by the MCP Apps ``app-call`` control path: the spool record binds
+        the PRODUCING backend's full PoolKey digest, and the callback resolves
+        exclusively through it. Resolving by server name alone would let an
+        app callback land on a co-pooled tenant's backend for the same server
+        (different credentials / sandbox / approval identity) — an exact-digest
+        match makes cross-partition execution impossible; a dead or evicted
+        backend is a plain deny, never a fallback.
+        """
+        async with self._lock:
+            backend = self._backends.get(digest)
+        if backend is not None and backend.is_alive:
+            return backend
+        return None
+
     def reserve(self, key: PoolKey) -> None:
         """Mark ``key`` as in-flight (handed out, not yet attached).
 

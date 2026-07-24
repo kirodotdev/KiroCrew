@@ -2499,6 +2499,13 @@ _CREW_SECRET_LEAVES: list[str] = [
     # Kiro identity credentials. Agent reads/writes must not be able to replace
     # this trust decision.
     ".kiro_cli_binary_trust.json",
+    # MCP Apps spool (SEP-1865). Defense-in-depth: the per-render callback
+    # capability (`callback_secret`) is delivered owner-WS-only and never
+    # written to model-visible text, but the spool records also hold app HTML
+    # and tool data, so the whole directory sits on the sensitive floor —
+    # agent file tools cannot read it. Legitimate readers (gatewayd writer,
+    # dashboard render/relay) open it directly in-process.
+    "mcp-apps",
     # Runtime exec dir. ``run/`` holds paths the gateway executes OUTSIDE the
     # agent sandbox: the sandbox launcher scripts (``sandbox.py`` execs
     # ``python <home>/run/kirocrew_sandbox_*.py``) and the remote-instance

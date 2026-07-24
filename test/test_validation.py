@@ -26,6 +26,7 @@ from kiro_crew.validation import (
     validate_field,
     validate_jsonrpc_request,
     validate_jsonrpc_response,
+    validate_mcp_tool_arguments,
     validate_string_field,
     validate_tool_args,
 )
@@ -648,3 +649,250 @@ class TestDeployArtifactSchema:
         args = {"site_id": "s", "artifact_slug": "a", "ttl_hours": 48}
         result = validate_tool_args(args, DEPLOY_ARTIFACT_SCHEMA)
         assert result["ttl_hours"] == 48
+
+
+# ── MCP inputSchema validation (fail-closed boundary for app-originated calls) ──
+
+
+class TestValidateMcpToolArguments:
+    """validate_mcp_tool_arguments: the shared fail-closed check applied to
+    UNTRUSTED tools/call arguments (e.g. from an MCP App iframe)."""
+
+    def _v(self, args, schema):
+        from kiro_crew.validation import validate_mcp_tool_arguments
+        validate_mcp_tool_arguments(args, schema)
+
+    def _raises(self, args, schema, fragment):
+        from kiro_crew.validation import ValidationError, validate_mcp_tool_arguments
+        with pytest.raises(ValidationError) as exc:
+            validate_mcp_tool_arguments(args, schema)
+        assert fragment in str(exc.value)
+
+    def test_no_schema_allows_only_empty(self):
+        self._v({}, None)
+        self._raises({"a": 1}, None, "no inputSchema")
+
+    def test_top_level_must_be_object(self):
+        self._raises("nope", {"type": "object"}, "must be a JSON object")
+        self._raises([1], {"type": "object"}, "must be a JSON object")
+
+    def test_typed_properties_enforced(self):
+        schema = {
+            "type": "object",
+            "properties": {"path": {"type": "string"}, "count": {"type": "integer"}},
+            "required": ["path"],
+        }
+        self._v({"path": "/tmp/x", "count": 3}, schema)
+        self._raises({"count": 3}, schema, "required")
+        self._raises({"path": 42}, schema, "expected string")
+        # bool must not satisfy integer.
+        self._raises({"path": "x", "count": True}, schema, "expected integer")
+
+    def test_unknown_fields_rejected_fail_closed(self):
+        schema = {"type": "object", "properties": {"a": {"type": "string"}}}
+        self._raises({"a": "x", "smuggled": 1}, schema, "unknown field")
+
+    def test_additional_properties_false_without_properties_map(self):
+        """Regression: `{"type":"object","additionalProperties":false}` — a
+        valid schema meaning "accepts only {}" — must reject every key even
+        though it declares NO properties map."""
+        schema = {"type": "object", "additionalProperties": False}
+        self._v({}, schema)
+        self._raises({"x": 1}, schema, "unknown field")
+        # Nested position too.
+        nested = {"type": "object",
+                  "properties": {"o": {"type": "object", "additionalProperties": False}}}
+        self._v({"o": {}}, nested)
+        self._raises({"o": {"x": 1}}, nested, "unknown field")
+
+    def test_additional_properties_opt_in(self):
+        loose = {"type": "object", "properties": {"a": {"type": "string"}},
+                 "additionalProperties": True}
+        self._v({"a": "x", "extra": 1}, loose)
+        typed = {"type": "object", "properties": {},
+                 "additionalProperties": {"type": "integer"}}
+        self._v({"n": 5}, typed)
+        self._raises({"n": "s"}, typed, "expected integer")
+
+    def test_enum_and_ranges(self):
+        schema = {
+            "type": "object",
+            "properties": {
+                "mode": {"type": "string", "enum": ["r", "w"]},
+                "n": {"type": "number", "minimum": 0, "maximum": 10},
+                "s": {"type": "string", "maxLength": 3},
+            },
+        }
+        self._v({"mode": "r", "n": 5, "s": "ab"}, schema)
+        self._raises({"mode": "x"}, schema, "not in enum")
+        self._raises({"n": 11}, schema, "must be <=")
+        self._raises({"s": "abcd"}, schema, "exceeds maxLength")
+
+    def test_array_items(self):
+        schema = {
+            "type": "object",
+            "properties": {"xs": {"type": "array", "items": {"type": "integer"},
+                                  "maxItems": 2}},
+        }
+        self._v({"xs": [1, 2]}, schema)
+        self._raises({"xs": [1, 2, 3]}, schema, "exceeds maxItems")
+        self._raises({"xs": ["s"]}, schema, "expected integer")
+
+    def test_unknown_schema_type_rejects(self):
+        schema = {"type": "object",
+                  "properties": {"a": {"type": "no-such-type"}}}
+        self._raises({"a": 1}, schema, "expected no-such-type")
+
+    def test_unsupported_validation_keywords_reject_fail_closed(self):
+        """A constraint the subset can't enforce must never be silently
+        dropped — oneOf/$ref/multipleOf/patternProperties reject outright."""
+        for kw, val in [
+            ("oneOf", [{"type": "string"}]),
+            ("$ref", "#/defs/x"),
+            ("multipleOf", 2),
+            ("patternProperties", {"^x": {}}),
+            ("if", {"type": "string"}),
+        ]:
+            schema = {"type": "object", "properties": {"a": {kw: val}}}
+            self._raises({"a": 1}, schema, "unsupported validation keyword")
+        # Also rejected at the top level.
+        self._raises({}, {"type": "object", "allOf": []},
+                     "unsupported validation keyword")
+
+    def test_annotation_keywords_are_ignored(self):
+        schema = {
+            "type": "object", "title": "T", "description": "d", "$schema": "s",
+            "properties": {"a": {"type": "string", "format": "uri",
+                                 "default": "x", "examples": ["y"]}},
+        }
+        self._v({"a": "anything"}, schema)
+
+    def test_const_and_pattern(self):
+        schema = {
+            "type": "object",
+            "properties": {
+                "mode": {"const": "fixed"},
+                "path": {"type": "string", "pattern": r"^/safe/"},
+            },
+        }
+        self._v({"mode": "fixed", "path": "/safe/file"}, schema)
+        self._raises({"mode": "other"}, schema, "does not equal const")
+        self._raises({"path": "/etc/passwd"}, schema, "does not match pattern")
+
+    def test_pattern_redos_is_bounded_fail_closed(self):
+        """A pathological server-controlled pattern + app-controlled
+        near-match must not spin the validator: the bounded matcher times
+        out (or size-caps) and the call fails closed."""
+        import time as _time
+
+        evil = {"type": "object",
+                "properties": {"s": {"type": "string", "pattern": r"(a+)+$"}}}
+        start = _time.monotonic()
+        self._raises({"s": "a" * 3000 + "b"}, evil,
+                     "could not be safely evaluated")
+        assert _time.monotonic() - start < 5.0  # bounded, not exponential
+        # Oversized inputs are also refused without running the regex.
+        self._raises({"s": "x" * 5000},
+                     {"type": "object",
+                      "properties": {"s": {"type": "string", "pattern": "x+"}}},
+                     "could not be safely evaluated")
+
+    def test_exclusive_bounds_min_items_unique(self):
+        schema = {
+            "type": "object",
+            "properties": {
+                "n": {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 10},
+                "xs": {"type": "array", "minItems": 1, "uniqueItems": True},
+            },
+        }
+        self._v({"n": 5, "xs": [1, 2]}, schema)
+        self._raises({"n": 0}, schema, "must be > 0")
+        self._raises({"n": 10}, schema, "must be < 10")
+        self._raises({"xs": []}, schema, "fewer than minItems")
+        self._raises({"xs": [1, 1]}, schema, "items not unique")
+
+    def test_depth_bomb_rejected(self):
+        # 20 levels of nesting under a schema with no properties map — the
+        # hard depth cap must stop it.
+        payload: dict = {"k": 1}
+        for _ in range(20):
+            payload = {"k": payload}
+        self._raises({"deep": payload},
+                     {"type": "object", "additionalProperties": True},
+                     "max nesting depth")
+
+
+# ── MCP Apps arg-validation hardening (PR #339 round 7) ──
+
+def test_boolean_false_subschema_rejects():
+    with pytest.raises(ValidationError):
+        validate_mcp_tool_arguments(
+            {"x": 1}, {"type": "object", "properties": {"x": False}}
+        )
+
+
+def test_boolean_true_subschema_accepts_anything():
+    validate_mcp_tool_arguments(
+        {"x": {"any": [1, 2, 3]}}, {"type": "object", "properties": {"x": True}}
+    )
+
+
+def test_enum_rejects_bool_for_number():
+    # Python True == 1, but JSON keeps bool and number distinct.
+    with pytest.raises(ValidationError, match="enum"):
+        validate_mcp_tool_arguments(
+            {"x": True}, {"type": "object", "properties": {"x": {"enum": [1]}}}
+        )
+
+
+def test_const_rejects_bool_for_number():
+    with pytest.raises(ValidationError, match="const"):
+        validate_mcp_tool_arguments(
+            {"x": True}, {"type": "object", "properties": {"x": {"const": 1}}}
+        )
+
+
+def test_malformed_type_keyword_rejected():
+    with pytest.raises(ValidationError, match="malformed"):
+        validate_mcp_tool_arguments(
+            {"x": 1}, {"type": "object", "properties": {"x": {"type": 7}}}
+        )
+
+
+def test_malformed_property_subschema_rejected_fail_closed():
+    # GPT 5.6 finding: a property VALUE that is neither a subschema (object)
+    # nor a boolean (e.g. the string "false") must NOT recurse to the
+    # "no subschema → return" branch and admit the field unvalidated. The
+    # whole schema is rejected fail-closed.
+    with pytest.raises(ValidationError, match="malformed"):
+        validate_mcp_tool_arguments(
+            {"path": "/etc/shadow"},
+            {"type": "object", "properties": {"path": "false"}},
+        )
+    # additionalProperties with a malformed (non-dict, non-bool) shape too.
+    with pytest.raises(ValidationError, match="malformed"):
+        validate_mcp_tool_arguments(
+            {"x": 1},
+            {"type": "object", "additionalProperties": "nope"},
+        )
+    # A boolean subschema (`false`) is still VALID shape — it rejects the value
+    # on VALUE grounds, not as a malformed schema.
+    with pytest.raises(ValidationError, match="forbidden"):
+        validate_mcp_tool_arguments(
+            {"path": "x"},
+            {"type": "object", "properties": {"path": False}},
+        )
+
+
+def test_unique_items_distinguishes_bool_from_number():
+    # [True, 1] are DISTINCT in JSON, so uniqueItems must accept them.
+    validate_mcp_tool_arguments(
+        {"x": [True, 1]},
+        {"type": "object", "properties": {"x": {"type": "array", "uniqueItems": True}}},
+    )
+    with pytest.raises(ValidationError, match="unique"):
+        validate_mcp_tool_arguments(
+            {"x": [1, 1]},
+            {"type": "object",
+             "properties": {"x": {"type": "array", "uniqueItems": True}}},
+        )

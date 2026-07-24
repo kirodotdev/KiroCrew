@@ -360,6 +360,21 @@ read-your-writes should add it deliberately, with its own tests.
 
 ## Enforcement planes
 
+> **MCP App-originated tool calls.** The MCP Apps callback path
+> (`mcp_gateway/app_call.py::handle_app_call`, reached via
+> `POST /api/mcp-apps/call`) evaluates the governance ceiling ∩ active
+> profile for the canonical `@server/tool` reference (`mcp` scope) before
+> forwarding — the same decision Plane A applies to model-originated MCP
+> calls, so an enterprise deny binds both invocation authorities. Its
+> polarity differs deliberately: evaluation errors DENY (fail-closed),
+> because the app path does not traverse the always-on deny floor that
+> backstops Plane A's soft fail-open. The spool capability tokens
+> themselves sit on the sensitive-path floor (`mcp-apps` in
+> `security._SENSITIVE_HOME_DIRS`) so the agent cannot harvest them.
+> Remaining Plane A parity refinements are tracked in
+> [issue #418](https://github.com/kirodotdev/KiroCrew/issues/418) — see
+> [mcp-apps.md](mcp-apps.md).
+
 - **Plane A — the host gate** (`HookManager.on_tool_call`, the primary
   chokepoint). The deny-floor is now the *effective* denied-command rule set —
   the enabled subset of `BUILTIN_DENIED_RULES` ∪ the user's `user_added`

@@ -2955,6 +2955,18 @@ class DashboardState:
                 self._remove_ws(ws)
         return delivered
 
+    def broadcast_ws_owners(self, msg_type: str, data: object) -> None:
+        """Send a typed message to OWNER-authorized WS clients only.
+
+        For payloads that carry capability material (e.g. the MCP Apps
+        ``mcp_app_render`` frame, which delivers the app's ``callback_secret``)
+        — a non-owner or guest socket must never receive them.
+        """
+        if not getattr(self, "_owner_ws_clients", None):
+            return
+        msg = json.dumps({"type": msg_type, "data": data})
+        self._send_ws_owners(msg)
+
     def ws_client_count(self) -> int:
         """Number of connected dashboard WS clients (live subscribers)."""
         return len(self._ws_clients)

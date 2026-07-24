@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl, urlparse
 
-from kiro_crew import model_registry
+from kiro_crew import mcp_apps_render, model_registry
 from kiro_crew.acp.client import AcpError, AcpProcessDied, _is_safe_oauth_url
 from kiro_crew.acp.types import (
     EVENT_AGENT_SWITCHED,
@@ -3135,6 +3135,23 @@ async def _run_chat(
                 # redacted form, so the comparison must use the redacted form
                 # too — see the `_tool_meta` docstring for the convention.
                 _tcid = _redact_tool_field(event.tool_call_id) if event.tool_call_id else ""
+                # MCP Apps (flag-independent on this side): if gatewayd spooled a
+                # UI payload it injected an opaque marker into the result text.
+                # Load it, push an mcp_app_render event to this slot, and strip
+                # the marker from the transcript text (cosmetic, like redaction).
+                # Awaited: the spool read inside is thread-offloaded (multi-MB
+                # records must not stall this event loop).
+                _out = await mcp_apps_render.handle_tool_result(
+                    state,
+                    slot_key=slot.key,
+                    tool_call_id=_tcid,
+                    text=_out,
+                    # WS routes on the bare slot.key, but the gateway recorded
+                    # the CANONICAL producing session on the spool. Pass it for
+                    # the binding check or every real render is refused as a
+                    # bare-vs-prefixed mismatch (silent no-render).
+                    producing_session_key=slot.linked_session_key or _history_key_for(slot.key),
+                )
                 state.broadcast_ws(
                     "tool_result",
                     {

@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, 
 import { useQuery } from '@tanstack/react-query'
 import { shallowEqual } from 'react-redux'
 import { useAppSelector, useAppDispatch } from '../../store'
-import { clearFocusToolCallId } from '../../store/chatSlice'
+import { clearFocusToolCallId, mcpAppKey } from '../../store/chatSlice'
 import { useSimplifiedToolNames } from '../../hooks/useSimplifiedToolNames'
 import { LoaderCircle, CircleSlash, CircleDot, Lock, PanelRight } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
@@ -12,6 +12,7 @@ import { registerToolPill } from '../../store/toolPillRegistry'
 import { extractToolFilePath } from '../../utils/toolFilePath'
 import { isSafePath } from '../../utils/safePath'
 import { fileReadUrl } from '../../utils/fileReadUrl'
+import McpAppFrame from '../../components/McpAppFrame'
 
 /** Inline tool call pill. Click toggles an expanded panel below the pill that
  *  shows purpose / input / output (the same details that previously lived in
@@ -21,6 +22,15 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
   const label = message.content.replace(/^🔧\s*/, '')
   const toolCallId = message.meta?.tool_call_id as string | undefined
   const simplified = useSimplifiedToolNames()
+
+  // MCP App (SEP-1865) render payload attached to this tool call, if any.
+  // Rendered as an inline sandboxed iframe below the tool-call row. Selected
+  // by (slot, tool_call_id) — this row's own slot — so another session's app
+  // (and its callback capability) can never mount here.
+  const mcpApp = useAppSelector(s => {
+    const sk = slot ?? s.chat.activeSlot
+    return toolCallId && sk ? s.chat.mcpApps?.[mcpAppKey(sk, toolCallId)] : undefined
+  })
 
   // Pull the matching toolLog entry. Returns purpose/input/output for the inline
   // expansion as well as completion status for the icon.
@@ -322,6 +332,11 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* MCP App (SEP-1865): inline sandboxed render attached to this tool
+          call. Appears below the details panel; presence is driven by the
+          `mcp_app_render` WS event stored in chat.mcpApps. */}
+      {mcpApp && <McpAppFrame payload={mcpApp} />}
     </div>
   )
 })

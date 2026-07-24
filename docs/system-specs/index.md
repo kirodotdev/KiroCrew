@@ -18,6 +18,7 @@ Load relevant module specs before making changes to that component. Read common 
 | [history](modules/history.md) | Persistent conversation history with LLM consolidation |
 | [knowledge](modules/knowledge.md) | Knowledge Library ingest (FileReader/SUPPORTED formats incl. .org), folder watcher, LLMPool workers (sweep-shielded) |
 | [learn-cron-dashboard](modules/learn-cron-dashboard.md) | Self-learning, cron scheduler, web dashboard |
+| [mcp-apps](modules/mcp-apps.md) | SEP-1865 interactive MCP App rendering via gatewayd: marker grammar, spool schema v1 (enforced), `app-call` frame + `/api/mcp-apps/call` authorization ladder, sandboxed-iframe CSP model, single-consume slot-bound renders, 24h TTL sweep |
 | [memory-skills-hooks](modules/memory-skills-hooks.md) | Memory files, skill loading, message/tool hooks |
 | [messaging](modules/messaging.md) | Channel-neutral messaging transport: MessagingTransport/TurnDriver approval ladder/Renderer + ChannelLink session-key namespacing (gated via messaging.use_transport) |
 | [metrics](modules/metrics.md) | OpenTelemetry-based metrics facade: namespace/attribute guardrails, redaction/privacy contract, local-first JSONL sink, default-OFF consent model (+ `KIROCREW_TELEMETRY` env opt-in), bounded local retention (age + total-size caps), opt-in OTLP egress (off by default), privacy-safe gateway boot-to-ready + bounded-cardinality per-route latency metrics |

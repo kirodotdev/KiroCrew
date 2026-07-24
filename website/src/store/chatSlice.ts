@@ -8,6 +8,7 @@ import type { ChatMessage, ChatSlot, SessionInfo, SubagentActivity, ToolActivity
 import { SOFT_STOP_DEBOUNCE_MS } from '../pages/chat/types'
 import { mergePreservedPastes } from '../utils/pasteTokens'
 import { safeSetItem } from '../utils/safeStorage'
+import type { McpAppRenderPayload } from '../lib/mcpAppSrcdoc'
 
 const SKIP_ROLES = new Set(['chunk', 'done'])
 const filterMessages = (msgs: ChatMessage[]) => msgs.filter(m => !SKIP_ROLES.has(m.role))
@@ -32,6 +33,27 @@ const isUnsafeKey = (key: string): boolean =>
  *  key to an inert own-property so any write that slips past a guard still can't
  *  reach the prototype. Real keys pass through unchanged. */
 const safeKey = (key: string): string => (isUnsafeKey(key) ? `unsafe-key:${key}` : key)
+
+/** Composite key for `state.mcpApps`: `<session>\u001F<tool_call_id>`. The
+ *  session scope prevents cross-slot render collisions and makes per-slot
+ *  eviction a prefix scan (the payloads carry multi-MB app HTML, so they must
+ *  not outlive their slot). \u001F (unit separator) cannot appear in either
+ *  component. */
+export const mcpAppKey = (sessionKey: string, toolCallId: string): string =>
+  `${sessionKey}\u001F${toolCallId}`
+
+/** Max MCP App render payloads retained per slot (each carries multi-MB HTML);
+ *  oldest are evicted past this bound. */
+const MCP_APPS_PER_SLOT_MAX = 24
+
+/** Drop every MCP App render payload belonging to `sessionKey` (slot deleted
+ *  or its conversation cleared — the tool rows the apps hang off are gone). */
+const evictMcpApps = (state: { mcpApps: Record<string, McpAppRenderPayload> }, sessionKey: string): void => {
+  const prefix = `${sessionKey}\u001F`
+  for (const k of Object.keys(state.mcpApps)) {
+    if (k.startsWith(prefix)) delete state.mcpApps[k]
+  }
+}
 
 /** One queued-message entry as normalized by `fetchSlotDetail` from the backend
  *  slot-detail `queue` field. */
@@ -197,6 +219,11 @@ interface ChatState {
   /** Tool call to highlight & auto-expand inline. Set by openActivityToTool;
    *  consumed (cleared) once the matching ToolCallLine has expanded itself. */
   focusToolCallId: string | null
+  /** MCP Apps (SEP-1865) render payloads keyed by tool_call_id. Populated from
+   *  `mcp_app_render` WS broadcasts; consumed by ToolCallLine → McpAppFrame.
+   *  tool_call_ids are globally unique (ACP-issued), so a flat map is safe
+   *  across slots. */
+  mcpApps: Record<string, McpAppRenderPayload>
   slotActivity: Record<string, { toolLog: ToolActivity[]; subagents: Record<string, SubagentActivity>; activityTab?: 'changes' | 'subagents' | 'workflows' | 'logs' | 'files' | 'side' | 'artifacts'; activityOpen?: boolean }>
   slotSide: Record<string, SideState>
   slotSideClosed: Record<string, boolean>
@@ -260,6 +287,7 @@ const initialState: ChatState = {
   activityOpen: false,
   activityTab: 'files' as const,
   focusToolCallId: null,
+  mcpApps: {},
   slotActivity: seedSlotActivity(),
   slotMessages: {},
   slotRun: {},
@@ -976,7 +1004,7 @@ const chatSlice = createSlice({
       if (isUnsafeKey(slot)) return
       state.slotStatusDetail[safeKey(slot)] = detail
     },
-    clearMessages(state) { state.messages = []; state.slotHasMore = false; state.slotOldestIndex = 0; state.voiceAudio = null; state.voicePlaying = false },
+    clearMessages(state) { state.messages = []; state.slotHasMore = false; state.slotOldestIndex = 0; state.voiceAudio = null; state.voicePlaying = false; if (state.activeSlot) evictMcpApps(state, state.activeSlot) },
     truncateAfterIndex(state, action: PayloadAction<number>) { state.messages = state.messages.slice(0, action.payload) },
     replaceMessages(state, action: PayloadAction<ChatMessage[]>) { state.messages = action.payload },
     /** Path B: seed a non-active slot's message history into the per-slot store
@@ -1447,6 +1475,26 @@ const chatSlice = createSlice({
         }
       }
       if (target >= 0) log[target].output = action.payload.output
+    },
+    /** Store an MCP App (SEP-1865) render payload, keyed by BOTH its session
+     *  and tool_call_id (see mcpAppKey): the session scope means an ACP
+     *  tool-call-id reuse across slots can never cross-render another
+     *  session's app (or its live callback capability), and per-slot eviction
+     *  (payloads are multi-MB) is a simple prefix scan. */
+    sseMcpAppRender(state, action: PayloadAction<McpAppRenderPayload>) {
+      const p = action.payload
+      if (!p?.tool_call_id || isUnsafeKey(p.tool_call_id)) return
+      if (!p.session_key || isUnsafeKey(p.session_key)) return
+      state.mcpApps[mcpAppKey(p.session_key, p.tool_call_id)] = p
+      // Bound per-slot retention: payloads carry multi-MB app HTML, so a
+      // long-lived slot that renders many apps must not grow unbounded. Keys
+      // enumerate in insertion order, so the oldest slot entries are dropped
+      // first once the cap is exceeded.
+      const prefix = `${p.session_key}\u001F`
+      const slotKeys = Object.keys(state.mcpApps).filter((k) => k.startsWith(prefix))
+      for (let i = 0; i < slotKeys.length - MCP_APPS_PER_SLOT_MAX; i++) {
+        delete state.mcpApps[slotKeys[i]]
+      }
     },
     /** Handle chat messages pushed via global SSE/WS (works after refresh). */
     /** Accumulate streamed model reasoning (`chat_thinking` WS event) into a
@@ -1963,6 +2011,7 @@ const chatSlice = createSlice({
         delete state.slotSide[action.payload]
         delete state.slotSideClosed[action.payload]
         if (state.followups) delete state.followups[action.payload]
+        evictMcpApps(state, action.payload)
         state.slotHistory = state.slotHistory.filter(k => k !== action.payload)
         if (state.activeSlot === action.payload) {
           state.activeSlot = null
@@ -2025,6 +2074,7 @@ export const {
   toggleActivity, openActivityToTab, openActivityPanel, openActivityToTool, clearFocusToolCallId, clearSubagentsForSnapshot, sseSubagentPending, markSubagentApproving, sseSubagentSpawn, sseSubagentChunk, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentQueued,
   sseSubagentBatchUpdate, sseSubagentBatchChunks, selectSubagent, clearTerminalSubagents,
   sseSubagentSnapshot, sseToolActivity, sseToolResult, sseActivityEvent,
+  sseMcpAppRender,
   sseWorkflowEvent, clearWorkflowRun,
   sseSideResult, sideClose, sideOptimisticAppend, sideOptimisticRollback,
 } = chatSlice.actions

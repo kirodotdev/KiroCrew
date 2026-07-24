@@ -49,6 +49,7 @@ from kiro_crew.executors import maintenance_executor, subprocess_executor
 from kiro_crew.mcp_caller import CallerContext
 from kiro_crew.mcp_caller import _parent_pid as _ppid_fn
 from kiro_crew.mcp_gateway import credwatch, socketsec
+from kiro_crew.mcp_gateway.apps import sweep_spool as apps_sweep_spool
 from kiro_crew.mcp_gateway.backend import Backend, BackendGone, spawn_backend
 from kiro_crew.mcp_gateway.breaker import CircuitBreaker
 from kiro_crew.mcp_gateway.manager import _scrub_sensitive_env
@@ -293,6 +294,17 @@ async def run_gatewayd(
     breaker = CircuitBreaker()
     pool = BackendPool(max_backends=max_backends, breaker=breaker)
     connections: set[asyncio.Task[None]] = set()
+
+    # MCP Apps spool hygiene: reap records past their 24h TTL at every daemon
+    # start (write_spool also sweeps opportunistically per write). Offloaded —
+    # it walks a directory — and best-effort: a failed sweep must never stop
+    # the daemon from serving.
+    try:
+        swept = await asyncio.to_thread(apps_sweep_spool)
+        if swept:
+            logger.info("mcp-apps: startup sweep removed %d expired spool record(s)", swept)
+    except Exception:
+        logger.debug("mcp-apps: startup spool sweep failed", exc_info=True)
 
     # Clamp prewarm_count below pool capacity. Prewarmed backends are pinned —
     # exempt from the idle sweeper and LRU eviction — so prewarming every slot
@@ -1468,6 +1480,37 @@ async def _handle_connection(
     # same uid-gated 0700 socket as Register/Claim.
     if register.get("type") == "abort":
         await _write_json_line(writer, await _apply_abort(register, pool))
+        return
+
+    # App-call short-circuit (one-shot control connection from the dashboard):
+    # an embedded MCP App iframe invoking one of its server's app-visible
+    # tools. The frame carries only an opaque spool id — the gateway re-reads
+    # its own spool record for routing, enforces _meta.ui.visibility, and
+    # forwards through the normal stub seam. Trust basis: same uid-gated 0700
+    # socket as Register/Claim/Abort. Validation + auditing live in
+    # ``app_call.handle_app_call``.
+    if register.get("type") == "app-call":
+        # circular import: app_call/backend pull gatewayd-adjacent modules, so
+        # these stay function-scoped to avoid an import cycle at module load.
+        from kiro_crew.mcp_gateway.app_call import _audit, handle_app_call
+        from kiro_crew.mcp_gateway.backend import _mcp_apps_enabled
+
+        if not _mcp_apps_enabled():
+            # Feature OFF ⇒ byte-identical legacy behavior on EVERY layer: never
+            # execute an app-originated tool call, even if a spool capability is
+            # still live within its 24h TTL from a window when the flag was on.
+            # Audit the denial like every other app-call outcome (same SEL shape
+            # as app_call.handle_app_call's allow/deny events).
+            _audit(
+                "denied", "mcp-apps feature disabled",
+                spool_id=str(register.get("spool_id") or ""),
+                tool=str(register.get("tool") or ""),
+            )
+            await _write_json_line(
+                writer, {"type": "app-call-rejected", "reason": "mcp-apps feature disabled"}
+            )
+            return
+        await _write_json_line(writer, await handle_app_call(pool, register))
         return
 
     if register.get("type") not in (None, "register"):
