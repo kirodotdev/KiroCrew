@@ -53,6 +53,18 @@ class TestBuildFramePayload:
         )
         assert out == {"data": "QUJD", "format": "png", "device_width": 1280}
 
+    def test_drops_bool_and_out_of_range_dimensions(self):
+        # bool is an int subclass, so a bare isinstance(int) check let
+        # device_width=True through — the panel then treats it as 1px in JS
+        # aspect math. Non-positive and absurdly large values are dropped too.
+        for bad in (True, False, 0, -5, 100_001):
+            out = build_frame_payload(
+                {"data": "QUJD", "format": "png", "device_width": bad, "device_height": 720}
+            )
+            assert out is not None
+            assert "device_width" not in out, f"device_width={bad!r} leaked"
+            assert out["device_height"] == 720  # a valid sibling still passes
+
     def test_passes_through_valid_session_key(self):
         out = build_frame_payload({"data": "QUJD", "session_key": "chat-Abc_1.2:3"})
         assert out is not None and out["session_key"] == "chat-Abc_1.2:3"

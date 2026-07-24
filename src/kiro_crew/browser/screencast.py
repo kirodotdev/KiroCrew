@@ -76,7 +76,12 @@ def build_frame_payload(body: dict[str, Any]) -> dict[str, Any] | None:
     payload: dict[str, Any] = {"data": data, "format": fmt}
     for dim in ("device_width", "device_height"):
         val = body.get(dim)
-        if isinstance(val, int):
+        # bool is an int subclass, so {"device_width": true} would pass a bare
+        # isinstance(int) check and broadcast device_width=True — which the
+        # BrowserLiveView panel treats as 1 in JS aspect/size math (a 1px frame
+        # hint). Also bound it to a sane pixel range, matching the module's
+        # bound-every-field idiom (format allowlist, _B64_RE, _SESSION_KEY_RE).
+        if isinstance(val, int) and not isinstance(val, bool) and 0 < val <= 100_000:
             payload[dim] = val
     # Pass the session key through (bounded) so the panel can label which session
     # it mirrors. The dashboard resolves it to a title from its own slot store.
