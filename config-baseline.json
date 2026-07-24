@@ -3981,7 +3981,7 @@
       "help": "Git branch to read from.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": "mainline"
+      "defaultValue": "main"
     }
   ]
 }

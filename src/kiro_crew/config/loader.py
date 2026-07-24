@@ -1518,7 +1518,7 @@ class ExternalRegistryConfig:
         metadata=_meta("Repo", "Git URL of the repo containing apps (https or ssh)."),
     )
     branch: str = field(
-        default="mainline",
+        default="main",
         metadata=_meta("Branch", "Git branch to read from."),
     )
 
@@ -3497,6 +3497,13 @@ class KiroCrewConfig:
                 ExternalRegistryConfig(
                     name=str(r.get("name", "")),
                     repo=str(r.get("repo", "")),
+                    # Backward-compat: an entry that OMITS ``branch`` is a legacy
+                    # config written before URL registries defaulted new entries
+                    # to ``main`` (the registries PUT API now always persists an
+                    # explicit branch). Such an entry relied on the historical
+                    # ``mainline`` default, so preserve it here — silently
+                    # retargeting it to ``main`` on upgrade would break any
+                    # registry whose content still lives on ``mainline``.
                     branch=str(r.get("branch", "mainline")),
                 )
                 for r in (data.get("registries") or [])

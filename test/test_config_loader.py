@@ -192,6 +192,29 @@ def test_sandbox_allow_unsandboxed_exec_loads_from_config() -> None:
     assert enabled.agent.sandbox_allow_unsandboxed_exec is True
 
 
+def test_registry_branchless_legacy_entry_preserves_mainline():
+    # Regression: URL registries changed new-entry branch default to "main",
+    # but a legacy config entry that OMITS "branch" relied on the historical
+    # "mainline" default. Silently retargeting it to "main" on upgrade would
+    # break registries whose content still lives on "mainline". A branchless
+    # entry must load as "mainline"; an explicit branch is honored verbatim.
+    loaded = _load_from_dict(
+        {
+            "registries": [
+                {"name": "legacy", "repo": "https://example.com/org/legacy.git"},
+                {
+                    "name": "explicit",
+                    "repo": "https://example.com/org/new.git",
+                    "branch": "main",
+                },
+            ]
+        }
+    )
+    by_name = {r.name: r for r in loaded.registries}
+    assert by_name["legacy"].branch == "mainline"
+    assert by_name["explicit"].branch == "main"
+
+
 def test_publish_relocate_roots_parsed_and_round_trips():
     # Regression (PR #14 nrb): publish.relocate_roots was declared + consumed by
     # the relocate handler but NOT parsed in from_dict, so an operator value was

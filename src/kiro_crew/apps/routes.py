@@ -56,6 +56,7 @@ from kiro_crew.apps.manager import (
 )
 from kiro_crew.apps.manifest import Dependencies
 from kiro_crew.apps.registry import (
+    _git_url_host,
     get_registry_app_by_repo,
     get_server_platform,
     install_from_registry,
@@ -1445,14 +1446,32 @@ def _blob_cache_dir() -> Path:
     return config_dir() / "cache" / "blobs"
 
 
+def _blob_cache_key(repo: str) -> str:
+    """Derive a flat, filesystem-safe AND injective cache key for a repo.
+
+    ``repo`` may be a full git URL (``/``, ``:``), so it can't be used as a
+    directory tree.  Slugification alone is not injective (``org/app`` and
+    ``org_app`` would collide and serve each other's blobs), so a short stable
+    sha256 of the ORIGINAL repo is appended to guarantee distinct repos never
+    share a cache directory.
+    """
+    slug = re.sub(r"[^A-Za-z0-9_.-]", "_", repo)
+    return f"{slug}-{hashlib.sha256(repo.encode('utf-8')).hexdigest()[:8]}"
+
+
 _BLOB_FETCH_TIMEOUT = 30  # seconds — shallow clone of a single-branch repo
 _BLOB_FETCH_SEMAPHORE = asyncio.Semaphore(3)  # max 3 concurrent git fetches
 # Bare-name repo identifier (legacy registry entries) — no scheme, no path.
 _SAFE_REPO_RE = re.compile(r"^[A-Za-z0-9_-]+$")
-# https/http git URL: https://host[:port]/org/app[.git]. Host/path charset is
+# https git URL: https://host[:port]/org/app[.git]. Host/path charset is
 # restricted and shell metacharacters / traversal are rejected separately.
+# Plaintext ``http://`` is deliberately NOT accepted: registry clones fetch an
+# index + app manifests whose setup code later runs with gateway privileges
+# (signatures are optional by default), so an unauthenticated transport would
+# let a network (MITM) attacker swap in an attacker-controlled app. Require TLS
+# for HTTP-style remotes; use an explicit ssh:// / scp form for private ones.
 _SAFE_HTTPS_URL_RE = re.compile(
-    r"^https?://[A-Za-z0-9.\-]+(?::[0-9]+)?/[A-Za-z0-9._/\-]+$"
+    r"^https://[A-Za-z0-9.\-]+(?::[0-9]+)?/[A-Za-z0-9._/\-]+$"
 )
 # scp-style ssh remote: user@host:org/app[.git]
 _SAFE_SCP_URL_RE = re.compile(
@@ -1494,6 +1513,35 @@ def _is_safe_repo_identifier(repo: str) -> bool:
     return False
 
 
+def _derive_registry_name(repo: str) -> str:
+    """Derive a safe display name from a git URL (host + path slugified).
+
+    Used when a URL registry is added without an explicit ``name`` — defaulting
+    ``name=repo`` (the legacy behavior) would make two URL registries with
+    disallowed name characters collide.  Strips the scheme + userinfo, drops a
+    trailing ``.git``, and slugifies host+path to ``[A-Za-z0-9_-]`` so
+    ``https://github.com/acme/apps`` becomes ``github-com-acme-apps``.
+
+    A short stable hash of the ORIGINAL ``repo`` is appended so two distinct
+    URLs whose slugs collide (e.g. ``…/org/a-b`` and ``…/org/a_b`` both slugify
+    to ``…-org-a-b``) never derive the same name — and therefore never share an
+    ``_external_registry_cache_path`` cache file, which would otherwise let one
+    registry's fetch clobber the other's index.
+    """
+    s = repo.strip()
+    # Strip URL scheme (https://, ssh://, git://, git+ssh://, ...).
+    s = re.sub(r"^[A-Za-z][A-Za-z0-9+.\-]*://", "", s)
+    # Strip leading userinfo (scp-style ``user@host:path`` or ssh userinfo).
+    s = re.sub(r"^[^/@]+@", "", s)
+    # Drop a trailing ``.git``.
+    s = re.sub(r"\.git$", "", s)
+    # Slugify everything that is not alphanumeric to a single dash.
+    slug = re.sub(r"[^A-Za-z0-9]+", "-", s).strip("-") or "registry"
+    # Disambiguate on the original repo so distinct URLs never collide.
+    digest = hashlib.sha256(repo.strip().encode("utf-8")).hexdigest()[:8]
+    return f"{slug}-{digest}"
+
+
 def _registry_git_url(repo: str) -> str | None:
     """Resolve the git clone URL for a registry repo, or ``None``.
 
@@ -1505,13 +1553,17 @@ def _registry_git_url(repo: str) -> str | None:
     any particular host.
     """
     entry = get_registry_app_by_repo(repo)
-    if not entry:
-        return None
-    for key in ("gitUrl", "cloneUrl"):
-        url = entry.get(key)
-        if isinstance(url, str) and url:
-            return url
+    if entry:
+        for key in ("gitUrl", "cloneUrl"):
+            url = entry.get(key)
+            if isinstance(url, str) and url:
+                return url
     # The repo field itself is treated as a clone URL when it looks like one.
+    # This must apply even when ``get_registry_app_by_repo`` finds no entry:
+    # that lookup searches BUNDLED entries only, so an external (federated)
+    # registry whose ``repo`` is a full git URL never resolves an ``entry`` —
+    # yet ``_is_safe_repo_identifier`` admits such URLs, so we must honor the
+    # validated URL directly or external-registry blobs become unreachable.
     if ("://" in repo) or repo.startswith("git@") or repo.endswith(".git"):
         return repo
     return None
@@ -1529,14 +1581,31 @@ async def _fetch_git_blob(repo: str, ref: str, file_path: str, cache_path: Path)
     fallback) when no URL is resolvable or anything goes wrong.
     """
     from kiro_crew.apps.registry import (
-        _context_clone_sandbox_mode,
-        minimal_env,
+        anonymous_git_env,
     )
     from kiro_crew.sandbox import cgroup_scope_argv, resource_limit_preexec, wrap_argv
 
     git_url = _registry_git_url(repo)
     if not git_url:
         logger.debug("No git URL resolvable for registry repo %r — skipping blob fetch", repo)
+        return False
+
+    # SSRF gate: a configured external registry's (untrusted) index can list an
+    # app ``repo`` pointing at an internal address (e.g. ``https://127.0.0.1/x``)
+    # or an attacker-controlled host — and it passes both ``known_registry_repos``
+    # and ``_is_safe_repo_identifier``. Browsing the App Store fetches icons
+    # through this path automatically, so honoring such a value would drive
+    # ``git clone`` against the loopback/internal network (authenticated backend
+    # SSRF). Constrain the clone to an explicitly-trusted host (public forge or a
+    # host the owner configured as a registry); this is rebinding-proof because
+    # it gates on the hostname, not its resolvable IP.
+    from kiro_crew.apps.registry import is_clone_host_trusted
+
+    if not await asyncio.to_thread(is_clone_host_trusted, git_url):
+        logger.warning(
+            "Blob clone refused for repo=%r url=%r: host not in trusted forge/registry set (SSRF gate)",
+            repo, git_url,
+        )
         return False
 
     import tempfile
@@ -1555,18 +1624,18 @@ async def _fetch_git_blob(repo: str, ref: str, file_path: str, cache_path: Path)
             git_url,
             tmp_root,
         ]
-        # Route through the context-aware clone-sandbox decision (same as the
-        # registry.py clone sites) so a companion's extended trusted-host set
-        # applies here too; standalone resolves to the same bare decision.
-        sandboxed_cmd, _cleanup = wrap_argv(
-            clone_cmd, mode=_context_clone_sandbox_mode(git_url)
-        )
+        # Index-originated automatic clone (browse-time icon/blob fetch): force
+        # strict sandbox (~/.ssh hidden) and a credential-free env so a
+        # trusted-host repo injected by an untrusted registry index can't be
+        # cloned with the gateway's ambient git/ssh identity (confused-deputy
+        # defense — see anonymous_git_env).
+        sandboxed_cmd, _cleanup = wrap_argv(clone_cmd, mode="strict")
         sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
         proc = await asyncio.create_subprocess_exec(
             *sandboxed_cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            env=minimal_env(),
+            env=anonymous_git_env(),
             preexec_fn=resource_limit_preexec(),
         )
         try:
@@ -1616,7 +1685,7 @@ async def handle_blob_proxy(request: web.Request) -> web.Response:
     Query params:
       repo  — registry repo identifier (matches a registry entry's ``repo``)
       path  — file path within the repo (e.g. "assets/icon/logo.png")
-      ref   — git ref, defaults to "mainline"
+      ref   — git ref, defaults to "main"
 
     SECURITY: Only serves repos listed in the registry JSON (prevents SSRF).
     Caches fetched blobs to ~/.kirocrew/cache/blobs/{repo}/{ref}/{path}.
@@ -1624,11 +1693,13 @@ async def handle_blob_proxy(request: web.Request) -> web.Response:
     """
     repo = request.query.get("repo", "")
     file_path = request.query.get("path", "")
-    # Look up the registry entry's branch; fall back to query param or mainline
+    # Look up the registry entry's branch; fall back to query param or main
     ref = request.query.get("ref", "")
     if not ref:
-        entry = get_registry_app_by_repo(repo) if repo else None
-        ref = entry.get("branch", "mainline") if entry else "mainline"
+        entry = (
+            await asyncio.to_thread(get_registry_app_by_repo, repo) if repo else None
+        )
+        ref = entry.get("branch", "main") if entry else "main"
 
     # Validate inputs
     if not repo or not file_path:
@@ -1655,10 +1726,10 @@ async def handle_blob_proxy(request: web.Request) -> web.Response:
         return web.json_response({"error": "repo not in registry"}, status=403)
 
     # Check cache.  ``repo`` may now be a full git URL (containing ``/`` and
-    # ``:``), so derive a flat, filesystem-safe cache key rather than using the
-    # raw value as a directory tree.  The resolved-path check below still
-    # guards against any escape out of the cache root.
-    repo_key = re.sub(r"[^A-Za-z0-9_.-]", "_", repo)
+    # ``:``), so derive a flat, filesystem-safe, injective cache key rather than
+    # using the raw value as a directory tree.  The resolved-path check below
+    # still guards against any escape out of the cache root.
+    repo_key = _blob_cache_key(repo)
     cache_path = _blob_cache_dir() / repo_key / ref / file_path
 
     # SECURITY: Verify resolved path stays within cache dir BEFORE any
@@ -2002,16 +2073,23 @@ async def handle_registries(request: web.Request) -> web.Response:
         repo = str(entry.get("repo", "")).strip()
         if not repo:
             return _deny("repo is required")
-        if not re.match(r"^[A-Za-z0-9_\-]+$", repo):
+        # Accept a bare name (legacy — kept for companion resolution) OR a
+        # vetted full git URL. Reuse the blob-proxy validator, which rejects
+        # shell metacharacters / traversal and owner/repo shorthand.
+        if not _is_safe_repo_identifier(repo):
             return _deny(f"invalid repo name: {repo!r}", f"repo={repo}")
         if repo in _blocked_repos:
             return _deny(
                 f"{repo!r} is the core registry — no need to add it", f"blocked_repo={repo}"
             )
-        name = str(entry.get("name", "")).strip() or repo
+        # Bare names default the display name to the repo (legacy). Full URLs
+        # derive a safe slug from host+path so two URL registries never collide
+        # on a default name.
+        default_name = repo if _SAFE_REPO_RE.match(repo) else _derive_registry_name(repo)
+        name = str(entry.get("name", "")).strip() or default_name
         if not re.match(r"^[A-Za-z0-9_\-. ]+$", name):
             return _deny(f"invalid registry name: {name!r}", f"name={name}")
-        branch = str(entry.get("branch", "mainline")).strip() or "mainline"
+        branch = str(entry.get("branch", "main")).strip() or "main"
         if not re.match(r"^[A-Za-z0-9][A-Za-z0-9_\-./]*$", branch) or ".." in branch:
             return _deny(f"invalid branch name: {branch!r}", f"branch={branch}")
         validated.append({"name": name, "repo": repo, "branch": branch})
@@ -2041,6 +2119,39 @@ async def handle_registries(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": f"cannot read config: {exc}"}, status=500
         )
+    # Detect hosts this PUT newly introduces to the registry trust set. A
+    # configured registry host is fed into the loosened-sandbox / SSH-clone
+    # trust set (see registry._configured_registry_hosts) AND its apps become
+    # installable with gateway privileges, so admitting a host is a genuine
+    # trust grant — not just a config edit. The generic ``registries.update``
+    # event does not record WHICH host gained trust, leaving an unreconstructable
+    # audit gap; emit a distinct, per-host ``registries.host_trust_granted``
+    # event so incident response can always establish when/how a host entered
+    # the trust set. Compare against the PRIOR on-disk config, not the freshly
+    # validated list, so re-saving an unchanged list emits nothing.
+    # ``data.get("registries") or []`` (not ``data.get("registries", [])``):
+    # a config carrying an explicit ``"registries": null`` loads fine elsewhere
+    # via the same ``or []`` idiom, so iterating the bare ``.get`` default would
+    # attempt to loop over ``None`` and turn this repair-PUT into an HTTP 500,
+    # blocking the only dashboard path that could fix the malformed value.
+    prior = data.get("registries") or []
+    prior_hosts = {
+        h
+        for r in prior
+        if isinstance(r, dict) and (h := _git_url_host(str(r.get("repo", ""))))
+    }
+    newly_trusted_hosts: list[str] = []
+    for r in validated:
+        host = _git_url_host(r["repo"])
+        if host and host not in prior_hosts and host not in newly_trusted_hosts:
+            newly_trusted_hosts.append(host)
+            sel().log_api_access(
+                caller="dashboard",
+                operation="registries.host_trust_granted",
+                outcome="success",
+                resources=f"host={host} repo={r['repo']}",
+            )
+
     data["registries"] = validated
     cfg.parent.mkdir(parents=True, exist_ok=True)
     atomic_write(cfg, json.dumps(data, indent=2) + "\n")
@@ -2051,7 +2162,72 @@ async def handle_registries(request: web.Request) -> web.Response:
         outcome="success",
         resources=f"count={len(validated)} repos={','.join(r['repo'] for r in validated)}",
     )
-    return web.json_response({"ok": True, "registries": validated})
+    return web.json_response(
+        {"ok": True, "registries": validated, "newlyTrustedHosts": newly_trusted_hosts}
+    )
+
+
+async def handle_registries_refresh(request: web.Request) -> web.Response:
+    """POST /api/apps/registries/refresh — bust registry caches and re-warm.
+
+    Optional JSON body ``{"repo": "<git-url-or-name>"}`` refreshes only the
+    registry whose ``.repo`` matches; omit/empty to refresh all. The blocking
+    cache-bust + re-fetch is offloaded inside ``refresh_registries`` (async).
+    """
+    from kiro_crew.apps.registry import refresh_registries
+
+    caller = request.get("user", "dashboard")
+    repo: str | None = None
+    body_bytes = await request.read()
+    if body_bytes:
+        try:
+            body = json.loads(body_bytes)
+        except Exception:
+            return web.json_response({"error": "invalid JSON"}, status=400)
+        # A non-empty body MUST decode to an object. A valid-but-non-object
+        # payload (e.g. ``[]`` or ``"foo"``) previously slipped past the
+        # ``isinstance(body, dict)`` guard leaving ``repo=None``, which then
+        # refreshed EVERY configured registry — an unintended fan-out of git
+        # clones / cache writes from a malformed request. Reject it as a 400.
+        if not isinstance(body, dict):
+            return web.json_response(
+                {"error": "request body must be a JSON object"}, status=400
+            )
+        raw = body.get("repo")
+        if raw is not None:
+            repo = str(raw).strip() or None
+
+    if repo is not None and not _is_safe_repo_identifier(repo):
+        sel().log_api_access(
+            caller=caller,
+            operation="registries.refresh",
+            outcome="denied",
+            resources=f"repo={repo}",
+        )
+        return web.json_response({"error": f"invalid repo: {repo!r}"}, status=400)
+
+    result = await refresh_registries(repo)
+    if result.get("not_found"):
+        sel().log_api_access(
+            caller=caller,
+            operation="registries.refresh",
+            outcome="not_found",
+            resources=f"repo={repo}",
+        )
+        return web.json_response(
+            {"error": f"no configured registry matches repo: {repo!r}"},
+            status=404,
+        )
+    sel().log_api_access(
+        caller=caller,
+        operation="registries.refresh",
+        outcome="success" if result.get("ok") else "partial",
+        resources=(
+            f"refreshed={len(result.get('refreshed', []))} "
+            f"failed={len(result.get('failed', []))} apps={result.get('apps')}"
+        ),
+    )
+    return web.json_response(result)
 
 
 def register_app_routes(app: web.Application) -> None:
@@ -2074,6 +2250,7 @@ def register_app_routes(app: web.Application) -> None:
     app.router.add_get("/api/apps/registry", handle_registry)
     app.router.add_get("/api/apps/registries", handle_registries)
     app.router.add_put("/api/apps/registries", handle_registries)
+    app.router.add_post("/api/apps/registries/refresh", handle_registries_refresh)
     app.router.add_get("/api/apps/blob", handle_blob_proxy)
     app.router.add_post("/api/apps/registry/install", handle_registry_install)
     app.router.add_post("/api/apps/registry/install-stream", handle_registry_install_stream)

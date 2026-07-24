@@ -8,7 +8,7 @@ import type React from 'react'
 import { useState } from 'react'
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
 import {
-  Plus, Trash2, GitBranch, Database, ExternalLink, RefreshCw, X,
+  Plus, Trash2, GitBranch, Database, ExternalLink, RefreshCw, X, ShieldCheck,
 } from 'lucide-react'
 import { api } from '../api/client'
 import { Card, CardTitle, Btn, Input, EmptyState, Badge } from './ui'
@@ -18,13 +18,51 @@ import { recordEvent } from '../rum'
 
 type Registry = { name: string; repo: string; branch: string }
 
+// Shell metacharacters / whitespace that must never appear in a repo value.
+const SHELL_META = /[\s;&|`$(){}<>'"\\]/
+
+/**
+ * A repo value is valid if it is EITHER a legacy bare name
+ * (`[A-Za-z0-9_-]+`) OR a git URL (https/ssh/scp-style). In all cases it must
+ * be free of whitespace and shell metacharacters.
+ */
+function isValidRepo(repo: string): boolean {
+  if (!repo || SHELL_META.test(repo)) return false
+  if (/^[A-Za-z0-9_-]+$/.test(repo)) return true // legacy bare name
+  // HTTPS only: plaintext http:// is rejected by the backend (registry clones
+  // fetch manifests whose setup code later runs with gateway privileges, so an
+  // unauthenticated transport is a MITM app-injection vector). Mirror that gate
+  // client-side so the form validates before a guaranteed 400.
+  if (/^https:\/\/\S+$/.test(repo)) return true // https URL
+  if (/^ssh:\/\/\S+$/.test(repo)) return true // ssh:// URL
+  if (/^git@[^\s:]+:\S+$/.test(repo)) return true // scp-style git@host:org/repo.git
+  return false
+}
+
+/**
+ * Derive a browsable https web URL from a repo value:
+ *  - https URLs open as-is
+ *  - scp/ssh forms convert to https://host/path (stripping a trailing .git)
+ *  - bare names keep the legacy kirodotdev-labs URL
+ */
+function repoWebUrl(repo: string): string {
+  if (/^https?:\/\//.test(repo)) return repo
+  const scp = repo.match(/^git@([^:]+):(.+)$/)
+  if (scp) return `https://${scp[1]}/${scp[2].replace(/\.git$/, '')}`
+  const ssh = repo.match(/^ssh:\/\/(?:[^@/]+@)?([^/]+)\/(.+)$/)
+  if (ssh) return `https://${ssh[1]}/${ssh[2].replace(/\.git$/, '')}`
+  return `https://github.com/kirodotdev-labs/${repo}`
+}
+
 export default function RegistryManager() {
   const queryClient = useQueryClient()
   const [adding, setAdding] = useState(false)
   const [editName, setEditName] = useState('')
   const [editRepo, setEditRepo] = useState('')
-  const [editBranch, setEditBranch] = useState('mainline')
+  const [editBranch, setEditBranch] = useState('')
   const [error, setError] = useState('')
+  const [trustNotice, setTrustNotice] = useState<string[]>([])
+  const [lastSyncedAt, setLastSyncedAt] = useState('')
 
   const { data, isLoading } = useQuery({
     queryKey: ['registries'],
@@ -34,36 +72,71 @@ export default function RegistryManager() {
 
   const mutation = useMutation({
     mutationFn: (regs: Registry[]) => api.updateRegistries(regs),
-    onSuccess: () => {
+    onSuccess: (res: { newlyTrustedHosts?: string[] }) => {
       queryClient.invalidateQueries({ queryKey: ['registries'] })
       queryClient.invalidateQueries({ queryKey: ['registry'] })
       setError('')
+      // Surface the trust grant that just happened. Adding a registry host is
+      // not a neutral config edit: that host's apps become installable (their
+      // setup runs with gateway privileges, signatures optional by default) and
+      // ssh-form hosts join the loosened-sandbox clone set. The owner who
+      // clicked "Add" is the one actor who should consciously acknowledge it,
+      // so echo the backend's authoritative newlyTrustedHosts list here.
+      setTrustNotice(res?.newlyTrustedHosts && res.newlyTrustedHosts.length > 0 ? res.newlyTrustedHosts : [])
     },
     onError: (e: unknown) => setError(e instanceof Error ? e.message : 'Failed to update registries'),
   })
 
+  const refreshMutation = useMutation({
+    mutationFn: (repo?: string) => api.refreshRegistries(repo),
+    onSuccess: (res: { lastSyncedAt?: string; ok?: boolean; failed?: string[] }) => {
+      queryClient.invalidateQueries({ queryKey: ['registry'] })
+      queryClient.invalidateQueries({ queryKey: ['registries'] })
+      if (res?.lastSyncedAt) setLastSyncedAt(res.lastSyncedAt)
+      // Surface per-registry failures instead of reporting a blanket success:
+      // a failed refetch keeps serving the prior (stale) listing rather than
+      // dropping the registry's apps, so the user must know it didn't sync.
+      if (res?.ok === false && res.failed && res.failed.length > 0) {
+        setError(`Could not refresh: ${res.failed.join(', ')} — still showing the last-synced apps for these.`)
+      } else {
+        setError('')
+      }
+    },
+    onError: (e: unknown) => setError(e instanceof Error ? e.message : 'Failed to refresh registries'),
+  })
+
   const handleAdd = () => {
     const repo = editRepo.trim()
-    const name = editName.trim() || repo
-    const branch = editBranch.trim() || 'mainline'
+    // Send an empty name/branch when omitted so the BACKEND owns the defaults
+    // (safe slug derivation + the 'main' branch default). Sending `name = repo`
+    // for a URL made the backend reject it (400) since names disallow '/' & ':'.
+    const name = editName.trim()
+    const branch = editBranch.trim()
     if (!repo) { setError('Repo name is required'); return }
-    if (!/^[A-Za-z0-9_\-]+$/.test(repo)) {
-      setError('Repo must be alphanumeric (hyphens/underscores allowed)')
+    if (!isValidRepo(repo)) {
+      setError('Repo must be a git URL or an alphanumeric name (hyphens/underscores allowed)')
       return
     }
     if (registries.some(r => r.repo === repo)) {
       setError(`Registry "${repo}" already exists`)
       return
     }
-    mutation.mutate([...registries, { name, repo, branch }])
+    // Keep the form open and populated until the mutation actually succeeds:
+    // clearing synchronously here would lose the user's input if the backend
+    // rejects the value (e.g. 400), forcing them to reopen and re-enter it.
+    mutation.mutate([...registries, { name, repo, branch }], {
+      onSuccess: () => {
+        setAdding(false)
+        setEditName('')
+        setEditRepo('')
+        setEditBranch('')
+      },
+    })
     recordEvent('registry_add', { repo, name, branch })
-    setAdding(false)
-    setEditName('')
-    setEditRepo('')
-    setEditBranch('mainline')
   }
 
   const handleRemove = (repo: string) => {
+    setTrustNotice([])
     mutation.mutate(registries.filter(r => r.repo !== repo))
     recordEvent('registry_remove', { repo })
   }
@@ -79,6 +152,18 @@ export default function RegistryManager() {
         <div className="mb-3 bg-danger/10 border border-danger/20 rounded-lg p-2.5 flex items-center gap-2 animate-rise">
           <span className="text-danger text-[13px] flex-1">{error}</span>
           <Clickable className="text-danger/60 hover:text-danger" onClick={() => setError('')} aria-label="Dismiss error">
+            <X size={14} />
+          </Clickable>
+        </div>
+      )}
+
+      {trustNotice.length > 0 && (
+        <div className="mb-3 bg-accent/10 border border-accent/20 rounded-lg p-2.5 flex items-start gap-2 animate-rise">
+          <ShieldCheck size={14} className="text-accent shrink-0 mt-0.5" />
+          <span className="text-accent text-[13px] flex-1">
+            You are now trusting apps from {trustNotice.join(', ')}. Apps from {trustNotice.length > 1 ? 'these hosts' : 'this host'} become installable and run setup with gateway privileges.
+          </span>
+          <Clickable className="text-accent/60 hover:text-accent" onClick={() => setTrustNotice([])} aria-label="Dismiss trust notice">
             <X size={14} />
           </Clickable>
         </div>
@@ -112,10 +197,17 @@ export default function RegistryManager() {
               </div>
               <Clickable
                 className="text-muted hover:text-accent transition-colors opacity-0 group-hover:opacity-100"
-                onClick={() => window.open(`https://github.com/kirodotdev-labs/${reg.repo}`, '_blank')}
+                onClick={() => window.open(repoWebUrl(reg.repo), '_blank')}
                 aria-label={`Open ${reg.repo} repository`}
               >
                 <ExternalLink size={14} />
+              </Clickable>
+              <Clickable
+                className={`text-muted hover:text-accent transition-colors opacity-0 group-hover:opacity-100 ${refreshMutation.isPending ? 'pointer-events-none opacity-30' : ''}`}
+                onClick={() => refreshMutation.mutate(reg.repo)}
+                aria-label={`Refresh ${reg.name} registry`}
+              >
+                <RefreshCw size={14} className={refreshMutation.isPending && refreshMutation.variables === reg.repo ? 'animate-spin' : ''} />
               </Clickable>
               <Clickable
                 className={`text-muted hover:text-danger transition-colors opacity-0 group-hover:opacity-100 ${mutation.isPending ? 'pointer-events-none opacity-30' : ''}`}
@@ -148,7 +240,7 @@ export default function RegistryManager() {
               <label htmlFor="registry-repo" className="text-[12px] text-muted mb-1 block">Repo *</label>
               <Input
                 id="registry-repo"
-                placeholder="e.g. my-kirocrew-app-registry"
+                placeholder="https://github.com/org/app-registry"
                 value={editRepo}
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEditRepo(e.target.value)}
                 onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => e.key === 'Enter' && handleAdd()}
@@ -159,7 +251,7 @@ export default function RegistryManager() {
               <label htmlFor="registry-branch" className="text-[12px] text-muted mb-1 block">Branch</label>
               <Input
                 id="registry-branch"
-                placeholder="mainline"
+                placeholder="main"
                 value={editBranch}
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEditBranch(e.target.value)}
                 onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => e.key === 'Enter' && handleAdd()}
@@ -179,12 +271,21 @@ export default function RegistryManager() {
             <Plus size={14} /> Add Registry
           </Btn>
           {registries.length > 0 && (
-            <Btn
-              onClick={() => queryClient.invalidateQueries({ queryKey: ['registry'] })}
-              aria-label="Refresh registry apps"
-            >
-              <RefreshCw size={14} /> Sync Apps
-            </Btn>
+            <>
+              <Btn
+                onClick={() => refreshMutation.mutate(undefined)}
+                disabled={refreshMutation.isPending}
+                aria-label="Sync registry apps"
+              >
+                <RefreshCw size={14} className={refreshMutation.isPending && !refreshMutation.variables ? 'animate-spin' : ''} />
+                {refreshMutation.isPending && !refreshMutation.variables ? 'Syncing…' : 'Sync Apps'}
+              </Btn>
+              {lastSyncedAt && (
+                <span className="text-[12px] text-muted">
+                  Last synced {new Date(lastSyncedAt).toLocaleTimeString()}
+                </span>
+              )}
+            </>
           )}
         </div>
       )}

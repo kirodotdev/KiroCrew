@@ -171,6 +171,10 @@ async def test_fetch_app_manifest_reaps_clone_tree_on_timeout(monkeypatch):
         return proc
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+    # The SSRF host-trust gate short-circuits untrusted hosts before the clone
+    # spawns; this test targets the timeout-reap path AFTER the gate admits the
+    # host, so treat the test host as trusted.
+    monkeypatch.setattr(registry, "is_clone_host_trusted", lambda url: True)
 
     result = await registry._fetch_app_manifest(
         repo="https://example.com/demo.git",
@@ -313,7 +317,7 @@ async def test_install_script_timeout_routes_through_kill_process_group(monkeypa
         json.dumps({"setup": {"onInstall": "sleep 999"}}), encoding="utf-8"
     )
 
-    async def _fake_build(git_url, name, log_lines, branch="main"):
+    async def _fake_build(git_url, name, log_lines, branch="main", **kwargs):
         return {"ok": True, "pkg_dir": tmp_path}
 
     monkeypatch.setattr(registry, "_clone_build_app", _fake_build)

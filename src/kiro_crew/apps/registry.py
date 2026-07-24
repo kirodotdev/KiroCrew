@@ -35,6 +35,8 @@ import re
 import shutil
 import sys
 import time
+from datetime import datetime, timezone
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
@@ -144,6 +146,70 @@ def minimal_env(**extra: str) -> dict[str, str]:
     and route-level uninstall handlers.
     """
     env = {k: v for k, v in os.environ.items() if k in _SAFE_ENV_KEYS}
+    env.update(extra)
+    return env
+
+
+# Env keys that let git present the gateway's *ambient* identity to a remote:
+# the SSH agent socket, and any GIT_SSH / GIT_SSH_COMMAND override that could
+# route auth through the owner's keys. Stripped for index-originated clones.
+_GIT_CREDENTIAL_ENV_KEYS = frozenset({"SSH_AUTH_SOCK", "SSH_AGENT_PID", "GIT_SSH", "GIT_SSH_COMMAND"})
+
+
+def anonymous_git_env(**extra: str) -> dict[str, str]:
+    """Env for an INDEX-ORIGINATED (automatic, browse/refresh-time) git clone.
+
+    Confused-deputy defense (companion to :func:`is_clone_host_trusted`): the
+    clone-host trust gate is deliberately **host-granular**, so a host the owner
+    configured for one registry (e.g. their internal forge) is trusted wholesale.
+    A configured registry's ``app-registry.json`` is UNTRUSTED content, so it can
+    list an app whose ``repo`` points at a *sibling* private repo on that same
+    trusted host. The manifest/blob-proxy paths clone such repos **automatically**
+    on browse/refresh — with no per-repo owner action — so cloning them with the
+    gateway's ambient git/ssh identity would be a confused-deputy read of a
+    private sibling repo, surfaced back through the App Store. Such automatic
+    clones therefore run **credential-free / anonymous**:
+
+    - drop the SSH agent + ``GIT_SSH``/``GIT_SSH_COMMAND`` passthrough
+      (``_GIT_CREDENTIAL_ENV_KEYS``) so no ssh key/agent is ever offered;
+    - disable system **and** global git config (``GIT_CONFIG_NOSYSTEM=1`` +
+      ``GIT_CONFIG_GLOBAL=os.devnull``) so no HTTPS credential helper fires;
+    - never prompt (``GIT_TERMINAL_PROMPT=0``, plus a batch-mode
+      ``GIT_SSH_COMMAND`` with no identity/agent) so a private repo simply fails
+      to clone (→ graceful fallback) instead of authenticating as the gateway.
+
+    Callers must ALSO pass ``mode="strict"`` to :func:`wrap_argv` so the OS
+    sandbox hides ``~/.ssh`` — env suppression and the sandbox are belt-and-
+    suspenders on the same credential-free property.
+
+    Credential posture by clone origin (all four paths gate on
+    :func:`is_clone_host_trusted` first):
+
+    - **Automatic** browse/refresh clones (manifest + blob proxy) — always
+      credential-free / anonymous (this function), because no per-repo owner
+      action gates them.
+    - **Index-originated installs** — an app whose registry entry came from an
+      owner-configured *external* index (carries ``_registry``): the ``repo``
+      URL is index-controlled, so the install clone is ALSO credential-free
+      (``anonymous_git_env`` + strict sandbox); the owner designated the index
+      URL, not the app's repo. See :func:`_git_clone_or_pull`'s
+      ``index_originated`` flag.
+    - **Bundled / owner-designated installs** — the curated bundled registry (no
+      ``_registry`` marker) and fetching the owner's own configured registry
+      index keep full credentials via :func:`minimal_env`; those repos are
+      deliberately owner-designated.
+    """
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if k in _SAFE_ENV_KEYS and k not in _GIT_CREDENTIAL_ENV_KEYS
+    }
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    env["GIT_CONFIG_NOSYSTEM"] = "1"
+    env["GIT_CONFIG_GLOBAL"] = os.devnull
+    # If a trusted-host remote is nonetheless SSH, force batch mode with no
+    # identity/agent so it can't silently authenticate as the gateway.
+    env["GIT_SSH_COMMAND"] = "ssh -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none"
     env.update(extra)
     return env
 
@@ -297,6 +363,45 @@ def _context_clone_sandbox_mode(git_url: str) -> str:
         return _clone_sandbox_mode(git_url, _configured_registry_hosts())
 
 
+def is_clone_host_trusted(git_url: str) -> bool:
+    """SSRF gate: is *git_url*'s host one the owner explicitly trusts to clone?
+
+    The trust set is the well-known public forges (``_PUBLIC_GIT_HOSTS``, plus
+    any a companion contributes) UNION the hosts of the owner's
+    explicitly-configured external registries (``_configured_registry_hosts``).
+
+    Why this exists: registry ``repo`` fields are now full git URLs, and a
+    configured external (federated) registry's ``app-registry.json`` is
+    UNTRUSTED content — it can list an app whose ``repo`` points at an internal
+    address (e.g. ``https://127.0.0.1:8443/x``) or any attacker-controlled host.
+    Such a value passes ``_is_safe_repo_identifier`` and enters the blob-proxy
+    allowlist (``known_registry_repos``), so without this gate merely browsing
+    the App Store would drive ``git clone`` against the loopback/internal
+    network — an authenticated backend SSRF. Constraining every URL clone to an
+    explicitly-trusted HOST closes that vector and is immune to DNS rebinding:
+    the hostname itself must be trusted, not its (re-resolvable) IP. An
+    owner-configured internal forge (e.g. self-hosted GitLab at a private IP)
+    stays allowed precisely because the owner added it; an index-injected host
+    never is.
+
+    Bare-name legacy repos (no URL host) return ``False`` here and are handled
+    by the bundled-registry allowlist — they never reach a URL clone. Fails
+    CLOSED: an unparseable/hostless URL is untrusted.
+    """
+    host = _git_url_host(git_url)
+    if not host:
+        return False
+    try:
+        policy = current_context().registry
+        trusted = frozenset(policy.public_git_hosts()) | _configured_registry_hosts()
+    except PlatformCompositionError:
+        raise
+    except Exception:
+        logger.debug("clone-host trust set via context failed; using default", exc_info=True)
+        trusted = _PUBLIC_GIT_HOSTS | _configured_registry_hosts()
+    return host in trusted
+
+
 def _edition_registry_rows() -> list[dict[str, Any]]:
     """Edition-contributed App-Store rows (CPP seam), fail-closed to []."""
     from kiro_crew.platform.context import safe_context_call
@@ -347,8 +452,28 @@ def _load_registry_file() -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
+def _safe_cache_stem(name: str) -> str:
+    """Map an arbitrary registry/app name to a filesystem-safe cache stem.
+
+    Pure-safe names (``[A-Za-z0-9_.\\-]``, no ``..``) are returned byte-identical
+    so existing caches stay valid. Any name carrying disallowed characters —
+    crucially path separators or ``..`` traversal supplied by an external
+    registry entry (e.g. ``../../config``) — is slugified AND disambiguated with
+    a short stable hash of the ORIGINAL name, so the derived path can never
+    escape ``_manifest_cache_dir()`` nor collide with another name.
+    """
+    if ".." not in name and re.match(r"^[A-Za-z0-9_.\-]+$", name):
+        return name
+    slug = re.sub(r"[^A-Za-z0-9_\-]+", "-", name).strip("-") or "app"
+    digest = sha256(name.encode("utf-8")).hexdigest()[:8]
+    return f"{slug}-{digest}"
+
+
 def _manifest_cache_path(name: str) -> Path:
-    return _manifest_cache_dir() / f"{name}.json"
+    # Sanitize the name so a hostile/traversal entry name from an external
+    # registry can never resolve outside the manifest cache dir (read, write,
+    # AND delete all go through here, so they stay mutually consistent).
+    return _manifest_cache_dir() / f"{_safe_cache_stem(name)}.json"
 
 
 def _read_manifest_cache(name: str) -> dict[str, Any] | None:
@@ -377,6 +502,51 @@ def _write_manifest_cache(name: str, data: dict[str, Any]) -> None:
         logger.warning("Failed to cache manifest for %s: %s", name, exc)
 
 
+def _is_safe_registry_subdir(subdir: Any) -> bool:
+    """True if *subdir* is a safe, contained relative path for a registry entry.
+
+    An external registry index is untrusted and controls the entire entry,
+    including ``subdirectory`` — which is later joined to the throwaway clone
+    dir, the persistent app-source dir, and the manifest read path. An absolute
+    or ``..`` value would escape those roots and let an attacker-selected
+    ``app.json`` (→ ``setup.onInstall``) be read/executed. Empty/missing means
+    the repo root (safe). Rejects non-strings, NUL, backslashes (Windows/UNC
+    separators), absolute paths (POSIX ``/…`` or drive-letter ``C:…``), and any
+    ``.``/``..`` path segment. Purely lexical; the use-site
+    :func:`_contained_join` adds a symlink-resolving containment check as
+    defense-in-depth.
+    """
+    if subdir in (None, ""):
+        return True
+    if not isinstance(subdir, str):
+        return False
+    if "\x00" in subdir or "\\" in subdir:
+        return False
+    if subdir.startswith("/") or (len(subdir) >= 2 and subdir[1] == ":"):
+        return False
+    return not any(seg in ("..", ".") for seg in subdir.split("/"))
+
+
+def _contained_join(root: Path, subdir: str) -> Path | None:
+    """Join *subdir* under *root*, returning the symlink-resolved result only if
+    it stays within *root*; ``None`` on any escape.
+
+    Defense-in-depth companion to :func:`_is_safe_registry_subdir`: the lexical
+    gate rejects ``..``/absolute values before an entry is cached/listed, and
+    this resolves symlinks so a hostile clone containing e.g. ``sub -> /etc``
+    cannot smuggle a read outside the clone root at use time. Returns *root*
+    unchanged for an empty *subdir*.
+    """
+    if not subdir:
+        return root
+    try:
+        base = root.resolve()
+        target = (root / subdir).resolve()
+    except OSError:
+        return None
+    return target if target.is_relative_to(base) else None
+
+
 async def _fetch_app_manifest(
     repo: str,
     branch: str,
@@ -394,15 +564,16 @@ async def _fetch_app_manifest(
 
     Returns the parsed app.json dict, or None on failure.  All failures are
     swallowed (returns None) so a missing/unreachable repo never crashes the
-    listing path on a vanilla machine.
+    listing path on a vanilla machine. *subdirectory* is an untrusted
+    index-controlled value; it is joined via :func:`_contained_join` so an
+    absolute/``..``/symlink value can never read outside the clone root.
     """
     # Try persistent clone first (already installed)
     if app_name:
         clone_dir = app_source_dir(app_name)
-        local_manifest = (
-            clone_dir / subdirectory / "app.json" if subdirectory else clone_dir / "app.json"
-        )
-        if local_manifest.is_file():
+        manifest_dir = _contained_join(clone_dir, subdirectory)
+        local_manifest = manifest_dir / "app.json" if manifest_dir is not None else None
+        if local_manifest is not None and local_manifest.is_file():
             try:
                 content = await asyncio.to_thread(local_manifest.read_text, "utf-8")
                 return json.loads(content)
@@ -414,8 +585,18 @@ async def _fetch_app_manifest(
     if not _looks_like_git_url(git_url):
         # Not a cloneable URL (e.g. empty or a bare name on a public machine).
         return None
+    # SSRF gate: only clone from explicitly-trusted hosts. An untrusted external
+    # registry index can list an app repo pointing at an internal address; this
+    # listing path clones automatically, so it must not honor such a host.
+    # is_clone_host_trusted() loads config from disk (KiroCrewConfig.load), so
+    # run it off the event loop to avoid blocking all gateway tasks.
+    if not await asyncio.to_thread(is_clone_host_trusted, git_url):
+        logger.debug(
+            "manifest clone refused for %r: host not in trusted forge/registry set (SSRF gate)",
+            git_url,
+        )
+        return None
 
-    file_path = f"{subdirectory}/app.json" if subdirectory else "app.json"
     import tempfile
 
     tmp_root: str | None = None
@@ -432,13 +613,17 @@ async def _fetch_app_manifest(
             git_url,
             tmp_root,
         ]
-        sandboxed_cmd, _cleanup = wrap_argv(clone_cmd, mode=_context_clone_sandbox_mode(git_url))
+        # Index-originated automatic clone: force strict sandbox (~/.ssh hidden)
+        # and a credential-free env so a trusted-host repo injected by an
+        # untrusted index can't be cloned with the gateway's ambient identity
+        # (confused-deputy defense — see anonymous_git_env).
+        sandboxed_cmd, _cleanup = wrap_argv(clone_cmd, mode="strict")
         sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
         proc = await asyncio.create_subprocess_exec(
             *sandboxed_cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            env=minimal_env(),
+            env=anonymous_git_env(),
             preexec_fn=resource_limit_preexec(),
             start_new_session=platform_compat.IS_POSIX,
             creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
@@ -451,7 +636,12 @@ async def _fetch_app_manifest(
                 stderr.decode(errors="replace").strip(),
             )
             return None
-        manifest_path = Path(tmp_root) / file_path
+        manifest_dir = _contained_join(Path(tmp_root), subdirectory)
+        if manifest_dir is None:
+            # Untrusted index subdirectory escaped the clone root (absolute,
+            # ``..``, or a symlink resolving outside tmp_root) — refuse.
+            return None
+        manifest_path = manifest_dir / "app.json"
         if not manifest_path.is_file():
             return None
         content = await asyncio.to_thread(manifest_path.read_text, "utf-8")
@@ -473,7 +663,7 @@ async def _resolve_manifest(entry: dict[str, Any]) -> dict[str, Any]:
     """
     name = entry.get("name", "")
     repo = entry.get("repo", "")
-    branch = entry.get("branch", "mainline")
+    branch = entry.get("branch", "main")
     subdirectory = entry.get("subdirectory", "")
     git_url = _entry_git_url(entry)
 
@@ -653,10 +843,18 @@ _EXTERNAL_REGISTRY_CACHE_TTL = 3600  # 1 hour
 
 def _external_registry_cache_path(name: str) -> Path:
 
-    # Sanitize name to prevent path traversal in cache file paths
-    if not re.match(r"^[A-Za-z0-9_\-]+$", name):
-        name = "invalid"
-    return _manifest_cache_dir() / f"_registry_{name}.json"
+    # Pure-safe names keep the historical byte-identical path (no hash suffix)
+    # so existing caches stay valid. Names carrying disallowed characters (e.g.
+    # URL-derived registry names) are slugified AND disambiguated with a short
+    # stable hash of the ORIGINAL name, so two distinct such names can never
+    # clobber the same ``_registry_<name>.json`` cache file.
+    if re.match(r"^[A-Za-z0-9_\-]+$", name):
+        safe = name
+    else:
+        slug = re.sub(r"[^A-Za-z0-9_\-]+", "-", name).strip("-") or "registry"
+        digest = sha256(name.encode("utf-8")).hexdigest()[:8]
+        safe = f"{slug}-{digest}"
+    return _manifest_cache_dir() / f"_registry_{safe}.json"
 
 
 def _read_external_registry_cache(
@@ -678,7 +876,48 @@ def _read_external_registry_cache(
             if age > _EXTERNAL_REGISTRY_CACHE_TTL:
                 return None
         data = json.loads(path.read_text(encoding="utf-8"))
-        return data if isinstance(data, list) else None
+        if not isinstance(data, list):
+            return None
+        # Path-safety gate on EVERY cache read (not just fresh fetches). A cache
+        # file written by an older build — or hand-tampered — may contain an
+        # entry whose name is not valid kebab-case (e.g. ``../../victim``). Such
+        # a name would otherwise flow through list_registry ->
+        # install_from_registry -> ``app_source_dir(name)`` and let a failed
+        # clone's ``shutil.rmtree(dest)`` escape the app-sources root. Fresh
+        # fetches are already filtered before write; re-filter here so cached
+        # and stale-fallback reads can never reintroduce a traversing name.
+        from kiro_crew.apps.manifest import KEBAB_RE
+
+        safe: list[dict[str, Any]] = []
+        for entry in data:
+            if not isinstance(entry, dict):
+                continue
+            entry_name = entry.get("name")
+            if not isinstance(entry_name, str) or not KEBAB_RE.match(entry_name):
+                logger.warning(
+                    "Dropping cached external registry %s entry with invalid "
+                    "name %r (must be lowercase kebab-case)",
+                    name,
+                    entry_name,
+                )
+                continue
+            # ``subdirectory`` is untrusted index content joined to the clone /
+            # app-source roots; drop any entry whose value is absolute or
+            # traversing so it can never reach a filesystem op (same rationale
+            # as the name gate above). Fresh fetches are filtered before write;
+            # re-filter here so a cached/stale/hand-tampered file cannot
+            # reintroduce a traversing subdirectory.
+            if not _is_safe_registry_subdir(entry.get("subdirectory", "")):
+                logger.warning(
+                    "Dropping cached external registry %s entry %r with unsafe "
+                    "subdirectory %r (must be a contained relative path)",
+                    name,
+                    entry_name,
+                    entry.get("subdirectory"),
+                )
+                continue
+            safe.append(entry)
+        return safe
     except (json.JSONDecodeError, OSError):
         return None
 
@@ -821,8 +1060,10 @@ async def _fetch_external_registry_index(
             try:
                 data = json.loads(await asyncio.to_thread(index_path.read_text, "utf-8"))
                 if isinstance(data, list):
+                    # Keep only well-formed object entries — a malformed index
+                    # item (e.g. a bare string) must never reach normalization.
                     _sel_outcome("success")
-                    return data
+                    return [item for item in data if isinstance(item, dict)]
             except (json.JSONDecodeError, OSError):
                 pass
 
@@ -859,6 +1100,72 @@ async def _fetch_external_registry_index(
             await asyncio.to_thread(shutil.rmtree, tmp_root, ignore_errors=True)
 
 
+async def _fetch_and_cache_external_registry(reg) -> list[dict[str, Any]] | None:
+    """Fetch a registry's index, normalize entries, and write the cache.
+
+    Returns the fresh entries on success (cache overwritten), or ``None`` on a
+    fetch failure — in which case the caller decides whether to fall back to a
+    stale cache. Because the cache is only overwritten on success, a transient
+    forge/network failure leaves the prior (stale) cache intact ("stale >
+    missing"): this is the fetch-then-swap contract the refresh path relies on.
+    """
+    name = reg.name or reg.repo
+    entries = await _fetch_external_registry_index(reg.repo, reg.branch)
+    if entries is None:
+        return None
+    # Defensively drop malformed (non-dict) index items before normalization:
+    # a configured repo can return a valid JSON array containing a non-object
+    # (e.g. ``["oops"]``), and ``entry.setdefault(...)`` on a str would raise
+    # AttributeError — which, on the refresh path, escapes as an HTTP 500.
+    entries = [e for e in entries if isinstance(e, dict)]
+    # Path-safety gate: an external registry index is untrusted input. A
+    # hostile/typo entry name such as ``/tmp/victim`` or ``../../victim`` would
+    # otherwise flow through list_registry -> install_from_registry ->
+    # ``app_source_dir(name)`` (which does ``_app_sources_dir() / name`` — an
+    # absolute or traversing name escapes the app-sources root), and on a failed
+    # clone ``_git_clone_or_pull`` calls ``shutil.rmtree(dest)`` on that
+    # attacker-selected path. Reject any entry whose name is not a valid
+    # kebab-case app name (the same KEBAB_RE gate install/register already
+    # enforce) BEFORE it is cached or listed, so a malicious name can never
+    # reach a filesystem operation.
+    from kiro_crew.apps.manifest import KEBAB_RE
+
+    valid_entries: list[dict[str, Any]] = []
+    for entry in entries:
+        entry_name = entry.get("name")
+        if not isinstance(entry_name, str) or not KEBAB_RE.match(entry_name):
+            logger.warning(
+                "Dropping external registry %s entry with invalid name %r "
+                "(must be lowercase kebab-case)",
+                name,
+                entry_name,
+            )
+            continue
+        # ``subdirectory`` is untrusted index content later joined to the clone
+        # and persistent app-source roots; an absolute/``..`` value would escape
+        # them and read/execute an attacker-selected app.json. Drop it before it
+        # is cached or listed (defense-in-depth with _contained_join at use).
+        if not _is_safe_registry_subdir(entry.get("subdirectory", "")):
+            logger.warning(
+                "Dropping external registry %s entry %r with unsafe subdirectory "
+                "%r (must be a contained relative path)",
+                name,
+                entry_name,
+                entry.get("subdirectory"),
+            )
+            continue
+        valid_entries.append(entry)
+    entries = valid_entries
+    # Ensure each entry has gitUrl/repo/branch set (for install_from_registry)
+    for entry in entries:
+        entry.setdefault("gitUrl", reg.repo)
+        entry.setdefault("repo", reg.repo)
+        entry.setdefault("branch", reg.branch)
+        entry["_registry"] = name
+    await asyncio.to_thread(_write_external_registry_cache, name, entries)
+    return entries
+
+
 async def _load_external_registries() -> list[dict[str, Any]]:
     """Load app entries from all configured external registries.
 
@@ -878,8 +1185,6 @@ async def _load_external_registries() -> list[dict[str, Any]]:
 
     async def _load_one(reg) -> list[dict[str, Any]]:
         name = reg.name or reg.repo
-        repo = reg.repo
-        branch = reg.branch
 
         # Try cache first
         cached = await asyncio.to_thread(_read_external_registry_cache, name)
@@ -888,32 +1193,23 @@ async def _load_external_registries() -> list[dict[str, Any]]:
                 entry["_registry"] = name
             return cached
 
-        # Fetch from repo
-        entries = await _fetch_external_registry_index(repo, branch)
-        if entries is None:
-            # Fall back to stale cache (stale > missing)
-            stale = await asyncio.to_thread(
-                _read_external_registry_cache,
-                name,
-                ignore_ttl=True,
-            )
-            if stale is not None:
-                for entry in stale:
-                    entry["_registry"] = name
-                return stale
-            logger.warning("Failed to load external registry %s from %s", name, repo)
-            return []
+        # Fetch from repo (writes the cache on success).
+        entries = await _fetch_and_cache_external_registry(reg)
+        if entries is not None:
+            return entries
 
-        # Ensure each entry has gitUrl/repo/branch set (for install_from_registry)
-        for entry in entries:
-            entry.setdefault("gitUrl", repo)
-            entry.setdefault("repo", repo)
-            entry.setdefault("branch", branch)
-            entry["_registry"] = name
-
-        # Cache the results
-        await asyncio.to_thread(_write_external_registry_cache, name, entries)
-        return entries
+        # Fall back to stale cache (stale > missing)
+        stale = await asyncio.to_thread(
+            _read_external_registry_cache,
+            name,
+            ignore_ttl=True,
+        )
+        if stale is not None:
+            for entry in stale:
+                entry["_registry"] = name
+            return stale
+        logger.warning("Failed to load external registry %s from %s", name, reg.repo)
+        return []
 
     results = await asyncio.gather(
         *[_load_one(reg) for reg in config.registries],
@@ -926,6 +1222,118 @@ async def _load_external_registries() -> list[dict[str, Any]]:
             logger.warning("External registry load failed: %s", result)
 
     return all_entries
+
+
+def _expire_cache_file(path: Path) -> None:
+    """Backdate a cache file's mtime so it reads as stale (best-effort).
+
+    Preferred over unlinking: a subsequent read treats the file as expired and
+    refetches, but the data survives on disk as a stale-fallback if that
+    refetch fails — so a refresh during a forge/network blip degrades to
+    "slightly stale" instead of "apps vanished". Missing file is a no-op.
+
+    Defense-in-depth: the resolved path must stay inside the manifest cache
+    dir; anything else (a traversal-derived path) is ignored rather than
+    touched. In practice ``_manifest_cache_path`` already sanitizes names, so
+    this only guards against future callers.
+    """
+    try:
+        cache_dir = _manifest_cache_dir().resolve()
+        resolved = path.resolve()
+        if cache_dir not in resolved.parents:
+            logger.warning("Refusing to expire cache file outside cache dir: %s", path)
+            return
+        past = time.time() - max(_MANIFEST_CACHE_TTL, _EXTERNAL_REGISTRY_CACHE_TTL) - 3600
+        os.utime(resolved, (past, past))
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        logger.debug("Failed to expire cache file %s: %s", path, exc)
+
+
+async def refresh_registries(repo: str | None = None) -> dict[str, Any]:
+    """Refetch external-registry caches (fetch-then-swap) and re-warm.
+
+    For every configured registry (or just the one whose ``.repo`` matches
+    *repo*), refetches its index and — only on a successful fetch — overwrites
+    the cache and expires the per-app manifest caches its entries contributed
+    (via mtime backdating, so a failed manifest refetch still falls back to the
+    stale copy). A registry whose refetch FAILS keeps its existing cache intact
+    and is reported in ``failed`` rather than silently reported as synced.
+
+    Returns ``{ok, refreshed, failed, results, apps, lastSyncedAt}`` where
+    ``ok`` is True only if every matched registry refreshed successfully and
+    ``results`` carries the per-registry outcome so the UI can distinguish
+    "synced" from "sync failed, serving stale". When *repo* is supplied but
+    matches no configured registry, returns ``ok: False`` with
+    ``not_found: True`` so the route can map it to HTTP 404.
+    """
+    from kiro_crew.config.loader import (
+        KiroCrewConfig,  # deferred: loader imports apps/ at module level
+    )
+
+    config = await asyncio.to_thread(KiroCrewConfig.load)
+    registries = list(config.registries or [])
+    if repo:
+        registries = [r for r in registries if r.repo == repo]
+        # A caller-supplied ``repo`` that matches no configured registry is a
+        # client error, not a silent success: refreshing nothing and returning
+        # ``ok: true`` would let an API client believe a sync happened when the
+        # target does not exist. Signal not-found so the route maps it to 404.
+        if not registries:
+            return {
+                "ok": False,
+                "not_found": True,
+                "refreshed": [],
+                "failed": [],
+                "results": [],
+                "apps": 0,
+                "lastSyncedAt": datetime.now(timezone.utc).isoformat(),
+            }
+
+    refreshed: list[str] = []
+    failed: list[str] = []
+    results: list[dict[str, Any]] = []
+    for reg in registries:
+        name = reg.name or reg.repo
+        # Read the (possibly stale) prior index up front so we know which
+        # per-app manifest caches this registry contributed, even if the
+        # refetch changes/removes some entries.
+        prior = await asyncio.to_thread(
+            _read_external_registry_cache, name, ignore_ttl=True
+        )
+        # Fetch-then-swap: the cache is overwritten only on a successful fetch.
+        entries = await _fetch_and_cache_external_registry(reg)
+        if entries is None:
+            failed.append(name)
+            results.append({"name": name, "ok": False})
+            continue
+        # Expire per-app manifest caches so fresh display info is refetched
+        # lazily on the next read (mtime expiry preserves the stale fallback).
+        manifest_names: set[str] = set()
+        for e in (prior or []) + entries:
+            entry_name = e.get("name")
+            if isinstance(entry_name, str) and entry_name:
+                manifest_names.add(entry_name)
+        for entry_name in manifest_names:
+            await asyncio.to_thread(
+                _expire_cache_file, _manifest_cache_path(entry_name)
+            )
+        refreshed.append(name)
+        results.append({"name": name, "ok": True})
+
+    # Re-warm so the response's app count reflects post-refresh state (and
+    # untouched registries read their still-valid caches).
+    apps = await list_registry()
+
+    return {
+        "ok": not failed,
+        "refreshed": refreshed,
+        "failed": failed,
+        "results": results,
+        "apps": len(apps),
+        "lastSyncedAt": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1027,12 +1435,38 @@ def get_registry_app(name: str) -> dict[str, Any] | None:
     return None
 
 
+def _external_registry_app_by_repo(repo: str) -> dict[str, Any] | None:
+    """Look up an app entry by repo across the user's external (federated)
+    registries, reading local sync caches only (``ignore_ttl`` so a stale index
+    still resolves) — never fetches, so it is safe to call from the per-request
+    blob-proxy worker. Fails open to ``None``."""
+    try:
+        from kiro_crew.config.loader import (
+            KiroCrewConfig,  # circular import: loader.py imports from apps/ at module level; deferring avoids ImportError
+        )
+
+        for reg in KiroCrewConfig.load().registries:
+            cached = _read_external_registry_cache(reg.name or reg.repo, ignore_ttl=True)
+            for entry in cached or []:
+                if isinstance(entry, dict) and entry.get("repo") == repo:
+                    return entry
+    except Exception:  # fail open: branch resolution must never break blob serving
+        logger.debug("_external_registry_app_by_repo: read failed", exc_info=True)
+    return None
+
+
 def get_registry_app_by_repo(repo: str) -> dict[str, Any] | None:
-    """Look up a registry app by repo name (for blob proxy branch lookup)."""
+    """Look up a registry app by repo name (for blob proxy branch lookup).
+
+    Searches the bundled registry first, then the user's external (federated)
+    registries — matching ``known_registry_repos()``'s union — so an
+    external-registry app pinned to a non-``main`` branch resolves the correct
+    ref in the ``/api/apps/blob`` branch fallback instead of silently 403ing.
+    """
     for entry in _load_registry_file():
         if entry.get("repo") == repo:
             return entry
-    return None
+    return _external_registry_app_by_repo(repo)
 
 
 def is_registry_source(source: str) -> bool:
@@ -1134,11 +1568,37 @@ async def _git_clone_or_pull(
     branch: str,
     dest: Path,
     log_lines: list[str],
+    *,
+    index_originated: bool = False,
 ) -> dict[str, Any] | None:
     """Clone *git_url* into *dest*, or fast-forward it if already present.
 
     Returns None on success, or a ``{"ok": False, ...}`` error dict on failure.
+
+    *index_originated* selects the credential posture (confused-deputy defense —
+    see :func:`anonymous_git_env`). When ``False`` (the default: a bundled /
+    owner-designated install) the clone keeps the gateway's ambient git/ssh
+    identity via :func:`minimal_env`. When ``True`` (the repo URL came from an
+    owner-configured *external* registry index — index-controlled content, not a
+    repo the owner typed) the clone runs **credential-free** via
+    :func:`anonymous_git_env` and forces the ``strict`` OS sandbox (``~/.ssh``
+    hidden), so a hostile index entry pointing at a private *sibling* repo on the
+    owner's own trusted forge cannot be read with the gateway's identity.
     """
+    clone_env = anonymous_git_env() if index_originated else minimal_env()
+    sandbox_mode = "strict" if index_originated else _context_clone_sandbox_mode(git_url)
+    # SSRF gate: refuse to clone/pull from a host the owner does not explicitly
+    # trust (public forge or configured registry). The git_url may originate
+    # from an untrusted external registry index; this prevents a clone against
+    # a loopback/internal destination it could inject. is_clone_host_trusted()
+    # loads config from disk, so run it off the event loop.
+    if not await asyncio.to_thread(is_clone_host_trusted, git_url):
+        log_lines.append(f"Refusing clone: host of {git_url!r} is not a trusted forge/registry")
+        return {
+            "ok": False,
+            "error": "untrusted_clone_host",
+            "message": "Refusing to clone from an untrusted host (not a public forge or configured registry).",
+        }
     if dest.is_dir() and (dest / ".git").is_dir():
         # Already cloned — fetch and fast-forward the target branch.
         log_lines.append(f"Updating {git_url} (branch: {branch})...")
@@ -1148,7 +1608,7 @@ async def _git_clone_or_pull(
         # agent-influenced git spawn.
         pull_cmd, _cleanup = wrap_argv(
             ["git", "pull", "--ff-only", "origin", branch],
-            mode=_context_clone_sandbox_mode(git_url),
+            mode=sandbox_mode,
         )
         pull_cmd = cgroup_scope_argv(pull_cmd)
         proc = await asyncio.create_subprocess_exec(
@@ -1158,7 +1618,7 @@ async def _git_clone_or_pull(
             stderr=asyncio.subprocess.STDOUT,
             start_new_session=platform_compat.IS_POSIX,
             creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
-            env=minimal_env(),
+            env=clone_env,
             preexec_fn=resource_limit_preexec(),
         )
         try:
@@ -1187,7 +1647,7 @@ async def _git_clone_or_pull(
         git_url,
         str(dest),
     ]
-    sandboxed_cmd, _cleanup = wrap_argv(clone_cmd, mode=_context_clone_sandbox_mode(git_url))
+    sandboxed_cmd, _cleanup = wrap_argv(clone_cmd, mode=sandbox_mode)
     sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
     proc = await asyncio.create_subprocess_exec(
         *sandboxed_cmd,
@@ -1195,7 +1655,7 @@ async def _git_clone_or_pull(
         stderr=asyncio.subprocess.STDOUT,
         start_new_session=platform_compat.IS_POSIX,
         creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
-        env=minimal_env(),
+        env=clone_env,
         preexec_fn=resource_limit_preexec(),
     )
     try:
@@ -1215,13 +1675,19 @@ async def _clone_build_app(
     git_url: str,
     app_name: str,
     log_lines: list[str],
-    branch: str = "mainline",
+    branch: str = "main",
+    *,
+    index_originated: bool = False,
 ) -> dict[str, Any]:
     """Clone an app repo and run its build, returning the source directory.
 
     Source is cloned to ``~/.kirocrew/app-sources/{app_name}/`` (persistent;
     survives reboots and is reused for updates).  After clone/pull, the app's
     declared build commands run via :func:`_run_app_build`.
+
+    *index_originated* is forwarded to :func:`_git_clone_or_pull` to pick the
+    credential posture (credential-free + strict sandbox for repos whose URL
+    came from an external registry index — see that function's docstring).
 
     Returns ``{"ok": True, "pkg_dir": <Path>}`` on success or
     ``{"ok": False, "error": ...}`` on failure.
@@ -1230,14 +1696,18 @@ async def _clone_build_app(
     # across the complete lifecycle transaction — clone/build, copy,
     # registration, and backend startup — so nested acquisition here would
     # deadlock (asyncio.Lock is not reentrant).
-    return await _clone_build_app_locked(git_url, app_name, log_lines, branch=branch)
+    return await _clone_build_app_locked(
+        git_url, app_name, log_lines, branch=branch, index_originated=index_originated
+    )
 
 
 async def _clone_build_app_locked(
     git_url: str,
     app_name: str,
     log_lines: list[str],
-    branch: str = "mainline",
+    branch: str = "main",
+    *,
+    index_originated: bool = False,
 ) -> dict[str, Any]:
     """Inner implementation of _clone_build_app, called under per-app lock."""
     if not _looks_like_git_url(git_url):
@@ -1248,7 +1718,9 @@ async def _clone_build_app_locked(
         }
 
     pkg_dir = app_source_dir(app_name)
-    clone_err = await _git_clone_or_pull(git_url, branch, pkg_dir, log_lines)
+    clone_err = await _git_clone_or_pull(
+        git_url, branch, pkg_dir, log_lines, index_originated=index_originated
+    )
     if clone_err is not None:
         return clone_err
 
@@ -1396,8 +1868,22 @@ async def install_from_registry(
         return {"ok": False, "error": f"app {name!r} has no git URL configured"}
 
     repo = entry.get("repo", "")
-    branch = entry.get("branch", "mainline")
+    branch = entry.get("branch", "main")
     subdirectory = entry.get("subdirectory", "")
+
+    # Confused-deputy defense on the INSTALL path (companion to the automatic
+    # browse/refresh defense in ``anonymous_git_env``). An entry that came from
+    # an owner-configured *external* registry index carries ``_registry`` (set
+    # when the index is fetched/cached); its ``repo`` URL is index-controlled
+    # content, not a repo the owner typed — the owner clicked Install on an
+    # index-authored name/description. Because ``is_clone_host_trusted`` is
+    # host-granular, such an entry can point at a private *sibling* repo on the
+    # owner's own trusted forge; cloning it with the gateway's ambient git/ssh
+    # identity would read that private repo as a confused deputy. So an
+    # index-originated install clones credential-free + strict-sandboxed too.
+    # Bundled (curated, KiroCrew-shipped) entries have no ``_registry`` marker
+    # and remain owner-designated → full credentials.
+    index_originated = bool(entry.get("_registry"))
 
     # Fetch the app's manifest for platform info and install script. This is a
     # read-only metadata fetch (git archive of app.json), safe to do before the
@@ -1500,13 +1986,26 @@ async def install_from_registry(
             name,
             log_lines,
             branch=branch,
+            index_originated=index_originated,
         )
         if not build_result["ok"]:
             return {**build_result, "log": "\n".join(log_lines)}
 
         app_source = build_result["pkg_dir"]
         if subdirectory:
-            app_source = app_source / subdirectory
+            # ``subdirectory`` is untrusted index-controlled content. Join it
+            # under the cloned source root with symlink-resolving containment so
+            # an absolute/``..``/symlink value cannot point app.json (and thus
+            # setup.onInstall) at an attacker-selected path outside the clone.
+            contained = _contained_join(app_source, subdirectory)
+            if contained is None:
+                return {
+                    "ok": False,
+                    "name": name,
+                    "error": f"unsafe subdirectory {subdirectory!r} escapes the app source root",
+                    "log": "\n".join(log_lines),
+                }
+            app_source = contained
 
         if not (app_source / "app.json").is_file():
             return {
