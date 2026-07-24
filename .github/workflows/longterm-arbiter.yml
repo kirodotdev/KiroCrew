@@ -1,4 +1,4 @@
-name: Long-Term Impact Arbiter
+name: Arbiter
 
 # SECOND-ORDER GATE. The line-level reviewers (Opus 4.8 / GPT 5.6) surface Medium
 # findings and the design reviewer surfaces CONCERNS — none of which block,
@@ -8,7 +8,7 @@ name: Long-Term Impact Arbiter
 # This workflow reads the sub-threshold findings the three reviewers ALREADY
 # posted, judges — with a deliberately conservative rubric — which ones a human
 # must be forced to act on, posts an actionable checklist, and gates the PR via a
-# dedicated "Long-Term Impact" check-run.
+# dedicated "Arbiter — judge from comments" check-run.
 #
 # It is its OWN workflow (not a job inside design-review.yml) precisely so that
 # "Design Review" can be one of its workflow_run triggers — a job cannot be
@@ -28,9 +28,9 @@ name: Long-Term Impact Arbiter
 # ONLY pre-fetched files (Read-only, no gh/git tools), minimizing the prompt-
 # injection surface from untrusted PR content.
 #
-# NOTE: the job's own status check is named "Long-Term Impact Arbiter"
+# NOTE: the job's own status check is named "Arbiter"
 # (informational). The GATING check is the API-posted check-run named
-# "Long-Term Impact" — that is the string to add to branch protection. Keeping
+# "Arbiter — judge from comments" — that is the string to add to branch protection. Keeping
 # the two names distinct avoids two same-named checks on one SHA.
 
 on:
@@ -43,7 +43,7 @@ on:
 permissions:
   contents: read
   pull-requests: write
-  checks: write     # posts the "Long-Term Impact" check-run
+  checks: write     # posts the "Arbiter — judge from comments" check-run
   id-token: write   # required for AWS OIDC (configure-aws-credentials)
 
 concurrency:
@@ -54,7 +54,7 @@ concurrency:
 
 jobs:
   arbiter:
-    name: Long-Term Impact Arbiter
+    name: Arbiter
     runs-on: ubuntu-latest
     # Same-repo PRs only (forks have no OIDC/secrets); handle BOTH event shapes.
     if: >-
@@ -244,7 +244,7 @@ jobs:
             [ARBITER-REVIEWED] ${{ github.event.workflow_run.head_sha || github.event.pull_request.head.sha }}
 
       # Decide the outcome, upsert the arbiter comment, and post the
-      # "Long-Term Impact" check-run (this workflow's runs are not auto-attached
+      # "Arbiter — judge from comments" check-run (this workflow's runs are not auto-attached
       # to the PR, so we create the check-run explicitly against the head SHA —
       # its name is the branch-protection handle). Outcome by state:
       #   skip     -> success  (Dependabot; nothing to gate)
@@ -274,7 +274,7 @@ jobs:
           case "$STATE" in
             skip)
               CONCLUSION="success"; TITLE="Skipped (Dependabot)"
-              BODY="Long-Term Impact arbiter skipped for a Dependabot PR." ;;
+              BODY="Arbiter skipped for a Dependabot PR." ;;
             waiting)
               STATUS="in_progress"; CONCLUSION=""
               TITLE="Waiting for reviewers:${MISSING}"
@@ -301,7 +301,7 @@ jobs:
                 # Errored / overloaded / no verdict header: do NOT hard-block, and
                 # do NOT post raw model/error text (may carry internal detail).
                 CONCLUSION="neutral"; TITLE="Arbiter could not complete (re-run)"
-                BODY="_The long-term impact review did not produce a verdict for \`$SHA\` (the model call errored or returned no header). See the Long-Term Impact Arbiter job logs; re-run to refresh. Non-blocking._"
+                BODY="_The long-term impact review did not produce a verdict for \`$SHA\` (the model call errored or returned no header). See the Arbiter job logs; re-run to refresh. Non-blocking._"
               fi ;;
           esac
 
@@ -310,7 +310,7 @@ jobs:
           if [ "$STATE" != "waiting" ]; then
             {
               echo "$MARKER"
-              echo "## Long-Term Impact — $TITLE"
+              echo "## Arbiter — $TITLE"
               echo
               echo "_Second-order review of already-raised Medium/CONCERNS findings for \`$SHA\` — updated in place; add the \`defer-longterm\` label (with a justification) to override._"
               echo
@@ -335,19 +335,19 @@ jobs:
           # Post the check-run (title/summary trimmed for the check UI).
           ck_title="$(printf '%s' "$TITLE" | head -c 120)"
           ck_summary="$(printf '%s' "$BODY" | head -c 600)"
-          [ -z "$ck_summary" ] && ck_summary="See the Long-Term Impact PR comment."
+          [ -z "$ck_summary" ] && ck_summary="See the Arbiter PR comment."
           if [ "$STATUS" = "completed" ]; then
             gh api --method POST "repos/$REPO/check-runs" \
-              -f name="Long-Term Impact" -f head_sha="$SHA" \
+              -f name="Arbiter — judge from comments" -f head_sha="$SHA" \
               -f status="completed" -f conclusion="$CONCLUSION" \
               -f "output[title]=$ck_title" -f "output[summary]=$ck_summary" >/dev/null \
-              && echo "Posted Long-Term Impact check-run: $CONCLUSION" \
-              || echo "::warning::failed to post Long-Term Impact check-run"
+              && echo "Posted Arbiter — judge from comments check-run: $CONCLUSION" \
+              || echo "::warning::failed to post Arbiter — judge from comments check-run"
           else
             gh api --method POST "repos/$REPO/check-runs" \
-              -f name="Long-Term Impact" -f head_sha="$SHA" \
+              -f name="Arbiter — judge from comments" -f head_sha="$SHA" \
               -f status="in_progress" \
               -f "output[title]=$ck_title" -f "output[summary]=$ck_summary" >/dev/null \
-              && echo "Posted Long-Term Impact check-run: pending (waiting)" \
-              || echo "::warning::failed to post Long-Term Impact check-run"
+              && echo "Posted Arbiter — judge from comments check-run: pending (waiting)" \
+              || echo "::warning::failed to post Arbiter — judge from comments check-run"
           fi

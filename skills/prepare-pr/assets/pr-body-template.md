@@ -19,8 +19,9 @@ sufficient" only when genuinely true, with a one-line why.>
 
 ## Screenshots
 <MANDATORY for user-visible UI changes; delete this section otherwise.
-Commit images to the PR branch under docs/screenshots/<feature>/ and embed
-with commit-SHA-pinned URLs so they survive branch deletion on merge:
-![alt](https://github.com/<owner>/<repo>/raw/<sha>/docs/screenshots/<feature>/<name>.png)
+Commit images to the PR branch under temp-screenshots/<feature>/ (a top-level,
+ephemeral, never-packaged dir — never under docs/ or src/kiro_crew/**) and embed
+with commit-SHA-pinned URLs so they survive branch deletion on merge and periodic cleanup:
+![alt](https://github.com/<owner>/<repo>/raw/<sha>/temp-screenshots/<feature>/<name>.png)
 Show each affected surface's meaningful variants; fold full-page context
 into a <details> block.>
