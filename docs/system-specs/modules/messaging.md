@@ -1,6 +1,6 @@
 # Messaging Transport Module
 
-Last Updated: 2026-07-13 (Initial module spec: channel-neutral `kiro_crew.messaging` package — Layer 1 `MessagingTransport`/`TransportCapabilities`/`InboundMessage`, Layer 2 `TurnDriver` approval ladder, Layer 2b `Renderer`/`OutputEvent`/`chunk_text`, Layer 3 session-key namespacing + ConversationState generations; Slack reference impl + `messaging.use_transport` flag, default ON in KiroCrew)
+Last Updated: 2026-07-13 (Initial module spec: channel-neutral `kiro_crew.messaging` package — Layer 1 `MessagingTransport`/`TransportCapabilities`/`InboundMessage`, Layer 2 `TurnDriver` approval ladder, Layer 2b `Renderer`/`OutputEvent`/`chunk_text`, Layer 3 session-key namespacing + ConversationState generations; Slack reference impl + `messaging.use_transport` flag, default ON in KiroCrew; 2026-07-24: added Managed-MCP session-key resolution invariant — every channel transport-dispatch surface (Telegram DM + forum, Discord, Slack, Webex, WeCom) now publishes session_pid_<pid>.txt via the shared messaging.identity.publish_turn_identity helper so managed MCP tools resolve X-Session-Key, #232)
 
 ## Overview
 
@@ -247,6 +247,7 @@ Full new-path dispatch: fires the ack reaction + working status immediately (con
 - **Conservative capability defaults**: unspecified `TransportCapabilities` degrade safely (WhatsApp-like floor), and renderers must honor `max_message_chars` (`chunk_text`) and `max_buttons`.
 - **Session keys are namespaced**: every key is `channel_type:conversation_id`; only bare legacy Slack `thread_ts` keys are shimmed, via `canonical_key`/`legacy_key`.
 - **Own-channel vs. mirror**: `ChannelLink` models a session's own inbound channel only; the dashboard→Slack mirror binding stays in `SessionMap.get/set_slack_link` (guardrail G3). The generalized channel-neutral outbound mirror (`SessionMap.set_mirror_link`, PR #52) stores a `ChannelLink` under the `mirror` slot for non-Slack channels — still distinct from the session's own inbound link.
+- **Managed-MCP session-key resolution**: every turn-running surface publishes `session_pid_<pid>.txt` (with an HMAC-SHA256 sidecar) through the single shared helper `messaging.identity.publish_turn_identity` (which calls `session_pid_sig.publish_session_pid`), keyed by the session's kiro-cli host PID, so the gateway's ancestor PID-walk resolves the caller's `X-Session-Key`. One writer, called by the dashboard, native Slack, and every channel transport-dispatch surface — Telegram (DM + forum), Discord, Slack, Webex, and WeCom. Any surface that omits it makes every session-keyed managed MCP tool (`learn_add`, cron management, …) fail with HTTP 400 `missing X-Session-Key` from that channel's turns; the identity-topology test guards every dispatcher against regressing. (#232)
 
 ## Testing conventions
 

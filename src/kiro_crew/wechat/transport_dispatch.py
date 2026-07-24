@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.hooks import TOOL_AUTO_APPROVE, TOOL_DENY
 from kiro_crew.messaging.driver import APPROVAL_INTERACTIVE, TurnDriver
+from kiro_crew.messaging.identity import publish_turn_identity
 from kiro_crew.messaging.link import build_dm_session_key, seed_generation
 from kiro_crew.sel import sel
 from kiro_crew.wechat.client import new_stream_id
@@ -163,6 +164,9 @@ class WeComDispatcher:
             _acquired = True
             if is_new:
                 await self.sessions.set_channel(session_key, channel_id)
+            # Publish this turn's session identity so managed MCP tools resolve
+            # X-Session-Key; one shared writer lives in messaging.identity. (#232)
+            await publish_turn_identity(self.sessions, session_key)
             # Off-loop: build_message embeds the episodic query (blocking urllib).
             full_message, _ = await run_in_embed_pool(
                 self.ctx_builder.build_message,
