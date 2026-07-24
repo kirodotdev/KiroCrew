@@ -86,6 +86,7 @@ async def maybe_start_wecom(orch: "GatewayOrchestrator") -> "WeComClient | None"
         transport = WeComTransport(
             client,
             allowed_users=_allowed_userids(orch),
+            allow_all=bool(orch._cfg.wechat.allow_all_users),
             owner_id=orch._owner_id,
             dispatch=dispatcher.handle_message,
         )
@@ -95,11 +96,36 @@ async def maybe_start_wecom(orch: "GatewayOrchestrator") -> "WeComClient | None"
         client.set_message_handler(transport.receive)
         dispatcher.client = client
 
+        # Keep the settings badge truthful: connect() only SCHEDULES the WS
+        # loop, so "started" proves nothing about the credentials. The client
+        # reports live connection transitions (connected + subscribed /
+        # connect failure / immediate close on bad creds / server kick)
+        # through on_status; start not-connected and let the first transition
+        # flip it. This is the compensating control for skipping save-time
+        # credential verification in the config API. Wired BEFORE connect()
+        # so the very first transition cannot fire into a missing callback
+        # (the dedupe would then swallow the re-report forever).
+        if orch.dashboard_state is not None:
+            state = orch.dashboard_state
+            state.wecom_connected = False
+            state.wecom_connect_error = ""
+
+            def _on_status(healthy: bool, reason: str) -> None:
+                state.wecom_connected = healthy
+                state.wecom_connect_error = "" if healthy else reason[:120]
+
+            client.on_status = _on_status
+
         await transport.connect()  # opens the outbound WS connect/serve loop
         if orch.dashboard_state is not None:
             orch.dashboard_state.register_channel_transport(transport)
         logger.info("WeChat (WeCom AI-bot) channel started (transport path).")
         return client
-    except Exception:
+    except Exception as exc:
+        if orch.dashboard_state is not None:
+            orch.dashboard_state.wecom_connected = False
+            orch.dashboard_state.wecom_connect_error = (
+                f"{type(exc).__name__}: {exc}"[:120]
+            )
         logger.exception("Failed to start WeChat channel; continuing without it.")
         return None

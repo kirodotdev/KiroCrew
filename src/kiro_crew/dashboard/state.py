@@ -1418,6 +1418,14 @@ class DashboardState:
         # Short reason from the most recent Webex connection failure, empty
         # when connected or never attempted. Read by the settings badge.
         self.webex_connect_error: str = ""
+        # True only while the WeCom (WeChat) channel's WebSocket is connected
+        # + subscribed (kept live by WeComClient.on_status, wired in
+        # maybe_start_wecom). Read by the WeCom settings status badge.
+        self.wecom_connected: bool = False
+        # Short reason from the most recent WeCom connection failure (connect
+        # error, immediate close on bad credentials, or server kick), empty
+        # when connected or never attempted. Read by the settings badge.
+        self.wecom_connect_error: str = ""
         # Live channel transports (Telegram/WeCom/...) for channel-neutral
         # cross-surface mirror delivery — registered at boot by each channel's
         # gateway via ``register_channel_transport``. Slack keeps its dedicated

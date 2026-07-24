@@ -125,6 +125,37 @@ export interface TelegramConfigSave {
   allowed_forum_chat_ids?: string[]
 }
 
+/** WeCom config as returned by GET /api/wecom/config (secrets masked). */
+export interface WeComConfigData {
+  connected: boolean
+  connect_error: string
+  configured: boolean
+  read_only: boolean
+  /** Primary secret slot = WECOM_SECRET. */
+  bot_token_set: boolean
+  bot_token_preview: string
+  /** Second credential slot = WECOM_BOT_ID. */
+  bot_id_set: boolean
+  bot_id_preview: string
+  enabled: boolean
+  allowed_user_ids: string[]
+  /** Explicit opt-in: every org member may DM the bot (allow-list bypassed). */
+  allow_all_users: boolean
+  soft_threshold_pct: number
+}
+
+/** Writable WeCom config fields sent to PUT /api/wecom/config. */
+export interface WeComConfigSave {
+  bot_token: string
+  bot_token_clear: boolean
+  bot_id: string
+  bot_id_clear: boolean
+  enabled: boolean
+  allowed_user_ids: string[]
+  allow_all_users: boolean
+  soft_threshold_pct: number
+}
+
 /** Webex config as returned by GET /api/webex/config (secret masked). */
 export interface WebexConfigData {
   connected: boolean
@@ -1157,6 +1188,8 @@ export const api = {
   // Telegram integration config
   getTelegramConfig: () => get('/api/telegram/config').then(j) as Promise<TelegramConfigData>,
   saveTelegramConfig: (body: Partial<TelegramConfigSave>) => put('/api/telegram/config', body).then(j) as Promise<{ ok: boolean; restart_required: boolean; verify_warning: string }>,
+  getWeComConfig: () => get('/api/wecom/config').then(j) as Promise<WeComConfigData>,
+  saveWeComConfig: (body: Partial<WeComConfigSave>) => put('/api/wecom/config', body).then(j) as Promise<{ ok: boolean; restart_required: boolean; verify_warning: string }>,
   // Webex integration config
   getWebexConfig: () => get('/api/webex/config').then(j) as Promise<WebexConfigData>,
   saveWebexConfig: (body: Partial<WebexConfigSave>) => put('/api/webex/config', body).then(j) as Promise<{ ok: boolean; restart_required: boolean; verify_warning: string }>,

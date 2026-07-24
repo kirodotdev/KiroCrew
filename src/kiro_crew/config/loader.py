@@ -2472,6 +2472,17 @@ class WeComConfig:
             tags=["wechat"],
         ),
     )
+    allow_all_users: bool = field(
+        default=False,
+        metadata=_meta(
+            "Allow All Users",
+            "Let every member of the WeCom organization DM the bot, bypassing "
+            "the allow-list. Safe-ish because a WeCom AI bot is reachable only "
+            "inside your own org tenant (unlike globally addressable bots), "
+            "but it grants agent access to the whole company. Default off.",
+            tags=["wechat"],
+        ),
+    )
     ws_url: str = field(
         default="wss://openws.work.weixin.qq.com",
         metadata=_meta(
@@ -3398,6 +3409,7 @@ class KiroCrewConfig:
                     for u in wechat_data.get("allowed_users", [])
                     if isinstance(u, dict) and u.get("userid")
                 ],
+                allow_all_users=bool(wechat_data.get("allow_all_users", False)),
                 ws_url=str(wechat_data.get("ws_url", "wss://openws.work.weixin.qq.com")),
                 soft_threshold_pct=int(wechat_data.get("soft_threshold_pct", 80)),
                 hard_threshold_pct=int(wechat_data.get("hard_threshold_pct", 95)),

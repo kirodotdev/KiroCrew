@@ -763,3 +763,78 @@ class TestFrameLoggingOmitsContent:
         assert cmd not in caplog.text
         # ...but a generic unhandled-cmd event is recorded.
         assert "unhandled cmd" in caplog.text
+
+
+class TestStatusCallback:
+    """Live connection-status reporting for the settings badge."""
+
+    def _client(self) -> WeComClient:
+        return WeComClient(bot_id="b", secret="s", ws_url="wss://fake")
+
+    def test_transitions_are_deduped(self) -> None:
+        """Only state TRANSITIONS reach the callback, not every report."""
+        client = self._client()
+        seen: list[tuple[bool, str]] = []
+        client.on_status = lambda healthy, reason: seen.append((healthy, reason))
+
+        client._notify_status(False, "connect failed")
+        client._notify_status(False, "connect failed")  # duplicate, swallowed
+        client._notify_status(True, "")
+        client._notify_status(True, "")  # duplicate, swallowed
+        client._notify_status(False, "server closed connection immediately")
+
+        assert seen == [
+            (False, "connect failed"),
+            (True, ""),
+            (False, "server closed connection immediately"),
+        ]
+
+    def test_callback_exception_is_swallowed(self) -> None:
+        """A broken status observer must never break the WS loop."""
+        client = self._client()
+
+        def _boom(healthy: bool, reason: str) -> None:
+            raise RuntimeError("observer bug")
+
+        client.on_status = _boom
+        client._notify_status(False, "connect failed")  # must not raise
+        # The transition was still recorded, so dedupe keeps working.
+        assert client._last_status is False
+
+    def test_no_callback_still_records_state(self) -> None:
+        """Without an observer the transition is recorded (late wiring safe-ish),
+        and a later opposite transition still fires a freshly-set callback."""
+        client = self._client()
+        client._notify_status(True, "")
+        assert client._last_status is True
+        seen: list[bool] = []
+        client.on_status = lambda healthy, reason: seen.append(healthy)
+        client._notify_status(False, "dropped")
+        assert seen == [False]
+
+    @pytest.mark.asyncio
+    async def test_run_loop_reports_connect_failure_reason(self) -> None:
+        """A failing connect attempt surfaces not-healthy with a reason."""
+        client = self._client()
+        seen: list[tuple[bool, str]] = []
+        client.on_status = lambda healthy, reason: seen.append((healthy, reason))
+
+        calls = 0
+
+        async def _fail_then_stop() -> None:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise aiohttp.ClientError("dns boom")
+            client._closed = True  # stop the loop on the second pass
+
+        client._connect_and_serve = _fail_then_stop  # type: ignore[method-assign]
+
+        async def _no_sleep(_delay: float) -> None:
+            return None
+
+        with patch("kiro_crew.wechat.client.asyncio.sleep", _no_sleep):
+            await client._run_loop()
+
+        assert seen and seen[0][0] is False
+        assert "dns boom" in seen[0][1]

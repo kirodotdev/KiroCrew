@@ -21,7 +21,9 @@ transport (the neutral layers are untouched):
   (or its one-shot ``response_url``), so ``supports_proactive_send`` is False.
 
 Security: :meth:`authorize` is **deny-by-default** and owner-only. An empty
-allow-list authorizes nobody (fail closed), never everybody.
+allow-list authorizes nobody (fail closed), never everybody. The only path to
+"everybody" is the explicit ``allow_all`` opt-in (config
+``wechat.allow_all_users``), which still denies frames without a userid.
 """
 
 from __future__ import annotations
@@ -69,6 +71,7 @@ class WeComTransport(MessagingTransport):
         client: WeComClient,
         *,
         allowed_users: Iterable[str] = (),
+        allow_all: bool = False,
         owner_id: str = "",
         dispatch: DispatchFn | None = None,
     ) -> None:
@@ -76,6 +79,12 @@ class WeComTransport(MessagingTransport):
         # Deny-by-default: freeze the allow-list so it can't mutate under an
         # in-flight decision. owner_id (when set) is always allowed.
         self._allowed: frozenset[str] = frozenset(u for u in allowed_users if u)
+        # Explicit opt-in only (config wechat.allow_all_users): every org
+        # member may DM the bot. This is a deliberate toggle, NEVER inferred
+        # from an empty allow-list — an empty list stays fail-closed. A WeCom
+        # AI bot is reachable only inside the org tenant, which is what makes
+        # this a reasonable (if broad) grant.
+        self._allow_all = bool(allow_all)
         self._owner_id = owner_id
         self._dispatch = dispatch
         self.capabilities = WECOM_CAPABILITIES
@@ -117,10 +126,17 @@ class WeComTransport(MessagingTransport):
 
     # -- Inbound adapter ----------------------------------------------------
     def authorize(self, msg: InboundMessage) -> bool:
-        """Owner-only, deny-by-default. Empty allow-list authorizes nobody."""
+        """Owner-only, deny-by-default. Empty allow-list authorizes nobody.
+
+        ``allow_all`` (explicit config opt-in) authorizes any inbound with a
+        non-empty userid — a missing/empty userid is denied even then, so an
+        anonymous or malformed frame never reaches dispatch.
+        """
         uid = msg.user_id
         allowed = bool(uid) and (
-            (bool(self._owner_id) and uid == self._owner_id) or uid in self._allowed
+            self._allow_all
+            or (bool(self._owner_id) and uid == self._owner_id)
+            or uid in self._allowed
         )
         if not allowed:
             # Audit ALL denials (including empty/missing userid) via the helper
