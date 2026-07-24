@@ -222,11 +222,30 @@ def workspace_root() -> Path:
 
 
 def _safe_int(value: object, default: int) -> int:
-    """Convert *value* to int, returning *default* on failure."""
+    """Convert *value* to int, returning *default* on failure.
+
+    OverflowError: TOML/JSON parse `1e1000` to float("inf"), which int()
+    rejects with OverflowError rather than ValueError — still a malformed
+    config value, still the default.
+    """
     try:
         return int(value)  # type: ignore[call-overload]
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
+
+
+def _safe_list(value: object) -> list:
+    """Return *value* if it is a list, else []. Guards list()/comprehensions in
+    config parse against a malformed (non-list) config value that would either
+    crash (int/None) or silently mis-coerce (a string char-splits) — config
+    load must degrade to the default, never raise."""
+    return value if isinstance(value, list) else []
+
+
+def _safe_dict(value: object) -> dict:
+    """Return *value* if it is a dict, else {}. Guards .items()/dict() in config
+    parse against a non-dict config value (which would raise AttributeError)."""
+    return value if isinstance(value, dict) else {}
 
 
 def _safe_float(
@@ -3195,13 +3214,18 @@ class KiroCrewConfig:
                 ),
                 completion_keep_chars=_safe_int(agent_data.get("completion_keep_chars", 3000), 3000),
                 subagent_result_ttl_secs=_safe_int(agent_data.get("subagent_result_ttl_secs", 3600), 3600),
-                subagent_cwd_allowed_roots=list(
-                    agent_data.get(
-                        "subagent_cwd_allowed_roots",
-                        ["~/workspace", "~/workspaces", "~/workplace", "~/workplaces"],
+                subagent_cwd_allowed_roots=(
+                    [r for r in _roots if isinstance(r, str)]
+                    if isinstance(
+                        _roots := agent_data.get("subagent_cwd_allowed_roots"), list
                     )
+                    else ["~/workspace", "~/workspaces", "~/workplace", "~/workplaces"]
                 ),
-                log_level=agent_data.get("log_level", "WARNING").upper(),
+                log_level=(
+                    lvl.upper()
+                    if isinstance(lvl := agent_data.get("log_level", "WARNING"), str)
+                    else "WARNING"
+                ),
                 bot_name=_sanitize_bot_name(agent_data.get("bot_name", "")),
                 max_channels=agent_data.get("max_channels", 1),
                 max_channel_agents=agent_data.get("max_channel_agents", 3),
@@ -3375,7 +3399,9 @@ class KiroCrewConfig:
                 forward_to_agent_callback=str(
                     slack_data.get("forward_to_agent_callback") or ""
                 ).strip(),
-                trusted_bot_ids=set(slack_data.get("trusted_bot_ids", [])),
+                trusted_bot_ids={
+                    b for b in _safe_list(slack_data.get("trusted_bot_ids")) if isinstance(b, str)
+                },
                 allowed_enterprise_ids=[
                     e
                     for e in slack_data.get("allowed_enterprise_ids", [])
@@ -3383,7 +3409,7 @@ class KiroCrewConfig:
                 ],
                 reactions={
                     k: v
-                    for k, v in slack_data.get("reactions", {}).items()
+                    for k, v in _safe_dict(slack_data.get("reactions")).items()
                     if isinstance(k, str) and (v is None or (isinstance(v, str) and v))
                 },
                 reactions_enabled=bool(slack_data.get("reactions_enabled", True)),
@@ -3411,8 +3437,8 @@ class KiroCrewConfig:
                 ],
                 allow_all_users=bool(wechat_data.get("allow_all_users", False)),
                 ws_url=str(wechat_data.get("ws_url", "wss://openws.work.weixin.qq.com")),
-                soft_threshold_pct=int(wechat_data.get("soft_threshold_pct", 80)),
-                hard_threshold_pct=int(wechat_data.get("hard_threshold_pct", 95)),
+                soft_threshold_pct=_safe_int(wechat_data.get("soft_threshold_pct", 80), 80),
+                hard_threshold_pct=_safe_int(wechat_data.get("hard_threshold_pct", 95), 95),
             ),
             dashboard=DashboardConfig(
                 url=dashboard_data.get("url", ""),
@@ -3548,7 +3574,9 @@ class KiroCrewConfig:
                 auto_refine_on_deviation=bool(skills_data.get("auto_refine_on_deviation", False)),
                 auto_min_tool_calls=_safe_int(skills_data.get("auto_min_tool_calls", 5), 5),
                 auto_similarity_threshold=_safe_float(skills_data.get("auto_similarity_threshold", 0.85), 0.85),
-                extra_paths=list(skills_data.get("extra_paths", [])),
+                extra_paths=[
+                    p for p in _safe_list(skills_data.get("extra_paths")) if isinstance(p, str)
+                ],
             ),
             slack_channels={
                 ch_id: ChannelConfig.from_dict(ch_data)

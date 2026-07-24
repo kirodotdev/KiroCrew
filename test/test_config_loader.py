@@ -212,6 +212,64 @@ def test_publish_relocate_roots_parsed_and_round_trips():
     assert reloaded.publish.relocate_roots == ["/srv/shared"]
 
 
+class TestMalformedConfigValuesNeverCrashLoad:
+    """Round-2 hardening: several config parse sites coerced values with a bare
+    .upper()/int()/list()/set()/.items() and no guard. jsonschema is optional
+    (absent in the shipped runtime), so a hand-edited config.json with a wrongly
+    typed value reached the parse and crashed KiroCrewConfig.load() outright —
+    bricking every caller. Each must now degrade to the default instead."""
+
+    def test_non_string_log_level_falls_back(self):
+        # agent.log_level=42 -> "42".upper()? no: 42 has no .upper() -> crash.
+        loaded = _load_from_dict({"agent": {"log_level": 42}})
+        assert loaded.agent.log_level == "WARNING"
+        # a valid string still applies (and uppercases)
+        assert _load_from_dict({"agent": {"log_level": "debug"}}).agent.log_level == "DEBUG"
+
+    def test_non_list_subagent_cwd_allowed_roots_falls_back(self):
+        # The parse-time fallback preserves prior absent-key behavior: the
+        # historical `list(get(default=[4 roots]))` yielded these 4 roots.
+        fallback = ["~/workspace", "~/workspaces", "~/workplace", "~/workplaces"]
+        # int would crash list(); a string would char-split silently.
+        assert _load_from_dict({"agent": {"subagent_cwd_allowed_roots": 5}}).agent.subagent_cwd_allowed_roots == fallback
+        assert _load_from_dict({"agent": {"subagent_cwd_allowed_roots": "abc"}}).agent.subagent_cwd_allowed_roots == fallback
+        # a real list still parses (non-str entries dropped)
+        got = _load_from_dict({"agent": {"subagent_cwd_allowed_roots": ["~/x", 9]}}).agent.subagent_cwd_allowed_roots
+        assert got == ["~/x"]
+
+    def test_non_list_trusted_bot_ids_falls_back(self):
+        # set() on a non-iterable (int) crashes; on a string it char-splits.
+        assert _load_from_dict({"slack": {"trusted_bot_ids": 5}}).slack.trusted_bot_ids == set()
+        assert _load_from_dict({"slack": {"trusted_bot_ids": "B123"}}).slack.trusted_bot_ids == set()
+        assert _load_from_dict({"slack": {"trusted_bot_ids": ["B1", 2]}}).slack.trusted_bot_ids == {"B1"}
+
+    def test_non_dict_reactions_falls_back(self):
+        # .items() on a non-dict (list) crashes.
+        assert _load_from_dict({"slack": {"reactions": ["x"]}}).slack.reactions == {}
+        assert _load_from_dict({"slack": {"reactions": {"eyes": "👀"}}}).slack.reactions == {"eyes": "👀"}
+
+    def test_non_finite_wechat_thresholds_fall_back(self):
+        # JSON/TOML parse 1e1000 to float("inf"); int(inf) raises OverflowError,
+        # not ValueError, so the old _safe_int guard still crashed load().
+        cfg = _load_from_dict(
+            {"wechat": {"soft_threshold_pct": float("inf"), "hard_threshold_pct": float("nan")}}
+        )
+        assert cfg.wechat.soft_threshold_pct == 80
+        # NaN: int(nan) raises ValueError, already caught — pin it anyway.
+        assert cfg.wechat.hard_threshold_pct == 95
+
+    def test_non_numeric_wechat_thresholds_fall_back(self):
+        cfg = _load_from_dict(
+            {"wechat": {"soft_threshold_pct": "lots", "hard_threshold_pct": None}}
+        )
+        assert cfg.wechat.soft_threshold_pct == 80
+        assert cfg.wechat.hard_threshold_pct == 95
+
+    def test_non_list_skills_extra_paths_falls_back(self):
+        assert _load_from_dict({"skills": {"extra_paths": 5}}).skills.extra_paths == []
+        assert _load_from_dict({"skills": {"extra_paths": ["/a", 9]}}).skills.extra_paths == ["/a"]
+
+
 # Hypothesis strategy for safe identifier strings (no control chars, JSON-safe)
 _safe_name_st = st.text(
     alphabet=st.sampled_from("abcdefghijklmnopqrstuvwxyz0123456789_-"),
