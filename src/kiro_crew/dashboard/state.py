@@ -317,18 +317,43 @@ def parse_cls_meta(cls_val: str) -> dict | None:
     return meta
 
 
-def _mark_permission_resolved(messages: list[dict], request_id: str, decision: str) -> None:
-    """Persist a resolved decision into a permission message's cls JSON."""
+def _mark_permission_resolved(
+    messages: list[dict],
+    request_id: str,
+    decision: str,
+    *,
+    only_if_pending: bool = False,
+) -> bool:
+    """Persist a resolved decision into a permission message's cls JSON.
+
+    Returns True when a permission message was written. Callers holding the
+    owning slot MUST set ``slot._dirty = True`` on a True return — the periodic
+    flush skips non-dirty slots, so an unflagged in-place mutation can be lost
+    on restart and the card comes back as an unanswerable orphan.
+
+    ``only_if_pending`` leaves an already-resolved message untouched (and
+    returns False). Use it for backstop callers that must not clobber a richer
+    decision already recorded by the primary resolver — e.g. "trust"/"yolo",
+    which the UI renders as "Trusted — auto-approving future calls" and would
+    otherwise be flattened to a bare "approved".
+    """
     for msg in reversed(messages):
         if msg.get("role") == "permission":
             try:
                 cls = json.loads(msg.get("cls", "{}"))
+                if not isinstance(cls, dict):
+                    # Valid JSON but not an object — cannot carry "resolved".
+                    # Mirrors parse_cls_meta() / _sweep_stale_permissions().
+                    continue
                 if cls.get("request_id") == request_id:
+                    if only_if_pending and "resolved" in cls:
+                        return False
                     cls["resolved"] = decision
                     msg["cls"] = json.dumps(cls)
-                    return
+                    return True
             except (json.JSONDecodeError, TypeError):
                 pass
+    return False
 
 
 # ── Constants ──
@@ -1798,7 +1823,11 @@ class DashboardState:
             fut = slot._approval_futures.get(approval_id)
             if fut and not fut.done():
                 fut.set_result(decision)
-                _mark_permission_resolved(slot.messages, approval_id, decision)
+                if _mark_permission_resolved(slot.messages, approval_id, decision):
+                    # The periodic flush skips non-dirty slots; without this the
+                    # in-place mutation can be lost and the answered card comes
+                    # back on reload with a future that no longer exists.
+                    slot._dirty = True
                 self._audit_and_broadcast_approval(slot.key, approval_id, approved)
                 self.push_slots_update()
                 return True

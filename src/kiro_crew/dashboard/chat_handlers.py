@@ -713,10 +713,18 @@ def _reject_pending_approvals(slot: _ChatSlot) -> None:
     approval, the chat runner is suspended on the approval future. Without
     resolving it, the stream generator stays paused, _turn_done never fires,
     and the cooperative cancel times out — forcing a hard kill.
+
+    Resolving the future is not enough on its own: the ``permission`` message
+    the UI renders the approval bar from must ALSO be marked resolved.
+    Otherwise the future is gone while the message still reads pending, so the
+    bar survives a history reload and every button on it answers
+    ``404 no pending approval`` — an approval card the user cannot action.
     """
     for aid, fut in list(slot._approval_futures.items()):
         if not fut.done():
             fut.set_result("rejected")
+            if _mark_permission_resolved(slot.messages, aid, "rejected"):
+                slot._dirty = True
             sel().log_tool_invocation(
                 session_key=_history_key_for(slot.key),
                 agent=getattr(slot, "agent", "") or "kirocrew",
@@ -2102,8 +2110,11 @@ async def api_chat_mode(request: web.Request) -> web.Response:
             for aid, fut in list(slot._approval_futures.items()):
                 if not fut.done():
                     fut.set_result("approved")
-                    # Persist resolved state into the permission message
-                    _mark_permission_resolved(slot.messages, aid, mode)
+                    # Persist resolved state into the permission message. The
+                    # periodic flush skips non-dirty slots, so the mark must
+                    # flag the slot or the write can be lost on restart.
+                    if _mark_permission_resolved(slot.messages, aid, mode):
+                        slot._dirty = True
                     state.broadcast_ws("approval_resolved", {"id": aid, "approved": True})
                     try:
                         sel().log_api_access(
@@ -2304,12 +2315,15 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
     fut.set_result(resolved)
     # Persist resolved state into the permission message so it survives tab
     # switches — on the owner slot, whose messages hold the permission card.
+    # Flagging the slot dirty is required for it to survive a RESTART too: the
+    # periodic flush skips non-dirty slots.
     if request_id:
-        _mark_permission_resolved(
+        if _mark_permission_resolved(
             owner.messages,
             request_id,
             original_action if original_action in ("trust", "trust_reads") else resolved,
-        )
+        ):
+            owner._dirty = True
     # Broadcast first to ensure frontend is unblocked
     if request_id:
         state.broadcast_ws(

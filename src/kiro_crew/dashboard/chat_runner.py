@@ -93,6 +93,7 @@ from kiro_crew.dashboard.state import (
     TOOL_STALL_RECOVERY_PREFIX,
     DashboardState,
     _ChatSlot,
+    _mark_permission_resolved,
     build_refusal_recovery_prompt,
     build_stale_recovery_prompt,
     build_tool_stall_recovery_prompt,
@@ -3424,12 +3425,45 @@ async def _run_chat(
                         )
                         if not fut.done():
                             fut.set_result("rejected")
+                # Pre-seeded so the `finally` backstop below is total over EVERY
+                # exit from the await — including CancelledError, which slot
+                # deletion / cleanup endpoints raise by cancelling slot.task.
+                # Assigning only inside try/except would leave `outcome` unbound
+                # on that path: the finally would raise UnboundLocalError,
+                # replacing the CancelledError with a spurious exception and
+                # skipping both the message marking and the Slack cleanup —
+                # reintroducing this PR's own orphan-card bug on the cancel path.
+                # "rejected" is the correct reading: a cancelled turn never
+                # obtained consent.
+                outcome = "rejected"
                 try:
                     outcome = await asyncio.wait_for(fut, timeout=7200.0)
                 except asyncio.TimeoutError:
                     outcome = "rejected"
                 finally:
                     slot._approval_futures.pop(str(event.request_id), None)
+                    # Backstop: the future is now gone, so the permission
+                    # message MUST NOT be left reading pending — the UI would
+                    # keep rendering an approval bar whose every button answers
+                    # 404, and a history reload would resurrect it. The primary
+                    # resolvers (HTTP slot-approve, Slack click) already mark it
+                    # and record richer decisions like "trust"/"yolo", so only
+                    # write when still pending. This is the sole marker for the
+                    # paths that resolve the future in-process: the 2h timeout
+                    # above and the Slack-delivery auto-reject branches.
+                    _approved = outcome in ("approved", "approved_trust_reads")
+                    if _mark_permission_resolved(
+                        slot.messages,
+                        str(event.request_id),
+                        "approved" if _approved else "rejected",
+                        only_if_pending=True,
+                    ):
+                        slot._dirty = True
+                        state.broadcast_ws(
+                            "approval_resolved",
+                            {"id": str(event.request_id), "approved": _approved},
+                        )
+                        state.push_slots_update()
                     # Clean up the Slack prompt: remove the registry entry and
                     # delete the buttons message now the decision is in.
                     if _slack_approval_ts is not None:

@@ -203,6 +203,29 @@ Streaming chunks are cleaned up after each response (only final assistant messag
 
 **Agent Config**: PUT saves to `~/.kiro/agents/kirocrew.json` and auto-restarts all kiro-cli sessions so changes take effect immediately.
 
+### Tool-Approval Resolution Persistence
+
+A pending tool approval has **two** pieces of state that must stay in lockstep: the in-memory `asyncio.Future` in `slot._approval_futures[request_id]`, which the chat runner awaits, and the `permission` message in `slot.messages`, whose `cls` JSON is what the UI renders the approval bar from. The message is the durable half — it is the only piece that survives a history reload.
+
+**Invariant: every path that resolves or discards an approval future MUST also mark the message.** A future resolved without marking leaves a card that renders as pending while nothing is listening: the UI keeps showing live Allow once / Trust / Reject buttons, `POST /api/chat/slots/{slot}/approve` answers `404 no pending approval` for all of them, and a reload resurrects the card. The resolution paths and their markers:
+
+| Path | Marker |
+|---|---|
+| HTTP `POST /api/chat/slots/{slot}/approve` | `api_chat_slot_approve` marks `"trust"` / `"trust_reads"` verbatim (the UI renders those distinctly), everything else as the coerced `"approved"` / `"approved_trust_reads"` / `"rejected"` |
+| Slack approval click | `DashboardState.resolve_approval` marks `"approved"`/`"rejected"` |
+| Bulk trust/yolo mode switch | `api_chat_mode` marks with the mode name (`"trust"` / `"yolo"`) |
+| Stop / interrupt | `_reject_pending_approvals` marks `"rejected"` |
+| Chat runner's own exits — 2h `wait_for` timeout, Slack delivery-failure auto-reject, task cancellation | the `finally` backstop in `_run_chat` marks with `only_if_pending=True` |
+| Turn-start sweep (repairs orphans from prior turns) | `_sweep_stale_permissions` marks `"stale"` |
+
+**`resolved` field values** (`cls.resolved`): `"approved"`, `"approved_trust_reads"`, `"rejected"`, `"trust"`, `"trust_reads"`, `"yolo"`, `"stale"`. Presence of the key — not its value — is what makes a permission message non-pending; `selectSlotPendingApproval` in the SPA and the `only_if_pending` guard both key off presence alone. The frontend additionally writes `"stale"` locally when a decision 404s, which clears the orphaned card in that tab; it is a display-layer dismissal, not a backend write, so orphans persisted before the marking paths existed converge only via the next turn's sweep.
+
+**`only_if_pending` guard**: `_mark_permission_resolved(..., only_if_pending=True)` returns `False` and writes nothing when `resolved` is already present. The runner's backstop uses it so it cannot flatten a richer decision a primary resolver already recorded — `"trust"` renders as *"Trusted — auto-approving future calls"* and would otherwise be downgraded to a bare `"approved"`. It also suppresses a duplicate `approval_resolved` WS broadcast on the paths where the primary resolver already sent one.
+
+**`slot._dirty` obligation**: `_mark_permission_resolved` mutates `slot.messages` in place and returns `True` when it wrote. The periodic flush (`_flush_dirty_slots`, every 5s) **skips slots whose `_dirty` is `False`**, so a caller that marks without flagging the slot can lose the write on restart and resurrect the card. Every call site holding the owning slot sets `slot._dirty = True` on a `True` return. This invariant is enforced by convention at each call site, not by an owning helper — a new future-resolution path must honor both halves.
+
+**Runner backstop totality**: `outcome` is pre-seeded to `"rejected"` before the approval `await`, because the `finally` runs on *every* exit including `CancelledError` (slot deletion and cleanup endpoints cancel `slot.task`). Assigning it only inside `try`/`except` would raise `UnboundLocalError` from the `finally`, replacing the cancellation with a spurious exception and skipping both the message marking and the Slack prompt cleanup.
+
 ### Key Endpoints
 
 **Status/System**: `/api/status`, `/api/system` (live metrics, 1s refresh, static fields cached), `/api/stream` (SSE), `/api/ws` (WebSocket — single multiplexed connection replacing SSE + polling for React SPA)
