@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 import json
+import logging
 import sys
 from datetime import datetime, timedelta
 from unittest.mock import patch
@@ -1609,3 +1610,48 @@ class TestDashboardRebuildCancel:
             "SELECT status FROM ingestion_jobs WHERE id = 'dashcancel01'"
         ).fetchone()
         assert row["status"] == "cancelled"
+
+
+@pytest.mark.asyncio
+class TestWatcherLargeRebuildWarning:
+    """A stale count at/over _LARGE_REBUILD_WARN_THRESHOLD logs a prominent WARNING."""
+
+    def _watcher(self, store):
+        from kiro_crew.knowledge.watcher import KnowledgeWatcher
+
+        class _Pipe:
+            pass
+        pipe = _Pipe()
+        pipe.embedder = _FakeEmbedder()
+        return KnowledgeWatcher(store, pipe)
+
+    async def test_large_stale_count_logs_warning(self, store, monkeypatch, caplog):
+        import kiro_crew.knowledge.watcher as watcher_mod
+        monkeypatch.setattr(watcher_mod, "_LARGE_REBUILD_WARN_THRESHOLD", 3)
+        for i in range(3):
+            store.add_item(f"Item {i}", "body", "document")
+        watcher = self._watcher(store)
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.knowledge.watcher"):
+            await watcher._maybe_reembed_stale()
+        assert watcher._reembed_task is not None
+        await watcher._reembed_task
+
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING
+                    and "full background re-embed" in r.getMessage()]
+        assert len(warnings) == 1
+        assert "3 items" in warnings[0].getMessage()
+
+    async def test_small_stale_count_no_warning(self, store, monkeypatch, caplog):
+        import kiro_crew.knowledge.watcher as watcher_mod
+        monkeypatch.setattr(watcher_mod, "_LARGE_REBUILD_WARN_THRESHOLD", 100)
+        store.add_item("Only item", "body", "document")
+        watcher = self._watcher(store)
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.knowledge.watcher"):
+            await watcher._maybe_reembed_stale()
+        assert watcher._reembed_task is not None
+        await watcher._reembed_task
+
+        assert not [r for r in caplog.records if r.levelno == logging.WARNING
+                    and "full background re-embed" in r.getMessage()]

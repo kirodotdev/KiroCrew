@@ -597,6 +597,42 @@ def _stamp_embed_attempt(store, item_id: str, now_iso: str) -> None:
     store.db.commit()
 
 
+def _init_rebuild_total(store, count_where: str, params_tail: tuple, job_id: str) -> None:
+    """Count the rebuild's total items and stamp it on the job row (single commit).
+
+    Runs on a worker thread (``asyncio.to_thread``): the COUNT(*) scans the items
+    table and can stall for tens of seconds on a large KB under WAL contention, so
+    it must never run inline on the gateway event loop. ``store.db`` is a
+    per-thread connection; the UPDATE and its commit stay on this thread's own
+    connection.
+    """
+    total = store.db.execute(
+        f"SELECT COUNT(*) AS c FROM items WHERE {count_where}",  # noqa: S608
+        params_tail).fetchone()["c"]
+    store.db.execute(
+        "UPDATE ingestion_jobs SET items_total = ?, updated_at = ? WHERE id = ?",
+        (total, datetime.now().isoformat(), job_id))
+    store.db.commit()
+
+
+def _fetch_rebuild_page(store, page_where: str, params_tail: tuple, last_id: str):
+    """Fetch one keyset page of items to re-embed (worker thread; see above)."""
+    return store.db.execute(
+        f"SELECT id, title, summary, content, updated_at FROM items WHERE {page_where} "  # noqa: S608
+        "ORDER BY id LIMIT ?",
+        (*params_tail, last_id, _REBUILD_BATCH_SIZE)).fetchall()
+
+
+def _commit_rebuild_progress(store, job_id: str | None, processed: int, failed: int) -> None:
+    """Write end-of-batch progress counters and commit (worker thread; see above)."""
+    if job_id is not None:
+        store.db.execute(
+            "UPDATE ingestion_jobs SET items_processed = ?, items_failed = ?, "
+            "updated_at = ? WHERE id = ?",
+            (processed, failed, datetime.now().isoformat(), job_id))
+    store.db.commit()
+
+
 def _select_active_rebuild_job(store, *, now: datetime | None = None):
     """Return a FRESH (within the staleness window) active rebuild job row, or None.
 
@@ -699,20 +735,16 @@ async def rebuild_embeddings(store, embedder, *, job_id: str | None = None,
         params_tail = (sig,)
 
     if job_id is not None:
-        total = store.db.execute(
-            f"SELECT COUNT(*) AS c FROM items WHERE {count_where}",  # noqa: S608
-            params_tail).fetchone()["c"]
-        store.db.execute(
-            "UPDATE ingestion_jobs SET items_total = ?, updated_at = ? WHERE id = ?",
-            (total, datetime.now().isoformat(), job_id))
-        store.db.commit()
+        # OFFLOADED: the total COUNT scans the items table and can stall on a
+        # large KB; an inline call blocks the event loop (loop-watchdog risk).
+        await asyncio.to_thread(_init_rebuild_total, store, count_where, params_tail, job_id)
 
     last_id = ""
     while True:
-        rows = store.db.execute(
-            f"SELECT id, title, summary, content, updated_at FROM items WHERE {page_where} "  # noqa: S608
-            "ORDER BY id LIMIT ?",
-            (*params_tail, last_id, _REBUILD_BATCH_SIZE)).fetchall()
+        # OFFLOADED: page reads can block behind a concurrent writer's
+        # busy_timeout; keep every DB touch in this loop off the event loop.
+        rows = await asyncio.to_thread(
+            _fetch_rebuild_page, store, page_where, params_tail, last_id)
         if not rows:
             break
         for row in rows:
@@ -765,11 +797,7 @@ async def rebuild_embeddings(store, embedder, *, job_id: str | None = None,
                 # thread safely uses its OWN connection to the same db; the loop
                 # awaits it serially, so there is no concurrent-connection use.
                 await asyncio.to_thread(_heartbeat_rebuild_job, store, job_id, now_iso)
-        if job_id is not None:
-            store.db.execute(
-                "UPDATE ingestion_jobs SET items_processed = ?, items_failed = ?, "
-                "updated_at = ? WHERE id = ?",
-                (processed, failed, datetime.now().isoformat(), job_id))
-        store.db.commit()
+        # OFFLOADED end-of-batch progress write + commit (same no-blocking rule).
+        await asyncio.to_thread(_commit_rebuild_progress, store, job_id, processed, failed)
 
     return processed
