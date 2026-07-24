@@ -764,8 +764,15 @@ class CronService:
         delete_after_run: bool = False,
         created_by: str = "",
         approval_mode: str = "",
+        enabled: bool = True,
     ) -> CronJob:
-        """Add a new job. Provide one of ``every_secs``, ``at_ts``, or ``cron_expr``."""
+        """Add a new job. Provide one of ``every_secs``, ``at_ts``, or ``cron_expr``.
+
+        ``enabled=False`` creates the job already paused (``user_paused=True``,
+        mirroring :meth:`enable_job`) so the paused state is part of the FIRST
+        persist — never an enabled-then-paused two-save window that a crash or
+        a concurrent reader of the store could capture as enabled.
+        """
         valid_approval_modes = ("", "auto")
         if approval_mode not in valid_approval_modes:
             raise ValueError(f"Invalid approval_mode: {approval_mode!r}")
@@ -787,7 +794,8 @@ class CronService:
             schedule=schedule,
             channel=channel,
             thread_ts=thread_ts,
-            enabled=True,
+            enabled=enabled,
+            user_paused=not enabled,
             created_ts=time.time(),
             delete_after_run=delete_after_run,
             created_by=created_by,

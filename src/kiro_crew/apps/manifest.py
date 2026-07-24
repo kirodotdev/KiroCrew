@@ -70,6 +70,16 @@ class CronEntry:
     env: dict[str, str] = field(default_factory=dict)  # environment variables for the job
     persistent_session: bool = True  # whether to carry context between runs
     silent: bool = False  # suppress dashboard notifications
+    # When False the cron is registered in a paused state (visible in the
+    # dashboard Schedule view, resumable) instead of firing on install/enable.
+    # Apps that need user configuration before their crons are useful ship
+    # them disabled and enable/resume once configured.
+    enabled: bool = True
+    # Parse-time type violation: manifest "enabled" was present but not a JSON
+    # boolean (e.g. the string "false", which bool() would coerce truthy —
+    # silently re-creating the fires-unconfigured bug). Reported as a
+    # validation error; never serialized.
+    enabled_type_invalid: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {"name": self.name}
@@ -93,6 +103,8 @@ class CronEntry:
             d["persistent_session"] = False
         if self.silent:
             d["silent"] = True
+        if not self.enabled:
+            d["enabled"] = False
         return d
 
     @classmethod
@@ -112,6 +124,15 @@ class CronEntry:
             env={str(k): str(v) for k, v in data.get("env", {}).items()},
             persistent_session=bool(data.get("persistent_session", True)),
             silent=bool(data.get("silent", False)),
+            # STRICT boolean: "enabled" gates whether a cron fires at all, so a
+            # type slip (the string "false" is truthy) must not silently
+            # re-enable a disabled-by-design cron. Non-boolean values are
+            # flagged and rejected by AppManifest.validate(); the value falls
+            # back to True only so the flagged manifest still round-trips.
+            enabled=(data["enabled"] if isinstance(data.get("enabled"), bool)
+                     else True),
+            enabled_type_invalid=("enabled" in data
+                                  and not isinstance(data["enabled"], bool)),
         )
 
 
@@ -830,6 +851,11 @@ class AppManifest:
             if cron.command and cron.script:
                 errors.append(
                     f"cron entry {cron.name!r}: 'command' and 'script' are mutually exclusive"
+                )
+            if cron.enabled_type_invalid:
+                errors.append(
+                    f"cron entry {cron.name!r}: 'enabled' must be a JSON boolean "
+                    "(true/false) — got a non-boolean value"
                 )
             if not (cron.agent or cron.agent_sequence or cron.message or cron.command or cron.script):
                 errors.append(

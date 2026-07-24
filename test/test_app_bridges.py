@@ -209,6 +209,27 @@ class TestCronRegistration:
         assert defs[0]["name"] == "test-app/refresh"
         assert defs[0]["every"] == 3600
 
+    def test_register_crons_persists_enabled_flag(self, tmp_path, app_env):
+        """A manifest cron shipped disabled keeps enabled:false in app-crons.json."""
+        src = _make_app_source(
+            tmp_path,
+            crons=[{
+                "name": "nightly-run",
+                "cron_expr": "0 22 * * *",
+                "agent": "my-agent",
+                "enabled": False,
+            }],
+        )
+        install_app(src)
+        manifest = AppManifest.from_json_file(
+            app_env["home"] / "apps" / "test-app" / APP_MANIFEST_FILENAME
+        )
+
+        _register_crons("test-app", manifest)
+        defs = load_app_cron_defs("test-app")
+        assert len(defs) == 1
+        assert defs[0]["enabled"] is False
+
     def test_deregister_crons(self, tmp_path, app_env):
         src = _make_app_source(tmp_path)
         install_app(src)
@@ -837,7 +858,101 @@ class TestCronServiceBridge:
             env={"FOO": "bar"},
             persistent_session=False,
             silent=True,
+            enabled=True,
         )
+
+    def test_disabled_cron_registers_paused(self, tmp_path, app_env, monkeypatch):
+        """A manifest cron with enabled:false is passed through as enabled=False."""
+        from unittest.mock import MagicMock, patch
+
+        from kiro_crew.apps.bridges import register_app_crons_with_service
+
+        cron_defs = [{
+            "name": "test-app/nightly-run",
+            "every": 0,
+            "cron_expr": "0 22 * * *",
+            "agent": "discovery",
+            "message": "",
+            "app": "test-app",
+            "enabled": False,
+        }]
+        self._write_app_crons(tmp_path, "test-app", cron_defs)
+
+        mock_cron_service = MagicMock()
+        mock_sdk = MagicMock()
+        mock_sdk.list_jobs.return_value = []
+        mock_sdk.add_job.return_value = MagicMock(id="abc123")
+
+        with patch("kiro_crew.apps.bridges.CronSDK", return_value=mock_sdk):
+            result = register_app_crons_with_service("test-app", mock_cron_service)
+
+        assert result == ["test-app/nightly-run"]
+        assert mock_sdk.add_job.call_args.kwargs["enabled"] is False
+
+    def test_legacy_defs_without_enabled_default_active(self, tmp_path, app_env, monkeypatch):
+        """Pre-existing app-crons.json without the enabled key registers active."""
+        from unittest.mock import MagicMock, patch
+
+        from kiro_crew.apps.bridges import register_app_crons_with_service
+
+        cron_defs = [{
+            "name": "test-app/legacy",
+            "every": 600,
+            "agent": "a",
+            "message": "m",
+            "app": "test-app",
+        }]
+        self._write_app_crons(tmp_path, "test-app", cron_defs)
+
+        mock_cron_service = MagicMock()
+        mock_sdk = MagicMock()
+        mock_sdk.list_jobs.return_value = []
+        mock_sdk.add_job.return_value = MagicMock(id="abc123")
+
+        with patch("kiro_crew.apps.bridges.CronSDK", return_value=mock_sdk):
+            register_app_crons_with_service("test-app", mock_cron_service)
+
+        assert mock_sdk.add_job.call_args.kwargs["enabled"] is True
+
+    def test_startup_skips_existing_disabled_job(self, tmp_path, app_env, monkeypatch):
+        """Gateway-startup re-registration must not re-add (and thus re-pause)
+        a job that already exists in a disabled state.
+
+        CronSDK.list_jobs() includes disabled jobs, so a paused job counts as
+        existing — preserving a user's resume/pause state across restarts.
+        """
+        from unittest.mock import MagicMock, patch
+
+        from kiro_crew.apps.bridges import register_app_crons_with_service
+
+        cron_defs = [{
+            "name": "test-app/nightly-run",
+            "every": 0,
+            "cron_expr": "0 22 * * *",
+            "agent": "discovery",
+            "message": "",
+            "app": "test-app",
+            "enabled": False,
+        }]
+        self._write_app_crons(tmp_path, "test-app", cron_defs)
+
+        existing = MagicMock()
+        existing.name = "test-app/nightly-run"
+        existing.enabled = False  # currently paused
+        existing.user_paused = True
+
+        mock_cron_service = MagicMock()
+        mock_sdk = MagicMock()
+        mock_sdk.list_jobs.return_value = [existing]
+
+        with patch("kiro_crew.apps.bridges.CronSDK", return_value=mock_sdk):
+            result = register_app_crons_with_service("test-app", mock_cron_service)
+
+        assert result == []
+        mock_sdk.add_job.assert_not_called()
+        # The existing job's state is untouched — no duplicate, no re-pause.
+        assert existing.enabled is False
+        assert existing.user_paused is True
 
     def test_registers_command_type_cron(self, tmp_path, app_env, monkeypatch):
         """Apps declaring command-type crons get them registered as command jobs."""
@@ -882,6 +997,7 @@ class TestCronServiceBridge:
             env=None,
             persistent_session=False,
             silent=True,
+            enabled=True,
         )
 
     def test_rejects_malicious_command(self, tmp_path, app_env, monkeypatch):

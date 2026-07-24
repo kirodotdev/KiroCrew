@@ -98,6 +98,50 @@ class TestCronService:
         assert job.schedule.kind == "cron"
         assert job.schedule.cron_expr == "0 9 * * *"
 
+    def test_add_job_enabled_false_registers_paused(self, tmp_path: Path) -> None:
+        """enabled=False creates the job paused (user_paused=True) at creation."""
+        svc = CronService(base_dir=tmp_path)
+        svc._load()
+        job = svc.add_job(
+            name="shipped-disabled", message="", cron_expr="0 22 * * *",
+            enabled=False,
+        )
+        assert job.enabled is False
+        assert job.user_paused is True
+        # A fresh service reloading the store must also see it paused.
+        svc2 = CronService(base_dir=tmp_path)
+        svc2._load()
+        loaded = [j for j in svc2.list_jobs(include_disabled=True) if j.id == job.id]
+        assert loaded and loaded[0].enabled is False
+
+    def test_add_job_enabled_false_never_persisted_enabled(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The paused state is part of the FIRST persist — no save may ever
+        capture the disabled-by-manifest job in an enabled state (a crash or a
+        concurrent store reader between an enabled-then-paused save pair would
+        make the wrong state permanent via the startup skip-by-name)."""
+        svc = CronService(base_dir=tmp_path)
+        svc._load()
+        snapshots: list[tuple[bool, bool]] = []
+        real_save = svc._save
+
+        def spy_save(*a, **k):
+            for j in svc._jobs:
+                if j.name == "shipped-disabled":
+                    snapshots.append((j.enabled, j.user_paused))
+            return real_save(*a, **k)
+
+        monkeypatch.setattr(svc, "_save", spy_save)
+        svc.add_job(
+            name="shipped-disabled", message="", cron_expr="0 22 * * *",
+            enabled=False,
+        )
+        assert snapshots, "add_job must persist the new job"
+        assert all(s == (False, True) for s in snapshots), (
+            f"a save captured the job enabled: {snapshots}"
+        )
+
     def test_add_job_invalid_cron_expr(self, tmp_path: Path) -> None:
         svc = CronService(base_dir=tmp_path)
         svc._load()

@@ -151,6 +151,35 @@ class TestValidation:
         errors = m.validate()
         assert any("every" in e or "cron_expr" in e for e in errors)
 
+    def test_cron_enabled_non_boolean_rejected(self):
+        # The string "false" is truthy under bool() — a type slip here would
+        # silently re-enable a disabled-by-design cron. Manifest validation
+        # must reject non-boolean values with a clear error.
+        m = AppManifest.from_dict(_valid_manifest(
+            crons=[{"name": "j1", "every": 300, "message": "go",
+                    "enabled": "false"}]
+        ))
+        errors = m.validate()
+        assert any("'enabled' must be a JSON boolean" in e for e in errors)
+        # The flagged manifest must not accidentally register the cron
+        # disabled either — the parse falls back to the default.
+        assert m.crons[0].enabled is True
+
+    def test_cron_enabled_boolean_values_accepted(self):
+        for value, expected in ((False, False), (True, True)):
+            m = AppManifest.from_dict(_valid_manifest(
+                crons=[{"name": "j1", "every": 300, "message": "go",
+                        "enabled": value}]
+            ))
+            assert m.validate() == []
+            assert m.crons[0].enabled is expected
+        # Absent key: default enabled, no error.
+        m = AppManifest.from_dict(_valid_manifest(
+            crons=[{"name": "j1", "every": 300, "message": "go"}]
+        ))
+        assert m.validate() == []
+        assert m.crons[0].enabled is True
+
     def test_ui_page_missing_route(self):
         m = AppManifest.from_dict(_valid_manifest(
             ui={"pages": [{"label": "X"}]}

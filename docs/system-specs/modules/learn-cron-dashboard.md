@@ -75,6 +75,38 @@ Jobs can define `skip_dates` — a list of dates (YYYY-MM-DD) on which the job s
 
 Jobs receive random jitter by default (0-5min hourly, 0-59min daily) to spread load. Set `strict_schedule: true` on a job to disable jitter entirely — the job fires at the exact cron/interval time.
 
+### App-Manifest Cron `enabled` Flag (register-paused contract)
+
+App manifests (`app.json`) may declare crons with `"enabled": false` — a cron
+the app ships disabled-by-design (e.g. a nightly job that needs user
+configuration before it is useful). The contract, end to end:
+
+- **Parse**: `CronEntry.enabled` (`apps/manifest.py`, default `true`). The value
+  must be a JSON boolean — a non-boolean (e.g. the string `"false"`, truthy
+  under coercion) is rejected by `AppManifest.validate()` with a clear error;
+  coercion remains only on the self-written `app-crons.json` read path.
+  Serialization is sparse — `to_dict()` emits the key only when `false`.
+- **Persist**: `_register_crons()` carries `enabled` through the app's
+  `app-crons.json`. A legacy `app-crons.json` without the key registers
+  **active** (default `true` — behavior unchanged for existing apps).
+- **Register**: `register_app_crons_with_service()` (`apps/bridges.py`)
+  threads `enabled` to `CronSDK.add_job(enabled=...)` (`apps/cron_sdk.py`),
+  which forwards it to `CronService.add_job(enabled=...)`. A disabled cron is
+  **created paused** — `enabled=False` + `user_paused=True`, mirroring
+  `CronService.enable_job(False)` — **atomically in the job's first persist**
+  (never an enabled-then-paused two-save window that a crash or a concurrent
+  reader of `crons.json` could capture as enabled). It is visible in the
+  Schedule view and resumable via `cron_resume`/dashboard, never silently
+  active and never invisible.
+- **Startup idempotency**: gateway-startup re-registration skips existing
+  jobs by name using `list_jobs(include_disabled=True)`, so a paused job IS
+  found and skipped — a user-resumed cron survives gateway restart
+  un-clobbered.
+- **Lifecycle caveat**: `on_app_disable` removes the app's jobs; re-enabling
+  the app re-registers from the manifest, so a cron the user had resumed
+  returns to **paused** (manifest is the sole source of truth on
+  re-register). Documented in `docs/app-kit/manifest-reference.md`.
+
 ### Hide in Chat (`hide_in_chat`)
 
 By default a persistent-session agent cron auto-creates a linked dashboard chat slot (`cron-{job_id}`) on first delivery (see Auto-inject), so its runs appear in the active session list. Set `hide_in_chat: true` to suppress that slot creation — the run's result still reaches Slack/dashboard notifications, and the run stays visible in the History tab via the **cron execution-history store** (`CronHistoryStore`, written unconditionally by the executor and surfaced at `GET /api/crons/{id}/history`), but no entry clutters the Chats sidebar. Useful for fire-and-forget jobs (daily digests, log cleanups, polling). Default `false` (preserves prior behavior; absent field reads as `false`). Orthogonal to `silent`: `silent` suppresses the push notification, `hide_in_chat` suppresses the chat slot. The flag is a no-op for `script`/`command` crons, which never create a slot. The executor gates all three `inject_cron_result_to_dashboard` call sites on `not job.hide_in_chat`; the dashboard notification's CTA falls into the pre-existing no-slot branch ("View last result", which lazily rebuilds a slot from history on click) instead of "Continue session". Note: the `cron:{job_id}` *dashboard conversation_log* is written ONLY by `inject_cron_result_to_dashboard`, so it is intentionally empty for a hidden cron — it exists solely to give a dashboard follow-up turn context, which a no-slot cron never has. Hidden-cron result persistence is the execution-history store, not `cron:{job_id}`.

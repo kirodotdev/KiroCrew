@@ -48,6 +48,7 @@ class CronSDK:
         env: dict[str, str] | None = None,
         persistent_session: bool = True,
         silent: bool = False,
+        enabled: bool = True,
     ) -> Any:
         """Create a cron job owned by this app.
 
@@ -124,6 +125,14 @@ class CronSDK:
         kwargs: dict[str, Any] = {
             "name": name,
             "message": message,
+            # An app can ship a cron disabled (manifest "enabled": false) when
+            # it needs user configuration before the job is useful. Passing
+            # enabled through add_job registers it paused (user_paused=True,
+            # mirroring the dashboard pause semantics so cron_resume / the UI
+            # can re-enable it) atomically in the job's FIRST persist — no
+            # enabled-then-paused window for a crash or concurrent store
+            # reader to capture.
+            "enabled": enabled,
         }
         if every_secs is not None:
             kwargs["every_secs"] = every_secs

@@ -33,6 +33,7 @@ class MockCronJob:
     persistent_session: bool = True
     silent: bool = False
     enabled: bool = True
+    user_paused: bool = False
     every_secs: int | None = None
     cron_expr: str | None = None
 
@@ -43,7 +44,13 @@ class MockCronService:
         self._next_id = 1
 
     def add_job(self, **kwargs: Any) -> MockCronJob:
-        job = MockCronJob(id=f"job-{self._next_id}", **kwargs)
+        # Mirror CronService.add_job register-paused semantics: enabled=False
+        # creates the job already paused (user_paused=True) at creation.
+        job = MockCronJob(
+            id=f"job-{self._next_id}",
+            user_paused=not kwargs.get("enabled", True),
+            **kwargs,
+        )
         self._next_id += 1
         self._jobs.append(job)
         return job
@@ -140,6 +147,52 @@ class TestCronJobCreation:
         assert job.env == env
         assert job.persistent_session == persistent
         assert job.silent == silent
+
+    def test_disabled_job_registers_paused(self) -> None:
+        """enabled=False creates the job in a paused, user-resumable state."""
+        svc = MockCronService()
+        sdk = CronSDK("my-app", svc)
+
+        job = sdk.add_job(
+            name="my-app/nightly-run",
+            message="",
+            cron_expr="0 22 * * *",
+            enabled=False,
+        )
+
+        assert job.enabled is False
+        assert job.user_paused is True
+
+    def test_enabled_default_registers_active(self) -> None:
+        """Default add_job (no enabled kwarg) creates an active job."""
+        svc = MockCronService()
+        sdk = CronSDK("my-app", svc)
+
+        job = sdk.add_job(name="my-app/refresh", message="go", cron_expr="* * * * *")
+
+        assert job.enabled is True
+        assert getattr(job, "user_paused", False) is False
+
+    def test_paused_at_registration_job_can_be_resumed(self) -> None:
+        """A job registered disabled can be re-enabled (resumed) via update_job."""
+        svc = MockCronService()
+        sdk = CronSDK("my-app", svc)
+
+        job = sdk.add_job(
+            name="my-app/nightly-run",
+            message="",
+            cron_expr="0 22 * * *",
+            enabled=False,
+        )
+        assert job.enabled is False
+
+        updated = sdk.update_job(job.id, enabled=True, user_paused=False)
+
+        assert updated is not None
+        assert updated.enabled is True
+        assert updated.user_paused is False
+        # Resumed job shows up in the active (non-disabled) list again.
+        assert job in svc.list_jobs()
 
 
 # ---------------------------------------------------------------------------

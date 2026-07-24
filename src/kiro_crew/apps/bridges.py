@@ -339,6 +339,7 @@ def _register_crons(app_name: str, manifest: AppManifest) -> list[str]:
             "env": cron.env,
             "persistent_session": cron.persistent_session,
             "silent": cron.silent,
+            "enabled": cron.enabled,
         })
         registered.append(namespaced)
 
@@ -460,6 +461,7 @@ def register_app_crons_with_service(app_name: str, cron_service: Any) -> list[st
                 env=d.get("env") or None,
                 persistent_session=d.get("persistent_session", False),
                 silent=bool(d.get("silent", False)),
+                enabled=bool(d.get("enabled", True)),
             )
             newly_registered.append(name)
             sel().log_api_access(

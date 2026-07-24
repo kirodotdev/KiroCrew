@@ -59,6 +59,13 @@ The app manifest (`app.json`) declares your app's identity, resources, and requi
 | `cron_expr` | string | Cron expression (mutually exclusive with `every`) |
 | `message` | string | Prompt sent to the agent on each run |
 | `agent` | string | Agent to run (optional, uses default if omitted) |
+| `enabled` | boolean | Default `true`. Must be a JSON boolean — any other type is rejected at manifest validation. When `false` the cron is registered **paused** (visible in the Schedule view, resumable) instead of firing on install/enable — for jobs that need user configuration first |
+
+> **Caveat:** disabling an app deletes its registered cron jobs, and re-enabling
+> the app re-registers them from the manifest. A cron shipped with
+> `"enabled": false` that a user later resumed will therefore be reset back to
+> the paused state after an app disable → re-enable cycle and must be resumed
+> again.
 
 ## Frontend UI
 
