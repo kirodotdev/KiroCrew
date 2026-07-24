@@ -1789,23 +1789,28 @@ def _resolve_session_key() -> str:
     if sk:
         return sk
     try:
+        from kiro_crew.session_pid_sig import read_session_pid_txt
+
         cfg_dir = config_dir()
         # Sandbox launcher exports its own HOST pid (the pid the gateway keys
         # session_pid files by) — direct lookup works even when this
         # process's pid view diverges from the host's (PID-namespace
         # sandboxing), where the ancestor walk below can never match.
+        # Reads go through session_pid_sig's hardened reader (symlink
+        # refusal, regular-file check, size bound) — same read discipline
+        # as the strict verifier, minus the signature requirement.
         host_pid = os.environ.get("KIROCREW_HOST_PID", "")
         if host_pid.isdigit():
-            pid_file = cfg_dir / f"session_pid_{host_pid}.txt"
-            if pid_file.exists():
-                return pid_file.read_text(encoding="utf-8").strip()
+            key = read_session_pid_txt(host_pid, cfg_dir)
+            if key:
+                return key
         pid = os.getppid()
         seen: set[int] = set()
         while pid > 1 and pid not in seen:
             seen.add(pid)
-            pid_file = cfg_dir / f"session_pid_{pid}.txt"
-            if pid_file.exists():
-                return pid_file.read_text(encoding="utf-8").strip()
+            key = read_session_pid_txt(pid, cfg_dir)
+            if key:
+                return key
             pid = _get_ppid(pid)
     except Exception:
         pass
@@ -1813,20 +1818,48 @@ def _resolve_session_key() -> str:
 
 
 def _resolve_session_key_strict() -> str:
-    """Resolve the session key, refusing PID-walked identities.
+    """Resolve the session key, refusing PID-walked and unsigned identities.
 
-    Like ``_resolve_session_key`` but drops the ``/proc`` ancestor walk:
-    only the gateway-injected ``KIROCREW_SESSION_KEY`` env var is accepted.
-    Returns ``""`` when only the PID-walk would have matched.
+    Like ``_resolve_session_key`` but drops the ``/proc`` ancestor walk.
+    Two identity sources are accepted:
 
-    Required by state-mutating MCP tools. A subagent spawned via
-    ``spawn_run`` lives under the parent slot's process tree, so a
-    PID-walk from its MCP-core child silently resolves to the parent —
-    which would let the subagent mutate state on the wrong slot.
-    Read-only callers (audit, telemetry) keep the lenient resolver
-    where misattribution is harmless.
+    1. The gateway-injected ``KIROCREW_SESSION_KEY`` env var.
+    2. The direct ``KIROCREW_HOST_PID`` -> ``session_pid_<pid>.txt``
+       lookup, but ONLY when the HMAC sidecar written by the gateway
+       verifies (:func:`kiro_crew.session_pid_sig.verify_session_pid`).
+       PID-namespace sandboxing strips ``KIROCREW_SESSION_KEY`` from the
+       sandboxed env, but the sandbox launcher exports its OWN host pid
+       (``sandbox.py``) — exactly the pid the gateway keys
+       ``session_pid_<pid>.txt`` by on session claim. The bare ``.txt``
+       file is agent-writable and therefore forgeable; the sidecar is
+       signed with the SEL trust root (``sel_hmac.key``), which agents
+       cannot read, and binds the pid into the MAC so another pid's
+       pair cannot be replayed. Without this branch,
+       ``monitor_start``/``autonudge_stop``/``set_project`` fail closed
+       in every sandboxed dashboard session even though the session is
+       fully identified.
+
+    Returns ``""`` when only the ``/proc`` ancestor WALK would have
+    matched, or when the sidecar is missing/invalid. The walk stays
+    excluded: a subagent spawned via ``spawn_run`` lives under the
+    parent slot's process tree, so walking ancestors from its MCP-core
+    child silently resolves to the parent — which would let the
+    subagent mutate state on the wrong slot. Read-only callers (audit,
+    telemetry) keep the lenient resolver where misattribution is
+    harmless.
     """
-    return os.environ.get("KIROCREW_SESSION_KEY", "")
+    sk = os.environ.get("KIROCREW_SESSION_KEY", "")
+    if sk:
+        return sk
+    try:
+        host_pid = os.environ.get("KIROCREW_HOST_PID", "")
+        if host_pid.isdigit():
+            from kiro_crew.session_pid_sig import verify_session_pid
+
+            return verify_session_pid(host_pid)
+    except Exception:
+        pass
+    return ""
 
 
 def _vet_messaging_governance(caller_session: str) -> str | None:

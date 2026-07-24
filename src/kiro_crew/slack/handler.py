@@ -37,7 +37,7 @@ if TYPE_CHECKING:
 from kiro_crew.acp.client import AcpError, AcpProcessDied, AcpPromptBusy, AcpTimeoutError
 from kiro_crew.acp.types import STOP_REASON_CANCELLED, STOP_REASON_END_TURN
 from kiro_crew.atomic_write import atomic_write
-from kiro_crew.config.loader import ACTIVATION_REVIEW, KiroCrewConfig, config_dir, config_path
+from kiro_crew.config.loader import ACTIVATION_REVIEW, KiroCrewConfig, config_path
 from kiro_crew.context import (
     ContextBuilder,
     build_cancelled_turn_preamble,
@@ -45,7 +45,7 @@ from kiro_crew.context import (
     window_for_provider_client,
 )
 from kiro_crew.cron import CronService, compute_next_run_ts, format_schedule, get_local_tz
-from kiro_crew.executors import run_in_embed_pool
+from kiro_crew.executors import maintenance_executor, run_in_embed_pool
 from kiro_crew.history import ConversationLog, HistoryConsolidator
 from kiro_crew.hooks import (
     HOOK_REPLY,
@@ -77,6 +77,7 @@ from kiro_crew.security import (
 )
 from kiro_crew.sel import sel
 from kiro_crew.session import SessionManager
+from kiro_crew.session_pid_sig import publish_session_pid
 from kiro_crew.slack.blocks import build_working_blocks, deprecation_warning_block
 from kiro_crew.slack.client import SlackClientOps
 from kiro_crew.slack.format import (
@@ -2891,12 +2892,17 @@ async def handle_message(
             resumed,
         )
 
-        # Write current session key so MCP tools can pass it to spawn API.
-        # Keyed by kiro-cli PID to avoid races between concurrent sessions.
+        # Publish the session_pid_<pid>.txt mapping (plus HMAC sidecar) so MCP
+        # tools can resolve identity. Keyed by kiro-cli PID to avoid races
+        # between concurrent sessions. Offloaded: publish does a key read plus
+        # two atomic_write() replacements — blocking filesystem work that must
+        # not run on the event loop (no-blocking-call-on-event-loop).
         try:
             pid = sessions.get_pid(session_key)
             if isinstance(pid, int):
-                (config_dir() / f"session_pid_{pid}.txt").write_text(session_key, encoding="utf-8")
+                await asyncio.get_running_loop().run_in_executor(
+                    maintenance_executor(), publish_session_pid, pid, session_key
+                )
         except Exception:
             pass
 

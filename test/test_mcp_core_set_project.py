@@ -20,8 +20,27 @@ from kiro_crew import mcp_core
 
 
 class TestResolveSessionKeyStrict:
-    """Strict resolver: only the ``KIROCREW_SESSION_KEY`` env var produces a
-    value. The PID-walk fallback that the lenient resolver uses is dropped."""
+    """Strict resolver: the ``KIROCREW_SESSION_KEY`` env var, or the direct
+    ``KIROCREW_HOST_PID`` -> ``session_pid_<pid>.txt`` lookup — the latter
+    ONLY when the gateway-written HMAC sidecar verifies. The /proc ancestor
+    WALK the lenient resolver uses is dropped, and an unsigned or forged
+    file is refused."""
+
+    def _signed_env(self, monkeypatch, tmp_path, pid: str, session_key: str):
+        """Simulate the sandbox: env key stripped, HOST_PID set, and a
+        gateway-published (signed) mapping on disk."""
+        from kiro_crew import session_pid_sig
+
+        monkeypatch.delenv("KIROCREW_SESSION_KEY", raising=False)
+        monkeypatch.setenv("KIROCREW_HOST_PID", pid)
+        (tmp_path / "sel_hmac.key").write_bytes(b"k" * 32)
+        with patch.object(session_pid_sig, "config_dir", return_value=tmp_path), \
+             patch.object(
+                 session_pid_sig,
+                 "sel_hmac_key_path",
+                 return_value=tmp_path / "sel_hmac.key",
+             ):
+            session_pid_sig.publish_session_pid(int(pid), session_key)
 
     def test_env_var_used(self, monkeypatch):
         monkeypatch.setenv("KIROCREW_SESSION_KEY", "dashboard:slot-B")
@@ -31,7 +50,132 @@ class TestResolveSessionKeyStrict:
         """Lenient resolver would walk /proc and find a session_pid_*.txt;
         strict returns "" so the caller can refuse."""
         monkeypatch.delenv("KIROCREW_SESSION_KEY", raising=False)
+        monkeypatch.delenv("KIROCREW_HOST_PID", raising=False)
         assert mcp_core._resolve_session_key_strict() == ""
+
+    def test_env_var_wins_over_host_pid(self, monkeypatch, tmp_path):
+        """When both identities are present the env var is authoritative."""
+        from kiro_crew import session_pid_sig
+
+        self._signed_env(monkeypatch, tmp_path, "4242", "dashboard:file-slot")
+        monkeypatch.setenv("KIROCREW_SESSION_KEY", "dashboard:env-slot")
+        with patch.object(session_pid_sig, "config_dir", return_value=tmp_path), \
+             patch.object(
+                 session_pid_sig,
+                 "sel_hmac_key_path",
+                 return_value=tmp_path / "sel_hmac.key",
+             ):
+            assert mcp_core._resolve_session_key_strict() == "dashboard:env-slot"
+
+    def test_signed_host_pid_mapping_accepted(self, monkeypatch, tmp_path):
+        """Sandboxed session: env key stripped, launcher-declared HOST_PID
+        maps to a gateway-published signed mapping — accepted."""
+        from kiro_crew import session_pid_sig
+
+        self._signed_env(
+            monkeypatch, tmp_path, "4242", "dashboard:chat-32-1784855955"
+        )
+        with patch.object(session_pid_sig, "config_dir", return_value=tmp_path), \
+             patch.object(
+                 session_pid_sig,
+                 "sel_hmac_key_path",
+                 return_value=tmp_path / "sel_hmac.key",
+             ):
+            assert (
+                mcp_core._resolve_session_key_strict()
+                == "dashboard:chat-32-1784855955"
+            )
+
+    def test_unsigned_host_pid_file_refused(self, monkeypatch, tmp_path):
+        """FORGERY: an agent writes a bare session_pid_<pid>.txt pointing at
+        another slot's key. Without the HMAC sidecar (which requires the
+        agent-unreadable SEL key) the strict resolver must refuse."""
+        from kiro_crew import session_pid_sig
+
+        monkeypatch.delenv("KIROCREW_SESSION_KEY", raising=False)
+        monkeypatch.setenv("KIROCREW_HOST_PID", "4242")
+        (tmp_path / "sel_hmac.key").write_bytes(b"k" * 32)
+        (tmp_path / "session_pid_4242.txt").write_text(
+            "dashboard:victim-slot", encoding="utf-8"
+        )
+        with patch.object(session_pid_sig, "config_dir", return_value=tmp_path), \
+             patch.object(
+                 session_pid_sig,
+                 "sel_hmac_key_path",
+                 return_value=tmp_path / "sel_hmac.key",
+             ):
+            assert mcp_core._resolve_session_key_strict() == ""
+
+    def test_replayed_sidecar_for_other_pid_refused(self, monkeypatch, tmp_path):
+        """REPLAY: a subagent copies the parent's .txt/.sig pair under its own
+        pid. The pid is bound into the MAC, so verification must fail."""
+        from kiro_crew import session_pid_sig
+
+        (tmp_path / "sel_hmac.key").write_bytes(b"k" * 32)
+        with patch.object(session_pid_sig, "config_dir", return_value=tmp_path), \
+             patch.object(
+                 session_pid_sig,
+                 "sel_hmac_key_path",
+                 return_value=tmp_path / "sel_hmac.key",
+             ):
+            # Gateway legitimately publishes the PARENT's mapping (pid 1000).
+            session_pid_sig.publish_session_pid(1000, "dashboard:parent-slot")
+        # Subagent (host pid 2000) replays the parent's pair under its own pid.
+        for ext in ("txt", "sig"):
+            (tmp_path / f"session_pid_2000.{ext}").write_text(
+                (tmp_path / f"session_pid_1000.{ext}").read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+        monkeypatch.delenv("KIROCREW_SESSION_KEY", raising=False)
+        monkeypatch.setenv("KIROCREW_HOST_PID", "2000")
+        with patch.object(session_pid_sig, "config_dir", return_value=tmp_path), \
+             patch.object(
+                 session_pid_sig,
+                 "sel_hmac_key_path",
+                 return_value=tmp_path / "sel_hmac.key",
+             ):
+            assert mcp_core._resolve_session_key_strict() == ""
+
+    def test_host_pid_without_file_returns_empty(self, monkeypatch, tmp_path):
+        """A subagent sandbox exports its own HOST_PID, but the gateway never
+        writes a session_pid file for it — strict must refuse, not walk."""
+        from kiro_crew import session_pid_sig
+
+        monkeypatch.delenv("KIROCREW_SESSION_KEY", raising=False)
+        monkeypatch.setenv("KIROCREW_HOST_PID", "5555")
+        with patch.object(session_pid_sig, "config_dir", return_value=tmp_path), \
+             patch.object(
+                 session_pid_sig,
+                 "sel_hmac_key_path",
+                 return_value=tmp_path / "sel_hmac.key",
+             ):
+            assert mcp_core._resolve_session_key_strict() == ""
+
+    def test_non_numeric_host_pid_ignored(self, monkeypatch, tmp_path):
+        """Malformed HOST_PID (path traversal, garbage) never reaches the
+        filesystem lookup."""
+        from kiro_crew import session_pid_sig
+
+        monkeypatch.delenv("KIROCREW_SESSION_KEY", raising=False)
+        monkeypatch.setenv("KIROCREW_HOST_PID", "../../etc/passwd")
+        with patch.object(session_pid_sig, "config_dir", return_value=tmp_path), \
+             patch.object(
+                 session_pid_sig,
+                 "sel_hmac_key_path",
+                 return_value=tmp_path / "sel_hmac.key",
+             ):
+            assert mcp_core._resolve_session_key_strict() == ""
+
+    def test_verifier_failure_returns_empty(self, monkeypatch):
+        """Any error inside verification fails closed to ''."""
+        from kiro_crew import session_pid_sig
+
+        monkeypatch.delenv("KIROCREW_SESSION_KEY", raising=False)
+        monkeypatch.setenv("KIROCREW_HOST_PID", "4242")
+        with patch.object(
+            session_pid_sig, "verify_session_pid", side_effect=OSError("boom")
+        ):
+            assert mcp_core._resolve_session_key_strict() == ""
 
 
 # ───────────────────────────── set_project tool ─────────────────────────────

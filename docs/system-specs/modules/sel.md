@@ -42,6 +42,23 @@ The `config_bounds_clamped` event (`outcome=clamped`, `source=background`, `oper
 - **Key + log are on the sensitive-path floor (`cdf82704`):** both `sel_hmac.key` and `security_events.jsonl` are in `security._SENSITIVE_HOME_DIRS`, so the audited agent's `fs_read`/file-edit tools (gated by `is_sensitive_path()`) cannot read the key to forge the chain or rewrite the log. The gateway's own writer/reader (`sel.py`, `dashboard/session_health.py`) opens the files directly and bypasses that gate. Residual: the key still lives in the agent's home namespace — a deeper out-of-process signer is future hardening.
 - Verification: `verify_integrity()` walks the chain and reports tampered entries
 - Append-only: no in-place edits; pruning rewrites with chain rebuild
+- **Second protocol anchored on this key — domain-separated:** `session_pid_sig.py`
+  authenticates the `session_pid_<pid>.txt` -> session-key mapping consumed by
+  strict MCP identity resolvers. It does **not** sign with the raw
+  `sel_hmac.key`; it derives a purpose-specific subkey
+  (`HMAC(sel_hmac.key, "kirocrew.session_pid.sig.v1")`) so the sidecar MAC and
+  the SEL audit chain never share a signing key — a MAC minted under one
+  protocol is valueless to the other (no cross-protocol confusion/replay). The
+  key file remains a single on-disk trust root; only `SecurityEventLog` ever
+  *creates* it. **Recorded acceptance — widened compromise impact:** anchoring
+  session identity here means compromise of `sel_hmac.key` no longer only
+  permits forging the audit chain — it also permits minting valid
+  session-identity sidecars and driving state-mutating MCP tools against
+  another session (cross-session state mutation). The likelihood of compromise
+  is unchanged (same sensitive-path floor); the *impact* grew, and any future
+  hardening of this key (the out-of-process signer above, issue #302) must
+  treat `session_pid_sig` as a dependent of equal weight. See
+  `docs/system-specs/modules/session.md` for the sidecar contract.
 
 ## Async Writer
 

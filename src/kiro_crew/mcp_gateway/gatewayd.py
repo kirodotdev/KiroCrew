@@ -69,6 +69,7 @@ from kiro_crew.mcp_gateway.spill import cleanup_old_spill_files
 from kiro_crew.metrics.provider import get_recorder
 from kiro_crew.sandbox import prewarm_backend
 from kiro_crew.sel import SecurityEventLog
+from kiro_crew.session_pid_sig import read_session_pid_txt
 
 logger = logging.getLogger(__name__)
 
@@ -1121,10 +1122,12 @@ def _resolve_peer_identity(peer_pid: int) -> tuple[str, list[int]]:
         seen.add(pid)
         chain.append(pid)
         if not session_key:
-            pid_file = cfg_dir / f"session_pid_{pid}.txt"
+            # Hardened read (symlink refusal, regular-file check, size
+            # bound) — gatewayd is a trusted process reading a predictable,
+            # agent-writable path, the exact symlink-planting surface
+            # session_pid_sig's reader exists to close.
             try:
-                if pid_file.exists():
-                    session_key = pid_file.read_text(encoding="utf-8").strip()
+                session_key = read_session_pid_txt(pid, cfg_dir)
             except OSError:
                 pass
         try:

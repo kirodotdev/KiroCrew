@@ -63,7 +63,7 @@ class TestAgentPassthrough:
     async def test_channel_agent_passed(self):
         slack, sessions, ctx = _make_mocks()
 
-        with patch("kiro_crew.slack.handler.config_dir", return_value=MagicMock()):
+        with patch("kiro_crew.slack.handler.publish_session_pid"):
             await handle_message(
                 slack=slack,
                 sessions=sessions,
@@ -89,7 +89,7 @@ class TestAgentPassthrough:
         from kiro_crew.slack import handler
         handler._cached_default_agent = ""
 
-        with patch("kiro_crew.slack.handler.config_dir", return_value=MagicMock()):
+        with patch("kiro_crew.slack.handler.publish_session_pid"):
             await handle_message(
                 slack=slack,
                 sessions=sessions,

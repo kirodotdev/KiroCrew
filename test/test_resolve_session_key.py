@@ -93,6 +93,21 @@ class TestResolveSessionKey:
         ):
             assert _resolve_session_key() == ""
 
+    def test_symlinked_pid_file_refused(self, tmp_path):
+        """SYMLINK ATTACK on the lenient path: session_pid_<pid>.txt replaced
+        by a symlink to a sensitive file must NOT be followed — the lenient
+        resolver reads through session_pid_sig's hardened no-follow reader
+        (same discipline as the strict verifier, minus the signature)."""
+        secret = tmp_path / "victim-secret"
+        secret.write_text("dashboard:chat-stolen", encoding="utf-8")
+        ppid = os.getppid()
+        (tmp_path / f"session_pid_{ppid}.txt").symlink_to(secret)
+        env = {k: v for k, v in os.environ.items() if k != "KIROCREW_SESSION_KEY"}
+        with patch.dict("os.environ", env, clear=True), patch(
+            "kiro_crew.mcp_core.config_dir", return_value=tmp_path
+        ), patch("kiro_crew.mcp_core._get_ppid", return_value=0):
+            assert _resolve_session_key() == ""
+
     def test_handles_cycle_detection(self, tmp_path):
         """Stops if PID chain forms a cycle (prevents infinite loop)."""
 

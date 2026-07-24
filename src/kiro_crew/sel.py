@@ -867,3 +867,22 @@ def _infer_source(session_key: str) -> str:
 def sel() -> SecurityEventLog:
     """Module-level accessor for the singleton SEL instance."""
     return SecurityEventLog()
+
+
+def sel_hmac_key_path() -> Path:
+    """Canonical on-disk location of the SEL trust-root key (``sel_hmac.key``).
+
+    Single source of truth shared by :class:`SecurityEventLog` (the key's
+    creator/owner) and dependent protocols (``session_pid_sig``) so they can
+    never diverge on which file anchors trust. Tracks the LIVE singleton's
+    directory when one is initialized (tests and embedded deployments pass a
+    ``base_dir``); otherwise falls back to the same default the singleton
+    would use. Dependent protocols must resolve the key through this accessor
+    rather than re-deriving the path (e.g. via ``config_dir()``, which honors
+    ``KIROCREW_HOME`` while ``_DEFAULT_DIR`` does not — resolving differently
+    would split the trust root under isolated-home deployments).
+    """
+    inst = SecurityEventLog._instance
+    if inst is not None and getattr(inst, "_initialized", False):
+        return inst._dir / _HMAC_KEY_FILE
+    return _DEFAULT_DIR / _HMAC_KEY_FILE

@@ -630,6 +630,10 @@ def cleanup_orphaned_sessions() -> None:
         # os.kill(pid, 0) would terminate the process on Windows — probe instead.
         if not platform_compat.pid_exists(pid):
             pid_file.unlink(missing_ok=True)
+            # Remove the HMAC sidecar (session_pid_<pid>.sig) alongside its
+            # .txt — a dangling sidecar is harmless (verification requires
+            # both) but would accumulate forever.
+            pid_file.with_suffix(".sig").unlink(missing_ok=True)
             stale_pid_files += 1
     if stale_pid_files:
         logger.info("Cleaned up %d stale session PID files", stale_pid_files)

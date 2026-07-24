@@ -211,6 +211,7 @@ class CallerContext:
                 # circular import: config.loader imports mcp_caller top-level
                 # for CallerContext typing; we can only reach config_dir here.
                 from kiro_crew.config.loader import config_dir
+                from kiro_crew.session_pid_sig import read_session_pid_txt
 
                 # Walk the FULL ancestor chain, not
                 # just os.getppid(). The tree can be gateway -> kiro-cli (has
@@ -224,20 +225,22 @@ class CallerContext:
                 # works even when this process's /proc view of pids diverges
                 # from the host's (PID-namespace sandboxing), where the
                 # ancestor walk below can never match.
+                # Reads go through session_pid_sig's hardened reader (symlink
+                # refusal, regular-file check, size bound) — same read
+                # discipline as the strict verifier, minus the signature
+                # requirement.
                 host_pid = os.environ.get("KIROCREW_HOST_PID", "")
                 if host_pid.isdigit():
-                    pid_file = cfg_dir / f"session_pid_{host_pid}.txt"
-                    if pid_file.exists():
-                        sk = pid_file.read_text(encoding="utf-8").strip()
+                    sk = read_session_pid_txt(host_pid, cfg_dir)
+                    if sk:
                         source = "pidfile"
                 if not sk:
                     pid = os.getppid()
                     seen: set[int] = set()
                     while pid > 1 and pid not in seen:
                         seen.add(pid)
-                        pid_file = cfg_dir / f"session_pid_{pid}.txt"
-                        if pid_file.exists():
-                            sk = pid_file.read_text(encoding="utf-8").strip()
+                        sk = read_session_pid_txt(pid, cfg_dir)
+                        if sk:
                             source = "pidfile"
                             break
                         pid = _parent_pid(pid)

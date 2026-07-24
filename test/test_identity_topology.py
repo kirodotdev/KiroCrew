@@ -359,6 +359,85 @@ def test_gatewayd_peer_identity_resolves_via_host_walk(topo, monkeypatch) -> Non
 
 
 # ---------------------------------------------------------------------------
+# Hardened-reader wiring: every registered .txt reader must refuse a planted
+# symlink at the predictable session_pid_<pid>.txt path (same-uid agent
+# symlink-planting — the surface session_pid_sig.read_session_pid_txt
+# closes). mcp_core's refusal is locked in test_resolve_session_key.py;
+# these lock the remaining three readers.
+# ---------------------------------------------------------------------------
+
+
+def _plant_symlink(topo, host_pid: int) -> None:
+    """Replace the mapping file for *host_pid* with a symlink to a secret."""
+    secret = topo.cfg_dir / "victim-secret"
+    secret.write_text("dashboard:chat-stolen", encoding="utf-8")
+    txt = topo.cfg_dir / f"session_pid_{host_pid}.txt"
+    txt.unlink(missing_ok=True)
+    txt.symlink_to(secret)
+
+
+def test_from_env_refuses_symlinked_pid_file(topo, monkeypatch) -> None:
+    from kiro_crew import mcp_caller
+
+    _plant_symlink(topo, SESSION_HOST)
+    _wire_common(monkeypatch, topo, "host")
+    monkeypatch.setattr(mcp_caller, "_parent_pid", topo.parent_lookup("host"))
+    monkeypatch.setattr(
+        "kiro_crew.config.loader.config_dir", lambda: topo.cfg_dir
+    )
+
+    ctx = mcp_caller.CallerContext.from_env()
+    assert ctx.session_key == ""
+
+
+def test_mcp_shared_refuses_symlinked_pid_file(topo, monkeypatch) -> None:
+    from kiro_crew import mcp_shared
+
+    monkeypatch.setattr(mcp_shared, "_excluded_tools", None)
+    monkeypatch.setattr(mcp_shared, "_last_failure_time", 0.0)
+    monkeypatch.setattr(mcp_shared, "_last_startup_race_time", 0.0)
+    monkeypatch.setattr(mcp_shared, "_failure_count", 0)
+
+    cfg = MagicMock()
+    cfg.dashboard.url = "http://localhost:5476/"
+    monkeypatch.setattr(
+        mcp_shared.KiroCrewConfig, "load", classmethod(lambda cls: cfg)
+    )
+    monkeypatch.setattr(mcp_shared, "parse_dashboard_url", lambda url: ("localhost", 5476))
+    monkeypatch.setattr(mcp_shared, "config_dir", lambda: topo.cfg_dir)
+    (topo.cfg_dir / ".local_secret").write_text("s")
+
+    # Symlink at the DIRECT parent's path (where the resolvable-case test
+    # plants a real file) plus one at the fixture-written SESSION_HOST path,
+    # so no ancestor resolves via a symlink.
+    _plant_symlink(topo, SESSION_HOST)
+    _plant_symlink(topo, KIRO_CLI)
+    _wire_common(monkeypatch, topo, "host")
+
+    urlopen = MagicMock()
+    monkeypatch.setattr(mcp_shared.urllib.request, "urlopen", urlopen)
+
+    # No key resolvable -> startup-race fail-open WITHOUT a policy call and,
+    # crucially, WITHOUT the stolen key ever being read through the symlink.
+    assert mcp_shared._resolve_excluded_tools() == set()
+    assert not urlopen.called
+
+
+def test_gatewayd_peer_identity_refuses_symlinked_pid_file(topo, monkeypatch) -> None:
+    from kiro_crew.mcp_gateway import gatewayd as gw
+
+    _plant_symlink(topo, SESSION_HOST)
+    monkeypatch.setattr(gw, "_config_dir", lambda: topo.cfg_dir)
+    monkeypatch.setattr(gw, "_ppid_fn", topo.parent_lookup("host"))
+
+    key, chain = gw._resolve_peer_identity(MCP_SERVER)
+    assert key == ""
+    # The chain must remain complete for claim indexing even when the key
+    # is refused — identity repair happens later via claim-push.
+    assert chain == [MCP_SERVER, KIRO_CLI, SESSION_HOST, GATEWAY]
+
+
+# ---------------------------------------------------------------------------
 # Call-site registry guard
 # ---------------------------------------------------------------------------
 # Every file referencing the session_pid_<pid>.txt contract must be listed
@@ -372,20 +451,48 @@ _SESSION_PID_TOKEN = re.compile(r"session_pid_(\{|\*|<)")
 
 #: file (relative to src/kiro_crew) -> declared role / namespace assumption
 _REGISTERED_CALL_SITES: dict[str, str] = {
-    "dashboard/chat_runner.py": "writer: keys the file by the HOST pid of the spawned session process",
-    "slack/handler.py": "writer: keys the file by the HOST pid of the spawned session process",
-    "mcp_caller.py": "reader: client-side /proc ancestry walk — assumes caller sees HOST pids",
-    "mcp_core.py": "reader: /proc ancestry walk + stale-file cleanup glob — assumes HOST pids",
+    "dashboard/chat_runner.py": (
+        "writer via session_pid_sig.publish_session_pid — keys the "
+        "session_pid_<pid>.txt file (plus HMAC sidecar) by the HOST pid of "
+        "the spawned session process"
+    ),
+    "slack/handler.py": (
+        "writer via session_pid_sig.publish_session_pid — keys the "
+        "session_pid_<pid>.txt file (plus HMAC sidecar) by the HOST pid of "
+        "the spawned session process"
+    ),
+    "session_pid_sig.py": (
+        "canonical owner of the file contract — writer, strict verifier, "
+        "and lenient hardened reader: publishes session_pid_<pid>.txt with "
+        "an HMAC-SHA256 sidecar (session_pid_<pid>.sig, keyed by the "
+        "SEL trust root sel_hmac.key), verifies it for strict resolvers "
+        "(pid bound into the MAC), and exposes read_session_pid_txt "
+        "(no-follow, regular-file, size-bounded; unsigned) for lenient "
+        "readers — HOST-pid keyed"
+    ),
+    "mcp_caller.py": (
+        "reader: client-side /proc ancestry walk — assumes HOST pids; .txt "
+        "reads via session_pid_sig.read_session_pid_txt (hardened, unsigned)"
+    ),
+    "mcp_core.py": (
+        "reader: lenient /proc ancestry walk + stale-file cleanup glob "
+        "(assumes HOST pids), .txt reads via "
+        "session_pid_sig.read_session_pid_txt (hardened, unsigned); STRICT "
+        "path delegates to session_pid_sig.verify_session_pid "
+        "(HMAC-verified, direct KIROCREW_HOST_PID lookup, no walk)"
+    ),
     "mcp_shared.py": (
         "reader: policy session-key /proc ancestry walk inline in "
-        "_resolve_excluded_tools — assumes HOST pids"
+        "_resolve_excluded_tools — assumes HOST pids; .txt reads via "
+        "session_pid_sig.read_session_pid_txt (hardened, unsigned)"
     ),
     "mcp_gateway/stub.py": "reader via CallerContext.from_env; register-time caller block — assumes HOST pids",
     "mcp_gateway/gatewayd.py": (
         "reader: SERVER-side /proc ancestry walk from the SO_PEERCRED peer pid "
         "(_resolve_peer_identity) — runs in gatewayd's own (host) pid namespace, "
         "so it is immune to client-side namespace divergence; also indexes the "
-        "host ancestor chain for claim-push matching"
+        "host ancestor chain for claim-push matching; .txt reads via "
+        "session_pid_sig.read_session_pid_txt (hardened, unsigned)"
     ),
     "sandbox.py": (
         "writer-adjacent: launcher exports KIROCREW_HOST_PID (its own HOST pid — "
@@ -393,7 +500,7 @@ _REGISTERED_CALL_SITES: dict[str, str] = {
         "so in-namespace readers can look the file up directly without a /proc walk"
     ),
     "mcp_gateway/claim.py": "docstring reference to the contract (no code reads)",
-    "session_pid.py": "stale-file cleanup: globs session_pid_*.txt for dead processes",
+    "session_pid.py": "stale-file cleanup: globs session_pid_*.txt (+ .sig sidecars) for dead processes",
 }
 
 

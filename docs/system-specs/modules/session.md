@@ -495,6 +495,55 @@ parent PID explicitly avoids this.
 - **Periodic**: `_cleanup_loop()` calls it alongside idle session expiry (~60s)
 - **At shutdown**: `cleanup_orphaned_sessions()` on signal/exit
 
+### session_pid sidecar contract (`session_pid_sig.py`)
+
+The gateway maps its direct child pid to a session key by publishing
+`config_dir()/session_pid_<pid>.txt` on session claim (writers:
+`dashboard/chat_runner.py`, `slack/handler.py` — both route through
+`session_pid_sig.publish_session_pid`, the single legitimate publish path).
+Because the `.txt` lives in the same-uid agent-writable config dir it is NOT
+a trust root on its own; publication therefore also writes a
+`session_pid_<pid>.sig` sidecar:
+
+- **MAC**: HMAC-SHA256 over `"<pid>:<session_key>"` — the pid is bound into
+  the MAC so one pid's pair cannot be replayed under another pid.
+- **Key**: a purpose-specific subkey derived from the SEL trust root via a
+  domain-separation label (`HMAC(sel_hmac.key, "kirocrew.session_pid.sig.v1")`).
+  The raw root never signs a sidecar; the sidecar protocol and the SEL audit
+  chain never share a signing key (see `sel.md`). Only `SecurityEventLog`
+  ever *creates* the key file.
+- **Writes are atomic** (`atomic_write` → `os.replace`): a pre-planted
+  symlink at the predictable paths is replaced, never followed.
+- **Consumers**: STRICT identity resolvers for state-mutating MCP tools
+  (`monitor_start`, `autonudge_stop`, `set_project`) accept the direct
+  `KIROCREW_HOST_PID` → mapping lookup only via
+  `session_pid_sig.verify_session_pid`, which fails closed to `""` on a
+  missing/short key, missing files, or MAC mismatch. Lenient (read-only)
+  resolvers keep reading the `.txt` without a signature check, but through
+  the same hardened reader (`session_pid_sig.read_session_pid_txt`:
+  no-follow, regular-file, size-bounded) — `session_pid_sig` owns both the
+  read and write discipline for the file family. Every `.txt` reader routes
+  through it: `mcp_core._resolve_session_key` (host-pid + walk),
+  `mcp_shared._resolve_excluded_tools` (policy walk),
+  `mcp_caller.CallerContext.from_env` (host-pid + walk; also serves
+  `mcp_gateway/stub.py`), and `mcp_gateway/gatewayd._resolve_peer_identity`
+  (server-side peer walk). The sidecar is additive.
+- **Unsigned degrade**: if the SEL key is unavailable at publish time the
+  `.txt` is still written (lenient readers keep working) and any stale
+  sidecar is removed — strict resolvers fail closed for that pid.
+- **Key rotation**: rotating/regenerating `sel_hmac.key` (e.g. snapshot
+  restore, which deliberately excludes the key) invalidates every existing
+  sidecar; strict resolvers fail closed until the next turn's publish
+  re-signs the mapping. Benign and self-healing — no migration step.
+- **Stale cleanup**: the orphan sweep removes `session_pid_<pid>.sig`
+  alongside its `.txt` for dead pids (`session_pid.py`).
+- **Threat model** (full version in the `session_pid_sig.py` module
+  docstring): file forgery, cross-pid replay, tampering, and symlink
+  planting are blocked; deliberate same-uid impersonation via
+  attacker-chosen env in self-launched processes is out of scope (identical
+  capability exists against env-only resolution) and is tracked as the
+  SO_PEERCRED gateway-authentication follow-up (issue #302).
+
 ### Orphan Sweep Active Set
 
 The periodic sweep of `kiro_session_pids.txt` (which kills tracked kiro-cli
