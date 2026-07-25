@@ -183,6 +183,7 @@ vi.mock('../store', () => ({
 
 import CommandPalette from './CommandPalette'
 import { useCommandPalette } from '../hooks/useCommandPalette'
+import { SHORTCUTS_ENABLED_KEY } from '../hooks/useKeyboardShortcuts'
 import type { Result } from './commandPalette/types'
 
 afterEach(() => {
@@ -239,6 +240,55 @@ describe('useCommandPalette — global trigger', () => {
     expect(result.current.open).toBe(true)
     act(() => result.current.close())
     expect(result.current.open).toBe(false)
+  })
+})
+
+describe('useCommandPalette — Enable shortcuts toggle', () => {
+  // jsdom localStorage is shared across the file/suite, so a lingering '0'
+  // would disable shortcuts for every later test. Always clear the key.
+  afterEach(() => localStorage.removeItem(SHORTCUTS_ENABLED_KEY))
+
+  it('double-Shift does NOT open the palette when shortcuts are disabled', () => {
+    localStorage.setItem(SHORTCUTS_ENABLED_KEY, '0')
+    const { result } = renderHook(() => useCommandPalette())
+    act(() => {
+      fireEvent.keyDown(window, { key: 'Shift' })
+      fireEvent.keyDown(window, { key: 'Shift' })
+    })
+    expect(result.current.open).toBe(false)
+  })
+
+  it('⌘K does NOT open the palette when shortcuts are disabled', () => {
+    localStorage.setItem(SHORTCUTS_ENABLED_KEY, '0')
+    const { result } = renderHook(() => useCommandPalette())
+    act(() => {
+      fireEvent.keyDown(window, { key: 'k', metaKey: true })
+    })
+    expect(result.current.open).toBe(false)
+  })
+
+  it('the nav button (openPalette) still works while shortcuts are disabled', () => {
+    localStorage.setItem(SHORTCUTS_ENABLED_KEY, '0')
+    const { result } = renderHook(() => useCommandPalette())
+    act(() => result.current.openPalette())
+    expect(result.current.open).toBe(true)
+  })
+
+  it('re-enabling restores double-Shift (no stale first tap carries over)', () => {
+    localStorage.setItem(SHORTCUTS_ENABLED_KEY, '0')
+    const { result } = renderHook(() => useCommandPalette())
+    // A Shift arrives while disabled (must not seed a pending first tap)…
+    act(() => { fireEvent.keyDown(window, { key: 'Shift' }) })
+    // …then shortcuts are re-enabled and a single Shift lands.
+    localStorage.setItem(SHORTCUTS_ENABLED_KEY, '1')
+    act(() => { fireEvent.keyDown(window, { key: 'Shift' }) })
+    expect(result.current.open).toBe(false)
+    // A genuine double-tap after re-enabling opens as normal.
+    act(() => {
+      fireEvent.keyDown(window, { key: 'Shift' })
+      fireEvent.keyDown(window, { key: 'Shift' })
+    })
+    expect(result.current.open).toBe(true)
   })
 })
 

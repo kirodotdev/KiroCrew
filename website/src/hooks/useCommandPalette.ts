@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
+import { SHORTCUTS_ENABLED_KEY } from './useKeyboardShortcuts'
 
 /**
  * Global trigger + open/close state for the Search Everywhere command palette
@@ -13,6 +14,15 @@ import { useState, useEffect, useCallback, useRef } from 'react'
  *    ⌘K is intentionally chosen over reserved combos (⌘P print, ⌘W close tab,
  *    ⌘1–9 tab switch, ⌘⌥← / ⌘⌥→) which Chrome will NOT let a page cancel.
  *
+ * Both keyboard bindings honour the global "Enable shortcuts" toggle
+ * ({@link SHORTCUTS_ENABLED_KEY}, shared with useKeyboardShortcuts /
+ * useInstanceShortcuts and surfaced by the Settings → Shortcuts "Search
+ * Everywhere" row). The flag is read live per keystroke — a Settings change
+ * takes effect without re-registering the listener — so when shortcuts are
+ * off, double-Shift and ⌘K fall through to the browser. The palette stays
+ * reachable via its nav button, which calls `openPalette` directly and is
+ * unaffected by the gate.
+ *
  * The listener is attached to `window` (not an element) so the gesture works
  * regardless of focus — including while a chat textarea or a nav row is
  * focused — matching the "search everywhere" intent.
@@ -25,6 +35,9 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 
 /** Max gap between the two Shift keydowns to count as a double-tap. */
 export const DOUBLE_SHIFT_WINDOW_MS = 400
+
+/** Live read of the global shortcuts toggle (default on; '0' means disabled). */
+const shortcutsEnabled = () => localStorage.getItem(SHORTCUTS_ENABLED_KEY) !== '0'
 
 export interface UseCommandPalette {
   /** Whether the palette is currently shown. */
@@ -49,6 +62,16 @@ export function useCommandPalette(): UseCommandPalette {
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
+      // Honour the global "Enable shortcuts" toggle. Read live so a Settings
+      // change applies without re-registering. When off, both bindings fall
+      // through to the browser; the palette's nav button (openPalette) is
+      // unaffected. Reset any pending first Shift tap so re-enabling can't
+      // resume a half-formed double-tap from across the disabled window.
+      if (!shortcutsEnabled()) {
+        lastShiftRef.current = 0
+        return
+      }
+
       // ⌘K / Ctrl+K alias — toggle. Require no other modifiers so it doesn't
       // swallow richer combos. Cancelable in a real Chrome tab.
       if ((e.key === 'k' || e.key === 'K') && (e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey) {
