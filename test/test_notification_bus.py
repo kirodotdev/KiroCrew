@@ -231,6 +231,26 @@ class TestNoteShape:
         assert note["title"] == "t"  # reserved key not clobbered by meta
         assert note["channel"] == "system.cron"
 
+    def test_meta_cannot_clobber_a_builder_set_field(self):
+        # Default-safe guard: any key the builder already wrote to the note is
+        # off-limits to meta by construction (the "key in note" check), so a new
+        # schema field is protected without having to be re-listed in a denylist.
+        # group_key is a builder-set optional field that is not underscore-
+        # prefixed.
+        bus, _ = _make_bus()
+        note = bus.push(
+            NotificationPayload(
+                source="system",
+                channel="system.cron",
+                title="t",
+                body="b",
+                group_key="real-group",
+                meta={"group_key": "EVIL", "job_id": "j1"},
+            )
+        )
+        assert note["group_key"] == "real-group"
+        assert note["job_id"] == "j1"
+
     def test_meta_cannot_smuggle_unset_schema_fields(self):
         # meta={"url": ...} must not inject an unvalidated URL into the note
         # when payload.url is None (validation only runs on payload fields).
@@ -246,6 +266,47 @@ class TestNoteShape:
         )
         assert "url" not in note
         assert "ttl" not in note
+        assert note["job_id"] == "j1"
+
+    def test_meta_cannot_smuggle_broadcast_envelope_keys(self):
+        # DashboardState._broadcast branches on note["_type"] (and reads
+        # companion keys like slot/role/content once set) to decide the WS
+        # frame. Caller-supplied meta must not be able to inject "_type" (or any
+        # underscore-prefixed key) and hijack the envelope.
+        bus, _ = _make_bus()
+        note = bus.push(
+            NotificationPayload(
+                source="system",
+                channel="system.cron",
+                title="t",
+                body="b",
+                meta={
+                    "_type": "slot_update",
+                    "slot": "victim",
+                    "content": "spoofed",
+                    "job_id": "j1",
+                },
+            )
+        )
+        assert "_type" not in note
+        assert note.get("_type", "notification") == "notification"
+        assert note["job_id"] == "j1"  # non-private meta still merges
+
+    def test_meta_cannot_preset_status_fields(self):
+        # 'silenced'/'acked' are sink/frontend-owned; a caller must not
+        # pre-suppress or pre-ack a note it is pushing.
+        bus, _ = _make_bus()
+        note = bus.push(
+            NotificationPayload(
+                source="system",
+                channel="system.cron",
+                title="t",
+                body="b",
+                meta={"silenced": True, "acked": True, "job_id": "j1"},
+            )
+        )
+        assert "silenced" not in note
+        assert "acked" not in note
         assert note["job_id"] == "j1"
 
     def test_optional_fields_omitted_when_unset(self):

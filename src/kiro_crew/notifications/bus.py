@@ -68,6 +68,10 @@ _RESERVED_NOTE_KEYS = frozenset(
         "url",
         "icon",
         "ttl",
+        # Sink/frontend-owned status fields: a caller must not be able to
+        # pre-suppress or pre-acknowledge a note it is pushing.
+        "silenced",
+        "acked",
     }
 )
 
@@ -283,11 +287,24 @@ class NotificationBus:
         if payload.meta:
             # Meta keys merge flat into the note (legacy behavior — the
             # frontend reads note.job_id / note.slot / note.session_key
-            # directly). Reserved schema keys are skipped entirely so meta
-            # can neither clobber them nor smuggle unvalidated values into
-            # unset schema fields (see _RESERVED_NOTE_KEYS).
+            # directly). The merge is default-safe: a meta key is admitted only
+            # if it clears THREE independent guards, so no single denylist has
+            # to be kept perfectly in sync as the schema grows:
+            #   1. not already in `note` — every field the builder above wrote
+            #      (kind/source/.../group_key/actions/url/icon/ttl, present or
+            #      added in future) is off-limits by construction, closing the
+            #      "unset schema field" smuggle vector without re-listing them.
+            #   2. not underscore-prefixed — all internal broadcast-envelope
+            #      keys (DashboardState._broadcast branches on note["_type"] and
+            #      reads companion keys like slot/role/content once it is set)
+            #      are private by convention; blocking the whole `_`-namespace
+            #      neutralizes envelope hijacking for current AND future keys.
+            #   3. not in _RESERVED_NOTE_KEYS — the residual sink/frontend-owned
+            #      fields that are NOT underscore-prefixed and are set LATER than
+            #      this merge (silenced/acked), so guards 1-2 can't catch them.
             for key, value in payload.meta.items():
-                if key not in _RESERVED_NOTE_KEYS:
-                    note.setdefault(key, value)
+                if key in note or key.startswith("_") or key in _RESERVED_NOTE_KEYS:
+                    continue
+                note[key] = value
         self._sink(note)
         return note
