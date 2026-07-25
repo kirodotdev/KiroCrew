@@ -435,6 +435,8 @@ class TestConservativeShutdown:
         mgr = SubagentManager.__new__(SubagentManager)
         mgr._agents = {"agent-001": info}
         mgr._tasks = {}
+        mgr._report_tasks = set()
+        mgr._report_owners = {}
         # Fork adaptation: _force_reap pumps the spawn queue after freeing a
         # slot (a1933a4b, ported earlier in this branch); an empty queue makes
         # _drain_queue return immediately without touching other attrs.
@@ -498,6 +500,8 @@ class TestConservativeShutdown:
         mgr = SubagentManager.__new__(SubagentManager)
         mgr._agents = {"agent-001": info_a, "agent-002": info_b}
         mgr._tasks = {}
+        mgr._report_tasks = set()
+        mgr._report_owners = {}
         # Fork adaptation: see test_session_sharing_never_kills_runtime.
         mgr._queue = []
         mgr._running_count = 2

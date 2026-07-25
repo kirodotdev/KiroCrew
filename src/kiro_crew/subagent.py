@@ -72,6 +72,7 @@ from kiro_crew.subagent_cost import (
 from kiro_crew.subagent_persistence import (
     _agent_dir,
     _cleanup_session_files_sync,
+    clear_tombstone,
     create_agent_folder,
     list_orphans,
     mark_delivered,
@@ -219,7 +220,8 @@ _REAPER_INTERVAL = 60  # seconds between reaper sweeps
 # latency is irrelevant next to permanent wedging.
 _WAVE_STUCK_SECS = 1800
 _RESET_TIMEOUT = 30.0  # max seconds for session reset in finally block
-_RECOVERY_SLOT_WAIT_SECS = 60.0  # max seconds cancel-recovery waits for a free slot
+_RECOVERY_SLOT_WAIT_SECS = 60.0
+_REPORT_DRAIN_TIMEOUT = 30.0  # max seconds cancel_all() waits for shielded terminal reports to drain
 _STARTUP_TIMEOUT_SECS = 120  # max seconds a subagent may sit pre-first-turn with no runtime before the startup watchdog reaps it
 _ON_DONE_TIMEOUT = 1200.0  # outer cap: max total seconds for semaphore wait + injection
 
@@ -821,6 +823,15 @@ class SubagentInfo:
     # restart mid-wave would silently lose every held completion (Arbiter
     # item 1). The gateway marks held members delivered when the digest fires.
     _digest_held: bool = False
+    # A reap/stop has STARTED but may still be in its (awaiting) teardown. Split
+    # out of `reaped` because that flag carries two incompatible meanings: the
+    # cancel-recovery scheduler needs it set BEFORE the teardown awaits (or it
+    # respawns the run being killed), while `_run`'s error synthesis needs it
+    # still False until the reaper actually owns the record (or a run woken by
+    # the reaper's session reset skips its own error and reports a FALSE
+    # SUCCESS). One flag cannot be both early and late; this one is the early
+    # half — "do not respawn, a reap is in flight".
+    _reap_started: bool = False
     # Set by the gateway on the wave's FINAL member only: the held OK member
     # ids whose delivery tombstones must be settled once the digest has been
     # successfully handed off (i.e. after _on_done returns without raising —
@@ -874,6 +885,23 @@ class SubagentInfo:
     # _run finally block skips terminal finalization (subagent_done, on_done)
     # while set so the agent is not reported done mid-recovery.
     _recovering: bool = False
+    # Ownership token for the one-time TERMINAL REPORT (`subagent_done` +
+    # `_on_done`), claimed via `SubagentManager._claim_finalize`.
+    _finalized: bool = False
+    # Ownership token for the one-time SLOT RELEASE (`_running_count` decrement
+    # + queue drain), claimed via `SubagentManager._release_slot`. Separate from
+    # both `reaped` and `done`: whichever terminal path arrives first frees the
+    # slot exactly once, so neither a reap that loses the report claim nor a
+    # `_run` that sees `reaped` can leave `_running_count` inflated. At the
+    # 60-100 concurrent agents #364 targets, a leaked slot starves the queue.
+    _slot_released: bool = False
+    # True once the terminal report's `_on_done` injection has RETURNED, i.e.
+    # the outcome actually reached the parent. Distinct from `_finalized` (the
+    # claim, taken before delivery is attempted) and from the "delivered"
+    # tombstone (written later, after teardown). Read by `cancel_all()` to tell
+    # a report cancelled BEFORE delivery — which must be made recoverable on the
+    # next start — from one cancelled AFTER it, which must not be re-delivered.
+    _reported_to_parent: bool = False
 
     @property
     def outcome(self) -> str:
@@ -961,6 +989,11 @@ class SubagentManager:
         self._completion_keep = completion_keep
         self._completion_keep_chars = completion_keep_chars
         self._running_count = 0
+        # Strong refs to in-flight shielded terminal reports (see
+        # `_spawn_terminal_report`); drained in `cancel_all`.
+        self._report_tasks: set[asyncio.Task] = set()  # type: ignore[type-arg]
+        # task -> the agent whose terminal report it is delivering
+        self._report_owners: dict[asyncio.Task, SubagentInfo] = {}  # type: ignore[type-arg]
         self._last_spawn_ts: float = 0.0  # monotonic time of the last actual start (stagger gate)
         self.hook_store: Any = None  # Optional ScriptHookStore, set by server.py
         self._agents: dict[str, SubagentInfo] = {}
@@ -1586,11 +1619,318 @@ class SubagentManager:
         except Exception:
             logger.debug("Failed to record slow command for %s", info.id, exc_info=True)
 
+    def _claim_finalize(
+        self, info: SubagentInfo, *, supersede_recovery: bool = False
+    ) -> bool:
+        """Claim the exclusive right to report ``info``'s terminal outcome.
+
+        Returns True for exactly one caller. Both the reap path and ``_run``'s
+        ``finally`` call this and report only if it returns True, so the parent
+        is notified exactly once no matter which wins the race or whether the
+        loser is cancelled part-way through its teardown.
+
+        Contains no ``await``, so on a single-threaded event loop the
+        check-and-set is atomic with respect to other tasks.
+
+        Returns False while ``_recovering`` — a cancel-recovery respawn is
+        pending and the agent must not be reported done yet — leaving the claim
+        OPEN so the respawned run can take it later.
+
+        ``supersede_recovery=True`` overrides that withholding and is used ONLY
+        by definitively-terminal callers (`_force_reap`, which also serves user
+        Stop). Without it a reap landing inside the recovery window stranded the
+        outcome: the reap was refused the claim, performed teardown and set
+        ``reaped``, reported nothing — and `_resume`'s ``reaped`` abort path
+        bare-returns, so no path ever reported and the agent sat unfinished
+        until the reaper's wall-clock deadline. Superseding also clears
+        ``_recovering``, because a killed agent has nothing left to respawn.
+
+        Scope note: this token governs REPORTING only, and it deliberately does
+        NOT consult ``info.done``. Gating it on ``done`` was the round-5 defect:
+        if ``_run_inner`` set ``done`` while the reap awaited its session reset,
+        the reaper refused the claim, still marked ``reaped``, and ``_run``'s
+        finally then skipped its own claim — nobody reported. The terminal RECORD
+        (tombstone/stat) keeps its own ``not info.done`` guard and slot accounting
+        has its own one-shot token (:meth:`_release_slot`); three concerns, three
+        guards. Session teardown stays keyed on ``reaped``.
+        """
+        if info._recovering and not supersede_recovery:
+            return False
+        if info._finalized:
+            return False
+        if info._recovering:
+            # A terminal reap/stop SUPERSEDES a pending cancel-recovery respawn:
+            # the agent is being killed, so there is nothing left to respawn.
+            # Clearing the flag here is what keeps `False` from meaning two
+            # different things to this caller ("someone else already reported"
+            # vs "withheld for a respawn that will report later") — the exact
+            # conflation this token exists to remove.
+            info._recovering = False
+        info._finalized = True
+        return True
+
+    async def _report_terminal(
+        self,
+        info: SubagentInfo,
+        *,
+        source: str,
+        injection_timeout_reason: str,
+        mark_delivered_on_success: bool,
+        settle_digest: bool = False,
+        teardown_done: "asyncio.Event | None" = None,
+    ) -> None:
+        """Deliver ``info``'s one-shot terminal report as a single unit.
+
+        This is the exact work the finalize claim guards: fire the
+        ``subagent_done`` WS event, then inject the completion into the parent
+        (``_on_done``) with its ``_ON_DONE_TIMEOUT`` cap, timeout handling, and
+        (for the ``_run`` path) the result.txt TTL / workspace-cleanup
+        bookkeeping.
+
+        Why this is a separate coroutine run under ``asyncio.shield`` (see
+        ``_run_terminal_report``): the claim makes reporting EXCLUSIVE but not
+        ATOMIC. A claimer cancelled mid-report (``_force_reap`` /
+        ``cancel_all()`` cancelling the task while it awaits ``_fire_event`` or
+        ``_on_done``) would exit without delivering, and the other path — seeing
+        the claim already taken — stays silent, so the completed outcome never
+        reaches the parent. Running the report on a shielded, strongly-held task
+        makes it complete independently of caller cancellation.
+
+        The two call sites (reap vs. ``_run``'s ``finally``) differ only in the
+        injection-timeout reason string, the log ``source`` prefix, and whether
+        a successful delivery marks the result delivered — those are passed as
+        arguments rather than unified away. The WS payload is identical (both
+        set ``info.elapsed`` before calling), so it is built from ``info`` here.
+        """
+        await self._fire_event(
+            "subagent_done",
+            info,
+            {
+                "elapsed": info.elapsed,
+                "error": _redact(info.error) if info.error else None,
+                "stopped": info.user_stopped,
+                "outcome": info.outcome,
+                "task": _redact(info.task),
+                "agent": _redact(info.agent),
+                "result": _done_result(info.result),
+            },
+        )
+        if not self._on_done:
+            return
+        try:
+            await asyncio.wait_for(self._on_done(info), timeout=_ON_DONE_TIMEOUT)
+            # The outcome has REACHED the parent. Recorded before any further
+            # await so a shutdown cancellation landing in the teardown wait or
+            # the tombstone write below is not mistaken for a lost delivery by
+            # `cancel_all()` (which would re-deliver it on the next start).
+            info._reported_to_parent = True
+            if settle_digest:
+                # _on_done returned without raising, so the wave digest (if this
+                # was the final member) has been handed off. Only NOW settle the
+                # held members' delivery tombstones.
+                self._settle_digest_holds(info)
+            # Digest-held wave members are NOT marked delivered here: their
+            # result has not reached the parent yet (the gateway marks them when
+            # the digest fires), so a restart mid-wave leaves them visible to
+            # orphan reconciliation.
+            if mark_delivered_on_success and not info.error and not info._digest_held:
+                # Wait for the caller's session teardown before writing the
+                # "delivered" tombstone. This report is deliberately SPAWNED
+                # ahead of teardown (so a cancellation cannot strand it), which
+                # opens a window the older post-teardown ordering did not have:
+                # a crash after the tombstone but before teardown finished would
+                # leave a surviving child process EXCLUDED from orphan
+                # reconciliation — invisible and never reaped. The wait is
+                # bounded because the caller's teardown is itself bounded
+                # (_RESET_TIMEOUT then SIGKILL) and runs in a `finally`, so the
+                # event is set even when the caller is cancelled.
+                if teardown_done is not None and not teardown_done.is_set():
+                    try:
+                        await asyncio.wait_for(
+                            teardown_done.wait(), timeout=_RESET_TIMEOUT + 30
+                        )
+                    except asyncio.TimeoutError:
+                        logger.warning(
+                            "Subagent %s: teardown did not complete before the "
+                            "delivered tombstone; writing it anyway",
+                            info.id,
+                        )
+                # Retain result.txt for a TTL grace window instead of deleting
+                # it now, so the parent can read the full transcript
+                # (spawn_status / read / grep) after the completion event. A
+                # "delivered" tombstone excludes it from orphan reconciliation;
+                # the reaper prunes it after agent.subagent_result_ttl_secs.
+                try:
+                    mark_delivered(info.id)
+                except Exception:
+                    logger.debug("Failed to mark subagent %s delivered", info.id, exc_info=True)
+                # Clean up workspace result file (agent-{id}.md in parent dir).
+                try:
+                    parent_key = info.parent_session_key
+                    if parent_key.startswith("dashboard:"):
+                        slot_key = parent_key.removeprefix("dashboard:")
+                        _ws_result_path(slot_key, info.id).unlink(missing_ok=True)
+                except Exception:
+                    logger.debug(
+                        "Failed to clean workspace result for %s", info.id, exc_info=True
+                    )
+        except asyncio.TimeoutError:
+            logger.error(
+                "%s: completion injection timed out for %s after %.0fs",
+                source,
+                info.id,
+                _ON_DONE_TIMEOUT,
+            )
+            # Kill the parent session's kiro-cli process so the next agent's
+            # injection gets a clean provider instead of hitting "Prompt already
+            # in progress" on the stuck one.
+            try:
+                await self._sessions.reset(info.parent_session_key)
+            except Exception:
+                logger.debug(
+                    "Failed to reset parent session %s after injection timeout",
+                    info.parent_session_key,
+                    exc_info=True,
+                )
+            self.notify_injection_failed(info, reason=injection_timeout_reason)
+        except Exception:
+            logger.exception("%s: announce failed for %s", source, info.id)
+
+    async def _run_terminal_report(
+        self,
+        info: SubagentInfo,
+        *,
+        source: str,
+        injection_timeout_reason: str,
+        mark_delivered_on_success: bool,
+        settle_digest: bool = False,
+        teardown_done: "asyncio.Event | None" = None,
+    ) -> None:
+        """Spawn the shielded terminal report and block until it completes.
+
+        Convenience for callers that have no cancellable ``await`` between
+        taking the claim and reporting (``_force_reap``): there is no window in
+        which a cancellation could strand the outcome before the report task
+        exists, so spawning and awaiting can be adjacent. Callers that DO have a
+        teardown ``await`` between the claim and the report (``_run``'s
+        ``finally``) must instead :meth:`_spawn_terminal_report` BEFORE that
+        await and :meth:`_await_report` after, so the report task is already
+        live (and shielded) no matter where the cancellation lands.
+        """
+        await self._await_report(
+            self._spawn_terminal_report(
+                info,
+                source=source,
+                injection_timeout_reason=injection_timeout_reason,
+                mark_delivered_on_success=mark_delivered_on_success,
+                settle_digest=settle_digest,
+                teardown_done=teardown_done,
+            )
+        )
+
+    def _spawn_terminal_report(
+        self,
+        info: SubagentInfo,
+        *,
+        source: str,
+        injection_timeout_reason: str,
+        mark_delivered_on_success: bool,
+        settle_digest: bool = False,
+        teardown_done: "asyncio.Event | None" = None,
+    ) -> "asyncio.Task":  # type: ignore[type-arg]
+        """Launch :meth:`_report_terminal` on a strongly-referenced task.
+
+        Returns immediately (no ``await``) so the caller can start the report
+        BEFORE its own teardown awaits, guaranteeing the report exists and is
+        held alive independently of the caller's fate. The task is retained in
+        ``self._report_tasks`` (so it cannot be garbage-collected while its
+        awaiter is cancelled, and so ``cancel_all()`` can drain it) and
+        self-removes on completion.
+        """
+        task = asyncio.create_task(
+            self._report_terminal(
+                info,
+                source=source,
+                injection_timeout_reason=injection_timeout_reason,
+                mark_delivered_on_success=mark_delivered_on_success,
+                settle_digest=settle_digest,
+                teardown_done=teardown_done,
+            )
+        )
+        self._report_tasks.add(task)
+        # Owner map so `cancel_all()` can identify WHOSE outcome it is about to
+        # abandon (and re-admit it to orphan recovery). Kept alongside the set
+        # rather than replacing it: `_report_tasks` is the strong reference that
+        # keeps the task alive, and both are cleared by the one done callback.
+        self._report_owners[task] = info
+
+        def _forget(t: "asyncio.Task") -> None:  # type: ignore[type-arg]
+            self._report_tasks.discard(t)
+            self._report_owners.pop(t, None)
+
+        task.add_done_callback(_forget)
+        return task
+
+    @staticmethod
+    async def _await_report(task: "asyncio.Task") -> None:  # type: ignore[type-arg]
+        """Block until a spawned terminal report completes, shielded.
+
+        On normal completion this blocks until the report is delivered
+        (sequencing unchanged). If the awaiting caller is cancelled, the shield
+        keeps the report running to completion on its own task while the caller
+        still receives ``CancelledError`` — teardown semantics are unchanged and
+        the outcome is never stranded.
+        """
+        await asyncio.shield(task)
+
+    def _release_slot(self, info: SubagentInfo) -> bool:
+        """Claim the exclusive right to free ``info``'s concurrency slot.
+
+        Returns True for exactly one caller; that caller decrements
+        ``_running_count`` once and drains the queue. Contains no ``await``, so
+        the check-and-set is atomic with respect to other tasks on the loop.
+
+        Why this is its OWN token rather than a side effect of ``done`` or
+        ``reaped``: both terminal paths (`_force_reap` and `_run`'s ``finally``)
+        can run for the same agent, and previous revisions inferred slot
+        ownership from whichever flag happened to be set. That produced a double
+        decrement in one interleaving and — after the flag order was changed to
+        fix a delivery bug — no decrement at all in another, inflating
+        ``_running_count`` and permanently starving the spawn queue. An explicit
+        one-shot token makes the count independent of report and record ordering.
+
+        Note the recovery respawn's own ``_running_count += 1`` re-admit is
+        unaffected: it runs after the interrupted run's ``finally`` has already
+        released, and this token is per-``SubagentInfo``.
+        """
+        if info._slot_released:
+            return False
+        info._slot_released = True
+        return True
+
     async def _force_reap(
         self, agent_id: str, info: SubagentInfo, elapsed: float, *, reason: str = ""
     ) -> None:
         """Kill a subagent's session process and mark it done."""
         session_key = f"subagent:{agent_id}"
+
+        # Reap-in-flight marker + recovery cancel BEFORE ANY await in this
+        # method. Both used to sit after the session teardown below, which yields
+        # (bounded by _RESET_TIMEOUT, longer still on the SIGKILL path). A
+        # cancel-recovery task whose bounded handshake expired inside that window
+        # respawned the very run being killed — tools executing after a user
+        # Stop, strictly worse than a duplicate report. Note this sets
+        # `_reap_started`, NOT `reaped`: setting `reaped` this early makes a run
+        # woken by our own session reset skip its error synthesis and report a
+        # false SUCCESS before we own the record. See `_reap_started`.
+        info._reap_started = True
+        # A pending cancel-recovery respawn is moot — this agent is being killed.
+        # Cancel it rather than letting it sit in its bounded handshake wait
+        # (_RESET_TIMEOUT + 60s) only to discover `reaped` and bare-return.
+        # The reap owns the terminal report from here (see the claim below).
+        recovery_task = self._tasks.pop(f"{agent_id}:recovery", None)
+        if recovery_task and not recovery_task.done():
+            recovery_task.cancel()
 
         if info._session_sharing:
             # Session-sharing subagent: NEVER SIGKILL the shared runtime —
@@ -1638,14 +1978,22 @@ class SubagentManager:
 
         task = self._tasks.pop(agent_id, None)
         if task and not task.done():
-            # Marker BEFORE cancel (intentional-cancel contract): reaped must
-            # be visible when the task's CancelledError arm runs, or the
-            # recovery scheduler would classify this reap as an unexpected
-            # external cancel and respawn the run we are killing.
+            # `reaped` is set HERE — late, immediately before the intentional
+            # cancel — not at the top of the method. Late enough that a run woken
+            # by the session reset above still synthesizes its own error (a run
+            # that sees `reaped` skips error synthesis, and reporting with no
+            # error set delivers a false success). Early enough to satisfy the
+            # intentional-cancel contract: visible when the task's
+            # CancelledError arm runs. The recovery scheduler reads the earlier
+            # `_reap_started` instead, so it is not affected by this placement.
             info.reaped = True
             self._cancel_task_intentionally(task, info, reason=reason or "reaped")
 
-        freed_slot = False
+        # No live task to cancel above (already exited) — the reap still owns
+        # teardown bookkeeping from here, so mark it now.
+        info.reaped = True
+        # Guard 1 of 3 — the terminal RECORD (done/error/stat/tombstone/cost) is
+        # first-arrival-wins on `info.done`, so it is never written twice.
         if not info.done:
             info.done = True
             if not info.error and not info.user_stopped:
@@ -1654,19 +2002,18 @@ class SubagentManager:
                     info.error = f"Failed to start within {self._startup_deadline}s (no runtime launched, no turn produced) [{_timeout_context(info, include_elapsed=False)}]"
                 else:
                     info.error = f"Reaped after {int(elapsed)}s (exceeded {self._default_timeout}s deadline) [{_timeout_context(info, include_elapsed=False)}]"
-            self._running_count = max(0, self._running_count - 1)
-            freed_slot = True
             if not info.user_stopped:
                 # A user-initiated stop is a neutral outcome, not a failure.
                 Stats().inc_subagent_failed()
             self._write_tombstone(info, reason or "reaped")
             self._record_cost(info)
-        info.reaped = True
-        # A reap/cancel frees a slot but — unlike normal completion (the `if not
-        # info.reaped` finally block in _run) — does NOT otherwise pump the queue.
-        # Without this, queued spawns sit stranded until an unrelated agent finishes
-        # or a new spawn arrives. Drain here so a freed slot is used immediately.
-        if freed_slot:
+        # Guard 2 of 3 — SLOT accounting, on its own one-shot token and therefore
+        # independent of both `done` (above) and `reaped`. A reap/cancel frees a
+        # slot but — unlike normal completion — does NOT otherwise pump the queue,
+        # so queued spawns would sit stranded until an unrelated agent finished.
+        # Drain here so the freed slot is used immediately.
+        if self._release_slot(info):
+            self._running_count = max(0, self._running_count - 1)
             self._drain_queue()
 
         try:
@@ -1689,45 +2036,31 @@ class SubagentManager:
         except Exception:
             logger.warning("Reaper: release failed for %s", agent_id, exc_info=True)
 
-        # Fire WS event immediately so Activity Viewer updates
-        # before the slow _on_done path (stream_and_collect).
+        # Guard 3 of 3 — the terminal REPORT (subagent_done + _on_done), owned by
+        # the finalize claim. The claim deliberately does NOT consult `info.done`:
+        # `_run_inner` may set `done` while the teardown above is suspended, and
+        # gating on it made the reaper decline while `_run`'s finally also declined
+        # (it sees `reaped`) — so nobody reported. The report runs SHIELDED, so a
+        # cancellation landing mid-report (cancel_all during shutdown) still
+        # delivers rather than stranding the outcome with the claim consumed.
         info.elapsed = elapsed
-        await self._fire_event(
-            "subagent_done",
-            info,
-            {
-                "elapsed": elapsed,
-                "error": _redact(info.error) if info.error else None,
-                "stopped": info.user_stopped,
-                "outcome": info.outcome,
-                "task": _redact(info.task),
-                "agent": _redact(info.agent),
-                "result": _done_result(info.result),
-            },
-        )
-
-        if self._on_done:
-            try:
-                await asyncio.wait_for(self._on_done(info), timeout=_ON_DONE_TIMEOUT)
-            except asyncio.TimeoutError:
-                logger.error(
-                    "Reaper: completion injection timed out for %s after %.0fs",
-                    agent_id,
-                    _ON_DONE_TIMEOUT,
-                )
-                try:
-                    await self._sessions.reset(info.parent_session_key)
-                except Exception:
-                    logger.debug(
-                        "Reaper: failed to reset parent session %s",
-                        info.parent_session_key,
-                        exc_info=True,
-                    )
-                self.notify_injection_failed(
-                    info, reason=f"delivery timed out after {int(_ON_DONE_TIMEOUT)}s (reaper)"
-                )
-            except Exception:
-                logger.exception("Reaper: announce failed for %s", agent_id)
+        if self._claim_finalize(info, supersede_recovery=True):
+            await self._run_terminal_report(
+                info,
+                source="Reaper",
+                injection_timeout_reason=(
+                    f"delivery timed out after {int(_ON_DONE_TIMEOUT)}s (reaper)"
+                ),
+                mark_delivered_on_success=False,
+                # This member's own result is NOT marked delivered (it was
+                # reaped, not completed) — but if it was the wave member whose
+                # `_on_done` flushed the batch digest, its SIBLINGS' successful
+                # results HAVE now reached the parent. Settling is about their
+                # holds, not this member's outcome, so it must happen on this
+                # path too or held siblings stay visible to orphan
+                # reconciliation and get spuriously "recovered" after a restart.
+                settle_digest=True,
+            )
 
         # Truncate retained text AFTER _on_done to preserve full output for result injection
         if len(info.streaming_text) > 10_000:
@@ -2405,8 +2738,15 @@ class SubagentManager:
         if not approved:
             info.done = True
             info.error = "spawn rejected"
-            self._running_count -= 1
-            self._drain_queue()
+            # Slot accounting through the one-shot token, NOT a bare decrement.
+            # A user Stop funnels into `_force_reap` and can land while this
+            # approval is still pending (a human prompt has no deadline), and
+            # `_force_reap` releases the slot and reports. A bare decrement here
+            # then double-released — driving `_running_count` negative — and the
+            # announce below double-reported the completion.
+            if self._release_slot(info):
+                self._running_count -= 1
+                self._drain_queue()
             self._tasks.pop(info.id, None)
             sel().log_tool_invocation(
                 session_key=info.parent_session_key,
@@ -2416,7 +2756,9 @@ class SubagentManager:
                 metadata={"subagent_id": info.id},
             )
             logger.info("Subagent %s spawn rejected", info.id)
-            if self._on_done:
+            # Report ownership through the same claim every other terminal path
+            # uses, so a concurrent reap/stop cannot also announce.
+            if self._on_done and self._claim_finalize(info):
                 await self._safe_announce(info)
             return
 
@@ -2617,6 +2959,49 @@ class SubagentManager:
     def count(self) -> int:
         return len(self.running)
 
+    async def _teardown_run_session(self, info: SubagentInfo, session_key: str) -> None:
+        """Release and reset the run's own session (skipped when reaped).
+
+        Split out of ``_run``'s ``finally`` so the caller can wrap it in a nested
+        ``try/finally``: every statement here AWAITS, and a cancellation arriving
+        at one of those awaits propagates straight out of the enclosing
+        ``finally`` suite (the ``except Exception`` arms do not catch
+        ``CancelledError``). That skipped the slot release, the task-registry pop
+        and the teardown gate — leaking a concurrency slot, which is the very
+        class of bug this module's guard split exists to prevent.
+        """
+        try:
+            if info._session_sharing:
+                # Session-sharing subagents: destroy the session handle
+                # (unregister from shared runtime). Don't kill the runtime.
+                # Skip when the reaper already tore it down (info.reaped).
+                if info._shared_provider and not info.reaped:
+                    await info._shared_provider.shutdown()
+            else:
+                self._sessions.release(session_key, cleanup=True)
+        except Exception:
+            logger.warning("Subagent %s: release failed", info.id, exc_info=True)
+        if not info._session_sharing:
+            try:
+                await asyncio.wait_for(
+                    self._sessions.reset(session_key), timeout=_RESET_TIMEOUT
+                )
+            except asyncio.TimeoutError:
+                logger.warning("Subagent %s: reset timed out, force-killing", info.id)
+                await self._sigkill_session(session_key)
+                try:
+                    sel().log_tool_invocation(
+                        session_key=session_key,
+                        source="subagent",
+                        tool_name="run_finally_force_kill",
+                        outcome="sigkill",
+                        metadata={"subagent_id": info.id},
+                    )
+                except Exception:
+                    logger.exception("Subagent %s: SEL audit failed", info.id)
+            except Exception:
+                logger.exception("Subagent %s: reset failed", info.id)
+
     async def _run(self, info: SubagentInfo) -> None:
         """Execute a subagent task in its own session."""
         session_key = f"subagent:{info.id}"
@@ -2696,119 +3081,63 @@ class SubagentManager:
                 self._write_tombstone(info, "error")
             logger.exception("Subagent %s failed", info.id)
         finally:
-            if not info.reaped:
-                # Fire WS event immediately so Activity Viewer updates
-                # before the slow reset + on_done path. Skipped while
-                # _recovering: a cancel-recovery respawn is pending and the
-                # agent must not be reported done (the respawned run's own
-                # finally will finalize).
-                if not info._recovering:
-                    info.elapsed = time.time() - info.started
-                    self._record_cost(info)
-                    await self._fire_event(
-                        "subagent_done",
-                        info,
-                        {
-                            "elapsed": info.elapsed,
-                            "error": _redact(info.error) if info.error else None,
-                            "stopped": info.user_stopped,
-                            "outcome": info.outcome,
-                            "task": _redact(info.task),
-                            "agent": _redact(info.agent),
-                            "result": _done_result(info.result),
-                        },
-                    )
-                try:
-                    if info._session_sharing:
-                        # Session-sharing subagents: destroy the session handle
-                        # (unregister from shared runtime). Don't kill the runtime.
-                        # Skip when the reaper already tore it down (info.reaped).
-                        if info._shared_provider and not info.reaped:
-                            await info._shared_provider.shutdown()
-                    else:
-                        self._sessions.release(session_key, cleanup=True)
-                except Exception:
-                    logger.warning("Subagent %s: release failed", info.id, exc_info=True)
-                self._running_count -= 1
-                self._drain_queue()
-                if not info._session_sharing:
-                    try:
-                        await asyncio.wait_for(
-                            self._sessions.reset(session_key), timeout=_RESET_TIMEOUT
-                        )
-                    except asyncio.TimeoutError:
-                        logger.warning("Subagent %s: reset timed out, force-killing", info.id)
-                        await self._sigkill_session(session_key)
-                        try:
-                            sel().log_tool_invocation(
-                                session_key=session_key,
-                                source="subagent",
-                                tool_name="run_finally_force_kill",
-                                outcome="sigkill",
-                                metadata={"subagent_id": info.id},
-                            )
-                        except Exception:
-                            logger.exception("Subagent %s: SEL audit failed", info.id)
-                    except Exception:
-                        logger.exception("Subagent %s: reset failed", info.id)
-            self._tasks.pop(info.id, None)
-
-        if self._on_done and not info.reaped and not info._recovering:
-            try:
-                await asyncio.wait_for(self._on_done(info), timeout=_ON_DONE_TIMEOUT)
-                # Wave-digest settling: _on_done returned without raising, so
-                # the digest (if this was the wave's final member) has been
-                # handed off. Only NOW settle the held members' delivery
-                # tombstones — a routing failure or crash above leaves them
-                # undelivered and visible to orphan reconciliation.
-                self._settle_digest_holds(info)
-                # Retain result.txt for a TTL grace window instead of deleting it
-                # now, so the parent can read the full transcript (spawn_status /
-                # read / grep) after the completion event. A "delivered" tombstone
-                # excludes it from orphan reconciliation; the reaper prunes it after
-                # agent.subagent_result_ttl_secs (default 1h).
-                # Digest-held wave members are NOT marked here: their result has
-                # not reached the parent yet. The gateway marks them delivered
-                # when the wave digest actually fires, so a restart mid-wave
-                # leaves them visible to orphan reconciliation (Arbiter item 1).
-                if not info.error and not info._digest_held:
-                    try:
-                        mark_delivered(info.id)
-                    except Exception:
-                        logger.debug("Failed to mark subagent %s delivered", info.id, exc_info=True)
-                    # Clean up workspace result file (agent-{id}.md in parent session dir)
-                    try:
-                        parent_key = info.parent_session_key
-                        if parent_key.startswith("dashboard:"):
-                            slot_key = parent_key.removeprefix("dashboard:")
-                            _ws_result_path(slot_key, info.id).unlink(missing_ok=True)
-                    except Exception:
-                        logger.debug(
-                            "Failed to clean workspace result for %s", info.id, exc_info=True
-                        )
-            except asyncio.TimeoutError:
-                logger.error(
-                    "Subagent %s: completion injection timed out after %.0fs",
-                    info.id,
-                    _ON_DONE_TIMEOUT,
-                )
-                # Kill the parent session's kiro-cli process so the next
-                # agent's injection gets a clean provider instead of hitting
-                # "Prompt already in progress" on the stuck one.
-                try:
-                    await self._sessions.reset(info.parent_session_key)
-                except Exception:
-                    logger.debug(
-                        "Failed to reset parent session %s after injection timeout",
-                        info.parent_session_key,
-                        exc_info=True,
-                    )
-                self.notify_injection_failed(
+            # Guard 3 of 3 — the terminal REPORT, owned by the finalize claim.
+            # Taken (and the report task SPAWNED) before the teardown awaits
+            # below, so a cancellation landing anywhere in teardown cannot
+            # strand the outcome: the shielded task is already live. The claim
+            # returns False while _recovering without consuming itself, so a
+            # pending cancel-recovery respawn is not reported done and its
+            # respawned run can claim later.
+            report_task = None
+            # Set once this finally's session teardown has finished, so the
+            # already-spawned report holds its "delivered" tombstone until the
+            # child is provably gone (see `_report_terminal`).
+            teardown_done = asyncio.Event()
+            if self._claim_finalize(info):
+                info.elapsed = time.time() - info.started
+                self._record_cost(info)
+                report_task = self._spawn_terminal_report(
                     info,
-                    reason=f"delivery timed out after {int(_ON_DONE_TIMEOUT)}s (queue + injection)",
+                    source="Subagent",
+                    injection_timeout_reason=(
+                        f"delivery timed out after {int(_ON_DONE_TIMEOUT)}s"
+                        " (queue + injection)"
+                    ),
+                    mark_delivered_on_success=True,
+                    settle_digest=True,
+                    teardown_done=teardown_done,
                 )
-            except Exception:
-                logger.exception("Subagent announce failed for %s", info.id)
+            # Nested try/finally: the teardown awaits must never be able to skip
+            # the bookkeeping below (see `_teardown_run_session`).
+            try:
+                if not info.reaped:
+                    await self._teardown_run_session(info, session_key)
+            finally:
+                # Guard 2 of 3 — SLOT accounting on its own one-shot token, so
+                # the count is released exactly once whichever terminal path
+                # arrives first (and is NOT skipped just because the reaper set
+                # `reaped`, which is how an earlier revision leaked slots).
+                if self._release_slot(info):
+                    self._running_count -= 1
+                    self._drain_queue()
+                self._tasks.pop(info.id, None)
+                # Teardown is done (or was skipped because the reaper did it) —
+                # release the report's delivered-tombstone gate. Unconditional,
+                # so the report can never wedge on a cancelled teardown.
+                teardown_done.set()
+
+        # The report itself already ran (or is running) on the shielded task
+        # spawned in the finally above; block until it completes so sequencing is
+        # unchanged for callers.
+        #
+        # NOT during shutdown. `_run`'s CancelledError arm deliberately does not
+        # re-raise, so by the time we reach this await the cancellation has been
+        # consumed and `shield` would simply wait out the full _ON_DONE_TIMEOUT
+        # injection cap — holding `cancel_all()`'s gather for up to 20 minutes.
+        # The report is registered in `self._report_tasks`, so `cancel_all()`'s
+        # bounded drain owns it from here.
+        if report_task is not None and not self._shutting_down:
+            await self._await_report(report_task)
 
     def _schedule_cancel_recovery(self, info: SubagentInfo) -> None:
         """Respawn *info*'s run on a fresh task after an unexpected cancellation.
@@ -2864,7 +3193,7 @@ class SubagentManager:
                             info.id,
                         )
                         raise RuntimeError("original task teardown timed out")
-                if info.done or info.reaped or self._shutting_down:
+                if info.done or info._reap_started or info.reaped or self._shutting_down:
                     info._recovering = False
                     return
                 # Re-acquire a slot through capacity, not blind increment:
@@ -2876,7 +3205,7 @@ class SubagentManager:
                     if time.time() >= deadline or self._shutting_down:
                         raise RuntimeError("no free slot for recovery respawn")
                     await asyncio.sleep(0.25)
-                if info.done or info.reaped or self._shutting_down:
+                if info.done or info._reap_started or info.reaped or self._shutting_down:
                     info._recovering = False
                     return
                 info._recovering = False
@@ -2889,6 +3218,11 @@ class SubagentManager:
                 # subagent_recovering emit happens after, where a cancellation
                 # can no longer leak the counter.
                 self._running_count += 1
+                # The interrupted run's finally already consumed this info's
+                # slot token to free its slot. The respawn occupies a FRESH slot,
+                # so re-arm the token or the respawned run's finally would no-op
+                # and leave `_running_count` permanently inflated.
+                info._slot_released = False
                 self._tasks[info.id] = asyncio.create_task(self._run(info))
                 try:
                     await self._fire_event("subagent_recovering", info, {"attempt": 1})
@@ -2897,7 +3231,8 @@ class SubagentManager:
             except Exception:
                 logger.exception("Subagent %s cancel-recovery respawn failed", info.id)
                 info._recovering = False
-                if not info.done and not info.reaped:
+                # The RECORD keeps its own first-arrival-wins `done` guard...
+                if not info.done and not info._reap_started and not info.reaped:
                     # Full terminal finalization — the UI must never be left on
                     # a running card and the parent must still hear about the
                     # failure (with any partial result) even when the respawn
@@ -2908,31 +3243,30 @@ class SubagentManager:
                     Stats().inc_subagent_failed()
                     self._write_tombstone(info, "cancelled")
                     self._record_cost(info)
-                    try:
-                        await self._fire_event(
-                            "subagent_done",
-                            info,
-                            {
-                                "elapsed": info.elapsed,
-                                "error": _redact(info.error),
-                                "stopped": False,
-                                "outcome": "failed",
-                                "task": _redact(info.task),
-                                "agent": _redact(info.agent),
-                                "result": _done_result(info.result),
-                            },
-                        )
-                    except Exception:
-                        logger.debug("subagent_done emit failed for %s", info.id, exc_info=True)
-                    if self._on_done:
-                        try:
-                            await asyncio.wait_for(self._on_done(info), timeout=_ON_DONE_TIMEOUT)
-                        except Exception:
-                            logger.warning(
-                                "Subagent %s: recovery-failure delivery failed",
-                                info.id,
-                                exc_info=True,
-                            )
+                if not info.elapsed:
+                    # Report needs an elapsed even when the record above was
+                    # skipped because another path had already set `done`.
+                    info.elapsed = time.time() - info.started
+                # ...and the REPORT goes through the one-shot claim, exactly like
+                # the reap and `_run`'s finally. This site used to fire
+                # `subagent_done` and `_on_done` DIRECTLY, gated only on
+                # done/reaped — a fourth reporter outside the very claim this
+                # class uses to guarantee exactly-once delivery, so a reaper
+                # racing a failed respawn could deliver the outcome twice.
+                # Reporting via `_run_terminal_report` also shields the delivery,
+                # which matters here because `_force_reap` cancels this task.
+                if self._claim_finalize(info):
+                    await self._run_terminal_report(
+                        info,
+                        source="Recovery",
+                        injection_timeout_reason=(
+                            f"delivery timed out after {int(_ON_DONE_TIMEOUT)}s "
+                            "(recovery failure)"
+                        ),
+                        mark_delivered_on_success=False,
+                        # Same reasoning as the reap path: settle siblings' holds.
+                        settle_digest=True,
+                    )
             finally:
                 # Whether respawned, aborted, or cancelled: this pending
                 # recovery is no longer outstanding.
@@ -2955,11 +3289,20 @@ class SubagentManager:
                     # (its own CancelledError arm is terminal: one-shot flag is
                     # spent). Don't finalize over it.
                     raise
-                if not info.done and not info.reaped:
+                # `_reap_started`, not just `reaped`: `_force_reap` cancels this
+                # task BEFORE it sets `reaped` (which must stay false until the
+                # reaper owns the record — see `_reap_started`). Consulting only
+                # `reaped` made this arm win the race and persist a neutral user
+                # Stop as a FAILURE, with a failure stat and a "cancelled"
+                # tombstone the reaper could no longer correct.
+                if not info.done and not info._reap_started and not info.reaped:
                     info.done = True
                     info.error = "cancelled"
                     info.elapsed = time.time() - info.started
-                    Stats().inc_subagent_failed()
+                    if not info.user_stopped:
+                        # A user-initiated stop is a neutral outcome, not a
+                        # failure — matching the reap path's own record guard.
+                        Stats().inc_subagent_failed()
                     self._write_tombstone(info, "cancelled")
                 raise
 
@@ -3681,3 +4024,69 @@ class SubagentManager:
         if tasks_to_await:
             await asyncio.gather(*tasks_to_await, return_exceptions=True)
         self._tasks.clear()
+        # Shielded terminal reports keep running after their awaiter is
+        # cancelled (that is the point). Drain them with a BOUNDED wait so a
+        # report is not orphaned by a closing event loop, without letting a
+        # wedged injection block shutdown indefinitely.
+        pending_reports = [t for t in self._report_tasks if not t.done()]
+        if pending_reports:
+            try:
+                await asyncio.wait(pending_reports, timeout=_REPORT_DRAIN_TIMEOUT)
+            except Exception:
+                logger.debug("cancel_all: report drain wait failed", exc_info=True)
+            # `asyncio.wait` RETURNS on timeout without touching the stragglers.
+            # Leaving them pending is worse than not shielding at all: shutdown
+            # would proceed while they keep invoking `_on_done` against
+            # tearing-down state, and they would then die when the loop closes —
+            # losing the very report the shield exists to guarantee. So cancel
+            # them explicitly and gather to completion, which also surfaces any
+            # exception into the log instead of an "exception was never
+            # retrieved" warning at interpreter exit.
+            stragglers = [t for t in pending_reports if not t.done()]
+            if stragglers:
+                logger.warning(
+                    "cancel_all: %d terminal report(s) did not drain in %.0fs — "
+                    "cancelling; their completions may not have been delivered",
+                    len(stragglers), _REPORT_DRAIN_TIMEOUT,
+                )
+                abandoned = [self._report_owners.get(t) for t in stragglers]
+                for report_task in stragglers:
+                    report_task.cancel()
+                try:
+                    await asyncio.gather(*stragglers, return_exceptions=True)
+                except Exception:
+                    logger.debug("cancel_all: straggler gather failed", exc_info=True)
+                # A cancelled report is a LOST delivery, and the terminal record
+                # for it was already written — including a tombstone, which is
+                # exactly what `list_orphans()` uses to exclude a folder from the
+                # next start's reconciliation. Left alone, the outcome is
+                # unrecoverable: never injected, and invisible to the one path
+                # that could still inject it (GPT 5.6 BLOCKING).
+                #
+                # Extending the drain to `_ON_DONE_TIMEOUT` instead was rejected:
+                # it would hold gateway shutdown for up to 20 minutes on a single
+                # wedged injection, which is what the bounded drain exists to
+                # prevent. Bounded shutdown plus recoverable state is strictly
+                # better than unbounded shutdown.
+                #
+                # Only reports cancelled BEFORE `_on_done` returned are re-admitted
+                # — `_reported_to_parent` marks the ones that already reached the
+                # parent, so a cancellation in the later teardown/tombstone waits
+                # does not cause a duplicate delivery on restart.
+                for task, owner in zip(stragglers, abandoned):
+                    if owner is None or not task.cancelled():
+                        continue
+                    if owner._reported_to_parent:
+                        continue
+                    try:
+                        if clear_tombstone(owner.id):
+                            logger.warning(
+                                "cancel_all: %s's completion was not delivered — "
+                                "re-admitted to orphan recovery for the next start",
+                                owner.id,
+                            )
+                    except Exception:
+                        logger.debug(
+                            "cancel_all: failed to re-admit %s to orphan recovery",
+                            owner.id, exc_info=True,
+                        )

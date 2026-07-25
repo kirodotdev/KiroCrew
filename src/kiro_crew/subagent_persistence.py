@@ -165,6 +165,30 @@ def mark_delivered(agent_id: str) -> None:
     write_tombstone(agent_id, cause="delivered", recovery_action="delivered")
 
 
+def clear_tombstone(agent_id: str) -> bool:
+    """Remove ``tombstone.json`` so the agent is visible to orphan recovery again.
+
+    A tombstone is the marker :func:`list_orphans` uses to EXCLUDE a folder from
+    restart reconciliation. That is correct once the outcome has reached the
+    parent, but the terminal record is written BEFORE delivery is attempted — so
+    if delivery is then abandoned (gateway shutdown cancelling a still-pending
+    terminal report), the tombstone would suppress the one mechanism that could
+    still hand the result to the parent, losing it permanently.
+
+    Clearing it re-admits the folder to the next start's reconciliation, which
+    sees ``result.txt`` and re-delivers. Returns True if a tombstone was
+    removed. Best-effort: never raises to the caller.
+    """
+    try:
+        p = _agent_dir(agent_id) / "tombstone.json"
+        existed = p.exists()
+        p.unlink(missing_ok=True)
+        return existed
+    except OSError:
+        logger.warning("clear_tombstone failed for %s", agent_id, exc_info=True)
+        return False
+
+
 # ── slow-command record (stalled but STILL RUNNING) ──────────────────
 
 

@@ -697,8 +697,9 @@ def test_no_raw_cancel_outside_chokepoint():
     """Source scan: every raw ``.cancel()`` on a managed run task in
     subagent.py must route through ``_cancel_task_intentionally`` (the
     mechanical enforcement of the intentional-cancel marker contract).
-    Allowed raw sites: the chokepoint body itself and the reaper-loop task
-    (not a managed run — recovery never applies to it)."""
+    Allowed raw sites: the chokepoint body itself, the reaper-loop task, and a
+    pending cancel-recovery scheduler task — none of the latter two are managed
+    runs, so the marker contract (and recovery) never applies to them."""
     import inspect
 
     import kiro_crew.subagent as subagent_mod
@@ -715,6 +716,12 @@ def test_no_raw_cancel_outside_chokepoint():
     allowed_substrings = (
         "task.cancel()",  # chokepoint body — verified below to be unique
         "self._reaper_task.cancel()",
+        # A reap supersedes a pending respawn; the recovery task schedules the
+        # respawn and is NOT a managed run, so no terminal marker applies.
+        "recovery_task.cancel()",
+        # Shielded terminal-report tasks drained at shutdown — also not managed
+        # runs; cancelling them cannot trigger a respawn.
+        "report_task.cancel()",
     )
     chokepoint_src = inspect.getsource(
         subagent_mod.SubagentManager._cancel_task_intentionally
@@ -728,7 +735,10 @@ def test_no_raw_cancel_outside_chokepoint():
     # The generic 'task.cancel()' form must appear ONLY inside the chokepoint.
     generic = [
         (n, l) for n, l in raw_sites
-        if "task.cancel()" in l and "_reaper_task" not in l
+        if "task.cancel()" in l
+        and "_reaper_task" not in l
+        and "recovery_task" not in l
+        and "report_task" not in l
     ]
     assert len(generic) == 1, (
         f"expected exactly one raw task.cancel() (the chokepoint body), "

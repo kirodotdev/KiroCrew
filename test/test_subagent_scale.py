@@ -674,11 +674,14 @@ class TestWaveDigest:
         assert info._digest_settle_ids == []  # idempotent re-entry safe
         # Structural guarantee: the settle call sits AFTER the awaited
         # _on_done inside the same try-block, so an _on_done exception
-        # (routing failure / crash) skips it entirely.
+        # (routing failure / crash) skips it entirely. The terminal report
+        # (subagent_done + _on_done + settle) now lives in _report_terminal,
+        # which `_run` runs on a shielded task — the ordering invariant is
+        # unchanged, only its owning function moved.
         import inspect
 
         from kiro_crew import subagent as _mod
-        src = inspect.getsource(_mod.SubagentManager._run)
+        src = inspect.getsource(_mod.SubagentManager._report_terminal)
         on_done_pos = src.index("await asyncio.wait_for(self._on_done(info)")
         settle_pos = src.index("self._settle_digest_holds(info)")
         assert settle_pos > on_done_pos
