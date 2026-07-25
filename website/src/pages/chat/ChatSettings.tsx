@@ -92,6 +92,7 @@ export interface DashboardConfig {
   restore_window_minutes: number
   merge_queued_messages: boolean
   widget_density: 'more' | 'less'
+  verbosity: 'default' | 'concise'
   quick_send: boolean
   session_grid: boolean
   tail_fork_enabled: boolean
@@ -102,7 +103,7 @@ export default function ChatSettings({ config, onChange }: { config: ChatConfig;
   const btnRef = useRef<HTMLButtonElement>(null)
   const popoverRef = useRef<HTMLDivElement>(null)
   const queryClient = useQueryClient()
-  const { data: dashCfg = { restore_sessions: false, restore_window_minutes: 30, merge_queued_messages: false, widget_density: 'more' as const, quick_send: false, session_grid: false, tail_fork_enabled: false } } = useQuery<DashboardConfig>({ queryKey: ['dashboardConfig'], queryFn: () => api.dashboardConfig() })
+  const { data: dashCfg = { restore_sessions: false, restore_window_minutes: 30, merge_queued_messages: false, widget_density: 'more' as const, verbosity: 'default' as const, quick_send: false, session_grid: false, tail_fork_enabled: false } } = useQuery<DashboardConfig>({ queryKey: ['dashboardConfig'], queryFn: () => api.dashboardConfig() })
   const dashMut = useMutation({
     mutationFn: (next: DashboardConfig) => api.updateDashboardConfig(next),
     onMutate: async (next) => {

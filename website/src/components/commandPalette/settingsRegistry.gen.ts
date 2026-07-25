@@ -45,6 +45,14 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "chat.concise-responses",
+    "label": "Concise Responses",
+    "description": "Trim filler and over-narration: lead with the answer, keep progress notes high-level. Code, commands, and error strings stay verbatim; security warnings and multi-step instructions keep full detail.",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
     "id": "chat.confirm-before-closing-session",
     "label": "Confirm Before Closing Session",
     "description": "Show a confirmation dialog when closing a session",

@@ -148,3 +148,5 @@ Playwright MCP responses are auto-compressed by a proxy — full accessibility t
 - Playwright tools (`browser_navigate`, `browser_click`, etc.) are MCP tools — NOT bash commands
 
 {{WIDGET_BLOCK}}
+
+{{VERBOSITY_BLOCK}}

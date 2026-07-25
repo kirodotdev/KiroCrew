@@ -961,13 +961,49 @@ class ContextBuilder:
                 "{{MAX_SUBAGENTS}}", str(cap) if cap > 0 else "several"
             )
 
+        cfg = KiroCrewConfig.load()
+
+        # Verbosity control — applies to ALL transports (dashboard, Slack, CLI).
+        # Resolved before the dashboard-only widget branch below so it reaches
+        # every session. When "default", nothing is injected (zero prompt bloat).
+        verbosity = getattr(cfg.dashboard, "verbosity", "default")
+        if verbosity == "concise":
+            verbosity_block = (
+                "## Response Verbosity: Concise\n\n"
+                "Concise mode is on. Reduce length without losing substance:\n"
+                "- Lead with the answer or result. Skip preamble, filler, and "
+                "pleasantries (e.g. \"Sure!\", \"Great question\", \"I'd be happy "
+                "to\", \"basically\", \"let me…\").\n"
+                "- Keep progress signal brief, not absent: a short high-level note "
+                "of what you're doing or will do next is fine (it builds confidence "
+                "about what's happening underneath), but skip step-by-step "
+                "play-by-play and low-level detail that isn't needed for a quick "
+                "understanding. Favor the outcome; mention process only at a high "
+                "level.\n"
+                "- Prefer short sentences and fragments; cut hedging and "
+                "repetition; state each fact once.\n"
+                "- Structure over sprawl: tight bullets, surface the "
+                "recommendation, take a position instead of dumping every option.\n"
+                "- Don't paste long logs, file dumps, or command output unless "
+                "asked — quote the shortest decisive line.\n"
+                "- Keep code, commands, paths, identifiers, and error strings "
+                "verbatim and complete. Brevity is for prose, never correctness.\n"
+                "- Preserve the user's language; compress the style, not the "
+                "content.\n\n"
+                "Ignore concise mode and keep full detail for: security warnings, "
+                "irreversible-action confirmations, and multi-step instructions "
+                "where order or omissions could cause a mistake."
+            )
+        else:
+            verbosity_block = ""
+        prompt = prompt.replace("{{VERBOSITY_BLOCK}}", verbosity_block)
+
         is_dashboard = session_key and (
             session_key.startswith("dashboard:") or session_key.startswith("dashboard_")
         )
         if not is_dashboard:
             return prompt.replace("{{WIDGET_BLOCK}}", "")
 
-        cfg = KiroCrewConfig.load()
         density = getattr(cfg.dashboard, "widget_density", "more")
 
         if density == "more":

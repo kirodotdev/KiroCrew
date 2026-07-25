@@ -1344,6 +1344,18 @@ class DashboardConfig:
             enum=["more", "less"],
         ),
     )
+    verbosity: str = field(
+        default="default",
+        metadata=_meta(
+            "Response Verbosity",
+            "Controls how terse the agent's prose is. 'default' is normal; "
+            "'concise' injects brevity guidelines (lead with the answer, cut "
+            "filler, keep code/errors verbatim) while preserving full detail for "
+            "security warnings, irreversible-action confirmations, and ordered "
+            "multi-step instructions.",
+            enum=["default", "concise"],
+        ),
+    )
     tail_fork_enabled: bool = field(
         default=False,
         metadata=_meta(
@@ -3466,6 +3478,7 @@ class KiroCrewConfig:
                 quick_send=dashboard_data.get("quick_send", False),
                 session_grid=dashboard_data.get("session_grid", False),
                 widget_density=dashboard_data.get("widget_density", "more"),
+                verbosity=dashboard_data.get("verbosity", "default"),
                 tail_fork_enabled=dashboard_data.get("tail_fork_enabled", False),
                 terminal=dashboard_data.get("terminal", {"enabled": True}),
                 default_project=dashboard_data.get("default_project", ""),
