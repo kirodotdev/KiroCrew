@@ -1867,6 +1867,10 @@ class TestRunMethod:
         # _init_services is mocked so vector_memory never gets created — mock
         # the default-on embeddings wiring too (it dereferences vector_memory).
         orch._start_embeddings = AsyncMock()
+        # run() spawns _auto_migrate_memory as a fire-and-forget task; with
+        # _init_services mocked it would raise AttributeError on
+        # vector_memory and surface as an unretrieved-task error at GC time.
+        orch._auto_migrate_memory = AsyncMock()
         orch._init_cron = AsyncMock()
         orch._init_heartbeat = AsyncMock()
         orch._init_mcp_discovery = MagicMock()
@@ -1908,6 +1912,10 @@ class TestRunMethod:
 
         orch._init_services = MagicMock()
         orch._start_embeddings = AsyncMock()
+        # run() spawns _auto_migrate_memory as a fire-and-forget task; with
+        # _init_services mocked it would raise AttributeError on
+        # vector_memory and surface as an unretrieved-task error at GC time.
+        orch._auto_migrate_memory = AsyncMock()
         orch._init_cron = AsyncMock()
         orch._init_heartbeat = AsyncMock()
         orch._init_mcp_discovery = MagicMock()
@@ -2876,6 +2884,22 @@ class TestAutoMigrateMemory:
         set_migrated.assert_not_awaited()
         assert orch._cfg.memory.migrated is False
 
+    @pytest.mark.asyncio
+    async def test_no_vector_store_returns_without_raising(self):
+        """A boot where ``_init_services`` never ran must not raise.
+
+        The task is fire-and-forget, so an escaping AttributeError would only
+        surface later as an unretrieved-task error, logged far from its cause.
+        """
+        orch = _make_orchestrator()
+        orch._cfg.memory.migrated = False
+        assert not hasattr(orch, "vector_memory")
+        set_migrated = AsyncMock()
+        with patch.object(orch, "_set_memory_migrated", set_migrated):
+            await orch._auto_migrate_memory()
+        set_migrated.assert_not_awaited()
+        assert orch._cfg.memory.migrated is False
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Tests: _auto_apply_update discards local edits before staging frontend
@@ -3643,6 +3667,10 @@ class TestRunSignalAndBgSession:
 
         orch._init_services = MagicMock()
         orch._start_embeddings = AsyncMock()
+        # run() spawns _auto_migrate_memory as a fire-and-forget task; with
+        # _init_services mocked it would raise AttributeError on
+        # vector_memory and surface as an unretrieved-task error at GC time.
+        orch._auto_migrate_memory = AsyncMock()
         orch._init_cron = AsyncMock()
         orch._init_heartbeat = AsyncMock()
         orch._init_mcp_discovery = MagicMock()
@@ -3693,6 +3721,10 @@ class TestBgSessionDashboardBranch:
 
         orch._init_services = MagicMock()
         orch._start_embeddings = AsyncMock()
+        # run() spawns _auto_migrate_memory as a fire-and-forget task; with
+        # _init_services mocked it would raise AttributeError on
+        # vector_memory and surface as an unretrieved-task error at GC time.
+        orch._auto_migrate_memory = AsyncMock()
         orch._init_cron = AsyncMock()
         orch._init_heartbeat = AsyncMock()
         orch._init_mcp_discovery = MagicMock()

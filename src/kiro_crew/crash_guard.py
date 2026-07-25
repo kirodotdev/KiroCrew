@@ -140,5 +140,19 @@ def install(loop=None) -> None:
 
 
 def install_loop_handler(loop) -> None:
-    """Install the asyncio exception handler on the given loop."""
+    """Install the asyncio exception handler on the given loop.
+
+    Also pins ``_CRASH_LOG`` to the *current* config dir. asyncio reports
+    unretrieved task exceptions at GC time — potentially long after the owning
+    process/test has torn its environment down — so resolving the path lazily
+    inside ``_write_crash`` can send a record to whichever ``KIROCREW_HOME`` is
+    in effect at GC time rather than the one that was running. Pinning here
+    keeps every record with the instance that produced it.
+    """
+    global _CRASH_LOG
+
+    try:
+        _CRASH_LOG = _crash_log_path()
+    except Exception:  # pragma: no cover - path resolution is best-effort
+        logger.debug("crash log path resolution failed", exc_info=True)
     loop.set_exception_handler(_asyncio_exception_handler)

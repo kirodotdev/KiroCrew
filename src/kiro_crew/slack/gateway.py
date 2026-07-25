@@ -4242,9 +4242,16 @@ class GatewayOrchestrator:
         """
         from kiro_crew.memory import legacy_memory_present
 
-        store = self.vector_memory
+        # Every dereference lives inside the try so the "never raises" contract
+        # above holds even on a boot where ``_init_services`` never ran (or was
+        # stubbed): this is a fire-and-forget task, so an escaping exception is
+        # only surfaced later as an unretrieved-task error, far from its cause.
         loop = asyncio.get_running_loop()
         try:
+            store = getattr(self, "vector_memory", None)
+            if store is None:
+                logger.debug("auto-migrate skipped: vector memory not initialised")
+                return
             # ── Phase 1: migrate ──
             if not self._cfg.memory.migrated:
                 # Bind embed_fn so migration writes real vectors when the model
