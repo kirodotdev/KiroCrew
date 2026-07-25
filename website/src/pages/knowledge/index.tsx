@@ -1,12 +1,14 @@
 import { useState, useEffect, useRef, useCallback, useMemo, lazy, Suspense } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Search, BookOpen, Network, FolderSync, HelpCircle, FileText, Tag, X, Copy, ChevronDown, ChevronRight, FolderOpen } from 'lucide-react'
+import { Search, BookOpen, Network, FolderSync, HelpCircle, FileText, X, Copy } from 'lucide-react'
 import { Btn, SearchInput, Badge, EmptyState, ContentSkeleton } from '../../components/ui'
 import Clickable from '../../components/Clickable'
 import { knowledgeApi } from './api'
-import { typeBadgeVariant, formatDate, useCopy, ITEM_TYPES, STATUSES, ONBOARDING } from './helpers'
+import { useCopy, ITEM_TYPES, STATUSES, ONBOARDING } from './helpers'
 import DetailView from './DetailView'
 import SourcesList from './SourcesList'
+import { ItemCard } from './ItemCard'
+import { SourceGroup, NO_SOURCE } from './SourceGroup'
 import { EmbeddingStatus } from './EmbeddingStatus'
 import type { KnowledgeItem, Entity, Source, NamespaceInfo, IngestionJob } from './types'
 
@@ -55,32 +57,6 @@ function EntityAutocomplete({ query, onSelect }: { query: string; onSelect: (nam
   )
 }
 
-function ItemCard({ item, onClick, selected, onSelect }: { item: KnowledgeItem; onClick: () => void; selected: boolean; onSelect: (checked: boolean) => void }) {
-  const { copied, copy } = useCopy()
-  return (
-    <div className="flex items-start gap-2 animate-rise">
-      <input type="checkbox" aria-label={`Select ${item.title || 'Untitled'}`} checked={selected} onChange={e => onSelect(e.target.checked)}
-        className="mt-3.5 shrink-0 accent-accent" onClick={e => e.stopPropagation()} />
-      <Clickable onClick={onClick} className="flex-1 border border-border rounded-lg p-3.5 hover:border-border-strong hover:bg-bg-hover cursor-pointer transition-all">
-        <div className="flex items-start justify-between gap-2">
-          <div className="flex-1 min-w-0">
-            <div className="text-sm font-medium text-text-strong truncate">{item.title || 'Untitled'}</div>
-            {item.summary && <div className="text-[13px] text-muted mt-1 line-clamp-2">{item.summary}</div>}
-          </div>
-          <Badge variant={typeBadgeVariant(item.item_type)}>{item.item_type.replace(/_/g, ' ')}</Badge>
-        </div>
-        <div className="flex items-center gap-3 mt-2 text-[11px] text-muted">
-          <span>{formatDate(item.updated_at)}</span>
-          {item.namespace && item.namespace !== 'default' && <span className="bg-accent/10 text-accent px-1.5 py-0.5 rounded text-[10px]">{item.namespace}</span>}
-          {item.tags && <span className="flex items-center gap-0.5"><Tag size={10} />{typeof item.tags === 'string' ? item.tags : ''}</span>}
-          {item._score !== undefined && <span className="text-[10px] text-accent/70">{item._match_type}</span>}
-          <Btn className="ml-auto !px-1.5 !py-0.5 !text-[11px]" onClick={e => { e.stopPropagation(); copy(item.summary || item.title) }}><Copy size={10} /> {copied ? 'Copied!' : 'Copy'}</Btn>
-        </div>
-      </Clickable>
-    </div>
-  )
-}
-
 function BulkActions({ selectedIds, items, onDone }: { selectedIds: Set<string>; items: KnowledgeItem[]; onDone: () => void }) {
   const queryClient = useQueryClient()
 
@@ -93,9 +69,13 @@ function BulkActions({ selectedIds, items, onDone }: { selectedIds: Set<string>;
     onMutate: async () => {
       await queryClient.cancelQueries({ queryKey: ['knowledge-items'] })
       const prev = queryClient.getQueriesData({ queryKey: ['knowledge-items'] })
-      queryClient.setQueriesData<{ items: KnowledgeItem[]; total: number }>({ queryKey: ['knowledge-items'] }, old =>
-        old ? { ...old, items: old.items.filter(i => !selectedIds.has(i.id)), total: old.total - selectedIds.size } : old
-      )
+      // The 'knowledge-items' prefix now also covers the source-counts cache,
+      // whose payload has no `items` array. Only rewrite item-shaped entries.
+      queryClient.setQueriesData<{ items: KnowledgeItem[]; total: number }>({ queryKey: ['knowledge-items'] }, old => {
+        if (!old || !Array.isArray(old.items)) return old
+        const kept = old.items.filter(i => !selectedIds.has(i.id))
+        return { ...old, items: kept, total: old.total - (old.items.length - kept.length) }
+      })
       return { prev }
     },
     onError: (_err, _vars, ctx) => {
@@ -117,9 +97,13 @@ function BulkActions({ selectedIds, items, onDone }: { selectedIds: Set<string>;
     onMutate: async () => {
       await queryClient.cancelQueries({ queryKey: ['knowledge-items'] })
       const prev = queryClient.getQueriesData({ queryKey: ['knowledge-items'] })
-      queryClient.setQueriesData<{ items: KnowledgeItem[]; total: number }>({ queryKey: ['knowledge-items'] }, old =>
-        old ? { ...old, items: old.items.filter(i => !selectedIds.has(i.id)), total: old.total - selectedIds.size } : old
-      )
+      // The 'knowledge-items' prefix now also covers the source-counts cache,
+      // whose payload has no `items` array. Only rewrite item-shaped entries.
+      queryClient.setQueriesData<{ items: KnowledgeItem[]; total: number }>({ queryKey: ['knowledge-items'] }, old => {
+        if (!old || !Array.isArray(old.items)) return old
+        const kept = old.items.filter(i => !selectedIds.has(i.id))
+        return { ...old, items: kept, total: old.total - (old.items.length - kept.length) }
+      })
       return { prev }
     },
     onError: (_err, _vars, ctx) => {
@@ -152,105 +136,6 @@ function BulkActions({ selectedIds, items, onDone }: { selectedIds: Set<string>;
   )
 }
 
-function FileSubGroup({ filePath, items, onItemClick, selectedItems, onSelect }: {
-  filePath: string; items: KnowledgeItem[]
-  onItemClick: (id: string) => void; selectedItems: Set<string>; onSelect: (id: string, checked: boolean) => void
-}) {
-  const [open, setOpen] = useState(true)
-  const fileName = filePath === '__ungrouped__' ? 'Other' : filePath.split('/').pop() || filePath
-
-  return (
-    <div className="ml-2 border-l-2 border-border pl-2">
-      <button onClick={() => setOpen(!open)}
-        className="flex items-center gap-1.5 py-1 text-left bg-transparent border-none cursor-pointer w-full">
-        {open ? <ChevronDown size={12} className="text-muted" /> : <ChevronRight size={12} className="text-muted" />}
-        <FileText size={12} className="text-muted" />
-        <span className="text-[12px] text-text truncate">{fileName}</span>
-        <span className="text-[10px] text-muted">({items.length})</span>
-      </button>
-      {open && (
-        <div className="space-y-1 mt-0.5">
-          {items.map(item => (
-            <ItemCard key={item.id} item={item} onClick={() => onItemClick(item.id)}
-              selected={selectedItems.has(item.id)}
-              onSelect={(checked) => onSelect(item.id, checked)}
-            />
-          ))}
-        </div>
-      )}
-    </div>
-  )
-}
-
-interface SourceGroupProps {
-  source: Source | undefined
-  items: KnowledgeItem[]
-  onItemClick: (id: string) => void
-  selectedItems: Set<string>
-  onSelect: (id: string, checked: boolean) => void
-  defaultOpen?: boolean
-  // When true, the badge shows the source's true total (source.item_count) rather than the
-  // count of items on the current page, which is capped at MAX_PAGE_SIZE by the backend.
-  showSourceTotal?: boolean
-}
-
-function SourceGroup({ source, items, onItemClick, selectedItems, onSelect, defaultOpen = false, showSourceTotal = false }: SourceGroupProps) {
-  const [open, setOpen] = useState(defaultOpen)
-  const name = source?.name || 'Unknown source'
-  const subtitle = source?.uri || ''
-  const isFolder = source?.source_type === 'local_folder' || source?.source_type === 'obsidian_vault'
-  const isArtifact = source?.source_type === 'artifact'
-  // Sub-group items: folder/vault sources group by file path; the aggregate
-  // "artifact" source groups per-artifact (label = artifact name).
-  const isGrouped = isFolder || isArtifact
-  const Icon = isFolder ? FolderOpen : FileText
-
-  // Sub-group by file/artifact for grouped sources
-  const fileGroups = useMemo(() => {
-    if (!isGrouped) return null
-    const groups = new Map<string, KnowledgeItem[]>()
-    for (const item of items) {
-      const key = item._file_path || '__ungrouped__'
-      if (!groups.has(key)) groups.set(key, [])
-      groups.get(key)!.push(item)
-    }
-    return groups.size > 0 ? groups : null
-  }, [items, isGrouped])
-
-  return (
-    <div className="border border-border rounded-lg overflow-hidden">
-      <button
-        onClick={() => setOpen(!open)}
-        className="w-full flex items-center gap-2 px-3 py-2.5 bg-bg-elevated hover:bg-bg-hover text-left border-none cursor-pointer transition-colors"
-      >
-        {open ? <ChevronDown size={14} className="text-muted shrink-0" /> : <ChevronRight size={14} className="text-muted shrink-0" />}
-        <Icon size={14} className={isFolder ? "text-amber-500 shrink-0" : "text-accent shrink-0"} />
-        <span className="text-[13px] font-medium text-text-strong truncate">{name}</span>
-        <Badge variant="ok">{showSourceTotal ? (source?.item_count ?? items.length) : items.length}</Badge>
-        {source?.summary_topic && <span className="text-[11px] text-muted truncate max-w-[300px]">{source.summary_topic}</span>}
-        {subtitle && <span className="text-[11px] text-muted truncate ml-auto max-w-[200px]">{subtitle}</span>}
-      </button>
-      {open && (
-        <div className="space-y-1.5 p-2 pt-1">
-          {fileGroups ? (
-            Array.from(fileGroups.entries()).map(([filePath, fileItems]) => (
-              <FileSubGroup key={filePath} filePath={filePath} items={fileItems}
-                onItemClick={onItemClick} selectedItems={selectedItems} onSelect={onSelect} />
-            ))
-          ) : (
-            items.map(item => (
-              <ItemCard key={item.id} item={item} onClick={() => onItemClick(item.id)}
-                selected={selectedItems.has(item.id)}
-                onSelect={(checked) => onSelect(item.id, checked)}
-              />
-            ))
-          )}
-        </div>
-      )}
-    </div>
-  )
-}
-
 export default function KnowledgePage() {
   const queryClient = useQueryClient()
   const [tab, setTab] = useState<Tab>('list')
@@ -267,12 +152,21 @@ export default function KnowledgePage() {
   const [uploadNamespace, setUploadNamespace] = useState('default')
   const [showAutocomplete, setShowAutocomplete] = useState(false)
   const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set())
+  // Items currently rendered by each expanded SourceGroup. Selection-wide
+  // actions read this instead of the react-query cache, so they can never reach
+  // an item that is not on screen (a retained cache from a previously expanded
+  // source would otherwise be swept into a bulk Delete).
+  const [visibleBySource, setVisibleBySource] = useState<Record<string, KnowledgeItem[]>>({})
   const searchRef = useRef<HTMLDivElement>(null)
   const entitySectionRef = useRef<HTMLDivElement>(null)
   const listContainerRef = useRef<HTMLDivElement>(null)
   const limit = query ? 20 : MAX_PAGE_SIZE
+  // Source-first list: when nothing is searched the top level renders one row
+  // per source and each row pages within itself, so the item-level query below
+  // is only used for flat search results.
+  const sourceFirst = !query
 
-  const { data: itemsData, isLoading: loading } = useQuery({
+  const { data: itemsData, isLoading: itemsLoading } = useQuery({
     queryKey: ['knowledge-items', { page, query, typeFilter, statusFilter, namespaceFilter, limit }],
     queryFn: () => {
       const params = new URLSearchParams({ page: String(page), limit: String(limit) })
@@ -282,17 +176,32 @@ export default function KnowledgePage() {
       if (namespaceFilter) params.set('namespace', namespaceFilter)
       return knowledgeApi<{ items: KnowledgeItem[]; total: number }>(`/items?${params}`)
     },
+    enabled: !sourceFirst,
   })
+
+  // Per-source counts under the active filters. This is what makes every source
+  // visible at once: the rows come from these counts, not from whichever items
+  // happened to land on a shared page.
+  const { data: countsData, isLoading: countsLoading } = useQuery({
+    // Shared 'knowledge-items' prefix: see SourceGroup for the rationale.
+    queryKey: ['knowledge-items', 'source-counts', { typeFilter, statusFilter, namespaceFilter }],
+    queryFn: () => {
+      const params = new URLSearchParams()
+      if (typeFilter) params.set('type', typeFilter)
+      if (statusFilter) params.set('status', statusFilter)
+      if (namespaceFilter) params.set('namespace', namespaceFilter)
+      const qs = params.toString()
+      return knowledgeApi<{ counts: Record<string, number>; total: number }>(`/source-counts${qs ? `?${qs}` : ''}`)
+    },
+    enabled: sourceFirst,
+  })
+
   // Memoize so the `?? []` fallback doesn't create a new array reference on
-  // every render — that reference feeds the groupedItems useMemo and the
-  // keyboard-shortcut useEffect below, and an unstable identity would make them
-  // recompute/re-subscribe each render.
+  // every render — that reference feeds the keyboard-shortcut useEffect below,
+  // and an unstable identity would make it re-subscribe each render.
   const items = useMemo(() => itemsData?.items ?? [], [itemsData])
-  const total = itemsData?.total ?? 0
-  // Source-group badges show the source's true item_count only when the list is unfiltered.
-  // Under a search/type/namespace filter the badge falls back to the matched count on the page,
-  // since item_count (from /sources) is the source's unfiltered, all-namespace total.
-  const showSourceTotals = !query && !typeFilter && !namespaceFilter
+  const total = sourceFirst ? (countsData?.total ?? 0) : (itemsData?.total ?? 0)
+  const loading = sourceFirst ? countsLoading : itemsLoading
 
   const { data: stats } = useQuery({
     queryKey: ['knowledge-stats'],
@@ -345,22 +254,34 @@ export default function KnowledgePage() {
     enabled: !!selectedEntity,
   })
 
-  const sourcesMap = useMemo(() => {
-    const map = new Map<string, Source>()
-    for (const s of sources) map.set(s.id, s)
-    return map
-  }, [sources])
-
-  const groupedItems = useMemo(() => {
-    if (query) return null // flat mode on search
-    const groups = new Map<string, KnowledgeItem[]>()
-    for (const item of items) {
-      const key = item.source_id || '__none__'
-      if (!groups.has(key)) groups.set(key, [])
-      groups.get(key)!.push(item)
+  // One row per source that has at least one matching item, ordered the way the
+  // Sources tab orders them (most recently updated first) with the sourceless
+  // bucket last. Derived from /source-counts, so a source is never hidden just
+  // because its items fell on a later page.
+  const sourceRows = useMemo(() => {
+    if (!sourceFirst) return null
+    const counts = countsData?.counts ?? {}
+    // Explicit element type: rows for unknown or sourceless buckets carry no
+    // Source record, which inference from the first map alone would reject.
+    const rows: { sourceId: string; source: Source | undefined; count: number }[] = sources
+      .filter(s => (counts[s.id] ?? 0) > 0)
+      .map(s => ({ sourceId: s.id, source: s as Source | undefined, count: counts[s.id] }))
+    // Sources present in counts but missing from /sources (deleted row, stale
+    // cache) still get a row so their items remain reachable.
+    const known = new Set(sources.map(s => s.id))
+    for (const [sid, count] of Object.entries(counts)) {
+      if (sid !== NO_SOURCE && !known.has(sid)) rows.push({ sourceId: sid, source: undefined, count })
     }
-    return groups
-  }, [items, query])
+    if (counts[NO_SOURCE]) rows.push({ sourceId: NO_SOURCE, source: undefined, count: counts[NO_SOURCE] })
+    return rows
+  }, [sourceFirst, countsData, sources])
+
+  // Filters forwarded to each group's scoped item fetch. Memoized because it is
+  // part of the group query key.
+  const groupFilters = useMemo(
+    () => ({ type: typeFilter, status: statusFilter, namespace: namespaceFilter }),
+    [typeFilter, statusFilter, namespaceFilter]
+  )
 
   const ingestMutation = useMutation({
     mutationFn: async ({ files, namespace }: { files: File[]; namespace: string }) => {
@@ -393,6 +314,25 @@ export default function KnowledgePage() {
     ingestMutation.mutate({ files, namespace: uploadNamespace || 'default' })
   }
 
+  // In flat search mode the page owns the items; in source-first mode the
+  // expanded groups do.
+  const visibleItems = useMemo(
+    () => (sourceFirst ? Object.values(visibleBySource).flat() : items),
+    [sourceFirst, visibleBySource, items]
+  )
+
+  // Selection is bounded to what is on screen. A group collapsing or paging
+  // away removes its items from `visibleItems`, so drop their IDs here too:
+  // otherwise a bulk Delete would act on items the user can no longer see.
+  useEffect(() => {
+    setSelectedItems(prev => {
+      if (prev.size === 0) return prev
+      const visible = new Set(visibleItems.map(i => i.id))
+      const kept = new Set([...prev].filter(id => visible.has(id)))
+      return kept.size === prev.size ? prev : kept
+    })
+  }, [visibleItems])
+
   // Keyboard shortcuts
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -414,19 +354,22 @@ export default function KnowledgePage() {
         else if (selectedId) { setSelectedId(null); e.preventDefault() }
         else if (selectedItems.size > 0) { setSelectedItems(new Set()); e.preventDefault() }
       } else if (e.key === 'ArrowRight' && !e.altKey && !e.ctrlKey) {
-        if (!selectedId && page < Math.ceil(total / limit)) { setPage(p => p + 1); e.preventDefault() }
+        // Arrow paging drives the flat search pager only; in source-first mode
+        // each group owns its own pager and `page` is unread.
+        if (!sourceFirst && !selectedId && page < Math.ceil(total / limit)) { setPage(p => p + 1); e.preventDefault() }
       } else if (e.key === 'ArrowLeft' && !e.altKey && !e.ctrlKey) {
-        if (!selectedId && page > 1) { setPage(p => p - 1); e.preventDefault() }
+        if (!sourceFirst && !selectedId && page > 1) { setPage(p => p - 1); e.preventDefault() }
       } else if (e.key === 'a' && (e.ctrlKey || e.metaKey) && tab === 'list' && !selectedId) {
         if (listContainerRef.current?.contains(document.activeElement || target)) {
           e.preventDefault()
-          setSelectedItems(new Set(items.map(i => i.id)))
+          // Only what is on screen: never a retained cache for a collapsed source.
+          setSelectedItems(new Set(visibleItems.map(i => i.id)))
         }
       }
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [selectedId, page, total, limit, items, tab, selectedItems.size, showHelp])
+  }, [selectedId, page, total, limit, tab, selectedItems.size, showHelp, sourceFirst, visibleItems])
 
   useEffect(() => {
     setSelectedItems(new Set())
@@ -437,6 +380,19 @@ export default function KnowledgePage() {
       entitySectionRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
     }
   }, [selectedEntity])
+
+  const handleVisibleItemsChange = useCallback((sourceId: string, groupItems: KnowledgeItem[] | null) => {
+    setVisibleBySource(prev => {
+      if (groupItems === null) {
+        if (!(sourceId in prev)) return prev
+        const next = { ...prev }
+        delete next[sourceId]
+        return next
+      }
+      if (prev[sourceId] === groupItems) return prev
+      return { ...prev, [sourceId]: groupItems }
+    })
+  }, [])
 
   const handleEntitySelect = useCallback((name: string) => {
     setTab('graph')
@@ -535,32 +491,41 @@ export default function KnowledgePage() {
               </div>
 
               {selectedItems.size > 0 && (
-                <BulkActions selectedIds={selectedItems} items={items} onDone={() => setSelectedItems(new Set())} />
+                <BulkActions selectedIds={selectedItems} items={visibleItems} onDone={() => setSelectedItems(new Set())} />
               )}
 
-              {loading ? <ContentSkeleton /> : !items.length ? (
+              {loading ? <ContentSkeleton /> : sourceRows ? (
+                !sourceRows.length ? (
+                  <EmptyState icon={<Search size={40} />} title="No items match your filters" subtitle="Try a different type, status, or namespace" />
+                ) : (
+                  <div className="space-y-2 mt-3">
+                    {sourceRows.map(row => (
+                      <SourceGroup
+                        key={row.sourceId}
+                        sourceId={row.sourceId}
+                        source={row.source}
+                        count={row.count}
+                        filters={groupFilters}
+                        onVisibleItemsChange={handleVisibleItemsChange}
+                        // A single source is opened by default: there is nothing
+                        // to choose between, so an extra click buys nothing.
+                        defaultOpen={sourceRows.length === 1}
+                        onItemClick={(id) => setSelectedId(id)}
+                        selectedItems={selectedItems}
+                        onSelect={(id, checked) => {
+                          setSelectedItems(prev => {
+                            const next = new Set(prev)
+                            if (checked) next.add(id)
+                            else next.delete(id)
+                            return next
+                          })
+                        }}
+                      />
+                    ))}
+                  </div>
+                )
+              ) : !items.length ? (
                 <EmptyState icon={<Search size={40} />} title="No items match your search" subtitle="Try different keywords or filters" />
-              ) : groupedItems ? (
-                <div className="space-y-2 mt-3">
-                  {Array.from(groupedItems.entries()).map(([sourceId, groupItems]) => (
-                    <SourceGroup
-                      key={sourceId}
-                      source={sourcesMap.get(sourceId)}
-                      items={groupItems}
-                      showSourceTotal={showSourceTotals}
-                      onItemClick={(id) => setSelectedId(id)}
-                      selectedItems={selectedItems}
-                      onSelect={(id, checked) => {
-                        setSelectedItems(prev => {
-                          const next = new Set(prev)
-                          if (checked) next.add(id)
-                          else next.delete(id)
-                          return next
-                        })
-                      }}
-                    />
-                  ))}
-                </div>
               ) : (
                 <div className="space-y-2 mt-3">
                   {items.map(item => (
@@ -578,7 +543,9 @@ export default function KnowledgePage() {
                   ))}
                 </div>
               )}
-              {totalPages > 1 && (
+              {/* Top-level pager exists only for flat search results. In
+                  source-first mode each group owns its own pager. */}
+              {!sourceFirst && totalPages > 1 && (
                 <div className="flex items-center justify-center gap-3 mt-4 py-3 border-t border-border">
                   <Btn disabled={page <= 1} onClick={() => setPage(p => p - 1)}>&larr; Prev</Btn>
                   <span className="text-[13px] text-text font-medium">Page {page} of {totalPages}</span>

@@ -184,6 +184,70 @@ def _attach_file_paths(store, items: list[dict]) -> None:
             item["_file_path"] = fp
 
 
+_NO_SOURCE = "__none__"
+
+# Candidate-pool escalation for a source-scoped hybrid search: start here, then
+# double until retrieval is exhausted. Capped so a pathological corpus cannot
+# turn one request into an unbounded scan.
+# Ids bound per `IN (...)` statement. Comfortably under the 999-variable floor
+# of older SQLite builds (SQLITE_MAX_VARIABLE_NUMBER).
+_SQLITE_VARIABLE_CHUNK = 500
+
+_SCOPED_SEARCH_START = 200
+_SCOPED_SEARCH_MAX = 20000
+
+
+async def _search_until_exhausted(retriever, q: str, limit: int) -> list[dict]:
+    """Retrieve hybrid-search candidates until the retriever runs out.
+
+    A source scope is applied *after* ranking, so a fixed window can hide every
+    matching item behind higher-ranked hits from other sources. Growing the
+    window until the retriever returns fewer rows than requested means the
+    caller has seen the whole ranking, so its filtered count is the true total.
+    """
+    want = max(limit * 3, _SCOPED_SEARCH_START)
+    results: list[dict] = []
+    while True:
+        results = await run_in_embed_pool(retriever.search, q, limit=want)
+        # Short read means the ranking is exhausted; nothing further to fetch.
+        if len(results) < want or want >= _SCOPED_SEARCH_MAX:
+            return results
+        want = min(want * 2, _SCOPED_SEARCH_MAX)
+
+
+def _matches_source(item: dict, source_id: str) -> bool:
+    """True when `item` belongs to `source_id`. The `__none__` sentinel matches
+    items with no source (NULL or empty string), mirroring how the list view
+    groups sourceless items into a single 'No source' bucket."""
+    own = item.get("source_id")
+    if source_id == _NO_SOURCE:
+        return not own
+    return own == source_id
+
+
+def _load_items_by_id(store, item_ids: list[str]) -> dict[str, dict]:
+    """Batch-load and serialize items by id, keyed by id.
+
+    Chunked because a source-scoped hybrid search escalates its candidate pool:
+    binding 20k ids into a single `IN (...)` exceeds SQLITE_MAX_VARIABLE_NUMBER
+    (999 on older builds) and fails the request with "too many SQL variables".
+
+    Runs off the event loop: both the SELECT and the per-row serialization can be
+    large enough to stall the gateway if run inline.
+    """
+    out: dict[str, dict] = {}
+    for start in range(0, len(item_ids), _SQLITE_VARIABLE_CHUNK):
+        chunk = item_ids[start:start + _SQLITE_VARIABLE_CHUNK]
+        placeholders = ",".join("?" * len(chunk))
+        rows = store.db.execute(
+            f"SELECT * FROM items WHERE id IN ({placeholders})",  # noqa: S608
+            chunk,
+        ).fetchall()
+        for row in rows:
+            out[row["id"]] = store._serialize_item(row)
+    return out
+
+
 async def list_items(request: web.Request) -> web.Response:
     """GET /api/knowledge/items -- list/search with pagination."""
     store = _store(request)
@@ -191,6 +255,10 @@ async def list_items(request: web.Request) -> web.Response:
     item_type = request.query.get("type")
     status = request.query.get("status")
     namespace = request.query.get("namespace")
+    # Scope the page to a single source. The list view pages *within* a source
+    # group, so its pager math must see that source's total, not the global one.
+    # The sentinel "__none__" selects items with no source at all.
+    source_id = request.query.get("source_id")
     try:
         page = max(1, int(request.query.get("page", 1)))
         limit = min(100, max(1, int(request.query.get("limit", 20))))
@@ -206,20 +274,26 @@ async def list_items(request: web.Request) -> web.Response:
         embed_fn = embedder.embed if embedder and await embedder.is_available_async() else None
         retriever = HybridRetriever(store, embedder=embed_fn)
         # mc-embed bulkhead: the search's query embed blocks on Ollama.
-        all_results = await run_in_embed_pool(
-            retriever.search, q, limit=limit * 3
-        )  # over-fetch to allow filtering
-        # Batch fetch all candidate items (avoid N+1)
-        result_ids = [r["id"] for r in all_results]
-        if result_ids:
-            placeholders = ",".join("?" * len(result_ids))
-            rows = store.db.execute(
-                f"SELECT * FROM items WHERE id IN ({placeholders})",  # noqa: S608
-                result_ids
-            ).fetchall()
-            items_by_id = {row["id"]: store._serialize_item(row) for row in rows}
+        # The retriever ranks globally, so post-retrieval filtering can discard
+        # an unbounded share of any fixed window: if enough higher-ranked hits
+        # belong to other sources, a scoped search would report zero matches and
+        # later pages could never reach the real ones. Under a source scope,
+        # escalate the candidate pool until retrieval is exhausted (it returns
+        # fewer rows than asked for), which makes the scoped total exact.
+        # Unscoped searches keep the cheap limit * 3 window.
+        if source_id:
+            all_results = await _search_until_exhausted(retriever, q, limit)
         else:
-            items_by_id = {}
+            all_results = await run_in_embed_pool(
+                retriever.search, q, limit=limit * 3
+            )
+        # Batch fetch all candidate items (avoid N+1). A scoped search escalates
+        # its candidate pool, so this query and the row serialization can both be
+        # large: run them in a worker thread rather than on the event loop.
+        # `store.db` is a thread-local property, so the thread gets its own
+        # connection.
+        result_ids = [r["id"] for r in all_results]
+        items_by_id = await asyncio.to_thread(_load_items_by_id, store, result_ids)
         filtered = []
         for r in all_results:
             item = items_by_id.get(r["id"])
@@ -230,6 +304,8 @@ async def list_items(request: web.Request) -> web.Response:
             if item_type and item.get("item_type") != item_type:
                 continue
             if namespace and item.get("namespace") != namespace:
+                continue
+            if source_id and not _matches_source(item, source_id):
                 continue
             item["_score"] = r["score"]
             item["_match_type"] = r["match_type"]
@@ -250,6 +326,11 @@ async def list_items(request: web.Request) -> web.Response:
         if namespace:
             where.append("i.namespace = ?")
             params.append(namespace)
+        if source_id == _NO_SOURCE:
+            where.append("(i.source_id IS NULL OR i.source_id = '')")
+        elif source_id:
+            where.append("i.source_id = ?")
+            params.append(source_id)
         where_clause = ' AND '.join(where)
         total = store.db.execute(
             f"SELECT COUNT(*) FROM items i WHERE {where_clause}",  # noqa: S608
@@ -448,6 +529,42 @@ async def get_full_graph(request: web.Request) -> web.Response:
 
 
 # ---------- Sources ----------
+
+
+async def source_counts(request: web.Request) -> web.Response:
+    """GET /api/knowledge/source-counts -- item count per source under the
+    active type/status/namespace filters.
+
+    The list view renders one collapsed row per source, so it needs a truthful
+    per-source count *for the current filter set*. `/sources.item_count` is the
+    source's unfiltered, all-namespace total and would over-report whenever a
+    filter is on. Sourceless items are reported under the `__none__` key.
+    """
+    store = _store(request)
+    item_type = request.query.get("type")
+    status = request.query.get("status")
+    namespace = request.query.get("namespace")
+    where, params = ["1=1"], []  # type: list[str], list[object]
+    if item_type:
+        where.append("item_type = ?")
+        params.append(item_type)
+    if status:
+        where.append("status = ?")
+        params.append(status)
+    if namespace:
+        where.append("namespace = ?")
+        params.append(namespace)
+    sql = (
+        f"SELECT COALESCE(NULLIF(source_id, ''), '{_NO_SOURCE}') AS sid, COUNT(*) AS cnt "  # noqa: S608
+        f"FROM items WHERE {' AND '.join(where)} GROUP BY sid"  # noqa: S608
+    )
+    # This is a full aggregate scan over `items`, which grows without bound, so
+    # unlike the point lookups elsewhere in this module it is offloaded rather
+    # than run inline: blocking the event loop here would stall chat and
+    # heartbeat processing on a large knowledge base.
+    rows = await asyncio.to_thread(lambda: store.db.execute(sql, params).fetchall())
+    counts = {r["sid"]: r["cnt"] for r in rows}
+    return web.json_response({"counts": counts, "total": sum(counts.values())})
 
 
 async def list_sources(request: web.Request) -> web.Response:
@@ -1430,6 +1547,7 @@ def setup_knowledge_routes(app: web.Application) -> None:
     app.router.add_get("/api/knowledge/namespaces", list_namespaces)
     app.router.add_get("/api/knowledge/stats", get_stats)
     app.router.add_get("/api/knowledge/sources", list_sources)
+    app.router.add_get("/api/knowledge/source-counts", source_counts)
     app.router.add_post("/api/knowledge/sources", add_source)
     app.router.add_post("/api/knowledge/pick-folder", pick_folder)
     app.router.add_post("/api/knowledge/sources/{id}/sync", sync_source)

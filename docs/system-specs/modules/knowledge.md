@@ -34,7 +34,7 @@ files / uploads / artifacts / URLs
 | `knowledge/dedup.py` | Cross-source deduplication |
 | `knowledge/connectors/` | `BaseConnector`, `local_folder` source connectors |
 | `mcp_core.py` | `local_knowledge_search` MCP tool + cached store/embedder |
-| `dashboard/handlers/knowledge.py` | Dashboard Knowledge-tab API (sources, ingest, search) |
+| `dashboard/handlers/knowledge.py` | Dashboard Knowledge-tab API (sources, ingest, search, source-scoped list + `/source-counts`) |
 | `agent.py:_install_knowledge_agent` | Installs the `kirocrew-knowledge` kiro-cli agent used by the pool |
 
 ## Constants
@@ -147,6 +147,46 @@ The LLM reaches retrieval through the `kirocrew-core` MCP tool `local_knowledge_
 
 The dashboard Knowledge tab uses the same store via a lazily-initialized `KnowledgeStore` on `DashboardState` (`dashboard/state.py`).
 
+## 5. Source-scoped list API (`dashboard/handlers/knowledge.py`)
+
+The dashboard Knowledge list view is **source-first**: it renders one collapsed
+row per source and pages *within* a source, rather than paging all items globally
+and grouping whatever landed on the page. Two pieces of API surface support this.
+
+### `GET /api/knowledge/items?source_id=<id>`
+
+Scopes the page to a single source. Composes with the existing `type`, `status`,
+`namespace`, `q`, `page`, and `limit` params.
+
+- The reported `total` is **scoped to that source**, not the global count. The
+  in-group pager derives its page count from it, so a global total would break
+  the pager math.
+- `source_id=__none__` selects items with no source (`source_id` NULL or empty).
+- Applied in both branches of `list_items`: as a SQL predicate in the list
+  branch, and via `_matches_source` after ranking in the hybrid-search branch.
+- Because the hybrid-search branch filters *after* the retriever has ranked
+  globally, a scoped search escalates its candidate pool
+  (`_search_until_exhausted`: `_SCOPED_SEARCH_START` doubling to
+  `_SCOPED_SEARCH_MAX`) until the retriever short-reads, so the scoped total is
+  exact rather than truncated by a fixed window. At the cap the total may
+  understate; pushing `source_id` into `HybridRetriever` is the tracked
+  follow-up. Unscoped searches keep the cheap `limit * 3` window.
+
+### `GET /api/knowledge/source-counts`
+
+Returns the item count per source **under the active filters**:
+
+```json
+{ "counts": { "<source_id>": 42, "__none__": 3 }, "total": 45 }
+```
+
+- Accepts `type`, `status`, and `namespace`; the counts reflect them, which is
+  why the list view uses this rather than `/sources.item_count` (a source's
+  unfiltered, all-namespace total that would over-report when filtered).
+- Sourceless items are reported under the `__none__` key.
+- The list view derives its rows from these counts, which is what guarantees
+  every source is visible at once regardless of relative size.
+
 ## Invariants
 
 - **Sensitive paths never ingested** — `FileReader.read`, `FolderWatcher._walk`, `_hash_file`, and `_ingest_file` all gate on `is_sensitive_path()` (with symlink re-resolution at ingest time for TOCTOU).
@@ -156,3 +196,9 @@ The dashboard Knowledge tab uses the same store via a lazily-initialized `Knowle
 - **FTS query input is parameterized** — user query tokens are always double-quoted literals; the user never injects FTS5 operators.
 - **Embedding-dimension mismatches are skipped, not scored** — vector search excludes incomparable-dimension items so a model swap cannot fill the top-K with all-zero ghosts.
 - **The self-heal rebuild path never touches SQLite on the event loop** — `_maybe_reembed_stale`'s stale COUNT, `rebuild_embeddings`' total COUNT / page SELECTs / batch progress commits, and the success-path job finalize all run via `asyncio.to_thread` (`store.db` is a per-thread connection, so each worker thread uses its own connection to the same WAL db). On a large KB (observed: ~1.3GB after an embedder-sig change) an inline COUNT can stall past the 25s loop-watchdog threshold and crash-loop the gateway. The one deliberate exception is the CancelledError finalize in `_run_reembed_job`, which stays inline so cancellation cannot pre-empt the single-flight finalize. When the stale count exceeds `_LARGE_REBUILD_WARN_THRESHOLD` the watcher logs a prominent WARNING before starting the full re-embed.
+- **`__none__` is a shared wire contract** — the no-source sentinel is defined as `_NO_SOURCE` in `dashboard/handlers/knowledge.py` and mirrored as `NO_SOURCE` in `website/src/pages/knowledge/SourceGroup.tsx`. Both sides must change together; it is effectively un-renameable once shipped.
+- **A source-scoped `total` is scoped, never global** — `/items?source_id=` reports the count for that source alone, because the per-source pager computes its page count from it.
+- **Per-source badge counts are filter-aware** — list-view badges come from `/source-counts` (which honours `type`/`status`/`namespace`), not from `/sources.item_count`, so a badge never disagrees with the group's contents under a filter.
+- **The search branch's candidate load runs off the event loop** — a scoped search escalates its candidate pool, so `_load_items_by_id` (batch `SELECT` plus per-row serialization) and the `source_counts` aggregate both run via `asyncio.to_thread`. `store.db` is a per-thread connection, so each worker thread uses its own. Run inline, either can stall the loop past the watchdog threshold on a large KB.
+- **Frontend selection is bounded to on-screen items** — in source-first mode item data lives in per-`SourceGroup` caches, so bulk actions read the items each expanded group reports as rendered, and selected IDs are pruned when a group collapses or pages away. Reading the react-query cache directly would let a bulk Delete reach a retained cache for a source the user can no longer see.
+- **Per-source caches are keyed under the `knowledge-items` prefix** — `['knowledge-items', 'source-items', ...]` and `['knowledge-items', 'source-counts', ...]` so every existing `invalidateQueries(['knowledge-items'])` call site reaches them. Consequently any `setQueriesData` on that prefix must guard on the payload shape, since the counts entry has no `items` array.
