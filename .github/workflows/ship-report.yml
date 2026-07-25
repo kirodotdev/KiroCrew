@@ -1,0 +1,243 @@
+# Ship report: twice daily, summarize PRs merged into this repo as a short
+# glanceable update (Bedrock) and post it to the team Slack channel via an
+# incoming webhook. Schedule is 16:00 and 00:00 UTC = 9am and 5pm PDT
+# (8am/4pm in winter -- GitHub cron has no timezone support).
+#
+# Reporting windows are contiguous: each run reports (previous successful
+# SCHEDULED run's start, this run's start]. A failed run does not advance the
+# window, so the next run re-covers its PRs (at-least-once delivery). Empty
+# windows succeed silently and advance the window without posting. Backfill
+# is capped at 72h (covers two consecutive missed runs plus jitter).
+#
+# Degradation matrix (narrative degrades, delivery never silently drops):
+#   SHIP_REPORT_BEDROCK_ROLE_ARN secret unset  -> deterministic template body
+#   OIDC/Bedrock failure                       -> deterministic template body
+#   SLACK_WEBHOOK_URL secret unset             -> run FAILS (window not advanced,
+#                                                 re-covered once the secret exists)
+#
+# Config:
+#   secrets.SLACK_WEBHOOK_URL                -- channel-locked incoming webhook
+#   secrets.SHIP_REPORT_BEDROCK_ROLE_ARN     -- OIDC role, bedrock:InvokeModel only
+#   vars.SHIP_REPORT_BEDROCK_MODEL_ID        -- whitespace-separated model
+#                                               priority chain; first success
+#                                               wins (default Opus 5 -> Opus 4.8)
+#   vars.SHIP_REPORT_LINK_STYLE              -- mrkdwn (default) | plain; set
+#                                               plain when the webhook is a Slack
+#                                               Workflow Builder webhook, which
+#                                               renders <url|text> literally
+
+name: Ship Report
+
+on:
+  schedule:
+    - cron: "0 16 * * *" # 9am PDT
+    - cron: "0 0 * * *" # 5pm PDT
+  workflow_dispatch:
+    inputs:
+      lookback_hours:
+        description: "Override window: report PRs merged in the last N hours"
+        required: false
+        default: ""
+      dry_run:
+        description: "Write the report to the job summary instead of Slack (default; a live manual post is not counted in the reporting watermark)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  pull-requests: read # gh pr list (explicit permissions zero everything else)
+  actions: read # read this workflow's run history to anchor the window
+  id-token: write # OIDC for the Bedrock role
+
+concurrency:
+  group: ship-report
+  cancel-in-progress: false
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      LINK_STYLE: ${{ vars.SHIP_REPORT_LINK_STYLE || 'mrkdwn' }}
+      HAS_BEDROCK: ${{ secrets.SHIP_REPORT_BEDROCK_ROLE_ARN != '' && 'true' || '' }}
+    steps:
+      - name: Compute reporting window
+        id: window
+        env:
+          LOOKBACK_HOURS: ${{ github.event_name == 'workflow_dispatch' && inputs.lookback_hours || '' }}
+        run: |
+          set -euo pipefail
+          ANCHOR="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq .run_started_at)"
+          # Search-indexing grace: GitHub search is eventually consistent, so
+          # report only up to 10 minutes before this run started. The previous
+          # run's end was derived with the same shift, keeping windows
+          # contiguous; a PR merged in the final minutes lands next run.
+          END="$(date -u -d "$ANCHOR - 10 minutes" +%Y-%m-%dT%H:%M:%SZ)"
+          if [ -n "$LOOKBACK_HOURS" ]; then
+            START="$(date -u -d "$END - $LOOKBACK_HOURS hours" +%Y-%m-%dT%H:%M:%SZ)"
+          else
+            # An anchor-lookup API failure must fail the run (set -e): masking
+            # it would silently shrink a long recovery window to the 24h
+            # default and permanently drop the earlier PRs. An empty result on
+            # a SUCCESSFUL call is the legitimate first-run case.
+            PREV="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ship-report.yml/runs?event=schedule&status=success&per_page=1" \
+              --jq '.workflow_runs[0].run_started_at // empty')"
+            START=""
+            [ -z "$PREV" ] || START="$(date -u -d "$PREV - 10 minutes" +%Y-%m-%dT%H:%M:%SZ)"
+            DEFAULT="$(date -u -d "$END - 24 hours" +%Y-%m-%dT%H:%M:%SZ)"
+            FLOOR="$(date -u -d "$END - 72 hours" +%Y-%m-%dT%H:%M:%SZ)"
+            [ -n "$START" ] || START="$DEFAULT"
+            [ "$START" \> "$FLOOR" ] || START="$FLOOR"
+          fi
+          echo "start=$START" >> "$GITHUB_OUTPUT"
+          echo "end=$END" >> "$GITHUB_OUTPUT"
+          echo "Window: $START .. $END"
+
+      - name: Fetch merged PRs
+        id: fetch
+        env:
+          START: ${{ steps.window.outputs.start }}
+          END: ${{ steps.window.outputs.end }}
+        run: |
+          set -euo pipefail
+          gh pr list --repo "$GITHUB_REPOSITORY" --state merged \
+            --search "merged:>=$START" \
+            --json number,title,author,mergedAt,url --limit 301 > raw.json
+          if [ "$(jq length raw.json)" -gt 300 ]; then
+            echo "::error::window exceeds the supported 300-PR limit; failing so the window is not advanced"
+            exit 1
+          fi
+          jq --arg s "$START" --arg e "$END" \
+              '[ .[] | select(.mergedAt > $s and .mergedAt <= $e) ] | sort_by(.mergedAt)' \
+            raw.json > prs.json
+          COUNT="$(jq length prs.json)"
+          echo "count=$COUNT" >> "$GITHUB_OUTPUT"
+          echo "Merged PRs in window: $COUNT"
+
+      - name: Configure AWS credentials
+        id: creds
+        if: steps.fetch.outputs.count != '0' && env.HAS_BEDROCK
+        continue-on-error: true
+        uses: aws-actions/configure-aws-credentials@517a711dbcd0e402f90c77e7e2f81e849156e31d # v6.2.2
+        with:
+          role-to-assume: ${{ secrets.SHIP_REPORT_BEDROCK_ROLE_ARN }}
+          aws-region: us-west-2
+
+      - name: Generate narrative body (Bedrock)
+        id: bedrock
+        if: steps.fetch.outputs.count != '0' && env.HAS_BEDROCK && steps.creds.outcome == 'success'
+        continue-on-error: true
+        env:
+          # Whitespace-separated priority list: first model that returns a
+          # non-empty body wins; each failure is a warning, and total failure
+          # drops to the deterministic template step.
+          MODEL_IDS: ${{ vars.SHIP_REPORT_BEDROCK_MODEL_ID || 'global.anthropic.claude-opus-5 global.anthropic.claude-opus-4-8' }}
+        run: |
+          set -euo pipefail
+          if [ "$LINK_STYLE" = "plain" ]; then
+            LINK_RULE="Reference a PR as #NUMBER right after the clause describing it. Never include URLs."
+          else
+            LINK_RULE="Reference a PR as <URL|#NUMBER> right after the clause describing it."
+          fi
+          INSTRUCTIONS="You write a twice-daily ship update for the KiroCrew engineering Slack channel. \
+          Below is a JSON array of pull requests merged into $GITHUB_REPOSITORY during one reporting window. \
+          Write a SHORT, glanceable update: 2 to 4 plain sentences, 70 words maximum. \
+          Name only the 2 or 3 most significant changes. $LINK_RULE \
+          Roll everything else into one closing clause with rough counts by theme, \
+          for example: plus nine smaller fixes across browser, skills, and CI. \
+          Base every statement only on the PR titles given; never invent details. \
+          No emojis, no bullet lists, no headings, no opening or closing filler. \
+          Output only the update body."
+          GENERATED=""
+          for MODEL in $MODEL_IDS; do
+            jq -n --arg m "$MODEL" --arg i "$INSTRUCTIONS" --rawfile prs prs.json '{
+              modelId: $m,
+              messages: [{role: "user", content: [{text: ($i + "\n\nPR data:\n" + $prs)}]}],
+              inferenceConfig: {maxTokens: 300},
+              additionalModelRequestFields: {thinking: {type: "disabled"}}
+            }' > req.json
+            if aws bedrock-runtime converse --cli-input-json file://req.json > resp.json 2> bedrock.err; then
+              # -j (no trailing newline) so an empty join yields a truly empty
+              # file; require non-whitespace before declaring success.
+              jq -j '[.output.message.content[]?.text // empty] | join("")' resp.json > body.txt
+              if grep -q '[^[:space:]]' body.txt; then
+                echo "Narrative generated by: $MODEL"
+                GENERATED=1
+                break
+              fi
+              echo "::warning::model $MODEL returned an empty body; trying next"
+            else
+              echo "::warning::model $MODEL failed: $(head -c 200 bedrock.err | tr '\n' ' ')"
+            fi
+          done
+          test -n "$GENERATED"
+
+      - name: Generate template body (fallback)
+        if: steps.fetch.outputs.count != '0' && steps.bedrock.outcome != 'success'
+        run: |
+          set -euo pipefail
+          jq -r '
+            def bucket:
+              if   (.title | test("^feat"))                    then "Features"
+              elif (.title | test("^fix"))                     then "Fixes"
+              elif (.title | test("^docs"))                    then "Docs"
+              elif (.title | test("^(ci|chore|build|test)"))   then "CI and chores"
+              elif (.title | test("^(refactor|perf)"))         then "Refactoring"
+              elif (.title | test("^revert"))                  then "Reverts"
+              else "Other" end;
+            def ref:
+              if env.LINK_STYLE == "plain"
+              then "#\(.number) \(.title)"
+              else "<\(.url)|#\(.number)> \(.title)" end;
+            group_by(bucket)
+            | map("\(.[0] | bucket) \(length): "
+                + (map(ref) | .[0:2] | join("; "))
+                + (if length > 2 then " +\(length - 2) more" else "" end))
+            | join("\n")
+          ' prs.json > body.txt
+
+      - name: Deliver report
+        if: steps.fetch.outputs.count != '0'
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          START: ${{ steps.window.outputs.start }}
+          END: ${{ steps.window.outputs.end }}
+          COUNT: ${{ steps.fetch.outputs.count }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && 'true' || '' }}
+        run: |
+          set -euo pipefail
+          # Sanitize the body (Bedrock or template) at the delivery chokepoint:
+          # PR titles and model output are untrusted for Slack rendering. Plain
+          # mode has no legitimate angle brackets, so neutralize them all;
+          # mrkdwn mode must keep approved PR links working, so escape & and
+          # any '<' that does not open a github.com pull-request link.
+          if [ "$LINK_STYLE" = "plain" ]; then
+            sed -e 's/</\xe2\x80\xb9/g' -e 's/>/\xe2\x80\xba/g' body.txt > body_safe.txt
+          else
+            perl -pe 's/&/&amp;/g; s/<(?!https:\/\/github\.com\/[^|>[:space:]]+\/pull\/[0-9]+\|#[0-9]+>)/&lt;/g' body.txt > body_safe.txt
+          fi
+          PLURAL="s"; [ "$COUNT" = "1" ] && PLURAL=""
+          TITLE="KiroCrew ship report"
+          [ "$LINK_STYLE" = "plain" ] || TITLE="*KiroCrew ship report*"
+          START_FMT="$(TZ=America/Los_Angeles date -d "$START" +'%b %d %I:%M %p')"
+          if [ "$(TZ=America/Los_Angeles date -d "$START" +%Y%m%d)" = "$(TZ=America/Los_Angeles date -d "$END" +%Y%m%d)" ]; then
+            END_FMT="$(TZ=America/Los_Angeles date -d "$END" +'%I:%M %p')"
+          else
+            END_FMT="$(TZ=America/Los_Angeles date -d "$END" +'%b %d %I:%M %p')"
+          fi
+          HEADER="$TITLE — $COUNT PR$PLURAL merged, $START_FMT–$END_FMT PT"
+          { echo "$HEADER"; echo; cat body_safe.txt; } > report.txt
+          if [ -n "$DRY_RUN" ]; then
+            { echo '```'; cat report.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+            echo "Dry run: report written to job summary."
+            exit 0
+          fi
+          if [ -z "$SLACK_WEBHOOK_URL" ]; then
+            echo "::error::SLACK_WEBHOOK_URL secret is not set; failing so this window is re-covered by the next run"
+            exit 1
+          fi
+          jq -n --rawfile text report.txt '{text: $text}' > payload.json
+          curl -fsS --retry 2 -X POST -H 'Content-Type: application/json' \
+            --data @payload.json "$SLACK_WEBHOOK_URL" > /dev/null
+          echo "Report delivered to Slack."
