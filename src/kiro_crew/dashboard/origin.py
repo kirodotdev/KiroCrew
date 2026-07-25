@@ -145,9 +145,19 @@ def parse_dashboard_url(url: str) -> tuple[str, int]:
         host, port = "", _DEFAULT_PORT
     else:
         url = _ensure_scheme(url)
-        parsed = urlparse(url)
-        host = parsed.hostname or ""
-        port = parsed.port or _DEFAULT_PORT
+        # urlparse raises ValueError on a malformed IPv6 literal
+        # ("http://[::1"), and .port raises ValueError on a non-integer port
+        # ("http://host:notaport"). dashboard.url is a user-editable config
+        # field parsed unguarded during gateway startup (SlackGateway.
+        # _init_dashboard, cli_server, cli_doctor, mcp_core), so one typo aborted
+        # the whole boot. Degrade to defaults instead — mirrors dashboard_origin().
+        try:
+            parsed = urlparse(url)
+            host = parsed.hostname or ""
+            port = parsed.port or _DEFAULT_PORT
+        except ValueError:
+            logger.warning("Ignoring malformed dashboard_url: %s", url)
+            host, port = "", _DEFAULT_PORT
     env_port = os.environ.get("KIROCREW_PORT")
     if env_port:
         try:

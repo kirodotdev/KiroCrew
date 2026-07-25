@@ -132,6 +132,30 @@ class TestSchemeAgreement:
         assert origin == f"http://{host}:9090"
 
 
+class TestParseDashboardUrlMalformed:
+    """A typo in the user-editable dashboard.url config field must not abort
+    gateway startup. parse_dashboard_url is called unguarded during boot, and
+    urlparse()/.port raise ValueError on a malformed IPv6 literal or a
+    non-integer port — those must degrade to defaults, not propagate."""
+
+    def test_malformed_ipv6_falls_back_to_defaults(self) -> None:
+        # urlparse("http://[::1") raises ValueError('Invalid IPv6 URL').
+        host, port = parse_dashboard_url("http://[::1")
+        assert host == ""
+        assert port == 5476  # _DEFAULT_PORT
+
+    def test_non_integer_port_falls_back_to_defaults(self) -> None:
+        # parsed.port raises ValueError on a non-numeric port.
+        host, port = parse_dashboard_url("http://myhost:notaport")
+        assert host == ""
+        assert port == 5476
+
+    def test_valid_url_still_parses(self) -> None:
+        host, port = parse_dashboard_url("http://myhost:9090")
+        assert host == "myhost"
+        assert port == 9090
+
+
 _MOD = "kiro_crew.dashboard.origin"
 
 
