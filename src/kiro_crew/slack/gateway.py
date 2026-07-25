@@ -37,7 +37,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from aiohttp import web
-from slack_sdk.errors import SlackApiError
 from slack_sdk.socket_mode.websockets import SocketModeClient as WSSocketModeClient
 
 import kiro_crew
@@ -157,6 +156,7 @@ from kiro_crew.slack.handler import (
     is_thread_incognito,
     is_thread_temporary,
 )
+from kiro_crew.slack.retry import open_dm_with_retry
 from kiro_crew.subagent import (
     INJECTION_TIMEOUT,
     SubagentInfo,
@@ -1406,35 +1406,15 @@ class GatewayOrchestrator:
     async def _open_dm_with_retry(
         self, user_id: str, job_name: str, max_attempts: int = 3
     ) -> str | None:
-        """Retry open_dm to handle transient Slack API errors."""
+        """Retry open_dm to handle transient Slack API errors (shared impl)."""
         if self.slack is None:
             return None
-        for attempt in range(1, max_attempts + 1):
-            try:
-                return await self.slack.open_dm(user_id)
-            except (SlackApiError, ConnectionError, TimeoutError) as exc:
-                # Retry on rate-limits (429), server errors (5xx), and network errors;
-                # re-raise immediately on non-retryable client errors (4xx except 429).
-                retryable = (
-                    not isinstance(exc, SlackApiError)
-                    or exc.response.status_code == 429
-                    or exc.response.status_code >= 500
-                )
-                if not retryable:
-                    raise
-                if attempt < max_attempts:
-                    logger.warning(
-                        "Cron '%s': open_dm attempt %d/%d failed, retrying in %ds",
-                        job_name,
-                        attempt,
-                        max_attempts,
-                        attempt,
-                        exc_info=True,
-                    )
-                    await asyncio.sleep(attempt)
-                else:
-                    raise
-        return None  # unreachable but satisfies type checker
+        return await open_dm_with_retry(
+            self.slack,
+            user_id,
+            context=f"Cron '{job_name}'",
+            max_attempts=max_attempts,
+        )
 
     async def _deliver_cron_response(
         self, parent_key: str, text: str, *, silent: bool = False

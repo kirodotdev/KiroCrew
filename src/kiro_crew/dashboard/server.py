@@ -222,6 +222,7 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         "/api/session-tool-policy",
         "/api/hooks/agent",
         "/api/outbox/notify",
+        "/api/notifications/agent",  # MCP-only (send_notification tool); no browser caller
         "/api/slack/upload-file",
         "/api/slack/pins",
         "/api/slack/reactions",
@@ -635,6 +636,10 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_post("/api/taskrunner/cancel", handlers.api_taskrunner_cancel)
     app.router.add_post("/api/send-message", handlers.api_send_message)
     app.router.add_post("/api/delete-message", handlers.api_delete_message)
+    # send_notification MCP tool (RFC notification bus Phase 5) — registered
+    # here (not the dashboard-only block) so headless --slack-only mode
+    # serves it too; it is on _STRICT_INTERNAL_API_PATHS like send-message.
+    app.router.add_post("/api/notifications/agent", handlers.api_notification_agent_push)
     app.router.add_post("/api/browser-event", handlers.api_browser_event)
     app.router.add_post("/api/browser-auth-retry", handlers.api_browser_auth_retry)
     app.router.add_post("/api/browser/frame", handlers.api_browser_frame)

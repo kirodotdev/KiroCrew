@@ -437,6 +437,27 @@ The importer must not write the policy/profile/admission trust-root files or
 construct an alternate evaluator. Unsupported or policy-incompatible items are
 reported/skipped; import success never implies a governance grant.
 
+### `vet_and_audit` — the audited-decision seam for governed outbound messaging
+
+`governance_profiles.vet_and_audit(scope, item, *, session_key, tool_name,
+app="", fail_closed=False, log_warning=True)` evaluates ONE permission
+decision via `governance_permits` AND writes its SEL
+`log_governance_decision` record — **grant and denial alike** — from a
+single code path, then returns the Decision. Any chokepoint whose outcome
+must land in the audit trail with a consistent shape calls this seam
+instead of pairing `governance_permits` with hand-rolled SEL writes.
+Current caller: `mcp_core._vet_messaging_governance` (governed outbound
+messaging, shared by `send_message` and `send_notification`, single
+`capabilities.messaging` check). Contract details: `fail_closed` passes
+through to `governance_permits` unchanged (a degraded evaluation returns a
+denying Decision instead of raising); exceptions from evaluation propagate
+to the caller so each site keeps its documented degrade posture; SEL write
+failures never raise (best-effort audit must not block or unblock the
+send). **A new governed caller MUST use this seam** — hand-rolling
+`governance_permits` + SEL at a new outbound-messaging chokepoint (e.g. a
+future notification delivery-routing fanout) reissues the
+record-shape/fail-closed drift this seam exists to prevent.
+
 ### Filesystem + egress at the host gate (tool kind + real args)
 
 `filesystem.read` / `filesystem.write` / `network.egress` are enforced at the
@@ -819,7 +840,8 @@ carve-out stay as code. It expects `CONTRACT_VERSION == 1` (pinned pre-launch).
   `compose_profiles`, `resolve_pinned_commands` + `COMMANDS_SCOPE` force-pins).
 - `platform/governance_profiles.py` — `ProfileStore` (hot-reload),
   `resolve_active_scope`, `governance_permits`, `governance_floor_ordinal`,
-  `GOVERNANCE_ERROR_REASON` (the eval-error marker consumers match on).
+  `GOVERNANCE_ERROR_REASON` (the eval-error marker consumers match on),
+  `vet_and_audit`.
 - `security.py` — `_SENSITIVE_HOME_DIRS` keystone entries.
 - `hooks.py` — Plane A gate threading.
 - `sel.py` — `log_governance_decision`.

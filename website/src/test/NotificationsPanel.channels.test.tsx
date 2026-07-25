@@ -84,4 +84,5 @@ describe('NotificationsPanel channels section', () => {
     // Sound section still renders
     expect(screen.getByText('Sound')).toBeTruthy()
   })
+
 })

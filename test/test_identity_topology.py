@@ -229,7 +229,7 @@ def test_mcp_shared_policy_walk_reaches_gateway(topo, monkeypatch, view) -> None
 
     # Reset the module-lifetime policy caches so a prior test (or the
     # host-view run) cannot leak a cached/negative-cached result in.
-    monkeypatch.setattr(mcp_shared, "_excluded_tools", None)
+    monkeypatch.setattr(mcp_shared, "_excluded_tools_by_session", {})
     monkeypatch.setattr(mcp_shared, "_last_failure_time", 0.0)
     monkeypatch.setattr(mcp_shared, "_last_startup_race_time", 0.0)
     monkeypatch.setattr(mcp_shared, "_failure_count", 0)
@@ -393,7 +393,7 @@ def test_from_env_refuses_symlinked_pid_file(topo, monkeypatch) -> None:
 def test_mcp_shared_refuses_symlinked_pid_file(topo, monkeypatch) -> None:
     from kiro_crew import mcp_shared
 
-    monkeypatch.setattr(mcp_shared, "_excluded_tools", None)
+    monkeypatch.setattr(mcp_shared, "_excluded_tools_by_session", {})
     monkeypatch.setattr(mcp_shared, "_last_failure_time", 0.0)
     monkeypatch.setattr(mcp_shared, "_last_startup_race_time", 0.0)
     monkeypatch.setattr(mcp_shared, "_failure_count", 0)

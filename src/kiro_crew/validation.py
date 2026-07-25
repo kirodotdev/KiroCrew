@@ -1277,6 +1277,30 @@ SEND_MESSAGE_SCHEMA = ToolSchema(
     ],
 )
 
+SEND_NOTIFICATION_SCHEMA = ToolSchema(
+    tool_name="send_notification",
+    fields=[
+        FieldSpec("title", str, required=True, max_len=MAX_SHORT_STRING),
+        # Cap matches the bus's _MAX_BODY_LEN (20000) so the schema never
+        # rejects a body the advertised contract accepts.
+        FieldSpec("body", str, max_len=20_000),
+        FieldSpec(
+            "priority", str, max_len=16, pattern=re.compile(r"^(critical|default|passive)$")
+        ),
+        # Path-only deep link -- the gateway re-validates with the full
+        # WHATWG-hardened rule at the persistence trust root; this pattern
+        # is the cheap first gate (must start with '/', not '//').
+        FieldSpec("url", str, max_len=500, pattern=re.compile(r"^/(?!/)\S*$")),
+        FieldSpec("group_key", str, max_len=MAX_SHORT_STRING),
+        # Inline actions (Phase 4 contract). Item cap mirrors the bus's
+        # _MAX_ACTIONS (4); per-item shape ({id,label,url?}, length caps,
+        # internal-path url) is validated by NotificationPayload at the
+        # persistence trust root -- this schema bounds the outer list so a
+        # malformed MCP call is rejected before the HTTP hop.
+        FieldSpec("actions", list, item_type=dict, max_items=4),
+    ],
+)
+
 READ_SLACK_PROFILE_SCHEMA = ToolSchema(
     tool_name="read_slack_profile",
     fields=[
@@ -1375,6 +1399,7 @@ MCP_CORE_SCHEMAS: dict[str, ToolSchema] = {
     "skill_search": SKILL_SEARCH_SCHEMA,
     "task_run": TASK_RUN_SCHEMA,
     "send_message": SEND_MESSAGE_SCHEMA,
+    "send_notification": SEND_NOTIFICATION_SCHEMA,
     "read_slack_profile": READ_SLACK_PROFILE_SCHEMA,
     "wait": WAIT_SCHEMA,
     "register_hook": REGISTER_HOOK_SCHEMA,

@@ -495,7 +495,7 @@ KiroCrew exposes capabilities to the LLM via two mechanisms:
 
 1. **MCP tools** (native): kiro-cli calls them directly with structured JSON params — **preferred for all LLM-facing operations**
    - `kirocrew-cron` MCP server: `cron_list`, `cron_add`, `cron_update`, `cron_remove`, `cron_remove_all`, `cron_pause`, `cron_resume`, `cron_trigger`
-   - `kirocrew-core` MCP server: `spawn_run`, `spawn_list`, `spawn_status`, `learn_add`, `learn_list`, `learn_remove`, `task_run`, `wait`, `register_hook`, `send_message`, `local_knowledge_search`
+   - `kirocrew-core` MCP server: `spawn_run`, `spawn_list`, `spawn_status`, `learn_add`, `learn_list`, `learn_remove`, `task_run`, `wait`, `register_hook`, `send_message`, `send_notification`, `local_knowledge_search`
    - `playwright` MCP server (`@playwright/mcp`): `browser_navigate`, `browser_click`, `browser_snapshot`, `browser_take_screenshot`, `browser_fill_form`, `browser_type`, `browser_press_key`, `browser_evaluate`, `browser_hover`, `browser_drag`, `browser_select_option`, `browser_tabs`, `browser_close`, `browser_wait_for`, `browser_resize`
    - `slack-mcp` (mcpServers): Slack integration
    - Configured in `agents/defaults.json` → `mcpServers` → installed to `kirocrew.json`
@@ -542,6 +542,7 @@ should always use the MCP tool equivalents.
 | — | `wait` | kirocrew-core |
 | — | `register_hook` | kirocrew-core |
 | — | `send_message` | kirocrew-core |
+| — | `send_notification` | kirocrew-core |
 | — | `local_knowledge_search` | kirocrew-core |
 | — | `file_send` | kirocrew-core |
 | — | `autonudge_stop` | kirocrew-core |

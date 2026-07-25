@@ -273,7 +273,7 @@ class _LoopHarness:
     resolution are stubbed out so the loop needs no gateway environment.
     """
 
-    def __init__(self, monkeypatch, call_tool_fn):
+    def __init__(self, monkeypatch, call_tool_fn, loop_kwargs: dict | None = None):
         import os
         import sys
         import threading
@@ -284,13 +284,14 @@ class _LoopHarness:
         self._stdin = io.TextIOWrapper(io.open(rfd, "rb"))
         monkeypatch.setattr(sys, "stdin", self._stdin)
         monkeypatch.setattr(mcp_shared, "respond", self._record)
-        monkeypatch.setattr(mcp_shared, "_resolve_excluded_tools", lambda: set())
+        monkeypatch.setattr(mcp_shared, "_resolve_excluded_tools", lambda *a: set())
         self.sel_mock = MagicMock()
         monkeypatch.setattr(mcp_shared, "sel", lambda: self.sel_mock)
         self._os = os
         self._thread = threading.Thread(
             target=mcp_shared.run_mcp_stdio_loop,
             args=("test-server", "0.0.0", lambda: [], call_tool_fn),
+            kwargs=loop_kwargs or {},
             daemon=True,
         )
         self._thread.start()
@@ -443,3 +444,172 @@ class TestStdioLoopBusyQueue:
         finally:
             release.set()
             harness.close()
+
+
+# --- Caller-identity extension through the stdio loop (PR #422 round 18) -----
+
+
+def _initialize(req_id) -> dict:
+    return {"jsonrpc": "2.0", "id": req_id, "method": "initialize", "params": {}}
+
+
+def _tools_call_with_caller(req_id, tool_name: str, session_key: str) -> dict:
+    from kiro_crew.mcp_caller import CallerContext, build_caller_meta
+
+    msg = _tools_call(req_id, tool_name)
+    msg["params"]["_meta"] = build_caller_meta(
+        CallerContext(session_key=session_key, from_gateway=True)
+    )
+    return msg
+
+
+class TestStdioLoopCallerIdentity:
+    def setup_method(self):
+        mcp_shared._use_content_length = False
+
+    def test_initialize_advertises_capability_when_opted_in(self, monkeypatch):
+        # GPT 5.6 round 18 HIGH: without the advertisement gatewayd treats
+        # the backend as single-session and never injects the caller block,
+        # so the whole per-call identity path would be dead code.
+        harness = _LoopHarness(
+            monkeypatch, lambda n, a: "ok", {"advertise_caller_identity": True}
+        )
+        try:
+            harness.send(_initialize(1))
+            assert harness.wait_for(lambda: len(harness.responses) >= 1)
+            caps = harness.responses[0][1]["capabilities"]
+            assert caps["experimental"] == {
+                "kirocrew.caller-identity": {"schemaVersion": 1}
+            }
+        finally:
+            harness.close()
+
+    def test_initialize_omits_capability_by_default(self, monkeypatch):
+        # kirocrew-cron does NOT consume per-call identity — it must stay
+        # single-session (gatewayd refuses to pool non-advertising backends).
+        harness = _LoopHarness(monkeypatch, lambda n, a: "ok")
+        try:
+            harness.send(_initialize(1))
+            assert harness.wait_for(lambda: len(harness.responses) >= 1)
+            assert "experimental" not in harness.responses[0][1]["capabilities"]
+        finally:
+            harness.close()
+
+    def test_tool_sees_current_caller_from_meta(self, monkeypatch):
+        # The dispatch loop must install the gateway-injected caller for the
+        # duration of the call and clear it afterwards.
+        from kiro_crew import mcp_caller
+
+        seen: list = []
+
+        def call_tool(name, args):
+            ctx = mcp_caller.current_caller()
+            seen.append(ctx.session_key if ctx else None)
+            return "ok"
+
+        harness = _LoopHarness(monkeypatch, call_tool)
+        try:
+            harness.send(_tools_call_with_caller(11, "echo", "dashboard:chat-3"))
+            assert harness.wait_for(lambda: len(harness.responses) >= 1)
+            assert seen == ["dashboard:chat-3"]
+            assert mcp_caller.current_caller() is None  # cleared after dispatch
+        finally:
+            harness.close()
+
+    def test_excluded_tool_audit_attributes_caller_session(self, monkeypatch):
+        # GPT 5.6 round 18 MEDIUM: in a shared backend the env var attributes
+        # rejection audits to "mcp" or the wrong session — the parsed caller
+        # identity must win when present.
+        harness = _LoopHarness(monkeypatch, lambda n, a: "ok")
+        monkeypatch.setattr(
+            mcp_shared, "_resolve_excluded_tools", lambda *a: {"blocked"}
+        )
+        try:
+            harness.send(_tools_call_with_caller(21, "blocked", "dashboard:chat-9"))
+            assert harness.wait_for(
+                lambda: harness.sel_mock.log_tool_invocation.call_count >= 1
+            )
+            kw = harness.sel_mock.log_tool_invocation.call_args.kwargs
+            assert kw["outcome"] == "rejected_excluded"
+            assert kw["session_key"] == "dashboard:chat-9"
+        finally:
+            harness.close()
+
+    def test_failed_tool_audit_attributes_caller_session(self, monkeypatch):
+        def boom(name, args):
+            raise RuntimeError("kaput")
+
+        harness = _LoopHarness(monkeypatch, boom)
+        try:
+            harness.send(_tools_call_with_caller(31, "echo", "dashboard:chat-5"))
+            assert harness.wait_for(lambda: len(harness.responses) >= 1)
+            assert harness.wait_for(
+                lambda: harness.sel_mock.log_tool_invocation.call_count >= 1
+            )
+            kw = harness.sel_mock.log_tool_invocation.call_args.kwargs
+            assert kw["outcome"] == "failed"
+            assert kw["session_key"] == "dashboard:chat-5"
+        finally:
+            harness.close()
+
+
+class TestPerSessionToolPolicy:
+    """Pooled backends must not bleed one session's policy into another
+    (GPT 5.6 PR #422 round 20)."""
+
+    def _reset(self):
+        # Full module-state reset: the negative-cache timestamps are shared
+        # process globals — a failure-path test from another file in the
+        # same shard leaves them set, short-circuiting this test to
+        # fail-open set() (exactly what happened on CI shard 3).
+        mcp_shared._excluded_tools_by_session.clear()
+        mcp_shared._last_failure_time = 0.0
+        mcp_shared._last_startup_race_time = 0.0
+        mcp_shared._failure_count = 0
+
+    def setup_method(self):
+        self._reset()
+
+    def teardown_method(self):
+        self._reset()
+
+    def test_cache_is_keyed_per_session(self, monkeypatch):
+        calls: list = []
+
+        def fake_urlopen(req, timeout=0):
+            import io
+
+            calls.append(req.headers.get("X-session-key"))
+            body = (
+                b'{"exclude": ["tool_a"]}'
+                if req.headers.get("X-session-key") == "dashboard:chat-1"
+                else b'{"exclude": ["tool_b"]}'
+            )
+
+            class _Resp(io.BytesIO):
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *a):
+                    return False
+
+            return _Resp(body)
+
+        import urllib.request
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(
+            mcp_shared.KiroCrewConfig,
+            "load",
+            classmethod(lambda cls: type("C", (), {"dashboard": type("D", (), {"url": "http://localhost:5476"})()})()),
+        )
+        monkeypatch.setattr(mcp_shared, "_read_internal_secret", lambda: "s3cr3t", raising=False)
+
+        a = mcp_shared._resolve_excluded_tools("dashboard:chat-1")
+        b = mcp_shared._resolve_excluded_tools("dashboard:chat-2")
+        assert a == {"tool_a"}
+        assert b == {"tool_b"}  # NOT session-1's cached policy
+        # Cache hit path: no third HTTP call for a repeat lookup.
+        n = len(calls)
+        assert mcp_shared._resolve_excluded_tools("dashboard:chat-1") == {"tool_a"}
+        assert len(calls) == n

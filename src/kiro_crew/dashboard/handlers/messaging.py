@@ -31,6 +31,10 @@ from kiro_crew.dashboard.state import (
     CRON_NOTIFY_PREFIX,
     DashboardState,
 )
+from kiro_crew.notifications.bus import (
+    NotificationPayload,
+    NotificationValidationError,
+)
 from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
 from kiro_crew.slack.format import build_options_blocks, extract_options
 from kiro_crew.subagent_persistence import _agent_dir, read_state
@@ -635,6 +639,144 @@ async def api_notification_channel_settings(request: web.Request) -> web.Respons
         return web.json_response({"error": str(exc)}, status=400)
     state.broadcast_ws("notification_channel_settings", {"channel": channel, "settings": entry})
     return web.json_response({"ok": True, "channel": channel, "settings": entry})
+
+
+async def api_notification_agent_push(request: web.Request) -> web.Response:
+    """POST /api/notifications/agent — send_notification MCP tool (RFC Phase 5).
+
+    Agent sessions publish schema-v2 notifications through the system.agent
+    channel. Body: ``{"title": str, "body"?: str, "priority"?: str,
+    "url"?: str, "group_key"?: str, "actions"?: [{id,label,url?}]}``.
+    ``source``/``channel`` are server-fixed (never body-supplied), and the
+    full payload validation applies — internal-path urls, action caps,
+    length caps. Durability mirrors the app push: a 200 awaits the persist.
+    """
+    state: DashboardState = request.app["state"]
+    # App tokens must never reach this endpoint (GPT 5.6 round 16): an app's
+    # declared ``permissions.api`` uses prefix-boundary matching, so an app
+    # allowed ``/api/notifications`` is also admitted to this child route by
+    # the auth middleware. This publish path is MCP/internal-secret only —
+    # it publishes ``source="system"`` (channel system.agent), so an app
+    # reaching it could impersonate system notifications and bypass its app
+    # rate limits / declared-channel checks. Apps publish through
+    # POST /api/notifications where their
+    # token-verified ``app:<name>`` source is enforced. The middleware sets
+    # ``request["app"]`` only on app-token auth; the internal-secret path
+    # (the MCP tool) never does.
+    if request.get("app"):
+        # Permission denial on a security boundary — audited before the
+        # response (backend-security-controls: every denial emits SEL).
+        _sel().log_api_access(
+            caller=f"app:{request.get('app')}",
+            operation="notification_agent_push",
+            outcome="denied",
+            source="notifications_api",
+            error="app tokens forbidden on the agent publish path",
+        )
+        return web.json_response({"error": "forbidden for app tokens"}, status=403)
+    # MCP/internal-secret ONLY (GPT 5.6 round 19): the strict-internal
+    # middleware also admits loopback dashboard-COOKIE callers to this
+    # route, and a browser-credentialed caller publishing source="system"
+    # would bypass MCP governance. The middleware sets
+    # request["internal_auth"] only on the
+    # validated X-Internal-Secret path — exactly the transport the
+    # send_notification tool uses.
+    if not request.get("internal_auth"):
+        _sel().log_api_access(
+            caller=str(request.get("user") or request.remote or ""),
+            operation="notification_agent_push",
+            outcome="denied",
+            source="notifications_api",
+            error="internal-secret authentication required (cookie callers forbidden)",
+        )
+        return web.json_response(
+            {"error": "internal-secret authentication required"}, status=403
+        )
+    # Bound the body BEFORE decoding, mirroring the app push endpoint:
+    # without this the strict-internal route inherits the server-wide
+    # client_max_size, and a large JSON object would be buffered and decoded
+    # on the event-loop thread (GPT 5.6 round 11). 64 KB is generous --
+    # payload fields have their own caps.
+    _max_body = 64 * 1024
+    if request.content_length and request.content_length > _max_body:
+        return web.json_response({"error": "payload too large"}, status=413)
+    chunks: list[bytes] = []
+    received = 0
+    async for chunk in request.content.iter_chunked(8192):
+        received += len(chunk)
+        if received > _max_body:
+            return web.json_response({"error": "payload too large"}, status=413)
+        chunks.append(chunk)
+    try:
+        body = json.loads(b"".join(chunks))
+    except Exception:
+        return web.json_response({"error": "invalid JSON body"}, status=400)
+    if not isinstance(body, dict):
+        return web.json_response({"error": "body must be a JSON object"}, status=400)
+    # Type-check optional fields BEFORE payload construction: the bus
+    # validator assumes str/list shapes, so a non-string url or non-list
+    # actions would raise AttributeError/TypeError past the
+    # NotificationValidationError catch -- a 500 where the contract says 400.
+    for field_name in ("title", "body", "priority", "url", "group_key"):
+        value = body.get(field_name)
+        if value is not None and not isinstance(value, str):
+            return web.json_response(
+                {"error": f"{field_name} must be a string"}, status=400
+            )
+    actions = body.get("actions")
+    if actions is not None and not isinstance(actions, list):
+        return web.json_response({"error": "actions must be a list"}, status=400)
+    payload = NotificationPayload(
+        source="system",
+        channel="system.agent",
+        kind="agent",
+        title=body.get("title") or "",
+        body=body.get("body") or "",
+        priority=body.get("priority"),
+        url=body.get("url"),
+        group_key=body.get("group_key"),
+        actions=actions,
+    )
+    try:
+        note = state.notification_bus.push(payload)
+    except NotificationValidationError as exc:
+        _sel().log_api_access(
+            caller="agent",
+            operation="notification_agent_push",
+            outcome="denied",
+            source="notifications_api",
+            error=str(exc),
+        )
+        return web.json_response({"error": str(exc)}, status=400)
+    except Exception:
+        logger.exception("agent notification delivery failed")
+        _sel().log_api_access(
+            caller="agent",
+            operation="notification_agent_push",
+            outcome="error",
+            source="notifications_api",
+            error="delivery failed",
+        )
+        return web.json_response({"error": "notification delivery failed"}, status=500)
+    # Same durability guarantee as the app push endpoint: only acknowledge
+    # once the persist job has succeeded.
+    persist = state.last_notification_persist
+    if persist is not None and not await persist:
+        _sel().log_api_access(
+            caller="agent",
+            operation="notification_agent_push",
+            outcome="error",
+            source="notifications_api",
+            error="persistence failed",
+        )
+        return web.json_response({"error": "failed to persist notification"}, status=500)
+    _sel().log_api_access(
+        caller="agent",
+        operation="notification_agent_push",
+        outcome="success",
+        source="notifications_api",
+    )
+    return web.json_response({"ok": True, "note": note})
 
 
 _MAX_BLOCKS = 50  # Slack Block Kit limit

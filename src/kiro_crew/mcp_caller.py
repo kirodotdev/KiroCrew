@@ -70,6 +70,7 @@ from __future__ import annotations
 import os
 import platform
 import subprocess
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Mapping
@@ -294,3 +295,51 @@ def build_caller_meta(ctx: CallerContext) -> dict[str, Any]:
             "channelId": ctx.channel_id,
         }
     }
+
+
+# --- Per-call current caller (stdio-loop dispatch state) --------------------
+#
+# ``run_mcp_stdio_loop`` dispatches at most ONE tool call at a time (a single
+# worker thread, joined before the next dispatch). The loop sets this from
+# the request's verified ``params._meta`` block immediately before invoking
+# the tool and clears it in the dispatch ``finally`` — tool handlers (and the
+# identity resolvers in ``mcp_core``) read it via :func:`current_caller` as
+# the AUTHENTICATED per-call identity in the pooled topology, where env-var
+# identity is wrong-by-construction (one shared backend, many sessions).
+#
+# Held in a ``contextvars.ContextVar`` rather than a bare module global: a
+# security identity must not depend on the "dispatch is sequential" invariant
+# alone — if dispatch ever becomes concurrent, each thread/task context reads
+# its own value instead of bleeding another session's identity (design
+# review, PR #422). Set and read happen in the same thread today (the worker
+# sets it at its own start), so behavior is unchanged.
+#
+# Trust: in the pooled topology gatewayd strips any stub-supplied
+# ``kirocrew.caller`` block from every inbound frame (``backend.py``
+# strip-on-forward + the initialize forge guard) and injects its own, built
+# from the uid-gated claim-push at ``rekey()`` — so a block seen here is
+# gateway-authored. In the non-pooled stdio topology no client sends the
+# block and this stays ``None`` (callers fall back to env/HMAC-pid sources).
+
+_CURRENT_CALLER: ContextVar["CallerContext | None"] = ContextVar(
+    "kirocrew_current_caller", default=None
+)
+
+
+def set_current_caller(ctx: "CallerContext | None") -> None:
+    """Install (or clear, with ``None``) the current call's verified caller.
+
+    ONLY the stdio dispatch loop may call this — tool code must treat the
+    slot as read-only via :func:`current_caller`.
+    """
+    _CURRENT_CALLER.set(ctx)
+
+
+def current_caller() -> "CallerContext | None":
+    """The gateway-injected caller identity for the tool call in flight.
+
+    ``None`` when the gateway did not inject the extension (non-pooled
+    topology, legacy gateway) — callers must fall back to their env/PID
+    resolution paths.
+    """
+    return _CURRENT_CALLER.get()

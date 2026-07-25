@@ -27,12 +27,12 @@ import kiro_crew.mcp_shared as mcp_shared
 @pytest.fixture(autouse=True)
 def reset_module_state(monkeypatch):
     """Reset the module-level cache between tests."""
-    mcp_shared._excluded_tools = None
+    mcp_shared._excluded_tools_by_session.clear()
     mcp_shared._last_failure_time = 0.0
     mcp_shared._last_startup_race_time = 0.0
     mcp_shared._failure_count = 0
     yield
-    mcp_shared._excluded_tools = None
+    mcp_shared._excluded_tools_by_session.clear()
     mcp_shared._last_failure_time = 0.0
     mcp_shared._last_startup_race_time = 0.0
     mcp_shared._failure_count = 0
@@ -244,7 +244,7 @@ class TestWarningSuppression:
         for _ in range(n):
             mcp_shared._last_failure_time = 0.0
             mcp_shared._last_startup_race_time = 0.0
-            mcp_shared._excluded_tools = None
+            mcp_shared._excluded_tools_by_session.clear()
             with patch.object(mcp_shared.urllib.request, "urlopen", urlopen):
                 mcp_shared._resolve_excluded_tools()
 

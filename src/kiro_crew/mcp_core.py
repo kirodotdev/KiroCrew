@@ -50,6 +50,7 @@ from kiro_crew.knowledge.dedup import dedup_sweep
 from kiro_crew.knowledge.embedder import create_embedder_from_config
 from kiro_crew.knowledge.retrieval import HybridRetriever
 from kiro_crew.knowledge.store import KnowledgeStore
+from kiro_crew.mcp_caller import current_caller
 from kiro_crew.mcp_shared import (
     ToolCancelled,
     call_tool_with_logging,
@@ -606,6 +607,75 @@ def _list_tools() -> list[dict[str, Any]]:
                     },
                 },
                 "required": ["text"],
+            },
+        },
+        {
+            "name": "send_notification",
+            "description": (
+                "Publish a notification to the KiroCrew notification center "
+                "(bell feed) through the system.agent channel (RFC notification "
+                "bus Phase 5). Unlike send_message, this is a pure notification: "
+                "it never sends chat messages or DMs. "
+                "Supports priority tiers, a dashboard-internal "
+                "deep link, and group stacking. Use for structured, glanceable "
+                "signals (job done, threshold crossed); use send_message for "
+                "conversational delivery."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": "Notification title (required, <= 500 chars).",
+                    },
+                    "body": {
+                        "type": "string",
+                        "description": "Body text (markdown, <= 20000 chars).",
+                    },
+                    "priority": {
+                        "type": "string",
+                        "enum": ["critical", "default", "passive"],
+                        "description": (
+                            "critical = badge+sound+banner, default = badge+sound, "
+                            "passive = feed-only. Omit for the channel default."
+                        ),
+                    },
+                    "url": {
+                        "type": "string",
+                        "description": (
+                            "Dashboard-internal deep link (path starting with '/', "
+                            "e.g. '/schedule'). External URLs are rejected."
+                        ),
+                    },
+                    "group_key": {
+                        "type": "string",
+                        "description": (
+                            "Notes sharing a group_key collapse into one stack in "
+                            "the feed. Use for repeated signals of the same kind."
+                        ),
+                    },
+                    "actions": {
+                        "type": "array",
+                        "maxItems": 4,
+                        "description": (
+                            "Inline action buttons (max 4). Each item: "
+                            '{"id": str (<=64), "label": str (<=40), "url"?: '
+                            "dashboard-internal path (<=500)}. Rendered on the "
+                            "notification card; url-less actions are legal but "
+                            "render nothing today."
+                        ),
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {"type": "string"},
+                                "label": {"type": "string"},
+                                "url": {"type": "string"},
+                            },
+                            "required": ["id", "label"],
+                        },
+                    },
+                },
+                "required": ["title"],
             },
         },
         {
@@ -1982,6 +2052,12 @@ def _get_knowledge_search(db_path: Path, cfg_path: Path) -> tuple[Any, Any]:
 def _resolve_session_key() -> str:
     """Return the real session key, falling back to PID file when env var is absent.
 
+    Source 0 is the gateway-injected per-call caller context (pooled
+    topology): gatewayd strips client-forged ``kirocrew.caller`` blocks and
+    injects its own on every forwarded call, so it is the authoritative
+    identity when present — env-var identity is wrong-by-construction in a
+    shared backend (one process, many sessions).
+
     Warm-pool kiro-cli processes have no KIROCREW_SESSION_KEY env var (the pool
     spawns with an empty key so rekey() + PID file provide the correct mapping).
 
@@ -1990,6 +2066,9 @@ def _resolve_session_key() -> str:
     immediate parent (kiro-cli-chat) which has no PID file.  Walk up ancestors
     until we find a matching file or hit init.
     """
+    ctx = current_caller()
+    if ctx is not None and ctx.session_key:
+        return ctx.session_key
     sk = os.environ.get("KIROCREW_SESSION_KEY", "")
     if sk:
         return sk
@@ -2053,7 +2132,21 @@ def _resolve_session_key_strict() -> str:
     subagent mutate state on the wrong slot. Read-only callers (audit,
     telemetry) keep the lenient resolver where misattribution is
     harmless.
+
+    Source 0 (accepted BEFORE both of the above): the gateway-injected
+    per-call caller context. In the pooled topology gatewayd strips any
+    client-forged ``kirocrew.caller`` block on every inbound frame and
+    injects its own (built from the uid-gated claim-push at ``rekey()``),
+    so a context present here is gateway-authored — strictly stronger
+    provenance than the env var, and the ONLY correct identity in a
+    shared backend serving many sessions. This is what keeps
+    ``send_notification`` working for warm-pool sessions on platforms
+    without the sandbox launcher (macOS/Windows), where neither env
+    source exists in the backend process (GPT 5.6 round 17).
     """
+    ctx = current_caller()
+    if ctx is not None and ctx.session_key:
+        return ctx.session_key
     sk = os.environ.get("KIROCREW_SESSION_KEY", "")
     if sk:
         return sk
@@ -2068,14 +2161,66 @@ def _resolve_session_key_strict() -> str:
     return ""
 
 
-def _vet_messaging_governance(caller_session: str) -> str | None:
+def _deny_channel_agent_messaging(caller_session: str, tool_name: str) -> str | None:
+    """Return an ``Error:`` denial when a channel agent calls a messaging tool.
+
+    Channel agents (session keys ``channel:<channel_id>:<agent_id>``) are
+    confined to channel-post communication. The interactive guard in
+    ``channel.py`` rejects these tools at the permission-request event, but
+    an AUTO-APPROVED call (kirocrew-core is in the default ``allowedTools``)
+    never emits that event — so the containment boundary must also hold
+    here at MCP dispatch, keyed on the verified caller identity (GPT 5.6
+    round 17 HIGH). Best-effort SEL audit mirrors channel.py's
+    ``rejected_blocked_tool`` outcome; audit failure never unblocks the
+    deny.
+    """
+    if not caller_session.startswith("channel:"):
+        return None
+    try:
+        from kiro_crew.sel import sel
+
+        sel().log_tool_invocation(
+            session_key=caller_session,
+            source="mcp",
+            tool_name=tool_name,
+            tool_kind="kirocrew-core",
+            outcome="rejected_blocked_tool",
+        )
+    except Exception:
+        # File-backed SEL write; stdio-silent (no logger — stderr would
+        # corrupt the JSON-RPC stream). The deny below still holds.
+        pass
+    return (
+        f"Error: {tool_name} is not available to channel agents — "
+        "communicate through channel posts instead."
+    )
+
+
+def _vet_messaging_governance(
+    caller_session: str,
+    tool_name: str = "send_message",
+    fail_closed: bool = False,
+) -> str | None:
     """Return a denial reason if governance forbids outbound messaging, else None.
+
+    ``tool_name`` attributes the SEL audit records (denial / degraded) to the
+    actual calling tool — the gate is shared by ``send_message`` and
+    ``send_notification``, and the persisted audit trail must name the real
+    caller.
+
+    ``fail_closed=True`` (the ``send_notification`` posture) makes a
+    governance-evaluation ERROR deny instead of degrade-open: it is passed
+    through to :func:`governance_permits` (which then returns a denying
+    Decision on internal error) AND honored in this helper's own except
+    branch, so an exception escaping ``governance_permits`` itself cannot
+    fail-open either.  The degrade is still SEL-audited on both paths.
 
     Proactive/outbound messaging is a ``capabilities.messaging`` gate (an exfil
     surface a policy/profile may disable per surface/app).  Runs in the
     ``kirocrew-core`` stdio subprocess, which DOES boot the platform via
-    ``cli.main`` — so ``current_context()`` carries the ceiling.  Best-effort:
-    a ``PlatformCompositionError`` propagates; any other error returns None.
+    ``cli.main`` — so ``current_context()`` carries the ceiling.  Best-effort
+    for ``send_message`` (fail_closed=False): a ``PlatformCompositionError``
+    propagates; any other error returns None.
     Emits no stray stdout/stderr (either would corrupt the JSON-RPC stream); a
     fail-open degrade is audited via the file-backed ``governance_degraded`` SEL
     only (``log_warning=False`` suppresses the logger here).
@@ -2083,19 +2228,22 @@ def _vet_messaging_governance(caller_session: str) -> str | None:
     from kiro_crew.platform.context import PlatformCompositionError
 
     try:
-        from kiro_crew.platform.governance_profiles import governance_permits
+        from kiro_crew.platform.governance_profiles import vet_and_audit
 
-        decision = governance_permits(
+        # Shared evaluate+audit seam: the decision AND its SEL record —
+        # allowed or denied — come from one code path, so record shapes and
+        # fail-closed semantics cannot drift between governed
+        # outbound-messaging callers.
+        decision = vet_and_audit(
             "capabilities.messaging",
             "",
             session_key=caller_session,
+            tool_name=tool_name,
             app=_governance_app(),
+            fail_closed=fail_closed,
             log_warning=False,
         )
         if not getattr(decision, "permitted", True):
-            _audit_governance_deny(
-                caller_session, "send_message", "capabilities.messaging", decision
-            )
             return "outbound messaging blocked by governance policy"
         return None
     except PlatformCompositionError:
@@ -2104,14 +2252,14 @@ def _vet_messaging_governance(caller_session: str) -> str | None:
         # No logger here: this runs inside the kirocrew-core stdio MCP server,
         # whose stray stdout/stderr would corrupt the JSON-RPC stream (same
         # constraint as redact_via_context). Still emit the file-backed
-        # governance_degraded SEL (no stdout) so the fail-open is auditable.
+        # governance_degraded SEL (no stdout) so the degrade is auditable.
         # Wrapped so a late-import failure cannot raise ImportError out of this
         # except-branch and hard-fail the stdio tool call.
         try:
             from kiro_crew.platform.governance_profiles import audit_governance_degraded
 
             audit_governance_degraded(
-                "send_message",
+                tool_name,
                 session_key=caller_session,
                 scope="capabilities.messaging",
                 app=_governance_app(),
@@ -2119,6 +2267,8 @@ def _vet_messaging_governance(caller_session: str) -> str | None:
             )
         except Exception:
             pass
+        if fail_closed:
+            return "governance evaluation failed; denying (fail-closed)"
         return None
 
 
@@ -2781,7 +2931,11 @@ def _call_tool(name: str, raw_args: dict[str, Any]) -> str:
         raw_args,
         _validate_args,
         _call_tool_inner,
-        session_key="mcp_core",
+        # Real caller identity when resolvable (per-call caller context in
+        # pooled backends, env/PID otherwise) — a hardcoded "mcp_core" lost
+        # attribution for every standard tool audit in shared backends
+        # (GPT 5.6 round 20).
+        session_key=_resolve_session_key() or "mcp_core",
         downstream_service="kirocrew-core",
     )
 
@@ -3649,6 +3803,15 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         # "cron → Slack DM by default" routing and report where the message
         # actually landed.
         caller_session = _resolve_session_key()
+        # Channel-agent containment (GPT 5.6 round 17 HIGH): channel agents
+        # communicate exclusively through channel posts. The channel.py
+        # permission-request guard only fires when kiro-cli ASKS — an
+        # auto-approved kirocrew-core call (default allowedTools) emits no
+        # permission event — so the boundary must also hold here at MCP
+        # dispatch, keyed on the verified caller identity.
+        _chan_deny = _deny_channel_agent_messaging(caller_session, "send_message")
+        if _chan_deny:
+            return _chan_deny
         is_cron = caller_session.startswith("cron:")
         if is_cron:
             payload["caller_session"] = caller_session
@@ -3707,6 +3870,58 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                 "(owner DM unavailable: no Slack client or owner_id). Verify Slack delivery."
             )
         return "Notification delivered."
+
+    if name == "send_notification":
+        # Pure notification-center publish (RFC Phase 5) through the
+        # system.agent channel. Governed by the same messaging capability
+        # gate as send_message -- it is a proactive user-facing signal.
+        #
+        # STRICT identity only: the caller identity authorizes the publish
+        # and attributes its SEL audit records, so a forgeable identity
+        # (the lenient resolver accepts agent-writable session_pid_<pid>.txt
+        # without the HMAC sidecar, plus a /proc ancestor walk) would let an
+        # agent publish under another surface's identity. Fail CLOSED when
+        # no verified identity exists rather than publishing with a
+        # spoofable or absent one.
+        caller_session = _resolve_session_key_strict()
+        if not caller_session:
+            return (
+                "Error: cannot verify caller identity for send_notification "
+                "(no gateway-injected session key or HMAC-verified pid). "
+                "Refusing to publish without a trusted governance identity."
+            )
+        # Channel-agent containment (GPT 5.6 round 17 HIGH): same boundary
+        # as send_message — an auto-approved call emits no permission event,
+        # so channel.py's guard alone cannot hold it.
+        _chan_deny = _deny_channel_agent_messaging(caller_session, "send_notification")
+        if _chan_deny:
+            return _chan_deny
+        # Fail-closed: unlike send_message (chat reply surface, degrade-open
+        # is the lesser harm), a notification publish is purely proactive —
+        # a governance-evaluation error must deny, not bypass a configured
+        # messaging denial (deny-by-default backend rule).
+        _gov_note = _vet_messaging_governance(
+            caller_session, tool_name="send_notification", fail_closed=True
+        )
+        if _gov_note:
+            return f"Error: {_gov_note}"
+        payload = {"title": args["title"]}
+        for key in ("body", "priority", "url", "group_key", "actions"):
+            if args.get(key):
+                payload[key] = args[key]
+        resp = _post("/api/notifications/agent", payload)
+        if not resp.get("ok"):
+            # "Error:" prefix (not "Failed:"): call_tool_with_logging
+            # classifies only "Error:"-prefixed strings as failures, so a
+            # "Failed:" return would be SEL-recorded as completed and hide
+            # the error from the audit trail (GPT 5.6 round 12).
+            return f"Error: {resp}"
+        note = resp.get("note") or {}
+        return (
+            f"Notification published to the notification center "
+            f"(channel={note.get('channel', 'system.agent')}, "
+            f"priority={note.get('priority', 'default')})."
+        )
 
     if name == "delete_message":
         # Use .get() (not subscript) as defense-in-depth: _validate_args enforces
@@ -5577,4 +5792,15 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
 
 def run_mcp_core_server() -> None:
     """Run MCP stdio server for core agent tools."""
-    run_mcp_stdio_loop("kirocrew-core", "1.0.0", _list_tools, _call_tool)
+    run_mcp_stdio_loop(
+        "kirocrew-core",
+        "1.0.0",
+        _list_tools,
+        _call_tool,
+        # Pooled-operation opt-in: kirocrew-core consumes the per-call
+        # ``kirocrew.caller`` identity (see _resolve_session_key*), so it is
+        # safe to share one backend across sessions. kirocrew-cron does NOT
+        # advertise — its tools still read env identity, so gatewayd keeps
+        # it per-session.
+        advertise_caller_identity=True,
+    )

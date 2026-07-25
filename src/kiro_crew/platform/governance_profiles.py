@@ -860,6 +860,67 @@ def governance_permits(
         return _D(True, f"{GOVERNANCE_ERROR_REASON}; no opinion", rule="default")
 
 
+def vet_and_audit(
+    scope: str,
+    item: str,
+    *,
+    session_key: str,
+    tool_name: str,
+    app: str = "",
+    fail_closed: bool = False,
+    log_warning: bool = True,
+) -> "object":
+    """Evaluate one permission decision AND write its SEL audit record.
+
+    The single audited-decision seam for governed outbound messaging
+    (``mcp_core._vet_messaging_governance``, shared by ``send_message`` and
+    ``send_notification``).  Every permission decision — grant or denial —
+    lands in the SEL trail with the same record shape from ONE code path,
+    so fail-closed semantics, scope additions, and audit shapes cannot
+    drift between callers.  Callers own only their posture (which scopes to
+    check, what a denial means); the evaluate+audit pairing lives here.
+    A NEW governed outbound-messaging caller MUST use this seam rather than
+    pairing ``governance_permits`` with hand-rolled SEL writes.
+
+    Exceptions from :func:`governance_permits` propagate unchanged (it
+    already converts unexpected internal errors into a Decision per its
+    ``fail_closed`` contract; ``PlatformCompositionError`` still raises) so
+    each caller keeps its documented degrade posture.  SEL write failures
+    never raise — a best-effort audit must not block or unblock the send.
+    """
+    decision = governance_permits(
+        scope,
+        item,
+        session_key=session_key,
+        app=app,
+        log_warning=log_warning,
+        fail_closed=fail_closed,
+    )
+    outcome = "allowed" if getattr(decision, "permitted", False) else "denied"
+    try:
+        # Local import is DELIBERATE (matches this module's other SEL sites):
+        # the test suite's convention is patch("kiro_crew.sel.sel"), which a
+        # load-time ``from ... import`` binding would bypass. Keep the lazy
+        # lookup so audits stay intercept-able at the source module.
+        from kiro_crew.sel import sel
+
+        sel().log_governance_decision(
+            session_key=session_key,
+            tool_name=tool_name,
+            scope=scope,
+            item=item,
+            outcome=outcome,
+            rule=getattr(decision, "rule", ""),
+            layer=getattr(decision, "layer", ""),
+            reason=getattr(decision, "reason", "") or "",
+        )
+    except Exception:
+        # File-backed SEL write; stdio-silent callers rely on this never
+        # touching stdout/stderr and never raising.
+        pass
+    return decision
+
+
 def governance_floor_ordinal(
     scope: str,
     *,

@@ -6,6 +6,7 @@ import asyncio
 import concurrent.futures
 import json
 import logging
+import math
 import os
 import re
 import tempfile
@@ -2057,7 +2058,20 @@ class DashboardState:
         # Applied before append/broadcast so SSE clients and disk both see
         # the user's view.
         self.notification_channel_settings.apply(note)
+        # RFC Phase 5: lazily sweep expired passive rows on every delivery
+        # (the log is capped at a few hundred rows, so the scan is cheap).
+        # Disk catches up on the next full rewrite (ack/delete/clear paths).
+        sweep_expired_notifications(self._notification_log)
         self._notification_log.append(note)
+        # Bound the in-memory list (GPT 5.6 round 17): only the disk load
+        # path capped it before, so sustained live deliveries grew the list
+        # without limit — and the per-delivery sweep above scans it, making
+        # delivery O(N²) over time. Same cap as the persisted file; oldest
+        # rows drop first (the file trim keeps disk consistent).
+        if len(self._notification_log) > _MAX_PERSISTED_NOTIFICATIONS:
+            del self._notification_log[
+                : len(self._notification_log) - _MAX_PERSISTED_NOTIFICATIONS
+            ]
         # Badge counts attention-worthy rows only (RFC Phase 3: passive rows
         # -- including muted-channel notes -- are excluded).
         if note.get("priority") != "passive":
@@ -3058,6 +3072,82 @@ def _notifications_path() -> Path:
     return config_dir() / _NOTIFICATIONS_FILE
 
 
+def _note_ts_epoch(note: dict[str, Any]) -> float | None:
+    """Best-effort epoch seconds for a note's ``ts`` (ISO string or epoch str)."""
+    ts = note.get("ts")
+    if ts is None:
+        return None
+    try:
+        parsed = float(ts)
+        # float() of a numeric STRING beyond float range (e.g. "-1e999")
+        # returns inf/-inf without raising — a -inf epoch would make every
+        # TTL comparison read "expired" and the sweep would destroy the row,
+        # violating the never-destroy-on-ambiguity rule (GPT 5.6 round 23).
+        # NaN likewise carries no ordering meaning. Treat both as
+        # unparseable (note kept).
+        return parsed if math.isfinite(parsed) else None
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError: float() of a JSON integer beyond float range (e.g.
+        # 10**400) raises rather than returning inf — one poison row must
+        # not abort the whole sweep (GPT 5.6 round 18).
+        pass
+    try:
+        return datetime.fromisoformat(str(ts)).timestamp()
+    except (ValueError, OverflowError, OSError):
+        # .timestamp() raises OverflowError/OSError (not just ValueError) for
+        # platform-unrepresentable datetimes -- pre-epoch or far-future ISO
+        # strings, most acutely on Windows. Treat them as unparseable (note
+        # kept) rather than letting the error escape the sweep: at load time
+        # that escape would hit _load_notifications' blanket handler, empty
+        # the history, and the next mutation would persist the loss.
+        return None
+
+
+def sweep_expired_notifications(
+    log: list[dict[str, Any]], *, now: float | None = None
+) -> int:
+    """Remove expired PASSIVE notes in place (RFC Phase 5 TTL sweeper).
+
+    A note expires when it is passive, carries a positive integer ``ttl``
+    (seconds), and ``ts + ttl`` is in the past. Only passive notes sweep —
+    critical/default history has recall value and stays until the user acts.
+    Notes with unparseable timestamps are kept (never destroy on ambiguity).
+    Returns the number of rows removed.
+    """
+    now = time.time() if now is None else now
+    kept: list[dict[str, Any]] = []
+    removed = 0
+    try:
+        for note in log:
+            ttl = note.get("ttl")
+            epoch = _note_ts_epoch(note)
+            if (
+                note.get("priority") == "passive"
+                and isinstance(ttl, int)
+                and not isinstance(ttl, bool)  # bool is an int subclass
+                and ttl > 0
+                and epoch is not None
+                # ttl < now - epoch (not epoch + ttl < now): adding an
+                # arbitrarily large int TTL to a float epoch raises
+                # OverflowError, and the sweep-wide guard would abort the
+                # whole sweep. int-vs-float comparison never overflows.
+                and ttl < now - epoch
+            ):
+                removed += 1
+                continue
+            kept.append(note)
+    except Exception:
+        # The sweep is an optimization -- it must NEVER cost data. A poison
+        # row escaping here at load time would hit _load_notifications'
+        # blanket handler and empty the entire history (persisted on the
+        # next mutation); in _deliver_note it would break every delivery.
+        logger.warning("Notification TTL sweep aborted", exc_info=True)
+        return 0
+    if removed:
+        log[:] = kept
+    return removed
+
+
 def _load_notifications() -> list[dict[str, Any]]:
     """Load persisted notifications from disk (newest last)."""
     path = _notifications_path()
@@ -3085,8 +3175,16 @@ def _load_notifications() -> list[dict[str, Any]]:
                 # to the outer except.
                 logger.debug("Skipping malformed notification row", exc_info=True)
                 continue
-        # Keep only the most recent N
-        return entries[-_MAX_PERSISTED_NOTIFICATIONS:]
+        # RFC Phase 5: drop expired passive rows BEFORE the recency cap.
+        # Sweeping after truncation loses data: with more than N rows on
+        # disk, newer expired-passive rows would displace older LIVE rows
+        # during truncation, and the next full rewrite would delete those
+        # live rows permanently (GPT 5.6 round 11). Disk rewrites lazily on
+        # the next mutation; the in-memory view is authoritative for serving.
+        sweep_expired_notifications(entries)
+        # Keep only the most recent N live rows
+        entries = entries[-_MAX_PERSISTED_NOTIFICATIONS:]
+        return entries
     except Exception:
         logger.debug("Failed to load notifications", exc_info=True)
         return []
@@ -3142,12 +3240,29 @@ def _rewrite_notifications(notifications: list[dict[str, str]]) -> None:
 
 
 def _maybe_trim_notifications(path: Path) -> None:
-    """Trim the notifications file if it exceeds 2x the max."""
+    """Trim the notifications file if it exceeds 2x the max.
+
+    Expired passive rows are discarded BEFORE the recency cap — the same
+    displacement hazard as the load path (GPT 5.6 round 12): trimming the
+    raw tail first would retain newer expired-passive rows while deleting
+    older LIVE rows, permanently losing history after the next load-time
+    sweep. Unparseable lines are kept (never destroy on ambiguity).
+    """
     try:
         lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
         if len(lines) <= _MAX_PERSISTED_NOTIFICATIONS * 2:
             return
-        kept = lines[-_MAX_PERSISTED_NOTIFICATIONS:]
+        keep: list[str] = []
+        for line in lines:
+            try:
+                row = json.loads(line)
+            except Exception:
+                keep.append(line)
+                continue
+            if isinstance(row, dict) and sweep_expired_notifications([row]) == 1:
+                continue  # expired passive row -- drop before the cap
+            keep.append(line)
+        kept = keep[-_MAX_PERSISTED_NOTIFICATIONS:]
         path.write_text("".join(kept), encoding="utf-8")
     except Exception:
         pass

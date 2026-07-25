@@ -21,6 +21,11 @@ from typing import Any, Callable, Optional
 from kiro_crew import platform_compat
 from kiro_crew.config.loader import KiroCrewConfig, config_dir
 from kiro_crew.dashboard.origin import parse_dashboard_url
+from kiro_crew.mcp_caller import (
+    CallerContext,
+    caller_identity_capability,
+    set_current_caller,
+)
 from kiro_crew.sel import sel
 from kiro_crew.validation import (
     ValidationError,
@@ -137,9 +142,16 @@ class ToolCancelled(Exception):
 _use_content_length = False
 
 # ── Managed tool policy cache ──────────────────────────────────────────────
-# Resolved once per MCP server process lifetime.  The MCP server is spawned
-# per kiro-cli session, so the policy is stable for the process.
-_excluded_tools: set[str] | None = None
+# Keyed per SESSION: in the pooled topology one backend process serves many
+# sessions (per-call identity via the caller-meta extension), so a single
+# process-global set would apply the FIRST session's policy — or a cached
+# fail-open — to every other session (GPT 5.6 PR #422 round 20). Non-pooled
+# backends see one key for the process lifetime, preserving the old behavior.
+# BOUNDED (round 21): a long-lived pooled backend serves churning sessions;
+# FIFO-evict the oldest entry past the cap so the dict cannot grow without
+# limit. Eviction only costs a re-fetch on that session's next call.
+_EXCLUDED_TOOLS_CACHE_MAX = 256
+_excluded_tools_by_session: dict[str, set[str]] = {}
 # Two separate negative caches with different TTLs so the long-TTL
 # HTTP-error path doesn't keep fail-open active when only a brief
 # startup race triggered the failure.
@@ -169,8 +181,13 @@ _STARTUP_RACE_CACHE_TTL: float = 5.0  # seconds
 _MAX_WARNING_FAILURES: int = 2
 
 
-def _resolve_excluded_tools() -> set[str]:
+def _resolve_excluded_tools(caller_session: str = "") -> set[str]:
     """Query the gateway for the current session's managedToolPolicy.exclude.
+
+    ``caller_session`` is the verified per-call identity from the gateway's
+    caller-meta extension (pooled topology); when non-empty it takes
+    precedence over the env/PID resolution below and keys the cache, so
+    sessions sharing one backend cannot inherit each other's policy.
 
     Returns a set of tool names that should be hidden from this session.
     Caches the result on success only.  On failure:
@@ -191,21 +208,31 @@ def _resolve_excluded_tools() -> set[str]:
     3. This MCP-level filtering is defense-in-depth for non-kiro-cli
        clients (Claude Code, custom MCP hosts) that skip disabledTools.
     """
-    global _excluded_tools, _last_failure_time, _last_startup_race_time, _failure_count
-    if _excluded_tools is not None:
-        return _excluded_tools
+    global _last_failure_time, _last_startup_race_time, _failure_count
+    _cached = _excluded_tools_by_session.get(caller_session)
+    if _cached is not None:
+        return _cached
 
     now = time.monotonic()
     # Negative cache: avoid hammering gateway on persistent failures.
     # Silent during the cache window — only the structured audit event is
     # emitted to keep gateway.log readable.  Two windows: a long one for
     # genuine HTTP/network failure, a short one for benign startup races.
+    # The startup-race window exists for the NO-IDENTITY case (pid file not
+    # yet visible); a caller WITH a verified per-call identity is past that
+    # race by definition, so honoring the global short window for it would
+    # fail-open an identified pooled session on another session's race
+    # (GPT 5.6 round 21) — skip it when caller_session is present.
     if (
         (_last_failure_time and (now - _last_failure_time) < _NEGATIVE_CACHE_TTL)
-        or (_last_startup_race_time and (now - _last_startup_race_time) < _STARTUP_RACE_CACHE_TTL)
+        or (
+            not caller_session
+            and _last_startup_race_time
+            and (now - _last_startup_race_time) < _STARTUP_RACE_CACHE_TTL
+        )
     ):
         sel().log_api_access(
-            caller=os.environ.get("KIROCREW_SESSION_KEY", "mcp"),
+            caller=caller_session or os.environ.get("KIROCREW_SESSION_KEY", "mcp"),
             operation="tool_policy.negative_cache_hit",
             outcome="fail_open",
             source="mcp_shared",
@@ -224,8 +251,9 @@ def _resolve_excluded_tools() -> set[str]:
         except Exception:
             pass
 
-        # Resolve session key (same logic as mcp_core._resolve_session_key)
-        session_key = os.environ.get("KIROCREW_SESSION_KEY", "")
+        # Resolve session key: the verified per-call caller identity wins
+        # (pooled topology); env/PID resolution is the single-session path.
+        session_key = caller_session or os.environ.get("KIROCREW_SESSION_KEY", "")
         if not session_key:
             def _ppid_via_libproc(pid: int) -> int:
                 """macOS parent-PID via libproc proc_pidinfo (no exec, sandbox-safe)."""
@@ -340,10 +368,17 @@ def _resolve_excluded_tools() -> set[str]:
 
         exclude = policy.get("exclude", [])
         if isinstance(exclude, list):
-            _excluded_tools = {t for t in exclude if isinstance(t, str)}
+            resolved = {t for t in exclude if isinstance(t, str)}
         else:
-            _excluded_tools = set()
-        return _excluded_tools
+            resolved = set()
+        # FIFO bound: dicts preserve insertion order; drop the oldest
+        # session's entry when full (pooled backends serve churning sessions).
+        while len(_excluded_tools_by_session) >= _EXCLUDED_TOOLS_CACHE_MAX:
+            _excluded_tools_by_session.pop(
+                next(iter(_excluded_tools_by_session))
+            )
+        _excluded_tools_by_session[caller_session] = resolved
+        return resolved
     except Exception as exc:
         # Policy call failed (network error, timeout, non-404 HTTP) —
         # use the LONG negative cache to avoid repeated 5s urlopen
@@ -518,6 +553,8 @@ def run_mcp_stdio_loop(
     server_version: str,
     list_tools_fn: Callable[[], list[dict[str, Any]]],
     call_tool_fn: Callable[[str, dict[str, Any]], str],
+    *,
+    advertise_caller_identity: bool = False,
 ) -> None:
     """Generic MCP stdio server loop — reads JSON-RPC from stdin, writes to stdout.
 
@@ -538,6 +575,7 @@ def run_mcp_stdio_loop(
     """
     # In-flight tool execution state: at most one at a time (sequential dispatch).
     _current_req_id: Any = None
+    _current_caller_key: str = ""
     _cancel_event: Optional[threading.Event] = None
     _worker_thread: Optional[threading.Thread] = None
     _result_lock = threading.Lock()
@@ -573,15 +611,23 @@ def run_mcp_stdio_loop(
                 ids.add(str(_pcid))
         return ids
 
-    def _sel_audit(outcome: str, tool_name: str, req_id: Any) -> None:
+    def _sel_audit(
+        outcome: str, tool_name: str, req_id: Any, session_key: str = ""
+    ) -> None:
         """Emit a SEL audit event for a tool invocation outcome.
+
+        ``session_key`` should be the request's parsed caller identity when
+        available (pooled topology: the env var below attributes every
+        outcome to ``mcp`` or the wrong session in a shared backend — GPT
+        5.6 round 18); the env read is the single-session fallback.
 
         SEL failure must not break the response path, but a missed audit
         record must be visible (security-controls guideline: callback
         failures are logged, never bare pass)."""
         try:
             sel().log_tool_invocation(
-                session_key=os.environ.get("KIROCREW_SESSION_KEY", "mcp"),
+                session_key=session_key
+                or os.environ.get("KIROCREW_SESSION_KEY", "mcp"),
                 source="mcp",
                 tool_name=tool_name,
                 tool_kind=server_name,
@@ -594,21 +640,45 @@ def run_mcp_stdio_loop(
                 outcome, tool_name, req_id, sel_exc,
             )
 
+    def _req_caller_key(request: dict) -> str:
+        """Parsed caller session key from a request's ``_meta``, or ""."""
+        try:
+            ctx = CallerContext.from_meta(
+                request.get("params", {}).get("_meta")
+            )
+            return ctx.session_key if ctx is not None else ""
+        except Exception:
+            return ""
+
     def _run_tool(
-        req_id: Any, tool_name: str, tool_args: dict, cancel_evt: threading.Event
+        req_id: Any,
+        tool_name: str,
+        tool_args: dict,
+        cancel_evt: threading.Event,
+        caller_ctx: "CallerContext | None" = None,
     ) -> None:
         """Worker thread: run tool, store result unless cancelled."""
         global _thread_cancel_event
         # Inject cancel event into thread-local so cooperative tools can check it
         _thread_cancel_event = cancel_evt
+        # Install the verified per-call caller for identity resolvers. Safe as
+        # a module slot: dispatch is strictly sequential (one worker at a
+        # time, joined before the next dispatch).
+        set_current_caller(caller_ctx)
         try:
             result_text = call_tool_fn(tool_name, tool_args)
         except ToolCancelled:
             # Tool cooperatively exited on cancel -- suppress response
             logger.info("tool cancelled for request %s", req_id)
             # SEL audit: cancelled tool invocations must emit audit events
-            _sel_audit("cancelled", tool_name, req_id)
+            _sel_audit(
+                "cancelled",
+                tool_name,
+                req_id,
+                caller_ctx.session_key if caller_ctx else "",
+            )
             _thread_cancel_event = None
+            set_current_caller(None)
             _result_ready.set()
             return
         except Exception as exc:
@@ -618,6 +688,7 @@ def run_mcp_stdio_loop(
             _tool_errored = False
         finally:
             _thread_cancel_event = None
+            set_current_caller(None)
         # Audit decision is made atomically with the cancellation check, under
         # the same lock that guards response delivery: exactly ONE audit event
         # per request (a failed+late-cancel race must not emit two).
@@ -627,13 +698,23 @@ def run_mcp_stdio_loop(
                 if _tool_errored:
                     # Exception escaped call_tool_fn (may bypass its internal
                     # logging) -- audit the failure.
-                    _sel_audit("failed", tool_name, req_id)
+                    _sel_audit(
+                        "failed",
+                        tool_name,
+                        req_id,
+                        caller_ctx.session_key if caller_ctx else "",
+                    )
                     _worker_audited[0] = True
             else:
                 # Late-cancel race: tool finished (or errored) but cancel
                 # arrived before delivery. From the client's perspective this
                 # invocation was cancelled.
-                _sel_audit("cancelled", tool_name, req_id)
+                _sel_audit(
+                    "cancelled",
+                    tool_name,
+                    req_id,
+                    caller_ctx.session_key if caller_ctx else "",
+                )
                 _worker_audited[0] = True
         _result_ready.set()
 
@@ -652,7 +733,12 @@ def run_mcp_stdio_loop(
                         elif _result_box and not _worker_audited[0]:
                             # Boxed result dropped due to cancellation (cancel
                             # arrived after the worker delivered) -- audit it.
-                            _sel_audit("cancelled", _current_tool_name, _current_req_id)
+                            _sel_audit(
+                                "cancelled",
+                                _current_tool_name,
+                                _current_req_id,
+                                _current_caller_key,
+                            )
                         _result_box.clear()
                         # Consumed: drop the id so a completed request never
                         # lingers in the cancelled set.
@@ -701,6 +787,7 @@ def run_mcp_stdio_loop(
                         "rejected_busy",
                         req.get("params", {}).get("name", ""),
                         req_id,
+                        _req_caller_key(req),
                     )
                     respond(
                         req_id,
@@ -715,7 +802,7 @@ def run_mcp_stdio_loop(
             # Other messages while busy: drop gracefully. Notifications are
             # fine to drop; initialize/initialized never arrive mid-tool.
             elif method == "tools/list" and req_id is not None:
-                excluded = _resolve_excluded_tools()
+                excluded = _resolve_excluded_tools(_req_caller_key(req))
                 tools = list_tools_fn()
                 if excluded:
                     tools = [t for t in tools if t.get("name") not in excluded]
@@ -732,7 +819,12 @@ def run_mcp_stdio_loop(
                 elif _result_box and not _worker_audited[0]:
                     # Boxed result dropped due to cancellation (cancel arrived
                     # after the worker delivered) -- audit it.
-                    _sel_audit("cancelled", _current_tool_name, _current_req_id)
+                    _sel_audit(
+                                "cancelled",
+                                _current_tool_name,
+                                _current_req_id,
+                                _current_caller_key,
+                            )
                 _result_box.clear()
                 # Consumed: drop the id so a completed request never lingers
                 # in the cancelled set.
@@ -755,11 +847,20 @@ def run_mcp_stdio_loop(
             continue
 
         if method == "initialize":
+            _caps: dict[str, Any] = {"tools": {"listChanged": False}}
+            if advertise_caller_identity:
+                # Pooled-operation opt-in: gatewayd pools ONLY backends that
+                # advertise the caller-identity extension (others fall back
+                # to per-session spawn). Advertising is what makes the
+                # per-call ``_meta.kirocrew.caller`` path live end-to-end —
+                # without it the dispatch loop's caller slot never receives
+                # gateway-authored metadata (GPT 5.6 round 18).
+                _caps["experimental"] = caller_identity_capability()
             respond(
                 req_id,
                 {
                     "protocolVersion": "2024-11-05",
-                    "capabilities": {"tools": {"listChanged": False}},
+                    "capabilities": _caps,
                     "serverInfo": {"name": server_name, "version": server_version},
                 },
             )
@@ -782,7 +883,7 @@ def run_mcp_stdio_loop(
                     protected=_live_request_ids(),
                 )
         elif method == "tools/list":
-            excluded = _resolve_excluded_tools()
+            excluded = _resolve_excluded_tools(_req_caller_key(req))
             tools = list_tools_fn()
             if excluded:
                 tools = [t for t in tools if t.get("name") not in excluded]
@@ -795,17 +896,34 @@ def run_mcp_stdio_loop(
             tool_args = params.get("arguments", {})
             if not isinstance(tool_args, dict):
                 tool_args = {}
+            # Verified per-call identity (pooled topology): gatewayd strips
+            # any client-forged ``kirocrew.caller`` block and injects its own
+            # on every forwarded call, so a block present here is
+            # gateway-authored. None in the non-pooled stdio topology.
+            _caller_ctx = CallerContext.from_meta(params.get("_meta"))
             # A queued request may have been cancelled while waiting -- emit
             # no response (per MCP spec) but audit the cancellation.
             if req_id is not None and str(req_id) in _cancelled_ids:
-                _sel_audit("cancelled", tool_name, req_id)
+                _sel_audit(
+                    "cancelled",
+                    tool_name,
+                    req_id,
+                    _caller_ctx.session_key if _caller_ctx else "",
+                )
                 continue
             # Defense-in-depth: reject calls to excluded tools even if
             # the LLM somehow attempts to call them (hallucination).
-            excluded = _resolve_excluded_tools()
+            # Per-call caller identity keys the policy in pooled backends.
+            excluded = _resolve_excluded_tools(
+                _caller_ctx.session_key if _caller_ctx else ""
+            )
             if tool_name in excluded:
                 sel().log_tool_invocation(
-                    session_key=os.environ.get("KIROCREW_SESSION_KEY", "mcp"),
+                    session_key=(
+                        _caller_ctx.session_key
+                        if _caller_ctx
+                        else os.environ.get("KIROCREW_SESSION_KEY", "mcp")
+                    ),
                     source="mcp",
                     tool_name=tool_name,
                     tool_kind=server_name,
@@ -822,19 +940,37 @@ def run_mcp_stdio_loop(
                 # Windows: select.select() cannot poll sys.stdin (WinError
                 # 10038), so no worker-thread interleave — dispatch the tool
                 # synchronously exactly as the pre-worker loop did.
-                result_text = call_tool_fn(tool_name, tool_args)
+                # Exception handling mirrors the worker path: the client gets
+                # an Error response and the failure is SEL-audited with the
+                # caller identity (an escaped exception would kill the loop).
+                set_current_caller(_caller_ctx)
+                try:
+                    result_text = call_tool_fn(tool_name, tool_args)
+                except Exception as exc:
+                    result_text = f"Error: {exc}"
+                    _sel_audit(
+                        "failed",
+                        tool_name,
+                        req_id,
+                        _caller_ctx.session_key if _caller_ctx else "",
+                    )
+                finally:
+                    set_current_caller(None)
                 respond(req_id, build_tool_response(result_text))
             else:
                 # Dispatch tool in worker thread so we can receive cancel notifications
                 _cancel_event = threading.Event()
                 _current_req_id = req_id
                 _current_tool_name = tool_name
+                _current_caller_key = (
+                    _caller_ctx.session_key if _caller_ctx else ""
+                )
                 _worker_audited[0] = False
                 _result_ready.clear()
                 _result_box.clear()
                 _worker_thread = threading.Thread(
                     target=_run_tool,
-                    args=(req_id, tool_name, tool_args, _cancel_event),
+                    args=(req_id, tool_name, tool_args, _cancel_event, _caller_ctx),
                     daemon=True,
                 )
                 _worker_thread.start()

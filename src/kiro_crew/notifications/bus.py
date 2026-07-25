@@ -151,7 +151,14 @@ class NotificationPayload:
             raise NotificationValidationError(
                 f"priority must be one of {PRIORITIES}, got {self.priority!r}"
             )
-        if self.ttl is not None and (not isinstance(self.ttl, int) or self.ttl <= 0):
+        if self.ttl is not None and (
+            not isinstance(self.ttl, int)
+            # bool is an int subclass: the sweeper deliberately excludes it,
+            # so accepting "ttl": true here would 200 a passive note that
+            # never expires (GPT 5.6 round 11) -- reject at the contract.
+            or isinstance(self.ttl, bool)
+            or self.ttl <= 0
+        ):
             raise NotificationValidationError("ttl must be a positive integer")
         if self.actions is not None:
             if len(self.actions) > _MAX_ACTIONS:
@@ -173,6 +180,16 @@ class NotificationPayload:
                     raise NotificationValidationError(
                         "each action requires non-empty string 'id' and 'label' fields"
                     )
+                # Closed key set (GPT 5.6 round 21): _redact_note_value scrubs
+                # VALUES, not dict KEYS -- an extra property whose NAME carries
+                # a credential would sail past redaction into JSONL and every
+                # dashboard response. The contract is {id, label, url?}; reject
+                # anything else at the trust root.
+                unknown = set(action) - {"id", "label", "url"}
+                if unknown:
+                    raise NotificationValidationError(
+                        "action contains unknown fields (allowed: id, label, url)"
+                    )
                 if len(action["id"]) > _MAX_ACTION_ID_LEN:
                     raise NotificationValidationError(
                         f"action id exceeds {_MAX_ACTION_ID_LEN} chars"
@@ -188,7 +205,7 @@ class NotificationPayload:
                 # render nothing today. When present, `url` obeys the same
                 # path-only rule as the note-level field: persistence is the
                 # trust root, so a stored action can never leak external
-                # navigation to any consumer (frontend, Slack escalation,
+                # navigation to any consumer (frontend,
                 # native notifications, MCP tools).
                 action_url = action.get("url")
                 if action_url is not None:

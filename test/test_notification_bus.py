@@ -47,6 +47,16 @@ class TestPayloadValidation:
         with pytest.raises(NotificationValidationError, match="ttl"):
             p.validate()
 
+    def test_boolean_ttl_rejected(self):
+        # GPT 5.6 round 11 (MEDIUM): bool is an int subclass -- validation
+        # accepted "ttl": true while the sweeper deliberately excludes bools,
+        # so the note would 200 yet never expire. Reject at the contract.
+        p = NotificationPayload(
+            source="system", channel="system.cron", title="t", body="b", ttl=True
+        )
+        with pytest.raises(NotificationValidationError, match="ttl"):
+            p.validate()
+
     def test_action_without_id_rejected(self):
         p = NotificationPayload(
             source="system",
@@ -119,7 +129,7 @@ class TestPayloadValidation:
     def test_action_url_rejected_at_trust_root(self, bad_url):
         # Persistence is the trust root (Arbiter finding on PR #399): an
         # unsafe actions[].url must never be stored, so every future
-        # consumer (Slack escalation, native notifications, MCP tools)
+        # consumer (native notifications, MCP tools)
         # inherits the guarantee without re-implementing the filter.
         p = NotificationPayload(
             source="system",

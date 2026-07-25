@@ -14,6 +14,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -32,6 +33,33 @@ _MAX_A2A_EXCHANGES = 3
 # Max time an agent blocks on its inbox before re-checking its stop condition,
 # guaranteeing subscribe() can never park indefinitely.
 _INBOX_POLL_SECS = 1.0
+
+# Direct-to-user messaging tools a channel agent may never invoke — channel
+# agents communicate exclusively through channel posts.  send_notification
+# reaches the user like send_message does (notification feed publish, badge,
+# and sound), so both sit
+# behind the same containment boundary.  Matched against the rendered
+# permission-request text/title via _blocked_tool_named() (boundary-aware,
+# not naive substring — "Editing send_notification.py" must NOT match).
+CHANNEL_AGENT_BLOCKED_TOOLS: tuple[str, ...] = ("send_message", "send_notification")
+
+# Boundary-aware matcher: the tool name must stand alone in the rendered
+# title — not embedded in a filename/path/identifier ("send_notification.py",
+# "/tmp/send_message_backup"). MCP separator runs of 2+ underscores are
+# normalized to spaces first so BOTH qualified invocation forms match:
+# "kirocrew-core___send_message" (kiro-cli) and
+# "mcp__kirocrew-core__send_message" (canonical MCP prefix form).
+_BLOCKED_TOOL_RE = re.compile(
+    r"(?<![\w.\-/])("
+    + "|".join(re.escape(t) for t in CHANNEL_AGENT_BLOCKED_TOOLS)
+    + r")(?![\w.\-/])"
+)
+_MCP_SEPARATOR_RE = re.compile(r"_{2,}")
+
+
+def _blocked_tool_named(rendered: str) -> bool:
+    """True when a blocked messaging tool is named (as a tool) in *rendered*."""
+    return bool(_BLOCKED_TOOL_RE.search(_MCP_SEPARATOR_RE.sub(" ", rendered)))
 
 
 class ListenMode(Enum):
@@ -658,8 +686,12 @@ async def _stream_task(
                 )
 
             elif event.kind == EVENT_PERMISSION_REQUEST:
-                # Block send_message — channel agents communicate via channel posts
-                if "send_message" in (event.text or event.title or ""):
+                # Block direct-to-user messaging tools — channel agents
+                # communicate via channel posts only. send_notification is
+                # functionally equivalent for reaching the user (feed
+                # publish, badge, sound), so it shares the
+                # containment boundary (PR #422 review).
+                if _blocked_tool_named(event.text or event.title or ""):
                     sel().log_tool_invocation(
                         session_key=agent.session_key,
                         agent=agent.agent_name,

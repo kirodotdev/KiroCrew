@@ -88,8 +88,8 @@ function ChannelsSection() {
             const muted = !!c.settings.muted
             const override = c.settings.priority
             return (
-              <div key={c.channel} className={`flex items-center gap-2.5 py-1.5 ${muted || !c.registered ? 'opacity-60' : ''}`}>
-                <div className="flex-1 min-w-0">
+              <div key={c.channel} className={`flex flex-wrap items-center gap-2.5 py-1.5 ${muted || !c.registered ? 'opacity-60' : ''}`}>
+                <div className="flex-1 min-w-0 basis-40">
                   <div className="text-[13px] text-text flex items-center gap-1.5">
                     {channelLabel(c)}
                     {c.protected && <Lock className="lucide-inline text-muted" aria-label="Protected channel" />}
@@ -106,7 +106,7 @@ function ChannelsSection() {
                   <span className="text-[11px] text-muted italic shrink-0">protected</span>
                 ) : (
                   <>
-                    <div className="shrink-0 w-48">
+                    <div className="shrink-0 w-full sm:w-48">
                       <Select
                         value={override ?? PRIORITY_SENTINEL}
                         onValueChange={v => patch(c.channel, { priority: v === PRIORITY_SENTINEL ? null : v })}
