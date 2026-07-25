@@ -178,6 +178,36 @@ class TestConfigDirTriggersMigration:
         assert (new_home / paths.MIGRATION_MARKER_NAME).exists()
         assert not (tmp_path / ".kiro" / "crew.pre-migration").exists()
 
+    def test_readonly_conflicting_dest_file_is_overwritten(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # Regression: git writes packfiles (and app-source checkouts under the
+        # data home carry them) mode 0o444. When the new home is already
+        # populated, the merge must OVERWRITE a read-only destination file — the
+        # default copytree copy2 opens the dest for writing and raises
+        # PermissionError on a 0o444 file, which aborted the whole migration and
+        # trapped the user in a permanent split-brain (legacy authoritative, new
+        # home half-populated, gateway pinned to legacy). The custom
+        # copy_function must clear the read-only bit so legacy still wins.
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        legacy = _seed_legacy(tmp_path)
+        pack_rel = Path("apps") / "x" / ".git" / "objects" / "pack" / "p.pack"
+        (legacy / pack_rel).parent.mkdir(parents=True)
+        (legacy / pack_rel).write_text("legacy-pack", encoding="utf-8")
+        new_home = tmp_path / ".kiro" / "crew"
+        (new_home / pack_rel).parent.mkdir(parents=True)
+        dest_pack = new_home / pack_rel
+        dest_pack.write_text("stale-pack", encoding="utf-8")
+        os.chmod(dest_pack, 0o444)  # read-only, exactly like a real git packfile
+        monkeypatch.setattr(home_migration, "_gateway_is_live", lambda home: False)
+
+        result = paths.config_dir()
+
+        assert result == new_home  # migration completed (did not abort)
+        assert not legacy.exists()  # legacy deleted → no split-brain
+        assert (new_home / pack_rel).read_text(encoding="utf-8") == "legacy-pack"
+        assert (new_home / paths.MIGRATION_MARKER_NAME).exists()
+
     def test_divergent_new_home_gateway_live_retains_legacy(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:

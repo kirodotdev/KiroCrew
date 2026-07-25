@@ -39,6 +39,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+import stat
 import sys
 from pathlib import Path
 from typing import Callable
@@ -137,6 +138,37 @@ def _make_copy_ignore(legacy_root: Path) -> Callable[[str, list[str]], set[str]]
         return ignored
 
     return _ignore
+
+
+def _copy_overwrite(src: str, dst: str, *, follow_symlinks: bool = True) -> object:
+    """``copytree`` copy-function that can overwrite a READ-ONLY destination.
+
+    ``shutil.copytree(..., dirs_exist_ok=True)`` defaults to ``copy2``, which
+    opens each destination ``O_WRONLY|O_CREAT|O_TRUNC``. When the new home is
+    already populated (the very re-migration path this design relies on — marker
+    present + legacy still present → force-copy legacy over the new home again),
+    that ``open`` fails with ``PermissionError`` on any destination file that is
+    read-only. Git writes packfiles (``*.pack`` / ``*.idx`` / ``*.rev`` under
+    ``.git/objects/pack``) mode ``0o444``, and app-source checkouts under the
+    data home carry them — so a real merge reliably hit ``[Errno 13]`` and
+    aborted the whole migration, stranding the user in a permanent split-brain
+    (legacy home authoritative, new home half-populated, gateway pinned to
+    legacy). This mirrors ``copy2`` but first clears the destination's read-only
+    bit if it already exists, so legacy always wins the overwrite as intended.
+
+    The chmod is best-effort (a failure just lets ``copy2`` raise as before, no
+    worse than the pre-fix behavior) and only touches a path that already exists
+    at the destination — never the read-only source, which stays untouched.
+    """
+    if os.path.lexists(dst) and not os.path.islink(dst):
+        try:
+            # Ensure owner-write so copy2's truncate-open succeeds; copy2 then
+            # copies the source's own mode bits over, restoring 0o444 et al.
+            st_mode = os.stat(dst).st_mode
+            os.chmod(dst, st_mode | stat.S_IWUSR)
+        except OSError:
+            pass  # let copy2 surface the real error if the write still fails
+    return shutil.copy2(src, dst, follow_symlinks=follow_symlinks)
 
 
 def _verify_copy(legacy: Path, new_home: Path) -> list[str]:
@@ -283,8 +315,20 @@ def _do_migrate(*, legacy: Path, new_home: Path, marker: Path) -> Path:
     # deleted — at the cost of a legacy symlink becoming a real copy post-
     # migration. copytree also never writes back through a source symlink to
     # its external target, so nothing outside the home is touched.
+    #
+    # ``copy_function=_copy_overwrite`` (instead of the default ``copy2``) is
+    # REQUIRED for the merge to survive a read-only destination file: git
+    # packfiles under an app-source checkout are mode 0o444, and overwriting one
+    # with plain copy2 raises PermissionError, aborting the whole migration and
+    # trapping the user in a permanent split-brain. See _copy_overwrite.
     try:
-        shutil.copytree(legacy, new_home, dirs_exist_ok=True, ignore=_make_copy_ignore(legacy))
+        shutil.copytree(
+            legacy,
+            new_home,
+            dirs_exist_ok=True,
+            ignore=_make_copy_ignore(legacy),
+            copy_function=_copy_overwrite,
+        )
     except Exception:
         logger.warning(
             "data-home copy to %s failed; keeping %s (will retry on next start)",

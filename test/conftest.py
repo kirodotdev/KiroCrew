@@ -255,26 +255,49 @@ def _isolate_kirocrew_home(tmp_path_factory, monkeypatch):
     earlier test (which may have patched ``Path.home`` / cleared ``KIROCREW_HOME``)
     would otherwise leak into a later test that resolves the default home. Reset
     per test so each resolves fresh against its own patched environment.
+
+    Also clear ``KIROCREW_PROJECT_DIR`` for the same "match CI on a dev box"
+    reason: it is auto-set to the repo root when running from a checkout, so
+    ``skills._project_skills_dir()`` resolves to the repo's real ``skills/``.
+    A test that drives ``_ensure_builtin_skills`` against a tmp dir then sees the
+    live ``skills/kirocrew-dev/*`` as a "source", which flips relocation/cleanup
+    behavior — green in CI (env unset there), red locally. Tests that need a
+    project dir set it themselves via ``monkeypatch`` (which still wins).
     """
     home = tmp_path_factory.mktemp("kirocrew-home")
     monkeypatch.setenv("KIROCREW_HOME", str(home))
+    monkeypatch.delenv("KIROCREW_PROJECT_DIR", raising=False)
     monkeypatch.setattr("kiro_crew.config.paths._resolved_home", None)
 
 
 @pytest.fixture(autouse=True)
 def _isolate_kiro_window_cache():
-    """Snapshot/restore ``model_registry._KIRO_WINDOWS`` around every test.
+    """Give every test an EMPTY ``model_registry._KIRO_WINDOWS``, then restore it.
 
-    The kiro-list window cache is process-global module state. Any test that
-    exercises ``/api/models`` (which calls ``refresh_kiro_windows``) or seeds the
-    cache directly would otherwise leak model->window entries into later tests —
-    e.g. a GPT window seeded here makes a "non-registry model is unknown" test in
-    another module wrongly see GPT as known. Restore the exact dict contents
-    after each test so ordering can't couple tests through this cache.
+    The kiro-list window cache is process-global module state with two ways to
+    couple tests:
+
+    * **Test-to-test leak** — a test that exercises ``/api/models`` (which calls
+      ``refresh_kiro_windows``) or seeds the cache directly would otherwise leave
+      entries behind, e.g. a GPT window seeded here makes a "non-registry model
+      is unknown" test in another module wrongly see GPT as known.
+    * **Import-time host leak** — ``model_registry`` calls ``_load_kiro_windows()``
+      at import, which reads ``<config_dir>/model_windows.json``. On a developer
+      box that file holds the operator's real cached windows (e.g. a locally
+      served ``deepseek-3.2`` at a non-registry value), so a test asserting the
+      static supplementary floor for that same id fails ONLY on that machine —
+      green in CI (no such file), red locally. Snapshotting-then-restoring alone
+      preserved that polluted baseline for the duration of each test body.
+
+    Clearing before the test (and restoring the original snapshot after) makes
+    every test start from the same empty cache regardless of what the host had on
+    disk — so a local run matches CI. Tests that need entries seed them in their
+    own body.
     """
     import kiro_crew.model_registry as _mr
 
     saved = dict(_mr._KIRO_WINDOWS)
+    _mr._KIRO_WINDOWS.clear()
     try:
         yield
     finally:
