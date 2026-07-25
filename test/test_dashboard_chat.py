@@ -2441,6 +2441,32 @@ class TestRunChatSegmentFlush:
         assert "tool_call" in ws_types
 
     @pytest.mark.asyncio
+    async def test_idle_turn_boundary_refreshes_source_status(self, tmp_path, monkeypatch):
+        """Reaching idle at a turn boundary must re-read the slot's PR/MR status.
+
+        Regression for the production wiring: `_run_chat`'s idle branch calls
+        `state.refresh_slot_source_status(slot.key)` so the sidebar chips and the
+        detail panel re-read after a turn that may have opened/pushed/merged a
+        PR. The state-level tests exercise `refresh_slot_source_status` directly
+        and would stay green if this call were deleted, so pin the real
+        `_run_chat` path here.
+        """
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+        events = [LLMEvent(kind=EVENT_TEXT_CHUNK, text="ok"), LLMEvent(kind=EVENT_COMPLETE)]
+        state = self._make_state_for_run_chat(tmp_path, monkeypatch)
+        state.refresh_slot_source_status = MagicMock()
+        slot = state.get_or_create_slot("s1")
+        client = self._make_mock_client(events)
+        state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+
+        from kiro_crew.dashboard.chat import _run_chat
+
+        await _run_chat(state, slot, "hello")
+
+        state.refresh_slot_source_status.assert_called_once_with(slot.key)
+
+    @pytest.mark.asyncio
     async def test_text_permission_request_flushes_segment(self, tmp_path, monkeypatch):
         """Mock event stream: text → permission_request flushes segment
         before permission flow.

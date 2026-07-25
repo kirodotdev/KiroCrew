@@ -120,6 +120,8 @@ from kiro_crew.dashboard.handlers.source_providers import (
     api_pull_request_resolve,
     api_pull_request_source,
     api_pull_request_status,
+    register_status_delta_sink,
+    unregister_status_delta_sink,
 )
 from kiro_crew.dashboard.handlers.tunnel import api_tunnel_status
 from kiro_crew.dashboard.loop_watchdog import LoopStallWatchdog
@@ -1040,6 +1042,25 @@ def build_host_canonical_redirect(canonical_host: str) -> Any:
     return host_canonical_redirect
 
 
+def _wire_status_delta_sink(app: web.Application, state: DashboardState) -> None:
+    """Register the PR status-delta sink and its shutdown cleanup on ``app``.
+
+    Registered once at wiring time (rather than per WS connect) so the sink set
+    holds exactly one entry per process; ``push_source_status`` no-ops while no
+    owner socket is open. The matching ``on_cleanup`` hook is REQUIRED: the sink
+    set is module-global and outlives any single ``DashboardState``, so without
+    it, starting/stopping/restarting a dashboard in one process retains every old
+    state's bound method — a slow leak plus duplicate dispatch to dead states on
+    every later status change.
+    """
+    register_status_delta_sink(state.push_source_status)
+
+    async def _status_sink_shutdown(_app: web.Application) -> None:
+        unregister_status_delta_sink(state.push_source_status)
+
+    app.on_cleanup.append(_status_sink_shutdown)
+
+
 async def start_dashboard(
     sessions: SessionManager,
     crons: CronService,
@@ -1213,6 +1234,11 @@ async def start_dashboard(
     state.load_folders()
     state.load_tags()
     app["port"] = port
+
+    # Route pull-request status deltas to owner websockets. Extracted so the
+    # register + shutdown-cleanup contract is unit-testable without booting the
+    # whole gateway (see test_wire_status_delta_sink_registers_and_cleans_up).
+    _wire_status_delta_sink(app, state)
 
     _precompute_telemetry(state)
 

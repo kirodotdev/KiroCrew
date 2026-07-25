@@ -685,3 +685,133 @@ class TestPeriodicCheckStatusRefresh:
 
         # Fired at least twice: the first raised, the loop logged and continued.
         assert len(calls) >= 2
+
+
+class TestTurnBoundarySourceStatus:
+    """Regression: PR state must not lag the session that just changed it.
+
+    Before this, nothing invalidated either status cache when an agent turn
+    ended — the chips waited out the periodic rotation (minutes, with more
+    PR-linked slots than the per-round admission cap) and the detail panel never
+    refetched at all, so the sidebar and the panel could show different
+    lifecycles for the same PR indefinitely.
+    """
+
+    def test_per_slot_urls_are_scoped_and_capped(self, state: DashboardState) -> None:
+        slot = state.get_or_create_slot("chat-a")
+        for n in (1, 2, 3, 4):
+            slot.append(
+                "assistant", f"see https://github.com/acme/repo/pull/{n}", broadcast=False
+            )
+        other = state.get_or_create_slot("chat-b")
+        other.append("assistant", "and https://github.com/acme/other/pull/9", broadcast=False)
+
+        # Only this slot's chips, capped at the serialized count — a turn ending
+        # in one session must not fan provider reads across every other session.
+        assert state.source_link_urls_for_slot("chat-a") == [
+            "https://github.com/acme/repo/pull/1",
+            "https://github.com/acme/repo/pull/2",
+            "https://github.com/acme/repo/pull/3",
+        ]
+        assert state.source_link_urls_for_slot("nope") == []
+
+    def test_turn_boundary_forces_refresh_for_owner(self, state: DashboardState, monkeypatch) -> None:
+        from kiro_crew.dashboard.handlers import source_providers
+
+        slot = state.get_or_create_slot("chat-a")
+        slot.append("assistant", "opened https://github.com/acme/repo/pull/7", broadcast=False)
+        state._owner_ws_clients.add(MagicMock(closed=False))
+        calls: list[tuple] = []
+        monkeypatch.setattr(
+            source_providers,
+            "request_check_refresh_now",
+            lambda urls, on_update=None: calls.append((urls, on_update)),
+        )
+
+        state.refresh_slot_source_status("chat-a")
+
+        assert calls == [(["https://github.com/acme/repo/pull/7"], state.push_slots_update)]
+
+    def test_turn_boundary_is_a_noop_without_an_owner_window(
+        self, state: DashboardState, monkeypatch
+    ) -> None:
+        """Status is credential-backed and only owners render it, so a headless
+        or non-owner gateway must not spawn provider subprocesses per turn."""
+        from kiro_crew.dashboard.handlers import source_providers
+
+        slot = state.get_or_create_slot("chat-a")
+        slot.append("assistant", "opened https://github.com/acme/repo/pull/7", broadcast=False)
+        state._owner_ws_clients.clear()
+        refresh = MagicMock()
+        monkeypatch.setattr(source_providers, "request_check_refresh_now", refresh)
+
+        state.refresh_slot_source_status("chat-a")
+
+        refresh.assert_not_called()
+
+    def test_turn_boundary_swallows_refresh_failures(
+        self, state: DashboardState, monkeypatch
+    ) -> None:
+        """A status refresh is best-effort telemetry; it must never be able to
+        break the turn-completion path it hangs off."""
+        from kiro_crew.dashboard.handlers import source_providers
+
+        slot = state.get_or_create_slot("chat-a")
+        slot.append("assistant", "opened https://github.com/acme/repo/pull/7", broadcast=False)
+        state._owner_ws_clients.add(MagicMock(closed=False))
+        monkeypatch.setattr(
+            source_providers,
+            "request_check_refresh_now",
+            MagicMock(side_effect=RuntimeError("no event loop")),
+        )
+
+        state.refresh_slot_source_status("chat-a")  # must not raise
+
+    def test_status_delta_goes_only_to_owner_sockets(
+        self, state: DashboardState, monkeypatch
+    ) -> None:
+        sent: list[str] = []
+        monkeypatch.setattr(state, "_send_ws_owners", lambda msg: sent.append(msg))
+
+        # No owner connected → nothing is serialized or sent at all.
+        state._owner_ws_clients.clear()
+        state.push_source_status({"url": "https://github.com/acme/repo/pull/7", "state": "merged"})
+        assert sent == []
+
+        state._owner_ws_clients.add(MagicMock(closed=False))
+        state.push_source_status({"url": "https://github.com/acme/repo/pull/7", "state": "merged"})
+
+        assert json.loads(sent[0]) == {
+            "type": "source_status",
+            "data": {"url": "https://github.com/acme/repo/pull/7", "state": "merged"},
+        }
+
+    @pytest.mark.asyncio
+    async def test_wire_status_delta_sink_registers_and_cleans_up(
+        self, state: DashboardState
+    ) -> None:
+        """The dashboard wiring must register the owner-scoped sink AND clean it up.
+
+        Regression for the production-wiring gap: the transport tests above call
+        ``push_source_status`` / ``register_status_delta_sink`` directly, so they
+        would stay green even if ``start_dashboard`` stopped wiring the sink or
+        dropped its shutdown cleanup. This drives the real wiring helper: it must
+        register exactly the state's ``push_source_status`` and, on app shutdown,
+        unregister it (the sink set is module-global and would otherwise leak
+        dead states across dashboard restarts, double-dispatching every delta).
+        """
+        from aiohttp import web
+
+        from kiro_crew.dashboard import server
+        from kiro_crew.dashboard.handlers import source_providers
+
+        source_providers._status_delta_sinks.clear()
+        app = web.Application()
+        server._wire_status_delta_sink(app, state)
+
+        assert state.push_source_status in source_providers._status_delta_sinks
+
+        # Running the app's cleanup handlers must remove the sink.
+        for cleanup in app.on_cleanup:
+            await cleanup(app)
+        assert state.push_source_status not in source_providers._status_delta_sinks

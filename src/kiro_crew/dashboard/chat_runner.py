@@ -1924,6 +1924,11 @@ def _finish_queue_cycle(state: DashboardState, slot: _ChatSlot) -> None:
     slot.task = None
     state.push_slots_update()
     state.broadcast_ws("chat_done", {"slot": slot.key})
+    # The turn that just finished is the most likely moment for this session's
+    # PRs to have moved (opened, pushed, merged, reviewed), so re-read their
+    # status now instead of leaving the sidebar chips on TTL rotation and the
+    # detail panel on no refresh at all.
+    state.refresh_slot_source_status(slot.key)
     state.push_refresh("history")
     if not slot._titled:
         title_task = asyncio.create_task(_maybe_auto_title(state, slot))

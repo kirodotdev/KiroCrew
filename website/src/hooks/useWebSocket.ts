@@ -2,14 +2,15 @@ import { useEffect, useRef, useCallback } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { useAppDispatch } from '../store'
 import { store } from '../store'
-import { sseStatus, sseConnected, sseDisconnected, sseSlots, setChannelTrusted, sseSlotTitle, triggerRefresh, fetchSlots, markSlotUnread, setUpdateProgress, sseSubagentStatus, sseSubagentText, touchSlotActivity, type SubagentDetail } from '../store/dashboardSlice'
+import { sseStatus, sseConnected, sseDisconnected, sseSlots, setChannelTrusted, sseSlotTitle, triggerRefresh, fetchSlots, markSlotUnread, setUpdateProgress, sseSubagentStatus, sseSubagentText, touchSlotActivity, patchSlotSourceLinks, type SubagentDetail } from '../store/dashboardSlice'
 import { addNotification, ackNotificationByTs, unackNotificationByTs, removeNotificationByTs, fetchNotifications } from '../store/notificationsSlice'
 import { MC_NOTIFICATION_EVENT, TURN_DONE_KIND, shouldChimeOnTurnDone, type McNotificationDetail } from './notificationEvent'
 import { emitThemeSound } from './themeSound'
 import { fetchHistory, missedChunkMarker, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, refreshSlot, warmSlotCache, sseContextUsage, clearMessages, setVoicePlaying, setVoiceAudio, resolveByApprovalId, clearSubagentsForSnapshot, sseSubagentPending, sseSubagentSpawn, sseSubagentChunk, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentSnapshot, sseSubagentBatchUpdate, sseSubagentBatchChunks, sseToolActivity, sseToolResult, sseActivityEvent, sseSideResult, sseWorkflowEvent, setSlotStatusDetail, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, appendSlotMessage, setQuestionCard } from '../store/chatSlice'
 import { api } from '../api/client'
 import { sanitizeLlmOutput } from '../utils/sanitize'
-import type { StatusData, ChatSlot, Notification } from '../types'
+import { applyStatusDelta, parseStatusDelta } from '../utils/pullRequestStatusDelta'
+import type { StatusData, ChatSlot, Notification, PullRequestStatusBatch } from '../types'
 
 type LogCallback = ((data: { level: string; msg: string }) => void) | null
 
@@ -581,6 +582,22 @@ export function useWebSocket() {
               dispatch(setSlotStatusDetail({ slot: data.slot, kind: 'idle', text: 'Ready', ts: Date.now() }))
             }
             if (data.slot) dispatch(refreshSlot(data.slot))
+            if (data.slot) {
+              // Turn boundary: the finished turn is the likeliest moment for
+              // this session's PRs to have moved (comments, mergeability, a
+              // pushed revision) — changes the lightweight status delta does NOT
+              // carry. Invalidate the detail/status queries so they refetch.
+              // For the ACTIVE slot, refetch now (the panel is on screen). For a
+              // BACKGROUND slot, only MARK stale (refetchType: 'none'): its
+              // detail query is staleTime:Infinity, so without this it would stay
+              // "fresh" forever and render pre-turn data when the user later
+              // switches to it — but refetching an off-screen PR every background
+              // turn would be wasteful, so defer the fetch to its next mount.
+              const isActive = data.slot === store.getState().chat.activeSlot
+              const refetchType = isActive ? 'active' : 'none'
+              queryClient.invalidateQueries({ queryKey: ['pull-request-source'], refetchType })
+              queryClient.invalidateQueries({ queryKey: ['pull-request-statuses'], refetchType })
+            }
             // Auto-speak: speak any remaining unspoken text from streaming
             if (autoSpeakRef.current && !voiceMutedRef.current && data.slot === store.getState().chat.activeSlot) {
               const msgs = store.getState().chat.messages
@@ -664,6 +681,43 @@ export function useWebSocket() {
             queryClient.invalidateQueries({ queryKey: ['cron-history'] })
             queryClient.invalidateQueries({ queryKey: ['cron-history-all'] })
             break
+          case 'source_status': {
+            // A pull request's lifecycle/CI status changed on the gateway. Patch
+            // the strip's cached batch straight away (no poll wait) and refetch
+            // the detail payload so both surfaces — on every owner window — track
+            // the same state instead of disagreeing until the next poll.
+            const delta = parseStatusDelta(data)
+            if (!delta) break
+            // Cancel any in-flight batched-status fetch first. Without this, a
+            // status poll that started before this delta can resolve AFTER the
+            // setQueriesData below and overwrite the authoritative pushed value
+            // with its stale snapshot for a full TTL. cancelQueries aborts the
+            // pending fetch so it cannot clobber the patch; the retained poll
+            // (and the detail invalidation below) reconcile from here.
+            queryClient.cancelQueries({ queryKey: ['pull-request-statuses'] })
+            queryClient.setQueriesData<PullRequestStatusBatch>(
+              { queryKey: ['pull-request-statuses'] },
+              batch => applyStatusDelta(batch, delta),
+            )
+            // Patch the sidebar chips too: those render from the Redux `slots`
+            // payload (`source_links[].state/ci`), NOT react-query, so a delta
+            // that only touched the query caches would leave the sidebar glyph
+            // stale until an unrelated slots broadcast — the same chip↔panel
+            // divergence this feature removes, recreated on the sidebar.
+            dispatch(patchSlotSourceLinks({ url: delta.url, state: delta.state, ci: delta.ci }))
+            // Invalidate the detail payload for EVERY changed delta, regardless
+            // of origin. A 'detail'-origin delta is produced by one window's full
+            // fetch; only that window received the fresh HTTP payload, so other
+            // owner windows must refetch too or their staleTime:Infinity detail
+            // query keeps rendering the pre-change lifecycle — the exact chip↔
+            // panel divergence this feature fixes, just across windows. The
+            // initiating window's refetch is harmless: it hits the gateway's
+            // still-warm full-payload cache (same value, no re-projection, no new
+            // delta), so there is no feedback loop.
+            queryClient.invalidateQueries({ queryKey: ['pull-request-source', delta.url] })
+            queryClient.invalidateQueries({ queryKey: ['pull-request-checks', delta.url] })
+            break
+          }
           case 'browser_frame':
             // Live mirror frame (a screenshot the agent took, forwarded by the
             // MCP proxy). Routed via a window event so BrowserLiveView can render

@@ -2536,6 +2536,52 @@ class DashboardState:
             )
         return urls
 
+    def source_link_urls_for_slot(self, key: str) -> list[str]:
+        """Sidebar-visible PR/MR chip URLs for one slot (same cap as the sweep)."""
+        slot = self._slots.get(key)
+        if slot is None:
+            return []
+        return [
+            link["url"]
+            for link in slot._pr_source_links()[:_SERIALIZED_SOURCE_LINKS_PER_SLOT]
+        ]
+
+    def push_source_status(self, delta: dict) -> None:
+        """Push a single PR/MR status delta to owner websockets only.
+
+        Chip status is credential-backed provider data, so this never reaches
+        non-owner or app-token clients. Fire-and-forget: the panel's own poll
+        remains the safety net if a client misses the event.
+        """
+        if not self._owner_ws_clients:
+            return
+        self._send_ws_owners(json.dumps({"type": "source_status", "data": delta}))
+
+    def refresh_slot_source_status(self, key: str) -> None:
+        """Re-read this slot's PR/MR status now — called at agent turn boundaries.
+
+        A turn that just ran ``gh pr create``, pushed a revision, or drove a
+        review round is exactly when a PR's lifecycle moved, and nothing else in
+        the system invalidates the status caches on that event: the chips would
+        wait out the periodic rotation and the detail panel would not refetch at
+        all. Owner-gated (status is credential-backed, and with no owner window
+        open there is nobody to render it, so no provider subprocess is spawned)
+        and rate-floored inside ``request_check_refresh_now``.
+        """
+        if not self._owner_ws_clients:
+            return
+        try:
+            urls = self.source_link_urls_for_slot(key)
+            if not urls:
+                return
+            from kiro_crew.dashboard.handlers.source_providers import (
+                request_check_refresh_now,
+            )
+
+            request_check_refresh_now(urls, self.push_slots_update)
+        except Exception:
+            logger.debug("turn-boundary source status refresh failed", exc_info=True)
+
     def serialize_slots(self, *, include_check_status: bool = False) -> list:
         """Serialize slots, optionally including owner-only provider status.
 

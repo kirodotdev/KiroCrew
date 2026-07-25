@@ -579,6 +579,107 @@ def _author(value: Any) -> str:
     return str(value or "")
 
 
+# --- Shared chip-status projection ------------------------------------------
+#
+# The sidebar chips and the detail panel derive the same {state, ci} chip
+# projection from two different provider reads (a lightweight chip fetch and a
+# full payload). This PR makes the two caches mutually invalidating, so the
+# invariant "both projections agree" is load-bearing: any vocabulary drift turns
+# a common steady state into a sustained cache ping-pong. To make drift
+# structurally impossible rather than convention-enforced, BOTH paths route
+# every raw provider value through the single functions below. Do not inline a
+# second copy of this vocabulary anywhere.
+
+
+def _rollup_ci(buckets: list[str]) -> str | None:
+    """Roll per-check buckets up to a single chip CI value (or ``None``)."""
+    if not buckets:
+        return None
+    if "failed" in buckets:
+        return "failed"
+    if "pending" in buckets:
+        return "running"
+    return "passed"
+
+
+def _project_state(raw_state: str, *, draft: bool) -> str | None:
+    """Map a provider PR/MR lifecycle state to the chip ``state`` vocabulary.
+
+    GitHub reports OPEN/MERGED/CLOSED; GitLab opened/merged/closed/locked. A
+    ``draft`` flag only means "draft" while the PR is still open — GitLab keeps
+    ``draft: true`` on an MR closed while in draft, so the draft mapping must be
+    gated on the open state or the two paths diverge (chip "draft" vs full
+    "closed") and ping-pong forever.
+
+    ``locked`` is GitLab's *transient* state while a merge is in progress — it
+    is not a terminal lifecycle. Mapping it to ``closed`` painted a false
+    "closed" glyph on an MR that is actually mid-merge and conflicted with the
+    detail panel's own locked handling. Project nothing for it (both paths agree
+    on "no lifecycle change") and let the next read resolve to merged/closed once
+    GitLab settles.
+    """
+    state = raw_state.lower()
+    if state in {"open", "opened"}:
+        return "draft" if draft else "open"
+    if state == "merged":
+        return "merged"
+    if state == "closed":
+        return "closed"
+    return None
+
+
+def _gitlab_status_bucket(status: str) -> str:
+    """Map a single GitLab *job* status to a check bucket for the Checks list.
+
+    This is the per-job display vocabulary and is deliberately FAITHFUL: a job
+    that failed buckets as ``failed`` even when it is ``allow_failure`` (GitLab
+    shows such a job as failed-but-allowed, and hiding it as ``skipped`` made the
+    Checks tab claim "all checks passed" while a job was red). The single CI
+    glyph is NOT rolled up from these job buckets for GitLab — it comes from the
+    pipeline aggregate via ``_gitlab_aggregate_ci`` — so a faithful failed job
+    here never diverges the chip from the full-payload projection.
+    """
+    state = status.lower()
+    if state in {"success", "passed"}:
+        return "passed"
+    if state in {"skipped", "manual"}:
+        return "skipped"
+    if state in {"failed", "canceled", "cancelled"}:
+        return "failed"
+    return "pending"
+
+
+def _gitlab_aggregate_ci(status: str) -> str | None:
+    """Project a GitLab *pipeline aggregate* status to the chip CI vocabulary.
+
+    Single source of truth for the GitLab CI glyph, called by BOTH the chip path
+    (which reads the pipeline aggregate directly) and the full-payload path (via
+    ``ciStatus`` stamped by ``_fetch_gitlab``). Because both sides call this one
+    function on the same aggregate value, the two projections cannot drift by
+    construction — regardless of how the vocabulary is mapped below.
+
+    The aggregate is authoritative and lossless for the glyph: GitLab folds
+    ``allow_failure`` failures into a ``success`` aggregate, so an allowed
+    failure correctly reads "passed" here while its job still shows failed in the
+    Checks list. ``manual`` is a *blocking* gate (the pipeline is waiting on a
+    manual action), so it maps to ``running`` — not ``passed`` — because work is
+    still outstanding.
+    """
+    state = status.lower()
+    if state in {"success", "passed"}:
+        return "passed"
+    if state in {"failed", "canceled", "cancelled"}:
+        return "failed"
+    if state == "skipped":
+        # A wholly skipped pipeline has no failures and nothing outstanding.
+        return "passed"
+    if not state:
+        return None
+    # running / pending / created / scheduled / preparing / waiting_for_resource
+    # and manual (a blocking manual gate is still outstanding work).
+    return "running"
+
+
 def _github_check(item: dict[str, Any]) -> dict[str, Any]:
     conclusion = str(item.get("conclusion") or item.get("state") or "").upper()
     status = str(item.get("status") or "").upper()
@@ -900,14 +1001,7 @@ async def _fetch_github(ref: SourceRef) -> dict[str, Any]:
 
 def _gitlab_check(item: dict[str, Any]) -> dict[str, Any]:
     status = str(item.get("status") or "").lower()
-    if status in {"success", "passed"}:
-        bucket = "passed"
-    elif status in {"skipped", "manual"}:
-        bucket = "skipped"
-    elif status in {"failed", "canceled", "cancelled"}:
-        bucket = "failed"
-    else:
-        bucket = "pending"
+    bucket = _gitlab_status_bucket(status)
     return {
         "name": item.get("name") or "Job",
         "workflow": item.get("stage") or "",
@@ -977,6 +1071,13 @@ async def _fetch_gitlab(ref: SourceRef) -> dict[str, Any]:
         except SourceProviderError:
             _mark_partial(partial_sections, "checks")
             jobs = []
+    if len(_as_list(jobs)) >= _SECONDARY_PAGE_SIZE:
+        # A full page of jobs may be truncated — a failed job on a later page
+        # would be invisible in this list. The CI glyph is projected from the
+        # pipeline AGGREGATE (`ciStatus` below), which stays authoritative
+        # regardless, but flag the Checks LIST as partial so the panel does not
+        # imply it is exhaustive.
+        _mark_partial(partial_sections, "checks")
 
     raw_changes = changes.get("changes") if isinstance(changes, dict) else []
     change_rows = _as_list(raw_changes)
@@ -1039,7 +1140,23 @@ async def _fetch_gitlab(ref: SourceRef) -> dict[str, Any]:
             )
 
     gitlab_mergeable, gitlab_merge_state = _gitlab_merge_state(details)
-    return {
+    gitlab_checks = [_gitlab_check(item) for item in _as_list(jobs)]
+    # The single CI glyph is projected from the pipeline AGGREGATE (authoritative
+    # and lossless — GitLab folds allow_failure into it and marks a blocking
+    # manual gate), NOT rolled up from the per-job buckets, so a truncated /
+    # empty / allow_failure job list can never diverge the glyph from the chip
+    # path (which reads the same aggregate). `checks` below is a faithful
+    # display list only.
+    pipeline_status = str(pipeline_rows[0].get("status") or "") if pipeline_rows else ""
+    gitlab_ci = _gitlab_aggregate_ci(pipeline_status)
+    if not gitlab_checks and pipeline_rows and pipeline_status and "checks" not in partial_sections:
+        # A pipeline EXISTS but its jobs have not materialized yet (freshly
+        # created pipeline). Synthesize a single "Pipeline" row from the
+        # aggregate so the Checks tab is not empty while jobs spin up — a
+        # pipeline-less MR keeps `checks` empty. Display-only; the glyph comes
+        # from `ciStatus`.
+        gitlab_checks = [_gitlab_check({**pipeline_rows[0], "name": "Pipeline"})]
+    payload: dict[str, Any] = {
         "provider": "gitlab",
         "url": details.get("web_url") or ref.url,
         "number": details.get("iid") or ref.number,
@@ -1070,11 +1187,17 @@ async def _fetch_gitlab(ref: SourceRef) -> dict[str, Any]:
             }
             for item in commit_rows
         ],
-        "checks": [_gitlab_check(item) for item in _as_list(jobs)],
+        "checks": gitlab_checks,
         "comments": gitlab_comments,
         "files": normalized_files,
         "partialSections": partial_sections,
     }
+    if gitlab_ci is not None:
+        # Authoritative aggregate CI for the glyph; consumed by
+        # `status_from_full_payload` so the full-payload projection matches the
+        # chip path (which reads the same aggregate) exactly.
+        payload["ciStatus"] = gitlab_ci
+    return payload
 
 
 async def _fetch_github_checks(ref: SourceRef) -> list[dict[str, Any]]:
@@ -1225,6 +1348,16 @@ async def _fetch_pull_request_uncached(ref: SourceRef, generation: int) -> dict[
             or sum(entry[1] for entry in _CACHE.values()) > _CACHE_MAX_BYTES
         ):
             del _CACHE[min(_CACHE, key=lambda key: _CACHE[key][0])]
+        # One provider read, both surfaces: project this payload onto the chip
+        # cache so the sidebar cannot keep rendering an older lifecycle than the
+        # detail panel it was just fetched for. Kept INSIDE the lock, in the same
+        # transaction as the generation check and the `_CACHE` write, so a
+        # provider mutation cannot land between the passing generation check and
+        # this projection and republish pre-mutation status into the chip cache
+        # (which would emit a stale `source_status` delta the full-cache
+        # invalidation cannot undo). `record_full_payload_status` is synchronous
+        # and never re-acquires `_CACHE_LOCK`, so running it here cannot deadlock.
+        record_full_payload_status(ref.url, data)
     return data
 
 
@@ -1488,8 +1621,17 @@ async def _github_pull_request_node(ref: SourceRef) -> tuple[str, dict[str, Any]
     return node_id, repository
 
 
-async def _invalidate_pull_request_cache(url: str) -> None:
-    """Supersede cached and in-flight data before a provider mutation."""
+async def _invalidate_full_payload_cache(url: str) -> None:
+    """Supersede the FULL pull-request payload cache and its in-flight fetch.
+
+    Deliberately does NOT touch the lightweight chip-status cache. A caller that
+    has just written a fresh chip status (the changed-status path in
+    ``_refresh_check_status``) must drop only the now-stale full payload behind
+    the detail panel, not the chip entry it just produced — invalidating the
+    chip here would pop that entry and bump its generation, spuriously
+    re-judging the next refresh as "changed" and spinning the very
+    mutual-invalidation loop this projection exists to avoid.
+    """
     async with _CACHE_LOCK:
         _CACHE.pop(url, None)
         if _FULL_FETCH_TASKS.get(url):
@@ -1497,6 +1639,11 @@ async def _invalidate_pull_request_cache(url: str) -> None:
         else:
             _FULL_FETCH_GENERATIONS.pop(url, None)
         _FULL_FETCH_INFLIGHT.pop(url, None)
+
+
+async def _invalidate_pull_request_cache(url: str) -> None:
+    """Supersede cached and in-flight data before a provider mutation."""
+    await _invalidate_full_payload_cache(url)
     _invalidate_check_status(url)
 
 
@@ -1932,6 +2079,95 @@ _CHECK_TASKS: set[asyncio.Task] = set()  # keep strong refs until done
 _CheckUpdateCallback = Callable[[], None]
 _check_update_callbacks: set[_CheckUpdateCallback] = set()
 _check_update_handle: asyncio.TimerHandle | None = None
+# An agent turn that touched a pull request (opened it, pushed, merged, drove a
+# review round) is the highest-signal moment to re-read it, so the turn-boundary
+# hook bypasses the TTL instead of waiting out the periodic rotation. The floor
+# bounds a rapid multi-turn session to one forced provider read per URL per
+# interval; every other caller stays on plain TTL pacing.
+_CHECK_FORCE_MIN_INTERVAL_SECS = 10.0
+_check_forced_at: dict[str, float] = {}
+# URLs for which a turn-boundary forced refresh arrived while a (possibly
+# pre-turn, now-stale) chip fetch was already in flight. The in-flight fetch is
+# NOT floor-stamped (it may return pre-turn data), and when it completes
+# ``_refresh_check_status`` issues exactly one follow-up forced read so the
+# post-turn state is actually observed instead of waiting out the TTL.
+_check_force_pending: set[str] = set()
+# Status-delta sinks receive {"url", "ci"?, "state"?} whenever a URL's cached
+# chip status CHANGES, so owner dashboards can invalidate the matching
+# pull-request detail query immediately instead of waiting out a poll interval.
+# Status is credential-backed, so sinks must be owner-scoped.
+_StatusDeltaSink = Callable[[dict[str, str]], None]
+_status_delta_sinks: set[_StatusDeltaSink] = set()
+# Structural loop-breaker for the chip <-> full-payload mutual-invalidation
+# protocol. The two caches project a provider's raw state independently and are
+# kept equivalent only by convention ("keep the two in step"). Should they ever
+# disagree on a URL's vocabulary (a bug), the chip refresh observes the SAME
+# changed transition every TTL cycle — chip re-projects value A, the client's
+# full refetch re-projects value B back into the cache — so the invalidation
+# protocol would spawn a provider subprocess per URL per cycle indefinitely,
+# silently. Rather than trust the two projections to stay identical as
+# GitHub/GitLab vocabularies evolve, cap the blast radius: once a URL repeats an
+# identical (previous -> new) changed-transition past this threshold, stop
+# driving the loop for it and log loudly, so a divergence degrades to a stale
+# glyph instead of an unbounded polling loop. A genuinely changing PR produces
+# DISTINCT transitions, which resets the counter, so it is never damped.
+_CHECK_FLAP_DAMP_THRESHOLD = 3
+_check_flap: dict[str, tuple[tuple[str, str], int]] = {}
+_check_flap_damped: set[str] = set()
+
+
+def _status_sig(status: dict[str, str] | None) -> str:
+    """Stable, order-independent signature of a chip status for flap detection."""
+    if not status:
+        return ""
+    return "|".join(f"{key}={status[key]}" for key in sorted(status))
+
+
+def _note_check_flap(
+    url: str, previous: dict[str, str] | None, status: dict[str, str]
+) -> bool:
+    """Track repeated identical changed-transitions; return True to damp the loop.
+
+    See ``_check_flap`` above. The chip refresh calls this on every *changed*
+    transition it is about to act on. When the same (previous -> new) transition
+    recurs past ``_CHECK_FLAP_DAMP_THRESHOLD`` times in a row for one URL, the
+    two projections are flapping and the caller must stop invalidating the full
+    payload for it. Any different transition (a real state change) resets the
+    counter and clears the damp.
+    """
+    transition = (_status_sig(previous), _status_sig(status))
+    last, count = _check_flap.get(url, (None, 0))
+    if transition == last:
+        count += 1
+    else:
+        count = 1
+        _check_flap_damped.discard(url)
+    _check_flap[url] = (transition, count)
+    if count >= _CHECK_FLAP_DAMP_THRESHOLD:
+        if url not in _check_flap_damped:
+            _check_flap_damped.add(url)
+            logger.warning(
+                "source-status: suppressing full-payload invalidation for %s — chip "
+                "status keeps flapping (%s -> %s) every refresh, which means the chip "
+                "and full-payload projections disagree on vocabulary (a bug); the chip "
+                "glyph may now be stale until the two projections are reconciled",
+                url,
+                transition[0] or "<none>",
+                transition[1] or "<none>",
+            )
+        return True
+    return False
+
+
+def _clear_check_flap(url: str) -> None:
+    """Reset a URL's flap tracker after an authoritative full-payload write.
+
+    Called by ``record_full_payload_status`` when the full fetch changes the
+    cached status, so an interleaved full write is not misread as part of a
+    repeating chip transition (which would otherwise falsely damp real churn).
+    """
+    _check_flap.pop(url, None)
+    _check_flap_damped.discard(url)
 
 
 def get_cached_check_status(url: str) -> dict[str, str] | None:
@@ -1954,6 +2190,19 @@ def _trim_check_cache() -> None:
             if url not in _check_cache and url not in _check_inflight
         ]:
             del _check_generations[url]
+    while len(_check_forced_at) > _CHECK_CACHE_MAX:
+        del _check_forced_at[min(_check_forced_at, key=lambda key: _check_forced_at[key])]
+    # Flap-tracking state is only meaningful while a URL is live in the cache;
+    # drop entries for evicted URLs so these maps cannot outgrow the cache.
+    if len(_check_flap) > _CHECK_CACHE_MAX:
+        for stale in [key for key in _check_flap if key not in _check_cache]:
+            _check_flap.pop(stale, None)
+            _check_flap_damped.discard(stale)
+    # Follow-up-force intent only matters while a fetch is actually in flight;
+    # drop any stragglers for URLs no longer inflight so the set stays bounded.
+    if len(_check_force_pending) > _CHECK_CACHE_MAX:
+        for stale in [key for key in _check_force_pending if key not in _check_inflight]:
+            _check_force_pending.discard(stale)
 
 
 def _invalidate_check_status(url: str) -> None:
@@ -1966,6 +2215,123 @@ def _invalidate_check_status(url: str) -> None:
     _check_cache.pop(url, None)
     _check_generations[url] = _check_generations.get(url, 0) + 1
     _trim_check_cache()
+
+
+def register_status_delta_sink(sink: _StatusDeltaSink) -> None:
+    """Receive ``{"url", "ci"?, "state"?}`` whenever a chip status changes.
+
+    Idempotent: registering the same bound method twice keeps one sink. Sinks
+    must be owner-scoped — chip status is credential-backed provider data.
+    """
+    _status_delta_sinks.add(sink)
+
+
+def unregister_status_delta_sink(sink: _StatusDeltaSink) -> None:
+    _status_delta_sinks.discard(sink)
+
+
+def _emit_status_delta(url: str, status: dict[str, str], origin: str) -> None:
+    """Fan a changed status out to every registered sink, best-effort.
+
+    ``origin`` records where the change was observed — ``"chip"`` (the
+    lightweight refresh path) or ``"detail"`` (a full fetch's write-through) —
+    and is **diagnostic only**: the client invalidates the detail payload for
+    EVERY changed delta regardless of origin. It must, because a ``"detail"``
+    delta is produced by the single window whose full fetch ran; only that
+    window received the fresh HTTP payload, so the other owner windows (whose
+    detail query is ``staleTime: Infinity``) would otherwise keep rendering the
+    pre-change lifecycle. The initiating window's resulting refetch is harmless:
+    ``record_full_payload_status`` only runs in the *uncached* fetch path, so
+    the refetch hits the warm 30s cache and emits no further delta (no loop).
+    The field is retained on the wire for diagnostics and possible future
+    requester-aware routing; no consumer branches on it today.
+    """
+    if not _status_delta_sinks:
+        return
+    delta = {"url": url, "origin": origin, **status}
+    for sink in tuple(_status_delta_sinks):
+        with contextlib.suppress(Exception):
+            sink(delta)
+
+
+def status_from_full_payload(payload: dict[str, Any]) -> dict[str, str] | None:
+    """Derive the lightweight chip status from a FULL pull-request payload.
+
+    The sidebar chips and the detail panel used to read two independent caches
+    with different TTLs, so they could each be "fresh" and still disagree. The
+    full fetch is strictly richer than the chip fetch, so it write-throughs into
+    the chip cache via this projection — one provider read, one truth, both
+    surfaces. Shares the SAME projection helpers as ``_fetch_check_status``:
+    ``_project_state`` for lifecycle, and — for CI — GitLab's authoritative
+    ``ciStatus`` aggregate (stamped by ``_fetch_gitlab`` via
+    ``_gitlab_aggregate_ci``, the same value the chip path reads) or, for GitHub,
+    ``_rollup_ci`` over the ``statusCheckRollup`` buckets. Because both paths
+    resolve the CI glyph from the identical aggregate, they cannot drift.
+    """
+    if not isinstance(payload, dict):
+        return None
+    result: dict[str, str] = {}
+    # GitLab stamps an authoritative aggregate CI (`ciStatus`) — the same value
+    # the chip path reads straight from the pipeline aggregate — so prefer it and
+    # never roll up GitLab's faithful per-job buckets (which would count an
+    # allow_failure red job, or miss a truncated one, and diverge from the chip).
+    # GitHub has no separate aggregate: its `statusCheckRollup` buckets ARE the
+    # aggregate, so fall back to rolling them up.
+    ci_status = payload.get("ciStatus")
+    if isinstance(ci_status, str) and ci_status:
+        result["ci"] = ci_status
+    else:
+        buckets = [
+            str(check.get("bucket") or "")
+            for check in _as_list(payload.get("checks"))
+        ]
+        ci = _rollup_ci(buckets)
+        if ci is not None:
+            result["ci"] = ci
+    state = _project_state(str(payload.get("state") or ""), draft=bool(payload.get("draft")))
+    if state is not None:
+        result["state"] = state
+    return result or None
+
+
+def record_full_payload_status(url: str, payload: dict[str, Any]) -> None:
+    """Publish a full fetch's lifecycle/CI projection into the chip cache.
+
+    Keeps the sidebar chips in lockstep with whatever the detail panel just
+    rendered, and emits a delta so other owner windows converge too. Never
+    invalidates the full cache — the caller just stored it.
+    """
+    status = status_from_full_payload(payload)
+    if status is None:
+        return
+    previous = _check_cache.get(url)
+    # A degraded full payload (a provider's secondary pipelines/jobs call failed,
+    # so ``checks`` came back empty and is flagged in ``partialSections``) omits
+    # the ``ci`` projection. Mirror ``_refresh_check_status``'s keep-known-status
+    # rule: never let a transient partial fetch erase a CI glyph the chip cache
+    # already knows, or the write-through would recreate the very chip/panel
+    # divergence this projection exists to prevent. Only carry the field over
+    # when ``checks`` is explicitly partial — a genuinely empty checks section
+    # (no CI configured) must still be allowed to clear a stale glyph.
+    if (
+        "ci" not in status
+        and previous
+        and previous[1]
+        and "ci" in previous[1]
+        and "checks" in (payload.get("partialSections") or [])
+    ):
+        status = {**status, "ci": previous[1]["ci"]}
+    _check_cache[url] = (time.monotonic(), status)
+    _trim_check_cache()
+    if previous is None or previous[1] != status:
+        # A full-payload write is an independent, authoritative status change —
+        # NOT another instance of the chip re-projecting the same value. Reset
+        # this URL's flap tracker so the chip refresh's consecutive-transition
+        # counter does not mistake "chip A→B, full B→C, chip C→B ..." for a
+        # single repeating A→B loop and falsely damp legitimate CI churn (e.g.
+        # three real re-runs of the same job).
+        _clear_check_flap(url)
+        _emit_status_delta(url, status, "detail")
 
 
 def _flush_check_updates() -> None:
@@ -1989,7 +2355,7 @@ def _queue_check_update(callback: _CheckUpdateCallback) -> None:
 
 
 def schedule_check_refresh(
-    urls: list[str], on_update: _CheckUpdateCallback | None = None
+    urls: list[str], on_update: _CheckUpdateCallback | None = None, *, force: bool = False
 ) -> list[str]:
     """Kick bounded background refreshes for stale URLs without blocking.
 
@@ -2000,25 +2366,83 @@ def schedule_check_refresh(
     surface a just-refreshed state up to one extra TTL late. URLs deferred by the
     pending-work cap are deliberately excluded: they were backed off for a TTL,
     so nothing is coming sooner.
+
+    ``force`` skips the TTL check for event-driven callers that know the remote
+    state just moved (see ``request_check_refresh_now``). The pending cap and
+    inflight dedup still apply, so a forced round can never outgrow a paced one.
     """
     now = time.monotonic()
     refreshing: list[str] = []
     for url in dict.fromkeys(urls):
         entry = _check_cache.get(url)
-        if entry and now - entry[0] < _CHECK_TTL_SECS:
+        if not force and entry and now - entry[0] < _CHECK_TTL_SECS:
             continue
         if url in _check_inflight:
             refreshing.append(url)
             continue
         if len(_check_inflight) >= _CHECK_PENDING_MAX:
-            _check_cache[url] = (now, entry[1] if entry else None)
-            _trim_check_cache()
+            # A paced (TTL) caller over the cap was backed off for a full TTL, so
+            # renew its timestamp to stop the slots endpoint re-attempting every
+            # poll. A forced caller (turn boundary) must instead stay eligible:
+            # renewing the timestamp here would push the periodic sweep out by a
+            # TTL and make the chip STALER in exactly the contention case force
+            # exists for (more PR-linked slots than the pending cap).
+            if not force:
+                _check_cache[url] = (now, entry[1] if entry else None)
+                _trim_check_cache()
             continue
         _check_inflight.add(url)
         refreshing.append(url)
         task = asyncio.get_running_loop().create_task(_refresh_check_status(url, on_update))
         _CHECK_TASKS.add(task)
         task.add_done_callback(_CHECK_TASKS.discard)
+    return refreshing
+
+
+def request_check_refresh_now(
+    urls: list[str], on_update: _CheckUpdateCallback | None = None
+) -> list[str]:
+    """TTL-bypassing refresh for event-driven callers (agent turn boundaries).
+
+    A finished agent turn is the moment a PR most likely changed, so waiting out
+    the 60s chip TTL — or the periodic loop's rotation, which with more PR-linked
+    slots than ``CHECK_STATUS_PENDING_MAX`` can take minutes — leaves both the
+    chips and the detail panel visibly behind reality. Each URL is floored to one
+    forced read per ``_CHECK_FORCE_MIN_INTERVAL_SECS`` so a burst of short turns
+    cannot turn into a burst of provider subprocesses; URLs inside the floor fall
+    back to normal TTL pacing rather than being dropped.
+    """
+    now = time.monotonic()
+    eligible: list[str] = []
+    paced: list[str] = []
+    for url in dict.fromkeys(urls):
+        last = _check_forced_at.get(url)
+        if last is not None and now - last < _CHECK_FORCE_MIN_INTERVAL_SECS:
+            paced.append(url)
+            continue
+        eligible.append(url)
+    inflight_before = set(_check_inflight)
+    refreshing = schedule_check_refresh(eligible, on_update, force=True)
+    # Distinguish URLs this call actually STARTED from ones a prior fetch already
+    # had in flight. `schedule_check_refresh` returns both, but only the started
+    # ones did a fresh post-turn read.
+    started = [url for url in refreshing if url not in inflight_before]
+    already = [url for url in refreshing if url in inflight_before]
+    # Burn the once-per-interval force allowance ONLY for URLs actually STARTED.
+    # A URL deferred by the pending cap never ran, and an already-in-flight URL's
+    # fetch may have started BEFORE this turn's final push landed — stamping
+    # either as "just forced" would satisfy the floor with pre-turn data and lock
+    # out the corrective read for CHECK_FORCE_MIN_INTERVAL.
+    for url in started:
+        _check_forced_at[url] = now
+    # For URLs whose in-flight fetch predates this turn boundary, request exactly
+    # one follow-up forced read on completion (see `_refresh_check_status`), so a
+    # stale pre-turn result cannot pin the chip for a full TTL.
+    for url in already:
+        _check_force_pending.add(url)
+    _trim_check_cache()
+    if paced:
+        refreshing.extend(schedule_check_refresh(paced, on_update))
     return refreshing
 
 
@@ -2032,6 +2456,15 @@ async def _refresh_check_status(url: str, on_update: _CheckUpdateCallback | None
         status = None
     finally:
         _check_inflight.discard(url)
+        if url in _check_force_pending:
+            # A turn-boundary force arrived while THIS (possibly pre-turn) fetch
+            # was in flight. Its result may predate the turn's final push, so
+            # issue exactly one follow-up forced read now that the URL is free.
+            # The follow-up starts fresh (not in flight), so it is not re-queued
+            # here — at most one follow-up per in-flight collision, bounded.
+            _check_force_pending.discard(url)
+            with contextlib.suppress(Exception):
+                schedule_check_refresh([url], on_update, force=True)
     if _check_generations.get(url, 0) != generation:
         # A mutation superseded this URL while the fetch was in flight, so the
         # result describes the pre-mutation state. Drop it rather than let it
@@ -2041,9 +2474,51 @@ async def _refresh_check_status(url: str, on_update: _CheckUpdateCallback | None
     # refreshes the timestamp so repeated slots requests respect the TTL.
     if status is None and previous:
         status = previous[1]
+    # Re-read the cache AFTER the provider await. The turn-boundary design makes
+    # a concurrent full fetch the COMMON case: on `chat_done` the client
+    # invalidates the detail payload (starting a full fetch) at the same moment
+    # `refresh_slot_source_status` forces a chip refresh for the same URL. If the
+    # full fetch resolved first it already wrote the fresh projection into
+    # `_check_cache` via `record_full_payload_status`. Comparing against the
+    # stale pre-await `previous` would then let this (possibly older) chip read
+    # overwrite the newer value, spuriously judge "changed", drop the just-stored
+    # full payload, and emit a redundant delta — roughly doubling provider cost
+    # on every status-changing turn boundary and briefly broadcasting the wrong
+    # status. `_check_inflight` dedups concurrent chip refreshes, so the only
+    # writer that can land here is `record_full_payload_status`; when it did,
+    # defer to it entirely rather than clobber the richer full-payload projection.
+    latest = _check_cache.get(url)
+    if latest is not previous:
+        return
     _check_cache[url] = (time.monotonic(), status)
     _trim_check_cache()
-    if on_update and status is not None and (previous is None or previous[1] != status):
+    changed = status is not None and (previous is None or previous[1] != status)
+    if not changed:
+        return
+    assert status is not None  # narrowed by `changed`
+    # Structural loop-breaker: if this URL keeps repeating the identical chip
+    # transition every refresh, the chip and full-payload projections disagree
+    # on vocabulary and the mutual-invalidation protocol below would spin a
+    # provider-polling loop forever. Cap the blast radius — still update the chip
+    # cache and re-serialize the sidebar, but stop driving the full-payload
+    # invalidation + delta that closes the loop, so the divergence degrades to a
+    # stale glyph instead of an unbounded loop.
+    if _note_check_flap(url, previous[1] if previous else None, status):
+        if on_update:
+            _queue_check_update(on_update)
+        return
+    # The chip cache just learned the PR moved, so the full payload behind the
+    # detail panel is known-stale. Drop ONLY the full payload (rather than let it
+    # live out its own TTL) and tell owner dashboards, so the panel and the chip
+    # can never render two different lifecycles for the same PR. We must not
+    # invalidate the chip cache here: this refresh just wrote the fresh chip
+    # entry, and clearing it (as the mutation-path `_invalidate_pull_request_cache`
+    # does) would bump the chip generation and re-judge the next refresh as
+    # "changed", spinning the mutual-invalidation loop.
+    with contextlib.suppress(Exception):
+        await _invalidate_full_payload_cache(url)
+    _emit_status_delta(url, status, "chip")
+    if on_update:
         _queue_check_update(on_update)
 
 
@@ -2059,41 +2534,40 @@ async def _fetch_check_status(url: str) -> dict[str, str] | None:
         buckets = [
             _github_check(item)["bucket"] for item in _as_list(data.get("statusCheckRollup"))
         ]
-        if buckets:
-            result["ci"] = (
-                "failed" if "failed" in buckets else "running" if "pending" in buckets else "passed"
-            )
+        ci = _rollup_ci(buckets)
+        if ci is not None:
+            result["ci"] = ci
         raw_state = str(data.get("state") or "").upper()
-        if data.get("isDraft") and raw_state == "OPEN":
-            result["state"] = "draft"
-        elif raw_state == "MERGED":
-            result["state"] = "merged"
-        elif raw_state == "CLOSED":
-            result["state"] = "closed"
-        elif raw_state == "OPEN":
-            result["state"] = "open"
+        state = _project_state(raw_state, draft=bool(data.get("isDraft")))
+        if state is not None:
+            result["state"] = state
         return result or None
     project = quote(ref.project, safe="")
     details = await _run_json("glab", "api", f"projects/{project}/merge_requests/{ref.number}")
     if isinstance(details, dict):
-        raw_state = str(details.get("state") or "").lower()
-        if details.get("draft") or details.get("work_in_progress"):
-            result["state"] = "draft"
-        elif raw_state == "merged":
-            result["state"] = "merged"
-        elif raw_state == "closed":
-            result["state"] = "closed"
-        elif raw_state in {"opened", "open"}:
-            result["state"] = "open"
+        # Same {state} vocabulary as the full-payload path via `_project_state`:
+        # GitLab keeps `draft: true` on an MR closed while still in draft, so the
+        # draft mapping is gated on the open state and `locked` folds into
+        # `closed`. A mismatch here would ping-pong under this PR's mutual
+        # invalidation (chip "draft" ≠ cached "closed", drop, refetch, repeat).
+        state = _project_state(
+            str(details.get("state") or ""),
+            draft=bool(details.get("draft") or details.get("work_in_progress")),
+        )
+        if state is not None:
+            result["state"] = state
     pipelines = await _run_json(
         "glab", "api", f"projects/{project}/merge_requests/{ref.number}/pipelines?per_page=1"
     )
     rows = _as_list(pipelines)
     status = str(rows[0].get("status") or "").lower() if rows else ""
-    if status == "success":
-        result["ci"] = "passed"
-    elif status in {"failed", "canceled", "cancelled"}:
-        result["ci"] = "failed"
-    elif status:
-        result["ci"] = "running"
+    if status:
+        # Project the pipeline AGGREGATE through the SAME helper the full-payload
+        # path uses (`_gitlab_aggregate_ci`, consumed there via `ciStatus`), so
+        # the chip glyph and the panel glyph cannot drift. The aggregate already
+        # folds allow_failure into `success` and marks a blocking manual gate, so
+        # it is the authoritative, lossless source for the single CI glyph.
+        ci = _gitlab_aggregate_ci(status)
+        if ci is not None:
+            result["ci"] = ci
     return result or None

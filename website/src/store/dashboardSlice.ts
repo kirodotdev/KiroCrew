@@ -131,6 +131,28 @@ const dashboardSlice = createSlice({
       const slot = state.slots.find(s => s.key === action.payload.key)
       if (slot) Object.assign(slot, action.payload)
     },
+    // Patch the sidebar's PR/MR chips (rendered from `slot.source_links`, the
+    // Redux slots payload) from a `source_status` websocket delta. Without this
+    // the delta only updated the react-query caches (Changes strip + detail
+    // panel), leaving the sidebar chip on its pre-change glyph until an
+    // unrelated slots broadcast happened by — the exact chip-vs-panel divergence
+    // this feature exists to remove, recreated on the sidebar surface. The delta
+    // is keyed by URL and may touch any slot that links that PR.
+    patchSlotSourceLinks(
+      state,
+      action: PayloadAction<{ url: string; state?: NonNullable<ChatSlot['source_links']>[number]['state']; ci?: NonNullable<ChatSlot['source_links']>[number]['ci'] }>,
+    ) {
+      const { url } = action.payload
+      if (!url) return
+      for (const slot of state.slots) {
+        if (!slot.source_links) continue
+        for (const link of slot.source_links) {
+          if (link.url !== url) continue
+          if (action.payload.state !== undefined) link.state = action.payload.state
+          if (action.payload.ci !== undefined) link.ci = action.payload.ci
+        }
+      }
+    },
     updateSlotFolder(state, action: PayloadAction<{ key: string; folderId: string }>) {
       const slot = state.slots.find(s => s.key === action.payload.key)
       if (slot) slot.folder_id = action.payload.folderId || undefined
@@ -224,7 +246,7 @@ const dashboardSlice = createSlice({
 })
 
 export const { sseStatus, sseConnected, sseDisconnected, sseSlots, touchSlotActivity, setChannelTrusted, sseSlotTitle, addSlotOptimistic, removeSlotOptimistic, updateSlot, updateSlotFolder, updateSlotPin, triggerRefresh, markSlotUnread, markSlotRead, setUpdateProgress,
-  setDesktopUpdateAvailable, sseSubagentStatus, sseSubagentText, sseSlotColor, setSessionDefaultColor, setSessionColorsMode, setSessionColorsPalette, setSessionColorsIntensity, setEnabledAppIds } = dashboardSlice.actions
+  setDesktopUpdateAvailable, sseSubagentStatus, sseSubagentText, sseSlotColor, setSessionDefaultColor, setSessionColorsMode, setSessionColorsPalette, setSessionColorsIntensity, setEnabledAppIds, patchSlotSourceLinks } = dashboardSlice.actions
 
 /**
  * Resolve a slot's surface key. Backend emits `surface` (mirrors `mode` today
