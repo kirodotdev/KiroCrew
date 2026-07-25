@@ -97,11 +97,19 @@ class TestModelRegistry:
         # static floor a headless start (Slack/cron) that never seeds the
         # kiro-list cache resolves them to None ⇒ the 1M reference and
         # over-assembles context. The supplementary map is the floor.
-        assert mr.model_window("deepseek-3.2") == 128_000
+        # Windows match kiro-cli --list-models context_window_tokens (2026-07).
+        assert mr.model_window("deepseek-3.2") == 164_000
+        assert mr.model_window("minimax-m2.5") == 196_000
+        assert mr.model_window("minimax-m2.1") == 196_000
+        assert mr.model_window("glm-5") == 200_000
+        assert mr.model_window("gpt-5.6-sol") == 272_000
+        assert mr.model_window("gpt-5.6-terra") == 272_000
+        assert mr.model_window("gpt-5.6-luna") == 272_000
         assert mr.model_window("qwen3-coder-next") == 256_000
         assert mr.model_window("qwen3-coder-480b") == 256_000
         assert mr.model_window("glm-4.7-flash") == 128_000
-        for m in ("deepseek-3.2", "qwen3-coder-next", "glm-4.7-flash"):
+        for m in ("deepseek-3.2", "minimax-m2.5", "glm-5", "gpt-5.6-terra",
+                  "qwen3-coder-next", "glm-4.7-flash"):
             assert mr.has_known_window(m) is True
             assert mr.window_source(m) == "supplementary"
 
@@ -135,13 +143,13 @@ class TestModelRegistry:
         try:
             mr._KIRO_WINDOWS.clear()
             assert mr.model_window("auto") == 200_000  # stale registry literal
-            assert mr.model_window("gpt-5.6-terra") is None  # registry doesn't list it
+            assert mr.model_window("unlisted-model-zzz") is None  # neither registry nor supplementary
             # refresh does the in-memory update synchronously and returns True
             # when the cache changed (signalling the async caller to persist).
             changed = mr.refresh_kiro_windows(
                 [
                     {"model_id": "auto", "context_window_tokens": 1000000},
-                    {"model_id": "gpt-5.6-terra", "context_window_tokens": 272000},
+                    {"model_id": "unlisted-model-zzz", "context_window_tokens": 272000},
                     {"model_id": "bad", "context_window_tokens": 0},  # skipped
                     {"model_id": "alsobad"},  # missing field, skipped
                 ]
@@ -149,7 +157,7 @@ class TestModelRegistry:
             assert changed is True
             assert mr.model_window("auto") == 1000000  # cache corrects stale registry 200k
             assert mr.window_source("auto") == "kiro-list"
-            assert mr.model_window("gpt-5.6-terra") == 272000
+            assert mr.model_window("unlisted-model-zzz") == 272000
             assert mr.model_window("bad") is None  # 0 not cached
             # A no-op refresh (same data) returns False — no persist needed.
             assert mr.refresh_kiro_windows([{"model_id": "auto", "context_window_tokens": 1000000}]) is False

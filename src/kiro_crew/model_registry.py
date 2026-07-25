@@ -135,12 +135,21 @@ _SUPPLEMENTARY_WINDOWS: dict[str, int] = {
     # cron) that never hits that endpoint would otherwise resolve these to None
     # ⇒ the 1M reference and over-assemble context. Keeping the static window as
     # a floor prevents that over-large-prompt regression on first/headless runs.
-    "deepseek-3.2": 128_000,
+    # Currently-served sub-1M models. Windows are the kiro-cli
+    # `chat --list-models --format json` context_window_tokens as of 2026-07
+    # (the refresh_kiro_windows cache overrides these when seeded).
+    "deepseek-3.2": 164_000,
+    "minimax-m2.5": 196_000,
+    "minimax-m2.1": 196_000,
+    "glm-5": 200_000,
+    "gpt-5.6-sol": 272_000,
+    "gpt-5.6-terra": 272_000,
+    "gpt-5.6-luna": 272_000,
+    "qwen3-coder-next": 256_000,
+    # Legacy / not-currently-served kiro ids, kept as harmless static floors.
     "kimi-k2.5": 256_000,
-    "minimax-m2.1": 200_000,
     "glm-4.7": 200_000,
     "glm-4.7-flash": 128_000,
-    "qwen3-coder-next": 256_000,
     "qwen3-coder-480b": 256_000,
 }
 
