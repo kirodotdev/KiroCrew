@@ -193,6 +193,20 @@ def test_dump_age_seconds(dumps_dir: Path) -> None:
     assert 0 <= age < 2.0
 
 
+def test_dump_age_never_negative_with_future_mtime(dumps_dir: Path) -> None:
+    """A dump whose mtime rounds marginally AHEAD of ``time.time()`` (sub-microsecond
+    float jitter on a just-written file, or higher-resolution FS timestamps) must
+    report age 0.0 — never a negative. Regression for `assert 0 <= age` failing
+    with a tiny negative delta (~-2e-7)."""
+    import time
+
+    p = _create_stacked_dump(dumps_dir, f"{DUMP_PREFIX}20260717T010000Z{DUMP_SUFFIX}")
+    st = p.stat()
+    # Force mtime clearly into the future to reproduce the jitter deterministically.
+    os.utime(p, (st.st_atime, time.time() + 5.0))
+    assert dump_age_seconds(p) == 0.0
+
+
 # ── Integration with LoopStallWatchdog dump_file param ──
 
 
