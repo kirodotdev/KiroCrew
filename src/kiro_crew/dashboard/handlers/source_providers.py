@@ -1319,6 +1319,66 @@ async def api_pull_request_checks(request: web.Request) -> web.Response:
     return web.json_response({"checks": checks})
 
 
+# Upper bound on URLs accepted per status request. Matches the Changes tab's
+# own source cap (website/src/utils/pullRequestLinks.ts MAX_PULL_REQUEST_SOURCES)
+# so one request covers a full strip, and caps the parse work for a hostile body.
+STATUS_URLS_MAX = 64
+
+
+async def api_pull_request_status(request: web.Request) -> web.Response:
+    """Owner-only POST ``/api/source/pull-request/status`` with ``{urls: [...]}``.
+
+    Returns the *cached* lightweight ``{ci, state}`` for each URL and kicks a
+    bounded background refresh for stale entries — the same cache and pacing the
+    sidebar chips use. Never blocks on a provider call: unknown URLs simply come
+    back absent and appear on a later poll.
+    """
+    denied = _authorize_owner_request(
+        request, "source.pull_request.status", allow_local_no_owner=True
+    )
+    if denied is not None:
+        return denied
+    try:
+        body = await request.json()
+    except asyncio.CancelledError:
+        _audit_source_api(request, "source.pull_request.status", "failed", "request_cancelled")
+        raise
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    raw_urls = body.get("urls")
+    if not isinstance(raw_urls, list):
+        _audit_source_api(request, "source.pull_request.status", "failed", "invalid_request")
+        return web.json_response({"error": "A list of pull-request URLs is required."}, status=400)
+    canonical: list[str] = []
+    for value in raw_urls[:STATUS_URLS_MAX]:
+        if not isinstance(value, str):
+            continue
+        try:
+            ref = parse_source_url(value)
+        except ValueError:
+            continue
+        if ref.url not in canonical:
+            canonical.append(ref.url)
+    statuses = {
+        url: status for url in canonical if (status := get_cached_check_status(url)) is not None
+    }
+    refreshing = schedule_check_refresh(canonical)
+    _audit_source_api(request, "source.pull_request.status", "completed")
+    # ``refreshing`` lets the client re-poll shortly instead of on TTL pacing, so
+    # a state change lands within seconds of the background refresh rather than up
+    # to one extra TTL later. ``ttlSecs`` is the server's own cache TTL, so the
+    # client's steady-state pacing tracks it instead of hardcoding a copy.
+    return web.json_response(
+        {
+            "statuses": statuses,
+            "refreshing": refreshing,
+            "ttlSecs": CHECK_STATUS_TTL_SECS,
+        }
+    )
+
+
 _GITHUB_THREAD_ID_RE = re.compile(r"^[A-Za-z0-9_=+-]{1,128}$")
 _GITLAB_THREAD_ID_RE = re.compile(r"^[A-Fa-f0-9]{1,128}$")
 
@@ -1573,23 +1633,38 @@ def _queue_check_update(callback: _CheckUpdateCallback) -> None:
         )
 
 
-def schedule_check_refresh(urls: list[str], on_update: _CheckUpdateCallback | None = None) -> None:
-    """Kick bounded background refreshes for stale URLs without blocking."""
+def schedule_check_refresh(
+    urls: list[str], on_update: _CheckUpdateCallback | None = None
+) -> list[str]:
+    """Kick bounded background refreshes for stale URLs without blocking.
+
+    Returns the URLs whose value is expected to change shortly — the ones this
+    call started plus the ones a prior call already has in flight. Callers that
+    serve the cache to a client (the source-strip status endpoint) use it to tell
+    the client "poll again soon" instead of leaving it on TTL pacing, which would
+    surface a just-refreshed state up to one extra TTL late. URLs deferred by the
+    pending-work cap are deliberately excluded: they were backed off for a TTL,
+    so nothing is coming sooner.
+    """
     now = time.monotonic()
+    refreshing: list[str] = []
     for url in dict.fromkeys(urls):
         entry = _check_cache.get(url)
         if entry and now - entry[0] < _CHECK_TTL_SECS:
             continue
         if url in _check_inflight:
+            refreshing.append(url)
             continue
         if len(_check_inflight) >= _CHECK_PENDING_MAX:
             _check_cache[url] = (now, entry[1] if entry else None)
             _trim_check_cache()
             continue
         _check_inflight.add(url)
+        refreshing.append(url)
         task = asyncio.get_running_loop().create_task(_refresh_check_status(url, on_update))
         _CHECK_TASKS.add(task)
         task.add_done_callback(_CHECK_TASKS.discard)
+    return refreshing
 
 
 async def _refresh_check_status(url: str, on_update: _CheckUpdateCallback | None = None) -> None:

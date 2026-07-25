@@ -4,6 +4,7 @@ import type {
   McpApplyChange,
   PullRequestCheck,
   PullRequestSource,
+  PullRequestStatusBatch,
   PublishProviderDescriptor,
   SessionDoc,
 } from '../types'
@@ -786,6 +787,7 @@ export const api = {
   // Chat
   pullRequestSource: (url: string, refresh = false) => post('/api/source/pull-request', { url, refresh }).then(j) as Promise<PullRequestSource>,
   pullRequestChecks: (url: string) => post('/api/source/pull-request/checks', { url }).then(j) as Promise<{ checks: PullRequestCheck[] }>,
+  pullRequestStatuses: (urls: string[]) => post('/api/source/pull-request/status', { urls }).then(j) as Promise<PullRequestStatusBatch>,
   resolvePullRequestThread: (url: string, threadId: string) => post('/api/source/pull-request/resolve', { url, threadId }).then(j) as Promise<{ resolved: boolean }>,
   chatSlots: () => fetch('/api/chat/slots').then(j),
   chatSlotDetail: (slot: string, limit?: number, before?: number) => {

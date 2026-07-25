@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { PullRequestSource } from '../types'
 import { MAX_PULL_REQUEST_SOURCES } from '../utils/pullRequestLinks'
@@ -7,6 +7,7 @@ import { MAX_PULL_REQUEST_SOURCES } from '../utils/pullRequestLinks'
 const mockApi = vi.hoisted(() => ({
   pullRequestChecks: vi.fn(),
   pullRequestSource: vi.fn(),
+  pullRequestStatuses: vi.fn(),
   resolvePullRequestThread: vi.fn(),
 }))
 vi.mock('../api/client', () => ({ api: mockApi }))
@@ -17,7 +18,11 @@ vi.mock('../components/MarkdownRenderer', () => ({
 import PullRequestPanel, {
   CHECK_POLL_MAX_FAILURES,
   pullRequestCheckPollDelay,
+  pullRequestCiSignal,
+  pullRequestLifecycleState,
   pullRequestMergeBlocker,
+  STATUS_FOLLOWUP_MAX,
+  statusPollDelay,
 } from '../components/PullRequestPanel'
 
 const github: PullRequestSource = {
@@ -83,6 +88,8 @@ beforeEach(() => {
   mockApi.pullRequestChecks.mockResolvedValue({ checks: github.checks })
   mockApi.pullRequestSource.mockReset()
   mockApi.pullRequestSource.mockImplementation((url: string) => Promise.resolve(new URL(url).hostname === 'gitlab.com' ? gitlab : github))
+  mockApi.pullRequestStatuses.mockReset()
+  mockApi.pullRequestStatuses.mockResolvedValue({ statuses: {} })
   mockApi.resolvePullRequestThread.mockReset()
   mockApi.resolvePullRequestThread.mockResolvedValue({ resolved: true })
 })
@@ -107,6 +114,90 @@ describe('PullRequestPanel', () => {
     expect(gitlabTab).toBeInTheDocument()
     expect(githubTab.querySelector('[data-provider-mark="github"]')).toBeInTheDocument()
     expect(gitlabTab.querySelector('[data-provider-mark="gitlab"]')).toBeInTheDocument()
+  })
+
+  it('shows lifecycle and CI state on every source tab, not just the selected one', async () => {
+    mockApi.pullRequestStatuses.mockResolvedValue({
+      statuses: {
+        [github.url]: { state: 'open', ci: 'running' },
+        [gitlab.url]: { state: 'merged', ci: 'passed' },
+      },
+    })
+
+    renderPanel()
+    await screen.findByText('Add source tabs')
+
+    // One bounded request covers the whole strip.
+    await waitFor(() => expect(mockApi.pullRequestStatuses).toHaveBeenCalledWith([github.url, gitlab.url]))
+
+    const gitlabTab = await screen.findByRole('tab', { name: /MR !7/i })
+    // Merged is terminal: the merge glyph shows and CI is suppressed.
+    expect(within(gitlabTab).getByLabelText('Merged')).toBeInTheDocument()
+    expect(within(gitlabTab).queryByLabelText('Checks passed')).not.toBeInTheDocument()
+
+    // The selected tab is driven by its own fully loaded payload (open, all
+    // checks passed) rather than the coarser cached status ('running').
+    const githubTab = screen.getByRole('tab', { name: /PR #12/i })
+    expect(within(githubTab).getByLabelText('Open')).toBeInTheDocument()
+    expect(within(githubTab).getByLabelText('Checks passed')).toBeInTheDocument()
+    expect(within(githubTab).queryByLabelText('Checks running')).not.toBeInTheDocument()
+  })
+
+  it('leaves source tabs unmarked while no status is known yet', async () => {
+    renderPanel()
+    await screen.findByText('Add source tabs')
+
+    const gitlabTab = screen.getByRole('tab', { name: /MR !7/i })
+    expect(within(gitlabTab).queryByLabelText('Merged')).not.toBeInTheDocument()
+    expect(within(gitlabTab).queryByLabelText('Open')).not.toBeInTheDocument()
+  })
+
+  it('paces the strip poll by the server TTL, with a bounded fast follow-up', () => {
+    // No data yet, or a server that omits the TTL: fall back to 60s.
+    expect(statusPollDelay(undefined, 0)).toBe(60_000)
+    expect(statusPollDelay({ statuses: {} }, 0)).toBe(60_000)
+    // Steady state tracks the server's own cache TTL instead of a hardcoded copy…
+    expect(statusPollDelay({ statuses: {}, ttlSecs: 30 }, 0)).toBe(30_000)
+    // …clamped against absurd values.
+    expect(statusPollDelay({ statuses: {}, ttlSecs: 0.1 }, 0)).toBe(5_000)
+    expect(statusPollDelay({ statuses: {}, ttlSecs: 99_999 }, 0)).toBe(300_000)
+    // A refresh in flight means a new value is coming: re-poll quickly so a
+    // merge or finished CI run is not invisible for another whole interval.
+    const refreshing = { statuses: {}, ttlSecs: 60, refreshing: ['https://github.com/a/b/pull/1'] }
+    expect(statusPollDelay(refreshing, 0)).toBe(5_000)
+    expect(statusPollDelay(refreshing, STATUS_FOLLOWUP_MAX)).toBe(5_000)
+    // A provider that never settles cannot hold the panel on the fast interval.
+    expect(statusPollDelay(refreshing, STATUS_FOLLOWUP_MAX + 1)).toBe(60_000)
+    // Failing polls back off but never stop — one transient error must not
+    // freeze every unselected tab's glyph until the user intervenes.
+    expect(statusPollDelay(undefined, 0, 1)).toBe(30_000)
+    expect(statusPollDelay(undefined, 0, 2)).toBe(60_000)
+    expect(statusPollDelay(undefined, 0, 4)).toBe(240_000)
+    expect(statusPollDelay(undefined, 0, 99)).toBe(300_000)
+    // Backoff outranks the fast follow-up hint from the last good response.
+    expect(statusPollDelay(refreshing, 0, 1)).toBe(30_000)
+  })
+
+  it('derives chip lifecycle and CI signals from a loaded pull request', () => {
+    expect(pullRequestLifecycleState(github)).toBe('open')
+    expect(pullRequestLifecycleState(gitlab)).toBe('merged')
+    expect(pullRequestLifecycleState({ ...github, draft: true })).toBe('draft')
+    expect(pullRequestLifecycleState({ ...github, state: 'CLOSED' })).toBe('closed')
+    // Merged outranks draft: a merged pull request is terminal.
+    expect(pullRequestLifecycleState({ ...gitlab, draft: true })).toBe('merged')
+    // GitLab reports 'opened' for live MRs, and states outside the known set
+    // (e.g. 'locked') must show no glyph rather than being mislabeled 'Open'.
+    expect(pullRequestLifecycleState({ ...github, state: 'opened' })).toBe('open')
+    expect(pullRequestLifecycleState({ ...github, state: 'locked' })).toBeUndefined()
+    expect(pullRequestLifecycleState({ ...github, state: '' })).toBeUndefined()
+
+    expect(pullRequestCiSignal([])).toBeUndefined()
+    expect(pullRequestCiSignal(github.checks)).toBe('passed')
+    expect(pullRequestCiSignal([{ ...github.checks[0], bucket: 'pending' }])).toBe('running')
+    expect(pullRequestCiSignal([
+      { ...github.checks[0], bucket: 'pending' },
+      { ...github.checks[0], bucket: 'failed' },
+    ])).toBe('failed')
   })
 
   it('shows an actionable warning when the local GitHub CLI is not logged in', async () => {
@@ -326,7 +417,10 @@ describe('PullRequestPanel', () => {
     const onAddToChat = vi.fn()
     renderPanel(onAddToChat)
     await screen.findByText('Add source tabs')
-    fireEvent.click(screen.getByRole('tab', { name: /Checks/i }))
+    // Scoped to the section tablist: the source strip above it now carries CI
+    // state labels of its own, so a bare /Checks/ query spans both lists.
+    const sections = screen.getByRole('tablist', { name: 'Pull request sections' })
+    fireEvent.click(within(sections).getByRole('tab', { name: /Checks/i }))
     // Only the failed check exposes Add to chat.
     const addButtons = screen.getAllByRole('button', { name: 'Add to chat' })
     expect(addButtons).toHaveLength(1)

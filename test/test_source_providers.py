@@ -966,6 +966,107 @@ async def test_check_update_broadcasts_are_coalesced(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_status_endpoint_serves_cached_chip_status_and_kicks_refresh(monkeypatch) -> None:
+    """The Changes-tab strip reads cached status for many URLs in one request."""
+    known = "https://github.com/acme/repo/pull/12"
+    unknown = "https://github.com/acme/repo/pull/13"
+    source._check_cache.clear()
+    source._check_cache[known] = (source.time.monotonic(), {"ci": "failed", "state": "open"})
+    refresh = MagicMock(return_value=[unknown])
+    monkeypatch.setattr(source, "schedule_check_refresh", refresh)
+
+    app = _app()
+    async with TestClient(TestServer(app)) as client:
+        response = await client.post(
+            "/api/source/pull-request/status",
+            # A www. spelling and a duplicate both normalize to one entry; a
+            # non-pull-request URL is dropped instead of failing the request.
+            json={
+                "urls": [
+                    "https://www.github.com/acme/repo/pull/12",
+                    known,
+                    unknown,
+                    "https://example.com/x",
+                ]
+            },
+        )
+        assert response.status == 200
+        payload = await response.json()
+
+    # Only URLs with a cached status are reported; the rest simply stay absent
+    # until a background refresh lands.
+    assert payload == {
+        "statuses": {known: {"ci": "failed", "state": "open"}},
+        # The scheduler's report is passed through verbatim so the client knows
+        # to re-poll soon instead of waiting out the TTL, along with the TTL that
+        # paces its steady state.
+        "refreshing": [unknown],
+        "ttlSecs": source.CHECK_STATUS_TTL_SECS,
+    }
+    assert refresh.call_args.args[0] == [known, unknown]
+    source._check_cache.clear()
+
+
+@pytest.mark.asyncio
+async def test_schedule_check_refresh_reports_urls_expected_to_change(monkeypatch) -> None:
+    """The status endpoint's ``refreshing`` hint comes from the scheduler itself."""
+    fresh = "https://github.com/acme/repo/pull/1"
+    stale = "https://github.com/acme/repo/pull/2"
+    already = "https://github.com/acme/repo/pull/3"
+    deferred = "https://github.com/acme/repo/pull/4"
+    source._check_cache.clear()
+    source._check_inflight.clear()
+    monkeypatch.setattr(source, "_refresh_check_status", AsyncMock(return_value=None))
+    now = source.time.monotonic()
+    source._check_cache[fresh] = (now, {"state": "open"})
+    source._check_cache[stale] = (now - source._CHECK_TTL_SECS - 1, {"state": "open"})
+    source._check_inflight.add(already)
+    monkeypatch.setattr(source, "_CHECK_PENDING_MAX", 2)
+
+    refreshing = source.schedule_check_refresh([fresh, stale, already, deferred])
+
+    # Fresh entries need nothing; a started and an already-in-flight refresh are
+    # both "coming shortly"; the pending-cap deferral was backed off for a TTL,
+    # so promising the client a fast update for it would be a lie.
+    assert refreshing == [stale, already]
+    assert source._check_cache[deferred][1] is None
+    source._check_cache.clear()
+    source._check_inflight.clear()
+
+
+@pytest.mark.asyncio
+async def test_status_endpoint_bounds_urls_and_rejects_non_list_bodies(monkeypatch) -> None:
+    refresh = MagicMock(return_value=[])
+    monkeypatch.setattr(source, "schedule_check_refresh", refresh)
+    source._check_cache.clear()
+    urls = [
+        f"https://github.com/acme/repo/pull/{index + 1}"
+        for index in range(source.STATUS_URLS_MAX + 5)
+    ]
+
+    app = _app()
+    async with TestClient(TestServer(app)) as client:
+        accepted = await client.post("/api/source/pull-request/status", json={"urls": urls})
+        assert accepted.status == 200
+        rejected = await client.post("/api/source/pull-request/status", json={"urls": "all"})
+        assert rejected.status == 400
+
+    assert len(refresh.call_args.args[0]) == source.STATUS_URLS_MAX
+    source._check_cache.clear()
+
+
+@pytest.mark.asyncio
+async def test_status_endpoint_requires_owner_identity() -> None:
+    app = _app(user="U_OTHER")
+    async with TestClient(TestServer(app)) as client:
+        response = await client.post(
+            "/api/source/pull-request/status",
+            json={"urls": ["https://github.com/acme/repo/pull/12"]},
+        )
+        assert response.status == 403
+
+
+@pytest.mark.asyncio
 async def test_schedule_check_refresh_backs_off_overflow_without_spawning(monkeypatch) -> None:
     url = "https://github.com/acme/repo/pull/99"
     source._check_cache.clear()
@@ -1599,6 +1700,7 @@ def _app(
     app["state"] = state
     app.router.add_post("/api/source/pull-request", source.api_pull_request_source)
     app.router.add_post("/api/source/pull-request/checks", source.api_pull_request_checks)
+    app.router.add_post("/api/source/pull-request/status", source.api_pull_request_status)
     app.router.add_post("/api/source/pull-request/resolve", source.api_pull_request_resolve)
     return app
 

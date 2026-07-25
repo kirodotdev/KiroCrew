@@ -255,6 +255,26 @@ export interface PullRequestCheck {
   startedAt: string; completedAt: string
 }
 
+/** Lightweight per-URL status used by wayfinding chips (sidebar + Changes tab
+ *  strip). Both fields are present only when known: the backend serves them
+ *  from a short-TTL cache and refreshes in the background, so a freshly seen
+ *  pull request has no status until a later poll. */
+export interface PullRequestStatus {
+  state?: 'open' | 'draft' | 'merged' | 'closed'
+  ci?: 'running' | 'passed' | 'failed'
+}
+
+/** Response of the batched status endpoint. `refreshing` names the URLs whose
+ *  cached value is expected to change shortly (a background provider refresh is
+ *  in flight), so the client can re-poll soon instead of waiting a full cache
+ *  interval; `ttlSecs` is the server's own cache TTL, which paces the steady
+ *  state so the client never hardcodes a copy of it. */
+export interface PullRequestStatusBatch {
+  statuses: Record<string, PullRequestStatus>
+  refreshing?: string[]
+  ttlSecs?: number
+}
+
 export interface PullRequestComment {
   id: string; kind: 'comment' | 'review' | 'inline'; author: string; body: string
   state: string; createdAt: string; url: string; path: string; line?: number | null

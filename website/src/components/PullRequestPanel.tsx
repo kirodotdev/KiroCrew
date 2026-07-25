@@ -10,6 +10,9 @@ import {
   ExternalLink,
   GitCommitHorizontal,
   GitMerge,
+  GitPullRequest,
+  GitPullRequestClosed,
+  GitPullRequestDraft,
   Loader,
   MessageSquare,
   RefreshCw,
@@ -22,6 +25,8 @@ import type {
   PullRequestComment,
   PullRequestFile,
   PullRequestSource,
+  PullRequestStatus,
+  PullRequestStatusBatch,
 } from '../types'
 import {
   MAX_PULL_REQUEST_SOURCES,
@@ -40,6 +45,45 @@ import { Btn } from './ui'
 
 const CHECK_POLL_BASE_MS = 10_000
 const CHECK_POLL_MAX_MS = 60_000
+// Strip-wide status poll. Steady state is paced by the TTL the server reports
+// for its chip-status cache (falling back to 60s when absent), so the client
+// never hardcodes a copy of it. While the server says a background refresh is in
+// flight the panel polls again quickly instead — otherwise a state change that
+// lands just after a poll would stay invisible for a further full TTL.
+const STATUS_POLL_FALLBACK_MS = 60_000
+const STATUS_POLL_MIN_MS = 5_000
+const STATUS_POLL_MAX_MS = 300_000
+const STATUS_FOLLOWUP_MS = 5_000
+/** First delay after a failed poll; doubles per consecutive failure up to
+ *  STATUS_POLL_MAX_MS. Polling is never abandoned — a transient network or
+ *  gateway blip must not freeze the strip's glyphs until the user intervenes. */
+const STATUS_ERROR_BACKOFF_MS = 30_000
+/** Consecutive in-flight-refresh polls allowed at the fast interval before
+ *  falling back to TTL pacing — bounds a provider that never settles. */
+export const STATUS_FOLLOWUP_MAX = 3
+
+/** Delay until the next strip-status poll: bounded exponential backoff while
+ * polls are failing, the fast follow-up while the server reports a refresh in
+ * flight (bounded by STATUS_FOLLOWUP_MAX), otherwise the server-reported cache
+ * TTL clamped to a sane range. */
+export function statusPollDelay(
+  batch: PullRequestStatusBatch | undefined,
+  consecutiveFollowups: number,
+  consecutiveFailures = 0,
+): number {
+  if (consecutiveFailures > 0) {
+    return Math.min(
+      STATUS_ERROR_BACKOFF_MS * 2 ** (consecutiveFailures - 1),
+      STATUS_POLL_MAX_MS,
+    )
+  }
+  if (batch?.refreshing?.length && consecutiveFollowups <= STATUS_FOLLOWUP_MAX) {
+    return STATUS_FOLLOWUP_MS
+  }
+  const ttl = Number(batch?.ttlSecs)
+  const paced = Number.isFinite(ttl) && ttl > 0 ? ttl * 1000 : STATUS_POLL_FALLBACK_MS
+  return Math.min(Math.max(paced, STATUS_POLL_MIN_MS), STATUS_POLL_MAX_MS)
+}
 export const CHECK_POLL_MAX_FAILURES = 3
 
 export function pullRequestCheckPollDelay(
@@ -174,6 +218,76 @@ function stateLabel(source: PullRequestSource): string {
   if (source.mergedAt || source.state.toLowerCase() === 'merged') return 'Merged'
   const state = source.state || 'Open'
   return state.charAt(0).toUpperCase() + state.slice(1).toLowerCase()
+}
+
+type LifecycleState = NonNullable<PullRequestStatus['state']>
+
+/** Lifecycle state of a fully loaded pull request, in the same vocabulary the
+ * lightweight status endpoint uses — so the selected tab's chip can be driven by
+ * the authoritative payload instead of waiting for the next status poll.
+ * Merged wins over draft: a merged pull request is terminal. Returns undefined
+ * for anything outside the known set (GitLab also reports states like `locked`),
+ * so the tab shows no lifecycle glyph rather than mislabeling it "Open". */
+export function pullRequestLifecycleState(
+  source: PullRequestSource,
+): LifecycleState | undefined {
+  const state = source.state.toLowerCase()
+  if (source.mergedAt || state === 'merged') return 'merged'
+  if (state === 'closed') return 'closed'
+  if (source.draft) return 'draft'
+  if (state === 'open' || state === 'opened') return 'open'
+  return undefined
+}
+
+/** Roll a check list up to one CI signal, matching the backend's chip rollup
+ * (any failure fails; otherwise any pending runs; otherwise passed). */
+export function pullRequestCiSignal(
+  checks: PullRequestCheck[] | undefined,
+): PullRequestStatus['ci'] {
+  if (!checks?.length) return undefined
+  if (checks.some(check => check.bucket === 'failed')) return 'failed'
+  if (checks.some(check => check.bucket === 'pending')) return 'running'
+  return 'passed'
+}
+
+const LIFECYCLE_META: Record<LifecycleState, { icon: typeof GitMerge; tone: string; label: string }> = {
+  merged: { icon: GitMerge, tone: 'text-aim', label: 'Merged' },
+  closed: { icon: GitPullRequestClosed, tone: 'text-danger', label: 'Closed' },
+  draft: { icon: GitPullRequestDraft, tone: 'text-muted', label: 'Draft' },
+  open: { icon: GitPullRequest, tone: 'text-ok', label: 'Open' },
+}
+
+const CI_META: Record<NonNullable<PullRequestStatus['ci']>, { icon: typeof Check; tone: string; label: string; spin?: boolean }> = {
+  running: { icon: Loader, tone: 'text-warn', label: 'Checks running', spin: true },
+  passed: { icon: Check, tone: 'text-ok', label: 'Checks passed' },
+  failed: { icon: XCircle, tone: 'text-danger', label: 'Checks failed' },
+}
+
+/** State markers for one pull-request tab in the source strip: lifecycle glyph
+ * plus, while the pull request is still live, its CI rollup. CI is suppressed
+ * once merged or closed — the lifecycle glyph is the terminal signal there. */
+function SourceTabState({ status }: { status: PullRequestStatus | undefined }) {
+  const lifecycle = status?.state
+  const ci = lifecycle === 'merged' || lifecycle === 'closed' ? undefined : status?.ci
+  if (!lifecycle && !ci) return null
+  const life = lifecycle ? LIFECYCLE_META[lifecycle] : null
+  const check = ci ? CI_META[ci] : null
+  const LifeIcon = life?.icon
+  const CheckIcon = check?.icon
+  return (
+    <>
+      {LifeIcon && life && (
+        <span className={`inline-flex shrink-0 ${life.tone}`} aria-label={life.label} title={life.label}>
+          <LifeIcon className="lucide-inline" aria-hidden="true" />
+        </span>
+      )}
+      {CheckIcon && check && (
+        <span className={`inline-flex shrink-0 ${check.tone}`} aria-label={check.label} title={check.label}>
+          <CheckIcon className={`lucide-inline ${check.spin ? 'animate-spin' : ''}`} aria-hidden="true" />
+        </span>
+      )}
+    </>
+  )
 }
 
 function diffLanguage(path: string): string | null {
@@ -589,8 +703,48 @@ export default function PullRequestPanel({
     : 0
   const checksPollingPaused = sourceHasPendingChecks
     && checkPollFailures >= CHECK_POLL_MAX_FAILURES
+  // Lifecycle + CI state for EVERY tab in the strip, so a merged, closed, or
+  // failing pull request is legible without selecting it. Served from the
+  // gateway's short-TTL chip cache (one bounded request per poll, no provider
+  // call on the request path), so entries appear as background refreshes land.
+  const statusUrls = useMemo(
+    () => sources.slice(0, MAX_PULL_REQUEST_SOURCES).map(item => item.url),
+    [sources],
+  )
+  const statusFollowupsRef = useRef(0)
+  useEffect(() => { statusFollowupsRef.current = 0 }, [statusUrls])
+  const statusQuery = useQuery<PullRequestStatusBatch>({
+    queryKey: ['pull-request-statuses', statusUrls] as const,
+    queryFn: async () => {
+      const result = await api.pullRequestStatuses(statusUrls)
+      // Count consecutive polls that found a refresh in flight, so a provider
+      // that never settles can't hold the panel on the fast interval forever.
+      statusFollowupsRef.current = result.refreshing?.length
+        ? statusFollowupsRef.current + 1
+        : 0
+      return result
+    },
+    enabled: statusUrls.length > 0,
+    staleTime: 0,
+    refetchOnWindowFocus: false,
+    retry: false,
+    // A dropped connection is exactly when the chips went stale, so re-poll on
+    // reconnect instead of waiting out the backoff.
+    refetchOnReconnect: true,
+    refetchInterval: currentQuery => statusPollDelay(
+      currentQuery.state.data,
+      statusFollowupsRef.current,
+      // Failing polls back off but never stop: parking permanently would leave
+      // every unselected tab's glyph stale after one transient error, with no
+      // recovery until the user hit refresh or the source list changed.
+      currentQuery.state.fetchFailureCount,
+    ),
+  })
   const handleRefresh = () => {
     forceRefreshRef.current = true
+    // Also force the strip-wide status poll now, instead of waiting out its
+    // current interval (or its post-error backoff).
+    void statusQuery.refetch()
     void query.refetch().then(result => {
       if (
         selected
@@ -621,6 +775,19 @@ export default function PullRequestPanel({
     && checkCounts.complete === checkCounts.total
   const showAllChecksPassed = allChecksPassed && !query.isFetching
   const mergeBlocker = source ? pullRequestMergeBlocker(source) : null
+  const statusByUrl = useMemo(() => {
+    const merged: Record<string, PullRequestStatus> = { ...(statusQuery.data?.statuses || {}) }
+    // The selected pull request already has a full, user-refreshable payload —
+    // prefer it over the cached chip status so its own chip never lags the
+    // header badge it sits above.
+    if (source) {
+      merged[source.url] = {
+        state: pullRequestLifecycleState(source),
+        ci: pullRequestCiSignal(source.checks),
+      }
+    }
+    return merged
+  }, [statusQuery.data, source])
 
   const tabs: Array<{ id: SourceTab; label: string; count?: number; tone?: string }> = source ? [
     { id: 'changes', label: 'Changes', count: source.files.length },
@@ -662,6 +829,7 @@ export default function PullRequestPanel({
           >
             {item.provider === 'github' ? <GithubLogo size={13} className="shrink-0" /> : <GitlabLogo size={13} className="shrink-0" />}
             <span>{item.provider === 'github' ? 'PR' : 'MR'} {item.provider === 'github' ? '#' : '!'}{item.number}</span>
+            <SourceTabState status={statusByUrl[item.url]} />
           </Btn>
         ))}
       </div>

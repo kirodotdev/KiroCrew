@@ -117,6 +117,7 @@ from kiro_crew.dashboard.handlers.source_providers import (
     api_pull_request_checks,
     api_pull_request_resolve,
     api_pull_request_source,
+    api_pull_request_status,
 )
 from kiro_crew.dashboard.handlers.tunnel import api_tunnel_status
 from kiro_crew.dashboard.loop_watchdog import LoopStallWatchdog
@@ -1395,6 +1396,7 @@ async def start_dashboard(
     app.router.add_post("/api/chat", chat.api_chat)
     app.router.add_post("/api/source/pull-request", api_pull_request_source)
     app.router.add_post("/api/source/pull-request/checks", api_pull_request_checks)
+    app.router.add_post("/api/source/pull-request/status", api_pull_request_status)
     app.router.add_post("/api/source/pull-request/resolve", api_pull_request_resolve)
     app.router.add_get("/api/chat/slots", chat.api_chat_slots)
     app.router.add_post("/api/chat/slots", chat.api_chat_slot_create)
