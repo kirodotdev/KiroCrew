@@ -449,14 +449,16 @@ export default function KnowledgePage() {
 
   return (
     <div className="flex flex-col h-full">
-      <div className="flex items-end justify-between gap-4 px-6 pt-4 pb-3">
-        <div>
-          <div className="text-2xl font-bold tracking-tight text-text-strong flex items-center gap-2">
-            <BookOpen size={22} /> Knowledge Library
+      <div className="flex items-start sm:items-end justify-between gap-3 sm:gap-4 px-4 sm:px-6 pt-4 pb-3">
+        <div className="min-w-0">
+          <div className="text-xl sm:text-2xl font-bold tracking-tight text-text-strong flex items-center gap-2">
+            <BookOpen size={22} className="shrink-0" /> Knowledge Library
           </div>
-          <div className="text-muted text-sm mt-1">Search, explore, and manage your knowledge base</div>
+          <div className="text-muted text-[13px] sm:text-sm mt-1">Search, explore, and manage your knowledge base</div>
         </div>
-        <Btn onClick={() => setShowHelp(true)}><HelpCircle size={14} /> Help</Btn>
+        <div className="shrink-0">
+          <Btn onClick={() => setShowHelp(true)}><HelpCircle size={14} /> Help</Btn>
+        </div>
       </div>
 
       {showHelp && (
@@ -483,17 +485,18 @@ export default function KnowledgePage() {
         </Clickable>
       )}
 
-      {/* Tabs */}
-      <div className="flex gap-1 px-6 border-b border-border">
+      {/* Tabs — horizontally scrollable on narrow viewports so the active
+          underline never spills past the container. */}
+      <div className="flex gap-1 px-4 sm:px-6 border-b border-border overflow-x-auto">
         {TABS.map(t => (
           <button key={t} onClick={() => { setTab(t); setSelectedId(null); setSelectedItems(new Set()) }}
-            className={`flex items-center gap-1.5 px-3 py-2 text-[13px] font-medium border-b-2 transition-all bg-transparent cursor-pointer ${tab === t ? 'border-accent text-text font-semibold' : 'border-transparent text-muted hover:text-text'}`}>
+            className={`flex items-center gap-1.5 px-3 py-2 text-[13px] font-medium border-b-2 transition-all bg-transparent cursor-pointer shrink-0 whitespace-nowrap ${tab === t ? 'border-accent text-text font-semibold' : 'border-transparent text-muted hover:text-text'}`}>
             {TAB_META[t].icon} {TAB_META[t].label}
           </button>
         ))}
       </div>
 
-      <div className={`flex-1 px-6 py-4 min-h-0 ${tab === 'graph' ? 'flex flex-col' : 'overflow-y-auto'}`} ref={listContainerRef}>
+      <div className={`flex-1 px-4 sm:px-6 py-4 min-h-0 ${tab === 'graph' ? 'flex flex-col' : 'overflow-y-auto'}`} ref={listContainerRef}>
         <EmbeddingStatus />
         {isEmpty && tab === 'list' ? (
           <div className="flex flex-col items-center justify-center py-12 animate-rise">
@@ -619,19 +622,19 @@ export default function KnowledgePage() {
 
       {/* Stats bar */}
       {stats && (
-        <div className="border-t border-border px-6 py-2 flex gap-4 text-[12px] text-muted shrink-0">
-          <span>{stats.items} items</span>
-          <span>{stats.entities} entities</span>
-          <span>{stats.relations} relations</span>
-          <span>{stats.sources} sources</span>
+        <div className="border-t border-border px-4 sm:px-6 py-2 flex gap-x-3 gap-y-0.5 sm:gap-4 flex-wrap text-[11px] sm:text-[12px] text-muted shrink-0">
+          <span className="whitespace-nowrap">{stats.items} items</span>
+          <span className="whitespace-nowrap">{stats.entities} entities</span>
+          <span className="whitespace-nowrap">{stats.relations} relations</span>
+          <span className="whitespace-nowrap">{stats.sources} sources</span>
           {stats.embeddings?.enabled ? (
-            <span className={stats.embeddings.available ? 'text-ok' : 'text-warn'} title={stats.embeddings.available ? `${stats.embeddings.model} — ${stats.embeddings.embedded_items} embedded` : `Embedding model loading (${stats.embeddings.model})`}>
+            <span className={`whitespace-nowrap ${stats.embeddings.available ? 'text-ok' : 'text-warn'}`} title={stats.embeddings.available ? `${stats.embeddings.model} — ${stats.embeddings.embedded_items} embedded` : `Embedding model loading (${stats.embeddings.model})`}>
               ● {stats.embeddings.available ? `embeddings (${stats.embeddings.embedded_items})` : 'embeddings loading'}
             </span>
           ) : (
-            <span className="text-muted" title="Embedding model is downloading in the background">○ embeddings initializing</span>
+            <span className="text-muted whitespace-nowrap" title="Embedding model is downloading in the background">○ embeddings initializing</span>
           )}
-          {tab === 'list' && <span className="ml-auto text-[10px]">/ to search, Esc to back, &larr;&rarr; to page</span>}
+          {tab === 'list' && <span className="ml-auto text-[10px] hidden sm:inline">/ to search, Esc to back, &larr;&rarr; to page</span>}
         </div>
       )}
     </div>

@@ -12,11 +12,11 @@ export function SourceSummaryDisplay({ source }: { source: Source }) {
   if (!source.summary_topic) return null
   const themes: string[] = (() => { try { return JSON.parse(source.summary_themes || '[]') } catch { return [] } })()
   return (
-    <div className="mt-1">
+    <div className="mt-1 min-w-0">
       <p className="text-[12px] text-muted leading-relaxed line-clamp-1">{source.summary_topic}</p>
       {themes.length > 0 && (
         <div className="flex gap-1 flex-wrap mt-0.5">
-          {themes.map((t, i) => <span key={i} className="text-[10px] px-1.5 py-0.5 rounded bg-bg border border-border text-muted">{t}</span>)}
+          {themes.map((t, i) => <span key={i} className="text-[10px] px-1.5 py-0.5 rounded bg-bg border border-border text-muted whitespace-nowrap max-w-full truncate">{t}</span>)}
         </div>
       )}
     </div>
@@ -78,7 +78,7 @@ function StalenessIndicator({ lastSynced }: { lastSynced?: string }) {
   const daysSince = Math.floor((Date.now() - new Date(lastSynced).getTime()) / (1000 * 60 * 60 * 24))
   const stale = daysSince > 30
   return (
-    <span className={`text-[11px] ${stale ? 'text-warn' : 'text-muted'}`}>
+    <span className={`text-[11px] whitespace-nowrap ${stale ? 'text-warn' : 'text-muted'}`}>
       {stale && <AlertCircle size={10} className="inline mr-0.5" />}
       {formatRelativeDate(lastSynced)}
     </span>
@@ -440,14 +440,16 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
           const isPending = s.sync_status === 'pending_confirmation'
           return (
           <div key={s.id} className={`border border-border rounded-lg p-3 hover:border-border-strong transition-all ${isDeleting ? 'opacity-50' : ''}`}>
-            <div className="flex items-center gap-3">
+            {/* Stacks on narrow viewports: identity block on top, meta + actions below. */}
+            <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3">
+              <div className="flex items-start sm:items-center gap-2 sm:gap-3 min-w-0 flex-1">
               {isFolderType ? (
-                <button onClick={() => setExpandedSource(isExpanded ? null : s.id)} className="text-muted shrink-0"
+                <button onClick={() => setExpandedSource(isExpanded ? null : s.id)} className="text-muted shrink-0 mt-0.5 sm:mt-0"
                   aria-label={isExpanded ? 'Collapse folder details' : 'Expand folder details'}>
                   {isExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
                 </button>
               ) : (
-                <FolderSync size={16} className="text-muted shrink-0" />
+                <FolderSync size={16} className="text-muted shrink-0 mt-0.5 sm:mt-0" />
               )}
               <div className="flex-1 min-w-0">
                 {editingId === s.id ? (
@@ -465,24 +467,29 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
                   <div className="flex items-center gap-1 min-w-0 group/name">
                     <span className="text-sm font-medium text-text-strong truncate">{s.name}</span>
                     <button aria-label="Rename source" onClick={() => startRename(s)}
-                      className="text-muted shrink-0 p-0.5 rounded opacity-0 group-hover/name:opacity-100 hover:text-text transition-opacity"><Pencil size={12} /></button>
+                      className="text-muted shrink-0 p-0.5 rounded opacity-100 sm:opacity-0 sm:group-hover/name:opacity-100 hover:text-text transition-opacity"><Pencil size={12} /></button>
                   </div>
                 )}
-                <div className="text-[11px] text-muted flex items-center gap-1.5">
-                  {s.source_type}{s.uri ? ` · ${s.uri}` : ''}
+                <div className="text-[11px] text-muted flex items-center gap-1.5 min-w-0">
+                  <span className="truncate" title={s.uri || s.source_type}>
+                    {s.source_type}{s.uri ? ` · ${s.uri}` : ''}
+                  </span>
                   {s.source_type === 'local_file'
-                    ? <span className="inline-flex items-center gap-0.5 text-ok" title="Auto-watches for file changes every 5 min">● auto</span>
+                    ? <span className="inline-flex items-center gap-0.5 text-ok shrink-0" title="Auto-watches for file changes every 5 min">● auto</span>
                     : isFolderType
-                    ? <span className={`inline-flex items-center gap-0.5 ${isPaused ? 'text-warn' : isPending ? 'text-muted' : 'text-ok'}`} title={isPaused ? 'Paused' : isPending ? 'Awaiting confirmation' : 'Watching folder'}>● {isPaused ? 'paused' : isPending ? 'pending' : 'folder'}</span>
-                    : <span className="inline-flex items-center gap-0.5 text-muted" title="Use Sync button to update">○ manual</span>}
+                    ? <span className={`inline-flex items-center gap-0.5 shrink-0 ${isPaused ? 'text-warn' : isPending ? 'text-muted' : 'text-ok'}`} title={isPaused ? 'Paused' : isPending ? 'Awaiting confirmation' : 'Watching folder'}>● {isPaused ? 'paused' : isPending ? 'pending' : 'folder'}</span>
+                    : <span className="inline-flex items-center gap-0.5 text-muted shrink-0" title="Use Sync button to update">○ manual</span>}
                 </div>
                 <SourceSummaryDisplay source={s} />
               </div>
+              </div>
+              {/* Meta + actions: wraps under the identity block on narrow viewports. */}
+              <div className="flex items-center gap-2 sm:gap-3 flex-wrap sm:flex-nowrap shrink-0 pl-6 sm:pl-0">
               {isDeleting ? <Badge variant="warn">Deleting...</Badge> : (
                 <Badge variant={s.sync_status === 'synced' || s.sync_status === 'active' ? 'ok' : s.sync_status === 'error' ? 'err' : s.sync_status === 'paused' ? 'warn' : 'aim'}>{s.sync_status}</Badge>
               )}
-              <span className="text-[11px] text-muted">{s.item_count ?? 0} items</span>
-              {(() => { const { wordCount: wc } = parseSourceProps(s); if (!shouldShowWordCount(wc)) return null; return <span className="text-[11px] text-muted">{wc! < 1000 ? `${wc} words` : `~${Math.round(wc! / 1000)}k words`}</span> })()}
+              <span className="text-[11px] text-muted whitespace-nowrap">{s.item_count ?? 0} items</span>
+              {(() => { const { wordCount: wc } = parseSourceProps(s); if (!shouldShowWordCount(wc)) return null; return <span className="text-[11px] text-muted whitespace-nowrap">{wc! < 1000 ? `${wc} words` : `~${Math.round(wc! / 1000)}k words`}</span> })()}
               <StalenessIndicator lastSynced={s.last_synced} />
               {/* Pause/Resume/Confirm for folder sources */}
               {isFolderType && isPending && (
@@ -518,6 +525,7 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
                 className="px-2 py-1 text-[11px] border border-border rounded hover:bg-bg-elevated text-danger/70 hover:text-danger disabled:opacity-50 flex items-center gap-0.5">
                 {isDeleting ? <RefreshCw size={12} className="animate-spin" /> : <X size={12} />}
               </button>
+              </div>
             </div>
             {/* Inline expandable progress for folder sources */}
             {isFolderType && isExpanded && <FolderProgress sourceId={s.id} />}
