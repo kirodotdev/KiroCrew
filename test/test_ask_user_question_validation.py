@@ -98,8 +98,10 @@ class TestValidateAskUserQuestion:
         assert len(result[0]["options"][0]["description"]) == 500
 
     def test_max_4_questions(self):
-        q = self._valid_input()["questions"][0]
-        inp = {"questions": [q] * 6}
+        # Distinct texts: identical texts are rejected (see
+        # test_rejects_duplicate_question_text); this asserts the count cap.
+        base = self._valid_input()["questions"][0]
+        inp = {"questions": [dict(base, question=f"Question {i}?") for i in range(6)]}
         result = validate_ask_user_question(inp)
         assert len(result) == 4
 
@@ -108,6 +110,17 @@ class TestValidateAskUserQuestion:
         inp["questions"][0]["options"] = [{"label": f"Opt{i}", "description": ""} for i in range(10)]
         result = validate_ask_user_question(inp)
         assert len(result[0]["options"]) == 6
+
+    def test_rejects_duplicate_option_labels_normalized(self):
+        # Labels are the selection identity and returned answer; descriptions
+        # cannot distinguish duplicate labels for the blocked agent.
+        inp = self._valid_input()
+        inp["questions"][0]["options"] = [
+            {"label": "Deploy", "description": "staging"},
+            {"label": "  deploy  ", "description": "production"},
+        ]
+        with pytest.raises(ValidationError, match="duplicate option labels"):
+            validate_ask_user_question(inp)
 
     def test_skips_option_without_label(self):
         inp = self._valid_input()
@@ -140,3 +153,20 @@ class TestValidateAskUserQuestion:
         assert len(result) == 2
         assert result[1]["header"] == "H2"
         assert result[1]["multiSelect"] is True
+
+    def test_rejects_duplicate_question_text(self):
+        # Answers are keyed by question text end-to-end, so two questions with
+        # the same text collapse to one answer map entry — the user answers
+        # both but only the last reaches the blocked agent. Reject duplicates.
+        q1 = {"question": "Pick one?", "options": [{"label": "A"}, {"label": "B"}]}
+        q2 = {"question": "Pick one?", "options": [{"label": "X"}, {"label": "Y"}]}
+        with pytest.raises(ValidationError, match="duplicate question text"):
+            validate_ask_user_question({"questions": [q1, q2]})
+
+    def test_rejects_duplicate_question_text_normalized(self):
+        # Normalization is case- and whitespace-insensitive so trivially
+        # different renderings of the same prompt are still caught.
+        q1 = {"question": "Pick   one?", "options": [{"label": "A"}, {"label": "B"}]}
+        q2 = {"question": "pick one?", "options": [{"label": "X"}, {"label": "Y"}]}
+        with pytest.raises(ValidationError, match="duplicate question text"):
+            validate_ask_user_question({"questions": [q1, q2]})

@@ -38,6 +38,7 @@ agent backend and Slack credentials.
 | [Task Runner](task-runner.md) | Autonomous multi-step execution from spec files — hand it a task, walk away |
 | [Research Lab](research-lab.md) | Autonomous multi-cycle research campaigns — grill-tree scoping, adaptive agent execution, exportable reports |
 | [Dashboard](dashboard.md) | React web UI with multi-session chat, memory management, and live system metrics |
+| [Agent Questions](agent-questions.md) | Let an agent pause mid-turn and ask you a clickable multiple-choice question |
 | [Slack](slack-integration.md) | DM-based interaction with tool approval, streaming, and channel monitoring |
 | [Agents](agents.md) | Switch between specialized agents per conversation, thread, or cron job |
 | [Skills](skills.md) | Drop-in markdown knowledge packs for domain-specific workflows |

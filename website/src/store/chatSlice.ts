@@ -55,6 +55,21 @@ const evictMcpApps = (state: { mcpApps: Record<string, McpAppRenderPayload> }, s
   }
 }
 
+/** Read one slot's pending question card, or null.
+ *
+ *  A bare `map[slot]` lookup is not safe even with guarded writes: for
+ *  `__proto__` or `constructor` it returns an INHERITED value that is truthy but
+ *  carries no `questions`, so the card renders and crashes. Guarding the key and
+ *  requiring an own property makes the read fail closed. Exported so the single-
+ *  chat view and the grid panes share one definition. */
+export const pendingQuestionFor = (
+  map: ChatState['pendingQuestions'] | undefined,
+  slot: string | null | undefined,
+): ChatState['pendingQuestions'][string] | null => {
+  if (!slot || !map || isUnsafeKey(slot)) return null
+  return Object.prototype.hasOwnProperty.call(map, slot) ? map[slot] : null
+}
+
 /** One queued-message entry as normalized by `fetchSlotDetail` from the backend
  *  slot-detail `queue` field. */
 type SlotQueueItem = { content: string; queueId: string; ts: string }
@@ -237,7 +252,10 @@ interface ChatState {
   slotLoading: boolean
   slotHistory: string[]
   stopPressedAt: Record<string, number | null>
-  pendingQuestion: { slot: string; questions: Array<{ question: string; header?: string; options: Array<{ label: string; description?: string }>; multiSelect?: boolean }> } | null
+  /** Pending ask_question cards keyed by slot. Keyed (rather than a single
+   *  card) so concurrent ask_question calls from two slots cannot evict each
+   *  other — the losing agent would block until its timeout. */
+  pendingQuestions: Record<string, { slot: string; ask_id?: string; questions: Array<{ question: string; header?: string; options: Array<{ label: string; description?: string }>; multiSelect?: boolean }> }>
   // Agent-authored follow-up suggestions (suggest_followup MCP tool), rendered
   // as a card above the composer. Keyed BY SLOT: a single global card let a
   // suggestion arriving in session B silently evict session A's unacted-on card,
@@ -296,7 +314,7 @@ const initialState: ChatState = {
   slotSide: {},
   slotSideClosed: {},
   slotHistory: [],
-  pendingQuestion: null,
+  pendingQuestions: {},
   followups: {},
   stopPressedAt: {},
   pendingTurnSlot: null,
@@ -815,10 +833,33 @@ const chatSlice = createSlice({
   initialState,
   reducers: {
     setActiveSlot(state, action: PayloadAction<string | null>) { state.activeSlot = action.payload; state.slotState = 'idle'; state.pendingTurnSlot = null },
-    clearSlotState(state) { state.messages = []; state.toolLog = []; state.subagents = {}; state.activityTab = 'files'; state.slotRunning = false; state.slotStopping = false; state.slotState = 'idle'; state.slotHasMore = false; state.slotOldestIndex = 0; state.loadingOlder = false; state.lastChunkSeq = undefined; state._wsChunkedDuringFetch = false; state.slotStatusDetail = {}; state.voicePlaying = false; state.voiceAudio = null; state.pendingQuestion = null; state.pendingTurnSlot = null },
+    clearSlotState(state) { state.messages = []; state.toolLog = []; state.subagents = {}; state.activityTab = 'files'; state.slotRunning = false; state.slotStopping = false; state.slotState = 'idle'; state.slotHasMore = false; state.slotOldestIndex = 0; state.loadingOlder = false; state.lastChunkSeq = undefined; state._wsChunkedDuringFetch = false; state.slotStatusDetail = {}; state.voicePlaying = false; state.voiceAudio = null; if (state.activeSlot) delete state.pendingQuestions?.[state.activeSlot]; state.pendingTurnSlot = null },
     setPendingInput(state, action: PayloadAction<string | null>) { state.pendingInput = action.payload },
-    setQuestionCard(state, action: PayloadAction<ChatState['pendingQuestion']>) { state.pendingQuestion = action.payload },
-    clearQuestionCard(state) { state.pendingQuestion = null },
+    setQuestionCard(state, action: PayloadAction<{ slot: string; ask_id?: string; questions: ChatState['pendingQuestions'][string]['questions'] }>) {
+      // Defensive init: existing test fixtures build partial preloaded state
+      // without this key.
+      if (!state.pendingQuestions) state.pendingQuestions = {}
+      // Same fail-closed chokepoint as the neighbouring slot-keyed reducers: the
+      // slot arrives over the websocket, and `__proto__`/`constructor` would
+      // otherwise make a READ return an inherited value that is truthy but has
+      // no `questions`, crashing QuestionCard on render.
+      if (isUnsafeKey(action.payload.slot)) return
+      state.pendingQuestions[safeKey(action.payload.slot)] = action.payload
+    },
+    clearQuestionCard(state, action: PayloadAction<{ slot: string }>) {
+      if (isUnsafeKey(action.payload.slot)) return
+      delete state.pendingQuestions?.[safeKey(action.payload.slot)]
+    },
+    /** Clear the card only if it is the one the backend just resolved.
+     *  Guards against a stale `question_card_resolved` (from a timed-out
+     *  earlier ask) wiping a newer card the user is mid-way through. */
+    resolveQuestionCard(state, action: PayloadAction<{ ask_id: string }>) {
+      // Delete by ask_id match so a stale resolution for an already-replaced
+      // question cannot clear a different slot's live card.
+      for (const [slotKey, card] of Object.entries(state.pendingQuestions ?? {})) {
+        if (card?.ask_id === action.payload.ask_id) delete state.pendingQuestions[slotKey]
+      }
+    },
     setFollowupCard(state, action: PayloadAction<{ slot: string; items: FollowupItem[]; ts?: number }>) {
       const { slot, items, ts } = action.payload
       if (!slot || !items?.length) return
@@ -2068,7 +2109,7 @@ const chatSlice = createSlice({
 })
 
 export const {
-  setActiveSlot, clearSlotState, setPendingInput, setQuestionCard, clearQuestionCard, setFollowupCard, clearFollowupCard, dismissFollowupItem, appendMessage, appendSlotMessage, updateStreamingMessage, finalizeAssistant,
+  setActiveSlot, clearSlotState, setPendingInput, setQuestionCard, clearQuestionCard, resolveQuestionCard, setFollowupCard, clearFollowupCard, dismissFollowupItem, appendMessage, appendSlotMessage, updateStreamingMessage, finalizeAssistant,
   removeThinking, removeByApprovalId, resolveByApprovalId, clearPendingPermissions, setSlotRunning, setSlotStopping, startLocalTurn, syncSlotRunningFromServer, setSlotState, setSlotStatusDetail, setStopPressedAt, clearMessages, truncateAfterIndex, replaceMessages, hydrateSlotMessages, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage,
   sseContextUsage, setVoicePlaying, setVoiceAudio,
   toggleActivity, openActivityToTab, openActivityPanel, openActivityToTool, clearFocusToolCallId, clearSubagentsForSnapshot, sseSubagentPending, markSubagentApproving, sseSubagentSpawn, sseSubagentChunk, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentQueued,

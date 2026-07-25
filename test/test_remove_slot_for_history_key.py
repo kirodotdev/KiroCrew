@@ -70,6 +70,27 @@ class TestRemoveSlotForHistoryKey:
         state.sessions.destroy.assert_awaited_once_with("dashboard:chat-1-100")
 
     @pytest.mark.asyncio
+    async def test_pending_question_cancelled_before_running_task(self):
+        """History deletion must not leave a DashboardState-owned question
+        future alive after its slot task and provider have been destroyed."""
+        slot = _make_slot("dashboard_chat-1-100", running=True)
+        state = _make_state({"dashboard_chat-1-100": slot})
+        task_was_done: list[bool] = []
+
+        def cancel_questions(slot_key: str) -> int:
+            assert slot_key == slot.key
+            task_was_done.append(slot.task.done())
+            return 1
+
+        state.cancel_questions_for_slot = MagicMock(side_effect=cancel_questions)
+
+        await _remove_slot_for_history_key(state, "dashboard_chat-1-100")
+
+        state.cancel_questions_for_slot.assert_called_once_with(slot.key)
+        assert task_was_done == [False]
+        assert slot.task.cancelled()
+
+    @pytest.mark.asyncio
     async def test_non_running_task_not_cancelled(self):
         slot = _make_slot("dashboard_chat-1-100", running=False)
         state = _make_state({"dashboard_chat-1-100": slot})

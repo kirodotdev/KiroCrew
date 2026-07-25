@@ -1825,19 +1825,24 @@ class ContextBuilder:
                 "in the user's voice as an instruction to you — \"Merge it now\", not "
                 "\"I'll merge it\".)"
             )
-            # Dashboard-only, situational nudge for the suggest_followup tool.
-            # Gated to dashboard sessions because the tool rejects Slack/cron/
-            # subagent contexts (they have no card surface). Deliberately framed
-            # as OPTIONAL and turn-END, not per-turn: the tool's own description
-            # carries the full contract, and with MCP Tool Search on the model
-            # otherwise may never surface it. This is awareness, not a mandate —
-            # it must not become noise on every reply. Distinct from [OPTIONS:]
-            # above: those are inline choices for THIS conversation; a follow-up
-            # card is a concrete NEXT task handed off (optionally to a worktree).
+            # Dashboard-only, situational nudges for tools that may otherwise
+            # never surface with MCP Tool Search. Gated here because both tools
+            # reject Slack/cron/subagent contexts (they have no card surface).
+            # ask_question is a MID-turn blocking decision; [OPTIONS:] remains
+            # the cheaper END-turn choice mechanism on every interactive surface.
             if session_key and (
                 session_key.startswith("dashboard:")
                 or session_key.startswith("dashboard_")
             ):
+                parts.append(
+                    "\n\n(If you need the user's answer to a blocking question BEFORE "
+                    "you can continue the current turn, use the ask_question tool — it "
+                    "pauses and returns the answer as the tool result. This is situational, "
+                    "not per-turn: when you are ENDING your turn, use the final [OPTIONS:] "
+                    "line instead, and do not interrupt the user for a non-blocking choice.)"
+                )
+                # A follow-up card is distinct from both: it offers concrete NEXT
+                # tasks after work is done, optionally handing one to a worktree.
                 parts.append(
                     "\n\n(When you have FINISHED a substantive piece of work and see "
                     "concrete, worth-doing next steps, you MAY offer them with the "

@@ -45,6 +45,14 @@ class _FakeState:
     def push_slots_update(self):
         self._push_count += 1
 
+    def cancel_questions_for_slot(self, slot_key):
+        """No pending ask_question cards in this fixture.
+
+        Present because the stop path releases BOTH blocking waits (approvals
+        and agent questions) through `_unblock_pending_waits`.
+        """
+        return 0
+
 
 class TestStopHandlerIdempotent:
     """Repeat /stop press returns info without creating another card."""

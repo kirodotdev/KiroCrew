@@ -16,9 +16,15 @@ interface Question {
 interface QuestionCardProps {
   questions: Question[]
   onSubmit: (answers: Record<string, string>) => void
+  /** Unblock the agent with no answer. Omitted for legacy cards, which have
+   *  nothing blocked on them and so have nothing to dismiss. */
+  onDismiss?: () => void
+  /** True while a submission is in flight: both controls lock so a second
+   *  click cannot produce a duplicate resolution or a duplicate chat turn. */
+  busy?: boolean
 }
 
-function QuestionCard({ questions, onSubmit }: QuestionCardProps) {
+function QuestionCard({ questions, onSubmit, onDismiss, busy = false }: QuestionCardProps) {
   const [selections, setSelections] = useState<Record<number, Set<string>>>({})
   const [customInputs, setCustomInputs] = useState<Record<number, string>>({})
 
@@ -51,7 +57,13 @@ function QuestionCard({ questions, onSubmit }: QuestionCardProps) {
     onSubmit(answers)
   }
 
-  const hasAnyAnswer = questions.some((_, i) => (selections[i]?.size ?? 0) > 0 || customInputs[i]?.trim())
+  /* Every question must be answered before Submit unlocks. The answer map is
+     keyed by question text, so a partial submit resumes the blocked agent with
+     a map missing entries it asked for -- it cannot tell "unanswered" from
+     "never asked" and proceeds on incomplete input. A multi-question card is
+     one atomic ask, so the gate is `every`, not `some`. */
+  const isAnswered = (i: number) => (selections[i]?.size ?? 0) > 0 || !!customInputs[i]?.trim()
+  const allAnswered = questions.every((_, i) => isAnswered(i))
 
   return (
     <div className="border border-accent/30 rounded-xl bg-card shadow-md overflow-hidden animate-scale-in">
@@ -84,20 +96,31 @@ function QuestionCard({ questions, onSubmit }: QuestionCardProps) {
             type="text"
             aria-label="Custom answer"
             placeholder="Or type a custom answer..."
+            maxLength={2000}
             value={customInputs[qIdx] || ''}
             onChange={e => {
               setCustomInputs(prev => ({ ...prev, [qIdx]: e.target.value }))
               setSelections(prev => ({ ...prev, [qIdx]: new Set() }))
             }}
-            onKeyDown={e => { if (e.key === 'Enter' && hasAnyAnswer) handleSubmit() }}
+            onKeyDown={e => { if (e.key === 'Enter' && allAnswered && !busy) handleSubmit() }}
             className="mt-2 w-full px-3 py-2 rounded-lg border border-border bg-bg text-text text-[13px] placeholder:text-muted focus:border-accent focus:outline-none"
           />
         </div>
       ))}
-      <div className="px-4 py-3 border-t border-border flex justify-end">
+      <div className="px-4 py-3 border-t border-border flex justify-end items-center gap-2">
+        {onDismiss && (
+          <button
+            onClick={onDismiss}
+            disabled={busy}
+            aria-label="Dismiss question without answering"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[13px] font-medium cursor-pointer transition-all disabled:opacity-30 disabled:cursor-not-allowed bg-transparent text-muted hover:text-text border border-border"
+          >
+            Dismiss
+          </button>
+        )}
         <button
           onClick={handleSubmit}
-          disabled={!hasAnyAnswer}
+          disabled={!allAnswered || busy}
           className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-md text-[13px] font-medium cursor-pointer transition-all disabled:opacity-30 disabled:cursor-not-allowed bg-accent text-accent-fg hover:bg-accent-hover border-none"
         >
           <MessageSquare size={14} /> Submit

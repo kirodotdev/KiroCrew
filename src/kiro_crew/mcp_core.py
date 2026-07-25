@@ -89,6 +89,7 @@ from kiro_crew.validation import (
     ARTIFACT_SAVE_SCHEMA,
     ARTIFACT_UPDATE_SCHEMA,
     ARTIFACT_VERSIONS_SCHEMA,
+    ASK_QUESTION_SCHEMA,
     AUTONUDGE_STOP_SCHEMA,
     CHANNEL_ID_RE,
     GET_CHAT_SESSION_SCHEMA,
@@ -1276,6 +1277,84 @@ def _list_tools() -> list[dict[str, Any]]:
                         "description": "Why the loop is being stopped (logged for audit)",
                     },
                 },
+            },
+        },
+        {
+            "name": "ask_question",
+            "description": (
+                "Ask the dashboard user one or more multiple-choice questions and "
+                "BLOCK until they answer. Renders a question card in the chat: the "
+                "user clicks an option (or types a custom answer in the card's "
+                "free-text field) and the answer is returned to you as this tool's "
+                "result — no extra turn, no [OPTIONS:] tag. Use when you need a "
+                "decision mid-task and cannot usefully continue without it "
+                "(which of these approaches, which account, confirm before I "
+                "refactor). Prefer the [OPTIONS: a | b | c] text tag when you are "
+                "ENDING your turn anyway — this tool is for pausing mid-turn. "
+                "Dashboard sessions only; returns a timeout notice if the user "
+                "does not answer within timeout_secs."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "questions": {
+                        "type": "array",
+                        "description": (
+                            "1-4 questions to show in one card, each with 1-6 options"
+                        ),
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "question": {
+                                    "type": "string",
+                                    "description": "The question text (max 500 chars)",
+                                },
+                                "header": {
+                                    "type": "string",
+                                    "description": (
+                                        "Short category badge shown before the "
+                                        "question, e.g. 'SCOPE' (max 50 chars)"
+                                    ),
+                                },
+                                "options": {
+                                    "type": "array",
+                                    "description": "The clickable choices",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "label": {
+                                                "type": "string",
+                                                "description": "Option text (max 200)",
+                                            },
+                                            "description": {
+                                                "type": "string",
+                                                "description": (
+                                                    "Optional gloss shown next to "
+                                                    "the label (max 500)"
+                                                ),
+                                            },
+                                        },
+                                        "required": ["label"],
+                                    },
+                                },
+                                "multiSelect": {
+                                    "type": "boolean",
+                                    "description": (
+                                        "Allow selecting several options (default false)"
+                                    ),
+                                },
+                            },
+                            "required": ["question", "options"],
+                        },
+                    },
+                    "timeout_secs": {
+                        "type": "integer",
+                        "description": (
+                            "How long to wait for the answer (15-540, default 300)"
+                        ),
+                    },
+                },
+                "required": ["questions"],
             },
         },
         {
@@ -2621,9 +2700,15 @@ def _delete_user(path: str) -> dict:
         return {"error": str(e)}
 
 
-def _post_user(path: str, body: dict) -> dict:
-    """POST JSON to a user-token-gated route (e.g. ``POST /api/autonudge``)."""
-    return _write_user(path, body, method="POST")
+def _post_user(path: str, body: dict, timeout: int = 10) -> dict:
+    """POST JSON to a user-token-gated route (e.g. ``POST /api/autonudge``).
+
+    ``timeout`` is the socket timeout in seconds. It is a parameter because
+    ``ask_question`` deliberately blocks server-side until the dashboard user
+    answers, so it needs a window longer than the 10s default used by the
+    fire-and-forget callers.
+    """
+    return _write_user(path, body, method="POST", timeout=timeout)
 
 
 def _patch_user(path: str, body: dict) -> dict:
@@ -2631,7 +2716,7 @@ def _patch_user(path: str, body: dict) -> dict:
     return _write_user(path, body, method="PATCH")
 
 
-def _write_user(path: str, body: dict, *, method: str) -> dict:
+def _write_user(path: str, body: dict, *, method: str, timeout: int = 10) -> dict:
     """Send a JSON body to a user-token-gated route via *method*."""
     token, why = _local_user_token_with_reason()
     if not token:
@@ -2644,7 +2729,7 @@ def _write_user(path: str, body: dict, *, method: str) -> dict:
     )
     try:
         # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected -- _API is the loopback dashboard base resolved from local config and path is code-constructed; no user-controlled URL reaches urlopen (same trust profile as _get_user/_delete_user)
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read())
     except urllib.error.HTTPError as e:
         return _http_error_body(e)
@@ -4796,6 +4881,65 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             f"Auto-nudge loop {loop_id} stopped on session {slot_key}"
             + (f" (reason: {reason})" if reason else "")
             + ". No further nudges will fire."
+        )
+
+    if name == "ask_question":
+        args = validate_tool_args(args, ASK_QUESTION_SCHEMA)
+        # STRICT resolution (env-var only, no PID walk): the card renders in the
+        # resolved slot's chat and blocks that caller. A subagent must not be
+        # able to PID-walk into its parent's identity and post a question card
+        # into the parent's conversation.
+        sk = _resolve_session_key_strict()
+        if not sk.startswith("dashboard:"):
+            sel().log_tool_invocation(
+                session_key=sk, source="mcp", tool_name="ask_question", outcome="noop"
+            )
+            return (
+                "ask_question only works from a dashboard chat session "
+                f"(current session_key={sk!r}). From other surfaces, end your "
+                "turn with an [OPTIONS: a | b | c] tag instead — it renders "
+                "clickable buttons on every channel that supports them."
+            )
+        timeout_secs = int(args.get("timeout_secs") or 300)
+        # Give the HTTP read a margin over the server-side wait so the socket
+        # does not trip first and strand a question the user is still answering.
+        resp = _post_user(
+            "/api/ask-question",
+            {
+                "session_key": sk,
+                "questions": args["questions"],
+                "timeout_secs": timeout_secs,
+            },
+            timeout=timeout_secs + 30,
+        )
+        if resp.get("error"):
+            sel().log_tool_invocation(
+                session_key=sk, source="mcp", tool_name="ask_question", outcome="error"
+            )
+            return f"Failed to ask the question: {resp['error']}"
+        if resp.get("status") != "answered":
+            sel().log_tool_invocation(
+                session_key=sk,
+                source="mcp",
+                tool_name="ask_question",
+                outcome="timeout",
+            )
+            return (
+                f"No answer within {timeout_secs}s (the user did not respond or "
+                "dismissed the card). Do NOT re-ask automatically — proceed with "
+                "your best judgment and say which assumption you made, or ask in "
+                "plain text and end your turn."
+            )
+        answers = resp.get("answers") or {}
+        sel().log_tool_invocation(
+            session_key=sk,
+            source="mcp",
+            tool_name="ask_question",
+            outcome="success",
+            metadata={"question_count": len(answers)},
+        )
+        return "The user answered:\n" + "\n".join(
+            f"- {q}: {a}" for q, a in answers.items()
         )
 
     if name == "monitor_start":

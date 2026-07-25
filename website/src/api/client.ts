@@ -1044,6 +1044,15 @@ export const api = {
   spawnClear: () => del('/api/spawn').then(j),
   approvals: (): Promise<{ id: string; source?: string; tool?: string; tool_input?: string; tool_call_id?: string; slot?: string; ts?: number }[]> => fetch('/api/approvals').then(j),
   resolveApproval: (id: string, action: 'approve' | 'reject') => post('/api/approvals/' + encodeURIComponent(id) + '/' + action, {}).then(j),
+  /** Question cards still awaiting an answer, for rehydration after a reload or
+   *  websocket reconnect (`question_card` is a one-shot broadcast). */
+  pendingQuestions: (): Promise<{ ask_id: string; slot: string; questions: { question: string; header?: string; multiSelect?: boolean; options: { label: string; description?: string }[] }[]; ts?: number }[]> =>
+    fetch('/api/ask-question/pending').then(j),
+  /** Resolve a pending agent question (ask_question MCP tool). Pass no answers
+   *  to dismiss, which unblocks the agent with a timeout-equivalent result. */
+  answerQuestion: (askId: string, answers?: Record<string, string>) =>
+    post('/api/ask-question/' + encodeURIComponent(askId) + '/answer',
+      answers ? { answers } : { dismissed: true }).then(j),
   // Logs
   logLevel: () => fetch('/api/logs/level').then(j),
   setLogLevel: (level: string) => post('/api/logs/level', { level }).then(j),

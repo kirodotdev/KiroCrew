@@ -597,6 +597,19 @@ async def _remove_slot_for_history_key(state: DashboardState, key: str) -> None:
     if not slot:
         # Reverse: history key has no prefix, but slot was stored with one
         slot = state._slots.pop("dashboard_" + key, None)
+    if slot:
+        # A pending ask_question is owned by the slot's running turn, but its
+        # future lives in DashboardState rather than on slot.task. History
+        # deletion tears down that task and provider directly, bypassing the
+        # normal stop/delete handlers; resolve the wait first so the MCP HTTP
+        # request returns and its finally block retracts the now-stale card.
+        cancelled = state.cancel_questions_for_slot(slot.key)
+        if cancelled:
+            logger.info(
+                "History delete: cancelled %d pending question(s) on slot %s",
+                cancelled,
+                slot.key,
+            )
     if slot and slot.running and slot.task is not None:
         slot.task.cancel()
         try:

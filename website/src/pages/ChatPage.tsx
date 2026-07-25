@@ -18,7 +18,7 @@ import {
   setVoiceAudio,
   toggleActivity, openActivityPanel, openActivityToTab,
   setActiveSlot, truncateAfterIndex, replaceMessages,
-  requestStop, clearQuestionCard, clearFollowupCard, dismissFollowupItem,
+  requestStop, pendingQuestionFor, clearFollowupCard, dismissFollowupItem,
 } from '../store/chatSlice'
 import { removeNotificationByTs } from '../store/notificationsSlice'
 import { onTerminalReady, sendToTerminalSession } from '../utils/terminalRegistry'
@@ -75,8 +75,8 @@ import ChatInput from '../components/ChatInput'
 import SessionGridView from '../components/SessionGridView'
 import { anchorForSlot, loadLayout, sessionSlots } from '../hooks/splitLayoutStore'
 import { modelSupportsEffort } from '../lib/effort'
-import QuestionCard from '../components/QuestionCard'
 import FollowUpCard from '../components/FollowUpCard'
+import PendingQuestionCard from '../components/PendingQuestionCard'
 import type { FollowupItem } from '../store/chatSlice'
 
 // Stable identity for the "no follow-up cards" case: returning a fresh {} from
@@ -581,7 +581,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
   const composerBusy = useAppSelector(s => selectComposerBusy(s, s.chat.activeSlot))
   const slotStopping = useAppSelector(s => s.chat.slotStopping)
   const slotLoading = useAppSelector(s => s.chat.slotLoading)
-  const pendingQuestion = useAppSelector(s => s.chat.pendingQuestion)
+  const pendingQuestion = useAppSelector(s => pendingQuestionFor(s.chat.pendingQuestions, s.chat.activeSlot))
   const pendingFollowup = useAppSelector(s => (s.chat.activeSlot ? s.chat.followups?.[s.chat.activeSlot] : undefined))
   const followupTsBySlot = useAppSelector(s => s.chat.followups) ?? EMPTY_FOLLOWUPS
   // The ambient tip yields to functional surfaces that own the above-composer band
@@ -591,7 +591,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
     // slot check below) -- suppression must match, or a question pending in
     // another running slot suppresses tips here forever (Codex round-31,
     // same slot-ownership family as the workflowRuns fix in round-16).
-    (!!s.chat.pendingQuestion && s.chat.pendingQuestion.slot === s.chat.activeSlot) ||
+    !!pendingQuestionFor(s.chat.pendingQuestions, s.chat.activeSlot) ||
     // The follow-up card occupies the same above-composer band. Cards are
     // slot-keyed, so read only the ACTIVE slot's entry — a card parked in
     // another session must not suppress tips here.
@@ -679,7 +679,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
       ? history.filter(s => (s.title || '').toLowerCase().includes(historyQuery) || s.key.toLowerCase().includes(historyQuery)).slice(0, 5)
       : [],
     [historyQuery, history])
-  const isWelcomeState = messages.length === 0 && !slotRunning && !slotLoading && !sendingRef.current && !knowledgeFetch.results.length && !knowledgeFetch.loading && !knowledgeFetch.pendingKnowledge
+  /* `!pendingQuestion`: the welcome hero is vertically centred in the empty
+     transcript, which is the same space the question card occupies above the
+     composer -- with both mounted they visibly overlap. An agent that asks
+     before producing any output is a real case (it happens on the very first
+     turn), so the card wins and the welcome content stands down. */
+  const isWelcomeState = messages.length === 0 && !slotRunning && !slotLoading && !sendingRef.current && !knowledgeFetch.results.length && !knowledgeFetch.loading && !knowledgeFetch.pendingKnowledge && !pendingQuestion
   const showHistorySuggestions = isWelcomeState && historySuggestions.length > 0 && !historyDismissed
   useEffect(() => {
     if (!showHistorySuggestions) return
@@ -3908,16 +3913,18 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
                   onSkip={() => knowledgeFetch.clearResults()}
                 />
               ) : null}
-              {pendingQuestion && pendingQuestion.slot === activeSlot && (
+              {pendingQuestion && (
                 <div className="px-5 pb-2 mx-auto w-full" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
-                  <QuestionCard
-                    questions={pendingQuestion.questions}
-                    onSubmit={(answers) => {
-                      const text = Object.values(answers).join('\n')
-                      if (text.trim()) {
-                        send(text)
-                      }
-                      dispatch(clearQuestionCard())
+                  <PendingQuestionCard
+                    slotKey={activeSlot}
+                    onFallbackSend={(text) => {
+                      // A 404 means the blocked wait is gone and the card has
+                      // already cleared. Keep the user's answer in the composer
+                      // for an explicit retry instead of auto-sending: even with
+                      // a live WS, /api/chat can resolve with an HTTP error (for
+                      // example Kiro becoming unavailable), which would otherwise
+                      // leave the answer only in a non-persisted optimistic bubble.
+                      setInput((prev) => (prev.trim() ? `${prev}\n${text}` : text))
                     }}
                   />
                 </div>

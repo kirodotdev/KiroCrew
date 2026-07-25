@@ -1637,6 +1637,12 @@ class DashboardState:
         # Pending tool approvals: id → asyncio.Future[bool]
         self._pending_approvals: dict[str, dict] = {}
         self._approval_futures: dict[str, asyncio.Future] = {}  # type: ignore[type-arg]
+        # Pending agent questions (ask_question MCP tool): ask_id → payload /
+        # Future[dict]. Distinct from _approval_futures because the resolution
+        # value is the user's answer map, not an allow/deny boolean, and the
+        # question card is addressed to one slot rather than the whole gateway.
+        self._pending_questions: dict[str, dict] = {}
+        self._question_futures: dict[str, asyncio.Future] = {}  # type: ignore[type-arg]
         self._flush_task: asyncio.Task | None = None  # type: ignore[type-arg]
         # Update progress tracking (shared across all connected clients)
         self._update_progress: dict[str, str] | None = None  # {step, detail}
@@ -1775,6 +1781,18 @@ class DashboardState:
     # wait only this short window and then deny-fast, letting the turn proceed/fail
     # rather than hang.
     _BACKGROUND_APPROVAL_TIMEOUT_SECS = 180  # 3 minutes — deny-fast for unattended runs
+    # Agent questions block a live MCP tool call, so the ceiling is bounded by
+    # how long the agent transport will hold that call open — far shorter than
+    # the 2h approval window. Callers pick a value inside these bounds.
+    _QUESTION_TIMEOUT_DEFAULT = 300  # 5 minutes
+    # Hard ceiling set by the ACP tool-stall watchdog, NOT by the `wait` tool.
+    # `acp/client.py::_TOOL_STALL_TIMEOUT` is 600s and is armed once a tool call
+    # is dispatched; a blocked ask_question emits no progress frames, so a window
+    # at or beyond 600s lets the watchdog declare the turn dead and kill it —
+    # after which an answer has no turn left to return to. 540s keeps a 60s
+    # margin below the watchdog. `wait` can afford 1800s because it is a
+    # different mechanism; copying that number here was the bug.
+    _QUESTION_TIMEOUT_MAX = 540  # 9 minutes — 60s under the 600s tool-stall watchdog
     _FLUSH_INTERVAL = 5  # seconds between dirty-slot flushes
 
     _log = logging.getLogger(__name__)
@@ -1940,6 +1958,140 @@ class DashboardState:
                 self.push_slots_update()
                 return True
         return False
+
+    async def request_question(
+        self,
+        ask_id: str,
+        slot_key: str,
+        questions: list[dict],
+        timeout: int | None = None,
+    ) -> dict[str, str] | None:
+        """Ask the dashboard user a multiple-choice question and block for the answer.
+
+        Broadcasts a ``question_card`` carrying ``ask_id`` and awaits the
+        matching :meth:`resolve_question` call. Returns the user's answer map
+        (``{question: answer}``), or ``None`` when the wait timed out, the
+        caller was cancelled, or the user dismissed the card.
+
+        ``questions`` MUST already have passed
+        :func:`kiro_crew.validation.validate_ask_user_question` — this method
+        redacts but does not re-shape the payload.
+        """
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future[dict[str, str] | None] = loop.create_future()
+
+        # The question text is model-authored and rendered in the dashboard, so
+        # it gets the same redaction pass as the approval payload.
+        safe_questions: list[dict] = []
+        seen_redacted: set[str] = set()
+        for q in questions:
+            sq = dict(q)
+            for field in ("question", "header"):
+                val, _ = redact_exfiltration_urls(str(sq.get(field) or ""))
+                val, _ = redact_credentials(val)
+                sq[field] = val
+            # The answer map is keyed by the REDACTED question text (that is what
+            # the frontend renders and echoes back), and redaction is lossy: two
+            # questions that differ only inside a credential or URL collapse to
+            # the same key here even though validate_ask_user_question saw them
+            # as distinct. One answer would then silently overwrite the other and
+            # the agent would resume on incomplete input. Reject instead: a
+            # question the user cannot tell apart on screen is not answerable.
+            norm = " ".join(str(sq.get("question") or "").split()).casefold()
+            if norm in seen_redacted:
+                raise ValueError(
+                    "questions collapse to identical text after redaction; "
+                    "rephrase so each question is distinguishable"
+                )
+            seen_redacted.add(norm)
+            safe_opts: list[dict] = []
+            seen_redacted_labels: set[str] = set()
+            for o in sq.get("options") or []:
+                so = dict(o)
+                for field in ("label", "description"):
+                    val, _ = redact_exfiltration_urls(str(so.get(field) or ""))
+                    val, _ = redact_credentials(val)
+                    so[field] = val
+                # Redaction is lossy. Distinct validated labels can collapse to
+                # the same rendered/returned value, just as question text can.
+                # Reject before registering the future or broadcasting a card:
+                # descriptions cannot disambiguate an answer that contains only
+                # the selected label.
+                norm_label = " ".join(str(so.get("label") or "").split()).casefold()
+                if norm_label in seen_redacted_labels:
+                    raise ValueError(
+                        "option labels collapse to identical text after redaction; "
+                        "rephrase so every option is distinguishable"
+                    )
+                seen_redacted_labels.add(norm_label)
+                safe_opts.append(so)
+            sq["options"] = safe_opts
+            safe_questions.append(sq)
+
+        payload = {
+            "ask_id": ask_id,
+            "slot": slot_key,
+            "questions": safe_questions,
+            "ts": time.time(),
+        }
+        self._pending_questions[ask_id] = payload
+        # Registered only now that the payload is known-good: an early raise
+        # above must not leave an orphan future nothing will ever resolve.
+        self._question_futures[ask_id] = fut
+        # Owner-only: the payload carries the model-authored question text and
+        # options addressed to the dashboard owner. A plain broadcast_ws would
+        # also deliver it to non-owner sessions, which would defeat the
+        # owner-gating on the HTTP endpoints.
+        self.broadcast_ws_owners("question_card", payload)
+
+        window = timeout if timeout is not None else self._QUESTION_TIMEOUT_DEFAULT
+        window = max(1, min(int(window), self._QUESTION_TIMEOUT_MAX))
+        try:
+            return await asyncio.wait_for(fut, timeout=window)
+        except asyncio.TimeoutError:
+            return None
+        except asyncio.CancelledError:
+            return None
+        finally:
+            self._pending_questions.pop(ask_id, None)
+            self._question_futures.pop(ask_id, None)
+            # Tell every owner client to drop the card — otherwise a timed-out
+            # or cancelled question stays clickable and submitting it 404s.
+            # Owner-scoped to match the card broadcast: a non-owner never
+            # received the card, so it has nothing to drop.
+            try:
+                self.broadcast_ws_owners("question_card_resolved", {"ask_id": ask_id})
+            except Exception:
+                self._log.warning("WS broadcast failed for question resolution", exc_info=True)
+
+    def resolve_question(self, ask_id: str, answers: dict[str, str] | None) -> bool:
+        """Resolve a pending agent question. Returns False when no such question.
+
+        ``answers`` of ``None`` means the user dismissed the card without
+        answering; the blocked caller then sees the same result as a timeout.
+        """
+        fut = self._question_futures.get(ask_id)
+        if fut is None or fut.done():
+            return False
+        fut.set_result(answers)
+        return True
+
+    def cancel_questions_for_slot(self, slot_key: str) -> int:
+        """Unblock every question pending on ``slot_key``. Returns how many.
+
+        Called when a slot's turn is stopped or reset so a blocked ask_question
+        cannot outlive the turn that issued it and strand its MCP call.
+        """
+        stale = [
+            aid
+            for aid, p in self._pending_questions.items()
+            if p.get("slot") == slot_key
+        ]
+        cancelled = 0
+        for aid in stale:
+            if self.resolve_question(aid, None):
+                cancelled += 1
+        return cancelled
 
     def start_flush_loop(self) -> None:
         """Start background loop that flushes dirty slots to disk every 5s."""

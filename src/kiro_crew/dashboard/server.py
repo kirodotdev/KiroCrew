@@ -684,6 +684,21 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_patch("/api/autonudge/{loop_id}", api_autonudge_update)
     app.router.add_delete("/api/autonudge/{loop_id}", api_autonudge_delete)
 
+    # Agent questions — blocking question-card round-trip for the ask_question
+    # MCP tool. The POST holds open until the user answers, so it must not be
+    # wrapped in any short-timeout middleware.
+    from kiro_crew.dashboard.handlers.ask_question import (
+        api_ask_question,
+        api_ask_question_answer,
+        api_ask_question_pending,
+    )
+
+    app.router.add_post("/api/ask-question", api_ask_question)
+    # Registered before the {ask_id} route so the literal path is not captured
+    # as an ask_id.
+    app.router.add_get("/api/ask-question/pending", api_ask_question_pending)
+    app.router.add_post("/api/ask-question/{ask_id}/answer", api_ask_question_answer)
+
     # Artifacts — persistent, versioned LLM-generated UI
     app.router.add_get("/api/artifacts", api_artifacts_list)
 

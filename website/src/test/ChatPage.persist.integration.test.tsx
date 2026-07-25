@@ -6,7 +6,7 @@
  * this test FAILS.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { act, render, renderHook } from '@testing-library/react'
+import { act, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -18,7 +18,18 @@ import type { RootState } from '../store'
 
 // --- Stub child components ---
 vi.mock('react-virtuoso', () => ({ Virtuoso: () => null }))
-vi.mock('../components/ChatInput', () => ({ default: () => null }))
+vi.mock('../components/ChatInput', () => ({
+  default: ({ value }: { value: string }) => (
+    <textarea aria-label="test chat input" value={value} readOnly />
+  ),
+}))
+vi.mock('../components/PendingQuestionCard', () => ({
+  default: ({ onFallbackSend }: { onFallbackSend: (text: string) => void }) => (
+    <button aria-label="send stale question fallback" onClick={() => onFallbackSend('Public only')}>
+      Send fallback
+    </button>
+  ),
+}))
 vi.mock('../components/WelcomeView', () => ({ default: () => null }))
 vi.mock('../components/MarkdownPanel', () => ({ default: () => null }))
 vi.mock('../components/MarkdownRenderer', () => ({ default: () => null }))
@@ -50,7 +61,7 @@ vi.mock('../api/client', () => ({
      'chatSlotWorkspace', 'models', 'planAction', 'planFromChat', 'renameSlot',
      'resolveApproval', 'screenshot', 'slackChannels', 'slackLink', 'spawnList',
      'stopChatSlot', 'uploadFiles', 'voiceSynthesize', 'workspaces', 'chatSlots',
-     'notifications', 'status'].map(k => [k, vi.fn().mockResolvedValue(k === 'chatSlotDetail' ? { messages: [], has_more: false } : {})])
+     'notifications', 'status', 'sendChat'].map(k => [k, vi.fn().mockResolvedValue(k === 'chatSlotDetail' ? { messages: [], has_more: false } : {})])
   ),
 }))
 
@@ -78,10 +89,11 @@ function renderChatPage(
   activeSlot: string | null,
   slots: ChatSlot[],
   chatOverrides: Partial<RootState['chat']> = {},
+  connected = false,
 ) {
   const store = createTestStore({
     dashboard: {
-      status: { platform: 'darwin' }, connected: false, slots, approvalMode: 'normal',
+      status: { platform: 'darwin' }, connected, slots, approvalMode: 'normal',
       channelTrusted: false, refreshTrigger: 0, unreadSlots: [], updateProgress: null,
       subagentRunning: {}, subagentDetails: {}, subagentText: {},
       sessionDefaultColor: null, sessionColorsMode: 'tint', sessionColorsPalette: 'horizon', sessionColorsIntensity: 'clear',
@@ -158,6 +170,31 @@ describe('ChatPage unmount slot persistence (real component)', () => {
     await act(async () => { window.dispatchEvent(new Event('beforeunload')) })
     const persisted = JSON.parse(localStorage.getItem('mc-chat-drafts') || '{}')
     expect(persisted['chat-2']).toBe('mid-sentence crash content')
+  })
+
+  it('preserves a connected stale-question fallback in the existing composer draft', async () => {
+    localStorage.setItem('mc-chat-drafts', JSON.stringify({ 'chat-2': 'existing draft' }))
+    localStorage.setItem('mc-chat-drafts-ts', JSON.stringify({ 'chat-2': Date.now() }))
+
+    renderChatPage(undefined, 'chat-2', allSlots, {
+      pendingQuestions: {
+        'chat-2': {
+          slot: 'chat-2',
+          ask_id: 'ask-stale',
+          questions: [{ question: 'Trust model', options: [{ label: 'Public only' }] }],
+        },
+      },
+    }, true)
+
+    fireEvent.click(screen.getByRole('button', { name: 'send stale question fallback' }))
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('test chat input')).toHaveValue('existing draft\nPublic only')
+    })
+    // A live WebSocket does not guarantee /api/chat will accept a new turn
+    // (Kiro readiness can return HTTP 503), so stale answers require an
+    // explicit user retry rather than an automatic send.
+    expect(api.sendChat).not.toHaveBeenCalled()
   })
 
   it('keeps the Changes tab while uncached slot history is loading', async () => {

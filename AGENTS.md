@@ -546,6 +546,7 @@ should always use the MCP tool equivalents.
 | — | `local_knowledge_search` | kirocrew-core |
 | — | `file_send` | kirocrew-core |
 | — | `autonudge_stop` | kirocrew-core |
+| — | `ask_question` | kirocrew-core |
 | — | `artifact_folder_list` | kirocrew-core |
 | — | `artifact_folder_create` | kirocrew-core |
 | — | `artifact_folder_rename` | kirocrew-core |

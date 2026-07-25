@@ -8,6 +8,7 @@ import ChatMessageList from '../app-sdk/ChatMessageList'
 import ToolCallLine from '../pages/chat/ToolCallLine'
 import type { ChatMessage } from '../types'
 import ChatInput from './ChatInput'
+import PendingQuestionCard from './PendingQuestionCard'
 import QueueStack, { SubagentDeliveryProgress, isSystemDelivery } from './QueueStack'
 import SubagentProgressBar from '../pages/chat/SubagentProgressBar'
 import AgentDropdownList from './AgentDropdownList'
@@ -266,6 +267,30 @@ export default function ChatPane({
         {queuedMessages.length > 0 && (
           <QueueStack messages={queuedMessages} onCancel={onCancelQueued} onInterrupt={onInterruptQueued} />
         )}
+
+        {/* The pending ask_question card renders per pane: in split mode the
+            agent that asked may not be the pane the user is looking at, and
+            without this its card never appears anywhere, so it waits out its
+            full window. */}
+        <PendingQuestionCard
+          slotKey={slotKey}
+          /* doSend() reads the composer state, so the fallback sends directly.
+             `sendChat` returns the raw Response, so a non-OK status RESOLVES
+             rather than rejecting — both have to be checked. The card is already
+             cleared by the time this runs, so a swallowed failure would destroy
+             the user's answer outright; on any failure it goes back into the
+             composer instead. */
+          onFallbackSend={(text) => {
+            api
+              .sendChat(text, slotKey)
+              .then((res) => {
+                if (!res || !res.ok) throw new Error(`send failed (${res?.status ?? 'no response'})`)
+              })
+              .catch(() => {
+                setInput((prev) => (prev.trim() ? `${prev}\n${text}` : text))
+              })
+          }}
+        />
 
         <ChatInput
           value={input}

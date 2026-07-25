@@ -771,6 +771,52 @@ def _reject_pending_approvals(slot: _ChatSlot) -> None:
             )
 
 
+def _unblock_pending_waits(state: DashboardState, slot: _ChatSlot) -> None:
+    """Unblock EVERY thing a stop/interrupt could leave the runner waiting on.
+
+    Two independent blocking waits exist per slot and both must be released or
+    the cooperative cancel times out into a hard kill:
+
+    * pending tool approvals (:func:`_reject_pending_approvals`)
+    * pending agent questions from the ``ask_question`` tool
+      (:meth:`DashboardState.cancel_questions_for_slot`) — the blocked HTTP
+      request holds an MCP worker, so resolving the future is what lets that
+      socket close and the tool call return.
+
+    They are combined here deliberately: a new blocking wait added later must
+    be released from every stop path, and three separate call sites each
+    needing their own second line is how one of them gets missed.
+    """
+    _reject_pending_approvals(slot)
+    cancelled = state.cancel_questions_for_slot(slot.key)
+    if cancelled:
+        logger.info(
+            "Stop: cancelled %d pending question(s) on slot %s", cancelled, slot.key
+        )
+
+
+async def _reset_slot_session(
+    state: DashboardState, slot: _ChatSlot, session_key: str
+) -> None:
+    """Reset a slot's agent session, releasing anything blocked on the old one.
+
+    The switch handlers (agent, model, bulk model, reasoning effort, workspace)
+    reset the session so the next message starts under the new setting. That
+    tears down the agent process — but a pending ``ask_question`` lives in
+    dashboard state, not in the session, so without this it survives the reset:
+    the card stays on screen inviting an answer, and the blocked HTTP request
+    holds an MCP worker until its own timeout with no agent left to receive the
+    answer it eventually returns.
+
+    Routing every reset through one helper rather than adding a second call at
+    each site is deliberate, and is the same reasoning as
+    :func:`_unblock_pending_waits`: five call sites each having to remember an
+    extra line is how one of them gets missed.
+    """
+    _unblock_pending_waits(state, slot)
+    await state.sessions.reset(session_key)
+
+
 def _resolve_stop_event(slot: _ChatSlot, outcome: str) -> None:
     """Update the in-flight stop_event message in place with final state."""
     stop_id = slot._stop_event_id
@@ -851,8 +897,9 @@ async def api_chat_slot_stop(request: web.Request) -> web.Response:
             slot._stop_state = "idle"
             state.push_slots_update()
 
-        # Unblock chat runner if it's suspended waiting for tool approval.
-        _reject_pending_approvals(slot)
+        # Unblock chat runner if it's suspended waiting for tool approval or on
+        # a pending ask_question card.
+        _unblock_pending_waits(state, slot)
         await state.sessions.stop_turn(_history_key_for(name), force=True, on_hard=_on_hard_force)
         sel().log_tool_invocation(
             session_key=_history_key_for(name),
@@ -950,8 +997,9 @@ async def api_chat_slot_stop(request: web.Request) -> web.Response:
         slot._stop_state = "idle"
         state.push_slots_update()
 
-    # Unblock chat runner if it's suspended waiting for tool approval.
-    _reject_pending_approvals(slot)
+    # Unblock chat runner if it's suspended waiting for tool approval or on a
+    # pending ask_question card.
+    _unblock_pending_waits(state, slot)
 
     outcome = await state.sessions.stop_turn(
         _history_key_for(name), force=False, preserve_queue=True, on_soft=_on_soft, on_hard=_on_hard
@@ -1065,8 +1113,9 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
     slot.append("system", stop_msg, stop_msg)
     state.push_slots_update()
 
-    # Unblock chat runner if it's suspended waiting for tool approval.
-    _reject_pending_approvals(slot)
+    # Unblock chat runner if it's suspended waiting for tool approval or on a
+    # pending ask_question card.
+    _unblock_pending_waits(state, slot)
 
     outcome = await state.sessions.stop_turn(
         _history_key_for(name),
@@ -1264,6 +1313,10 @@ async def api_chat_slot_delete(request: web.Request) -> web.Response:
 
     # Remove from dict before async operations
     state._slots.pop(name, None)
+    # Release any blocking wait before cancelling the task: a pending
+    # ask_question holds an MCP worker on a blocked HTTP request, and the slot
+    # is going away, so nobody will ever answer its card.
+    _unblock_pending_waits(state, slot)
     if slot.running and slot.task is not None:
         slot.task.cancel()
         try:
@@ -1453,7 +1506,7 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
 
     # Reset session so next message uses the new agent
     logger.info("Slot %s agent switched to %r, resetting session", name, agent_name or "kirocrew")
-    await state.sessions.reset(_history_key_for(name))
+    await _reset_slot_session(state, slot, _history_key_for(name))
     # Persist the new agent so the session resumes under the correct agent
     # after a gateway restart.  Written after reset succeeds so we never
     # advertise an agent we couldn't actually switch to.
@@ -1524,7 +1577,7 @@ async def api_chat_slot_model(request: web.Request) -> web.Response:
         return web.json_response({"ok": True, "model": model_name})
     slot.model = model_name
     logger.info("Slot %s model switched to %r, resetting session", name, model_name or "auto")
-    await state.sessions.reset(_history_key_for(name))
+    await _reset_slot_session(state, slot, _history_key_for(name))
     state.push_slots_update()
     return web.json_response({"ok": True, "model": model_name})
 
@@ -1589,7 +1642,7 @@ async def api_chat_slots_model(request: web.Request) -> web.Response:
         # the new model with stale history (the model/history inconsistency), and a
         # single failure doesn't abort the whole bulk switch.
         try:
-            await state.sessions.reset(_history_key_for(name))
+            await _reset_slot_session(state, slot, _history_key_for(name))
         except Exception:
             logger.error("Bulk model switch: session reset failed for %s", name, exc_info=True)
             failed.append(name)
@@ -1696,7 +1749,7 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
     if not _updated_live:
         # No live session (or live update failed): reset so the next cold
         # start picks up the new effort via the provider factory/overlay.
-        await state.sessions.reset(session_key)
+        await _reset_slot_session(state, slot, session_key)
     state.push_slots_update()
     return web.json_response({"ok": True, "reasoning_effort": effort})
 
@@ -1724,7 +1777,7 @@ async def api_chat_slot_workspace(request: web.Request) -> web.Response:
     slot.workspace = ws_name
     slot.project = default_project_dir(ws_name)
     logger.info("Slot %s workspace switched to %r, resetting session", name, ws_name)
-    await state.sessions.reset(_history_key_for(name))
+    await _reset_slot_session(state, slot, _history_key_for(name))
     state.push_slots_update()
     return web.json_response({"ok": True, "workspace": ws_name})
 

@@ -898,6 +898,33 @@ MONITOR_UPDATE_SCHEMA = ToolSchema(
     ],
 )
 
+# Bounds for the question-card payload, shared by ASK_QUESTION_SCHEMA (agent-facing
+# arg check) and validate_ask_user_question (authoritative payload normalization).
+_ASK_MAX_QUESTIONS = 4
+_ASK_MAX_OPTIONS = 6
+_ASK_MAX_QUESTION_LEN = 500
+_ASK_MAX_HEADER_LEN = 50
+_ASK_MAX_LABEL_LEN = 200
+_ASK_MAX_DESC_LEN = 500
+# The answer side is bounded too: answers are echoed verbatim into the agent's
+# transcript, so an oversized custom answer would consume model context.
+_ASK_MAX_ANSWER_LEN = 2000
+
+# ask_question renders the dashboard question card and blocks the tool call
+# until the user answers. `questions` is only shape-checked here (a bounded
+# list); the per-question/per-option limits are enforced server-side by
+# validate_ask_user_question, which is the single source of truth for the card
+# payload. timeout bounds mirror DashboardState._QUESTION_TIMEOUT_MAX.
+ASK_QUESTION_SCHEMA = ToolSchema(
+    tool_name="ask_question",
+    fields=[
+        FieldSpec("questions", list, required=True, max_items=_ASK_MAX_QUESTIONS),
+        # 540 not 1800: the ACP tool-stall watchdog (600s) kills the turn
+        # first, and an answer arriving after that has no turn to return to.
+        FieldSpec("timeout_secs", int, min_val=15, max_val=540),
+    ],
+)
+
 # delete_message reads args["channel"] and args["ts"] by subscript. Without a
 # schema, a call omitting either key raised KeyError, which is NOT caught by
 # call_tool_with_logging (only ValidationError is) and propagated out of the
@@ -1785,6 +1812,7 @@ MCP_CORE_SCHEMAS: dict[str, ToolSchema] = {
     "autonudge_stop": AUTONUDGE_STOP_SCHEMA,
     "monitor_start": MONITOR_START_SCHEMA,
     "monitor_update": MONITOR_UPDATE_SCHEMA,
+    "ask_question": ASK_QUESTION_SCHEMA,
     "delete_message": DELETE_MESSAGE_SCHEMA,
     "local_knowledge_search": LOCAL_KNOWLEDGE_SEARCH_SCHEMA,
     "knowledge_dedup": KNOWLEDGE_DEDUP_SCHEMA,
@@ -1954,13 +1982,7 @@ def validate_string_field(
 
 
 # ── AskUserQuestion Schema Validation ──
-
-_ASK_MAX_QUESTIONS = 4
-_ASK_MAX_OPTIONS = 6
-_ASK_MAX_QUESTION_LEN = 500
-_ASK_MAX_HEADER_LEN = 50
-_ASK_MAX_LABEL_LEN = 200
-_ASK_MAX_DESC_LEN = 500
+# Bounds live near ASK_QUESTION_SCHEMA above (single definition, two consumers).
 
 
 def validate_ask_user_question(raw: object) -> list[dict]:
@@ -1977,6 +1999,7 @@ def validate_ask_user_question(raw: object) -> list[dict]:
         raise ValidationError("questions", "must be a non-empty list")
 
     result: list[dict] = []
+    seen_questions: set[str] = set()
     for q in questions[:_ASK_MAX_QUESTIONS]:
         if not isinstance(q, dict):
             continue
@@ -1988,16 +2011,37 @@ def validate_ask_user_question(raw: object) -> list[dict]:
         if not isinstance(raw_opts, list):
             continue
         opts: list[dict] = []
+        seen_labels: set[str] = set()
         for o in raw_opts[:_ASK_MAX_OPTIONS]:
             if not isinstance(o, dict):
                 continue
             label = str(o.get("label") or "")[:_ASK_MAX_LABEL_LEN]
             if not label:
                 continue
+            # Option labels are their end-to-end identity: the frontend keys
+            # selection state by label and sends labels back as the answer.
+            # Descriptions are display-only, so duplicate normalized labels
+            # would make distinct-looking rows submit the same value.
+            norm_label = " ".join(label.split()).casefold()
+            if norm_label in seen_labels:
+                raise ValidationError(
+                    "questions", "duplicate option labels are not allowed"
+                )
+            seen_labels.add(norm_label)
             desc = str(o.get("description") or "")[:_ASK_MAX_DESC_LEN]
             opts.append({"label": label, "description": desc})
         if not opts:
             continue
+        # Answers are keyed by question text end-to-end (the frontend builds an
+        # answer map keyed on the question string, and the tool result echoes
+        # that map). Two questions with the same text collapse to one entry —
+        # the user answers both but only the last reaches the blocked agent.
+        # Reject duplicates (normalized on whitespace/case) so a multi-question
+        # card can never silently drop an answer.
+        norm = " ".join(qt.split()).casefold()
+        if norm in seen_questions:
+            raise ValidationError("questions", "duplicate question text is not allowed")
+        seen_questions.add(norm)
         result.append(
             {
                 "question": qt,
