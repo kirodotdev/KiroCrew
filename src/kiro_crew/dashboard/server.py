@@ -1535,6 +1535,7 @@ async def start_dashboard(
     app.router.add_get("/api/file-watch", handlers.api_file_watch)
     app.router.add_post("/api/file-write", handlers.api_file_write)
     app.router.add_get("/api/file-diff", handlers.api_file_diff)
+    app.router.add_get("/api/git-changes", handlers.api_git_changes)
     app.router.add_get("/api/file-search", handlers.api_file_search)
     app.router.add_get("/api/browse-dirs", handlers.api_browse_dirs)
     app.router.add_get("/api/browse-files", handlers.api_browse_files)

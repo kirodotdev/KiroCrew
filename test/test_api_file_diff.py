@@ -41,13 +41,19 @@ async def test_empty_path_returns_empty():
 
 @pytest.mark.asyncio
 async def test_nonexistent_file_returns_empty():
-    """Non-existent file returns empty diff and original."""
+    """Non-existent file outside any repo returns empty diff (status not_git).
+
+    Missing files are no longer rejected up front — a tracked-but-deleted path
+    must reach git to produce its deletion patch. A missing file that git does
+    not know about falls out as an empty not_git result.
+    """
     req = _req("/tmp/nonexistent_file_abc123.txt")
     with patch("kiro_crew.dashboard.handlers.files._sel", return_value=_mock_sel()):
         resp = await api_file_diff(req)
     assert resp.status == 200
     body = json.loads(resp.body)
-    assert body == {"diff": "", "original": ""}
+    assert body["diff"] == ""
+    assert body["original"] == ""
 
 
 @pytest.mark.asyncio
@@ -129,7 +135,7 @@ async def test_modified_file_in_git_repo(tmp_path):
 @pytest.mark.asyncio
 @requires_git
 async def test_untracked_file_in_git_repo(tmp_path):
-    """Untracked file returns untracked status with diff."""
+    """Untracked file returns untracked status with a synthesized all-added patch."""
     subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True, check=True)
     subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=tmp_path, capture_output=True)
     subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, capture_output=True)
@@ -147,8 +153,33 @@ async def test_untracked_file_in_git_repo(tmp_path):
     assert resp.status == 200
     body = json.loads(resp.body)
     assert body["status"] == "untracked"
-    assert body["diff"] != ""
+    # difflib-synthesized patch (portable — no /dev/null git invocation).
+    assert "+new file content" in body["diff"]
+    assert "@@" in body["diff"]
     assert body["original"] == ""
+
+
+@pytest.mark.asyncio
+@requires_git
+async def test_deleted_file_returns_deletion_patch(tmp_path):
+    """A tracked file deleted from the working tree returns its deletion patch."""
+    subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=tmp_path, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, capture_output=True)
+    f = tmp_path / "doomed.txt"
+    f.write_text("soon gone")
+    subprocess.run(["git", "add", "doomed.txt"], cwd=tmp_path, capture_output=True, check=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=tmp_path, capture_output=True, check=True)
+    f.unlink()
+
+    with patch("kiro_crew.dashboard.handlers.files._sel", return_value=_mock_sel()):
+        req = _req(str(f))
+        resp = await api_file_diff(req)
+    assert resp.status == 200
+    body = json.loads(resp.body)
+    assert body["status"] == "deleted"
+    assert "-soon gone" in body["diff"]
+    assert body["original"] == "soon gone"
 
 
 @pytest.mark.asyncio

@@ -8,6 +8,7 @@ import {
   ChevronRight,
   Circle,
   ExternalLink,
+  FolderGit2,
   GitCommitHorizontal,
   GitMerge,
   GitPullRequest,
@@ -29,13 +30,13 @@ import type {
   PullRequestStatusBatch,
 } from '../types'
 import {
+  LOCAL_CHANGES_SOURCE_URL,
   MAX_PULL_REQUEST_SOURCES,
   type PullRequestLink,
 } from '../utils/pullRequestLinks'
-import { parseUnifiedDiff } from '../utils/parseUnifiedDiff'
-import hljs from '../utils/hljs'
-import DOMPurify from 'dompurify'
-import { DIFF_BG, DIFF_FG } from '../utils/diffUtils'
+import DiffView from './UnifiedDiffView'
+import LocalChangesView, { FileNameWithPath } from './LocalChangesView'
+import { colorForExt, fileIcon } from '../utils/fileIcons'
 import GithubLogo from './icons/GithubLogo'
 import GitlabLogo from './icons/GitlabLogo'
 import { timeAgo } from '../utils/timeAgo'
@@ -290,81 +291,24 @@ function SourceTabState({ status }: { status: PullRequestStatus | undefined }) {
   )
 }
 
-function diffLanguage(path: string): string | null {
-  const ext = path.split('.').pop()?.toLowerCase() || ''
-  return ext && hljs.getLanguage(ext) ? ext : null
-}
-
-/** Defer heavy subtree mounting until just after the drawer's slide-in
- * animation (120ms), so opening the panel animates with lightweight file
- * headers instead of stuttering on thousands of highlighted diff rows. */
-function useDeferredMount(delayMs = 140): boolean {
-  const [ready, setReady] = useState(false)
-  useEffect(() => {
-    const id = window.setTimeout(() => setReady(true), delayMs)
-    return () => window.clearTimeout(id)
-  }, [delayMs])
-  return ready
-}
-
-function DiffView({ patch, path }: { patch: string; path: string }) {
-  const ready = useDeferredMount()
-  const rows = useMemo(() => parseUnifiedDiff(patch), [patch])
-  const language = useMemo(() => diffLanguage(path), [path])
-  // Per-line highlighting keyed by file extension. Lines are highlighted
-  // independently (multi-line constructs may reset), which matches the
-  // fidelity GitHub's own diff view accepts. hljs escapes the input, so
-  // its HTML output is safe to inject.
-  const highlighted = useMemo(() => {
-    if (!language || !ready) return null
-    return rows.map(row =>
-      row.kind === 'hunk-gap' ? '' : DOMPurify.sanitize(hljs.highlight(row.text, { language, ignoreIllegals: true }).value),
-    )
-  }, [rows, language, ready])
-  if (!ready) return <div className="px-3 py-3 text-[11px] text-muted">Loading diff…</div>
-  return (
-    <div className="min-w-max text-[11px] leading-5 font-mono">
-      {rows.map((row, index) => {
-        if (row.kind === 'hunk-gap') {
-          return (
-            <div key={index} className="flex items-center gap-2 px-3 py-1 bg-bg-elevated/60 text-muted select-none">
-              {row.hiddenCount > 0 ? `${row.hiddenCount} unmodified ${row.hiddenCount === 1 ? 'line' : 'lines'}` : <span className="w-full border-t border-border" />}
-            </div>
-          )
-        }
-        const tone = row.kind === 'add' ? DIFF_BG.add : row.kind === 'del' ? DIFF_BG.del : ''
-        const marker = row.kind === 'add' ? '+' : row.kind === 'del' ? '-' : ' '
-        const markerTone = row.kind === 'add' ? DIFF_FG.add : row.kind === 'del' ? DIFF_FG.del : 'text-muted/40'
-        const html = highlighted?.[index]
-        return (
-          <div key={index} className={`flex min-w-fit ${tone}`}>
-            <span className="w-10 shrink-0 px-1 text-right text-muted/50 select-none border-r border-border/30">{row.oldLine ?? ''}</span>
-            <span className="w-10 shrink-0 px-1 text-right text-muted/50 select-none border-r border-border/30">{row.newLine ?? ''}</span>
-            <span className={`w-4 shrink-0 text-center select-none ${markerTone}`}>{marker}</span>
-            {html !== undefined && html !== '' ? (
-              <span className="hljs flex-1 whitespace-pre px-2 !bg-transparent" dangerouslySetInnerHTML={{ __html: html }} />
-            ) : (
-              <span className="flex-1 whitespace-pre px-2 text-text">{row.text}</span>
-            )}
-          </div>
-        )
-      })}
-    </div>
-  )
-}
-
 function ChangeRow({ file }: { file: PullRequestFile }) {
   const [open, setOpen] = useState(false)
+  const Icon = fileIcon(file.path)
+  const iconColor = colorForExt(file.path)
   return (
     <div className="border-b border-border last:border-b-0">
       <Btn
         type="button"
         onClick={() => setOpen(value => !value)}
-        className="w-full flex items-center gap-2 px-3 py-2.5 bg-transparent border-none text-left cursor-pointer hover:bg-bg-hover transition-colors"
+        className="group w-full flex items-center gap-2 px-3 py-2.5 bg-transparent border-none text-left cursor-pointer hover:bg-bg-hover transition-colors"
         aria-expanded={open}
       >
-        {open ? <ChevronDown className="lucide-inline shrink-0 text-muted" /> : <ChevronRight className="lucide-inline shrink-0 text-muted" />}
-        <span className="text-[13px] text-text truncate min-w-0 flex-1">{file.path}</span>
+        <Icon size={13} className={`${iconColor} shrink-0`} />
+        <FileNameWithPath rel={file.path} />
+        {open
+          ? <ChevronDown size={13} className="shrink-0 text-muted" />
+          : <ChevronRight size={13} className="shrink-0 text-muted opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100 transition-opacity" />}
+        <span className="flex-1 min-w-0" />
         <span className="text-[11px] text-muted capitalize shrink-0">{file.status}</span>
         <span className="text-[11px] shrink-0"><span className="text-ok">+{file.additions}</span> <span className="text-danger">-{file.deletions}</span></span>
       </Btn>
@@ -599,14 +543,25 @@ export default function PullRequestPanel({
   selectedUrl,
   onSelect,
   onAddToChat,
+  projectDir,
+  onFileOpen,
 }: {
   sources: PullRequestLink[]
   selectedUrl: string
   onSelect: (url: string) => void
   onAddToChat: (text: string) => void
+  /** Chat's project directory — scopes the ever-present Local tab. */
+  projectDir?: string
+  /** Open a path as a native file document tab (Local tab file names). */
+  onFileOpen?: (path: string) => void
 }) {
   const cappedSources = sources.slice(0, MAX_PULL_REQUEST_SOURCES)
-  const selected = cappedSources.find(source => source.url === selectedUrl) || cappedSources[0]
+  // The Local Changes tab is ever-present in the source strip, selected via a
+  // sentinel "url"; it is also the default whenever there are no PR sources.
+  const localSelected = selectedUrl === LOCAL_CHANGES_SOURCE_URL || cappedSources.length === 0
+  const selected = localSelected
+    ? undefined
+    : cappedSources.find(source => source.url === selectedUrl) || cappedSources[0]
   const [tab, setTab] = useState<SourceTab>('changes')
   const [checkPollState, setCheckPollState] = useState({ url: '', failures: 0 })
   const checkPollStateRef = useRef({ url: '', failures: 0 })
@@ -817,6 +772,17 @@ export default function PullRequestPanel({
   return (
     <div className="flex flex-col h-full min-h-0">
       <div role="tablist" aria-label="Pull requests" className="shrink-0 border-b border-border px-2 py-2 flex items-center gap-1 overflow-x-auto">
+        <Btn
+          type="button"
+          role="tab"
+          aria-selected={localSelected}
+          onClick={() => onSelect(LOCAL_CHANGES_SOURCE_URL)}
+          className={`shrink-0 flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border-none cursor-pointer text-[12px] transition-colors ${localSelected ? 'bg-bg-hover text-text' : 'bg-transparent text-muted hover:text-text hover:bg-bg-hover/60'}`}
+          title={projectDir || 'Local working-tree changes'}
+        >
+          <FolderGit2 size={13} className="shrink-0" />
+          <span>Local</span>
+        </Btn>
         {cappedSources.map(item => (
           <Btn
             key={item.url}
@@ -834,8 +800,14 @@ export default function PullRequestPanel({
         ))}
       </div>
 
-      {query.isLoading && <div className="flex-1 flex items-center justify-center gap-2 text-[13px] text-muted"><Loader className="lucide-inline animate-spin" />Loading source provider…</div>}
-      {query.error && (
+      {localSelected && (
+        <div className="flex-1 min-h-0 overflow-hidden">
+          <LocalChangesView projectDir={projectDir} onFileOpen={onFileOpen} />
+        </div>
+      )}
+
+      {!localSelected && query.isLoading && <div className="flex-1 flex items-center justify-center gap-2 text-[13px] text-muted"><Loader className="lucide-inline animate-spin" />Loading source provider…</div>}
+      {!localSelected && query.error && (
         <div className="flex-1 flex items-center justify-center px-6">
           <div role="alert" className="max-w-md flex flex-col items-center">
             <AlertCircle className={`lucide-inline mb-2 ${queryError.loginCommand ? 'text-warn' : 'text-danger'}`} />

@@ -42,6 +42,14 @@ const VIEW_TITLES: Record<ViewKind, string> = {
   logs: 'Logs', side: 'Side',
 }
 
+/** Kinds a persisted tab may legitimately carry. Anything else (e.g. a tab
+ *  minted by a since-removed view kind) is dropped on rehydrate instead of
+ *  rendering as an iconless, bodyless chip. */
+const KNOWN_TAB_KINDS = new Set<string>([
+  'changes', 'files', 'artifacts', 'subagents', 'workflows', 'logs', 'side',
+  'file', 'diff', 'artifact', 'terminal',
+])
+
 /** Max concurrent terminal tabs per chat (each is a live PTY). At the cap,
  *  openTerminal focuses/reuses the most-recent terminal instead of spawning. */
 export const MAX_TERMINALS_PER_CHAT = 4
@@ -146,7 +154,11 @@ function loadPersisted(): BySlot {
       try {
         const b = JSON.parse(localStorage.getItem(k) ?? 'null') as Partial<Bucket> | null
         if (b && Array.isArray(b.tabs)) {
-          out[slot] = { tabs: b.tabs as PanelTab[], activeId: (b.activeId as string | null) ?? null }
+          const tabs = (b.tabs as PanelTab[]).filter(t => KNOWN_TAB_KINDS.has(t?.kind as string))
+          const activeId = tabs.some(t => t.id === b.activeId)
+            ? ((b.activeId as string | null) ?? null)
+            : (tabs.length ? tabs[tabs.length - 1].id : null)
+          out[slot] = { tabs, activeId }
         }
       } catch { /* skip malformed bucket */ }
     }

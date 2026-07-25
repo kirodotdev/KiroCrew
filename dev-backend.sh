@@ -45,4 +45,4 @@ echo "   Source: $PYTHONPATH"
 echo "   Data:   $KIROCREW_HOME"
 echo ""
 
-exec "$RUNTIME_PYTHON" -m kiro_crew gateway
+exec "$RUNTIME_PYTHON" -m kiro_crew gateway "$@"

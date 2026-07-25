@@ -541,7 +541,7 @@ function SessionArtifactsTab({ slot, onFileOpen }: { slot: string; onFileOpen?: 
   )
 }
 
-export default function ActivityViewer({ subagents, toolLog, open, onToggle, slot, files, onFileOpen, onFileRemove, navLinks, navResolving, view, sources, selectedSourceUrl, onSelectSource, onAddToChat, onFileSave, onSubmitComments, openDocPaths, previewPath, onPreviewPathChange }: {
+export default function ActivityViewer({ subagents, toolLog, open, onToggle, slot, files, onFileOpen, onFileRemove, navLinks, navResolving, view, sources, projectDir, selectedSourceUrl, onSelectSource, onAddToChat, onFileSave, onSubmitComments, openDocPaths, previewPath, onPreviewPathChange }: {
   subagents: Record<string, SubagentActivity>; toolLog: ToolActivity[]; open: boolean; onToggle: () => void; slot: string
   files?: TouchedFile[]; onFileOpen?: (path: string) => void; onFileRemove?: (path: string) => void; onFilesClear?: (source: 'history' | 'tool') => void
   projectDir?: string
@@ -586,7 +586,6 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
   previewOpenRef.current = previewPathValue != null
   const reduxTab = useAppSelector(s => s.chat.activityTab)
   const [tab, setTab] = useState<'changes' | 'subagents' | 'workflows' | 'logs' | 'files' | 'side' | 'artifacts'>(reduxTab === ('nav' as string) ? 'files' : reduxTab)
-  const hasSources = (sources?.length || 0) > 0
   const explicitTab = useRef(false)
   const containerRef = useRef<HTMLDivElement>(null)
   // Exception-first ordering: agents needing attention (failed, stalled,
@@ -689,11 +688,10 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
 
   // When a `view` prop is supplied, SidePanel owns the tab strip — render only
   // that view and skip the internal SegmentedControl.
-  const requestedTab = view ?? tab
-  const effectiveTab = requestedTab === 'changes' && !hasSources ? 'files' : requestedTab
+  const effectiveTab = view ?? tab
 
   const TABS: { key: typeof tab; label: string; icon: ReactNode; count?: number }[] = [
-    ...(hasSources ? [{ key: 'changes' as const, label: 'Changes', icon: <GitPullRequest size={13} />, count: sources!.length }] : []),
+    { key: 'changes' as const, label: 'Changes', icon: <GitPullRequest size={13} />, count: sources?.length || 0 },
     { key: 'files', label: 'Files', icon: <FileText size={13} />, count: files?.length || 0 },
     { key: 'artifacts', label: 'Artifacts', icon: <Component size={13} /> },
     { key: 'subagents', label: 'Subagents', icon: <Bot size={13} />, count: ids.length + visibleLog.filter(isSpawnApproval).length },
@@ -720,14 +718,18 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
         </div>
       )}
 
-      {/* Changes (pull request sources) view */}
-      {effectiveTab === 'changes' && hasSources && (
+      {/* Changes view: PR source tabs + the ever-present Local Changes tab
+          (working-tree diffs for the chat's project dir). Local Changes gives
+          the view a permanent body, so it renders even with zero PR sources. */}
+      {effectiveTab === 'changes' && (
         <div className="flex-1 min-h-0 overflow-hidden">
           <PullRequestPanel
-            sources={sources!}
+            sources={sources || []}
             selectedUrl={selectedSourceUrl || ''}
             onSelect={onSelectSource || (() => {})}
             onAddToChat={onAddToChat || (() => {})}
+            projectDir={projectDir}
+            onFileOpen={onFileOpen}
           />
         </div>
       )}

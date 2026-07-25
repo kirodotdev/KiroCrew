@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import difflib
 import errno
 import hashlib
 import json
@@ -1973,20 +1974,30 @@ async def api_file_search(request: web.Request) -> web.Response:
 
 
 async def api_file_diff(request: web.Request) -> web.Response:
-    """GET /api/file-diff?path=... — returns git diff and HEAD content for a file."""
+    """GET /api/file-diff?path=... — returns git diff and HEAD content for a file.
+
+    The file does NOT have to exist in the working tree: a tracked-but-deleted
+    path returns its deletion patch (status ``deleted``) so reviewers can
+    inspect removed content.
+    """
     raw_path = request.query.get("path", "").strip()
     if not raw_path:
         _sel().log_api_access(caller=request.get("user", "dashboard"), operation="file_diff", outcome="allowed", resources="empty_path")
         return web.json_response({"diff": "", "original": ""})
     raw_path = os.path.realpath(os.path.expanduser(raw_path))
-    if not os.path.isfile(raw_path):
-        _sel().log_api_access(caller=request.get("user", "dashboard"), operation="file_diff", outcome="allowed", resources=f"path={raw_path}", error="not_found")
-        return web.json_response({"diff": "", "original": ""})
     if is_sensitive_path(raw_path):
         _sel().log_api_access(caller=request.get("user", "dashboard"), operation="file_diff", outcome="denied", resources=raw_path, error="sensitive path")
         return web.json_response({"error": "Access denied"}, status=403)
+    file_missing = not os.path.isfile(raw_path)
 
+    # Nearest EXISTING ancestor as the git cwd — the file (or even its
+    # directory) may have been deleted.
     dirpath = os.path.dirname(raw_path)
+    while dirpath and dirpath != os.path.dirname(dirpath) and not os.path.isdir(dirpath):
+        dirpath = os.path.dirname(dirpath)
+    if not os.path.isdir(dirpath):
+        _sel().log_api_access(caller=request.get("user", "dashboard"), operation="file_diff", outcome="allowed", resources=f"path={raw_path}", error="not_found")
+        return web.json_response({"diff": "", "original": ""})
 
     def _run() -> dict:
         # Disable textconv/filter drivers and fsmonitor to prevent code execution
@@ -2009,12 +2020,19 @@ async def api_file_diff(request: web.Request) -> web.Response:
                 cwd=dirpath, capture_output=True, text=True, timeout=10, env=_env,
             )
             original = head.stdout if head.returncode == 0 else ""
-            # Get diff
+            # Get diff (works for deleted paths too — git diffs against HEAD)
             r = subprocess.run(
                 [*_git, "diff", "--no-textconv", "--no-ext-diff", "HEAD", "--", raw_path],
                 cwd=dirpath, capture_output=True, text=True, timeout=10, env=_env,
             )
             diff = r.stdout.strip() if r.returncode == 0 else ""
+            if file_missing:
+                # Tracked-but-deleted: deletion patch + HEAD content. Anything
+                # else missing is simply unknown to git — empty result, which
+                # matches the endpoint's historical behavior for absent files.
+                if diff and original:
+                    return {"diff": diff, "original": original, "status": "deleted"}
+                return {"diff": "", "original": ""}
             if not diff:
                 # Check for untracked file
                 r2 = subprocess.run(
@@ -2022,11 +2040,16 @@ async def api_file_diff(request: web.Request) -> web.Response:
                     cwd=dirpath, capture_output=True, text=True, timeout=5, env=_env,
                 )
                 if r2.returncode == 0 and r2.stdout.strip().startswith("??"):
-                    r3 = subprocess.run(
-                        [*_git, "diff", "--no-textconv", "--no-ext-diff", "--no-index", "/dev/null", raw_path],
-                        cwd=dirpath, capture_output=True, text=True, timeout=10, env=_env,
-                    )
-                    diff = r3.stdout if r3.stdout else ""
+                    # Synthesize the all-added patch in Python instead of
+                    # `git diff --no-index /dev/null <path>`: /dev/null is not
+                    # portable to native Windows, and difflib output is
+                    # byte-for-byte adequate for the frontend renderers.
+                    try:
+                        with open(raw_path, "r", encoding="utf-8", errors="replace") as fh:
+                            new_lines = fh.read().splitlines(keepends=True)
+                    except OSError:
+                        new_lines = []
+                    diff = "".join(difflib.unified_diff([], new_lines, fromfile="/dev/null", tofile=rel))
                     return {"diff": diff, "original": "", "status": "untracked"}
             status = "modified" if diff else "clean"
             return {"diff": diff, "original": original, "status": status}
@@ -2035,6 +2058,178 @@ async def api_file_diff(request: web.Request) -> web.Response:
 
     result = await asyncio.to_thread(_run)
     _sel().log_api_access(caller=request.get("user", "dashboard"), operation="file_diff", outcome="allowed", resources=f"path={raw_path}")
+    return web.json_response(result)
+
+
+# Bounds for the git-changes scan (api_git_changes): repos discovered under the
+# project dir and changed files reported per repo. Keeps the response — and the
+# per-request subprocess fan-out — bounded on large workspaces.
+GIT_CHANGES_MAX_REPOS = 20
+GIT_CHANGES_MAX_FILES = 500
+_GIT_CHANGES_TIMEOUT_SECS = 10
+
+
+def _git_status_label(code: str) -> str:
+    """Map a porcelain v1 XY code to a coarse per-file status label."""
+    if code == "??":
+        return "untracked"
+    if "U" in code or code in ("AA", "DD"):
+        return "conflicted"
+    # Prefer the worktree (Y) column; fall back to the index (X) column.
+    key = code[1] if len(code) > 1 and code[1] != " " else code[0]
+    return {
+        "M": "modified", "A": "added", "D": "deleted",
+        "R": "renamed", "C": "copied", "T": "modified",
+    }.get(key, "modified")
+
+
+def _discover_git_repos(base: str) -> list[str]:
+    """Git worktree roots at/under ``base``: the dir itself when it is inside a
+    repo, else its immediate children, else ``base/src`` children (multi-repo
+    workspace layout). Sensitive paths are skipped. Bounded scan — depth <= 2.
+
+    ``.git`` is checked with ``exists`` rather than ``isdir``: linked git
+    worktrees and submodules represent it as a FILE (a gitdir pointer), and
+    those are just as much repositories as a regular checkout."""
+    if os.path.exists(os.path.join(base, ".git")):
+        return [base]
+
+    def _children_with_git(parent: str) -> list[str]:
+        found: list[str] = []
+        try:
+            entries = sorted(os.scandir(parent), key=lambda e: e.name.lower())
+        except OSError:
+            return found
+        for entry in entries:
+            if len(found) >= GIT_CHANGES_MAX_REPOS:
+                break
+            if not entry.is_dir(follow_symlinks=False) or entry.name.startswith("."):
+                continue
+            real = os.path.realpath(entry.path)
+            if is_sensitive_path(real):
+                continue
+            if os.path.exists(os.path.join(real, ".git")):
+                found.append(real)
+        return found
+
+    repos = _children_with_git(base)
+    src = os.path.join(base, "src")
+    if not repos and os.path.isdir(src):
+        repos = _children_with_git(src)
+    return repos[:GIT_CHANGES_MAX_REPOS]
+
+
+async def api_git_changes(request: web.Request) -> web.Response:
+    """GET /api/git-changes?dir=... — working-tree changes for git repos under a directory.
+
+    Response: ``{"dir": ..., "repos": [{"root", "name", "branch", "files":
+    [{"path", "rel", "status", "staged"}]}]}``. An empty ``repos`` list means no
+    git repository was found; a repo with an empty ``files`` list is clean.
+    Per-file diffs are served by the existing /api/file-diff endpoint.
+    """
+    caller = request.get("user", "dashboard")
+    raw_dir = request.query.get("dir", "").strip()
+    if not raw_dir:
+        return web.json_response({"error": "Missing dir parameter"}, status=400)
+    base = os.path.realpath(os.path.expanduser(raw_dir))
+    if not os.path.isdir(base):
+        _sel().log_api_access(caller=caller, operation="git_changes", outcome="allowed", resources=f"dir={base}", error="not_found")
+        return web.json_response({"dir": base, "repos": []})
+    if is_sensitive_path(base):
+        _sel().log_api_access(caller=caller, operation="git_changes", outcome="denied", resources=base, error="sensitive path")
+        return web.json_response({"error": "Access denied"}, status=403)
+
+    def _run() -> dict:
+        # Same hardening as api_file_diff: disable textconv/filter drivers and
+        # fsmonitor so .gitattributes / .git/config in untrusted repos cannot
+        # trigger code execution.
+        _git = ["git", "-c", "diff.textconv=", "-c", "core.attributesFile=/dev/null", "-c", "core.fsmonitor="]
+        _env = {**os.environ, "GIT_ATTR_NOSYSTEM": "1"}
+        repos_out: list[dict] = []
+        for repo in _discover_git_repos(base):
+            try:
+                top = subprocess.run(
+                    [*_git, "rev-parse", "--show-toplevel"],
+                    cwd=repo, capture_output=True, text=True,
+                    timeout=_GIT_CHANGES_TIMEOUT_SECS, env=_env,
+                )
+                if top.returncode != 0:
+                    continue
+                root = top.stdout.strip() or repo
+                branch_r = subprocess.run(
+                    [*_git, "rev-parse", "--abbrev-ref", "HEAD"],
+                    cwd=root, capture_output=True, text=True,
+                    timeout=_GIT_CHANGES_TIMEOUT_SECS, env=_env,
+                )
+                branch = branch_r.stdout.strip() if branch_r.returncode == 0 else ""
+                # -z: NUL-delimited entries with VERBATIM paths — no C-style
+                # quoting/escaping to undo, and filenames with leading/trailing
+                # whitespace survive intact.
+                status_r = subprocess.run(
+                    [*_git, "status", "--porcelain", "--no-renames", "-z"],
+                    cwd=root, capture_output=True, text=True,
+                    timeout=_GIT_CHANGES_TIMEOUT_SECS, env=_env,
+                )
+                if status_r.returncode != 0:
+                    continue
+                # One numstat per repo covers every tracked change (staged +
+                # unstaged vs HEAD) — far cheaper than a per-file diff fan-out.
+                # Untracked files have no numstat entry; binary files report
+                # "-\t-" and are skipped (counts stay absent for both).
+                numstat_r = subprocess.run(
+                    [*_git, "diff", "--numstat", "-z", "--no-textconv", "--no-ext-diff", "--no-renames", "HEAD"],
+                    cwd=root, capture_output=True, text=True,
+                    timeout=_GIT_CHANGES_TIMEOUT_SECS, env=_env,
+                )
+                counts: dict[str, tuple[int, int]] = {}
+                if numstat_r.returncode == 0:
+                    for ns_entry in numstat_r.stdout.split("\0"):
+                        parts = ns_entry.split("\t")
+                        if len(parts) != 3 or not parts[0].isdigit() or not parts[1].isdigit():
+                            continue
+                        counts[parts[2]] = (int(parts[0]), int(parts[1]))
+            except (subprocess.TimeoutExpired, FileNotFoundError, UnicodeDecodeError):
+                continue
+            files: list[dict] = []
+            for status_entry in status_r.stdout.split("\0"):
+                if len(files) >= GIT_CHANGES_MAX_FILES:
+                    break
+                # Entry shape: "XY <path>" — two status columns, one space,
+                # then the verbatim path.
+                if len(status_entry) < 4:
+                    continue
+                code, rel = status_entry[:2], status_entry[3:]
+                if not rel:
+                    continue
+                # The payload keeps the LEXICAL repo path — for a changed
+                # symlink, resolving it would point diff/open actions at the
+                # TARGET instead of the changed entry. realpath is used only
+                # for the sensitive-location check, so a repo symlinking into
+                # e.g. ~/.ssh still never leaks.
+                lexical_path = os.path.normpath(os.path.join(root, rel))
+                if is_sensitive_path(os.path.realpath(lexical_path)):
+                    continue
+                entry: dict = {
+                    "path": lexical_path,
+                    "rel": rel,
+                    "status": _git_status_label(code),
+                    "staged": code[0] not in (" ", "?"),
+                }
+                # +/- line counts from the repo-wide numstat. Absent for
+                # untracked and binary files.
+                if rel in counts:
+                    entry["additions"], entry["deletions"] = counts[rel]
+                files.append(entry)
+            repos_out.append({
+                "root": root,
+                "name": os.path.basename(root) or root,
+                "branch": branch,
+                "files": files,
+            })
+        return {"dir": base, "repos": repos_out}
+
+    result = await asyncio.to_thread(_run)
+    _sel().log_api_access(caller=caller, operation="git_changes", outcome="allowed", resources=f"dir={base} repos={len(result['repos'])}")
     return web.json_response(result)
 
 

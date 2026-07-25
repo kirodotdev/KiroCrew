@@ -99,12 +99,13 @@ describe('PullRequestPanel', () => {
     renderPanel()
     expect(await screen.findByText('Add source tabs')).toBeInTheDocument()
     expect(screen.getByText('Github', { exact: false })).toBeInTheDocument()
-    expect(screen.getByText('src/panel.tsx')).toBeInTheDocument()
+    expect(screen.getByText('panel.tsx')).toBeInTheDocument()
+    expect(screen.getByText('src')).toBeInTheDocument()
     expect(screen.getByText('1 File Changed')).toBeInTheDocument()
     // Diffs stay unmounted until explicitly expanded, then parse after the
     // drawer animation deferral.
     expect(screen.queryByText('new')).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: /src\/panel\.tsx/i }))
+    fireEvent.click(screen.getByRole('button', { name: /panel\.tsx/i }))
     expect(await screen.findByText('new')).toBeInTheDocument()
     expect(screen.getByText('old')).toBeInTheDocument()
     expect(screen.getByRole('tab', { name: /All checks passed/i })).toBeInTheDocument()

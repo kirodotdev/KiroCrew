@@ -39,7 +39,29 @@ function emitChangeSources(found: Map<string, AttributedLink>): PullRequestLink[
   return out
 }
 
+/**
+ * Every referenced PR regardless of who mentioned it first. The Changes panel
+ * treats a user paste as tracking intent (a PR to follow), not mere context,
+ * so it consumes this unfiltered projection; emitChangeSources above keeps the
+ * agent-first attribution for other consumers.
+ */
+function emitAllSources(found: Map<string, AttributedLink>): PullRequestLink[] {
+  const out: PullRequestLink[] = []
+  for (const link of found.values()) {
+    out.push({ url: link.url, provider: link.provider, number: link.number, repo: link.repo })
+  }
+  return out
+}
+
 export const MAX_PULL_REQUEST_SOURCES = 64
+
+/**
+ * Sentinel "url" for the ever-present Local Changes tab in the Changes panel's
+ * source strip. Never a real provider link: it must not enter the seen-source
+ * index, be persisted, or be sent to a provider — it only routes selection
+ * between the local worktree view and the PR sources.
+ */
+export const LOCAL_CHANGES_SOURCE_URL = 'local:changes'
 
 const SEEN_SOURCES_STORAGE_KEY = 'mc-pr-source-seen-v1'
 const MAX_PERSISTED_SOURCE_SLOTS = 32
@@ -176,6 +198,13 @@ export class PullRequestLinkIndex {
   private tail: AttributedLink[] = []
   private tailTransient = false
   private result: PullRequestLink[] = []
+  private resultAll: PullRequestLink[] = []
+
+  /** All PRs referenced by anyone (user or agent) — see emitAllSources. Kept in
+   *  sync with the last update()/rebuild, so call after update(). */
+  all(): PullRequestLink[] {
+    return this.resultAll
+  }
 
   update(slot: string | null, messages: ChatMessage[]): PullRequestLink[] {
     if (slot !== this.slot) {
@@ -234,6 +263,7 @@ export class PullRequestLinkIndex {
     const found = new Map(this.settled)
     addLinks(found, this.tail)
     this.result = emitChangeSources(found)
+    this.resultAll = emitAllSources(found)
   }
 }
 

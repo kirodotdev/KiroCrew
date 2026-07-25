@@ -257,8 +257,12 @@ export default function SidePanel({
           Per Figma "left-nav" (7328:10637): the row is a rounded elevated card
           (bg-elevated, 12px radius, 8px padding) floating above the content,
           not a flat bordered bar. side-panel-strip punches the strip out of the
-          Electron window-drag region (see index.css) so chips receive events. */}
-      <div className="side-panel-strip flex items-center gap-1.5 shrink-0 p-2 mb-3 rounded-tl-xl bg-bg-elevated">
+          Electron window-drag region (see index.css) so chips receive events.
+          The mb-3 breathing gap is dropped when the active view renders its OWN
+          top tab row flush against the strip (Changes' source strip) — the two
+          stacked rows already delineate each other and the double gap read as
+          uneven spacing. */}
+      <div className={`side-panel-strip flex items-center gap-1.5 shrink-0 p-2 rounded-tl-xl bg-bg-elevated ${activeId === 'changes' ? '' : 'mb-3'}`}>
         {/* Collapse the panel (far-left), separated from the tabs by a hairline. */}
         <button
           className="flex items-center justify-center w-7 h-7 rounded-md text-muted hover:text-text hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0"

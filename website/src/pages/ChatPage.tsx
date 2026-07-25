@@ -103,6 +103,7 @@ import { loadFileDrafts, saveFileDrafts as persistFileDrafts, setFileDraft } fro
 import { loadPasteDrafts, savePasteDrafts as persistPasteDrafts, setPasteDraft } from '../utils/chatPasteDrafts'
 import { findPrevUserMsgDisplayIdx } from '../utils/findPrevUserMsgDisplayIdx'
 import {
+  LOCAL_CHANGES_SOURCE_URL,
   loadSeenPullRequestLinks,
   persistSeenPullRequestLinks,
   PullRequestLinkIndex,
@@ -1213,7 +1214,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
   const search = useMessageSearch(messages, activeSlot)
   const touchedFiles = useTouchedFiles(activeSlot ?? undefined)
   const sourceLinkIndex = useRef(new PullRequestLinkIndex())
-  const sourceLinks = sourceLinkIndex.current.update(activeSlot, messages)
+  sourceLinkIndex.current.update(activeSlot, messages)
+  // The Changes tab shows every referenced PR — user pastes included (pasting
+  // a PR is tracking intent, not mere context), via the index's unfiltered
+  // projection. The agent-only projection (update()'s return) is unused here.
+  const sourceLinks = sourceLinkIndex.current.all()
   const [selectedSourceUrl, setSelectedSourceUrl] = useState('')
 
   // Add and focus the per-slot Changes tab for newly detected source URLs,
@@ -1240,7 +1245,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
       setSelectedSourceUrl('')
       return
     }
-    if (!sourceLinks.some(source => source.url === selectedSourceUrl)) {
+    if (
+      selectedSourceUrl !== LOCAL_CHANGES_SOURCE_URL
+      && !sourceLinks.some(source => source.url === selectedSourceUrl)
+    ) {
       setSelectedSourceUrl(sourceLinks[0].url)
     }
     // React to indexed sources, selection, and hydration completion only;
@@ -3097,16 +3105,16 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
                   aria-hidden="true"
                   className="absolute z-[60] bg-bg-elevated border border-border shadow-md pointer-events-none"
                   initial={PANEL}
-                  animate={BTN}
+                  animate={{ ...BTN, opacity: 0 }}
                   exit={{ ...PANEL, opacity: 0 }}
-                  transition={MORPH}
+                  transition={{ ...MORPH, opacity: { delay: MORPH.duration, duration: 0.15 } }}
                 />
               )}
             </AnimatePresence>
             <button
               type="button"
               onClick={() => window.dispatchEvent(new CustomEvent('toggle-pin-chat-sidebar'))}
-              className="absolute top-[20px] left-2 z-[61] w-[34px] h-[34px] rounded-xl flex items-center justify-center cursor-pointer text-muted hover:text-text transition-colors bg-transparent border-none"
+              className="absolute top-[20px] left-2 z-[61] w-[34px] h-[34px] rounded-lg flex items-center justify-center cursor-pointer text-muted hover:text-text hover:bg-bg-hover transition-colors bg-transparent border-none"
               title={sidebarOpen ? 'Hide sessions' : 'Show sessions'}
               aria-label={sidebarOpen ? 'Hide sessions sidebar' : 'Show sessions sidebar'}
             >
@@ -3206,7 +3214,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
                 in index.css) so the overlay never paints over the scroller's scrollbar
                 track — otherwise the thumb is hidden/un-grabbable when scrolled to top. */}
             <div className="absolute top-0 left-0 right-1.5 z-10 pointer-events-none" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
-              <div className={`pr-5 pt-3 pb-2 flex items-center gap-2 bg-bg pointer-events-none ${!sidebarOpen && !isMobile ? 'pl-14' : 'pl-5'}`}>
+              <div className={`pr-5 pt-[23px] pb-2 flex items-center gap-2 bg-bg pointer-events-none ${!sidebarOpen && !isMobile ? 'pl-[60px]' : 'pl-5'}`}>
+                {!sidebarOpen && !isMobile && embedMode !== 'chat' && (
+                  <div aria-hidden="true" className="w-px h-4 bg-border shrink-0" />
+                )}
                 {embedMode !== 'chat' && isMobile && (
                   <button className="p-1 rounded-md text-muted hover:text-text cursor-pointer bg-transparent border-none pointer-events-auto" onClick={() => setMobileSessions(p => !p)} aria-label="Toggle sessions">
                     {effectiveMode === 'orchestrator' ? <MessageSquareDot size={16} /> : <MessageSquare size={16} />}
