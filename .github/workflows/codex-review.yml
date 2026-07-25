@@ -77,9 +77,16 @@ jobs:
         if: github.actor != 'dependabot[bot]'
         run: |
           mkdir -p "$HOME/.codex"
+          # model_reasoning_effort defaults to "medium" when unset. Pin it to
+          # "high": the review is a lean read-only single-shot per pass (fast even
+          # at high effort), so we spend the available time budget on DEEPER
+          # reasoning — better recall on subtle logic/security bugs — rather than
+          # finishing early. Latency/cost rise modestly; acceptable for a merge
+          # gate.
           cat > "$HOME/.codex/config.toml" <<'EOF'
           model_provider = "amazon-bedrock"
           model = "openai.gpt-5.6-sol"
+          model_reasoning_effort = "high"
           EOF
 
       - name: Write review prompt
@@ -102,12 +109,17 @@ jobs:
           You are reviewing a pull request. Start from the changes this branch
           introduces relative to the base commit:
               git diff ${{ github.event.pull_request.base.sha }}...HEAD
-          FOCUS on the changed files. You MAY open the full changed files and any
-          surrounding or referenced files (the sandbox is read-only) for CONTEXT
-          -- to understand a changed line -- but do NOT review or report on code
-          outside the diff, and do not go on a whole-repo audit. Report findings
-          ONLY on lines this PR adds or changes; use context reads to judge those
-          lines, never to expand scope into unrelated code.
+          FOCUS on the changed files. The sandbox is READ-ONLY but you have full
+          repo access — USE IT. Actively pull the RELATED code needed to judge a
+          change instead of assuming: open the full changed files, and read the
+          definition AND call sites of a changed symbol, the other side of a
+          changed contract/interface, the validation or guard a changed line
+          relies on, and the tests that exercise it. Prefer reading the real code
+          over guessing about it. This context-gathering is EXPECTED (you have the
+          time budget). But do NOT review or report on code outside the diff, and
+          do not go on a whole-repo audit: report findings ONLY on lines this PR
+          adds or changes; the related-code reads exist to judge those lines
+          correctly, never to expand scope into unrelated code.
 
           Review the diff for:
           1. Security vulnerabilities (injection, path traversal, credential exposure)
