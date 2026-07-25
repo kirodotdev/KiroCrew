@@ -4,26 +4,26 @@
 // rocky/gas giants, hover tooltips, Carl Sagan quote). Themed onto this
 // project's --accent/--bg/--text tokens.
 //
-// The GitHub connect step is a SLIDE OF THIS CAROUSEL, not a separate
-// component rendered after it — putting it outside the carousel meant Back
-// stopped working once you reached it (the parent swapped WelcomeCarousel
-// out entirely). Keeping it as the last slide means Back always has
-// somewhere to go, all the way back to slide 0.
+// The connect step is a SLIDE OF THIS CAROUSEL, not a separate component
+// rendered after it — putting it outside the carousel meant Back stopped
+// working once you reached it (the parent swapped WelcomeCarousel out
+// entirely). Keeping it as the last slide means Back always has somewhere to
+// go, all the way back to slide 0.
 //
-// Choosing GitHub and filling in the repo URL happen on the SAME slide (not
-// a slide transition): the button morphs in place into logo-left +
-// input-field-right, per product decision. That sub-state (showConnectForm)
-// is lifted to THIS component rather than kept private inside the slide
-// component, because the parent's Back button needs to know about it — Back
-// on this slide must first collapse the form back to the button before it
-// pops the page, otherwise a user who opened the form and changed their mind
-// gets yanked all the way to the previous content slide instead of a single
-// step back.
+// That last slide's BODY is the shared <ConnectPanel> (provider rows +
+// recent-repo multi-select), and its state lives in the shared
+// `useConnectFlow` hook — shared with ConnectRepoModal so the first-run flow
+// and the "connect another repo" overlay can never drift apart. The hook is
+// called HERE rather than inside the slide because this component renders the
+// Connect button in its nav row (the slot Next occupies on content slides) and
+// its Back button needs to see the provider selection: Back on the connect
+// slide first clears the chosen provider (collapsing the card back down)
+// before it pops the page, otherwise a user who opened GitHub and changed
+// their mind gets yanked all the way to the previous content slide instead of
+// a single step back.
 import { useState } from 'react'
-import { useMutation } from '@tanstack/react-query'
 import { Radar, Search, GitPullRequest, BookOpen, RefreshCw, ArrowLeft, ArrowRight } from 'lucide-react'
-import { issueRadarApi } from './api'
-import GithubLogo from '../../components/icons/GithubLogo'
+import ConnectPanel, { COLLAPSED_CARD, EXPANDED_CARD, useConnectFlow } from './ConnectPanel'
 
 interface Slide {
   title: string
@@ -72,46 +72,54 @@ const SLIDES: Slide[] = [
   },
 ]
 
-// One extra "slide" beyond SLIDES: the GitHub connect slide (button ->
-// expands in place into the connect form, see GithubConnectSlide below).
+// One extra "slide" beyond SLIDES: the connect slide (provider rows ->
+// expands in place into the repo picker, see ConnectPanel).
 const CONNECT_PAGE = SLIDES.length
 
 export default function WelcomeCarousel({ onConnected }: { onConnected: (repo: { owner: string; repo: string }) => void }) {
   const [page, setPage] = useState(0)
-  // Lifted out of GithubConnectSlide (see file-header comment) so Back's
-  // two-level pop (form -> button, then button -> previous slide) can see it.
-  const [showConnectForm, setShowConnectForm] = useState(false)
-  // Also lifted (form field + mutation, not just the open/closed flag): the
-  // Connect action now renders in the NAV ROW's Next-button slot (per
-  // product decision — "same position Next used to occupy"), not inside the
-  // slide's own content area, so the button that triggers submission has to
-  // live where the parent renders it.
-  const [repoUrl, setRepoUrl] = useState('')
-  const connectMutation = useMutation({
-    mutationFn: (url: string) => issueRadarApi.connect(url),
-    onSuccess: (data) => onConnected({ owner: data.owner, repo: data.repo }),
-  })
-  const submitConnect = () => {
-    if (!repoUrl.trim() || connectMutation.isPending) return
-    connectMutation.mutate(repoUrl.trim())
-  }
+  const flow = useConnectFlow(onConnected)
 
   const isContentSlide = page < SLIDES.length
   const isConnectSlide = page === CONNECT_PAGE
+  const expanded = isConnectSlide && flow.provider === 'github'
+  const targetCount = flow.targets.length
 
   const handleBack = () => {
-    if (isConnectSlide && showConnectForm) {
-      setShowConnectForm(false)
+    // Blocked while a connect is in flight, for the same reason the modal
+    // blocks dismissal: navigating away only changes the UI, it does not
+    // cancel the sequential fetch loop, so repos would keep connecting behind
+    // a screen that looks like the user backed out.
+    if (flow.pending) return
+    // Two-level pop on the connect slide: first collapse the provider
+    // selection (shrinking the card), only then leave the slide.
+    if (isConnectSlide && flow.provider) {
+      flow.clearProvider()
       return
     }
     setPage((p) => p - 1)
   }
 
   return (
-    <div className="relative flex h-full items-center justify-center bg-bg overflow-hidden">
+    <div className="relative flex h-full items-center justify-center bg-bg overflow-hidden p-3">
       <SolarSystemBackground />
-      <div className="relative z-10 border border-border rounded-[14px] bg-card w-[480px] min-h-[420px] flex flex-col items-center justify-between p-10 text-center">
-        <div className="flex-1 flex flex-col items-center justify-center gap-3.5 w-full">
+      <div
+        className={`relative z-10 border border-border rounded-[14px] bg-card flex flex-col items-center justify-between p-10 text-center transition-[width,min-height] duration-200 ease-out ${
+          expanded ? EXPANDED_CARD : COLLAPSED_CARD
+        }`}
+      >
+        {/* min-h-0 + overflow-hidden: the nav row below is a sibling, so
+         * without clipping here a taller-than-expected slide would push
+         * Back/Next past the card's fixed height and out of the window.
+         * The connect slide is TOP-anchored (justify-start) — centring a
+         * two-column form in a 540px card left a large, lopsided gap above the
+         * title. The five content slides stay centred, which suits their
+         * single icon + headline. */}
+        <div
+          className={`flex-1 min-h-0 overflow-y-auto flex flex-col items-center gap-3.5 w-full ${
+            isConnectSlide ? 'justify-start' : 'justify-center'
+          }`}
+        >
           {isContentSlide && (
             <div key={page} className="animate-[wc-fade_.2s_ease] flex flex-col items-center gap-3.5">
               <div className={`flex items-center justify-center h-20 text-accent ${SLIDES[page].animClass}`}>
@@ -121,22 +129,13 @@ export default function WelcomeCarousel({ onConnected }: { onConnected: (repo: {
               <div className="text-[13.5px] text-muted leading-[1.7] max-w-[380px]">{SLIDES[page].subtitle}</div>
             </div>
           )}
-          {isConnectSlide && (
-            <GithubConnectSlide
-              showConnectForm={showConnectForm}
-              onOpenConnectForm={() => setShowConnectForm(true)}
-              url={repoUrl}
-              onUrlChange={setRepoUrl}
-              onSubmit={submitConnect}
-              submitError={connectMutation.isError ? (connectMutation.error as Error).message : null}
-            />
-          )}
+          {isConnectSlide && <ConnectPanel flow={flow} />}
         </div>
 
-        <div className="flex items-center justify-between w-full pt-3">
+        <div className="flex items-center justify-between w-full pt-3 flex-shrink-0">
           <button
             onClick={handleBack}
-            disabled={page === 0}
+            disabled={page === 0 || flow.pending}
             className="min-w-[84px] px-4 py-1.5 rounded-md border border-border bg-bg text-text text-xs cursor-pointer disabled:opacity-30 disabled:cursor-default hover:bg-bg-hover"
           >
             <ArrowLeft size={12} className="lucide-inline" /> Back
@@ -149,13 +148,11 @@ export default function WelcomeCarousel({ onConnected }: { onConnected: (repo: {
               />
             ))}
           </div>
-          {/* This slot is Next on content slides, Connect on the connect
-           * slide once the form is open (per product decision — "same
-           * position Next used to occupy"), and an empty spacer on the
-           * connect slide's collapsed (button-only) state, where the
-           * GitHub button itself is the only action and lives in the
-           * content area instead. The shared min-width keeps Back/dots
-           * aligned across all three variants. */}
+          {/* This slot is Next on content slides, Connect on the connect slide
+           * once a provider is chosen (per product decision — "same position
+           * Next used to occupy"), and an empty spacer on the connect slide's
+           * collapsed state, where the provider rows are the only action. The
+           * shared min-width keeps Back/dots aligned across all three. */}
           {isContentSlide && (
             <button
               onClick={() => setPage((p) => p + 1)}
@@ -164,17 +161,19 @@ export default function WelcomeCarousel({ onConnected }: { onConnected: (repo: {
               Next <ArrowRight size={12} className="lucide-inline" />
             </button>
           )}
-          {isConnectSlide && showConnectForm && (
+          {isConnectSlide && flow.provider && (
             <button
-              onClick={submitConnect}
-              disabled={!repoUrl.trim() || connectMutation.isPending}
+              onClick={flow.submit}
+              disabled={targetCount === 0 || flow.pending}
               className="min-w-[84px] inline-flex items-center justify-center gap-1 px-4 py-1.5 rounded-md border border-accent text-accent bg-transparent text-xs font-semibold cursor-pointer hover:bg-accent-subtle disabled:opacity-30"
             >
-              <RefreshCw size={12} className={connectMutation.isPending ? 'animate-spin' : ''} />
-              Connect
+              <RefreshCw size={12} className={flow.pending ? 'animate-spin' : ''} />
+              {flow.progress
+                ? `Connecting ${flow.progress.done + 1} of ${flow.progress.total}…`
+                : targetCount > 1 ? `Connect ${targetCount}` : 'Connect'}
             </button>
           )}
-          {isConnectSlide && !showConnectForm && <div className="min-w-[84px]" />}
+          {isConnectSlide && !flow.provider && <div className="min-w-[84px]" />}
         </div>
       </div>
 
@@ -315,83 +314,6 @@ function SolarSystemBackground() {
       <div className="wc-star" style={{ top: '38%', right: '3%' }} />
       <div className="wc-star" style={{ top: '88%', right: '30%' }} />
       <div className="wc-star" style={{ top: '60%', right: '25%' }} />
-    </div>
-  )
-}
-
-/** GitHub connect slide — a single slide with two visual states of the SAME
- * title/subtitle (their position never shifts between states — verified,
- * not assumed: they live in this component's own fixed header, above
- * whichever variant renders below):
- *
- * 1. Collapsed: a tall outlined (not filled — per product decision) button,
- *    logo above the "GitHub" label. No gh-CLI note here — that note only
- *    appears AFTER clicking GitHub (per product decision), so it reads as a
- *    confirmation of what just happened rather than a caveat shown before
- *    the user has committed to anything.
- * 2. Expanded (after clicking it): the button morphs in place into an
- *    UNBORDERED logo + input row — no wrapping box around them, per product
- *    decision. Connect itself is NOT rendered here — it moved to the parent
- *    (WelcomeCarousel)'s nav row, in the slot Next used to occupy, per
- *    product decision ("Connect goes bottom-right, where Next used to be").
- *    So this component is a pure display component now: form state (url,
- *    submit mutation) lives in the parent, which needs it to wire up that
- *    nav-row button; this component just renders the input and forwards
- *    onChange/onSubmit.
- */
-function GithubConnectSlide({
-  showConnectForm,
-  onOpenConnectForm,
-  url,
-  onUrlChange,
-  onSubmit,
-  submitError,
-}: {
-  showConnectForm: boolean
-  onOpenConnectForm: () => void
-  url: string
-  onUrlChange: (url: string) => void
-  onSubmit: () => void
-  submitError: string | null
-}) {
-  return (
-    <div className="flex flex-col items-center gap-4 w-full">
-      <div className="text-[20px] font-bold text-text tracking-[-0.2px]">Let's Connect a Repo</div>
-      <div className="text-[13.5px] text-muted leading-[1.7] max-w-[380px]">
-        Connect a repo. Nothing runs without your say.
-      </div>
-
-      {!showConnectForm && (
-        <button
-          onClick={onOpenConnectForm}
-          className="flex flex-col items-center justify-center gap-2.5 w-[120px] h-[140px] rounded-md border border-accent text-accent bg-transparent cursor-pointer hover:bg-accent-subtle"
-        >
-          <GithubLogo size={40} />
-          <span className="text-[13px] font-semibold">GitHub</span>
-        </button>
-      )}
-
-      {showConnectForm && (
-        <div className="flex items-center gap-3 w-full max-w-[380px]">
-          <GithubLogo size={20} className="flex-shrink-0 text-accent" />
-          <input
-            value={url}
-            onChange={(e) => onUrlChange(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter') onSubmit() }}
-            autoFocus
-            aria-label="GitHub repository URL"
-            placeholder="https://github.com/<owner>/<repo>"
-            className="flex-1 box-border text-[13.5px] px-3 py-2 rounded-md bg-bg text-text border border-border font-mono"
-          />
-        </div>
-      )}
-
-      {submitError && <div className="text-danger text-xs">{submitError}</div>}
-      {showConnectForm && (
-        <p className="text-[12px] text-muted opacity-70 max-w-[380px]">
-          Read access via your existing <code>gh</code> CLI session — nothing is installed or granted beyond that.
-        </p>
-      )}
     </div>
   )
 }

@@ -7,11 +7,12 @@
 import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { issueRadarApi } from './api'
-import { loadActiveRepo, saveActiveRepo } from './lib/format'
+import { loadActiveRepo, markAutoSelectFirstIssue, patchUiState, saveActiveRepo } from './lib/format'
 import type { ActiveRepo } from './lib/types'
 import { IssueRadarProvider } from './context'
 import Workspace from './Workspace'
 import WelcomeCarousel from './WelcomeCarousel'
+import ConnectRepoModal from './ConnectRepoModal'
 
 export default function IssueRadarPage() {
   const queryClient = useQueryClient()
@@ -29,6 +30,38 @@ export default function IssueRadarPage() {
     saveActiveRepo(repo)
     setActive(repo)
     setConnectingNew(false)
+    // Land on the issue list, not wherever the user happened to be (typically
+    // Settings, since that's where "Connect repo" lives), showing OPEN issues
+    // so the auto-selected first issue is an open one. On first run the
+    // provider isn't mounted yet, so the intent is persisted for it to restore;
+    // when it IS already mounted, ConnectRepoModal switches the view live
+    // through the context.
+    patchUiState({
+      mainView: 'issues',
+      stateFilter: 'open',
+      selectedIssue: null,
+      // Filters from a previous session would otherwise apply to the new repo
+      // and can hide every issue in it.
+      query: '',
+      selectedLabels: [],
+      requestedByMe: false,
+      assignedToMe: false,
+      createdByMember: false,
+      // The PR side needs the same reset, and for a sharper reason than the
+      // issue side: `selectedPull` is a NUMBER, so a leftover #42 silently
+      // auto-opens the new repo's unrelated #42. Mirrors `switchRepo`.
+      selectedPull: null,
+      prQuery: '',
+      prSelectedLabels: [],
+      prAuthoredByMe: false,
+      prAssignedToMe: false,
+      prReviewRequestedByMe: false,
+      prDraftOnly: false,
+      prCreatedByMember: false,
+    })
+    // Open the first issue once the list resolves (consumed by the provider,
+    // but only once THIS repo is the active one — see markAutoSelectFirstIssue).
+    markAutoSelectFirstIssue(repo)
     queryClient.invalidateQueries({ queryKey: ['issue-radar', 'repos'] })
   }
 
@@ -36,7 +69,11 @@ export default function IssueRadarPage() {
     return <div className="flex h-full items-center justify-center text-muted text-xs">Loading…</div>
   }
 
-  if (repos.length === 0 || connectingNew) {
+  // First run (no repos yet): the full-screen onboarding carousel. Adding
+  // ANOTHER repo when some already exist instead overlays a modal on the
+  // current view (see connectingNew below), so the workspace/settings page
+  // stays put behind a blurred backdrop.
+  if (repos.length === 0) {
     return <WelcomeCarousel onConnected={onConnected} />
   }
 
@@ -51,7 +88,12 @@ export default function IssueRadarPage() {
       onSwitch={(r) => { saveActiveRepo(r); setActive(r) }}
       onAddRepo={() => setConnectingNew(true)}
     >
-      <Workspace />
+      <div className="relative h-full">
+        <Workspace />
+        {connectingNew && (
+          <ConnectRepoModal onConnected={onConnected} onClose={() => setConnectingNew(false)} />
+        )}
+      </div>
     </IssueRadarProvider>
   )
 }

@@ -24,6 +24,10 @@ builtin app's ``/api/apps/{name}/*`` surface):
                                         -> {"owner", "repo", "members": [...],
                                             "from_cache": bool}
   GET  /api/apps/issue-radar/repos      -> {"repos": [{"owner","repo","enabled"}]}
+  GET  /api/apps/issue-radar/recent-repos[?days=<d>]
+                                        -> {"repos": [{"owner","repo","full_name",
+                                            "last_contributed_at",
+                                            "contribution_count","connected"}]}
 
   GET  /api/apps/issue-radar/issue-ai?owner=<o>&repo=<r>&number=<n>[&refresh=1]
                                         -> {"owner","repo","number","summary",
@@ -298,6 +302,80 @@ async def _handle_me(request: web.Request) -> web.Response:
     except github_client.GhCliError:
         return web.json_response({"login": None})
     return web.json_response({"login": login})
+
+
+async def _handle_recent_repos(request: web.Request) -> web.Response:
+    """GET /recent-repos[?days=<d>] — repos the `gh` user personally
+    CONTRIBUTED to within the last ``days`` (default 30), newest contribution
+    first, for the connect dialog's picker.
+
+    Each row carries ``last_contributed_at`` (that user's own latest
+    contribution to the repo) and is flagged ``connected`` so the picker can
+    show — and disable — repos already wired up. Live `gh` call, not cached:
+    the list is only read while the connect dialog is open, and a stale picker
+    is worse than a one-second wait. A `gh` failure is a 502 (upstream/auth),
+    matching /issues.
+    """
+    raw_days = (request.query.get("days") or "").strip()
+    try:
+        days = int(raw_days) if raw_days else github_client.CONTRIB_WINDOW_DAYS
+    except ValueError:
+        return web.json_response({"error": "days must be an integer"}, status=400)
+    # Bounded before it reaches timedelta(days=...): an arbitrarily large value
+    # raises OverflowError there, which would surface as a 500. 0 stays legal
+    # (it disables the window); MAX_WINDOW_DAYS is far beyond the event feed's
+    # own ~90-day horizon, so the cap costs nothing in practice.
+    if not 0 <= days <= github_client.MAX_WINDOW_DAYS:
+        return web.json_response(
+            {"error": f"days must be between 0 and {github_client.MAX_WINDOW_DAYS}"},
+            status=400,
+        )
+
+    try:
+        login = await asyncio.to_thread(github_client.get_current_login)
+    except github_client.GhSetupError as exc:
+        # Host isn't set up (no gh, or no session). Not an error the user can
+        # retry away — answer 200 with a reason so the dialog can render install
+        # / `gh auth login` instructions and keep the manual URL field usable.
+        return web.json_response(
+            {"repos": [], "setup_required": exc.reason, "error": str(exc)}
+        )
+    except github_client.GhCliError as exc:
+        return web.json_response({"error": str(exc)}, status=502)
+    if not login:
+        # No resolvable login means no event feed to read. An empty list (not a
+        # 502) keeps the dialog usable — the manual URL field still works.
+        return web.json_response({"repos": []})
+
+    try:
+        repos, truncated = await asyncio.to_thread(
+            github_client.list_contributed_repos, login, within_days=days
+        )
+    except github_client.GhSetupError as exc:
+        return web.json_response(
+            {"repos": [], "setup_required": exc.reason, "error": str(exc)}
+        )
+    except github_client.GhCliError as exc:
+        return web.json_response({"error": str(exc)}, status=502)
+
+    # Case-INSENSITIVE identity: GitHub owner/repo names are case-preserving
+    # but not case-sensitive, and the event feed can spell a repo differently
+    # from the stored config (`Owner/Repo` vs `owner/repo`). A case-sensitive
+    # compare would mark an already-connected repo as connectable and let the
+    # user create a duplicate config + cache entry for the same repo.
+    def _key(owner: object, repo: object) -> tuple[str, str]:
+        return (str(owner or "").casefold(), str(repo or "").casefold())
+
+    connected = {
+        _key(r.get("owner"), r.get("repo"))
+        for r in await asyncio.to_thread(store.list_connected_repos)
+    }
+    for r in repos:
+        r["connected"] = _key(r.get("owner"), r.get("repo")) in connected
+
+    # `truncated` tells the UI not to present the list as exhaustive — see
+    # list_contributed_repos.
+    return web.json_response({"repos": repos, "truncated": truncated})
 
 
 async def _handle_get_settings(request: web.Request) -> web.Response:
@@ -1755,6 +1833,7 @@ def register_routes(app: web.Application) -> None:
     app.router.add_get("/api/apps/issue-radar/labels", _require_enabled(_handle_labels))
     app.router.add_get("/api/apps/issue-radar/members", _require_enabled(_handle_members))
     app.router.add_get("/api/apps/issue-radar/repos", _require_enabled(_handle_repos))
+    app.router.add_get("/api/apps/issue-radar/recent-repos", _require_enabled(_handle_recent_repos))
     app.router.add_delete("/api/apps/issue-radar/repos", _require_enabled(_handle_disconnect))
     app.router.add_get("/api/apps/issue-radar/me", _require_enabled(_handle_me))
     app.router.add_get("/api/apps/issue-radar/settings", _require_enabled(_handle_get_settings))

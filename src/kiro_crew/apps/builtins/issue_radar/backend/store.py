@@ -223,16 +223,30 @@ def add_connected_repo(owner: str, repo: str, *, permissions: dict | None = None
     Stores the repo's GitHub ``permissions`` object (admin/maintain/push/pull/
     triage) so the UI can badge Read/Write access without a live call; updates
     it on reconnect if a fresh value is supplied.
+
+    Identity is CASE-INSENSITIVE. GitHub names are case-preserving but not
+    case-sensitive, so ``acme/widget`` and ``Acme/Widget`` are one repo — a
+    case-sensitive match appended a second entry for it, and that duplicate then
+    carried its own independent caches and triage settings. The first spelling
+    connected stays the stored one, so existing entries are never rewritten.
     """
     with _config_lock(root):
         config = read_config(root)
         repos = config.setdefault("repos", [])
-        existing = next((r for r in repos if r["owner"] == owner and r["repo"] == repo), None)
+        existing = next((r for r in repos if _same_repo(r, owner, repo)), None)
         if existing is None:
             repos.append({"owner": owner, "repo": repo, "enabled": True, "permissions": permissions})
         elif permissions is not None:
             existing["permissions"] = permissions
         write_config(config, root)
+
+
+def _same_repo(entry: dict, owner: str, repo: str) -> bool:
+    """Case-insensitive owner/repo identity for a config entry."""
+    return (
+        str(entry.get("owner", "")).casefold() == owner.casefold()
+        and str(entry.get("repo", "")).casefold() == repo.casefold()
+    )
 
 
 def set_repo_permissions(owner: str, repo: str, permissions: dict | None, *, root: Path | None = None) -> None:
@@ -241,7 +255,7 @@ def set_repo_permissions(owner: str, repo: str, permissions: dict | None, *, roo
     with _config_lock(root):
         config = read_config(root)
         for r in config.get("repos", []):
-            if r["owner"] == owner and r["repo"] == repo:
+            if _same_repo(r, owner, repo):
                 r["permissions"] = permissions
         write_config(config, root)
 

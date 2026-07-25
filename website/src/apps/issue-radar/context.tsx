@@ -18,7 +18,7 @@ import {
 import type {
   ActiveRepo, DashboardTab, ExpandedSection, MainView, PrSortKey, PrStateFilter, SettingsTarget, SortDir, SortKey, StateFilter,
 } from './lib/types'
-import { asArray, loadUiState, saveUiState } from './lib/format'
+import { asArray, consumeAutoSelectFirstIssue, loadUiState, saveUiState } from './lib/format'
 
 /** GitHub author_association values that mark a repo member (maintainer). Kept
  * in sync with the backend's ``_MEMBER_ASSOC_RANK`` and the detail badge's
@@ -602,6 +602,27 @@ export function IssueRadarProvider({
     clearPrFilters()
     onSwitch(r)
   }
+
+  // A just-connected repo opens its first issue once the list resolves, so the
+  // user lands on real content instead of an empty detail pane. Driven by a
+  // one-shot flag (see markAutoSelectFirstIssue) because the connect happens
+  // before this query finishes — and, on first run, before this provider even
+  // mounts. Consumed exactly once, so a later reload doesn't re-select.
+  //
+  // Falls back to the UNFILTERED list: the connect flow clears filters, but if
+  // any survived (or a restored filter excludes everything in the new repo)
+  // sortedIssues can be empty while the repo does have issues — consuming the
+  // flag with nothing selected would strand the user on a blank pane.
+  //
+  // Gated on `active`: while the newly connected repo's issues are still
+  // refetching, this effect can run with the PREVIOUS repo's list, and an
+  // unscoped flag would select one of its issues.
+  useEffect(() => {
+    if (!issuesQuery.isSuccess) return
+    if (!consumeAutoSelectFirstIssue(active)) return
+    const first = sortedIssues[0] ?? issues[0]
+    if (first) setSelectedIssue(first.number)
+  }, [issuesQuery.isSuccess, sortedIssues, issues, active])
 
   const value: IssueRadarContextValue = {
     repos, active, switchRepo, onAddRepo,

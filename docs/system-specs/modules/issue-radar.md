@@ -29,6 +29,7 @@ wrapped in `_require_enabled` (returns 403 when the app is disabled).
 | GET | `/labels` | Repo label set |
 | GET | `/members` | Repo collaborators (authoritative API or fallback) |
 | GET | `/repos` | Connected repos list (with permission self-heal) |
+| GET | `/recent-repos` | Repos the `gh` user contributed to recently (connect-dialog picker) |
 | DELETE | `/repos` | Disconnect a repo (drops config + cache) |
 | GET | `/me` | Current `gh` login |
 | GET/PUT | `/settings` | Per-repo triage settings |

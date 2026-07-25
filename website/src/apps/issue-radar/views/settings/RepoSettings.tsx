@@ -133,6 +133,10 @@ export default function RepoSettings({ owner, repo }: { owner: string; repo: str
     mutationFn: () => issueRadarApi.disconnect(owner, repo),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['issue-radar', 'repos'] })
+      // The connect dialog's picker caches a `connected` flag per repo, so
+      // without this the just-disconnected repo stays greyed out as "Connected"
+      // and un-tickable until that cache expires.
+      qc.invalidateQueries({ queryKey: ['issue-radar', 'recent-repos'] })
       openSettings({ kind: 'general', anchor: 'repos' })
     },
   })

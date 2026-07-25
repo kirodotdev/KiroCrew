@@ -431,6 +431,38 @@ export interface ReposResponse {
   repos: ConnectedRepo[]
 }
 
+/** One row of the connect dialog's picker — a repo the `gh` user personally
+ * contributed to inside the requested window. `last_contributed_at` is that
+ * user's OWN latest contribution (push / PR / review / issue / comment), not
+ * the repo's last push, and is what the row renders. `connected` is
+ * server-computed against the config, so the picker can disable repos already
+ * wired up. */
+export interface RecentRepo {
+  owner: string
+  repo: string
+  full_name: string
+  /** ISO-8601 UTC timestamp of the user's most recent contribution. */
+  last_contributed_at: string
+  /** How many contribution events the user made in the window. */
+  contribution_count: number
+  connected: boolean
+}
+
+/** Why the host can't talk to GitHub yet, when it can't. The picker turns this
+ * into install / `gh auth login` instructions rather than an error string. */
+export type GhSetupReason = 'not_installed' | 'not_authenticated'
+
+export interface RecentReposResponse {
+  repos: RecentRepo[]
+  /** True when the event page came back full, so repos contributed to earlier
+   * in the window may be missing. The picker must not claim completeness. */
+  truncated?: boolean
+  /** Present only when `gh` is unusable; `repos` is then empty. */
+  setup_required?: GhSetupReason | null
+  /** The server's diagnostic detail (e.g. which dirs were searched). */
+  error?: string
+}
+
 export interface MeResponse {
   login: string | null
 }
@@ -634,6 +666,17 @@ export const issueRadarApi = {
 
   repos: async (): Promise<ReposResponse> => {
     const r = await fetch(`${API}/repos`, { credentials: 'same-origin' })
+    if (!r.ok) throw new Error(await parseErrorBody(r))
+    return r.json()
+  },
+
+  /** Repos the `gh` user personally contributed to within the last `days` —
+   * the connect dialog's multi-select picker. Live call (not cached).
+   * `days` is required: the window belongs to the caller (see
+   * RECENT_WINDOW_DAYS) so the value isn't defined in two places. */
+  recentRepos: async (days: number): Promise<RecentReposResponse> => {
+    const q = new URLSearchParams({ days: String(days) })
+    const r = await fetch(`${API}/recent-repos?${q.toString()}`, { credentials: 'same-origin' })
     if (!r.ok) throw new Error(await parseErrorBody(r))
     return r.json()
   },

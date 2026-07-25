@@ -208,3 +208,51 @@ export function saveUiState(state: PersistedUiState) {
     /* quota exceeded / private mode — persistence is best-effort */
   }
 }
+
+/** Merge a single field into the persisted UI state, leaving the rest intact.
+ *
+ * Needed for the connect flow: after connecting a repo the user should land on
+ * the issue list, but on FIRST RUN the provider isn't mounted yet (the welcome
+ * carousel renders in its place), so there is no live `setMainView` to call —
+ * the provider will read this stored value when it mounts a moment later. The
+ * already-mounted case (the "connect another repo" modal) switches view through
+ * the context instead. */
+export function patchUiState(patch: Partial<PersistedUiState>) {
+  try {
+    localStorage.setItem(UI_STATE_KEY, JSON.stringify({ ...loadUiState(), ...patch }))
+  } catch {
+    /* best-effort, same as saveUiState */
+  }
+}
+
+/** Pending "open the first issue" intent, set at connect time.
+ *
+ * A MODULE-SCOPED variable, deliberately not localStorage/sessionStorage: the
+ * gap this must survive is only the one between `onConnected` and the provider
+ * mounting (which, on first run, happens moments later in the SAME JS session —
+ * no reload occurs). Persisting it would outlive that gap, so a user who closes
+ * the tab before the issues query resolves, or whose query errors, would have
+ * the flag fire on their next visit and yank selection to the first issue of
+ * whatever repo is active. Storage is also shared across tabs, where whichever
+ * tab resolved first would consume the other's intent. */
+let autoSelectFirstIssue: { owner: string; repo: string } | null = null
+
+/** GitHub names are case-preserving but not case-sensitive. */
+const repoKey = (r: { owner: string; repo: string }) => `${r.owner}/${r.repo}`.toLowerCase()
+
+/** Ask the workspace to open the first open issue once the list has loaded.
+ * SCOPED to the repo that was just connected: the provider may still be
+ * showing the previous repo while its issues refetch, and an unscoped flag
+ * would be consumed by that render and select an issue from the OLD repo. */
+export function markAutoSelectFirstIssue(repo: { owner: string; repo: string }) {
+  autoSelectFirstIssue = { owner: repo.owner, repo: repo.repo }
+}
+
+/** Read AND clear the flag, but only when `active` is the repo the intent was
+ * recorded for. Returns true only for that repo's first caller. */
+export function consumeAutoSelectFirstIssue(active: { owner: string; repo: string }): boolean {
+  if (!autoSelectFirstIssue) return false
+  if (repoKey(autoSelectFirstIssue) !== repoKey(active)) return false
+  autoSelectFirstIssue = null
+  return true
+}

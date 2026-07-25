@@ -21,6 +21,7 @@ import re
 import subprocess
 import sys
 import time
+from datetime import datetime, timedelta, timezone
 from urllib.parse import quote, urlparse
 
 GH_TIMEOUT_SEC = 20.0
@@ -39,6 +40,25 @@ class RepoUrlError(ValueError):
 
 class GhCliError(RuntimeError):
     """Raised when ``gh`` is missing, unauthenticated, times out, or the API call fails."""
+
+
+class GhSetupError(GhCliError):
+    """Raised when ``gh`` cannot be used because the HOST is not set up — the
+    binary is absent (or not in a trusted directory), or the CLI has no
+    authenticated session.
+
+    Distinct from a generic :class:`GhCliError` (network blip, API 500) because
+    the fix is a user action, not a retry: the connect dialog turns ``reason``
+    into install / ``gh auth login`` instructions instead of showing a raw error
+    string. A subclass of ``GhCliError`` so existing ``except GhCliError``
+    handlers keep working.
+
+    ``reason`` is ``"not_installed"`` or ``"not_authenticated"``.
+    """
+
+    def __init__(self, message: str, *, reason: str) -> None:
+        super().__init__(message)
+        self.reason = reason
 
 
 class GhPermissionError(GhCliError):
@@ -145,8 +165,12 @@ def _gh_bin() -> str:
             _gh_bin_cache = validated
             return validated
         except (ValueError, OSError) as exc:
-            raise GhCliError(
-                f"KIROCREW_ISSUE_RADAR_GH={override!r} failed validation: {exc}"
+            # A host-setup problem the user must fix (wrong path, symlinked or
+            # user-owned binary), not a transient API failure — surface it as a
+            # GhSetupError so the connect dialog offers instructions.
+            raise GhSetupError(
+                f"KIROCREW_ISSUE_RADAR_GH={override!r} failed validation: {exc}",
+                reason="not_installed",
             ) from exc
 
     # Resolve from the shared trusted dirs — validate each candidate.
@@ -160,11 +184,12 @@ def _gh_bin() -> str:
         except (ValueError, OSError):
             continue  # not root-owned or user-writable — skip
 
-    raise GhCliError(
+    raise GhSetupError(
         "the `gh` CLI was not found in any trusted directory "
         f"({', '.join(_PROVIDER_EXECUTABLE_DIRS)}), or all candidates failed "
         "ownership validation; set KIROCREW_ISSUE_RADAR_GH to a root-owned gh "
-        "executable"
+        "executable",
+        reason="not_installed",
     )
 
 
@@ -192,7 +217,9 @@ def _gh_run(argv: list[str], *, timeout: float, input_text: str | None = None) -
         )
     except FileNotFoundError as exc:  # pragma: no cover — _gh_bin guards first
         _audit("gh_run", operation, "failure", error="gh not found")
-        raise GhCliError("the `gh` CLI is not installed on this host") from exc
+        raise GhSetupError(
+            "the `gh` CLI is not installed on this host", reason="not_installed"
+        ) from exc
     except subprocess.TimeoutExpired as exc:
         _audit("gh_run", operation, "failure", error=f"timeout after {timeout}s")
         raise GhCliError(f"`gh` timed out after {timeout}s") from exc
@@ -233,6 +260,7 @@ def _run_gh_api(path: str, jq_filter: str, *, timeout: float = GH_TIMEOUT_SEC, p
 
     if proc.returncode != 0:
         tail = " ".join((proc.stderr or "").strip().splitlines()[-3:])
+        _raise_if_auth_failure(tail)
         raise GhCliError(f"gh api {path} failed (exit {proc.returncode}): {tail}")
 
     out: list[dict] = []
@@ -245,6 +273,34 @@ def _run_gh_api(path: str, jq_filter: str, *, timeout: float = GH_TIMEOUT_SEC, p
         except json.JSONDecodeError:
             continue
     return out
+
+
+# Markers `gh` prints when the CLI itself has no usable credentials (as opposed
+# to a repo simply being out of reach for an authenticated user). Matched
+# case-insensitively against the stderr tail so the connect dialog can offer
+# `gh auth login` instead of echoing an opaque exit code.
+_GH_AUTH_MARKERS = (
+    "gh auth login",
+    "not logged in",
+    "authentication required",
+    "requires authentication",
+    "bad credentials",
+    "http 401",
+)
+
+
+def _raise_if_auth_failure(stderr_tail: str) -> None:
+    """Re-classify an unauthenticated `gh` failure as :class:`GhSetupError`.
+
+    No-op for every other failure, so the caller still raises its own, more
+    specific ``GhCliError`` with the full context.
+    """
+    low = (stderr_tail or "").lower()
+    if any(m in low for m in _GH_AUTH_MARKERS):
+        raise GhSetupError(
+            "the `gh` CLI is not authenticated — run `gh auth login`",
+            reason="not_authenticated",
+        )
 
 
 def verify_repo_access(owner: str, repo: str, *, timeout: float = GH_TIMEOUT_SEC) -> dict:
@@ -342,6 +398,131 @@ def list_recent_open_issues(
     return _run_gh_api(path, _ISSUE_POLL_JQ, timeout=timeout, paginate=False)
 
 
+# The repo picker's list: repos the authenticated user personally CONTRIBUTED
+# to recently, newest contribution first.
+#
+# Sourced from the user's EVENT FEED (`users/{login}/events`), not
+# `user/repos?sort=pushed`. The latter answers "which of my repos changed" —
+# it fires for a teammate's push and says nothing about whether *this* user did
+# anything, and it cannot tell you when they last did. The event feed is
+# per-actor, so each entry is an action the user themselves took, and its
+# `created_at` is exactly "when I last contributed here".
+#
+# Event types are filtered to actual contributions: pushes, PRs, reviews,
+# review comments, issues, issue/commit comments, branch/tag creation and
+# releases. Watch/Fork/Member events are excluded — starring a repo is not
+# contributing to it.
+_CONTRIB_EVENT_TYPES = frozenset({
+    "PushEvent",
+    "PullRequestEvent",
+    "PullRequestReviewEvent",
+    "PullRequestReviewCommentEvent",
+    "IssuesEvent",
+    "IssueCommentEvent",
+    "CommitCommentEvent",
+    "CreateEvent",
+    "ReleaseEvent",
+})
+
+_EVENT_JQ = (
+    ".[] | {type: .type, repo: (.repo.name // null), "
+    "created_at: (.created_at // null)}"
+)
+
+
+#: Default trailing window for "repos I contributed to". Single source of truth
+#: for the backend — the route reads it rather than repeating the literal.
+CONTRIB_WINDOW_DAYS = 30
+
+#: Upper bound for a caller-supplied window. Guards ``timedelta(days=...)``,
+#: which raises OverflowError on absurd values; also clamped here so a direct
+#: caller (not just the HTTP route) can't trip it.
+MAX_WINDOW_DAYS = 3650
+
+
+#: Events fetched per call. A busy contributor can fill this in days, which is
+#: why the result reports truncation rather than implying completeness.
+_EVENT_PAGE_SIZE = 100
+
+
+def list_contributed_repos(
+    login: str, *, within_days: int = CONTRIB_WINDOW_DAYS, timeout: float = GH_TIMEOUT_SEC
+) -> tuple[list[dict], bool]:
+    """Repos ``login`` personally contributed to within the last ``within_days``.
+
+    Powers the connect dialog's picker, so the user picks from repos they
+    actually worked on instead of pasting URLs. Ordered by most-recent
+    contribution first, each row carrying ``last_contributed_at`` — the
+    timestamp of that user's latest contribution to the repo, which is what the
+    UI renders ("3 days ago").
+
+    Returns ``(rows, truncated)``. ``truncated`` is True when the event page
+    came back full, meaning activity older than the newest 100 events was not
+    examined and the list may be MISSING repos the user contributed to inside
+    the window. The UI must not present a truncated list as complete — a picker
+    that looks exhaustive leads the user to conclude they didn't work on a repo.
+
+    Single page (no ``--paginate``): this is a picker, not an audit. GitHub's
+    feed is itself capped (roughly the last 90 days / 300 events).
+
+    ``within_days=0`` disables the window. Rows are ``[{owner, repo, full_name,
+    last_contributed_at, contribution_count}]``.
+    """
+    path = f"users/{quote(login, safe='')}/events?per_page={_EVENT_PAGE_SIZE}"
+    events = _run_gh_api(path, _EVENT_JQ, timeout=timeout, paginate=False)
+    truncated = len(events) >= _EVENT_PAGE_SIZE
+
+    days = max(0, min(int(within_days), MAX_WINDOW_DAYS))
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(days=days) if days else None
+    )
+
+    # full_name -> {last contribution ts, how many contribution events}
+    by_repo: dict[str, dict] = {}
+    for ev in events:
+        if ev.get("type") not in _CONTRIB_EVENT_TYPES:
+            continue
+        full_name = ev.get("repo")
+        if not isinstance(full_name, str) or full_name.count("/") != 1:
+            continue
+        when = _parse_gh_timestamp(ev.get("created_at"))
+        if when is None or (cutoff is not None and when < cutoff):
+            continue
+        row = by_repo.get(full_name)
+        if row is None:
+            owner, _, repo = full_name.partition("/")
+            by_repo[full_name] = {
+                "owner": owner,
+                "repo": repo,
+                "full_name": full_name,
+                "last_contributed_at": ev["created_at"],
+                "contribution_count": 1,
+                "_when": when,
+            }
+        else:
+            row["contribution_count"] += 1
+            # The feed is newest-first, but don't rely on it — keep the max.
+            if when > row["_when"]:
+                row["_when"] = when
+                row["last_contributed_at"] = ev["created_at"]
+
+    rows = sorted(by_repo.values(), key=lambda r: r["_when"], reverse=True)
+    for r in rows:
+        del r["_when"]
+    return rows, truncated
+
+
+def _parse_gh_timestamp(value: object) -> datetime | None:
+    """Parse a GitHub ISO-8601 UTC stamp (``2026-07-25T20:57:01Z``) to an aware
+    datetime, or None when absent/malformed."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
 def get_current_login(*, timeout: float = GH_TIMEOUT_SEC) -> str | None:
     """Return the login of the authenticated `gh` user (``gh api user``).
 
@@ -355,6 +536,7 @@ def get_current_login(*, timeout: float = GH_TIMEOUT_SEC) -> str | None:
 
     if proc.returncode != 0:
         tail = " ".join((proc.stderr or "").strip().splitlines()[-3:])
+        _raise_if_auth_failure(tail)
         raise GhCliError(f"gh api user failed (exit {proc.returncode}): {tail}")
 
     return (proc.stdout or "").strip() or None
