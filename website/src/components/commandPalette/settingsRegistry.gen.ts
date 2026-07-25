@@ -108,14 +108,6 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
-    "id": "chat.notification-limit",
-    "label": "Notification Limit",
-    "description": "Maximum notifications to display",
-    "tab": "chat",
-    "type": "select",
-    "occurrence": 1
-  },
-  {
     "id": "chat.quick-send",
     "label": "Quick Send",
     "tab": "chat",

@@ -24,7 +24,6 @@ export const CONTENT_WIDTH: Record<ContentWidth, { messages: string; input: stri
 export interface ChatConfig {
   contentWidth: ContentWidth
   historyExpanded: boolean
-  notifLimit: number
   showTimestamps: boolean
   showTurnStats: boolean
   sendOnEnter: SendMode
@@ -46,7 +45,7 @@ export type FollowUpLayout = 'multiline' | 'scroll'
 export type StreamMode = 'immediate' | 'smooth'
 
 const LS_KEY = 'mc-chat-config'
-const DEFAULTS: ChatConfig = { historyExpanded: true, notifLimit: 50, showTimestamps: true, showTurnStats: true, sendOnEnter: 'enter', collapseAllSteps: true, confirmCloseSession: false, simplifiedToolNames: true, contentWidth: 'compact', tagColumnsEnabled: true, fileChipStyle: 'expanded', followUpLayout: 'scroll', streamMode: 'smooth', showContextPct: false, defaultAutopilot: false }
+const DEFAULTS: ChatConfig = { historyExpanded: true, showTimestamps: true, showTurnStats: true, sendOnEnter: 'enter', collapseAllSteps: true, confirmCloseSession: false, simplifiedToolNames: true, contentWidth: 'compact', tagColumnsEnabled: true, fileChipStyle: 'expanded', followUpLayout: 'scroll', streamMode: 'smooth', showContextPct: false, defaultAutopilot: false }
 
 const VALID_FILE_CHIP_STYLES: ReadonlySet<FileChipStyle> = new Set(['expanded', 'minimal'])
 const VALID_FOLLOW_UP_LAYOUTS: ReadonlySet<FollowUpLayout> = new Set(['multiline', 'scroll'])
@@ -181,12 +180,6 @@ export default function ChatSettings({ config, onChange }: { config: ChatConfig;
             </select>
           </div>
           <Toggle label="Quick Send" hint="Click a suggested reply to send it instantly. Shift+Click to select multiple." checked={dashCfg.quick_send} onChange={v => setDash({ quick_send: v })} />
-          <div className="flex items-center justify-between">
-            <span className="text-[13px] text-muted">Notification limit</span>
-            <select className="bg-bg-elevated border border-border rounded-md px-2 py-1 text-[13px] text-text outline-none cursor-pointer" value={config.notifLimit} onChange={e => set('notifLimit', Number(e.target.value))}>
-              {[25, 50, 100, 200].map(n => <option key={n} value={n}>{n}</option>)}
-            </select>
-          </div>
           <div className="border-t border-border pt-2 mt-1">
             <div className="text-[11px] font-semibold text-muted uppercase tracking-wide mb-2">Startup</div>
             <Toggle label="Restore sessions on restart" hint="Re-open chats active within the time window" checked={dashCfg.restore_sessions} onChange={v => setDash({ restore_sessions: v })} />

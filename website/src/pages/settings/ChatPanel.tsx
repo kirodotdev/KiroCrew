@@ -5,7 +5,6 @@ import { loadChatConfig, saveChatConfig, type ChatConfig, type ContentWidth, typ
 import { api } from '../../api/client'
 import { isMac } from '../../utils/platform'
 
-const NOTIF_OPTIONS = ['25', '50', '100', '200']
 const RESTORE_OPTIONS = ['15', '30', '60', '120', '360', '720', '1440', '0']
 const RESTORE_LABELS = ['15m', '30m', '1h', '2h', '6h', '12h', '24h', 'No limit']
 const COMPACT_OPTIONS = ['20', '40', '60', '80', '90']
@@ -164,16 +163,21 @@ export function ChatPanel() {
           <button className="text-[13px] text-danger hover:text-text cursor-pointer bg-transparent border-none" onClick={() => setSaveError('')}>Dismiss</button>
         </div>
       )}
+      {dashQ.isError && (
+        <div className="mb-4 text-[13px] text-danger">
+          Failed to load dashboard config.{' '}
+          <button className="underline cursor-pointer bg-transparent border-none text-danger" onClick={() => dashQ.refetch()}>Retry</button>
+        </div>
+      )}
+      {mcQ.isError && (
+        <div className="mb-4 text-[13px] text-danger">
+          Failed to load config.{' '}
+          <button className="underline cursor-pointer bg-transparent border-none text-danger" onClick={() => mcQ.refetch()}>Retry</button>
+        </div>
+      )}
 
-      <SettingsSection title="Behavior">
+      <SettingsSection title="Composer">
         <SettingsCard>
-          <SettingsButtonGroup
-            label="Text Streaming Style"
-            description="Immediate mode shows raw chunks as they arrive. Smooth mode buffers and fades text in at a steady pace."
-            value={chatCfg.streamMode}
-            options={[{ value: 'immediate', label: 'Immediate' }, { value: 'smooth', label: 'Smooth' }]}
-            onChange={v => setChat('streamMode', v as ChatConfig['streamMode'])}
-          />
           <SettingsSelect
             label="Send shortcut"
             description={chatCfg.sendOnEnter === 'enter' ? 'Shift+Enter for newline' : chatCfg.sendOnEnter === 'ctrl-enter' ? 'Enter for newline' : `${isMac ? '⌘' : 'Ctrl'}+Enter for newline`}
@@ -183,28 +187,8 @@ export function ChatPanel() {
             onChange={v => setChat('sendOnEnter', v as SendMode)}
           />
           <SettingsToggle label="Quick Send" description={`Click a suggested reply to send it instantly. ${isMac ? '⇧' : 'Shift'}+Click to select multiple.`} checked={dashCfg.quick_send} onChange={v => setDash({ quick_send: v })} disabled={dashDisabled} />
-          <SettingsToggle label="Split View (Session Grid)" description={`Opt-in: split the chat into resizable session panes (${isMac ? '⌘' : 'Ctrl'}+D). Experimental.`} checked={dashCfg.session_grid} onChange={v => setDash({ session_grid: v })} disabled={dashDisabled} />
-          <SettingsToggle label="Show Timestamps" description="Display time on each message" checked={chatCfg.showTimestamps} onChange={v => setChat('showTimestamps', v)} />
-          <SettingsToggle label="History Expanded" description="Expand history sidebar by default" checked={chatCfg.historyExpanded} onChange={v => setChat('historyExpanded', v)} />
-          <SettingsSelect label="Notification Limit" description="Maximum notifications to display" value={String(chatCfg.notifLimit)} options={NOTIF_OPTIONS} onChange={v => setChat('notifLimit', Number(v))} />
-          <SettingsButtonGroup label="Content Width" description="Compact is the original view. Comfortable and Full use more screen space." value={chatCfg.contentWidth} options={[{ value: "compact", label: "Compact" }, { value: "comfortable", label: "Comfortable" }, { value: "full", label: "Full" }]} onChange={v => setChat('contentWidth', v as ContentWidth)} />
-          <SettingsToggle label="Show Thinking Inline" description="Show intermediate reasoning text between tool calls instead of collapsing everything" checked={!chatCfg.collapseAllSteps} onChange={v => setChat('collapseAllSteps', !v)} />
-          {dashQ.isError && <div className="text-[13px] text-danger mb-2">Failed to load config. <button className="underline cursor-pointer bg-transparent border-none text-danger" onClick={() => dashQ.refetch()}>Retry</button></div>}
           <SettingsToggle label="Merge Queued Messages" description="Combine follow-up messages into a single labeled prompt while the agent is busy" checked={dashCfg.merge_queued_messages} onChange={v => setDash({ merge_queued_messages: v })} disabled={dashDisabled} />
-          <SettingsSelect label="Widget Density" description="How aggressively the agent uses inline widgets for visual content" value={dashCfg.widget_density ?? 'more'} options={['more', 'less']} optionLabels={['More (encourage widgets)', 'Less (only when needed)']} onChange={v => setDash({ widget_density: v as 'more' | 'less' })} disabled={dashDisabled} />
-          <SettingsToggle label="Tail-only Fork" description="Fork keeps only the messages after the chosen point instead of those up to it." checked={dashCfg.tail_fork_enabled} onChange={v => setDash({ tail_fork_enabled: v })} disabled={dashDisabled} />
-          <SettingsToggle label="Feature Tips" description={tipsConfigOff ? 'Disabled by instance config (tips_enabled: false)' : 'Show occasional feature discovery tips above the composer while the agent is working'} checked={!!tipsQ.data && tipsQ.data.enabled_config && !tipsQ.data.opted_out} onChange={v => tipsMut.mutate(v)} disabled={tipsConfigOff || tipsQ.isLoading || tipsQ.isError} />
-          <SettingsToggle label="Confirm Before Closing Session" description="Show a confirmation dialog when closing a session" checked={chatCfg.confirmCloseSession} onChange={v => setChat('confirmCloseSession', v)} />
-          <SettingsToggle label="Default to Autopilot Mode" description="New sessions start in autopilot mode (plan → approve → execute). You can still toggle individual sessions." checked={chatCfg.defaultAutopilot} onChange={v => setChat('defaultAutopilot', v)} />
-          <SettingsToggle label="Simplified Tool Call Names" description="When enabled, inline tool pills show simplified tool use purpose instead of the exact command being run" checked={chatCfg.simplifiedToolNames} onChange={v => setChat('simplifiedToolNames', v)} />
-          <SettingsSelect label="File Change Chips" description="How file diff chips appear below assistant messages" value={chatCfg.fileChipStyle} options={['expanded', 'minimal']} optionLabels={['Expanded (icon + name + stats)', 'Minimal (stats only, name on hover)']} onChange={v => setChat('fileChipStyle', v as ChatConfig['fileChipStyle'])} />
           <SettingsButtonGroup label="Follow-Up Bar Layout" description="Multiline wraps suggestions onto multiple rows. Single line keeps them on one horizontally-scrollable row." value={chatCfg.followUpLayout} options={[{ value: "multiline", label: "Multiline" }, { value: "scroll", label: "Single line" }]} onChange={v => setChat('followUpLayout', v as ChatConfig['followUpLayout'])} />
-          {mcQ.isError && (
-            <div className="text-[13px] text-danger mb-2">
-              Failed to load config.{' '}
-              <button className="underline cursor-pointer bg-transparent border-none text-danger" onClick={() => mcQ.refetch()}>Retry</button>
-            </div>
-          )}
           <SettingsInput
             label="Soft-stop budget (seconds)"
             aria-label="Soft-stop budget (seconds)"
@@ -225,13 +209,36 @@ export function ChatPanel() {
             }}
             disabled={!mcQ.isSuccess}
           />
-          <SettingsToggle label="Show Context Percentage" description="Display usage percentage next to the context progress bar" checked={chatCfg.showContextPct} onChange={v => setChat('showContextPct', v)} />
         </SettingsCard>
       </SettingsSection>
 
-      <SettingsSection title="Startup">
+      <SettingsSection title="Messages">
         <SettingsCard>
-          {dashQ.isError && <div className="text-[13px] text-danger mb-2">Failed to load config. <button className="underline cursor-pointer bg-transparent border-none text-danger" onClick={() => dashQ.refetch()}>Retry</button></div>}
+          <SettingsButtonGroup
+            label="Text Streaming Style"
+            description="Immediate mode shows raw chunks as they arrive. Smooth mode buffers and fades text in at a steady pace."
+            value={chatCfg.streamMode}
+            options={[{ value: 'immediate', label: 'Immediate' }, { value: 'smooth', label: 'Smooth' }]}
+            onChange={v => setChat('streamMode', v as ChatConfig['streamMode'])}
+          />
+          <SettingsToggle label="Show Timestamps" description="Display time on each message" checked={chatCfg.showTimestamps} onChange={v => setChat('showTimestamps', v)} />
+          <SettingsButtonGroup label="Content Width" description="Compact is the original view. Comfortable and Full use more screen space." value={chatCfg.contentWidth} options={[{ value: "compact", label: "Compact" }, { value: "comfortable", label: "Comfortable" }, { value: "full", label: "Full" }]} onChange={v => setChat('contentWidth', v as ContentWidth)} />
+          <SettingsToggle label="Show Thinking Inline" description="Show intermediate reasoning text between tool calls instead of collapsing everything" checked={!chatCfg.collapseAllSteps} onChange={v => setChat('collapseAllSteps', !v)} />
+          <SettingsToggle label="Simplified Tool Call Names" description="When enabled, inline tool pills show simplified tool use purpose instead of the exact command being run" checked={chatCfg.simplifiedToolNames} onChange={v => setChat('simplifiedToolNames', v)} />
+          <SettingsSelect label="File Change Chips" description="How file diff chips appear below assistant messages" value={chatCfg.fileChipStyle} options={['expanded', 'minimal']} optionLabels={['Expanded (icon + name + stats)', 'Minimal (stats only, name on hover)']} onChange={v => setChat('fileChipStyle', v as ChatConfig['fileChipStyle'])} />
+          <SettingsSelect label="Widget Density" description="How aggressively the agent uses inline widgets for visual content" value={dashCfg.widget_density ?? 'more'} options={['more', 'less']} optionLabels={['More (encourage widgets)', 'Less (only when needed)']} onChange={v => setDash({ widget_density: v as 'more' | 'less' })} disabled={dashDisabled} />
+          <SettingsToggle label="Show Context Percentage" description="Display usage percentage next to the context progress bar" checked={chatCfg.showContextPct} onChange={v => setChat('showContextPct', v)} />
+          <SettingsToggle label="Feature Tips" description={tipsConfigOff ? 'Disabled by instance config (tips_enabled: false)' : 'Show occasional feature discovery tips above the composer while the agent is working'} checked={!!tipsQ.data && tipsQ.data.enabled_config && !tipsQ.data.opted_out} onChange={v => tipsMut.mutate(v)} disabled={tipsConfigOff || tipsQ.isLoading || tipsQ.isError} />
+        </SettingsCard>
+      </SettingsSection>
+
+      <SettingsSection title="Sessions">
+        <SettingsCard>
+          <SettingsToggle label="Split View (Session Grid)" description={`Opt-in: split the chat into resizable session panes (${isMac ? '⌘' : 'Ctrl'}+D). Experimental.`} checked={dashCfg.session_grid} onChange={v => setDash({ session_grid: v })} disabled={dashDisabled} />
+          <SettingsToggle label="History Expanded" description="Expand history sidebar by default" checked={chatCfg.historyExpanded} onChange={v => setChat('historyExpanded', v)} />
+          <SettingsToggle label="Confirm Before Closing Session" description="Show a confirmation dialog when closing a session" checked={chatCfg.confirmCloseSession} onChange={v => setChat('confirmCloseSession', v)} />
+          <SettingsToggle label="Default to Autopilot Mode" description="New sessions start in autopilot mode (plan → approve → execute). You can still toggle individual sessions." checked={chatCfg.defaultAutopilot} onChange={v => setChat('defaultAutopilot', v)} />
+          <SettingsToggle label="Tail-only Fork" description="Fork keeps only the messages after the chosen point instead of those up to it." checked={dashCfg.tail_fork_enabled} onChange={v => setDash({ tail_fork_enabled: v })} disabled={dashDisabled} />
           <SettingsToggle label="Restore Sessions" description="Re-open recently active sessions on startup" checked={dashCfg.restore_sessions} onChange={v => setDash({ restore_sessions: v })} disabled={dashDisabled} />
           {dashCfg.restore_sessions && (
             <SettingsSelect label="Restore Window" description="Time window for session restoration" value={String(dashCfg.restore_window_minutes)} options={RESTORE_OPTIONS} optionLabels={RESTORE_LABELS} onChange={v => setDash({ restore_window_minutes: Number(v) })} disabled={dashDisabled} />
@@ -241,12 +248,6 @@ export function ChatPanel() {
 
       <SettingsSection title="Context">
         <SettingsCard>
-          {mcQ.isError && (
-            <div className="text-[13px] text-danger mb-2">
-              Failed to load config.{' '}
-              <button className="underline cursor-pointer bg-transparent border-none text-danger" onClick={() => mcQ.refetch()}>Retry</button>
-            </div>
-          )}
           <SettingsSelect
             label="Auto-Compact Threshold"
             description="Context usage % at which auto-compaction triggers. Lower = more frequent compaction, longer sessions"
@@ -265,12 +266,6 @@ export function ChatPanel() {
 
       <SettingsSection title="Subagents">
         <SettingsCard>
-          {mcQ.isError && (
-            <div className="text-[13px] text-danger mb-2">
-              Failed to load config.{' '}
-              <button className="underline cursor-pointer bg-transparent border-none text-danger" onClick={() => mcQ.refetch()}>Retry</button>
-            </div>
-          )}
           <SettingsSelect
             label="Completion Event Truncation"
             description="Which part of a subagent's stream to keep when injecting its completion event into the parent session. Head preserves the start (default, matches legacy behavior). Tail preserves the final summary. Both keeps a slice from each end with a marker between them."

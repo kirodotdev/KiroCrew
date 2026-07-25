@@ -3,7 +3,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import ChatSettings, { loadChatConfig, type ChatConfig } from '../pages/chat/ChatSettings'
 
-const DEFAULTS: ChatConfig = { historyExpanded: true, notifLimit: 50, showTimestamps: true, sendOnEnter: 'enter', collapseAllSteps: true }
+const DEFAULTS: ChatConfig = { historyExpanded: true, showTimestamps: true, sendOnEnter: 'enter', collapseAllSteps: true }
 
 function renderSettings(props: { config: ChatConfig; onChange: ReturnType<typeof vi.fn> }) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
