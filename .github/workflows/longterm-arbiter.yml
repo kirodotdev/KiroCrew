@@ -1,6 +1,6 @@
 name: Arbiter
 
-# SECOND-ORDER GATE. The line-level reviewers (Opus 4.8 / GPT 5.6) surface Medium
+# SECOND-ORDER GATE. The line-level reviewers (Claude / GPT 5.6) surface Medium
 # findings and the design reviewer surfaces CONCERNS — none of which block,
 # correctly, since most are not blockers. But some carry a real long-term cost
 # (architectural erosion, maintainability debt, latent security/data-correctness
@@ -35,7 +35,7 @@ name: Arbiter
 
 on:
   workflow_run:
-    workflows: ["Opus 4.8 Review", "GPT 5.6 Review", "Design Review"]
+    workflows: ["Claude AI Review", "GPT 5.6 Review", "Design Review"]
     types: [completed]
   pull_request:
     types: [labeled, unlabeled]
@@ -122,7 +122,7 @@ jobs:
             # mis-read per-page). Fail-safe to [] on any error.
             comments="$(gh api "repos/$REPO/issues/$PR/comments" --paginate 2>/dev/null | jq -s 'add // []' 2>/dev/null || echo '[]')"
             pick() { printf '%s' "$comments" | jq -r --arg m "$1" '[.[] | select(.user.login=="github-actions[bot]" and (.body|startswith($m)))] | (last.body // "")'; }
-            opus="$(pick '<!-- claude-ai-review -->')"
+            claude="$(pick '<!-- claude-ai-review -->')"
             gpt="$(pick '<!-- codex-ai-review -->')"
             design="$(pick '<!-- design-review -->')"
 
@@ -131,7 +131,7 @@ jobs:
             # this workflow, so its completion re-fires the arbiter — the design
             # comment converges deterministically like the two code reviewers.
             missing=""
-            present "$opus"   || missing="$missing Opus-4.8"
+            present "$claude" || missing="$missing Claude"
             present "$gpt"    || missing="$missing GPT-5.6"
             present "$design" || missing="$missing Design"
 
@@ -141,7 +141,7 @@ jobs:
             else
               {
                 echo "# Sub-threshold reviewer findings for $SHA"
-                echo; echo "## Opus 4.8 Review (line-level; Medium/Low)"; echo; printf '%s\n' "$opus"
+                echo; echo "## Claude AI Review (line-level; Medium/Low)"; echo; printf '%s\n' "$claude"
                 echo; echo "## GPT 5.6 Review (line-level; Medium/Low)"; echo; printf '%s\n' "$gpt"
                 echo; echo "## Design Review (design-level; CONCERNS)"; echo; printf '%s\n' "$design"
               } > /tmp/subthreshold.md
@@ -196,7 +196,7 @@ jobs:
 
             INPUTS:
             - /tmp/subthreshold.md — the Medium/Low findings from the two
-              line-level reviewers (Opus 4.8, GPT 5.6) and the CONCERNS from the
+              line-level reviewers (Claude, GPT 5.6) and the CONCERNS from the
               design reviewer, for this PR and commit.
             - /tmp/pr.diff — the PR diff (may be truncated).
 
@@ -307,7 +307,7 @@ jobs:
             waiting)
               STATUS="in_progress"; CONCLUSION=""
               TITLE="Waiting for reviewers:${MISSING}"
-              BODY="The arbiter runs after all reviewers post for this commit. Missing for \`$SHA\`:${MISSING}. This re-fires as each reviewer (Opus 4.8 / GPT 5.6 / Design) completes; the check stays pending (merge-blocking) until all are in." ;;
+              BODY="The arbiter runs after all reviewers post for this commit. Missing for \`$SHA\`:${MISSING}. This re-fires as each reviewer (Claude / GPT 5.6 / Design) completes; the check stays pending (merge-blocking) until all are in." ;;
             deferred)
               CONCLUSION="success"; TITLE="Deferred via defer-longterm label"
               BODY="An author applied the \`defer-longterm\` label, acknowledging and deferring the long-term items. Policy expects a justification comment on the PR." ;;
