@@ -13,9 +13,9 @@ import {
   switchSlot, createSlot, deleteSlot, fetchHistory,
   appendMessage, resumeFromHistory, forkSlot,
   setSlotRunning, startLocalTurn, syncSlotRunningFromServer, setPendingInput, resolveByApprovalId, clearPendingPermissions, cancelQueuedMessage, editQueuedMessage,
-  selectComposerBusy, selectSlotSubagentsRunning,
+  selectComposerBusy,
   setVoiceAudio,
-  toggleActivity, openActivityPanel, openActivityToTab,
+  toggleActivity, openActivityPanel,
   setActiveSlot, truncateAfterIndex, replaceMessages,
   requestStop, clearQuestionCard,
 } from '../store/chatSlice'
@@ -579,13 +579,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
   const contextPct = useAppSelector(s => s.chat.slotContextPct[s.chat.activeSlot ?? ''] ?? 0)
   const contextTokens = useAppSelector(s => s.chat.slotContextTokens?.[s.chat.activeSlot ?? ''])
   const subagents = useAppSelector(s => s.chat.subagents)
-  // Hard-lock the composer while background sub-agents run for the active slot
-  // (Decision B). Derived from the single slot-keyed selector shared with
-  // ChatPane and SubagentProgressBar (WS subagent map ∪ the slot snapshot's
-  // subagents_running flag, so a post-reload empty map doesn't unlock it), so
-  // every composer surface enforces the invariant identically. Tangential
-  // questions go to the Activity-panel side chat, not the main thread.
-  const subagentsRunning = useAppSelector(s => selectSlotSubagentsRunning(s, activeSlot))
   const toolLog = useAppSelector(s => s.chat.toolLog)
   const activityOpen = useAppSelector(s => s.chat.activityOpen)
   const slotHasMore = useAppSelector(s => s.chat.slotHasMore)
@@ -3532,8 +3525,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
                    follow-up during the stop window instead of being silently blocked. */
                 false
               }
-              subagentsRunning={subagentsRunning}
-              onOpenSideChat={() => dispatch(openActivityToTab('side'))}
               autoFocusKey={activeSlot}
               prefillHint={prefillHint}
               onDismissHint={() => setPrefillHint(false)}

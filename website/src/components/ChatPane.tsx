@@ -18,7 +18,7 @@ import { useAgents } from '../hooks/useAgents'
 import { useFilteredDropdown } from '../hooks/useFilteredDropdown'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { useAppSelector, useAppDispatch } from '../store'
-import { selectSlotMessages, selectSlotStreamState, selectComposerBusy, selectSlotSubagentsRunning, hydrateSlotMessages, appendSlotMessage, requestStop, cancelQueuedMessage, openActivityToTab } from '../store/chatSlice'
+import { selectSlotMessages, selectSlotStreamState, selectComposerBusy, hydrateSlotMessages, appendSlotMessage, requestStop, cancelQueuedMessage } from '../store/chatSlice'
 import { api } from '../api/client'
 import { changeApprovalMode } from '../store/dashboardSlice'
 import { safeSetItem } from '../utils/safeStorage'
@@ -72,10 +72,6 @@ export default function ChatPane({
   const allMessages = useAppSelector((s) => selectSlotMessages(s, slotKey))
   const streamState = useAppSelector((s) => selectSlotStreamState(s, slotKey))
   const running = streamState !== 'idle'
-  // Hard-lock this pane's composer while its own sub-agents run (Decision B) —
-  // same slot-keyed selector ChatPage uses, so the split-view pane enforces the
-  // invariant identically instead of being a silently-unlocked bypass.
-  const subagentsRunning = useAppSelector((s) => selectSlotSubagentsRunning(s, slotKey))
   // Per-slot context-window usage for the input-bar ring (mirrors ChatPage; the
   // store already keys these by slot, the pane just never read them). Default 0
   // so the ring always renders, exactly like single chat.
@@ -309,15 +305,6 @@ export default function ChatPane({
           onSend={doSend}
           isRunning={busy}
           onStop={onStop}
-          subagentsRunning={subagentsRunning}
-          onOpenSideChat={() => {
-            // openActivityToTab acts on the GLOBAL active slot, so focus this
-            // pane's slot first — otherwise, from a non-active pane, the escape
-            // hatch would open the wrong slot's side chat while this pane stays
-            // locked. onFocus activates the pane (same path as click/mousedown).
-            onFocus?.()
-            dispatch(openActivityToTab('side'))
-          }}
           autoFocusKey={slotKey}
           agentName={paneSlot?.agent || 'default'}
           agentSource={installedAgents.find((a) => a.name === (paneSlot?.agent || 'default'))?.source}

@@ -3479,42 +3479,6 @@ class GatewayOrchestrator:
                         body,
                         meta=self._notif_meta(parent_key),
                     )
-
-                # ── Release the sub-agent hold on the Slack queue ──
-                # Messages that arrived while sub-agents ran were queued by the
-                # events.py gate (fire-and-forget spawns leave no _session_tasks
-                # entry, so the normal turn-end drain never fired). Once this is
-                # the LAST sub-agent for the parent, kick the shared drain helper:
-                # it dispatches the next queued message and re-arms itself, so the
-                # WHOLE backlog drains (one turn at a time), not just the first.
-                # It no-ops when a live turn already owns the session (that turn's
-                # own done-callback drains), so this never double-dispatches.
-                try:
-                    _still = (
-                        self.subagent_mgr.running_agents_for(parent_key)
-                        if self.subagent_mgr
-                        else None
-                    )
-                    if _still == []:
-                        from kiro_crew.messaging.link import legacy_key
-                        from kiro_crew.slack.events import _schedule_next_queued
-
-                        # The Slack surface keys _session_tasks / _pending_queue /
-                        # the session queue by the BARE thread ts (events.py
-                        # session_key), while subagents record the CANONICAL
-                        # slack:<thread> parent_key. Drain under the bare form so
-                        # dequeue + the pending-queue lookup hit the entries the
-                        # enqueue gate actually stored. (SessionManager.dequeue
-                        # folds bare/canonical, but _pending_queue is a plain dict
-                        # that does not — so pass the bare key explicitly.)
-                        _drain_key = legacy_key(parent_key) or parent_key
-                        _schedule_next_queued(self, _drain_key)
-                except Exception:
-                    logger.exception(
-                        "Subagent %s: failed to drain Slack queue for %s",
-                        info.id,
-                        parent_key,
-                    )
                 return
 
             # Cron parent — inject result back into the cron session.

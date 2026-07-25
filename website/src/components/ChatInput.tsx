@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useLayoutEffect, useCallback, memo } from 'react'
-import { ArrowUpFromLine, ArrowUp, Loader2, Plus, Crop, Bot, Mic, Square, ShieldCheck, BookOpen, Handshake, Rocket, X, ClipboardList, CheckCircle, Ban, Sparkles, Target, Lock, Globe, FolderOpen, FileText, ChevronDown, Check, PawPrint } from 'lucide-react'
+import { ArrowUpFromLine, ArrowUp, Loader2, Plus, Crop, Bot, Mic, Square, ShieldCheck, BookOpen, Handshake, Rocket, X, ClipboardList, CheckCircle, Ban, Sparkles, Target, Lock, Globe, FolderOpen, FileText, ChevronDown, Check } from 'lucide-react'
 import { Toggle } from './ui'
 import VoiceStatusBar from './VoiceStatusBar'
 import { createPortal } from 'react-dom'
@@ -177,14 +177,6 @@ interface ChatInputProps {
    * must NOT clear the value around this call. */
   onSteer?: () => void
   disabled?: boolean
-  /** Hard-lock the composer while background sub-agents run for this slot
-   *  (Decision B). Distinct from `disabled` (stopping) — steers tangential
-   *  questions to the Activity-panel side chat to keep the main thread's
-   *  plan/synthesis context clean. */
-  subagentsRunning?: boolean
-  /** Opens the Activity-panel side chat; wired to the lock banner button so the
-   *  user can ask tangential questions without unlocking the main composer. */
-  onOpenSideChat?: () => void
   placeholder?: string
   prefillHint?: boolean
   onDismissHint?: () => void
@@ -380,8 +372,6 @@ function ChatInput({
   canSteer,
   onSteer,
   disabled = false,
-  subagentsRunning = false,
-  onOpenSideChat,
   placeholder = '',
   prefillHint,
   onScreenshot,
@@ -679,15 +669,9 @@ function ChatInput({
   // (normal send, or server-side queue while running).
   const steerActive = isRunning && (!stopState || stopState === 'idle') && !!canSteer && !!onSteer && busySendMode === 'steer'
   const fireComposer = useCallback(() => {
-    // Single choke point for every send path (Enter, the idle Send button, and
-    // the busy steer/queue split-button): while background sub-agents run for
-    // this slot the composer is hard-locked, so no path may send or steer into
-    // the slot's context. Gating here (not per-surface) keeps the invariant in
-    // one place so a new caller can't silently bypass it.
-    if (subagentsRunning) return
     if (steerActive && onSteer) onSteer()
     else onSend()
-  }, [subagentsRunning, steerActive, onSteer, onSend])
+  }, [steerActive, onSteer, onSend])
   const { botName } = useBranding()
   const isMobile = useIsMobile()
   const ime = useImeGuard()
@@ -1406,7 +1390,7 @@ function ChatInput({
       // While a turn is running, Enter follows the split-button mode:
       // steer (default) injects into the running turn; queue defers.
       e.preventDefault()
-      if (connected && !subagentsRunning) fireComposer()
+      if (connected) fireComposer()
       return
     }
     // Prompt history: ↑/↓ cycles through prior user messages.
@@ -1904,16 +1888,15 @@ function ChatInput({
         <VoiceStatusBar recording={voiceRecording} level={voiceLevel} deviceLabel={voiceDeviceLabel} error={voiceError} onDismissError={onClearVoiceError} />
 
         {optimizing && <span className="absolute inset-0 flex items-start px-4 pt-3 text-sm text-white font-medium pointer-events-none z-10 bg-black/60 rounded-2xl"><Sparkles size={14} className="inline mr-1 text-yellow-400" /> Optimizing prompt…</span>}
-        {subagentsRunning && !optimizing && <div className="absolute inset-0 flex items-center justify-between gap-2 px-4 text-sm font-medium pointer-events-none z-10 bg-black/60 rounded-2xl text-white"><span className="flex items-center gap-1"><PawPrint size={14} className="lucide-inline" /> Sub-agents running — use the side chat for other questions</span>{onOpenSideChat && <button type="button" onClick={onOpenSideChat} className="pointer-events-auto shrink-0 text-xs py-1 px-2.5 rounded-md bg-accent text-accent-fg hover:bg-accent-hover transition-colors">Open side chat</button>}</div>}
         <div className={`relative ${manualHeight !== null ? 'flex-1 min-h-0 flex flex-col' : ''}`}>
         <PasteHighlightLayer ref={mirrorRef} value={value} blocks={pasteBlocks} />
         <textarea
           ref={inputRef}
           aria-label="Message input"
-          className={`relative w-full bg-transparent border-none ${INPUT_TYPO} text-text outline-none min-h-[44px] max-h-[50vh] placeholder:text-muted resize-none ${manualHeight !== null ? 'flex-1' : ''} ${(disabled || subagentsRunning) ? 'opacity-40 pointer-events-none' : ''} ${optimizing ? 'opacity-30' : ''}`}
+          className={`relative w-full bg-transparent border-none ${INPUT_TYPO} text-text outline-none min-h-[44px] max-h-[50vh] placeholder:text-muted resize-none ${manualHeight !== null ? 'flex-1' : ''} ${disabled ? 'opacity-40 pointer-events-none' : ''} ${optimizing ? 'opacity-30' : ''}`}
           style={manualHeight !== null ? { height: '100%' } : undefined}
-          placeholder={!connected ? 'Gateway offline — message will not send' : subagentsRunning ? 'Sub-agents running — use the Activity panel side chat for other questions' : disabled ? 'Stopping…' : voiceRecording ? 'Recording… click mic to stop' : voiceTranscribing ? 'Transcribing, please wait…' : resolvedPlaceholder}
-          readOnly={optimizing || subagentsRunning}
+          placeholder={!connected ? 'Gateway offline — message will not send' : disabled ? 'Stopping…' : voiceRecording ? 'Recording… click mic to stop' : voiceTranscribing ? 'Transcribing, please wait…' : resolvedPlaceholder}
+          readOnly={optimizing}
           rows={1}
           value={value}
           onDragOver={e => { e.preventDefault(); onDragOver?.(e); e.stopPropagation() }}
@@ -2196,7 +2179,7 @@ function ChatInput({
                     )}
                   </div>
                 ) : (
-                  <button className="w-8 h-8 rounded-full bg-warn text-warn-fg border-none flex items-center justify-center cursor-pointer hover:bg-warn/80 disabled:opacity-30 disabled:cursor-not-allowed transition-all" onClick={onSend} disabled={subagentsRunning} title="Queue message" aria-label="Queue message">
+                  <button className="w-8 h-8 rounded-full bg-warn text-warn-fg border-none flex items-center justify-center cursor-pointer hover:bg-warn/80 transition-all" onClick={onSend} title="Queue message" aria-label="Queue message">
                     <ArrowUpFromLine size={18} />
                   </button>
                 )
@@ -2226,7 +2209,7 @@ function ChatInput({
               <button
                 className="w-8 h-8 rounded-full bg-accent text-accent-fg border-none flex items-center justify-center cursor-pointer hover:bg-accent-hover disabled:opacity-30 disabled:cursor-not-allowed transition-all"
                 onClick={onSend}
-                disabled={(!value.trim() && !pendingFiles.length) || disabled || subagentsRunning || optimizing || !connected}
+                disabled={(!value.trim() && !pendingFiles.length) || disabled || optimizing || !connected}
                 aria-label="Send"
                 {...offlineProps(connected, 'send', 'Send')}
               >
