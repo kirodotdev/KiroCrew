@@ -389,10 +389,14 @@ export function checkSessionExpired(r: Response): Response {
  */
 export class ApiError extends Error {
   readonly status: number
-  constructor(status: number, message: string) {
+  /** The raw response body, kept so a caller can read structured fields that
+   * `friendlyErrText` collapses away when it unwraps the human message. */
+  readonly body: string
+  constructor(status: number, message: string, body = '') {
     super(message)
     this.name = 'ApiError'
     this.status = status
+    this.body = body
   }
 }
 
@@ -428,7 +432,7 @@ const j = async (r: Response) => {
   if (r.ok) removeAuthBanner()
   if (!r.ok) {
     const errText = await r.text()
-    throw new ApiError(r.status, friendlyErrText(r.status, errText) || `HTTP ${r.status}`)
+    throw new ApiError(r.status, friendlyErrText(r.status, errText) || `HTTP ${r.status}`, errText)
   }
   return r.json()
 }
@@ -443,7 +447,7 @@ const jNullable = async (r: Response) => {
   if (r.status === 204) return null
   if (!r.ok) {
     const errText = await r.text()
-    throw new ApiError(r.status, friendlyErrText(r.status, errText) || `HTTP ${r.status}`)
+    throw new ApiError(r.status, friendlyErrText(r.status, errText) || `HTTP ${r.status}`, errText)
   }
   return r.json()
 }
@@ -789,6 +793,8 @@ export const api = {
   pullRequestChecks: (url: string) => post('/api/source/pull-request/checks', { url }).then(j) as Promise<{ checks: PullRequestCheck[] }>,
   pullRequestStatuses: (urls: string[]) => post('/api/source/pull-request/status', { urls }).then(j) as Promise<PullRequestStatusBatch>,
   resolvePullRequestThread: (url: string, threadId: string) => post('/api/source/pull-request/resolve', { url, threadId }).then(j) as Promise<{ resolved: boolean }>,
+  enablePullRequestAutoMerge: (url: string, confirmImmediateMerge = false) => post('/api/source/pull-request/auto-merge', { url, confirmImmediateMerge }).then(j) as Promise<{ autoMerge: boolean; mergeMethod: string }>,
+  markPullRequestReady: (url: string) => post('/api/source/pull-request/ready', { url }).then(j) as Promise<{ ready: boolean }>,
   chatSlots: () => fetch('/api/chat/slots').then(j),
   chatSlotDetail: (slot: string, limit?: number, before?: number) => {
     const p = new URLSearchParams()

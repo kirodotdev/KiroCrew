@@ -104,11 +104,20 @@ function age(value: string): string {
 export function pullRequestErrorDetails(error: unknown): {
   message: string
   loginCommand: 'gh auth login' | 'glab auth login' | ''
+  /** The server refused pending an acknowledgement the client may now offer. */
+  confirmationRequired: boolean
 } {
   let message = error instanceof Error ? error.message : String(error || '')
+  let confirmationRequired = false
+  // ApiError already unwraps the human message, which discards every other
+  // field, so the structured marker is read from the raw body it preserves.
+  const raw = typeof (error as { body?: unknown })?.body === 'string'
+    ? (error as { body: string }).body
+    : message
   try {
-    const payload = JSON.parse(message) as { error?: unknown }
+    const payload = JSON.parse(raw) as { error?: unknown; confirmationRequired?: unknown }
     if (typeof payload.error === 'string') message = payload.error
+    confirmationRequired = payload.confirmationRequired === true
   } catch {
     // Provider and network errors may already be plain text.
   }
@@ -118,7 +127,7 @@ export function pullRequestErrorDetails(error: unknown): {
     : authenticationFailure && /(?:`|\b)glab auth login(?:`|\b)/i.test(message)
       ? 'glab auth login'
       : ''
-  return { message, loginCommand }
+  return { message, loginCommand, confirmationRequired }
 }
 
 function safeExternalUrl(value: string): string | undefined {
@@ -518,6 +527,135 @@ function EmptyTab({ children }: { children: string }) {
   return <div className="flex flex-col items-center justify-center gap-2 py-12 text-[13px] text-muted"><Circle className="lucide-inline" />{children}</div>
 }
 
+/** Whether the pull request is still live — actions are pointless (and the
+ * provider rejects them) once it is merged or closed. */
+export function pullRequestIsLive(source: PullRequestSource): boolean {
+  const state = source.state.toLowerCase()
+  if (source.mergedAt) return false
+  return state === 'open' || state === 'opened' || state === 'draft'
+}
+
+/** Provider-write actions on the loaded pull request: take it out of draft, and
+ * arm auto-merge. Both are owner-only server-side; failures surface inline
+ * rather than as a toast, so the reason stays next to the button that caused it.
+ *
+ * Auto-merge takes a second confirming click because it authorizes a merge. That
+ * click sends no acknowledgement flag: if the server finds nothing would defer
+ * the merge (GitLab with no pipeline pending) it refuses and says so, and only
+ * that refusal escalates the UI to a third, explicitly-worded confirmation which
+ * carries the flag. The acknowledgement is therefore never a constant the client
+ * asserts up front, and the wording always describes the real situation.
+ *
+ * Confirm and Cancel are separate buttons, so the second half of an accidental
+ * double-click cannot land on a confirm that appeared under the cursor. */
+export function PullRequestActions({ source }: { source: PullRequestSource }) {
+  const queryClient = useQueryClient()
+  const [confirmAutoMerge, setConfirmAutoMerge] = useState(false)
+  const [immediateMergeWarning, setImmediateMergeWarning] = useState('')
+  const isGitHub = source.provider === 'github'
+  const label = isGitHub ? 'pull request' : 'merge request'
+
+  const invalidate = () => {
+    void queryClient.invalidateQueries({ queryKey: ['pull-request-source'] })
+    void queryClient.invalidateQueries({ queryKey: ['pull-request-statuses'] })
+  }
+  const readyMutation = useMutation({
+    mutationFn: () => api.markPullRequestReady(source.url),
+    onSuccess: invalidate,
+  })
+  const autoMergeMutation = useMutation({
+    mutationFn: (acknowledgeImmediateMerge: boolean) =>
+      api.enablePullRequestAutoMerge(source.url, acknowledgeImmediateMerge),
+    onSuccess: () => {
+      setConfirmAutoMerge(false)
+      setImmediateMergeWarning('')
+      invalidate()
+    },
+    onError: (error: unknown) => {
+      // The server is the only thing that knows whether a merge would actually
+      // be deferred, so its refusal — not a client guess — is what escalates.
+      const details = pullRequestErrorDetails(error)
+      if (details.confirmationRequired) setImmediateMergeWarning(details.message)
+    },
+  })
+
+  const dismissAutoMerge = () => {
+    setConfirmAutoMerge(false)
+    setImmediateMergeWarning('')
+    autoMergeMutation.reset()
+  }
+
+  if (!pullRequestIsLive(source)) return null
+  const showReady = source.draft
+  const showAutoMerge = !source.draft && !source.autoMerge
+  const errorDetails = pullRequestErrorDetails(readyMutation.error || autoMergeMutation.error)
+  // The immediate-merge refusal is rendered as its own confirmation prompt, so
+  // repeating it as a failure would read as a dead end rather than a question.
+  const error = immediateMergeWarning ? '' : errorDetails.message
+  const busy = readyMutation.isPending || autoMergeMutation.isPending
+  const armedMethod = autoMergeMutation.data?.mergeMethod
+  if (!showReady && !showAutoMerge && !source.autoMerge && !error) return null
+
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-2">
+      {showReady && (
+        <Btn
+          type="button"
+          onClick={() => readyMutation.mutate()}
+          disabled={busy}
+          title={`Take this ${label} out of draft`}
+          className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md border border-border bg-transparent text-[11px] text-muted hover:text-text hover:bg-bg-hover cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {readyMutation.isPending ? <Loader className="lucide-inline animate-spin" /> : <GitPullRequest className="lucide-inline" />}
+          Ready for review
+        </Btn>
+      )}
+      {source.autoMerge && (
+        <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-aim/15 text-[11px] text-aim" title={isGitHub ? 'GitHub will merge this pull request once its requirements pass' : 'GitLab will merge this merge request when the pipeline succeeds'}>
+          <GitMerge className="lucide-inline" /> Auto-merge enabled{armedMethod ? ` (${armedMethod})` : ''}
+        </span>
+      )}
+      {showAutoMerge && (confirmAutoMerge || immediateMergeWarning) && (
+        <Btn
+          type="button"
+          onClick={dismissAutoMerge}
+          disabled={busy}
+          className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md border border-border bg-transparent text-[11px] text-muted hover:text-text hover:bg-bg-hover cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          Cancel
+        </Btn>
+      )}
+      {showAutoMerge && (
+        <Btn
+          type="button"
+          onClick={() => {
+            if (immediateMergeWarning) autoMergeMutation.mutate(true)
+            else if (confirmAutoMerge) autoMergeMutation.mutate(false)
+            else setConfirmAutoMerge(true)
+          }}
+          disabled={busy}
+          title={isGitHub
+            ? 'GitHub merges this pull request automatically once required checks and reviews pass'
+            : 'GitLab merges this merge request when the pipeline succeeds — it merges right away if no pipeline is pending'}
+          className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-md border text-[11px] cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${confirmAutoMerge || immediateMergeWarning ? 'border-warn text-warn hover:bg-warn/10' : 'border-border bg-transparent text-muted hover:text-text hover:bg-bg-hover'}`}
+        >
+          {autoMergeMutation.isPending ? <Loader className="lucide-inline animate-spin" /> : <GitMerge className="lucide-inline" />}
+          {immediateMergeWarning ? 'Merge now' : confirmAutoMerge ? 'Confirm auto-merge' : 'Enable auto-merge'}
+        </Btn>
+      )}
+      {immediateMergeWarning && !autoMergeMutation.isPending && (
+        <span role="alert" className="text-[11px] text-warn">{immediateMergeWarning}</span>
+      )}
+      {confirmAutoMerge && !immediateMergeWarning && !autoMergeMutation.isPending && (
+        <span className="text-[11px] text-warn">
+          This authorizes the merge{isGitHub ? ' as soon as requirements pass, squashing if this repository allows it (otherwise a merge commit, then rebase)' : ' when the pipeline succeeds'}.
+        </span>
+      )}
+      {error && <span role="alert" className="text-[11px] text-danger">{error}</span>}
+    </div>
+  )
+}
+
 function PullRequestBody({ source, tab, onAddToChat }: { source: PullRequestSource; tab: SourceTab; onAddToChat: (text: string) => void }) {
   if (tab === 'description') {
     return source.description
@@ -884,6 +1022,7 @@ export default function PullRequestPanel({
               <span><span className="text-ok">+{source.additions}</span> <span className="text-danger">-{source.deletions}</span></span>
               {source.updatedAt && <span>Updated {age(source.updatedAt)}</span>}
             </div>
+            <PullRequestActions key={source.url} source={source} />
           </div>
 
           {mergeBlocker && (

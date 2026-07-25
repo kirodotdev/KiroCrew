@@ -18,7 +18,7 @@ import os
 import re
 import stat
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TypeVar
@@ -740,6 +740,7 @@ async def _fetch_github(ref: SourceRef) -> dict[str, Any]:
         [
             "additions",
             "author",
+            "autoMergeRequest",
             "baseRefName",
             "body",
             "changedFiles",
@@ -877,6 +878,7 @@ async def _fetch_github(ref: SourceRef) -> dict[str, Any]:
         "mergedAt": details.get("mergedAt") or "",
         "mergeable": github_mergeable,
         "mergeStateStatus": github_merge_state,
+        "autoMerge": bool(details.get("autoMergeRequest")),
         "updatedAt": details.get("updatedAt") or "",
         "headBranch": details.get("headRefName") or "",
         "baseBranch": details.get("baseRefName") or "",
@@ -1045,6 +1047,7 @@ async def _fetch_gitlab(ref: SourceRef) -> dict[str, Any]:
         "mergedAt": details.get("merged_at") or "",
         "mergeable": gitlab_mergeable,
         "mergeStateStatus": gitlab_merge_state,
+        "autoMerge": bool(details.get("merge_when_pipeline_succeeds")),
         "updatedAt": details.get("updated_at") or "",
         "headBranch": details.get("source_branch") or "",
         "baseBranch": details.get("target_branch") or "",
@@ -1387,6 +1390,100 @@ _GITHUB_RESOLVE_MUTATION = (
     "{thread{isResolved}}}"
 )
 
+# Node ids are provider-issued, but they are interpolated into a CLI argument,
+# so they get the same shape check as review-thread ids before dispatch.
+_GITHUB_NODE_ID_RE = re.compile(r"^[A-Za-z0-9_=+-]{1,128}$")
+
+_GITHUB_PULL_REQUEST_NODE_QUERY = (
+    "query($owner:String!,$repo:String!,$number:Int!){repository(owner:$owner,name:$repo)"
+    "{squashMergeAllowed mergeCommitAllowed rebaseMergeAllowed"
+    " pullRequest(number:$number){id isDraft state autoMergeRequest{enabledAt}}}}"
+)
+
+_GITHUB_AUTO_MERGE_MUTATION = (
+    "mutation($pullRequestId:ID!,$mergeMethod:PullRequestMergeMethod!)"
+    "{enablePullRequestAutoMerge(input:{pullRequestId:$pullRequestId,mergeMethod:$mergeMethod})"
+    "{pullRequest{autoMergeRequest{enabledAt}}}}"
+)
+
+_GITHUB_READY_MUTATION = (
+    "mutation($pullRequestId:ID!)"
+    "{markPullRequestReadyForReview(input:{pullRequestId:$pullRequestId})"
+    "{pullRequest{isDraft}}}"
+)
+
+# GitHub merge methods in the order this dashboard prefers them, gated on what
+# the repository actually allows: enabling auto-merge with a disallowed method
+# fails, and the repository's allow-list is the only machine-readable signal
+# GitHub exposes (there is no "default method" field in the API).
+_GITHUB_MERGE_METHODS: tuple[tuple[str, str], ...] = (
+    ("squashMergeAllowed", "SQUASH"),
+    ("mergeCommitAllowed", "MERGE"),
+    ("rebaseMergeAllowed", "REBASE"),
+)
+
+# GitLab stores draft state as a title prefix, but exposes a dedicated
+# mutation that performs the transition itself. Using it keeps the prefix
+# grammar (Draft:/[WIP]/...) the provider's problem and avoids a read-modify-
+# write of the title, which would clobber a concurrent retitle and could
+# mangle titles that merely start with a draft-like word ("Drafting widgets").
+_GITLAB_SET_DRAFT_MUTATION = (
+    "mutation($projectPath:ID!,$iid:String!,$draft:Boolean!)"
+    "{mergeRequestSetDraft(input:{projectPath:$projectPath,iid:$iid,draft:$draft})"
+    "{errors mergeRequest{draft}}}"
+)
+
+
+def _raise_on_graphql_errors(payload: Any, message: str) -> None:
+    """Raise when a GraphQL response carries errors instead of a mutation result.
+
+    GraphQL reports refusals in the body with HTTP 200, so a provider CLI that
+    only fails on transport errors would let a rejected mutation look like a
+    success. Both the transport-level ``errors`` array and the per-mutation
+    ``errors`` field are checked, since GitLab uses the latter.
+    """
+    if not isinstance(payload, dict):
+        raise SourceProviderError(message)
+    if payload.get("errors"):
+        raise SourceProviderError(message)
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        return
+    for result in data.values():
+        if isinstance(result, dict) and result.get("errors"):
+            raise SourceProviderError(message)
+
+
+def _github_repository_node(payload: Any) -> dict[str, Any]:
+    """Extract the repository node from a GraphQL pull-request node response."""
+    data = payload.get("data") if isinstance(payload, dict) else None
+    repository = data.get("repository") if isinstance(data, dict) else None
+    return repository if isinstance(repository, dict) else {}
+
+
+async def _github_pull_request_node(ref: SourceRef) -> tuple[str, dict[str, Any]]:
+    """Return the pull request's validated node id plus its repository node."""
+    payload = await _run_json(
+        "gh",
+        "api",
+        "graphql",
+        "-f",
+        f"query={_GITHUB_PULL_REQUEST_NODE_QUERY}",
+        "-f",
+        f"owner={ref.owner}",
+        "-f",
+        f"repo={ref.repo}",
+        "-F",
+        f"number={ref.number}",
+    )
+    repository = _github_repository_node(payload)
+    pull_request = repository.get("pullRequest")
+    pull_request = pull_request if isinstance(pull_request, dict) else {}
+    node_id = str(pull_request.get("id") or "")
+    if not _GITHUB_NODE_ID_RE.fullmatch(node_id):
+        raise SourceProviderError("GitHub did not return a usable pull-request id")
+    return node_id, repository
+
 
 async def _invalidate_pull_request_cache(url: str) -> None:
     """Supersede cached and in-flight data before a provider mutation."""
@@ -1397,6 +1494,7 @@ async def _invalidate_pull_request_cache(url: str) -> None:
         else:
             _FULL_FETCH_GENERATIONS.pop(url, None)
         _FULL_FETCH_INFLIGHT.pop(url, None)
+    _invalidate_check_status(url)
 
 
 async def resolve_pull_request_thread(raw_url: str, thread_id: str) -> None:
@@ -1446,6 +1544,175 @@ async def resolve_pull_request_thread(raw_url: str, thread_id: str) -> None:
             "-f",
             "resolved=true",
         )
+
+
+async def _gitlab_merge_request(ref: SourceRef) -> dict[str, Any]:
+    """Read a merge request so a mutation can refuse inapplicable requests."""
+    project = quote(ref.project, safe="")
+    details = await _run_json("glab", "api", f"projects/{project}/merge_requests/{ref.number}")
+    if not isinstance(details, dict):
+        raise SourceProviderError("GitLab returned an invalid merge-request payload")
+    return details
+
+
+def _gitlab_is_draft(details: dict[str, Any]) -> bool:
+    """Report draft state, tolerating the legacy ``work_in_progress`` field."""
+    return bool(details.get("draft") or details.get("work_in_progress"))
+
+
+# GitLab pipeline statuses that still have to finish. While one of these is the
+# head pipeline's status, merge_when_pipeline_succeeds genuinely defers the
+# merge; outside them there is nothing left to wait for and the same call
+# merges right away.
+_GITLAB_PENDING_PIPELINE_STATUSES = frozenset(
+    {"created", "waiting_for_resource", "preparing", "pending", "running", "scheduled", "manual"}
+)
+
+
+def _gitlab_has_pending_pipeline(details: dict[str, Any]) -> bool:
+    """Report whether a pipeline would actually gate the merge."""
+    pipeline = details.get("head_pipeline") or details.get("pipeline")
+    if not isinstance(pipeline, dict):
+        return False
+    return str(pipeline.get("status") or "").lower() in _GITLAB_PENDING_PIPELINE_STATUSES
+
+
+class ConfirmationRequired(ValueError):
+    """A mutation refused because the caller has not acknowledged its effect.
+
+    Distinct from an ordinary rejection so the response can carry a machine-
+    readable marker: the request is not malformed and is not permanently
+    refused, it is waiting on an acknowledgement the client can only make
+    meaningfully once the server has told it what is actually at stake.
+    """
+
+
+async def enable_pull_request_auto_merge(
+    raw_url: str, *, confirm_immediate_merge: bool = False
+) -> str:
+    """Enable auto-merge (merge once requirements pass) and return the method.
+
+    Both providers are read first so an inapplicable request is refused before
+    anything is dispatched. GitHub has a real auto-merge switch and refuses a
+    draft or already-armed pull request. GitLab has none: its equivalent is a
+    merge call flagged ``merge_when_pipeline_succeeds``, which merges
+    **immediately** when no pipeline is pending. That makes the GitLab path a
+    merge authorization, so when nothing would gate the merge the caller must
+    pass ``confirm_immediate_merge`` to acknowledge it. The refusal is raised as
+    ``ConfirmationRequired`` so a client can discover the hazard from the server
+    rather than pre-emptively asserting consent: the acknowledgement is only
+    ever sent in answer to this specific refusal, which keeps the guard live for
+    the dashboard instead of degrading it into a constant.
+    """
+    ref = parse_source_url(raw_url)
+    if ref.provider == "github":
+        node_id, repository = await _github_pull_request_node(ref)
+        pull_request = repository.get("pullRequest")
+        pull_request = pull_request if isinstance(pull_request, dict) else {}
+        if pull_request.get("isDraft"):
+            raise ValueError(
+                "GitHub cannot enable auto-merge on a draft pull request. "
+                "Mark it ready for review first."
+            )
+        if pull_request.get("autoMergeRequest"):
+            raise ValueError("Auto-merge is already enabled for this pull request.")
+        method = next(
+            (
+                graphql_method
+                for field, graphql_method in _GITHUB_MERGE_METHODS
+                if repository.get(field)
+            ),
+            "",
+        )
+        if not method:
+            raise ValueError("This repository does not allow any merge method.")
+        # Invalidate before dispatch: once the provider call starts its remote
+        # result is uncertain under cancellation, so stale generations must
+        # already be unable to refill or satisfy a post-mutation refresh.
+        await _invalidate_pull_request_cache(ref.url)
+        payload = await _run_json(
+            "gh",
+            "api",
+            "graphql",
+            "-f",
+            f"query={_GITHUB_AUTO_MERGE_MUTATION}",
+            "-f",
+            f"pullRequestId={node_id}",
+            "-f",
+            f"mergeMethod={method}",
+        )
+        _raise_on_graphql_errors(payload, "GitHub refused to enable auto-merge")
+        return method.lower()
+    details = await _gitlab_merge_request(ref)
+    if _gitlab_is_draft(details):
+        raise ValueError(
+            "GitLab cannot arm a draft merge request. Mark it ready for review first."
+        )
+    if details.get("merge_when_pipeline_succeeds"):
+        raise ValueError("Auto-merge is already enabled for this merge request.")
+    if not _gitlab_has_pending_pipeline(details) and not confirm_immediate_merge:
+        raise ConfirmationRequired(
+            "No pipeline is pending, so GitLab would merge this merge request "
+            "immediately. Confirm the merge to proceed."
+        )
+    project = quote(ref.project, safe="")
+    await _invalidate_pull_request_cache(ref.url)
+    await _run_json(
+        "glab",
+        "api",
+        "-X",
+        "PUT",
+        f"projects/{project}/merge_requests/{ref.number}/merge",
+        "-f",
+        "merge_when_pipeline_succeeds=true",
+    )
+    return "pipeline"
+
+
+async def mark_pull_request_ready(raw_url: str) -> None:
+    """Take a draft pull/merge request out of draft state.
+
+    Both providers expose a dedicated transition, so neither path rewrites the
+    title: GitLab's draft prefix grammar stays the provider's concern and a
+    concurrent retitle cannot be clobbered by this call.
+    """
+    ref = parse_source_url(raw_url)
+    if ref.provider == "github":
+        node_id, repository = await _github_pull_request_node(ref)
+        pull_request = repository.get("pullRequest")
+        pull_request = pull_request if isinstance(pull_request, dict) else {}
+        if not pull_request.get("isDraft"):
+            raise ValueError("This pull request is already ready for review.")
+        await _invalidate_pull_request_cache(ref.url)
+        payload = await _run_json(
+            "gh",
+            "api",
+            "graphql",
+            "-f",
+            f"query={_GITHUB_READY_MUTATION}",
+            "-f",
+            f"pullRequestId={node_id}",
+        )
+        _raise_on_graphql_errors(payload, "GitHub refused to mark the pull request ready")
+        return
+    details = await _gitlab_merge_request(ref)
+    if not _gitlab_is_draft(details):
+        raise ValueError("This merge request is already ready for review.")
+    await _invalidate_pull_request_cache(ref.url)
+    payload = await _run_json(
+        "glab",
+        "api",
+        "graphql",
+        "-f",
+        f"query={_GITLAB_SET_DRAFT_MUTATION}",
+        "-f",
+        f"projectPath={ref.project}",
+        "-f",
+        f"iid={ref.number}",
+        "-F",
+        "draft=false",
+    )
+    _raise_on_graphql_errors(payload, "GitLab refused to mark the merge request ready")
 
 
 _LOCAL_DASHBOARD_OWNER_SUBJECTS = frozenset({"local-app", "local-startup"})
@@ -1524,40 +1791,102 @@ async def api_pull_request_resolve(request: web.Request) -> web.Response:
     installations accept only signed local bootstrap subjects. App tokens and
     missing auth claims fail closed.
     """
-    denied = _authorize_owner_request(request, "source.pull_request.resolve")
+
+    async def action(body: dict[str, Any]) -> dict[str, Any]:
+        await resolve_pull_request_thread(
+            str(body.get("url") or ""), str(body.get("threadId") or "")
+        )
+        return {"resolved": True}
+
+    return await _owner_mutation_response(request, "source.pull_request.resolve", action)
+
+
+async def _owner_mutation_response(
+    request: web.Request,
+    operation: str,
+    action: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]],
+) -> web.Response:
+    """Run one owner-only provider mutation with shared auth, audit, and errors.
+
+    Every provider mutation shares the same contract: an explicit owner claim,
+    a JSON body, and terminal audit events that distinguish a client disconnect
+    (remote outcome unknown) from a rejected request or a provider failure.
+    """
+    denied = _authorize_owner_request(request, operation)
     if denied is not None:
         return denied
-
     try:
         body = await request.json()
     except asyncio.CancelledError:
-        _audit_source_api(request, "source.pull_request.resolve", "failed", "request_cancelled")
+        _audit_source_api(request, operation, "failed", "request_cancelled")
         raise
     except Exception:
         body = {}
     if not isinstance(body, dict):
         body = {}
     try:
-        await resolve_pull_request_thread(
-            str(body.get("url") or ""), str(body.get("threadId") or "")
-        )
+        payload = await action(body)
     except asyncio.CancelledError:
         # The provider may have accepted the mutation before the client
         # disconnected, so record the uncertain outcome and preserve task
         # cancellation for aiohttp's shutdown/disconnect handling.
-        _audit_source_api(request, "source.pull_request.resolve", "failed", "request_cancelled")
+        _audit_source_api(request, operation, "failed", "request_cancelled")
         raise
     except ValueError as exc:
-        _audit_source_api(request, "source.pull_request.resolve", "failed", "invalid_request")
-        return web.json_response({"error": str(exc)}, status=400)
+        _audit_source_api(request, operation, "failed", "invalid_request")
+        rejection: dict[str, Any] = {"error": str(exc)}
+        if isinstance(exc, ConfirmationRequired):
+            # Marks the refusal as answerable: the client may retry with the
+            # acknowledgement, and only this reply justifies sending it.
+            rejection["confirmationRequired"] = True
+        return web.json_response(rejection, status=400)
     except SourceProviderError as exc:
-        _audit_source_api(request, "source.pull_request.resolve", "failed", "provider_error")
+        _audit_source_api(request, operation, "failed", "provider_error")
         return web.json_response({"error": str(exc)}, status=503)
     except Exception:
-        _audit_source_api(request, "source.pull_request.resolve", "failed", "internal_error")
+        _audit_source_api(request, operation, "failed", "internal_error")
         raise
-    _audit_source_api(request, "source.pull_request.resolve", "completed")
-    return web.json_response({"resolved": True})
+    _audit_source_api(request, operation, "completed")
+    return web.json_response(payload)
+
+
+async def api_pull_request_auto_merge(request: web.Request) -> web.Response:
+    """Owner-only POST ``/api/source/pull-request/auto-merge`` mutation.
+
+    Authorizes the provider to merge the pull request once its requirements
+    pass. Same credential boundary as the resolve mutation.
+
+    ``confirmImmediateMerge`` must be a real JSON boolean. Coercing it with
+    ``bool()`` would let any truthy value -- notably the string ``"false"`` --
+    read as consent, so a malformed client would silently satisfy the very guard
+    that stands between it and an immediate merge.
+    """
+
+    async def action(body: dict[str, Any]) -> dict[str, Any]:
+        confirm = body.get("confirmImmediateMerge", False)
+        if confirm is not True and confirm is not False:
+            raise ValueError("confirmImmediateMerge must be true or false.")
+        method = await enable_pull_request_auto_merge(
+            str(body.get("url") or ""),
+            confirm_immediate_merge=confirm,
+        )
+        return {"autoMerge": True, "mergeMethod": method}
+
+    return await _owner_mutation_response(request, "source.pull_request.auto_merge", action)
+
+
+async def api_pull_request_ready(request: web.Request) -> web.Response:
+    """Owner-only POST ``/api/source/pull-request/ready`` mutation.
+
+    Takes the pull/merge request out of draft. Same credential boundary as the
+    resolve mutation.
+    """
+
+    async def action(body: dict[str, Any]) -> dict[str, Any]:
+        await mark_pull_request_ready(str(body.get("url") or ""))
+        return {"ready": True}
+
+    return await _owner_mutation_response(request, "source.pull_request.ready", action)
 
 
 # ── Lightweight CI check status for sidebar chips ────────────────────────────
@@ -1592,6 +1921,10 @@ _CHECK_CONCURRENCY = 4
 _check_semaphore = asyncio.Semaphore(_CHECK_CONCURRENCY)
 _check_cache: dict[str, tuple[float, dict[str, str] | None]] = {}
 _check_inflight: set[str] = set()
+# Bumped when a mutation supersedes a URL's status. A refresh that started
+# before the bump must not write its now-stale result back into the cache,
+# which would otherwise restore the pre-mutation state for up to one TTL.
+_check_generations: dict[str, int] = {}
 _CHECK_TASKS: set[asyncio.Task] = set()  # keep strong refs until done
 _CheckUpdateCallback = Callable[[], None]
 _check_update_callbacks: set[_CheckUpdateCallback] = set()
@@ -1611,6 +1944,25 @@ def get_cached_check_status(url: str) -> dict[str, str] | None:
 def _trim_check_cache() -> None:
     while len(_check_cache) > _CHECK_CACHE_MAX:
         del _check_cache[min(_check_cache, key=lambda key: _check_cache[key][0])]
+    if len(_check_generations) > _CHECK_CACHE_MAX:
+        for url in [
+            url
+            for url in _check_generations
+            if url not in _check_cache and url not in _check_inflight
+        ]:
+            del _check_generations[url]
+
+
+def _invalidate_check_status(url: str) -> None:
+    """Drop a URL's cached chip status and supersede any in-flight refresh.
+
+    The sidebar/source-strip chips read a separate, shorter-lived cache from the
+    full pull-request payload, so a mutation that only busts the full cache
+    would leave the chips showing pre-mutation state until their TTL expired.
+    """
+    _check_cache.pop(url, None)
+    _check_generations[url] = _check_generations.get(url, 0) + 1
+    _trim_check_cache()
 
 
 def _flush_check_updates() -> None:
@@ -1669,6 +2021,7 @@ def schedule_check_refresh(
 
 async def _refresh_check_status(url: str, on_update: _CheckUpdateCallback | None = None) -> None:
     previous = _check_cache.get(url)
+    generation = _check_generations.get(url, 0)
     try:
         async with _check_semaphore:
             status = await _fetch_check_status(url)
@@ -1676,6 +2029,11 @@ async def _refresh_check_status(url: str, on_update: _CheckUpdateCallback | None
         status = None
     finally:
         _check_inflight.discard(url)
+    if _check_generations.get(url, 0) != generation:
+        # A mutation superseded this URL while the fetch was in flight, so the
+        # result describes the pre-mutation state. Drop it rather than let it
+        # overwrite the invalidated entry.
+        return
     # A transient provider failure must not erase a known status. It still
     # refreshes the timestamp so repeated slots requests respect the TTL.
     if status is None and previous:

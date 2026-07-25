@@ -294,6 +294,8 @@ export interface PullRequestSource {
   mergeable?: string
   /** Normalized merge-state detail: 'clean' | 'dirty' | 'behind' | 'blocked' | 'unstable' | 'draft' | 'need_rebase' (GitLab) | 'unknown' | ''. */
   mergeStateStatus?: string
+  /** Auto-merge is armed: GitHub auto-merge, or GitLab merge-when-pipeline-succeeds. */
+  autoMerge?: boolean
   commits: PullRequestCommit[]; checks: PullRequestCheck[]
   comments: PullRequestComment[]; files: PullRequestFile[]
   /** Sections potentially incomplete because a provider request failed or hit a page/output limit. */

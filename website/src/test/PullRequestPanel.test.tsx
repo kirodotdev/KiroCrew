@@ -9,6 +9,8 @@ const mockApi = vi.hoisted(() => ({
   pullRequestSource: vi.fn(),
   pullRequestStatuses: vi.fn(),
   resolvePullRequestThread: vi.fn(),
+  enablePullRequestAutoMerge: vi.fn(),
+  markPullRequestReady: vi.fn(),
 }))
 vi.mock('../api/client', () => ({ api: mockApi }))
 vi.mock('../components/MarkdownRenderer', () => ({
@@ -19,6 +21,7 @@ import PullRequestPanel, {
   CHECK_POLL_MAX_FAILURES,
   pullRequestCheckPollDelay,
   pullRequestCiSignal,
+  pullRequestIsLive,
   pullRequestLifecycleState,
   pullRequestMergeBlocker,
   STATUS_FOLLOWUP_MAX,
@@ -92,6 +95,10 @@ beforeEach(() => {
   mockApi.pullRequestStatuses.mockResolvedValue({ statuses: {} })
   mockApi.resolvePullRequestThread.mockReset()
   mockApi.resolvePullRequestThread.mockResolvedValue({ resolved: true })
+  mockApi.enablePullRequestAutoMerge.mockReset()
+  mockApi.enablePullRequestAutoMerge.mockResolvedValue({ autoMerge: true, mergeMethod: 'squash' })
+  mockApi.markPullRequestReady.mockReset()
+  mockApi.markPullRequestReady.mockResolvedValue({ ready: true })
 })
 
 describe('PullRequestPanel', () => {
@@ -507,6 +514,130 @@ describe('PullRequestPanel', () => {
     expect(await screen.findByText('GitLab source')).toBeInTheDocument()
     await waitFor(() => expect(mockApi.pullRequestSource).toHaveBeenCalledWith(gitlab.url, false))
     expect(screen.getByText('Merged')).toBeInTheDocument()
+  })
+})
+
+function renderSource(source: PullRequestSource) {
+  mockApi.pullRequestSource.mockImplementation(() => Promise.resolve(source))
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  return render(
+    <QueryClientProvider client={client}>
+      <PullRequestPanel
+        sources={[{ url: source.url, provider: source.provider, number: source.number, repo: 'widgets' }]}
+        selectedUrl={source.url}
+        onSelect={() => {}}
+        onAddToChat={() => {}}
+      />
+    </QueryClientProvider>,
+  )
+}
+
+describe('PullRequestPanel actions', () => {
+  it('requires a confirming click before arming auto-merge', async () => {
+    renderSource(github)
+    const enable = await screen.findByRole('button', { name: /Enable auto-merge/i })
+    // A draft-only action must not appear on a ready pull request.
+    expect(screen.queryByRole('button', { name: /Ready for review/i })).not.toBeInTheDocument()
+
+    fireEvent.click(enable)
+    expect(mockApi.enablePullRequestAutoMerge).not.toHaveBeenCalled()
+    const confirm = await screen.findByRole('button', { name: /Confirm auto-merge/i })
+    expect(screen.getByText(/authorizes the merge/i)).toBeInTheDocument()
+
+    fireEvent.click(confirm)
+    // The confirming click asserts nothing about the merge being immediate --
+    // only the server knows that, so the acknowledgement is withheld until it asks.
+    await waitFor(() =>
+      expect(mockApi.enablePullRequestAutoMerge).toHaveBeenCalledWith(github.url, false),
+    )
+  })
+
+  it('sends the acknowledgement only after the server says the merge is immediate', async () => {
+    // Shaped like the real ApiError: the message is already unwrapped to prose,
+    // so the structured marker survives only on the raw body.
+    const refusal = JSON.stringify({
+      error: 'No pipeline is pending, so GitLab would merge this merge request immediately.',
+      confirmationRequired: true,
+    })
+    const apiError = Object.assign(
+      new Error('No pipeline is pending, so GitLab would merge this merge request immediately.'),
+      { status: 400, body: refusal },
+    )
+    mockApi.enablePullRequestAutoMerge
+      .mockRejectedValueOnce(apiError)
+      .mockResolvedValueOnce({ autoMerge: true, mergeMethod: 'pipeline' })
+    renderSource(github)
+
+    fireEvent.click(await screen.findByRole('button', { name: /Enable auto-merge/i }))
+    fireEvent.click(await screen.findByRole('button', { name: /Confirm auto-merge/i }))
+
+    // The server's own words become the prompt, so the warning describes the
+    // real situation instead of a generic caption.
+    expect(await screen.findByRole('alert')).toHaveTextContent(/merge this merge request immediately/i)
+    const mergeNow = await screen.findByRole('button', { name: /Merge now/i })
+    fireEvent.click(mergeNow)
+
+    await waitFor(() =>
+      expect(mockApi.enablePullRequestAutoMerge).toHaveBeenLastCalledWith(github.url, true),
+    )
+  })
+
+  it('keeps confirm and cancel as separate targets so a double-click cannot arm it', async () => {
+    renderSource(github)
+    const enable = await screen.findByRole('button', { name: /Enable auto-merge/i })
+    fireEvent.click(enable)
+
+    // A second click at the original position lands on Cancel, which stands
+    // where the arming button was, so an accidental double-click backs out.
+    const cancel = await screen.findByRole('button', { name: /^Cancel$/i })
+    expect(cancel).not.toBe(await screen.findByRole('button', { name: /Confirm auto-merge/i }))
+    fireEvent.click(cancel)
+
+    expect(await screen.findByRole('button', { name: /Enable auto-merge/i })).toBeInTheDocument()
+    expect(mockApi.enablePullRequestAutoMerge).not.toHaveBeenCalled()
+  })
+
+  it('offers only the ready action on a draft pull request', async () => {
+    renderSource({ ...github, draft: true })
+    const ready = await screen.findByRole('button', { name: /Ready for review/i })
+    // GitHub rejects auto-merge on a draft, so the button is withheld until the
+    // pull request leaves draft rather than failing on click.
+    expect(screen.queryByRole('button', { name: /auto-merge/i })).not.toBeInTheDocument()
+
+    fireEvent.click(ready)
+    await waitFor(() => expect(mockApi.markPullRequestReady).toHaveBeenCalledWith(github.url))
+  })
+
+  it('reports armed auto-merge as state instead of an action', async () => {
+    renderSource({ ...github, autoMerge: true })
+    expect(await screen.findByText('Auto-merge enabled')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Enable auto-merge/i })).not.toBeInTheDocument()
+  })
+
+  it('hides both actions once the pull request is no longer live', async () => {
+    renderSource(gitlab)
+    await screen.findByText('GitLab source')
+    expect(screen.queryByRole('button', { name: /auto-merge/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Ready for review/i })).not.toBeInTheDocument()
+  })
+
+  it('surfaces the provider reason inline when an action fails', async () => {
+    mockApi.markPullRequestReady.mockRejectedValue(
+      new Error(JSON.stringify({ error: 'This pull request is already ready for review.' })),
+    )
+    renderSource({ ...github, draft: true })
+    fireEvent.click(await screen.findByRole('button', { name: /Ready for review/i }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('already ready for review')
+  })
+})
+
+describe('pullRequestIsLive', () => {
+  it('accepts open and draft states and rejects terminal ones', () => {
+    expect(pullRequestIsLive(github)).toBe(true)
+    expect(pullRequestIsLive({ ...github, state: 'opened' })).toBe(true)
+    expect(pullRequestIsLive({ ...github, state: 'closed' })).toBe(false)
+    expect(pullRequestIsLive({ ...github, mergedAt: '2026-07-13T10:00:00Z' })).toBe(false)
   })
 })
 

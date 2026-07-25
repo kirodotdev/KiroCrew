@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import threading
+import time
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -1678,6 +1680,383 @@ async def test_resolve_gitlab_dispatches_discussion_put(monkeypatch) -> None:
     assert "resolved=true" in argv
 
 
+@pytest.mark.asyncio
+async def test_auto_merge_github_picks_allowed_method_and_busts_cache(monkeypatch) -> None:
+    node = {
+        "data": {
+            "repository": {
+                "squashMergeAllowed": False,
+                "mergeCommitAllowed": True,
+                "rebaseMergeAllowed": True,
+                "pullRequest": {"id": "PR_node1", "isDraft": False, "state": "OPEN"},
+            }
+        }
+    }
+    run = AsyncMock(side_effect=[node, {}])
+    monkeypatch.setattr(source, "_run_json", run)
+    url = "https://github.com/acme/repo/pull/12"
+    source._CACHE[url] = (0.0, 21, {"provider": "github"})
+
+    try:
+        assert await source.enable_pull_request_auto_merge(url) == "merge"
+    finally:
+        source._CACHE.clear()
+
+    mutation_argv = run.await_args_list[1].args
+    assert any("enablePullRequestAutoMerge" in part for part in mutation_argv)
+    assert "pullRequestId=PR_node1" in mutation_argv
+    assert "mergeMethod=MERGE" in mutation_argv
+    assert url not in source._CACHE
+
+
+@pytest.mark.asyncio
+async def test_auto_merge_github_refuses_draft_before_dispatch(monkeypatch) -> None:
+    node = {
+        "data": {
+            "repository": {
+                "squashMergeAllowed": True,
+                "pullRequest": {"id": "PR_node1", "isDraft": True, "state": "OPEN"},
+            }
+        }
+    }
+    run = AsyncMock(return_value=node)
+    monkeypatch.setattr(source, "_run_json", run)
+
+    with pytest.raises(ValueError, match="draft"):
+        await source.enable_pull_request_auto_merge("https://github.com/acme/repo/pull/12")
+
+    run.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_auto_merge_github_refuses_when_already_armed(monkeypatch) -> None:
+    node = {
+        "data": {
+            "repository": {
+                "squashMergeAllowed": True,
+                "pullRequest": {
+                    "id": "PR_node1",
+                    "isDraft": False,
+                    "autoMergeRequest": {"enabledAt": "2026-07-13T10:00:00Z"},
+                },
+            }
+        }
+    }
+    monkeypatch.setattr(source, "_run_json", AsyncMock(return_value=node))
+
+    with pytest.raises(ValueError, match="already enabled"):
+        await source.enable_pull_request_auto_merge("https://github.com/acme/repo/pull/12")
+
+
+@pytest.mark.asyncio
+async def test_auto_merge_github_rejects_unusable_node_id(monkeypatch) -> None:
+    node = {"data": {"repository": {"squashMergeAllowed": True, "pullRequest": {"id": "bad id"}}}}
+    monkeypatch.setattr(source, "_run_json", AsyncMock(return_value=node))
+
+    with pytest.raises(source.SourceProviderError, match="usable pull-request id"):
+        await source.enable_pull_request_auto_merge("https://github.com/acme/repo/pull/12")
+
+
+@pytest.mark.asyncio
+async def test_auto_merge_github_refuses_when_no_method_allowed(monkeypatch) -> None:
+    node = {
+        "data": {
+            "repository": {
+                "squashMergeAllowed": False,
+                "mergeCommitAllowed": False,
+                "rebaseMergeAllowed": False,
+                "pullRequest": {"id": "PR_node1", "isDraft": False},
+            }
+        }
+    }
+    run = AsyncMock(return_value=node)
+    monkeypatch.setattr(source, "_run_json", run)
+
+    with pytest.raises(ValueError, match="merge method"):
+        await source.enable_pull_request_auto_merge("https://github.com/acme/repo/pull/12")
+
+    run.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_auto_merge_gitlab_dispatches_merge_when_pipeline_succeeds(monkeypatch) -> None:
+    run = AsyncMock(side_effect=[{"head_pipeline": {"status": "running"}}, {}])
+    monkeypatch.setattr(source, "_run_json", run)
+
+    method = await source.enable_pull_request_auto_merge(
+        "https://gitlab.com/acme/platform/service/-/merge_requests/42"
+    )
+
+    assert method == "pipeline"
+    argv = run.await_args_list[1].args
+    assert argv[0] == "glab"
+    assert "PUT" in argv
+    assert "projects/acme%2Fplatform%2Fservice/merge_requests/42/merge" in argv
+    assert "merge_when_pipeline_succeeds=true" in argv
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("details", "expected"),
+    [
+        ({"draft": True, "head_pipeline": {"status": "running"}}, "draft"),
+        ({"work_in_progress": True, "head_pipeline": {"status": "running"}}, "draft"),
+        (
+            {"merge_when_pipeline_succeeds": True, "head_pipeline": {"status": "running"}},
+            "already enabled",
+        ),
+        ({"head_pipeline": {"status": "success"}}, "immediately"),
+        ({}, "immediately"),
+    ],
+)
+async def test_auto_merge_gitlab_refuses_inapplicable_requests_before_dispatch(
+    monkeypatch, details: dict, expected: str
+) -> None:
+    run = AsyncMock(return_value=details)
+    monkeypatch.setattr(source, "_run_json", run)
+
+    with pytest.raises(ValueError, match=expected):
+        await source.enable_pull_request_auto_merge(
+            "https://gitlab.com/acme/platform/service/-/merge_requests/42"
+        )
+
+    # Only the precondition read happened: nothing was merged.
+    run.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_auto_merge_gitlab_merges_without_pipeline_only_when_confirmed(monkeypatch) -> None:
+    run = AsyncMock(side_effect=[{"head_pipeline": {"status": "success"}}, {}])
+    monkeypatch.setattr(source, "_run_json", run)
+
+    method = await source.enable_pull_request_auto_merge(
+        "https://gitlab.com/acme/platform/service/-/merge_requests/42",
+        confirm_immediate_merge=True,
+    )
+
+    assert method == "pipeline"
+    assert "merge_when_pipeline_succeeds=true" in run.await_args_list[1].args
+
+
+@pytest.mark.asyncio
+async def test_auto_merge_gitlab_immediate_refusal_is_answerable(monkeypatch) -> None:
+    """The no-pipeline refusal is distinguishable from an ordinary rejection.
+
+    A client can only offer a meaningful acknowledgement if it can tell this
+    refusal apart from a permanent one, so it carries its own type.
+    """
+    monkeypatch.setattr(source, "_run_json", AsyncMock(return_value={}))
+
+    with pytest.raises(source.ConfirmationRequired):
+        await source.enable_pull_request_auto_merge(
+            "https://gitlab.com/acme/platform/service/-/merge_requests/42"
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("confirm", ["false", "true", 1, 0, {}, [], None, "yes"])
+async def test_auto_merge_handler_rejects_non_boolean_confirmation(
+    monkeypatch, confirm: object
+) -> None:
+    """Only a real JSON boolean counts as consent.
+
+    ``bool()`` coercion would read the string ``"false"`` -- and every other
+    truthy value -- as an acknowledgement, so a malformed client would satisfy
+    the very guard standing between it and an immediate merge.
+    """
+    action = AsyncMock(return_value="squash")
+    monkeypatch.setattr(source, "enable_pull_request_auto_merge", action)
+    monkeypatch.setattr(source, "_sel", lambda: MagicMock())
+
+    async with TestClient(TestServer(_app())) as client:
+        response = await client.post(
+            "/api/source/pull-request/auto-merge",
+            json={"url": "https://github.com/acme/repo/pull/12", "confirmImmediateMerge": confirm},
+        )
+        assert response.status == 400
+        assert (await response.json())["error"] == "confirmImmediateMerge must be true or false."
+
+    action.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_auto_merge_handler_marks_confirmation_required_refusals(monkeypatch) -> None:
+    """The 400 carries a machine-readable marker, not just prose."""
+    monkeypatch.setattr(
+        source,
+        "enable_pull_request_auto_merge",
+        AsyncMock(side_effect=source.ConfirmationRequired("No pipeline is pending.")),
+    )
+    monkeypatch.setattr(source, "_sel", lambda: MagicMock())
+
+    async with TestClient(TestServer(_app())) as client:
+        response = await client.post(
+            "/api/source/pull-request/auto-merge",
+            json={"url": "https://gitlab.com/acme/platform/service/-/merge_requests/42"},
+        )
+        assert response.status == 400
+        assert await response.json() == {
+            "error": "No pipeline is pending.",
+            "confirmationRequired": True,
+        }
+
+
+@pytest.mark.asyncio
+async def test_ordinary_rejections_carry_no_confirmation_marker(monkeypatch) -> None:
+    """Only an answerable refusal invites a retry with the acknowledgement."""
+    monkeypatch.setattr(
+        source,
+        "enable_pull_request_auto_merge",
+        AsyncMock(side_effect=ValueError("Auto-merge is already enabled.")),
+    )
+    monkeypatch.setattr(source, "_sel", lambda: MagicMock())
+
+    async with TestClient(TestServer(_app())) as client:
+        response = await client.post(
+            "/api/source/pull-request/auto-merge",
+            json={"url": "https://github.com/acme/repo/pull/12"},
+        )
+        assert response.status == 400
+        assert await response.json() == {"error": "Auto-merge is already enabled."}
+
+
+@pytest.mark.asyncio
+async def test_ready_github_dispatches_mutation_and_busts_cache(monkeypatch) -> None:
+    node = {"data": {"repository": {"pullRequest": {"id": "PR_node1", "isDraft": True}}}}
+    run = AsyncMock(side_effect=[node, {}])
+    monkeypatch.setattr(source, "_run_json", run)
+    url = "https://github.com/acme/repo/pull/12"
+    source._CACHE[url] = (0.0, 21, {"provider": "github"})
+
+    try:
+        await source.mark_pull_request_ready(url)
+    finally:
+        source._CACHE.clear()
+
+    mutation_argv = run.await_args_list[1].args
+    assert any("markPullRequestReadyForReview" in part for part in mutation_argv)
+    assert "pullRequestId=PR_node1" in mutation_argv
+    assert url not in source._CACHE
+
+
+@pytest.mark.asyncio
+async def test_ready_github_refuses_non_draft_before_dispatch(monkeypatch) -> None:
+    node = {"data": {"repository": {"pullRequest": {"id": "PR_node1", "isDraft": False}}}}
+    run = AsyncMock(return_value=node)
+    monkeypatch.setattr(source, "_run_json", run)
+
+    with pytest.raises(ValueError, match="already ready"):
+        await source.mark_pull_request_ready("https://github.com/acme/repo/pull/12")
+
+    run.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("details", [{"draft": True}, {"work_in_progress": True}])
+async def test_ready_gitlab_uses_set_draft_mutation_not_a_title_rewrite(
+    monkeypatch, details: dict
+) -> None:
+    run = AsyncMock(side_effect=[details, {"data": {"mergeRequestSetDraft": {"errors": []}}}])
+    monkeypatch.setattr(source, "_run_json", run)
+
+    await source.mark_pull_request_ready(
+        "https://gitlab.com/acme/platform/service/-/merge_requests/42"
+    )
+
+    argv = run.await_args_list[1].args
+    assert "graphql" in argv
+    assert any("mergeRequestSetDraft" in part for part in argv)
+    assert "projectPath=acme/platform/service" in argv
+    assert "iid=42" in argv
+    assert "draft=false" in argv
+    # The title is never read back out or written, so a concurrent retitle and a
+    # title that merely starts with a draft-like word are both left alone.
+    assert not any(str(part).startswith("title=") for part in argv)
+
+
+@pytest.mark.asyncio
+async def test_ready_gitlab_refuses_when_not_draft(monkeypatch) -> None:
+    run = AsyncMock(return_value={"title": "Drafting widgets", "draft": False})
+    monkeypatch.setattr(source, "_run_json", run)
+
+    with pytest.raises(ValueError, match="already ready"):
+        await source.mark_pull_request_ready(
+            "https://gitlab.com/acme/platform/service/-/merge_requests/42"
+        )
+
+    run.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_ready_gitlab_raises_when_mutation_reports_errors(monkeypatch) -> None:
+    run = AsyncMock(
+        side_effect=[
+            {"draft": True},
+            {"data": {"mergeRequestSetDraft": {"errors": ["Not allowed"]}}},
+        ]
+    )
+    monkeypatch.setattr(source, "_run_json", run)
+
+    # GraphQL reports refusals in the body with HTTP 200, so a rejected mutation
+    # must not read as success.
+    with pytest.raises(source.SourceProviderError, match="refused"):
+        await source.mark_pull_request_ready(
+            "https://gitlab.com/acme/platform/service/-/merge_requests/42"
+        )
+
+
+@pytest.mark.asyncio
+async def test_mutation_invalidates_chip_status_cache(monkeypatch) -> None:
+    # The chips read a separate, shorter-lived cache from the full payload, so a
+    # mutation must bust both or the chips keep showing pre-mutation state.
+    url = "https://github.com/acme/repo/pull/12"
+    source._check_cache[url] = (time.monotonic(), {"state": "draft"})
+    try:
+        await source._invalidate_pull_request_cache(url)
+        assert url not in source._check_cache
+    finally:
+        source._check_cache.pop(url, None)
+        source._check_generations.pop(url, None)
+
+
+@pytest.mark.asyncio
+async def test_inflight_status_refresh_cannot_restore_superseded_state(monkeypatch) -> None:
+    url = "https://github.com/acme/repo/pull/12"
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def fetch(_url: str) -> dict[str, str]:
+        started.set()
+        await release.wait()
+        return {"state": "draft"}
+
+    monkeypatch.setattr(source, "_fetch_check_status", fetch)
+    source._check_cache[url] = (time.monotonic(), {"state": "draft"})
+    try:
+        task = asyncio.create_task(source._refresh_check_status(url))
+        await started.wait()
+        # The mutation lands while the refresh is still in flight.
+        await source._invalidate_pull_request_cache(url)
+        release.set()
+        await task
+
+        assert url not in source._check_cache
+    finally:
+        source._check_cache.pop(url, None)
+        source._check_generations.pop(url, None)
+        source._check_inflight.discard(url)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "action",
+    ["enable_pull_request_auto_merge", "mark_pull_request_ready"],
+)
+async def test_mutations_reject_unsupported_urls(action: str) -> None:
+    with pytest.raises(ValueError):
+        await getattr(source, action)("https://example.com/acme/repo/pull/12")
+
+
 def _app(
     *,
     user: str = "U_OWNER",
@@ -1702,6 +2081,8 @@ def _app(
     app.router.add_post("/api/source/pull-request/checks", source.api_pull_request_checks)
     app.router.add_post("/api/source/pull-request/status", source.api_pull_request_status)
     app.router.add_post("/api/source/pull-request/resolve", source.api_pull_request_resolve)
+    app.router.add_post("/api/source/pull-request/auto-merge", source.api_pull_request_auto_merge)
+    app.router.add_post("/api/source/pull-request/ready", source.api_pull_request_ready)
     return app
 
 
@@ -2178,6 +2559,143 @@ async def test_resolve_handler_audits_provider_failure_without_provider_text(mon
         error="provider_error",
     )
     assert secret not in str(audit.log_api_access.call_args)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("path", "action_name"),
+    [
+        ("/api/source/pull-request/auto-merge", "enable_pull_request_auto_merge"),
+        ("/api/source/pull-request/ready", "mark_pull_request_ready"),
+    ],
+)
+async def test_action_handlers_deny_local_token_when_no_owner(
+    monkeypatch, _mock_source_sel, path: str, action_name: str
+) -> None:
+    """The local no-owner fallback is scoped to reads: these mutations stay
+    owner-only, so a local-app token with no owner still fails closed."""
+    action = AsyncMock()
+    monkeypatch.setattr(source, action_name, action)
+
+    async with TestClient(TestServer(_app(owner_id="", user="local-app", app_name=""))) as client:
+        response = await client.post(path, json={"url": "https://github.com/acme/repo/pull/1"})
+        assert response.status == 403
+        assert (await response.json()) == {"error": "forbidden"}
+
+    action.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_auto_merge_handler_success_reports_method(monkeypatch) -> None:
+    action = AsyncMock(return_value="squash")
+    audit = MagicMock()
+    monkeypatch.setattr(source, "enable_pull_request_auto_merge", action)
+    monkeypatch.setattr(source, "_sel", lambda: audit)
+
+    async with TestClient(TestServer(_app())) as client:
+        response = await client.post(
+            "/api/source/pull-request/auto-merge",
+            json={"url": "https://github.com/acme/repo/pull/12", "confirmImmediateMerge": True},
+        )
+        assert response.status == 200
+        assert (await response.json()) == {"autoMerge": True, "mergeMethod": "squash"}
+
+    action.assert_awaited_once_with(
+        "https://github.com/acme/repo/pull/12", confirm_immediate_merge=True
+    )
+    audit.log_api_access.assert_called_once_with(
+        caller="U_OWNER",
+        operation="source.pull_request.auto_merge",
+        outcome="completed",
+        source="dashboard",
+        error="",
+    )
+
+
+@pytest.mark.asyncio
+async def test_ready_handler_success(monkeypatch) -> None:
+    action = AsyncMock(return_value=None)
+    audit = MagicMock()
+    monkeypatch.setattr(source, "mark_pull_request_ready", action)
+    monkeypatch.setattr(source, "_sel", lambda: audit)
+
+    async with TestClient(TestServer(_app())) as client:
+        response = await client.post(
+            "/api/source/pull-request/ready",
+            json={"url": "https://github.com/acme/repo/pull/12"},
+        )
+        assert response.status == 200
+        assert (await response.json()) == {"ready": True}
+
+    action.assert_awaited_once_with("https://github.com/acme/repo/pull/12")
+    audit.log_api_access.assert_called_once_with(
+        caller="U_OWNER",
+        operation="source.pull_request.ready",
+        outcome="completed",
+        source="dashboard",
+        error="",
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("path", "action_name", "operation"),
+    [
+        (
+            "/api/source/pull-request/auto-merge",
+            "enable_pull_request_auto_merge",
+            "source.pull_request.auto_merge",
+        ),
+        (
+            "/api/source/pull-request/ready",
+            "mark_pull_request_ready",
+            "source.pull_request.ready",
+        ),
+    ],
+)
+async def test_action_handlers_audit_provider_failure_without_provider_text(
+    monkeypatch, path: str, action_name: str, operation: str
+) -> None:
+    secret = "ghp_" + "a" * 36
+    audit = MagicMock()
+    monkeypatch.setattr(
+        source,
+        action_name,
+        AsyncMock(side_effect=source.SourceProviderError(f"provider failed {secret}")),
+    )
+    monkeypatch.setattr(source, "_sel", lambda: audit)
+
+    async with TestClient(TestServer(_app())) as client:
+        response = await client.post(path, json={"url": "https://github.com/acme/repo/pull/12"})
+        assert response.status == 503
+
+    audit.log_api_access.assert_called_once_with(
+        caller="U_OWNER",
+        operation=operation,
+        outcome="failed",
+        source="dashboard",
+        error="provider_error",
+    )
+    assert secret not in str(audit.log_api_access.call_args)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("path", "action_name"),
+    [
+        ("/api/source/pull-request/auto-merge", "enable_pull_request_auto_merge"),
+        ("/api/source/pull-request/ready", "mark_pull_request_ready"),
+    ],
+)
+async def test_action_handlers_return_400_for_rejected_requests(
+    monkeypatch, _mock_source_sel, path: str, action_name: str
+) -> None:
+    monkeypatch.setattr(source, action_name, AsyncMock(side_effect=ValueError("not allowed here")))
+
+    async with TestClient(TestServer(_app())) as client:
+        response = await client.post(path, json={"url": "https://github.com/acme/repo/pull/12"})
+        assert response.status == 400
+        assert (await response.json()) == {"error": "not allowed here"}
 
 
 class _ResolveRequest:
