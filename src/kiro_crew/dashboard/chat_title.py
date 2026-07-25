@@ -407,6 +407,17 @@ async def _maybe_auto_title(state: DashboardState, slot: _ChatSlot) -> None:
     returns SKIP/empty after the assistant has responded (a definitive
     failure), the title falls back to the truncated first message with an
     ellipsis (see ``_fallback_title_from_messages``).
+
+    Runs for EVERY ``memory_mode``, temporary included. Titling reads only the
+    slot's own messages and prompts the shared ``_bg`` session, so it neither
+    reads stored memory nor writes any — the two things a temporary session
+    actually forbids. It used to bail on ``slot.blocks_reads``, which left
+    temporary tabs stuck on "New Session…" forever; that guard was an
+    over-broad proxy for "ephemeral" (the manual
+    ``api_chat_slot_generate_title`` endpoint never had it). The title is
+    persisted the same way for every mode because ``_save_slot_to_history``
+    already writes ``meta_line["title"]`` for temporary slots regardless of
+    this path — those sessions keep a transcript on disk for tab recovery.
     """
     if slot._titled:
         return
@@ -415,8 +426,6 @@ async def _maybe_auto_title(state: DashboardState, slot: _ChatSlot) -> None:
         # running. The active attempt will consume it after releasing the guard.
         if any(m.get("role") == "assistant" and m.get("content") for m in slot.messages):
             slot._title_retry_pending = True
-        return
-    if slot.blocks_reads:
         return
     user_count = sum(1 for m in slot.messages if m.get("role") == "user")
     if user_count < 1 or user_count > _TITLE_MAX_ATTEMPTS:

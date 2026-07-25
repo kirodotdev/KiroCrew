@@ -225,6 +225,32 @@ archived instead of being permanently deleted:
 
 - `set_title(key, title)` — persists a title into the session's metadata line (first line of JSONL)
 
+### Session titling is independent of `memory_mode`
+
+Auto-titling (`dashboard/chat_title.py:_maybe_auto_title`) runs for **every**
+`memory_mode` — `persistent`, `incognito`, and `temporary` alike — and the
+resulting title is persisted for all three. This is deliberate, not an
+oversight:
+
+- Titling reads only the slot's **own** messages and prompts the shared `_bg`
+  session. It neither reads stored memory nor writes any, so neither of the two
+  guarantees a non-persistent mode actually makes (`is_restricted` → no
+  consolidation/lessons; `blocks_reads` → no memory-context injection) is
+  engaged by it.
+- Persisting the title discloses nothing new. `_save_slot_to_history` has no
+  `memory_mode` gate, so an incognito/temporary slot already writes its **full
+  transcript** to its session JSONL for tab recovery and gateway-restart
+  restore. The title is a summary of content that is already on disk in the same
+  file, and `restore_recent_sessions` skips only on `closed`, never on
+  `memory_mode`.
+
+Gating titling on `blocks_reads` (as an earlier revision did) therefore bought
+no privacy while leaving temporary tabs permanently labelled "New Session…".
+The manual `POST /api/chat/slots/{slot}/generate-title` endpoint never had such
+a gate, so a temporary session could already be titled and persisted on demand.
+Do not reintroduce a `memory_mode` condition here without first changing what
+`_save_slot_to_history` writes.
+
 ## HistoryConsolidator (`history.py`)
 
 Background task that fires when unconsolidated count ≥ 10 messages. Uses the

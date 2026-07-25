@@ -189,6 +189,33 @@ class TestHistoryPersistence:
         meta = state.conversation_log.get_metadata("dashboard:n1")
         assert "memory_mode" not in meta or meta.get("memory_mode") == "persistent"
 
+    def test_temporary_transcript_on_disk_predates_any_titling(self, tmp_path, monkeypatch):
+        """A temporary slot's transcript reaches disk with NO titling involved.
+
+        Locks in the premise behind "titling is independent of memory_mode"
+        (docs/system-specs/modules/history.md): the session JSONL — full user and
+        assistant content — is written by the ordinary flush path regardless of
+        mode. A persisted title is therefore a summary of content already in that
+        same file, not a new disclosure. If this ever starts asserting False,
+        `_maybe_auto_title` must be re-gated on memory_mode.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        from kiro_crew.dashboard.chat import _save_slot_to_history
+
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("t-disk", memory_mode="temporary")
+        slot.append("user", "my private question")
+        slot.append("assistant", "the answer")
+
+        # No _maybe_auto_title / _persist_title call anywhere in this test.
+        _save_slot_to_history(state, slot)
+
+        path = state.conversation_log._path("dashboard:t-disk")
+        assert path.exists()
+        body = path.read_text(encoding="utf-8")
+        assert "my private question" in body
+        assert "the answer" in body
+
 
 # ── Restore on gateway restart ──
 

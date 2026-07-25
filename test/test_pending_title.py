@@ -4,7 +4,7 @@
   empty sessions and the pre-LLM window), never the bare chat-N key.
 - ``_fallback_title_from_messages`` truncates the first user message with an
   ellipsis when the LLM can't title the chat.
-- ``_maybe_auto_title`` SKIP fallback and in-flight guard.
+- ``_maybe_auto_title`` SKIP fallback, in-flight guard, and mode-independence.
 """
 
 from __future__ import annotations
@@ -343,3 +343,71 @@ class TestSkipFallbackBranch:
 
         assert slot._titled is True
         assert slot.title == "a fairly vague opening question here"  # short enough, no ellipsis
+
+
+class TestAutoTitleRunsForEveryMemoryMode:
+    """Titling is not gated on ``memory_mode``.
+
+    It used to bail on ``slot.blocks_reads`` (true only for ``temporary``),
+    which left temporary tabs showing "New Session…" for their whole life.
+    Titling reads only the slot's own messages, so no memory-privacy rule
+    applies; the manual generate-title endpoint never had the guard either.
+    """
+
+    def _run(self, slot, generated="Debug flaky test"):
+        import asyncio
+
+        from kiro_crew.dashboard import chat_title
+
+        state = _fake_state()
+        attempts = []
+
+        async def _generate(_state, messages):
+            attempts.append(list(messages))
+            return generated
+
+        orig = chat_title._generate_title_via_kiro
+        chat_title._generate_title_via_kiro = _generate  # type: ignore[assignment]
+        try:
+            asyncio.run(chat_title._maybe_auto_title(state, slot))
+        finally:
+            chat_title._generate_title_via_kiro = orig  # type: ignore[assignment]
+        return state, attempts
+
+    def test_temporary_slot_is_titled(self):
+        slot = _ChatSlot("chat-10-1", memory_mode="temporary")
+        assert slot.blocks_reads is True  # the mode the old guard rejected
+        slot.messages.append({"role": "user", "content": "debug my flaky test"})
+
+        state, attempts = self._run(slot)
+
+        assert len(attempts) == 1  # the LLM was actually called
+        assert slot.title == "Debug flaky test"
+        assert slot._titled is True
+        assert slot.display_title == "Debug flaky test"
+        state.push_slot_title.assert_called_with(slot.key, "Debug flaky test")
+
+    def test_temporary_slot_skip_still_falls_back(self):
+        # SKIP handling must be identical for temporary slots — no early return
+        # can short-circuit the truncated fallback.
+        slot = _ChatSlot("chat-10-2", memory_mode="temporary")
+        slot.messages.append({"role": "user", "content": "something vague"})
+        slot.messages.append({"role": "assistant", "content": "some reply"})
+
+        self._run(slot, generated="")
+
+        assert slot.title == "something vague"
+        assert slot._titled is True
+
+    def test_incognito_slot_is_titled(self):
+        # Incognito was never blocked (blocks_reads is temporary-only); assert it
+        # so a future re-broadening of the gate to is_restricted is caught.
+        slot = _ChatSlot("chat-10-3", memory_mode="incognito")
+        assert slot.is_restricted is True
+        assert slot.blocks_reads is False
+        slot.messages.append({"role": "user", "content": "debug my flaky test"})
+
+        _state, attempts = self._run(slot)
+
+        assert len(attempts) == 1
+        assert slot._titled is True
