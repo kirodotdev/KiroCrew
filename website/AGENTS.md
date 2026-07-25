@@ -282,16 +282,48 @@ Plus one **exported-transport** seam for edition-owned API methods (not a
 registry — see "API methods" below): `api/apiTransport.ts` exports `apiTransport`,
 and the edition builds its own typed API module on it.
 
-**Composition root.** `src/extensions.ts` is the one file an edition owns. It is
-imported first in `main.tsx` (before the store/providers/`App`), so all
-registration runs before render. The core ships it **empty and must keep it
-empty** — `extensionSeams.test.tsx` asserts the stock body is `export {}` (plus
-comments) and that importing it registers nothing. This guards a silent-erasure
-hazard: the file is core-tracked but edition-owned, so a core registration added
-here would be deleted by an edition's overlay on the next sync with no collision
-and no throw. Put core registrations in the seed maps, never here. Registries are
-read at module-load / first-render and are **not reactive** — register here, not
-after mount.
+**Composition root.** `src/extensions.ts` is **core-owned** and imported first in
+`main.tsx` (before the store/providers/`App`), so all registration runs before
+render. It imports the `virtual:kirocrew-edition` module, which the
+`editionExtensionPlugin` in `vite.config.ts` resolves to:
+- an **inert empty module** in the stock OSS build (`KIROCREW_EDITION_DIR`
+  unset) — the stock build registers nothing, byte-identical to no seam;
+- the **downstream edition's own** `$KIROCREW_EDITION_DIR/extensions.tsx` when
+  that env var points at an edition repo — so the edition injects its
+  `register*()` calls + component imports **by build config**, compiled through
+  the same vite/rollup pass, **without shadowing/overlaying any core file**
+  (the copy-and-shadow erosion the seams exist to eliminate). A misconfigured
+  `KIROCREW_EDITION_DIR` (set but missing `extensions.tsx`/`.ts`) **fails the
+  build loudly** rather than silently degrading to the stock SPA.
+
+**Edition-build safety (fail-closed opt-in):** edition composition is **opt-in
+and fail-closed** — `KIROCREW_EDITION_DIR` alone is NOT enough; the plugin also
+requires **`KIROCREW_ALLOW_EDITION=1`** or it THROWS. So every pipeline
+(including release/publish, and the backend `setup.py` → `build-frontend.sh`
+path) is protected by default: a stray/inherited `KIROCREW_EDITION_DIR` can
+never silently compile proprietary edition sources into `website/dist` (the dist
+staged into the public OSS wheel — a contaminated public release cannot be
+unpublished). Only the edition's own build sets `KIROCREW_ALLOW_EDITION=1`.
+Forgetting the opt-in fails safe (stock); there is no guard var a release job
+must "remember to set." An edition-mode build additionally prints a loud
+`[kirocrew-edition] ⚠ BUILDING WITH EDITION COMPOSITION ROOT` line so the mode
+is unmissable in local + CI logs.
+
+**Edition peer-dependency rule:** an edition dir resolves bare imports from its
+OWN `node_modules`, so any **context-carrying singleton** the core's provider
+tree owns must be de-duplicated or its hooks bind to a second instance
+(`Invalid hook call`, `No QueryClient set`, null router context, silently empty
+data — only at runtime, only in the edition build). `vite.config.ts`
+`resolve.dedupe` covers `react`, `react-dom`, `react-redux`, `react-router`,
+`react-router-dom`, `@tanstack/react-query`, `framer-motion`. **When the core
+adds a new global-context provider, add its package here** (and the edition
+should declare these as peer deps).
+
+The core must register **nothing of its own** in `extensions.ts` —
+`extensionSeams.test.tsx` asserts its stock body is the edition import + `export
+{}` (plus comments). Put core registrations in the seed maps, never here.
+Registries are read at module-load / first-render and are **not reactive** —
+the edition registers via this import path, not after mount.
 
 **Builtin routes.** `registerBuiltinComponents()` accepts only a single, plain
 top-level path segment (`/^\/[A-Za-z0-9][A-Za-z0-9._~-]*$/`) — `BuiltinAppRoute`

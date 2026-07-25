@@ -352,20 +352,22 @@ describe('extension slot isolation', () => {
 })
 
 describe('composition root — stock extensions.ts is empty', () => {
-  // extensions.ts is core-tracked but contractually edition-owned: a downstream
-  // build overlays it to inject registrations. If the CORE ever registers
-  // something in it, an edition's overlay would silently delete that core
-  // feature on the next sync (no key collision -> no throw). Guard the
-  // invariant so the stock file stays a no-op: its body is `export {}` (plus
-  // comments), and importing it registers nothing.
-  it('has an empty body (export {} + comments only)', () => {
+  // extensions.ts is core-OWNED: it imports the `virtual:kirocrew-edition`
+  // module (resolved by editionExtensionPlugin to an inert stub in the stock
+  // build, or the edition's own composition root when KIROCREW_EDITION_DIR is
+  // set). The core must register NOTHING of its own here — its only body is the
+  // edition import + `export {}` (plus comments). If the core ever added a
+  // registration here, the stock build would stop being a pure no-op. Guard
+  // that invariant.
+  it('has an empty body (edition import + export {} + comments only)', () => {
     // vitest runs with cwd = website/; extensions.ts lives at src/extensions.ts.
     const src = readFileSync(resolve(process.cwd(), 'src/extensions.ts'), 'utf-8')
     const code = src
+      .replace(/\r\n/g, '\n') // normalize CRLF (Windows checkout) before comparing
       .replace(/\/\*[\s\S]*?\*\//g, '') // block comments
       .replace(/^\s*\/\/.*$/gm, '') // line comments
       .trim()
-    expect(code).toBe('export {}')
+    expect(code).toBe("import 'virtual:kirocrew-edition'\n\nexport {}")
   })
 
   it('capsule-segment + overview-stat-card seams are empty in the stock build', () => {
