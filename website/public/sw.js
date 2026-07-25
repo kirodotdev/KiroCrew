@@ -46,6 +46,13 @@ self.addEventListener('fetch', e => {
   if (url.pathname.startsWith('/vendor/')) return
   if (url.pathname.startsWith('/fonts/')) return
   if (url.pathname.startsWith('/sprites/')) return
+  // Backend-served brand assets: the sidebar logo + favicon (/logo.png) and the
+  // legacy /static/ tree. These are NOT in the shell cache, so the network-first
+  // fallback below would resolve them to Response.error() on any transient fetch
+  // failure (e.g. a gateway restart/redeploy while a tab is open) and strand them
+  // as a broken image until the tab reloads. Let the browser fetch them natively.
+  if (url.pathname === '/logo.png') return
+  if (url.pathname.startsWith('/static/')) return
 
   // ── Shell navigation: network-first, fall back to cached shell ──────
   e.respondWith(
