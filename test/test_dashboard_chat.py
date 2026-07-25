@@ -1381,10 +1381,16 @@ class TestInMemoryAuthority:
             log.append("dashboard:s4", "user", f"old msg {i}")
         # Restore truncated to the last 3 in memory; _disk_window_len mirrors
         # what restore sets (those 3 are already the on-disk window tail).
+        # Mirror PRODUCTION restore, which re-appends each window message WITH its
+        # persisted ``ts`` (chat_persistence restore uses
+        # ``slot.append(..., ts=m.get("ts", ""))``). Preserving the ts is what lets
+        # a steady save recognise the on-disk window-region copies as its OWN (a
+        # ts-match) rather than as fresh-ts duplicates — so neither duplicating nor
+        # archiving them.
         slot = state.get_or_create_slot("s4")
-        slot.append("user", "old msg 5")
-        slot.append("user", "old msg 6")
-        slot.append("user", "old msg 7")
+        disk_tail = log.read_messages("dashboard:s4")[5:]
+        for m in disk_tail:
+            slot.append("user", m["content"], ts=m.get("ts", ""))
         slot.drain()
         slot._resumed_count = len(slot.messages)
         slot._disk_window_len = len(slot.messages)
@@ -5382,7 +5388,7 @@ class TestSlotTaskNoneGuard:
         slot.task = asyncio.get_running_loop().create_future()
 
         async with TestClient(TestServer(_make_app(state))) as client:
-            with patch("kiro_crew.dashboard.chat_handlers._save_slot_to_history"):
+            with patch("kiro_crew.dashboard.chat_handlers.save_slot_off_loop"):
                 resp = await client.delete("/api/chat/slots/s1")
             assert resp.status == 200
             assert slot.task.cancelled()
@@ -5544,7 +5550,7 @@ class TestBulkCleanup:
         slot.drain()
 
         with patch(
-            "kiro_crew.dashboard.chat_handlers._save_slot_to_history",
+            "kiro_crew.dashboard.chat_handlers.save_slot_off_loop",
             side_effect=OSError("disk full"),
         ):
             async with TestClient(TestServer(_make_app(state))) as client:
@@ -7191,6 +7197,42 @@ class TestForkSlot:
         assert visible[-1]["content"] == "reply1"
 
     @pytest.mark.asyncio
+    async def test_fork_aborts_and_keeps_dirty_when_source_save_fails(self, tmp_path):
+        # Regression (double-persistence data-loss): the fork persists the dirty
+        # source slot before reading it as the source of truth, then clears
+        # `_dirty` (which also disables the periodic retry). If that save is
+        # best-effort it can silently drop the write under a lock timeout / I/O
+        # error, yet `_dirty` would still be cleared — permanently losing the
+        # unwritten source messages on the next restart. The fork must persist
+        # with best_effort=False and, on failure, abort (503) WITHOUT clearing
+        # `_dirty`, so the periodic flush still retries.
+        from unittest.mock import AsyncMock, patch
+
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("src")
+        slot.append("user", "unsaved-source-msg", "msg msg-u")
+        slot.append("assistant", "unsaved-reply", "msg msg-a")
+        slot.drain()
+        # Force the save branch: pretend nothing has reached disk yet.
+        slot._dirty = True
+        slot._resumed_count = 0
+
+        failing_save = AsyncMock(side_effect=RuntimeError("lock timeout"))
+        app = _make_app(state)
+        async with TestClient(TestServer(app)) as client:
+            with patch(
+                "kiro_crew.dashboard.chat_fork.save_slot_off_loop", failing_save
+            ):
+                resp = await client.post("/api/chat/slots/src/fork", json={})
+                assert resp.status == 503
+
+        # best_effort must be explicitly False so the failure propagated.
+        assert failing_save.await_count == 1
+        assert failing_save.await_args.kwargs.get("best_effort") is False
+        # Slot stays dirty → the periodic flush will retry; messages not lost.
+        assert slot._dirty is True
+
+    @pytest.mark.asyncio
     async def test_fork_preserves_meta(self, tmp_path):
         # Regression: chat_fork.py previously dropped the `meta` dict when copying
         # messages into the new slot, silently breaking every meta-based feature
@@ -7960,7 +8002,9 @@ class TestForkSlot:
 
 
 class TestColorTheme:
-    """Tests for color_theme validation, slot assignment, and Lumon persona injection."""
+    """Tests for color_theme validation and slot assignment. Only "" and
+    ``custom-<slug>`` (installed packs) are valid; any built-in visual-theme
+    slug or junk value is coerced to "" (no persona path)."""
 
     @pytest.mark.asyncio
     async def test_color_theme_set_on_slot(self, tmp_path, monkeypatch):
@@ -7970,17 +8014,17 @@ class TestColorTheme:
             async with TestClient(TestServer(_make_app(state))) as client:
                 resp = await client.post(
                     "/api/chat?ws=1",
-                    json={"message": "hi", "slot": "theme-slot", "color_theme": "lumon"},
+                    json={"message": "hi", "slot": "theme-slot", "color_theme": "custom-mypack"},
                 )
                 assert resp.status == 200
-                assert state._slots["theme-slot"].color_theme == "lumon"
+                assert state._slots["theme-slot"].color_theme == "custom-mypack"
 
     @pytest.mark.asyncio
     async def test_color_theme_cleared_to_empty(self, tmp_path, monkeypatch):
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         slot = state.get_or_create_slot("theme-slot")
-        slot.color_theme = "lumon"
+        slot.color_theme = "custom-mypack"
         with patch("kiro_crew.dashboard.chat_handlers._run_chat", new=AsyncMock()):
             async with TestClient(TestServer(_make_app(state))) as client:
                 resp = await client.post(
@@ -7996,7 +8040,7 @@ class TestColorTheme:
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         slot = state.get_or_create_slot("theme-slot")
-        slot.color_theme = "lumon"
+        slot.color_theme = "custom-mypack"
         with patch("kiro_crew.dashboard.chat_handlers._run_chat", new=AsyncMock()):
             async with TestClient(TestServer(_make_app(state))) as client:
                 resp = await client.post(
@@ -8004,7 +8048,7 @@ class TestColorTheme:
                     json={"message": "hi", "slot": "theme-slot"},
                 )
                 assert resp.status == 200
-                assert slot.color_theme == "lumon"
+                assert slot.color_theme == "custom-mypack"
 
     @pytest.mark.asyncio
     async def test_invalid_color_theme_coerced_to_empty(self, tmp_path, monkeypatch):
@@ -8033,149 +8077,146 @@ class TestColorTheme:
                 assert state._slots["theme-slot"].color_theme == ""
 
 
-class TestLumonPersonaInjection:
-    """Tests for _maybe_inject_persona helper function."""
+class TestInstalledPackConsentInjection:
+    """Content-bound (sha256) consent gate for INSTALLED pack personas
+    (``custom-<slug>``). Injection requires the caller's ``theme_consent_sha``
+    to equal sha256 of the persona text actually read from disk; anything else
+    fails closed. Guards the Codex HIGH reinstall-swap fix."""
 
-    def setup_method(self):
-        from kiro_crew.dashboard import chat
+    PERSONA = "Speak like a friendly installed-pack host."
 
-        if hasattr(chat, "_cached_persona"):
-            chat._cached_persona.cache_clear()
+    @staticmethod
+    def _sha(text: str) -> str:
+        import hashlib
 
-    def test_persona_appended_when_lumon(self, tmp_path):
-        from kiro_crew.dashboard.chat import _maybe_inject_persona
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
-        fake_persona = "Use a light Lumon-inspired persona."
-        with patch(
-            "kiro_crew.dashboard.chat_utils._cached_persona", return_value=fake_persona
-        ):
-            result = _maybe_inject_persona("hello", "lumon", True)
-
-        assert "[LUMON PERSONA]" in result
-        assert fake_persona in result
-
-    def test_persona_not_appended_without_lumon(self):
-        from kiro_crew.dashboard.chat import _maybe_inject_persona
-
-        result = _maybe_inject_persona("hello", "", True)
-        assert result == "hello"
-
-    def test_persona_not_appended_on_followup(self):
-        from kiro_crew.dashboard.chat import _maybe_inject_persona
-
-        result = _maybe_inject_persona("hello", "lumon", False)
-        assert result == "hello"
-
-    def test_persona_survives_cache_error(self):
+    def test_matching_sha_injects(self):
         from kiro_crew.dashboard.chat import _maybe_inject_persona
 
         with patch(
-            "kiro_crew.dashboard.chat_utils._cached_persona", side_effect=ImportError("boom")
+            "kiro_crew.dashboard.chat_utils._installed_theme_persona",
+            return_value=self.PERSONA,
         ):
-            result = _maybe_inject_persona("hello", "lumon", True)
+            result = _maybe_inject_persona(
+                "hello", "custom-mypack", True,
+                theme_consent_sha=self._sha(self.PERSONA),
+            )
+        assert "[THEME PERSONA]" in result
+        assert self.PERSONA in result
+
+    def test_stale_sha_not_injected(self):
+        # Reinstall rewrote persona.md; the stored hash no longer matches the
+        # on-disk text -> the new, never-consented persona must NOT be injected.
+        from kiro_crew.dashboard.chat import _maybe_inject_persona
+
+        with patch(
+            "kiro_crew.dashboard.chat_utils._installed_theme_persona",
+            return_value=self.PERSONA,
+        ):
+            result = _maybe_inject_persona(
+                "hello", "custom-mypack", True,
+                theme_consent_sha=self._sha("OLD PERSONA THE USER CONSENTED TO"),
+            )
         assert result == "hello"
 
-    def test_persona_empty_cache_returns_original(self):
+    def test_absent_sha_not_injected(self):
         from kiro_crew.dashboard.chat import _maybe_inject_persona
 
-        with patch("kiro_crew.dashboard.chat_utils._cached_persona", return_value=""):
-            result = _maybe_inject_persona("hello", "lumon", True)
+        with patch(
+            "kiro_crew.dashboard.chat_utils._installed_theme_persona",
+            return_value=self.PERSONA,
+        ):
+            result = _maybe_inject_persona("hello", "custom-mypack", True)
         assert result == "hello"
 
-
-class TestBikiniPersonaInjection:
-    """Tests for _maybe_inject_persona helper function (bikini-bottom / Karen)."""
-
-    def setup_method(self):
-        from kiro_crew.dashboard import chat
-        if hasattr(chat, "_cached_persona"):
-            chat._cached_persona.cache_clear()
-
-    def test_persona_appended_when_bikini_bottom(self, tmp_path):
+    def test_legacy_boolean_alone_not_injected(self):
+        # The legacy boolean consent field grants nothing on its own: with no
+        # content-bound sha, an installed pack persona is never injected even
+        # though the pack ships one.
         from kiro_crew.dashboard.chat import _maybe_inject_persona
 
-        fake_persona = "Use a Karen (from SpongeBob) persona."
-        with patch("kiro_crew.dashboard.chat_utils._cached_persona", return_value=fake_persona):
-            result = _maybe_inject_persona("hello", "bikini-bottom", True)
-
-        assert "[KAREN PERSONA]" in result
-        assert fake_persona in result
-
-    def test_persona_not_appended_without_bikini_bottom(self):
-        from kiro_crew.dashboard.chat import _maybe_inject_persona
-
-        result = _maybe_inject_persona("hello", "", True)
+        with patch(
+            "kiro_crew.dashboard.chat_utils._installed_theme_persona",
+            return_value=self.PERSONA,
+        ):
+            result = _maybe_inject_persona(
+                "hello", "custom-mypack", True, theme_consent_sha=None,
+            )
         assert result == "hello"
 
-    def test_persona_not_appended_on_followup(self):
+    def test_not_injected_on_followup(self):
         from kiro_crew.dashboard.chat import _maybe_inject_persona
 
-        result = _maybe_inject_persona("hello", "bikini-bottom", False)
+        with patch(
+            "kiro_crew.dashboard.chat_utils._installed_theme_persona",
+            return_value=self.PERSONA,
+        ):
+            result = _maybe_inject_persona(
+                "hello", "custom-mypack", False,
+                theme_consent_sha=self._sha(self.PERSONA),
+            )
         assert result == "hello"
 
-    def test_persona_survives_cache_error(self):
+    def test_malformed_sha_no_crash_no_injection(self):
+        # GPT HIGH: a non-ASCII (or otherwise malformed) theme_consent_sha
+        # must never reach hmac.compare_digest (which raises TypeError on
+        # non-ASCII str, aborting the whole chat turn). The compare-site guard
+        # treats anything that is not exactly 64 lowercase-hex as ABSENT:
+        # no exception AND no injection.
         from kiro_crew.dashboard.chat import _maybe_inject_persona
 
-        with patch("kiro_crew.dashboard.chat_utils._cached_persona", side_effect=ImportError("boom")):
-            result = _maybe_inject_persona("hello", "bikini-bottom", True)
-        assert result == "hello"
+        valid = self._sha(self.PERSONA)
+        malformed = [
+            "é",                 # non-ASCII -> would TypeError in compare_digest
+            valid.upper(),       # uppercase hex (raw, un-normalized) -> not 64-lower
+            valid[:-1],          # 63 chars
+            valid + "a",         # 65 chars
+            "",                  # empty
+            "  ",                # whitespace only
+            12345,               # non-str
+            None,                # absent
+            valid[:-2] + "gg",  # non-hex chars
+        ]
+        with patch(
+            "kiro_crew.dashboard.chat_utils._installed_theme_persona",
+            return_value=self.PERSONA,
+        ):
+            for bad in malformed:
+                # The call must not raise for any malformed input...
+                result = _maybe_inject_persona(
+                    "hello", "custom-mypack", True, theme_consent_sha=bad,
+                )
+                # ...and must not inject the persona.
+                assert result == "hello", f"unexpected injection for {bad!r}"
 
-    def test_persona_empty_cache_returns_original(self):
+    def test_normalizer_fail_closed_and_salvage(self):
+        # The parse-site normalizer (validation.normalize_theme_consent_sha)
+        # rejects malformed values (-> None, fail closed) and salvages a valid
+        # sha wrapped in surrounding whitespace / uppercase (strip + lower).
+        from kiro_crew.validation import normalize_theme_consent_sha
+
+        valid = self._sha(self.PERSONA)
+        assert normalize_theme_consent_sha("é") is None
+        assert normalize_theme_consent_sha(valid[:-1]) is None
+        assert normalize_theme_consent_sha("") is None
+        assert normalize_theme_consent_sha(12345) is None
+        assert normalize_theme_consent_sha(None) is None
+        assert normalize_theme_consent_sha(valid) == valid
+        # salvage: leading/trailing whitespace + uppercase normalize to canonical
+        assert normalize_theme_consent_sha("  " + valid.upper() + "\n") == valid
+        # a normalized value then injects through the real gate
         from kiro_crew.dashboard.chat import _maybe_inject_persona
 
-        with patch("kiro_crew.dashboard.chat_utils._cached_persona", return_value=""):
-            result = _maybe_inject_persona("hello", "bikini-bottom", True)
-        assert result == "hello"
-
-    def test_cached_persona_rejects_path_traversal(self):
-        from kiro_crew.dashboard import chat_utils
-
-        for bad in ("../persona.md", "..\\persona.md", "/etc/passwd", "sub/dir.md"):
-            with pytest.raises(ValueError):
-                chat_utils._cached_persona(bad)
-
-
-class TestKnightRiderPersonaInjection:
-    """Tests for _maybe_inject_persona helper function (knight-rider / KITT)."""
-
-    def setup_method(self):
-        from kiro_crew.dashboard import chat
-        if hasattr(chat, "_cached_persona"):
-            chat._cached_persona.cache_clear()
-
-    def test_persona_appended_when_knight_rider(self, tmp_path):
-        from kiro_crew.dashboard.chat import _maybe_inject_persona
-
-        fake_persona = "Use a Knight Rider in-car AI persona."
-        with patch("kiro_crew.dashboard.chat_utils._cached_persona", return_value=fake_persona):
-            result = _maybe_inject_persona("hello", "knight-rider", True)
-
-        assert "[KITT PERSONA]" in result
-        assert fake_persona in result
-
-    def test_persona_not_appended_on_followup(self):
-        from kiro_crew.dashboard.chat import _maybe_inject_persona
-
-        result = _maybe_inject_persona("hello", "knight-rider", False)
-        assert result == "hello"
-
-    def test_persona_survives_cache_error(self):
-        from kiro_crew.dashboard.chat import _maybe_inject_persona
-
-        with patch("kiro_crew.dashboard.chat_utils._cached_persona", side_effect=ImportError("boom")):
-            result = _maybe_inject_persona("hello", "knight-rider", True)
-        assert result == "hello"
-
-    def test_knight_rider_registered_in_theme_personas(self):
-        """Guards the registry mapping so the slug + tag stay in sync with the
-        frontend (themeBranding.tsx) and the persona file shipped via
-        config/persona-*.md (setup.cfg)."""
-        from kiro_crew.dashboard.chat_utils import _THEME_PERSONAS
-
-        assert "knight-rider" in _THEME_PERSONAS
-        tag, filename = _THEME_PERSONAS["knight-rider"]
-        assert tag == "KITT PERSONA"
-        assert filename == "persona-knight-rider.md"
+        with patch(
+            "kiro_crew.dashboard.chat_utils._installed_theme_persona",
+            return_value=self.PERSONA,
+        ):
+            norm = normalize_theme_consent_sha("  " + valid.upper() + "\n")
+            result = _maybe_inject_persona(
+                "hello", "custom-mypack", True, theme_consent_sha=norm,
+            )
+        assert "[THEME PERSONA]" in result
 
 
 class TestStopReasonCancelled:
@@ -9023,20 +9064,33 @@ class TestEmptyResponseRetry:
             return orig(self_slot, *a, **kw)
 
         with patch.object(_ChatSlot, "queue_insert", spy), patch(
-            "kiro_crew.dashboard.chat_runner._save_slot_to_history"
+            "kiro_crew.dashboard.chat_runner.save_slot_off_loop"
         ) as mock_save, patch(
             "kiro_crew.dashboard.chat_runner._maybe_consolidate"
         ) as mock_consolidate, patch(
             "kiro_crew.dashboard.chat_runner._flush_file_changes"
-        ) as mock_flush:
+        ) as mock_flush, patch(
+            "kiro_crew.dashboard.chat_runner.asyncio.create_task"
+        ) as mock_create_task:
+            # Deterministically neutralize the detached queue-drain task the
+            # finally block spawns after the empty re-queue. Under build-fleet
+            # load the loop can schedule that task (and its own cascading
+            # re-drains) before the assertions run, each calling the patched
+            # _flush_file_changes again (observed flaking as `assert 6 == 1`).
+            # Closing the coroutine and returning a completed future keeps this
+            # turn's behavior (re-queue + single finally flush) while making the
+            # spawn a no-op — no await path, no cascade, no timing dependence.
+            def _no_schedule(coro, *a, **kw):
+                try:
+                    coro.close()
+                except (AttributeError, RuntimeError):
+                    pass
+                fut: asyncio.Future = asyncio.get_event_loop().create_future()
+                fut.set_result(None)
+                return fut
+
+            mock_create_task.side_effect = _no_schedule
             await _run_chat(state, slot, "test message")
-            # The empty-response retry path re-queues the message, and _run_chat's
-            # finally block spawns a detached asyncio task to drain the queue (a
-            # second "attempt 2" turn). Cancel it before asserting: no await has run
-            # since create_task, so the task body has not started, which makes this
-            # safe and deterministic. Under build-fleet load the detached turn would
-            # otherwise race these module-scoped patches (its finally calls the
-            # patched _flush_file_changes a second time), flaking as assert 2 == 1.
             for _bg_task in list(state._background_tasks):
                 _bg_task.cancel()
 
@@ -9075,18 +9129,114 @@ class TestEmptyResponseRetry:
         assert slot._empty_response_retries == 0
 
     @pytest.mark.asyncio
-    async def test_second_empty_response_shows_error(self, tmp_path: Path) -> None:
-        """Second consecutive empty response → error card shown."""
+    async def test_second_empty_response_auto_continues(self, tmp_path: Path) -> None:
+        """Second consecutive empty response → ONE synthetic continue nudge is
+        queued (same live session) with a transcript-visible notice. Re-sending
+        the identical prompt reproduces the identical empty generation; a
+        DIFFERENT message reliably recovers — this automates the user manually
+        typing "continue"."""
+        from kiro_crew.dashboard.chat_runner import _EMPTY_AUTO_CONTINUE_MSG
+
         state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
-        slot._empty_response_retries = 1  # already retried once
+        slot._empty_response_retries = 1  # already silently retried once
+        self._make_empty_stream(client)
+
+        calls = []
+        orig = _ChatSlot.queue_insert
+
+        def spy(self_slot, *a, **kw):
+            calls.append(a)
+            return orig(self_slot, *a, **kw)
+
+        with patch.object(_ChatSlot, "queue_insert", spy):
+            await _run_chat(state, slot, "test message")
+            for _bg_task in list(state._background_tasks):
+                _bg_task.cancel()
+
+        # The nudge (NOT the original message) is queued at the front.
+        assert (0, _EMPTY_AUTO_CONTINUE_MSG) in calls
+        assert (0, "test message") not in calls
+        # Visible recovery notice, counter advanced to the terminal rung, and
+        # the recovery turn is excluded from the cycle-complete counter reset.
+        notice_msgs = [m for m in slot.messages if m.get("role") == "notice"]
+        assert any("auto-continuing once" in m.get("content", "") for m in notice_msgs)
+        assert slot._empty_response_retries == 2
+
+    @pytest.mark.asyncio
+    async def test_auto_continue_nudge_drains_as_inject_not_user(self, tmp_path: Path) -> None:
+        """The queued nudge is runner orchestration, not user speech: when the
+        queue drains it, the transcript append MUST use the "inject" recovery
+        role (never "user" — a user-role append would persist an internal
+        instruction as user-authored history and mirror it to linked
+        channels), and it MUST NOT cancel a pending synthesis (the user did
+        not take over the conversation)."""
+        from kiro_crew.dashboard.chat_runner import _EMPTY_AUTO_CONTINUE_MSG
+
+        state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+        slot._empty_response_retries = 1  # next empty triggers the nudge rung
+        slot._pending_synthesis = True
+        self._make_empty_stream(client)
+
+        await _run_chat(state, slot, "test message")
+        # Let the REAL detached drain task run: it pops the nudge, classifies
+        # it, appends it to the transcript, and runs the (also-empty) nudge
+        # turn, which terminates the ladder at the give-up notice.
+        for _bg_task in list(state._background_tasks):
+            try:
+                await _bg_task
+            except Exception:
+                pass
+
+        nudge_msgs = [
+            m for m in slot.messages if m.get("content") == _EMPTY_AUTO_CONTINUE_MSG
+        ]
+        assert nudge_msgs, "drained nudge never reached the transcript"
+        # The nudge must NEVER carry the user role (that would persist an
+        # internal instruction as user-authored history and mirror it to
+        # linked channels) — the ORIGINAL user message keeps its user role.
+        assert all(m.get("role") == "inject" for m in nudge_msgs)
+        # Draining a synthetic recovery message is not a user takeover.
+        assert slot._pending_synthesis is True
+
+    @pytest.mark.asyncio
+    async def test_third_empty_response_shows_notice(self, tmp_path: Path) -> None:
+        """Third consecutive empty (the auto-continue nudge ALSO produced
+        nothing) → terminal notice card; the ladder is bounded, never loops."""
+        state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+        slot._empty_response_retries = 2  # re-queue + nudge both spent
         self._make_empty_stream(client)
 
         await _run_chat(state, slot, "test message")
 
         notice_msgs = [m for m in slot.messages if m.get("role") == "notice"]
         assert any("returned nothing this turn" in m.get("content", "") for m in notice_msgs)
-        # After the terminal second-empty error, the counter resets so the NEXT
-        # independent user turn gets a fresh one-retry budget (not sticky at 1).
+        # After the terminal notice, the counter resets so the NEXT independent
+        # user turn gets a fresh budget (not sticky).
+        assert slot._empty_response_retries == 0
+
+    @pytest.mark.asyncio
+    async def test_second_empty_flag_off_shows_notice(self, tmp_path: Path) -> None:
+        """With session.empty_response_auto_continue disabled, the second empty
+        surfaces the terminal notice immediately (pre-feature behavior)."""
+        state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+        slot._empty_response_retries = 1
+        self._make_empty_stream(client)
+
+        # Exercise the REAL config path (loader wiring included): persist the
+        # flag as false in a config file and point KiroCrewConfig.load() at it,
+        # rather than patching the gate function (which would pass even if the
+        # loader dropped the field — the exact regression this test guards).
+        cfg_file = tmp_path / "flag-off-config.json"
+        cfg_file.write_text(
+            '{"session": {"empty_response_auto_continue": false}}'
+        )
+        with patch(
+            "kiro_crew.config.loader.config_path", return_value=cfg_file
+        ):
+            await _run_chat(state, slot, "test message")
+
+        notice_msgs = [m for m in slot.messages if m.get("role") == "notice"]
+        assert any("returned nothing this turn" in m.get("content", "") for m in notice_msgs)
         assert slot._empty_response_retries == 0
 
     @pytest.mark.asyncio

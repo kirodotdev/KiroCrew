@@ -317,18 +317,43 @@ def parse_cls_meta(cls_val: str) -> dict | None:
     return meta
 
 
-def _mark_permission_resolved(messages: list[dict], request_id: str, decision: str) -> None:
-    """Persist a resolved decision into a permission message's cls JSON."""
+def _mark_permission_resolved(
+    messages: list[dict],
+    request_id: str,
+    decision: str,
+    *,
+    only_if_pending: bool = False,
+) -> bool:
+    """Persist a resolved decision into a permission message's cls JSON.
+
+    Returns True when a permission message was written. Callers holding the
+    owning slot MUST set ``slot._dirty = True`` on a True return — the periodic
+    flush skips non-dirty slots, so an unflagged in-place mutation can be lost
+    on restart and the card comes back as an unanswerable orphan.
+
+    ``only_if_pending`` leaves an already-resolved message untouched (and
+    returns False). Use it for backstop callers that must not clobber a richer
+    decision already recorded by the primary resolver — e.g. "trust"/"yolo",
+    which the UI renders as "Trusted — auto-approving future calls" and would
+    otherwise be flattened to a bare "approved".
+    """
     for msg in reversed(messages):
         if msg.get("role") == "permission":
             try:
                 cls = json.loads(msg.get("cls", "{}"))
+                if not isinstance(cls, dict):
+                    # Valid JSON but not an object — cannot carry "resolved".
+                    # Mirrors parse_cls_meta() / _sweep_stale_permissions().
+                    continue
                 if cls.get("request_id") == request_id:
+                    if only_if_pending and "resolved" in cls:
+                        return False
                     cls["resolved"] = decision
                     msg["cls"] = json.dumps(cls)
-                    return
+                    return True
             except (json.JSONDecodeError, TypeError):
                 pass
+    return False
 
 
 # ── Constants ──
@@ -716,6 +741,8 @@ class _ChatSlot:
         "_compaction_fail_cooldown_until",
         "color_index",
         "color_theme",
+        "theme_consent",
+        "theme_consent_sha",
         "memory_mode",
         "_ephemeral",
         "_pending_context",
@@ -862,6 +889,13 @@ class _ChatSlot:
         self._compaction_fail_cooldown_until: float = 0.0
         self.color_index: int | None = None
         self.color_theme: str = ""
+        # Explicit user consent for the active INSTALLED theme's experience
+        # layer (persona injection is gated on this; fail-closed default).
+        self.theme_consent: bool = False
+        # Content-bound persona consent: sha256 hex of the installed pack's
+        # persona text the user granted in the consent modal. Persona injection
+        # requires this to match the persona read from disk (fail-closed None).
+        self.theme_consent_sha: str | None = None
         if memory_mode not in VALID_MEMORY_MODES:
             raise ValueError(f"invalid memory_mode {memory_mode!r}, must be one of {VALID_MEMORY_MODES}")
         self.memory_mode: str = memory_mode
@@ -886,9 +920,12 @@ class _ChatSlot:
         # message lines, OLDER than the in-memory window) + a fresh re-serialize
         # of the whole window. The prefix is never rewritten, so a restart that
         # loaded only a recent window can no longer destroy older history. This
-        # caches the prefix bytes keyed by (path-mtime, _disk_older_count) so a
-        # 5s flush is O(window), not O(file). See chat_persistence._save_*.
-        self._frozen_prefix_cache: tuple[float, int, str] | None = None
+        # caches the prefix bytes keyed by (path-mtime, path-size,
+        # _disk_older_count) so a 5s flush is O(window), not O(file). The
+        # (mtime, size) pair also doubles as the "did another process write this
+        # file since we last saved?" signal that gates the cross-process
+        # foreign-append merge. See chat_persistence._save_*.
+        self._frozen_prefix_cache: tuple[float, int, int, str, list[str]] | None = None
         # Set by rewind/regenerate after they TRUNCATE the window. While set,
         # _save_slot_to_history takes the archive-safe rewrite path so the
         # dropped tail is archived — even if the inline rewrite save failed
@@ -1020,16 +1057,26 @@ class _ChatSlot:
 
     # ── Queue helpers (dict-based queue items) ──
 
-    def queue_append(self, content: str) -> str:
-        """Append a message to the queue. Returns the generated queue ID."""
+    def queue_append(self, content: str, kind: str = "") -> str:
+        """Append a message to the queue. Returns the generated queue ID.
+
+        ``kind`` is a structural origin tag (e.g. ``"synthetic_recovery"`` for
+        runner-injected recovery instructions). Classification by metadata —
+        not by content equality — survives queue transformations and cannot
+        collide with user-typed text that happens to match an internal string.
+        Empty string = plain user/system content (default).
+        """
         qid = uuid.uuid4().hex[:12]
-        self._queue.append({"id": qid, "content": content})
+        self._queue.append({"id": qid, "content": content, "kind": kind})
         return qid
 
-    def queue_insert(self, index: int, content: str) -> str:
-        """Insert a message at a specific queue position. Returns the queue ID."""
+    def queue_insert(self, index: int, content: str, kind: str = "") -> str:
+        """Insert a message at a specific queue position. Returns the queue ID.
+
+        See :meth:`queue_append` for the ``kind`` structural origin tag.
+        """
         qid = uuid.uuid4().hex[:12]
-        self._queue.insert(index, {"id": qid, "content": content})
+        self._queue.insert(index, {"id": qid, "content": content, "kind": kind})
         return qid
 
     def queue_pop(self, index: int = 0) -> dict[str, str]:
@@ -1337,6 +1384,8 @@ class _ChatSlot:
             "tags": list(self.tags),
             "color_index": self.color_index,
             "color_theme": self.color_theme,
+            "theme_consent": self.theme_consent,
+            "theme_consent_sha": self.theme_consent_sha,
             "memory_mode": self.memory_mode,
             "forked_from": self.forked_from,
             "linked_session_key": self.linked_session_key,
@@ -1798,7 +1847,11 @@ class DashboardState:
             fut = slot._approval_futures.get(approval_id)
             if fut and not fut.done():
                 fut.set_result(decision)
-                _mark_permission_resolved(slot.messages, approval_id, decision)
+                if _mark_permission_resolved(slot.messages, approval_id, decision):
+                    # The periodic flush skips non-dirty slots; without this the
+                    # in-place mutation can be lost and the answered card comes
+                    # back on reload with a future that no longer exists.
+                    slot._dirty = True
                 self._audit_and_broadcast_approval(slot.key, approval_id, approved)
                 self.push_slots_update()
                 return True

@@ -39,10 +39,10 @@ no `npm`, no build step (macOS / Linux / EC2):
 
 ```bash
 # nightly channel (stable/insider channels open once their first release cuts)
-curl -fsSL https://d28nxu9if70cmc.cloudfront.net/cli.sh | sh -s -- --channel nightly
+curl -fsSL https://download.crew.kiro.dev/cli.sh | sh -s -- --channel nightly
 
 # pin an exact version
-curl -fsSL https://d28nxu9if70cmc.cloudfront.net/cli.sh | sh -s -- --channel nightly --version 0.1.0.dev20260718
+curl -fsSL https://download.crew.kiro.dev/cli.sh | sh -s -- --channel nightly --version 0.1.0.dev20260718
 ```
 
 The installer resolves the channel feed, verifies the wheel's SHA-256 against
@@ -57,7 +57,7 @@ pip verifies the hash fail-closed, and no package index is consulted for
 never be selected. Dependencies still resolve from PyPI:
 
 ```bash
-pip install "https://d28nxu9if70cmc.cloudfront.net/cli/nightly/0.1.0.dev20260718/kirocrew-0.1.0.dev20260718-py3-none-any.whl#sha256=2109dd186da999a1f135b4d6da2b36110d6a943e0af229ec259c25f72b73e570"
+pip install "https://download.crew.kiro.dev/cli/nightly/0.1.0.dev20260718/kirocrew-0.1.0.dev20260718-py3-none-any.whl#sha256=2109dd186da999a1f135b4d6da2b36110d6a943e0af229ec259c25f72b73e570"
 ```
 
 The `cli.sh` installer above does exactly this resolution for you (reads the

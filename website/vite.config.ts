@@ -194,7 +194,7 @@ export default defineConfig({
     // ``./coverage/`` would be outside the packaged output and the coverage
     // tool would never see it.
     coverage: {
-      provider: 'istanbul',
+      provider: 'v8',
       reporter: ['text', 'cobertura', 'lcov'],
       reportsDirectory: './build/coverage',
       include: ['src/**/*.{ts,tsx}'],

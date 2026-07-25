@@ -426,7 +426,16 @@ delegates to that same global. Wired sites:
   the pre-seam stub), so a companion that keeps its last URL while
   RECONNECTING/ERROR is not reported as live. `register_callbacks` +
   `status_snapshot` are a v1 addition to the
-  existing `TunnelProvider` Protocol (no `CONTRACT_VERSION` bump). The token-auth
+  existing `TunnelProvider` Protocol (no `CONTRACT_VERSION` bump).
+  **`ensure_available(*, install=True) -> str`** is a further v1 addition (no
+  bump): an idempotent "make the tunnel reachable, provisioning on demand" entry
+  point returning one of `"connected"` / `"starting"` / `"disabled"` /
+  `"unavailable"`. WIRED at `slack/allowlist.py::send_dashboard_link`, which
+  calls it (via `async_safe_context_call`) only when a tunnel URL is wanted for a
+  Slack dashboard link but none is live yet; the `DefaultTunnelProvider` returns
+  `"disabled"`, so the standalone path is unchanged (it still falls back to the
+  local URL). Narrow-only: the method can start/provision a companion tunnel but
+  never bypasses the `tunnel/setup.py` token-auth deny gate. The token-auth
   deny gate in `tunnel/setup.py` is evaluated BEFORE the manager is constructed or
   `start()` reached, so a companion tunnel cannot start without dashboard token
   auth; the connect/disconnect callbacks and `/api/tunnel/status` stay wrapped

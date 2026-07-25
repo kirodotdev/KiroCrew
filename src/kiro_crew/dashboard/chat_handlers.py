@@ -31,13 +31,12 @@ from kiro_crew.dashboard.chat_persistence import (
     _attach_variants,
     _redact_meta,
     _redact_meta_for_role,
-    _save_slot_to_history,
     get_reasoning_effort_values,
+    save_slot_off_loop,
 )
 from kiro_crew.dashboard.chat_runner import _run_chat
 from kiro_crew.dashboard.chat_title import _maybe_auto_title
 from kiro_crew.dashboard.chat_utils import (
-    _THEME_PERSONAS,
     _build_stream_chunk,
     _edit_queued_by_id,
     _emit_agent_assignment,
@@ -62,7 +61,11 @@ from kiro_crew.security import (
     redact_exfiltration_urls,
 )
 from kiro_crew.sel import SecurityEvent, sel
-from kiro_crew.validation import _AGENT_NAME_RE, ARTIFACT_SLUG_RE
+from kiro_crew.validation import (
+    _AGENT_NAME_RE,
+    ARTIFACT_SLUG_RE,
+    normalize_theme_consent_sha,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -119,7 +122,19 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     user_meta = body.get("meta")  # knowledge/files/pastes metadata from frontend
     if not isinstance(user_meta, dict):
         user_meta = None
-    if not isinstance(color_theme, str) or color_theme not in {"", *_THEME_PERSONAS}:
+    theme_consent = body.get("theme_consent") is True
+    # Content-bound persona consent (Codex HIGH fix): the sha256 hex the user
+    # granted in the consent modal. Injection is gated on this matching the
+    # persona text read from disk server-side; the legacy boolean above is
+    # still parsed (backward-compatible bodies + logging) but no longer grants
+    # injection by itself. Normalize + full-match to 64 lowercase hex here so a
+    # malformed value (non-ASCII "é", wrong length, non-str) becomes None
+    # (absent) rather than reaching hmac.compare_digest and crashing the turn
+    # with a TypeError (GPT HIGH fix).
+    theme_consent_sha = normalize_theme_consent_sha(body.get("theme_consent_sha"))
+    if not isinstance(color_theme, str) or not (
+        color_theme == "" or color_theme.startswith("custom-")
+    ):
         color_theme = ""
     if not isinstance(agent, str) or not (agent == "" or _AGENT_NAME_RE.match(agent)):
         _emit_agent_assignment(str(slot_name or ""), str(agent), outcome="denied_invalid")
@@ -204,6 +219,8 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
 
     if "color_theme" in body:
         slot.color_theme = color_theme
+        slot.theme_consent = theme_consent
+        slot.theme_consent_sha = theme_consent_sha
 
     if slot.running:
         # Mid-turn steer: inject into the RUNNING turn instead of queueing for
@@ -713,10 +730,18 @@ def _reject_pending_approvals(slot: _ChatSlot) -> None:
     approval, the chat runner is suspended on the approval future. Without
     resolving it, the stream generator stays paused, _turn_done never fires,
     and the cooperative cancel times out — forcing a hard kill.
+
+    Resolving the future is not enough on its own: the ``permission`` message
+    the UI renders the approval bar from must ALSO be marked resolved.
+    Otherwise the future is gone while the message still reads pending, so the
+    bar survives a history reload and every button on it answers
+    ``404 no pending approval`` — an approval card the user cannot action.
     """
     for aid, fut in list(slot._approval_futures.items()):
         if not fut.done():
             fut.set_result("rejected")
+            if _mark_permission_resolved(slot.messages, aid, "rejected"):
+                slot._dirty = True
             sel().log_tool_invocation(
                 session_key=_history_key_for(slot.key),
                 agent=getattr(slot, "agent", "") or "kirocrew",
@@ -1227,7 +1252,7 @@ async def api_chat_slot_delete(request: web.Request) -> web.Response:
         except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
             pass
     try:
-        _save_slot_to_history(state, slot, closed=True)
+        await save_slot_off_loop(state, slot, closed=True, best_effort=False)
     except Exception:
         # Save failed — restore slot so data isn't lost
         logger.error("Failed to save slot %s to history, restoring", name, exc_info=True)
@@ -1333,7 +1358,7 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
         if not removed:
             continue
         try:
-            _save_slot_to_history(state, removed, closed=True)
+            await save_slot_off_loop(state, removed, closed=True, best_effort=False)
         except Exception:
             logger.error("Cleanup: failed to archive slot %s", name, exc_info=True)
             state._slots[name] = removed
@@ -1415,7 +1440,15 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
     # advertise an agent we couldn't actually switch to.
     if state.conversation_log:
         try:
-            state.conversation_log.update_metadata(_history_key_for(name), {"agent": agent_name})
+            # update_metadata enters _locked (flock + os.close); those are
+            # blocking-on-loop-prohibited, so offload to a worker thread rather
+            # than run them on the event loop (a wedged peer must never freeze
+            # chat/WS/heartbeat).
+            await asyncio.to_thread(
+                state.conversation_log.update_metadata,
+                _history_key_for(name),
+                {"agent": agent_name},
+            )
         except Exception:
             logger.warning("Failed to persist agent for slot %s", name, exc_info=True)
     state.push_slots_update()
@@ -1898,6 +1931,13 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
         slot.color_index = meta["color_index"]
     if meta.get("color_theme"):
         slot.color_theme = meta["color_theme"]
+        slot.theme_consent = meta.get("theme_consent") is True
+        # Restore from history metadata: re-run the same fail-closed normalizer
+        # so a tampered/legacy JSONL can't seed a malformed sha that later
+        # crashes the compare (GPT HIGH fix).
+        slot.theme_consent_sha = normalize_theme_consent_sha(
+            meta.get("theme_consent_sha")
+        )
     mm = meta.get("memory_mode", "persistent")
     slot.memory_mode = mm
     if mm != "persistent":
@@ -1908,22 +1948,13 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
         slot.forked_from = meta["forked_from"]
     # Clear closed flag so session restores on next gateway restart
     if meta.get("closed"):
+        # Offload to a worker thread: clear_closed takes the per-session
+        # cross-process lock (so it can't race an append / rewrite and lose
+        # data), and on the event loop that lock fails fast under contention —
+        # the patient off-loop acquire path avoids both a loop-blocking disk
+        # write and a dropped edit. Best-effort: resume proceeds regardless.
         try:
-            path = state.conversation_log._path(history_key)
-            if path.exists():
-                lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
-                if lines:
-                    first_line_data = json.loads(lines[0])
-                    first_line_data.pop("closed", None)
-                    lines[0] = json.dumps(first_line_data) + "\n"
-                    atomic_tmp = path.with_name(path.name + ".tmp")
-                    try:
-                        atomic_tmp.write_text("".join(lines), encoding="utf-8")
-                        atomic_tmp.replace(path)
-                        state.conversation_log._meta_cache.pop(history_key, None)
-                    except Exception:
-                        atomic_tmp.unlink(missing_ok=True)
-                        raise
+            await asyncio.to_thread(state.conversation_log.clear_closed, history_key)
         except Exception:
             logger.warning("Failed to clear closed flag for %s", history_key, exc_info=True)
     all_messages = state.conversation_log.read_messages_chained(history_key)
@@ -2102,8 +2133,11 @@ async def api_chat_mode(request: web.Request) -> web.Response:
             for aid, fut in list(slot._approval_futures.items()):
                 if not fut.done():
                     fut.set_result("approved")
-                    # Persist resolved state into the permission message
-                    _mark_permission_resolved(slot.messages, aid, mode)
+                    # Persist resolved state into the permission message. The
+                    # periodic flush skips non-dirty slots, so the mark must
+                    # flag the slot or the write can be lost on restart.
+                    if _mark_permission_resolved(slot.messages, aid, mode):
+                        slot._dirty = True
                     state.broadcast_ws("approval_resolved", {"id": aid, "approved": True})
                     try:
                         sel().log_api_access(
@@ -2304,12 +2338,15 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
     fut.set_result(resolved)
     # Persist resolved state into the permission message so it survives tab
     # switches — on the owner slot, whose messages hold the permission card.
+    # Flagging the slot dirty is required for it to survive a RESTART too: the
+    # periodic flush skips non-dirty slots.
     if request_id:
-        _mark_permission_resolved(
+        if _mark_permission_resolved(
             owner.messages,
             request_id,
             original_action if original_action in ("trust", "trust_reads") else resolved,
-        )
+        ):
+            owner._dirty = True
     # Broadcast first to ensure frontend is unblocked
     if request_id:
         state.broadcast_ws(

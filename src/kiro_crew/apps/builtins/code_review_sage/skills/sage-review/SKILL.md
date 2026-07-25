@@ -22,7 +22,7 @@ supplied as context, not baked in:
 ## Self-heal (run first, always — idempotent)
 
 ```bash
-python3 ~/.kirocrew/apps/code-review-sage/sage_lib/store.py --ensure
+python3 ~/.kiro/crew/apps/code-review-sage/sage_lib/store.py --ensure
 ```
 
 ## Load learning context (before reviewing)
@@ -31,16 +31,16 @@ Load patterns from all **active namespaces** (configured in config.json →
 `review.active_namespaces`). The CLI command unions them for you:
 
 ```bash
-python3 ~/.kirocrew/apps/code-review-sage/sage_lib/learning.py list-for-review
+python3 ~/.kiro/crew/apps/code-review-sage/sage_lib/learning.py list-for-review
 ```
 
 Or read them manually — the "default" namespace maps to `common/`, others live
 under `namespaces/<name>/`:
 
 ```bash
-cat ~/.kirocrew/apps/code-review-sage/data/learnings/common/learned-patterns.md
+cat ~/.kiro/crew/apps/code-review-sage/data/learnings/common/learned-patterns.md
 # For each additional active namespace:
-cat ~/.kirocrew/apps/code-review-sage/data/learnings/namespaces/<namespace>/learned-patterns.md 2>/dev/null
+cat ~/.kiro/crew/apps/code-review-sage/data/learnings/namespaces/<namespace>/learned-patterns.md 2>/dev/null
 ```
 
 Treat all loaded patterns as additional review heuristics (warm start).
@@ -394,7 +394,7 @@ from the `learn-from-sage` skill:
 3. If it passes the quality gate (general, non-trivial, fits a dimension),
    **stage** it into the candidate file (`source=fix_introduce`):
    ```bash
-   python3 ~/.kirocrew/apps/code-review-sage/sage_lib/learning.py stage \
+   python3 ~/.kiro/crew/apps/code-review-sage/sage_lib/learning.py stage \
        --file /tmp/pattern.json --source fix_introduce
    ```
    This appends to `learned-patterns.candidate.md` only — it does NOT touch the
@@ -409,7 +409,7 @@ candidate is pure staging until consolidated.
 
 ## Result record (write one per change)
 
-Write `~/.kirocrew/apps/code-review-sage/data/results/<change-id>.json`. This is
+Write `~/.kiro/crew/apps/code-review-sage/data/results/<change-id>.json`. This is
 the durable source of truth the Focus Report reads. **Findings JSON contract**
 (kept stable so the deterministic scorer is decoupled from prompt wording):
 

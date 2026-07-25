@@ -11,7 +11,7 @@
 export const SETTINGS_KEYWORDS: Record<string, string[]> = {
   // Display
   'display.mode': ['dark mode', 'light mode', 'theme', 'appearance', 'dark', 'light', 'night'],
-  'display.color-theme': ['theme', 'appearance', 'skin', 'palette'],
+  'display.theme': ['theme', 'appearance', 'skin', 'palette'],
   'display.zoom-level': ['magnification', 'scale', 'bigger', 'smaller', 'bigger text', 'smaller text', 'accessibility'],
   'display.font-family': ['typeface', 'monospace', 'sans-serif'],
   'display.interface': ['chat mode', 'cli mode', 'bubbles', 'terminal'],

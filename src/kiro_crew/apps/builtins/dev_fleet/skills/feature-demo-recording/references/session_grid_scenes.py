@@ -7,7 +7,7 @@ ported to the demo_harness API. Read it to see real selectors, the fork-precondi
 and English caption phrasing. Adapt scene-by-scene for a new feature.
 
 Run exactly like record_template.py:
-  KC_URL="$(cat .tokenurl)" "$(cat ~/.kirocrew/workspace/.demo-recording-venv/PY_PATH)" \
+  KC_URL="$(cat .tokenurl)" "$(cat ~/.kiro/crew/workspace/.demo-recording-venv/PY_PATH)" \
       session_grid_scenes.py
 """
 import os

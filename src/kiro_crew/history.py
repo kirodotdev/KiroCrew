@@ -8,6 +8,8 @@ Files auto-rotate at 512KB, keeping last 200 lines.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import contextvars
 import json
 import logging
 import math
@@ -16,10 +18,12 @@ import re
 import threading
 import time as _time
 from collections import OrderedDict
+from collections.abc import Callable, Iterator
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Generic, TypeVar
 
+from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import KiroCrewConfig, config_dir
 from kiro_crew.executors import run_in_embed_pool
@@ -52,6 +56,343 @@ _CONSOLIDATION_THRESHOLD = 30  # preferences/projects update threshold (messages
 
 _SESSION_MAX_BYTES = 2 * 1024 * 1024  # 2MB
 _SESSION_KEEP_LINES = 200
+# Bounded cross-process lock acquisition. The per-session sidecar ``flock`` is
+# acquired on the hot ``append`` path, which some transports (Telegram/WeChat/
+# Webex dispatch, workflow/cron injection) may still call synchronously from the
+# gateway event loop. An UNBOUNDED blocking acquire there would let one wedged
+# writer in another process freeze the whole gateway indefinitely, and simply
+# *proceeding* after a timeout would write WITHOUT the cross-process lock — a
+# stale rewrite in the holder can then clobber that write (silent transcript
+# loss). So we do neither: we poll ``try_acquire_lock`` up to a bounded deadline
+# and, on timeout, RAISE ``HistoryLockTimeout`` (fail the mutation) instead of
+# writing unlocked. The critical sections under the lock are all short (append a
+# line / rewrite one metadata line / rotate) so a real contention window clears
+# in milliseconds; a timeout means a genuinely wedged holder.
+#
+# The acquire strategy is chosen by execution context. Off the event loop
+# (worker threads, subagents, crons, CLI) a caller can afford to poll patiently
+# up to ``_FLOCK_ACQUIRE_TIMEOUT_S``. ON a running asyncio loop we must NEVER
+# block or sleep — even a sub-second poll stalls every chat/heartbeat/websocket
+# on the gateway's sole event loop — so the loop path makes exactly ONE
+# non-blocking acquire attempt and fails fast on contention. Callers on the loop
+# should offload persistence via ``asyncio.to_thread`` (see the transport
+# dispatchers' ``_persist_turn``) or via :func:`append_off_loop` (see the
+# dashboard ``inject_cron_result_to_dashboard`` / ``inject_workflow_result``
+# injectors); the single non-blocking attempt is the safety net for any that
+# don't.
+_FLOCK_ACQUIRE_TIMEOUT_S = 10.0
+_FLOCK_POLL_INTERVAL_S = 0.05
+
+
+class HistoryLockTimeout(TimeoutError):
+    """Raised when the cross-process session lock cannot be acquired in time.
+
+    The mutation is abandoned (never applied without the lock) so a concurrent
+    rewrite in another process cannot silently clobber an unlocked write. A
+    timeout indicates a wedged lock holder, not ordinary contention (critical
+    sections are sub-millisecond).
+
+    On-loop callers must NOT let this raise into an async handler (it would turn
+    a transient, retryable lock contention into a user-visible 500). The two
+    supported disciplines are: (1) offload the mutation off the loop so it takes
+    the patient acquire path — the transport dispatchers' ``_persist_turn`` use
+    ``asyncio.to_thread`` and the dashboard injectors use
+    :func:`append_off_loop`; or (2) wrap the mutation in ``try/except`` and skip
+    persistence on this error. Call-sites that do neither will surface it as the
+    mutation's failure — by design, fail rather than write unlocked.
+    """
+
+
+class OnLoopPersistError(AssertionError):
+    """A session-file mutation entered :meth:`ConversationLog._locked` directly
+    on the event loop, violating the off-loop persistence discipline.
+
+    The offload invariant (see the ``_locked`` contract and
+    ``docs/system-specs/modules/history.md``) is that NO session-JSONL mutator
+    runs on the gateway event loop: on-loop callers route through
+    ``append_off_loop`` / ``append_if_absent_off_loop`` / ``update_metadata_off_loop``
+    / ``save_slot_off_loop`` (or ``asyncio.to_thread``), all of which dispatch
+    the mutation to a worker thread so ``_locked`` runs OFF the loop and takes
+    the patient acquire path. A raw on-loop mutator call works in every low-
+    traffic test and use (the flock is uncontended) and only loses data under
+    real concurrency — where the on-loop path makes a single non-blocking
+    acquire, raises :class:`HistoryLockTimeout`, and the caller's best-effort
+    ``try/except`` swallows it as silent transcript loss.
+
+    Because that failure is invisible in CI, ``_locked`` fails LOUD instead:
+    when strict enforcement is active (:func:`_on_loop_persist_strict` — on under
+    ``KIROCREW_STRICT_ON_LOOP_PERSIST`` or ``KIROCREW_DEV_MODE``) any on-loop
+    entry raises this error so an un-offloaded call-site fails tests rather than
+    losing data in production. In production (strict off) the same on-loop entry
+    is instead logged loudly (throttled) and proceeds via the single non-blocking
+    safety-net acquire. Tests that deliberately exercise the low-level on-loop
+    primitive wrap the call in :func:`allow_on_loop_persist`.
+    """
+
+
+# When True (default in production), on-loop entry into ``_locked`` is a logged
+# warning + single non-blocking acquire. When strict enforcement is active it
+# raises :class:`OnLoopPersistError` instead. A ``ContextVar`` (async-safe, no
+# cross-task bleed) lets the low-level primitive tests opt a single call out.
+_allow_on_loop_persist: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "kirocrew_allow_on_loop_persist", default=False
+)
+
+# Throttle the production on-loop warning so a mis-wired hot path cannot flood
+# the log; the diagnostic still fires once per window per process.
+_ON_LOOP_WARN_INTERVAL_S = 60.0
+_on_loop_warn_last: float = 0.0
+
+
+@contextlib.contextmanager
+def allow_on_loop_persist() -> Iterator[None]:
+    """Suppress the strict on-loop persistence assertion for the current context.
+
+    Reserved for tests (and any genuinely-vetted call-site) that intentionally
+    drive a session mutator directly on the event loop to exercise the
+    low-level ``_locked`` primitive — e.g. the HistoryLockTimeout fail-fast
+    path. Production code must NEVER use this: it must offload instead.
+    """
+    token = _allow_on_loop_persist.set(True)
+    try:
+        yield
+    finally:
+        _allow_on_loop_persist.reset(token)
+
+
+def _on_loop_persist_strict() -> bool:
+    """Whether an on-loop ``_locked`` entry should RAISE (vs. warn-and-proceed).
+
+    Strict enforcement turns the convention-only offload discipline into a hard,
+    test-catchable failure. It is on when EITHER:
+
+    - ``KIROCREW_STRICT_ON_LOOP_PERSIST`` is truthy (explicit opt-in — the knob
+      the discipline-enforcement tests flip, and a CI/dev harness can export to
+      make an un-offloaded call-site fail instead of ship), or
+    - ``KIROCREW_DEV_MODE`` is truthy (developer gateway runs — where all
+      persistence is already offloaded, so a raise means a real newly-added
+      un-offloaded path, surfaced immediately rather than lost under contention).
+
+    A truthy ``KIROCREW_STRICT_ON_LOOP_PERSIST`` wins; an explicit falsy value
+    force-disables even under dev-mode (so the production-fallback path stays
+    testable). It is deliberately NOT auto-on under bare pytest: the suite's own
+    async harness calls several mutators directly on the loop as a convenience
+    (not a production path), so auto-strict would flag harness code, not drift.
+    The default (no flag) is the production behavior — a loud throttled warning
+    plus the non-blocking safety-net acquire — so shipping never introduces a new
+    hard failure in the field.
+    """
+    explicit = os.environ.get("KIROCREW_STRICT_ON_LOOP_PERSIST", "").strip().lower()
+    if explicit in _ON_LOOP_TRUTHY:
+        return True
+    if explicit in _ON_LOOP_FALSY:
+        return False
+    return os.environ.get("KIROCREW_DEV_MODE", "").strip().lower() in _ON_LOOP_TRUTHY
+
+
+_ON_LOOP_TRUTHY = frozenset({"1", "true", "yes", "on"})
+_ON_LOOP_FALSY = frozenset({"0", "false", "no", "off"})
+
+
+def _check_on_loop_persist_discipline(key: str) -> None:
+    """Enforce (strict) or diagnose (production) an on-loop ``_locked`` entry.
+
+    Called at the top of :meth:`ConversationLog._locked`. If there is no running
+    event loop the caller is already off-loop (worker thread / CLI / subagent /
+    cron) and this is a no-op — the common, correct case. On the loop it either
+    raises :class:`OnLoopPersistError` (strict) or logs a throttled warning
+    (production) so the un-offloaded call-site is never silent.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return  # off-loop: the sanctioned path — nothing to flag
+    if _allow_on_loop_persist.get():
+        return  # explicitly-vetted low-level primitive exercise (tests)
+    if _on_loop_persist_strict():
+        raise OnLoopPersistError(
+            f"session mutation for {key!r} entered _locked on the event loop; "
+            f"on-loop callers MUST offload (append_off_loop / "
+            f"append_if_absent_off_loop / update_metadata_off_loop / "
+            f"save_slot_off_loop / asyncio.to_thread) so the write takes the "
+            f"patient off-loop acquire path — a raw on-loop mutation loses data "
+            f"under real contention (HistoryLockTimeout swallowed as silent "
+            f"transcript loss). Wrap in history.allow_on_loop_persist() only to "
+            f"test the low-level primitive itself."
+        )
+    global _on_loop_warn_last
+    now = _time.monotonic()
+    if now - _on_loop_warn_last >= _ON_LOOP_WARN_INTERVAL_S:
+        _on_loop_warn_last = now
+        logger.warning(
+            "history: session mutation for %s ran _locked ON the event loop "
+            "without offloading; this drops the write under real contention "
+            "(HistoryLockTimeout swallowed by best-effort callers). Route it "
+            "through append_off_loop/save_slot_off_loop/asyncio.to_thread.",
+            key, stack_info=True,
+        )
+
+
+def append_off_loop(
+    conversation_log: "ConversationLog",
+    key: str,
+    role: str,
+    content: str,
+    *,
+    agent: str | None = None,
+) -> None:
+    """Persist a message without blocking (or fail-fast-dropping on) the loop.
+
+    The lock-backed :meth:`ConversationLog.append` acquires a cross-process
+    flock and writes to disk. On the gateway event loop that primitive makes a
+    single non-blocking acquire attempt and raises :class:`HistoryLockTimeout`
+    on *any* concurrent holder (see the ``_locked`` contract), so calling it
+    directly from an async context both risks a disk write on the loop and drops
+    the write under benign contention.
+
+    This helper routes around both problems: on a running asyncio loop the
+    append is dispatched to a worker thread (``run_in_executor``) so it takes the
+    patient off-loop acquire path and never stalls the loop; off the loop it
+    appends inline. Persistence is best-effort — the caller has already reflected
+    the message in the in-memory slot, so a lock timeout or I/O error only skips
+    the durable replay copy and is logged rather than raised.
+    """
+
+    def _do() -> None:
+        conversation_log.append(key, role, content, agent=agent)
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if loop is None:
+        try:
+            _do()
+        except Exception:  # noqa: BLE001 - best-effort durable copy
+            logger.warning(
+                "append_off_loop: inline append failed key=%s", key, exc_info=True
+            )
+        return
+
+    def _report(fut: "asyncio.Future[None]") -> None:
+        exc = fut.exception()
+        if exc is not None:
+            logger.warning(
+                "append_off_loop: offloaded append failed key=%s: %r", key, exc
+            )
+
+    loop.run_in_executor(None, _do).add_done_callback(_report)
+
+
+def append_if_absent_off_loop(
+    conversation_log: "ConversationLog",
+    key: str,
+    role: str,
+    content: str,
+    *,
+    agent: str | None = None,
+) -> None:
+    """Idempotent, loop-safe variant of :func:`append_off_loop`.
+
+    Routes :meth:`ConversationLog.append_if_absent` — which atomically skips a
+    message already persisted under the same session lock — off the event loop
+    exactly like :func:`append_off_loop`. Used by the workflow-result and
+    cron-result injectors, which ALSO reflect the message in the in-memory slot
+    (``slot.append``); the periodic slot save can therefore serialize the same
+    message before this durable copy runs. The plain ``append`` would then
+    double-write it; ``append_if_absent`` performs the disk check under the
+    lock so the second write is a no-op. Best-effort — a lock timeout / I/O
+    error only skips the durable replay copy (the slot already carries it) and
+    is logged rather than raised.
+    """
+
+    def _do() -> None:
+        conversation_log.append_if_absent(key, role, content, agent=agent)
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if loop is None:
+        try:
+            _do()
+        except Exception:  # noqa: BLE001 - best-effort durable copy
+            logger.warning(
+                "append_if_absent_off_loop: inline append failed key=%s",
+                key, exc_info=True,
+            )
+        return
+
+    def _report(fut: "asyncio.Future[None]") -> None:
+        exc = fut.exception()
+        if exc is not None:
+            logger.warning(
+                "append_if_absent_off_loop: offloaded append failed key=%s: %r",
+                key, exc,
+            )
+
+    loop.run_in_executor(None, _do).add_done_callback(_report)
+
+
+def update_metadata_off_loop(
+    conversation_log: "ConversationLog",
+    key: str,
+    fields: dict,
+) -> None:
+    """Merge session metadata without running the flock/fd ops on the loop.
+
+    Mirrors :func:`append_off_loop`, but for the lock-backed
+    :meth:`ConversationLog.update_metadata`. That method enters ``_locked``,
+    which ``os.open``\\ s the sidecar, takes a cross-process ``flock`` and
+    ``os.close``\\ s the fd. Those primitives are ``blocking: true`` under the
+    ``no-blocking-call-on-event-loop`` rule: a wedged cross-process peer can
+    stall the acquire (or, mid-release, the close) and freeze chat, WebSockets,
+    and heartbeat until the watchdog restarts the gateway. This helper keeps
+    them off the loop.
+
+    Use it from *synchronous* helpers that may run on the event-loop thread
+    (e.g. slot rehydration / startup restore) where ``await`` is not available.
+    Async handlers that can ``await`` should prefer
+    ``await asyncio.to_thread(conversation_log.update_metadata, ...)`` so the
+    write is ordered against the response.
+
+    On a running loop the update is dispatched to a worker thread (which takes
+    ``_locked``'s patient off-loop acquire path); off the loop it runs inline.
+    Persistence is best-effort — the mutation is metadata backfill the caller
+    has already reflected in memory, so a lock timeout or I/O error is logged
+    rather than raised.
+    """
+
+    def _do() -> None:
+        conversation_log.update_metadata(key, fields)
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if loop is None:
+        try:
+            _do()
+        except Exception:  # noqa: BLE001 - best-effort metadata backfill
+            logger.warning(
+                "update_metadata_off_loop: inline update failed key=%s",
+                key,
+                exc_info=True,
+            )
+        return
+
+    def _report(fut: "asyncio.Future[None]") -> None:
+        exc = fut.exception()
+        if exc is not None:
+            logger.warning(
+                "update_metadata_off_loop: offloaded update failed key=%s: %r",
+                key,
+                exc,
+            )
+
+    loop.run_in_executor(None, _do).add_done_callback(_report)
+
+
 SEARCH_MIN_CHARS = 2  # shortest query string that triggers backend search
 _TITLE_BOOST = 10  # field-boost multiplier for title matches in search_sessions
 _SEARCH_SCAN_WINDOW = 500  # cap files scanned per search to bound I/O
@@ -303,6 +644,28 @@ class ConversationLog:
     _file_locks: dict[str, threading.RLock] = {}
     _file_locks_guard = threading.Lock()
 
+    # Cross-process advisory-lock state. The per-file ``threading.RLock`` above
+    # only serializes writers *inside this process*; a subagent, cron, or CLI
+    # invocation runs in a SEPARATE process and would otherwise interleave its
+    # create/append/rotate/rewrite against ours and silently lose updates (or
+    # let a reader observe a torn file mid-rewrite). ``_locked`` layers a POSIX
+    # ``flock`` (advisory, cross-process) on a per-session ``.lock`` sidecar on
+    # top of the in-process RLock. ``_flock_state`` maps lock_key →
+    # ``[fd, depth, held]`` (``held`` = 1 while the ``flock`` is currently taken
+    # on ``fd``) so re-entrant same-key acquisition (RLock is reentrant) reuses
+    # the single held fd instead of ``flock``-ing a second fd of the same file —
+    # which, on POSIX, blocks forever against ourselves. Crucially, the entry is
+    # *kept alive with ``held``=1* across the brief window between a depth→0 exit
+    # and the off-loop release actually running: a sequential same-key
+    # re-acquire in that window REUSES the still-held flock (never re-``flock``s
+    # a fresh fd, which would spuriously EWOULDBLOCK against our own not-yet-
+    # released fd and fail the single non-blocking on-loop attempt). Guarded by
+    # ``_flock_guard`` for the (fast, non-blocking) dict bookkeeping only; the
+    # blocking ``flock`` call happens outside the guard so distinct keys never
+    # serialize on it.
+    _flock_state: dict[str, list[int]] = {}
+    _flock_guard = threading.Lock()
+
     def __init__(
         self,
         base_dir: Path | None = None,
@@ -326,13 +689,15 @@ class ConversationLog:
         #: staleness (an append bumps the file mtime, so the entry is
         #: recomputed on the next call). Own ``_LRUCache`` → own internal lock.
         self._recent_cache: _LRUCache[tuple[float, list[dict]]] = _LRUCache(cache_max)
-        #: tab_id → [session keys] index for chained reads. Initialized eagerly
-        #: (no ``hasattr`` dance) and guarded by ``self._lock`` because
+        #: tab_id → [session keys] chain index. ``None`` means "stale, rebuild
+        #: on next chained read"; a dict is an authoritative snapshot. Rebuilt
+        #: lazily by _rebuild_tab_id_index, invalidated by
+        #: invalidate_tab_id_cache on every append / metadata edit / delete
+        #: that can change the chain. Guarded by ``self._lock`` because
         #: ``read_messages_chained`` is reachable from worker threads while the
-        #: event loop may clear it via ``invalidate_tab_id_cache`` — an
-        #: unsynchronized lazy-init/read/clear produced a transient empty index
-        #: or ``AttributeError``.
-        self._tab_id_index: dict[str, list[str]] = {}
+        #: event loop may mark it stale — an unsynchronized rebuild/read/clear
+        #: produced a transient empty index or ``AttributeError``.
+        self._tab_id_index: dict[str, list[str]] | None = None
         #: Coarse instance lock protecting the lazily-built ``_tab_id_index``
         #: rebuild/read/clear. The message/metadata/recent LRUs are each
         #: internally locked; this guards the shared mutable state that lives
@@ -357,6 +722,217 @@ class ConversationLog:
                 lock = threading.RLock()
                 ConversationLog._file_locks[lock_key] = lock
             return lock
+
+    def _lock_path(self, key: str) -> Path:
+        """Sidecar lock-file path for *key* (``<session>.jsonl.lock``).
+
+        A dedicated sidecar is used rather than locking the session file's own
+        fd because writes go through ``atomic_write`` (temp file + ``os.replace``),
+        which swaps the inode — a lock held on the pre-replace fd would guard a
+        now-unlinked inode and protect nothing. The sidecar's inode is stable.
+        The ``.lock`` suffix keeps it out of every ``*.jsonl`` glob (list/search/
+        tab-id-index) so it is never mistaken for a session file.
+        """
+        p = self._path(key)
+        return p.parent / (p.name + ".lock")
+
+    @staticmethod
+    def _run_fd_cleanup_off_loop(cleanup: Callable[[], None]) -> None:
+        """Run a blocking lock-fd cleanup without ever stalling the event loop.
+
+        ``platform_compat.release_lock`` (``flock(LOCK_UN)``) and ``os.close``
+        are ``blocking: true`` under the ``no-blocking-call-on-event-loop``
+        rule: on a wedged descriptor they can freeze chat, WebSockets, and the
+        heartbeat until the watchdog restarts the gateway. ``_locked`` may run
+        synchronously ON the loop thread — an on-loop caller that did not
+        offload relies on the single non-blocking acquire as a safety net (see
+        the module docstring and ``append_off_loop``) — so its descriptor
+        release/close must never execute inline on the loop.
+
+        Off the loop we run the cleanup inline. On the loop we dispatch it to
+        the default executor (fire-and-forget: the caller awaits nothing). The
+        release cleanup re-validates the ``_flock_state`` entry under the
+        per-key RLock before touching the fd, so scheduling it while the entry
+        is still live (kept alive with ``held``=1 across the depth→0 → release
+        window) is safe — a same-key re-acquire simply cancels it. A failed
+        unlock/close of an already-doomed fd is not actionable, so the future's
+        exception is consumed to avoid a spurious "exception was never
+        retrieved" warning.
+
+        NOTE: this is only the *release* side. The first-entry acquire still
+        ``os.open``s the local sidecar synchronously because the fd must exist
+        before it can be ``flock``ed; that open is a fast local-FS syscall and,
+        unlike the release, is on the critical path. On-loop callers that want
+        to keep even the acquire off the loop must offload the whole mutation
+        (``append_off_loop`` / ``update_metadata_off_loop`` / ``save_slot_off_loop``).
+        """
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop is None:
+            cleanup()
+            return
+        fut = loop.run_in_executor(None, cleanup)
+        fut.add_done_callback(lambda f: f.exception())
+
+    @contextlib.contextmanager
+    def _locked(self, key: str) -> Iterator[None]:
+        """Hold BOTH the in-process RLock and a cross-process advisory flock.
+
+        Serializes create/append/rotate/rewrite/metadata mutations of a single
+        session file against every other writer — threads in this process (via
+        the RLock) *and* other processes such as subagents, crons, and the CLI
+        (via the ``flock`` on the sidecar lock file). Reentrant: a nested
+        ``_locked`` for the same key on the same thread reuses the held fd.
+        """
+        # Fail loud (strict) or diagnose (production) if a mutation reached the
+        # lock ON the event loop — the un-offloaded-call-site guard (see
+        # OnLoopPersistError). No-op off the loop, which is the sanctioned path.
+        _check_on_loop_persist_discipline(key)
+        with self._file_lock(key):
+            lock_key = str(self._path(key))
+            with ConversationLog._flock_guard:
+                state = ConversationLog._flock_state.get(lock_key)
+                if state is None:
+                    lock_path = self._lock_path(key)
+                    lock_path.parent.mkdir(parents=True, exist_ok=True)
+                    fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o600)
+                    state = [fd, 0, 0]  # fd, depth, held
+                    ConversationLog._flock_state[lock_key] = state
+                state[1] += 1
+                # ``held`` == 1 means the ``flock`` is already taken on
+                # ``state[0]`` — either by an outer reentrant frame OR because a
+                # depth→0 exit's off-loop release has not run yet. In BOTH cases
+                # we reuse the held flock rather than ``flock``-ing a fresh fd
+                # (which would EWOULDBLOCK against our own fd and, on the loop,
+                # fail the single non-blocking attempt). The re-bumped depth
+                # also cancels any pending release (it re-checks depth == 0).
+                need_acquire = state[2] == 0
+            # Bounded cross-process acquire done OUTSIDE _flock_guard (only when
+            # the flock is not already held) so unrelated keys never serialize
+            # on the bookkeeping mutex. The RLock we hold guarantees no other
+            # thread races this same key. On timeout/contention we RAISE
+            # HistoryLockTimeout — we never proceed with the mutation unlocked,
+            # because a concurrent rewrite could then clobber the unlocked write
+            # (silent data loss). ON a running asyncio loop we make exactly ONE
+            # non-blocking attempt and fail fast (never sleep/poll — that would
+            # block the sole event loop). Off-loop we poll patiently to a
+            # bounded deadline.
+            if need_acquire:
+                try:
+                    on_loop = True
+                    try:
+                        asyncio.get_running_loop()
+                    except RuntimeError:
+                        on_loop = False
+                    if on_loop:
+                        if not platform_compat.try_acquire_lock(
+                            state[0], exclusive=True
+                        ):
+                            logger.warning(
+                                "history: cross-process lock for %s busy on the "
+                                "event loop; abandoning mutation rather than "
+                                "blocking the loop or writing unlocked (a "
+                                "concurrent rewrite could clobber it)",
+                                key,
+                            )
+                            raise HistoryLockTimeout(
+                                f"could not acquire cross-process lock for "
+                                f"{key!r} without blocking the event loop"
+                            )
+                    else:
+                        deadline = _time.monotonic() + _FLOCK_ACQUIRE_TIMEOUT_S
+                        while not platform_compat.try_acquire_lock(
+                            state[0], exclusive=True
+                        ):
+                            if _time.monotonic() >= deadline:
+                                logger.warning(
+                                    "history: cross-process lock for %s not "
+                                    "acquired within %.1fs; abandoning mutation "
+                                    "to avoid an unlocked write that a "
+                                    "concurrent rewrite could clobber",
+                                    key, _FLOCK_ACQUIRE_TIMEOUT_S,
+                                )
+                                raise HistoryLockTimeout(
+                                    f"could not acquire cross-process lock for "
+                                    f"{key!r} within "
+                                    f"{_FLOCK_ACQUIRE_TIMEOUT_S:.1f}s"
+                                )
+                            _time.sleep(_FLOCK_POLL_INTERVAL_S)
+                    with ConversationLog._flock_guard:
+                        state[2] = 1  # flock now held on state[0]
+                except BaseException:
+                    with ConversationLog._flock_guard:
+                        state[1] -= 1
+                        # Only tear the fd down if we are the last frame AND the
+                        # flock was never taken; a concurrent reuse (depth > 0)
+                        # or a held flock must keep the fd alive.
+                        drop = state[1] == 0 and state[2] == 0
+                        if drop:
+                            ConversationLog._flock_state.pop(lock_key, None)
+                    if drop:
+                        # Acquire failed → the flock was never taken, so only
+                        # the fd needs releasing. ``os.close`` is ``blocking:
+                        # true`` under the no-blocking-call-on-event-loop rule;
+                        # defer it off the loop (see ``_run_fd_cleanup_off_loop``).
+                        _fd = state[0]
+                        self._run_fd_cleanup_off_loop(lambda: os.close(_fd))
+                    raise
+            try:
+                yield
+            finally:
+                with ConversationLog._flock_guard:
+                    state[1] -= 1
+                    done = state[1] == 0
+                if done:
+                    # Depth hit 0. ``platform_compat.release_lock`` (flock
+                    # LOCK_UN) and ``os.close`` are both ``blocking: true``
+                    # syscalls, so run them off the event loop — a wedged
+                    # descriptor must never freeze chat/WS/heartbeat (the
+                    # finding this addresses). We DO NOT pop the state here:
+                    # the entry stays alive with ``held``=1 so a sequential
+                    # same-key re-acquire before the release runs reuses the
+                    # still-held flock instead of ``flock``-ing a fresh fd (the
+                    # regression that spuriously raised HistoryLockTimeout under
+                    # executor load). The deferred release re-checks depth and
+                    # its own fd under the guard, so a reuse cancels it.
+                    self._schedule_flock_release(key, lock_key, state[0])
+
+    def _schedule_flock_release(
+        self, key: str, lock_key: str, fd: int
+    ) -> None:
+        """Release+close *fd* off the loop iff the entry is still idle.
+
+        Scheduled on a depth→0 exit of :meth:`_locked`. Runs the blocking
+        ``flock(LOCK_UN)`` + ``os.close`` off the event loop (they can stall on
+        a wedged descriptor). Re-validates under the per-key RLock and
+        ``_flock_guard`` that the ``_flock_state`` entry still refers to *fd*
+        and its depth is still 0 — if a same-key re-acquire bumped the depth in
+        the meantime (reusing the still-held flock) or the fd was already
+        replaced, the release is a no-op and ownership passes to that frame's
+        own eventual depth→0 exit. This closes the window in which the entry was
+        popped while the flock was still held, which made the next on-loop
+        acquire EWOULDBLOCK against our own not-yet-released fd.
+        """
+
+        def _release_and_close() -> None:
+            # Reentrant RLock: off-loop this runs on a worker thread and blocks
+            # until no same-key frame holds it; inline (no loop) it re-enters on
+            # the current thread. Either way, serializing with _locked bodies
+            # guarantees the depth check below cannot race an acquire.
+            with self._file_lock(key):
+                with ConversationLog._flock_guard:
+                    st = ConversationLog._flock_state.get(lock_key)
+                    if st is None or st[0] != fd or st[1] != 0:
+                        return  # reused or replaced — leave the flock in place
+                    ConversationLog._flock_state.pop(lock_key, None)
+                try:
+                    platform_compat.release_lock(fd)
+                finally:
+                    os.close(fd)
+
+        self._run_fd_cleanup_off_loop(_release_and_close)
 
     def init(self) -> None:
         """Create sessions directory if missing."""
@@ -403,8 +979,11 @@ class ConversationLog:
         path = self._path(key)
         # Serialize the create-if-missing + append + rotate against concurrent
         # rewrites (compaction / consolidation) so no write is lost and readers
-        # never observe a torn file.
-        with self._file_lock(key):
+        # never observe a torn file. ``_locked`` also takes a cross-process
+        # advisory flock so a subagent / cron / CLI writing the SAME session
+        # file in another process can't interleave and lose this append.
+        with self._locked(key):
+            created_with_tab_id = False
             if not path.exists():
                 self._dir.mkdir(parents=True, exist_ok=True)
                 meta: dict = {
@@ -416,6 +995,7 @@ class ConversationLog:
                     meta["agent"] = agent
                 if tab_id:
                     meta["tab_id"] = tab_id
+                    created_with_tab_id = True
                 path.write_text(json.dumps(meta) + "\n", encoding="utf-8")
 
             msg: dict = {
@@ -438,8 +1018,53 @@ class ConversationLog:
             # Invalidate cache since file changed
             self._invalidate_cache(key)
 
+            # A newly-created file carrying a tab_id adds a fresh key to that
+            # tab_id's chain — drop the cached tab_id→[keys] index so the next
+            # chained read rebuilds it and actually sees this session (a stale
+            # index would silently omit it from the chain).
+            if created_with_tab_id:
+                self.invalidate_tab_id_cache()
+
             # Rotate if file exceeds size limit
             self._maybe_rotate(path)
+
+    def append_if_absent(
+        self,
+        key: str,
+        role: str,
+        content: str,
+        *,
+        agent: str | None = None,
+        tab_id: str | None = None,
+    ) -> bool:
+        """Append a message only if an identical one is not already persisted.
+
+        Returns ``True`` if the message was written, ``False`` if a message
+        with the same ``(role, content)`` already exists on disk.
+
+        The disk check and the append run together under ``_locked`` so they
+        are ATOMIC against a concurrent writer of the same session file — in
+        particular the periodic dashboard slot save
+        (``_save_slot_to_history``), which serializes the in-memory slot window
+        (already carrying this message via ``slot.append``) and takes the SAME
+        per-session cross-process lock. Without this, a fire-and-forget
+        :func:`append_off_loop` scheduled after the slot save has already
+        written the identical message would append it a SECOND time; the
+        duplicate then survives a restart and is replayed twice to subsequent
+        agent turns. This is the workflow-result / cron-result double-append
+        race: the read-modify-write must be one locked critical section, not a
+        separate unlocked existence check followed by a later append.
+        """
+        with self._locked(key):
+            if self._path(key).exists():
+                for m in self._read_messages(key):
+                    if m.get("role") == role and m.get("content") == content:
+                        return False
+            # Reentrant: ``append`` re-enters ``_locked`` for the same key on
+            # this thread (RLock + refcounted flock), so the write stays inside
+            # the critical section we already hold.
+            self.append(key, role, content, agent=agent, tab_id=tab_id)
+            return True
 
     def recent(
         self,
@@ -530,13 +1155,86 @@ class ConversationLog:
         offset = self._read_metadata(key).get("last_consolidated", 0)
         return messages[offset:], len(messages)
 
-    def mark_consolidated(self, key: str, offset: int) -> None:
-        """Rewrite metadata line with updated last_consolidated offset."""
+    def rotation_generation(self, key: str) -> int:
+        """Return the session's rotation generation counter.
+
+        Incremented by :meth:`_maybe_rotate` on every rotation. A consolidator
+        snapshots this alongside the message offset before its (slow) LLM call
+        and passes it back to :meth:`mark_consolidated`, which resets the offset
+        whenever the generation changed — closing the rotation-during-await race
+        for ANY retained count, not just files that shrank below the offset.
+        Absent field (legacy metadata / never rotated) reads as ``0``.
+        """
+        return int(self._read_metadata(key).get("rotation_generation", 0) or 0)
+
+    def snapshot_for_consolidation(
+        self, key: str
+    ) -> tuple[list[dict], int, int]:
+        """Atomically snapshot ``(unconsolidated_messages, total, generation)``.
+
+        The consolidator needs the unconsolidated tail, the total message count
+        (the absolute offset it later passes to :meth:`mark_consolidated`), and
+        the rotation generation counter to reflect the SAME point in time. Read
+        as three separate calls (``get_unconsolidated`` + ``rotation_generation``)
+        an append can trigger a rotation *between* them, pairing pre-rotation
+        messages/offset with the post-rotation generation. ``mark_consolidated``
+        then sees matching generations and applies the stale (shifted) offset —
+        and when the retained count is >= that offset the count fallback misses
+        it too — silently marking never-processed messages as consolidated and
+        dropping them from memory/history extraction.
+
+        Holding :meth:`_locked` across all three reads makes the snapshot
+        atomic: no append/rotation can interleave, so the returned offset and
+        generation are guaranteed consistent. Returns
+        ``(messages[offset:], len(messages), generation)``. The returned list is
+        a fresh slice (never the shared ``_read_messages`` cache object), so the
+        caller may treat it as owned.
+        """
+        with self._locked(key):
+            messages = self._read_messages(key)
+            meta = self._read_metadata(key)
+            offset = meta.get("last_consolidated", 0)
+            generation = int(meta.get("rotation_generation", 0) or 0)
+            return list(messages[offset:]), len(messages), generation
+
+    def mark_consolidated(
+        self, key: str, offset: int, generation: int | None = None
+    ) -> None:
+        """Rewrite metadata line with updated ``last_consolidated`` offset.
+
+        *offset* is an absolute message index captured by the caller BEFORE a
+        (potentially slow) LLM consolidation call. *generation* is the rotation
+        generation counter (:meth:`rotation_generation`) captured at the same
+        moment. If a rotation fired while the consolidator awaited the LLM, the
+        file was truncated to its newest messages, ``last_consolidated`` reset
+        to 0, and the generation bumped — so the caller's *offset* is in the
+        stale PRE-rotation numbering: every surviving index shifted by the
+        number of dropped lines, so applying it would silently mark
+        never-consolidated retained messages as already processed.
+
+        Detection uses two independent signals:
+
+        1. **Generation change** (primary, when *generation* is supplied):
+           any rotation between snapshot and write bumps the counter, so a
+           mismatch resets ``last_consolidated`` to 0 regardless of how many
+           messages the rotation retained. This closes the case a pure
+           offset-vs-count heuristic misses — a rotation that keeps >= *offset*
+           messages leaves ``offset <= msg_count`` true yet has still shifted
+           every index.
+        2. **Offset exceeds current count** (fallback, always): the file shrank
+           below the captured offset (rotation truncated it). Retained if
+           *generation* is unavailable (legacy callers) or as defense-in-depth.
+
+        In either case ``last_consolidated`` is reset to 0 and the retained tail
+        is reconsolidated rather than clamping the offset to EOF (which would
+        silently mark post-rotation messages as already consolidated and drop
+        them from memory/history extraction). When neither trips, the offset is
+        applied as-is.
+        """
         path = self._path(key)
-        # Serialize behind the per-file lock and re-read under it so a
-        # concurrent append (guarded by the same lock) is never lost, and
-        # write atomically so a crash mid-write can't truncate the transcript.
-        with self._file_lock(key):
+        # Serialize behind the cross-process lock and re-read under it so a
+        # concurrent append (in this or another process) is never lost.
+        with self._locked(key):
             if not path.exists():
                 return
             prev_mtime = _safe_mtime(path)
@@ -544,10 +1242,60 @@ class ConversationLog:
             if not lines:
                 return
             meta = json.loads(lines[0])
-            meta["last_consolidated"] = offset
+            # Reconcile the caller's absolute *offset* against the messages
+            # actually present now. Line 0 is the metadata line; every other
+            # non-blank line is a message.
+            msg_count = sum(1 for ln in lines[1:] if ln.strip())
+            current_generation = int(meta.get("rotation_generation", 0) or 0)
+            if generation is not None and current_generation != generation:
+                # PRIMARY signal: a rotation fired between the caller's snapshot
+                # and now (the generation counter advanced). The offset is in
+                # the stale PRE-rotation numbering — every surviving index has
+                # shifted by the number of dropped lines — so it cannot be
+                # applied regardless of how many messages the rotation retained.
+                # A rotation that kept >= *offset* messages leaves
+                # ``offset <= msg_count`` true and would sail past the count
+                # heuristic below, silently marking never-consolidated retained
+                # messages as done. Reset to 0 and reconsolidate the retained
+                # tail (harmless, idempotent) rather than risk that loss.
+                logger.warning(
+                    "mark_consolidated: rotation generation changed %s->%d for "
+                    "%s (rotation during consolidation); resetting "
+                    "last_consolidated to 0 to avoid skipping retained messages",
+                    generation, current_generation, key,
+                )
+                safe_offset = 0
+            elif offset > msg_count:
+                # The file shrank below the captured offset — a rotation fired
+                # during the (slow) LLM await, truncating to the newest messages
+                # and resetting ``last_consolidated`` to 0. The caller's offset
+                # is in the PRE-rotation numbering and is now meaningless.
+                # Clamping it to ``msg_count`` would mark the retained tail —
+                # which now includes brand-new, never-consolidated messages that
+                # arrived after the snapshot — as consolidated, permanently
+                # skipping them (silent history/memory loss). Reset to 0 and let
+                # the retained tail be reconsolidated instead: redoing a handful
+                # of already-processed messages is harmless and idempotent,
+                # whereas dropping new ones is a data-integrity failure.
+                logger.warning(
+                    "mark_consolidated: offset %d exceeds current message count "
+                    "%d for %s (rotation during consolidation); resetting "
+                    "last_consolidated to 0 to avoid skipping post-rotation "
+                    "messages",
+                    offset, msg_count, key,
+                )
+                safe_offset = 0
+            else:
+                safe_offset = offset
+            meta["last_consolidated"] = safe_offset
             meta["updated_at"] = datetime.now().isoformat()
             lines[0] = json.dumps(meta) + "\n"
-            atomic_write(path, "".join(lines), fsync=True)
+            # Reduce lock hold for this one-line metadata rewrite: skip the
+            # fsync (fsync=False). ``last_consolidated`` is recoverable
+            # bookkeeping — if a crash loses it we simply re-consolidate a few
+            # messages — so paying a disk flush while holding the cross-process
+            # lock (blocking every other writer of this session) isn't worth it.
+            atomic_write(path, "".join(lines), fsync=False)
             # Housekeeping bookkeeping — must not advance the session's mtime
             # (see _restore_mtime). Otherwise consolidation floats stale sessions
             # to the top of list_sessions on every gateway restart.
@@ -874,16 +1622,21 @@ class ConversationLog:
             return self._read_messages(key)
         # Guard the lazy build/read of the shared _tab_id_index: this method is
         # reachable from worker threads (chat_persistence restore/save) while the
-        # event loop may clear the index via invalidate_tab_id_cache(). Without
-        # the lock two threads could rebuild concurrently, or one could read a
-        # half-cleared index. Snapshot the key list under the lock, then do the
-        # (potentially slow) per-file reads outside it.
+        # event loop may mark the index stale via invalidate_tab_id_cache().
+        # Without the lock two threads could rebuild concurrently, or one could
+        # read a half-built index. Rebuild only when it is missing/stale
+        # (``None``); a freshly rebuilt index is AUTHORITATIVE, so a tid absent
+        # from it genuinely has no sibling files right now. We deliberately do
+        # NOT plant a permanent ``[]`` sentinel for a missing tid — the old
+        # sentinel suppressed every future rebuild, so a second session opened
+        # later under the same tab_id was never linked into the chain and its
+        # messages silently vanished from recent_chained. Snapshot the key list
+        # under the lock, then do the (potentially slow) per-file reads outside.
         with self._lock:
-            if tid not in self._tab_id_index:
+            if self._tab_id_index is None:
                 self._rebuild_tab_id_index()
-                if tid not in self._tab_id_index:
-                    self._tab_id_index[tid] = []  # sentinel: prevent repeated rebuilds
-            keys = list(self._tab_id_index.get(tid, []))
+            index = self._tab_id_index or {}
+            keys = list(index.get(tid, []))
         if not keys:
             return self._read_messages(key)
         all_msgs: list[dict] = []
@@ -911,19 +1664,62 @@ class ConversationLog:
         self._tab_id_index = index
 
     def invalidate_tab_id_cache(self) -> None:
-        """Clear the tab_id index so it's rebuilt on next chained read."""
+        """Mark the tab_id index stale so it is rebuilt on the next chained read.
+
+        Sets the index to ``None`` (rather than ``.clear()``-ing it) so
+        read_messages_chained can distinguish "stale, must rebuild" from
+        "freshly built, tid legitimately absent" — the distinction the removed
+        ``[]`` sentinel used to get wrong. Guarded by ``self._lock`` so a
+        concurrent rebuild/read on a worker thread can't observe a half-updated
+        index.
+        """
         with self._lock:
-            self._tab_id_index.clear()
+            self._tab_id_index = None
 
     def delete_session(self, key: str) -> bool:
-        """Delete a session file. Returns True if deleted."""
-        path = self._path(key)
-        if path.exists():
-            path.unlink()
+        """Delete a session file. Returns True if a file was removed.
+
+        The existence check and unlink run under ``_locked`` so a concurrent
+        ``append`` / ``rewrite_session`` / ``update_metadata`` in this or any
+        other process cannot race the delete — otherwise a writer holding the
+        lock could complete its ``os.replace`` and resurrect the file we just
+        removed, or we could unlink the file out from under an open descriptor
+        and lose an acknowledged append. ``unlink(missing_ok=True)`` still
+        tolerates a concurrent deletion of the same session (the TOCTOU race
+        between our existence check and the unlink). On a wedged holder the lock
+        acquire raises ``HistoryLockTimeout``; we report "not removed" rather
+        than delete unlocked (the very clobber this lock prevents).
+        """
+        existed = False
+        try:
+            with self._locked(key):
+                path = self._path(key)
+                existed = path.exists()
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError:
+                    return False
+        except HistoryLockTimeout:
+            logger.warning(
+                "delete_session: lock timeout, not deleting key=%s", key
+            )
+            return False
+        if existed:
             self._invalidate_cache(key)
             self.invalidate_tab_id_cache()
-            return True
-        return False
+        # NB: we deliberately do NOT unlink the ``.lock`` sidecar here. The
+        # sidecar's *inode* is the cross-process mutex: ``_locked`` opens the
+        # path and ``flock``s the resulting fd. Reaping the file re-opens the
+        # exact inode race the lock exists to prevent — after this delete
+        # releases ``_locked``, a concurrent writer can recreate the session
+        # and acquire the surviving sidecar; unlinking it then lets a later
+        # acquirer create a *fresh* sidecar inode and lock that instead, so two
+        # processes hold "the lock" on different inodes and can clobber each
+        # other's writes (lost transcript update). A deleted session therefore
+        # leaves a bounded, zero-byte ``.lock`` trace on purpose; cross-process
+        # -safe reaping (under a separate directory-wide meta-lock that excludes
+        # all session-lock acquisition) is deferred as future work.
+        return existed
 
     def set_title(self, key: str, title: str) -> None:
         """Persist a title into the session's metadata line."""
@@ -932,12 +1728,17 @@ class ConversationLog:
     def update_metadata(self, key: str, fields: dict) -> None:
         """Merge *fields* into the session's metadata line and persist.
 
-        Serialized behind the per-file lock so a concurrent append or rewrite
-        of the same session file can't clobber this metadata edit (and vice
-        versa).
+        Serialized behind the cross-process lock so a concurrent append or
+        rewrite of the same session file — in this or any other process — can't
+        clobber this metadata edit (and vice versa).
         """
-        with self._file_lock(key):
+        with self._locked(key):
             self._update_metadata_locked(key, fields)
+        # A tab_id change re-links this session into (or out of) a chain, so the
+        # cached tab_id→[keys] index is now stale. Invalidate OUTSIDE the lock
+        # (it only touches in-process state) so the next chained read rebuilds.
+        if "tab_id" in fields:
+            self.invalidate_tab_id_cache()
 
     def _update_metadata_locked(self, key: str, fields: dict) -> None:
         """Merge *fields* into the session's metadata line and persist.
@@ -989,7 +1790,12 @@ class ConversationLog:
         try:
             try:
                 _os.write(fd, data)
-                _os.fsync(fd)
+                # Deliberately NO fsync here: this is a one-line metadata edit
+                # (title/agent/folder/tab_id/pin) held under the cross-process
+                # lock. os.replace() below is still crash-atomic (no torn file)
+                # without a flush; fsync would only add power-loss durability,
+                # which isn't worth blocking every other writer of this session
+                # for a disk flush. Metadata is cheaply re-derivable/re-editable.
             finally:
                 _os.close(fd)
             _os.replace(tmp, str(path))
@@ -1000,6 +1806,37 @@ class ConversationLog:
                 pass
             raise
         _restore_mtime(path, prev_mtime)
+        self._invalidate_cache(key)
+
+    def clear_closed(self, key: str) -> None:
+        """Remove the ``closed`` flag from a session's metadata line.
+
+        Serialized behind the cross-process ``_locked`` so a concurrent append /
+        rewrite / metadata edit — in this or any other process — can't clobber
+        this edit (and vice versa). ``update_metadata`` only merges keys, so a
+        dedicated remover is needed to drop ``closed`` when a session is resumed.
+        No-op when the file is absent, unparsable, not flagged, or its first line
+        isn't a metadata line. Housekeeping: the pre-write mtime is preserved so
+        resuming doesn't reorder ``list_sessions``.
+        """
+        path = self._path(key)
+        with self._locked(key):
+            if not path.exists():
+                return
+            prev_mtime = _safe_mtime(path)
+            lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+            if not lines:
+                return
+            try:
+                meta = json.loads(lines[0])
+            except json.JSONDecodeError:
+                return
+            if meta.get("_type") != "metadata" or "closed" not in meta:
+                return
+            meta.pop("closed", None)
+            lines[0] = json.dumps(meta) + "\n"
+            atomic_write(path, "".join(lines), fsync=False)
+            _restore_mtime(path, prev_mtime)
         self._invalidate_cache(key)
 
     def _read_messages(self, key: str) -> list[dict]:
@@ -1291,10 +2128,10 @@ class ConversationLog:
 
     def rewrite_session(self, key: str, messages: list[dict]) -> None:
         """Rewrite session JSONL with only the given messages."""
-        # Serialize the full rewrite against concurrent appends so a live
-        # session's writes aren't lost, and (via atomic_write below) so a crash
-        # can't truncate the transcript.
-        with self._file_lock(key):
+        # Serialize the full rewrite against concurrent appends — in this or
+        # any other process — so a live session's writes aren't lost, and (via
+        # atomic_write below) so a crash can't truncate the transcript.
+        with self._locked(key):
             self._rewrite_session_locked(key, messages)
 
     def _rewrite_session_locked(self, key: str, messages: list[dict]) -> None:
@@ -1333,6 +2170,11 @@ class ConversationLog:
             "last_consolidated": orig_meta.get("last_consolidated", 0),
             "compacted_at": datetime.now().isoformat(),
         }
+        # Carry the rotation generation forward so a compaction (which is NOT a
+        # rotation) doesn't reset it to 0 and spuriously trip the generation
+        # mismatch in mark_consolidated for an in-flight consolidation.
+        if orig_meta.get("rotation_generation"):
+            meta["rotation_generation"] = orig_meta["rotation_generation"]
         if orig_meta.get("memory_mode"):
             meta["memory_mode"] = orig_meta["memory_mode"]
         lines = [json.dumps(meta) + "\n"]
@@ -1343,7 +2185,19 @@ class ConversationLog:
         self._invalidate_cache(key)
 
     def _maybe_rotate(self, path: Path) -> None:
-        """Rotate session file if it exceeds size limit."""
+        """Rotate a session file that exceeds the byte limit.
+
+        Keeps the metadata line plus at most ``_SESSION_KEEP_LINES`` trailing
+        messages. When a file is oversized because of a handful of very large
+        messages — i.e. it has ``<= _SESSION_KEEP_LINES`` lines but still blows
+        the byte budget — it now drops the OLDEST messages until it fits instead
+        of returning early. Previously the ``len(lines) <= _SESSION_KEEP_LINES``
+        guard let such a file grow without bound (a session of a few multi-MB
+        messages would never rotate), defeating the size cap entirely.
+
+        Callers hold the per-session lock (this is invoked from ``append`` under
+        ``_locked``); it does not acquire the lock itself.
+        """
         try:
             if path.stat().st_size <= _SESSION_MAX_BYTES:
                 return
@@ -1353,27 +2207,52 @@ class ConversationLog:
         # append's mtime rather than re-stamping to "now" (see _restore_mtime).
         prev_mtime = _safe_mtime(path)
         lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
-        if len(lines) <= _SESSION_KEEP_LINES:
-            return
-        # Keep metadata line + last N message lines
         meta_line = lines[0] if lines and '"_type"' in lines[0] else ""
-        kept = lines[-_SESSION_KEEP_LINES:]
-        dropped_start = 1 if meta_line else 0
-        # Edge case: if len(lines) <= _SESSION_KEEP_LINES + dropped_start, the slice
-        # is empty and _archive_lines returns None (noop). The guard above already
-        # returns when len(lines) <= _SESSION_KEEP_LINES, so this only fires when
-        # there are genuinely more lines than we keep.
+        msg_lines = lines[1:] if meta_line else lines[:]
+        if not msg_lines:
+            return
+        meta_bytes = len(meta_line.encode("utf-8"))
+
+        def _kept_bytes(n: int) -> int:
+            return meta_bytes + sum(len(ln.encode("utf-8")) for ln in msg_lines[-n:])
+
+        # Start from the normal line cap, then shrink further while the retained
+        # tail still exceeds the byte budget — this is what lets a file with
+        # <= _SESSION_KEEP_LINES lines still rotate.
+        keep_count = min(_SESSION_KEEP_LINES, len(msg_lines))
+        while keep_count > 1 and _kept_bytes(keep_count) > _SESSION_MAX_BYTES:
+            keep_count -= 1
+        if keep_count >= len(msg_lines):
+            # Keeping every message would drop nothing — the file is oversized
+            # because of a single message larger than the whole budget, which we
+            # can't split. Leave it rather than pointlessly rewriting.
+            return
+
+        kept = msg_lines[-keep_count:]
+        dropped = msg_lines[:-keep_count]
         try:
-            _archive_lines(path.stem, lines[dropped_start:-_SESSION_KEEP_LINES], reason="rotate", base=self._dir)
+            _archive_lines(path.stem, dropped, reason="rotate", base=self._dir)
         except Exception:
             logger.warning("Failed to archive rotated lines for %s", path.stem, exc_info=True)
 
-        # Reset last_consolidated since offsets are now invalid
+        # Reset last_consolidated since offsets are now invalid, and bump the
+        # rotation generation counter. Resetting the offset to 0 only protects
+        # the case where the file shrank BELOW a stale consolidation snapshot;
+        # a rotation that retains >= the snapshot offset leaves ``offset <=
+        # msg_count`` true while every surviving index has shifted by the number
+        # of dropped lines, so a stale offset written by a concurrent
+        # consolidator would silently mark never-consolidated retained messages
+        # as done. The monotonically-increasing generation lets
+        # ``mark_consolidated`` detect ANY rotation between snapshot and write,
+        # regardless of retained count (absent field == 0 for legacy files).
         if meta_line:
             try:
                 meta = json.loads(meta_line)
                 meta["last_consolidated"] = 0
                 meta["rotated_at"] = datetime.now().isoformat()
+                meta["rotation_generation"] = (
+                    int(meta.get("rotation_generation", 0) or 0) + 1
+                )
                 meta_line = json.dumps(meta) + "\n"
             except json.JSONDecodeError:
                 pass
@@ -1384,7 +2263,12 @@ class ConversationLog:
         # Invalidate cache — offsets changed
         safe = path.stem
         self._invalidate_cache(safe)
-        logger.info("Rotated session file %s (%d → %d lines)", path.name, len(lines), len(kept))
+        logger.info(
+            "Rotated session file %s (%d → %d lines)",
+            path.name,
+            len(lines),
+            len(kept) + (1 if meta_line else 0),
+        )
 
 
 # ── Module-level helpers for auto skill eligibility ──
@@ -1624,7 +2508,23 @@ class HistoryConsolidator:
     async def _consolidate(self, key: str, include_history: bool = True) -> None:
         """Run LLM consolidation for a session."""
         try:
-            unconsolidated, total = self._log.get_unconsolidated(key)
+            # Atomically snapshot the unconsolidated tail, the total message
+            # count (the absolute offset handed to mark_consolidated below), and
+            # the rotation generation under ONE lock hold. Reading them as
+            # separate calls let an append trigger a rotation between them,
+            # pairing a pre-rotation offset with a post-rotation generation —
+            # mark_consolidated would then see matching generations and apply
+            # the stale offset (retained-count fallback misses it too), silently
+            # dropping messages from extraction. Offloaded to a worker thread:
+            # _consolidate runs on the gateway event loop and _locked/file IO is
+            # blocking (same rationale as the mark_consolidated offload below).
+            (
+                unconsolidated,
+                total,
+                generation_at_snapshot,
+            ) = await asyncio.to_thread(
+                self._log.snapshot_for_consolidation, key
+            )
             if not unconsolidated:
                 return
 
@@ -1836,7 +2736,12 @@ class HistoryConsolidator:
             # thread — otherwise a slow filesystem freezes the loop (heartbeats,
             # Slack, dashboard). Same rationale as the offloads above.
             if include_history:
-                await asyncio.to_thread(self._log.mark_consolidated, key, total)
+                await asyncio.to_thread(
+                    self._log.mark_consolidated,
+                    key,
+                    total,
+                    generation_at_snapshot,
+                )
 
         except Exception:
             logger.exception("Consolidation failed for %s", key)

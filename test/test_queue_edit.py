@@ -54,8 +54,8 @@ class TestQueueEditHelper:
         id1 = slot.queue_append("same")
         id2 = slot.queue_append("same")
         slot.queue_edit_by_id(id2, "changed")
-        assert slot._queue[0] == {"id": id1, "content": "same"}
-        assert slot._queue[1] == {"id": id2, "content": "changed"}
+        assert slot._queue[0] == {"id": id1, "content": "same", "kind": ""}
+        assert slot._queue[1] == {"id": id2, "content": "changed", "kind": ""}
 
 
 class TestEditQueuedMessagesHelper:
@@ -229,5 +229,5 @@ class TestQueueEditEndpoint:
                 )
                 assert resp.status == 200
 
-        assert slot._queue[0] == {"id": id1, "content": "same"}
-        assert slot._queue[1] == {"id": id2, "content": "edited"}
+        assert slot._queue[0] == {"id": id1, "content": "same", "kind": ""}
+        assert slot._queue[1] == {"id": id2, "content": "edited", "kind": ""}

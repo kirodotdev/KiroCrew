@@ -100,8 +100,10 @@ class TestConfigDirTriggersMigration:
         # then a DOWNGRADE that writes fresh state back to ~/.kirocrew, then an
         # upgrade. The marker must NOT blind-trust the (stale) new home while a
         # legacy dir with data exists — migration re-runs and reconciles. Here the
-        # legacy write-back diverges from the marked new home, so it must abort to
-        # the intact legacy (nothing lost) rather than silently ignore it.
+        # legacy write-back diverges from the marked new home; the legacy home holds
+        # the current data, so reconciliation makes LEGACY authoritative at the new
+        # home (completing the switch), preserving the stale marked home as a
+        # recoverable backup rather than leaving the user stranded on ~/.kirocrew.
         monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
         new_home = tmp_path / ".kiro" / "crew"
         new_home.mkdir(parents=True)
@@ -114,9 +116,15 @@ class TestConfigDirTriggersMigration:
 
         result = paths.config_dir()
 
-        # Divergent legacy write-back is NOT ignored: reconcile aborts to legacy.
-        assert result == legacy
-        assert (legacy / "config.json").read_text(encoding="utf-8") == '{"post_downgrade": true}'
+        # The current (post-downgrade) legacy data wins and is now authoritative at
+        # the new home; the switch completes and the stale home is backed up.
+        assert result == new_home
+        assert not legacy.exists()  # legacy promoted into the new home
+        assert (new_home / "config.json").read_text(encoding="utf-8") == '{"post_downgrade": true}'
+        assert (new_home / paths.MIGRATION_MARKER_NAME).exists()  # marked complete
+        backups = list((tmp_path / ".kiro" / "crew.pre-migration").glob("*"))
+        assert len(backups) == 1  # stale marked home preserved, recoverable
+        assert (backups[0] / "config.json").read_text(encoding="utf-8") == '{"old": true}'
 
     def test_partial_new_home_all_gaps_migrates_and_completes(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -139,14 +147,15 @@ class TestConfigDirTriggersMigration:
         assert (new_home / paths.MIGRATION_MARKER_NAME).exists()
         assert not legacy.exists()
 
-    def test_partial_new_home_with_diverging_file_aborts_and_retains_legacy(
+    def test_partial_new_home_with_diverging_file_reconciles_legacy_wins(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        # HIGH regression (GPT 5.6 round 3): a pre-existing ~/.kiro/crew file that
-        # DIFFERS from the legacy copy means the no-overwrite merge would keep the
-        # (possibly stale) destination while archiving the current legacy — making
-        # stale state authoritative. The migration must ABORT: retain legacy, no
-        # archive, no completion marker, and use the intact legacy home this run.
+        # A pre-existing ~/.kiro/crew file that DIFFERS from the legacy copy means
+        # the no-overwrite merge would keep the (possibly stale) destination. The
+        # legacy home holds the current data, so reconciliation makes LEGACY
+        # authoritative at the new home (completing the switch to ~/.kiro/crew) and
+        # preserves the divergent destination as a recoverable backup — rather than
+        # leaving the user stranded on ~/.kirocrew forever.
         monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
         legacy = _seed_legacy(tmp_path)  # legacy config.json == "{}"
         new_home = tmp_path / ".kiro" / "crew"
@@ -155,11 +164,173 @@ class TestConfigDirTriggersMigration:
 
         result = paths.config_dir()
 
-        assert result == legacy  # fell back to the intact legacy home
+        assert result == new_home  # switch completes on the new home
+        assert not legacy.exists()  # legacy promoted into the new home
+        assert (new_home / "config.json").read_text(
+            encoding="utf-8"
+        ) == "{}"  # legacy authoritative
+        assert (new_home / paths.MIGRATION_MARKER_NAME).exists()  # marked complete
+        assert not (
+            tmp_path / ".kirocrew.archived"
+        ).exists()  # no separate archive (backup instead)
+        backups = list((tmp_path / ".kiro" / "crew.pre-migration").glob("*"))
+        assert len(backups) == 1  # divergent home preserved, recoverable
+        assert (backups[0] / "config.json").read_text(encoding="utf-8") == '{"stale": true}'
+
+    def test_divergent_new_home_switch_preserves_models_and_hardens_backup(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # Real-world scenario (the reason this fix exists): a populated, divergent
+        # ~/.kiro/crew (e.g. left by a sibling Kiro tool or a KIROCREW_HOME
+        # experiment) previously left the user stranded on ~/.kirocrew forever.
+        # Now the switch completes with legacy authoritative: regenerable bulk dirs
+        # ride along (no re-download), and the backup is owner-locked (it may hold
+        # credential leaves at a path the security keystone does not gate).
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        legacy = _seed_legacy(tmp_path)
+        (legacy / "config.json").write_text('{"current": true}', encoding="utf-8")
+        (legacy / "models").mkdir()
+        (legacy / "models" / "embed.gguf").write_text("weights", encoding="utf-8")
+        new_home = tmp_path / ".kiro" / "crew"
+        new_home.mkdir(parents=True)
+        (new_home / "config.json").write_text('{"stale": true}', encoding="utf-8")  # diverges
+        monkeypatch.setattr(home_migration, "_gateway_is_live", lambda home: False)
+
+        result = paths.config_dir()
+
+        assert result == new_home
+        assert not legacy.exists()
+        assert (new_home / "config.json").read_text(encoding="utf-8") == '{"current": true}'
+        assert (new_home / "models" / "embed.gguf").read_text(encoding="utf-8") == "weights"
+        assert (new_home / paths.MIGRATION_MARKER_NAME).exists()
+        backups = list((tmp_path / ".kiro" / "crew.pre-migration").glob("*"))
+        assert len(backups) == 1
+        assert (backups[0] / "config.json").read_text(encoding="utf-8") == '{"stale": true}'
+        # Backup is locked down — not readable/writable by group or other.
+        assert backups[0].stat().st_mode & 0o077 == 0
+
+    def test_divergent_new_home_gateway_live_retains_legacy(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # Safety: if a gateway is actively live on the pre-existing new home (e.g.
+        # one launched with KIROCREW_HOME=~/.kiro/crew), reconciliation must NOT
+        # yank it aside — retain legacy and retry on the next start.
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        legacy = _seed_legacy(tmp_path)
+        new_home = tmp_path / ".kiro" / "crew"
+        new_home.mkdir(parents=True)
+        (new_home / "config.json").write_text('{"stale": true}', encoding="utf-8")  # diverges
+        # A gateway holds the NEW home's lock (but not legacy's).
+        monkeypatch.setattr(home_migration, "_gateway_is_live", lambda home: home == new_home)
+
+        result = paths.config_dir()
+
+        assert result == legacy  # not migrated — new home left untouched
         assert legacy.exists()
-        assert (legacy / "config.json").read_text(encoding="utf-8") == "{}"  # legacy intact
-        assert not (new_home / paths.MIGRATION_MARKER_NAME).exists()  # not marked complete
-        assert not (tmp_path / ".kirocrew.archived").exists()  # legacy NOT archived
+        assert (new_home / "config.json").read_text(
+            encoding="utf-8"
+        ) == '{"stale": true}'  # untouched
+        assert not (new_home / paths.MIGRATION_MARKER_NAME).exists()
+        assert not list(
+            (tmp_path / ".kiro" / "crew.pre-migration").glob("*")
+        )  # nothing moved aside
+
+    def test_divergent_new_home_retarget_is_best_effort_and_completes(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The intra-home symlink retarget runs AFTER the promote (on the now-live
+        # home, not a rollback source) and is best-effort — exactly like the copy
+        # path's staging retarget. A reported un-rewritable link does NOT abort the
+        # switch: the data is fully present, so migration completes rather than
+        # stranding the user; only a rare convenience link would dangle. The failure
+        # list is NOT silently discarded — it is surfaced prominently on stderr so
+        # the user can repair the dangling link.
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        legacy = _seed_legacy(tmp_path)
+        new_home = tmp_path / ".kiro" / "crew"
+        new_home.mkdir(parents=True)
+        (new_home / "config.json").write_text('{"stale": true}', encoding="utf-8")  # diverges
+        monkeypatch.setattr(home_migration, "_gateway_is_live", lambda home: False)
+        # Simulate the retarget reporting a link it could not rewrite.
+        monkeypatch.setattr(
+            home_migration,
+            "_retarget_intra_home_symlinks",
+            lambda *a, **k: ["ws/current"],
+        )
+
+        result = paths.config_dir()
+
+        assert result == new_home  # switch still completes (best-effort)
+        assert not legacy.exists()
+        assert (new_home / "config.json").read_text(
+            encoding="utf-8"
+        ) == "{}"  # legacy authoritative
+        assert (new_home / paths.MIGRATION_MARKER_NAME).exists()
+        assert len(list((tmp_path / ".kiro" / "crew.pre-migration").glob("*"))) == 1
+        # The un-rewritable link is surfaced, not silently swallowed.
+        err = capsys.readouterr().err
+        assert "could not be re-pointed" in err
+        assert "ws/current" in err
+
+    def test_divergent_new_home_gateway_appears_after_probe_retains_legacy(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # On the no-lock swap path (Windows, or a POSIX lock we could not open) a
+        # gateway can start on the new home AFTER the initial _gateway_is_live probe.
+        # A pre-promote re-check must catch it and retain legacy rather than vacating
+        # a live home. Force the no-lock path and make liveness flip to True on the
+        # SECOND probe (the pre-promote re-check).
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        legacy = _seed_legacy(tmp_path)
+        new_home = tmp_path / ".kiro" / "crew"
+        new_home.mkdir(parents=True)
+        (new_home / "config.json").write_text('{"stale": true}', encoding="utf-8")  # diverges
+        monkeypatch.setattr(home_migration.platform_compat, "IS_POSIX", False)  # no lock held
+        calls = {"n": 0}
+
+        def _liveness(home: Path) -> bool:
+            # False on the first (entry) probe so we proceed; True on the re-check.
+            if home == new_home:
+                calls["n"] += 1
+                return calls["n"] >= 2
+            return False
+
+        monkeypatch.setattr(home_migration, "_gateway_is_live", _liveness)
+
+        result = paths.config_dir()
+
+        assert result == legacy  # retained — did not vacate the now-live new home
+        assert legacy.exists()
+        assert (new_home / "config.json").read_text(encoding="utf-8") == '{"stale": true}'
+        # No backup minted, no completion marker written.
+        assert not (tmp_path / ".kiro" / "crew.pre-migration").exists()
+        assert not (new_home / paths.MIGRATION_MARKER_NAME).exists()
+
+    def test_crash_mid_swap_recovers_via_legacy_no_data_loss(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # The restore-through-legacy ordering guarantees a crash mid-swap leaves the
+        # data at a CANONICAL path. Simulate the on-disk state right after the
+        # "vacate new_home" step crashed: legacy present at ~/.kirocrew, new_home
+        # absent, a stray backup left behind. The next start must recover via a
+        # NORMAL legacy->new_home migration — never a fresh empty home, never lost
+        # data.
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        legacy = _seed_legacy(tmp_path)
+        stray_backup = tmp_path / ".kiro" / "crew.pre-migration" / "123"
+        stray_backup.mkdir(parents=True)
+        (stray_backup / "config.json").write_text('{"stale": true}', encoding="utf-8")
+        monkeypatch.setattr(home_migration, "_gateway_is_live", lambda home: False)
+
+        result = paths.config_dir()
+
+        new_home = tmp_path / ".kiro" / "crew"
+        assert result == new_home  # recovered via normal migration
+        assert (new_home / ".env").exists()  # legacy data safely migrated, not lost
+        assert (new_home / paths.MIGRATION_MARKER_NAME).exists()
+        assert not legacy.exists()  # archived normally
+        # The stray backup is an untouched, harmless orphan.
+        assert (stray_backup / "config.json").read_text(encoding="utf-8") == '{"stale": true}'
 
     def test_idempotent_second_call_no_reprocess(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -350,9 +521,10 @@ class TestMigrateHomeDirect:
         # HIGH regression (GPT 5.6 round 4): a crafted ~/.kiro/crew/sessions
         # symlink pointing OUTSIDE the home must not make the merge move legacy
         # session files through it to the external target. The merge refuses to
-        # follow the symlink, the divergence guard then flags the un-migrated
-        # legacy files, and migration ABORTS (legacy retained + not archived), so
-        # nothing is exfiltrated and no data is lost.
+        # follow the symlink, the divergence guard then flags the un-migrated legacy
+        # files, and reconciliation makes LEGACY authoritative at the new home
+        # (completing the switch) while the malicious symlink is sidelined into the
+        # backup — so nothing is exfiltrated and no data is lost.
         monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
         legacy = _seed_legacy(tmp_path)  # has sessions/a.jsonl
         leak = tmp_path / "leak"
@@ -364,11 +536,15 @@ class TestMigrateHomeDirect:
 
         result = paths.config_dir()
 
-        assert result == legacy  # aborted → intact legacy home
-        assert (legacy / "sessions" / "a.jsonl").exists()  # NOT moved out
+        assert result == new_home  # switch completes, legacy promoted
+        assert not legacy.exists()
+        assert (new_home / "sessions" / "a.jsonl").exists()  # legacy sessions promoted intact
         assert not (leak / "a.jsonl").exists()  # nothing exfiltrated through the link
-        assert not (new_home / paths.MIGRATION_MARKER_NAME).exists()  # not marked
-        assert not (tmp_path / ".kirocrew.archived").exists()  # legacy not archived
+        assert (new_home / paths.MIGRATION_MARKER_NAME).exists()  # marked complete
+        # The malicious symlink was moved verbatim into the backup, not followed.
+        backups = list((tmp_path / ".kiro" / "crew.pre-migration").glob("*"))
+        assert len(backups) == 1
+        assert (backups[0] / "sessions").is_symlink()
 
     def test_symlinked_source_dir_is_not_followed_into_external_target(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -395,10 +571,18 @@ class TestMigrateHomeDirect:
 
         paths.config_dir()
 
-        # The external target was NOT emptied — its real file is untouched.
+        # The external target was NOT emptied — its real file is untouched (the
+        # merge never followed the source symlink; the promote renames the link
+        # verbatim and only retargets links that point INTO the old home).
         assert (external / "important.txt").read_text(encoding="utf-8") == "do not move me"
-        # The pre-existing real dest dir is preserved (no overwrite).
-        assert (new_home / "linked" / "mine.txt").read_text(encoding="utf-8") == "kept"
+        # Reconciliation promoted legacy: new_home/linked is now the legacy symlink
+        # to the external dir; the pre-existing real dest dir was preserved in the
+        # backup (no data lost, nothing overwritten).
+        new_home = tmp_path / ".kiro" / "crew"
+        assert (new_home / "linked").is_symlink()
+        backups = list((tmp_path / ".kiro" / "crew.pre-migration").glob("*"))
+        assert len(backups) == 1
+        assert (backups[0] / "linked" / "mine.txt").read_text(encoding="utf-8") == "kept"
 
     def test_symlinked_source_relocated_verbatim_into_gap(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -470,14 +654,15 @@ class TestMigrateHomeDirect:
         assert not legacy.exists()  # redundant copy removed
         assert (new_home / ".env").exists()
 
-    def test_remigration_retains_legacy_when_updated_file_would_be_lost(
+    def test_remigration_reconciles_legacy_wins_updated_file_preserved(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         # HIGH regression (GPT 5.6 round 2): re-migration where new_home has a
-        # STALE file, legacy has the UPDATED copy, and a prior archive exists.
-        # The no-overwrite merge keeps the stale dest file, so deleting legacy
-        # would lose the only current copy. The engine must RETAIN legacy (not
-        # rmtree, not mark complete) and fall back to it.
+        # STALE file, legacy has the UPDATED copy, and a prior archive exists. The
+        # no-overwrite merge keeps the stale dest file, so treating the dest as
+        # authoritative would lose the only current copy. Reconciliation makes
+        # LEGACY authoritative at the new home (the updated file survives and the
+        # switch completes), preserving the stale dest as a recoverable backup.
         monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
         legacy = _seed_legacy(tmp_path)
         (legacy / "config.json").write_text('{"updated": true}', encoding="utf-8")
@@ -491,11 +676,14 @@ class TestMigrateHomeDirect:
             legacy=legacy, new_home=new_home, marker=new_home / paths.MIGRATION_MARKER_NAME
         )
 
-        # Legacy retained (the updated config.json survives); migration not marked.
-        assert result == legacy
-        assert legacy.exists()
-        assert (legacy / "config.json").read_text(encoding="utf-8") == '{"updated": true}'
-        assert not (new_home / paths.MIGRATION_MARKER_NAME).exists()
+        # The updated config.json survives and is authoritative; switch completes.
+        assert result == new_home
+        assert not legacy.exists()  # legacy promoted into the new home
+        assert (new_home / "config.json").read_text(encoding="utf-8") == '{"updated": true}'
+        assert (new_home / paths.MIGRATION_MARKER_NAME).exists()  # marked complete
+        backups = list((tmp_path / ".kiro" / "crew.pre-migration").glob("*"))
+        assert len(backups) == 1  # stale dest preserved, recoverable
+        assert (backups[0] / "config.json").read_text(encoding="utf-8") == '{"stale": true}'
 
     def test_legacy_quiesced_before_compare_closes_write_after_compare_race(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -721,15 +909,16 @@ class TestMigrateHomeDirect:
 
         assert os.readlink(result / "extlink") == str(external)  # unchanged
 
-    def test_legacy_symlink_shadowed_at_dest_retains_legacy_not_deleted(
+    def test_legacy_symlink_shadowed_at_dest_reconciles_symlink_preserved(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         # HIGH regression (GPT 5.6 round 6): a prior archive exists (re-migration
         # rmtree branch), the legacy home has a SYMLINK whose name ALSO exists in
         # new_home. The no-overwrite merge drops the staged legacy link (dest
         # exists); if the divergence guard skipped symlinks it would declare the
-        # homes identical and rmtree the legacy home — permanently losing the link.
-        # The symlink-aware divergence guard must flag it and RETAIN legacy.
+        # homes identical and destroy the link. The symlink-aware guard flags it,
+        # and reconciliation makes LEGACY authoritative at the new home — the link
+        # survives (promoted) while the shadowing dest dir is preserved in a backup.
         monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
         legacy = _seed_legacy(tmp_path)
         external = tmp_path / "ext"
@@ -746,22 +935,25 @@ class TestMigrateHomeDirect:
             legacy=legacy, new_home=new_home, marker=new_home / paths.MIGRATION_MARKER_NAME
         )
 
-        # Legacy retained (the symlink survives); migration not marked complete.
-        assert result == legacy
-        assert legacy.exists()
-        assert (legacy / "mylink").is_symlink()
-        assert not (new_home / paths.MIGRATION_MARKER_NAME).exists()
+        # The legacy symlink survives (promoted to the new home); switch completes.
+        assert result == new_home
+        assert not legacy.exists()
+        assert (new_home / "mylink").is_symlink()
+        assert (new_home / paths.MIGRATION_MARKER_NAME).exists()  # marked complete
+        backups = list((tmp_path / ".kiro" / "crew.pre-migration").glob("*"))
+        assert len(backups) == 1
+        assert (backups[0] / "mylink").is_dir()  # shadowing dir preserved, recoverable
 
-    def test_stale_will_dangle_dest_symlink_flagged_diverged_retains_legacy(
+    def test_stale_will_dangle_dest_symlink_reconciles_and_retargets(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         # Adversarial-review finding: new_home pre-exists with a STALE absolute
         # symlink still pointing INTO legacy (e.g. a user `cp -a ~/.kirocrew
         # ~/.kiro/crew` before upgrading). The no-overwrite merge keeps that stale
-        # dest link (refuses to merge onto a symlink) and discards the retargeted
-        # staged link. The divergence guard must NOT accept the raw into-legacy
-        # target (it will dangle once legacy is archived) — it must flag it and
-        # RETAIN legacy, so the working original is never lost.
+        # dest link and discards the retargeted staged link, so the divergence guard
+        # flags it. Reconciliation makes LEGACY authoritative at the new home AND
+        # retargets its absolute intra-home links, so the promoted link resolves
+        # within the new home instead of dangling once the old path is gone.
         monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
         legacy = _seed_legacy(tmp_path)
         (legacy / "ws").mkdir()
@@ -778,11 +970,14 @@ class TestMigrateHomeDirect:
             legacy=legacy, new_home=new_home, marker=new_home / paths.MIGRATION_MARKER_NAME
         )
 
-        # Diverged → retain legacy (original preserved), do NOT mark complete.
-        assert result == legacy
-        assert legacy.exists()
-        assert (legacy / "ws" / "x").is_dir()
-        assert not (new_home / paths.MIGRATION_MARKER_NAME).exists()
+        # Switch completes; the promoted link is retargeted into the new home and
+        # resolves to a real dir (not dangling into the gone legacy path).
+        assert result == new_home
+        assert not legacy.exists()
+        assert (new_home / "ws" / "x").is_dir()
+        assert (new_home / "ws" / "current").is_symlink()
+        assert os.readlink(new_home / "ws" / "current") == str(new_home / "ws" / "x")
+        assert (new_home / paths.MIGRATION_MARKER_NAME).exists()  # marked complete
 
     def test_legacy_symlink_identical_at_dest_allows_archive(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -805,6 +1000,36 @@ class TestMigrateHomeDirect:
         assert result == new_home
         assert (new_home / paths.MIGRATION_MARKER_NAME).exists()
         assert not legacy.exists()  # redundant legacy removed (prior archive existed)
+
+    def test_retarget_symlink_is_atomic_preserves_original_on_failure(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # The intra-home retarget must be ATOMIC: if creating the replacement link
+        # fails (e.g. Windows without symlink privilege), the ORIGINAL link must be
+        # preserved (never unlinked-then-lost) and the failure reported. We force the
+        # atomic os.replace to fail and assert the original link survives untouched.
+        staging = tmp_path / "staging"
+        staging.mkdir()
+        legacy = tmp_path / ".kirocrew"
+        new_home = tmp_path / ".kiro" / "crew"
+        (staging / "current").symlink_to(str(legacy / "x"))  # absolute intra-legacy → retargeted
+
+        real_replace = home_migration.os.replace
+
+        def failing_replace(src: object, dst: object) -> None:
+            raise OSError("simulated symlink-replace failure")
+
+        monkeypatch.setattr(home_migration.os, "replace", failing_replace)
+        failed = home_migration._retarget_intra_home_symlinks(
+            staging, legacy=legacy, new_home=new_home
+        )
+        monkeypatch.setattr(home_migration.os, "replace", real_replace)
+
+        assert failed == ["current"]  # reported
+        assert (staging / "current").is_symlink()  # original preserved (not destroyed)
+        assert os.readlink(staging / "current") == str(legacy / "x")  # unchanged target
+        # No orphaned temp retarget link left behind.
+        assert not list(staging.glob("*.retarget.*"))
 
     def test_stale_fifo_does_not_abort_migration(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path

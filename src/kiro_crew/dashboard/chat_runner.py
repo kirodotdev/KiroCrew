@@ -41,7 +41,7 @@ from kiro_crew.context_management import (
     strip_plan_markers,
     validate_plan_format,
 )
-from kiro_crew.dashboard.chat_persistence import _build_history_prefix, _save_slot_to_history
+from kiro_crew.dashboard.chat_persistence import _build_history_prefix, save_slot_off_loop
 from kiro_crew.dashboard.chat_title import (
     _extract_and_redact_plan_metadata,
     _maybe_auto_title,
@@ -93,6 +93,7 @@ from kiro_crew.dashboard.state import (
     TOOL_STALL_RECOVERY_PREFIX,
     DashboardState,
     _ChatSlot,
+    _mark_permission_resolved,
     build_refusal_recovery_prompt,
     build_stale_recovery_prompt,
     build_tool_stall_recovery_prompt,
@@ -153,19 +154,28 @@ from kiro_crew.validation import ValidationError, infer_use_case, validate_ask_u
 
 logger = logging.getLogger(__name__)
 
-# Re-queued after a post-token transient backend error. This CONTINUE
-# instruction (NOT the original prompt) is dispatched onto the SAME live ACP
-# session — which still holds the interrupted turn's context (original prompt,
-# partial assistant text, and any completed tool results). It tells the model to
-# resume from where it stopped rather than restart, so completed work and tool
-# side effects are never redone.
-_POSTTOKEN_RECOVER_MSG = (
-    "The previous response was interrupted partway through by a transient "
-    "backend error. The work already done above (including any completed tool "
-    "results) is preserved in the conversation. Continue from where it stopped "
-    "to finish the original request — do NOT restart from scratch and do NOT "
-    "re-run steps or tools that already completed successfully."
+# The synthetic recovery message constants live in chat_utils (single source
+# of truth shared with the queue/merge predicates — is_system_injection must
+# classify them identically to the turn logic here). Re-exported under their
+# historical names so existing imports keep working.
+from kiro_crew.dashboard.chat_utils import (  # noqa: E402
+    _EMPTY_AUTO_CONTINUE_MSG,
+    _POSTTOKEN_RECOVER_MSG,
+    _SYNTHETIC_RECOVERY_MSGS,
+    SYNTHETIC_RECOVERY_KIND,
+    is_synthetic_recovery_item,
 )
+
+
+def _empty_auto_continue_enabled() -> bool:
+    """Config gate for the empty-response auto-continue rung (default ON —
+    the recovery is bounded to one nudge per user message and always
+    transcript-visible). Fail-open to the default: a config-load hiccup must
+    not disable self-healing mid-incident."""
+    try:
+        return bool(KiroCrewConfig.load().session.empty_response_auto_continue)
+    except Exception:  # pragma: no cover — config load must not break recovery
+        return True
 
 
 def drain_pending_context(slot: "_ChatSlot") -> str:
@@ -1867,7 +1877,7 @@ async def _run_chat(
     # refresh the allowance and inherits the True flag set when recovery was
     # enqueued (finding #3). Suppressed/nested recoveries never set the flag, so
     # this reset is a no-op for them and a later real turn can still recover.
-    if message != _POSTTOKEN_RECOVER_MSG:
+    if message not in _SYNTHETIC_RECOVERY_MSGS:
         slot._posttoken_retry_used = False
     _pending_tools: dict[str, str] = {}  # tool_call_id -> tool_name
     # session_id -> {started, done, agent, task} for native kiro-cli subagents,
@@ -2318,7 +2328,7 @@ async def _run_chat(
             # Use resolved kiro agent name (e.g. "kirocrew"), not the slot
             # name (e.g. "default"), so build_message's is_custom check
             # correctly identifies kirocrew sessions and enables skills.
-            # Lumon persona injection — prepend to message so build_message
+            # Theme persona injection — prepend to message so build_message
             # accounts for it in context budget calculations.
             # Folder breadcrumb: inject once per session, and again after a
             # folder move (no session reset — it's just a label refresh).
@@ -2326,7 +2336,43 @@ async def _run_chat(
             if is_new or slot._folder_changed:
                 folder_path = state.folder_breadcrumb(slot.folder_id) or None
                 slot._folder_changed = False
-            message = _maybe_inject_persona(message, getattr(slot, "color_theme", ""), is_new)
+            _color_theme = getattr(slot, "color_theme", "")
+            # Governance gate (arbiter item 1): installed-pack persona injection
+            # is a governable capability. A policy can force-disable it wholesale
+            # (default-allow standalone). Only consult when a persona could
+            # actually be injected (new turn + installed "custom-" theme) to
+            # avoid a governance call on every ordinary turn. fail_closed=True:
+            # unlike the neighboring capability sites (spawn/messaging/...),
+            # which have always-on chokepoint checks behind governance, this
+            # gate is the ONLY enforcement of the enterprise persona
+            # off-switch — a degraded permissive Decision would silently
+            # bypass a policy that disables capabilities.theme_persona.
+            # A governance-evaluation error therefore denies (persona skipped
+            # for that turn; the chat itself is unaffected).
+            _persona_permitted = True
+            if is_new and isinstance(_color_theme, str) and _color_theme.startswith("custom-"):
+                from kiro_crew.platform.governance_profiles import governance_permits
+
+                _decision = governance_permits(
+                    "capabilities.theme_persona",
+                    "",
+                    session_key=session_key,
+                    log_warning=False,
+                    fail_closed=True,
+                )
+                _persona_permitted = getattr(_decision, "permitted", False)
+                if not _persona_permitted:
+                    logger.info(
+                        "theme persona injection skipped: capabilities."
+                        "theme_persona denied by governance policy"
+                    )
+            if _persona_permitted:
+                message = _maybe_inject_persona(
+                    message,
+                    _color_theme,
+                    is_new,
+                    theme_consent_sha=getattr(slot, "theme_consent_sha", None),
+                )
             # Scale the injected-context budget to the active model's context
             # window so a 200K model gets one-fifth the memory/lessons/history
             # chars a 1M model gets (same share of the window). Resolve from the
@@ -3424,12 +3470,45 @@ async def _run_chat(
                         )
                         if not fut.done():
                             fut.set_result("rejected")
+                # Pre-seeded so the `finally` backstop below is total over EVERY
+                # exit from the await — including CancelledError, which slot
+                # deletion / cleanup endpoints raise by cancelling slot.task.
+                # Assigning only inside try/except would leave `outcome` unbound
+                # on that path: the finally would raise UnboundLocalError,
+                # replacing the CancelledError with a spurious exception and
+                # skipping both the message marking and the Slack cleanup —
+                # reintroducing this PR's own orphan-card bug on the cancel path.
+                # "rejected" is the correct reading: a cancelled turn never
+                # obtained consent.
+                outcome = "rejected"
                 try:
                     outcome = await asyncio.wait_for(fut, timeout=7200.0)
                 except asyncio.TimeoutError:
                     outcome = "rejected"
                 finally:
                     slot._approval_futures.pop(str(event.request_id), None)
+                    # Backstop: the future is now gone, so the permission
+                    # message MUST NOT be left reading pending — the UI would
+                    # keep rendering an approval bar whose every button answers
+                    # 404, and a history reload would resurrect it. The primary
+                    # resolvers (HTTP slot-approve, Slack click) already mark it
+                    # and record richer decisions like "trust"/"yolo", so only
+                    # write when still pending. This is the sole marker for the
+                    # paths that resolve the future in-process: the 2h timeout
+                    # above and the Slack-delivery auto-reject branches.
+                    _approved = outcome in ("approved", "approved_trust_reads")
+                    if _mark_permission_resolved(
+                        slot.messages,
+                        str(event.request_id),
+                        "approved" if _approved else "rejected",
+                        only_if_pending=True,
+                    ):
+                        slot._dirty = True
+                        state.broadcast_ws(
+                            "approval_resolved",
+                            {"id": str(event.request_id), "approved": _approved},
+                        )
+                        state.push_slots_update()
                     # Clean up the Slack prompt: remove the registry entry and
                     # delete the buttons message now the decision is in.
                     if _slack_approval_ts is not None:
@@ -3990,6 +4069,29 @@ async def _run_chat(
                 slot._empty_response_retries += 1
                 slot.queue_insert(0, message)
                 _retrying_empty = True
+            elif (
+                _prompt_depth == 0
+                and slot._empty_response_retries < 2
+                and not _should_suppress_requeue(slot)
+                and _empty_auto_continue_enabled()
+            ):
+                # Second consecutive empty: the silent SAME-message re-queue
+                # also produced nothing. Re-sending the identical prompt tends
+                # to reproduce the identical empty generation, but a DIFFERENT
+                # message reliably recovers (observed repeatedly in the field —
+                # the user typing "continue" broke the pattern every time). So
+                # auto-send ONE synthetic continue nudge on the same live
+                # session, with a transcript-visible notice so the recovery is
+                # never invisible. Third empty falls through to the give-up
+                # notice below — bounded, no loop.
+                slot._empty_response_retries += 1
+                slot.append(
+                    "notice",
+                    "ℹ️ The model returned nothing twice — auto-continuing once.",
+                    "msg msg-info",
+                )
+                slot.queue_insert(0, _EMPTY_AUTO_CONTINUE_MSG, kind=SYNTHETIC_RECOVERY_KIND)
+                _retrying_empty = True
             else:
                 # Recoverable, usually-transient: the runner already silently
                 # self-retried once (first empty = silent re-queue). Surface a
@@ -4000,7 +4102,8 @@ async def _run_chat(
                 # _on_message; no explicit broadcast_ws.
                 _empty_msg = (
                     "ℹ️ The model returned nothing this turn (it was retried "
-                    "automatically). Just send your message again to continue."
+                    "and auto-continued automatically). Just send your message "
+                    "again to continue."
                 )
                 slot.append("notice", _empty_msg, "msg msg-info")
         # On an empty-response re-queue the turn produced nothing and will
@@ -4017,7 +4120,7 @@ async def _run_chat(
             # Attach accumulated file changes to last assistant message before persist
             _flush_file_changes(slot)
             # Save to history and trigger memory consolidation
-            _save_slot_to_history(state, slot)
+            await save_slot_off_loop(state, slot)
             # Reset ALL retry budgets once the cycle completes (success OR the
             # terminal second-empty error) so each new user turn gets fresh budgets.
             # Guarded by _retrying_empty so the empty re-queue iteration preserves
@@ -4376,7 +4479,7 @@ async def _run_chat(
                 # allowance HERE — only a real enqueue burns it (finding #3).
                 await asyncio.sleep(_delay)
                 slot._posttoken_retry_used = True
-                slot.queue_insert(0, _POSTTOKEN_RECOVER_MSG)
+                slot.queue_insert(0, _POSTTOKEN_RECOVER_MSG, kind=SYNTHETIC_RECOVERY_KIND)
             # else: Stop active (_should_suppress_requeue) or nested turn
             # (_prompt_depth != 0) — do NOT requeue; partial + notice already
             # shown, so the streamed answer survives in the transcript. The
@@ -4533,6 +4636,18 @@ async def _run_chat(
                 next_msg.startswith(REFUSAL_RECOVERY_PREFIX)
                 or next_msg.startswith(STALE_RECOVERY_PREFIX)
                 or next_msg.startswith(TOOL_STALL_RECOVERY_PREFIX)
+                # Runner-injected synthetic recovery instructions (the
+                # post-transient CONTINUE and the empty-response auto-continue
+                # nudge) are orchestration, not user speech: they must drain
+                # with the "inject" transcript role — never persisted as a
+                # user-authored message — and must not cancel a pending
+                # synthesis. Classified STRUCTURALLY from the queue entry's
+                # kind tag (is_system_injection_item breaks merges on the same
+                # tag, so a tagged entry always drains alone and `consumed`
+                # carries exactly it); content equality is deliberately not
+                # used — a user pasting the recovery text verbatim must
+                # classify as a plain user message.
+                or any(is_synthetic_recovery_item(i) for i in consumed)
             )
             # User took over: a plain user message draining cancels any armed
             # post-fan-out synthesis (the user has redirected the conversation).

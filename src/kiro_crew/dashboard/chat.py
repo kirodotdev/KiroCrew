@@ -140,7 +140,6 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     _broadcast_auto_tool,
     _broadcast_compaction_result,
     _build_stream_chunk,
-    _cached_persona,
     _dequeue_next_message,
     _emit_agent_assignment,
     _extract_bash_command,

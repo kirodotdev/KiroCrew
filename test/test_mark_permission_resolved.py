@@ -75,3 +75,63 @@ class TestMarkPermissionResolved:
         _mark_permission_resolved(msgs, "abc", "approved")
         assert "resolved" not in json.loads(msgs[0]["cls"])
         assert json.loads(msgs[2]["cls"])["resolved"] == "approved"
+
+    def test_non_dict_cls_skipped(self) -> None:
+        """Valid JSON that isn't an object cannot carry "resolved" — skip, don't raise."""
+        msgs = [
+            {"role": "permission", "content": "shell", "cls": "[]", "ts": "1"},
+            {"role": "permission", "content": "shell", "cls": "123", "ts": "2"},
+            {"role": "permission", "content": "read", "cls": json.dumps({"request_id": "abc"}), "ts": "3"},
+        ]
+        assert _mark_permission_resolved(msgs, "abc", "approved") is True
+        assert json.loads(msgs[2]["cls"])["resolved"] == "approved"
+
+    def test_returns_whether_it_wrote(self) -> None:
+        msgs = [
+            {"role": "permission", "content": "shell", "cls": json.dumps({"request_id": "abc"}), "ts": "1"},
+        ]
+        assert _mark_permission_resolved(msgs, "abc", "approved") is True
+        assert _mark_permission_resolved(msgs, "nope", "approved") is False
+
+
+class TestMarkPermissionResolvedOnlyIfPending:
+    """The backstop guard: never clobber a decision the primary resolver wrote."""
+
+    def test_skips_already_resolved(self) -> None:
+        msgs = [
+            {
+                "role": "permission",
+                "content": "shell",
+                "cls": json.dumps({"request_id": "abc", "resolved": "trust"}),
+                "ts": "1",
+            },
+        ]
+        assert (
+            _mark_permission_resolved(msgs, "abc", "approved", only_if_pending=True)
+            is False
+        )
+        # "trust" renders as "Trusted — auto-approving future calls"; flattening it
+        # to a bare "approved" would silently downgrade the UI's account of events.
+        assert json.loads(msgs[0]["cls"])["resolved"] == "trust"
+
+    def test_writes_when_still_pending(self) -> None:
+        msgs = [
+            {"role": "permission", "content": "shell", "cls": json.dumps({"request_id": "abc"}), "ts": "1"},
+        ]
+        assert (
+            _mark_permission_resolved(msgs, "abc", "rejected", only_if_pending=True)
+            is True
+        )
+        assert json.loads(msgs[0]["cls"])["resolved"] == "rejected"
+
+    def test_overwrites_when_guard_off(self) -> None:
+        msgs = [
+            {
+                "role": "permission",
+                "content": "shell",
+                "cls": json.dumps({"request_id": "abc", "resolved": "stale"}),
+                "ts": "1",
+            },
+        ]
+        assert _mark_permission_resolved(msgs, "abc", "approved") is True
+        assert json.loads(msgs[0]["cls"])["resolved"] == "approved"

@@ -3,14 +3,14 @@
 record_template.py — copy this into your workdir and fill in the SCENES.
 
   cp <app-skills-dir>/feature-demo-recording/references/record_template.py \
-     ~/.kirocrew/workspace/uploads/<feature>-video/record.py
+     ~/.kiro/crew/workspace/uploads/<feature>-video/record.py
 
 Then run (after setup.sh + a fresh token in .tokenurl):
 
-  cd ~/.kirocrew/workspace/uploads/<feature>-video
+  cd ~/.kiro/crew/workspace/uploads/<feature>-video
   # RECORD -> page@*.webm + events.json
   KC_DEMO_REFS="<app-skills-dir>/feature-demo-recording/references" \
-  KC_URL="$(cat .tokenurl)" "$(cat ~/.kirocrew/workspace/.demo-recording-venv/PY_PATH)" record.py
+  KC_URL="$(cat .tokenurl)" "$(cat ~/.kiro/crew/workspace/.demo-recording-venv/PY_PATH)" record.py
   # POLISH -> auto-zoom + dead-air trim -> demo.mp4
   bash <app-skills-dir>/feature-demo-recording/references/render.sh . demo.mp4 --dead-air-speed 6
 

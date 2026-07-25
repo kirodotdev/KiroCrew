@@ -345,13 +345,21 @@ async def _generate_title_via_kiro(
     return title[:80]
 
 
-def _persist_title(state: DashboardState, slot: _ChatSlot) -> None:
-    """Save the slot title to the conversation history file."""
+async def _persist_title(state: DashboardState, slot: _ChatSlot) -> None:
+    """Save the slot title to the conversation history file.
+
+    ``set_title`` -> ``update_metadata`` enters ``_locked`` (cross-process flock
+    acquire + ``os.close``). Those are blocking-on-loop-prohibited, so the write
+    is dispatched to a worker thread rather than run on the event-loop thread
+    where a wedged peer could freeze chat/WS/heartbeat.
+    """
 
     if state.conversation_log:
         history_key = _history_key_for(slot.key)
         try:
-            state.conversation_log.set_title(history_key, slot.title)
+            await asyncio.to_thread(
+                state.conversation_log.set_title, history_key, slot.title
+            )
             logger.debug("Persisted title %r for slot %s", slot.title, slot.key)
         except Exception:
             logger.debug("Failed to persist title for slot %s", slot.key)
@@ -417,7 +425,7 @@ async def _maybe_auto_title(state: DashboardState, slot: _ChatSlot) -> None:
             # first message with an ellipsis.
             slot.title = _fallback_title_from_messages(slot.messages)
             slot._titled = True
-            _persist_title(state, slot)
+            await _persist_title(state, slot)
             state.push_slot_title(slot.key, slot.title)
         return
     slot._title_in_flight = True
@@ -435,7 +443,7 @@ async def _maybe_auto_title(state: DashboardState, slot: _ChatSlot) -> None:
             await _reveal_title(state, slot, title)
             slot.title = title
             slot._titled = True
-            _persist_title(state, slot)
+            await _persist_title(state, slot)
             state.push_slot_title(slot.key, title)
         else:
             # LLM returned SKIP/empty. Show the truncated fallback name right
@@ -448,7 +456,7 @@ async def _maybe_auto_title(state: DashboardState, slot: _ChatSlot) -> None:
             # LLM title.
             slot.title = _fallback_title_from_messages(slot.messages)
             slot._titled = attempt_has_assistant
-            _persist_title(state, slot)
+            await _persist_title(state, slot)
             state.push_slot_title(slot.key, slot.title)
             logger.info(
                 "Auto-title: fell back to truncated message for slot %s (locked=%s)",
@@ -488,7 +496,7 @@ async def api_chat_slot_generate_title(request: web.Request) -> web.Response:
     if title and not fallback_is_placeholder:
         slot.title = title
         slot._titled = True
-        _persist_title(state, slot)
+        await _persist_title(state, slot)
         state.push_slot_title(slot.key, title)
 
     return web.json_response({"ok": True, "title": "" if fallback_is_placeholder else title})
@@ -512,7 +520,7 @@ async def api_chat_slot_rename(request: web.Request) -> web.Response:
         return web.json_response({"error": "title required"}, status=400)
     slot.title = title
     slot._titled = True
-    _persist_title(state, slot)
+    await _persist_title(state, slot)
     state.push_slot_title(slot.key, title)
     sel().log_api_access(
         caller="dashboard",

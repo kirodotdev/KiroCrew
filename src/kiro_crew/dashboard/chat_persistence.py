@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -19,7 +20,7 @@ from kiro_crew.dashboard.chat_utils import (
 )
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot, _normalize_slot_key
 from kiro_crew.effort import EFFORT_LEVELS, EFFORT_VALUES
-from kiro_crew.history import _archive_lines
+from kiro_crew.history import _archive_lines, update_metadata_off_loop
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.validation import ARTIFACT_SLUG_RE
 
@@ -398,7 +399,13 @@ def _rehydrate_slot_from_history(state: DashboardState, slot_name: str) -> _Chat
     tab_id = meta.get("tab_id")
     if not tab_id:
         tab_id = uuid.uuid4().hex[:12]
-        state.conversation_log.update_metadata(history_key, {"tab_id": tab_id})
+        # _rehydrate_slot_from_history runs on the event-loop thread (cold-slot
+        # resolution in api_send_message). update_metadata enters _locked
+        # (flock + os.close), a blocking-on-loop-prohibited op, so backfill the
+        # tab_id off the loop rather than on it.
+        update_metadata_off_loop(
+            state.conversation_log, history_key, {"tab_id": tab_id}
+        )
     slot._tab_id = tab_id
     # Use read_messages_chained (not read_messages) so the loaded window walks
     # the tab_id ancestry across forks, matching restore_recent_sessions.
@@ -551,7 +558,12 @@ def restore_recent_sessions(
         tab_id = meta.get("tab_id")
         if not tab_id:
             tab_id = uuid.uuid4().hex[:12]
-            state.conversation_log.update_metadata(key, {"tab_id": tab_id})
+            # restore_recent_sessions runs during on_startup (event loop live)
+            # — keep the _locked flock/os.close off the loop via the off-loop
+            # backfill helper.
+            update_metadata_off_loop(
+                state.conversation_log, key, {"tab_id": tab_id}
+            )
         slot._tab_id = tab_id
         messages = state.conversation_log.read_messages_chained(key)
         slot._disk_older_count = max(0, len(messages) - 500)
@@ -677,40 +689,181 @@ def _build_message_entry(m: dict) -> dict | None:
     return entry
 
 
-def _read_frozen_prefix(slot: _ChatSlot, path, disk_older: int) -> str:
-    """Return the frozen-prefix bytes: the first *disk_older* on-disk message lines.
+# Transient/streaming roles that are never persisted (mirrors
+# ``_build_message_entry``). A window-region disk line carrying one of these is
+# not a real message and is never treated as a cross-process append to preserve.
+_TRANSIENT_ROLES = frozenset({"chunk", "done", "streaming", "queued", "permission"})
 
-    These are the lines OLDER than the in-memory window — never rewritten, so
-    older history survives a restart that only loaded a recent window. The bytes
-    are cached on the slot keyed by ``(mtime, disk_older)`` so a steady 5s flush
-    is O(window) rather than O(file size) (#5): the cache hits whenever the file
-    has not changed on disk since the last save (the only writer of this file is
-    this slot, so its own atomic_write bumps the mtime and the next call re-reads
-    — but the prefix region is identical, so re-reads are rare in practice and
-    always correct).
 
-    Returns "" when there is no frozen prefix (a fresh slot, ``disk_older == 0``)
-    or the file is missing/unreadable/has no metadata line.
+def _frozen_prefix_and_foreign_appends(
+    slot: _ChatSlot,
+    path,
+    disk_older: int,
+    window_entries: list[dict],
+    *,
+    collect_foreign: bool = True,
+) -> tuple[str, list[str], list[str]]:
+    """Return ``(frozen_prefix, foreign_lines, dedup_dropped)`` for a save.
+
+    ``frozen_prefix`` is the verbatim bytes of the first *disk_older* on-disk
+    message lines — the turns OLDER than the in-memory window. They are never
+    rewritten, so older history survives a restart that only loaded a recent
+    window. The bytes are cached on the slot keyed by ``(mtime, size,
+    disk_older)`` so a steady 5s flush is O(window) rather than O(file size)
+    (#5).
+
+    ``foreign_lines`` are on-disk message lines in the WINDOW region (the bytes
+    after the frozen prefix) that this slot's in-memory *window_entries* do NOT
+    represent — i.e. acknowledged appends made by ANOTHER process (subagent /
+    cron / CLI) that this slot never saw. ``_save_slot_to_history`` captures its
+    ``window`` snapshot BEFORE taking ``_locked``, so a cross-process writer can
+    fully append + release between the snapshot and this save acquiring the lock;
+    a bare ``meta + frozen + window`` replace would then silently delete that
+    acknowledged message. Carrying these lines into the payload makes the save
+    non-destructive against cross-process appends (the data-loss finding). A
+    disk line is treated as ours (dropped; the window re-serializes it) when its
+    ``ts`` matches a window entry (covers in-place edits, which keep ``ts`` but
+    change content) OR — as a COUNT-BOUNDED tiebreak — its ``(role, content)``
+    matches an as-yet-unconsumed window entry (covers a same-process
+    ``append_if_absent`` copy persisted with a FRESH ``ts`` distinct from the
+    window entry's in-memory ``ts``). The tiebreak is bounded so each window
+    entry absorbs AT MOST ONE disk copy: if the on-disk window region holds two
+    lines with identical ``(role, content)`` but distinct timestamps — the
+    window's own persisted copy PLUS a genuinely distinct event from another
+    process (e.g. a repeated identical cron / workflow result) — only the first
+    is folded into the window and the second is preserved as a foreign append.
+    A plain ``(role, content)`` set collapsed those two real events into one
+    (the GPT 5.6 HIGH data-loss finding); the bounded, timestamp-first identity
+    fixes it. Timestamp is the closest thing to a stable per-message id today;
+    the intended successor is a creation-time per-message uuid that demotes this
+    heuristic to a legacy fallback for un-stamped lines — tracked as a committed
+    follow-up in https://github.com/kirodotdev/KiroCrew/issues/381 (see also
+    ``docs/system-specs/modules/history.md``). ``dedup_dropped`` returns any
+    fresh-``ts`` content-tiebreak drops so the caller can route them through the
+    archive — even the residual ambiguous case (a distinct message
+    indistinguishable from an ``append_if_absent`` copy without a stable id)
+    then loses no data permanently.
+
+    Fast path (#5): when BOTH the on-disk mtime AND size match the frozen-prefix
+    cache, THIS slot was the last writer and nothing has landed since, so the
+    prefix is served from cache and the foreign lines preserved by the previous
+    save are re-emitted verbatim from cache — the O(file) read/scan runs ONLY
+    when the file changed on disk since our last write. Size is part of the key
+    because an append always grows the file even inside a single coarse mtime
+    tick, so mtime alone is not a safe change signal for a data-loss guard.
+    Re-emitting the cached foreign lines (rather than assuming there are none)
+    is what makes the fast path non-destructive: a previous save may have
+    preserved a cross-process append INTO the on-disk window region, and since
+    ``disk_older`` is unchanged those preserved lines would otherwise be dropped
+    by a bare frozen-prefix + in-memory-window rebuild on the very next save.
+
+    Returns ``("", [])`` when the file is missing/unreadable/has no metadata line.
     """
-    if disk_older <= 0:
-        return ""
     try:
-        mtime = path.stat().st_mtime
+        st = path.stat()
+        mtime, size = st.st_mtime, st.st_size
     except OSError:
-        return ""
+        return ("", [], [])
     cache = slot._frozen_prefix_cache
-    if cache is not None and cache[0] == mtime and cache[1] == disk_older:
-        return cache[2]
+    if (
+        cache is not None
+        and cache[0] == mtime
+        and cache[1] == size
+        and cache[2] == disk_older
+    ):
+        # File is byte-identical to our last write → prefix AND the foreign
+        # lines that write preserved are both served from cache. Returning the
+        # cached foreign lines (a copy, so the caller cannot mutate the cache)
+        # keeps the fast path non-destructive: the previously-preserved
+        # cross-process append is re-emitted instead of silently dropped. No
+        # scan runs, so there are no fresh dedup drops to archive.
+        return (cache[3], list(cache[4]), [])
     try:
         existing = path.read_text(encoding="utf-8").splitlines(keepends=True)
     except OSError:
-        return ""
+        return ("", [], [])
     if not existing or '"_type"' not in existing[0]:
-        return ""
+        return ("", [], [])
     body = existing[1:]  # message lines only (metadata excluded)
-    prefix = "".join(body[:disk_older])
-    slot._frozen_prefix_cache = (mtime, disk_older, prefix)
-    return prefix
+    prefix = "".join(body[:disk_older]) if disk_older > 0 else ""
+    if not collect_foreign:
+        # Rewrite (rewind / regenerate / fork) INTENTIONALLY truncates the
+        # window, so a disk window-region line absent from the (truncated) window
+        # is ambiguous between a rewound tail (must drop) and a cross-process
+        # append (must keep). Those edits are same-session/same-process (not the
+        # cross-process loss this scan guards), so skip the scan and let the
+        # rewrite's archive-diff handle the dropped tail. Cache with no foreign
+        # lines so a subsequent fast path re-emits nothing extra.
+        slot._frozen_prefix_cache = (mtime, size, disk_older, prefix, [])
+        return (prefix, [], [])
+    # Scan the on-disk window region for lines the in-memory window does not
+    # carry — those are cross-process appends we must preserve. Identity is
+    # timestamp-first (the closest thing to a stable per-message id today), with
+    # (role, content) used only as a COUNT-BOUNDED tiebreak so each window entry
+    # absorbs at most ONE disk copy (see the module docstring / history.md).
+    #
+    # ``window_ts`` maps each window entry's ``ts`` to its ``(role, content)`` so
+    # a ts-match can also decrement that entry's content budget — otherwise a
+    # ts-matched entry could ALSO absorb a later same-content disk line and
+    # over-collapse. ``remaining_rc`` is the per-``(role, content)`` budget of
+    # window entries still available to absorb a disk copy.
+    window_ts = {
+        e["ts"]: (e.get("role"), e.get("content", ""))
+        for e in window_entries
+        if e.get("ts")
+    }
+    remaining_rc: dict[tuple[object, object], int] = {}
+    for e in window_entries:
+        _k = (e.get("role"), e.get("content", ""))
+        remaining_rc[_k] = remaining_rc.get(_k, 0) + 1
+    consumed_ts: set[str] = set()
+    foreign: list[str] = []
+    dedup_dropped: list[str] = []
+    for ln in body[disk_older:]:
+        if not ln.strip():
+            continue
+        try:
+            entry = json.loads(ln)
+        except (json.JSONDecodeError, ValueError):
+            continue  # corrupt window-region line — not a preservable message
+        if not isinstance(entry, dict) or entry.get("_type") == "metadata":
+            continue
+        role = entry.get("role")
+        if role is None or role in _TRANSIENT_ROLES:
+            continue
+        ts = entry.get("ts")
+        rc = (role, entry.get("content", ""))
+        norm = ln if ln.endswith("\n") else ln + "\n"
+        # 1) ts-match: an in-place edit keeps the ``ts`` but changes content, so
+        #    the window's version wins. Consume the matched entry from the
+        #    content budget too so a later same-content line can't re-claim it.
+        if ts and ts in window_ts and ts not in consumed_ts:
+            consumed_ts.add(ts)
+            wkey = window_ts[ts]
+            if remaining_rc.get(wkey, 0) > 0:
+                remaining_rc[wkey] -= 1
+            continue  # same message (possibly edited in place) — window wins
+        # 2) content tiebreak (bounded): a window entry with this exact
+        #    (role, content) that no ts-match already consumed absorbs this disk
+        #    copy — the ``append_if_absent`` fresh-``ts`` case. A drop carrying a
+        #    DISTINCT non-empty ``ts`` is the genuinely ambiguous case (it could
+        #    be a distinct message we cannot tell apart without a stable id), so
+        #    route it through the archive; a ts-less / matching re-serialization
+        #    is a plain window copy and is dropped silently to avoid archive spam.
+        if remaining_rc.get(rc, 0) > 0:
+            remaining_rc[rc] -= 1
+            if ts:
+                dedup_dropped.append(norm)
+            continue  # window already carries this content
+        # 3) genuinely foreign → preserve verbatim.
+        foreign.append(norm)
+    # Cache the frozen prefix AND the foreign lines together, keyed on the
+    # as-read (mtime, size). If this save's atomic_write later fails, the file
+    # on disk is unchanged, so a subsequent save that re-reads the same
+    # (mtime, size) must re-emit these same preserved foreign lines rather than
+    # drop them — hence they are cached here, not just at the post-write site.
+    slot._frozen_prefix_cache = (mtime, size, disk_older, prefix, foreign)
+    return (prefix, foreign, dedup_dropped)
 
 
 def _save_slot_to_history(
@@ -805,108 +958,257 @@ def _save_slot_to_history(
         return
     history_key = _history_key_for(slot.key)
     try:
-        existing_meta = state.conversation_log.get_metadata(history_key)
+        # Hold the SAME per-session cross-process lock that ``append`` /
+        # ``append_off_loop`` / rotate / rewrite / metadata mutations take, across
+        # the whole read-modify-atomic_write below (metadata read, frozen-prefix
+        # read, archive-diff read, and the file-replacing ``atomic_write``).
+        # Without it, a concurrent ``append_off_loop`` (e.g. a workflow/cron
+        # result appended to the originating dashboard session) can land between
+        # this save's snapshot of the file and its ``atomic_write`` — the save
+        # then replaces the file with meta+frozen+window and silently deletes the
+        # acknowledged append. ``_locked`` serializes the two so neither is lost.
+        # On the event loop ``_locked`` makes ONE non-blocking acquire and raises
+        # ``HistoryLockTimeout`` under contention (never blocking the loop); the
+        # ``save_slot_off_loop`` helper routes on-loop callers to a worker thread
+        # so they take the patient acquire path instead of dropping the save.
+        with state.conversation_log._locked(history_key):
+            existing_meta = state.conversation_log.get_metadata(history_key)
 
-        path = state.conversation_log._path(history_key)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        meta_line: dict = {
-            "_type": "metadata",
-            "created_at": existing_meta.get("created_at") or slot.created_at,
-            "last_consolidated": existing_meta.get("last_consolidated", 0),
-        }
-        if closed:
-            meta_line["closed"] = True
-        meta_line["memory_mode"] = slot.memory_mode
-        if slot.title and slot.title != slot.key:
-            meta_line["title"] = slot.title
-        if slot.agent:
-            meta_line["agent"] = slot.agent
-        meta_line["model"] = slot.model
-        if slot.reasoning_effort:
-            meta_line["reasoning_effort"] = slot.reasoning_effort
-        if slot.mode:
-            meta_line["mode"] = slot.mode
-        if slot.workspace and slot.workspace != "default":
-            meta_line["workspace"] = slot.workspace
-        if slot.project:
-            meta_line["project"] = slot.project
-        if slot.folder_id:
-            meta_line["folder_id"] = slot.folder_id
-        if slot._app:
-            meta_line["app"] = slot._app
-        # Artifact companion binding — persisted so a bound
-        # session restored after a gateway restart (or resumed from the
-        # History page) comes back as the artifact's active bound session.
-        if slot._artifact:
-            meta_line["artifact"] = slot._artifact
-        if slot.pinned:
-            meta_line["pinned"] = True
-        if slot.color_index is not None:
-            meta_line["color_index"] = slot.color_index
-        if slot.color_theme:
-            meta_line["color_theme"] = slot.color_theme
-        if slot.tags:
-            meta_line["tags"] = list(slot.tags)
-        if slot.forked_from is not None:
-            meta_line["forked_from"] = slot.forked_from
-        tab_id = getattr(slot, "_tab_id", None) or existing_meta.get("tab_id")
-        if tab_id:
-            meta_line["tab_id"] = tab_id
-        meta_str = json.dumps(meta_line) + "\n"
+            path = state.conversation_log._path(history_key)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            meta_line: dict = {
+                "_type": "metadata",
+                "created_at": existing_meta.get("created_at") or slot.created_at,
+                "last_consolidated": existing_meta.get("last_consolidated", 0),
+            }
+            # Preserve history-layer-owned metadata this dashboard save does NOT
+            # manage. ``rotation_generation`` (bumped by ``_maybe_rotate``, with
+            # its ``rotated_at`` stamp) lets a concurrent consolidation detect a
+            # rotation and skip applying a stale offset. Reconstructing the
+            # metadata subset here would drop it, resetting the generation to 0
+            # and re-opening the exact consolidation race the rotation-generation
+            # fix closed. Carry these forward verbatim (absent field == no-op).
+            for _meta_key in ("rotation_generation", "rotated_at", "compacted_at"):
+                if _meta_key in existing_meta:
+                    meta_line[_meta_key] = existing_meta[_meta_key]
+            if closed:
+                meta_line["closed"] = True
+            meta_line["memory_mode"] = slot.memory_mode
+            if slot.title and slot.title != slot.key:
+                meta_line["title"] = slot.title
+            if slot.agent:
+                meta_line["agent"] = slot.agent
+            meta_line["model"] = slot.model
+            if slot.reasoning_effort:
+                meta_line["reasoning_effort"] = slot.reasoning_effort
+            if slot.mode:
+                meta_line["mode"] = slot.mode
+            if slot.workspace and slot.workspace != "default":
+                meta_line["workspace"] = slot.workspace
+            if slot.project:
+                meta_line["project"] = slot.project
+            if slot.folder_id:
+                meta_line["folder_id"] = slot.folder_id
+            if slot._app:
+                meta_line["app"] = slot._app
+            # Artifact companion binding — persisted so a bound
+            # session restored after a gateway restart (or resumed from the
+            # History page) comes back as the artifact's active bound session.
+            if slot._artifact:
+                meta_line["artifact"] = slot._artifact
+            if slot.pinned:
+                meta_line["pinned"] = True
+            if slot.color_index is not None:
+                meta_line["color_index"] = slot.color_index
+            if slot.color_theme:
+                meta_line["color_theme"] = slot.color_theme
+            if slot.tags:
+                meta_line["tags"] = list(slot.tags)
+            if slot.forked_from is not None:
+                meta_line["forked_from"] = slot.forked_from
+            tab_id = getattr(slot, "_tab_id", None) or existing_meta.get("tab_id")
+            if tab_id:
+                meta_line["tab_id"] = tab_id
+            meta_str = json.dumps(meta_line) + "\n"
 
-        # ── Frozen prefix (never rewritten) + freshly serialized window ──────
-        # Read the verbatim bytes of the on-disk lines OLDER than the in-memory
-        # window (cached, O(window) on a steady flush — #5). Then re-serialize
-        # the ENTIRE window snapshot so in-place edits and reordering persist.
-        frozen_prefix = _read_frozen_prefix(slot, path, disk_older)
-        window_lines = [
-            json.dumps(e) + "\n"
-            for m in window
-            if (e := _build_message_entry(m)) is not None
-        ]
-        payload = meta_str + frozen_prefix + "".join(window_lines)
-
-        # Rewrite paths (rewind/regenerate/fork) intentionally TRUNCATE the
-        # window, so the dropped tail must be archived first to stay
-        # recoverable. The default save is a superset of what's on disk (frozen
-        # prefix unchanged + same-or-grown window), so it drops nothing — and we
-        # skip the O(file) archive-diff read there to keep a steady flush
-        # O(window) (#5). Both sides are passed as proper per-line lists so the
-        # normalized-JSON diff matches the frozen-prefix lines (never archived).
-        if rewrite and path.exists():
-            try:
-                old_lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
-                new_lines = payload.splitlines(keepends=True)
-                _archive_dropped_lines(state, history_key, old_lines, new_lines)
-            except Exception:
-                logger.warning(
-                    "Failed to archive dropped lines for %s", history_key, exc_info=True
+            # ── Frozen prefix (never rewritten) + freshly serialized window ──
+            # Read the verbatim bytes of the on-disk lines OLDER than the
+            # in-memory window (cached, O(window) on a steady flush — #5), AND
+            # detect any cross-process appends that landed in the on-disk window
+            # region since our last write. Then re-serialize the ENTIRE window
+            # snapshot so in-place edits and reordering persist, and append the
+            # foreign lines so a concurrent cross-process append (landed between
+            # this save's pre-lock ``window`` snapshot and the lock) is preserved
+            # rather than clobbered by the meta+frozen+window replace.
+            window_entries = [
+                e for m in window if (e := _build_message_entry(m)) is not None
+            ]
+            window_lines = [json.dumps(e) + "\n" for e in window_entries]
+            frozen_prefix, foreign_lines, dedup_dropped = (
+                _frozen_prefix_and_foreign_appends(
+                    slot, path, disk_older, window_entries, collect_foreign=not rewrite
                 )
+            )
+            # A fresh-``ts`` disk copy folded into the window by the bounded
+            # (role, content) tiebreak is redundant with a window entry, so the
+            # payload does not carry it. It is nonetheless the genuinely ambiguous
+            # case (indistinguishable from a distinct same-content message without
+            # a stable per-message id), so archive it before the atomic replace so
+            # the trade-off loses no data permanently (arbiter long-term item 2b).
+            if dedup_dropped:
+                try:
+                    base = (
+                        state.conversation_log._dir
+                        if state.conversation_log
+                        else None
+                    )
+                    _archive_lines(
+                        history_key, dedup_dropped, reason="foreign-dedup", base=base
+                    )
+                except Exception:
+                    logger.warning(
+                        "Failed to archive foreign-dedup drops for %s",
+                        history_key,
+                        exc_info=True,
+                    )
+            payload = (
+                meta_str + frozen_prefix + "".join(window_lines) + "".join(foreign_lines)
+            )
 
-        atomic_write(path, payload, fsync=True)
-        # A rewrite (archive-safe) save succeeded → clear the pending-rewrite
-        # flag so later saves return to the cheap default path (#3).
-        if rewrite:
-            slot._pending_rewrite = False
-        # Record how many window messages are now on disk so memory trimming
-        # can safely fold leading window messages into the frozen prefix (#8).
-        slot._disk_window_len = len(window)
-        # We just wrote the file, so we KNOW its frozen prefix is exactly
-        # ``frozen_prefix`` at the new mtime — refresh the cache rather than
-        # invalidating it, so the next steady flush is a cache hit (O(window),
-        # #5) instead of an O(file) re-read.
-        if disk_older > 0:
+            # Rewrite paths (rewind/regenerate/fork) intentionally TRUNCATE the
+            # window, so the dropped tail must be archived first to stay
+            # recoverable. The default save is a superset of what's on disk
+            # (frozen prefix unchanged + same-or-grown window), so it drops
+            # nothing — and we skip the O(file) archive-diff read there to keep a
+            # steady flush O(window) (#5). Both sides are passed as proper
+            # per-line lists so the normalized-JSON diff matches the
+            # frozen-prefix lines (never archived).
+            if rewrite and path.exists():
+                try:
+                    old_lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+                    new_lines = payload.splitlines(keepends=True)
+                    _archive_dropped_lines(state, history_key, old_lines, new_lines)
+                except Exception:
+                    logger.warning(
+                        "Failed to archive dropped lines for %s", history_key, exc_info=True
+                    )
+
+            atomic_write(path, payload, fsync=True)
+            # A rewrite (archive-safe) save succeeded → clear the pending-rewrite
+            # flag so later saves return to the cheap default path (#3).
+            if rewrite:
+                slot._pending_rewrite = False
+            # Record how many window messages are now on disk so memory trimming
+            # can safely fold leading window messages into the frozen prefix (#8).
+            slot._disk_window_len = len(window)
+            # Record the post-write mtime in the frozen-prefix cache (even when
+            # there is no frozen prefix, ``disk_older == 0``). The cache doubles
+            # as the "did another process touch this file since we last wrote
+            # it?" signal: a matching mtime on the next save proves THIS slot was
+            # the last writer, so the frozen prefix is reusable and no NEW
+            # cross-process append can have landed — letting the foreign-append
+            # scan take the O(window) fast path (#5) instead of re-reading the
+            # whole file. The foreign lines this save just preserved are cached
+            # alongside so the fast path re-emits them verbatim: they now live in
+            # the on-disk window region (after the frozen prefix), and because
+            # ``disk_older`` is unchanged a bare frozen+window rebuild on the next
+            # save would otherwise silently delete them (data-loss finding).
             try:
-                slot._frozen_prefix_cache = (path.stat().st_mtime, disk_older, frozen_prefix)
+                _st = path.stat()
+                slot._frozen_prefix_cache = (
+                    _st.st_mtime,
+                    _st.st_size,
+                    disk_older,
+                    frozen_prefix,
+                    foreign_lines,
+                )
             except OSError:
                 slot._frozen_prefix_cache = None
-        else:
-            slot._frozen_prefix_cache = None
-        state.conversation_log._invalidate_cache(history_key)
-        state.conversation_log.invalidate_tab_id_cache()
+            state.conversation_log._invalidate_cache(history_key)
+            state.conversation_log.invalidate_tab_id_cache()
     except Exception:
         logger.error("Failed to save slot %s to history", slot.key, exc_info=True)
         raise
+
+
+async def save_slot_off_loop(
+    state: DashboardState,
+    slot: _ChatSlot,
+    messages: list[dict] | None = None,
+    *,
+    closed: bool = False,
+    force: bool = False,
+    rewrite: bool = False,
+    best_effort: bool = True,
+) -> None:
+    """Persist a slot from the event loop without blocking or dropping the save.
+
+    :func:`_save_slot_to_history` now holds the per-session cross-process
+    ``_locked`` across its read-modify-``atomic_write`` (see the finding it
+    fixes). That lock, invoked on the gateway event loop, makes a single
+    non-blocking acquire and raises :class:`~kiro_crew.history.HistoryLockTimeout`
+    under any concurrent holder (e.g. a workflow/cron result appending via
+    :func:`~kiro_crew.history.append_off_loop`) — so calling the save inline on
+    the loop would both risk a disk write on the loop and drop the save under
+    benign contention, or surface the timeout into the aiohttp handler.
+
+    This helper mirrors :func:`~kiro_crew.history.append_off_loop`: on a running
+    loop it dispatches the save to a worker thread so it takes the *patient*
+    off-loop acquire path; off the loop it saves inline.
+
+    ``best_effort`` (default ``True``): a lock timeout / I/O error is logged and
+    the slot is marked ``_dirty`` so the periodic flush retries the write — the
+    in-memory slot is the source of truth. This retry re-arm matters for the
+    metadata mutation endpoints (pin / folder / tag / mode), which call this with
+    ``force=True`` but do not otherwise mark the slot dirty: without it a
+    swallowed failure would drop an acknowledged edit with no retry, losing it
+    after a restart. Pass ``best_effort=False`` for archival paths (session
+    close/cleanup) that must CONFIRM the durable write succeeded before removing
+    the session: the save still runs off-loop (patient acquire), but any
+    exception propagates so the caller can roll back and keep the slot.
+    """
+
+    def _do() -> None:
+        _save_slot_to_history(
+            state, slot, messages, closed=closed, force=force, rewrite=rewrite
+        )
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if loop is None:
+        if best_effort:
+            try:
+                _do()
+            except Exception:  # noqa: BLE001 - best-effort durable copy
+                # A swallowed failure must NOT be silently final: mark the slot
+                # dirty so the periodic flush retries the write. Metadata-only
+                # mutations (pin / folder / tag / mode) call this with
+                # ``force=True`` but do not otherwise set ``_dirty``; without this
+                # a lock timeout / I/O error would drop the change and the flush
+                # would never retry it, losing an acknowledged edit after restart.
+                slot._dirty = True
+                logger.warning(
+                    "save_slot_off_loop: inline save failed slot=%s", slot.key, exc_info=True
+                )
+            return
+        _do()
+        return
+    if best_effort:
+        try:
+            await loop.run_in_executor(None, _do)
+        except Exception:  # noqa: BLE001 - best-effort durable copy
+            # See the inline branch above: re-arm the periodic flush so a
+            # swallowed metadata/message save is retried rather than lost.
+            slot._dirty = True
+            logger.warning(
+                "save_slot_off_loop: offloaded save failed slot=%s", slot.key, exc_info=True
+            )
+        return
+    # Non-best-effort: propagate so the caller can roll back (do NOT remove the
+    # session until the durable write is confirmed).
+    await loop.run_in_executor(None, _do)
 
 
 def _build_history_prefix(slot: _ChatSlot) -> str:

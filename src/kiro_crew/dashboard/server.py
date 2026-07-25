@@ -103,6 +103,11 @@ from kiro_crew.dashboard.handlers.discover import (
     api_skills_discover_preview,
 )
 from kiro_crew.dashboard.handlers.knowledge import setup_knowledge_routes
+from kiro_crew.dashboard.handlers.mcp_custom import (
+    api_mcp_custom_add,
+    api_mcp_custom_get,
+    api_mcp_custom_update,
+)
 from kiro_crew.dashboard.handlers.mcp_discover import (
     api_mcp_discover,
     api_mcp_discover_detail,
@@ -1326,9 +1331,14 @@ async def start_dashboard(
     # Custom Themes (CRUD)
     app.router.add_get("/api/themes", handlers.api_themes)
     app.router.add_post("/api/themes", handlers.api_themes_create)
+    app.router.add_post("/api/themes/install", handlers.api_themes_install)
     app.router.add_get("/api/themes/{slug}", handlers.api_theme_detail)
     app.router.add_put("/api/themes/{slug}", handlers.api_theme_detail)
     app.router.add_delete("/api/themes/{slug}", handlers.api_theme_detail)
+    # Installed-theme asset serving (L1/L2)
+    app.router.add_get("/api/theme/{slug}/assets/{path:.+}", handlers.api_theme_asset)
+    app.router.add_get("/api/theme/{slug}/overlay/{id}", handlers.api_theme_overlay)
+    app.router.add_get("/api/theme/{slug}/topbar/{mode}", handlers.api_theme_topbar)
 
     # Agent config
     app.router.add_get("/api/agent/config", handlers.api_agent_config)
@@ -1352,6 +1362,10 @@ async def start_dashboard(
     app.router.add_get("/api/mcp/discover", api_mcp_discover)
     app.router.add_get("/api/mcp/discover/detail", api_mcp_discover_detail)
     app.router.add_post("/api/mcp/discover/install", api_mcp_discover_install)
+    # Manual MCP server management (Add Custom modal + per-server JSON edit)
+    app.router.add_post("/api/mcp/custom", api_mcp_custom_add)
+    app.router.add_get("/api/mcp/custom/{name}", api_mcp_custom_get)
+    app.router.add_put("/api/mcp/custom/{name}", api_mcp_custom_update)
     app.router.add_post("/api/mcp/probe", handlers.api_mcp_probe)
     app.router.add_get("/api/mcp/probe", handlers.api_mcp_probe_cached)
     app.router.add_post("/api/mcp/sync", handlers.api_mcp_sync)

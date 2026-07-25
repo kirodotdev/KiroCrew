@@ -102,7 +102,7 @@ Hand subagents read-only or compute-only work; never pass a live token into a su
 
 ## Step 1 — Setup (one-time per machine)
 
-Run the setup helper. It creates `~/.kirocrew/workspace/.demo-recording-venv` with Playwright,
+Run the setup helper. It creates `~/.kiro/crew/workspace/.demo-recording-venv` with Playwright,
 and reuses the already-installed browsers in `~/.cache/ms-playwright/` (they are typically
 already present from prior Playwright usage, so this is usually instant).
 
@@ -121,7 +121,7 @@ script finds it and writes the path to `.demo-recording-venv/FFMPEG_PATH`. No se
 ## Step 2 — Write the scene script
 
 Copy `references/record_template.py` to your working dir (e.g.
-`~/.kirocrew/workspace/uploads/<feature>-video/record.py`) and fill in the `SCENES`.
+`~/.kiro/crew/workspace/uploads/<feature>-video/record.py`) and fill in the `SCENES`.
 
 The harness gives you a `Demo` object with these methods (full reference:
 `references/demo_harness.py` docstrings):
@@ -214,7 +214,7 @@ Tokens expire. If a run dies with "no composer / 403", the token is stale — ge
 ```bash
 cd <workdir>
 KC_DEMO_REFS="<app-skills-dir>/feature-demo-recording/references" \
-KC_URL="$(cat .tokenurl)" "$(cat ~/.kirocrew/workspace/.demo-recording-venv/PY_PATH)" record.py
+KC_URL="$(cat .tokenurl)" "$(cat ~/.kiro/crew/workspace/.demo-recording-venv/PY_PATH)" record.py
 ```
 
 `KC_DEMO_REFS` points back at the skill's `references/` directory so the copied
@@ -268,7 +268,7 @@ re-recording** — just re-run `render.sh` with different flags against the same
 plain transcode *without* the auto-zoom (rarely), use the h264 ffmpeg directly:
 
 ```bash
-FF="$(cat ~/.kirocrew/workspace/.demo-recording-venv/FFMPEG_PATH)"
+FF="$(cat ~/.kiro/crew/workspace/.demo-recording-venv/FFMPEG_PATH)"
 WEBM="$(cat <workdir>/MAIN_WEBM)"
 "$FF" -y -i "$WEBM" -vf "scale=1280:-2" -c:v libx264 -pix_fmt yuv420p -crf 23 \
       -movflags +faststart <workdir>/<feature>-plain.mp4

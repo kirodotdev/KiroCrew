@@ -92,7 +92,7 @@ kirocrew browse auth refresh
 ```
 Then call `browser_set_storage_state` with the storage-state file path:
 ```
-filename: ~/.kirocrew/playwright-storage-state.json
+filename: ~/.kiro/crew/playwright-storage-state.json
 ```
 This reloads cookies WITHOUT restarting the MCP server. Then retry navigation.
 
@@ -119,7 +119,7 @@ standard browser extension or tool that produces that format. KiroCrew parses
 that file (`parse_netscape_cookies`) and converts it to Playwright storage
 state during `kirocrew browse auth refresh`.
 
-- Default cookie-jar location is conceptually `~/.kirocrew/browser-cookies.txt`
+- Default cookie-jar location is conceptually `~/.kiro/crew/browser-cookies.txt`
   (any Netscape/Mozilla-format file works).
 - Only the cookies for the site being browsed are needed; a full-jar export is fine too.
 - Cookies expire — when auth fails, the user re-exports a fresh jar and you re-refresh.
@@ -205,7 +205,7 @@ No special setup beyond exporting cookies. The flow:
 
 ## How It Works (Technical)
 
-The config at `~/.kirocrew/playwright-config.json` sets:
+The config at `~/.kiro/crew/playwright-config.json` sets:
 - `isolated: true` — required for `storageState` to take effect (without it, Playwright uses a persistent profile and ignores our cookies)
 - `contextOptions.storageState` — pre-loads exported cookies at context creation
 - `capabilities: ["network", "storage"]` — `network` enables `browser_route` for UA spoofing; `storage` enables `browser_set_storage_state` for cookie hot-reload
@@ -214,4 +214,4 @@ The config at `~/.kirocrew/playwright-config.json` sets:
 
 - A Netscape/Mozilla cookie jar exported from a browser where the user is logged in (for sites that require auth)
 - Playwright MCP + browsers installed (`kirocrew browse setup`)
-- Config auto-generated at `~/.kirocrew/playwright-config.json`
+- Config auto-generated at `~/.kiro/crew/playwright-config.json`

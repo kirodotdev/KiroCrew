@@ -14,6 +14,8 @@
  *   import { registerPanelShortcut }     from './hooks/useKeyboardShortcuts'
  *   import { registerNonAppPrefix }      from './components/MigrationCheck'
  *   import { registerTheme }             from './hooks/useTheme'
+ *   import { registerCapsuleSegment }    from './apps/capsuleSegments'
+ *   import { registerOverviewStatCards } from './pages/overviewStatCards'
  *
  * For edition-owned API methods there is no registrar — the edition imports the
  * blessed `apiTransport` (`./api/apiTransport`) and builds its own typed API

@@ -1283,7 +1283,7 @@ async def _route_action_to_session(
 
 async def _import_thread_to_slot(slack: Any, ds: Any, channel: str, thread_ts: str) -> Any:
     """Fetch a Slack thread, redact messages, and import into a new dashboard slot."""
-    from kiro_crew.dashboard.chat import _save_slot_to_history
+    from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
 
     # Idempotency: return existing slot if already linked
     existing = ds.get_linked_slot(thread_ts)
@@ -1312,7 +1312,7 @@ async def _import_thread_to_slot(slack: Any, ds: Any, channel: str, thread_ts: s
         text_content, _ = redact_credentials(text_content)
         slot.append(role, text_content, f"msg msg-{'a' if is_bot else 'u'}")
     ds.link_slack(slot.key, thread_ts, channel)
-    _save_slot_to_history(ds, slot)
+    await save_slot_off_loop(ds, slot)
     ds.push_slots_update()
     return slot
 

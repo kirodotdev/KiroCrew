@@ -32,6 +32,8 @@ import {
   RESERVED_PANEL_CODES,
 } from '../hooks/useKeyboardShortcuts'
 import { registerTheme, getRegisteredThemes } from '../hooks/useTheme'
+import { registerCapsuleSegment, getCapsuleSegments } from '../apps/capsuleSegments'
+import { registerOverviewStatCards, getOverviewStatCards } from '../pages/overviewStatCards'
 import { apiTransport } from '../api/apiTransport'
 // Importing the client installs the blessed transport (installApiTransport runs
 // at client module load), so `apiTransport` is populated for the test below.
@@ -82,9 +84,8 @@ describe('builtinIcons — nav-icon seam', () => {
 })
 
 describe('themeBranding — theme seam', () => {
-  it('seeds the core lumon branding', () => {
-    const lumon = getThemeBranding('lumon')
-    expect(lumon?.botName).toBe('LumonClaw')
+  it('ships no core-seeded registrations (built-in Lumon removed with theme packs)', () => {
+    expect(getThemeBranding('lumon')).toBeUndefined()
   })
 
   it('returns undefined for a theme with no branding', () => {
@@ -96,11 +97,12 @@ describe('themeBranding — theme seam', () => {
     expect(getThemeBranding('seam-theme')?.botName).toBe('SeamBot')
   })
 
-  it('throws on duplicate theme branding in dev/test; core wins', () => {
-    expect(() => registerThemeBranding({ lumon: { botName: 'Hijack' } })).toThrow(
+  it('throws on duplicate theme branding in dev/test; first registration wins', () => {
+    registerThemeBranding({ 'seam-dup': { botName: 'First', logo: '/a.svg' } })
+    expect(() => registerThemeBranding({ 'seam-dup': { botName: 'Hijack' } })).toThrow(
       /already registered/,
     )
-    expect(getThemeBranding('lumon')?.botName).toBe('LumonClaw')
+    expect(getThemeBranding('seam-dup')?.botName).toBe('First')
   })
 })
 
@@ -249,6 +251,40 @@ describe('apiTransport — exported blessed transport (not a registry)', () => {
   })
 })
 
+describe('capsuleSegments — in-capsule segment seam', () => {
+  it('registers segments and returns them sorted by order', () => {
+    registerCapsuleSegment([{ id: 'testseg:b', order: 2, component: () => null }])
+    registerCapsuleSegment([{ id: 'testseg:a', order: 1, component: () => null }])
+    const ids = getCapsuleSegments().filter(s => s.id.startsWith('testseg:')).map(s => s.id)
+    expect(ids).toEqual(['testseg:a', 'testseg:b'])
+  })
+
+  it('throws on a duplicate id in dev/test', () => {
+    registerCapsuleSegment([{ id: 'testseg:dup', component: () => null }])
+    expect(() => registerCapsuleSegment([{ id: 'testseg:dup', component: () => null }])).toThrow(
+      /already registered/,
+    )
+    expect(getCapsuleSegments().filter(s => s.id === 'testseg:dup').length).toBe(1)
+  })
+})
+
+describe('overviewStatCards — settings status-card seam', () => {
+  it('registers cards and returns them sorted by order', () => {
+    registerOverviewStatCards([{ id: 'testcard:b', order: 2, component: () => null }])
+    registerOverviewStatCards([{ id: 'testcard:a', order: 1, component: () => null }])
+    const ids = getOverviewStatCards().filter(c => c.id.startsWith('testcard:')).map(c => c.id)
+    expect(ids).toEqual(['testcard:a', 'testcard:b'])
+  })
+
+  it('throws on a duplicate id in dev/test', () => {
+    registerOverviewStatCards([{ id: 'testcard:dup', component: () => null }])
+    expect(() =>
+      registerOverviewStatCards([{ id: 'testcard:dup', component: () => null }]),
+    ).toThrow(/already registered/)
+    expect(getOverviewStatCards().filter(c => c.id === 'testcard:dup').length).toBe(1)
+  })
+})
+
 describe('builtinRegistry — route-shape guard', () => {
   // BuiltinAppRoute resolves /:builtinApp from ONE pathname segment and never
   // the query/hash — so anything that isn't a bare plain segment registers but
@@ -332,15 +368,21 @@ describe('composition root — stock extensions.ts is empty', () => {
     expect(code).toBe('export {}')
   })
 
+  it('capsule-segment + overview-stat-card seams are empty in the stock build', () => {
+    expect(getCapsuleSegments().every(s => !s.id.startsWith('edition:'))).toBe(true)
+    expect(getOverviewStatCards().every(c => !c.id.startsWith('edition:'))).toBe(true)
+  })
+
   it('importing it adds no registrations beyond the seeded core state', async () => {
     // The registries are module singletons seeded by the core. Snapshot the
     // core-seeded keys, import the composition root, and assert nothing new
     // appeared (the seam tests above add their own entries, so compare deltas
     // against a fresh reimport rather than absolute counts).
     await import('../extensions')
-    // lumon is the only seeded theme branding; the icon registry is seeded with
-    // the core lucide set; neither should gain entries from the stock root.
-    expect(getThemeBranding('lumon')?.botName).toBe('LumonClaw')
+    // Theme branding ships unseeded (built-in Lumon removed with theme packs);
+    // the icon registry is seeded with the core lucide set; neither should
+    // gain entries from the stock root.
+    expect(getThemeBranding('lumon')).toBeUndefined()
     expect(getBuiltinIcon('Brain')).toBeDefined()
     // No stock top-bar widget (edition-only slot).
     expect(getTopBarWidgets().every(w => !w.id.startsWith('edition:'))).toBe(true)

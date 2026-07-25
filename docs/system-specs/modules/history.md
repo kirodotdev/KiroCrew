@@ -1,6 +1,6 @@
 # Conversation History Module
 
-Last Updated: 2026-07-13 (agent_usage roster ordering, folder_id in session metadata, _SEARCH_SCAN_WINDOW relevance search; session archive, configurable autocompact)
+Last Updated: 2026-07-24 (on-loop offload discipline enforcement via OnLoopPersistError + CI-enforced strict mode in the e2e gateway job + deferred single-writer-queue alternative; foreign-append timestamp-first bounded dedup with archive of ambiguous drops + creation-time uuid successor identity; agent_usage roster ordering, folder_id in session metadata, _SEARCH_SCAN_WINDOW relevance search; session archive, configurable autocompact)
 
 ## Overview
 
@@ -61,6 +61,57 @@ no longer destroy older turns.
   consistent snapshot: it reads `_disk_older_count`, snapshots
   `list(slot.messages)`, and re-checks `_disk_older_count` (bounded retry) so a
   concurrent trim cannot interleave with the read-serialize-write.
+- **Cross-process lock (`_locked`)**: `_save_slot_to_history` holds the session's
+  cross-process `_locked` (the SAME lock `append` / `append_off_loop` / rotate /
+  rewrite / metadata edits take) across its metadata read, frozen-prefix read,
+  archive diff, and `atomic_write`. Without it a concurrent `append_off_loop`
+  (e.g. a workflow/cron result appended to the originating dashboard session)
+  could land between the save's file snapshot and its file-replacing
+  `atomic_write`, silently deleting the acknowledged append. On the event loop
+  `_locked` makes ONE non-blocking acquire and raises `HistoryLockTimeout` under
+  contention rather than blocking the loop — so **on-loop callers MUST offload**:
+  `save_slot_off_loop(state, slot, …)` dispatches the save to a worker thread so
+  it takes the patient off-loop acquire path. It is `best_effort=True` by default
+  (a lock timeout / I/O error is logged, not raised — the in-memory slot is the
+  source of truth and the periodic flush retries); archival paths that must
+  confirm the durable write before removing the session (session close/cleanup)
+  pass `best_effort=False` so the exception propagates and the caller rolls back.
+  Off-loop callers (`_flush_dirty_slots`, `save_all_slots_to_history` at
+  shutdown) call `_save_slot_to_history` inline — off the loop `_locked` polls
+  patiently to a bounded deadline. The same discipline applies to every other
+  session-JSONL writer: `clear_closed` (resume un-flags `closed` under `_locked`,
+  offloaded via `asyncio.to_thread`) and all `history.py` mutators hold `_locked`.
+- **On-loop offload discipline is enforced, not convention-only**: the offload
+  invariant above was previously guaranteed only by convention — a future
+  contributor calling a raw mutator (`append` / `update_metadata` / `set_title`
+  / `delete_session` / `_save_slot_to_history`) from an async handler would get
+  a write that works in every uncontended test yet silently drops under real
+  contention (the on-loop `HistoryLockTimeout` swallowed by a best-effort
+  `try/except`), invisible in CI. `_locked` now calls
+  `_check_on_loop_persist_discipline(key)` on entry: if a running event loop is
+  detected it either **raises `OnLoopPersistError`** (strict mode — on under
+  `KIROCREW_STRICT_ON_LOOP_PERSIST=1` or `KIROCREW_DEV_MODE`) so an un-offloaded
+  call-site fails tests rather than losing data, or emits a **loud throttled
+  warning** and proceeds via the single non-blocking safety-net acquire
+  (default / production gateway, strict off — never a new hard failure in the
+  field). Strict is deliberately NOT auto-on under bare pytest (the suite's own
+  async harness calls several mutators directly on the loop as a convenience, so
+  auto-strict would flag harness code, not drift); the enforcement tests flip
+  the env flag explicitly. Off the loop the check is a no-op (the sanctioned
+  path). Tests that deliberately drive the low-level on-loop primitive wrap the
+  call in `history.allow_on_loop_persist()` (a `ContextVar`-scoped bypass);
+  production code must NEVER use it. **Considered-and-deferred alternative — a single-writer
+  queue:** funnel every session-file mutation through one dedicated writer thread
+  (or per-key `asyncio.Queue` drained off-loop) so the loop never touches
+  `_locked` at all and no caller can bypass the discipline structurally. It was
+  deferred because it reshapes every mutator into an async enqueue (touching the
+  same ~15 call-sites plus the synchronous CLI/subagent/cron writers that must
+  stay inline), serializes unrelated keys unless sharded, and complicates the
+  close/cleanup paths that need a confirmed durable write (`best_effort=False`).
+  The refcounted `_flock_state` + the strict on-loop guard give most of the
+  safety at a fraction of the churn; the single-writer queue is the intended
+  escape hatch if the guard's warn-and-proceed production fallback ever proves
+  insufficient (e.g. a hot on-loop path that must not be lost).
 - **Rewrite path** (`rewrite=True`, an explicit `messages` snapshot, or a slot
   left in `_pending_rewrite` — rewind/regenerate/fork): writes
   `metadata + frozen_prefix + serialize(snapshot)`. These INTENTIONALLY drop the
@@ -70,6 +121,75 @@ no longer destroy older turns.
   set by rewind/regenerate after they truncate the window and cleared only on a
   successful rewrite save, so a failed inline rewrite still gets retried as an
   archive-safe rewrite by the next flush (never silently overwritten).
+- **Foreign-append merge & timestamp-first dedup** (`_frozen_prefix_and_foreign_appends`):
+  a default save captures its `window` snapshot BEFORE taking `_locked`, so a
+  cross-process writer (subagent / cron / CLI) can fully append + release the
+  lock in that gap. A bare `meta + frozen + window` replace would then delete
+  that acknowledged append, so the save first scans the on-disk WINDOW region
+  (the bytes after the frozen prefix) for lines the in-memory window does not
+  represent and carries them into the payload as `foreign_lines`. A disk line is
+  classified as **ours** (dropped — the window re-serializes it) when EITHER:
+  (a) its `ts` matches a window entry — covers in-place edits that keep `ts` but
+  change content; OR (b) as a **count-bounded** tiebreak, its `(role, content)`
+  matches an **as-yet-unconsumed** window entry — covers a same-process
+  `append_if_absent` durable copy persisted with a fresh `ts` (the workflow/
+  cron-result injectors reflect the message in the slot AND write it via
+  `append_if_absent_off_loop`, so the same message legitimately exists twice with
+  different timestamps and must NOT be double-persisted). Only a line matching
+  NEITHER is foreign and preserved.
+  - **Timestamp-first identity (the fix for GPT 5.6's HIGH data-loss finding).**
+    `ts` is the primary identity; `(role, content)` is only a bounded tiebreak in
+    which **each window entry absorbs at most ONE disk copy**. So if the on-disk
+    window region holds two lines with identical `(role, content)` but distinct
+    timestamps — the window's own persisted copy (ts-matched, dropped) PLUS a
+    *genuinely distinct* event from another process (e.g. a cron that reports the
+    same status text twice) — the first is folded and the **second is preserved
+    as a foreign append**. An earlier plain-`(role, content)`-set match collapsed
+    both real events into one; the bounded, timestamp-first identity fixes it
+    while still folding the common `append_if_absent` fresh-`ts` copy.
+  - **Archive of ambiguous drops (no permanent loss).** A fresh-`ts` copy folded
+    by tiebreak (b) is the genuinely ambiguous case (indistinguishable from a
+    distinct same-content message without a stable id), so those drops are
+    returned as `dedup_dropped` and routed through `_archive_lines`
+    (`reason="foreign-dedup"`) by `_save_slot_to_history` before the atomic
+    replace — the trade-off loses no data permanently. (A ts-less / ts-matched
+    plain re-serialization is a normal window copy and is dropped silently to
+    avoid archive spam.)
+  - **Intended successor identity.** Timestamp is the closest thing to a stable
+    per-message id available today. The intended successor is a **creation-time
+    per-message uuid** (stamped when the message is created, carried through the
+    slot and onto disk) so identity is *exact* rather than inferred; the bounded
+    heuristic above is the bridge until that lands. This is a tracked, committed
+    follow-up — see
+    [issue #381](https://github.com/kirodotdev/KiroCrew/issues/381) — not an
+    open-ended aspiration: when the uuid lands it **demotes this heuristic to a
+    legacy fallback** used only for un-stamped (pre-uuid) lines, and both this
+    paragraph and the `test_foreign_append_content_identity_dedup_semantics`
+    contract test must be updated in the same commit.
+  - **Residual window (rewrite saves).** The scan runs only for default saves
+    (`collect_foreign = not rewrite`). Rewrite saves (rewind / regenerate / fork)
+    intentionally truncate the window and are same-session/same-process, so they
+    **skip** the foreign scan and can still clobber a concurrent cross-process
+    append that lands between the pre-lock window snapshot and the lock — a known,
+    narrow residual window (the dropped tail is handled by the rewrite's
+    archive-diff, not the foreign scan).
+- **Consolidation offset & rotation generation**: `last_consolidated` is an
+  absolute message index the consolidator snapshots (as `total`) BEFORE its slow
+  LLM call and writes back via `mark_consolidated`. A rotation firing during that
+  await truncates the file and shifts every surviving index, so the stale offset
+  can no longer be applied. Detection uses a monotonically-increasing
+  `rotation_generation` counter in the metadata line (bumped by `_maybe_rotate`
+  on every rotation, carried forward by compaction, absent field == 0 for legacy
+  files): the consolidator snapshots it alongside the offset
+  (`rotation_generation()`) and `mark_consolidated(key, total, generation=…)`
+  resets `last_consolidated` to 0 whenever the generation changed — **regardless
+  of how many messages the rotation retained**. This closes the gap a pure
+  `offset > msg_count` heuristic misses (a rotation retaining ≥ the offset leaves
+  `offset ≤ msg_count` true yet still shifted every index, silently marking
+  never-consolidated retained messages as done); the `offset > msg_count` check
+  remains as a defense-in-depth fallback for legacy callers that pass no
+  generation. Reconsolidating a few already-processed messages is harmless and
+  idempotent; dropping unprocessed ones is a persisted data-integrity failure.
 
 ## Session Archive (`history.py`)
 

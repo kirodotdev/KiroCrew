@@ -449,6 +449,31 @@ class TestPatchWritesCanonicalKey:
         assert servers["@playwright/mcp"] == {"command": "npx", "args": ["@playwright/mcp@latest"]}
 
 
+class TestPatchMalformedMcpJson:
+    """A user-owned mcp.json may hold valid JSON that isn't an object, or an
+    mcpServers that isn't a dict. patch_mcp_* guarded only JSONDecodeError/OSError,
+    so data.setdefault / servers[...] raised an uncaught AttributeError/TypeError.
+    The patcher must reset the bad shape and still register the canonical key."""
+
+    @pytest.mark.parametrize("patcher", ["extension", "headless"])
+    @pytest.mark.parametrize("bad", ["[]", "null", '"hi"', "42", '{"mcpServers": []}'])
+    def test_non_object_shape_does_not_crash(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, patcher: str, bad: str
+    ):
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(setup_mod, "_kirocrew_bin", lambda: "kirocrew")
+        mcp_json = tmp_path / ".kiro" / "settings" / "mcp.json"
+        mcp_json.parent.mkdir(parents=True, exist_ok=True)
+        mcp_json.write_text(bad)
+        if patcher == "extension":
+            patch_mcp_extension("tok-123")  # must not raise
+        else:
+            patch_mcp_headless()  # must not raise
+        # The bad shape was reset and the canonical proxy key registered.
+        servers = _read_servers(mcp_json)
+        assert _CANONICAL in servers
+
+
 # ── TestMigrateOwnedPlaywrightRegistration ───────────────────────────────────
 
 

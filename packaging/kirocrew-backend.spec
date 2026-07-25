@@ -61,10 +61,6 @@ for rel in [
     "model_registry.json",
     "config/defaults.json",
     "config/prompt.md",
-    "config/persona-lumon.md",
-    "config/persona-lcars.md",
-    "config/persona-bikini-bottom.md",
-    "config/persona-knight-rider.md",
     "config/prompt-orchestrator.md",
     "apps/app-registry.json",
 ]:
@@ -72,7 +68,7 @@ for rel in [
 
 # Directory trees (data-bearing).
 for rel in [
-    "config",          # all prompts/personas/schema json
+    "config",          # all prompts/schema json
     "apps",            # builtins + app.json manifests + registry
     "eval/scenarios",  # eval specs
     "docs",            # in-app docs served by the dashboard

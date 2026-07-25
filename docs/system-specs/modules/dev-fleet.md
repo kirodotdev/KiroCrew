@@ -390,13 +390,18 @@ All user-visible output passes through `redact_credentials()` and
 
 ## Bundled Skills
 
-The app bundles three skills declared in `app.json`:
+The app bundles two skills declared in `app.json`:
 
 - `skills/pod-e2e` — end-to-end test harness for isolated pod instances
-- `skills/kirocrew-worktree-dev` — developer workflow guide for brazil-worktrees
 - `skills/feature-demo-recording` — headless Playwright video recording
 
-Skills are registered as symlinks into `~/.kirocrew/skills/` via the app bridge at
+`kirocrew-worktree-dev` is deliberately NOT bundled: the canonical copy is
+owned by the `skills/kirocrew-dev/` development-skills folder (synced into
+every install via the project-dir mechanism), and the app-bridged duplicate
+was removed because two copies of the same skill drift and get loaded
+nondeterministically against each other (PR #353 arbiter finding).
+
+Skills are registered as symlinks into `~/.kiro/crew/skills/` via the app bridge at
 two lifecycle points:
 
 1. **On enable** — `register_app()` in `bridges.py` creates namespaced + flat symlinks

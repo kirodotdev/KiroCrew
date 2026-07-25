@@ -4197,7 +4197,25 @@ class GatewayOrchestrator:
         if self.dashboard_state:
             from kiro_crew.dashboard.chat import save_all_slots_to_history
 
-            save_all_slots_to_history(self.dashboard_state)
+            # save_all_slots_to_history does synchronous per-slot file I/O that
+            # takes the per-session cross-process lock; on the event loop a
+            # contended session would raise HistoryLockTimeout (and a wedged
+            # disk would block the loop). Offload to the bounded
+            # subprocess_executor with a deadline so a slot's final save is
+            # attempted off-loop and cannot stall the shutdown path.
+            try:
+                await asyncio.wait_for(
+                    asyncio.get_running_loop().run_in_executor(
+                        subprocess_executor(),
+                        save_all_slots_to_history,
+                        self.dashboard_state,
+                    ),
+                    timeout=5.0,
+                )
+            except Exception:
+                logger.debug(
+                    "Dashboard slot save before shutdown failed", exc_info=True
+                )
             self.dashboard_state.file_indexes.stop_all()
 
         # Cancel in-flight handler tasks
@@ -4481,7 +4499,24 @@ class GatewayOrchestrator:
                 self.dashboard_state.push_update_progress("restarting", "Restarting server…")
                 from kiro_crew.dashboard.chat import save_all_slots_to_history
 
-                save_all_slots_to_history(self.dashboard_state)
+                # Offload the synchronous per-slot save (per-session lock + disk
+                # I/O) to the bounded subprocess_executor with a deadline so a
+                # contended/wedged session can't stall the auto-update restart
+                # (mirrors the shutdown save above).
+                try:
+                    await asyncio.wait_for(
+                        asyncio.get_running_loop().run_in_executor(
+                            subprocess_executor(),
+                            save_all_slots_to_history,
+                            self.dashboard_state,
+                        ),
+                        timeout=5.0,
+                    )
+                except Exception:
+                    logger.debug(
+                        "Dashboard slot save before auto-update restart failed",
+                        exc_info=True,
+                    )
             if self.sessions:
                 await self.sessions.close_all()
             # Use -m kiro_crew rather than sys.argv[0] so the restart resolves

@@ -40,6 +40,7 @@ Instructions for the LLM agent...
 | `description` | yes | One-line summary — the LLM sees this to decide relevance |
 | `always` | no | `true` to inject into every session (default: `false`) |
 | `triggers` | no | Comma-separated keywords that auto-inject the skill. Prefix with `!` for negative triggers (e.g. `!test` excludes when "test" appears) |
+| `repo_scope` | no | Relative path (e.g. `src/kiro_crew`) that must exist in the CWD or an ancestor for the skill to be eligible. Mechanically suppresses repo-specific skills outside their repo — use for skills whose instructions would be wrong or destructive elsewhere. Fails closed. |
 
 ### Loading Behavior
 

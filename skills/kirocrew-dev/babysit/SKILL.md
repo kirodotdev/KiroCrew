@@ -12,7 +12,7 @@ tags: [skill, kirocrew, monitor, babysit, autonudge, loop]
 to **your current session**. After each of your turns completes and the
 session sits idle for `interval_secs`, the message is re-injected as your
 next turn. You keep the full conversation context, memory, and tools on every
-cycle. Loops persist to `~/.kirocrew/autonudge.json` and survive gateway
+cycle. Loops persist to `~/.kiro/crew/autonudge.json` and survive gateway
 restarts.
 
 Works from:

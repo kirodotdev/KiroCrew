@@ -66,10 +66,10 @@ dim "[1/4] Scanning working tree for internal markers..."
 INTERNAL_PATTERN='amazon\.com|a2z\.com|aws\.dev|\.amazon\.|code\.amazon|t\.corp|sim\.amazon|isengard|phonetool|midway-auth|mwinit|brazil ws|brazil-build|brazil-runtime|brazil-pkg-cache|meshclaw|Mesh-[0-9]|AVP-[0-9]|account.?[0-9]{12}|CR-[0-9]{6,}|\bP[0-9]{6,}\b'
 
 matches=$(grep -rniE "$INTERNAL_PATTERN" \
-  src/ website/src/ docs/ skills/ scripts/ config/ packaging/ \
+  src/ website/src/ website/docs/ docs/ skills/ scripts/ config/ packaging/ \
   ./*.md \
   --include='*.py' --include='*.ts' --include='*.tsx' --include='*.md' --include='*.json' \
-  --include='*.sh' --include='*.yaml' --include='*.yml' \
+  --include='*.sh' --include='*.yaml' --include='*.yml' --include='*.css' \
   2>/dev/null || true)
 
 # Filter out allowlisted paths

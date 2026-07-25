@@ -95,6 +95,27 @@ jobs:
       wheel_artifact: cli-wheel
     secrets: inherit
 
+  # ── Linux desktop publish ─────────────────────────────────────────────
+  # Publishes the built AppImage to the distribution CDN (versioned key +
+  # latest alias). Its own lane beside publish-cli, deliberately NOT inside
+  # sign-and-notarize.yml: the Linux artifact takes no part in the macOS
+  # trust chain, and needing only build-desktop means neither a wheel nor a
+  # macOS signing failure can block it (per-platform releases).
+  publish-linux:
+    name: Publish Linux Desktop (nightly channel)
+    needs: [version, build-desktop]
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/publish-linux.yml
+    with:
+      channel: nightly
+      version: ${{ needs.version.outputs.nightly_version }}
+      publish: true
+      appimage_artifact: build-linux-x64
+    secrets: inherit
+
   # Caller job for the reusable sign-and-notarize workflow: a workflow_call
   # callee can never exceed the caller job's permissions, so the caller must
   # grant id-token explicitly. attestations:write covers the sign job's

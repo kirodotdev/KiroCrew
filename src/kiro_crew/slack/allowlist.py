@@ -216,6 +216,29 @@ async def send_dashboard_link(
     # Tunnel URL is only used when explicitly opted in via slack.use_tunnel_url
     # (default false until tunnel mechanism is scaled for general use).
     tunnel_url = get_tunnel_url() if cfg.slack.use_tunnel_url else ""
+    # Zero-touch provisioning seam: when opted into the tunnel URL, the box is
+    # localhost-only, and no tunnel is live yet, give a composed edition a chance
+    # to provision one on demand (install + enable + start), then re-read the URL.
+    # The public Default's ensure_available() returns "disabled" (no-op), so the
+    # standalone path is byte-identical — this block only does work for an edition
+    # that implements the seam. PlatformCompositionError is re-raised (fail-closed).
+    if cfg.slack.use_tunnel_url and local_only and not tunnel_url:
+        from kiro_crew.platform import current_context
+        from kiro_crew.platform.context import async_safe_context_call
+
+        state = await async_safe_context_call(
+            lambda: current_context().tunnel.ensure_available(),
+            fallback="disabled",
+            log_message="tunnel.ensure_available failed; falling back to local link",
+        )
+        # Only adopt a tunnel URL once the tunnel is actually CONNECTED — a
+        # "starting" tunnel has no public URL live yet, so re-reading it would
+        # yield "" and we would (correctly) fall through to the local link
+        # anyway; gating on "connected" makes that explicit and never risks
+        # sending a half-provisioned/localhost link as if it were the tunnel.
+        # The edition can re-issue the link on a later message once connected.
+        if state == "connected":
+            tunnel_url = get_tunnel_url() or tunnel_url
     if tunnel_url:
         url = f"{tunnel_url}/?token={token}"
     else:

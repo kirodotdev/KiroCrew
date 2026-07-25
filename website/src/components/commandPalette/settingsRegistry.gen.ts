@@ -232,14 +232,6 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
-    "id": "display.color-theme",
-    "label": "Color Theme",
-    "description": "Select a color palette for the dashboard",
-    "tab": "display",
-    "type": "select",
-    "occurrence": 1
-  },
-  {
     "id": "display.display-mode",
     "label": "Display Mode",
     "description": "How the session color is applied to the row.",
@@ -293,6 +285,14 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Choose a color palette for your sidebar sessions.",
     "tab": "display",
     "type": "buttonGroup",
+    "occurrence": 1
+  },
+  {
+    "id": "display.theme",
+    "label": "Theme",
+    "description": "Select a theme for the dashboard",
+    "tab": "display",
+    "type": "select",
     "occurrence": 1
   },
   {

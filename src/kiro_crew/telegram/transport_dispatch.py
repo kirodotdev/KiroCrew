@@ -372,7 +372,9 @@ class TelegramDispatcher:
             # fall through to the except and re-record the successful turn). ──
             self.sessions.record_success(session_key)
             try:
-                self._persist_turn(session_key, text, accumulated, is_new)
+                await asyncio.to_thread(
+                    self._persist_turn, session_key, text, accumulated, is_new
+                )
             except Exception:
                 logger.warning(
                     "Telegram: persist_turn failed session=%s", session_key, exc_info=True

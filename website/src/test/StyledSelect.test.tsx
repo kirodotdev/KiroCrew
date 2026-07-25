@@ -2,12 +2,12 @@ import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, screen, fireEvent, act } from '@testing-library/react'
 import StyledSelect from '../components/StyledSelect'
 
-// 17 themes — same count as the Color Theme dropdown that triggered the bug report.
+// 16 themes — same order as the Color Theme dropdown that triggered the bug report.
 // Threshold for the filter input is options.length > 5, so 6+ exercises the filter path.
 const MANY_OPTIONS = [
   'emerald', 'monokai', 'solarized', 'amber', 'dracula', 'nord',
   'rosepine', 'catppuccin', 'tokyonight', 'gruvbox', 'ice', 'amoled',
-  'kiro', 'intellij', 'highcontrast', 'lumon', 'everforest',
+  'kiro', 'intellij', 'highcontrast', 'everforest',
 ]
 const FEW_OPTIONS = ['emerald', 'monokai', 'solarized']
 

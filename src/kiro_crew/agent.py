@@ -1490,8 +1490,26 @@ def _refresh_dynamic_fields(config: dict) -> None:
     if isinstance(bundled_resources, list) and bundled_resources and not config.get("resources"):
         config["resources"] = list(bundled_resources)
 
-    # tools/allowedTools: intentionally not modified on existing configs.
-    # User controls these lists entirely.
+    # tools/allowedTools: user-owned and otherwise NOT modified on existing
+    # configs.  Narrow exception (ADD-only): ensure the ``tool_search`` built-in
+    # grant is present.  kiro-cli only activates MCP Tool Search when the
+    # ToolSearch built-in is in the agent's tools list; without the grant, the
+    # per-session overlay written for AgentConfig.tool_search (enabled +
+    # minPct=0/minTokens=0) is a no-op and full MCP tool specs are sent every
+    # turn.  Existing configs created before ``tool_search`` shipped in
+    # defaults.json never gain it otherwise, because the tools list is preserved
+    # above.  It is a read-only, auto-allowed built-in (permission eval => Allow)
+    # so no ``allowedTools`` entry is needed.  Gated on the shipped template
+    # actually granting it (so an edition that drops it is respected) and scoped
+    # to this single tool; the feature's on/off remains the AgentConfig.tool_search
+    # toggle.  Never removes a tool and never reorders the rest.
+    tools = config.get("tools")
+    if (
+        isinstance(tools, list)
+        and "tool_search" in (bundled.get("tools") or [])
+        and "tool_search" not in tools
+    ):
+        tools.append("tool_search")
 
 
 def get_shipped_tools() -> dict[str, list[str]]:

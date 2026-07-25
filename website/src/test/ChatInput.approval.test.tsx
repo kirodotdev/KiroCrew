@@ -6,15 +6,32 @@ vi.mock("@radix-ui/react-popover", async () => await import("./__mocks__/@radix-
 import { screen, fireEvent, waitFor } from '@testing-library/react'
 import { renderWithProviders, createTestStore } from './helpers'
 import ChatInput from '../components/ChatInput'
-import { api } from '../api/client'
+import { api, ApiError } from '../api/client'
 import type { RootState } from '../store'
 
-vi.mock('../api/client', () => ({
-  api: {
-    resolveApproval: vi.fn(() => Promise.resolve({})),
-    approveChatSlot: vi.fn(() => Promise.resolve({})),
-  },
-}))
+vi.mock('../api/client', () => {
+  // Declared INSIDE the factory: vi.mock is hoisted above module-level
+  // declarations, so a top-level class here would be a TDZ error.
+  //
+  // Must be a real class: ChatInput narrows the rejection with
+  // `err instanceof ApiError` to tell an orphaned approval (404) from a
+  // genuine transport failure. A bare object stub makes that check false.
+  class MockApiError extends Error {
+    readonly status: number
+    constructor(status: number, message: string) {
+      super(message)
+      this.name = 'ApiError'
+      this.status = status
+    }
+  }
+  return {
+    api: {
+      resolveApproval: vi.fn(() => Promise.resolve({})),
+      approveChatSlot: vi.fn(() => Promise.resolve({})),
+    },
+    ApiError: MockApiError,
+  }
+})
 
 const defaultProps = {
   value: '',
@@ -264,6 +281,61 @@ describe('ChatInput approval flow', () => {
     fireEvent.click(screen.getByText('Trust'))
     const buttons = screen.getAllByRole('menuitem')
     expect(buttons.some(b => b.textContent?.includes('commands'))).toBe(false)
+  })
+})
+
+/**
+ * Orphaned approval cards: the backend no longer holds a future for the id
+ * (turn stopped / timed out / process replaced), so it answers 404. The card
+ * used to stay on screen with every button dead — clicks looked ignored.
+ */
+describe('ChatInput orphaned approval (404)', () => {
+  const notFound = () => new ApiError(404, 'no pending approval')
+
+  it('clears the approval bar when Trust 404s', async () => {
+    vi.mocked(api.approveChatSlot).mockRejectedValueOnce(notFound())
+    const store = createTestStore(stateWithApproval())
+    renderWithProviders(<ChatInput {...defaultProps} />, { store })
+    fireEvent.click(screen.getByText('Trust'))
+    fireEvent.click(screen.getByText('Trust all tools'))
+    await waitFor(() => {
+      expect(screen.queryByText('Allow once')).not.toBeInTheDocument()
+    })
+    expect(store.getState().chat.messages[1].meta!.resolved).toBe('stale')
+  })
+
+  it('clears the approval bar when Allow once 404s', async () => {
+    vi.mocked(api.resolveApproval).mockRejectedValueOnce(notFound())
+    const store = createTestStore(stateWithApproval())
+    renderWithProviders(<ChatInput {...defaultProps} />, { store })
+    fireEvent.click(screen.getByText('Allow once'))
+    await waitFor(() => {
+      expect(screen.queryByText('Allow once')).not.toBeInTheDocument()
+    })
+  })
+
+  it('explains why the click did nothing instead of failing silently', async () => {
+    vi.mocked(api.resolveApproval).mockRejectedValueOnce(notFound())
+    const store = createTestStore(stateWithApproval())
+    renderWithProviders(<ChatInput {...defaultProps} />, { store })
+    fireEvent.click(screen.getByText('Reject'))
+    await waitFor(() => {
+      expect(screen.getByRole('status')).toHaveTextContent(/expired/i)
+    })
+  })
+
+  it('keeps the bar up on a non-404 failure so the user can retry', async () => {
+    vi.mocked(api.resolveApproval).mockRejectedValueOnce(new ApiError(503, 'busy'))
+    const store = createTestStore(stateWithApproval())
+    renderWithProviders(<ChatInput {...defaultProps} />, { store })
+    fireEvent.click(screen.getByText('Allow once'))
+    await waitFor(() => {
+      expect(screen.getByRole('status')).toBeInTheDocument()
+    })
+    // A transient server error is not evidence the approval is gone — the
+    // buttons must remain live rather than dismissing a still-valid request.
+    expect(screen.getByText('Allow once')).toBeInTheDocument()
+    expect(store.getState().chat.messages[1].meta!.resolved).toBeUndefined()
   })
 })
 

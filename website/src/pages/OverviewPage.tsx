@@ -5,6 +5,8 @@ import { useUptime } from '../hooks/useUptime'
 import { api } from '../api/client'
 import { StatCard } from '../components/ui'
 import { TunnelStatus } from '../components/TunnelStatus'
+import ErrorBoundary from '../components/ErrorBoundary'
+import { getOverviewStatCards } from './overviewStatCards'
 import { MemoryTab, AgentCfgTab, KiroCrewCfgTab, UsageTab, PortabilityTab } from './overview'
 
 const tabs = ['memory', 'usage', 'kirocrewcfg', 'agentcfg', 'portability']
@@ -32,6 +34,17 @@ export default function OverviewPage() {
           <StatCard key={s.label} label={s.label} value={s.value} accent={s.accent} delay={i * 60} />
         ))}
         <TunnelStatus delay={6 * 60} />
+        {/* Extension slot: downstream-registered status cards (e.g. an edition
+            credential-TTL card). Empty in the stock build. Each is isolated in
+            its own ErrorBoundary so a throwing card disables only itself. */}
+        {getOverviewStatCards().map((c, i) => {
+          const CardComp = c.component
+          return (
+            <ErrorBoundary key={c.id} scope={`overview-stat-card:${c.id}`} fallback={null}>
+              <CardComp delay={(7 + i) * 60} />
+            </ErrorBoundary>
+          )
+        })}
       </div>
         <div className="flex gap-1 mb-4 border-b border-border">
           {tabs.map(t => (

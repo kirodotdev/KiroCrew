@@ -3334,7 +3334,13 @@ async def test_auto_prune_reaper_audits_scan_failure():
 
 
 def test_register_skills_creates_symlinks_for_bundled_skills(tmp_path, monkeypatch):
-    """Enabling the dev-fleet app registers pod-e2e and kirocrew-worktree-dev skills."""
+    """Enabling the dev-fleet app registers its bundled pod-e2e skill.
+
+    kirocrew-worktree-dev is deliberately NOT bundled here: the canonical copy
+    ships in the top-level ``skills/`` catalog (synced into every install), and
+    a second app-bridged copy would drift and be loaded nondeterministically
+    against it (PR #353 arbiter finding).
+    """
     from kiro_crew.apps.bridges import _register_skills
     from kiro_crew.apps.manifest import AppManifest
 
@@ -3351,7 +3357,7 @@ def test_register_skills_creates_symlinks_for_bundled_skills(tmp_path, monkeypat
     manifest = AppManifest(
         name="dev-fleet",
         version="1.0.0",
-        skills=["skills/pod-e2e", "skills/kirocrew-worktree-dev"],
+        skills=["skills/pod-e2e"],
     )
 
     registered = _register_skills("dev-fleet", manifest, app_root)
@@ -3359,9 +3365,11 @@ def test_register_skills_creates_symlinks_for_bundled_skills(tmp_path, monkeypat
     skills_dir = fake_config / "skills"
     namespaced_dir = skills_dir / "dev-fleet"
 
-    expected_skills = {"pod-e2e", "kirocrew-worktree-dev"}
+    expected_skills = {"pod-e2e"}
     registered_names = {r.split("/")[-1] for r in registered}
     assert expected_skills <= registered_names
+    # The stale bundled copy must stay deleted — the shipped catalog owns it.
+    assert not (app_root / "skills" / "kirocrew-worktree-dev").exists()
 
     for skill_name in expected_skills:
         link = namespaced_dir / skill_name
@@ -3392,7 +3400,7 @@ def test_register_skills_tolerates_missing_feature_demo_recording(tmp_path, monk
         version="1.0.0",
         skills=[
             "skills/pod-e2e",
-            "skills/kirocrew-worktree-dev",
+            "skills/kirocrew-worktree-dev",  # no longer bundled — must not crash
             "skills/feature-demo-recording",
         ],
     )
@@ -3401,7 +3409,8 @@ def test_register_skills_tolerates_missing_feature_demo_recording(tmp_path, monk
 
     registered_names = {r.split("/")[-1] for r in registered}
     assert "pod-e2e" in registered_names
-    assert "kirocrew-worktree-dev" in registered_names
+    # Absent bundled dirs are tolerated, not registered.
+    assert "kirocrew-worktree-dev" not in registered_names
 
 
 @pytest.mark.asyncio

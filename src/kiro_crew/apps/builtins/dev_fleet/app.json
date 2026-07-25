@@ -20,7 +20,7 @@
       }
     ]
   },
-  "skills": ["skills/pod-e2e", "skills/kirocrew-worktree-dev", "skills/feature-demo-recording"],
+  "skills": ["skills/pod-e2e", "skills/feature-demo-recording"],
   "backend": {
     "entryPoint": "kiro_crew.apps.builtins.dev_fleet.server",
     "port": "auto",

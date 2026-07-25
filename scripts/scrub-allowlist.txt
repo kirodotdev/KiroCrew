@@ -40,8 +40,11 @@ website/src/test/sensitiveCommand.test.ts
 # Frontend source/test comments referencing CRs for provenance
 website/src/.*CR-
 
-# Documentation (contains internal references that will be scrubbed/removed before publish)
-docs/
+# Documentation (contains internal references that will be scrubbed/removed
+# before publish). Anchored to the top-level ``docs/`` tree only — ``website/``
+# (incl. ``website/docs/``, the shipped frontend pack-author contract) is a
+# public source root and IS scanned, so a bare ``docs/`` must not swallow it.
+^docs/
 CHANGELOG.md
 
 # CLAUDE.md's "do not reintroduce" policy paragraph names the internal marker

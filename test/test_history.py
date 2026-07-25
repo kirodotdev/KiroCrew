@@ -1365,7 +1365,9 @@ class TestConsolidationDoesNotBlockLoop:
         write_thread_id: dict[str, int] = {}
 
         log = MagicMock()
-        log.get_unconsolidated.return_value = ([{"role": "user", "content": "hi"}], 1)
+        log.snapshot_for_consolidation.return_value = (
+            [{"role": "user", "content": "hi"}], 1, 0
+        )
         log.get_metadata.return_value = {}
 
         memory = MagicMock()
@@ -1410,7 +1412,9 @@ class TestConsolidationDoesNotBlockLoop:
         save_thread_id: dict[str, int] = {}
 
         log = MagicMock()
-        log.get_unconsolidated.return_value = ([{"role": "user", "content": "hi"}], 1)
+        log.snapshot_for_consolidation.return_value = (
+            [{"role": "user", "content": "hi"}], 1, 0
+        )
         log.get_metadata.return_value = {}
 
         memory = MagicMock()

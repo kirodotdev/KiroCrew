@@ -307,6 +307,46 @@ def format_schedule(schedule: CronSchedule, tz_name: str = "") -> str:
     return schedule.kind
 
 
+def is_valid_timezone(tz_name: str) -> bool:
+    """Return True if ``tz_name`` is a resolvable IANA timezone key.
+
+    Validates via the ``ZoneInfo`` constructor -- a single targeted, cached
+    lookup -- rather than ``available_timezones()``, which recursively walks
+    the entire tzdata tree and opens many files on every call. Because this
+    runs on callers reachable from the async event loop (dashboard cron PATCH
+    -> CronService.update_job), the cheap constructor path avoids blocking the
+    gateway (see ``no-blocking-call-on-event-loop``). ``ZoneInfo`` raises
+    ``ZoneInfoNotFoundError`` for unknown keys and ``ValueError`` for malformed
+    ones (e.g. absolute paths, ``..``); both are treated as invalid.
+    """
+    if not tz_name:
+        return False
+    try:
+        ZoneInfo(tz_name)
+    except Exception:
+        return False
+    return True
+
+
+def is_valid_skip_date(value: object) -> bool:
+    """Return True iff ``value`` is a strict, zero-padded ``YYYY-MM-DD`` date.
+
+    ``datetime.strptime(s, "%Y-%m-%d")`` accepts non-padded inputs such as
+    ``"2026-1-1"``: they parse fine, but fire-time skip matching compares
+    against a zero-padded rendering (``"2026-01-01"``), so the intended skip
+    silently never matches and the job runs on a date the user told it to
+    skip -- with no error anywhere. Requiring the parsed value to round-trip
+    exactly back to ``%Y-%m-%d`` rejects non-padded (and calendar-invalid)
+    inputs at every persistence path, independent of the running Python
+    version's ``date.fromisoformat`` leniency.
+    """
+    s = str(value)
+    try:
+        return datetime.strptime(s, "%Y-%m-%d").strftime("%Y-%m-%d") == s
+    except (ValueError, TypeError):
+        return False
+
+
 def get_local_tz() -> tuple[str, ZoneInfo]:
     """Return (tz_name, ZoneInfo) from config, falling back to UTC."""
     try:
@@ -780,6 +820,8 @@ class CronService:
         created_by: str = "",
         approval_mode: str = "",
         enabled: bool = True,
+        timezone: str = "",
+        skip_dates: list[str] | None = None,
     ) -> CronJob:
         """Add a new job. Provide one of ``every_secs``, ``at_ts``, or ``cron_expr``.
 
@@ -787,10 +829,29 @@ class CronService:
         mirroring :meth:`enable_job`) so the paused state is part of the FIRST
         persist — never an enabled-then-paused two-save window that a crash or
         a concurrent reader of the store could capture as enabled.
+
+        ``timezone``/``skip_dates`` are validated HERE, at the persistence
+        owner, and folded into the job before its single ``_save()`` -- so no
+        caller can strand a half-populated or invalid job on disk for *these
+        two calendar-validity-sensitive fields*, and every create path (MCP,
+        apps SDK, dashboard, CLI) shares one check. Other first-save fields
+        (``agent_id``/``model``/``session_key``/``strict_schedule``/
+        ``hide_in_chat``/``silent``) are still folded by callers after
+        ``add_job`` returns; totalizing the invariant over those fields is
+        tracked in issue #391 (delivered by the concurrent ``fix/cron-locking``
+        rework, PR #331, which consolidates every first-save field into a single
+        locked build+persist). Until then this guarantee is scoped to the two
+        fields named above.
         """
         valid_approval_modes = ("", "auto")
         if approval_mode not in valid_approval_modes:
             raise ValueError(f"Invalid approval_mode: {approval_mode!r}")
+        if timezone and not is_valid_timezone(timezone):
+            raise ValueError(f"Invalid timezone: {timezone!r}")
+        skip_dates = skip_dates or []
+        for _d in skip_dates:
+            if not is_valid_skip_date(_d):
+                raise ValueError(f"Invalid skip_date: {_d!r} (expected YYYY-MM-DD)")
         if cron_expr:
             if not validate_cron_expr(cron_expr):
                 raise ValueError(f"Invalid cron expression: {cron_expr}")
@@ -815,6 +876,8 @@ class CronService:
             delete_after_run=delete_after_run,
             created_by=created_by,
             approval_mode=approval_mode,
+            timezone=timezone,
+            skip_dates=skip_dates,
         )
         with self._file_lock():
             self._sync()
@@ -858,6 +921,22 @@ class CronService:
                         raise ValueError(f"Invalid interval: {kwargs['every_secs']}") from e
                     if val < _MIN_INTERVAL_SECS:
                         raise ValueError(f"Interval must be >= {_MIN_INTERVAL_SECS}s, got {val}")
+                # Calendar-validity of timezone / skip_dates, validated at the
+                # persistence owner so EVERY caller (MCP cron_add/cron_update,
+                # dashboard, CLI) is covered by one check rather than each
+                # write path re-implementing it. The schema regex only checks
+                # the YYYY-MM-DD shape, not that the date exists -- so
+                # skip_dates=["2026-02-30"] would otherwise persist silently
+                # and the skip would never match at fire time.
+                if "timezone" in kwargs and kwargs["timezone"]:
+                    if not is_valid_timezone(kwargs["timezone"]):
+                        raise ValueError(f"Invalid timezone: {kwargs['timezone']!r}")
+                if "skip_dates" in kwargs and kwargs["skip_dates"]:
+                    for _d in kwargs["skip_dates"]:
+                        if not is_valid_skip_date(_d):
+                            raise ValueError(
+                                f"Invalid skip_date: {_d!r} (expected YYYY-MM-DD)"
+                            )
                 if "name" in kwargs and kwargs["name"]:
                     job.name = kwargs["name"]
                 if "message" in kwargs and kwargs["message"]:

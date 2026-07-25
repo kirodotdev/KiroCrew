@@ -55,6 +55,7 @@ from kiro_crew.mcp_shared import (
     is_tool_cancelled,
     run_mcp_stdio_loop,
 )
+from kiro_crew.messaging.link import is_legacy_slack_key, legacy_key
 from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.security import (
     BINARY_MIME_ALLOWLIST,
@@ -2396,23 +2397,75 @@ def _validate_args(name: str, args: dict[str, Any]) -> dict[str, Any]:
 
 
 def _current_session_thread_ts() -> str | None:
-    """Read the current session's thread_ts from the most recent session_pid file."""
-    try:
-        pid_files = sorted(
-            config_dir().glob("session_pid_*.txt"),
-            key=lambda f: f.stat().st_mtime,
-            reverse=True,
-        )
-        if pid_files:
-            raw = safe_read_file_bytes(str(pid_files[0]))
-            if raw is None:
-                return None
-            ts = raw.decode("utf-8").strip()
-            if ts and not ts.startswith("dashboard:"):
-                return ts
-    except Exception:
-        pass
-    return None
+    """Return the CALLER's Slack thread_ts, or None.
+
+    Thin ``thread_ts | None`` view over :func:`_classify_slack_identity` — see
+    that function for the three-state discrimination (``thread`` /
+    ``non_slack`` / ``unresolved``) that ``file_send`` uses to fail CLOSED for
+    audience when the caller cannot be attributed. This wrapper returns the
+    bare thread_ts only for the ``thread`` state and ``None`` otherwise; on its
+    own it does NOT distinguish "not a Slack session" from "identity
+    unresolved", so callers on the outward-facing send path MUST use
+    :func:`_classify_slack_identity` directly to avoid the channel-root
+    disclosure hazard (unresolved identity + explicit channel -> channel root).
+
+    Resolution is via :func:`_resolve_session_key_strict`, which accepts ONLY
+    the gateway-injected env var or an HMAC-sidecar-verified
+    ``KIROCREW_HOST_PID`` lookup. It deliberately drops the ``/proc`` ancestor
+    walk and the bare (agent-writable, forgeable) ``.txt`` fallback the lenient
+    resolver allows — closing both the forged-pid-file and the subagent->parent
+    misresolution paths, and the prior newest-mtime ``session_pid_*.txt`` glob
+    that frequently resolved to a DIFFERENT session than the caller.
+    """
+    state, thread_ts = _classify_slack_identity()
+    return thread_ts if state == "thread" else None
+
+
+def _classify_slack_identity() -> tuple[str, str | None]:
+    """Classify the caller's STRICT Slack identity for outward file delivery.
+
+    ``_current_session_thread_ts`` collapses the result to a bare
+    ``thread_ts | None``; this returns the underlying THREE-state discrimination
+    that ``file_send`` needs to tell "this is not a Slack session" apart from
+    "the caller's Slack identity could not be resolved". Collapsing those two
+    into a bare ``None`` is a channel-root disclosure hazard: an *unresolved*
+    caller that still supplies an explicit tracked channel would upload at the
+    CHANNEL ROOT (``thread_ts=None`` + channel), exposing a file meant for one
+    thread to the entire channel — a reachable cross-session disclosure that is
+    fail-OPEN with respect to audience, not fail-closed. Warm-pool-claimed Slack
+    sessions have no strict identity source (the gateway writes the env var /
+    HMAC sidecar only at sandbox spawn, not at warm-pool claim), so every one of
+    their ``file_send`` calls hits this seam.
+
+    Returns one of:
+
+    * ``("thread", "<bare_ts>")`` — caller is a RESOLVED Slack thread (a
+      canonical ``slack:<thread_ts>`` key, converted via
+      :func:`messaging.link.legacy_key`, or an already-bare legacy Slack key).
+      Deliver threaded to ``thread_ts``.
+    * ``("non_slack", None)``     — caller is a RESOLVED non-Slack session
+      (``dashboard:``/``discord:``/app/channel/future namespace). It has no
+      Slack thread, but its identity IS known, so the handler's authorized
+      routing (owner DM, session-map-linked thread, or an explicitly-supplied
+      tracked channel) is safe — never a channel-root broadcast for an
+      unknown caller.
+    * ``("unresolved", None)``    — strict resolution failed (no gateway env var
+      and no HMAC-verified host-pid). The caller cannot be attributed, so an
+      outward Slack send must fail CLOSED (refuse) rather than broadcast.
+    """
+    key = _resolve_session_key_strict()
+    if not key:
+        return ("unresolved", None)
+    # Canonical ``slack:<thread_ts>`` -> bare thread_ts.
+    bare = legacy_key(key)
+    if bare is not None:
+        return ("thread", bare)
+    # Already-bare legacy Slack thread_ts -> pass through.
+    if is_legacy_slack_key(key):
+        return ("thread", key)
+    # Resolved, but not a Slack thread (dashboard:, discord:, apps, channels,
+    # future ns) — identity is known, so downstream routing is authorized.
+    return ("non_slack", None)
 
 
 def _call_tool(name: str, raw_args: dict[str, Any]) -> str:
@@ -2791,6 +2844,14 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         deadline = time.monotonic() + max_wait
         _next_ping = time.monotonic() + 60.0  # first keepalive after 60s, not immediately
         while time.monotonic() < deadline:
+            # Cooperative cancellation: honor notifications/cancelled the same
+            # way wait does, so a cancelled spawn_sub_agents call exits promptly
+            # instead of blocking the tool worker until every sub-agent settles
+            # or max_wait elapses.
+            if is_tool_cancelled():
+                raise ToolCancelled(
+                    f"spawn_sub_agents cancelled while awaiting {len(sa_ids)} sub-agent(s)"
+                )
             if time.monotonic() >= _next_ping:
                 try:
                     _post("/api/session-keepalive", {})
@@ -3426,20 +3487,49 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         )
         if d.get("error"):
             return f"Error: {d['error']}"
-        # Also upload to Slack if available
-        thread_ts = _current_session_thread_ts()
-        slack_resp = _post(
-            "/api/slack/upload-file",
-            {
-                "file_path": str(dest),
-                "filename": dest.name,
-                "thread_ts": thread_ts,
-                "channel": args.get("channel", ""),
-            },
-        )
+        # Also upload to Slack when the caller's Slack identity permits it.
+        #
+        # Resolve identity as a THREE-state result (see
+        # _classify_slack_identity). When strict resolution FAILS we must NOT
+        # fall through to a threadless upload: with an explicit tracked channel
+        # supplied the handler uploads at the CHANNEL ROOT (thread_ts=None +
+        # channel), exposing a file meant for one thread to the whole channel —
+        # a reachable cross-session disclosure (fail-OPEN w.r.t. audience). A
+        # warm-pool-claimed Slack session is exactly such an unresolved caller.
+        # Fail CLOSED for audience: refuse the Slack upload when the caller
+        # cannot be attributed. A RESOLVED non-Slack session keeps its existing,
+        # authorized routing (owner DM / session-map-linked thread / explicit
+        # tracked channel) because its identity is known and none of those paths
+        # broadcast at channel root for an unknown caller.
+        identity, thread_ts = _classify_slack_identity()
         slack_warning = ""
-        if slack_resp.get("error"):
-            slack_warning = f" (Slack upload failed: {slack_resp['error']})"
+        if identity == "unresolved":
+            sel().log_tool_invocation(
+                session_key="mcp_core",
+                source="mcp",
+                tool_name="file_send",
+                outcome="denied",
+                downstream_service="slack",
+                error="slack_identity_unresolved_upload_refused",
+            )
+            slack_warning = (
+                " (Slack upload skipped: the caller's Slack identity could not "
+                "be resolved, so a threaded upload cannot be guaranteed and a "
+                "channel-root broadcast is refused. The file is available in "
+                "the dashboard.)"
+            )
+        else:
+            slack_resp = _post(
+                "/api/slack/upload-file",
+                {
+                    "file_path": str(dest),
+                    "filename": dest.name,
+                    "thread_ts": thread_ts,
+                    "channel": args.get("channel", ""),
+                },
+            )
+            if slack_resp.get("error"):
+                slack_warning = f" (Slack upload failed: {slack_resp['error']})"
         msg = f"File sent: {dest.name} ({desc})" if desc else f"File sent: {dest.name}"
         return msg + slack_warning
 
@@ -3779,7 +3869,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             f"/api/artifacts/{slug}/comments",
             {
                 # Store the body verbatim; agent provenance is the structured
-                # is_agent flag (no emoji persisted into the body — CLAUDE.md).
+                # is_agent flag (no emoji persisted into the body — AGENTS.md).
                 "text": text,
                 "scope": scope,
                 "is_agent": True,
@@ -3804,7 +3894,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             f"/api/artifacts/{slug}/comments/{parent_id}/reply",
             {
                 # Store the body verbatim; agent provenance is the structured
-                # is_agent flag (no emoji persisted into the body — CLAUDE.md).
+                # is_agent flag (no emoji persisted into the body — AGENTS.md).
                 "text": text,
                 "is_agent": True,
                 "author": "agent",

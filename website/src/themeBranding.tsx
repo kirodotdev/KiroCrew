@@ -47,16 +47,12 @@ export interface ThemeBranding {
 }
 
 /**
- * Registry mapping a color-theme slug to its branding. The core seeds the
- * themes it bundles; downstream bundles extend it via `registerThemeBranding()`.
+ * Registry mapping a color-theme slug to its branding. The core ships no
+ * seeded registrations (the built-in Lumon theme was removed with the
+ * theme-packs PR — installed packs carry their own branding); downstream
+ * bundles extend it via `registerThemeBranding()`.
  */
-const THEME_BRANDING: Record<string, ThemeBranding> = {
-  lumon: {
-    botName: 'LumonClaw',
-    logo: '/static/lumon-logo.png',
-    logoClass: 'w-auto h-10',
-  },
-}
+const THEME_BRANDING: Record<string, ThemeBranding> = {}
 
 /**
  * Register branding for one or more theme slugs at runtime. Duplicate slugs are

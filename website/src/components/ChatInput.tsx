@@ -10,7 +10,7 @@ import { resolveByApprovalId, openActivityToTool, openActivityToTab, selectSlotP
 import { useSlotId } from '../providers/SlotContext'
 import { useToolPillVisible } from '../store/toolPillRegistry'
 import { ToolDetails } from '../pages/chat/ToolDetails'
-import { api } from '../api/client'
+import { api, ApiError } from '../api/client'
 import { safeSetItem } from '../utils/safeStorage'
 import { offlineProps } from '../utils/offline'
 import { shallowEqual } from 'react-redux'
@@ -443,6 +443,9 @@ function ChatInput({
   const pendingApproval = useAppSelector(s => selectSlotPendingApproval(s, slotId), shallowEqual)
   const hasApproval = !!pendingApproval
   const [approvalSubmitting, setApprovalSubmitting] = useState(false)
+  // Non-null while the last approval decision failed. Rendered as a one-line
+  // strip under the composer; auto-clears so it cannot become permanent chrome.
+  const [approvalNotice, setApprovalNotice] = useState<string | null>(null)
 
   const activeSlot = slotId
   const approvalMeta = pendingApproval?.meta as Record<string, unknown> | undefined
@@ -489,6 +492,14 @@ function ChatInput({
   }, [approvalToolCallId])
 
   const showGhost = !!pendingApproval && !pillVisible && ghostSettled
+
+  // Auto-dismiss the failure notice. Bounded lifetime keeps a transient
+  // backend hiccup from leaving a permanent banner over the composer.
+  useEffect(() => {
+    if (!approvalNotice) return
+    const t = setTimeout(() => setApprovalNotice(null), 8000)
+    return () => clearTimeout(t)
+  }, [approvalNotice])
   const showInChat = useCallback(() => {
     if (approvalToolCallId) dispatch(openActivityToTool(approvalToolCallId))
   }, [approvalToolCallId, dispatch])
@@ -499,14 +510,25 @@ function ChatInput({
   const handleApprovalAction = useCallback((decision: string, pattern?: string) => {
     if (!approvalId) return
     setApprovalSubmitting(true)
+    setApprovalNotice(null)
     const finish = () => {
       dispatch(resolveByApprovalId({ id: approvalId, decision }))
       setApprovalSubmitting(false)
     }
     const fail = (err: unknown) => {
+      setApprovalSubmitting(false)
+      // 404 means the backend no longer holds a future for this id — the turn
+      // was stopped, timed out, or the process was replaced. The card is an
+      // orphan: leaving it up makes every button look broken (the original
+      // bug), so clear it and say why instead of only logging to the console.
+      if (err instanceof ApiError && err.status === 404) {
+        dispatch(resolveByApprovalId({ id: approvalId, decision: 'stale' }))
+        setApprovalNotice('That approval expired — the turn it belonged to is no longer waiting.')
+        return
+      }
       // eslint-disable-next-line no-console -- surface real approval-resolution failures to the dev console
       console.error('Approval failed:', err)
-      setApprovalSubmitting(false)
+      setApprovalNotice('Could not submit that decision — see the console for details.')
     }
     if (['trust_command', 'trust_base', 'trust', 'trust_reads'].includes(decision) && activeSlot) {
       const extra: Record<string, string> = { request_id: approvalId }
@@ -1635,7 +1657,8 @@ function ChatInput({
   }, [hasFiles])
 
   return (
-    <div className={`px-5 pb-1 ${hasApproval ? 'pt-0' : 'pt-1'} mx-auto w-full flex flex-col`}
+    // 'input-area' is a stable theming hook — see website/docs/theming-contract.md
+    <div className={`input-area px-5 pb-1 ${hasApproval ? 'pt-0' : 'pt-1'} mx-auto w-full flex flex-col`}
       style={{ maxWidth: 'var(--mc-input-width, 900px)', ...(manualHeight !== null ? { minHeight: (pendingFiles.length > 0 ? INPUT_DRAG_MIN_H + FILE_PREVIEW_H : INPUT_DRAG_MIN_H) + 'px' } : {}) }}>
 
       {aboveComposer}
@@ -1787,7 +1810,15 @@ function ChatInput({
         )}
       </AnimatePresence>
 
-
+      {approvalNotice && (
+        <div
+          role="status"
+          className="flex items-center gap-2 px-4 py-2 mb-1 bg-[color-mix(in_srgb,var(--warn)_12%,transparent)] rounded-lg"
+        >
+          <Lock size={12} className="text-warn shrink-0" />
+          <span className="text-muted text-[13px]">{approvalNotice}</span>
+        </div>
+      )}
 
       {!showGhost && prefillHint && (
         <div className="flex items-center gap-2 px-4 py-2 mb-1 bg-accent/10 rounded-lg">
@@ -2176,8 +2207,9 @@ function ChatInput({
               >
                 {optimizing ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />}
               </button>
+              {/* 'primary' is a stable theming hook (button.primary) — see website/docs/theming-contract.md */}
               <button
-                className="w-8 h-8 rounded-full bg-accent text-accent-fg border-none flex items-center justify-center cursor-pointer hover:bg-accent-hover disabled:opacity-30 disabled:cursor-not-allowed transition-all"
+                className="primary w-8 h-8 rounded-full bg-accent text-accent-fg border-none flex items-center justify-center cursor-pointer hover:bg-accent-hover disabled:opacity-30 disabled:cursor-not-allowed transition-all"
                 onClick={onSend}
                 disabled={(!value.trim() && !pendingFiles.length) || disabled || optimizing || !connected}
                 aria-label="Send"

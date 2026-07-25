@@ -12,6 +12,7 @@ import { BrandingProvider } from './hooks/useBranding'
 import { ProviderProvider } from './providers'
 import { ThemeProvider } from './hooks/useTheme'
 import { UIModeProvider } from './hooks/useUIMode'
+import ThemeExperienceLayer from './components/ThemeExperienceLayer'
 import { initRum } from './rum'
 import App from './App'
 import { queryClient } from './api/queryClient'
@@ -79,6 +80,7 @@ createRoot(document.getElementById('root')!).render(
         <Provider store={store}>
           <ThemeProvider>
             <UIModeProvider>
+              <ThemeExperienceLayer />
               <BrowserRouter>
                 <Routes>
                   <Route path="/worlds-popout" element={<BrandingProvider><ProviderProvider><Suspense fallback={null}><WorldsPopout /></Suspense></ProviderProvider></BrandingProvider>} />

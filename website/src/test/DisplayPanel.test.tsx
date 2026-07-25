@@ -3,6 +3,7 @@ import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { DisplayPanel } from '../pages/settings/DisplayPanel'
 import { renderWithProviders } from './helpers'
+import { api } from '../api/client'
 
 // Mock useZoomCtx — DisplayPanel uses it for zoom/font controls. The object is
 // module-scoped and mutable so individual tests can flip zoomSupported to
@@ -23,25 +24,36 @@ vi.mock('../hooks/ZoomProvider', () => ({
 
 // Mock useTheme — provides color theme state. ThemeProvider is a passthrough
 // so renderWithProviders (in helpers.tsx) can still wrap children without
-// pulling in the real provider's state machine.
-vi.mock('../hooks/useTheme', () => ({
-  useTheme: () => ({
+// pulling in the real provider's state machine. `mockUseTheme` is mutable so a
+// test can flip `themeSwitching` on; a top-level beforeEach restores the default.
+const { mockUseTheme, DEFAULT_THEME } = vi.hoisted(() => {
+  const DEFAULT_THEME = {
     preference: 'dark',
     setTheme: vi.fn(),
     colorTheme: 'default',
     setColorTheme: vi.fn(),
-    allThemes: [
-      { value: 'default', label: 'Default', custom: false },
-    ],
+    allThemes: [{ value: 'default', label: 'Default', custom: false }],
     theme: 'dark',
     themeVersion: 0,
+    themeSwitching: false,
     addCustomTheme: vi.fn(),
     deleteCustomTheme: vi.fn(),
     loadCustomThemes: vi.fn(),
-  }),
+  }
+  return { mockUseTheme: vi.fn(() => DEFAULT_THEME), DEFAULT_THEME }
+})
+vi.mock('../hooks/useTheme', () => ({
+  useTheme: () => mockUseTheme(),
   ThemeProvider: ({ children }: { children: React.ReactNode }) => children,
   CUSTOM_THEMES_CHANGED_EVENT: 'custom-themes-changed',
 }))
+
+// Reset to the default theme shape before every test in this file (runs before
+// the describe-scoped beforeEach hooks). clearAllMocks keeps implementations.
+beforeEach(() => {
+  mockUseTheme.mockReset()
+  mockUseTheme.mockImplementation(() => DEFAULT_THEME)
+})
 
 // Mock useUIMode — provides chat/cli interface paradigm. UIModeProvider is a
 // passthrough so the test doesn't need real provider wiring.
@@ -155,6 +167,68 @@ describe('DisplayPanel – ThemeEditorPanel overlay', () => {
     // Sidebar Colors section should still be visible and interactive
     expect(screen.getByText('Sidebar Colors')).toBeInTheDocument()
     expect(screen.getByText('Palette')).toBeInTheDocument()
+  })
+})
+
+
+describe('DisplayPanel – theme install', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('renders the renamed "Theme" section with an Install control', () => {
+    renderWithProviders(<DisplayPanel />)
+    expect(screen.getByText('Install Theme')).toBeInTheDocument()
+    expect(screen.getByLabelText('Theme source')).toBeInTheDocument()
+    expect(screen.getByLabelText('Theme source location')).toBeInTheDocument()
+  })
+
+  it('installs a theme from a GitHub URL via api.installTheme', async () => {
+    const user = userEvent.setup()
+    const spy = vi
+      .spyOn(api, 'installTheme')
+      .mockResolvedValue({ ok: true, slug: 'lcars' })
+    renderWithProviders(<DisplayPanel />)
+
+    await user.type(
+      screen.getByLabelText('Theme source location'),
+      'https://github.com/u/lcars'
+    )
+    await user.click(screen.getByText('Install'))
+
+    await waitFor(() => {
+      expect(spy).toHaveBeenCalledWith({
+        type: 'github',
+        url: 'https://github.com/u/lcars',
+      })
+    })
+    spy.mockRestore()
+  })
+
+  it('shows the "Applying…" status indicator while a theme switch is in flight', () => {
+    mockUseTheme.mockImplementation(() => ({ ...DEFAULT_THEME, themeSwitching: true }))
+    renderWithProviders(<DisplayPanel />)
+    expect(screen.getByText(/Applying/)).toBeInTheDocument()
+  })
+
+  it('does not show the "Applying…" indicator when no switch is in flight', () => {
+    renderWithProviders(<DisplayPanel />)
+    expect(screen.queryByText(/Applying/)).not.toBeInTheDocument()
+  })
+
+  it('shows "Fetching…" on the install button while installTheme is pending', async () => {
+    const user = userEvent.setup()
+    const spy = vi
+      .spyOn(api, 'installTheme')
+      .mockReturnValue(new Promise(() => {}) as ReturnType<typeof api.installTheme>)
+    renderWithProviders(<DisplayPanel />)
+
+    await user.type(screen.getByLabelText('Theme source location'), 'https://github.com/u/x')
+    await user.click(screen.getByText('Install'))
+
+    // installTheme never resolves → the button stays in the 'fetching' phase.
+    expect(await screen.findByRole('button', { name: /Fetching/ })).toBeInTheDocument()
+    spy.mockRestore()
   })
 })
 

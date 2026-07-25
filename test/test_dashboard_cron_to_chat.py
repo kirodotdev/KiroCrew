@@ -124,29 +124,37 @@ class TestPersistsResultToConversationLog:
         state = _make_state()
         job = _make_job(job_id="job1", name="my-cron")
         inject_cron_result_to_dashboard(state, job, "the result")
-        # read_messages probed for dedup, then append called with linked key.
-        assert state.conversation_log.append.call_count == 1
-        args, kwargs = state.conversation_log.append.call_args
+        # Persistence now goes through the atomic append_if_absent (the dup
+        # check runs UNDER the session lock, not as a separate unlocked probe).
+        assert state.conversation_log.append_if_absent.call_count == 1
+        args, kwargs = state.conversation_log.append_if_absent.call_args
         assert args[0] == "cron:job1"
         assert args[1] == "assistant"
         assert "the result" in args[2]
         assert args[2].startswith("# Cron Job Result: my-cron")
+        # The old unlocked append() persist path is gone (dup check is now
+        # atomic inside append_if_absent). NB: read_messages is still called
+        # once to hydrate the fresh slot — that is not the persistence probe.
+        state.conversation_log.append.assert_not_called()
 
-    def test_does_not_persist_when_already_in_log(self):
+    def test_delegates_log_dedup_to_append_if_absent(self):
+        # The log-level duplicate check is now performed ATOMICALLY inside
+        # append_if_absent (under the per-session lock), not as a separate
+        # unlocked read_messages probe at the inject layer. The inject path must
+        # delegate to append_if_absent and no longer do its own log-persist.
+        # (append_if_absent's own skip-on-duplicate behavior is covered by
+        # test_history_locking_remediation::TestAppendIfAbsent.)
         state = _make_state()
         job = _make_job(job_id="job2", name="my-cron")
-        context = "# Cron Job Result: my-cron\n\nthe result"
-        # Conversation log already has this exact message.
-        state.conversation_log.read_messages.return_value = [
-            {"role": "assistant", "content": context}
-        ]
         inject_cron_result_to_dashboard(state, job, "the result")
+        state.conversation_log.append_if_absent.assert_called_once()
         state.conversation_log.append.assert_not_called()
 
     def test_empty_result_does_not_persist(self):
         state = _make_state()
         job = _make_job(job_id="job3")
         inject_cron_result_to_dashboard(state, job, "")
+        state.conversation_log.append_if_absent.assert_not_called()
         state.conversation_log.append.assert_not_called()
 
     def test_no_conversation_log_does_not_crash(self):

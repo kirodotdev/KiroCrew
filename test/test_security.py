@@ -2018,6 +2018,25 @@ class TestIsSensitivePath:
         assert is_sensitive_path(f"{home}/.kirocrew/refresh_chains.json") is True
         assert is_sensitive_path(f"{home}/.kirocrew/.local_secret") is True
 
+    def test_pre_migration_backup_is_gated(self) -> None:
+        # The divergent-home backup left by the ~/.kirocrew -> ~/.kiro/crew
+        # migration (home_migration._do_migrate) is a FULL copy of a data home
+        # holding the same credential leaves + governance trust root. It lives at
+        # ~/.kiro/crew.pre-migration/<timestamp>/ — a SIBLING of ~/.kiro/crew, not
+        # under it — so it must be gated as its own subtree, or the agent could
+        # fs_read forge-worthy secrets from it. The whole subtree is gated
+        # regardless of the dynamic <timestamp> leaf.
+        home = str(Path.home())
+        ts = "1784933442"
+        for leaf in ("token_signing.key", ".env", "security_policy.json", ".local_secret"):
+            assert is_sensitive_path(f"~/.kiro/crew.pre-migration/{ts}/{leaf}") is True
+            assert is_sensitive_path(f"{home}/.kiro/crew.pre-migration/{ts}/{leaf}") is True
+        # Nested copies (profiles/, sessions under the backup) are gated too.
+        assert is_sensitive_path(f"~/.kiro/crew.pre-migration/{ts}/profiles/surface.json") is True
+        # Guard: the live ~/.kiro/crew home is NOT over-blocked by the new entry
+        # (crew.pre-migration must not prefix-match plain crew/).
+        assert is_sensitive_path("~/.kiro/crew/config.json") is False
+
     def test_non_sel_crew_file_not_blocked(self) -> None:
         # Regression guard: the SEL additions must not over-block routine
         # crew-home reads (config.json, sessions.db) that operators/tools need.

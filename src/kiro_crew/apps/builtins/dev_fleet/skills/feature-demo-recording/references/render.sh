@@ -11,7 +11,7 @@ WORK="$(cd "$WORK" && pwd)"
 OUT="${2:-$WORK/demo.mp4}"; shift || true; shift 2>/dev/null || true
 EXTRA=("$@")
 
-VENV="${DEMO_VENV:-$HOME/.kirocrew/workspace/.demo-recording-venv}"
+VENV="${DEMO_VENV:-$HOME/.kiro/crew/workspace/.demo-recording-venv}"
 PY="$(cat "$VENV/PY_PATH")"
 REF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 

@@ -1514,8 +1514,91 @@ class TestToolBloatFixes:
 
         path = _run_install(tmp_path, cfg_dir)
         config = json.loads(path.read_text())
+        # Template (_bundled_defaults) does not grant tool_search, so the narrow
+        # seed does not fire and the user's tools list is preserved exactly.
         assert config["tools"] == ["execute_bash", "fs_read", "fs_write", "use_aws", "code"]
         assert config["allowedTools"] == ["fs_read", "use_aws"]
+
+    def _tool_search_defaults(self, tmp_path: Path) -> Path:
+        """Bundled defaults whose template grants the tool_search built-in."""
+        cfg_dir = tmp_path / "config"
+        cfg_dir.mkdir()
+        defaults = {
+            "model": "claude-default",
+            "tools": ["ReadFile", "tool_search"],
+            "allowedTools": ["ReadFile"],
+            "mcpServers": {},
+            "toolsSettings": {"execute_bash": {"deniedCommands": ["rm -rf /"]}},
+            "hooks": {"preToolUse": "audit"},
+        }
+        (cfg_dir / "defaults.json").write_text(json.dumps(defaults))
+        (cfg_dir / "prompt.md").write_text("system prompt")
+        return cfg_dir
+
+    def test_existing_config_seeds_missing_tool_search(self, tmp_path: Path):
+        """Existing config missing tool_search gains it (ADD-only) when the
+        shipped template grants it, appended without disturbing other tools."""
+        cfg_dir = self._tool_search_defaults(tmp_path)
+        kiro_dir = tmp_path / "kiro_agents"
+        kiro_dir.mkdir(exist_ok=True)
+        existing = {
+            "model": "claude-user-custom",
+            "tools": ["execute_bash", "fs_read", "code", "@builder-mcp"],
+            "allowedTools": ["fs_read", "@builder-mcp"],
+            "mcpServers": {},
+        }
+        (kiro_dir / "kirocrew.json").write_text(json.dumps(existing))
+
+        path = _run_install(tmp_path, cfg_dir)
+        config = json.loads(path.read_text())
+        # tool_search appended at the end; all prior tools preserved in order.
+        assert config["tools"] == [
+            "execute_bash",
+            "fs_read",
+            "code",
+            "@builder-mcp",
+            "tool_search",
+        ]
+        # Read-only auto-allowed built-in: NOT added to allowedTools.
+        assert "tool_search" not in config["allowedTools"]
+        assert config["allowedTools"] == ["fs_read", "@builder-mcp"]
+
+    def test_existing_config_tool_search_idempotent(self, tmp_path: Path):
+        """A config that already grants tool_search is left unchanged (no dup)."""
+        cfg_dir = self._tool_search_defaults(tmp_path)
+        kiro_dir = tmp_path / "kiro_agents"
+        kiro_dir.mkdir(exist_ok=True)
+        existing = {
+            "model": "claude-user-custom",
+            "tools": ["execute_bash", "tool_search", "code"],
+            "allowedTools": ["code"],
+            "mcpServers": {},
+        }
+        (kiro_dir / "kirocrew.json").write_text(json.dumps(existing))
+
+        path = _run_install(tmp_path, cfg_dir)
+        config = json.loads(path.read_text())
+        assert config["tools"] == ["execute_bash", "tool_search", "code"]
+        assert config["tools"].count("tool_search") == 1
+
+    def test_existing_config_no_tool_search_seed_when_template_omits(self, tmp_path: Path):
+        """When the shipped template does NOT grant tool_search, an existing
+        config's tools are left exactly as-is (seed is template-gated)."""
+        cfg_dir = _bundled_defaults(tmp_path)  # tools == ["ReadFile"], no tool_search
+        kiro_dir = tmp_path / "kiro_agents"
+        kiro_dir.mkdir(exist_ok=True)
+        existing = {
+            "model": "claude-user-custom",
+            "tools": ["execute_bash", "code"],
+            "allowedTools": ["code"],
+            "mcpServers": {},
+        }
+        (kiro_dir / "kirocrew.json").write_text(json.dumps(existing))
+
+        path = _run_install(tmp_path, cfg_dir)
+        config = json.loads(path.read_text())
+        assert config["tools"] == ["execute_bash", "code"]
+        assert "tool_search" not in config["tools"]
 
     def test_existing_config_no_managed_mcp_added(self, tmp_path: Path):
         """Existing configs don't get @managed-mcp refs injected."""

@@ -48,6 +48,43 @@ class TestDequeueNextMessage:
         assert [c["content"] for c in consumed] == ["single message"]
         assert len(slot._queue) == 0
 
+    def test_synthetic_recovery_entry_breaks_merge(self):
+        """A runner-injected synthetic recovery instruction (empty-response
+        nudge / post-transient CONTINUE) must NEVER be folded into a
+        "[N queued messages merged]" user turn: merged, the internal text
+        would drain with the user role (persisted as user-authored history and
+        mirrored to linked channels). Classification is STRUCTURAL — the
+        entry's kind tag set at queue_insert time — so it drains ALONE,
+        exactly like sub-agent and cron injections."""
+        from kiro_crew.dashboard.chat_utils import (
+            _SYNTHETIC_RECOVERY_MSGS,
+            SYNTHETIC_RECOVERY_KIND,
+        )
+
+        for synthetic in _SYNTHETIC_RECOVERY_MSGS:
+            slot = _ChatSlot("s1")
+            slot.queue_insert(0, "a genuine user message")
+            slot.queue_insert(0, synthetic, kind=SYNTHETIC_RECOVERY_KIND)
+            next_msg, consumed = _dequeue_next_message(slot, merge_enabled=True)
+            assert next_msg == synthetic
+            assert [c["content"] for c in consumed] == [synthetic]
+            # The user message stays queued for its own (user-role) turn.
+            assert [i["content"] for i in slot._queue] == ["a genuine user message"]
+
+    def test_user_pasted_recovery_text_is_plain_user_content(self):
+        """A user PASTING the transcript-visible recovery text verbatim is a
+        plain user message: without the structural kind tag it must merge and
+        classify as user speech — content equality is deliberately NOT a
+        classification mechanism (attribution correctness)."""
+        from kiro_crew.dashboard.chat_utils import _EMPTY_AUTO_CONTINUE_MSG
+
+        slot = _ChatSlot("s1")
+        slot.queue_append(_EMPTY_AUTO_CONTINUE_MSG)  # no kind: user-typed
+        slot.queue_append("and my follow-up question")
+        next_msg, consumed = _dequeue_next_message(slot, merge_enabled=True)
+        assert next_msg.startswith("[2 queued messages merged]")
+        assert len(consumed) == 2
+
     def test_multiple_messages_fifo_when_disabled(self):
         """When disabled, only first message is popped (original FIFO)."""
         slot = _ChatSlot("s1")

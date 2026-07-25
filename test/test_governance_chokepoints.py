@@ -299,6 +299,130 @@ class TestMessagingGate:
 
         assert mcp_core._vet_messaging_governance("cli_chat") is None
 
+
+# ── theme-pack install admission gate (capabilities.theme_install) ──
+class TestThemeInstallGate:
+    """Pack installation (POST /api/themes/install, incl. server-side git clone)
+    is governed by capabilities.theme_install (default-allow standalone; an
+    enterprise POLICY can ban installation wholesale). Mirrors the endpoint
+    admission gate: governance_permits(...) -> 403 when denied.
+    """
+
+    def test_default_ungoverned_permits(self):
+        _install(None)
+        d = gp.governance_permits(
+            "capabilities.theme_install", "", log_warning=False
+        )
+        assert d.permitted
+
+    def test_policy_present_but_silent_permits(self):
+        _install({"version": 1, "boot": {"fail_closed": True}})
+        d = gp.governance_permits(
+            "capabilities.theme_install", "", log_warning=False
+        )
+        assert d.permitted
+
+    def test_policy_disabled_blocks(self):
+        # Enterprise POLICY disabling install -> not permitted, so the endpoint
+        # returns 403 before any fetch/clone runs.
+        _install(
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "capabilities": {"theme_install": {"enabled": False}},
+            }
+        )
+        d = gp.governance_permits(
+            "capabilities.theme_install", "", log_warning=False
+        )
+        assert not d.permitted
+
+    def test_evaluation_error_fails_closed(self, monkeypatch):
+        # Admission chokepoint for third-party content: a governance-evaluation
+        # error must DENY (no ingestion) rather than degrade-to-permit.
+        _install({"version": 1, "boot": {"fail_closed": True}})
+        monkeypatch.setattr(
+            gp,
+            "resolve_active_scope",
+            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+        d = gp.governance_permits(
+            "capabilities.theme_install", "", log_warning=False, fail_closed=True
+        )
+        assert not d.permitted
+
+
+# ── theme-pack persona injection capability gate (capabilities.theme_persona) ──
+class TestThemeExperienceGate:
+    """Installed-pack persona injection is governed by
+    capabilities.theme_persona (default-allow standalone; an enterprise
+    POLICY can force-disable it wholesale). Mirrors the chat_runner injection
+    gate: governance_permits(..., session_key=sk) -> skip injection when denied.
+    """
+
+    def test_default_ungoverned_permits(self):
+        # No policy at all -> standalone default permits (personas keep working).
+        _install(None)
+        d = gp.governance_permits(
+            "capabilities.theme_persona", "", session_key="cli_chat", log_warning=False
+        )
+        assert d.permitted
+
+    def test_policy_present_but_silent_permits(self):
+        # capabilities.theme_persona default is ON in the catalog: a policy
+        # that governs capabilities.* but omits it still permits (default True).
+        _install({"version": 1, "boot": {"fail_closed": True}})
+        d = gp.governance_permits(
+            "capabilities.theme_persona", "", session_key="cli_chat", log_warning=False
+        )
+        assert d.permitted
+
+    def test_policy_disabled_blocks(self):
+        # An enterprise POLICY that disables the capability -> not permitted, so
+        # the chat_runner gate skips persona injection even with a valid sha.
+        _install(
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "capabilities": {"theme_persona": {"enabled": False}},
+            }
+        )
+        d = gp.governance_permits(
+            "capabilities.theme_persona", "", session_key="cli_chat", log_warning=False
+        )
+        assert not d.permitted
+
+    def test_evaluation_error_fails_closed(self, monkeypatch):
+        # Regression (GPT 5.6 HIGH on PR #107): the chat_runner injection gate
+        # passes fail_closed=True because governance is the ONLY enforcement of
+        # the enterprise persona off-switch. A governance-evaluation error must
+        # yield a DENYING Decision (persona skipped), not the default
+        # permissive "no opinion" — otherwise a policy disabling
+        # capabilities.theme_persona is silently bypassed on degrade.
+        _install(
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "capabilities": {"theme_persona": {"enabled": False}},
+            }
+        )
+        monkeypatch.setattr(
+            gp,
+            "resolve_active_scope",
+            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+        d = gp.governance_permits(
+            "capabilities.theme_persona",
+            "",
+            session_key="cli_chat",
+            log_warning=False,
+            fail_closed=True,
+        )
+        assert not d.permitted
+        # And the exact fallback the call site uses on a missing attribute
+        # must also deny, mirroring getattr(_decision, "permitted", False).
+        assert getattr(object(), "permitted", False) is False
+
     def test_per_app_profile_messaging_disable_is_consulted(self, monkeypatch):
         # review-bot: _vet_messaging_governance must pass
         # app=_governance_app() so a per-app profile that disables messaging is

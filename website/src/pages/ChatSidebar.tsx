@@ -2139,7 +2139,8 @@ function ChatSidebar({
   const tinyHeader = sidebarWidth < 200
 
   return (
-    <div className="sidebar-inner bg-bg-elevated border border-border rounded-xl shadow-sm flex flex-col shrink-0 relative h-full" style={{ width: sidebarWidth }}>
+    // stable theming hook 'sidebar' — see website/docs/theming-contract.md
+    <div className="sidebar sidebar-inner bg-bg-elevated border border-border rounded-xl shadow-sm flex flex-col shrink-0 relative h-full" style={{ width: sidebarWidth }}>
       {/* Drag handle — mouse-only column resize gesture; no keyboard analogue. */}
       {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions */}
       <div

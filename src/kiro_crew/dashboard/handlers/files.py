@@ -1306,6 +1306,12 @@ async def api_file_watch(request: web.Request) -> web.StreamResponse:
         )
         return web.json_response({"error": "invalid or forbidden path"}, status=400)
 
+    if not os.path.isfile(path):
+        _sel().log_tool_invocation(
+            session_key="dashboard", tool_name="file_watch", outcome="not_found", resources=path
+        )
+        return web.json_response({"error": "not found"}, status=404)
+
     _sel().log_tool_invocation(
         session_key="dashboard", tool_name="file_watch", outcome="success", resources=path
     )

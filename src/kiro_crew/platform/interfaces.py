@@ -698,6 +698,30 @@ class TunnelProvider(Protocol):
         """
         ...
 
+    async def ensure_available(self, *, install: bool = True) -> str:
+        """Zero-touch provision: ensure a tunnel CAN serve a remote link, then
+        report the resulting state. Distinct from ``start()`` (which only starts
+        an ALREADY-enabled tunnel) — this may install the tunnel toolchain and
+        flip enablement before starting, for surfaces that mint a remote link on
+        demand (the ``/kirocrew dashboard`` command, the setup wizard).
+
+        WIRED: ``slack/allowlist.py::send_dashboard_link`` calls this (via
+        ``safe_context_call``) when the box is localhost-only and no live public
+        URL exists, so a shared dashboard link can bring the tunnel up on first
+        use. Returns a state string: ``"connected"`` (URL live), ``"starting"``
+        (provisioning in progress), ``"disabled"`` (not configured / opted out),
+        or ``"unavailable"`` (install or start failed). ``install=False`` skips
+        any toolchain install (start-only). Only ``"connected"`` guarantees a
+        live public URL — the caller adopts a tunnel URL solely on ``"connected"``
+        and otherwise keeps the local link, re-issuing later once connected.
+
+        Public default = ``"disabled"`` — a pure no-op, so the standalone build
+        never provisions anything and behaves byte-identically. A companion
+        drives its real install-and-enable pipeline here (v1 addition; no
+        ``CONTRACT_VERSION`` bump).
+        """
+        ...
+
 
 class TelemetryProvider(Protocol):
     """Backend telemetry sink + the frontend RUM config blob.
