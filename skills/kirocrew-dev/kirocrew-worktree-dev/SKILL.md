@@ -255,6 +255,40 @@ this PR and push fixes"). Absent that, confirm before each push.
 - Never merge on the user's behalf — merge-ready means green + approved +
   current, then hand it back.
 
+## Rule 9 — Leave the worktree clean (so prune can reap it)
+
+A worktree's tree MUST be clean when you finish a work session on it —
+`git status --porcelain` should print **nothing**. This is not cosmetic: Dev
+Fleet's **"Prune merged"** fail-closes on a dirty tree (a `merged_dirty`
+verdict — untracked files count as dirty), so a merged worktree with even one
+stray untracked file or one unrestored tracked file is **refused for deletion**
+and piles up, wasting disk.
+
+Two habits keep the tree clean:
+
+- **Write scratch OUTSIDE the worktree.** PR bodies, build/test log dumps, QA
+  artifacts, and temp notes must never be written into the worktree root. Use a
+  temp dir instead:
+  ```bash
+  SCRATCH=$(mktemp -d)                          # e.g. /tmp/tmp.XXXXXX
+  gh pr create --body-file "$SCRATCH/pr-body.md" ...
+  python -m pytest -q > "$SCRATCH/fullsuite.log" 2>&1
+  ```
+  The lone exception is a **committed** deliverable — e.g. approved QA media
+  under `temp-screenshots/<feature>/`, which is staged into the PR's commit and
+  is therefore clean, not litter (see the pod-e2e skill).
+- **Restore regenerated tracked files; delete stray untracked ones.** Before you
+  end the session, run `git status --porcelain` and clear anything it prints:
+  ```bash
+  git status --porcelain                        # MUST be empty
+  git checkout -- config-baseline.json          # restore a baseline a test rewrote
+  rm -f .pr-body.md && rm -rf .r*-logs/          # delete stray scratch
+  ```
+
+If you genuinely need a new ignored scratch pattern, add it to the root
+`.gitignore` (the agent-workflow scratch section) rather than leaving it to
+dirty every tree.
+
 ## Why these rules exist (gotchas they prevent)
 
 - Editing the live checkout → the running gateway picks up partial changes →
@@ -275,3 +309,7 @@ this PR and push fixes"). Absent that, confirm before each push.
   agent safety convention (Rule 7).
 - Pushing directly to `main` → breaks CI for everyone; always use a feature
   branch + PR.
+- Scratch files (PR bodies, log dumps) written into the worktree, or a tracked
+  baseline a test rewrote and never restored → `git status` is dirty → Dev
+  Fleet "Prune merged" fail-closes (`merged_dirty`) and merged worktrees pile
+  up, wasting disk (Rule 9).
