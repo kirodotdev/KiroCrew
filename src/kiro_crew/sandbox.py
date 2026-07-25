@@ -1995,6 +1995,38 @@ def sandboxed_spawn_argv(
             mode=mode,
             strip_python_env=strip_python_env,
         )
+    # ``wrap_argv`` only strips PYTHONPATH/PYTHONHOME inside the launcher script,
+    # so on the fail-open path (no sandbox backend, opted-in unsandboxed exec) it
+    # returns argv unmodified and the strip never happens. Apply the same strip
+    # to the scrubbed env here so ``strip_python_env=True`` holds regardless of
+    # whether a backend is available.
+    extra = _PYTHON_ENV_PREFIXES if strip_python_env else None
+    scrubbed = scrub_env(env, extra_prefixes=extra)
+    # The cgroup wrapper prepended below needs the user session bus in the
+    # environment it is spawned with, so restore its locator vars after the
+    # scrub. Callers that pass a strict allowlist env (e.g. the source-provider
+    # CLI) otherwise hand systemd-run an environment it cannot reach the bus
+    # from and the spawn dies before exec'ing the real command.
+    patched, injected = cgroup_scope_bus_env(scrubbed)
+    if injected:
+        # The locators are the WRAPPER's capability, never the child's: a bus
+        # address in the sandboxed process is a sandbox escape (it can ask the
+        # user systemd manager to start a unit that runs outside the namespace).
+        # So they live only until systemd-run has used them — an ``env -u`` shim
+        # inside the scope drops them again before the real command execs. If no
+        # ``env`` binary is available we fail CLOSED: keep the scrubbed env, let
+        # the wrapper fail loudly, and never hand the child a live bus.
+        unset = _unset_env_argv(injected)
+        if unset is None:
+            logger.warning(
+                "SECURITY: no `env` binary to drop %s inside the cgroup scope; "
+                "not forwarding the bus locators (systemd-run will fail rather "
+                "than leak a user-bus address into the sandboxed child).",
+                ", ".join(injected),
+            )
+        else:
+            scrubbed = patched
+            wrapped = [*unset, *wrapped]
     # cgroup v2 scope (OUTERMOST layer): bound the spawned process tree with
     # pids.max + memory.max. Applied here so every sandboxed_spawn_argv caller
     # gets the fork-bomb / memory-DoS ceiling without threading it through each
@@ -2003,13 +2035,6 @@ def sandboxed_spawn_argv(
     # re-derived from an argv index, so prepending systemd-run does not disturb
     # it. See docs/resource-protection.md.
     wrapped = cgroup_scope_argv(wrapped)
-    # ``wrap_argv`` only strips PYTHONPATH/PYTHONHOME inside the launcher script,
-    # so on the fail-open path (no sandbox backend, opted-in unsandboxed exec) it
-    # returns argv unmodified and the strip never happens. Apply the same strip
-    # to the scrubbed env here so ``strip_python_env=True`` holds regardless of
-    # whether a backend is available.
-    extra = _PYTHON_ENV_PREFIXES if strip_python_env else None
-    scrubbed = scrub_env(env, extra_prefixes=extra)
     # Positive-identity marker for the orphan sweep: every tree spawned through
     # this chokepoint (and its descendants, via env inheritance) is identifiable
     # as KiroCrew-spawned even when its cmdline carries no KiroCrew fingerprint
@@ -2260,6 +2285,78 @@ def cgroup_scope_argv(argv: list[str]) -> list[str]:
         "--",
         *argv,
     ]
+
+
+# ``systemd-run --user`` finds the caller's session bus through these two
+# variables. They hold a socket path owned by the current user, not a
+# credential, and they are a dependency of the WRAPPER rather than of the
+# sandboxed child — which is why they are restored after the credential scrub
+# and then dropped again inside the scope (see :func:`_unset_env_argv`) instead
+# of being added to any caller's env allowlist.
+_CGROUP_SCOPE_BUS_ENV_KEYS = ("XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS")
+# Absolute paths only: the shim that drops the locators again must not be
+# resolvable through a caller- or agent-influenced PATH.
+_ENV_BINARY_CANDIDATES = ("/usr/bin/env", "/bin/env")
+
+
+def _unset_env_argv(keys: tuple[str, ...]) -> list[str] | None:
+    """Return an ``env -u KEY …`` prefix dropping *keys*, or None if impossible.
+
+    ``env`` ``exec``s its target in place (it does not fork), so prepending this
+    inside the scope leaves PID tracking, ``killpg`` and descendant scans intact
+    — the eventual PID is still the real child.
+
+    Returns None when no ``env`` binary exists at a trusted absolute path, which
+    callers must treat as "do not forward the bus locators at all".
+    """
+    for candidate in _ENV_BINARY_CANDIDATES:
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            argv = [candidate]
+            for key in keys:
+                argv += ["-u", key]
+            return argv
+    return None
+
+
+def cgroup_scope_bus_env(env: dict[str, str]) -> tuple[dict[str, str], tuple[str, ...]]:
+    """Return ``(env_with_bus_locators, keys_this_call_added)``.
+
+    Only applied when :func:`cgroup_scope_argv` actually wraps the spawn (same
+    :func:`_probe_cgroup_scope` gate), so hosts that never see a ``systemd-run``
+    prefix keep the exact environment their caller asked for and the returned
+    key tuple is empty.
+
+    Values are taken from the gateway's own environment and only fill keys the
+    caller left unset — an explicit value in *env* always wins and is NOT
+    reported as injected, so a caller that deliberately passes a bus address
+    keeps it end to end. The probe requires ``XDG_RUNTIME_DIR`` in
+    ``os.environ``, so whenever wrapping is applied at least that locator is
+    available to forward.
+
+    The returned key tuple is what lets the caller drop exactly what it added
+    again *inside* the scope: the locators must reach ``systemd-run``, but must
+    not reach the sandboxed child — a live user-bus address there can be used to
+    ask the user systemd manager to start a unit that runs outside the sandbox.
+
+    Without this, a caller that builds its child environment from a strict
+    allowlist (``dashboard/handlers/source_providers.py`` is the live example)
+    hands ``systemd-run`` an environment with no reachable bus; it exits 1 with
+    ``Failed to connect to bus: No medium found`` and the wrapped command never
+    runs at all.
+    """
+    available, _ = _probe_cgroup_scope()
+    if not available:
+        return env, ()
+    patched = dict(env)
+    injected: list[str] = []
+    for key in _CGROUP_SCOPE_BUS_ENV_KEYS:
+        if patched.get(key):
+            continue
+        value = os.environ.get(key)
+        if value:
+            patched[key] = value
+            injected.append(key)
+    return patched, tuple(injected)
 
 
 # Cached preexec_fn shared by every agent-influenced spawn. Built once from the

@@ -1125,6 +1125,199 @@ class TestCgroupScopeArgv:
             self._reset_probe()
 
 
+class TestCgroupScopeBusEnv:
+    """The systemd-run scope prepended by cgroup_scope_argv needs the user
+    session bus in the environment it is spawned with. Callers that build that
+    environment from a strict allowlist (source_providers.py) drop the bus
+    locators, and systemd-run then dies with "Failed to connect to bus: No
+    medium found" before it ever exec's the wrapped command.
+
+    The locators must NOT survive into the sandboxed child, though: a live
+    user-bus address there can start a systemd unit outside the sandbox. So the
+    forward is paired with an `env -u` shim inside the scope."""
+
+    def _reset_probe(self):
+        import kiro_crew.sandbox as sb
+
+        sb._CGROUP_SCOPE_PROBE = None
+        sb._CGROUP_WARNED = False
+
+    def test_forwards_bus_locators_into_allowlist_env(self):
+        import kiro_crew.sandbox as sb
+
+        self._reset_probe()
+        try:
+            with (
+                patch("kiro_crew.sandbox._probe_cgroup_scope", return_value=(True, "ok")),
+                patch.dict(
+                    os.environ,
+                    {
+                        "XDG_RUNTIME_DIR": "/run/user/4242",
+                        "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/4242/bus",
+                    },
+                    clear=False,
+                ),
+            ):
+                out, injected = sb.cgroup_scope_bus_env(
+                    {"PATH": "/usr/bin:/bin", "HOME": "/home/u"}
+                )
+            assert out["XDG_RUNTIME_DIR"] == "/run/user/4242"
+            assert out["DBUS_SESSION_BUS_ADDRESS"] == "unix:path=/run/user/4242/bus"
+            assert injected == ("XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS")
+            # The caller's own keys survive untouched.
+            assert out["PATH"] == "/usr/bin:/bin"
+            assert out["HOME"] == "/home/u"
+        finally:
+            self._reset_probe()
+
+    def test_caller_value_wins_and_missing_keys_stay_absent(self):
+        import kiro_crew.sandbox as sb
+
+        self._reset_probe()
+        try:
+            env = {"XDG_RUNTIME_DIR": "/caller/runtime"}
+            with (
+                patch("kiro_crew.sandbox._probe_cgroup_scope", return_value=(True, "ok")),
+                patch.dict(os.environ, {"XDG_RUNTIME_DIR": "/run/user/4242"}, clear=False),
+            ):
+                os.environ.pop("DBUS_SESSION_BUS_ADDRESS", None)
+                out, injected = sb.cgroup_scope_bus_env(env)
+            assert out["XDG_RUNTIME_DIR"] == "/caller/runtime"
+            # Nothing to forward -> the key is not invented.
+            assert "DBUS_SESSION_BUS_ADDRESS" not in out
+            # A caller-supplied value is NOT ours to strip inside the scope.
+            assert injected == ()
+            # Input dict is never mutated in place.
+            assert env == {"XDG_RUNTIME_DIR": "/caller/runtime"}
+        finally:
+            self._reset_probe()
+
+    def test_passthrough_when_scope_unavailable(self):
+        """No systemd-run prefix -> the caller's environment is handed through
+        exactly as given, bus locators included or not."""
+        import kiro_crew.sandbox as sb
+
+        self._reset_probe()
+        try:
+            with (
+                patch(
+                    "kiro_crew.sandbox._probe_cgroup_scope",
+                    return_value=(False, "not Linux"),
+                ),
+                patch.dict(
+                    os.environ, {"XDG_RUNTIME_DIR": "/run/user/4242"}, clear=False
+                ),
+            ):
+                out, injected = sb.cgroup_scope_bus_env({"PATH": "/usr/bin"})
+            assert out == {"PATH": "/usr/bin"}
+            assert injected == ()
+        finally:
+            self._reset_probe()
+
+    def test_unset_env_argv_prefix_and_absence(self):
+        """The shim is built from an absolute path (never PATH-resolved), and
+        reports None when no env binary exists so callers can fail closed."""
+        import kiro_crew.sandbox as sb
+
+        argv = sb._unset_env_argv(("XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"))
+        if argv is not None:
+            assert argv[0] in sb._ENV_BINARY_CANDIDATES
+            assert os.path.isabs(argv[0])
+            assert argv[1:] == [
+                "-u",
+                "XDG_RUNTIME_DIR",
+                "-u",
+                "DBUS_SESSION_BUS_ADDRESS",
+            ]
+        with patch("kiro_crew.sandbox.os.path.isfile", return_value=False):
+            assert sb._unset_env_argv(("XDG_RUNTIME_DIR",)) is None
+
+    def test_sandboxed_spawn_argv_forwards_bus_but_child_cannot_keep_it(self):
+        """End-to-end at the chokepoint: the spawn env carries the locators (so
+        systemd-run can reach the bus) AND the argv drops them again inside the
+        scope (so the sandboxed child cannot use the bus)."""
+        import kiro_crew.sandbox as sb
+
+        self._reset_probe()
+        try:
+            with (
+                patch("kiro_crew.sandbox.wrap_argv", return_value=(["gh", "pr", "view"], None)),
+                patch("kiro_crew.sandbox._probe_cgroup_scope", return_value=(True, "ok")),
+                patch(
+                    "kiro_crew.sandbox._cgroup_limits_from_config",
+                    return_value=(8192, 8192, 50, 0),
+                ),
+                patch("kiro_crew.sandbox._cpu_controller_delegated", return_value=False),
+                patch(
+                    "kiro_crew.sandbox._unset_env_argv",
+                    return_value=["/usr/bin/env", "-u", "XDG_RUNTIME_DIR", "-u", "DBUS_SESSION_BUS_ADDRESS"],
+                ),
+                patch.dict(
+                    os.environ,
+                    {
+                        "XDG_RUNTIME_DIR": "/run/user/4242",
+                        "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/4242/bus",
+                    },
+                    clear=False,
+                ),
+            ):
+                argv, env, _cleanup = sb.sandboxed_spawn_argv(
+                    ["gh", "pr", "view"],
+                    env={"PATH": "/usr/bin:/bin", "HOME": "/home/u"},
+                )
+            assert argv[0] == "systemd-run"
+            assert env["XDG_RUNTIME_DIR"] == "/run/user/4242"
+            assert env["DBUS_SESSION_BUS_ADDRESS"] == "unix:path=/run/user/4242/bus"
+            # The shim sits INSIDE the scope, immediately after `--`, so the real
+            # command execs without the locators.
+            inner = argv[argv.index("--") + 1 :]
+            assert inner == [
+                "/usr/bin/env",
+                "-u",
+                "XDG_RUNTIME_DIR",
+                "-u",
+                "DBUS_SESSION_BUS_ADDRESS",
+                "gh",
+                "pr",
+                "view",
+            ]
+        finally:
+            self._reset_probe()
+
+    def test_no_env_binary_fails_closed_without_leaking_bus(self, caplog):
+        """If the locators cannot be dropped again, they are not forwarded at
+        all: systemd-run fails loudly rather than the child getting a live bus."""
+        import logging
+
+        import kiro_crew.sandbox as sb
+
+        self._reset_probe()
+        try:
+            with (
+                patch("kiro_crew.sandbox.wrap_argv", return_value=(["gh"], None)),
+                patch("kiro_crew.sandbox._probe_cgroup_scope", return_value=(True, "ok")),
+                patch(
+                    "kiro_crew.sandbox._cgroup_limits_from_config",
+                    return_value=(8192, 8192, 50, 0),
+                ),
+                patch("kiro_crew.sandbox._cpu_controller_delegated", return_value=False),
+                patch("kiro_crew.sandbox._unset_env_argv", return_value=None),
+                patch.dict(
+                    os.environ, {"XDG_RUNTIME_DIR": "/run/user/4242"}, clear=False
+                ),
+                caplog.at_level(logging.WARNING),
+            ):
+                argv, env, _cleanup = sb.sandboxed_spawn_argv(
+                    ["gh"], env={"PATH": "/usr/bin:/bin"}
+                )
+            assert "XDG_RUNTIME_DIR" not in env
+            assert "DBUS_SESSION_BUS_ADDRESS" not in env
+            assert argv[argv.index("--") + 1 :] == ["gh"]
+            assert any("SECURITY" in r.getMessage() for r in caplog.records)
+        finally:
+            self._reset_probe()
+
+
 class TestKiroInternalSandboxExclusion:
     """macOS sandbox mutual exclusion: kiro internal sandbox ON
     -> KiroCrew seatbelt OFF for kiro-cli spawns; OFF -> seatbelt ON."""

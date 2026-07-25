@@ -160,6 +160,26 @@ of failure.
    still applies, but the fork-bomb / memory ceilings are NOT enforced there. Operators on such
    hosts should run the gateway under an externally-configured cgroup/container limit.
 
+   **Bus locators are part of the wrapper contract, and only the wrapper's.**
+   `systemd-run --user` reaches the user session bus via `XDG_RUNTIME_DIR` /
+   `DBUS_SESSION_BUS_ADDRESS`, so those must be present in the environment the spawn is created
+   with — not merely the gateway's. Because that environment is credential-scrubbed (and some
+   callers, e.g. the source-provider CLI, build it from a strict allowlist instead of inheriting
+   `os.environ`), `sandboxed_spawn_argv` restores them via `cgroup_scope_bus_env()` after the
+   scrub, gated on the same availability probe that decides whether to wrap at all. Omitting them
+   does not degrade to an unbounded spawn — it fails the spawn outright: `systemd-run` exits 1
+   with `Failed to connect to bus: No medium found` before exec'ing the wrapped command.
+
+   They must not survive into the sandboxed child, however: a live user-bus address inside the
+   sandbox can be used to ask the user systemd manager to start a unit that runs *outside* the
+   namespace. So the forward is paired with an `env -u XDG_RUNTIME_DIR -u
+   DBUS_SESSION_BUS_ADDRESS` shim placed inside the scope (immediately after `--`), which drops
+   exactly the keys this layer added — a value the caller supplied itself is left alone. `env`
+   `exec`s in place, so PID tracking / `killpg` / descendant scans are unaffected. It is resolved
+   from an absolute path (never a caller-influenced `PATH`), and when no `env` binary exists the
+   layer **fails closed**: the locators are not forwarded at all, so the wrapper fails loudly
+   rather than handing the child a reachable bus.
+
    **Remaining gap:** these are per-*scope* ceilings, not a single per-*session* aggregate
    across a session's multiple spawn trees; and enforcement depends on cgroup v2 delegation
    being present. The load-time config clamp (see the Mechanism Table) only bounds process
