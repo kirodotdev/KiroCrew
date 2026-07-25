@@ -204,8 +204,8 @@ class TestUninstall:
         assert result.ok
 
         # User data must survive
-        assert (data_dir / "priorities.md").read_text() == "- item1\n- item2\n"
-        assert (data_dir / "state" / "oncall.json").read_text() == '{"oncall": true}'
+        assert (data_dir / "priorities.md").read_text(encoding="utf-8") == "- item1\n- item2\n"
+        assert (data_dir / "state" / "oncall.json").read_text(encoding="utf-8") == '{"oncall": true}'
 
     def test_install_rollback_restores_data_on_copy_failure(self, tmp_path, app_home, monkeypatch):
         """If copytree fails after data/ was preserved, rollback must restore data/."""
@@ -236,8 +236,8 @@ class TestUninstall:
 
         # Rollback must have restored data/
         assert data_dir.is_dir(), "data/ directory must be restored after rollback"
-        assert (data_dir / "config.yaml").read_text() == "oncall:\n  rotation: my-rotation\n"
-        assert (data_dir / "state" / "oncall.json").read_text() == '{"oncall": true}'
+        assert (data_dir / "config.yaml").read_text(encoding="utf-8") == "oncall:\n  rotation: my-rotation\n"
+        assert (data_dir / "state" / "oncall.json").read_text(encoding="utf-8") == '{"oncall": true}'
 
     def test_install_rejects_unsafe_app_name(self, tmp_path, app_home, monkeypatch):
         """Path-traversal name must be rejected with SEL audit event."""
@@ -285,7 +285,7 @@ class TestUninstall:
         src2 = _make_app_source(tmp_path / "src2")
         result = install_app(src2)
         assert result.ok
-        assert (data_dir / "myfile.md").read_text() == "precious data\n"
+        assert (data_dir / "myfile.md").read_text(encoding="utf-8") == "precious data\n"
         assert not stale_tmp.exists()
 
     def test_install_stale_tmp_removed_when_current_data_exists(self, tmp_path, app_home):
@@ -313,7 +313,7 @@ class TestUninstall:
         assert result.ok
 
         # Current data must survive; stale tmp must be gone
-        assert (data_dir / "current.md").read_text() == "current data\n"
+        assert (data_dir / "current.md").read_text(encoding="utf-8") == "current data\n"
         assert not (data_dir / "old.md").exists()
         assert not stale_tmp.exists()
 
@@ -1071,8 +1071,8 @@ class TestCopyAppTree:
         v2 = _make_app_source(tmp_path / "v2", version="2.0.0")
         result = update_app(v2)
         assert result.ok, result.error
-        assert (dest / "data" / "state.json").read_text() == '{"k": 1}'
-        assert secret.read_text() == "s3cret"
+        assert (dest / "data" / "state.json").read_text(encoding="utf-8") == '{"k": 1}'
+        assert secret.read_text(encoding="utf-8") == "s3cret"
 
     def test_directory_junction_omitted(self, tmp_path, app_home, monkeypatch):
         """Windows directory junctions (reparse points not reported by

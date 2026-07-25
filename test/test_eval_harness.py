@@ -243,13 +243,13 @@ class TestSeedProfile:
     def test_seed_preferences(self, tmp_path):
         seed = SeedProfile(preferences="# Prefs\n- dark mode\n")
         _seed_profile(tmp_path, seed)
-        prefs = (tmp_path / "memory" / "preferences.md").read_text()
+        prefs = (tmp_path / "memory" / "preferences.md").read_text(encoding="utf-8")
         assert "dark mode" in prefs
 
     def test_seed_projects(self, tmp_path):
         seed = SeedProfile(projects="Working on Starfish cache")
         _seed_profile(tmp_path, seed)
-        projects = (tmp_path / "memory" / "projects.md").read_text()
+        projects = (tmp_path / "memory" / "projects.md").read_text(encoding="utf-8")
         assert "Starfish" in projects
 
     def test_seed_lessons(self, tmp_path):
@@ -257,7 +257,7 @@ class TestSeedProfile:
         _seed_profile(tmp_path, seed)
         lessons_file = tmp_path / "lessons.jsonl"
         assert lessons_file.exists()
-        lines = lessons_file.read_text().strip().splitlines()
+        lines = lessons_file.read_text(encoding="utf-8").strip().splitlines()
         assert len(lines) == 2
         assert json.loads(lines[0])["rule"] == "use 2-space indent"
 
@@ -369,7 +369,7 @@ class TestEvalRunner:
 
         runner = EvalRunner(provider_factory=lambda key, **kw: MockProvider(), workspace_dir=tmp_path)
         await runner.run_scenario(scenario)
-        prefs = (tmp_path / "memory" / "preferences.md").read_text()
+        prefs = (tmp_path / "memory" / "preferences.md").read_text(encoding="utf-8")
         assert "Rust" in prefs
 
     @pytest.mark.asyncio

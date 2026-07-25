@@ -69,7 +69,7 @@ def test_f1_boundary_policy_document_is_scoped():
 
 def test_f1_all_template_roles_carry_boundary():
     for name in ("app-apigw.yaml", "app-apigw-ddb.yaml", "app-lambda.yaml"):
-        src = (_TPL / name).read_text()
+        src = (_TPL / name).read_text(encoding="utf-8")
         roles = src.count("Type: AWS::IAM::Role")
         boundaries = src.count("PermissionsBoundary:")
         assert roles == boundaries, f"{name}: {roles} roles, {boundaries} boundaries"
@@ -80,7 +80,7 @@ def test_f1_all_template_roles_carry_boundary():
 
 
 def test_f2_all_staging_rejections_convert_to_409():
-    src = (_ROOT / "src/kiro_crew/deploy/handlers.py").read_text()
+    src = (_ROOT / "src/kiro_crew/deploy/handlers.py").read_text(encoding="utf-8")
     assert '"hardlink-in-tree"' in src
     assert '"staging-read-blocked"' in src
     # Cleanup wrapper guards everything after mkdtemp.
@@ -109,6 +109,6 @@ def test_f3_stage_tree_safe_rejects_dir_symlink(tmp_path):
 
 
 def test_f4_no_internal_tooling_instructions():
-    src = (_ROOT / "website/src/pages/ArtifactDeployPage.tsx").read_text()
+    src = (_ROOT / "website/src/pages/ArtifactDeployPage.tsx").read_text(encoding="utf-8")
     assert "ada credentials" not in src
     assert "Amazon-internal" not in src

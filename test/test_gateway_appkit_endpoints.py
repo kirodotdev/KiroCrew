@@ -144,7 +144,7 @@ class TestMcpServerRegistration:
             assert data["name"] == "my-server"
 
             # Verify written to mcp.json
-            cfg = json.loads(mcp_env.read_text())
+            cfg = json.loads(mcp_env.read_text(encoding="utf-8"))
             assert "my-server" in cfg["mcpServers"]
             assert cfg["mcpServers"]["my-server"]["command"] == "node"
             assert cfg["mcpServers"]["my-server"]["args"] == ["server.js"]
@@ -161,7 +161,7 @@ class TestMcpServerRegistration:
                 json={"command": "node", "args": ["new.js"]},
             )
             assert resp.status == 200
-            cfg = json.loads(mcp_env.read_text())
+            cfg = json.loads(mcp_env.read_text(encoding="utf-8"))
             assert cfg["mcpServers"]["old-server"]["command"] == "node"
 
     @pytest.mark.asyncio
@@ -183,7 +183,7 @@ class TestMcpServerRegistration:
                 json={"command": "node", "env": {"PORT": "3000"}},
             )
             assert resp.status == 200
-            cfg = json.loads(mcp_env.read_text())
+            cfg = json.loads(mcp_env.read_text(encoding="utf-8"))
             assert cfg["mcpServers"]["env-server"]["env"] == {"PORT": "3000"}
 
     @pytest.mark.asyncio
@@ -198,7 +198,7 @@ class TestMcpServerRegistration:
             assert data["ok"] is True
             assert data["removed"] is True
 
-            cfg = json.loads(mcp_env.read_text())
+            cfg = json.loads(mcp_env.read_text(encoding="utf-8"))
             assert "to-remove" not in cfg["mcpServers"]
 
     @pytest.mark.asyncio

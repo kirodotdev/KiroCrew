@@ -881,12 +881,12 @@ class TestCopyOverwrite:
         dst = tmp_path / "dst"
         # First install.
         _copy_installed_theme(_make_tiered(tmp_path / "a", level=1, extra=_L1_ASSETS), dst)
-        assert (dst / "styles" / "overrides.css").read_text() == ".chat-bubble { border-radius: 8px; }"
+        assert (dst / "styles" / "overrides.css").read_text(encoding="utf-8") == ".chat-bubble { border-radius: 8px; }"
         # Re-install with changed content overwrites the same-name file.
         updated = dict(_L1_ASSETS)
         updated["styles/overrides.css"] = ".chat-bubble { border-radius: 2px; }"
         _copy_installed_theme(_make_tiered(tmp_path / "b", level=1, extra=updated), dst)
-        assert (dst / "styles" / "overrides.css").read_text() == ".chat-bubble { border-radius: 2px; }"
+        assert (dst / "styles" / "overrides.css").read_text(encoding="utf-8") == ".chat-bubble { border-radius: 2px; }"
 
     def test_copies_all_l2_tiers(self, tmp_path: Path) -> None:
         dst = tmp_path / "dst"

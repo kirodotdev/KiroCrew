@@ -90,7 +90,7 @@ class TestEventLogging:
         log.log(event)
         sel_file = sel_dir / "security_events.jsonl"
         assert sel_file.exists()
-        lines = sel_file.read_text().strip().splitlines()
+        lines = sel_file.read_text(encoding="utf-8").strip().splitlines()
         assert len(lines) == 1
 
     def test_log_writes_valid_json(self, log, sel_dir):
@@ -105,7 +105,7 @@ class TestEventLogging:
         )
         log.log(event)
         sel_file = sel_dir / "security_events.jsonl"
-        data = json.loads(sel_file.read_text().strip())
+        data = json.loads(sel_file.read_text(encoding="utf-8").strip())
         assert data["event_id"] == "test1"
         assert data["operation"] == "fs_write"
         assert data["entry_hash"] != ""
@@ -123,7 +123,7 @@ class TestEventLogging:
                 operation=f"op{i}",
             ))
         sel_file = sel_dir / "security_events.jsonl"
-        lines = sel_file.read_text().strip().splitlines()
+        lines = sel_file.read_text(encoding="utf-8").strip().splitlines()
         entries = [json.loads(line) for line in lines]
         assert entries[0]["prev_hash"] == ""
         assert entries[1]["prev_hash"] == entries[0]["entry_hash"]
@@ -138,7 +138,7 @@ class TestEventLogging:
             resources="ls -la",
         )
         sel_file = sel_dir / "security_events.jsonl"
-        data = json.loads(sel_file.read_text().strip())
+        data = json.loads(sel_file.read_text(encoding="utf-8").strip())
         assert data["event_type"] == "tool_invocation"
         assert data["operation"] == "execute_bash"
         assert data["outcome"] == "approved"
@@ -151,7 +151,7 @@ class TestEventLogging:
             outcome="allowed",
         )
         sel_file = sel_dir / "security_events.jsonl"
-        data = json.loads(sel_file.read_text().strip())
+        data = json.loads(sel_file.read_text(encoding="utf-8").strip())
         assert data["event_type"] == "api_access"
         assert data["source"] == "dashboard"
 
@@ -164,7 +164,7 @@ class TestEventLogging:
             resources=long_resource,
         )
         sel_file = sel_dir / "security_events.jsonl"
-        data = json.loads(sel_file.read_text().strip())
+        data = json.loads(sel_file.read_text(encoding="utf-8").strip())
         assert len(data["resources"]) == 500
 
 
@@ -210,7 +210,7 @@ class TestVerifyIntegrity:
         ))
         # Tamper with first entry
         sel_file = sel_dir / "security_events.jsonl"
-        lines = sel_file.read_text().strip().splitlines()
+        lines = sel_file.read_text(encoding="utf-8").strip().splitlines()
         entry = json.loads(lines[0])
         entry["operation"] = "TAMPERED"
         lines[0] = json.dumps(entry)
@@ -267,7 +267,7 @@ class TestPrune:
         removed = log.prune(keep_days=365)
         assert removed == 1
         sel_file = sel_dir / "security_events.jsonl"
-        remaining = sel_file.read_text().strip().splitlines()
+        remaining = sel_file.read_text(encoding="utf-8").strip().splitlines()
         assert len(remaining) == 1
         assert "new_op" in remaining[0]
 
@@ -308,7 +308,7 @@ class TestForwardCallback:
         # Event should still be written despite callback failure
         sel_file = sel_dir / "security_events.jsonl"
         assert sel_file.exists()
-        assert "cb2" in sel_file.read_text()
+        assert "cb2" in sel_file.read_text(encoding="utf-8")
 
 
 class TestThreadSafety:
@@ -333,7 +333,7 @@ class TestThreadSafety:
             t.join()
 
         sel_file = sel_dir / "security_events.jsonl"
-        lines = sel_file.read_text().strip().splitlines()
+        lines = sel_file.read_text(encoding="utf-8").strip().splitlines()
         assert len(lines) == 40
         # All lines should be valid JSON
         for line in lines:
@@ -499,7 +499,7 @@ class TestVerifyIntegrityExtras:
         log.log(_make_event(event_id="e0"))
         log.log(_make_event(event_id="e1"))
         path = tmp_path / "security_events.jsonl"
-        lines = path.read_text().splitlines()
+        lines = path.read_text(encoding="utf-8").splitlines()
         d1 = json.loads(lines[1])
         d1["prev_hash"] = "deadbeef" * 8
         lines[1] = json.dumps(d1)
@@ -512,7 +512,7 @@ class TestVerifyIntegrityExtras:
         log = SecurityEventLog(base_dir=tmp_path, sync=True)
         log.log(_make_event())
         path = tmp_path / "security_events.jsonl"
-        path.write_text(path.read_text() + "\n\n   \n")
+        path.write_text(path.read_text(encoding="utf-8") + "\n\n   \n")
         total, valid = log.verify_integrity()
         assert total == 1 and valid == 1
 
@@ -520,7 +520,7 @@ class TestVerifyIntegrityExtras:
         log = SecurityEventLog(base_dir=tmp_path, sync=True)
         log.log(_make_event())
         path = tmp_path / "security_events.jsonl"
-        path.write_text(path.read_text() + "not-json-at-all\n")
+        path.write_text(path.read_text(encoding="utf-8") + "not-json-at-all\n")
         total, valid = log.verify_integrity()
         # Malformed line counts toward total, doesn't count as valid.
         assert total == 2
@@ -587,7 +587,7 @@ class TestRecentExtras:
         log = SecurityEventLog(base_dir=tmp_path, sync=True)
         log.log(_make_event(event_id="good"))
         path = tmp_path / "security_events.jsonl"
-        path.write_text(path.read_text() + "garbage-line\n")
+        path.write_text(path.read_text(encoding="utf-8") + "garbage-line\n")
         events = log.recent()
         assert len(events) == 1
         assert events[0]["event_id"] == "good"
@@ -596,7 +596,7 @@ class TestRecentExtras:
         log = SecurityEventLog(base_dir=tmp_path, sync=True)
         log.log(_make_event())
         path = tmp_path / "security_events.jsonl"
-        path.write_text(path.read_text() + "\n   \n")
+        path.write_text(path.read_text(encoding="utf-8") + "\n   \n")
         assert len(log.recent()) == 1
 
 
@@ -623,7 +623,7 @@ class TestPruneExtras:
         now = datetime.now(tz=timezone.utc).isoformat()
         log.log(_make_event(timestamp=now))
         path = tmp_path / "security_events.jsonl"
-        path.write_text(path.read_text() + "not-json\n")
+        path.write_text(path.read_text(encoding="utf-8") + "not-json\n")
         # Malformed line is removable (not a structured retainable entry).
         assert log.prune() == 1
 
@@ -673,7 +673,7 @@ class TestAsyncWriter:
             log.log(_make_event(event_id=f"a{i}", operation=f"op{i}"))
         log.flush()
         sel_file = tmp_path / "security_events.jsonl"
-        lines = sel_file.read_text().strip().splitlines()
+        lines = sel_file.read_text(encoding="utf-8").strip().splitlines()
         assert len(lines) == 5
 
     def test_async_chain_intact_after_batch(self, tmp_path: Path) -> None:

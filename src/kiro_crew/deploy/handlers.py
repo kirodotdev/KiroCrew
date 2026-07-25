@@ -27,6 +27,7 @@ from typing import Any
 
 from aiohttp import web
 
+from kiro_crew import platform_compat
 from kiro_crew.config.paths import config_dir
 from kiro_crew.deploy import engine
 from kiro_crew.deploy import iam as iam_mod
@@ -326,7 +327,10 @@ def _staging_root() -> Path:
         raise RuntimeError(
             f"deploy staging root {sr} is a symlink — refusing (possible symlink attack)"
         )
-    if st.st_uid != os.getuid():
+    # Ownership check is POSIX-only: on Windows st_uid is a meaningless 0
+    # and os.getuid() does not exist. The symlink refusal above plus the
+    # user-profile staging location carry the protection there.
+    if platform_compat.IS_POSIX and st.st_uid != os.getuid():
         raise RuntimeError(
             f"deploy staging root {sr} not owned by current user (uid {os.getuid()}, "
             f"owner {st.st_uid})"

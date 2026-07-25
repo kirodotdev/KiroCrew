@@ -139,7 +139,7 @@ class TestSetupElectronBuild:
         monkeypatch.setattr("kiro_crew.cli_setup.subprocess.run", lambda *a, **kw: mock_ok)
         _setup_electron()
         installed = tmp_path / "Applications" / "KiroCrew.app" / "Contents" / "Info.plist"
-        assert installed.read_text() == "<new>"
+        assert installed.read_text(encoding="utf-8") == "<new>"
 
     def test_x86_arch_fallback(self, tmp_path, capsys, monkeypatch):
         monkeypatch.setattr("kiro_crew.cli_setup.Path.home", lambda: tmp_path)

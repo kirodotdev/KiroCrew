@@ -855,7 +855,7 @@ def test_deploy_expires_at_uses_future_time(monkeypatch):
             # Capture the manifest content before the file is deleted
             src_file = cmd[2]
             try:
-                captured_manifest["data"] = Path(src_file).read_text()
+                captured_manifest["data"] = Path(src_file).read_text(encoding="utf-8")
             except FileNotFoundError:
                 pass
         return (0, "", "")

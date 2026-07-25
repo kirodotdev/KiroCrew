@@ -255,7 +255,7 @@ class TestChannelSettingsApi:
                 "/api/notifications/channels/settings",
                 json={"channel": "a.b", "muted": True},
             )
-        data = json.loads((tmp_path / "notification_settings.json").read_text())
+        data = json.loads((tmp_path / "notification_settings.json").read_text(encoding="utf-8"))
         assert data == {"channel_settings": {"a.b": {"muted": True}}}
 
 

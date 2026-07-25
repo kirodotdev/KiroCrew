@@ -13,7 +13,7 @@ _SCRIPTS = Path(__file__).resolve().parents[1] / (
 
 
 def test_f1_deploy_sh_rejects_source_hardlinks_before_copy():
-    src = (_SCRIPTS / "deploy.sh").read_text()
+    src = (_SCRIPTS / "deploy.sh").read_text(encoding="utf-8")
     assert "-links +1" in src
     # The check must run on the SOURCE tree and precede the cp -a
     # (snapshot copies have nlink=1, so a post-copy check would be dead).
@@ -21,13 +21,13 @@ def test_f1_deploy_sh_rejects_source_hardlinks_before_copy():
 
 
 def test_f1_deploy_backend_sh_rejects_source_hardlinks_before_copy():
-    src = (_SCRIPTS / "deploy-backend.sh").read_text()
+    src = (_SCRIPTS / "deploy-backend.sh").read_text(encoding="utf-8")
     assert "-links +1" in src
     assert src.index("-links +1") < src.index('cp -a "$SRC/."')
 
 
 def test_f2_teardown_gates_stack_deletion_on_identity_tags():
-    src = (_SCRIPTS / "teardown.sh").read_text()
+    src = (_SCRIPTS / "teardown.sh").read_text(encoding="utf-8")
     assert "kirocrew:site" in src
     assert "kirocrew:managed" in src
     # The tag check precedes the delete-stack call.

@@ -46,7 +46,7 @@ class TestF1NolinkRead:
         assert result in (None, b"x")
 
     def test_staging_uses_nolink_variant(self):
-        src = HANDLERS.read_text()
+        src = HANDLERS.read_text(encoding="utf-8")
         # the staging tree walk must read via the fd-pinned nolink helper
         # (R33 added within_root= so the call spans lines — match the name +
         # first argument instead of the exact single-line form)
@@ -61,7 +61,7 @@ class TestF1NolinkRead:
 class TestF2ReaperAccountId:
     def test_reaper_env_supplies_account_id(self):
         import re
-        raw = (TEMPLATES / "reaper.yaml").read_text()
+        raw = (TEMPLATES / "reaper.yaml").read_text(encoding="utf-8")
         sanitized = re.sub(r"!(Ref|GetAtt|Sub|Not|Equals|If|Select|Join|And|Or|Condition)\b", r"\1", raw)
         doc = yaml.safe_load(sanitized)
         fn = doc["Resources"]["ReaperFn"]["Properties"]

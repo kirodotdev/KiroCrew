@@ -61,7 +61,7 @@ class TestFlags:
         sm.set_flag("slack:1.2", "temporary", False)
         assert sm.get_flag("slack:1.2", "temporary") is False
         # clearing the last flag drops the sub-dict entirely (no accretion)
-        raw = json.loads((patched[0] / "session_map.json").read_text())
+        raw = json.loads((patched[0] / "session_map.json").read_text(encoding="utf-8"))
         assert "flags" not in raw["slack:1.2"]
 
     def test_clear_flag_on_missing_key_creates_no_entry(self, patched):
@@ -72,7 +72,7 @@ class TestFlags:
         assert sm.get_flag("slack:never.stored", "temporary") is False
         path = patched[0] / "session_map.json"
         if path.exists():
-            raw = json.loads(path.read_text())
+            raw = json.loads(path.read_text(encoding="utf-8"))
             assert "slack:never.stored" not in raw
 
     def test_two_flags_coexist(self, patched):

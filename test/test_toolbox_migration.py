@@ -25,7 +25,7 @@ class TestFixShellProfiles:
         )
         with patch.object(Path, "home", return_value=tmp_path):
             cli._fix_shell_profiles()
-        content = zshrc.read_text()
+        content = zshrc.read_text(encoding="utf-8")
         assert ".kirocrew-app" not in content
         assert ".toolbox" in content
         assert "alias ll" in content
@@ -39,7 +39,7 @@ class TestFixShellProfiles:
         )
         with patch.object(Path, "home", return_value=tmp_path):
             cli._fix_shell_profiles()
-        content = zshrc.read_text()
+        content = zshrc.read_text(encoding="utf-8")
         assert "OtherProject" in content
         assert "/usr/local/bin" in content
 
@@ -55,4 +55,4 @@ class TestFixShellProfiles:
         zshrc.write_text(original)
         with patch.object(Path, "home", return_value=tmp_path):
             cli._fix_shell_profiles()
-        assert zshrc.read_text() == original
+        assert zshrc.read_text(encoding="utf-8") == original

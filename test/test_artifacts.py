@@ -378,7 +378,7 @@ class TestSecurity:
     def test_snapshot_version_routes_through_read_gate(
         self, store: ArtifactStore, monkeypatch
     ) -> None:
-        # Regression: _snapshot_version() used to call src.read_text() directly,
+        # Regression: _snapshot_version() used to call src.read_text(encoding="utf-8") directly,
         # bypassing the is_sensitive_path() gate enforced by self._read_text().
         # If the gate ever started flagging artifact-internal paths (e.g. a
         # symlink expansion landing on a sensitive path), the snapshot read
@@ -574,7 +574,7 @@ class TestLifecycleEvents:
         art2 = store.get("legacy")
         assert art2.events == art.events
         # And meta.json on disk now carries the events.
-        on_disk = json.loads((adir / "meta.json").read_text())
+        on_disk = json.loads((adir / "meta.json").read_text(encoding="utf-8"))
         assert on_disk["events_backfilled"] is True
         assert len(on_disk["events"]) >= 1
 
@@ -1019,7 +1019,7 @@ class TestRoundThirteenFixes:
         store.get("x")  # populates art.live_dirty in memory
         store.update("x", description="updated")  # writes meta
         meta_path = store.root / "x" / "meta.json"
-        on_disk = json.loads(meta_path.read_text())
+        on_disk = json.loads(meta_path.read_text(encoding="utf-8"))
         assert "live_dirty" not in on_disk
 
     def test_live_dirty_still_present_in_api_response(self, store: ArtifactStore) -> None:

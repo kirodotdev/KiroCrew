@@ -13,7 +13,7 @@ import yaml
 from kiro_crew.deploy import iam as iam_mod
 
 REPO = Path(__file__).resolve().parents[1]
-HANDLERS = (REPO / "src" / "kiro_crew" / "deploy" / "handlers.py").read_text()
+HANDLERS = (REPO / "src" / "kiro_crew" / "deploy" / "handlers.py").read_text(encoding="utf-8")
 TEMPLATES = REPO / "src" / "kiro_crew" / "deploy" / "skills" / "artifact-deploy" / "templates"
 
 
@@ -56,7 +56,7 @@ class TestF1ApiGwTagCondition:
             "!", lambda loader, suffix, node: None
         )
         for name in ("app-apigw.yaml", "app-apigw-ddb.yaml"):
-            raw = (TEMPLATES / name).read_text()
+            raw = (TEMPLATES / name).read_text(encoding="utf-8")
             doc = yaml.load(raw, Loader=_CfnLoader)  # noqa: S506 — tag-blind CFN parse
             api = next(
                 r for r in doc["Resources"].values()

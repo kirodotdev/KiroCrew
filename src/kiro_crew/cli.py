@@ -1715,7 +1715,7 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
         _prev_log = _log_file.with_suffix(".log.prev")
         if _log_file.exists() and _log_file.stat().st_size > 0:
             try:
-                _log_file.rename(_prev_log)
+                _log_file.replace(_prev_log)
             except OSError:
                 pass  # race or permission — keep going
     _fh = RotatingFileHandler(_log_file, maxBytes=2 * 1024 * 1024, backupCount=3, encoding="utf-8")

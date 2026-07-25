@@ -274,7 +274,7 @@ class TestFileInterface:
     def test_write_status(self, tmp_path: Path):
         with patch("kiro_crew.apps.builtins.auto_research.handlers.RESEARCH_DIR", tmp_path):
             write_status("a1b2c3d4", "running")
-            d = json.loads((tmp_path / "a1b2c3d4" / "status.json").read_text())
+            d = json.loads((tmp_path / "a1b2c3d4" / "status.json").read_text(encoding="utf-8"))
             assert d["status"] == "running"
 
     def test_write_status_rejects_invalid(self, tmp_path: Path):
@@ -286,7 +286,7 @@ class TestFileInterface:
         with patch("kiro_crew.apps.builtins.auto_research.handlers.RESEARCH_DIR", tmp_path):
             write_status("a1b2c3d4", "running")
             write_guidance("a1b2c3d4", "focus on X")
-            assert (tmp_path / "a1b2c3d4" / "guidance.txt").read_text() == "focus on X"
+            assert (tmp_path / "a1b2c3d4" / "guidance.txt").read_text(encoding="utf-8") == "focus on X"
 
     def test_get_findings_sorted(self, tmp_path: Path):
         with patch("kiro_crew.apps.builtins.auto_research.handlers.RESEARCH_DIR", tmp_path):
@@ -404,7 +404,7 @@ class TestCRUD:
         ).fetchone()
         db.close()
         _write_brief(c["id"], row)
-        brief = (_campaign_dir(c["id"]) / "brief.md").read_text()
+        brief = (_campaign_dir(c["id"]) / "brief.md").read_text(encoding="utf-8")
         assert "3 parallel worker slots" in brief
         # All {pw} placeholders must be f-string-interpolated, not literal.
         assert "{pw}" not in brief
@@ -652,7 +652,7 @@ class TestHTTPHandlers:
                 assert r.status == 200
                 # Answering clears the question and writes the guidance.
                 assert not (h._campaign_dir(cid) / "questions.json").exists()
-                assert (h._campaign_dir(cid) / "guidance.txt").read_text() == "Use SQLite"
+                assert (h._campaign_dir(cid) / "guidance.txt").read_text(encoding="utf-8") == "Use SQLite"
 
     @pytest.mark.asyncio
     async def test_report_endpoint(self, app, tmp_path: Path):
@@ -868,7 +868,7 @@ class TestHTTPHandlers:
                 assert body["sub_questions"][1]["origin"] == "manual"
                 assert body["sub_questions"][1]["status"] == "open"
                 # Verify brief.md was regenerated with the new question.
-                brief = (h._campaign_dir(cid) / "brief.md").read_text()
+                brief = (h._campaign_dir(cid) / "brief.md").read_text(encoding="utf-8")
                 assert "What about token buckets?" in brief
                 assert "_(user guidance)_" in brief
 
@@ -969,7 +969,7 @@ class TestHTTPHandlers:
                 # A sanitized copy is created and the raw credential is gone.
                 sanitized = d / "findings_for_knowledge.md"
                 assert sanitized.exists()
-                assert "AKIAIOSFODNN7EXAMPLE" not in sanitized.read_text()
+                assert "AKIAIOSFODNN7EXAMPLE" not in sanitized.read_text(encoding="utf-8")
                 # The source ingested is the sanitized file, never raw FINDINGS.md.
                 assert added["uri"] == str(sanitized.resolve())
 
@@ -1407,7 +1407,7 @@ class TestLoopLaunch:
         state = MagicMock()
         state.get_or_create_slot.return_value = SimpleNamespace(key=f"research-{c['id']}")
         await h._launch_loop(SimpleNamespace(app={"state": state}), c["id"])
-        brief = (h._campaign_dir(c["id"]) / "brief.md").read_text()
+        brief = (h._campaign_dir(c["id"]) / "brief.md").read_text(encoding="utf-8")
         assert "Compare SQLite and PostgreSQL" in brief
         assert "concurrency model?" in brief
         assert "Definition of Done" in brief
@@ -1457,7 +1457,7 @@ class TestResearchAgentInstall:
             lambda: {"name": "kirocrew", "prompt": "file://x", "mcpServers": {}, "tools": []},
         )
         agent._install_research_agent()
-        data = json.loads((tmp_path / "kirocrew-research.json").read_text())
+        data = json.loads((tmp_path / "kirocrew-research.json").read_text(encoding="utf-8"))
         assert data["name"] == "kirocrew-research"
         assert "research" in data["prompt"].lower()
 
@@ -1538,7 +1538,7 @@ class TestClarificationQuestions:
             ).fetchone()
             db.close()
             _write_brief(c["id"], row)
-            brief = (_campaign_dir(c["id"]) / "brief.md").read_text()
+            brief = (_campaign_dir(c["id"]) / "brief.md").read_text(encoding="utf-8")
             # Attended exposes the questions directive; unattended omits it entirely
             # (no LLM-facing "you may ask" — no-pause is code-enforced instead).
             assert ("Questions allowed" in brief) is (not auto)
@@ -1707,7 +1707,7 @@ class TestForkAndGrillTreeHTTP:
         row = h.get_campaign(child_id)
         assert row is not None and row["parent_id"] == pid
         assert row["name"].startswith("Forked: ")
-        assert (h._campaign_dir(child_id) / "parent_findings.md").read_text() == (
+        assert (h._campaign_dir(child_id) / "parent_findings.md").read_text(encoding="utf-8") == (
             "# Parent findings\nsome evidence"
         )
 
@@ -2015,7 +2015,7 @@ class TestGrillBrief:
         ).fetchone()
         db.close()
         h._write_brief(cid, row)
-        brief = (h.RESEARCH_DIR / cid / "brief.md").read_text()
+        brief = (h.RESEARCH_DIR / cid / "brief.md").read_text(encoding="utf-8")
         assert "## Scope & Constraints" in brief
         assert "Prod or explore? → production" in brief
         assert "authoritative checklist" in brief
@@ -2042,7 +2042,7 @@ class TestGrillBrief:
         ).fetchone()
         db.close()
         h._write_brief(cid, row)
-        brief = (h.RESEARCH_DIR / cid / "brief.md").read_text()
+        brief = (h.RESEARCH_DIR / cid / "brief.md").read_text(encoding="utf-8")
         # With no sub-questions, the brief must NOT tell the agent "do NOT invent
         # your own" (that contradicts deriving its own) and SHOULD invite deriving.
         assert "do NOT invent your own" not in brief
@@ -2418,7 +2418,7 @@ class TestReserveAndFinalize:
         assert _enter_finalize(cid) is True
         assert (d / "finalize.flag").exists()
         assert not (d / "emergent_questions.json").exists()
-        assert "FINALIZE MODE" in (d / "guidance.txt").read_text()
+        assert "FINALIZE MODE" in (d / "guidance.txt").read_text(encoding="utf-8")
         # idempotent — second call does not re-signal
         assert _enter_finalize(cid) is False
 

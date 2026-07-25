@@ -174,7 +174,7 @@ def test_cleanup_purges_meshclaw_predecessor_entries(tmp_path, monkeypatch):
     monkeypatch.setattr(mcp_cleanup, "_KIRO_MCP_JSON", mcp_path)
 
     removed = mcp_cleanup.clean_stale_managed_mcp()
-    remaining = set(json.loads(mcp_path.read_text())["mcpServers"])
+    remaining = set(json.loads(mcp_path.read_text(encoding="utf-8"))["mcpServers"])
 
     assert "meshclaw-core" not in remaining, "stale meshclaw-core not purged"
     assert "meshclaw-cron" not in remaining, "stale meshclaw-cron not purged"
@@ -268,7 +268,7 @@ def test_first_run_delivers_shim_and_purge(tmp_path, monkeypatch):
     link = tmp_path / ".local" / "bin" / "kirocrew"
     assert link.is_symlink() and os.path.realpath(link) == os.path.realpath(exe)
     # stale managed entries purged, genuine user server preserved
-    remaining = set(json.loads(mcp.read_text())["mcpServers"])
+    remaining = set(json.loads(mcp.read_text(encoding="utf-8"))["mcpServers"])
     assert {"meshclaw-core", "meshclaw-cron", "kirocrew-core", "kirocrew-cron"}.isdisjoint(
         remaining
     )
@@ -285,13 +285,13 @@ def test_first_run_purge_is_one_time(tmp_path, monkeypatch):
     marker.write_text("done\n")
     # A stale entry reappears after migration (e.g. user re-imports old config).
     _seed_global_mcp(mcp)
-    before = mcp.read_text()
+    before = mcp.read_text(encoding="utf-8")
 
     agent.run_first_run_setup()
 
     # purge must NOT run again — global mcp.json untouched, stale entries stay
-    assert mcp.read_text() == before
-    assert "meshclaw-core" in set(json.loads(mcp.read_text())["mcpServers"])
+    assert mcp.read_text(encoding="utf-8") == before
+    assert "meshclaw-core" in set(json.loads(mcp.read_text(encoding="utf-8"))["mcpServers"])
     # but the shim is still ensured on every start
     assert (tmp_path / ".local" / "bin" / "kirocrew").is_symlink()
 
@@ -394,7 +394,7 @@ def test_clean_stale_malformed_json_untouched(tmp_path, monkeypatch):
     p.write_text("{ not valid json ")
     monkeypatch.setattr(mcp_cleanup, "_KIRO_MCP_JSON", p)
     assert mcp_cleanup.clean_stale_managed_mcp() == []
-    assert p.read_text() == "{ not valid json "  # left untouched
+    assert p.read_text(encoding="utf-8") == "{ not valid json "  # left untouched
 
 
 def test_clean_stale_no_stale_leaves_file_untouched(tmp_path, monkeypatch):
@@ -405,7 +405,7 @@ def test_clean_stale_no_stale_leaves_file_untouched(tmp_path, monkeypatch):
     p.write_text(content)
     monkeypatch.setattr(mcp_cleanup, "_KIRO_MCP_JSON", p)
     assert mcp_cleanup.clean_stale_managed_mcp() == []
-    assert p.read_text() == content  # not rewritten when nothing to remove
+    assert p.read_text(encoding="utf-8") == content  # not rewritten when nothing to remove
 
 
 def test_clean_stale_purges_meshclaw_command_playwright(tmp_path, monkeypatch):
@@ -432,7 +432,7 @@ def test_clean_stale_purges_meshclaw_command_playwright(tmp_path, monkeypatch):
     monkeypatch.setattr(mcp_cleanup, "_KIRO_MCP_JSON", p)
 
     removed = mcp_cleanup.clean_stale_managed_mcp()
-    remaining = set(json.loads(p.read_text())["mcpServers"])
+    remaining = set(json.loads(p.read_text(encoding="utf-8"))["mcpServers"])
 
     assert "npm:@playwright/mcp" not in remaining  # stale meshclaw-command entry purged
     assert "npm:@playwright/mcp" in removed
@@ -463,7 +463,7 @@ def test_clean_stale_purges_windows_exe_predecessor_command(tmp_path, monkeypatc
     monkeypatch.setattr(mcp_cleanup, "_KIRO_MCP_JSON", p)
 
     removed = mcp_cleanup.clean_stale_managed_mcp()
-    remaining = set(json.loads(p.read_text())["mcpServers"])
+    remaining = set(json.loads(p.read_text(encoding="utf-8"))["mcpServers"])
 
     assert "npm:@playwright/mcp" not in remaining  # meshclaw.exe command matched by stem
     assert "npm:@playwright/mcp" in removed

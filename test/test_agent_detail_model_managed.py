@@ -39,7 +39,7 @@ async def test_patch_explicit_model_freezes(tmp_path):
         resp = await api_agent_detail(request)
 
     assert resp.status == 200
-    data = json.loads(cfg.read_text())
+    data = json.loads(cfg.read_text(encoding="utf-8"))
     assert data["model"] == "claude-new"
     # Spec stays schema-clean; managed-state goes to the sidecar.
     assert "model_managed" not in data
@@ -58,7 +58,7 @@ async def test_patch_clear_model_resumes_tracking(tmp_path):
         resp = await api_agent_detail(request)
 
     assert resp.status == 200
-    data = json.loads(cfg.read_text())
+    data = json.loads(cfg.read_text(encoding="utf-8"))
     assert "model" not in data
     assert "model_managed" not in data
     assert agent_state.get_model_managed("kirocrew") is True

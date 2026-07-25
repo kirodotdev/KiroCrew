@@ -271,7 +271,7 @@ class TestRelocatedSkillCleanup:
         assert not (old / "SKILL.md").exists()
         # ...but nothing was deleted: user edits and scripts preserved on disk.
         quarantined = old / "SKILL.md.pre-relocation"
-        assert quarantined.read_text().endswith("USER-EDITED flat copy")
+        assert quarantined.read_text(encoding="utf-8").endswith("USER-EDITED flat copy")
         assert (old / "scripts" / "helper.py").exists()
         assert (new / "SKILL.md").exists()
 
@@ -295,16 +295,16 @@ class TestRelocatedSkillCleanup:
         (old / "SKILL.md").write_text("---\nname: prepare-pr\n---\nFIRST user edit")
         _ensure_builtin_skills(base)
         first = old / "SKILL.md.pre-relocation"
-        assert first.read_text().endswith("FIRST user edit")
+        assert first.read_text(encoding="utf-8").endswith("FIRST user edit")
 
         # Rollback recreates SKILL.md with different content; migration re-runs.
         (old / "SKILL.md").write_text("---\nname: prepare-pr\n---\nSECOND rollback copy")
         _ensure_builtin_skills(base)
 
         # Both preserved copies survive; nothing was overwritten.
-        assert first.read_text().endswith("FIRST user edit")
+        assert first.read_text(encoding="utf-8").endswith("FIRST user edit")
         second = old / "SKILL.md.pre-relocation.2"
-        assert second.read_text().endswith("SECOND rollback copy")
+        assert second.read_text(encoding="utf-8").endswith("SECOND rollback copy")
         assert not (old / "SKILL.md").exists()
 
     def test_flat_copy_untouched_when_nested_missing(self, tmp_path: Path) -> None:
@@ -753,7 +753,7 @@ class TestCreateAutoSkill:
         assert name == "auto/debug-timber"
         skill_file = tmp_path / "skills" / "auto" / "debug-timber" / "SKILL.md"
         assert skill_file.exists()
-        content = skill_file.read_text()
+        content = skill_file.read_text(encoding="utf-8")
         assert "name: auto/debug-timber" in content
         assert "source: auto" in content
         assert "session_key: dashboard:chat-1" in content
@@ -881,7 +881,7 @@ class TestUpdateAutoSkill:
             is False
         )
         # Original content untouched
-        content = (skills_dir / "manual-skill" / "SKILL.md").read_text()
+        content = (skills_dir / "manual-skill" / "SKILL.md").read_text(encoding="utf-8")
         assert "Hand-authored content" in content
 
     def test_updates_auto_skill(self, tmp_path):
@@ -902,7 +902,7 @@ class TestUpdateAutoSkill:
             provenance=self._make_provenance(refined_at="2026-05-06T09:00:00+00:00"),
         )
         assert ok is True
-        content = (tmp_path / "skills" / "auto" / "refine-me" / "SKILL.md").read_text()
+        content = (tmp_path / "skills" / "auto" / "refine-me" / "SKILL.md").read_text(encoding="utf-8")
         assert "refined desc" in content
         assert "run Y (better)" in content
         assert "refined_at: 2026-05-06T09:00:00+00:00" in content
@@ -1019,7 +1019,7 @@ class TestUpdateAutoSkillPreservesCreatedAt:
             provenance=bogus_new,
         )
         assert ok is True
-        content = (tmp_path / "skills" / "auto" / "preserved-ts" / "SKILL.md").read_text()
+        content = (tmp_path / "skills" / "auto" / "preserved-ts" / "SKILL.md").read_text(encoding="utf-8")
         # Original created_at must survive
         assert "created_at: 2026-05-05T11:00:00+00:00" in content
         # New refined_at was honored

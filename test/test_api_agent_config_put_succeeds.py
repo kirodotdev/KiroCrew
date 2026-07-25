@@ -43,6 +43,6 @@ async def test_api_agent_config_put_succeeds(tmp_path):
     assert response.status == 200
     # Verify the handler actually wrote the config files
     assert installed.exists()
-    assert json.loads(installed.read_text())["name"] == "test"
+    assert json.loads(installed.read_text(encoding="utf-8"))["name"] == "test"
     assert mc_cfg.exists()
-    assert json.loads(mc_cfg.read_text())["removedTools"]["tools"] == ["c"]
+    assert json.loads(mc_cfg.read_text(encoding="utf-8"))["removedTools"]["tools"] == ["c"]

@@ -274,10 +274,10 @@ class TestKillProcessTree:
         proc = subprocess.Popen([sys.executable, "-c", script], start_new_session=True)
         # Wait for the grandchild pid to be recorded.
         for _ in range(50):
-            if pidfile.exists() and pidfile.read_text().strip():
+            if pidfile.exists() and pidfile.read_text(encoding="utf-8").strip():
                 break
             time.sleep(0.1)
-        child_pid = int(pidfile.read_text().strip())
+        child_pid = int(pidfile.read_text(encoding="utf-8").strip())
         assert _pid_alive(child_pid), "grandchild should be alive before teardown"
 
         connect._kill_process_tree(proc)

@@ -113,7 +113,7 @@ class TestAgentRegistration:
         link = app_env["kiro_agents"] / "test-app--my-agent.json"
         assert link.is_symlink()
         # Verify it points to the right file
-        target = json.loads(link.read_text())
+        target = json.loads(link.read_text(encoding="utf-8"))
         assert target["name"] == "my-agent"
 
     def test_deregister_agents(self, tmp_path, app_env):
@@ -410,7 +410,7 @@ class TestMCPRegistration:
         registered = _register_mcp_servers("test-app", manifest)
         assert registered == ["test-app:my-mcp"]
 
-        data = json.loads(mcp_path.read_text())
+        data = json.loads(mcp_path.read_text(encoding="utf-8"))
         assert "test-app:my-mcp" in data["mcpServers"]
 
     def test_http_mcp_url_port_rewritten_to_live_backend_port(self, tmp_path, app_env, monkeypatch):
@@ -433,7 +433,7 @@ class TestMCPRegistration:
             app_env["home"] / "apps" / "test-app" / APP_MANIFEST_FILENAME
         )
         _register_mcp_servers("test-app", manifest)
-        data = json.loads(mcp_path.read_text())
+        data = json.loads(mcp_path.read_text(encoding="utf-8"))
         # Port rewritten 9100 -> 9101; scheme/host/path preserved.
         assert data["mcpServers"]["test-app:my-mcp"]["url"] == "http://localhost:9101/mcp"
 
@@ -458,7 +458,7 @@ class TestMCPRegistration:
             app_env["home"] / "apps" / "test-app" / APP_MANIFEST_FILENAME
         )
         _register_mcp_servers("test-app", manifest)
-        data = json.loads(mcp_path.read_text())
+        data = json.loads(mcp_path.read_text(encoding="utf-8"))
         # No dead-port entry written — nothing for kiro to fail to connect to.
         assert "test-app:my-mcp" not in data.get("mcpServers", {})
 
@@ -483,11 +483,11 @@ class TestMCPRegistration:
         # Backend up → entry written with live port.
         monkeypatch.setattr(backend_mod, "get_app_backend_port", lambda _n: 9101)
         _register_mcp_servers("test-app", manifest)
-        assert "test-app:my-mcp" in json.loads(mcp_path.read_text())["mcpServers"]
+        assert "test-app:my-mcp" in json.loads(mcp_path.read_text(encoding="utf-8"))["mcpServers"]
         # Backend now DOWN → a re-register must remove the now-dead entry.
         monkeypatch.setattr(backend_mod, "get_app_backend_port", lambda _n: None)
         _register_mcp_servers("test-app", manifest)
-        assert "test-app:my-mcp" not in json.loads(mcp_path.read_text()).get("mcpServers", {})
+        assert "test-app:my-mcp" not in json.loads(mcp_path.read_text(encoding="utf-8")).get("mcpServers", {})
 
     def test_stdio_mcp_server_always_registered_no_backend(self, tmp_path, app_env, monkeypatch):
         # A command/stdio MCP server (no url) has no port to be dead — it must always be
@@ -507,7 +507,7 @@ class TestMCPRegistration:
         )
         registered = _register_mcp_servers("test-app", manifest)
         assert registered == ["test-app:my-stdio"]
-        assert "test-app:my-stdio" in json.loads(mcp_path.read_text())["mcpServers"]
+        assert "test-app:my-stdio" in json.loads(mcp_path.read_text(encoding="utf-8"))["mcpServers"]
 
     def test_reregister_app_mcp_servers_overwrites_with_live_port(self, tmp_path, app_env, monkeypatch):
         # reregister_app_mcp_servers (called after the backend starts) overwrites the
@@ -529,11 +529,11 @@ class TestMCPRegistration:
             app_env["home"] / "apps" / "test-app" / APP_MANIFEST_FILENAME
         )
         _register_mcp_servers("test-app", manifest)
-        assert "test-app:my-mcp" not in json.loads(mcp_path.read_text()).get("mcpServers", {})
+        assert "test-app:my-mcp" not in json.loads(mcp_path.read_text(encoding="utf-8")).get("mcpServers", {})
         # Backend now up on 9101 → re-register writes it with the live port.
         monkeypatch.setattr(backend_mod, "get_app_backend_port", lambda _n: 9101)
         reregister_app_mcp_servers("test-app")
-        assert json.loads(mcp_path.read_text())["mcpServers"]["test-app:my-mcp"]["url"] \
+        assert json.loads(mcp_path.read_text(encoding="utf-8"))["mcpServers"]["test-app:my-mcp"]["url"] \
             == "http://localhost:9101/mcp"
 
     def test_explicit_live_port_rewrites_even_when_backend_unhealthy(self, tmp_path, app_env, monkeypatch):
@@ -553,7 +553,7 @@ class TestMCPRegistration:
         install_app(src)
         # Explicit live_port=9101 (from the spawn result) must win over the None lookup.
         reregister_app_mcp_servers("test-app", live_port=9101)
-        data = json.loads(mcp_path.read_text())
+        data = json.loads(mcp_path.read_text(encoding="utf-8"))
         assert data["mcpServers"]["test-app:my-mcp"]["url"] == "http://localhost:9101/mcp"
 
     def test_deregister_mcp_servers(self, tmp_path, app_env, monkeypatch):
@@ -574,7 +574,7 @@ class TestMCPRegistration:
         removed = _deregister_mcp_servers("app-a")
         assert removed == 2
 
-        data = json.loads(mcp_path.read_text())
+        data = json.loads(mcp_path.read_text(encoding="utf-8"))
         assert "app-a:srv1" not in data["mcpServers"]
         assert "app-a:srv2" not in data["mcpServers"]
         assert "app-b:srv1" in data["mcpServers"]
@@ -647,7 +647,7 @@ class TestMCPProperties:
             expected = f"{app_name}:{server_name}"
             assert expected in registered
 
-        data = json.loads(mcp_path.read_text()) if mcp_path.is_file() else {}
+        data = json.loads(mcp_path.read_text(encoding="utf-8")) if mcp_path.is_file() else {}
         for name in registered:
             assert name in data.get("mcpServers", {})
 
@@ -686,7 +686,7 @@ class TestMCPProperties:
         # Deregister app_a
         _deregister_mcp_servers(app_a)
 
-        data = json.loads(mcp_path.read_text()) if mcp_path.is_file() else {}
+        data = json.loads(mcp_path.read_text(encoding="utf-8")) if mcp_path.is_file() else {}
         remaining = data.get("mcpServers", {})
 
         # app_a entries gone
@@ -729,7 +729,7 @@ class TestBootReconcile:
 
         backend_mod.start_enabled_app_backends()
 
-        remaining = json.loads(mcp_path.read_text())["mcpServers"]
+        remaining = json.loads(mcp_path.read_text(encoding="utf-8"))["mcpServers"]
         assert "ai-app:backend" not in remaining   # stale dead entry scrubbed
         assert "other:keep" in remaining            # unrelated entry untouched
 
@@ -752,7 +752,7 @@ class TestBootReconcile:
 
         backend_mod._gate_mcp_registration("test-app", 9100, healthy=False)
 
-        remaining = json.loads(mcp_path.read_text())["mcpServers"]
+        remaining = json.loads(mcp_path.read_text(encoding="utf-8"))["mcpServers"]
         assert "test-app:backend" not in remaining  # dead enabled-app entry scrubbed
         assert "other:keep" in remaining            # unrelated entry untouched
 
@@ -771,7 +771,7 @@ class TestBootReconcile:
 
         backend_mod._gate_mcp_registration("test-app", 9101, healthy=True)
 
-        servers = json.loads(mcp_path.read_text())["mcpServers"]
+        servers = json.loads(mcp_path.read_text(encoding="utf-8"))["mcpServers"]
         assert "test-app:my-mcp" in servers
         assert servers["test-app:my-mcp"]["url"] == "http://localhost:9101/mcp"  # live port
 
@@ -801,7 +801,7 @@ class TestBootReconcile:
         backend_mod.start_enabled_app_backends()
 
         # Nothing registered synchronously; the health loop owns it.
-        assert json.loads(mcp_path.read_text())["mcpServers"] == {}
+        assert json.loads(mcp_path.read_text(encoding="utf-8"))["mcpServers"] == {}
 
 
 # ---------------------------------------------------------------------------

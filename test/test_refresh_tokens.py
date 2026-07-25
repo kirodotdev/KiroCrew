@@ -450,7 +450,7 @@ def test_tr_u_19_atomic_write_no_partial_state(tmp_path: Path):
             replacement="{}",
         )
     # File should always parse cleanly (atomic-rename pattern)
-    raw = state_file.read_text()
+    raw = state_file.read_text(encoding="utf-8")
     data = json.loads(raw)  # no JSONDecodeError
     assert len(data["consumed_jtis"]) == 100
 

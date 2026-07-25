@@ -270,7 +270,7 @@ class TestNotificationPersistence:
 
         rows = [
             json.loads(line)
-            for line in (tmp_path / "notifications.jsonl").read_text().splitlines()
+            for line in (tmp_path / "notifications.jsonl").read_text(encoding="utf-8").splitlines()
         ]
         assert [r["title"] for r in rows] == ["First", "Second"]
         assert "acked" not in rows[0]
@@ -288,7 +288,7 @@ class TestNotificationPersistence:
             start_time=0.0,
         )
         state._deliver_note({"ts": "t1", "kind": "cron", "title": "Sync", "body": "b"})
-        rows = (tmp_path / "notifications.jsonl").read_text().splitlines()
+        rows = (tmp_path / "notifications.jsonl").read_text(encoding="utf-8").splitlines()
         assert len(rows) == 1
         assert json.loads(rows[0])["title"] == "Sync"
 
@@ -311,7 +311,7 @@ class TestNotificationPersistence:
             return await state.delete_notification("t1")
 
         assert asyncio.run(scenario()) is True
-        content = (tmp_path / "notifications.jsonl").read_text()
+        content = (tmp_path / "notifications.jsonl").read_text(encoding="utf-8")
         assert "Doomed" not in content
 
     def test_ack_persists_durably_before_return(self, monkeypatch, tmp_path) -> None:
@@ -333,7 +333,7 @@ class TestNotificationPersistence:
         assert asyncio.run(scenario()) is True
         rows = [
             json.loads(line)
-            for line in (tmp_path / "notifications.jsonl").read_text().splitlines()
+            for line in (tmp_path / "notifications.jsonl").read_text(encoding="utf-8").splitlines()
         ]
         assert rows[0]["acked"] is True
 
@@ -363,7 +363,7 @@ class TestNotificationPersistence:
         asyncio.run(scenario())
         rows = [
             json.loads(line)
-            for line in (tmp_path / "notifications.jsonl").read_text().splitlines()
+            for line in (tmp_path / "notifications.jsonl").read_text(encoding="utf-8").splitlines()
         ]
         assert len(rows) == 1
         assert rows[0]["acked"] is True

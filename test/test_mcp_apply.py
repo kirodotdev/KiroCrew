@@ -48,7 +48,7 @@ class TestSetKirocrewEntry:
         monkeypatch.setattr(mcp_mod, "_KIROCREW_MCP_JSON", mc_path)
         action = mcp_mod._set_kirocrew_entry("srv", enabled=True, spec={"command": "x"})
         assert action == "added"
-        assert json.loads(mc_path.read_text())["mcpServers"]["srv"] == {"command": "x"}
+        assert json.loads(mc_path.read_text(encoding="utf-8"))["mcpServers"]["srv"] == {"command": "x"}
 
     def test_disables_existing(self, tmp_path, monkeypatch):
         from kiro_crew.dashboard.handlers import mcp as mcp_mod
@@ -58,7 +58,7 @@ class TestSetKirocrewEntry:
         monkeypatch.setattr(mcp_mod, "_KIROCREW_MCP_JSON", mc_path)
         action = mcp_mod._set_kirocrew_entry("srv", enabled=False)
         assert action == "disabled"
-        assert json.loads(mc_path.read_text())["mcpServers"]["srv"]["disabled"] is True
+        assert json.loads(mc_path.read_text(encoding="utf-8"))["mcpServers"]["srv"]["disabled"] is True
 
     def test_enabling_disabled_removes_flag(self, tmp_path, monkeypatch):
         from kiro_crew.dashboard.handlers import mcp as mcp_mod
@@ -70,7 +70,7 @@ class TestSetKirocrewEntry:
         monkeypatch.setattr(mcp_mod, "_KIROCREW_MCP_JSON", mc_path)
         action = mcp_mod._set_kirocrew_entry("srv", enabled=True)
         assert action == "enabled"
-        assert "disabled" not in json.loads(mc_path.read_text())["mcpServers"]["srv"]
+        assert "disabled" not in json.loads(mc_path.read_text(encoding="utf-8"))["mcpServers"]["srv"]
 
     def test_disabling_missing_with_spec_seeds_entry(self, tmp_path, monkeypatch):
         from kiro_crew.dashboard.handlers import mcp as mcp_mod
@@ -81,7 +81,7 @@ class TestSetKirocrewEntry:
             "srv", enabled=False, spec={"command": "x"}
         )
         assert action == "disabled"
-        entry = json.loads(mc_path.read_text())["mcpServers"]["srv"]
+        entry = json.loads(mc_path.read_text(encoding="utf-8"))["mcpServers"]["srv"]
         assert entry == {"command": "x", "disabled": True}
 
 
@@ -94,7 +94,7 @@ class TestSetScopeEntry:
             kpath, "srv", enabled=True, spec={"command": "c"}
         )
         assert action == "added"
-        assert json.loads(kpath.read_text())["mcpServers"]["srv"] == {"command": "c"}
+        assert json.loads(kpath.read_text(encoding="utf-8"))["mcpServers"]["srv"] == {"command": "c"}
 
     def test_removes_when_disabling_present(self, tmp_path, monkeypatch):
         from kiro_crew.dashboard.handlers import mcp as mcp_mod
@@ -105,7 +105,7 @@ class TestSetScopeEntry:
         )
         action = mcp_mod._set_scope_entry(kpath, "srv", enabled=False)
         assert action == "removed"
-        servers = json.loads(kpath.read_text())["mcpServers"]
+        servers = json.loads(kpath.read_text(encoding="utf-8"))["mcpServers"]
         assert "srv" not in servers
         assert "other" in servers  # untouched
 
@@ -205,12 +205,12 @@ class TestApplyEndpoint:
         assert body["applied"] == 1
 
         # KiroCrew mcp.json should now have slack-mcp (preservation happened)
-        mc = json.loads(mc_path.read_text())
+        mc = json.loads(mc_path.read_text(encoding="utf-8"))
         assert "slack-mcp" in mc["mcpServers"]
         assert mc["mcpServers"]["slack-mcp"].get("disabled") is not True
 
         # Kiro global should no longer have slack-mcp
-        k = json.loads(kiro_path.read_text())
+        k = json.loads(kiro_path.read_text(encoding="utf-8"))
         assert "slack-mcp" not in k["mcpServers"]
 
     @pytest.mark.asyncio
@@ -251,7 +251,7 @@ class TestApplyEndpoint:
         assert body["ok"] is True
 
         for p in (mc_path, kiro_path, cc_path):
-            data = json.loads(p.read_text())
+            data = json.loads(p.read_text(encoding="utf-8"))
             assert "foo" not in data["mcpServers"], f"foo still in {p}"
 
     @pytest.mark.asyncio
@@ -724,7 +724,7 @@ class TestUninstallCrashWindowCleanup:
 
         # Despite the abort, 'gone' (package confirmed removed) must NOT remain
         # in the persisted global config — the finally sweep purged it.
-        remaining = json.loads(kiro_path.read_text())["mcpServers"]
+        remaining = json.loads(kiro_path.read_text(encoding="utf-8"))["mcpServers"]
         assert "gone" not in remaining, "dangling config→removed-package reference"
 
     @pytest.mark.asyncio
@@ -792,7 +792,7 @@ class TestUninstallCrashWindowCleanup:
 
         # 'slow' was a REQUESTED uninstall the loop never reached → the sweep
         # removes its config even though the companion op only timed out.
-        remaining = json.loads(kiro_path.read_text())["mcpServers"]
+        remaining = json.loads(kiro_path.read_text(encoding="utf-8"))["mcpServers"]
         assert "slow" not in remaining, "requested uninstall's config should be swept"
 
     @pytest.mark.asyncio
@@ -858,7 +858,7 @@ class TestUninstallCrashWindowCleanup:
         with pytest.raises(_asyncio.CancelledError):
             await task
 
-        remaining = json.loads(kiro_path.read_text())["mcpServers"]
+        remaining = json.loads(kiro_path.read_text(encoding="utf-8"))["mcpServers"]
         # Both were REQUESTED uninstalls the loop never reached → the sweep purges
         # both by request (it no longer depends on the companion result being
         # recorded, which cancellation could race). 'done's package was removed;

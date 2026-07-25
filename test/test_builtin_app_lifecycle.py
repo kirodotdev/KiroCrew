@@ -46,7 +46,7 @@ class TestSyncBuiltinConfig:
         cfg.write_text(json.dumps({_TEST_CFG_KEY: {"enabled": True, "poll_interval_seconds": 60}}))
         with patch("kiro_crew.apps.routes.config_path", return_value=cfg):
             _sync_builtin_config(_TEST_BUILTIN, enabled=False)
-        data = json.loads(cfg.read_text())
+        data = json.loads(cfg.read_text(encoding="utf-8"))
         assert data[_TEST_CFG_KEY]["enabled"] is False
         assert data[_TEST_CFG_KEY]["poll_interval_seconds"] == 60  # preserved
 
@@ -55,7 +55,7 @@ class TestSyncBuiltinConfig:
         cfg.write_text(json.dumps({_TEST_CFG_KEY: {"enabled": False}}))
         with patch("kiro_crew.apps.routes.config_path", return_value=cfg):
             _sync_builtin_config(_TEST_BUILTIN, enabled=True)
-        data = json.loads(cfg.read_text())
+        data = json.loads(cfg.read_text(encoding="utf-8"))
         assert data[_TEST_CFG_KEY]["enabled"] is True
 
     def test_creates_section_if_missing(self, tmp_path, register_test_builtin):
@@ -63,7 +63,7 @@ class TestSyncBuiltinConfig:
         cfg.write_text(json.dumps({"agent": {"model": "auto"}}))
         with patch("kiro_crew.apps.routes.config_path", return_value=cfg):
             _sync_builtin_config(_TEST_BUILTIN, enabled=False)
-        data = json.loads(cfg.read_text())
+        data = json.loads(cfg.read_text(encoding="utf-8"))
         assert data[_TEST_CFG_KEY]["enabled"] is False
         assert data["agent"]["model"] == "auto"  # preserved
 
@@ -71,7 +71,7 @@ class TestSyncBuiltinConfig:
         cfg = tmp_path / "config.json"
         with patch("kiro_crew.apps.routes.config_path", return_value=cfg):
             _sync_builtin_config(_TEST_BUILTIN, enabled=True)
-        data = json.loads(cfg.read_text())
+        data = json.loads(cfg.read_text(encoding="utf-8"))
         assert data[_TEST_CFG_KEY]["enabled"] is True
 
     def test_noop_for_non_builtin(self, tmp_path):
@@ -79,7 +79,7 @@ class TestSyncBuiltinConfig:
         cfg.write_text(json.dumps({}))
         with patch("kiro_crew.apps.routes.config_path", return_value=cfg):
             _sync_builtin_config("some-other-app", enabled=False)
-        data = json.loads(cfg.read_text())
+        data = json.loads(cfg.read_text(encoding="utf-8"))
         assert _TEST_CFG_KEY not in data
 
     def test_raises_on_corrupt_config(self, tmp_path, register_test_builtin):
@@ -89,7 +89,7 @@ class TestSyncBuiltinConfig:
             with pytest.raises(OSError):
                 _sync_builtin_config(_TEST_BUILTIN, enabled=False)
         # File should be untouched — not overwritten with empty dict
-        assert cfg.read_text() == "{corrupt json!!!"
+        assert cfg.read_text(encoding="utf-8") == "{corrupt json!!!"
 
 
 # ── _notify_builtin_service ──
@@ -169,7 +169,7 @@ class TestHandleDisableBuiltin:
         body = json.loads(resp.body)
         assert body["ok"] is True
         # Config.json should now say enabled: false
-        data = json.loads(cfg.read_text())
+        data = json.loads(cfg.read_text(encoding="utf-8"))
         assert data[_TEST_CFG_KEY]["enabled"] is False
         # Restart callback should have been called (stops the service)
         restart_fn.assert_called_once()
@@ -201,7 +201,7 @@ class TestHandleDisableBuiltin:
         body = json.loads(resp.body)
         assert body["ok"] is True
         # Config.json should be untouched
-        data = json.loads(cfg.read_text())
+        data = json.loads(cfg.read_text(encoding="utf-8"))
         assert _TEST_CFG_KEY not in data
 
 

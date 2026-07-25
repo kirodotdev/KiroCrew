@@ -294,7 +294,7 @@ class TestShownDocsSurvivesRegeneration:
             loaded = _load_state()
             assert loaded.shown_docs == {"a": "x.md"}
             state_file = tmp_path / "tips_state.json"
-            data = json.loads(state_file.read_text())
+            data = json.loads(state_file.read_text(encoding="utf-8"))
             data["shown_docs"] = {"good": "ok.md", "bad": 7}
             state_file.write_text(json.dumps(data))
             loaded2 = _load_state()
@@ -323,7 +323,7 @@ class TestSnoozedDocsSurvivesIdDrift:
             loaded = _load_state()
             assert loaded.snoozed_docs == {"a.md": 123.0}
             state_file = tmp_path / "tips_state.json"
-            data = json.loads(state_file.read_text())
+            data = json.loads(state_file.read_text(encoding="utf-8"))
             data["snoozed_docs"] = {"good.md": 5.0, "bad.md": "x", "inf.md": 1e400}
             state_file.write_text(json.dumps(data).replace("Infinity", "1e999"))
             loaded2 = _load_state()

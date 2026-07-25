@@ -175,7 +175,7 @@ class TestConfigOverlayLoad:
             assert cfg.agent.yolo is True
             assert cfg.agent.model == "auto"
             cfg.save()
-            saved = json.loads((config_dir / "config.json").read_text())
+            saved = json.loads((config_dir / "config.json").read_text(encoding="utf-8"))
 
         assert "yolo" not in saved.get("agent", {})
         assert "model" not in saved.get("agent", {})
@@ -307,7 +307,7 @@ class TestCliConfigSetLocal:
 
         local_file = config_dir / "config.local.json"
         assert local_file.exists()
-        data = json.loads(local_file.read_text())
+        data = json.loads(local_file.read_text(encoding="utf-8"))
         assert data["agent"]["yolo"] is True
 
     def test_local_set_unknown_section_warns(self, tmp_path: Path, capsys) -> None:
@@ -353,7 +353,7 @@ class TestCliConfigSetLocal:
         ):
             _config_cmd(args)
 
-        saved = json.loads((config_dir / "config.json").read_text())
+        saved = json.loads((config_dir / "config.json").read_text(encoding="utf-8"))
         assert saved["agent"]["yolo"] is True
         assert "streaming" not in saved.get("agent", {})
 
@@ -374,7 +374,7 @@ class TestCliConfigSetLocal:
             with patch("kiro_crew.cli_config.sel"):
                 _config_cmd(args)
 
-        data = json.loads((config_dir / "config.local.json").read_text())
+        data = json.loads((config_dir / "config.local.json").read_text(encoding="utf-8"))
         assert data["agent"]["yolo"] is True
 
     def test_local_set_handles_non_dict_existing_file(self, tmp_path: Path) -> None:
@@ -394,7 +394,7 @@ class TestCliConfigSetLocal:
             with patch("kiro_crew.cli_config.sel"):
                 _config_cmd(args)
 
-        data = json.loads((config_dir / "config.local.json").read_text())
+        data = json.loads((config_dir / "config.local.json").read_text(encoding="utf-8"))
         assert data["agent"]["yolo"] is True
 
     def test_nonlocal_set_handles_corrupt_local_file(self, tmp_path: Path) -> None:
@@ -420,5 +420,5 @@ class TestCliConfigSetLocal:
         ):
             _config_cmd(args)
 
-        saved = json.loads((config_dir / "config.json").read_text())
+        saved = json.loads((config_dir / "config.json").read_text(encoding="utf-8"))
         assert saved["agent"]["yolo"] is True

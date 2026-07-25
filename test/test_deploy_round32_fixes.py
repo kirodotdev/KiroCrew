@@ -25,7 +25,7 @@ def _statements(doc):
 
 class TestF1ReaperShellDistTagGate:
     def test_tag_verification_precedes_destructive_ops(self):
-        src = REAPER_SH.read_text()
+        src = REAPER_SH.read_text(encoding="utf-8")
         tag_idx = src.index("list-tags-for-resource")
         assert tag_idx < src.index("update-distribution"), (
             "distribution tag gate must run before Phase-1 disable"
@@ -35,7 +35,7 @@ class TestF1ReaperShellDistTagGate:
         )
 
     def test_gate_fails_closed(self):
-        src = REAPER_SH.read_text()
+        src = REAPER_SH.read_text(encoding="utf-8")
         block = src.split("list-tags-for-resource", 1)[1][:900]
         assert "TAG_LOOKUP_FAILED" in src, "lookup failure must not pass the gate"
         assert "continue" in block, "mismatch must skip (fail closed), not proceed"

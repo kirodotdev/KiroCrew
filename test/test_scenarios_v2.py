@@ -64,7 +64,7 @@ class TestScenarioMultiStepCodeTask:
         assert Path(run.work_dir).exists()
         assert run.branch_name == "kirocrew/task/rest_api_task"
         # Original repo should be untouched
-        assert (repo / "README.md").read_text() == "# My Project"
+        assert (repo / "README.md").read_text(encoding="utf-8") == "# My Project"
 
         # Step 1: Create models.py
         (Path(run.work_dir) / "models.py").write_text("class User: pass")
@@ -130,7 +130,7 @@ class TestScenarioMultiStepCodeTask:
         (Path(run.work_dir) / "new_file.py").write_text("new")
 
         # User's original should be untouched
-        assert (repo / "app.py").read_text() == "original content"
+        assert (repo / "app.py").read_text(encoding="utf-8") == "original content"
         assert not (repo / "new_file.py").exists()
 
         await git_coord.finalize(run)
@@ -175,7 +175,7 @@ class TestScenarioStepFailureAndRevert:
         # middleware.py should be gone, auth.py should remain
         assert not (Path(run.work_dir) / "middleware.py").exists()
         assert (Path(run.work_dir) / "auth.py").exists()
-        assert (Path(run.work_dir) / "auth.py").read_text() == "def login(): pass"
+        assert (Path(run.work_dir) / "auth.py").read_text(encoding="utf-8") == "def login(): pass"
         assert len(run.commit_hashes) == 1
 
         await git_coord.finalize(run)
@@ -210,7 +210,7 @@ class TestScenarioStepFailureAndRevert:
         sha = await git_coord.commit_step(run, Step(index=2, title="B fixed", description="d"))
         assert sha != ""
         assert len(run.commit_hashes) == 2
-        assert (Path(run.work_dir) / "b.py").read_text() == "fixed"
+        assert (Path(run.work_dir) / "b.py").read_text(encoding="utf-8") == "fixed"
 
         await git_coord.finalize(run)
 
@@ -303,8 +303,8 @@ class TestScenarioGreenfieldProject:
         assert run.work_dir == str(work)  # unchanged
         assert not (work / ".git").exists()  # no git init
         # Existing files are untouched
-        assert (work / "config.yaml").read_text() == "key: value"
-        assert (work / "data.json").read_text() == "{}"
+        assert (work / "config.yaml").read_text(encoding="utf-8") == "key: value"
+        assert (work / "data.json").read_text(encoding="utf-8") == "{}"
 
 
 # ═══════════════════════════════════════════════════════════════════════

@@ -2910,7 +2910,7 @@ class TestSaveRoundTripPreservesAllSections:
         try:
             with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp):
                 KiroCrewConfig.load()  # migration write-back save fires
-            after = json.loads(tmp.read_text())
+            after = json.loads(tmp.read_text(encoding="utf-8"))
             assert after.get("knowledge", {}).get("pool_idle_ttl_secs") == 0
             assert after.get("heartbeat", {}).get("default_deliver") == "dashboard"
             assert after.get("snapshot_dir") == "/tmp/snaps"

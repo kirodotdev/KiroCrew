@@ -29,7 +29,7 @@ def test_f1_pending_schema_carries_override_flag(tmp_path, monkeypatch):
 
 
 def test_f1_mcp_blocked_path_distinguishes_credential():
-    src = (_ROOT / "src/kiro_crew/mcp_core.py").read_text()
+    src = (_ROOT / "src/kiro_crew/mcp_core.py").read_text(encoding="utf-8")
     blocked = src.split('if d.get("blocked"):', 1)[1][:2000]
     # Credential findings: hard block, no pending.
     assert 'if d.get("credential"):' in blocked
@@ -38,7 +38,7 @@ def test_f1_mcp_blocked_path_distinguishes_credential():
 
 
 def test_f1_confirm_handler_requires_explicit_human_override():
-    src = (_ROOT / "src/kiro_crew/deploy/handlers.py").read_text()
+    src = (_ROOT / "src/kiro_crew/deploy/handlers.py").read_text(encoding="utf-8")
     seg = src.split('if entry.get("override_scan_required"):', 1)[1][:600]
     # override_scan only set from the request body (human action), and only
     # when it is literally True.
@@ -46,7 +46,7 @@ def test_f1_confirm_handler_requires_explicit_human_override():
 
 
 def test_f1_frontend_sends_override_and_labels_action():
-    src = (_ROOT / "website/src/pages/ArtifactDeployPage.tsx").read_text()
+    src = (_ROOT / "website/src/pages/ArtifactDeployPage.tsx").read_text(encoding="utf-8")
     assert "override_scan_required" in src
     assert "Deploy anyway" in src
     assert "override_scan: true" in src
@@ -59,7 +59,7 @@ def test_f2_reaper_quarantines_on_every_identity_mismatch():
     src = (
         _ROOT / "src/kiro_crew/deploy/skills/artifact-deploy/scripts/"
         "reaper_lambda/index.py"
-    ).read_text()
+    ).read_text(encoding="utf-8")
     assert "def _quarantine_manifest" in src
     # Wired at the slug-forgery gate, dist/bucket tag gates, and the app-arch
     # stack tag gate (4 call sites + the def).

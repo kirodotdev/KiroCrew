@@ -197,7 +197,7 @@ class TestSyncMcpToAgentSlashName:
 
         mcp_mod._sync_mcp_to_agent("npm:@playwright/mcp", enabled=True)
 
-        cfg = json.loads(agent_path.read_text())
+        cfg = json.loads(agent_path.read_text(encoding="utf-8"))
         assert "playwright-mcp" in cfg["mcpServers"]
         assert "npm:@playwright/mcp" not in cfg["mcpServers"]
         assert "@playwright-mcp" in cfg["tools"]
@@ -225,7 +225,7 @@ class TestSyncMcpToAgentSlashName:
 
         mcp_mod._sync_mcp_to_agent("npm:@playwright/mcp", enabled=False, remove=True)
 
-        cfg = json.loads(agent_path.read_text())
+        cfg = json.loads(agent_path.read_text(encoding="utf-8"))
         assert "@playwright-mcp" not in cfg["tools"]
         assert "@npm:@playwright/mcp" not in cfg["tools"]
         assert "playwright-mcp" not in cfg["mcpServers"]

@@ -182,7 +182,7 @@ class TestHandoffToSlack:
         log.append("dashboard:chat-1", "user", "hello")
         # Set title in metadata
         path = tmp_path / "dashboard_chat-1.jsonl"
-        lines = path.read_text().splitlines(keepends=True)
+        lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
         meta = json.loads(lines[0])
         meta["title"] = "Auto Title"
         lines[0] = json.dumps(meta) + "\n"

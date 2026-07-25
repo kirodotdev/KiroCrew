@@ -1121,7 +1121,7 @@ class TestGovernanceDegradedIsObservable:
 
             sel_file = sel_dir / "security_events.jsonl"
             records = [
-                json.loads(line) for line in sel_file.read_text().splitlines() if line.strip()
+                json.loads(line) for line in sel_file.read_text(encoding="utf-8").splitlines() if line.strip()
             ]
             degraded = [r for r in records if r.get("event_type") == "governance_degraded"]
             assert degraded, "a governance_degraded SEL record must be persisted"

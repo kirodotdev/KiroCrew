@@ -45,19 +45,19 @@ class TestScaffold:
 
     def test_agent_is_valid_json(self, tmp_path):
         app_dir = scaffold_app(tmp_path, "json-check")
-        agent = json.loads((app_dir / "agents" / "sample-agent.json").read_text())
+        agent = json.loads((app_dir / "agents" / "sample-agent.json").read_text(encoding="utf-8"))
         assert agent["name"] == "sample-agent"
         assert "model" in agent
 
     def test_skill_has_frontmatter(self, tmp_path):
         app_dir = scaffold_app(tmp_path, "skill-check")
-        content = (app_dir / "skills" / "sample-skill" / "SKILL.md").read_text()
+        content = (app_dir / "skills" / "sample-skill" / "SKILL.md").read_text(encoding="utf-8")
         assert "---" in content
         assert "description:" in content
 
     def test_readme_has_name(self, tmp_path):
         app_dir = scaffold_app(tmp_path, "readme-check")
-        readme = (app_dir / "README.md").read_text()
+        readme = (app_dir / "README.md").read_text(encoding="utf-8")
         assert "readme-check" in readme
         assert "kirocrew app install" in readme
 
@@ -96,18 +96,18 @@ class TestScaffold:
         assert (app_dir / "ui" / ".gitignore").is_file()
 
         # package.json should reference the app name
-        pkg = json.loads((app_dir / "ui" / "package.json").read_text())
+        pkg = json.loads((app_dir / "ui" / "package.json").read_text(encoding="utf-8"))
         assert pkg["name"] == "ui-app-ui"
         assert "react" in pkg["dependencies"]
         assert "vite" in pkg["devDependencies"]
 
         # vite config should externalize shared modules
-        vite_cfg = (app_dir / "ui" / "vite.config.ts").read_text()
+        vite_cfg = (app_dir / "ui" / "vite.config.ts").read_text(encoding="utf-8")
         assert "@kirocrew/app-sdk" in vite_cfg
         assert "@kirocrew/app-sdk/ui" in vite_cfg
 
         # App.tsx should have a valid component
-        app_tsx = (app_dir / "ui" / "src" / "App.tsx").read_text()
+        app_tsx = (app_dir / "ui" / "src" / "App.tsx").read_text(encoding="utf-8")
         assert "useAppApi" in app_tsx
         assert "PageHeader" in app_tsx
 

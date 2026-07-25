@@ -160,11 +160,11 @@ class TestConcurrentPersist:
         older = json.dumps([{"task_id": "older"}])
 
         runner._commit_snapshot(5, newer)
-        assert json.loads((tmp_path / "runs.json").read_text())[0]["task_id"] == "newer"
+        assert json.loads((tmp_path / "runs.json").read_text(encoding="utf-8"))[0]["task_id"] == "newer"
 
         # Older sequence arriving late is ignored.
         runner._commit_snapshot(3, older)
-        assert json.loads((tmp_path / "runs.json").read_text())[0]["task_id"] == "newer"
+        assert json.loads((tmp_path / "runs.json").read_text(encoding="utf-8"))[0]["task_id"] == "newer"
 
     def test_apersist_snapshots_on_caller_thread(self, tmp_path: Path) -> None:
         """_apersist_runs must build the snapshot before offloading, so the

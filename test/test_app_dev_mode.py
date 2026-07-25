@@ -601,7 +601,7 @@ def test_update_app_preserves_dev_flag(tmp_path, monkeypatch):
 
     # Bump the source version and update in place.
     manifest_path = src / APP_MANIFEST_FILENAME
-    manifest = json.loads(manifest_path.read_text())
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["version"] = "1.1.0"
     manifest_path.write_text(json.dumps(manifest, indent=2))
     result = update_app(str(src))

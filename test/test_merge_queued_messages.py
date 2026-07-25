@@ -265,7 +265,7 @@ class TestDashboardConfigMergeQueued:
 
                 # Verify persisted
                 assert cfg_file.exists()
-                saved = json.loads(cfg_file.read_text())
+                saved = json.loads(cfg_file.read_text(encoding="utf-8"))
                 assert saved["dashboard"]["merge_queued_messages"] is True
 
                 # Verify GET reflects the change

@@ -9,7 +9,7 @@ import re
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-HANDLERS = (REPO / "src" / "kiro_crew" / "deploy" / "handlers.py").read_text()
+HANDLERS = (REPO / "src" / "kiro_crew" / "deploy" / "handlers.py").read_text(encoding="utf-8")
 
 
 class TestF1CapacityUnderLock:

@@ -1043,7 +1043,7 @@ class TestSetupTimezone:
 
         prompt = mock_input.call_args[0][0]
         assert "America/Los_Angeles" in prompt
-        data = json.loads(cfg_file.read_text())
+        data = json.loads(cfg_file.read_text(encoding="utf-8"))
         assert data["timezone"] == "America/Los_Angeles"
 
     def test_manual_entry(self, tmp_path, monkeypatch):
@@ -1058,7 +1058,7 @@ class TestSetupTimezone:
             with patch("kiro_crew.cli_setup._detect_system_timezone", return_value=""):
                 _setup_timezone()
 
-        data = json.loads(cfg_file.read_text())
+        data = json.loads(cfg_file.read_text(encoding="utf-8"))
         assert data["timezone"] == "America/New_York"
 
     def test_skip_on_empty_input(self, tmp_path, monkeypatch):
@@ -1073,7 +1073,7 @@ class TestSetupTimezone:
             with patch("kiro_crew.cli_setup._detect_system_timezone", return_value=""):
                 _setup_timezone()
 
-        data = json.loads(cfg_file.read_text())
+        data = json.loads(cfg_file.read_text(encoding="utf-8"))
         assert "timezone" not in data
 
     def test_invalid_timezone_rejected(self, tmp_path, monkeypatch, capsys):
@@ -1088,7 +1088,7 @@ class TestSetupTimezone:
             with patch("kiro_crew.cli_setup._detect_system_timezone", return_value=""):
                 _setup_timezone()
 
-        data = json.loads(cfg_file.read_text())
+        data = json.loads(cfg_file.read_text(encoding="utf-8"))
         assert "timezone" not in data
         output = capsys.readouterr().out
         assert "Unknown timezone" in output
@@ -1104,7 +1104,7 @@ class TestSetupTimezone:
         with patch("builtins.input", return_value=""):
             _setup_timezone()
 
-        data = json.loads(cfg_file.read_text())
+        data = json.loads(cfg_file.read_text(encoding="utf-8"))
         assert data["timezone"] == "America/Chicago"
 
     def test_corrupted_config_not_overwritten(self, tmp_path, monkeypatch, capsys):
@@ -1118,7 +1118,7 @@ class TestSetupTimezone:
         _setup_timezone()
 
         # File should be unchanged
-        assert cfg_file.read_text() == "not json {{{"
+        assert cfg_file.read_text(encoding="utf-8") == "not json {{{"
         output = capsys.readouterr().out
         assert "Could not read" in output
 
@@ -1191,7 +1191,7 @@ class TestManifest:
 
             _manifest(alias="bob", output=str(out_file))
         assert out_file.exists()
-        assert "KiroCrew-bob" in out_file.read_text()
+        assert "KiroCrew-bob" in out_file.read_text(encoding="utf-8")
 
     def test_creates_parent_dirs(self, tmp_path):
         out_file = tmp_path / "deep" / "nested" / "out.yaml"
@@ -2234,7 +2234,7 @@ class TestDoctorMcpTools:
             _doctor_mcp_tools(agent_path, issues)
         out = capsys.readouterr().out
         assert "Auto-fixed agent config" in out
-        updated = json.loads(agent_path.read_text())
+        updated = json.loads(agent_path.read_text(encoding="utf-8"))
         assert updated["tools"] == ["@kirocrew-cron", "@kirocrew-core"]
         assert updated["allowedTools"] == ["@kirocrew-cron", "@kirocrew-core"]
 
@@ -2624,7 +2624,7 @@ class TestConfigDirOverride:
 
         _setup_slack_tokens()
         assert (tmp_path / ".env").exists()
-        content = (tmp_path / ".env").read_text()
+        content = (tmp_path / ".env").read_text(encoding="utf-8")
         assert "xapp-test" in content
 
 
@@ -2748,7 +2748,7 @@ class TestArtifactCli:
         self, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # AUTOSDE security-controls: --content-file must be gated by
-        # is_sensitive_path() before Path.read_text() so a user (or script)
+        # is_sensitive_path() before Path.read_text(encoding="utf-8") so a user (or script)
         # cannot exfiltrate ~/.aws/credentials by piping it into an artifact.
         from kiro_crew.cli_commands import _artifact
 

@@ -15,10 +15,10 @@ from pathlib import Path
 import pytest
 
 SRC = Path(__file__).parent.parent / "src" / "kiro_crew"
-HANDLERS = (SRC / "deploy" / "handlers.py").read_text()
-VALIDATION = (SRC / "validation.py").read_text()
-MCP_CORE = (SRC / "mcp_core.py").read_text()
-DEPLOY_INIT = (SRC / "deploy" / "__init__.py").read_text()
+HANDLERS = (SRC / "deploy" / "handlers.py").read_text(encoding="utf-8")
+VALIDATION = (SRC / "validation.py").read_text(encoding="utf-8")
+MCP_CORE = (SRC / "mcp_core.py").read_text(encoding="utf-8")
+DEPLOY_INIT = (SRC / "deploy" / "__init__.py").read_text(encoding="utf-8")
 
 
 # ── F1: deploy_artifact in MCP_CORE_SCHEMAS ──

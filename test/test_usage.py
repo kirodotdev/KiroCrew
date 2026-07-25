@@ -509,7 +509,7 @@ class TestPersistTokenRecord:
         today = datetime.now().astimezone().strftime("%Y-%m-%d")
         shard_path = shard_dir / f"{today}.jsonl"
         assert shard_path.exists()
-        lines = shard_path.read_text().strip().split("\n")
+        lines = shard_path.read_text(encoding="utf-8").strip().split("\n")
         assert len(lines) == 1
         record = json.loads(lines[0])
         assert record["_type"] == "tokens"
@@ -565,7 +565,7 @@ class TestPersistTokenRecord:
 
         today = datetime.now().astimezone().strftime("%Y-%m-%d")
         shard_path = shard_dir / f"{today}.jsonl"
-        lines = shard_path.read_text().strip().split("\n")
+        lines = shard_path.read_text(encoding="utf-8").strip().split("\n")
         assert len(lines) == 2
 
     def test_writes_provider_field(self, tmp_path, monkeypatch):
@@ -582,7 +582,7 @@ class TestPersistTokenRecord:
         persist_token_record("slot", "opus", event, provider="claude_code")
 
         today = datetime.now().astimezone().strftime("%Y-%m-%d")
-        record = json.loads((shard_dir / f"{today}.jsonl").read_text().strip())
+        record = json.loads((shard_dir / f"{today}.jsonl").read_text(encoding="utf-8").strip())
         assert record["provider"] == "claude_code"
         assert record["model"] == "opus"
 
@@ -600,7 +600,7 @@ class TestPersistTokenRecord:
         persist_token_record("slot", "opus", event)
 
         today = datetime.now().astimezone().strftime("%Y-%m-%d")
-        record = json.loads((shard_dir / f"{today}.jsonl").read_text().strip())
+        record = json.loads((shard_dir / f"{today}.jsonl").read_text(encoding="utf-8").strip())
         assert record["provider"] == ""
 
     def test_parse_token_history_aggregates_provider(self, tmp_path, monkeypatch):
@@ -682,7 +682,7 @@ class TestPersistTokenRecordAsync:
         await persist_token_record_async("slot-a", "opus", event, provider="claude_code")
 
         today = datetime.now().astimezone().strftime("%Y-%m-%d")
-        record = json.loads((shard_dir / f"{today}.jsonl").read_text().strip())
+        record = json.loads((shard_dir / f"{today}.jsonl").read_text(encoding="utf-8").strip())
         assert record["slot"] == "slot-a"
         assert record["provider"] == "claude_code"
         assert record["input"] == 7

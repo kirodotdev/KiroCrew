@@ -84,7 +84,7 @@ class TestCronJobHideInChatField:
         job.hide_in_chat = True
         svc._save()
 
-        raw = json.loads((tmp_path / "crons.json").read_text())
+        raw = json.loads((tmp_path / "crons.json").read_text(encoding="utf-8"))
         entry = [j for j in raw["jobs"] if j["id"] == job.id][0]
         assert entry["hide_in_chat"] is True
 

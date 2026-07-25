@@ -42,7 +42,7 @@ def _mock_memory_ok(monkeypatch):
 class TestCreateAgentFolder:
     def test_creates_state_json(self, agent_root):
         path = create_agent_folder("abc123", task="do stuff", agent="kirocrew", parent_session="dashboard:default", max_turns=100)
-        state = json.loads((path / "state.json").read_text())
+        state = json.loads((path / "state.json").read_text(encoding="utf-8"))
         assert state["id"] == "abc123"
         assert state["task"] == "do stuff"
         assert state["agent"] == "kirocrew"
@@ -53,7 +53,7 @@ class TestCreateAgentFolder:
     def test_idempotent_on_existing_folder(self, agent_root):
         create_agent_folder("abc123", task="t1")
         path = create_agent_folder("abc123", task="t2")
-        state = json.loads((path / "state.json").read_text())
+        state = json.loads((path / "state.json").read_text(encoding="utf-8"))
         assert state["task"] == "t2"
 
 
@@ -64,7 +64,7 @@ class TestUpdateState:
     def test_updates_fields(self, agent_root):
         create_agent_folder("u1", task="t")
         update_state("u1", pid=12345, turns=5, last_tool="read")
-        state = json.loads((agent_root / "u1" / "state.json").read_text())
+        state = json.loads((agent_root / "u1" / "state.json").read_text(encoding="utf-8"))
         assert state["pid"] == 12345
         assert state["turns"] == 5
         assert state["last_tool"] == "read"
@@ -72,7 +72,7 @@ class TestUpdateState:
     def test_preserves_existing_fields(self, agent_root):
         create_agent_folder("u2", task="original")
         update_state("u2", pid=99)
-        state = json.loads((agent_root / "u2" / "state.json").read_text())
+        state = json.loads((agent_root / "u2" / "state.json").read_text(encoding="utf-8"))
         assert state["task"] == "original"
         assert state["pid"] == 99
 
@@ -109,7 +109,7 @@ class TestWriteResultChunk:
         create_agent_folder("w1", task="t")
         write_result_chunk("w1", "hello ")
         write_result_chunk("w1", "world")
-        content = (agent_root / "w1" / "result.txt").read_text()
+        content = (agent_root / "w1" / "result.txt").read_text(encoding="utf-8")
         assert content == "hello world"
 
 
@@ -120,7 +120,7 @@ class TestWriteTombstone:
     def test_writes_tombstone_json(self, agent_root):
         create_agent_folder("t1", task="t")
         write_tombstone("t1", cause="timeout", recovery_action="notified_slack")
-        ts = json.loads((agent_root / "t1" / "tombstone.json").read_text())
+        ts = json.loads((agent_root / "t1" / "tombstone.json").read_text(encoding="utf-8"))
         assert ts["cause"] == "timeout"
         assert ts["recovery_action"] == "notified_slack"
         assert "died" in ts
@@ -128,7 +128,7 @@ class TestWriteTombstone:
     def test_extra_fields_included(self, agent_root):
         create_agent_folder("t2", task="t")
         write_tombstone("t2", cause="reaped", recovery_action="delivered", pid=999, turns=12)
-        ts = json.loads((agent_root / "t2" / "tombstone.json").read_text())
+        ts = json.loads((agent_root / "t2" / "tombstone.json").read_text(encoding="utf-8"))
         assert ts["pid"] == 999
         assert ts["turns"] == 12
 
@@ -179,7 +179,7 @@ class TestPruneStaleTombstones:
         write_tombstone("old1", cause="timeout", recovery_action="delivered")
         # Backdate the tombstone
         ts_path = agent_root / "old1" / "tombstone.json"
-        ts = json.loads(ts_path.read_text())
+        ts = json.loads(ts_path.read_text(encoding="utf-8"))
         ts["died"] = time.time() - (8 * 86400)  # 8 days ago
         ts_path.write_text(json.dumps(ts))
 
@@ -203,7 +203,7 @@ class TestPruneStaleTombstones:
         create_agent_folder("del1", task="t")
         mark_delivered("del1")
         ts_path = agent_root / "del1" / "tombstone.json"
-        ts = json.loads(ts_path.read_text())
+        ts = json.loads(ts_path.read_text(encoding="utf-8"))
         ts["died"] = time.time() - 7200  # 2h ago
         ts_path.write_text(json.dumps(ts))
         prune_stale_tombstones(max_age_days=7, delivered_ttl_secs=3600)
@@ -221,7 +221,7 @@ class TestPruneStaleTombstones:
         create_agent_folder("err1", task="t")
         write_tombstone("err1", cause="timeout", recovery_action="notified")
         ts_path = agent_root / "err1" / "tombstone.json"
-        ts = json.loads(ts_path.read_text())
+        ts = json.loads(ts_path.read_text(encoding="utf-8"))
         ts["died"] = time.time() - 7200  # 2h ago
         ts_path.write_text(json.dumps(ts))
         prune_stale_tombstones(max_age_days=7, delivered_ttl_secs=3600)
@@ -233,7 +233,7 @@ class TestMarkDelivered:
         create_agent_folder("mv1", task="t")
         write_result_chunk("mv1", "final output")
         mark_delivered("mv1")
-        ts = json.loads((agent_root / "mv1" / "tombstone.json").read_text())
+        ts = json.loads((agent_root / "mv1" / "tombstone.json").read_text(encoding="utf-8"))
         assert ts["cause"] == "delivered"
         assert ts["recovery_action"] == "delivered"
         assert ts["result_available"] is True
@@ -290,7 +290,7 @@ class TestSpawnCreatesFolder:
         # Agent folder should exist with state.json
         state_path = agent_root / info.id / "state.json"
         assert state_path.exists(), f"Expected {state_path} to exist"
-        state = json.loads(state_path.read_text())
+        state = json.loads(state_path.read_text(encoding="utf-8"))
         assert state["id"] == info.id
         assert state["status"] == "running"
         assert state["parent_session"] == "dashboard:default"
@@ -409,7 +409,7 @@ class TestResultStreamingToAgentFolder:
         # Result should be in agent folder
         result_path = agent_root / info.id / "result.txt"
         assert result_path.exists()
-        assert result_path.read_text() == "hello world"
+        assert result_path.read_text(encoding="utf-8") == "hello world"
         # info.result_path should point to agent folder
         assert info.result_path == str(result_path)
 
@@ -456,7 +456,7 @@ class TestPerTurnStateUpdates:
             info = manager.spawn("pid test", parent_session_key="dashboard:default")
             await manager._tasks[info.id]
 
-        state = json.loads((agent_root / info.id / "state.json").read_text())
+        state = json.loads((agent_root / info.id / "state.json").read_text(encoding="utf-8"))
         assert state["pid"] == 42
         assert "pid_recorded_at" in state
         assert isinstance(state["pid_recorded_at"], float)
@@ -506,7 +506,7 @@ class TestPerTurnStateUpdates:
             info = manager.spawn("tool test", parent_session_key="dashboard:default")
             await manager._tasks[info.id]
 
-        state = json.loads((agent_root / info.id / "state.json").read_text())
+        state = json.loads((agent_root / info.id / "state.json").read_text(encoding="utf-8"))
         assert state["turns"] == 1
         assert state["last_tool"] == "shell"
 
@@ -539,7 +539,7 @@ class TestTombstoneOnAbnormalExit:
             # Simulate what _run does on TimeoutError
             manager._write_tombstone(info, "timeout")
 
-        ts = json.loads((agent_root / "timeout1" / "tombstone.json").read_text())
+        ts = json.loads((agent_root / "timeout1" / "tombstone.json").read_text(encoding="utf-8"))
         assert ts["cause"] == "timeout"
 
     @pytest.mark.asyncio
@@ -576,7 +576,7 @@ class TestTombstoneOnAbnormalExit:
             await manager._run(info)
 
         # Tombstone should still say "reaped", not "timeout"
-        ts = json.loads((agent_root / "reaped_timeout" / "tombstone.json").read_text())
+        ts = json.loads((agent_root / "reaped_timeout" / "tombstone.json").read_text(encoding="utf-8"))
         assert ts["cause"] == "reaped"
         # Error should not be overwritten
         assert info.error == "reaped by reaper"
@@ -623,7 +623,7 @@ class TestTombstoneOnAbnormalExit:
 
         ts_path = agent_root / info.id / "tombstone.json"
         assert ts_path.exists()
-        ts = json.loads(ts_path.read_text())
+        ts = json.loads(ts_path.read_text(encoding="utf-8"))
         assert ts["cause"] == "turn_limit"
 
     @pytest.mark.asyncio
@@ -641,7 +641,7 @@ class TestTombstoneOnAbnormalExit:
 
         manager._write_tombstone(info, "error")
 
-        ts = json.loads((agent_root / "error1" / "tombstone.json").read_text())
+        ts = json.loads((agent_root / "error1" / "tombstone.json").read_text(encoding="utf-8"))
         assert ts["cause"] == "error"
 
     @pytest.mark.asyncio
@@ -736,7 +736,7 @@ class TestFolderCleanupOnSuccess:
         # "delivered" tombstone marks it for deferred prune by the reaper.
         agent_dir = agent_root / info.id
         assert agent_dir.exists()
-        ts = json.loads((agent_dir / "tombstone.json").read_text())
+        ts = json.loads((agent_dir / "tombstone.json").read_text(encoding="utf-8"))
         assert ts["cause"] == "delivered"
         on_done.assert_awaited_once()
 
@@ -813,7 +813,7 @@ class TestOrphanReconciliation:
         with patch.object(manager, "_is_pid_alive", return_value=False):
             await manager._reconcile_orphans()
 
-        ts = json.loads((agent_root / "orphan1" / "tombstone.json").read_text())
+        ts = json.loads((agent_root / "orphan1" / "tombstone.json").read_text(encoding="utf-8"))
         assert ts["cause"] == "gateway_restart"
         assert ts["recovery_action"] == "result_available"
 
@@ -833,7 +833,7 @@ class TestOrphanReconciliation:
         with patch.object(manager, "_is_pid_alive", return_value=False):
             await manager._reconcile_orphans()
 
-        ts = json.loads((agent_root / "orphan2" / "tombstone.json").read_text())
+        ts = json.loads((agent_root / "orphan2" / "tombstone.json").read_text(encoding="utf-8"))
         assert ts["cause"] == "gateway_restart"
         assert ts["recovery_action"] == "notification_pending"
 
@@ -856,7 +856,7 @@ class TestOrphanReconciliation:
             await manager._reconcile_orphans()
 
         mock_kill.assert_called_once_with(99999)
-        ts = json.loads((agent_root / "orphan3" / "tombstone.json").read_text())
+        ts = json.loads((agent_root / "orphan3" / "tombstone.json").read_text(encoding="utf-8"))
         assert ts["cause"] == "gateway_restart"
         assert ts["recovery_action"] == "notification_pending"
 
@@ -879,7 +879,7 @@ class TestOrphanReconciliation:
             await manager._reconcile_orphans()
 
         mock_kill.assert_not_called()
-        ts = json.loads((agent_root / "recycled1" / "tombstone.json").read_text())
+        ts = json.loads((agent_root / "recycled1" / "tombstone.json").read_text(encoding="utf-8"))
         assert ts["cause"] == "gateway_restart"
 
     @pytest.mark.asyncio
@@ -917,7 +917,7 @@ class TestOrphanReconciliation:
 
         # Should not re-tombstone
         await manager._reconcile_orphans()
-        ts = json.loads((agent_root / "already_dead" / "tombstone.json").read_text())
+        ts = json.loads((agent_root / "already_dead" / "tombstone.json").read_text(encoding="utf-8"))
         assert ts["cause"] == "timeout"  # unchanged
 
     @pytest.mark.asyncio
@@ -1100,7 +1100,7 @@ class TestReaperPrunesTombstones:
         create_agent_folder("old_tomb", task="t")
         write_tombstone("old_tomb", cause="timeout", recovery_action="delivered")
         ts_path = agent_root / "old_tomb" / "tombstone.json"
-        ts = json.loads(ts_path.read_text())
+        ts = json.loads(ts_path.read_text(encoding="utf-8"))
         ts["died"] = time.time() - (8 * 86400)
         ts_path.write_text(json.dumps(ts))
 
@@ -1132,7 +1132,7 @@ class TestSpawnStatusReadsFromAgentFolder:
         write_result_chunk("status1", "full result text")
 
         expected = str(_agent_dir("status1") / "result.txt")
-        actual = (agent_root / "status1" / "result.txt").read_text()
+        actual = (agent_root / "status1" / "result.txt").read_text(encoding="utf-8")
         assert actual == "full result text"
         assert str(agent_root / "status1" / "result.txt") == expected
 
@@ -1230,7 +1230,7 @@ class TestRecordSlowCommand:
         log = agent_root / "slow_commands.jsonl"
         assert log.exists()  # NOT a tombstone — a separate analysis log
         assert not (agent_root / "ag1" / "tombstone.json").exists()
-        entry = json.loads(log.read_text().strip())
+        entry = json.loads(log.read_text(encoding="utf-8").strip())
         assert entry["id"] == "ag1"
         assert entry["last_tool"] == "fs_read"
         assert entry["idle_secs"] == 200
@@ -1239,6 +1239,6 @@ class TestRecordSlowCommand:
     def test_appends_multiple_lines(self, agent_root):
         record_slow_command("ag1", idle_secs=200)
         record_slow_command("ag2", idle_secs=300)
-        lines = (agent_root / "slow_commands.jsonl").read_text().strip().splitlines()
+        lines = (agent_root / "slow_commands.jsonl").read_text(encoding="utf-8").strip().splitlines()
         assert len(lines) == 2
         assert {json.loads(lines[0])["id"], json.loads(lines[1])["id"]} == {"ag1", "ag2"}

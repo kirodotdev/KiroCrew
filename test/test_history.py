@@ -22,7 +22,7 @@ class TestConversationLog:
         log.append("thread1", "user", "hello")
         path = tmp_path / "thread1.jsonl"
         assert path.exists()
-        lines = path.read_text().splitlines()
+        lines = path.read_text(encoding="utf-8").splitlines()
         assert len(lines) == 2  # metadata + message
         meta = json.loads(lines[0])
         assert meta["_type"] == "metadata"
@@ -119,7 +119,7 @@ class TestConversationLog:
         for i in range(300):
             log.append("t1", "user", f"{content} msg {i}")
         path = tmp_path / "t1.jsonl"
-        lines = path.read_text().splitlines()
+        lines = path.read_text(encoding="utf-8").splitlines()
         # Should have metadata + kept lines (+ a few from post-rotation appends)
         assert len(lines) <= _SESSION_KEEP_LINES + 5
 
@@ -852,7 +852,7 @@ class TestArchive:
             log.append("t1", "user", f"message number {i} with enough text to exceed limits")
         archives = list((tmp_path / "archive").glob("t1__*.jsonl"))
         assert len(archives) >= 1
-        content = archives[0].read_text()
+        content = archives[0].read_text(encoding="utf-8")
         header = json.loads(content.splitlines()[0])
         assert header["_type"] == "archive"
         assert header["reason"] == "rotate"
@@ -865,7 +865,7 @@ class TestArchive:
         log.rewrite_session("t1", [{"role": "user", "content": "new", "ts": "x"}])
         archives = list((tmp_path / "archive").glob("t1__*.jsonl"))
         assert len(archives) == 1
-        content = archives[0].read_text()
+        content = archives[0].read_text(encoding="utf-8")
         assert "original msg 1" in content
         assert "original msg 2" in content
         header = json.loads(content.splitlines()[0])
@@ -909,9 +909,9 @@ class TestArchive:
         p3 = _archive_lines("k", ["line3\n"], reason="rotate", base=tmp_path)
         assert len({p1, p2, p3}) == 3
         assert p1.exists() and p2.exists() and p3.exists()
-        assert "line1" in p1.read_text()
-        assert "line2" in p2.read_text()
-        assert "line3" in p3.read_text()
+        assert "line1" in p1.read_text(encoding="utf-8")
+        assert "line2" in p2.read_text(encoding="utf-8")
+        assert "line3" in p3.read_text(encoding="utf-8")
 
     def test_cleanup_old_archives_noop_when_dir_missing(self, tmp_path):
         import kiro_crew.history as history_mod
@@ -1053,7 +1053,7 @@ class TestArchive:
         from kiro_crew.history import _archive_lines
 
         p = _archive_lines("k", ['{"role":"user","content":"a"}\n', '{"role":"assistant","content":"b"}\n'], reason="rotate", base=tmp_path)
-        lines = p.read_text().splitlines()
+        lines = p.read_text(encoding="utf-8").splitlines()
         header = json.loads(lines[0])
         assert header == {"_type": "archive", "reason": "rotate", "archived_at": header["archived_at"], "count": 2}
         assert json.loads(lines[1])["role"] == "user"
@@ -1236,13 +1236,13 @@ class TestArchiveOnlyDropped:
         from kiro_crew.history import _safe_key
 
         path = tmp_path / f"{_safe_key('t1')}.jsonl"
-        lines = [ln for ln in path.read_text().splitlines() if ln and '"_type"' not in ln]
+        lines = [ln for ln in path.read_text(encoding="utf-8").splitlines() if ln and '"_type"' not in ln]
         assert len(lines) == 3
         kept = [json.loads(lines[1]), json.loads(lines[2])]  # B, C
         log.rewrite_session("t1", kept)
         archives = list((tmp_path / "archive").glob("t1__*.jsonl"))
         assert len(archives) == 1
-        archived = archives[0].read_text()
+        archived = archives[0].read_text(encoding="utf-8")
         # Only the dropped message A should be in the archive (not B or C).
         assert "\"content\": \"A\"" in archived
         assert "\"content\": \"B\"" not in archived
@@ -1732,7 +1732,7 @@ class TestProcessAutoSkillsIntegration:
         assert auto[0]["key"] == "auto/grep-with-context"
         skill_file = tmp_path / "skills" / "auto" / "grep-with-context" / "SKILL.md"
         assert skill_file.exists()
-        content = skill_file.read_text()
+        content = skill_file.read_text(encoding="utf-8")
         assert "source: auto" in content
         assert "session_key: dashboard:chat-2" in content
         assert "grep -n pattern file" in content
@@ -1823,7 +1823,7 @@ class TestProcessAutoSkillsIntegration:
 
         skill_file = tmp_path / "skills" / "auto" / "poison-skill" / "SKILL.md"
         assert skill_file.exists()
-        content = skill_file.read_text()
+        content = skill_file.read_text(encoding="utf-8")
         # AKIA prefix must NOT survive to disk
         assert "AKIAIOSFODNN7EXAMPLE" not in content
 
@@ -1993,7 +1993,7 @@ class TestAutoSkillSELAudit:
         assert namespace_rejections[0]["tool_name"] == "auto_skill_refine"
         assert namespace_rejections[0]["metadata"]["name"] == "manual-skill"
         # Original hand-authored skill untouched
-        content = (skills_dir / "manual-skill" / "SKILL.md").read_text()
+        content = (skills_dir / "manual-skill" / "SKILL.md").read_text(encoding="utf-8")
         assert "hand-crafted" in content
         assert "attacker content" not in content
 

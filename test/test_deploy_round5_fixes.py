@@ -154,8 +154,8 @@ class TestStageTreeTOCTOU:
                 shutil.copytree(f"/proc/self/fd/{fd}", str(dest), symlinks=True)
             finally:
                 os.close(fd)
-            assert (dest / "a.txt").read_text() == "aaa"
-            assert (dest / "sub" / "b.txt").read_text() == "bbb"
+            assert (dest / "a.txt").read_text(encoding="utf-8") == "aaa"
+            assert (dest / "sub" / "b.txt").read_text(encoding="utf-8") == "bbb"
         else:
             pytest.skip("/proc/self/fd not available (non-Linux)")
 

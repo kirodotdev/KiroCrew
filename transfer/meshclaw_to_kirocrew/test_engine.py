@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import sys
 from pathlib import Path
 
 import pytest
@@ -151,6 +152,10 @@ def test_config_merge_fills_and_drops(homes):
     assert "tunnel" in res["config"]["dropped"]
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="asserts POSIX path shapes in rewritten cron script paths",
+)
 def test_path_rewrite_in_crons(homes):
     _, src, dst = homes
     _seed_meshclaw(src)

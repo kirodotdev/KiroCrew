@@ -390,7 +390,7 @@ def test_deploy_skill_install_preserves_user_placed_dir(tmp_path, monkeypatch):
 
     # User directory must be untouched
     assert user_dir.is_dir()
-    assert (user_dir / "my-custom-file.txt").read_text() == "user content"
+    assert (user_dir / "my-custom-file.txt").read_text(encoding="utf-8") == "user content"
     # Our SKILL.md was NOT installed (user dir blocked it)
     assert not (user_dir / "SKILL.md").exists()
 

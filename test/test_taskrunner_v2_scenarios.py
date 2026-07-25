@@ -944,7 +944,7 @@ class TestScenarioRunsPersistence:
         runner._runs["trunc_1"] = run
         runner._persist_runs()
 
-        data = json.loads((tmp_path / "runs.json").read_text())
+        data = json.loads((tmp_path / "runs.json").read_text(encoding="utf-8"))
         assert len(data[0]["task_details"][0]["result"]) <= 2000
 
 

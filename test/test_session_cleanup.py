@@ -559,7 +559,7 @@ class TestTombstonePruningCleansSessionFiles:
         # Write an old tombstone (8 days ago)
         write_tombstone(agent_id, cause="timeout", recovery_action="delivered")
         ts_path = agent_root / agent_id / "tombstone.json"
-        ts = json.loads(ts_path.read_text())
+        ts = json.loads(ts_path.read_text(encoding="utf-8"))
         ts["died"] = time.time() - (8 * 86400)
         ts["session_id"] = session_id
         ts_path.write_text(json.dumps(ts))
@@ -587,7 +587,7 @@ class TestTombstonePruningCleansSessionFiles:
         create_agent_folder("no-sid", task="old task")
         write_tombstone("no-sid", cause="timeout", recovery_action="delivered")
         ts_path = agent_root / "no-sid" / "tombstone.json"
-        ts = json.loads(ts_path.read_text())
+        ts = json.loads(ts_path.read_text(encoding="utf-8"))
         ts["died"] = time.time() - (8 * 86400)
         ts_path.write_text(json.dumps(ts))
 

@@ -1409,7 +1409,7 @@ class TestInstallAgentRemote:
 
         install_agent()
 
-        data = json.loads((kiro_dir / "kirocrew.json").read_text())
+        data = json.loads((kiro_dir / "kirocrew.json").read_text(encoding="utf-8"))
         assert "deepwiki" in data["mcpServers"]
         assert data["mcpServers"]["deepwiki"]["url"] == "https://mcp.deepwiki.com/mcp"
         assert "local-srv" not in data["mcpServers"]
@@ -1441,7 +1441,7 @@ class TestInstallAgentRemote:
 
         install_agent()
 
-        data = json.loads((kiro_dir / "kirocrew.json").read_text())
+        data = json.loads((kiro_dir / "kirocrew.json").read_text(encoding="utf-8"))
         assert "deepwiki" in data["mcpServers"]
         assert data["mcpServers"]["deepwiki"]["url"] == "https://mcp.deepwiki.com/mcp"
 
@@ -1694,7 +1694,7 @@ class TestSharedServerToolsRegistration:
 
         rebuild_agent_config()
 
-        data = json.loads((kiro_dir / "kirocrew.json").read_text())
+        data = json.loads((kiro_dir / "kirocrew.json").read_text(encoding="utf-8"))
         assert "my-srv" in data["mcpServers"]
         assert "@my-srv" in data.get("tools", [])
         assert "@my-srv" in data.get("allowedTools", [])
@@ -1741,7 +1741,7 @@ class TestSharedServerToolsRegistration:
 
         rebuild_agent_config()
 
-        data = json.loads((kiro_dir / "kirocrew.json").read_text())
+        data = json.loads((kiro_dir / "kirocrew.json").read_text(encoding="utf-8"))
         assert "@my-srv" not in data.get("tools", [])
         assert "@my-srv" not in data.get("allowedTools", [])
 
@@ -1787,7 +1787,7 @@ class TestSharedServerToolsRegistration:
 
         rebuild_agent_config()
 
-        data = json.loads((kiro_dir / "kirocrew.json").read_text())
+        data = json.loads((kiro_dir / "kirocrew.json").read_text(encoding="utf-8"))
         assert "@my-srv" in data.get("tools", [])
         assert "@my-srv" in data.get("allowedTools", [])
         assert "disabled" not in data["mcpServers"]["my-srv"]
@@ -1825,7 +1825,7 @@ class TestSharedServerToolsRegistration:
 
         rebuild_agent_config()
 
-        data = json.loads((kiro_dir / "kirocrew.json").read_text())
+        data = json.loads((kiro_dir / "kirocrew.json").read_text(encoding="utf-8"))
         assert "@disabled-srv" not in data.get("tools", [])
         assert "@disabled-srv" not in data.get("allowedTools", [])
 
@@ -2329,7 +2329,7 @@ class TestProbeGroupReap:
         assert result.status == "error"  # timed out, as designed
 
         deadline = _time.monotonic() + 5
-        gc_pid = int(grandchild_pid_file.read_text().strip())
+        gc_pid = int(grandchild_pid_file.read_text(encoding="utf-8").strip())
         while _time.monotonic() < deadline:
             # Windows-safe liveness probe (a raw os.kill(pid, 0) TERMINATES the
             # target on Windows — the platform_compat rule); this test is

@@ -43,7 +43,7 @@ class TestCloudConfig:
     def test_never_stores_credentials(self, tmp_path):
         p = tmp_path / "cloud.json"
         CloudConfig(profile="dev", region="us-east-1", last_tag="t").save(p)
-        text = p.read_text()
+        text = p.read_text(encoding="utf-8")
         # Only profile/region/last_tag — no secret-shaped keys.
         for forbidden in ("secret", "access_key", "aws_access", "token", "password"):
             assert forbidden not in text.lower()

@@ -20,11 +20,11 @@ from kiro_crew.deploy import engine, profiles
 from kiro_crew.validation import validate_field
 
 REPO = Path(__file__).resolve().parents[1]
-HANDLERS = (REPO / "src" / "kiro_crew" / "deploy" / "handlers.py").read_text()
+HANDLERS = (REPO / "src" / "kiro_crew" / "deploy" / "handlers.py").read_text(encoding="utf-8")
 BASE_STACK = (
     REPO / "src" / "kiro_crew" / "deploy" / "skills" / "artifact-deploy"
     / "templates" / "base-stack.yaml"
-).read_text()
+).read_text(encoding="utf-8")
 
 
 class TestF1EmptyProfileName:

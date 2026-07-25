@@ -20,7 +20,7 @@ _SCRIPTS = Path(__file__).resolve().parents[1] / (
 
 
 def test_f1_lambda_untagged_bucket_is_identity_failure():
-    src = (_SCRIPTS / "reaper_lambda/index.py").read_text()
+    src = (_SCRIPTS / "reaper_lambda/index.py").read_text(encoding="utf-8")
     seg = src.split('elif code == "NoSuchTagSet":', 1)[1][:800]
     # Fail closed: quarantine + return, no prefix-based pass.
     assert "_quarantine_manifest(slug)" in seg
@@ -29,7 +29,7 @@ def test_f1_lambda_untagged_bucket_is_identity_failure():
 
 
 def test_f1_shell_reaper_gates_bucket_deletion_on_tag():
-    src = (_SCRIPTS / "reaper.sh").read_text()
+    src = (_SCRIPTS / "reaper.sh").read_text(encoding="utf-8")
     assert "get-bucket-tagging" in src
     # The tag check precedes the bucket empty (s3 rm) and delete.
     assert src.index("get-bucket-tagging") < src.index(

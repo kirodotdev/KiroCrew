@@ -398,7 +398,7 @@ class TestPolicyLoading:
         _patch_admission_paths(monkeypatch, adm, tmp_path, policy_path=pol)
 
         adm.seed_default_policy()
-        body = json.loads(pol.read_text())
+        body = json.loads(pol.read_text(encoding="utf-8"))
         body["banned"] = ["rogue-plugin"]  # legitimate operator edit
         pol.write_text(json.dumps(body))
         gh.reset()

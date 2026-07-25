@@ -178,7 +178,7 @@ class TestCommentStore:
         # Read raw file
         path = store.root / "test-art" / "comments.json"
         assert path.exists()
-        raw = json.loads(path.read_text())
+        raw = json.loads(path.read_text(encoding="utf-8"))
         assert len(raw) == 1
         assert raw[0]["anchor_quote"] == "hello"
         assert raw[0]["anchor_start_offset"] == 5
@@ -250,7 +250,7 @@ class TestAnchorRescan:
     def test_orphan_flag_persists_and_sync_state_untouched(self, store):
         store.add_comment("test-art", _anchored("c1", "Hello", sync_state="pending_push"))
         store.update("test-art", content="<p>Goodbye</p>")
-        raw = json.loads((store.root / "test-art" / "comments.json").read_text())
+        raw = json.loads((store.root / "test-art" / "comments.json").read_text(encoding="utf-8"))
         assert raw[0]["anchor_orphaned"] is True
         assert raw[0]["sync_state"] == "pending_push"
 

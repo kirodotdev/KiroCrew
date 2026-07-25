@@ -47,11 +47,11 @@ async def test_append_writes_job_file_and_index(store: CronHistoryStore, tmp_pat
     assert job_file.exists()
     assert index_file.exists()
 
-    job_data = json.loads(job_file.read_text().strip())
+    job_data = json.loads(job_file.read_text(encoding="utf-8").strip())
     assert job_data["run_id"] == "run1"
     assert job_data["trace"] == "trace data"
 
-    idx_data = json.loads(index_file.read_text().strip())
+    idx_data = json.loads(index_file.read_text(encoding="utf-8").strip())
     assert idx_data["run_id"] == "run1"
     assert "trace" not in idx_data
 
@@ -62,7 +62,7 @@ async def test_append_caps_summary_and_trace(store: CronHistoryStore, tmp_path: 
     await store.append(rec)
 
     job_file = tmp_path / "cron-history" / "job1.jsonl"
-    data = json.loads(job_file.read_text().strip())
+    data = json.loads(job_file.read_text(encoding="utf-8").strip())
     assert len(data["summary"]) == 200
     assert data["trace"].endswith("...[truncated]")
 
@@ -260,7 +260,7 @@ async def test_rotate_atomic_no_corruption(store: CronHistoryStore, tmp_path: Pa
     await store.rotate("job1")
 
     job_file = tmp_path / "cron-history" / "job1.jsonl"
-    lines = job_file.read_text().strip().splitlines()
+    lines = job_file.read_text(encoding="utf-8").strip().splitlines()
     assert len(lines) == 100
     for line in lines:
         json.loads(line)  # all lines valid JSON

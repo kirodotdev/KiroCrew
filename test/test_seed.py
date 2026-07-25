@@ -485,7 +485,7 @@ def test_seed_main_home_rail_refuses_even_with_replace(
     assert (target / "real_user_data.txt").exists(), (
         "CRITICAL: --seed-replace wiped main gateway home despite guardrail"
     )
-    assert (target / "real_user_data.txt").read_text() == "don't delete me"
+    assert (target / "real_user_data.txt").read_text(encoding="utf-8") == "don't delete me"
 
 
 def test_seed_main_home_rail_catches_symlink(
@@ -512,7 +512,7 @@ def test_seed_main_home_rail_catches_symlink(
 
     assert excinfo.value.code == seed_mod.EXIT_GUARDRAIL
     assert "refusing to seed main gateway home" in str(excinfo.value)
-    assert (real_main / "user_data.txt").read_text() == "preserved"
+    assert (real_main / "user_data.txt").read_text(encoding="utf-8") == "preserved"
 
 
 def test_seed_non_empty_rail_refuses_without_replace(
@@ -537,7 +537,7 @@ def test_seed_non_empty_rail_refuses_without_replace(
     assert "not empty" in msg
     assert "--seed-replace" in msg
     # Pre-existing content must be untouched on the refusal path.
-    assert (target / "stale.txt").read_text() == "old content"
+    assert (target / "stale.txt").read_text(encoding="utf-8") == "old content"
 
 
 def test_seed_non_empty_rail_succeeds_with_replace(
@@ -561,7 +561,7 @@ def test_seed_non_empty_rail_succeeds_with_replace(
     assert not (target / "subdir").exists()
     # Fixture content present.
     assert (target / "fixture.yaml").is_file()
-    assert (target / "fixture.yaml").read_text().strip() == (
+    assert (target / "fixture.yaml").read_text(encoding="utf-8").strip() == (
         "schema-version: 2026-04-28"
     )
 
@@ -588,7 +588,7 @@ def test_seed_replace_refuses_symlinked_target(
     assert excinfo.value.code == seed_mod.EXIT_GUARDRAIL
     assert "symlinked" in str(excinfo.value)
     # Link target must be untouched.
-    assert (real_dir / "precious.txt").read_text() == "must survive"
+    assert (real_dir / "precious.txt").read_text(encoding="utf-8") == "must survive"
 
 
 def test_seed_refuses_symlinked_nonempty_target_without_replace(
@@ -627,7 +627,7 @@ def test_seed_refuses_symlinked_nonempty_target_without_replace(
     assert "symlinked" in msg
     assert "--seed-replace" not in msg
     # Link target must be untouched.
-    assert (real_dir / "existing.txt").read_text() == "already here"
+    assert (real_dir / "existing.txt").read_text(encoding="utf-8") == "already here"
 
 
 def test_seed_empty_existing_dir_succeeds_without_replace(
@@ -877,7 +877,7 @@ def test_seed_regular_file_target_rejected(
     assert "not a directory" in str(excinfo.value)
     # Original file must NOT be touched (no rmtree, no copy).
     assert target_file.is_file()
-    assert target_file.read_text() == "some stale log the user left behind"
+    assert target_file.read_text(encoding="utf-8") == "some stale log the user left behind"
 
 
 def test_seed_empty_symlink_target_rejected(
@@ -966,7 +966,7 @@ def test_seed_symlink_to_file_rejected(
     assert "not a directory" in str(excinfo.value)
     # Link target must NOT be touched.
     assert real_file.is_file()
-    assert real_file.read_text() == "a stale file"
+    assert real_file.read_text(encoding="utf-8") == "a stale file"
     # Link itself still exists, still points at the file.
     assert link.is_symlink()
 

@@ -453,7 +453,7 @@ def test_tolerant_load_meta_without_publication(tmp_path):
     store.create(name="Doc", content="x", kind="text", slug="d")
     # Simulate a legacy meta.json with no publication key.
     meta_path = tmp_path / "a" / "d" / "meta.json"
-    raw = json.loads(meta_path.read_text())
+    raw = json.loads(meta_path.read_text(encoding="utf-8"))
     raw.pop("publication", None)
     meta_path.write_text(json.dumps(raw))
     assert store.get("d").publication is None
@@ -465,7 +465,7 @@ def test_tolerant_load_non_numeric_last_synced(tmp_path):
     store = ArtifactStore(root=tmp_path / "a")
     store.create(name="Doc", content="x", kind="text", slug="d")
     meta_path = tmp_path / "a" / "d" / "meta.json"
-    raw = json.loads(meta_path.read_text())
+    raw = json.loads(meta_path.read_text(encoding="utf-8"))
     raw["publication"] = {
         "artifact_id": "uuid-x",
         "view_url": "https://x/artifact/uuid-x",
@@ -727,7 +727,7 @@ async def test_pull_upstream_file_backed_writes_through_to_source_file(
     fake_client.get_response = _remote_get(tmp_path, "collab edit", version=2, sha="sha-v2")
     result = await publish_sync.pull_upstream(art.slug)
     assert result["pulled"] is True
-    assert src.read_text() == "collab edit"  # write-through to the working file
+    assert src.read_text(encoding="utf-8") == "collab edit"  # write-through to the working file
     reloaded = store.get(art.slug)
     assert reloaded.content == "collab edit"
     assert reloaded.version == 2
@@ -750,7 +750,7 @@ async def test_pull_upstream_file_backed_checkpoints_external_file_edit(
     assert result["pulled"] is True
     assert result["preserved_version"] == 2  # file edit checkpointed first
     assert store.get(art.slug, version=2).content == "my unsaved file edit"
-    assert src.read_text() == "collab edit"  # pulled content reached the file
+    assert src.read_text(encoding="utf-8") == "collab edit"  # pulled content reached the file
     assert store.get(art.slug).version == 3
     # The checkpoint did NOT auto-publish the file edit (race defused).
     assert fake_client.called("upload_version") == []
@@ -767,7 +767,7 @@ async def test_overwrite_upstream_file_backed_pushes_live_file_bytes(store, fake
     result = await publish_sync.overwrite_upstream(art.slug)
     assert result["overwritten"] is True
     assert fake_client.called("upload_version")  # push landed
-    assert src.read_text() == "my file content"  # local file untouched
+    assert src.read_text(encoding="utf-8") == "my file content"  # local file untouched
 
 
 @pytest.mark.asyncio

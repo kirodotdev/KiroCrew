@@ -19,12 +19,12 @@ _SKILL = Path(__file__).resolve().parents[1] / (
 
 
 def test_f1_deploy_backend_tags_stack_at_creation():
-    src = (_SKILL / "scripts/deploy-backend.sh").read_text()
+    src = (_SKILL / "scripts/deploy-backend.sh").read_text(encoding="utf-8")
     assert '--tags "kirocrew:site=$SLUG"' in src
 
 
 def test_f1_lambda_gates_every_delete_stack():
-    src = (_SKILL / "scripts/reaper_lambda/index.py").read_text()
+    src = (_SKILL / "scripts/reaper_lambda/index.py").read_text(encoding="utf-8")
     assert "_stack_site_tag_ok" in src
     # The Phase A main path reads stack tags from describe_stacks and refuses
     # on mismatch before delete_stack.
@@ -38,7 +38,7 @@ def test_f1_lambda_gates_every_delete_stack():
 
 
 def test_f1_shell_reaper_gates_stack_deletion():
-    src = (_SKILL / "scripts/reaper.sh").read_text()
+    src = (_SKILL / "scripts/reaper.sh").read_text(encoding="utf-8")
     # Both Phase A and the Phase B DELETE_FAILED retry check the tag.
     assert src.count("kirocrew:site") >= 2
     assert "tag mismatch" in src
@@ -68,5 +68,5 @@ def test_f2_backend_accepts_plain_https():
 def test_f2_frontend_safe_http_url_rejects_userinfo():
     src = (
         Path(__file__).resolve().parents[1] / "website/src/lib/safeUrl.ts"
-    ).read_text()
+    ).read_text(encoding="utf-8")
     assert "u.username || u.password" in src

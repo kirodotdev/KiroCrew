@@ -95,7 +95,7 @@ class TestAutoPausePersistence:
 
     def test_auto_pause_persisted_to_disk(self, tmp_path: Path) -> None:
         self._paused_job_service(tmp_path)
-        raw = json.loads((tmp_path / "crons.json").read_text())
+        raw = json.loads((tmp_path / "crons.json").read_text(encoding="utf-8"))
         stored = raw["jobs"][0]
         assert stored["auto_paused"] is True
         assert stored["enabled"] is False

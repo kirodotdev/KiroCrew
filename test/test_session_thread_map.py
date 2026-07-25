@@ -141,7 +141,7 @@ class TestSessionMapMigration:
         assert ts is None
         assert ch is None
         # But the file should be rewritten in dict format
-        raw = json.loads(map_path.read_text())
+        raw = json.loads(map_path.read_text(encoding="utf-8"))
         assert isinstance(raw["thread-1"], dict)
         assert raw["thread-1"]["sid"] == "sid-abc"
         await sm.close_all()

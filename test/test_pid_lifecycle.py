@@ -36,14 +36,14 @@ class TestTrackUntrack:
         from kiro_crew.session_pid import _track_pid
 
         _track_pid(12345)
-        assert "12345" in pid_file.read_text()
+        assert "12345" in pid_file.read_text(encoding="utf-8")
 
     def test_track_multiple(self, pid_file: Path) -> None:
         from kiro_crew.session_pid import _track_pid
 
         _track_pid(111)
         _track_pid(222)
-        lines = pid_file.read_text().strip().splitlines()
+        lines = pid_file.read_text(encoding="utf-8").strip().splitlines()
         assert lines == ["111", "222"]
 
     def test_untrack_pid(self, pid_file: Path) -> None:
@@ -52,7 +52,7 @@ class TestTrackUntrack:
         _track_pid(111)
         _track_pid(222)
         _untrack_pid(111)
-        lines = pid_file.read_text().strip().splitlines()
+        lines = pid_file.read_text(encoding="utf-8").strip().splitlines()
         assert lines == ["222"]
 
     def test_untrack_nonexistent(self, pid_file: Path) -> None:
@@ -60,7 +60,7 @@ class TestTrackUntrack:
 
         _track_pid(111)
         _untrack_pid(999)  # should not crash
-        assert "111" in pid_file.read_text()
+        assert "111" in pid_file.read_text(encoding="utf-8")
 
     def test_untrack_session_pid(self, session_pid_file: Path) -> None:
         from kiro_crew.session_pid import _track_session_pid, _untrack_session_pid
@@ -69,7 +69,7 @@ class TestTrackUntrack:
         _track_session_pid(222)
         _untrack_session_pid(111)
         gw = os.getpid()
-        lines = session_pid_file.read_text().strip().splitlines()
+        lines = session_pid_file.read_text(encoding="utf-8").strip().splitlines()
         assert lines == [f"{gw}:222"]
 
     def test_untrack_session_pid_missing_file(self, session_pid_file: Path) -> None:
@@ -87,14 +87,14 @@ class TestTrackUntrack:
         with open(session_pid_file, "a", encoding="utf-8") as f:
             f.write("99999:111\n")
         _untrack_session_pid(111)
-        lines = session_pid_file.read_text().strip().splitlines()
+        lines = session_pid_file.read_text(encoding="utf-8").strip().splitlines()
         assert lines == ["99999:111"]
 
     def test_track_child_pids_with_parent(self, pid_file: Path) -> None:
         from kiro_crew.session_pid import _track_child_pids
 
         _track_child_pids({100: None, 200: None, 300: None}, parent_pid=999)
-        lines = pid_file.read_text().strip().splitlines()
+        lines = pid_file.read_text(encoding="utf-8").strip().splitlines()
         assert set(lines) == {"100:999", "200:999", "300:999"}
 
     def test_track_child_pids_dedup(self, pid_file: Path) -> None:
@@ -103,7 +103,7 @@ class TestTrackUntrack:
 
         _track_child_pids({100: None, 200: None}, parent_pid=999)
         _track_child_pids({100: None, 300: None}, parent_pid=999)
-        lines = pid_file.read_text().strip().splitlines()
+        lines = pid_file.read_text(encoding="utf-8").strip().splitlines()
         assert sorted(lines) == ["100:999", "200:999", "300:999"]
 
     def test_untrack_child_pids(self, pid_file: Path) -> None:
@@ -111,7 +111,7 @@ class TestTrackUntrack:
 
         _track_child_pids({100: None, 200: None, 300: None}, parent_pid=999)
         _untrack_child_pids({100: None, 300: None})
-        lines = pid_file.read_text().strip().splitlines()
+        lines = pid_file.read_text(encoding="utf-8").strip().splitlines()
         assert lines == ["200:999"]
 
     def test_untrack_child_pids_preserves_bare_pid(self, pid_file: Path) -> None:
@@ -121,7 +121,7 @@ class TestTrackUntrack:
         _track_pid(100)  # bare parent line
         _track_child_pids({100: None}, parent_pid=999)  # child line with same PID
         _untrack_child_pids({100: None})
-        lines = pid_file.read_text().strip().splitlines()
+        lines = pid_file.read_text(encoding="utf-8").strip().splitlines()
         assert "100" in lines  # bare line preserved
 
 
@@ -132,7 +132,7 @@ class TestCleanupOrphanedMcpServers:
 
         pid_file.write_text("99999:1\n")  # child=99999, parent=1
         _cleanup_orphaned_mcp_servers()
-        assert "99999" not in pid_file.read_text()
+        assert "99999" not in pid_file.read_text(encoding="utf-8")
 
     def test_alive_child_with_alive_parent_survives(self, pid_file: Path) -> None:
         """Child whose parent session is still alive should NOT be killed."""
@@ -149,7 +149,7 @@ class TestCleanupOrphanedMcpServers:
             killed = _cleanup_orphaned_mcp_servers()
 
         assert killed == 0
-        assert str(child_pid) in pid_file.read_text()
+        assert str(child_pid) in pid_file.read_text(encoding="utf-8")
 
     def test_alive_child_with_dead_parent_killed(self, pid_file: Path) -> None:
         """Child whose parent session died should be killed (PPid=1 confirms orphan)."""
@@ -185,7 +185,7 @@ class TestCleanupOrphanedMcpServers:
             killed = _cleanup_orphaned_mcp_servers()
 
         assert killed == 0
-        assert "77777" not in pid_file.read_text()  # stale entry pruned
+        assert "77777" not in pid_file.read_text(encoding="utf-8")  # stale entry pruned
 
     def test_bare_pid_dead_pruned(self, pid_file: Path) -> None:
         """Dead bare PIDs should be pruned from the file."""
@@ -196,7 +196,7 @@ class TestCleanupOrphanedMcpServers:
         with patch("kiro_crew.session_pid.platform_compat.pid_exists", return_value=False):
             killed = _cleanup_orphaned_mcp_servers()
         assert killed == 0
-        assert "99999" not in pid_file.read_text()
+        assert "99999" not in pid_file.read_text(encoding="utf-8")
 
     def test_bare_pid_alive_kept(self, pid_file: Path) -> None:
         """Alive bare PIDs should be kept in the file."""
@@ -207,7 +207,7 @@ class TestCleanupOrphanedMcpServers:
         with patch("kiro_crew.session_pid.platform_compat.pid_exists", return_value=True):
             killed = _cleanup_orphaned_mcp_servers()
         assert killed == 0
-        assert "88888" in pid_file.read_text()
+        assert "88888" in pid_file.read_text(encoding="utf-8")
 
     def test_empty_file(self, pid_file: Path) -> None:
         from kiro_crew.session_pid import _cleanup_orphaned_mcp_servers
@@ -251,7 +251,7 @@ class TestCleanupOrphanedSessions:
             cleanup_orphaned_sessions()
 
         # File is truncated after startup cleanup
-        content = session_pid_file.read_text()
+        content = session_pid_file.read_text(encoding="utf-8")
         assert content == ""
 
     def test_kiro_pids_killed(self, session_pid_file: Path) -> None:
@@ -964,7 +964,7 @@ class TestCleanupOrphanedMcpServersExtra:
 
         assert killed == 0
         # Malformed bare line is left in place (continue, not pruned)
-        assert "not_a_number" in pid_file.read_text()
+        assert "not_a_number" in pid_file.read_text(encoding="utf-8")
 
     def test_orphan_kill_oserror_swallowed(self, pid_file: Path) -> None:
         """kill_pid raising OSError on an orphaned child is swallowed; entry pruned."""
@@ -993,7 +993,7 @@ class TestCleanupOrphanedMcpServersExtra:
 
         # kill raised → not counted, but the entry is still pruned
         assert killed == 0
-        assert "77777" not in pid_file.read_text()
+        assert "77777" not in pid_file.read_text(encoding="utf-8")
 
 
 class TestPidGoneOrUnmanaged:

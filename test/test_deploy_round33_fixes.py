@@ -14,7 +14,7 @@ from kiro_crew import hooks as hooks_mod
 from kiro_crew.hooks import safe_read_file_bytes_nolink
 
 REPO = Path(__file__).resolve().parents[1]
-HANDLERS = (REPO / "src" / "kiro_crew" / "deploy" / "handlers.py").read_text()
+HANDLERS = (REPO / "src" / "kiro_crew" / "deploy" / "handlers.py").read_text(encoding="utf-8")
 
 
 class TestF1FdPinnedContainment:

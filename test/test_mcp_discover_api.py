@@ -414,7 +414,7 @@ class TestDiscoverInstall:
             # The translated spec landed in the KiroCrew scope — DISABLED,
             # because required env is unset: enabling after configuration is
             # the user's informed-consent step (review finding).
-            written = json.loads(sandbox.kirocrew_json.read_text())
+            written = json.loads(sandbox.kirocrew_json.read_text(encoding="utf-8"))
             assert written["mcpServers"]["weather"] == {
                 "command": "npx",
                 "args": ["-y", "@acme/weather-mcp@1.2.3"],
@@ -454,7 +454,7 @@ class TestDiscoverInstall:
             )
             assert resp.status == 200
             assert (await resp.json())["enabled"] is False
-            written = json.loads(sandbox.kirocrew_json.read_text())
+            written = json.loads(sandbox.kirocrew_json.read_text(encoding="utf-8"))
             assert written["mcpServers"]["weather"]["disabled"] is True
         finally:
             await client.close()
@@ -483,7 +483,7 @@ class TestDiscoverInstall:
             )
             assert resp.status == 200
             assert (await resp.json())["enabled"] is True
-            written = json.loads(sandbox.kirocrew_json.read_text())
+            written = json.loads(sandbox.kirocrew_json.read_text(encoding="utf-8"))
             assert "disabled" not in written["mcpServers"]["weather"]
         finally:
             await client.close()
@@ -510,7 +510,7 @@ class TestDiscoverInstall:
             )
             assert resp.status == 200
             # User's filled env value survives the reinstall no-op.
-            written = json.loads(sandbox.kirocrew_json.read_text())
+            written = json.loads(sandbox.kirocrew_json.read_text(encoding="utf-8"))
             assert written["mcpServers"]["weather"]["env"] == {
                 "WEATHER_API_KEY": "user-filled-value"
             }
@@ -530,7 +530,7 @@ class TestDiscoverInstall:
             assert resp.status == 409
             assert (await resp.json())["error"] == "name already in use"
             # The existing spec was NOT clobbered.
-            written = json.loads(sandbox.kirocrew_json.read_text())
+            written = json.loads(sandbox.kirocrew_json.read_text(encoding="utf-8"))
             assert written["mcpServers"]["weather"]["command"] == "uvx"
         finally:
             await client.close()

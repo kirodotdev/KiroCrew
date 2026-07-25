@@ -96,7 +96,7 @@ class TestDiskCache:
         slack = _make_slack([{"id": "C111", "name": "engineering"}])
         await resolver.resolve_many(slack, ["C111"])
         assert cache_path.exists()
-        data = json.loads(cache_path.read_text())
+        data = json.loads(cache_path.read_text(encoding="utf-8"))
         assert data["names"] == {"C111": "engineering"}
         assert data["fetched_at"] > 0
 

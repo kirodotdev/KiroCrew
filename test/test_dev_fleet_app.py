@@ -1849,7 +1849,7 @@ async def test_make_live_real_cutover_writes_dropin(monkeypatch, tmp_path):
     assert res["ok"] is True and res.get("cutover") is True
     # Drop-in written with the reset + replacement ExecStart.
     assert dropin.is_file()
-    written = dropin.read_text()
+    written = dropin.read_text(encoding="utf-8")
     assert "\nExecStart=\n" in written
     assert f"ExecStart={wt}/.venv/bin/kirocrew gateway --no-open" in written
     # daemon-reload then a DETACHED systemd-run restart.
@@ -2229,7 +2229,7 @@ async def test_make_live_rolls_back_on_reload_failure(monkeypatch, tmp_path):
     res = await mod._make_live(str(wt), dry_run=False)
     assert res["ok"] is False and res["code"] == "reload_failed"
     assert res["rolled_back"] is True
-    assert dropin.read_text() == "PRIOR-OVERRIDE\n"   # restored to prior content
+    assert dropin.read_text(encoding="utf-8") == "PRIOR-OVERRIDE\n"   # restored to prior content
     assert reloads["n"] == 2                            # rollback re-reload ran
     assert not any(c[:2] == ["systemd-run", "--user"] for c in calls)  # no restart
 

@@ -1,7 +1,7 @@
 """Tests for GET /api/kiro-hooks handler.
 
 Covers the 5 paths identified in review:
-1. OSError/JSONDecodeError on agent_cfg.read_text() → empty hooks
+1. OSError/JSONDecodeError on agent_cfg.read_text(encoding="utf-8") → empty hooks
 2. _shipped_defaults() returning non-existent path → bundled fallback
 3. Malformed JSON where raw is not a dict → isinstance guard
 4. Unknown event filtering → events not in _VALID_HOOK_EVENTS dropped

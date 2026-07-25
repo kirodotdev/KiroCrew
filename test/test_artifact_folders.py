@@ -52,7 +52,7 @@ class TestFolderIdField:
     ) -> None:
         art = store.create(name="A", content="x")
         meta_path = store.root / art.slug / "meta.json"
-        raw = json.loads(meta_path.read_text())
+        raw = json.loads(meta_path.read_text(encoding="utf-8"))
         raw.pop("folder_id", None)  # simulate a pre-feature meta.json
         meta_path.write_text(json.dumps(raw))
         assert store.get(art.slug).folder_id == ""
@@ -60,7 +60,7 @@ class TestFolderIdField:
     def test_null_folder_id_loads_as_unfiled(self, store: ArtifactStore) -> None:
         art = store.create(name="A", content="x")
         meta_path = store.root / art.slug / "meta.json"
-        raw = json.loads(meta_path.read_text())
+        raw = json.loads(meta_path.read_text(encoding="utf-8"))
         raw["folder_id"] = None  # explicit JSON null, not a missing key
         meta_path.write_text(json.dumps(raw))
         # Must collapse to "" (unfiled), not the string "None".

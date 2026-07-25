@@ -554,7 +554,7 @@ class TestSandboxExecArgv:
         argv, profile_path = sandbox_exec_argv(["echo", "hi"], "strict")
         try:
             assert profile_path is not None
-            content = Path(profile_path).read_text()
+            content = Path(profile_path).read_text(encoding="utf-8")
             assert "(version 1)" in content
         finally:
             if profile_path:

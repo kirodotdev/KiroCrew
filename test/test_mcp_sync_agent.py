@@ -38,7 +38,7 @@ def mcp_env(tmp_path: Path):
 
 
 def _load(path: Path) -> dict:
-    return json.loads(path.read_text())
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 class TestSyncMcpToAgent:
@@ -60,7 +60,7 @@ class TestSyncMcpToAgent:
 
     def test_enable_strips_disabled_key(self, mcp_env):
         agent_cfg, mcp_json = mcp_env
-        d = json.loads(mcp_json.read_text())
+        d = json.loads(mcp_json.read_text(encoding="utf-8"))
         d["mcpServers"]["slack-mcp"]["disabled"] = True
         mcp_json.write_text(json.dumps(d))
         from kiro_crew.dashboard.handlers.mcp import _sync_mcp_to_agent
@@ -129,7 +129,7 @@ class TestSyncMcpToAgentBatch:
 
     def test_enable_skips_invalid_spec(self, mcp_env):
         agent_cfg, mcp_json = mcp_env
-        d = json.loads(mcp_json.read_text())
+        d = json.loads(mcp_json.read_text(encoding="utf-8"))
         d["mcpServers"]["bad-server"] = "not-a-dict"
         mcp_json.write_text(json.dumps(d))
         from kiro_crew.dashboard.handlers.mcp import _sync_mcp_to_agent_batch

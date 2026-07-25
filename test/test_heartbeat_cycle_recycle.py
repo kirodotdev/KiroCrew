@@ -261,7 +261,7 @@ class TestHeartbeatAgentInstall:
 
         path = kiro_dir / "kirocrew-heartbeat.json"
         assert path.exists()
-        config = json.loads(path.read_text())
+        config = json.loads(path.read_text(encoding="utf-8"))
 
         assert config["name"] == "kirocrew-heartbeat"
         # Minimal MCP surface — only kirocrew-core on public installs
@@ -311,7 +311,7 @@ class TestHeartbeatAgentInstall:
 
         agent_mod._install_heartbeat_agent()
 
-        config = json.loads((kiro_dir / "kirocrew-heartbeat.json").read_text())
+        config = json.loads((kiro_dir / "kirocrew-heartbeat.json").read_text(encoding="utf-8"))
         core_args = config["mcpServers"]["kirocrew-core"]["args"]
         # Filter flags + their values must be stripped (both --flag=value and
         # --flag <value> shapes).
@@ -343,7 +343,7 @@ class TestHeartbeatAgentInstall:
 
         path = kiro_dir / "kirocrew-heartbeat.json"
         assert path.exists()
-        config = json.loads(path.read_text())
+        config = json.loads(path.read_text(encoding="utf-8"))
         assert config["name"] == "kirocrew-heartbeat"
         # No main config → empty mcpServers (subsequent rebuild_agent_config
         # call will re-seed when kirocrew.json appears).
@@ -381,7 +381,7 @@ class TestHeartbeatAgentInstall:
 
         agent_mod._install_heartbeat_agent()
 
-        config = json.loads((kiro_dir / "kirocrew-heartbeat.json").read_text())
+        config = json.loads((kiro_dir / "kirocrew-heartbeat.json").read_text(encoding="utf-8"))
         # builder-mcp is omitted on public installs; kirocrew-core absent here.
         assert config["mcpServers"] == {}
         # tools list mirrors mcpServers — never references @builder-mcp.

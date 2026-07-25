@@ -17,7 +17,7 @@ _ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_f1_backend_verifies_expected_resource_ids():
-    src = (_ROOT / "src/kiro_crew/deploy/handlers.py").read_text()
+    src = (_ROOT / "src/kiro_crew/deploy/handlers.py").read_text(encoding="utf-8")
     assert "expected_distribution_id" in src
     assert "resource ids changed since preview" in src
     # The verification happens before engine.destroy.
@@ -26,7 +26,7 @@ def test_f1_backend_verifies_expected_resource_ids():
 
 
 def test_f1_frontend_two_call_destroy():
-    src = (_ROOT / "website/src/pages/ArtifactDeployPage.tsx").read_text()
+    src = (_ROOT / "website/src/pages/ArtifactDeployPage.tsx").read_text(encoding="utf-8")
     # Preview call without confirm, then confirmed call with bindings.
     assert "expected_bucket" in src
     assert "expected_distribution_id" in src
@@ -40,7 +40,7 @@ def test_f1_frontend_two_call_destroy():
 
 
 def test_f2_ui_surfaces_boundary_policy():
-    src = (_ROOT / "website/src/pages/ArtifactDeployPage.tsx").read_text()
+    src = (_ROOT / "website/src/pages/ArtifactDeployPage.tsx").read_text(encoding="utf-8")
     assert "boundary_policy" in src
     assert "Copy boundary policy" in src
 
@@ -57,7 +57,7 @@ def test_f3_boundary_covers_reaper_role_actions():
     yaml_src = (
         _ROOT / "src/kiro_crew/deploy/skills/artifact-deploy/templates/"
         "reaper.yaml"
-    ).read_text()
+    ).read_text(encoding="utf-8")
     # Strip comment lines (action names in comments are not grants).
     yaml_src = "\n".join(
         ln for ln in yaml_src.splitlines() if not ln.strip().startswith("#"))

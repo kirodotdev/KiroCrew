@@ -214,7 +214,7 @@ class TestConversationLogLegacyFallback:
         assert log.has_log(_CANON)
         log.append(_CANON, "assistant", "reply after the migration")
         assert not (tmp_path / f"slack_{_BARE_TS}.jsonl").exists()
-        assert "reply after the migration" in legacy_file.read_text()
+        assert "reply after the migration" in legacy_file.read_text(encoding="utf-8")
 
     def test_new_thread_creates_canonical_file(self, tmp_path) -> None:
         log = ConversationLog(base_dir=tmp_path)

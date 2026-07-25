@@ -67,7 +67,7 @@ def _expected_path(stem: str) -> str:
 def _all_referenced_paths() -> set[str]:
     paths: set[str] = set()
     for path in _test_files():
-        paths |= _referenced_paths(ast.parse(path.read_text()))
+        paths |= _referenced_paths(ast.parse(path.read_text(encoding="utf-8")))
     return paths
 
 

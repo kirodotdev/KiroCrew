@@ -154,6 +154,57 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
 
+  # Windows regression line: the backend supports Windows natively via
+  # kiro_crew.platform_compat (see docs/WINDOWS_INSTALL.md for the
+  # per-feature status), but until this job existed nothing in CI held
+  # that line -- a POSIX-only regression would land silently. Single
+  # Python (3.12: the preferred Windows runtime; numpy 1.x ships no 3.13
+  # Windows wheel), duration-balanced shards like the POSIX matrix,
+  # trace-free (--no-cov: the coverage-combine job merges ubuntu shards
+  # only). Timeout is higher than the POSIX job: windows-latest runners
+  # run the same tests measurably slower.
+  backend-test-windows:
+    name: Backend Tests (Windows)
+    runs-on: windows-latest
+    strategy:
+      # Full failure picture across shards, same as backend-test.
+      fail-fast: false
+      matrix:
+        group: [1, 2, 3, 4]
+    env:
+      SHARD_COUNT: 4
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+          # Same no-uv.lock caveat as backend-test: key the cache on the
+          # files that define the dependency set.
+          cache-dependency-glob: |
+            pyproject.toml
+            setup.cfg
+
+      - name: Install dependencies
+        run: uv pip install --system -e ".[voice,desktop]" --group dev
+
+      - name: Run tests (Windows shard ${{ matrix.group }}/${{ env.SHARD_COUNT }})
+        # bash (Git Bash on windows-latest), not pwsh: the invocation shares
+        # the POSIX job's line-continuation and env-interpolation syntax.
+        shell: bash
+        run: |
+          pytest -q -n auto --timeout=180 --no-cov \
+            --splits "$SHARD_COUNT" --group ${{ matrix.group }} \
+            --deselect=test/test_script_hooks.py \
+            --deselect=test/test_cron_script.py \
+            --deselect=test/test_run_aim_path.py
+        # Same deselects as backend-test (Linux-namespace sandbox tests and
+        # the Amazon-internal `aim` CLI are unavailable here too).
+
   coverage-combine:
     name: Coverage Combine
     needs: backend-test

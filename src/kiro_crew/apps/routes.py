@@ -215,7 +215,7 @@ def _sync_builtin_config(name: str, *, enabled: bool) -> None:
     try:
         tmp.write_text(json.dumps(data, indent=2))
         tmp.chmod(0o600)
-        tmp.rename(path)
+        tmp.replace(path)  # replace, not rename: Windows rename refuses to overwrite
     except OSError:
         if tmp.exists():
             tmp.unlink(missing_ok=True)

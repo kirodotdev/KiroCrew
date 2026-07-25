@@ -64,7 +64,7 @@ async def test_config_missing_seeds_empty_and_returns(tmp_path, monkeypatch):
     # The empty config file should now exist on disk.
     config_path = app_data_dir("cfg-app") / "config.json"
     assert config_path.is_file()
-    assert json.loads(config_path.read_text()) == {}
+    assert json.loads(config_path.read_text(encoding="utf-8")) == {}
 
 
 @pytest.mark.asyncio

@@ -392,7 +392,7 @@ class TestDashboardConfigAPI:
 
                 # Verify it was persisted
                 assert cfg_file.exists()
-                saved = json.loads(cfg_file.read_text())
+                saved = json.loads(cfg_file.read_text(encoding="utf-8"))
                 assert saved["dashboard"]["restore_sessions"] is True
                 assert saved["dashboard"]["restore_window_minutes"] == 120
 
@@ -412,7 +412,7 @@ class TestDashboardConfigAPI:
                     json={"restore_window_minutes": 9999},
                 )
                 assert resp.status == 200
-                saved = json.loads(cfg_file.read_text())
+                saved = json.loads(cfg_file.read_text(encoding="utf-8"))
                 assert saved["dashboard"]["restore_window_minutes"] == 1440
 
                 # Negative clamps to 0
@@ -421,7 +421,7 @@ class TestDashboardConfigAPI:
                     json={"restore_window_minutes": -5},
                 )
                 assert resp.status == 200
-                saved = json.loads(cfg_file.read_text())
+                saved = json.loads(cfg_file.read_text(encoding="utf-8"))
                 assert saved["dashboard"]["restore_window_minutes"] == 0
 
     @pytest.mark.asyncio
@@ -439,7 +439,7 @@ class TestDashboardConfigAPI:
                     json={"restore_window_minutes": 0},
                 )
                 assert resp.status == 200
-                saved = json.loads(cfg_file.read_text())
+                saved = json.loads(cfg_file.read_text(encoding="utf-8"))
                 assert saved["dashboard"]["restore_window_minutes"] == 0
 
     @pytest.mark.asyncio
@@ -683,7 +683,7 @@ class TestConfigRestoreFields:
 
         path = tmp_path / "dashboard_testslot.jsonl"
         assert path.exists()
-        meta = json.loads(path.read_text().split("\n")[0])
+        meta = json.loads(path.read_text(encoding="utf-8").split("\n")[0])
         assert meta["folder_id"] == "f-abc"
 
     def test_restores_pinned_session_regardless_of_age(self, tmp_path, monkeypatch):
@@ -735,7 +735,7 @@ class TestConfigRestoreFields:
 
         path = tmp_path / "dashboard_pinslot.jsonl"
         assert path.exists()
-        meta = json.loads(path.read_text().split("\n")[0])
+        meta = json.loads(path.read_text(encoding="utf-8").split("\n")[0])
         assert meta["pinned"] is True
 
 

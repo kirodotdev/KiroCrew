@@ -1508,7 +1508,7 @@ class TestInMemoryAuthority:
         assert [m["content"] for m in disk] == ["q1"]
         archives = list((tmp_path / "archive").glob("dashboard_s7__*.jsonl"))
         assert len(archives) == 1
-        content = archives[0].read_text()
+        content = archives[0].read_text(encoding="utf-8")
         for dropped in ("a1", "q2", "a2"):
             assert dropped in content
 
@@ -1546,7 +1546,7 @@ class TestInMemoryAuthority:
         ]
         archives = list((tmp_path / "archive").glob("dashboard_s11__*.jsonl"))
         assert len(archives) == 1
-        content = archives[0].read_text()
+        content = archives[0].read_text(encoding="utf-8")
         assert "old 5" in content
         # The frozen prefix must NOT be archived.
         for frozen in ("old 0", "old 1", "old 2", "old 3"):
@@ -1682,7 +1682,7 @@ class TestInMemoryAuthority:
         assert [m["content"] for m in disk] == ["q1"]
         archives = list((tmp_path / "archive").glob("dashboard_s10__*.jsonl"))
         assert len(archives) >= 1
-        content = "".join(a.read_text() for a in archives)
+        content = "".join(a.read_text(encoding="utf-8") for a in archives)
         for dropped in ("a1", "q2", "a2"):
             assert dropped in content
 
@@ -6482,7 +6482,7 @@ class TestFolderAssignmentPersistence:
             assert path.exists()
             import json
 
-            meta = json.loads(path.read_text().split("\n")[0])
+            meta = json.loads(path.read_text(encoding="utf-8").split("\n")[0])
             assert meta["folder_id"] == "f1"
 
     @pytest.mark.asyncio
@@ -6519,7 +6519,7 @@ class TestFolderAssignmentPersistence:
             assert path.exists(), "folder_id save must reach disk on resumed session"
             import json
 
-            meta = json.loads(path.read_text().split("\n")[0])
+            meta = json.loads(path.read_text(encoding="utf-8").split("\n")[0])
             assert meta.get("folder_id") == "f-resumed", (
                 "folder_id was silently dropped on resumed session — "
                 "force=True must bypass the _resumed_count guard"
@@ -6547,7 +6547,7 @@ class TestFolderAssignmentPersistence:
             assert path.exists(), "pinned save must reach disk on resumed session"
             import json
 
-            meta = json.loads(path.read_text().split("\n")[0])
+            meta = json.loads(path.read_text(encoding="utf-8").split("\n")[0])
             assert meta.get("pinned") is True, (
                 "pinned was silently dropped on resumed session — "
                 "force=True must bypass the _resumed_count guard"
@@ -6583,7 +6583,7 @@ class TestFolderAssignmentPersistence:
         assert path.exists(), "force=True must bypass the guard"
         import json
 
-        meta = json.loads(path.read_text().split("\n")[0])
+        meta = json.loads(path.read_text(encoding="utf-8").split("\n")[0])
         assert meta.get("folder_id") == "f-force"
 
 

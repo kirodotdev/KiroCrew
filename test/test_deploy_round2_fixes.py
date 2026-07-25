@@ -156,7 +156,7 @@ def test_deploy_sh_reaper_check_before_upload():
     """F6: Verify deploy.sh has reaper check before s3 sync, not after."""
     script = Path(__file__).parent.parent / "src" / "kiro_crew" / "deploy" / \
         "skills" / "artifact-deploy" / "scripts" / "deploy.sh"
-    content = script.read_text()
+    content = script.read_text(encoding="utf-8")
     # The reaper check must come BEFORE the s3 sync
     reaper_pos = content.find("kirocrew-deploy-reaper")
     sync_pos = content.find("s3 sync")
@@ -188,7 +188,7 @@ def test_reaper_lambda_has_oac_cleanup():
             "skills" / "artifact-deploy" / "scripts" / "reaper_lambda" / "index.py")
     )
     # Just verify the source contains the OAC cleanup code
-    source = Path(spec.origin).read_text()
+    source = Path(spec.origin).read_text(encoding="utf-8")
     assert "delete_origin_access_control" in source
     assert "list_origin_access_controls" in source
     assert "oac_id" in source
@@ -198,7 +198,7 @@ def test_reaper_yaml_has_oac_permissions():
     """F7: reaper.yaml IAM policy includes OAC permissions."""
     template = Path(__file__).parent.parent / "src" / "kiro_crew" / "deploy" / \
         "skills" / "artifact-deploy" / "templates" / "reaper.yaml"
-    content = template.read_text()
+    content = template.read_text(encoding="utf-8")
     assert "cloudfront:ListOriginAccessControls" in content
     assert "cloudfront:DeleteOriginAccessControl" in content
     assert "cloudfront:GetOriginAccessControl" in content
@@ -261,7 +261,7 @@ def test_handlers_manifest_includes_oac_id():
     """F7: The deploy manifest JSON written by handlers includes oac_id."""
     # Just verify the manifest_data construction in source code
     source = Path(__file__).parent.parent / "src" / "kiro_crew" / "deploy" / "handlers.py"
-    content = source.read_text()
+    content = source.read_text(encoding="utf-8")
     assert '"oac_id": result.get("oac_id", "")' in content
 
 
@@ -269,7 +269,7 @@ def test_reaper_sh_has_oac_cleanup():
     """F7: reaper.sh includes OAC deletion for engine-arch."""
     script = Path(__file__).parent.parent / "src" / "kiro_crew" / "deploy" / \
         "skills" / "artifact-deploy" / "scripts" / "reaper.sh"
-    content = script.read_text()
+    content = script.read_text(encoding="utf-8")
     assert "delete-origin-access-control" in content
     assert "list-origin-access-controls" in content
 

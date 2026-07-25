@@ -22,7 +22,7 @@ def test_acquire_creates_lock_file_with_pid(tmp_path):
     try:
         lock_file = tmp_path / LOCK_FILENAME
         assert lock_file.is_file()
-        assert lock_file.read_text().strip() == str(os.getpid())
+        assert lock_file.read_text(encoding="utf-8").strip() == str(os.getpid())
     finally:
         lock.release()
 
@@ -49,7 +49,7 @@ def test_stale_lock_is_reclaimed(tmp_path):
 
     lock = GatewayLock(tmp_path).acquire()
     try:
-        assert lock_file.read_text().strip() == str(os.getpid())
+        assert lock_file.read_text(encoding="utf-8").strip() == str(os.getpid())
     finally:
         lock.release()
 

@@ -928,7 +928,7 @@ def _read_source(modpath: str) -> str:
     import importlib
     from pathlib import Path
 
-    return Path(importlib.import_module(modpath).__file__).read_text()
+    return Path(importlib.import_module(modpath).__file__).read_text(encoding="utf-8")
 
 
 def test_knowledge_extra_connectors_site_uses_safe_context_call() -> None:

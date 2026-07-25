@@ -105,7 +105,7 @@ class TestVoiceConfig:
             assert mock_vc.piper_model == "~/voices/en.onnx"  # stripped
             assert mock_vc.piper_length_scale == 1.5
         # Persisted to config.json under voice_reply
-        persisted = json.loads(cfg_path.read_text())
+        persisted = json.loads(cfg_path.read_text(encoding="utf-8"))
         assert persisted["voice_reply"]["provider"] == "piper"
         assert persisted["voice_reply"]["piper_model"] == "~/voices/en.onnx"
 
@@ -221,7 +221,7 @@ class TestVoiceConfig:
         async with TestClient(TestServer(_make_voice_app(state))) as client:
             resp = await client.put("/api/voice/config", json={"voice": "Matthew"})
             assert resp.status == 200
-        persisted = json.loads(cfg_path.read_text())["voice_reply"]
+        persisted = json.loads(cfg_path.read_text(encoding="utf-8"))["voice_reply"]
         assert persisted["voice_id"] == "Matthew"       # updated
         assert persisted["auto_reply_to_voice"] is False  # preserved (not dropped)
         assert persisted["auto_speak"] is True            # preserved

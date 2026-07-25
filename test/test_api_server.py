@@ -348,7 +348,7 @@ class TestApiServerAuth:
 
         runner, _state, base = await self._start(tmp_path, monkeypatch)
         try:
-            secret = (tmp_path / ".local_secret").read_text().strip()
+            secret = (tmp_path / ".local_secret").read_text(encoding="utf-8").strip()
             async with aiohttp.ClientSession() as session:
                 async with session.get(
                     f"{base}/api/crons",
@@ -407,7 +407,7 @@ class TestApiServerAuth:
 
         runner, _state, base = await self._start(tmp_path, monkeypatch)
         try:
-            secret = (tmp_path / ".local_secret").read_text().strip()
+            secret = (tmp_path / ".local_secret").read_text(encoding="utf-8").strip()
             async with aiohttp.ClientSession() as session:
                 async with session.get(
                     f"{base}/api/artifact-folders",
@@ -441,7 +441,7 @@ class TestApiServerAuth:
 
         runner, _state, base = await self._start(tmp_path, monkeypatch)
         try:
-            secret = (tmp_path / ".local_secret").read_text().strip()
+            secret = (tmp_path / ".local_secret").read_text(encoding="utf-8").strip()
             async with aiohttp.ClientSession() as session:
                 async with session.post(
                     f"{base}/api/spawn",
@@ -510,7 +510,7 @@ class TestApiKirocrewConfig:
             assert resp.status == 200
             import json
 
-            saved = json.loads((tmp_path / "config.json").read_text())
+            saved = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
             assert saved["agent"]["subagent_max_turns"] == 50
             assert saved["agent"]["max_subagents"] == 3  # preserved
 
@@ -542,7 +542,7 @@ class TestApiKirocrewConfig:
             assert resp.status == 200
             import json
 
-            saved = json.loads((tmp_path / "config.json").read_text())
+            saved = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
             assert saved["agent"]["subagent_auto_max"] == 32
 
     @pytest.mark.asyncio

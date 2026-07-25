@@ -109,7 +109,7 @@ def test_open_dump_file_creates_file(dumps_dir: Path) -> None:
         assert files[0].name.startswith(DUMP_PREFIX)
         assert files[0].name.endswith(DUMP_SUFFIX)
         # Header should be written
-        content = files[0].read_text()
+        content = files[0].read_text(encoding="utf-8")
         assert "KiroCrew loop-stall crash dump" in content
         assert "PID:" in content
     finally:
@@ -123,7 +123,7 @@ def test_open_dump_file_returns_writable_fd(dumps_dir: Path) -> None:
         f.write("Thread 0x1234 (most recent call first):\n")
         f.flush()
         files = list(dumps_dir.iterdir())
-        content = files[0].read_text()
+        content = files[0].read_text(encoding="utf-8")
         assert "Thread 0x1234" in content
     finally:
         f.close()

@@ -124,8 +124,8 @@ def test_normal_tree_passes_staging(tmp_path: Path, monkeypatch):
     symlinks_found = [str(p) for p in staged.rglob("*") if p.is_symlink()]
     assert symlinks_found == []
     # Verify files copied correctly
-    assert (staged / "index.html").read_text() == "<h1>hi</h1>"
-    assert (staged / "subdir" / "style.css").read_text() == "body {}"
+    assert (staged / "index.html").read_text(encoding="utf-8") == "<h1>hi</h1>"
+    assert (staged / "subdir" / "style.css").read_text(encoding="utf-8") == "body {}"
     shutil.rmtree(str(sp))
 
 
@@ -189,7 +189,7 @@ def test_deploy_sh_no_unbound_scan_rc():
         "skills" / "artifact-deploy" / "scripts" / "deploy.sh"
     if not script.exists():
         pytest.skip("deploy.sh not found")
-    content = script.read_text()
+    content = script.read_text(encoding="utf-8")
     # Should have $_SCAN_RC but NOT bare $SCAN_RC (without underscore prefix)
     # Find occurrences of $SCAN_RC that are NOT $_SCAN_RC
     # Pattern: $SCAN_RC that's not preceded by underscore

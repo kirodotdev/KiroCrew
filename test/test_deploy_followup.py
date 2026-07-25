@@ -21,19 +21,19 @@ class TestFU1ReaperRemediation:
         assert h._reaper_remediation("", "") == "install-reaper.sh"
 
     def test_both_409_sites_attach_remediation(self):
-        src = Path(h.__file__).read_text()
+        src = Path(h.__file__).read_text(encoding="utf-8")
         assert src.count('"remediation": _reaper_remediation(profile, region)') == 2
 
 
 class TestFU3EmptyCostHint:
     def test_save_response_warns_on_empty_estimates(self):
         from kiro_crew import mcp_core
-        src = Path(mcp_core.__file__.replace(".pyc", ".py")).read_text()
+        src = Path(mcp_core.__file__.replace(".pyc", ".py")).read_text(encoding="utf-8")
         assert "webapp_metadata.cost.estimates is empty" in src
 
     def test_hint_condition_requires_webapp_kind(self):
         from kiro_crew import mcp_core
-        src = Path(mcp_core.__file__.replace(".pyc", ".py")).read_text()
+        src = Path(mcp_core.__file__.replace(".pyc", ".py")).read_text(encoding="utf-8")
         gate = src.split("cost_hint = \"\"")[1].split("cost_hint = (")[0]
         assert 'kind == "webapp"' in gate
 
@@ -106,25 +106,25 @@ class TestNew1Pricing:
             assert region == "us-east-1"
 
     def test_route_registered(self):
-        src = Path(h.__file__).read_text()
+        src = Path(h.__file__).read_text(encoding="utf-8")
         assert 'r.add_get("/api/deploy/pricing", _handle_pricing)' in src
 
 
 class TestNew3ReaperAlarm:
     def test_alarm_resources_are_conditional(self):
-        tpl = (_TPL_DIR / "reaper.yaml").read_text()
+        tpl = (_TPL_DIR / "reaper.yaml").read_text(encoding="utf-8")
         assert "AlarmEmail:" in tpl
         assert "HasAlarmEmail: !Not [!Equals [!Ref AlarmEmail, '']]" in tpl
         assert tpl.count("Condition: HasAlarmEmail") == 2
 
     def test_alarm_watches_reaper_errors_with_action(self):
-        tpl = (_TPL_DIR / "reaper.yaml").read_text()
+        tpl = (_TPL_DIR / "reaper.yaml").read_text(encoding="utf-8")
         assert "MetricName: Errors" in tpl
         assert "AlarmActions:" in tpl
         assert "TreatMissingData: notBreaching" in tpl
 
     def test_install_script_wires_alarm_email(self):
         script = (
-            _TPL_DIR.parent / "scripts" / "install-reaper.sh").read_text()
+            _TPL_DIR.parent / "scripts" / "install-reaper.sh").read_text(encoding="utf-8")
         assert "--alarm-email" in script
         assert 'AlarmEmail="${ALARM_EMAIL:-}"' in script

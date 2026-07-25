@@ -5,7 +5,7 @@ CODE_REVIEW_WORKFLOW = ROOT / ".github" / "workflows" / "code-review.yml"
 
 
 def test_woke_install_is_version_pinned_and_checksum_verified():
-    workflow = CODE_REVIEW_WORKFLOW.read_text()
+    workflow = CODE_REVIEW_WORKFLOW.read_text(encoding="utf-8")
     install_step = workflow.split("      - name: Install woke\n", 1)[1].split(
         "      - name: Scan only changed lines\n", 1
     )[0]

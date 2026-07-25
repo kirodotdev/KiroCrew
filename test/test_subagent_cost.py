@@ -44,13 +44,13 @@ def test_append_writes_jsonl_line(cost_log):
 
 def test_append_normalizes_empty_agent(cost_log):
     sc.append_cost_sample("", 0.3, 0.5)
-    rec = json.loads(cost_log.read_text().strip())
+    rec = json.loads(cost_log.read_text(encoding="utf-8").strip())
     assert rec["agent"] == "kirocrew"
 
 
 def test_append_skips_zero_zero(cost_log):
     sc.append_cost_sample("kirocrew", 0.0, 0.0)
-    assert not cost_log.exists() or cost_log.read_text().strip() == ""
+    assert not cost_log.exists() or cost_log.read_text(encoding="utf-8").strip() == ""
 
 
 def test_concurrent_appends_do_not_lose_samples(cost_log):
@@ -128,7 +128,7 @@ def test_compaction_noop_when_within_bound(cost_log):
     recs = [{"agent": "kirocrew", "mem_gb": 0.3, "cpu_cores": 0.1, "ts": i} for i in range(5)]
     _seed(cost_log, recs)
     sc.compact_cost_log(window=50)
-    assert len(cost_log.read_text().strip().splitlines()) == 5
+    assert len(cost_log.read_text(encoding="utf-8").strip().splitlines()) == 5
 
 
 def test_compaction_per_agent_independent(cost_log):
@@ -138,6 +138,6 @@ def test_compaction_per_agent_independent(cost_log):
     )
     _seed(cost_log, recs)
     sc.compact_cost_log(window=5)
-    lines = [json.loads(line) for line in cost_log.read_text().strip().splitlines()]
+    lines = [json.loads(line) for line in cost_log.read_text(encoding="utf-8").strip().splitlines()]
     assert sum(1 for r in lines if r["agent"] == "a") == 5
     assert sum(1 for r in lines if r["agent"] == "b") == 5

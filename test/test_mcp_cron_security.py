@@ -240,7 +240,7 @@ def test_run_command_uses_cc_sandbox(monkeypatch):
 def test_defaults_allowedtools_excludes_cron_add():
     import kiro_crew
     defaults_path = Path(kiro_crew.__file__).parent / "config" / "defaults.json"
-    cfg = json.loads(defaults_path.read_text())
+    cfg = json.loads(defaults_path.read_text(encoding="utf-8"))
     allowed = cfg["allowedTools"]
     # Whole-server prefix must be gone (it auto-approved cron_add).
     assert "@kirocrew-cron" not in allowed

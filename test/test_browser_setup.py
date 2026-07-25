@@ -178,14 +178,14 @@ class TestGeneratePlaywrightConfig:
         # B-minus dropped the CDP debug port — the live mirror now rides the
         # proxy's existing screenshot path, so no remote-debugging port is opened.
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        config = json.loads(generate_playwright_config().read_text())
+        config = json.loads(generate_playwright_config().read_text(encoding="utf-8"))
         args = config["browser"]["launchOptions"]["args"]
         assert not any("remote-debugging-port" in a for a in args)
 
     def test_config_has_correct_structure(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         config_path = generate_playwright_config()
-        config = json.loads(config_path.read_text())
+        config = json.loads(config_path.read_text(encoding="utf-8"))
         assert "browser" in config
         assert "capabilities" in config
         assert config["browser"]["browserName"] == "chromium"
@@ -198,7 +198,7 @@ class TestGeneratePlaywrightConfig:
         monkeypatch.delenv("KIROCREW_HOME", raising=False)
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         config_path = generate_playwright_config()
-        config = json.loads(config_path.read_text())
+        config = json.loads(config_path.read_text(encoding="utf-8"))
         storage_state = config["browser"]["contextOptions"]["storageState"]
         assert storage_state.startswith(str(tmp_path))
         assert "playwright-storage-state.json" in storage_state
@@ -224,7 +224,7 @@ class TestGeneratePlaywrightConfig:
         # branded "chrome" channel, which overrides browserName and is absent on
         # headless/Cloud Desktop hosts; pin it to bundled "chromium".
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        config = json.loads(generate_playwright_config().read_text())
+        config = json.loads(generate_playwright_config().read_text(encoding="utf-8"))
         assert config["browser"]["launchOptions"]["channel"] == "chromium"
 
 
@@ -278,7 +278,7 @@ class TestRefreshStorageState:
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         result = refresh_storage_state()
         storage_path = Path(result["path"])
-        data = json.loads(storage_path.read_text())
+        data = json.loads(storage_path.read_text(encoding="utf-8"))
         assert "cookies" in data
         assert "origins" in data
         assert len(data["cookies"]) == 2
@@ -336,7 +336,7 @@ def _write_mcp_json(tmp_path: Path, servers: dict) -> Path:
 
 
 def _read_servers(mcp_json: Path) -> dict:
-    return json.loads(mcp_json.read_text())["mcpServers"]
+    return json.loads(mcp_json.read_text(encoding="utf-8"))["mcpServers"]
 
 
 class TestPatchWritesCanonicalKey:
@@ -545,10 +545,10 @@ class TestMigrateOwnedPlaywrightRegistration:
                 }
             },
         )
-        before = mcp_json.read_text()
+        before = mcp_json.read_text(encoding="utf-8")
         migrate_owned_playwright_registration()
         # Byte-identical: an already-canonical proxy is left untouched (no churn).
-        assert mcp_json.read_text() == before
+        assert mcp_json.read_text(encoding="utf-8") == before
 
     def test_does_not_add_when_no_playwright(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
@@ -577,10 +577,10 @@ class TestMigrateOwnedPlaywrightRegistration:
         monkeypatch.setattr(setup_mod, "has_playwright_extension", lambda: False)
         direct = {"command": "npx", "args": ["@playwright/mcp@latest"]}
         mcp_json = _write_mcp_json(tmp_path, {"@playwright/mcp": dict(direct)})
-        before = mcp_json.read_text()
+        before = mcp_json.read_text(encoding="utf-8")
         migrate_owned_playwright_registration()
         # Byte-identical: the user's direct server was left exactly as-is.
-        assert mcp_json.read_text() == before
+        assert mcp_json.read_text(encoding="utf-8") == before
         assert _read_servers(mcp_json)["@playwright/mcp"] == direct
 
     def test_leaves_user_direct_server_under_canonical_key_untouched(
@@ -596,9 +596,9 @@ class TestMigrateOwnedPlaywrightRegistration:
         monkeypatch.setattr(setup_mod, "has_playwright_extension", lambda: False)
         direct = {"command": "npx", "args": ["@playwright/mcp@latest", "--headless"]}
         mcp_json = _write_mcp_json(tmp_path, {_CANONICAL: dict(direct)})
-        before = mcp_json.read_text()
+        before = mcp_json.read_text(encoding="utf-8")
         migrate_owned_playwright_registration()
-        assert mcp_json.read_text() == before
+        assert mcp_json.read_text(encoding="utf-8") == before
         assert _read_servers(mcp_json)[_CANONICAL] == direct
 
     def test_leaves_user_canonical_even_when_superseded_proxy_present(
@@ -619,9 +619,9 @@ class TestMigrateOwnedPlaywrightRegistration:
                 "playwright-proxy-mcp": {"command": "kirocrew", "args": ["mcp-playwright-proxy"]},
             },
         )
-        before = mcp_json.read_text()
+        before = mcp_json.read_text(encoding="utf-8")
         migrate_owned_playwright_registration()
-        assert mcp_json.read_text() == before
+        assert mcp_json.read_text(encoding="utf-8") == before
 
 
 # ── TestConvergePlaywrightServers ────────────────────────────────────────────
@@ -844,12 +844,12 @@ class TestConvergePlaywrightAgentFiles:
 
         _converge_playwright_agent_files()
 
-        assert set(json.loads(kiro_file.read_text())["mcpServers"]) == {_CANONICAL}
-        assert set(json.loads(cc_file.read_text())["mcpServers"]) == {_CANONICAL}
+        assert set(json.loads(kiro_file.read_text(encoding="utf-8"))["mcpServers"]) == {_CANONICAL}
+        assert set(json.loads(cc_file.read_text(encoding="utf-8"))["mcpServers"]) == {_CANONICAL}
         # The .bak file was NOT swept (still holds the duplicate).
         assert (
             "playwright-proxy-mcp"
-            in json.loads((kiro_dir / "kirocrew.json.bak.123").read_text())["mcpServers"]
+            in json.loads((kiro_dir / "kirocrew.json.bak.123").read_text(encoding="utf-8"))["mcpServers"]
         )
 
     def test_no_error_when_dirs_absent(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -892,12 +892,12 @@ class TestConvergePlaywrightAgentFiles:
         _converge_playwright_agent_files()
 
         # KiroCrew-owned files converged to one server.
-        assert set(json.loads(owned.read_text())["mcpServers"]) == {_CANONICAL}
-        assert set(json.loads(owned_variant.read_text())["mcpServers"]) == {_CANONICAL}
+        assert set(json.loads(owned.read_text(encoding="utf-8"))["mcpServers"]) == {_CANONICAL}
+        assert set(json.loads(owned_variant.read_text(encoding="utf-8"))["mcpServers"]) == {_CANONICAL}
         # User-owned files byte-identical (both proxies preserved).
-        assert "playwright-proxy-mcp" in json.loads(user_prefixed.read_text())["mcpServers"]
-        assert "playwright-proxy-mcp" in json.loads(user_kiro.read_text())["mcpServers"]
-        assert "playwright-proxy-mcp" in json.loads(user_cc.read_text())["mcpServers"]
+        assert "playwright-proxy-mcp" in json.loads(user_prefixed.read_text(encoding="utf-8"))["mcpServers"]
+        assert "playwright-proxy-mcp" in json.loads(user_kiro.read_text(encoding="utf-8"))["mcpServers"]
+        assert "playwright-proxy-mcp" in json.loads(user_cc.read_text(encoding="utf-8"))["mcpServers"]
 
     @pytest.mark.skipif(not IS_POSIX, reason="POSIX permission bits only")
     def test_preserves_0600_file_mode_on_sweep(
@@ -926,7 +926,7 @@ class TestConvergePlaywrightAgentFiles:
         _converge_playwright_agent_files()
 
         # Converged (one server left) AND still owner-only readable.
-        assert set(json.loads(secret_file.read_text())["mcpServers"]) == {_CANONICAL}
+        assert set(json.loads(secret_file.read_text(encoding="utf-8"))["mcpServers"]) == {_CANONICAL}
         assert stat.S_IMODE(secret_file.stat().st_mode) == 0o600
 
 
@@ -963,7 +963,7 @@ class TestConvergeKirocrewMcpJson:
         )
         setup_mod._converge_kirocrew_mcp_json()
         # The stale duplicate proxy is gone at the source.
-        assert set(json.loads(f.read_text())["mcpServers"]) == {_CANONICAL}
+        assert set(json.loads(f.read_text(encoding="utf-8"))["mcpServers"]) == {_CANONICAL}
 
     def test_noop_when_absent(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
@@ -990,7 +990,7 @@ class TestConvergeKirocrewMcpJson:
         )
         os.chmod(f, 0o600)
         setup_mod._converge_kirocrew_mcp_json()
-        assert set(json.loads(f.read_text())["mcpServers"]) == {_CANONICAL}
+        assert set(json.loads(f.read_text(encoding="utf-8"))["mcpServers"]) == {_CANONICAL}
         assert stat.S_IMODE(f.stat().st_mode) == 0o600
 
     def test_leaves_user_direct_server_untouched(
@@ -1007,7 +1007,7 @@ class TestConvergeKirocrewMcpJson:
         )
         f.write_text(original)
         setup_mod._converge_kirocrew_mcp_json()
-        assert f.read_text() == original
+        assert f.read_text(encoding="utf-8") == original
 
 
 # ── TestConvergeDropLogging / owned-filename source of truth ──────────────────

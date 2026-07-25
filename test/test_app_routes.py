@@ -158,7 +158,7 @@ def _make_app_source_with_ui(tmp_path, name="ui-cache-app"):
     ui = src / "ui"
     ui.mkdir()
     (ui / "index.mjs").write_text("export default function App() { return null }\n")
-    manifest = json.loads((src / APP_MANIFEST_FILENAME).read_text())
+    manifest = json.loads((src / APP_MANIFEST_FILENAME).read_text(encoding="utf-8"))
     manifest["ui"] = {"entry": "index.mjs", "pages": [{"route": f"/{name}", "label": name}]}
     (src / APP_MANIFEST_FILENAME).write_text(json.dumps(manifest, indent=2))
     return src

@@ -9,7 +9,7 @@ WORKFLOWS = ROOT / ".github" / "workflows"
 
 
 def _lines(name: str) -> list[str]:
-    return (WORKFLOWS / name).read_text().splitlines()
+    return (WORKFLOWS / name).read_text(encoding="utf-8").splitlines()
 
 
 def _permission_block(lines: list[str], marker: str) -> dict[str, str] | None:

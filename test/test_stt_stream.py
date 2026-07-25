@@ -422,7 +422,7 @@ class TestConfigPutRoundTrip:
             cfg_file = tmp_path / "config.json"
             assert cfg_file.exists()
             import json as _json
-            on_disk = _json.loads(cfg_file.read_text())
+            on_disk = _json.loads(cfg_file.read_text(encoding="utf-8"))
             assert on_disk["stt"]["streaming"] is True
             # Assert KiroCrewConfig.load() correctly deserializes — guards
             # against field-name mismatches that would silently break at runtime.

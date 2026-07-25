@@ -176,7 +176,7 @@ class TestObservePersistence:
 
         path = tmp_path / "C1.jsonl"
         assert path.exists()
-        lines = path.read_text().strip().split("\n")
+        lines = path.read_text(encoding="utf-8").strip().split("\n")
         assert len(lines) == 1
         data = json.loads(lines[0])
         assert data["user"] == "alice"
@@ -247,7 +247,7 @@ class TestObservePersistence:
         h.set_observe("C1")
 
         # File should be compacted — only the recent entry remains
-        lines = path.read_text().strip().split("\n")
+        lines = path.read_text(encoding="utf-8").strip().split("\n")
         assert len(lines) == 1
         data = json.loads(lines[0])
         assert data["user"] == "bob"
@@ -288,7 +288,7 @@ class TestObservePersistence:
         h.push("C1", "alice", "reply", thread_ts="T1")
 
         path = tmp_path / "C1.jsonl"
-        data = json.loads(path.read_text().strip())
+        data = json.loads(path.read_text(encoding="utf-8").strip())
         assert data["thread_ts"] == "T1"
 
         # Reload and verify

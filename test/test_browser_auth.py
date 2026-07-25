@@ -23,7 +23,7 @@ def test_parses_a_valid_cookie(tmp_path: Path):
 
 def test_non_utf8_byte_does_not_abort_the_whole_jar(tmp_path: Path):
     """A single non-UTF-8 byte anywhere in the jar previously raised
-    UnicodeDecodeError from path.read_text() and dropped EVERY cookie. It must
+    UnicodeDecodeError from path.read_text(encoding="utf-8") and dropped EVERY cookie. It must
     now degrade to U+FFFD on that line and still parse the good cookies."""
     jar = tmp_path / "cookies.txt"
     # A valid line, then a line with a raw 0xFF byte, then another valid line.

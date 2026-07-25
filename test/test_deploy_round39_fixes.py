@@ -14,7 +14,7 @@ from kiro_crew.deploy import engine
 from kiro_crew.deploy import iam as iam_mod
 
 REPO = Path(__file__).resolve().parents[1]
-HANDLERS = (REPO / "src" / "kiro_crew" / "deploy" / "handlers.py").read_text()
+HANDLERS = (REPO / "src" / "kiro_crew" / "deploy" / "handlers.py").read_text(encoding="utf-8")
 
 
 def _statements(doc):

@@ -109,7 +109,7 @@ class TestF2BoundaryPreflight:
     def test_boundary_preflight_before_first_deploy(self, script_name):
         """Boundary check appears before any cloudformation deploy call."""
         script = SCRIPTS_DIR / script_name
-        content = script.read_text()
+        content = script.read_text(encoding="utf-8")
         lines = content.splitlines()
 
         # Find line indices
@@ -132,7 +132,7 @@ class TestF2BoundaryPreflight:
     def test_dead_stack_detection_present(self, script_name):
         """ROLLBACK_COMPLETE detection is present."""
         script = SCRIPTS_DIR / script_name
-        content = script.read_text()
+        content = script.read_text(encoding="utf-8")
         assert "ROLLBACK_COMPLETE" in content, (
             f"Dead-stack ROLLBACK_COMPLETE detection missing from {script_name}"
         )
@@ -211,7 +211,7 @@ class TestF4CfnLintCI:
         ci_path = (
             Path(__file__).parent.parent / ".github" / "workflows" / "ci.yml"
         )
-        content = ci_path.read_text()
+        content = ci_path.read_text(encoding="utf-8")
         assert "cfn-lint" in content
         assert "Lint deploy templates" in content
 
@@ -224,7 +224,7 @@ class TestF5SkillMdOrdering:
 
     def test_metadata_before_verify_documented(self):
         """The skill doc mentions backfilling metadata before endpoint verification."""
-        content = SKILL_MD.read_text()
+        content = SKILL_MD.read_text(encoding="utf-8")
         # Check that the ordering note is present
         assert "metadata" in content.lower()
         assert "before" in content.lower()

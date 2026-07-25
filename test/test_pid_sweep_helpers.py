@@ -318,7 +318,7 @@ class TestWriteBackPidFile:
         session_pid_file.write_text("1:100\n1:200\n1:300\n")
         _write_back_pid_file({"1:200"})
 
-        content = session_pid_file.read_text()
+        content = session_pid_file.read_text(encoding="utf-8")
         assert "1:100" in content
         assert "1:200" not in content
         assert "1:300" in content
@@ -329,7 +329,7 @@ class TestWriteBackPidFile:
         session_pid_file.write_text("1:100\n")
         _write_back_pid_file({"1:100"})
 
-        assert session_pid_file.read_text() == ""
+        assert session_pid_file.read_text(encoding="utf-8") == ""
 
 
 # ── _periodic_pid_sweep ──
@@ -484,7 +484,7 @@ class TestPeriodicSweepIntegration:
             assert orphan_killed == 1
 
         # PID file should be cleaned
-        content = session_pid_file.read_text()
+        content = session_pid_file.read_text(encoding="utf-8")
         assert f"{my_gw}:{orphan_pid}" not in content
 
     @pytest.mark.asyncio

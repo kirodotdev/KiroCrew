@@ -20,7 +20,7 @@ def test_frontend_registry_matches_python_source():
         import pytest
 
         pytest.skip(f"frontend registry copy not found at {fe}")
-    assert json.loads(py.read_text()) == json.loads(fe.read_text()), (
+    assert json.loads(py.read_text(encoding="utf-8")) == json.loads(fe.read_text(encoding="utf-8")), (
         "model_registry.json drift: src/kiro_crew and website/src copies differ. "
         "Re-copy the Python source to the frontend."
     )

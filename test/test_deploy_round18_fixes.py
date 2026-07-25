@@ -13,16 +13,16 @@ from __future__ import annotations
 from pathlib import Path
 
 SRC = Path(__file__).parent.parent / "src" / "kiro_crew"
-HANDLERS = (SRC / "deploy" / "handlers.py").read_text()
-MCP_CORE = (SRC / "mcp_core.py").read_text()
+HANDLERS = (SRC / "deploy" / "handlers.py").read_text(encoding="utf-8")
+MCP_CORE = (SRC / "mcp_core.py").read_text(encoding="utf-8")
 SCRIPTS = SRC / "deploy" / "skills" / "artifact-deploy" / "scripts"
-DEPLOY_SH = (SCRIPTS / "deploy.sh").read_text()
-DEPLOY_BACKEND_SH = (SCRIPTS / "deploy-backend.sh").read_text()
-REAPER_SH = (SCRIPTS / "reaper.sh").read_text()
-REAPER_LAMBDA = (SCRIPTS / "reaper_lambda" / "index.py").read_text()
+DEPLOY_SH = (SCRIPTS / "deploy.sh").read_text(encoding="utf-8")
+DEPLOY_BACKEND_SH = (SCRIPTS / "deploy-backend.sh").read_text(encoding="utf-8")
+REAPER_SH = (SCRIPTS / "reaper.sh").read_text(encoding="utf-8")
+REAPER_LAMBDA = (SCRIPTS / "reaper_lambda" / "index.py").read_text(encoding="utf-8")
 PUBLISHHUB = (
     SRC.parent.parent / "website" / "src" / "components" / "PublishHub.tsx"
-).read_text()
+).read_text(encoding="utf-8")
 
 
 class TestF1ProfilesRedaction:

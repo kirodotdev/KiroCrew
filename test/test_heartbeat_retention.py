@@ -67,7 +67,7 @@ class TestHeartbeatRetention:
         finally:
             hb_mod.heartbeat_path = original
 
-        content = hb_path.read_text()
+        content = hb_path.read_text(encoding="utf-8")
         assert "Check ticket ABC" not in content
 
     @pytest.mark.asyncio
@@ -88,7 +88,7 @@ class TestHeartbeatRetention:
         finally:
             hb_mod.heartbeat_path = original
 
-        content = hb_path.read_text()
+        content = hb_path.read_text(encoding="utf-8")
         assert "Check ticket ABC" in content
 
     @pytest.mark.asyncio
@@ -111,7 +111,7 @@ class TestHeartbeatRetention:
         finally:
             hb_mod.heartbeat_path = original
 
-        content = hb_path.read_text()
+        content = hb_path.read_text(encoding="utf-8")
         assert "pending ticket" in content
         assert "resolved ticket" not in content
 
@@ -133,7 +133,7 @@ class TestHeartbeatRetention:
         finally:
             hb_mod.heartbeat_path = original
 
-        content = hb_path.read_text()
+        content = hb_path.read_text(encoding="utf-8")
         assert "Check ticket XYZ" in content
 
     @pytest.mark.asyncio
@@ -154,7 +154,7 @@ class TestHeartbeatRetention:
         finally:
             hb_mod.heartbeat_path = original
 
-        content = hb_path.read_text()
+        content = hb_path.read_text(encoding="utf-8")
         assert "Legacy task" not in content
 
     @pytest.mark.asyncio
@@ -177,7 +177,7 @@ class TestHeartbeatRetention:
         finally:
             hb_mod.heartbeat_path = original
 
-        content = hb_path.read_text()
+        content = hb_path.read_text(encoding="utf-8")
         assert "Check ticket" in content
         assert "deliver:C08HZAWV4TP" in content
 

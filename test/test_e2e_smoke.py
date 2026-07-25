@@ -258,7 +258,7 @@ def acp_gateway(monkeypatch, tmp_path):
         # breaks, rather than surfacing it 60s later as a "no reply" timeout.
         cfg = handle.home / "config.json"
         if cfg.is_file():
-            provider = json.loads(cfg.read_text()).get("agent", {}).get("provider", "acp")
+            provider = json.loads(cfg.read_text(encoding="utf-8")).get("agent", {}).get("provider", "acp")
             assert provider == "acp", (
                 "acp_gateway needs provider=acp for the KIROCREW_KIRO_BIN seam; "
                 f"minimal fixture resolved provider={provider!r}"

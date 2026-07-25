@@ -16,7 +16,7 @@ class TestWriteSecretFile:
 
         _write_secret_file(secret_path, "my-secret")
 
-        assert secret_path.read_text() == "my-secret"
+        assert secret_path.read_text(encoding="utf-8") == "my-secret"
         assert stat.S_IMODE(secret_path.stat().st_mode) == 0o600
 
     def test_os_open_fails_removes_file(self, tmp_path):

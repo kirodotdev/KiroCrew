@@ -8,7 +8,7 @@ F2: attach/detach backend helpers must NEVER spawn AWS commands without the
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-SERVER = (REPO / "src" / "kiro_crew" / "dashboard" / "server.py").read_text()
+SERVER = (REPO / "src" / "kiro_crew" / "dashboard" / "server.py").read_text(encoding="utf-8")
 SCRIPTS = REPO / "src" / "kiro_crew" / "deploy" / "skills" / "artifact-deploy" / "scripts"
 
 
@@ -26,7 +26,7 @@ class TestF1MigrationOffLoop:
 class TestF2FailClosedSandbox:
     def test_no_unsandboxed_fallback(self):
         for name in ("attach_backend.py", "detach_backend.py"):
-            src = (SCRIPTS / name).read_text()
+            src = (SCRIPTS / name).read_text(encoding="utf-8")
             assert "sandboxed_spawn_argv" in src, name
             # the fail-open fallback shape must be gone
             assert "wrapped_argv, env, cleanup = cmd, None, None" not in src, (

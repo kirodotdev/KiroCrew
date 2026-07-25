@@ -67,7 +67,7 @@ def test_prebundled_real_dir_left_untouched(fake_pkg, monkeypatch):
 
     assert result == tree_dist
     assert not tree_dist.is_symlink()
-    assert sentinel.read_text() == "toolbox"
+    assert sentinel.read_text(encoding="utf-8") == "toolbox"
 
 
 # ── Case 2: existing symlinks ──────────────────────────────────────────────

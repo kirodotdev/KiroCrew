@@ -16,7 +16,7 @@ class TestMemoryStore:
         assert prefs.exists()
         assert projects.exists()
         assert history_dir.is_dir()
-        assert "Preferences" in prefs.read_text()
+        assert "Preferences" in prefs.read_text(encoding="utf-8")
 
     def test_read_returns_empty_when_missing(self, tmp_path):
         store = MemoryStore(workspace=tmp_path)
@@ -175,7 +175,7 @@ class TestRecentHistoryCache:
         today = date.today().isoformat()
         history_file = tmp_path / "memory" / "history" / f"{today}.md"
         assert history_file.exists()
-        assert "test entry" in history_file.read_text()
+        assert "test entry" in history_file.read_text(encoding="utf-8")
 
     def test_read_recent_history_respects_days(self, tmp_path):
         """Only returns history within the requested day range."""

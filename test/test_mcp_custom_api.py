@@ -84,7 +84,7 @@ def _written(sandbox) -> dict:
     """The mcpServers block currently on disk (empty when never written)."""
     if not sandbox.kirocrew_json.exists():
         return {}
-    return json.loads(sandbox.kirocrew_json.read_text()).get("mcpServers", {})
+    return json.loads(sandbox.kirocrew_json.read_text(encoding="utf-8")).get("mcpServers", {})
 
 
 # ---------------------------------------------------------------------------
@@ -386,7 +386,7 @@ class TestMalformedConfigNeverClobbered:
             assert resp.status == 500
             assert "malformed" in (await resp.json())["error"]
             # The broken file is untouched — nothing was clobbered.
-            assert sandbox.kirocrew_json.read_text() == "{not json"
+            assert sandbox.kirocrew_json.read_text(encoding="utf-8") == "{not json"
         finally:
             await client.close()
 
@@ -398,7 +398,7 @@ class TestMalformedConfigNeverClobbered:
                 "/api/mcp/custom", json={"servers": {"weather": dict(_STDIO)}}
             )
             assert resp.status == 500
-            assert json.loads(sandbox.kirocrew_json.read_text())["mcpServers"] == ["broken"]
+            assert json.loads(sandbox.kirocrew_json.read_text(encoding="utf-8"))["mcpServers"] == ["broken"]
         finally:
             await client.close()
 
@@ -412,7 +412,7 @@ class TestMalformedConfigNeverClobbered:
                 "/api/mcp/custom", json={"servers": {"weather": dict(_STDIO)}}
             )
             assert resp.status == 200
-            servers = json.loads(sandbox.kirocrew_json.read_text())["mcpServers"]
+            servers = json.loads(sandbox.kirocrew_json.read_text(encoding="utf-8"))["mcpServers"]
             assert servers["existing"] == {"command": "keepme"}
             assert servers["weather"]["disabled"] is True
         finally:
@@ -446,7 +446,7 @@ class TestCarriedKeyRoundTrip:
             got = await (await client.get("/api/mcp/custom/weather")).json()
             resp = await client.put("/api/mcp/custom/weather", json={"spec": got["spec"]})
             assert resp.status == 200
-            data = json.loads(sandbox.kirocrew_json.read_text())
+            data = json.loads(sandbox.kirocrew_json.read_text(encoding="utf-8"))
             entry = data["mcpServers"]["weather"]
             assert entry["disabledTools"] == ["dangerous_tool"]
             assert entry["disabled"] is True  # enabled state also preserved
@@ -462,7 +462,7 @@ class TestCarriedKeyRoundTrip:
                 json={"spec": {"command": "npx", "args": ["-y", "@acme/weather-mcp@2"]}},
             )
             assert resp.status == 200
-            entry = json.loads(sandbox.kirocrew_json.read_text())["mcpServers"]["weather"]
+            entry = json.loads(sandbox.kirocrew_json.read_text(encoding="utf-8"))["mcpServers"]["weather"]
             assert entry["disabledTools"] == ["dangerous_tool"], "must never be dropped by edit"
             assert entry["args"] == ["-y", "@acme/weather-mcp@2"]
         finally:
@@ -478,7 +478,7 @@ class TestCarriedKeyRoundTrip:
             )
             assert resp.status == 400
             assert "managed by other flows" in (await resp.json())["error"]
-            entry = json.loads(sandbox.kirocrew_json.read_text())["mcpServers"]["weather"]
+            entry = json.loads(sandbox.kirocrew_json.read_text(encoding="utf-8"))["mcpServers"]["weather"]
             assert entry["disabledTools"] == ["dangerous_tool"]
         finally:
             await client.close()

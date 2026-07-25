@@ -84,7 +84,7 @@ class TestInstallAgent:
         """No existing kirocrew.json → config built from defaults."""
         cfg_dir = _bundled_defaults(tmp_path)
         path = _run_install(tmp_path, cfg_dir)
-        config = json.loads(path.read_text())
+        config = json.loads(path.read_text(encoding="utf-8"))
         assert config["model"] == "claude-default"
         assert "ReadFile" in config["tools"]
 
@@ -103,7 +103,7 @@ class TestInstallAgent:
         (kiro_dir / "kirocrew.json").write_text(json.dumps(existing))
 
         path = _run_install(tmp_path, cfg_dir)
-        config = json.loads(path.read_text())
+        config = json.loads(path.read_text(encoding="utf-8"))
         assert config["model"] == "claude-user-custom"
         assert "WriteFile" in config["tools"]
 
@@ -111,7 +111,7 @@ class TestInstallAgent:
         """Fresh install tracks the shipped default via the sidecar (not the spec)."""
         cfg_dir = _bundled_defaults(tmp_path)
         path = _run_install(tmp_path, cfg_dir)
-        config = json.loads(path.read_text())
+        config = json.loads(path.read_text(encoding="utf-8"))
         assert config["model"] == "claude-default"
         # kiro spec must stay schema-clean; managed-state lives in the sidecar.
         assert "model_managed" not in config
@@ -134,7 +134,7 @@ class TestInstallAgent:
         (kiro_dir / "kirocrew.json").write_text(json.dumps(existing))
 
         path = _run_install(tmp_path, cfg_dir)
-        config = json.loads(path.read_text())
+        config = json.loads(path.read_text(encoding="utf-8"))
         assert config["model"] == "claude-default"
         assert "model_managed" not in config
         assert agent_state.get_model_managed("kirocrew") is True
@@ -153,7 +153,7 @@ class TestInstallAgent:
         (kiro_dir / "kirocrew.json").write_text(json.dumps(existing))
 
         path = _run_install(tmp_path, cfg_dir)
-        config = json.loads(path.read_text())
+        config = json.loads(path.read_text(encoding="utf-8"))
         assert config["model"] == "claude-legacy-4.6"
         assert "model_managed" not in config
         assert agent_state.get_model_managed("kirocrew") is None
@@ -173,7 +173,7 @@ class TestInstallAgent:
         (kiro_dir / "kirocrew.json").write_text(json.dumps(existing))
 
         path = _run_install(tmp_path, cfg_dir)
-        config = json.loads(path.read_text())
+        config = json.loads(path.read_text(encoding="utf-8"))
         assert config["model"] == "claude-user-pinned"
         assert "model_managed" not in config
         assert agent_state.get_model_managed("kirocrew") is False
@@ -202,7 +202,7 @@ class TestInstallAgent:
         (kiro_dir / "kirocrew.json").write_text(json.dumps(existing))
 
         path = _run_install(tmp_path, cfg_dir)
-        config = json.loads(path.read_text())
+        config = json.loads(path.read_text(encoding="utf-8"))
         # Legacy deniedCommands injection is retired AND stripped on upgrade.
         assert "toolsSettings" not in config
         assert config["hooks"] == {"preToolUse": "audit"}
@@ -223,7 +223,7 @@ class TestInstallAgent:
         (kiro_dir / "kirocrew.json").write_text(json.dumps(existing))
 
         path = _run_install(tmp_path, cfg_dir)
-        config = json.loads(path.read_text())
+        config = json.loads(path.read_text(encoding="utf-8"))
         assert config["mcpServers"]["kirocrew-cron"]["command"] == "/usr/bin/kirocrew"
         assert config["mcpServers"]["kirocrew-core"]["command"] == "/usr/bin/kirocrew"
 
@@ -258,7 +258,7 @@ class TestInstallAgent:
         (kiro_dir / "kirocrew.json").write_text(json.dumps(existing))
 
         path = _run_install(tmp_path, cfg_dir)
-        config = json.loads(path.read_text())
+        config = json.loads(path.read_text(encoding="utf-8"))
         # kirocrew-cron/core: command refreshed, autoApprove preserved
         assert config["mcpServers"]["kirocrew-cron"]["command"] == "/usr/bin/kirocrew"
         assert config["mcpServers"]["kirocrew-cron"]["autoApprove"] == ["cron_list", "cron_add"]
@@ -304,7 +304,7 @@ class TestInstallAgent:
             )
         )
         path = _run_install(tmp_path, cfg_dir)
-        config = json.loads(path.read_text())
+        config = json.loads(path.read_text(encoding="utf-8"))
         # builder-mcp args overridden by kirocrew mcp.json (no tool-tag injection
         # on a public install — that Amazon-specific wiring was removed)
         assert config["mcpServers"]["builder-mcp"]["args"] == []
@@ -325,7 +325,7 @@ class TestInstallAgent:
             },
         }
         path = _run_install(tmp_path, cfg_dir, managed_mcps=mcps)
-        config = json.loads(path.read_text())
+        config = json.loads(path.read_text(encoding="utf-8"))
         assert config["mcpServers"]["arcc-governance"]["autoApprove"] == ["search_arcc"]
 
     def test_new_managed_server_seeds_auto_approve_on_refresh(self, tmp_path: Path):
@@ -356,7 +356,7 @@ class TestInstallAgent:
             },
         }
         path = _run_install(tmp_path, cfg_dir, managed_mcps=mcps)
-        config = json.loads(path.read_text())
+        config = json.loads(path.read_text(encoding="utf-8"))
         # arcc-governance is genuinely new → autoApprove should be seeded
         assert config["mcpServers"]["arcc-governance"]["autoApprove"] == ["search_arcc"]
 
@@ -390,7 +390,7 @@ class TestInstallAgent:
             },
         }
         path = _run_install(tmp_path, cfg_dir, managed_mcps=mcps)
-        config = json.loads(path.read_text())
+        config = json.loads(path.read_text(encoding="utf-8"))
         # command/args refreshed, but autoApprove NOT re-added
         assert config["mcpServers"]["arcc-governance"]["command"] == "/usr/bin/arcc"
         assert "autoApprove" not in config["mcpServers"]["arcc-governance"]
@@ -409,7 +409,7 @@ class TestInstallAgent:
         (kiro_dir / "kirocrew.json").write_text(json.dumps(existing))
 
         path = _run_install(tmp_path, cfg_dir, clean=True)
-        config = json.loads(path.read_text())
+        config = json.loads(path.read_text(encoding="utf-8"))
         assert config["model"] == "claude-default"
         assert "UserTool" not in config["tools"]
 
@@ -421,7 +421,7 @@ class TestInstallAgent:
         (kiro_dir / "kirocrew.json").write_text("not valid json{{{")
 
         path = _run_install(tmp_path, cfg_dir)
-        config = json.loads(path.read_text())
+        config = json.loads(path.read_text(encoding="utf-8"))
         assert config["model"] == "claude-default"
 
     def test_non_dict_json_falls_back_to_defaults(self, tmp_path: Path):
@@ -432,7 +432,7 @@ class TestInstallAgent:
         (kiro_dir / "kirocrew.json").write_text("[]")
 
         path = _run_install(tmp_path, cfg_dir)
-        config = json.loads(path.read_text())
+        config = json.loads(path.read_text(encoding="utf-8"))
         assert config["model"] == "claude-default"
 
     def test_missing_bundled_defaults_raises_when_existing_config_present(self, tmp_path: Path):
@@ -463,7 +463,7 @@ class TestAtomicJsonWrite:
         import stat
 
         assert stat.S_IMODE(target.stat().st_mode) == 0o664
-        assert json.loads(target.read_text()) == {"key": "value"}
+        assert json.loads(target.read_text(encoding="utf-8")) == {"key": "value"}
 
     def test_new_file_gets_0o644(self, tmp_path: Path):
         from kiro_crew.agent import _atomic_json_write
@@ -474,7 +474,7 @@ class TestAtomicJsonWrite:
         import stat
 
         assert stat.S_IMODE(target.stat().st_mode) == 0o644
-        assert json.loads(target.read_text()) == {"new": True}
+        assert json.loads(target.read_text(encoding="utf-8")) == {"new": True}
 
     def test_no_temp_file_left_on_success(self, tmp_path: Path):
         from kiro_crew.agent import _atomic_json_write
@@ -1145,7 +1145,7 @@ class TestKiroHooksMerge:
             for p in patches:
                 stack.enter_context(p)
             path = install_agent(clean=existing is None)
-        return json.loads(path.read_text())
+        return json.loads(path.read_text(encoding="utf-8"))
 
     def test_user_hooks_appended_to_bundled(self, tmp_path: Path):
         """User kiro_hooks are appended after bundled hooks per event."""
@@ -1470,7 +1470,7 @@ class TestKiroHooksFiltering:
         with patch("kiro_crew.agent.KIRO_AGENTS_DIR", kiro_dir):
             _sanitize_agent_hooks()
 
-        repaired = json.loads((kiro_dir / "kirocrew.json").read_text())
+        repaired = json.loads((kiro_dir / "kirocrew.json").read_text(encoding="utf-8"))
         assert "auto_approve_tools" not in repaired["hooks"]
         assert "postToolUse" in repaired["hooks"]
 
@@ -1513,7 +1513,7 @@ class TestToolBloatFixes:
         (kiro_dir / "kirocrew.json").write_text(json.dumps(existing))
 
         path = _run_install(tmp_path, cfg_dir)
-        config = json.loads(path.read_text())
+        config = json.loads(path.read_text(encoding="utf-8"))
         # Template (_bundled_defaults) does not grant tool_search, so the narrow
         # seed does not fire and the user's tools list is preserved exactly.
         assert config["tools"] == ["execute_bash", "fs_read", "fs_write", "use_aws", "code"]
@@ -1550,7 +1550,7 @@ class TestToolBloatFixes:
         (kiro_dir / "kirocrew.json").write_text(json.dumps(existing))
 
         path = _run_install(tmp_path, cfg_dir)
-        config = json.loads(path.read_text())
+        config = json.loads(path.read_text(encoding="utf-8"))
         # tool_search appended at the end; all prior tools preserved in order.
         assert config["tools"] == [
             "execute_bash",
@@ -1577,7 +1577,7 @@ class TestToolBloatFixes:
         (kiro_dir / "kirocrew.json").write_text(json.dumps(existing))
 
         path = _run_install(tmp_path, cfg_dir)
-        config = json.loads(path.read_text())
+        config = json.loads(path.read_text(encoding="utf-8"))
         assert config["tools"] == ["execute_bash", "tool_search", "code"]
         assert config["tools"].count("tool_search") == 1
 
@@ -1596,7 +1596,7 @@ class TestToolBloatFixes:
         (kiro_dir / "kirocrew.json").write_text(json.dumps(existing))
 
         path = _run_install(tmp_path, cfg_dir)
-        config = json.loads(path.read_text())
+        config = json.loads(path.read_text(encoding="utf-8"))
         assert config["tools"] == ["execute_bash", "code"]
         assert "tool_search" not in config["tools"]
 
@@ -1614,7 +1614,7 @@ class TestToolBloatFixes:
         (kiro_dir / "kirocrew.json").write_text(json.dumps(existing))
 
         path = _run_install(tmp_path, cfg_dir)
-        config = json.loads(path.read_text())
+        config = json.loads(path.read_text(encoding="utf-8"))
         assert config["tools"] == ["shell", "read"]
         assert config["allowedTools"] == ["read"]
 
@@ -1622,7 +1622,7 @@ class TestToolBloatFixes:
         """Fresh install adds @managed-mcp to tools but NOT allowedTools."""
         cfg_dir = _bundled_defaults(tmp_path)
         path = _run_install(tmp_path, cfg_dir)
-        config = json.loads(path.read_text())
+        config = json.loads(path.read_text(encoding="utf-8"))
         assert "@kirocrew-cron" in config["tools"]
         assert "@kirocrew-core" in config["tools"]
         assert "@kirocrew-cron" not in config["allowedTools"]
@@ -1642,7 +1642,7 @@ class TestToolBloatFixes:
         (kiro_dir / "kirocrew.json").write_text(json.dumps(existing))
 
         path = _run_install(tmp_path, cfg_dir)
-        config = json.loads(path.read_text())
+        config = json.loads(path.read_text(encoding="utf-8"))
         assert config["tools"] == ["shell", "read", "code"]
         assert config["allowedTools"] == ["read", "code"]
 
@@ -1654,7 +1654,7 @@ class TestToolBloatFixes:
         (kiro_dir / "kirocrew.json").write_text('"just a string"')
 
         path = _run_install(tmp_path, cfg_dir)
-        config = json.loads(path.read_text())
+        config = json.loads(path.read_text(encoding="utf-8"))
         # Should get defaults (fresh install path)
         assert config["model"] == "claude-default"
         assert "@kirocrew-cron" in config["tools"]
@@ -3261,8 +3261,8 @@ class TestMigrateAgentSpecs:
         with patch("kiro_crew.agent.KIRO_AGENTS_DIR", kiro):
             cleaned = migrate_agent_specs()
         assert cleaned == 2
-        assert "model_managed" not in json.loads((kiro / "a.json").read_text())
-        assert "cc_model" not in json.loads((kiro / "b.json").read_text())
+        assert "model_managed" not in json.loads((kiro / "a.json").read_text(encoding="utf-8"))
+        assert "cc_model" not in json.loads((kiro / "b.json").read_text(encoding="utf-8"))
         assert agent_state.get_model_managed("alpha") is False
         assert agent_state.get_cc_model("beta") == "claude-sonnet-4.6"
 
@@ -3287,7 +3287,7 @@ class TestMigrateAgentSpecs:
         """After install the written spec carries no KiroCrew bookkeeping keys."""
         cfg_dir = _bundled_defaults(tmp_path)
         path = _run_install(tmp_path, cfg_dir)
-        config = json.loads(path.read_text())
+        config = json.loads(path.read_text(encoding="utf-8"))
         assert "model_managed" not in config
         assert "cc_model" not in config
 
@@ -3363,7 +3363,7 @@ def _run_install_mcp_merge(
         for p in patches:
             stack.enter_context(p)
         path = install_agent()
-    return json.loads(path.read_text())
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 class TestMcpMergePriority:

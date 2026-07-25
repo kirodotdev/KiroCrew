@@ -516,7 +516,7 @@ class TestPodConfigWrite:
     def test_blank_pod_writes_tunnel_off_config(self, tmp_path: Path) -> None:
         home = tmp_path / "pod-home"
         rt.write_pod_config(home, seed="")
-        data = json.loads((home / "config.json").read_text())
+        data = json.loads((home / "config.json").read_text(encoding="utf-8"))
         assert data["tunnel"]["enabled"] is False
 
     def test_config_and_home_are_owner_only(self, tmp_path: Path) -> None:
@@ -533,7 +533,7 @@ class TestPodConfigWrite:
         )
         home = tmp_path / "pod-home"
         rt.write_pod_config(home, seed=str(seed))
-        data = json.loads((home / "config.json").read_text())
+        data = json.loads((home / "config.json").read_text(encoding="utf-8"))
         assert data["tunnel"]["enabled"] is False  # sanitized
         assert stat.S_IMODE((home / "config.json").stat().st_mode) == 0o600
 
@@ -723,7 +723,7 @@ class TestCliVerbs:
         c = PodConfig.load()
         pod_cli._install(c, argparse.Namespace())
         dst = tmp_path / ".config" / "systemd" / "user" / f"{c.unit_prefix}@.service"
-        assert dst.exists() and "pod _run %i" in dst.read_text()
+        assert dst.exists() and "pod _run %i" in dst.read_text(encoding="utf-8")
         assert "daemon-reload OK" in capsys.readouterr().out
         assert ("pod.install", "allowed") in recorded
 

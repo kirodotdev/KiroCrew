@@ -207,7 +207,7 @@ class TestSnapshotProcessTree:
 
         assert client._child_pids == {200: (2000, b"proc200"), 300: (3000, b"proc300"), 400: (4000, b"proc400")}
         # Verify child:parent lines written to kiro_pids.txt
-        content = (tmp_path / "kiro_pids.txt").read_text()
+        content = (tmp_path / "kiro_pids.txt").read_text(encoding="utf-8")
         lines = {ln.strip() for ln in content.splitlines() if ln.strip()}
         assert lines == {"200:100", "300:100", "400:100"}
 
@@ -329,11 +329,11 @@ class TestPidTracking:
             _track_pid(100)
             _track_pid(200)
             _track_pid(300)
-            assert "100" in pid_file.read_text()
-            assert "200" in pid_file.read_text()
+            assert "100" in pid_file.read_text(encoding="utf-8")
+            assert "200" in pid_file.read_text(encoding="utf-8")
 
             _untrack_pid(200)
-            content = pid_file.read_text()
+            content = pid_file.read_text(encoding="utf-8")
             assert "200" not in content
             assert "100" in content
             assert "300" in content

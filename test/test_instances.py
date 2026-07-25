@@ -336,7 +336,7 @@ class TestRunMarker:
 
         run_marker.write_marker(7879)
         marker = run_marker.marker_path(7879)
-        assert marker.read_text().strip() == str(launcher)
+        assert marker.read_text(encoding="utf-8").strip() == str(launcher)
 
         run_marker.clear_marker(7879)
         assert not marker.exists()
@@ -436,7 +436,7 @@ class TestRegistry:
     def test_no_credentials_persisted(self, tmp_path):
         reg = self._reg(tmp_path)
         reg.add(name="CD", ssh_host="cd-1", instance_id="cd-1")
-        raw = (tmp_path / "instances.json").read_text()
+        raw = (tmp_path / "instances.json").read_text(encoding="utf-8")
         assert "token" not in raw.lower()
 
     def test_env_home_path(self, tmp_path, monkeypatch):

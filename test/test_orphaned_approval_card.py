@@ -231,7 +231,7 @@ class TestResolveApprovalFlushes:
 
         root = Path(pkg.__file__).parent
         for name in ("chat_handlers.py", "chat_runner.py", "state.py"):
-            src = (root / name).read_text()
+            src = (root / name).read_text(encoding="utf-8")
             for match in re.finditer(r"_mark_permission_resolved\(", src):
                 # Skip the definition itself.
                 if src[: match.start()].rstrip().endswith("def"):

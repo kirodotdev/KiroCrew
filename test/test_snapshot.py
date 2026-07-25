@@ -150,7 +150,7 @@ class TestSnapshot:
         assert (snap / "workspace/memory/history/2026-01-01.md").is_file()
         assert (snap / "skills/my-skill/SKILL.md").is_file()
         assert not (snap / "workspace/hygiene_data/week1.json").exists()
-        m = json.loads((snap / "MANIFEST.json").read_text())
+        m = json.loads((snap / "MANIFEST.json").read_text(encoding="utf-8"))
         assert m["version"] == 2
 
     def test_db_content_survives(self, env):
@@ -319,11 +319,11 @@ class TestRestoreMerge:
         _, _, tarball, tmp_path = env
         dst = tmp_path / "dst8"
         _setup_fake_kirocrew(dst)
-        before = len(json.loads((dst / "crons.json").read_text())["jobs"])
+        before = len(json.loads((dst / "crons.json").read_text(encoding="utf-8"))["jobs"])
         monkeypatch.setenv("KIROCREW_HOME", str(dst))
         ret = restore_main([str(tarball), "--mode", "merge", "--force"])
         assert ret == 0
-        after = len(json.loads((dst / "crons.json").read_text())["jobs"])
+        after = len(json.loads((dst / "crons.json").read_text(encoding="utf-8"))["jobs"])
         assert before == after
 
     def test_merge_new_cron(self, env, monkeypatch):
@@ -331,12 +331,12 @@ class TestRestoreMerge:
         _, _, tarball, tmp_path = env
         dst = tmp_path / "dst9"
         _setup_fake_kirocrew(dst)
-        d = json.loads((dst / "crons.json").read_text())
+        d = json.loads((dst / "crons.json").read_text(encoding="utf-8"))
         d["jobs"][0]["name"] = "different-job"
         (dst / "crons.json").write_text(json.dumps(d))
         monkeypatch.setenv("KIROCREW_HOME", str(dst))
         restore_main([str(tarball), "--mode", "merge", "--force"])
-        count = len(json.loads((dst / "crons.json").read_text())["jobs"])
+        count = len(json.loads((dst / "crons.json").read_text(encoding="utf-8"))["jobs"])
         assert count == 2
 
     def test_merge_workspace_no_overwrite(self, env, monkeypatch):
@@ -348,7 +348,7 @@ class TestRestoreMerge:
         monkeypatch.setenv("KIROCREW_HOME", str(dst))
         ret = restore_main([str(tarball), "--mode", "merge", "--force"])
         assert ret == 0
-        assert (dst / "workspace/doc.md").read_text() == "local version"
+        assert (dst / "workspace/doc.md").read_text(encoding="utf-8") == "local version"
 
     def test_merge_episodic_facts_edges(self, env, monkeypatch):
         """TEST 12"""
@@ -401,7 +401,7 @@ class TestRestoreMerge:
         (dst / "notifications.jsonl").write_text('{"ts":"2026-02-01","msg":"local"}\n')
         monkeypatch.setenv("KIROCREW_HOME", str(dst))
         restore_main([str(tarball), "--mode", "merge", "--force"])
-        lines = (dst / "notifications.jsonl").read_text().strip().split("\n")
+        lines = (dst / "notifications.jsonl").read_text(encoding="utf-8").strip().split("\n")
         assert len(lines) == 2
 
     def test_merge_plan_memory(self, env, monkeypatch):
@@ -414,7 +414,7 @@ class TestRestoreMerge:
         ret = restore_main([str(tarball), "--mode", "merge", "--force"])
         assert ret == 0
         assert (dst / "plan_memory/plan1.json").is_file()
-        assert (dst / "plan_memory/local_plan.json").read_text() == "local plan"
+        assert (dst / "plan_memory/local_plan.json").read_text(encoding="utf-8") == "local plan"
 
     def test_merge_restores_missing_security(self, env, capsys, monkeypatch):
         """TEST 16"""
@@ -446,7 +446,7 @@ class TestRestoreMerge:
         (dst / "notifications.jsonl").write_text('{"ts":"2026-01-01","msg":"test"}\n')
         monkeypatch.setenv("KIROCREW_HOME", str(dst))
         restore_main([str(tarball), "--mode", "merge", "--components", "notifications", "--force"])
-        lines = (dst / "notifications.jsonl").read_text().strip().split("\n")
+        lines = (dst / "notifications.jsonl").read_text(encoding="utf-8").strip().split("\n")
         assert len(lines) == 1
         assert "Notifications imported: 0" in capsys.readouterr().out
 

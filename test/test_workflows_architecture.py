@@ -93,7 +93,7 @@ def test_layering_no_backward_or_unexpected_sibling_imports() -> None:
             f"new workflows module '{name}.py' — add it to ALLOWED_SIBLING_IMPORTS "
             "with its permitted layer (this test is the layering contract)"
         )
-        tree = ast.parse(path.read_text())
+        tree = ast.parse(path.read_text(encoding="utf-8"))
         actual = _intra_pkg_siblings(tree)
         allowed = ALLOWED_SIBLING_IMPORTS[name]
         violations = actual - allowed
@@ -106,7 +106,7 @@ def test_layering_no_backward_or_unexpected_sibling_imports() -> None:
 
 def test_engine_does_not_import_dashboard_internals() -> None:
     for path in _module_files():
-        tree = ast.parse(path.read_text())
+        tree = ast.parse(path.read_text(encoding="utf-8"))
         for imported in _external_imports(tree):
             for forbidden in FORBIDDEN_EXTERNAL_PREFIXES:
                 assert not imported.startswith(forbidden), (

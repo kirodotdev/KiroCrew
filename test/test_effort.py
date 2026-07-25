@@ -158,7 +158,7 @@ class TestCliOverlay:
         assert _read_cli_overlay(tmp_path) == {"claude-opus-4.7": "xhigh"}
         # Verify on-disk shape matches kiro-cli's expected format.
         cli = tmp_path / ".kiro" / "settings" / "cli.json"
-        data = json.loads(cli.read_text())
+        data = json.loads(cli.read_text(encoding="utf-8"))
         assert data["chat.modelDefaults"]["claude-opus-4.7"]["output_config"]["effort"] == "xhigh"
 
     def test_write_merges_preserves_other_keys(self, tmp_path):
@@ -175,7 +175,7 @@ class TestCliOverlay:
             )
         )
         _write_cli_overlay(tmp_path, "claude-opus-4.7", "max")
-        data = json.loads((settings_dir / "cli.json").read_text())
+        data = json.loads((settings_dir / "cli.json").read_text(encoding="utf-8"))
         # Existing unrelated setting preserved.
         assert data["chat.enableNotifications"] is True
         # Both models present.
@@ -207,7 +207,7 @@ class TestCliOverlay:
         _write_cli_overlay(tmp_path, "gpt-5.6-luna", "max")
         assert _read_cli_overlay(tmp_path) == {"gpt-5.6-luna": "max"}
         cli = tmp_path / ".kiro" / "settings" / "cli.json"
-        data = json.loads(cli.read_text())
+        data = json.loads(cli.read_text(encoding="utf-8"))
         model_cfg = data["chat.modelDefaults"]["gpt-5.6-luna"]
         assert model_cfg["reasoning"]["effort"] == "max"
         assert "output_config" not in model_cfg
@@ -238,7 +238,7 @@ class TestCliOverlay:
         _write_cli_overlay(tmp_path, model, "max")
 
         assert _read_cli_overlay(tmp_path) == {model: "max"}
-        model_cfg = json.loads(cli.read_text())["chat.modelDefaults"][model]
+        model_cfg = json.loads(cli.read_text(encoding="utf-8"))["chat.modelDefaults"][model]
         assert model_cfg[current_key]["effort"] == "max"
         assert model_cfg[stale_key] == {"preserved": True}
 
@@ -256,7 +256,7 @@ class TestCliOverlay:
         assert _read_cli_overlay(tmp_path) == {}
         # The whole model entry is dropped once its only sub-key is empty.
         cli = tmp_path / ".kiro" / "settings" / "cli.json"
-        data = json.loads(cli.read_text())
+        data = json.loads(cli.read_text(encoding="utf-8"))
         assert "gpt-5.6-luna" not in data.get("chat.modelDefaults", {})
 
 

@@ -204,7 +204,7 @@ class TestFileWrite:
                 "/api/file-write", json={"path": str(tmp_file), "content": "updated"}
             )
             assert resp.status == 200
-            assert tmp_file.read_text() == "updated"
+            assert tmp_file.read_text(encoding="utf-8") == "updated"
             mock_sel.log_tool_invocation.assert_called_with(
                 session_key="dashboard",
                 tool_name="file_write",

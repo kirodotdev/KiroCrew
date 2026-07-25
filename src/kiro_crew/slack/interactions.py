@@ -193,7 +193,7 @@ async def _handle_config_submission(payload: dict) -> None:
         cp.parent.mkdir(parents=True, exist_ok=True)
         tmp = cp.with_name(cp.name + ".tmp")
         tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-        tmp.rename(cp)
+        tmp.replace(cp)
     except OSError:
         logger.exception("Failed to persist config from modal")
 
@@ -1089,7 +1089,7 @@ async def _handle_voice_config_submission(payload: dict) -> None:
         cp.parent.mkdir(parents=True, exist_ok=True)
         tmp = cp.with_name(cp.name + ".tmp")
         tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-        tmp.rename(cp)
+        tmp.replace(cp)
     except OSError:
         logger.exception("Failed to persist voice config from modal")
 
@@ -1844,7 +1844,7 @@ async def _handle_users_select(
         cp.parent.mkdir(parents=True, exist_ok=True)
         tmp = cp.with_name(cp.name + ".tmp")
         tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-        tmp.rename(cp)
+        tmp.replace(cp)
     except OSError:
         logger.exception("Failed to persist users from select")
 
@@ -1887,7 +1887,7 @@ async def _handle_channels_select(
         cp.parent.mkdir(parents=True, exist_ok=True)
         tmp = cp.with_name(cp.name + ".tmp")
         tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-        tmp.rename(cp)
+        tmp.replace(cp)
     except OSError:
         logger.exception("Failed to persist channels from select")
 

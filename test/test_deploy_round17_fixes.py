@@ -14,10 +14,10 @@ from pathlib import Path
 import pytest
 
 SRC = Path(__file__).parent.parent / "src" / "kiro_crew"
-HANDLERS = (SRC / "deploy" / "handlers.py").read_text()
+HANDLERS = (SRC / "deploy" / "handlers.py").read_text(encoding="utf-8")
 PUBLISHHUB = (
     SRC.parent.parent / "website" / "src" / "components" / "PublishHub.tsx"
-).read_text()
+).read_text(encoding="utf-8")
 
 
 class TestF1FailClosedManifestExpiry:

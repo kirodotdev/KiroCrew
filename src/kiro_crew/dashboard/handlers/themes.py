@@ -462,8 +462,8 @@ def _do_install(stype: Any, source: dict[str, Any]) -> tuple[dict[str, Any] | No
                 return None, f"a custom theme named '{slug}' already exists", 409
             try:
                 if dest.exists():
-                    dest.rename(old)
-                stage.rename(dest)
+                    dest.replace(old)
+                stage.replace(dest)
             except OSError:
                 if not dest.exists() and old.exists():
                     old.rename(dest)  # roll back

@@ -369,7 +369,7 @@ class TestImportMerge:
                     apply_import_zip(zip_path, mode="merge")
                     # Import again — should not duplicate
                     apply_import_zip(zip_path, mode="merge")
-            crons = json.loads((target / "crons.json").read_text())
+            crons = json.loads((target / "crons.json").read_text(encoding="utf-8"))
             job_names = [j["name"] for j in crons["jobs"]]
             assert job_names.count("daily-check") == 1
         finally:
@@ -422,7 +422,7 @@ class TestImportMerge:
                     apply_import_zip(zip_path, mode="merge")
 
             # Pre-existing file should NOT be overwritten
-            content = (mem_dir / "preferences.md").read_text()
+            content = (mem_dir / "preferences.md").read_text(encoding="utf-8")
             assert "Existing prefs" in content
             assert "Uses vim" not in content
         finally:
@@ -444,7 +444,7 @@ class TestImportMerge:
                     apply_import_zip(zip_path, mode="merge")
 
             # Should still have only 1 entry (same ts)
-            lines = [line for line in (target / "notifications.jsonl").read_text().splitlines() if line.strip()]
+            lines = [line for line in (target / "notifications.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
             assert len(lines) == 1
         finally:
             os.unlink(str(zip_path))
@@ -464,7 +464,7 @@ class TestImportMerge:
                     apply_import_zip(zip_path, mode="merge")
 
             # Existing skill should NOT be overwritten
-            content = (sk_dir / "SKILL.md").read_text()
+            content = (sk_dir / "SKILL.md").read_text(encoding="utf-8")
             assert "Existing skill content" in content
         finally:
             os.unlink(str(zip_path))
@@ -494,7 +494,7 @@ class TestImportReplace:
                     apply_import_zip(zip_path, mode="replace")
 
             # Config should be replaced
-            data = json.loads((target / "config.json").read_text())
+            data = json.loads((target / "config.json").read_text(encoding="utf-8"))
             assert data["agent"]["provider"] == "acp"
         finally:
             os.unlink(str(zip_path))
