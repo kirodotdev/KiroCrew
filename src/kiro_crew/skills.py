@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 import re
@@ -12,12 +13,19 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
+from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import KiroCrewConfig, config_dir
+from kiro_crew.cron import referenced_skill_names
 from kiro_crew.hooks import validate_file_path
 from kiro_crew.metrics.provider import get_recorder
-from kiro_crew.security import is_sensitive_path
+from kiro_crew.security import (
+    is_sensitive_path,
+    redact_credentials,
+    redact_exfiltration_urls,
+)
 from kiro_crew.sel import sel
 from kiro_crew.skill_usage import SKILL_USAGE_FILENAME, SkillUsageLedger
+from kiro_crew.skills_script_validator import validate_scripts
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +73,22 @@ _ITER_CACHE_TTL_SECS = 5.0
 # hand-authored skills.  Final path: ``~/.kirocrew/skills/auto/<name>/SKILL.md``.
 AUTO_SKILL_NAMESPACE = "auto"
 
+# Archive area for retired auto-skills. A dot-prefixed dir so it is pruned from
+# skill discovery (``_iter_skill_files``) — archived skills never trigger, but
+# stay on disk and are restorable. Layout: ``auto/.archive/<slug>/SKILL.md``.
+AUTO_ARCHIVE_DIRNAME = ".archive"
+
+# Staging area for unapproved skill candidates. Dot-prefixed so it is pruned
+# from discovery — pending candidates never trigger. Layout:
+# ``auto/.pending/<slug>/{SKILL.md, scripts/, .meta.json}``.
+AUTO_PENDING_DIRNAME = ".pending"
+
+# Derived lifecycle states for auto-skills (not persisted — computed from
+# usage recency at lifecycle-run time).
+SKILL_STATE_ACTIVE = "active"
+SKILL_STATE_STALE = "stale"
+SKILL_STATE_ARCHIVED = "archived"
+
 # Frontmatter field used to mark a skill as auto-generated.  Absence means
 # the skill is hand-authored (or legacy, pre-feature).
 AUTO_SKILL_SOURCE_VALUE = "auto"
@@ -98,6 +122,7 @@ class AutoSkillProvenance:
     created_at: str  # ISO 8601 UTC
     refined_at: str = ""  # ISO 8601 UTC; empty until first refinement
     reuse_count: int = 0
+    pinned: bool = False  # user-pinned: exempt from lifecycle eviction
 
     @staticmethod
     def now_iso() -> str:
@@ -115,6 +140,8 @@ class AutoSkillProvenance:
             lines.append(f"refined_at: {self.refined_at}")
         if self.reuse_count:
             lines.append(f"reuse_count: {self.reuse_count}")
+        if self.pinned:
+            lines.append("pinned: true")
         return lines
 
 
@@ -216,6 +243,10 @@ def _iter_skill_files(base: Path) -> list[tuple[str, Path]]:
             _dirs.clear()  # prune this branch — symlink loop
             continue
         seen_real.add(real)
+        # Prune dot-directories (e.g. ``auto/.archive``, ``.pending``) so
+        # archived / pending / hub-state skills are never enumerated as live,
+        # trigger-matchable skills. Mutating ``_dirs`` in place prunes the walk.
+        _dirs[:] = [d for d in _dirs if not d.startswith(".")]
         # Path containment: ensure we stay within the skill base directory
         try:
             Path(real).relative_to(real_base)
@@ -768,6 +799,702 @@ class SkillsLoader:
             except OSError:
                 continue
         return False
+    # ── Auto skill lifecycle: pin / archive / restore / eviction ──
+
+    @staticmethod
+    def _cron_referenced_skills() -> set[str]:
+        """Skill keys referenced by any cron job (best-effort, never raises).
+
+        A skill a cron job depends on must never be archived out from under it.
+        Any import/read failure yields an empty set (no protection, no crash).
+        """
+        try:  # pragma: no cover - cron reference API is environment-dependent
+            return set(referenced_skill_names())
+        except Exception:
+            return set()
+
+    def _auto_created_ts(self, meta: dict) -> float:
+        """Parse ``created_at`` frontmatter to a unix timestamp, else 0.0."""
+        raw = meta.get("created_at", "")
+        if not raw:
+            return 0.0
+        try:
+            dt = datetime.fromisoformat(raw)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.timestamp()
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _auto_activity(self, key: str, path_str: str, meta: dict) -> tuple[int, float]:
+        """Return ``(hits, anchor_ts)`` for an auto-skill.
+
+        ``anchor_ts`` is the most recent evidence of relevance: last recorded
+        use, else the created_at frontmatter, else the file mtime — so a
+        never-used-but-freshly-created skill is not treated as ancient.
+        """
+        hits = 0
+        last_seen = 0.0
+        if self._usage is not None:
+            try:
+                hits_f, last_seen = self._usage.score(key)
+                hits = int(hits_f)
+            except Exception:
+                hits, last_seen = 0, 0.0
+        anchor = last_seen or self._auto_created_ts(meta)
+        if not anchor:
+            try:
+                anchor = Path(path_str).stat().st_mtime
+            except OSError:
+                anchor = 0.0
+        return hits, anchor
+
+    def set_pinned(self, name: str, pinned: bool) -> bool:
+        """Pin/unpin an auto-skill (exempt from lifecycle eviction).
+
+        Edits the ``pinned:`` frontmatter line in place. Returns True on
+        success. Only auto-generated skills may be pinned.
+        """
+        if not self.is_auto_generated(name):
+            return False
+        skill_file = self._dir / name / "SKILL.md"
+        if not skill_file.exists():
+            return False
+        content = skill_file.read_text(encoding="utf-8")
+        m = re.match(r"^---\n(.*?)\n---\n?(.*)$", content, re.DOTALL)
+        if not m:
+            return False
+        fm_lines = [ln for ln in m.group(1).split("\n") if not ln.strip().startswith("pinned:")]
+        if pinned:
+            fm_lines.append("pinned: true")
+        new_content = "---\n" + "\n".join(fm_lines) + "\n---\n" + m.group(2)
+        # Atomic write (temp + rename): a partial write must never truncate the
+        # live SKILL.md and lose the skill's content on a full-disk failure.
+        atomic_write(skill_file, new_content)
+        self._invalidate_iter_cache()
+        logger.info("%s auto skill: %s", "Pinned" if pinned else "Unpinned", name)
+        return True
+
+    def _archive_root(self) -> Path:
+        return self._dir / AUTO_SKILL_NAMESPACE / AUTO_ARCHIVE_DIRNAME
+
+    @staticmethod
+    def _is_pending_slug_safe(slug: str) -> bool:
+        """Strict guard for a single-segment auto-skill slug.
+
+        Rejects empty, ``.``/``..``, leading-dot, and any separator/traversal —
+        so e.g. ``dismiss_pending_skill(".")`` can't collapse to the pending
+        root and wipe the whole queue.
+        """
+        return (
+            bool(slug)
+            and slug not in (".", "..")
+            and not slug.startswith(".")
+            and "/" not in slug
+            and "\\" not in slug
+            and ".." not in slug
+        )
+
+    def archive_auto_skill(self, name: str) -> bool:
+        """Move an auto-skill into the archive (recoverable, never deleted).
+
+        Refuses non-auto skills. Returns True on success.
+        """
+        if not self.is_auto_generated(name):
+            return False
+        slug = name.split("/", 1)[1]
+        src = self._dir / name
+        if not src.is_dir():
+            return False
+        dest = self._archive_root() / slug
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if dest.exists():
+            # Never destroy a recoverable archive: a same-slug skill was
+            # archived before. Version the destination so the prior copy
+            # survives (archive-not-delete contract).
+            i = 2
+            while (self._archive_root() / f"{slug}-{i}").exists():
+                i += 1
+            dest = self._archive_root() / f"{slug}-{i}"
+        shutil.move(str(src), str(dest))
+        self._invalidate_iter_cache()
+        logger.info("Archived auto skill: %s", name)
+        return True
+
+    def restore_auto_skill(self, slug: str) -> str | None:
+        """Restore an archived auto-skill back to ``auto/<slug>``.
+
+        Returns the restored skill name, or None if not found / name clash.
+        """
+        if not self._is_pending_slug_safe(slug):
+            return None
+        src = self._archive_root() / slug
+        if not src.is_dir():
+            return None
+        name = f"{AUTO_SKILL_NAMESPACE}/{slug}"
+        dest = self._dir / name
+        if dest.exists():
+            logger.warning("Cannot restore %s: a live skill already exists", name)
+            return None
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(src), str(dest))
+        self._invalidate_iter_cache()
+        logger.info("Restored auto skill: %s", name)
+        return name
+
+    def list_archived_auto_skills(self) -> list[dict]:
+        """Return ``{slug, path}`` for every archived auto-skill."""
+        root = self._archive_root()
+        out: list[dict] = []
+        if not root.is_dir():
+            return out
+        for child in sorted(root.iterdir()):
+            if child.is_dir() and (child / "SKILL.md").exists():
+                out.append({"slug": child.name, "path": str(child / "SKILL.md")})
+        return out
+
+    def run_skill_lifecycle(
+        self,
+        *,
+        max_auto_skills: int,
+        stale_after_days: int,
+        archive_after_days: int,
+        cron_referenced: set[str] | None = None,
+        exempt: set[str] | None = None,
+        now: float | None = None,
+    ) -> dict:
+        """Age + bound the auto-skill set. Archives (never deletes).
+
+        Two passes:
+        1. **Inactivity**: archive any auto-skill whose anchor is older than
+           ``archive_after_days``. Pinned and cron-referenced skills are exempt.
+           Never-used (hits==0) skills younger than ``stale_after_days`` are
+           exempt (grace floor).
+        2. **Max-N backstop**: if more than ``max_auto_skills`` remain live,
+           archive the lowest-ranked (by hits, then recency) down to the cap,
+           again skipping pinned / cron-referenced skills.
+
+        Returns a counts dict: ``{checked, marked_stale, archived, capped}``.
+        """
+        if now is None:
+            now = time.time()
+        if cron_referenced is None:
+            cron_referenced = self._cron_referenced_skills()
+        extra_exempt = exempt or set()
+        stale_cutoff = now - stale_after_days * 86400
+        archive_cutoff = now - archive_after_days * 86400
+        counts = {"checked": 0, "marked_stale": 0, "archived": 0, "capped": 0}
+
+        # Snapshot live auto-skills with their activity + exemption status.
+        rows: list[dict] = []
+        for s in self.list_auto_skills():
+            key = s["key"]
+            meta = self._cached_frontmatter(Path(s["path"]))
+            hits, anchor = self._auto_activity(key, s["path"], meta)
+            pinned = str(meta.get("pinned", "")).lower() == "true"
+            slug = key.split("/")[-1]
+            exempt_row = (
+                pinned
+                or key in cron_referenced or slug in cron_referenced
+                or key in extra_exempt or slug in extra_exempt
+            )
+            rows.append({"key": key, "hits": hits, "anchor": anchor, "exempt": exempt_row})
+            counts["checked"] += 1
+
+        # Pass 1 — inactivity archival.
+        survivors: list[dict] = []
+        for r in rows:
+            if r["exempt"]:
+                survivors.append(r)
+                continue
+            never_used_grace = r["hits"] == 0 and r["anchor"] > stale_cutoff
+            if not never_used_grace and r["anchor"] <= archive_cutoff:
+                if self.archive_auto_skill(r["key"]):
+                    counts["archived"] += 1
+                    continue
+            if r["hits"] == 0 and r["anchor"] <= stale_cutoff:
+                counts["marked_stale"] += 1
+            elif r["anchor"] <= stale_cutoff:
+                counts["marked_stale"] += 1
+            survivors.append(r)
+
+        # Pass 2 — max-N backstop over what survived pass 1.
+        evictable = [r for r in survivors if not r["exempt"]]
+        overflow = len(survivors) - max_auto_skills
+        if overflow > 0 and evictable:
+            evictable.sort(key=lambda r: (r["hits"], r["anchor"]))
+            for r in evictable[:overflow]:
+                if self.archive_auto_skill(r["key"]):
+                    counts["archived"] += 1
+                    counts["capped"] += 1
+        return counts
+
+    # ── Auto skill staging: pending-approval queue ──
+
+    def _pending_root(self) -> Path:
+        return self._dir / AUTO_SKILL_NAMESPACE / AUTO_PENDING_DIRNAME
+
+    def stage_skill_candidate(
+        self,
+        slug: str,
+        *,
+        description: str,
+        triggers: str,
+        procedure_md: str,
+        provenance: AutoSkillProvenance,
+        scripts: list[dict] | None = None,
+        source: str = "consolidation",
+    ) -> str | None:
+        """Write a skill candidate to the pending queue (not live).
+
+        Layout: ``auto/.pending/<slug>/{SKILL.md, scripts/*, .meta.json}``.
+        Scripts are written **non-executable** — the executable bit is only set
+        on approval. Returns ``auto/<slug>`` on success, else ``None`` (invalid
+        slug, oversized procedure). Caller passes already-redacted content.
+        """
+        if not _AUTO_NAME_PATTERN.match(slug):
+            logger.warning("Rejected pending skill: slug %r failed validation", slug)
+            return None
+        if len(procedure_md) > AUTO_SKILL_MAX_PROCEDURE_CHARS:
+            logger.warning("Rejected pending skill %s: procedure too long", slug)
+            return None
+        name = f"{AUTO_SKILL_NAMESPACE}/{slug}"
+        root = self._pending_root()
+        root.mkdir(parents=True, exist_ok=True)
+        # Atomically CLAIM a pending dir. mkdir(exist_ok=False) closes the TOCTOU
+        # between an exists() check and the create. If the natural slug is already
+        # awaiting review we must NOT overwrite it (the queued candidate is
+        # immutable until approved/dismissed) — but we also must NOT silently drop
+        # THIS candidate: consolidation advances its message offset regardless of
+        # per-candidate outcome, so a distinct skill that merely slugifies the
+        # same as a pending one would be lost forever. Allocate a unique sibling
+        # slug (<slug>-2, -3, …) so it still gets queued. Genuine re-detections of
+        # the SAME skill are suppressed upstream by the metadata dedupe before
+        # staging, so this does not flood the queue with duplicates.
+        pdir = root / slug
+        try:
+            pdir.mkdir(exist_ok=False)
+        except FileExistsError:
+            claimed: "Path | None" = None
+            for _n in range(2, 51):
+                cand_dir = root / f"{slug}-{_n}"
+                try:
+                    cand_dir.mkdir(exist_ok=False)
+                except FileExistsError:
+                    continue
+                claimed = cand_dir
+                break
+            if claimed is None:
+                logger.warning(
+                    "Too many pending candidates for slug %s; deferring re-stage", slug
+                )
+                return name
+            pdir = claimed
+            slug = claimed.name
+            name = f"{AUTO_SKILL_NAMESPACE}/{slug}"
+            logger.info("Slug in use; staging distinct candidate as %s", name)
+        try:
+            content = _build_auto_skill_content(
+                slug=slug,
+                description=description,
+                triggers=triggers,
+                procedure_md=procedure_md,
+                provenance=provenance,
+            )
+            (pdir / "SKILL.md").write_text(content, encoding="utf-8")
+            script_names: list[str] = []
+            clean_scripts = [s for s in (scripts or []) if isinstance(s, dict)]
+            if clean_scripts:
+                sdir = pdir / "scripts"
+                sdir.mkdir(exist_ok=True)
+                for s in clean_scripts:
+                    fn = str(s.get("filename", "")).strip()
+                    # Guard the script filename against traversal / nesting.
+                    if not fn or "/" in fn or "\\" in fn or ".." in fn:
+                        continue
+                    (sdir / fn).write_text(str(s.get("content", "")), encoding="utf-8")
+                    script_names.append(fn)
+            meta = {
+                "slug": slug,
+                "name": name,
+                "source": source,
+                "created_at": provenance.created_at or AutoSkillProvenance.now_iso(),
+                "description": description,
+                "triggers": triggers,
+                "has_scripts": bool(script_names),
+                "scripts": script_names,
+            }
+            (pdir / ".meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+        except Exception:
+            # A partial write (e.g. disk full) must not leave a CLAIMED but empty
+            # dir behind: a later stage would see it exists and report the slug as
+            # "already awaiting review" while no reviewable candidate exists.
+            # Roll back the atomic claim so the slug can be re-staged cleanly.
+            shutil.rmtree(pdir, ignore_errors=True)
+            raise
+        logger.info(
+            "Staged pending skill candidate: %s (scripts=%d)", name, len(script_names)
+        )
+        return name
+
+    def _read_pending_meta(self, slug: str) -> dict:
+        mf = self._pending_root() / slug / ".meta.json"
+        # Never follow an LLM-planted symlink (could point at a sensitive file).
+        if mf.is_symlink():
+            return {}
+        try:
+            data = json.loads(mf.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        # Recursively redact secrets from LLM-produced metadata before it can
+        # surface via the pending list/detail API. The crystallize skill writes
+        # .meta.json directly, bypassing the consolidation redaction path, so a
+        # credential in ANY (incl. nested) value must be scrubbed here.
+        redacted = self._redact_deep(data)
+        return redacted if isinstance(redacted, dict) else {}
+
+    def list_pending_skills(self) -> list[dict]:
+        """Return ``{slug, name, description, triggers, has_scripts, created_at, path}``
+        for every staged candidate."""
+        root = self._pending_root()
+        out: list[dict] = []
+        if not root.is_dir():
+            return out
+        for child in sorted(root.iterdir()):
+            if not child.is_dir() or not (child / "SKILL.md").exists():
+                continue
+            # Only surface canonical slugs. A crystallize direct-write could name
+            # the pending dir with credential-shaped text; anything that isn't a
+            # canonical single-segment slug is skipped so it can't be serialized
+            # to the dashboard as a "slug" (and can't be approved/dismissed by
+            # the slug-keyed handlers, which apply the same guard).
+            if not _AUTO_NAME_PATTERN.match(child.name):
+                continue
+            meta = self._read_pending_meta(child.name)
+            out.append(
+                {
+                    "slug": child.name,
+                    "name": meta.get("name", f"{AUTO_SKILL_NAMESPACE}/{child.name}"),
+                    "description": meta.get("description", ""),
+                    "triggers": meta.get("triggers", ""),
+                    "has_scripts": bool(meta.get("has_scripts")),
+                    "created_at": meta.get("created_at", ""),
+                    "source": meta.get("source", ""),
+                    # NB: no on-disk ``path`` — this dict is API-facing (feeds
+                    # /api/skills/-/pending) and must not leak the server's home
+                    # / directory layout to dashboard clients.
+                }
+            )
+        return out
+
+    @staticmethod
+    def _redact_text(text: object) -> str:
+        """Two-pass redaction (exfiltration URLs + credentials) — the same
+        passes ``HistoryConsolidator._process_auto_skills`` applies. Run at the
+        pending detail/approve choke points so producers that bypass that path
+        (notably the ``crystallize`` skill writing straight to the queue) can't
+        surface secrets to the dashboard or promote them live."""
+        if not isinstance(text, str):
+            return ""
+        safe, _ = redact_exfiltration_urls(text)
+        safe, _ = redact_credentials(safe)
+        return safe
+
+    def _redact_deep(self, obj: object) -> object:
+        """Recursively redact every string in a nested dict/list structure so a
+        credential hidden in a nested ``.meta.json`` value can't reach the
+        dashboard unredacted (top-level-only redaction missed those). String
+        dict KEYS are redacted too — a prompt-injected key can carry a secret."""
+        if isinstance(obj, str):
+            return self._redact_text(obj)
+        if isinstance(obj, dict):
+            return {
+                (self._redact_text(k) if isinstance(k, str) else k): self._redact_deep(v)
+                for k, v in obj.items()
+            }
+        if isinstance(obj, list):
+            return [self._redact_deep(v) for v in obj]
+        return obj
+
+    @staticmethod
+    def _candidate_has_symlink(pdir: Path) -> bool:
+        """True if the candidate dir itself or any entry under it is a symlink —
+        so the read/approve paths never follow an LLM-planted link to a
+        sensitive file. (Scripts always require human review before going live;
+        this is defense-in-depth, not the primary control.)"""
+        if os.path.islink(str(pdir)):
+            return True
+        for root, dirs, files in os.walk(pdir):
+            for nm in list(dirs) + list(files):
+                if os.path.islink(os.path.join(root, nm)):
+                    return True
+        return False
+
+    def _redact_file_in_place(self, fp: Path) -> bool:
+        """Redact secrets from a file in place. Returns False if the file could
+        not be read or a required rewrite failed — the caller MUST abort
+        promotion so an unredacted secret never reaches a live skill."""
+        try:
+            original = fp.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return False
+        safe = self._redact_text(original)
+        if safe == original:
+            return True
+        try:
+            fp.write_text(safe, encoding="utf-8")
+        except OSError:
+            return False
+        return True
+
+    @staticmethod
+    def _collect_scripts(sdir: Path) -> list[dict]:
+        """Recursively collect ``{filename, content}`` for every regular file
+        under ``sdir`` (relative filenames). Recursion + symlink-skip ensure a
+        nested script (``scripts/nested/evil.py``) can't evade validation or
+        review by hiding below the top level."""
+        out: list[dict] = []
+        if not sdir.is_dir():
+            return out
+        for root, _dirs, files in os.walk(sdir):
+            for nm in sorted(files):
+                fp = Path(root) / nm
+                if fp.is_file() and not fp.is_symlink():
+                    try:
+                        out.append(
+                            {"filename": str(fp.relative_to(sdir)),
+                             "content": fp.read_text(encoding="utf-8")}
+                        )
+                    except OSError:
+                        continue
+        return out
+
+    def get_pending_skill(self, slug: str) -> dict | None:
+        """Return full pending-candidate detail incl. SKILL.md body + script bodies."""
+        if not self._is_pending_slug_safe(slug):
+            return None
+        pdir = self._pending_root() / slug
+        skill_file = pdir / "SKILL.md"
+        if not skill_file.exists():
+            return None
+        # Reject any symlink in the candidate on the read path too (approval
+        # already rejects them) so the detail API can't be tricked into reading
+        # a sensitive file a candidate symlinked SKILL.md / a nested file to.
+        if self._candidate_has_symlink(pdir):
+            logger.warning("Refusing to read pending %s: candidate contains a symlink", slug)
+            return None
+        meta = self._read_pending_meta(slug)
+        scripts = self._collect_scripts(pdir / "scripts")
+        for s in scripts:
+            s["filename"] = self._redact_text(s.get("filename", ""))
+            s["content"] = self._redact_text(s.get("content", ""))
+        return {
+            "slug": slug,
+            "name": meta.get("name", f"{AUTO_SKILL_NAMESPACE}/{slug}"),
+            "meta": meta,
+            "content": self._redact_text(skill_file.read_text(encoding="utf-8")),
+            "scripts": scripts,
+        }
+
+    def approve_pending_skill(self, slug: str) -> str | None:
+        """Promote a pending candidate to a live auto-skill.
+
+        Re-validates + redacts the candidate, then moves ``auto/.pending/<slug>``
+        → ``auto/<slug>`` and marks any bundled scripts executable. Returns the
+        live name, or ``None`` if the candidate is missing, a live skill of that
+        name already exists, it contains a symlink, script validation fails, or
+        redaction fails. Every check runs BEFORE the move, so a rejected
+        candidate is left untouched in the pending queue.
+        """
+        if not self._is_pending_slug_safe(slug):
+            return None
+        src = self._pending_root() / slug
+        if not (src / "SKILL.md").exists():
+            return None
+        name = f"{AUTO_SKILL_NAMESPACE}/{slug}"
+        dest = self._dir / name
+        if dest.exists():
+            logger.warning("Cannot approve %s: a live skill already exists", name)
+            return None
+        # Reject any symlink in the candidate (defense-in-depth on top of the
+        # mandatory human review); promotion + chmod must only touch real files.
+        if self._candidate_has_symlink(src):
+            logger.warning("Refusing to approve %s: candidate contains a symlink", slug)
+            return None
+        # Only promote known candidate entries. An injected auxiliary file (one a
+        # producer dropped in the candidate dir outside SKILL.md/.meta.json and
+        # the validated scripts/ tree) would be moved live WITHOUT validation or
+        # redaction and surface unredacted in the skill browser — refuse the
+        # whole candidate rather than promote unreviewed content.
+        _allowed_top = {"SKILL.md", ".meta.json", "scripts"}
+        for entry in src.iterdir():
+            if entry.name not in _allowed_top:
+                logger.warning(
+                    "Refusing to approve %s: unexpected candidate entry %r", name, entry.name
+                )
+                return None
+            # ``scripts`` is only valid as a DIRECTORY. A regular file named
+            # ``scripts`` would skip the directory-only script validation AND the
+            # redaction walk (which only recurses scripts/ as a dir), so an
+            # unredacted/unvalidated file could ride live — reject it.
+            if entry.name == "scripts" and not entry.is_dir():
+                logger.warning(
+                    "Refusing to approve %s: 'scripts' must be a directory, not a file", name
+                )
+                return None
+        # Re-validate every script (covers crystallize direct-writes).
+        sdir_src = src / "scripts"
+        if sdir_src.is_dir():
+            ok, report = validate_scripts(self._collect_scripts(sdir_src))
+            if not ok:
+                logger.warning(
+                    "Refusing to approve %s: script validation failed: %s", name, report
+                )
+                return None
+        # Redact the body + scripts before going live; abort if any file can't
+        # be read+rewritten so no unredacted bytes reach the live path. Snapshot
+        # each target FIRST so an abort after partial in-place redaction (a redact
+        # failure, or the post-redaction re-validation below) restores the
+        # candidate's ORIGINAL bytes — a failed approval must never leave a
+        # corrupted (partially-redacted / syntactically-broken) pending draft.
+        redact_targets = [src / "SKILL.md"]
+        if sdir_src.is_dir():
+            for root, _dirs, files in os.walk(sdir_src):
+                for nm in files:
+                    fp = Path(root) / nm
+                    if fp.is_file() and not fp.is_symlink():
+                        redact_targets.append(fp)
+        redact_backup: dict[Path, bytes] = {}
+        for fp in redact_targets:
+            try:
+                redact_backup[fp] = fp.read_bytes()
+            except OSError:
+                pass
+
+        def _restore_redacted() -> None:
+            for _fp, _b in redact_backup.items():
+                try:
+                    _fp.write_bytes(_b)
+                except OSError:
+                    pass
+
+        for fp in redact_targets:
+            if not self._redact_file_in_place(fp):
+                _restore_redacted()
+                logger.warning(
+                    "Refusing to approve %s: could not redact %s before promotion", name, fp.name
+                )
+                return None
+        # Re-validate scripts AFTER redaction: the earlier validation ran on the
+        # pre-redaction content, and redacting a credential-shaped token can
+        # alter script bytes (e.g. break syntax). Abort (restoring originals) if
+        # redaction left any script invalid so a broken/altered helper never goes
+        # live and the pending draft is not corrupted.
+        if sdir_src.is_dir():
+            ok, report = validate_scripts(self._collect_scripts(sdir_src))
+            if not ok:
+                _restore_redacted()
+                logger.warning(
+                    "Refusing to approve %s: scripts invalid after redaction: %s", name, report
+                )
+                return None
+        # Drop pending-only bookkeeping ONLY after every check + redaction has
+        # passed and immediately before the move, so a failed approval leaves the
+        # candidate — including its .meta.json (description/triggers) — intact in
+        # the pending queue for re-review. A removal FAILURE (non-writable dir,
+        # etc.) must ABORT: otherwise the raw, possibly secret-bearing .meta.json
+        # would ride into the live skill dir and be exposed by the browser. Only
+        # an already-absent file (FileNotFoundError) is benign. We stash the meta
+        # bytes first so a subsequent MOVE failure can restore them (otherwise the
+        # candidate would be left stranded in pending without its metadata).
+        meta_path = src / ".meta.json"
+        meta_backup: bytes | None = None
+        try:
+            meta_backup = meta_path.read_bytes()
+        except FileNotFoundError:
+            meta_backup = None
+        except OSError:
+            _restore_redacted()
+            logger.warning(
+                "Refusing to approve %s: could not read pending .meta.json before promotion", name
+            )
+            return None
+        try:
+            meta_path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            _restore_redacted()
+            logger.warning(
+                "Refusing to approve %s: could not remove pending .meta.json before promotion",
+                name,
+            )
+            return None
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            shutil.move(str(src), str(dest))
+        except OSError:
+            # Promotion failed after we deleted the pending bookkeeping — restore
+            # .meta.json AND the redacted files so the candidate stays intact in
+            # the pending queue for re-review instead of being left corrupted.
+            if meta_backup is not None and src.is_dir():
+                try:
+                    meta_path.write_bytes(meta_backup)
+                except OSError:
+                    pass
+            _restore_redacted()
+            logger.warning("Refusing to approve %s: could not move candidate live", name)
+            return None
+        # Mark scripts executable now that a human approved them (recursively).
+        sdir = dest / "scripts"
+        if sdir.is_dir():
+            for root, _dirs, files in os.walk(sdir):
+                for nm in files:
+                    sf = Path(root) / nm
+                    if sf.is_file() and not sf.is_symlink():
+                        try:
+                            sf.chmod(sf.stat().st_mode | 0o111)
+                        except OSError:
+                            pass
+        self._invalidate_iter_cache()
+        logger.info("Approved pending skill: %s", name)
+        return name
+
+    def dismiss_pending_skill(self, slug: str) -> bool:
+        """Delete a pending candidate. Returns True if it existed."""
+        if not self._is_pending_slug_safe(slug):
+            return False
+        pdir = self._pending_root() / slug
+        if not pdir.is_dir():
+            return False
+        shutil.rmtree(pdir)
+        logger.info("Dismissed pending skill: %s", slug)
+        return True
+
+    def prune_pending(self, ttl_days: int, *, now: float | None = None) -> int:
+        """Remove pending candidates older than ``ttl_days``. Returns count pruned.
+
+        Age is measured from the candidate directory's filesystem mtime (set when
+        the queue writes it), NOT the LLM-supplied ``created_at`` metadata: a
+        ``crystallize`` direct-write could stamp an arbitrarily old ``created_at``
+        and trick pruning into ``rmtree``-ing fresh, unreviewed work.
+        """
+        if now is None:
+            now = time.time()
+        cutoff = now - ttl_days * 86400
+        pruned = 0
+        root = self._pending_root()
+        for entry in self.list_pending_skills():
+            pdir = root / entry["slug"]
+            try:
+                ts = pdir.stat().st_mtime
+            except OSError:
+                continue
+            if ts <= cutoff and self.dismiss_pending_skill(entry["slug"]):
+                pruned += 1
+        return pruned
 
     def get_always_skills(self) -> list[str]:
         """Return names of skills marked ``always: true`` in frontmatter."""

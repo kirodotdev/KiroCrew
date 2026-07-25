@@ -169,6 +169,7 @@ from kiro_crew.platform import (
 from kiro_crew.safety_override import safety_override
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
+from kiro_crew.skills import SkillsLoader
 from kiro_crew.suggestions import api_suggestions
 from kiro_crew.tips import api_tips_feedback, api_tips_next, api_tips_status
 from kiro_crew.tunnel.setup import setup_tunnel
@@ -1205,13 +1206,33 @@ async def start_dashboard(
             memory = context_builder.memory if context_builder else MemoryStore()
             if not context_builder:
                 memory.init()
+            # Wire the skills loader + config so a dashboard-only launch honors
+            # the same auto-skill defaults as the CLI/gateway entry points —
+            # otherwise this fallback silently ran with auto-generation disabled,
+            # contradicting the on-by-default config.
+            if context_builder is not None:
+                _skills = context_builder.skills
+            else:
+                _skills = SkillsLoader(install_builtins=False)
+            _scfg = KiroCrewConfig.load().skills
             consolidator = _hist_mod.HistoryConsolidator(
                 log=conversation_log,
                 memory=memory,
                 sessions=sessions,
                 lesson_store=lessons,
+                skills_loader=_skills,
+                auto_skills_enabled=_scfg.auto_create_from_sessions,
+                auto_refine_enabled=_scfg.auto_refine_on_deviation,
+                auto_min_tool_calls=_scfg.auto_min_tool_calls,
+                auto_similarity_threshold=_scfg.auto_similarity_threshold,
+                approval_required=_scfg.approval_required,
+                max_auto_skills=_scfg.max_auto_skills,
+                stale_after_days=_scfg.stale_after_days,
+                archive_after_days=_scfg.archive_after_days,
+                generate_scripts=_scfg.generate_scripts,
+                judge_model=_scfg.judge_model,
             )
-            logger.info("Auto-created HistoryConsolidator for dashboard")
+            logger.info("Auto-created HistoryConsolidator for dashboard (skills wired)")
         except Exception:
             logger.debug("Could not create consolidator", exc_info=True)
 
@@ -1503,6 +1524,13 @@ async def start_dashboard(
     app.router.add_get("/api/skills/-/discover", api_skills_discover)
     app.router.add_get("/api/skills/-/discover/preview", api_skills_discover_preview)
     app.router.add_post("/api/skills/-/discover/install", api_skills_discover_install)
+    # Auto-skill pending-approval queue + pin (v2). Registered before the
+    # catch-all {name:.+} so the ``-`` sentinel paths resolve first.
+    app.router.add_get("/api/skills/-/pending", handlers.api_skills_pending)
+    app.router.add_get("/api/skills/-/pending/{slug}", handlers.api_skill_pending_detail)
+    app.router.add_post("/api/skills/-/pending/{slug}/approve", handlers.api_skill_pending_approve)
+    app.router.add_post("/api/skills/-/pending/{slug}/dismiss", handlers.api_skill_pending_dismiss)
+    app.router.add_post("/api/skills/-/pin", handlers.api_skill_pin)
     app.router.add_get("/api/skills/{name:.+}/-/tree", handlers.api_skill_tree)
     app.router.add_get("/api/skills/{name:.+}/-/file", handlers.api_skill_file)
     app.router.add_get("/api/skills/{name:.+}", handlers.api_skill_detail)

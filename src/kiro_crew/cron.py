@@ -25,6 +25,7 @@ import hashlib
 import json
 import logging
 import random
+import re
 import time
 import uuid
 from contextlib import contextmanager
@@ -56,6 +57,43 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_DIR = config_dir()
 _CRONS_FILE = "crons.json"
+
+# ``$skill`` token pattern (mirrors skills._DOLLAR_SKILL_PATTERN; duplicated
+# here to avoid a cron<->skills import cycle).
+_SKILL_TOKEN_RE = re.compile(r"(?<![\w$])\$([a-z0-9][a-z0-9/_-]*)")
+
+
+def referenced_skill_names() -> set[str]:
+    """Skill slugs referenced via ``$skill`` tokens in any cron job's message.
+
+    Read-only + best-effort: reads ``crons.json`` directly (so it needs no
+    running scheduler) and returns an empty set on any error. The skill
+    lifecycle uses this to exempt cron-referenced skills from eviction — a job
+    that says ``$deploy-helper`` keeps ``auto/deploy-helper`` from being
+    archived out from under it. Returns both the raw token and its last path
+    segment so callers can match either a full key or a bare slug.
+    """
+    out: set[str] = set()
+    try:
+        path = config_dir() / _CRONS_FILE
+        if not path.exists():
+            return out
+        data = json.loads(path.read_text(encoding="utf-8"))
+        jobs = data.get("jobs", []) if isinstance(data, dict) else []
+        for j in jobs:
+            if not isinstance(j, dict):
+                continue
+            msg = j.get("message") or ""
+            for m in _SKILL_TOKEN_RE.finditer(msg):
+                tok = m.group(1)
+                if any(c.isalpha() for c in tok):
+                    out.add(tok)
+                    out.add(tok.split("/")[-1])
+    except Exception:
+        return set()
+    return out
+
+
 _STORE_VERSION = 2
 _MIN_INTERVAL_SECS = 60
 _JOB_TIMEOUT_SECS = 1800  # 30 min per job

@@ -945,6 +945,13 @@ export const api = {
   updateSteering: (key: string, content: string) =>
     put('/api/steering/' + key.split('/').map(encodeURIComponent).join('/'), { content }).then(j),
   deleteSteering: (key: string) => del('/api/steering/' + key.split('/').map(encodeURIComponent).join('/')).then(j),
+
+  // Auto-skill pending queue + lifecycle pin
+  skillsPending: () => fetch('/api/skills/-/pending').then(j),
+  skillPendingDetail: (slug: string) => fetch('/api/skills/-/pending/' + encodeURIComponent(slug)).then(j),
+  approvePendingSkill: (slug: string) => post('/api/skills/-/pending/' + encodeURIComponent(slug) + '/approve', {}).then(j),
+  dismissPendingSkill: (slug: string) => post('/api/skills/-/pending/' + encodeURIComponent(slug) + '/dismiss', {}).then(j),
+  pinSkill: (name: string, pinned: boolean) => post('/api/skills/-/pin', { name, pinned }).then(j),
   /** Multi-provider skill discovery (skills.sh, etc.) */
   discoverSkills: (query: string, opts?: { provider?: string; limit?: number }) =>
     get(`/api/skills/-/discover?q=${encodeURIComponent(query)}${opts?.provider ? `&provider=${opts.provider}` : ''}${opts?.limit ? `&limit=${opts.limit}` : ''}`).then(j) as Promise<import('../types').DiscoverSkillsResponse>,

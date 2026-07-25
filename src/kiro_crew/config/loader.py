@@ -1655,15 +1655,16 @@ class SkillsConfig:
     # ── Auto skill creation ──
     # All fields default to OFF so upgrades are zero-impact. Enable via
     # ``kirocrew config set skills.auto_create_from_sessions true`` or the
-    # dashboard Settings → Skills panel (future).
+    # dashboard Settings → Skills toggle.
     auto_create_from_sessions: bool = field(
         default=False,
         metadata=_meta(
             "Auto-Create Skills",
             "When true, analyze each session after completion and synthesize a reusable "
-            "SKILL.md when a non-trivial multi-step procedure is detected. Generated "
-            "skills live under skills/auto/ so they never collide with hand-authored "
-            "skills. Disabled by default.",
+            "SKILL.md when a non-trivial multi-step procedure is detected. Candidates are "
+            "staged for review (see approval_required) rather than going live, and live "
+            "under skills/auto/ so they never collide with hand-authored skills. Disabled "
+            "by default; enable in Settings → Skills.",
         ),
     )
     auto_refine_on_deviation: bool = field(
@@ -1689,7 +1690,69 @@ class SkillsConfig:
             "Auto Similarity Threshold",
             "Skip creation when an existing skill's description has keyword overlap "
             "≥ this fraction with the synthesized description (0.0-1.0). Prevents "
-            "near-duplicate skills.",
+            "near-duplicate skills. Used as the lexical fallback when the Haiku "
+            "dedupe judge is unavailable.",
+        ),
+    )
+    # ── Staged approval + lifecycle (v2) ──
+    approval_required: bool = field(
+        default=True,
+        metadata=_meta(
+            "Skill Approval Required",
+            "When true, auto-generated skill candidates land in a pending queue for "
+            "human review instead of going live. Prose-only skills may auto-publish "
+            "when this is false; skills that bundle scripts ALWAYS require approval "
+            "regardless of this flag.",
+        ),
+    )
+    max_auto_skills: int = field(
+        default=100,
+        metadata=_meta(
+            "Max Auto Skills",
+            "Hard cap (backstop) on the number of live auto-generated skills. When "
+            "exceeded, the least-valuable (by recency + frequency) are archived — "
+            "never hard-deleted — down to the cap (≥1).",
+        ),
+    )
+    stale_after_days: int = field(
+        default=30,
+        metadata=_meta(
+            "Skill Stale After (days)",
+            "An auto-skill with no recorded use for this many days is marked stale "
+            "(≥1). Never-used skills younger than this window are exempt (grace floor).",
+        ),
+    )
+    archive_after_days: int = field(
+        default=90,
+        metadata=_meta(
+            "Skill Archive After (days)",
+            "An auto-skill inactive for this many days is archived (recoverable, "
+            "never deleted). Must be ≥ stale_after_days.",
+        ),
+    )
+    pending_ttl_days: int = field(
+        default=30,
+        metadata=_meta(
+            "Pending Skill TTL (days)",
+            "Unapproved skill candidates older than this are auto-cleaned from the "
+            "pending queue (≥1).",
+        ),
+    )
+    generate_scripts: bool = field(
+        default=True,
+        metadata=_meta(
+            "Generate Skill Scripts",
+            "When true, deterministic procedures may generate a validated Python "
+            "helper script alongside the SKILL.md. Script-bearing skills always "
+            "require approval.",
+        ),
+    )
+    judge_model: str = field(
+        default="claude-haiku-4.5",
+        metadata=_meta(
+            "Skill Judge Model",
+            "Cheap model used for the dedupe judge and the advisory pending review. "
+            "Kept separate from the main chat model to bound cost.",
         ),
     )
     extra_paths: list[str] = field(
@@ -1721,6 +1784,22 @@ class SkillsConfig:
                 "disabling auto_refine_on_deviation"
             )
             object.__setattr__(self, "auto_refine_on_deviation", False)
+        if self.max_auto_skills < 1:
+            logger.warning("max_auto_skills %d < 1, using 1", self.max_auto_skills)
+            object.__setattr__(self, "max_auto_skills", 1)
+        if self.stale_after_days < 1:
+            logger.warning("stale_after_days %d < 1, using 1", self.stale_after_days)
+            object.__setattr__(self, "stale_after_days", 1)
+        if self.archive_after_days < self.stale_after_days:
+            logger.warning(
+                "archive_after_days %d < stale_after_days %d, using stale_after_days",
+                self.archive_after_days,
+                self.stale_after_days,
+            )
+            object.__setattr__(self, "archive_after_days", self.stale_after_days)
+        if self.pending_ttl_days < 1:
+            logger.warning("pending_ttl_days %d < 1, using 1", self.pending_ttl_days)
+            object.__setattr__(self, "pending_ttl_days", 1)
 
 
 @dataclass
@@ -3999,6 +4078,15 @@ class KiroCrewConfig:
                 auto_min_tool_calls=_safe_int(skills_data.get("auto_min_tool_calls", 5), 5),
                 auto_similarity_threshold=_safe_float(
                     skills_data.get("auto_similarity_threshold", 0.85), 0.85
+                ),
+                approval_required=bool(skills_data.get("approval_required", True)),
+                max_auto_skills=_safe_int(skills_data.get("max_auto_skills", 100), 100),
+                stale_after_days=_safe_int(skills_data.get("stale_after_days", 30), 30),
+                archive_after_days=_safe_int(skills_data.get("archive_after_days", 90), 90),
+                pending_ttl_days=_safe_int(skills_data.get("pending_ttl_days", 30), 30),
+                generate_scripts=bool(skills_data.get("generate_scripts", True)),
+                judge_model=str(
+                    skills_data.get("judge_model", "claude-haiku-4.5") or "claude-haiku-4.5"
                 ),
                 extra_paths=[
                     p for p in _safe_list(skills_data.get("extra_paths")) if isinstance(p, str)

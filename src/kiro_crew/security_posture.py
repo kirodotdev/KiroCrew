@@ -266,6 +266,14 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "mcp_apps_render.py",
         "Recursively redacts string leaves of a rendered MCP app payload.",
     ),
+    (
+        "Auto-skill pending detail / promotion",
+        "skills.py",
+        "LLM-authored auto-skill candidate content (SKILL.md, scripts, and nested "
+        ".meta.json values/keys) is redacted at the pending detail-read choke "
+        "before it is returned by the dashboard skills API, and again in-place "
+        "before an approved candidate is promoted to the live skills dir.",
+    ),
 )
 
 # Modules that call a redactor but are NOT an output egress boundary, so they do

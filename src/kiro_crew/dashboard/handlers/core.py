@@ -1187,6 +1187,12 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # restart to take effect (the SSH manager + CSP relaxation init at startup),
     # so the Instances settings panel surfaces a "restart required" hint.
     "instances.enabled": {"type": "bool"},
+    # Skills: opt in to automatic skill generation (Settings → Skills). Both
+    # default OFF/ON respectively in SkillsConfig; generated candidates still
+    # require approval unless approval_required is turned off (scripts always
+    # require approval regardless — enforced in the generation path).
+    "skills.auto_create_from_sessions": {"type": "bool"},
+    "skills.approval_required": {"type": "bool"},
 }
 
 

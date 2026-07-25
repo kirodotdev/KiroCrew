@@ -170,6 +170,7 @@ export default function SkillsTab() {
   </>)
 
   return (<>
+    <PendingSkillsPanel />
     {/* Create Skill Modal */}
     <Modal open={creating} onClose={() => setCreating(false)} title="Create New Skill" maxWidth={560} footer={<>
       <Btn onClick={() => setCreating(false)}>Cancel</Btn>
@@ -257,4 +258,116 @@ export default function SkillsTab() {
     {/* Multi-provider Skill Browser Modal */}
     <SkillBrowserModal open={skillBrowserOpen} onClose={() => setSkillBrowserOpen(false)} />
   </>)
+}
+
+
+/** Pending review queue for auto-generated skill candidates.
+ *  Self-contained: its own query + approve/dismiss mutations, so it can be
+ *  dropped into the Skills tab without touching the main list logic. Renders
+ *  nothing when the queue is empty. Each row can be expanded to review the
+ *  full SKILL.md body and any bundled script contents BEFORE approving. */
+interface PendingSkill {
+  slug: string
+  name: string
+  description: string
+  has_scripts: boolean
+}
+interface PendingDetail {
+  name: string
+  content: string
+  scripts: { filename: string; content: string }[]
+}
+
+function PendingCandidateRow({ p, onApprove, onDismiss }: {
+  p: PendingSkill
+  onApprove: (slug: string) => void
+  onDismiss: (slug: string) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const { data: detail } = useQuery<PendingDetail>({
+    queryKey: ['skills-pending-detail', p.slug],
+    queryFn: () => api.skillPendingDetail(p.slug),
+    enabled: open,
+  })
+  return (
+    <div className="p-2 rounded-md border border-border">
+      <div className="flex items-center gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-medium text-text-strong truncate">
+            {p.name}
+            {p.has_scripts && (
+              <span className="ml-2 text-[10px] px-1.5 py-[1px] rounded-full bg-warn-subtle text-warn font-bold">script</span>
+            )}
+          </div>
+          <div className="text-[12px] text-muted truncate">{p.description}</div>
+        </div>
+        <Btn onClick={() => setOpen(o => !o)}>{open ? 'Hide' : 'Review'}</Btn>
+        <Btn primary disabled={!open || !detail} onClick={() => onApprove(p.slug)}>Approve</Btn>
+        <Btn danger onClick={() => { if (confirm(`Dismiss "${p.name}"?`)) onDismiss(p.slug) }}>Dismiss</Btn>
+      </div>
+      {open && detail && (
+        <div className="mt-2 space-y-2">
+          <div className="text-[11px] font-semibold text-muted">SKILL.md</div>
+          <pre className="text-[11px] whitespace-pre-wrap max-h-64 overflow-auto p-2 rounded bg-bg-elevated border border-border">{detail.content}</pre>
+          {(detail.scripts ?? []).map(s => (
+            <div key={s.filename}>
+              <div className="text-[11px] font-semibold text-warn">scripts/{s.filename}</div>
+              <pre className="text-[11px] whitespace-pre-wrap max-h-64 overflow-auto p-2 rounded bg-bg-elevated border border-border">{s.content}</pre>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function PendingSkillsPanel() {
+  const qc = useQueryClient()
+  const { data } = useQuery<{ pending: PendingSkill[] }>({
+    queryKey: ['skills-pending'],
+    queryFn: () => api.skillsPending(),
+    refetchInterval: 30000,
+  })
+  const pending: PendingSkill[] = data?.pending ?? []
+  const approve = useMutation({
+    mutationFn: (slug: string) => api.approvePendingSkill(slug),
+    onSuccess: (_data, slug) => {
+      // Evict the per-slug detail cache so a slug re-staged after this one went
+      // live can't surface the promoted candidate's stale detail.
+      qc.removeQueries({ queryKey: ['skills-pending-detail', slug] })
+      qc.invalidateQueries({ queryKey: ['skills-pending'] })
+      qc.invalidateQueries({ queryKey: ['skills'] })
+    },
+  })
+  const dismiss = useMutation({
+    mutationFn: (slug: string) => api.dismissPendingSkill(slug),
+    onSuccess: (_data, slug) => {
+      // Evict the per-slug detail cache too, so a slug re-staged shortly after
+      // dismissal can't show the dismissed candidate's stale detail (which a
+      // user might then approve without seeing the replacement).
+      qc.removeQueries({ queryKey: ['skills-pending-detail', slug] })
+      qc.invalidateQueries({ queryKey: ['skills-pending'] })
+    },
+  })
+  if (pending.length === 0) return null
+  return (
+    <div className="mt-4 mb-2">
+      <h4 className="text-sm font-semibold text-text-strong mb-2 flex items-center gap-2">
+        Pending review ({pending.length})
+        <InfoTip text="Auto-generated skill candidates awaiting your approval. Click Review to inspect the SKILL.md and any bundled script before approving. Approve makes the skill live (and marks scripts executable); dismiss discards it. Nothing goes live until you approve it." />
+      </h4>
+      <Card>
+        <div className="space-y-2">
+          {pending.map(p => (
+            <PendingCandidateRow
+              key={p.slug}
+              p={p}
+              onApprove={s => approve.mutate(s)}
+              onDismiss={s => dismiss.mutate(s)}
+            />
+          ))}
+        </div>
+      </Card>
+    </div>
+  )
 }

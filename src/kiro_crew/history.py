@@ -27,13 +27,15 @@ from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import KiroCrewConfig, config_dir
 from kiro_crew.executors import run_in_embed_pool
-from kiro_crew.llm_helpers import ToolApprovalPolicy, stream_and_collect_json
+from kiro_crew.llm_helpers import ToolApprovalPolicy, stream_and_collect, stream_and_collect_json
 from kiro_crew.messaging.link import legacy_key
 from kiro_crew.preview_text import strip_markdown_preview
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 from kiro_crew.session import BACKGROUND_KEY
 from kiro_crew.skills import AutoSkillProvenance
+from kiro_crew.skills_dedupe import metadata_dedupe
+from kiro_crew.skills_script_validator import validate_skill_script
 from kiro_crew.vector_memory_constants import (
     _MAX_EPISODIC_PER_CONSOLIDATION,
     _MAX_LESSONS_PER_CONSOLIDATION,
@@ -2452,6 +2454,13 @@ class HistoryConsolidator:
         auto_refine_enabled: bool = False,
         auto_min_tool_calls: int = 5,
         auto_similarity_threshold: float = 0.85,
+        # ── Staged approval + lifecycle (v2) ──
+        approval_required: bool = True,
+        max_auto_skills: int = 100,
+        stale_after_days: int = 30,
+        archive_after_days: int = 90,
+        generate_scripts: bool = True,
+        judge_model: str = "",
     ) -> None:
         self._log = log
         self._memory = memory
@@ -2465,6 +2474,17 @@ class HistoryConsolidator:
         self._auto_refine_enabled = auto_refine_enabled
         self._auto_min_tool_calls = auto_min_tool_calls
         self._auto_similarity_threshold = auto_similarity_threshold
+        self._approval_required = approval_required
+        self._max_auto_skills = max_auto_skills
+        self._stale_after_days = stale_after_days
+        self._archive_after_days = archive_after_days
+        self._generate_scripts = generate_scripts
+        self._judge_model = judge_model
+        # Captured on the first _consolidate (the gateway loop) so the sync,
+        # thread-offloaded _process_auto_skills can bridge the async dedupe
+        # judge back onto the loop. Throttle guards the autonomous lifecycle.
+        self._event_loop: "asyncio.AbstractEventLoop | None" = None
+        self._last_lifecycle: float = 0.0
         self._running: set[str] = set()
         self._tasks: set[asyncio.Task] = set()  # type: ignore[type-arg]
         # Track last activity per session for idle-based history consolidation
@@ -2578,6 +2598,9 @@ class HistoryConsolidator:
 
     async def _consolidate(self, key: str, include_history: bool = True) -> None:
         """Run LLM consolidation for a session."""
+        # Capture the gateway loop so the thread-offloaded _process_auto_skills
+        # can schedule the async dedupe judge back onto it.
+        self._event_loop = asyncio.get_running_loop()
         try:
             # Atomically snapshot the unconsolidated tail, the total message
             # count (the absolute offset handed to mark_consolidated below), and
@@ -2704,6 +2727,21 @@ class HistoryConsolidator:
                 and not _session_touched_sensitive(unconsolidated)
             )
             if auto_skills_eligible:
+                scripts_field = ""
+                if self._generate_scripts:
+                    scripts_field = (
+                        ', "scripts": (optional array, part of THIS new_skill '
+                        "object) ONLY when the procedure includes a "
+                        "DETERMINISTIC, always-identical step sequence worth "
+                        "running verbatim (a fixed command chain, a set API "
+                        "sequence, a predictable file transform). Each item: "
+                        '{"filename": "<name>.py", "language": "python", '
+                        '"content": "<self-contained Python, no network to '
+                        "unknown hosts, no credential access, no destructive "
+                        'commands, <=4KB>"}. Python ONLY (must run on Windows). '
+                        "Omit for judgment-based / context-dependent procedures. "
+                        "Scripts always require human approval"
+                    )
                 keys.append(
                     '"new_skill": Object or null. Return an object ONLY if this '
                     "session contained a non-trivial reusable multi-step procedure "
@@ -2715,8 +2753,8 @@ class HistoryConsolidator:
                     '"triggers": "<3-8 comma-separated keywords/phrases>", '
                     '"procedure_md": "<concise markdown body with '
                     "## When to use / ## Steps / ## Gotchas sections, "
-                    '<=8000 chars>"}. '
-                    "Return null if the session was trivial, a single-shot answer, "
+                    '<=8000 chars>"' + scripts_field + "}. "
+                    'Return null if the session was trivial, a single-shot answer, '
                     "a one-off failure, or involved sensitive paths. Do NOT "
                     "include absolute paths, credentials, tokens, or user PII in "
                     "the procedure body."
@@ -2790,9 +2828,29 @@ class HistoryConsolidator:
             # Guarded by flag + eligibility — failures are logged, never fatal.
             if auto_skills_eligible:
                 try:
-                    self._process_auto_skills(result, key)
+                    await asyncio.to_thread(self._process_auto_skills, result, key)
                 except Exception:
                     logger.warning("Auto-skill processing failed for %s", key, exc_info=True)
+
+            # Autonomous lifecycle: age-based archival must run even when this
+            # pass created/approved no skill, otherwise skills never age out on
+            # their own (create/approve were the only triggers). Consolidation is
+            # the existing idle/periodic path; throttle to at most once/hour
+            # across all sessions so frequent consolidations don't rescan the set.
+            if (
+                self._skills_loader is not None
+                and (_time.time() - self._last_lifecycle) > 3600
+            ):
+                self._last_lifecycle = _time.time()
+                try:
+                    await asyncio.to_thread(
+                        self._skills_loader.run_skill_lifecycle,
+                        max_auto_skills=self._max_auto_skills,
+                        stale_after_days=self._stale_after_days,
+                        archive_after_days=self._archive_after_days,
+                    )
+                except Exception:
+                    logger.debug("Periodic skill lifecycle pass failed", exc_info=True)
 
             # Only advance the consolidated offset for history consolidation.
             # Prefs-only consolidation uses a separate in-memory offset.
@@ -2923,6 +2981,93 @@ class HistoryConsolidator:
             if written:
                 logger.info("Wrote %d episodic entries from consolidation", written)
 
+    def _dedupe_candidate(
+        self, slug: str, description: str, triggers: str
+    ) -> "str | None":
+        """Return the key of an existing auto-skill this candidate duplicates.
+
+        Primary: a single metadata-judge call (``skills.judge_model``) comparing
+        the candidate against ALL existing auto-skills at once (bounded set, no
+        embeddings). Lexical ``find_similar`` runs as a fallback when the judge
+        is unavailable (no ``judge_model`` configured, no captured event loop, or
+        no existing skills) AND as a safety net when the judge returns no match —
+        so a judge *failure* (which fails open to "no duplicate") can't silently
+        skip dedup and let a near-identical skill through.
+        """
+        loader = self._skills_loader
+        if loader is None:
+            return None
+        existing = list(loader.list_auto_skills())
+        # Include already-staged (pending) candidates so repeated sessions don't
+        # queue a duplicate of something still awaiting review (list_auto_skills
+        # only enumerates LIVE skills — .pending is pruned from discovery).
+        try:
+            for p in loader.list_pending_skills():
+                existing.append({
+                    "key": f"auto/{p.get('slug', '')}",
+                    "description": p.get("description", ""),
+                    "triggers": p.get("triggers", ""),
+                })
+        except Exception:
+            pass
+        loop = self._event_loop
+
+        def _lexical() -> "str | None":
+            return loader.find_similar(
+                description, threshold=self._auto_similarity_threshold
+            )
+
+        if self._judge_model and existing and loop is not None:
+            def _judge_fn(prompt: str) -> str:
+                try:
+                    fut = asyncio.run_coroutine_threadsafe(
+                        self._dedupe_judge(prompt), loop
+                    )
+                    return fut.result(timeout=60) or ""
+                except Exception:
+                    return ""
+
+            candidate = {
+                "key": f"auto/{slug}",
+                "description": description,
+                "triggers": triggers,
+            }
+            match = metadata_dedupe(candidate, existing, _judge_fn)
+            # None means "new" OR a judge error (metadata_dedupe fails open to
+            # None). Either way, confirm with the cheap lexical check before
+            # concluding the candidate is unique.
+            return match if match is not None else _lexical()
+        return _lexical()
+
+    async def _dedupe_judge(self, prompt: str) -> str:
+        """One cheap metadata-dedupe judge turn on the shared background session.
+        Runs on that session's existing (lite / haiku-class) model — no per-turn
+        ``set_model`` switch, because the ``BACKGROUND_KEY`` session is shared
+        with consolidation and a switch would leak the judge model into later
+        turns when recycling doesn't fire. Fail-open (returns "" on any error)."""
+        if not self._sessions:
+            return ""
+        try:
+            client, _new, _resumed = await self._sessions.get_or_create(
+                BACKGROUND_KEY, agent="kirocrew-lite"
+            )
+            text = await stream_and_collect(
+                client, prompt, approval_policy=ToolApprovalPolicy.REJECT_ALL
+            )
+            return text or ""
+        except Exception:
+            logger.debug("Skill dedupe judge failed", exc_info=True)
+            return ""
+        finally:
+            # get_or_create ACQUIRES the per-session semaphore — the caller MUST
+            # release it (mirror _call_llm), else the shared _bg session is held
+            # forever and the next consolidation turn deadlocks waiting for it.
+            try:
+                self._sessions.release(BACKGROUND_KEY)
+                await self._sessions.recycle_background()
+            except Exception:
+                logger.debug("Skill dedupe judge session release failed", exc_info=True)
+
     def _process_auto_skills(self, result: dict, key: str) -> None:
         """Extract + write auto-generated skills from the consolidation result.
 
@@ -2950,6 +3095,30 @@ class HistoryConsolidator:
             description = _redact(new_skill.get("description", ""))
             triggers = _redact(new_skill.get("triggers", ""))
             procedure_md = _redact(new_skill.get("procedure_md", ""))
+            # Extract + statically validate any generated scripts. Scripts are
+            # redacted, then each is checked by the always-on static validator;
+            # only individually-clean scripts survive. A script-bearing
+            # candidate ALWAYS routes to approval (never auto-published).
+            valid_scripts: list[dict] = []
+            scripts_supplied = False
+            if self._generate_scripts:
+                raw_scripts = new_skill.get("scripts")
+                if isinstance(raw_scripts, list) and raw_scripts:
+                    scripts_supplied = True
+                    for s in raw_scripts:
+                        if not isinstance(s, dict):
+                            continue
+                        fn = _redact(s.get("filename", "")).strip()
+                        body = _redact(s.get("content", ""))
+                        ok, _findings = validate_skill_script(fn, body)
+                        if ok:
+                            valid_scripts.append({"filename": fn, "content": body})
+                        else:
+                            logger.info(
+                                "Auto-skill script %r rejected by validator: %s",
+                                fn,
+                                "; ".join(_findings),
+                            )
             if not (slug and description and procedure_md):
                 # Required fields missing (or stripped empty by redaction).
                 # Audit the rejection so operators can see that a create
@@ -2970,9 +3139,7 @@ class HistoryConsolidator:
                     },
                 )
             else:
-                similar = self._skills_loader.find_similar(
-                    description, threshold=self._auto_similarity_threshold
-                )
+                similar = self._dedupe_candidate(slug, description, triggers)
                 if similar:
                     logger.info(
                         "Auto-skill synthesis skipped: '%s' overlaps existing skill '%s'",
@@ -2995,40 +3162,84 @@ class HistoryConsolidator:
                         session_key=key,
                         created_at=AutoSkillProvenance.now_iso(),
                     )
-                    name = self._skills_loader.create_auto_skill(
-                        slug,
-                        description=description,
-                        triggers=triggers,
-                        procedure_md=procedure_md,
-                        provenance=provenance,
-                    )
-                    if name:
-                        logger.info("Auto-created skill %s from session %s", name, key)
-                        sel().log_tool_invocation(
-                            session_key=key,
-                            tool_name="auto_skill_create",
-                            tool_kind="skills",
-                            outcome="invoked",
-                            metadata={"name": name},
-                        )
-                    else:
-                        # create_auto_skill returned None: invalid slug,
-                        # oversized procedure, or directory already exists.
-                        # Audit the rejection so operators can see why.
-                        logger.info(
-                            "Auto-skill creation rejected for slug '%s' (creation_failed)",
+                    if self._approval_required or valid_scripts or scripts_supplied:
+                        # Stage for human review — nothing goes live unattended,
+                        # and any candidate that SUPPLIED scripts ALWAYS stages
+                        # (even if every script was rejected by the validator, so
+                        # a script-bearing candidate can never auto-publish as a
+                        # prose-only skill).
+                        name = self._skills_loader.stage_skill_candidate(
                             slug,
+                            description=description,
+                            triggers=triggers,
+                            procedure_md=procedure_md,
+                            provenance=provenance,
+                            scripts=valid_scripts or None,
                         )
-                        sel().log_tool_invocation(
-                            session_key=key,
-                            tool_name="auto_skill_create",
-                            tool_kind="skills",
-                            outcome="rejected",
-                            metadata={
-                                "slug": slug,
-                                "reason": "creation_failed",
-                            },
+                        if name:
+                            logger.info("Staged skill candidate %s from session %s", name, key)
+                            sel().log_tool_invocation(
+                                session_key=key,
+                                tool_name="auto_skill_create",
+                                tool_kind="skills",
+                                outcome="staged",
+                                metadata={"name": name, "scripts": len(valid_scripts)},
+                            )
+                        else:
+                            logger.info("Skill staging rejected for slug '%s'", slug)
+                            sel().log_tool_invocation(
+                                session_key=key,
+                                tool_name="auto_skill_create",
+                                tool_kind="skills",
+                                outcome="rejected",
+                                metadata={"slug": slug, "reason": "creation_failed"},
+                            )
+                    else:
+                        name = self._skills_loader.create_auto_skill(
+                            slug,
+                            description=description,
+                            triggers=triggers,
+                            procedure_md=procedure_md,
+                            provenance=provenance,
                         )
+                        if name:
+                            logger.info("Auto-created skill %s from session %s", name, key)
+                            sel().log_tool_invocation(
+                                session_key=key,
+                                tool_name="auto_skill_create",
+                                tool_kind="skills",
+                                outcome="invoked",
+                                metadata={"name": name},
+                            )
+                            # Bound the live auto-skill set after a live create
+                            # (auto-approve path). Best-effort; never break
+                            # consolidation on a lifecycle hiccup.
+                            try:
+                                self._skills_loader.run_skill_lifecycle(
+                                    max_auto_skills=self._max_auto_skills,
+                                    stale_after_days=self._stale_after_days,
+                                    archive_after_days=self._archive_after_days,
+                                )
+                            except Exception:  # pragma: no cover - defensive
+                                logger.debug("Skill lifecycle pass failed", exc_info=True)
+                        else:
+                            # create_auto_skill returned None: invalid slug,
+                            # oversized procedure, or directory already exists.
+                            # Audit the rejection so operators can see why.
+                            logger.info(
+                                "Auto-skill creation rejected for slug '%s' (creation_failed)",
+                                slug,
+                            )
+                            sel().log_tool_invocation(
+                                session_key=key,
+                                tool_name="auto_skill_create",
+                                tool_kind="skills",
+                                outcome="rejected",
+                                metadata={
+                                    "slug": slug,
+                                    "reason": "creation_failed",
+                                },
+                            )
 
         # Refine path (only if explicitly enabled)
         if not self._auto_refine_enabled:

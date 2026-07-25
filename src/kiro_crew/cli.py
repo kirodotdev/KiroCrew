@@ -621,6 +621,12 @@ def _consolidate_cmd(args) -> None:
         auto_refine_enabled=cfg.skills.auto_refine_on_deviation,
         auto_min_tool_calls=cfg.skills.auto_min_tool_calls,
         auto_similarity_threshold=cfg.skills.auto_similarity_threshold,
+        approval_required=cfg.skills.approval_required,
+        max_auto_skills=cfg.skills.max_auto_skills,
+        stale_after_days=cfg.skills.stale_after_days,
+        archive_after_days=cfg.skills.archive_after_days,
+        generate_scripts=cfg.skills.generate_scripts,
+        judge_model=cfg.skills.judge_model,
     )
 
     async def _run(keys: list[str]) -> None:

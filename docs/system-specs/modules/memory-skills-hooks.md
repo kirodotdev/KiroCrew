@@ -444,7 +444,14 @@ imports deduplicate through the provenance ledger.
 
 ## Auto Skill Creation (`skills.py` + `history.py`)
 
-Hermes-style autonomous skill creation from completed sessions. Disabled by default; opt-in per user via `skills.auto_create_from_sessions`.
+Hermes-style autonomous skill creation from completed sessions. **Opt-in, and STAGED for approval** — generation is **off by default** (`skills.auto_create_from_sessions` defaults **false**; enable via `kirocrew config set skills.auto_create_from_sessions true` or dashboard Settings → Skills). When on, candidates land in a pending-approval queue (`skills.approval_required` defaults **true**) and nothing goes live unattended. Pipeline: detect (during consolidation) → generate → metadata dedupe → pending queue → human approval → live → archive-if-unused.
+
+Key v2 elements (all under `skills.*`):
+- **Staged approval:** new skills route to `auto/.pending/<slug>/`; approve promotes to `auto/<slug>/` (dashboard: Skills → Pending review). Auto-approve for prose-only is opt-in via `approval_required=false`; **script-bearing candidates always require approval**.
+- **Scripts:** deterministic procedures may ship a validated **Python** helper (`generate_scripts`, default true); statically validated (regex denylist + AST policy: no dynamic exec/import, destructive fs, process exec, network egress, ≤4 KB) and re-validated at the approve choke point.
+- **Bounding:** archive-not-delete lifecycle `active→stale(`stale_after_days`,30)→archived(`archive_after_days`,90)`, `max_auto_skills` (100) backstop, pin + cron-referenced exemptions, never-used grace floor; pending TTL `pending_ttl_days` (30).
+- **Dedupe:** embedding-free metadata comparison over all generated skills (`judge_model`).
+- **On-demand:** the `crystallize` builtin skill stages a candidate from the current session.
 
 ### Flow
 
@@ -465,7 +472,7 @@ Prompt keys are only appended when ALL hold:
 
 | Condition | Source |
 |-----------|--------|
-| `skills.auto_create_from_sessions: true` | Config flag, default off |
+| `skills.auto_create_from_sessions: true` | Config flag, default **off** (opt-in; when on, candidates STAGED, not live) |
 | `skills_loader` instance passed | Wired from `slack/gateway.py` + `cli.py` |
 | `include_history=True` | Idle path only, not prefs-only |
 | `≥ skills.auto_min_tool_calls` messages with non-empty `tools` | Default 5 |
@@ -516,9 +523,16 @@ Opt-in secondary flag, gated by `auto_create_from_sessions`. When on, the consol
   "skills": {
     "max_triggered": 3,
     "auto_create_from_sessions": false,
+    "approval_required": true,
     "auto_refine_on_deviation": false,
     "auto_min_tool_calls": 5,
-    "auto_similarity_threshold": 0.85
+    "auto_similarity_threshold": 0.85,
+    "max_auto_skills": 100,
+    "stale_after_days": 30,
+    "archive_after_days": 90,
+    "pending_ttl_days": 30,
+    "generate_scripts": true,
+    "judge_model": "claude-haiku-4.5"
   }
 }
 ```
@@ -527,7 +541,8 @@ Opt-in secondary flag, gated by `auto_create_from_sessions`. When on, the consol
 
 No new command. Users interact via the existing skill management surface:
 
-- Enable: `kirocrew config set skills.auto_create_from_sessions true`
+- Off by default (opt-in). Enable: `kirocrew config set skills.auto_create_from_sessions true` (or dashboard Settings → Skills); auto-approve prose-only: `kirocrew config set skills.approval_required false`
+- Review pending candidates: dashboard Skills → Pending review, or `GET /api/skills/-/pending`
 - List auto skills: filter `kirocrew` skill listings to those under `auto/`, or use `SkillsLoader.list_auto_skills()` in code
 - Remove unwanted auto skill: `rm -rf ~/.kirocrew/skills/auto/<slug>` (or dashboard skill delete when UI lands)
 - Audit trail: `kirocrew security events -n 20 | grep auto_skill`

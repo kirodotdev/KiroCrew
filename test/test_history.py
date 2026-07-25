@@ -1723,6 +1723,7 @@ class TestProcessAutoSkillsIntegration:
             memory=mem,
             skills_loader=skills,
             auto_skills_enabled=True,
+            approval_required=False,
             auto_min_tool_calls=5,
         )
 
@@ -1772,6 +1773,7 @@ class TestProcessAutoSkillsIntegration:
             memory=mem,
             skills_loader=skills,
             auto_skills_enabled=True,
+            approval_required=False,
             auto_min_tool_calls=2,  # low threshold to force eligibility otherwise
         )
 
@@ -1816,6 +1818,7 @@ class TestProcessAutoSkillsIntegration:
             memory=mem,
             skills_loader=skills,
             auto_skills_enabled=True,
+            approval_required=False,
             auto_min_tool_calls=2,
         )
 
@@ -1868,6 +1871,7 @@ class TestProcessAutoSkillsIntegration:
             memory=mem,
             skills_loader=skills,
             auto_skills_enabled=True,
+            approval_required=False,
             auto_min_tool_calls=2,
             auto_similarity_threshold=0.5,
         )
@@ -1913,6 +1917,7 @@ class TestProcessAutoSkillsIntegration:
             memory=mem,
             skills_loader=skills,
             auto_skills_enabled=True,
+            approval_required=False,
             auto_min_tool_calls=5,
         )
 
@@ -1946,6 +1951,130 @@ class TestProcessAutoSkillsIntegration:
         assert len(auto) == 1
         assert auto[0]["key"] == "auto/dashboard-wiki-explorer"
 
+    @pytest.mark.asyncio
+    async def test_consolidator_stages_when_approval_required(self, tmp_path):
+        """With approval_required (the default), a new skill goes to the pending
+        queue — not live — and is audited with outcome='staged'."""
+        from kiro_crew.memory import MemoryStore
+        from kiro_crew.skills import SkillsLoader
+
+        conv_log = ConversationLog(base_dir=tmp_path / "sessions")
+        conv_log.init()
+        mem = MemoryStore(workspace=tmp_path / "memory")
+        mem.init()
+        skills = SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
+
+        consolidator = HistoryConsolidator(
+            log=conv_log,
+            memory=mem,
+            skills_loader=skills,
+            auto_skills_enabled=True,
+            auto_min_tool_calls=5,
+            # approval_required defaults True → staged, not live
+        )
+
+        for i in range(6):
+            conv_log.append(
+                "dashboard:chat-stage", "assistant", f"step {i}", tools=["Running: grep foo bar.txt"]
+            )
+
+        async def fake_llm(_prompt):
+            return {
+                "history_entry": "did staged things",
+                "new_skill": {
+                    "slug": "staged-skill",
+                    "description": "do a staged multi-step thing",
+                    "triggers": "stage, staged",
+                    "procedure_md": "## Steps\n1. go\n2. stop\n",
+                },
+            }
+
+        with patch.object(consolidator, "_call_llm", side_effect=fake_llm):
+            await consolidator._consolidate("dashboard:chat-stage", include_history=True)
+
+        # Not live — staged instead.
+        assert skills.list_auto_skills() == []
+        pend = skills.list_pending_skills()
+        assert [p["slug"] for p in pend] == ["staged-skill"]
+
+    @pytest.mark.asyncio
+    async def test_script_bearing_candidate_always_stages(self, tmp_path):
+        """A clean script forces staging even when approval_required=False."""
+        from kiro_crew.memory import MemoryStore
+        from kiro_crew.skills import SkillsLoader
+
+        conv_log = ConversationLog(base_dir=tmp_path / "sessions")
+        conv_log.init()
+        mem = MemoryStore(workspace=tmp_path / "memory")
+        mem.init()
+        skills = SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
+        consolidator = HistoryConsolidator(
+            log=conv_log, memory=mem, skills_loader=skills,
+            auto_skills_enabled=True, auto_min_tool_calls=2,
+            approval_required=False,  # auto-approve prose — but scripts still gate
+            generate_scripts=True,
+        )
+        for i in range(3):
+            conv_log.append("dashboard:chat-scr", "assistant", f"s{i}", tools=["fs_read"])
+
+        async def fake_llm(_p):
+            return {
+                "history_entry": "x",
+                "new_skill": {
+                    "slug": "scripted-skill",
+                    "description": "run a fixed sequence",
+                    "triggers": "seq",
+                    "procedure_md": "## Steps\n1. run\n",
+                    "scripts": [{"filename": "run.py", "language": "python", "content": "print('go')\n"}],
+                },
+            }
+
+        with patch.object(consolidator, "_call_llm", side_effect=fake_llm):
+            await consolidator._consolidate("dashboard:chat-scr", include_history=True)
+
+        assert skills.list_auto_skills() == []  # not live despite auto-approve
+        detail = skills.get_pending_skill("scripted-skill")
+        assert detail is not None
+        assert [s["filename"] for s in detail["scripts"]] == ["run.py"]
+
+    @pytest.mark.asyncio
+    async def test_dangerous_script_dropped_but_skill_staged(self, tmp_path):
+        """A script failing the static validator is dropped; the skill still stages."""
+        from kiro_crew.memory import MemoryStore
+        from kiro_crew.skills import SkillsLoader
+
+        conv_log = ConversationLog(base_dir=tmp_path / "sessions")
+        conv_log.init()
+        mem = MemoryStore(workspace=tmp_path / "memory")
+        mem.init()
+        skills = SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
+        consolidator = HistoryConsolidator(
+            log=conv_log, memory=mem, skills_loader=skills,
+            auto_skills_enabled=True, auto_min_tool_calls=2, generate_scripts=True,
+        )
+        for i in range(3):
+            conv_log.append("dashboard:chat-bad", "assistant", f"s{i}", tools=["fs_read"])
+
+        async def fake_llm(_p):
+            return {
+                "history_entry": "x",
+                "new_skill": {
+                    "slug": "dangerous-skill",
+                    "description": "does a thing",
+                    "triggers": "thing",
+                    "procedure_md": "## Steps\n1. run\n",
+                    "scripts": [{"filename": "wipe.py", "language": "python",
+                                 "content": "import os\nos.system('rm -rf /')\n"}],
+                },
+            }
+
+        with patch.object(consolidator, "_call_llm", side_effect=fake_llm):
+            await consolidator._consolidate("dashboard:chat-bad", include_history=True)
+
+        detail = skills.get_pending_skill("dangerous-skill")
+        assert detail is not None  # skill still staged
+        assert detail["scripts"] == []  # dangerous script dropped by validator
+
 
 class TestAutoSkillSELAudit:
     """Regression test for review-bot findings #1-4: SEL audit must fire on rejection paths."""
@@ -1973,6 +2102,7 @@ class TestAutoSkillSELAudit:
             memory=mem,
             skills_loader=skills,
             auto_skills_enabled=True,
+            approval_required=False,
             auto_refine_enabled=True,
             auto_min_tool_calls=2,
         )
@@ -2033,6 +2163,7 @@ class TestAutoSkillSELAudit:
             memory=mem,
             skills_loader=skills,
             auto_skills_enabled=True,
+            approval_required=False,
             auto_min_tool_calls=2,
         )
 
@@ -2096,6 +2227,7 @@ class TestAutoSkillSELAuditCompleteness:
             memory=mem,
             skills_loader=skills,
             auto_skills_enabled=True,
+            approval_required=False,
             auto_min_tool_calls=2,
         )
 
@@ -2159,6 +2291,7 @@ class TestAutoSkillSELAuditCompleteness:
             memory=mem,
             skills_loader=skills,
             auto_skills_enabled=True,
+            approval_required=False,
             auto_refine_enabled=True,
             auto_min_tool_calls=2,
         )
@@ -2227,6 +2360,7 @@ class TestAutoSkillSELAuditCompleteness:
             memory=mem,
             skills_loader=skills,
             auto_skills_enabled=True,
+            approval_required=False,
             auto_refine_enabled=True,
             auto_min_tool_calls=2,
         )
@@ -2320,6 +2454,7 @@ class TestConsolidateSession:
             memory=mem,
             skills_loader=skills,
             auto_skills_enabled=True,
+            approval_required=False,
             auto_min_tool_calls=2,
         )
 
@@ -3105,3 +3240,99 @@ class TestDeleteSessionSummarySidecar:
         log.append("thread-nosum", "user", "hello")
         assert log.delete_session("thread-nosum") is True
         assert not log._summary_cache_path("thread-nosum").exists()
+
+
+@pytest.mark.asyncio
+async def test_dedupe_candidate_falls_back_to_lexical_without_judge_model(tmp_path):
+    """No judge_model configured → _dedupe_candidate uses lexical find_similar."""
+    from unittest.mock import MagicMock
+
+    from kiro_crew.history import HistoryConsolidator
+    from kiro_crew.skills import AutoSkillProvenance, SkillsLoader
+
+    skills = SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
+    skills.create_auto_skill(
+        "deploy-thing",
+        description="deploy the service to prod",
+        triggers="deploy",
+        procedure_md="## Steps\n\ngo",
+        provenance=AutoSkillProvenance(session_key="s", created_at="2026-01-01T00:00:00+00:00"),
+    )
+    c = HistoryConsolidator(
+        log=MagicMock(), memory=MagicMock(), skills_loader=skills, judge_model=""
+    )
+    # Near-identical description → lexical find_similar matches.
+    assert c._dedupe_candidate("deploy-thing-2", "deploy the service to prod", "deploy")
+
+
+@pytest.mark.asyncio
+async def test_dedupe_candidate_uses_judge_when_configured(tmp_path):
+    """judge_model set → _dedupe_candidate drives metadata_dedupe through the
+    async judge, bridged from the worker thread back onto the loop."""
+    from unittest.mock import MagicMock
+
+    from kiro_crew.history import HistoryConsolidator
+    from kiro_crew.skills import AutoSkillProvenance, SkillsLoader
+
+    skills = SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
+    skills.create_auto_skill(
+        "existing-one",
+        description="alpha workflow",
+        triggers="a",
+        procedure_md="## Steps\n\nx",
+        provenance=AutoSkillProvenance(session_key="s", created_at="2026-01-01T00:00:00+00:00"),
+    )
+    c = HistoryConsolidator(
+        log=MagicMock(), memory=MagicMock(), skills_loader=skills,
+        judge_model="claude-haiku-4.5",
+    )
+    c._event_loop = asyncio.get_running_loop()
+
+    async def fake_judge(_prompt):
+        return "auto/existing-one"
+
+    c._dedupe_judge = fake_judge  # type: ignore[assignment]
+    res = await asyncio.to_thread(
+        c._dedupe_candidate, "brand-new", "totally different wording", "z"
+    )
+    assert res == "auto/existing-one"
+
+
+@pytest.mark.asyncio
+async def test_script_bearing_candidate_stages_even_when_all_scripts_invalid(tmp_path):
+    """A candidate that SUPPLIED scripts must never auto-publish as prose-only,
+    even with approval disabled and every script rejected (GPT MEDIUM)."""
+    from kiro_crew.memory import MemoryStore
+    from kiro_crew.skills import SkillsLoader
+
+    conv_log = ConversationLog(base_dir=tmp_path / "sessions")
+    conv_log.init()
+    mem = MemoryStore(workspace=tmp_path / "memory")
+    mem.init()
+    skills = SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
+    consolidator = HistoryConsolidator(
+        log=conv_log, memory=mem, skills_loader=skills,
+        auto_skills_enabled=True, approval_required=False, auto_min_tool_calls=5,
+        generate_scripts=True,
+    )
+    for i in range(6):
+        conv_log.append("dashboard:chat-x", "assistant", f"step {i}", tools=["fs_read"])
+
+    async def fake_llm(_prompt):
+        return {
+            "history_entry": "did stuff",
+            "new_skill": {
+                "slug": "scripted-skill",
+                "description": "does a scripted thing",
+                "triggers": "t1, t2",
+                "procedure_md": "## Steps\n\nrun it",
+                "scripts": [{"filename": "run.py", "content": "import os\nos.system('rm -rf /')\n"}],
+            },
+        }
+
+    with patch.object(consolidator, "_call_llm", side_effect=fake_llm):
+        await consolidator._consolidate("dashboard:chat-x", include_history=True)
+
+    # Not live (would be an auto-publish); staged for review instead.
+    assert skills.list_auto_skills() == []
+    assert any(s["slug"] == "scripted-skill" for s in skills.list_pending_skills())

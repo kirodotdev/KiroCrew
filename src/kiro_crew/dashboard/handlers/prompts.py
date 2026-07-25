@@ -10,6 +10,7 @@ from typing import Any
 
 from aiohttp import web
 
+from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.executors import discovery_executor
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -287,6 +288,220 @@ async def api_skill_file(request: web.Request) -> web.Response:
         return web.json_response({"error": err}, status=404)
     _audit('ok')
     return web.json_response({"name": name, "path": rel_path, "content": content})
+
+
+# ── Auto-skill pending-approval queue (v2) ──
+
+
+def _pending_slug_ok(slug: str) -> bool:
+    return (
+        bool(slug)
+        and slug not in (".", "..")
+        and not slug.startswith(".")
+        and "/" not in slug
+        and "\\" not in slug
+        and ".." not in slug
+    )
+
+
+async def api_skills_pending(request: web.Request) -> web.Response:
+    """GET /api/skills/-/pending — list staged auto-skill candidates."""
+    state: DashboardState = request.app["state"]
+    skills = _get_skills(state)
+
+    def _prune_and_list() -> list:
+        # Opportunistic TTL cleanup on read — gives prune_pending a real caller
+        # so stale candidates don't accumulate unbounded.
+        try:
+            ttl = KiroCrewConfig.load().skills.pending_ttl_days
+            skills.prune_pending(ttl)
+        except Exception:
+            pass
+        return skills.list_pending_skills()
+
+    try:
+        items = await asyncio.get_running_loop().run_in_executor(
+            discovery_executor(), _prune_and_list
+        )
+    except Exception:
+        items = []
+    _sel().log_tool_invocation(
+        session_key='', agent='api', source='dashboard',
+        tool_name='api_skills_pending', tool_kind='skill', outcome='ok',
+        metadata={'count': len(items)},
+    )
+    return web.json_response({"pending": items})
+
+
+async def api_skill_pending_detail(request: web.Request) -> web.Response:
+    """GET /api/skills/-/pending/{slug} — full candidate incl. body + scripts."""
+    state: DashboardState = request.app["state"]
+    skills = _get_skills(state)
+    slug = request.match_info["slug"]
+    if not _pending_slug_ok(slug):
+        _sel().log_tool_invocation(
+            session_key='', agent='api', source='dashboard',
+            tool_name='api_skill_pending_detail', tool_kind='skill',
+            outcome='bad_request', metadata={'slug': slug},
+        )
+        return web.json_response({"error": "invalid slug"}, status=400)
+    try:
+        detail = await asyncio.get_running_loop().run_in_executor(
+            discovery_executor(), skills.get_pending_skill, slug
+        )
+    except Exception:
+        _sel().log_tool_invocation(
+            session_key='', agent='api', source='dashboard',
+            tool_name='api_skill_pending_detail', tool_kind='skill',
+            outcome='error', metadata={'slug': slug},
+        )
+        return web.json_response({"error": "internal error"}, status=500)
+    _sel().log_tool_invocation(
+        session_key='', agent='api', source='dashboard',
+        tool_name='api_skill_pending_detail', tool_kind='skill',
+        outcome='ok' if detail is not None else 'not_found', metadata={'slug': slug},
+    )
+    if detail is None:
+        return web.json_response({"error": "not found"}, status=404)
+    return web.json_response(detail)
+
+
+async def api_skill_pending_approve(request: web.Request) -> web.Response:
+    """POST /api/skills/-/pending/{slug}/approve — promote candidate to live."""
+    state: DashboardState = request.app["state"]
+    skills = _get_skills(state)
+    slug = request.match_info["slug"]
+    if not _pending_slug_ok(slug):
+        _sel().log_tool_invocation(
+            session_key='', agent='api', source='dashboard',
+            tool_name='api_skill_pending_approve', tool_kind='skill',
+            outcome='rejected', metadata={'slug': slug, 'reason': 'invalid_slug'},
+        )
+        return web.json_response({"error": "invalid slug"}, status=400)
+
+    def _approve_and_bound() -> str | None:
+        nm = skills.approve_pending_skill(slug)
+        if nm:
+            # Approving consumes a slot — enforce the bound (archive, never
+            # delete). Best-effort; runs in the same off-loop executor job.
+            # Exempt the just-approved skill so a full-cap pass can't archive the
+            # very skill this request promoted (brand-new + zero-hit, it would
+            # otherwise rank lowest in the max-N backstop).
+            try:
+                cfg = KiroCrewConfig.load().skills
+                skills.run_skill_lifecycle(
+                    max_auto_skills=cfg.max_auto_skills,
+                    stale_after_days=cfg.stale_after_days,
+                    archive_after_days=cfg.archive_after_days,
+                    exempt={nm},
+                )
+            except Exception:
+                pass
+        return nm
+
+    try:
+        name = await asyncio.get_running_loop().run_in_executor(
+            discovery_executor(), _approve_and_bound
+        )
+    except Exception:
+        _sel().log_tool_invocation(
+            session_key='', agent='api', source='dashboard',
+            tool_name='api_skill_pending_approve', tool_kind='skill',
+            outcome='error', metadata={'slug': slug},
+        )
+        return web.json_response({"error": "internal error"}, status=500)
+    outcome = "ok" if name else "not_found"
+    _sel().log_tool_invocation(
+        session_key='', agent='api', source='dashboard',
+        tool_name='api_skill_pending_approve', tool_kind='skill', outcome=outcome,
+        metadata={'slug': slug, 'name': name or ''},
+    )
+    if not name:
+        return web.json_response(
+            {"error": "not found, a live skill already exists, or script validation failed"},
+            status=409,
+        )
+    return web.json_response({"approved": name})
+
+
+async def api_skill_pending_dismiss(request: web.Request) -> web.Response:
+    """POST /api/skills/-/pending/{slug}/dismiss — delete a candidate."""
+    state: DashboardState = request.app["state"]
+    skills = _get_skills(state)
+    slug = request.match_info["slug"]
+    if not _pending_slug_ok(slug):
+        _sel().log_tool_invocation(
+            session_key='', agent='api', source='dashboard',
+            tool_name='api_skill_pending_dismiss', tool_kind='skill',
+            outcome='rejected', metadata={'slug': slug, 'reason': 'invalid_slug'},
+        )
+        return web.json_response({"error": "invalid slug"}, status=400)
+    try:
+        ok = await asyncio.get_running_loop().run_in_executor(
+            discovery_executor(), skills.dismiss_pending_skill, slug
+        )
+    except Exception:
+        _sel().log_tool_invocation(
+            session_key='', agent='api', source='dashboard',
+            tool_name='api_skill_pending_dismiss', tool_kind='skill',
+            outcome='error', metadata={'slug': slug},
+        )
+        return web.json_response({"error": "internal error"}, status=500)
+    _sel().log_tool_invocation(
+        session_key='', agent='api', source='dashboard',
+        tool_name='api_skill_pending_dismiss', tool_kind='skill',
+        outcome='ok' if ok else 'not_found', metadata={'slug': slug},
+    )
+    if not ok:
+        return web.json_response({"error": "not found"}, status=404)
+    return web.json_response({"dismissed": slug})
+
+
+async def api_skill_pin(request: web.Request) -> web.Response:
+    """POST /api/skills/-/pin — body {name, pinned:bool}. Pin/unpin an auto-skill
+    so the lifecycle never archives it."""
+    state: DashboardState = request.app["state"]
+    skills = _get_skills(state)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    name = str(body.get("name", "")).strip()
+    raw_pinned = body.get("pinned", True)
+    if not isinstance(raw_pinned, bool):
+        _sel().log_tool_invocation(
+            session_key='', agent='api', source='dashboard',
+            tool_name='api_skill_pin', tool_kind='skill',
+            outcome='rejected', metadata={'name': name, 'reason': 'pinned_not_bool'},
+        )
+        return web.json_response({"error": "pinned must be a boolean"}, status=400)
+    pinned = raw_pinned
+    if not name:
+        _sel().log_tool_invocation(
+            session_key='', agent='api', source='dashboard',
+            tool_name='api_skill_pin', tool_kind='skill',
+            outcome='rejected', metadata={'name': name, 'reason': 'name_required'},
+        )
+        return web.json_response({"error": "name required"}, status=400)
+    try:
+        ok = await asyncio.get_running_loop().run_in_executor(
+            discovery_executor(), skills.set_pinned, name, pinned
+        )
+    except Exception:
+        _sel().log_tool_invocation(
+            session_key='', agent='api', source='dashboard',
+            tool_name='api_skill_pin', tool_kind='skill',
+            outcome='error', metadata={'name': name, 'pinned': pinned},
+        )
+        return web.json_response({"error": "internal error"}, status=500)
+    _sel().log_tool_invocation(
+        session_key='', agent='api', source='dashboard',
+        tool_name='api_skill_pin', tool_kind='skill',
+        outcome='ok' if ok else 'rejected', metadata={'name': name, 'pinned': pinned},
+    )
+    if not ok:
+        return web.json_response({"error": "not an auto-skill or not found"}, status=400)
+    return web.json_response({"name": name, "pinned": pinned})
 
 
 async def api_skill_detail(request: web.Request) -> web.Response:

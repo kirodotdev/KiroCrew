@@ -1,6 +1,6 @@
 import { useEffect } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Bell, Code, Globe, Import, Info, Keyboard, Link2, MessageSquare, Mic, Palette, PanelsTopLeft, Server, ShieldCheck } from 'lucide-react'
+import { Bell, Code, Globe, Import, Info, Keyboard, Link2, MessageSquare, Mic, Palette, PanelsTopLeft, Server, ShieldCheck, Sparkles } from 'lucide-react'
 import { useAppSelector } from '../store'
 import SidePanelLayout from '../components/SidePanelLayout'
 import { useSettingHighlight } from '../hooks/useSettingHighlight'
@@ -9,6 +9,7 @@ import { InstancesPanel } from './settings/InstancesPanel'
 import { isEmbeddedPane } from '../lib/embedded'
 import { DisplayPanel } from './settings/DisplayPanel'
 import { ChatPanel } from './settings/ChatPanel'
+import { SkillsPanel } from './settings/SkillsPanel'
 import { VoicePanel } from './settings/VoicePanel'
 import { DeveloperPanel } from './settings/DeveloperPanel'
 import { SecurityPanel } from './settings/SecurityPanel'
@@ -30,6 +31,7 @@ const TABS = [
   { key: 'voice', label: 'Voice', icon: <Mic size={16} />, group: GROUP_PREFERENCES, description: 'Text-to-speech and speech-to-text (dictation) settings' },
   { key: 'notifications', label: 'Notifications', icon: <Bell size={16} />, group: GROUP_PREFERENCES, description: 'Sound effects and per-source alert preferences' },
   { key: 'shortcuts', label: 'Shortcuts', icon: <Keyboard size={16} />, group: GROUP_PREFERENCES, description: 'Keyboard shortcuts reference and preferences' },
+  { key: 'skills', label: 'Skills', icon: <Sparkles size={16} />, group: GROUP_PREFERENCES, description: 'Automatic skill generation from sessions and the approval gate' },
   { key: 'channels', label: 'Channels', icon: <Link2 size={16} />, description: 'Chat platforms the agent can send and receive on — Slack, Discord, Telegram, Webex, WeCom, Microsoft Teams, WeChat' },
   { key: 'browser', label: 'Browser', icon: <Globe size={16} />, group: GROUP_SYSTEM, description: 'Playwright browser mode, extension token, and auth configuration' },
   { key: 'instances', label: 'Instances', icon: <Server size={16} />, group: GROUP_SYSTEM, description: 'Manage remote KiroCrew instances over SSH tunnels; switch between them from the top header' },
@@ -85,6 +87,7 @@ export default function SettingsPage() {
         {tab === 'voice' && <VoicePanel />}
         {tab === 'notifications' && <NotificationsPanel />}
         {tab === 'shortcuts' && <ShortcutsPanel />}
+        {tab === 'skills' && <SkillsPanel />}
         {tab === 'channels' && <ChannelsPanel />}
         {tab === 'browser' && <BrowserPanel />}
         {tab === 'instances' && !embedded && <InstancesPanel />}
