@@ -1,6 +1,7 @@
 import { safeSetItem } from '../../utils/safeStorage'
 import { useState, useMemo, useCallback, useEffect, type ReactNode } from 'react'
-import { Bell, BellOff, Check, CheckCheck, Trash2, X } from 'lucide-react'
+import { Bell, BellOff, Check, CheckCheck, Layers, Trash2, X } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
 import { useAppSelector, useAppDispatch } from '../../store'
 import { deleteNotification, clearNotifications, ackAllNotifications } from '../../store/notificationsSlice'
 import { api } from '../../api/client'
@@ -10,7 +11,7 @@ import { disintegrate } from '../../lib/disintegrate'
 import type { Notification } from '../../types'
 import {
   type Kind, type Category, KIND_KEYS, CATEGORIES, KINDS_STORAGE_KEY, loadActiveKinds,
-  parseTs, dateGroup, KIND_META, DEFAULT_META, fmtTime, stripMd, notePriority,
+  parseTs, dateGroup, KIND_META, DEFAULT_META, fmtTime, stripMd, notePriority, safeInternalUrl,
 } from './notifMeta'
 
 /** localStorage key for app channels the user has already decided on (keep or
@@ -140,6 +141,58 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
     return map
   }, [filtered])
 
+  const navigate = useNavigate()
+  // RFC Phase 4: group_key stacking -- notes sharing a group_key within a
+  // date group collapse into one stack (newest is the visible head), macOS
+  // Notification Center style. Expansion is per stack key, session-local.
+  const [expandedStacks, setExpandedStacks] = useState<Set<string>>(new Set())
+  const toggleStack = useCallback((key: string) => {
+    setExpandedStacks(prev => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key); else next.add(key)
+      return next
+    })
+  }, [])
+
+  type Row = { n: Notification; stackKey?: string; stackCount?: number; stackExpanded?: boolean; isStackChild?: boolean }
+  const stackedGroups = useMemo(() => {
+    const out = new Map<string, Row[]>()
+    for (const [g, notes] of groups.entries()) {
+      const rows: Row[] = []
+      const stacks = new Map<string, Notification[]>()
+      for (const n of notes) {
+        if (!n.group_key) continue
+        const arr = stacks.get(n.group_key)
+        if (arr) arr.push(n); else stacks.set(n.group_key, [n])
+      }
+      const seen = new Set<string>()
+      for (const n of notes) {
+        if (!n.group_key || (stacks.get(n.group_key)?.length ?? 0) < 2) {
+          rows.push({ n })
+          continue
+        }
+        if (seen.has(n.group_key)) continue
+        seen.add(n.group_key)
+        const stack = stacks.get(n.group_key)!  // notes is newest-first, so [0] is the head
+        const stackKey = `${g}:${n.group_key}`
+        const expanded = expandedStacks.has(stackKey)
+        rows.push({ n: stack[0], stackKey, stackCount: stack.length, stackExpanded: expanded })
+        if (expanded) for (const child of stack.slice(1)) rows.push({ n: child, isStackChild: true })
+      }
+      out.set(g, rows)
+    }
+    return out
+  }, [groups, expandedStacks])
+
+  // One-click approval resolution from the feed (RFC Phase 4 exit criteria).
+  const resolveApprovalNote = useCallback((n: Notification, action: 'approve' | 'reject') => {
+    api.resolveApproval(n.approval_id || n.ts, action)
+      .then(() => { dispatch(deleteNotification(n.ts)) })
+      // eslint-disable-next-line no-console -- intentional failure diagnostic;
+      // the row stays in the feed and remains retryable (detail panel too).
+      .catch(err => { console.error(`Inline ${action} failed`, err) })
+  }, [dispatch])
+
   const unread = items.filter(n => !n.acked).length
   const mac = variant === 'mac'
 
@@ -226,12 +279,12 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
         {filtered.length === 0 ? (
           <EmptyState icon={<Bell className="lucide-inline" />} title="No notifications" subtitle={noneActive ? 'No categories selected — click a category above' : filter ? 'Try a different search' : 'Activity will appear here'} />
         ) : (
-          Array.from(groups.entries()).map(([group, notes]) => (
+          Array.from(stackedGroups.entries()).map(([group, rows]) => (
             <div key={group} className="mb-3">
               <div className={mac
                 ? 'text-[11px] font-bold text-text-strong/80 uppercase tracking-[.06em] mb-1.5 px-1 drop-shadow-sm'
                 : 'text-[11px] font-semibold text-muted uppercase tracking-[.04em] mb-1.5 px-1'}>{group}</div>
-              {notes.map(n => {
+              {rows.map(({ n, stackKey, stackCount, stackExpanded, isStackChild }) => {
                 const km = KIND_META[n.kind] || DEFAULT_META
                 const active = selectedTs === n.ts
                 const prio = notePriority(n)
@@ -246,16 +299,34 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                 const promptChannel = promptTs === n.ts && n.channel && n.source
                   ? { channel: n.channel, label: `${n.source} / ${n.channel.startsWith(`${n.source}.`) ? n.channel.slice(n.source.length + 1) : n.channel}` }
                   : null
+                // RFC Phase 4: inline actions. Approval approve/reject is
+                // wired first; generic actions render only with a safe
+                // dashboard-internal url (never executable content).
+                const isApproval = n.kind === 'approval' && !n.acked
+                // Defense-in-depth for legacy/corrupted persisted rows: the
+                // actions field must be a real array (a truthy non-array like
+                // `{}` would throw on .filter), and only string fields render
+                // (a non-string label would crash React).
+                const urlActions = (Array.isArray(n.actions) ? n.actions : [])
+                  .filter(a => typeof a?.id === 'string' && typeof a?.label === 'string' && typeof a?.url === 'string')
+                  .map(a => ({ ...a, safeUrl: safeInternalUrl(a.url) }))
+                  .filter(a => a.safeUrl)
+                const hasActions = isApproval || urlActions.length > 0
+                const collapsedStack = !!(stackKey && stackCount && stackCount > 1 && !stackExpanded)
+                // macOS NC action buttons: quiet translucent capsules, text-only,
+                // semantic tint on the LABEL (never a solid colored fill).
+                const actionBtn = 'px-3 py-1 rounded-lg text-[12px] font-medium cursor-pointer font-body whitespace-nowrap transition-colors bg-[color-mix(in_srgb,var(--bg-hover)_80%,transparent)] backdrop-blur border border-[color-mix(in_srgb,var(--border)_45%,transparent)] hover:bg-bg-hover'
                 return (
-                  <div key={n.ts}>
+                  <div key={n.ts} className={isStackChild && !mac ? 'ml-4' : ''}>
                     <div data-notif-row
                       className={mac
-                        ? `group flex items-start gap-2.5 px-3 py-2.5 rounded-2xl ${promptChannel ? 'rounded-b-none mb-0' : 'mb-2'} transition-all ${macCard}`
-                        : `group flex items-center gap-2 px-2.5 py-2 rounded-md ${promptChannel ? 'rounded-b-none mb-0' : 'mb-1'} transition-all border-l-[3px] ${panelBorder} ${silenced ? 'border border-dashed border-border bg-transparent' : active ? 'bg-accent-subtle border border-accent' : 'border border-transparent hover:bg-bg-hover hover:border-border'} ${(n.acked || prio === 'passive') && !active && !silenced ? 'opacity-50' : ''} ${silenced ? 'opacity-60' : ''}`}
+                        ? `group flex flex-col px-3 py-2.5 rounded-2xl ${promptChannel || collapsedStack ? 'mb-0' : 'mb-2'} ${promptChannel ? 'rounded-b-none' : ''} ${collapsedStack ? 'relative z-[2] cursor-pointer' : ''} transition-all ${macCard}`
+                        : `group flex flex-col px-2.5 py-2 rounded-md ${promptChannel ? 'rounded-b-none mb-0' : 'mb-1'} transition-all border-l-[3px] ${panelBorder} ${silenced ? 'border border-dashed border-border bg-transparent' : active ? 'bg-accent-subtle border border-accent' : 'border border-transparent hover:bg-bg-hover hover:border-border'} ${(n.acked || prio === 'passive') && !active && !silenced ? 'opacity-50' : ''} ${silenced ? 'opacity-60' : ''}`}
                     >
+                      <div className={`flex ${mac ? 'items-start' : 'items-center'} gap-2.5`}>
                       <Clickable
-                        onClick={() => onSelect(n)}
-                        aria-label={`Open notification: ${n.title}`}
+                        onClick={() => { if (mac && collapsedStack && stackKey) toggleStack(stackKey); else onSelect(n) }}
+                        aria-label={mac && collapsedStack ? `Expand ${stackCount} grouped notifications: ${n.title}` : `Open notification: ${n.title}`}
                         className={`flex ${mac ? 'items-start' : 'items-center'} gap-2 flex-1 min-w-0 text-left cursor-pointer ${mac ? contentDim : ''}`}
                       >
                         {mac ? (
@@ -274,6 +345,9 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                           ) : !n.acked ? (
                             <span className={`w-1.5 h-1.5 rounded-full animate-dot-breathe ${prio === 'critical' ? 'bg-danger' : 'bg-accent'}`} data-priority={prio} />
                           ) : null}
+                          {mac && collapsedStack && (
+                            <span className="text-[10px] font-medium text-muted px-1.5 py-px rounded-full bg-[color-mix(in_srgb,var(--bg-hover)_80%,transparent)]">{stackCount}</span>
+                          )}
                         </div>
                       </Clickable>
                       <Clickable
@@ -281,7 +355,56 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                         className="opacity-0 group-hover:opacity-40 text-[11px] cursor-pointer hover:!opacity-100 hover:text-danger transition-opacity shrink-0"
                         onClick={async e => { e?.stopPropagation(); const row = (e?.currentTarget as HTMLElement | undefined)?.closest('[data-notif-row]') as HTMLElement | null; await disintegrate(row); dispatch(deleteNotification(n.ts)) }}
                       ><X className="lucide-inline" /></Clickable>
+                      </div>
+                      {(hasActions || (!mac && stackCount && stackCount > 1) || (mac && stackExpanded)) && (
+                        <div className={`flex items-center gap-1.5 mt-1.5 flex-wrap ${mac ? 'pl-[42px]' : 'pl-6'}`}>
+                          {isApproval && (
+                            <>
+                              <button
+                                type="button"
+                                className={`${actionBtn} text-ok`}
+                                onClick={e => { e.stopPropagation(); resolveApprovalNote(n, 'approve') }}
+                              >Approve</button>
+                              <button
+                                type="button"
+                                className={`${actionBtn} text-danger`}
+                                onClick={e => { e.stopPropagation(); resolveApprovalNote(n, 'reject') }}
+                              >Reject</button>
+                            </>
+                          )}
+                          {urlActions.map(a => (
+                            <button
+                              key={a.id}
+                              type="button"
+                              className={`${actionBtn} text-text`}
+                              onClick={e => { e.stopPropagation(); navigate(a.safeUrl!) }}
+                            >{a.label}</button>
+                          ))}
+                          <span className="flex-1" />
+                          {/* Stack toggle: mac shows only the quiet "Show less"
+                              when expanded (collapse-by-click lives on the deck);
+                              panel keeps an explicit pill both ways. */}
+                          {stackKey && stackCount && stackCount > 1 && (mac ? stackExpanded : true) && (
+                            <button
+                              type="button"
+                              aria-expanded={!!stackExpanded}
+                              className={mac
+                                ? `${actionBtn} text-muted`
+                                : 'px-2 py-0.5 rounded-full text-[11px] font-medium cursor-pointer bg-bg-hover text-muted border border-border hover:text-text hover:border-border-strong transition-colors font-body whitespace-nowrap'}
+                              onClick={e => { e.stopPropagation(); toggleStack(stackKey) }}
+                            >{mac ? 'Show less' : <><Layers className="lucide-inline" /> {stackExpanded ? 'Show less' : `${stackCount - 1} more`}</>}</button>
+                          )}
+                        </div>
+                      )}
                     </div>
+                    {/* macOS NC deck: two card edges peeking below a collapsed
+                        stack -- click anywhere on the head to expand. */}
+                    {mac && collapsedStack && (
+                      <div aria-hidden className="mb-2">
+                        <div className={`relative z-[1] h-3 -mt-1.5 mx-2 rounded-b-2xl ${silenced ? 'bg-[color-mix(in_srgb,var(--card)_30%,transparent)]' : 'bg-[color-mix(in_srgb,var(--card)_45%,transparent)]'} backdrop-blur-xl border border-t-0 border-[color-mix(in_srgb,var(--border)_45%,transparent)] shadow-[0_4px_12px_rgba(0,0,0,.06)]`} />
+                        <div className="relative z-0 h-3 -mt-1.5 mx-4 rounded-b-2xl bg-[color-mix(in_srgb,var(--card)_35%,transparent)] backdrop-blur-lg border border-t-0 border-[color-mix(in_srgb,var(--border)_35%,transparent)]" />
+                      </div>
+                    )}
                     {promptChannel && (
                       <div className={`flex items-center gap-2 px-3 py-2 border border-t-0 ${mac
                         ? 'rounded-b-2xl mb-2 bg-accent-subtle backdrop-blur-2xl border-[color-mix(in_srgb,var(--border)_55%,transparent)]'

@@ -511,6 +511,12 @@ function NotificationsBellButton() {
   // muted-channel (silenced) rows are excluded, mirroring the backend's
   // _unread_count semantics.
   const unacked = items.filter(n => !n.acked && n.priority !== 'passive' && !n.silenced)
+
+  // RFC Phase 4: mirror the unread count onto the desktop dock/taskbar badge.
+  useEffect(() => {
+    const api = (window as Window & { electronAPI?: { setBadgeCount?: (n: number) => void } }).electronAPI
+    api?.setBadgeCount?.(unacked.length)
+  }, [unacked.length])
   const selected = selectedTs ? items.find(n => n.ts === selectedTs) || null : null
 
   // Close popover when navigating (e.g. detail panel's "Go to Chat" buttons)

@@ -49,6 +49,7 @@
     "files": [
       "main.js",
       "app-menu.js",
+      "badge.js",
       "zoom.js",
       "instance-guard.js",
       "context-menu.js",

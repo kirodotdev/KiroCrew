@@ -49,6 +49,13 @@ _FALLBACK_CHANNEL = "system.agent"
 
 _MAX_TITLE_LEN = 500
 _MAX_BODY_LEN = 20000
+# Actions are rendered as buttons on every notification surface -- caps keep
+# a single note from expanding the feed layout or bloating the store (the
+# 64 KB request limit alone would admit thousands of actions).
+_MAX_ACTIONS = 4
+_MAX_ACTION_ID_LEN = 64
+_MAX_ACTION_LABEL_LEN = 40
+_MAX_ACTION_URL_LEN = 500
 
 # Schema-owned note keys. Meta merging skips these entirely: setdefault alone
 # would only protect keys already present, letting meta smuggle unvalidated
@@ -74,6 +81,30 @@ _RESERVED_NOTE_KEYS = frozenset(
 
 class NotificationValidationError(ValueError):
     """Raised when a payload fails schema validation or channel resolution."""
+
+
+def _validate_internal_url(url: str, *, field: str = "url") -> None:
+    """Reject anything but a dashboard-internal path (RFC "Security
+    considerations").
+
+    No external schemes, no protocol-relative URLs ("//evil.example.com"
+    resolves to an external origin), and no backslashes: browsers normalize
+    "\\" to "/" per the WHATWG URL spec, so "/\\evil.example.com" is
+    equivalent to "//evil.example.com". ASCII tab/newline/CR are rejected
+    because WHATWG URL parsing strips them before interpreting the URL, so
+    "/\\t/evil.example.com" would become protocol-relative.
+
+    Applied to the note-level ``url`` AND every ``actions[].url`` so that
+    persistence is the trust root: no stored note can carry an external
+    deep link, and client-side checks are genuine defense-in-depth.
+    """
+    if (
+        not url.startswith("/")
+        or url.startswith("//")
+        or "\\" in url
+        or any(c in url for c in "\t\n\r")
+    ):
+        raise NotificationValidationError(f"{field} must be a dashboard-internal path")
 
 
 @dataclass
@@ -119,27 +150,55 @@ class NotificationPayload:
         if self.ttl is not None and (not isinstance(self.ttl, int) or self.ttl <= 0):
             raise NotificationValidationError("ttl must be a positive integer")
         if self.actions is not None:
+            if len(self.actions) > _MAX_ACTIONS:
+                raise NotificationValidationError(
+                    f"at most {_MAX_ACTIONS} actions per notification"
+                )
             for action in self.actions:
-                if not isinstance(action, dict) or not action.get("id") or not action.get("label"):
+                # `id` and `label` must be NON-EMPTY STRINGS -- a truthy
+                # non-string (e.g. `{}`) would pass a bare truthiness check,
+                # persist, and then crash React ("Objects are not valid as a
+                # React child") for every client rendering the note.
+                if (
+                    not isinstance(action, dict)
+                    or not isinstance(action.get("id"), str)
+                    or not action["id"].strip()
+                    or not isinstance(action.get("label"), str)
+                    or not action["label"].strip()
+                ):
                     raise NotificationValidationError(
-                        "each action requires 'id' and 'label' fields"
+                        "each action requires non-empty string 'id' and 'label' fields"
                     )
+                if len(action["id"]) > _MAX_ACTION_ID_LEN:
+                    raise NotificationValidationError(
+                        f"action id exceeds {_MAX_ACTION_ID_LEN} chars"
+                    )
+                if len(action["label"]) > _MAX_ACTION_LABEL_LEN:
+                    raise NotificationValidationError(
+                        f"action label exceeds {_MAX_ACTION_LABEL_LEN} chars"
+                    )
+                # Action contract (RFC Phase 4): an action MAY carry a `url`
+                # (a dashboard-internal deep link the frontend renders as a
+                # navigation button). URL-less actions are legal and persist —
+                # they carry an identifier for future dispatch semantics but
+                # render nothing today. When present, `url` obeys the same
+                # path-only rule as the note-level field: persistence is the
+                # trust root, so a stored action can never leak external
+                # navigation to any consumer (frontend, Slack escalation,
+                # native notifications, MCP tools).
+                action_url = action.get("url")
+                if action_url is not None:
+                    if not isinstance(action_url, str):
+                        raise NotificationValidationError(
+                            "action url must be a dashboard-internal path"
+                        )
+                    if len(action_url) > _MAX_ACTION_URL_LEN:
+                        raise NotificationValidationError(
+                            f"action url exceeds {_MAX_ACTION_URL_LEN} chars"
+                        )
+                    _validate_internal_url(action_url, field="action url")
         if self.url is not None:
-            # Deep-links are dashboard-internal routes only (RFC "Security
-            # considerations") — no external schemes, no protocol-relative
-            # URLs ("//evil.example.com" resolves to an external origin),
-            # and no backslashes: browsers normalize "\" to "/" per the
-            # WHATWG URL spec, so "/\evil.example.com" is equivalent to
-            # "//evil.example.com".
-            if not self.url.startswith("/"):
-                raise NotificationValidationError("url must be a dashboard-internal path")
-            if self.url.startswith("//") or "\\" in self.url:
-                raise NotificationValidationError("url must be a dashboard-internal path")
-            if any(c in self.url for c in "\t\n\r"):
-                # WHATWG URL parsing strips ASCII tab/newline/CR before
-                # interpreting the URL, so "/\t/evil.example.com" would become
-                # the protocol-relative "//evil.example.com".
-                raise NotificationValidationError("url must be a dashboard-internal path")
+            _validate_internal_url(self.url, field="url")
 
 
 def payload_from_legacy(

@@ -58,6 +58,123 @@ class TestPayloadValidation:
         with pytest.raises(NotificationValidationError, match="action"):
             p.validate()
 
+    @pytest.mark.parametrize(
+        "bad_action",
+        [
+            {"id": {}, "label": {}},  # truthy non-strings crash React as children
+            {"id": "x", "label": 42},
+            {"id": ["a"], "label": "L"},
+            {"id": "", "label": "L"},  # empty after the string check
+            {"id": "  ", "label": "L"},  # whitespace-only
+        ],
+    )
+    def test_action_non_string_or_empty_fields_rejected(self, bad_action):
+        # GPT 5.6 HIGH on PR #399: a truthy non-string id/label passed the
+        # old truthiness check, persisted, and rendered as a React child --
+        # crashing the notification surface for every client.
+        p = NotificationPayload(
+            source="system",
+            channel="system.cron",
+            title="t",
+            body="b",
+            actions=[bad_action],
+        )
+        with pytest.raises(NotificationValidationError, match="action"):
+            p.validate()
+
+    def test_action_with_internal_url_accepted(self):
+        p = NotificationPayload(
+            source="system",
+            channel="system.cron",
+            title="t",
+            body="b",
+            actions=[{"id": "view", "label": "View schedule", "url": "/schedule"}],
+        )
+        p.validate()  # must not raise
+
+    def test_action_without_url_accepted(self):
+        # URL-less actions are legal per the Phase 4 contract: they persist
+        # (reserving dispatch semantics) but render nothing today.
+        p = NotificationPayload(
+            source="system",
+            channel="system.cron",
+            title="t",
+            body="b",
+            actions=[{"id": "ack", "label": "Acknowledge"}],
+        )
+        p.validate()  # must not raise
+
+    @pytest.mark.parametrize(
+        "bad_url",
+        [
+            "https://evil.example.com/",  # external scheme
+            "//evil.example.com/x",  # protocol-relative
+            "/\\evil.example.com/x",  # WHATWG backslash normalization
+            "/\t/evil.example.com/x",  # WHATWG stripped chars
+            "/\n/evil.example.com/x",
+            "/\r/evil.example.com/x",
+            "relative/path",  # not a path from root
+        ],
+    )
+    def test_action_url_rejected_at_trust_root(self, bad_url):
+        # Persistence is the trust root (Arbiter finding on PR #399): an
+        # unsafe actions[].url must never be stored, so every future
+        # consumer (Slack escalation, native notifications, MCP tools)
+        # inherits the guarantee without re-implementing the filter.
+        p = NotificationPayload(
+            source="system",
+            channel="system.cron",
+            title="t",
+            body="b",
+            actions=[{"id": "x", "label": "X", "url": bad_url}],
+        )
+        with pytest.raises(NotificationValidationError, match="action url"):
+            p.validate()
+
+    def test_action_non_string_url_rejected(self):
+        p = NotificationPayload(
+            source="system",
+            channel="system.cron",
+            title="t",
+            body="b",
+            actions=[{"id": "x", "label": "X", "url": 42}],
+        )
+        with pytest.raises(NotificationValidationError, match="action url"):
+            p.validate()
+
+    def test_action_count_capped(self):
+        # GPT 5.6 MEDIUM on PR #399: the 64 KB request limit alone would
+        # admit thousands of actions -- every one renders as a button on
+        # every surface, so the count is capped at validation.
+        actions = [{"id": f"a{i}", "label": f"L{i}"} for i in range(5)]
+        p = NotificationPayload(
+            source="system", channel="system.cron", title="t", body="b", actions=actions
+        )
+        with pytest.raises(NotificationValidationError, match="at most"):
+            p.validate()
+
+    def test_action_count_at_cap_accepted(self):
+        actions = [{"id": f"a{i}", "label": f"L{i}"} for i in range(4)]
+        p = NotificationPayload(
+            source="system", channel="system.cron", title="t", body="b", actions=actions
+        )
+        p.validate()  # must not raise
+
+    @pytest.mark.parametrize(
+        ("field", "action"),
+        [
+            ("id", {"id": "x" * 65, "label": "L"}),
+            ("label", {"id": "x", "label": "y" * 41}),
+            ("url", {"id": "x", "label": "L", "url": "/" + "y" * 500}),
+        ],
+    )
+    def test_action_field_lengths_capped(self, field, action):
+        p = NotificationPayload(
+            source="system", channel="system.cron", title="t", body="b", actions=[action]
+        )
+        with pytest.raises(NotificationValidationError, match=f"action {field} exceeds"):
+            p.validate()
+
     def test_external_url_rejected(self):
         p = NotificationPayload(
             source="system",

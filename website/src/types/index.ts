@@ -345,6 +345,9 @@ export interface Notification {
   slot?: string; session_key?: string; slack_link?: string
   // RFC Phase 3: schema-v2 routing + per-channel settings stamps
   source?: string; channel?: string; priority?: string; silenced?: boolean
+  // RFC Phase 4: inline actions, stacking, dashboard-internal deep link
+  group_key?: string; url?: string
+  actions?: { id: string; label: string; url?: string }[]
 }
 
 /** One row from GET /api/notifications/channels. */

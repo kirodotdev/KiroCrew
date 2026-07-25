@@ -20,7 +20,7 @@ Request body (JSON, max 64 KB — enforced on Content-Length AND incrementally o
 | `title` | string | yes | Validated by `NotificationPayload.validate()` (length caps) |
 | `body` | string | yes | Length-capped |
 | `priority` | string | no | `critical` / `default` / `passive`; defaults to the channel's `defaultPriority` |
-| `group_key`, `url`, `icon`, `ttl`, `actions`, `meta` | — | no | Passed through payload validation; `url` must be a dashboard-internal path |
+| `group_key`, `url`, `icon`, `ttl`, `actions`, `meta` | — | no | Passed through payload validation; `url` must be a dashboard-internal path. Each `actions[]` entry requires `id` + `label`; an entry MAY carry a `url`, validated with the same dashboard-internal-path rule at persistence time (the trust root — no stored action can hold an external link) |
 
 The note's `source` is always `app:<name>` resolved from the verified token; `channel` becomes `<app-name>.<channel-id>`.
 
@@ -84,7 +84,15 @@ API (dashboard-user only; app tokens have no grant here):
 - `GET /api/notifications/channels` — every registered channel plus channels with stored settings (even if currently unregistered, e.g. app disabled), each with `source`, `default_priority`, `protected`, and `settings`.
 - `PUT /api/notifications/channels/settings` — body `{"channel", "muted"?, "priority"?}`; `priority: null` clears the override. Changes broadcast over WS as `notification_channel_settings`.
 
+## Phase 4: inline actions and grouping (delivered)
+
+- **Action contract**: an `actions[]` entry is `{id, label, url?}`. `id` + `label` are required non-empty strings; `url` is optional and validated at persistence time with the dashboard-internal-path rule (same validator as the note-level `url` — `_validate_internal_url` in `notifications/bus.py`). Caps at validation: at most 4 actions per notification, `id` ≤ 64 chars, `label` ≤ 40 chars, `url` ≤ 500 chars (every action renders as a button on every surface, so unbounded counts/lengths would distort feed layout). The frontend renders an action as a navigation button only when it carries a `url` (`safeInternalUrl` in `notifMeta.tsx` re-checks client-side as defense-in-depth, plus string-type guards for legacy persisted rows); **url-less actions are legal, persist, and render nothing today** — they reserve dispatch semantics for a future phase.
+- **Approval inline resolution**: unacked `approval` notes render one-click Approve/Reject in the feed (bell popover and page), dispatching to the existing `POST /api/approvals/{id}/{action}` endpoint.
+- **`group_key` stacking**: notes sharing a `group_key` within a date group collapse to the newest head. The mac sheet renders a layered deck (click the collapsed head to expand, quiet "Show less" capsule); the panel variant uses an explicit "N more" pill.
+- **Deep links**: the detail panel renders an Open button for a note-level `url` and buttons for url-carrying actions (same validation).
+- **Dock badge**: the renderer mirrors the unread (non-passive, non-silenced) count to `app.setBadgeCount` via a `badge:set` IPC bridge; clamp lives in `electron/badge.js`.
+
 ## Known follow-ups
 
 - Phase 3 frontend: settings UI section (channel list grouped by source), priority tiers wired through sound/native banner/feed styling, provisional keep/mute prompt for the first notification from a new app channel.
-- Phase 4 (per RFC): inline actions and grouping.
+- Phase 4 follow-ups: surface inline-approval failures as a per-row transient error state (currently a console diagnostic; the row stays retryable); hoist dock-badge mirroring from `NotificationsBellButton` to an app-level effect with badge cleanup on teardown.

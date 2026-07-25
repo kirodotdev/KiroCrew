@@ -38,6 +38,10 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.on("fullscreen-changed", handler);
     return () => ipcRenderer.removeListener("fullscreen-changed", handler);
   },
+  // Dock/taskbar badge (RFC notification bus Phase 4): the renderer pushes
+  // its unread (critical+default) count; main.js applies app.setBadgeCount.
+  // No-op on platforms without badge support (Windows) -- Electron handles it.
+  setBadgeCount: (count) => ipcRenderer.send("badge:set", count),
 });
 
 // Native zoom bridge for the Settings > Display "Zoom Level" stepper.

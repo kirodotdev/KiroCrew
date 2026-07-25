@@ -105,6 +105,16 @@ export function notePriority(n: { priority?: string }): Priority {
   return n.priority === 'critical' || n.priority === 'passive' ? n.priority : 'default'
 }
 
+/** RFC Phase 4 security: deep-links must be dashboard-internal routes only.
+ *  Mirrors the backend validator in notifications/bus.py -- path-only, no
+ *  protocol-relative ("//host"), no backslashes (WHATWG normalizes "\" to
+ *  "/"), no tab/newline/CR tricks. Returns the url when safe, else null. */
+export function safeInternalUrl(url: string | undefined): string | null {
+  if (!url || !url.startsWith('/')) return null
+  if (url.startsWith('//') || url.includes('\\') || /[\t\n\r]/.test(url)) return null
+  return url
+}
+
 export function fmtTime(ts: string | number): string {
   const d = parseTs(ts)
   return isNaN(d.getTime()) ? 'Unknown date' : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })

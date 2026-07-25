@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import { X, MailOpen, Check, MessageSquare, CheckCircle, Ban, Clock, ClipboardList } from 'lucide-react'
+import { X, MailOpen, Check, MessageSquare, CheckCircle, Ban, Clock, ClipboardList, ArrowUpRight } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { useAppSelector, useAppDispatch } from '../../store'
 import { deleteNotification, ackNotification, unackNotification } from '../../store/notificationsSlice'
@@ -9,7 +9,7 @@ import MarkdownRenderer from '../MarkdownRenderer'
 import { CronAckBar } from '../../pages/chat'
 import { api } from '../../api/client'
 import type { Notification } from '../../types'
-import { KIND_META, DEFAULT_META, fmtFull } from './notifMeta'
+import { KIND_META, DEFAULT_META, fmtFull, safeInternalUrl } from './notifMeta'
 
 /** Intentional failure diagnostic for the navigation/approval actions below. */
 function logError(msg: string, err: unknown): void {
@@ -97,6 +97,10 @@ export default function NotificationDetailPanel({ n, onClose }: { n: Notificatio
         {n.slack_link && (
           <a href={n.slack_link} target="_blank" rel="noopener noreferrer" className="px-3 py-1.5 rounded-md border border-border text-[13px] font-medium cursor-pointer bg-transparent text-muted hover:text-text hover:border-border-strong transition-all font-body no-underline inline-flex items-center gap-1"><MessageSquare className="lucide-inline" /> Open in Slack</a>
         )}
+        {/* RFC Phase 4: dashboard-internal deep link (validated path-only). */}
+        {safeInternalUrl(n.url) && (
+          <button className="px-3 py-1.5 rounded-md bg-accent text-accent-fg text-[13px] font-medium cursor-pointer border-none hover:brightness-110 transition-all" onClick={() => navigate(safeInternalUrl(n.url)!)}><ArrowUpRight className="lucide-inline" /> Open</button>
+        )}
       </div>
 
       {/* Body */}
@@ -112,6 +116,21 @@ export default function NotificationDetailPanel({ n, onClose }: { n: Notificatio
             <button className="px-4 py-2 rounded-lg bg-danger text-danger-fg text-[13px] font-semibold cursor-pointer border-none hover:brightness-110 transition-all" onClick={async () => { try { await api.resolveApproval(n.approval_id || n.ts, 'reject'); dispatch(deleteNotification(n.ts)); onClose() } catch (e) { logError('Reject failed', e) } }}><Ban className="lucide-inline" /> Reject</button>
           </div>
         )}
+        {/* RFC Phase 4: generic actions -- rendered only with a validated
+            dashboard-internal url (action identifiers, never executable
+            content). Array.isArray + string-type checks guard legacy/corrupted
+            persisted rows (a truthy non-array `actions` would throw on .filter). */}
+        {(() => {
+          const urlActions = (Array.isArray(n.actions) ? n.actions : [])
+            .filter(a => typeof a?.id === 'string' && typeof a?.label === 'string' && typeof a?.url === 'string' && safeInternalUrl(a.url))
+          return urlActions.length > 0 && (
+            <div className="flex gap-3 mt-4 flex-wrap">
+              {urlActions.map(a => (
+                <button key={a.id} className="px-4 py-2 rounded-lg border border-accent/40 bg-transparent text-accent text-[13px] font-medium cursor-pointer hover:bg-accent-subtle transition-all font-body" onClick={() => { navigate(safeInternalUrl(a.url)!); onClose() }}>{a.label}</button>
+              ))}
+            </div>
+          )
+        })()}
         {n.kind === 'cron' && n.job_id && (
           <CronAckBar key={n.ts} notification={n} onDone={onClose} />
         )}

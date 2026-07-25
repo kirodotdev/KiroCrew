@@ -1622,6 +1622,14 @@ app.whenReady().then(async () => {
     }
   });
 
+  // Dock/taskbar badge (RFC notification bus Phase 4): renderer pushes its
+  // unread notification count. Clamped to a sane non-negative integer;
+  // Electron no-ops setBadgeCount on unsupported platforms (Windows).
+  const { clampBadgeCount } = require("./badge");
+  ipcMain.on("badge:set", (_event, count) => {
+    app.setBadgeCount(clampBadgeCount(count));
+  });
+
   // Native zoom bridge for the Settings > Display "Zoom Level" stepper.
   // A renderer cannot touch Chromium's per-origin zoom itself, so it
   // round-trips through these handlers. The same stepZoomFactor ladder backs
