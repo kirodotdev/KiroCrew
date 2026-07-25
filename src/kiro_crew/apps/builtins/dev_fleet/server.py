@@ -45,7 +45,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from aiohttp import web
 
@@ -1826,7 +1826,11 @@ async def _disk() -> dict:
 
 
 # --- worktree remove ---
-async def _worktree_remove(name: str, force: bool = False) -> dict:
+async def _worktree_remove(
+    name: str,
+    force: bool = False,
+    progress: Callable[[str], None] | None = None,
+) -> dict:
     """Remove a feature worktree. All safety gates preserved.
 
     Non-forced removal of merged PRs uses a SQUASH-SAFE race guard: fetches
@@ -1913,6 +1917,11 @@ async def _worktree_remove(name: str, force: bool = False) -> dict:
             }
 
     # stop pod if running
+    # Verification (dirty/PR/OID guards above) is the "verifying" phase; from
+    # here we enter pod shutdown, then the serialized git mutation. These phase
+    # signals drive the per-item prune checklist (no-op for other callers).
+    if progress is not None:
+        progress("stopping_pod")
     cfg = _load_cfg()
     stopped_pod = False
     if _POD_AVAILABLE and cfg is None:
@@ -1945,20 +1954,46 @@ async def _worktree_remove(name: str, force: bool = False) -> dict:
                 "error": f"cannot verify pod state: {_redact(str(exc))}",
             }
 
-    cmd = ["git", "-C", MAIN_REPO, "worktree", "remove", path]
-    if force:
-        cmd.append("--force")
-    rc, stdout, stderr = await _run_cmd(cmd, timeout=60)
-    if rc != 0:
-        return {"ok": False, "error": _redact((stderr or stdout).strip()[:300])}
+    if progress is not None:
+        progress("removing")
+    # Serialize the destructive git mutations. Concurrent `git worktree remove`
+    # / `update-ref -d` against the shared MAIN_REPO would race on the worktree
+    # admin dir and packed-refs locks, so only one worker mutates at a time.
+    async with _GIT_MUTATION_LOCK:
+        # TOCTOU recheck: the pod-inactive verification above happened BEFORE
+        # this lock was acquired. Under parallel prune a worker can queue here
+        # behind other removals — long enough for another session to restart
+        # the pod. Removing the checkout under a live pod would leave its
+        # gateway running from deleted files, so re-verify inactivity now.
+        if _POD_AVAILABLE and cfg:
+            try:
+                loop = asyncio.get_running_loop()
+                active3 = await loop.run_in_executor(
+                    subprocess_executor(), rt.active_names, cfg
+                )
+                if name in active3:
+                    return {"ok": False, "error": (
+                        "pod became active again before removal — refusing"
+                    )}
+            except Exception as exc:
+                return {
+                    "ok": False,
+                    "error": f"cannot re-verify pod state before removal: {_redact(str(exc))}",
+                }
+        cmd = ["git", "-C", MAIN_REPO, "worktree", "remove", path]
+        if force:
+            cmd.append("--force")
+        rc, stdout, stderr = await _run_cmd(cmd, timeout=60)
+        if rc != 0:
+            return {"ok": False, "error": _redact((stderr or stdout).strip()[:300])}
 
-    # delete branch if shipped/empty — atomically against the pinned OID
-    if branch and branch != BASE_BRANCH and verdict_oid:
-        if _is_pr_merged(pr) or own == 0:
-            await _git(
-                MAIN_REPO, "update-ref", "-d",
-                f"refs/heads/{branch}", verdict_oid.strip(), timeout=10,
-            )
+        # delete branch if shipped/empty — atomically against the pinned OID
+        if branch and branch != BASE_BRANCH and verdict_oid:
+            if _is_pr_merged(pr) or own == 0:
+                await _git(
+                    MAIN_REPO, "update-ref", "-d",
+                    f"refs/heads/{branch}", verdict_oid.strip(), timeout=10,
+                )
 
     return {"ok": True, "removed": True, "stopped_pod": stopped_pod, "pr": _redact_pr(pr)}
 
@@ -2113,8 +2148,23 @@ async def _rebase_locked(target: dict) -> dict:
 
 
 # --- prune ---
-_PRUNE_STATE: dict = {"running": False, "total": 0, "done": 0, "current": None, "results": []}
+# Per-item state machine (``items``) drives the frontend checklist, while the
+# top-level ``running``/``total``/``done``/``current``/``results`` fields are
+# kept for backward compatibility (auto-prune reaper + any existing consumers).
+_PRUNE_STATE: dict = {
+    "running": False, "total": 0, "done": 0, "current": None,
+    "results": [], "items": {},
+}
 _PRUNE_LOCK = asyncio.Lock()
+# Cap on concurrent per-item prune phases (fresh gh verdict + pod shutdown).
+_PRUNE_CONCURRENCY = 4
+# Serializes the destructive git mutations (`git worktree remove` +
+# `update-ref -d`) across ALL removal paths — concurrent prune workers, the
+# single-worktree remove handler, and the auto-prune reaper — because they all
+# mutate the shared MAIN_REPO ``.git`` state (worktree admin dir + packed-refs).
+# Uncontended in the sequential paths; only the parallel prune workers ever
+# queue on it.
+_GIT_MUTATION_LOCK = asyncio.Lock()
 
 
 async def _prunable(path: str, branch: str | None) -> dict:
@@ -2174,34 +2224,86 @@ async def _prune_candidates() -> dict:
 
 
 async def _prune_run(names: list[str]) -> dict:
+    # Deduplicate while preserving order: the API accepts any list of names,
+    # and a duplicate would spawn two workers racing to remove the SAME
+    # worktree — the second one then reports a spurious failure over the
+    # first one's success.
+    names = list(dict.fromkeys(names))
     async with _PRUNE_LOCK:
         if _PRUNE_STATE["running"]:
             return {"ok": False, "error": "prune already running"}
-        _PRUNE_STATE.update({"running": True, "total": len(names), "done": 0, "current": None, "results": []})
+        _PRUNE_STATE.update({
+            "running": True, "total": len(names), "done": 0, "current": None,
+            "results": [],
+            "items": {nm: {"status": "pending", "error": None} for nm in names},
+        })
 
-    async def _work() -> None:
-        try:
-            for nm in names:
-                _PRUNE_STATE["current"] = nm
+    items = _PRUNE_STATE["items"]
+    sem = asyncio.Semaphore(_PRUNE_CONCURRENCY)
+    # ``current`` is kept for API-shape compatibility but under parallel
+    # execution it is BEST-EFFORT: one of the currently in-flight items (or
+    # None when idle). ``active`` tracks in-flight names so a finished worker
+    # can hand ``current`` to a still-running one instead of leaving a
+    # completed name dangling.
+    active: set[str] = set()
+
+    async def _prune_one(nm: str) -> None:
+        # The expensive phases (fresh gh verdict + pod shutdown) run
+        # concurrently, capped by the semaphore. The destructive git mutation
+        # inside _worktree_remove is serialized on _GIT_MUTATION_LOCK. Every
+        # item finalizes EXACTLY once (in ``finally``) to a terminal status and
+        # bumps ``done`` — so one item failing (or raising) never wedges the
+        # batch or stops the others.
+        async with sem:
+            active.add(nm)
+            _PRUNE_STATE["current"] = nm
+            status = "failed"
+            error: str | None = None
+            result: dict = {"name": nm, "ok": False}
+            try:
+                items[nm]["status"] = "verifying"
                 # Re-resolve and require a fresh prunable verdict immediately
                 # before removal — the API accepts any discovered name, so a
                 # clean-but-recent worktree must be rejected here.
                 target, err = await _find_worktree(nm)
                 if target is None:
-                    _PRUNE_STATE["results"].append({"name": nm, "ok": False, "error": err})
-                    _PRUNE_STATE["done"] += 1
-                    continue
-                verdict = await _prunable(target["path"], target.get("branch"))
-                if not verdict.get("ok"):
-                    _PRUNE_STATE["results"].append(
-                        {"name": nm, "ok": False,
-                         "error": f"not prunable: {verdict.get('code', 'unknown')}"}
-                    )
-                    _PRUNE_STATE["done"] += 1
-                    continue
-                res = await _worktree_remove(nm, force=False)
-                _PRUNE_STATE["results"].append({"name": nm, **res})
+                    error = err
+                    result = {"name": nm, "ok": False, "error": err}
+                else:
+                    verdict = await _prunable(target["path"], target.get("branch"))
+                    if not verdict.get("ok"):
+                        error = f"not prunable: {verdict.get('code', 'unknown')}"
+                        result = {"name": nm, "ok": False, "error": error}
+                    else:
+                        def _progress(phase: str, _nm: str = nm) -> None:
+                            # phase in {"stopping_pod", "removing"}
+                            items[_nm]["status"] = phase
+
+                        res = await _worktree_remove(nm, force=False, progress=_progress)
+                        result = {"name": nm, **res}
+                        if res.get("ok"):
+                            status, error = "done", None
+                        else:
+                            status, error = "failed", res.get("error")
+            except Exception as exc:  # noqa: BLE001
+                error = _redact(str(exc))
+                result = {"name": nm, "ok": False, "error": error}
+                logger.exception("dev-fleet prune: item %r failed", nm)
+            finally:
+                items[nm].update(status=status, error=error)
+                _PRUNE_STATE["results"].append(result)
                 _PRUNE_STATE["done"] += 1
+                active.discard(nm)
+                # Never leave a COMPLETED name in ``current``: hand it to any
+                # still-in-flight item, or None when this was the last one.
+                if _PRUNE_STATE["current"] == nm:
+                    _PRUNE_STATE["current"] = next(iter(active), None)
+
+    async def _work() -> None:
+        try:
+            await asyncio.gather(
+                *(_prune_one(nm) for nm in names), return_exceptions=True
+            )
         finally:
             _PRUNE_STATE["running"] = False
             _PRUNE_STATE["current"] = None
@@ -2211,7 +2313,20 @@ async def _prune_run(names: list[str]) -> dict:
 
 
 async def _prune_status() -> dict:
-    return {k: (list(v) if isinstance(v, list) else v) for k, v in _PRUNE_STATE.items()}
+    # Snapshot both the backward-compatible top-level fields and the per-item
+    # state machine. Copies are made so the JSON encoder never observes a dict
+    # being mutated by an in-flight worker.
+    return {
+        "running": _PRUNE_STATE["running"],
+        "total": _PRUNE_STATE["total"],
+        "done": _PRUNE_STATE["done"],
+        "current": _PRUNE_STATE["current"],
+        "results": list(_PRUNE_STATE["results"]),
+        "items": {
+            nm: {"status": st.get("status"), "error": st.get("error")}
+            for nm, st in _PRUNE_STATE.get("items", {}).items()
+        },
+    }
 
 
 # --- background fleet refresher (started on app startup) ---

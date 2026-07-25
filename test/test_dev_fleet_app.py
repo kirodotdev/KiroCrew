@@ -3330,6 +3330,270 @@ async def test_auto_prune_reaper_audits_scan_failure():
     assert "gh down" in events[0]["error"]
 
 
+# =============================================================================
+# parallel prune (issue #435)
+# =============================================================================
+async def _await_prune_idle(timeout: float = 5.0) -> None:
+    """Wait until the background prune task drains (running -> False)."""
+    deadline = time.monotonic() + timeout
+    while mod._PRUNE_STATE["running"]:
+        if time.monotonic() > deadline:
+            raise AssertionError("prune did not finish within timeout")
+        await asyncio.sleep(0.01)
+
+
+@pytest.fixture
+def reset_prune_state():
+    """Fresh prune locks + state bound to the CURRENT test's event loop.
+
+    ``_PRUNE_LOCK`` / ``_GIT_MUTATION_LOCK`` are module-global asyncio.Locks and
+    an asyncio.Lock raises if reused across event loops; pytest-asyncio gives
+    each test its own loop, so re-create them (and clear the shared state) per
+    test.
+    """
+    mod._PRUNE_LOCK = asyncio.Lock()
+    mod._GIT_MUTATION_LOCK = asyncio.Lock()
+    mod._PRUNE_STATE.update({
+        "running": False, "total": 0, "done": 0, "current": None,
+        "results": [], "items": {},
+    })
+    yield
+
+
+@pytest.mark.asyncio
+async def test_prune_run_per_item_states_and_failure_isolation(reset_prune_state):
+    """Each item ends in a terminal per-item status; one failure never stops the
+    others; the backward-compat top-level fields are all preserved."""
+    names = ["wt-ok", "wt-bad-verdict", "wt-missing", "wt-remove-fail"]
+
+    async def fake_find(nm):
+        if nm == "wt-missing":
+            return None, "unknown worktree: 'wt-missing'"
+        return {"path": f"/wt/{nm}", "branch": f"feat/{nm}"}, None
+
+    async def fake_prunable(path, branch):
+        if path == "/wt/wt-bad-verdict":
+            return {"ok": False, "code": "active"}
+        return {"ok": True, "code": "merged"}
+
+    async def fake_remove(nm, force=False, progress=None):
+        # exercise the phase callback the parallel driver passes in
+        if progress is not None:
+            progress("stopping_pod")
+            progress("removing")
+        if nm == "wt-remove-fail":
+            return {"ok": False, "error": "pod still active after shutdown"}
+        return {"ok": True, "removed": True}
+
+    with patch.object(mod, "_find_worktree", side_effect=fake_find), \
+         patch.object(mod, "_prunable", side_effect=fake_prunable), \
+         patch.object(mod, "_worktree_remove", side_effect=fake_remove):
+        r = await mod._prune_run(names)
+        assert r == {"ok": True, "total": 4}
+        await _await_prune_idle()
+
+    st = await mod._prune_status()
+    # backward-compat top-level fields still present and correct
+    assert st["running"] is False
+    assert st["total"] == 4
+    assert st["done"] == 4
+    assert "current" in st
+    assert len(st["results"]) == 4
+    # per-item state machine
+    items = st["items"]
+    assert items["wt-ok"] == {"status": "done", "error": None}
+    assert items["wt-bad-verdict"]["status"] == "failed"
+    assert "not prunable" in items["wt-bad-verdict"]["error"]
+    assert items["wt-missing"]["status"] == "failed"
+    assert "unknown worktree" in items["wt-missing"]["error"]
+    assert items["wt-remove-fail"]["status"] == "failed"
+    assert "pod still active" in items["wt-remove-fail"]["error"]
+    # failure isolation: the one healthy item completed despite 3 failures
+    ok_results = [res for res in st["results"] if res.get("ok")]
+    assert ok_results == [{"name": "wt-ok", "ok": True, "removed": True}]
+
+
+@pytest.mark.asyncio
+async def test_prune_run_exception_in_item_is_isolated(reset_prune_state):
+    """An unexpected exception in one item is caught, marked failed, and does not
+    wedge the batch (done still reaches total)."""
+    names = ["wt-a", "wt-boom", "wt-b"]
+
+    async def fake_find(nm):
+        return {"path": f"/wt/{nm}", "branch": f"feat/{nm}"}, None
+
+    async def fake_prunable(path, branch):
+        return {"ok": True, "code": "merged"}
+
+    async def fake_remove(nm, force=False, progress=None):
+        if nm == "wt-boom":
+            raise RuntimeError("kaboom")
+        return {"ok": True, "removed": True}
+
+    with patch.object(mod, "_find_worktree", side_effect=fake_find), \
+         patch.object(mod, "_prunable", side_effect=fake_prunable), \
+         patch.object(mod, "_worktree_remove", side_effect=fake_remove):
+        await mod._prune_run(names)
+        await _await_prune_idle()
+
+    st = await mod._prune_status()
+    assert st["done"] == 3 and st["running"] is False
+    assert st["items"]["wt-boom"]["status"] == "failed"
+    assert "kaboom" in st["items"]["wt-boom"]["error"]
+    assert st["items"]["wt-a"]["status"] == "done"
+    assert st["items"]["wt-b"]["status"] == "done"
+
+
+@pytest.mark.asyncio
+async def test_prune_run_caps_concurrency_at_semaphore_limit(reset_prune_state, monkeypatch):
+    """The expensive per-item phase runs concurrently but never exceeds
+    _PRUNE_CONCURRENCY simultaneous items."""
+    monkeypatch.setattr(mod, "_PRUNE_CONCURRENCY", 2)
+    names = [f"wt-{i}" for i in range(6)]
+    inflight = 0
+    peak = 0
+
+    async def fake_find(nm):
+        return {"path": f"/wt/{nm}", "branch": f"feat/{nm}"}, None
+
+    async def fake_prunable(path, branch):
+        nonlocal inflight, peak
+        inflight += 1
+        peak = max(peak, inflight)
+        await asyncio.sleep(0.05)  # hold the semaphore slot
+        inflight -= 1
+        return {"ok": True, "code": "merged"}
+
+    async def fake_remove(nm, force=False, progress=None):
+        return {"ok": True, "removed": True}
+
+    with patch.object(mod, "_find_worktree", side_effect=fake_find), \
+         patch.object(mod, "_prunable", side_effect=fake_prunable), \
+         patch.object(mod, "_worktree_remove", side_effect=fake_remove):
+        await mod._prune_run(names)
+        await _await_prune_idle()
+
+    assert peak == 2, f"concurrency should reach (and not exceed) the cap of 2, saw {peak}"
+    st = await mod._prune_status()
+    assert st["done"] == 6
+    assert all(it["status"] == "done" for it in st["items"].values())
+
+
+@pytest.mark.asyncio
+async def test_worktree_remove_serializes_git_mutations(reset_prune_state):
+    """Concurrent removals must not overlap inside the git-mutation section — it
+    is guarded by _GIT_MUTATION_LOCK so the shared MAIN_REPO .git state is
+    mutated by only one worker at a time."""
+    inside = 0
+    overlapped = False
+
+    async def fake_run_cmd(cmd, timeout=None, **kw):
+        nonlocal inside, overlapped
+        if "worktree" in cmd and "remove" in cmd:
+            inside += 1
+            if inside > 1:
+                overlapped = True
+            await asyncio.sleep(0.05)
+            inside -= 1
+        return (0, "", "")
+
+    async def fake_find(name):
+        return {"path": f"/wt/{name}", "branch": f"feat/{name}"}, None
+
+    with patch.object(mod, "_find_worktree", side_effect=fake_find), \
+         patch.object(mod, "_live_worktree_path", new_callable=AsyncMock, return_value=None), \
+         patch.object(mod, "_own_checkout_path", return_value=None), \
+         patch.object(mod, "_real_dirty", new_callable=AsyncMock, return_value=False), \
+         patch.object(mod, "_pr_status_cached", new_callable=AsyncMock, return_value={"state": "MERGED"}), \
+         patch.object(mod, "_own_commits_count", new_callable=AsyncMock, return_value=0), \
+         patch.object(mod, "_fetch_pr_head_oid", new_callable=AsyncMock, return_value="a" * 40), \
+         patch.object(mod, "_head_contained_in_pr", new_callable=AsyncMock, return_value=True), \
+         patch.object(mod, "_git", new_callable=AsyncMock, return_value="a" * 40), \
+         patch.object(mod, "_load_cfg", return_value=None), \
+         patch.object(mod, "_POD_AVAILABLE", False), \
+         patch.object(mod, "_run_cmd", side_effect=fake_run_cmd):
+        results = await asyncio.gather(
+            mod._worktree_remove("wt-1", force=False),
+            mod._worktree_remove("wt-2", force=False),
+        )
+    assert all(r.get("ok") for r in results), results
+    assert overlapped is False, "git mutations overlapped — _GIT_MUTATION_LOCK not serializing"
+
+
+@pytest.mark.asyncio
+async def test_prune_run_deduplicates_names(reset_prune_state):
+    """Duplicate names in one request must not spawn racing workers: the list
+    is deduplicated (order-preserving) so the same worktree is processed
+    exactly once and a duplicate can never report a spurious failure over the
+    first worker's success."""
+    removed: list[str] = []
+
+    async def fake_find(nm):
+        return {"path": f"/wt/{nm}", "branch": f"feat/{nm}"}, None
+
+    async def fake_prunable(path, branch):
+        return {"ok": True, "code": "merged"}
+
+    async def fake_remove(nm, force=False, progress=None):
+        removed.append(nm)
+        return {"ok": True, "removed": True}
+
+    with patch.object(mod, "_find_worktree", side_effect=fake_find), \
+         patch.object(mod, "_prunable", side_effect=fake_prunable), \
+         patch.object(mod, "_worktree_remove", side_effect=fake_remove):
+        r = await mod._prune_run(["wt-a", "wt-b", "wt-a", "wt-a"])
+        assert r == {"ok": True, "total": 2}
+        await _await_prune_idle()
+
+    st = await mod._prune_status()
+    assert removed.count("wt-a") == 1
+    assert st["total"] == 2 and st["done"] == 2
+    assert set(st["items"]) == {"wt-a", "wt-b"}
+    assert all(it["status"] == "done" for it in st["items"].values())
+    assert len(st["results"]) == 2
+    # completed batch never leaves a finished name in ``current``
+    assert st["current"] is None
+
+
+@pytest.mark.asyncio
+async def test_worktree_remove_refuses_when_pod_reactivates_before_mutation(reset_prune_state):
+    """TOCTOU guard: pod inactivity is verified before _GIT_MUTATION_LOCK is
+    acquired; if the pod comes back while the worker queues on the lock, the
+    recheck inside the lock must refuse the removal (never delete a live
+    pod's checkout)."""
+    # 1st call: pod-stop section sees inactive (no stop needed).
+    # 2nd call: post-lock recheck sees the pod ACTIVE again -> refuse.
+    active_calls = iter([[], ["wt-1"]])
+    removed_cmds: list[list] = []
+
+    async def fake_run_cmd(cmd, timeout=None, **kw):
+        if "worktree" in cmd and "remove" in cmd:
+            removed_cmds.append(cmd)
+        return (0, "", "")
+
+    async def fake_find(name):
+        return {"path": f"/wt/{name}", "branch": f"feat/{name}"}, None
+
+    with patch.object(mod, "_find_worktree", side_effect=fake_find), \
+         patch.object(mod, "_live_worktree_path", new_callable=AsyncMock, return_value=None), \
+         patch.object(mod, "_own_checkout_path", return_value=None), \
+         patch.object(mod, "_real_dirty", new_callable=AsyncMock, return_value=False), \
+         patch.object(mod, "_pr_status_cached", new_callable=AsyncMock, return_value={"state": "MERGED"}), \
+         patch.object(mod, "_own_commits_count", new_callable=AsyncMock, return_value=0), \
+         patch.object(mod, "_fetch_pr_head_oid", new_callable=AsyncMock, return_value="a" * 40), \
+         patch.object(mod, "_head_contained_in_pr", new_callable=AsyncMock, return_value=True), \
+         patch.object(mod, "_git", new_callable=AsyncMock, return_value="a" * 40), \
+         patch.object(mod, "_load_cfg", return_value=object()), \
+         patch.object(mod, "_POD_AVAILABLE", True), \
+         patch.object(mod.rt, "active_names", side_effect=lambda cfg: next(active_calls)), \
+         patch.object(mod, "_run_cmd", side_effect=fake_run_cmd):
+        res = await mod._worktree_remove("wt-1", force=False)
+
+    assert res.get("ok") is False
+    assert "active again" in (res.get("error") or "")
+    assert removed_cmds == [], "git worktree remove ran despite live pod"
+
+
 # --- skill registration (bundled skills inside builtin app) ---
 
 

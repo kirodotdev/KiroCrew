@@ -6,7 +6,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { screen, waitFor, fireEvent } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 
-import DevFleetPage, { mergeLogWindow, LOG_GAP_MARKER } from '../pages/DevFleetPage'
+import DevFleetPage, { mergeLogWindow, LOG_GAP_MARKER, pruneVerdictLabel } from '../pages/DevFleetPage'
 
 function renderPage() {
   return renderWithProviders(<DevFleetPage />, { route: '/dev-fleet' })
@@ -695,6 +695,51 @@ describe('DevFleetPage', () => {
     expect(screen.getByText(/line-early-1/)).toBeInTheDocument()
     expect(screen.getAllByText(/line-5/).length).toBeGreaterThan(0)
   }, 20000)
+
+  it('prune progress renders a per-item checklist with live status chips and inline failure reason', async () => {
+    let pollCount = 0
+    vi.spyOn(globalThis, 'fetch').mockImplementation((url) => {
+      const u = typeof url === 'string' ? url : (url as Request).url
+      if (u.includes('/fleet')) return Promise.resolve(new Response(JSON.stringify(FLEET), { status: 200 }))
+      if (u.includes('/disk')) return Promise.resolve(new Response(JSON.stringify({ total_mb: 51200 }), { status: 200 }))
+      if (u.includes('/prune-candidates')) return Promise.resolve(new Response(JSON.stringify({
+        ok: true,
+        candidates: [{ name: 'wt-a', code: 'merged' }, { name: 'wt-b', code: 'merged' }],
+        kept: [], scanned: 2,
+      }), { status: 200 }))
+      if (u.includes('/prune-run')) return Promise.resolve(new Response(JSON.stringify({ ok: true, total: 2 }), { status: 200 }))
+      if (u.includes('/prune-status')) {
+        pollCount++
+        if (pollCount === 1) {
+          // In-flight: distinct per-item phases (one removing, one stopping pod).
+          return Promise.resolve(new Response(JSON.stringify({
+            running: true, total: 2, done: 0, current: 'wt-a', results: [],
+            items: { 'wt-a': { status: 'removing', error: null }, 'wt-b': { status: 'stopping_pod', error: null } },
+          }), { status: 200 }))
+        }
+        // Terminal: one removed, one failed with a reason to surface inline.
+        return Promise.resolve(new Response(JSON.stringify({
+          running: false, total: 2, done: 2, current: null,
+          results: [{ name: 'wt-a', ok: true }, { name: 'wt-b', ok: false, error: 'pod still active after shutdown' }],
+          items: { 'wt-a': { status: 'done', error: null }, 'wt-b': { status: 'failed', error: 'pod still active after shutdown' } },
+        }), { status: 200 }))
+      }
+      return Promise.resolve(new Response('{}', { status: 200 }))
+    })
+    renderPage()
+    await waitFor(() => expect(screen.getByText('feature-x')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Prune merged'))
+    await waitFor(() => expect(screen.getByText('Prune worktrees')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Remove selected'))
+    // The checklist replaces the single-line progress: one row per selected item.
+    await waitFor(() => expect(screen.getByTestId('prune-item-wt-a')).toBeInTheDocument(), { timeout: 4000 })
+    expect(screen.getByTestId('prune-item-wt-b')).toBeInTheDocument()
+    // Terminal poll: wt-a done, wt-b failed with the failure reason inline.
+    await waitFor(() => expect(screen.getByTestId('prune-item-wt-a')).toHaveAttribute('data-status', 'done'), { timeout: 8000 })
+    expect(screen.getByTestId('prune-item-wt-b')).toHaveAttribute('data-status', 'failed')
+    expect(screen.getByText('pod still active after shutdown')).toBeInTheDocument()
+    expect(screen.getByText('Prune complete')).toBeInTheDocument()
+  }, 15000)
 })
 
 // FINDING 3 (unit): the overlap-merge algorithm behind client-side log
@@ -719,5 +764,25 @@ describe('mergeLogWindow', () => {
   it('handles repeated lines by matching the longest suffix/prefix overlap', () => {
     // Longest suffix of buffer that prefixes the window is ['x','x'] (len 2).
     expect(mergeLogWindow(['x', 'x', 'x'], ['x', 'x', 'y'])).toEqual(['x', 'x', 'x', 'y'])
+  })
+})
+
+// Kept-reason surfacing: machine verdict codes -> human-readable text shown in
+// the prune preview dialog so users see WHY a row is a candidate or is kept.
+describe('pruneVerdictLabel', () => {
+  it('maps machine prune codes to human-readable reasons', () => {
+    expect(pruneVerdictLabel('merged')).toBe('PR merged')
+    expect(pruneVerdictLabel('empty')).toMatch(/no commits/i)
+    expect(pruneVerdictLabel('merged_dirty')).toMatch(/uncommitted/i)
+    expect(pruneVerdictLabel('merged_new_commits')).toMatch(/after merge/i)
+    expect(pruneVerdictLabel('merged_unverified')).toMatch(/verification/i)
+    expect(pruneVerdictLabel('active')).toBe('PR open or unmerged commits')
+    expect(pruneVerdictLabel('fresh')).toMatch(/recently/i)
+    expect(pruneVerdictLabel('dirty_check_failed')).toMatch(/git status/i)
+  })
+  it('falls back to the raw code for unknown values and never throws', () => {
+    expect(pruneVerdictLabel('totally_unknown')).toBe('totally_unknown')
+    expect(pruneVerdictLabel(undefined)).toBe('')
+    expect(pruneVerdictLabel('')).toBe('')
   })
 })

@@ -39,7 +39,7 @@ verification. Route names below are relative to that prefix.
 | `/apps/dev-fleet/api/pod/logs?name=&n=` | Pod journal tail (recent N lines, default 120) |
 | `/apps/dev-fleet/api/run?id=` | Async run status + streamed output (last 60 lines) |
 | `/apps/dev-fleet/api/prune-candidates` | List worktrees eligible for pruning |
-| `/apps/dev-fleet/api/prune-status` | Current prune operation progress |
+| `/apps/dev-fleet/api/prune-status` | Live prune progress: per-item state machine (`items`) + backward-compatible top-level counters |
 | `/apps/dev-fleet/api/disk` | Aggregate disk usage per worktree (async computation) |
 
 ### Write (POST)
@@ -81,6 +81,37 @@ A worktree is eligible for automatic pruning if:
 
 Worktrees NOT pruned: dirty, active (own commits > 0), fresh (< 48h), or merged-with-
 new-commits (unmerged follow-up work after the PR landed).
+
+### Parallel execution & per-item progress (issue #435)
+
+`prune-run` accepts a batch of names and processes them **concurrently** rather than one
+at a time. The design separates the two cost classes:
+
+- **Expensive per-item phases run in parallel.** The fresh `_prunable` re-verdict (which
+  makes `gh`/`git` network calls) and pod shutdown run under an `asyncio.Semaphore(4)`, so
+  a batch is bounded by the slowest ~4 items at a time instead of the sum of all of them.
+- **Git mutations are serialized.** The `git worktree remove` + branch `update-ref -d` for
+  every removal — including the single-worktree remove handler and the auto-prune reaper —
+  run behind one shared `asyncio.Lock` (`_GIT_MUTATION_LOCK`), because they mutate the
+  shared main-repo `.git` state (worktree admin dir + `packed-refs`). Concurrent git
+  mutations would otherwise race on those lock files.
+
+**Failure isolation:** each item is driven to a terminal state independently — one item
+failing (a `gh` timeout, a stuck pod, or an unexpected exception) never aborts the rest of
+the batch, and every item is finalized exactly once (terminal status + `done` bump).
+
+**Per-item status API:** `prune-status` returns an `items` map keyed by worktree name,
+each `{status, error}` where `status` is one of `pending | verifying | stopping_pod |
+removing | done | failed`. The top-level `running`, `total`, `done`, `current`, and
+`results` fields are retained for API-shape compatibility (the auto-prune reaper and older
+consumers). Note that under parallel execution `current` is **best-effort**: it names one
+of the currently in-flight items (never a completed one; `None` when idle), not "the"
+single item being processed — new consumers should read `items` instead. Duplicate names
+in a `prune-run` request are deduplicated (order-preserving) before workers launch, so a
+name never has two workers racing to remove the same worktree. The frontend renders
+`items` as a per-item checklist (status chip + inline
+failure reason); the preview dialog maps the kept-list verdict codes to human-readable
+reasons so users can see why a worktree is a candidate or is kept.
 
 ## Pod Integration
 

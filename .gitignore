@@ -72,6 +72,15 @@ frontend/src/.backup_pre_mdpanel/
 kirocrew-data.tar.gz
 .kiro/hooks/track-with-agent.kiro.hook
 
+# Agent-workflow scratch — files agents sometimes write into a worktree and
+# forget to remove: a PR body fed to `gh pr create --body-file`, and review-round
+# build/test log dirs (e.g. .r29-logs/). Ignoring them keeps `git status` clean so
+# Dev Fleet "Prune merged" can reap merged worktrees (a dirty tree fail-closes the
+# prune as merged_dirty). Prefer writing scratch under `mktemp -d`; committed
+# deliverables (e.g. temp-screenshots/) are unaffected. (`*.log` is already ignored above.)
+.pr-body.md
+.r*-logs/
+
 # AI attribution tracking data
 .attribution/
 

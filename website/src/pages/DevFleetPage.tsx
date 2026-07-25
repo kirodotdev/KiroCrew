@@ -121,6 +121,35 @@ export function mergeLogWindow(buffer: string[], window: string[]): string[] {
   return buffer.concat(window.slice(overlap))
 }
 
+/**
+ * Map a machine prune verdict code to a human-readable reason. Used both for
+ * candidate rows and for surfacing WHY a kept row was not pruned. Exported so
+ * the mapping can be unit-tested directly.
+ */
+export function pruneVerdictLabel(code?: string): string {
+  switch (code) {
+    case 'merged': return 'PR merged'
+    case 'empty': return 'no commits, stale'
+    case 'merged_dirty': return 'PR merged, uncommitted changes'
+    case 'fresh': return 'created recently'
+    case 'active': return 'PR open or unmerged commits'
+    case 'merged_new_commits': return 'PR merged but new commits pushed after merge'
+    case 'merged_unverified': return 'PR merged but verification unavailable — retry'
+    case 'dirty_check_failed': return 'git status failed'
+    default: return code || ''
+  }
+}
+
+// Per-item prune status -> chip label + visual kind, driving the checklist.
+export const PRUNE_STATUS_META: Record<string, { label: string; kind: 'idle' | 'spin' | 'done' | 'failed' }> = {
+  pending: { label: 'Pending', kind: 'idle' },
+  verifying: { label: 'Verifying', kind: 'spin' },
+  stopping_pod: { label: 'Stopping pod', kind: 'spin' },
+  removing: { label: 'Removing', kind: 'spin' },
+  done: { label: 'Removed', kind: 'done' },
+  failed: { label: 'Failed', kind: 'failed' },
+}
+
 // Auto-scrolling <pre> for the FULL provision log (mirrors the sync log panel's
 // styling). Sticks to the bottom while output is still streaming.
 function ProvLogPre({ lines, streaming }: { lines: string[]; streaming: boolean }) {
@@ -481,7 +510,7 @@ export default function DevFleetPage() {
   const [restarting, setRestarting] = useState(false)
   const [pruneDialog, setPruneDialog] = useState<{ candidates: { name: string; code?: string }[]; kept: { name: string; code?: string }[]; scanned: number } | null>(null)
   const [pruneSelected, setPruneSelected] = useState<Set<string>>(new Set())
-  const [pruneProgress, setPruneProgress] = useState<{ total: number; done: number; current: string | null; results: { name: string; ok?: boolean; error?: string }[] } | null>(null)
+  const [pruneProgress, setPruneProgress] = useState<{ names: string[]; items: Record<string, { status: string; error?: string | null }>; done: number; total: number; running: boolean } | null>(null)
   const askConfirm = (title: string, desc: ReactNode, opts?: { confirmLabel?: string; danger?: boolean; width?: number }) => new Promise<boolean>((resolve) => setConfirmReq({ title, desc, ...(opts || {}), resolve }))
   const settleConfirm = (val: boolean) => setConfirmReq((c) => { if (c) c.resolve(val); return null })
 
@@ -738,22 +767,54 @@ export default function DevFleetPage() {
     finally { setFlag('__prune', false) }
   }
 
-  async function pruneExecute(names: string[]) {
+  async function pruneExecute(rawNames: string[]) {
+    // Mirror the backend's order-preserving dedup: a duplicate would render
+    // duplicate checklist rows and inflate the total for a batch the server
+    // processes once.
+    const names = Array.from(new Set(rawNames))
     if (!names.length) { notify('Nothing selected', { type: 'info' }); return }
     setPruneDialog(null)
-    setPruneProgress({ total: names.length, done: 0, current: null, results: [] })
+    const seed: Record<string, { status: string; error?: string | null }> =
+      Object.fromEntries(names.map((n) => [n, { status: 'pending', error: null }]))
+    setPruneProgress({ names, items: seed, done: 0, total: names.length, running: true })
     try {
-      await api.post('/prune-run', { names })
+      // A rejected run ("prune already running") comes back ok:false with
+      // HTTP 200 — starting the poll loop anyway would track the OTHER run's
+      // items and render every row as a misleading "Pending".
+      const start = await api.post<{ ok?: boolean; error?: string }>('/prune-run', { names })
+      if (!start || start.ok === false) {
+        notify(start?.error || 'Prune failed to start', { type: 'error' })
+        setPruneProgress(null)
+        return
+      }
       for (let i = 0; i < 400; i++) {
         await sleep(1500)
         if (!pollAliveRef.current) return
-        let st: { running?: boolean; done?: number; current?: string | null; results?: { name: string; ok?: boolean; error?: string }[] } | null = null
+        let st: { running?: boolean; done?: number; items?: Record<string, { status?: string; error?: string | null }> } | null = null
         try { st = await api.get('/prune-status') } catch { continue }
         if (!st) continue
-        setPruneProgress({ total: names.length, done: st.done || 0, current: st.current || null, results: st.results || [] })
-        if (!st.running) {
-          const removed = (st.results || []).filter((r) => r.ok).length
-          const failed = (st.results || []).filter((r) => !r.ok).length
+        // Rebuild the item map in the ORIGINAL selection order; fall back to
+        // the pending seed for any name the backend has not populated yet.
+        const raw = st.items || {}
+        const backendTotal = Object.keys(raw).length || names.length
+        const items: Record<string, { status: string; error?: string | null }> =
+          Object.fromEntries(names.map((n) => [n, {
+            status: raw[n]?.status || 'pending',
+            error: raw[n]?.error ?? null,
+          }]))
+        const running = st.running !== false && (st.done || 0) < backendTotal
+        if (!running) {
+          // A name the backend never tracked (filtered server-side, e.g. the
+          // worktree vanished between preview and execute) must terminate as
+          // an explained failure, not sit "Pending" in a finished checklist.
+          for (const n of names) {
+            if (!raw[n]) items[n] = { status: 'failed', error: 'not processed (unknown or no longer a worktree)' }
+          }
+        }
+        setPruneProgress({ names, items, done: st.done || 0, total: names.length, running })
+        if (!running) {
+          const removed = names.filter((n) => items[n]?.status === 'done').length
+          const failed = names.filter((n) => items[n]?.status === 'failed').length
           notify(removed > 0 ? `Pruned ${removed} worktree(s)` + (failed > 0 ? ` (${failed} failed)` : '') : `Prune: ${failed} failed`, { type: removed > 0 ? 'success' : 'error' })
           invalidateAll()
           setTimeout(() => setPruneProgress(null), 5000)
@@ -1086,20 +1147,6 @@ export default function DevFleetPage() {
     </Modal>
   )
 
-  const pruneVerdictLabel = (code?: string): string => {
-    switch (code) {
-      case 'merged': return 'PR merged'
-      case 'empty': return 'no commits, stale'
-      case 'merged_dirty': return 'PR merged, uncommitted changes'
-      case 'fresh': return 'created recently'
-      case 'active': return 'PR open or unmerged commits'
-      case 'merged_new_commits': return 'PR merged but new commits pushed after merge'
-      case 'merged_unverified': return 'PR merged but verification unavailable — retry'
-      case 'dirty_check_failed': return 'git status failed'
-      default: return code || ''
-    }
-  }
-
   const pruneReviewDialog = pruneDialog && (() => {
     return (
       <Modal open={true} onClose={() => setPruneDialog(null)} title="Prune worktrees" maxWidth={480} footer={<><Btn onClick={() => setPruneDialog(null)}>Cancel</Btn><Btn danger onClick={() => pruneExecute(pruneDialog.candidates.filter((c) => pruneSelected.has(c.name)).map((c) => c.name))}>Remove selected</Btn></>}>
@@ -1135,27 +1182,45 @@ export default function DevFleetPage() {
     )
   })()
 
-  const pruneDone = pruneProgress != null && pruneProgress.done >= pruneProgress.total && !pruneProgress.current
+  const pruneDone = pruneProgress != null && !pruneProgress.running
   const pruneProgressModal = pruneProgress && (
     <Modal
       open={true}
       onClose={() => { if (pruneDone) setPruneProgress(null) }}
       title={pruneDone ? 'Prune complete' : 'Pruning worktrees'}
-      maxWidth={440}
+      maxWidth={460}
       footer={pruneDone ? <Btn onClick={() => setPruneProgress(null)}>Close</Btn> : undefined}
     >
       <div style={{ fontSize: 12 }}>
-        <div style={{ fontWeight: 600, marginBottom: 6 }}>
+        <div style={{ fontWeight: 600, marginBottom: 8 }}>
           {pruneDone ? 'Finished' : 'Removing'} {pruneProgress.done}/{pruneProgress.total}
-          {pruneProgress.current ? <span style={{ fontWeight: 400, color: 'var(--muted)' }}> {'\u2014'} {pruneProgress.current}</span> : null}
         </div>
-        {pruneProgress.results.map((r) => (
-          <div key={r.name} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '2px 0' }}>
-            <span style={{ color: r.ok ? 'var(--ok)' : 'var(--danger)', fontSize: 11 }}>{r.ok ? 'removed' : 'failed'}</span>
-            <span style={{ fontFamily: 'monospace', fontSize: 11 }}>{r.name}</span>
-            {!r.ok && r.error ? <span style={{ color: 'var(--muted)', fontSize: 11, marginLeft: 'auto', maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.error}</span> : null}
-          </div>
-        ))}
+        <div role="list" style={{ display: 'flex', flexDirection: 'column', maxHeight: 320, overflowY: 'auto' }}>
+          {pruneProgress.names.map((nm) => {
+            const it = pruneProgress.items[nm] || { status: 'pending', error: null }
+            const meta = PRUNE_STATUS_META[it.status] || PRUNE_STATUS_META.pending
+            return (
+              <div key={nm} role="listitem" data-testid={`prune-item-${nm}`} data-status={it.status} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '3px 0', borderBottom: '1px solid var(--border)' }}>
+                <span style={{ width: 14, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                  {meta.kind === 'spin'
+                    ? <LoaderCircle size={12} className="lucide-inline animate-spin" style={{ color: 'var(--muted)' }} />
+                    : meta.kind === 'done'
+                      ? <Check size={13} style={{ color: 'var(--ok)' }} />
+                      : meta.kind === 'failed'
+                        ? <X size={13} style={{ color: 'var(--danger)' }} />
+                        : <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--muted)', opacity: 0.4 }} />}
+                </span>
+                <span style={{ fontFamily: 'ui-monospace, SF Mono, Menlo, monospace', fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flexShrink: 0, maxWidth: 200 }}>{nm}</span>
+                <span style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 6, minWidth: 0, paddingLeft: 8 }}>
+                  {it.status === 'failed' && it.error && (
+                    <span title={it.error} style={{ color: 'var(--danger)', fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{it.error}</span>
+                  )}
+                  <Badge variant={meta.kind === 'done' ? 'ok' : meta.kind === 'failed' ? 'err' : 'muted'} className="text-[10.5px] px-1.5 py-0">{meta.label}</Badge>
+                </span>
+              </div>
+            )
+          })}
+        </div>
       </div>
     </Modal>
   )

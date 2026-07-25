@@ -241,3 +241,17 @@ QA screenshots and demo videos follow a **review-then-attach** contract:
 4. **Batch to minimize approval resets.** A force-push resets PR approvals --
    attach media BEFORE asking the user to approve the PR itself, and fold the
    media amend into any pending code amend rather than pushing twice.
+
+### Keep the rest of the tree clean
+
+The e2e suite already writes its logs and screenshots to
+`~/.kirocrew-pods/.e2e-artifacts/<wt>/` -- **outside** the worktree -- by design;
+don't copy those raw logs back into the worktree "to keep them with the branch."
+The only QA output that belongs in the tree is the **committed** media under
+`temp-screenshots/<feature>/` (above). Everything else -- raw `*.log` dumps,
+extra frames, scratch notes, the `.pr-body.md` you fed to `gh pr create` -- stays
+outside (write it under a `mktemp -d`). Before ending the session,
+`git status --porcelain` must be empty: a dirty tree fail-closes Dev Fleet's
+"Prune merged" (`merged_dirty`) so the merged worktree can't be reaped. See the
+kirocrew-worktree-dev skill, "Rule 9 -- Leave the worktree clean (so prune can
+reap it)."
