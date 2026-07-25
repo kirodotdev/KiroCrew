@@ -103,16 +103,19 @@ _GH_ENV_PASSTHROUGH = (
 
 _gh_bin_cache: str | None = None
 
-# Trusted directories for gh resolution — only system-owned, non-user-writable
-# locations. On macOS, Homebrew on Apple Silicon installs to /opt/homebrew/bin.
-_TRUSTED_BIN_DIRS = ("/usr/local/bin", "/usr/bin", "/bin", "/opt/homebrew/bin")
+# gh resolution reuses the SAME trusted directory list as the Sidebar PR panel
+# (source_providers._PROVIDER_EXECUTABLE_DIRS) so both panels accept exactly the
+# same gh locations — dropping a single root-owned copy in any trusted dir fixes
+# both at once. That list is imported lazily inside _gh_bin() (its owning module
+# pulls in dashboard state, so a top-level import here would be circular).
 
 
 def _gh_bin() -> str:
     """Absolute path to a trusted ``gh``, resolved once and cached.
 
-    Resolves from known system directories and validates the candidate (and
-    every parent) is canonical, root-owned, and non-writable by the gateway
+    Resolves from the same trusted directories as the Sidebar PR panel
+    (``source_providers._PROVIDER_EXECUTABLE_DIRS``) and validates the candidate
+    (and every parent) is canonical, root-owned, and non-writable by the gateway
     user — preventing a planted shim from receiving forwarded GitHub credentials.
     Uses the platform's ``_validate_provider_executable`` check (the same gate
     that protects git/glab provider paths). Set ``KIROCREW_ISSUE_RADAR_GH`` to
@@ -127,7 +130,11 @@ def _gh_bin() -> str:
             "Windows is not supported — use WSL to run the KiroCrew gateway"
         )
 
-    from kiro_crew.dashboard.handlers.source_providers import _validate_provider_executable
+    from kiro_crew.dashboard.handlers.source_providers import (
+        _PROVIDER_EXECUTABLE_CANDIDATES,
+        _PROVIDER_EXECUTABLE_DIRS,
+        _validate_provider_executable,
+    )
 
     # Operator override — still validated.
     override = os.environ.get("KIROCREW_ISSUE_RADAR_GH")
@@ -141,9 +148,8 @@ def _gh_bin() -> str:
                 f"KIROCREW_ISSUE_RADAR_GH={override!r} failed validation: {exc}"
             ) from exc
 
-    # Resolve from trusted system dirs — validate each candidate.
-    for d in _TRUSTED_BIN_DIRS:
-        cand = os.path.join(d, "gh")
+    # Resolve from the shared trusted dirs — validate each candidate.
+    for cand in _PROVIDER_EXECUTABLE_CANDIDATES["gh"]:
         if not os.path.isfile(cand):
             continue
         try:
@@ -154,9 +160,10 @@ def _gh_bin() -> str:
             continue  # not root-owned or user-writable — skip
 
     raise GhCliError(
-        "the `gh` CLI was not found in any trusted system directory "
-        f"({', '.join(_TRUSTED_BIN_DIRS)}), or all candidates failed ownership "
-        "validation; set KIROCREW_ISSUE_RADAR_GH to a root-owned gh executable"
+        "the `gh` CLI was not found in any trusted directory "
+        f"({', '.join(_PROVIDER_EXECUTABLE_DIRS)}), or all candidates failed "
+        "ownership validation; set KIROCREW_ISSUE_RADAR_GH to a root-owned gh "
+        "executable"
     )
 
 

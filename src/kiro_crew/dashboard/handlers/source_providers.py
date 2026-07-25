@@ -60,17 +60,20 @@ _PROVIDER_EXECUTABLE_OVERRIDES = {
     "gh": "KIROCREW_GH_BIN",
     "glab": "KIROCREW_GLAB_BIN",
 }
+# Trusted directories searched (in order) for a provider CLI. Shared with
+# Issue Radar's gh resolver (issue_radar/backend/github_client.py) so both
+# panels accept exactly the same set of gh locations and never drift.
+_PROVIDER_EXECUTABLE_DIRS = (
+    "/usr/local/libexec/kirocrew",
+    "/usr/libexec/kirocrew",
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    "/usr/bin",
+    "/home/linuxbrew/.linuxbrew/bin",
+)
 _PROVIDER_EXECUTABLE_CANDIDATES = {
     executable: tuple(
-        f"{directory}/{executable}"
-        for directory in (
-            "/usr/local/libexec/kirocrew",
-            "/usr/libexec/kirocrew",
-            "/opt/homebrew/bin",
-            "/usr/local/bin",
-            "/usr/bin",
-            "/home/linuxbrew/.linuxbrew/bin",
-        )
+        f"{directory}/{executable}" for directory in _PROVIDER_EXECUTABLE_DIRS
     )
     for executable in ("gh", "glab")
 }
