@@ -220,10 +220,22 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
     )}
     {!isStreaming && showFooter && turnStats && turnStats.elapsed_ms > 0 && (
       <div className="flex items-center gap-1 mt-1 text-[11px] text-muted/60 font-mono tabular-nums" data-testid="turn-stats" title={`Turn took ${fmtTurnElapsed(turnStats.elapsed_ms)}${(turnStats.credits ?? 0) > 0 ? ` and used ${fmtCredits(turnStats.credits!)} credits` : ''}${(turnStats.cost_usd ?? 0) > 0 ? ` ($${turnStats.cost_usd!.toFixed(4)} API cost)` : ''}`}>
-        <Clock size={11} aria-hidden="true" />
-        <span>{fmtTurnElapsed(turnStats.elapsed_ms)}</span>
-        {(turnStats.credits ?? 0) > 0 && <span>· {fmtCredits(turnStats.credits!)} credits</span>}
-        {!(turnStats.credits ?? 0) && (turnStats.cost_usd ?? 0) > 0 && <span>· ${turnStats.cost_usd!.toFixed(turnStats.cost_usd! < 0.01 ? 4 : 2)}</span>}
+        {/* Cost leads, elapsed trails: credits are the scarce resource users
+            actually budget, so they read first. The clock icon travels WITH the
+            elapsed value (never leads the line) so it never appears to label
+            the credit figure. */}
+        {(() => {
+          const credits = turnStats.credits ?? 0
+          const cost = turnStats.cost_usd ?? 0
+          const billed = credits > 0
+            ? `${fmtCredits(credits)} credits`
+            : cost > 0 ? `$${cost.toFixed(cost < 0.01 ? 4 : 2)}` : ''
+          return <>
+            {billed && <span>{billed} ·</span>}
+            <Clock size={11} aria-hidden="true" />
+            <span>{fmtTurnElapsed(turnStats.elapsed_ms)}</span>
+          </>
+        })()}
       </div>
     )}
     {!isStreaming && showFooter && (

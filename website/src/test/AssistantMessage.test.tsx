@@ -319,6 +319,19 @@ describe('turn stats footer (elapsed time + credits)', () => {
     expect(stats).toHaveTextContent('2.50 credits')
   })
 
+  it('puts the billed amount before the elapsed time', () => {
+    render(<AssistantMessage content="done" isStreaming={false} slotRunning={false} turnStats={{ elapsed_ms: 84_000, credits: 2.5 }} />)
+    // Collapse whitespace: the cost must read first, elapsed second.
+    const text = screen.getByTestId('turn-stats').textContent!.replace(/\s+/g, ' ').trim()
+    expect(text).toMatch(/^2\.50 credits ·\s*1m 24s$/)
+  })
+
+  it('puts the dollar cost before the elapsed time too', () => {
+    render(<AssistantMessage content="done" isStreaming={false} slotRunning={false} turnStats={{ elapsed_ms: 8_400, cost_usd: 0.0231 }} />)
+    const text = screen.getByTestId('turn-stats').textContent!.replace(/\s+/g, ' ').trim()
+    expect(text).toMatch(/^\$0\.02 ·\s*8\.4s$/)
+  })
+
   it('renders cost_usd when the provider bills in dollars (no credits)', () => {
     render(<AssistantMessage content="done" isStreaming={false} slotRunning={false} turnStats={{ elapsed_ms: 8_400, cost_usd: 0.0231 }} />)
     const stats = screen.getByTestId('turn-stats')
