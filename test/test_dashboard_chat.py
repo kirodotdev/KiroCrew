@@ -100,6 +100,31 @@ class TestChatSlot:
         slot.update_message("t1", content=unlinked_content)
         assert slot.to_dict()["source_links_total"] == 0
 
+    def test_pr_source_links_reevaluated_when_gitlab_allowlist_loads(self, monkeypatch):
+        """The sync scan can run BEFORE the first off-loop allowlist load, so the
+        cold-snapshot rejection must not stay memoized until the next message
+        mutation -- the allowlist generation is part of the cache key."""
+        from kiro_crew.dashboard.handlers import source_providers as sp
+
+        monkeypatch.setattr(sp, "_gitlab_hosts_snapshot", frozenset())
+        monkeypatch.setattr(sp, "_gitlab_hosts_loaded_at", 0.0)
+        monkeypatch.setattr(sp, "_gitlab_hosts_generation", 0)
+
+        slot = _ChatSlot("s1")
+        url = "https://gitlab.acme.internal/team/api/-/merge_requests/7"
+        slot.append("assistant", f"Opened {url}", ts="t1")
+        assert slot.to_dict()["source_links_total"] == 0
+
+        # Allowlist arrives later; no message changed.
+        sp._publish_gitlab_hosts(frozenset({"gitlab.acme.internal"}))
+        refreshed = slot.to_dict()
+        assert refreshed["source_links_total"] == 1
+        assert refreshed["source_links"][0]["url"] == url
+
+        # Revocation is likewise picked up without a message mutation.
+        sp._publish_gitlab_hosts(frozenset())
+        assert slot.to_dict()["source_links_total"] == 0
+
     def test_pr_source_links_ignore_streaming_numeric_prefixes(self):
         slot = _ChatSlot("s1")
         for suffix in ("1", "12", "123"):
@@ -10203,6 +10228,70 @@ class TestRunChatTransientRetry:
 
 
 # ── Bulk model switch (api_chat_slots_model) ──
+
+
+class TestSlotsGetWarmsGitLabAllowlist:
+    """GET /api/chat/slots warms the self-managed GitLab allowlist first.
+
+    Slot source-link extraction is synchronous and cannot load the allowlist, so
+    a cold direct GET (no WebSocket yet) would serialize against the empty
+    snapshot and omit every configured self-hosted MR chip. The WS path has its
+    own test; this pins the direct-fetch path, which is a separate entry point.
+    """
+
+    @pytest.mark.asyncio
+    async def test_cold_get_returns_the_authorized_self_hosted_link(self, monkeypatch) -> None:
+        from aiohttp import web
+        from aiohttp.test_utils import TestClient, TestServer
+
+        from kiro_crew.dashboard.chat_handlers import api_chat_slots
+        from kiro_crew.dashboard.handlers import source_providers as sp
+
+        url = "https://gitlab.acme.internal/team/api/-/merge_requests/7"
+        order: list[str] = []
+
+        # Cold snapshot: nothing has loaded the allowlist yet.
+        monkeypatch.setattr(sp, "_gitlab_hosts_snapshot", frozenset())
+        monkeypatch.setattr(sp, "_gitlab_hosts_loaded_at", 0.0)
+        monkeypatch.setattr(sp, "_gitlab_hosts_generation", 0)
+
+        async def fake_ensure() -> frozenset:
+            order.append("ensure")
+            sp._publish_gitlab_hosts(frozenset({"gitlab.acme.internal"}))
+            return frozenset({"gitlab.acme.internal"})
+
+        monkeypatch.setattr(sp, "ensure_gitlab_hosts_loaded", fake_ensure)
+        monkeypatch.setattr(sp, "schedule_check_refresh", lambda *a, **k: [])
+
+        state = MagicMock()
+        slot = _ChatSlot("s1")
+        slot.append("assistant", f"Opened {url}", ts="t1")
+
+        def serialize(**_kwargs):
+            order.append("serialize")
+            return [slot.to_dict()]
+
+        state.serialize_slots.side_effect = serialize
+
+        @web.middleware
+        async def dashboard_auth_marker(request, handler):
+            request["app"] = ""
+            request["user"] = ""
+            return await handler(request)
+
+        app = web.Application(middlewares=[dashboard_auth_marker])
+        app["state"] = state
+        app.router.add_get("/api/chat/slots", api_chat_slots)
+
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get("/api/chat/slots")
+            assert resp.status == 200
+            payloads = await resp.json()
+
+        # Warm-up strictly precedes serialization, and the authorized MR is a link.
+        assert order[:2] == ["ensure", "serialize"]
+        links = [link["url"] for p in payloads for link in p.get("source_links", [])]
+        assert url in links
 
 
 class TestBulkModelSwitch:

@@ -3089,7 +3089,8 @@
         "tips_snooze_hours": 48.0,
         "tips_recency_decay": 0.6,
         "tips_model": "claude-haiku-4.5",
-        "tips_explore_ratio": 0.2
+        "tips_explore_ratio": 0.2,
+        "gitlab_hosts": []
       }
     },
     {
@@ -3482,6 +3483,34 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 0.2
+    },
+    {
+      "path": "dashboard.gitlab_hosts",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Self-Hosted GitLab Hosts",
+      "help": "Exact hostnames (optionally host:port) of self-managed GitLab instances whose merge-request URLs the Changes panel may load. Empty = gitlab.com only (deny-by-default): a merge-request URL is only sent to the glab CLI if its host is an exact member of this list, so a pasted link cannot aim the credential-bearing CLI at an arbitrary or internal host. Suffixes and wildcards are not matched. Adding an entry authorizes the local glab CLI, with its token, to reach that host, including hosts only resolvable on your network.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": []
+    },
+    {
+      "path": "dashboard.gitlab_hosts.*",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null
     },
     {
       "path": "tunnel",

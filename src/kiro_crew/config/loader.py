@@ -1529,6 +1529,20 @@ class DashboardConfig:
             "Probability of picking a random catalog tip instead of personalized (0-1). Higher = more general discovery.",
         ),
     )
+    gitlab_hosts: list[str] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Self-Hosted GitLab Hosts",
+            "Exact hostnames (optionally host:port) of self-managed GitLab "
+            "instances whose merge-request URLs the Changes panel may load. "
+            "Empty = gitlab.com only (deny-by-default): a merge-request URL is "
+            "only sent to the glab CLI if its host is an exact member of this "
+            "list, so a pasted link cannot aim the credential-bearing CLI at an "
+            "arbitrary or internal host. Suffixes and wildcards are not matched. "
+            "Adding an entry authorizes the local glab CLI, with its token, to "
+            "reach that host, including hosts only resolvable on your network.",
+        ),
+    )
 
 
 @dataclass
@@ -2641,6 +2655,71 @@ def _coerce_str_ids(raw: object) -> list[str]:
     return out
 
 
+_GITLAB_HOST_NAME_RE = _re.compile(r"^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$")
+
+
+def _coerce_gitlab_hosts(raw: object) -> list[str]:
+    """Coerce the self-hosted GitLab allowlist to clean ``host[:port]`` entries.
+
+    Fails closed: a non-list yields ``[]``, and an entry is dropped unless it is
+    a bare lowercase-normalized hostname with an optional numeric port. Anything
+    carrying a scheme, userinfo, path, query, or wildcard is rejected rather than
+    sanitized, so a hand-edited config cannot smuggle a different target past the
+    exact-match check the source-provider handler performs.
+    """
+    if not isinstance(raw, list):
+        return []
+    out: list[str] = []
+    for entry in raw:
+        if not isinstance(entry, str):
+            continue
+        host = entry.strip().lower()
+        if not host or len(host) > 255:
+            continue
+        # Split the optional port BEFORE stripping trailing dots: an absolute-FQDN
+        # entry with a port ("gitlab.example.:8443") keeps its dot in the middle of
+        # the string, so stripping the whole entry first would leave it there and
+        # the URL API's "gitlab.example:8443" could never match.
+        name, sep, port_text = host.rpartition(":")
+        if not sep:
+            name, port_text = host, ""
+        name = name.rstrip(".")
+        # Hostname-only pattern here: the permissive one allows a trailing port,
+        # so validating `name` with it would let a malformed "host:8443:443"
+        # entry (whose last colon is split off as the port) silently authorize
+        # "host:8443".
+        if not name or not _GITLAB_HOST_NAME_RE.fullmatch(name):
+            continue
+        if sep:
+            # A colon was present, so a port MUST follow and it must be a plain
+            # run of ASCII digits. Fail closed on anything else rather than
+            # authorize a host the operator never wrote:
+            #   * "gitlab.example:"      -> empty port; without this it would
+            #     fall through to the portless branch and grant the bare host.
+            #   * "gitlab.example:+443"  -> int("+443") == 443 silently coerces.
+            #   * "gitlab.example:1_000" -> int("1_000") == 1000 (underscores).
+            #   * " 443", fullwidth digits, "0x10" -> also coerce or pass isdigit.
+            # str.isdigit() alone accepts non-ASCII digit codepoints, so pair it
+            # with isascii(); an empty string returns False for both.
+            if not (port_text.isascii() and port_text.isdigit()):
+                continue
+            port = int(port_text)
+            if not 0 < port < 65536:
+                continue
+            # Rebuild the port canonically: a configured "08443" would otherwise
+            # be stored verbatim while both the browser URL API and the backend
+            # normalize the URL's port to "8443", so the entry could never match.
+            # The default HTTPS port is dropped entirely, matching the URL API.
+            host = name if port == 443 else f"{name}:{port}"
+        else:
+            host = name
+        # gitlab.com is always accepted and must not need an allowlist entry.
+        if host in {"gitlab.com", "www.gitlab.com"} or host in out:
+            continue
+        out.append(host)
+    return out
+
+
 def _coerce_int(raw: object, default: int) -> int:
     """Return ``int(raw)`` or *default* if *raw* isn't a clean base-10 integer.
 
@@ -3558,6 +3637,7 @@ class KiroCrewConfig:
                 tips_explore_ratio=_safe_float(
                     dashboard_data.get("tips_explore_ratio", 0.2), 0.2, lo=0.0, hi=1.0
                 ),
+                gitlab_hosts=_coerce_gitlab_hosts(dashboard_data.get("gitlab_hosts")),
             ),
             tunnel=TunnelConfig(
                 enabled=bool(tunnel_data.get("enabled", False)),

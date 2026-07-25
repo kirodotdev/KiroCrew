@@ -585,6 +585,156 @@ class TestPeriodicCheckStatusRefresh:
         assert refresh_calls[0] == ([url], state.push_slots_update)
 
     @pytest.mark.asyncio
+    async def test_owner_ws_loop_pushes_slots_when_allowlist_generation_changes(
+        self, monkeypatch
+    ) -> None:
+        """An operator adding or revoking a self-managed host changes which links
+        are chips at all, and slot extraction is synchronous -- so the periodic
+        loop must push explicitly instead of waiting for message activity."""
+        from kiro_crew.dashboard import ws as dashboard_ws
+        from kiro_crew.dashboard.handlers import source_providers
+
+        state = MagicMock()
+        state.owner_id = "U_OWNER"
+        state.serialize_slots.return_value = []
+        state._yolo = False
+        state.source_link_urls.return_value = []
+
+        pushed = asyncio.Event()
+        state.push_slots_update.side_effect = lambda *a, **k: pushed.set()
+
+        calls = {"n": 0}
+
+        async def fake_ensure() -> frozenset:
+            calls["n"] += 1
+            # Change the generation only on the periodic round, not the warm-up.
+            if calls["n"] == 2:
+                source_providers._publish_gitlab_hosts(frozenset({"gitlab.acme.internal"}))
+            return frozenset()
+
+        class Request(dict):
+            def __init__(self) -> None:
+                super().__init__({"user": "U_OWNER", "app": ""})
+                self.app = {"state": state}
+
+        class FakeWebSocket:
+            def __init__(self) -> None:
+                self.closed = False
+                self.sent: list[dict] = []
+
+            async def prepare(self, request) -> None:
+                return None
+
+            async def send_json(self, payload: dict) -> None:
+                self.sent.append(payload)
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                await pushed.wait()
+                raise StopAsyncIteration
+
+        monkeypatch.setattr(source_providers, "_gitlab_hosts_snapshot", frozenset())
+        monkeypatch.setattr(source_providers, "_gitlab_hosts_loaded_at", 0.0)
+        monkeypatch.setattr(source_providers, "_gitlab_hosts_generation", 0)
+        monkeypatch.setattr(dashboard_ws, "_check_ws_origin", lambda request: None)
+        monkeypatch.setattr(
+            dashboard_ws.web, "WebSocketResponse", lambda **kwargs: FakeWebSocket()
+        )
+        monkeypatch.setattr(source_providers, "ensure_gitlab_hosts_loaded", fake_ensure)
+        monkeypatch.setattr(source_providers, "CHECK_STATUS_TTL_SECS", 0.01)
+
+        await asyncio.wait_for(dashboard_ws.api_ws(Request()), timeout=5)  # type: ignore[arg-type]
+
+        state.push_slots_update.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_slots_broadcast_carries_gitlab_hosts_generation(
+        self, state: DashboardState, monkeypatch
+    ) -> None:
+        """The WS `slots` envelope is rebuilt key-by-key in `_broadcast`, so an
+        unforwarded field is silently dropped — which would leave the client with
+        no way to notice an allowlist change now that polling was removed."""
+        from kiro_crew.dashboard.handlers import source_providers
+
+        sent: list[str] = []
+
+        class FakeWs:
+            closed = False
+
+            def send_str(self, msg: str):
+                sent.append(msg)
+
+                async def _noop() -> None:
+                    return None
+
+                return _noop()
+
+        state._ws_clients = [FakeWs()]  # type: ignore[assignment]
+        monkeypatch.setattr(source_providers, "_gitlab_hosts_generation", 7)
+
+        state.push_slots_update()
+
+        assert sent, "no slots frame was broadcast"
+        payload = json.loads(sent[-1])
+        assert payload["type"] == "slots"
+        assert payload["gitlabHostsGeneration"] == 7
+
+    @pytest.mark.asyncio
+    async def test_ws_warms_gitlab_allowlist_before_first_serialization(
+        self, monkeypatch
+    ) -> None:
+        """Slot source-link extraction is synchronous and cannot load the
+        allowlist, so a self-hosted MR chip would be missing from the very first
+        sidebar push unless the snapshot is warmed first."""
+        from kiro_crew.dashboard import ws as dashboard_ws
+        from kiro_crew.dashboard.handlers import source_providers
+
+        order: list[str] = []
+        state = MagicMock()
+        state.owner_id = "U_OWNER"
+        state._yolo = False
+        state.source_link_urls.return_value = []
+        state.serialize_slots.side_effect = lambda **_kwargs: order.append("serialize") or []
+
+        async def fake_ensure() -> frozenset:
+            order.append("ensure")
+            return frozenset()
+
+        class Request(dict):
+            def __init__(self) -> None:
+                super().__init__({"user": "U_OWNER", "app": ""})
+                self.app = {"state": state}
+
+        class FakeWebSocket:
+            def __init__(self) -> None:
+                self.closed = False
+                self.sent: list[dict] = []
+
+            async def prepare(self, request) -> None:
+                return None
+
+            async def send_json(self, payload: dict) -> None:
+                self.sent.append(payload)
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                raise StopAsyncIteration
+
+        fake_ws = FakeWebSocket()
+        monkeypatch.setattr(dashboard_ws, "_check_ws_origin", lambda request: None)
+        monkeypatch.setattr(dashboard_ws.web, "WebSocketResponse", lambda **kwargs: fake_ws)
+        monkeypatch.setattr(source_providers, "ensure_gitlab_hosts_loaded", fake_ensure)
+        monkeypatch.setattr(source_providers, "CHECK_STATUS_TTL_SECS", 30)
+
+        await asyncio.wait_for(dashboard_ws.api_ws(Request()), timeout=5)  # type: ignore[arg-type]
+
+        assert order[:2] == ["ensure", "serialize"]
+
+    @pytest.mark.asyncio
     async def test_non_owner_ws_never_starts_refresh_loop(self, monkeypatch) -> None:
         from kiro_crew.dashboard import ws as dashboard_ws
         from kiro_crew.dashboard.handlers import source_providers

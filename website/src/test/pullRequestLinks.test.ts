@@ -41,6 +41,79 @@ describe('extractPullRequestLinks', () => {
     ))).toEqual([])
   })
 
+  describe('self-hosted GitLab', () => {
+    const mr = 'https://gitlab.acme.internal/team/platform/api/-/merge_requests/7'
+
+    it('ignores a self-hosted MR when no host is allowlisted', () => {
+      expect(extractPullRequestLinks(messages(`Opened ${mr}`))).toEqual([])
+    })
+
+    it('extracts a self-hosted MR when its host is allowlisted', () => {
+      expect(extractPullRequestLinks(messages(`Opened ${mr}`), ['gitlab.acme.internal'])).toEqual([
+        { url: mr, provider: 'gitlab', number: 7, repo: 'api' },
+      ])
+    })
+
+    it('requires the port to be allowlisted and matches hosts exactly', () => {
+      const ported = 'https://gitlab.acme.internal:8443/team/api/-/merge_requests/9'
+      expect(extractPullRequestLinks(messages(ported), ['gitlab.acme.internal'])).toEqual([])
+      expect(extractPullRequestLinks(messages(ported), ['gitlab.acme.internal:8443'])).toEqual([
+        { url: 'https://gitlab.acme.internal:8443/team/api/-/merge_requests/9', provider: 'gitlab', number: 9, repo: 'api' },
+      ])
+      // Suffix and lookalike hosts stay unmatched.
+      expect(extractPullRequestLinks(
+        messages('https://evil-gitlab.acme.internal/a/b/-/merge_requests/1'),
+        ['gitlab.acme.internal'],
+      )).toEqual([])
+      expect(extractPullRequestLinks(
+        messages('https://gitlab.acme.internal.evil.test/a/b/-/merge_requests/1'),
+        ['gitlab.acme.internal'],
+      )).toEqual([])
+    })
+
+    it('accepts the absolute-FQDN form of an allowlisted host', () => {
+      // Config entries are dot-normalized by the loader, so extraction must
+      // normalize too or a dotted URL is silently dropped.
+      expect(extractPullRequestLinks(
+        messages('https://gitlab.acme.internal./team/api/-/merge_requests/7'),
+        ['gitlab.acme.internal'],
+      )).toEqual([
+        { url: 'https://gitlab.acme.internal/team/api/-/merge_requests/7', provider: 'gitlab', number: 7, repo: 'api' },
+      ])
+    })
+
+    it('treats an explicit :443 entry and URL as the bare host', () => {
+      // The URL API drops the default HTTPS port, and the backend now does too.
+      expect(extractPullRequestLinks(
+        messages('https://gitlab.acme.internal:443/team/api/-/merge_requests/7'),
+        ['gitlab.acme.internal'],
+      )).toEqual([
+        { url: 'https://gitlab.acme.internal/team/api/-/merge_requests/7', provider: 'gitlab', number: 7, repo: 'api' },
+      ])
+      expect(extractPullRequestLinks(messages(mr), ['gitlab.acme.internal:443'])).toEqual([
+        { url: mr, provider: 'gitlab', number: 7, repo: 'api' },
+      ])
+    })
+
+    it('persists and restores self-hosted seen URLs regardless of the allowlist', () => {
+      // The seen set is bookkeeping, not authorization: dropping self-hosted URLs
+      // here made them look new after a reload and reopened the Changes panel.
+      const seen = new Map([['slot-1', new Set([mr])]])
+      expect(persistSeenPullRequestLinks(seen)).toBe(true)
+      const restored = loadSeenPullRequestLinks()
+      expect([...(restored.get('slot-1') ?? [])]).toEqual([mr])
+    })
+
+    it('rescans settled messages when the allowlist changes mid-session', () => {
+      const index = new PullRequestLinkIndex()
+      const history = messages(`Opened ${mr}`, 'still working')
+      expect(index.update('slot-1', history)).toEqual([])
+      expect(index.update('slot-1', history, ['gitlab.acme.internal'])).toEqual([
+        { url: mr, provider: 'gitlab', number: 7, repo: 'api' },
+      ])
+    })
+  })
+
   it('detects URLs wrapped in markdown emphasis (regression: trailing ** broke the numeric tail)', () => {
     const url = 'https://github.com/acme/widgets/pull/166'
     for (const wrapped of [`**${url}**`, `*${url}*`, `\`${url}\``, `__${url}__`, `~~${url}~~`]) {

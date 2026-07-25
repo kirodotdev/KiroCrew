@@ -2122,7 +2122,28 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
     """GET/PUT /api/dashboard/config — read or write dashboard settings."""
     from kiro_crew.config.loader import KiroCrewConfig  # noqa: F811
 
-    cfg = KiroCrewConfig.load()
+    # Offloaded: KiroCrewConfig.load() stats, reads, parses, and validates config
+    # files. The client now polls this endpoint on an interval to pick up
+    # externally edited dashboard.gitlab_hosts, so a slow or network-backed config
+    # directory would otherwise stall the sole event loop on every poll.
+    try:
+        cfg = await asyncio.to_thread(KiroCrewConfig.load)
+    except asyncio.CancelledError:
+        # A cancellation at this await (client disconnect mid-poll, gateway
+        # shutdown) would otherwise unwind the handler before either the
+        # read-success or the write-success/failure audit below, leaving an
+        # authorized config access attempt entirely absent from the
+        # tamper-evident SEL chain. Pair the landed request with an explicit
+        # failure event, then re-raise so cancellation still propagates.
+        _sel().log_tool_invocation(
+            session_key="dashboard",
+            tool_name=(
+                "dashboard_config_write" if request.method == "PUT" else "dashboard_config_read"
+            ),
+            outcome="failure",
+            error="request_cancelled",
+        )
+        raise
     if request.method == "PUT":
         try:
             body = await request.json()
@@ -2139,7 +2160,17 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
         _allowed = {"restore_sessions", "restore_window_minutes", "merge_queued_messages", "widget_density", "verbosity", "quick_send", "session_grid", "tail_fork_enabled"}
         # One-release backward-compat shim for removed key; delete after all clients update.
         deprecated_ignored_keys = {"tail_fork_head_handling"}
-        body = {k: v for k, v in body.items() if k not in deprecated_ignored_keys}
+        # Read-only keys the GET exposes: both settings surfaces save with
+        # `mutate({ ...dashCfg, ...patch })`, so every GET field comes back in the
+        # PUT body. Drop them here instead of listing them in _allowed -- they
+        # stay unwritable, but a round-tripped read-only field must not 400 an
+        # unrelated toggle save.
+        read_only_ignored_keys = {"gitlab_hosts"}
+        body = {
+            k: v
+            for k, v in body.items()
+            if k not in deprecated_ignored_keys and k not in read_only_ignored_keys
+        }
         unknown = set(body.keys()) - _allowed
         if unknown:
             _sel().log_tool_invocation(
@@ -2246,5 +2277,10 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             "quick_send": cfg.dashboard.quick_send,
             "session_grid": cfg.dashboard.session_grid,
             "tail_fork_enabled": cfg.dashboard.tail_fork_enabled,
+            # Read-only here (absent from the PUT allowlist above): authorizing a
+            # self-managed GitLab instance is a config-file decision, not a
+            # dashboard toggle. The client uses it only to decide which pasted
+            # links become source tabs; the provider handler re-checks every URL.
+            "gitlab_hosts": list(cfg.dashboard.gitlab_hosts),
         }
     )

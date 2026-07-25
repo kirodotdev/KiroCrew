@@ -558,9 +558,18 @@ async def api_chat_slots(request: web.Request) -> web.Response:
     # Credential-backed check status is owner-only. Non-owner and app-token
     # callers receive source links but neither cached status nor provider work.
     from kiro_crew.dashboard.handlers.source_providers import (
+        ensure_gitlab_hosts_loaded,
         is_owner_dashboard_request,
         schedule_check_refresh,
     )
+
+    # Same warm-up as the WebSocket connect path: slot source-link extraction is
+    # synchronous and cannot load the self-managed GitLab allowlist itself, so a
+    # cold direct GET would omit every configured self-hosted MR link.
+    try:
+        await ensure_gitlab_hosts_loaded()
+    except Exception:
+        logger.debug("GitLab allowlist warm-up failed; chips may lag one round", exc_info=True)
 
     include_check_status = is_owner_dashboard_request(request)
     payloads = state.serialize_slots(include_check_status=include_check_status)

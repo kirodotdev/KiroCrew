@@ -27,6 +27,7 @@ export function useWebSocket() {
   const wasConnectedRef = useRef(false)
   const reconnectingRef = useRef(false)  // suppress markSlotUnread during reconnect catch-up
   const lastVersionRef = useRef<string | null>(null)
+  const lastGitlabHostsGenRef = useRef<number | null>(null)
   const voiceQueueRef = useRef<string[]>([])
   const voicePlayingRef = useRef(false)
   const activeAudioRef = useRef<HTMLAudioElement | null>(null)
@@ -183,6 +184,10 @@ export function useWebSocket() {
 
     ws.onopen = () => {
       reconnectRef.current = 1000
+      // Forget the last-seen allowlist generation: it is process-local to the
+      // gateway, so after a restart an equal number can mean a different
+      // allowlist. Clearing it makes the next generation frame refetch.
+      lastGitlabHostsGenRef.current = null
       // Cache auto-speak preference
       api.voiceConfig().then(c => { autoSpeakRef.current = !!c.autoSpeak }).catch(() => {})
       if (wasConnectedRef.current) {
@@ -257,6 +262,19 @@ export function useWebSocket() {
             }
             if (msg.channelTrusted !== undefined) {
               dispatch(setChannelTrusted(msg.channelTrusted))
+            }
+            // Refresh the cached GitLab-hosts allowlist when it may have changed.
+            // The generation is PROCESS-local, so a gateway restart can hand out a
+            // number equal to the one this client last saw even though the
+            // allowlist on disk changed. Treat the first generation frame of each
+            // connection as "unknown, refetch" and only compare within a
+            // connection — one extra fetch per connect, never a stale allowlist.
+            if (typeof msg.gitlabHostsGeneration === 'number') {
+              const prevGen = lastGitlabHostsGenRef.current
+              lastGitlabHostsGenRef.current = msg.gitlabHostsGeneration
+              if (prevGen === null || prevGen !== msg.gitlabHostsGeneration) {
+                queryClient.invalidateQueries({ queryKey: ['dashboardConfig'] })
+              }
             }
             break
           }

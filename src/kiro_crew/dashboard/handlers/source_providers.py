@@ -284,10 +284,126 @@ class SourceRef:
     project: str = ""
 
 
+_GITLAB_HOSTS_TTL_SECS = 30.0
+# Cached allowlist snapshot. Populated only by _load_gitlab_hosts() running in a
+# worker thread, so every reader on the event loop is a pure dict lookup.
+_gitlab_hosts_snapshot: frozenset[str] = frozenset()
+_gitlab_hosts_loaded_at = 0.0
+# Bumped whenever the snapshot's CONTENT changes. Consumers that memoize a
+# parse result (per-slot sidebar source links) fold this into their cache key so
+# a later allowlist load invalidates decisions made against the cold snapshot.
+_gitlab_hosts_generation = 0
+_gitlab_hosts_lock = asyncio.Lock()
+
+
+def gitlab_hosts_generation() -> int:
+    """Monotonic counter identifying the current allowlist snapshot."""
+    return _gitlab_hosts_generation
+
+
+def _gitlab_hosts_fresh() -> bool:
+    return bool(
+        _gitlab_hosts_loaded_at
+        and time.monotonic() - _gitlab_hosts_loaded_at < _GITLAB_HOSTS_TTL_SECS
+    )
+
+
+def _publish_gitlab_hosts(hosts: frozenset[str]) -> None:
+    """Install a freshly loaded snapshot, bumping the generation on real change."""
+    global _gitlab_hosts_snapshot, _gitlab_hosts_loaded_at, _gitlab_hosts_generation
+    if hosts != _gitlab_hosts_snapshot:
+        _gitlab_hosts_snapshot = hosts
+        _gitlab_hosts_generation += 1
+    _gitlab_hosts_loaded_at = time.monotonic()
+
+
+def _load_gitlab_hosts() -> frozenset[str]:
+    """Read the configured self-managed GitLab hosts. BLOCKING -- never on the loop.
+
+    ``KiroCrewConfig.load()`` stats, reads, parses, and validates config files, so
+    a slow or network-backed config directory would stall the sole event loop.
+    Callers reach this only through :func:`ensure_gitlab_hosts_loaded`.
+    """
+    try:
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        return frozenset(KiroCrewConfig.load().dashboard.gitlab_hosts)
+    except Exception:
+        logger.debug("self-hosted GitLab allowlist unavailable", exc_info=True)
+        return frozenset()
+
+
+async def ensure_gitlab_hosts_loaded() -> frozenset[str]:
+    """Refresh the cached allowlist off the event loop when the TTL has expired.
+
+    Awaited by every async entry point before it validates a URL, so an operator
+    adding an instance takes effect within one TTL without a gateway restart and
+    without a config read ever running on the loop.
+
+    The refresh is serialized: two concurrent loads could otherwise interleave so
+    that a reader holding the PRE-revocation config installs its snapshot after
+    the post-revocation one and resets the TTL, re-admitting a host the operator
+    just removed for another full interval. The lock plus a post-acquire
+    freshness recheck means exactly one load happens per expiry.
+    """
+    global _gitlab_hosts_snapshot, _gitlab_hosts_loaded_at
+    if _gitlab_hosts_fresh():
+        return _gitlab_hosts_snapshot
+    async with _gitlab_hosts_lock:
+        # Another waiter may have refreshed while this one queued.
+        if _gitlab_hosts_fresh():
+            return _gitlab_hosts_snapshot
+        hosts = await asyncio.to_thread(_load_gitlab_hosts)
+        _publish_gitlab_hosts(hosts)
+        return hosts
+
+
+def _allowed_gitlab_hosts() -> frozenset[str]:
+    """Return the cached self-managed GitLab hosts without touching the filesystem.
+
+    Safe to call from sync code on the event loop (URL parsing, slot
+    serialization). The snapshot comes only from config -- never from the browser
+    -- and is matched exactly, so neither a pasted URL nor a lookalike suffix can
+    widen it. Before the first :func:`ensure_gitlab_hosts_loaded` completes the
+    snapshot is empty, which fails closed (a self-managed URL is simply not
+    recognized yet).
+    """
+    return _gitlab_hosts_snapshot
+
+
+def _parse_gitlab_path(path: str) -> tuple[str, int]:
+    """Split a GitLab MR path into (project, number) or raise ``ValueError``."""
+    # String ops instead of a regex: the previous /(.+)/-/merge_requests/
+    # pattern backtracked polynomially on adversarial paths (CodeQL 192).
+    marker = "/-/merge_requests/"
+    idx = path.lower().rfind(marker)
+    project = path[1:idx] if idx > 0 else ""
+    number_text = path[idx + len(marker) :] if idx > 0 else ""
+    if not project or not number_text.isdigit():
+        raise ValueError(
+            "Expected a GitLab URL like https://gitlab.com/group/project/-/merge_requests/123."
+        )
+    if any(segment in {"", ".", ".."} for segment in project.split("/")):
+        raise ValueError("Invalid GitLab project path.")
+    return project, int(number_text)
+
+
+def _gitlab_ref(host: str, path: str) -> SourceRef:
+    """Build a GitLab ``SourceRef`` for an already-authorized host."""
+    project, number = _parse_gitlab_path(path)
+    normalized = urlunparse(("https", host, path, "", "", ""))
+    repo = project.rsplit("/", 1)[-1]
+    owner = project.rsplit("/", 1)[0] if "/" in project else ""
+    return SourceRef("gitlab", normalized, host, owner, repo, number, project=project)
+
+
 def parse_source_url(raw_url: str) -> SourceRef:
     """Validate and normalize a supported pull/merge-request URL.
 
-    Only public GitHub and GitLab hosts are accepted in this first version.
+    Public GitHub and gitlab.com are always accepted. A self-managed GitLab
+    instance is accepted only when its exact ``host[:port]`` appears in the
+    operator's ``dashboard.gitlab_hosts`` allowlist, so browser input can never
+    choose which instance the credential-bearing CLI talks to.
     Exact parsed-host checks prevent URLs that merely mention a trusted host in
     their path, query, or userinfo from reaching a provider CLI.
     """
@@ -296,7 +412,11 @@ def parse_source_url(raw_url: str) -> SourceRef:
     parsed = urlparse(raw_url.strip())
     if parsed.scheme != "https" or parsed.username or parsed.password:
         raise ValueError("Only HTTPS pull-request URLs without userinfo are supported.")
-    host = (parsed.hostname or "").lower()
+    # Strip a trailing dot so an absolute-FQDN URL (``gitlab.acme.internal.``)
+    # matches the allowlist, whose entries are canonicalized the same way by the
+    # config loader (:func:`_coerce_gitlab_hosts`). Without this the two sides
+    # can never agree and the host is rejected (fails closed).
+    host = (parsed.hostname or "").lower().rstrip(".")
     path = parsed.path.rstrip("/")
 
     if host in {"github.com", "www.github.com"}:
@@ -310,27 +430,22 @@ def parse_source_url(raw_url: str) -> SourceRef:
         return SourceRef("github", normalized, "github.com", owner, repo, int(number))
 
     if host in {"gitlab.com", "www.gitlab.com"}:
-        # String ops instead of a regex: the previous /(.+)/-/merge_requests/
-        # pattern backtracked polynomially on adversarial paths (CodeQL 192).
-        marker = "/-/merge_requests/"
-        idx = path.lower().rfind(marker)
-        project = path[1:idx] if idx > 0 else ""
-        number_text = path[idx + len(marker) :] if idx > 0 else ""
-        if not project or not number_text.isdigit():
-            raise ValueError(
-                "Expected a GitLab URL like https://gitlab.com/group/project/-/merge_requests/123."
-            )
-        number = number_text
-        if any(segment in {"", ".", ".."} for segment in project.split("/")):
-            raise ValueError("Invalid GitLab project path.")
-        normalized = urlunparse(("https", "gitlab.com", path, "", "", ""))
-        repo = project.rsplit("/", 1)[-1]
-        owner = project.rsplit("/", 1)[0] if "/" in project else ""
-        return SourceRef(
-            "gitlab", normalized, "gitlab.com", owner, repo, int(number), project=project
-        )
+        return _gitlab_ref("gitlab.com", path)
 
-    raise ValueError("Only github.com pull requests and gitlab.com merge requests are supported.")
+    # A self-managed instance may listen on a non-default port, so the allowlist
+    # is matched against host and host:port -- an entry without a port does not
+    # authorize an arbitrary port on the same host. An explicit :443 is treated
+    # as absent, matching the browser URL API (which drops the default HTTPS
+    # port) so the same URL resolves identically on both sides.
+    port = parsed.port
+    candidate = f"{host}:{port}" if port and port != 443 else host
+    if host and candidate in _allowed_gitlab_hosts():
+        return _gitlab_ref(candidate, path)
+
+    raise ValueError(
+        "Only github.com pull requests, gitlab.com merge requests, and merge "
+        "requests on a GitLab host listed in dashboard.gitlab_hosts are supported."
+    )
 
 
 def _safe_error(stderr: bytes) -> str:
@@ -412,8 +527,15 @@ async def _collect_process_output(
 async def _run_json(
     *argv: str,
     max_output_bytes: int = _METADATA_OUTPUT_BYTES,
+    host: str = "",
 ) -> Any:
-    """Run an allowlisted provider CLI with isolation, bounds, and SEL audit."""
+    """Run an allowlisted provider CLI with isolation, bounds, and SEL audit.
+
+    ``host`` is REQUIRED for ``glab`` and must already have passed
+    :func:`parse_source_url`; it is re-checked here so a caller cannot reach an
+    unauthorized instance even if a future code path forgets to validate, and an
+    omitted host is refused rather than silently resolved to gitlab.com.
+    """
     executable = argv[0] if argv else ""
     if max_output_bytes <= 0 or max_output_bytes > _DIFF_OUTPUT_BYTES:
         _audit_provider_cli(executable, "denied", "invalid_output_limit")
@@ -421,6 +543,21 @@ async def _run_json(
     if executable not in {"gh", "glab"}:
         _audit_provider_cli(executable, "denied", "unsupported_provider")
         raise SourceProviderError("unsupported provider command")
+    gitlab_host = "gitlab.com"
+    if executable == "glab":
+        # Required, not defaulted: a call site that forgets `host` would
+        # otherwise silently target gitlab.com, so an allowlisted self-managed MR
+        # could be read -- or mutated -- on the PUBLIC instance at the same
+        # project/IID. Failing loudly makes that class of bug impossible to
+        # introduce, including from future mutation endpoints.
+        if not host:
+            _audit_provider_cli(executable, "denied", "host_not_specified")
+            raise SourceProviderError("a GitLab host is required for glab calls")
+        if host not in {"gitlab.com", "www.gitlab.com"}:
+            if host not in _allowed_gitlab_hosts():
+                _audit_provider_cli(executable, "denied", "host_not_allowlisted")
+                raise SourceProviderError("GitLab host is not allowlisted")
+            gitlab_host = host
     if platform_compat.IS_WINDOWS:
         _audit_provider_cli(executable, "denied", "sandbox_unavailable")
         raise SourceProviderError(
@@ -434,6 +571,14 @@ async def _run_json(
         raise
 
     allowed_env_keys = _PROVIDER_BASE_ENV_KEYS | _PROVIDER_AUTH_ENV_KEYS[executable]
+    if executable == "glab" and gitlab_host != "gitlab.com":
+        # GITLAB_TOKEN is a single ambient credential with no host binding, so
+        # forwarding it while GITLAB_HOST points at a self-managed instance would
+        # send a gitlab.com PAT (and every permission it carries) to that server.
+        # Self-managed hosts must therefore authenticate from the per-host entry
+        # in glab's own config (reachable via GLAB_CONFIG_DIR), which is scoped to
+        # the host it was created for.
+        allowed_env_keys = allowed_env_keys - {"GITLAB_TOKEN"}
     base_env = {key: value for key, value in os.environ.items() if key in allowed_env_keys}
     base_env.update(
         {
@@ -448,10 +593,10 @@ async def _run_json(
         # to the same host instead of honoring a configured enterprise default.
         base_env["GH_HOST"] = "github.com"
     else:
-        # parse_source_url only accepts gitlab.com URLs; pin the CLI to that
-        # host so a self-managed default in glab config can't redirect the
-        # API paths to a different instance.
-        base_env["GITLAB_HOST"] = "gitlab.com"
+        # Pin the CLI to the host parse_source_url authorized for this URL, so a
+        # self-managed default in glab config can't redirect the bare API paths
+        # to a different instance.
+        base_env["GITLAB_HOST"] = gitlab_host
 
     cleanup_path: str | None = None
     invoked = False
@@ -1117,8 +1262,12 @@ async def _fetch_github(ref: SourceRef) -> dict[str, Any]:
     )
     return {
         "provider": "github",
-        "url": details.get("url") or ref.url,
-        "number": details.get("number") or ref.number,
+        # Identity comes from the VALIDATED ref, never the provider echo: the
+        # browser submits this url back for refresh/resolve, so a compromised or
+        # hostile instance echoing a different web_url could otherwise steer an
+        # owner-authenticated mutation at an unrelated pull/merge request.
+        "url": ref.url,
+        "number": ref.number,
         "title": details.get("title") or "",
         "description": details.get("body") or "",
         "state": details.get("state") or "",
@@ -1143,9 +1292,29 @@ async def _fetch_github(ref: SourceRef) -> dict[str, Any]:
     }
 
 
+def _gitlab_pipeline_as_check(pipeline: dict[str, Any]) -> dict[str, Any]:
+    """Represent a whole pipeline as a single check row.
+
+    A pipeline standing in for its jobs must keep PIPELINE-level semantics: a
+    ``manual`` pipeline is blocked on a required job, so it is marked as a
+    required gate (``allow_failure: False``) rather than falling through to the
+    job-level reading that treats a lone manual step as skipped -- which the
+    frontend would then roll up as passed.
+    """
+    record = {**pipeline, "name": "Pipeline"}
+    if str(pipeline.get("status") or "").lower() == "manual":
+        record["allow_failure"] = False
+    return _gitlab_check(record)
+
+
 def _gitlab_check(item: dict[str, Any]) -> dict[str, Any]:
     status = str(item.get("status") or "").lower()
     bucket = _gitlab_status_bucket(status)
+    if status == "manual" and item.get("allow_failure") is False:
+        # A required manual job is an unsatisfied gate, not an optional step that
+        # can be treated as skipped: rolling it up as passed would show green
+        # while the pipeline is still blocked on a human action.
+        bucket = "pending"
     return {
         "name": item.get("name") or "Job",
         "workflow": item.get("stage") or "",
@@ -1161,7 +1330,7 @@ def _gitlab_check(item: dict[str, Any]) -> dict[str, Any]:
 async def _fetch_gitlab(ref: SourceRef) -> dict[str, Any]:
     project = quote(ref.project, safe="")
     mr_api = f"projects/{project}/merge_requests/{ref.number}"
-    details = await _run_json("glab", "api", mr_api)
+    details = await _run_json("glab", "api", mr_api, host=ref.host)
     if not isinstance(details, dict):
         raise SourceProviderError("GitLab returned an invalid merge-request payload")
 
@@ -1174,15 +1343,20 @@ async def _fetch_gitlab(ref: SourceRef) -> dict[str, Any]:
     merge_state_raw: Any
     commits_raw, discussions_raw, changes_raw, pipelines_raw, merge_state_raw = (
         await asyncio.gather(
-            _run_json("glab", "api", f"{mr_api}/commits?per_page={_SECONDARY_PAGE_SIZE}"),
+            _run_json(
+                "glab", "api", f"{mr_api}/commits?per_page={_SECONDARY_PAGE_SIZE}", host=ref.host
+            ),
             _run_json(
                 "glab",
                 "api",
                 f"{mr_api}/discussions?per_page={_SECONDARY_PAGE_SIZE}",
                 max_output_bytes=_DISCUSSION_OUTPUT_BYTES,
+                host=ref.host,
             ),
-            _run_json("glab", "api", f"{mr_api}/changes", max_output_bytes=_DIFF_OUTPUT_BYTES),
-            _run_json("glab", "api", f"{mr_api}/pipelines?per_page=20"),
+            _run_json(
+                "glab", "api", f"{mr_api}/changes", max_output_bytes=_DIFF_OUTPUT_BYTES, host=ref.host
+            ),
+            _run_json("glab", "api", f"{mr_api}/pipelines?per_page=20", host=ref.host),
             # Runs alongside the secondary calls so its re-read wait overlaps
             # with fetches this request was making anyway.
             _gitlab_settled_merge_state(ref, mr_api, details),
@@ -1217,6 +1391,7 @@ async def _fetch_gitlab(ref: SourceRef) -> dict[str, Any]:
                 "glab",
                 "api",
                 f"projects/{project}/pipelines/{pipeline_rows[0]['id']}/jobs?per_page={_SECONDARY_PAGE_SIZE}",
+                host=ref.host,
             )
         except SourceProviderError:
             _mark_partial(partial_sections, "checks")
@@ -1312,8 +1487,11 @@ async def _fetch_gitlab(ref: SourceRef) -> dict[str, Any]:
         gitlab_checks = [_gitlab_check({**pipeline_rows[0], "name": "Pipeline"})]
     payload: dict[str, Any] = {
         "provider": "gitlab",
-        "url": details.get("web_url") or ref.url,
-        "number": details.get("iid") or ref.number,
+        # See _fetch_github: identity is the validated ref, not the provider's
+        # web_url/iid. This matters most for a self-managed instance, whose
+        # responses are outside the trust boundary the allowlist establishes.
+        "url": ref.url,
+        "number": ref.number,
         "title": details.get("title") or "",
         "description": details.get("description") or "",
         "state": details.get("state") or "",
@@ -1377,6 +1555,7 @@ async def _fetch_gitlab_checks(ref: SourceRef) -> list[dict[str, Any]]:
         "api",
         f"{mr_api}/pipelines?per_page=1",
         max_output_bytes=_CHECKS_OUTPUT_BYTES,
+        host=ref.host,
     )
     pipeline_rows = _as_list(pipelines)
     if not pipeline_rows:
@@ -1384,16 +1563,17 @@ async def _fetch_gitlab_checks(ref: SourceRef) -> list[dict[str, Any]]:
     pipeline = pipeline_rows[0]
     pipeline_id = pipeline.get("id")
     if not pipeline_id:
-        return [_gitlab_check({**pipeline, "name": "Pipeline"})]
+        return [_gitlab_pipeline_as_check(pipeline)]
     jobs = await _run_json(
         "glab",
         "api",
         f"projects/{project}/pipelines/{pipeline_id}/jobs?per_page={_SECONDARY_PAGE_SIZE}",
         max_output_bytes=_CHECKS_OUTPUT_BYTES,
+        host=ref.host,
     )
     job_rows = _as_list(jobs)
     if not job_rows:
-        return [_gitlab_check({**pipeline, "name": "Pipeline"})]
+        return [_gitlab_pipeline_as_check(pipeline)]
     return [_gitlab_check(item) for item in job_rows]
 
 
@@ -1458,6 +1638,9 @@ def _reserve_direct_fetch(task: asyncio.Task[Any], reservation_bytes: int) -> No
 
 async def fetch_pull_request_checks(raw_url: str) -> list[dict[str, Any]]:
     """Fetch current CI checks, coalescing concurrent requests for one URL."""
+    # Refresh the self-managed GitLab allowlist off the event loop before any
+    # URL validation reads the cached snapshot.
+    await ensure_gitlab_hosts_loaded()
     ref = parse_source_url(raw_url)
     task = _CHECKS_FETCH_INFLIGHT.get(ref.url)
     if task is None:
@@ -1517,6 +1700,9 @@ async def _fetch_pull_request_uncached(ref: SourceRef, generation: int) -> dict[
 
 async def fetch_pull_request(raw_url: str, *, refresh: bool = False) -> dict[str, Any]:
     """Fetch a PR/MR, sharing one provider fanout per normalized URL."""
+    # Refresh the self-managed GitLab allowlist off the event loop before any
+    # URL validation reads the cached snapshot.
+    await ensure_gitlab_hosts_loaded()
     ref = parse_source_url(raw_url)
     now = time.monotonic()
     async with _CACHE_LOCK:
@@ -1644,6 +1830,18 @@ async def api_pull_request_status(request: web.Request) -> web.Response:
     if not isinstance(raw_urls, list):
         _audit_source_api(request, "source.pull_request.status", "failed", "invalid_request")
         return web.json_response({"error": "A list of pull-request URLs is required."}, status=400)
+    try:
+        await ensure_gitlab_hosts_loaded()
+    except asyncio.CancelledError:
+        # This is a direct await in the handler (unlike the read/checks/resolve
+        # endpoints, which reach ensure() through a provider helper wrapped in
+        # the cancellation guard below). A cancellation here would otherwise
+        # unwind past the terminal ``completed`` audit, leaving an authorized
+        # status attempt absent from the tamper-evident SEL chain. Pair it with
+        # ``failed/request_cancelled`` — matching the body-parse guard above —
+        # then re-raise.
+        _audit_source_api(request, "source.pull_request.status", "failed", "request_cancelled")
+        raise
     canonical: list[str] = []
     for value in raw_urls[:STATUS_URLS_MAX]:
         if not isinstance(value, str):
@@ -1803,6 +2001,9 @@ async def _invalidate_pull_request_cache(url: str) -> None:
 
 async def resolve_pull_request_thread(raw_url: str, thread_id: str) -> None:
     """Resolve a review thread after conservatively invalidating cached data."""
+    # Refresh the self-managed GitLab allowlist off the event loop before any
+    # URL validation reads the cached snapshot.
+    await ensure_gitlab_hosts_loaded()
     ref = parse_source_url(raw_url)
     thread_pattern = _GITHUB_THREAD_ID_RE if ref.provider == "github" else _GITLAB_THREAD_ID_RE
     if not thread_pattern.fullmatch(thread_id or ""):
@@ -1847,13 +2048,16 @@ async def resolve_pull_request_thread(raw_url: str, thread_id: str) -> None:
             f"projects/{project}/merge_requests/{ref.number}/discussions/{thread_id}",
             "-f",
             "resolved=true",
+            host=ref.host,
         )
 
 
 async def _gitlab_merge_request(ref: SourceRef) -> dict[str, Any]:
     """Read a merge request so a mutation can refuse inapplicable requests."""
     project = quote(ref.project, safe="")
-    details = await _run_json("glab", "api", f"projects/{project}/merge_requests/{ref.number}")
+    details = await _run_json(
+        "glab", "api", f"projects/{project}/merge_requests/{ref.number}", host=ref.host
+    )
     if not isinstance(details, dict):
         raise SourceProviderError("GitLab returned an invalid merge-request payload")
     return details
@@ -1908,6 +2112,10 @@ async def enable_pull_request_auto_merge(
     ever sent in answer to this specific refusal, which keeps the guard live for
     the dashboard instead of degrading it into a constant.
     """
+    # Warm the allowlist BEFORE parsing: a self-managed URL is validated against
+    # the cached snapshot, so a cold mutation would otherwise be rejected as an
+    # unsupported host (400) even though the operator authorized it.
+    await ensure_gitlab_hosts_loaded()
     ref = parse_source_url(raw_url)
     if ref.provider == "github":
         node_id, repository = await _github_pull_request_node(ref)
@@ -1969,6 +2177,7 @@ async def enable_pull_request_auto_merge(
         f"projects/{project}/merge_requests/{ref.number}/merge",
         "-f",
         "merge_when_pipeline_succeeds=true",
+        host=ref.host,
     )
     return "pipeline"
 
@@ -1980,6 +2189,10 @@ async def mark_pull_request_ready(raw_url: str) -> None:
     title: GitLab's draft prefix grammar stays the provider's concern and a
     concurrent retitle cannot be clobbered by this call.
     """
+    # Warm the allowlist BEFORE parsing: a self-managed URL is validated against
+    # the cached snapshot, so a cold mutation would otherwise be rejected as an
+    # unsupported host (400) even though the operator authorized it.
+    await ensure_gitlab_hosts_loaded()
     ref = parse_source_url(raw_url)
     if ref.provider == "github":
         node_id, repository = await _github_pull_request_node(ref)
@@ -2015,6 +2228,7 @@ async def mark_pull_request_ready(raw_url: str) -> None:
         f"iid={ref.number}",
         "-F",
         "draft=false",
+        host=ref.host,
     )
     _raise_on_graphql_errors(payload, "GitLab refused to mark the merge request ready")
 
@@ -2719,6 +2933,9 @@ async def _refresh_check_status(url: str, on_update: _CheckUpdateCallback | None
 
 
 async def _fetch_check_status(url: str) -> dict[str, str] | None:
+    # Refresh the self-managed GitLab allowlist off the event loop before any
+    # URL validation reads the cached snapshot.
+    await ensure_gitlab_hosts_loaded()
     ref = parse_source_url(url)
     result: dict[str, str] = {}
     if ref.provider == "github":
@@ -2745,7 +2962,10 @@ async def _fetch_check_status(url: str) -> dict[str, str] | None:
         _record_merge_state(result, *_github_merge_state(data))
         return result or None
     project = quote(ref.project, safe="")
-    details = await _run_json("glab", "api", f"projects/{project}/merge_requests/{ref.number}")
+    details = await _run_json(
+        "glab", "api", f"projects/{project}/merge_requests/{ref.number}", host=ref.host
+    )
+    head_status = ""
     if isinstance(details, dict):
         # Same {state} vocabulary as the full-payload path via `_project_state`:
         # GitLab keeps `draft: true` on an MR closed while still in draft, so the
@@ -2759,11 +2979,22 @@ async def _fetch_check_status(url: str) -> dict[str, str] | None:
         if state is not None:
             result["state"] = state
         _record_merge_state(result, *_gitlab_merge_state(details))
-    pipelines = await _run_json(
-        "glab", "api", f"projects/{project}/merge_requests/{ref.number}/pipelines?per_page=1"
-    )
-    rows = _as_list(pipelines)
-    status = str(rows[0].get("status") or "").lower() if rows else ""
+        # head_pipeline is the MR's own HEAD pipeline and ships with this same
+        # payload, so the common case needs one provider call like GitHub does.
+        head = details.get("head_pipeline")
+        if isinstance(head, dict):
+            head_status = str(head.get("status") or "").lower()
+    if head_status:
+        status = head_status
+    else:
+        pipelines = await _run_json(
+            "glab",
+            "api",
+            f"projects/{project}/merge_requests/{ref.number}/pipelines?per_page=1",
+            host=ref.host,
+        )
+        rows = _as_list(pipelines)
+        status = str(rows[0].get("status") or "").lower() if rows else ""
     if status:
         # Project the pipeline AGGREGATE through the SAME helper the full-payload
         # path uses (`_gitlab_aggregate_ci`, consumed there via `ciStatus`), so

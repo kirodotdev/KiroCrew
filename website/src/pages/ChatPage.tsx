@@ -1199,7 +1199,23 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
   const search = useMessageSearch(messages, activeSlot)
   const touchedFiles = useTouchedFiles(activeSlot ?? undefined)
   const sourceLinkIndex = useRef(new PullRequestLinkIndex())
-  const sourceLinks = sourceLinkIndex.current.update(activeSlot, messages)
+  // Self-managed GitLab hosts the operator authorized (config-only, read-only
+  // here). Without them a pasted self-hosted MR link is not a Changes source.
+  // No refetchInterval: polling this shared ['dashboardConfig'] key turned every
+  // same-key observer into a poller and wrote a dashboard_config_read SEL entry
+  // on each tick. Instead the WS 'slots' push carries the allowlist generation
+  // (see useWebSocket), which invalidates this query only when the allowlist
+  // actually changes — an edit on disk still propagates, without the churn.
+  const { data: sourceHostCfg } = useQuery<{ gitlab_hosts?: string[] }>({
+    queryKey: ['dashboardConfig'],
+    queryFn: () => api.dashboardConfig(),
+    staleTime: 30_000,
+  })
+  const sourceLinks = sourceLinkIndex.current.update(
+    activeSlot,
+    messages,
+    sourceHostCfg?.gitlab_hosts ?? [],
+  )
   const [selectedSourceUrl, setSelectedSourceUrl] = useState('')
 
   // Add and focus the per-slot Changes tab for newly detected source URLs,

@@ -62,7 +62,42 @@ const MAX_PERSISTED_SLOT_LENGTH = 512
 // linear, no-backtracking shape CodeQL flagged on the old backend parser.
 const URL_CANDIDATE_RE = /https:\/\/[A-Za-z0-9!#$%&*+,.\/:;=?@_~-]+/g
 
-function parseCandidate(raw: string): PullRequestLink | null {
+/** Normalize the configured self-hosted GitLab hosts to a lookup set.
+ * Entries arrive from dashboard config (already `host[:port]`), never from chat
+ * content, and are matched exactly — the backend re-validates every URL before
+ * a provider CLI runs, so this only decides which links become source tabs.
+ * An explicit `:443` is dropped to match the URL API (and the backend), which
+ * omits the default HTTPS port. */
+export function gitlabHostSet(hosts: readonly string[] | undefined): ReadonlySet<string> {
+  return new Set(
+    (hosts ?? [])
+      .map(host => host.trim().toLowerCase().replace(/:443$/, ''))
+      .filter(Boolean),
+  )
+}
+
+const NO_GITLAB_HOSTS: ReadonlySet<string> = new Set<string>()
+
+function gitlabLink(origin: string, path: string): PullRequestLink | null {
+  const marker = '/-/merge_requests/'
+  const idx = path.lastIndexOf(marker)
+  if (idx <= 0) return null
+  const project = path.slice(1, idx)
+  const number = path.slice(idx + marker.length)
+  if (!project || !/^\d+$/.test(number)) return null
+  return {
+    url: `https://${origin}${path}`,
+    provider: 'gitlab',
+    number: Number(number),
+    repo: project.split('/').at(-1) || project,
+  }
+}
+
+function parseCandidate(
+  raw: string,
+  gitlabHosts: ReadonlySet<string> = NO_GITLAB_HOSTS,
+  anyGitlabHost = false,
+): PullRequestLink | null {
   // Trim trailing punctuation and markdown emphasis (**bold**, *italic*,
   // `code`, _underscore_, ~~strike~~) that the candidate scan may have
   // swallowed — agent messages routinely wrap PR URLs in emphasis, and a
@@ -76,7 +111,13 @@ function parseCandidate(raw: string): PullRequestLink | null {
   } catch {
     return null
   }
-  const host = url.hostname.toLowerCase().replace(/^www\./, '')
+  // Strip a trailing dot (absolute-FQDN form) so the parsed host matches the
+  // allowlist, whose entries are dot-normalized by the config loader; the two
+  // sides must agree or a self-hosted MR link is silently dropped.
+  const host = url.hostname
+    .toLowerCase()
+    .replace(/\.+$/, '')
+    .replace(/^www\./, '')
   const path = url.pathname.replace(/\/+$/, '')
   if (host === 'github.com') {
     const parts = path.split('/').filter(Boolean) // [owner, repo, 'pull', number]
@@ -88,25 +129,30 @@ function parseCandidate(raw: string): PullRequestLink | null {
       repo: parts[1],
     }
   }
-  if (host === 'gitlab.com') {
-    const marker = '/-/merge_requests/'
-    const idx = path.lastIndexOf(marker)
-    if (idx <= 0) return null
-    const project = path.slice(1, idx)
-    const number = path.slice(idx + marker.length)
-    if (!project || !/^\d+$/.test(number)) return null
-    return {
-      url: `https://gitlab.com${path}`,
-      provider: 'gitlab',
-      number: Number(number),
-      repo: project.split('/').at(-1) || project,
-    }
-  }
+  if (host === 'gitlab.com') return gitlabLink('gitlab.com', path)
+  // Self-managed instance: the exact host (with its port, when the URL carries
+  // one) must be allowlisted. `www.` is not stripped here — the allowlist and
+  // the backend both match the host as configured.
+  const rawHost = url.hostname.toLowerCase().replace(/\.+$/, '')
+  const hostWithPort = url.port ? `${rawHost}:${url.port}` : rawHost
+  if (anyGitlabHost || gitlabHosts.has(hostWithPort)) return gitlabLink(hostWithPort, path)
   return null
+}
+
+/** True when a stored URL is already in canonical form.
+ *
+ * Used only for the persisted "seen sources" bookkeeping set, which is NOT an
+ * authorization decision — whether a host may be loaded is decided at extraction
+ * time and re-validated by the backend. Applying the allowlist here would drop
+ * every self-hosted URL from the seen set, so after a reload those MRs would look
+ * new again and reopen the Changes panel. */
+function isCanonicalStoredUrl(value: string): boolean {
+  return parseCandidate(value, NO_GITLAB_HOSTS, true)?.url === value
 }
 
 function linksInMessage(
   message: ChatMessage | undefined,
+  gitlabHosts: ReadonlySet<string> = NO_GITLAB_HOSTS,
   limit = MAX_PULL_REQUEST_SOURCES,
 ): AttributedLink[] {
   if (message?.role === 'streaming' || message?.role === 'chunk' || limit <= 0) return []
@@ -119,7 +165,7 @@ function linksInMessage(
   const content = typeof rawContent === 'string' ? rawContent : ''
   URL_CANDIDATE_RE.lastIndex = 0
   for (const match of content.matchAll(URL_CANDIDATE_RE)) {
-    const link = parseCandidate(match[0])
+    const link = parseCandidate(match[0], gitlabHosts)
     if (!link || found.has(link.url)) continue
     found.set(link.url, { ...link, mentionedBy })
     if (found.size >= limit) break
@@ -150,10 +196,14 @@ function addLinks(
   }
 }
 
-export function extractPullRequestLinks(messages: ChatMessage[]): PullRequestLink[] {
+export function extractPullRequestLinks(
+  messages: ChatMessage[],
+  gitlabHosts: readonly string[] = [],
+): PullRequestLink[] {
+  const hosts = gitlabHostSet(gitlabHosts)
   const found = new Map<string, AttributedLink>()
   for (const message of messages) {
-    addLinks(found, linksInMessage(message))
+    addLinks(found, linksInMessage(message, hosts))
     // Once MAX agent sources are captured, no further message can add an emitted
     // Change source, so stop scanning (user links past this point are moot).
     if (roleCount(found, 'agent') >= MAX_PULL_REQUEST_SOURCES) break
@@ -185,8 +235,24 @@ export class PullRequestLinkIndex {
   private tail: AttributedLink[] = []
   private tailTransient = false
   private result: PullRequestLink[] = []
+  private hosts: ReadonlySet<string> = NO_GITLAB_HOSTS
+  private hostsKey = ''
 
-  update(slot: string | null, messages: ChatMessage[]): PullRequestLink[] {
+  update(
+    slot: string | null,
+    messages: ChatMessage[],
+    gitlabHosts: readonly string[] = [],
+  ): PullRequestLink[] {
+    // An operator adding a self-managed host mid-session must retro-detect the
+    // MRs already in the transcript, so a changed allowlist forces a full
+    // rescan rather than only applying to future messages.
+    const hostsKey = [...gitlabHostSet(gitlabHosts)].sort().join(',')
+    if (hostsKey !== this.hostsKey) {
+      this.hostsKey = hostsKey
+      this.hosts = gitlabHostSet(gitlabHosts)
+      this.rebuild(slot, messages)
+      return this.result
+    }
     if (slot !== this.slot) {
       this.rebuild(slot, messages)
       return this.result
@@ -206,7 +272,7 @@ export class PullRequestLinkIndex {
     if (appended) {
       if (!this.tailTransient) addLinks(this.settled, this.tail)
       for (let index = previousLength; index < nextLength - 1; index += 1) {
-        addLinks(this.settled, linksInMessage(messages[index]))
+        addLinks(this.settled, linksInMessage(messages[index], this.hosts))
         if (roleCount(this.settled, 'agent') >= MAX_PULL_REQUEST_SOURCES) break
       }
       this.setTail(messages[nextLength - 1])
@@ -227,7 +293,7 @@ export class PullRequestLinkIndex {
     this.messages = messages
     this.settled = new Map()
     for (let index = 0; index < Math.max(0, messages.length - 1); index += 1) {
-      addLinks(this.settled, linksInMessage(messages[index]))
+      addLinks(this.settled, linksInMessage(messages[index], this.hosts))
       if (roleCount(this.settled, 'agent') >= MAX_PULL_REQUEST_SOURCES) break
     }
     this.setTail(messages.at(-1))
@@ -236,7 +302,7 @@ export class PullRequestLinkIndex {
 
   private setTail(message: ChatMessage | undefined): void {
     this.tailTransient = message?.role === 'streaming' || message?.role === 'chunk'
-    this.tail = linksInMessage(message)
+    this.tail = linksInMessage(message, this.hosts)
   }
 
   private materialize(): void {
@@ -307,8 +373,7 @@ export function loadSeenPullRequestLinks(): Map<string, Set<string>> {
         || seen.size >= MAX_PULL_REQUEST_SOURCES
         || seen.size >= remainingUrls
       ) continue
-      const source = parseCandidate(value)
-      if (source?.url === value) seen.add(value)
+      if (isCanonicalStoredUrl(value)) seen.add(value)
     }
     if (!seen.size) continue
     remainingUrls -= seen.size
@@ -338,8 +403,7 @@ export function persistSeenPullRequestLinks(
         || urls.length >= MAX_PULL_REQUEST_SOURCES
         || urls.length >= remainingUrls
       ) continue
-      const source = parseCandidate(value)
-      if (source?.url === value) urls.push(value)
+      if (isCanonicalStoredUrl(value)) urls.push(value)
     }
     if (!urls.length) continue
     remainingUrls -= urls.length

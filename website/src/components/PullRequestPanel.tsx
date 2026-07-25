@@ -222,11 +222,16 @@ function stateTone(source: PullRequestSource): string {
   return 'bg-bg-hover text-muted'
 }
 
-function stateLabel(source: PullRequestSource): string {
+export function stateLabel(source: PullRequestSource): string {
+  const state = source.state.toLowerCase()
+  // Terminal states win over draft, matching pullRequestLifecycleState below:
+  // GitLab keeps `draft` set on a merge request that was closed while still a
+  // draft, and the badge must not contradict the tab's lifecycle glyph.
+  if (source.mergedAt || state === 'merged') return 'Merged'
+  if (state === 'closed') return 'Closed'
   if (source.draft) return 'Draft'
-  if (source.mergedAt || source.state.toLowerCase() === 'merged') return 'Merged'
-  const state = source.state || 'Open'
-  return state.charAt(0).toUpperCase() + state.slice(1).toLowerCase()
+  const label = source.state || 'Open'
+  return label.charAt(0).toUpperCase() + label.slice(1).toLowerCase()
 }
 
 type LifecycleState = NonNullable<PullRequestStatus['state']>

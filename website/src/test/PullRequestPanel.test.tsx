@@ -25,6 +25,7 @@ import PullRequestPanel, {
   pullRequestLifecycleState,
   pullRequestMergeBlocker,
   STATUS_FOLLOWUP_MAX,
+  stateLabel,
   statusPollDelay,
 } from '../components/PullRequestPanel'
 
@@ -183,6 +184,17 @@ describe('PullRequestPanel', () => {
     expect(statusPollDelay(undefined, 0, 99)).toBe(300_000)
     // Backoff outranks the fast follow-up hint from the last good response.
     expect(statusPollDelay(refreshing, 0, 1)).toBe(30_000)
+  })
+
+  it('labels the state badge in the same precedence as the tab lifecycle glyph', () => {
+    expect(stateLabel(github)).toBe('Open')
+    expect(stateLabel({ ...github, state: 'opened' })).toBe('Opened')
+    expect(stateLabel({ ...github, draft: true })).toBe('Draft')
+    // A GitLab MR keeps `draft` set after being closed as a draft, so the
+    // terminal state must win or the badge contradicts the tab glyph.
+    expect(stateLabel({ ...gitlab, state: 'closed', mergedAt: '', draft: true })).toBe('Closed')
+    expect(stateLabel({ ...gitlab, draft: true })).toBe('Merged')
+    expect(stateLabel({ ...gitlab, state: 'locked', mergedAt: '' })).toBe('Locked')
   })
 
   it('derives chip lifecycle and CI signals from a loaded pull request', () => {

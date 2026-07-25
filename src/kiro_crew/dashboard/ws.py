@@ -119,6 +119,8 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
     from kiro_crew.dashboard.handlers.source_providers import (
         CHECK_STATUS_PENDING_MAX,
         CHECK_STATUS_TTL_SECS,
+        ensure_gitlab_hosts_loaded,
+        gitlab_hosts_generation,
         is_owner_dashboard_request,
         schedule_check_refresh,
     )
@@ -127,12 +129,33 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
     ws = web.WebSocketResponse(heartbeat=30)
     await ws.prepare(request)
 
+    # Warm the self-managed GitLab allowlist BEFORE the first serialization.
+    # Slot source-link extraction is synchronous and cannot load it, so without
+    # this the initial sidebar would omit every self-hosted MR chip until some
+    # later provider request happened to populate the snapshot.
+    # Done BEFORE register_ws: this awaits, and a cancellation here would
+    # otherwise leave the socket registered with no cleanup scope to unregister
+    # it (the finally below is only entered after registration succeeds).
+    try:
+        await ensure_gitlab_hosts_loaded()
+    except Exception:
+        logger.debug("GitLab allowlist warm-up failed; chips may lag one round", exc_info=True)
+
     state.register_ws(ws, owner=owner_request)
 
     # Push current slots immediately so sidebar populates without waiting.
     try:
         slots_data = state.serialize_slots(include_check_status=owner_request)
-        await ws.send_json({"type": "slots", "data": slots_data, "yolo": state._yolo})
+        await ws.send_json(
+            {
+                "type": "slots",
+                "data": slots_data,
+                "yolo": state._yolo,
+                # Seed the client's generation baseline so a later change is
+                # detectable as a change rather than as a first sighting.
+                "gitlabHostsGeneration": gitlab_hosts_generation(),
+            }
+        )
         if owner_request:
             urls = [
                 link["url"] for payload in slots_data for link in payload.get("source_links", [])
@@ -190,6 +213,7 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
         # the offset by the admission cap each round cycles every chip through
         # the admitted window within ceil(len/cap) rounds.
         refresh_round = 0
+        hosts_generation = gitlab_hosts_generation()
         while not ws.closed and not shutdown_event.is_set():
             # Guard the body (not the whole loop) so a single transient failure
             # from source_link_urls()/schedule_check_refresh logs and continues
@@ -197,6 +221,15 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
             # frozen-chip bug this loop exists to fix.
             try:
                 await asyncio.sleep(CHECK_STATUS_TTL_SECS)
+                # Re-read the allowlist off-loop on the same cadence. A host the
+                # operator added (or revoked) changes which links are chips at
+                # all, and slot extraction is synchronous, so a generation change
+                # has to be pushed explicitly -- otherwise the new/removed chip
+                # waits for an unrelated message mutation.
+                await ensure_gitlab_hosts_loaded()
+                if gitlab_hosts_generation() != hosts_generation:
+                    hosts_generation = gitlab_hosts_generation()
+                    state.push_slots_update()
                 urls = state.source_link_urls()
                 if urls:
                     offset = (refresh_round * CHECK_STATUS_PENDING_MAX) % len(urls)

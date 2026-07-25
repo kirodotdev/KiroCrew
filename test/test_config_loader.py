@@ -3268,3 +3268,115 @@ class TestEmptyResponseAutoContinueWiring:
     def test_default_is_true(self) -> None:
         cfg = _load_from_dict({})
         assert cfg.session.empty_response_auto_continue is True
+
+
+class TestGitLabHostAllowlist:
+    """dashboard.gitlab_hosts authorizes self-managed GitLab instances for the
+    Changes panel, so it must fail closed and never sanitize a malformed entry
+    into something that still reaches a provider CLI."""
+
+    def test_default_is_empty(self) -> None:
+        assert _load_from_dict({}).dashboard.gitlab_hosts == []
+
+    def test_normalizes_case_and_trailing_dot(self) -> None:
+        cfg = _load_from_dict(
+            {"dashboard": {"gitlab_hosts": ["  GitLab.Acme.Internal.  ", "git.example:8443"]}}
+        )
+        assert cfg.dashboard.gitlab_hosts == ["gitlab.acme.internal", "git.example:8443"]
+
+    def test_drops_entries_that_are_not_bare_hosts(self) -> None:
+        cfg = _load_from_dict(
+            {
+                "dashboard": {
+                    "gitlab_hosts": [
+                        "https://gitlab.acme.internal",
+                        "gitlab.acme.internal/path",
+                        "user@gitlab.acme.internal",
+                        "*.acme.internal",
+                        "gitlab.acme.internal:99999",
+                        "gitlab.acme.internal:0",
+                        "",
+                        "   ",
+                        42,
+                        None,
+                    ]
+                }
+            }
+        )
+        assert cfg.dashboard.gitlab_hosts == []
+
+    def test_normalizes_explicit_default_https_port(self) -> None:
+        # The browser URL API drops :443, so a host:443 entry could never match a
+        # frontend-normalized URL; store it as the bare host so both sides agree.
+        cfg = _load_from_dict(
+            {"dashboard": {"gitlab_hosts": ["gitlab.acme.internal:443", "git.example:8443"]}}
+        )
+        assert cfg.dashboard.gitlab_hosts == ["gitlab.acme.internal", "git.example:8443"]
+
+    def test_drops_entry_with_an_embedded_port(self) -> None:
+        # Only the LAST colon is treated as the port separator, so validating the
+        # name with a pattern that itself allows a port would let this malformed
+        # entry silently authorize "gitlab.example:8443".
+        cfg = _load_from_dict(
+            {"dashboard": {"gitlab_hosts": ["gitlab.example:8443:443", "a:1:2:3"]}}
+        )
+        assert cfg.dashboard.gitlab_hosts == []
+
+    def test_drops_malformed_port_instead_of_granting_the_bare_host(self) -> None:
+        # A colon with no valid ASCII-digit port is a malformed entry, not a
+        # portless host. Before this guard, "gitlab.example:" fell through to the
+        # portless branch and authorized the bare host the operator never wrote,
+        # and int() coerced "+443"/"1_000"/" 443" into a real port -- each a
+        # deny-by-default violation. A genuine ported host in the same list must
+        # still be accepted, so the drop is per-entry, not all-or-nothing.
+        cfg = _load_from_dict(
+            {
+                "dashboard": {
+                    "gitlab_hosts": [
+                        "gitlab.example:",
+                        "gitlab.example:+443",
+                        "gitlab.example:-1",
+                        "gitlab.example:1_000",
+                        "gitlab.example: 443",
+                        "gitlab.example:8443",
+                    ]
+                }
+            }
+        )
+        assert cfg.dashboard.gitlab_hosts == ["gitlab.example:8443"]
+
+    def test_canonicalizes_ported_absolute_fqdn(self) -> None:
+        # The dot sits mid-string when a port follows, so the port must be split
+        # off before trailing dots are stripped or the entry never matches the
+        # URL-normalized "gitlab.example:8443".
+        cfg = _load_from_dict(
+            {"dashboard": {"gitlab_hosts": ["gitlab.example.:8443", "plain.example.:443"]}}
+        )
+        assert cfg.dashboard.gitlab_hosts == ["gitlab.example:8443", "plain.example"]
+
+    def test_canonicalizes_non_canonical_port_text(self) -> None:
+        # A leading-zero port passed validation but was stored verbatim, while
+        # both URL APIs normalize to "8443" -- so the entry could never match.
+        cfg = _load_from_dict(
+            {"dashboard": {"gitlab_hosts": ["git.example:08443", "other.example:0443"]}}
+        )
+        assert cfg.dashboard.gitlab_hosts == ["git.example:8443", "other.example"]
+
+    def test_drops_gitlab_com_and_duplicates(self) -> None:
+        cfg = _load_from_dict(
+            {
+                "dashboard": {
+                    "gitlab_hosts": [
+                        "gitlab.com",
+                        "www.gitlab.com",
+                        "gitlab.acme.internal",
+                        "GITLAB.ACME.INTERNAL",
+                    ]
+                }
+            }
+        )
+        assert cfg.dashboard.gitlab_hosts == ["gitlab.acme.internal"]
+
+    def test_non_list_falls_back_to_empty(self) -> None:
+        cfg = _load_from_dict({"dashboard": {"gitlab_hosts": "gitlab.acme.internal"}})
+        assert cfg.dashboard.gitlab_hosts == []

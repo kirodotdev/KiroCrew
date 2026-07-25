@@ -793,7 +793,7 @@ class _ChatSlot:
         self.messages: list[dict[str, Any]] = []
         # (content revision, links) cache for the sidebar PR chips scan.
         self._source_links_revision = 0
-        self._source_links_cache: tuple[int, list[dict]] | None = None
+        self._source_links_cache: tuple[tuple[int, int], list[dict]] | None = None
         self.total_messages: int = 0  # lifetime count (survives trimming)
         self.task: asyncio.Task | None = None  # type: ignore[type-arg]
         self.event = asyncio.Event()
@@ -1250,11 +1250,22 @@ class _ChatSlot:
         Linear scan (no regex backtracking) validated by the source-provider
         URL parser and cached behind an explicit content revision.
         """
-        if self._source_links_cache and self._source_links_cache[0] == self._source_links_revision:
-            return self._source_links_cache[1]
         # Local import: handlers.source_providers does not import state, but
         # keep the dependency lazy to stay out of module-load ordering.
-        from kiro_crew.dashboard.handlers.source_providers import parse_source_url
+        from kiro_crew.dashboard.handlers.source_providers import (
+            gitlab_hosts_generation,
+            parse_source_url,
+        )
+
+        # The self-managed GitLab allowlist is part of the cache key, not just the
+        # message revision: this runs synchronously and can execute BEFORE the
+        # first off-loop allowlist load, in which case a self-managed URL is
+        # rejected against the cold (empty) snapshot. Without the generation, that
+        # rejection would stay memoized until the next message mutation and the
+        # chip would be missing even after the allowlist loaded.
+        cache_key = (self._source_links_revision, gitlab_hosts_generation())
+        if self._source_links_cache and self._source_links_cache[0] == cache_key:
+            return self._source_links_cache[1]
 
         stop_chars = set(" \t\n<>()[]{}\"'")
         found: dict[str, dict] = {}
@@ -1294,7 +1305,7 @@ class _ChatSlot:
                         "url": ref.url,
                     }
         links = list(found.values())
-        self._source_links_cache = (self._source_links_revision, links)
+        self._source_links_cache = (cache_key, links)
         return links
 
     def to_dict(self, *, include_check_status: bool = False) -> dict:
@@ -2653,10 +2664,18 @@ class DashboardState:
 
     def push_slots_update(self) -> None:
         """Push slots, keeping provider status confined to owner websockets."""
+        from kiro_crew.dashboard.handlers.source_providers import (
+            gitlab_hosts_generation,
+        )
+
         yolo_active = self.is_yolo_active()  # expire first if needed
         slots_data = self.serialize_slots()
         mgr = getattr(self, "channel_manager", None)
         ch_trusted = bool(mgr and any(ch.trusted for ch in mgr._channels.values()))
+        # Piggyback the allowlist generation so clients invalidate the cached
+        # ['dashboardConfig'] query only when the GitLab-hosts allowlist actually
+        # changed -- an event-driven refresh that replaces a constant 30s poll
+        # (which multiplied audit-log writes across every same-key observer).
         self._broadcast(
             {
                 "_type": "slots",
@@ -2664,6 +2683,7 @@ class DashboardState:
                 "_yolo": yolo_active,
                 "slots": json.dumps(slots_data),
                 "channelTrusted": ch_trusted,
+                "gitlabHostsGeneration": gitlab_hosts_generation(),
             }
         )
         owner_ws_clients = getattr(self, "_owner_ws_clients", None)
@@ -2764,6 +2784,10 @@ class DashboardState:
                         "data": slots_list,
                         "yolo": note.get("_yolo", False),
                         "channelTrusted": note.get("channelTrusted", False),
+                        # Forwarded explicitly: this envelope is rebuilt key-by-key,
+                        # so anything not named here is silently dropped. The client
+                        # invalidates its cached dashboard config when this changes.
+                        "gitlabHostsGeneration": note.get("gitlabHostsGeneration"),
                     }
                 )
             elif msg_type == "slot_title":
