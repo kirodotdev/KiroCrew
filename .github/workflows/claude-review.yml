@@ -1,4 +1,4 @@
-name: Opus 4.8 Review
+name: Claude AI Review
 
 # Semantic AI review layer. Replicates the AutoSDE rules that CANNOT be
 # expressed as a grep (aria-label on icon-only buttons, no-emoji-as-icons,
@@ -22,7 +22,12 @@ concurrency:
 
 jobs:
   claude-review:
-    name: Opus 4.8 Review
+    # Model-AGNOSTIC check name on purpose: branch protection keys its required
+    # status check on this job name. Keep it model-agnostic so bumping the Claude
+    # model (--model below) never renames the check and never requires a
+    # branch-protection change. Put the model version only in --model, comments,
+    # and the posted-summary heading — never here.
+    name: Claude AI Review
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -30,7 +35,7 @@ jobs:
           fetch-depth: 0
 
       # Load AUTOSDE rules from the BASE commit, not the PR HEAD, so a PR
-      # cannot weaken the rules that govern it. Opus 4.8 reads these snapshots
+      # cannot weaken the rules that govern it. Fable 5 reads these snapshots
       # (its restricted toolset can Read files but not run git).
       - name: Extract base-ref AUTOSDE rules
         env:
@@ -44,7 +49,7 @@ jobs:
       # secrets / OIDC, so the AWS role assumption below can never succeed —
       # it errors, the review step is skipped, and the gate fails closed on
       # every Dependabot PR. Skip the credential + review steps for Dependabot
-      # and let the gate pass (see "Gate on Opus 4.8 review"). Dependency bumps
+      # and let the gate pass (see "Gate on Fable 5 review"). Dependency bumps
       # are mechanical and remain covered by the non-AI gates (Semgrep,
       # Dependency Audit, CodeQL, build/tests).
       - uses: aws-actions/configure-aws-credentials@517a711dbcd0e402f90c77e7e2f81e849156e31d # v6.2.2
@@ -53,7 +58,7 @@ jobs:
           role-to-assume: ${{ secrets.AWS_BEDROCK_ROLE_ARN }}
           aws-region: us-west-2
 
-      - name: Opus 4.8 review
+      - name: Fable 5 review
         id: review
         if: github.actor != 'dependabot[bot]'
         uses: anthropics/claude-code-action@44423bdec74b97d67543eb16c110546762c110b2 # v1
@@ -74,7 +79,8 @@ jobs:
           # and any file it needs for context; the gh commands let it
           # post findings.
           claude_args: |
-            --model us.anthropic.claude-opus-4-8
+            --model us.anthropic.claude-fable-5
+            --fallback-model us.anthropic.claude-opus-4-8
             --max-turns 100
             --allowedTools "Read,Grep,Glob,Bash(gh pr comment:*),Bash(gh pr view:*),Bash(gh api:*)"
             --json-schema '{"type":"object","additionalProperties":false,"required":["reviewed","block_merge","summary"],"properties":{"reviewed":{"type":"boolean","description":"true once you have completed the review of this commit"},"block_merge":{"type":"boolean","description":"true IFF at least one finding meets the BLOCKING BAR"},"summary":{"type":"string","description":"markdown review summary CI will post to the PR"}}}'
@@ -88,6 +94,26 @@ jobs:
             public fork: do NOT flag the absence of Brazil/AUTOSDE tooling.
 
             Review ONLY the PR diff. Post specific, actionable inline comments.
+
+            SCOPE (mandatory): FOCUS on the files this PR changes. You MAY read
+            surrounding or referenced files (Read/Grep/Glob) for CONTEXT — to
+            understand a changed line — but do NOT review or report on code
+            outside the diff, and do not go on a whole-repo audit. Report findings
+            ONLY on lines this PR adds or changes; use context reads to judge
+            those lines, never to expand the review into unrelated code.
+
+            COVERAGE (mandatory): enumerate EVERY file in the PR diff and inspect
+            each one — do not sample, skim, or stop early. "Inspect" means read
+            each changed file (with enough surrounding context to judge the
+            change) and surface the COMPLETE set of findings on the changed lines
+            in this single review, never a representative subset.
+
+            THOROUGHNESS — you run as a SINGLE agentic review with a large turn
+            budget; USE it. Re-scan the diff more than once within this one run
+            until every changed file has been examined and you are confident the
+            finding set is COMPLETE — do not stop after a first skim. (Do NOT try
+            to reason about what an earlier revision's review reported — you
+            cannot see it; review this diff live regardless of prior revisions.)
 
             AUTHORITATIVE RULE SET: read the BASE-branch rule snapshots at
             `.review-base-rules/AUTOSDE.yaml` (backend Python) and
@@ -151,13 +177,14 @@ jobs:
             your labels and your block decision consistent.
 
             SELF-CRITIQUE (run BEFORE you post the summary comment):
-            - Kill-filter: for each candidate finding ask "if I were the author,
-              would this change what I build or how I think about this code?" If
-              no (a style preference, a "consider", a nice-to-have) — DROP it. Do
-              not post nice-to-have comments.
+            - Kill-filter: DROP pure style preferences, "consider"/"nice-to-have"
+              nits, and anything that would not change the author's code or
+              understanding. But DO keep and report every substantive MEDIUM —
+              real correctness, robustness, maintainability, or clarity issues on
+              changed lines that would genuinely help the author — as an ADVISORY
+              (non-blocking) finding. Valuable MEDIUMs are the point of the
+              review; only true nits get dropped, not useful non-blocking issues.
             - Merge: if two findings share one root cause, post ONE comment.
-            - Re-run dedup: if an earlier revision's review already raised a
-              finding, do not repeat it — only report issues not already covered.
 
             PREMISE / DESIGN CONCERNS (keep separate from the code verdict):
             A "should this exist / is this the right design" objection is
@@ -199,10 +226,10 @@ jobs:
       # comment — so it works even when the model doesn't call gh pr comment.
       # UPSERT a single marker-keyed comment per PR: re-scanning on every push
       # UPDATEs that one comment (PATCH) instead of stacking a new one —
-      # otherwise the PR fills with N near-duplicate Opus 4.8 summaries as the
+      # otherwise the PR fills with N near-duplicate Fable 5 summaries as the
       # branch evolves (PR #14 accumulated 3). Fully workflow-owned, so the
       # dedup does not depend on the model following posting instructions.
-      - name: Post Opus 4.8 review summary
+      - name: Post Fable 5 review summary
         if: always()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -218,7 +245,7 @@ jobs:
           MARKER="<!-- claude-ai-review -->"
           {
             echo "$MARKER"
-            echo "## Opus 4.8 Review — $verdict"
+            echo "## Fable 5 Review — $verdict"
             echo
             echo "_Reviewed \`$HEAD\` — this comment is updated in place on each push._"
             echo
@@ -244,10 +271,10 @@ jobs:
           if [ -n "$existing" ] && [ "$existing" != "null" ]; then
             gh api --method PATCH "repos/$REPO/issues/comments/$existing" \
               --field body="$(cat /tmp/claude-summary.md)" >/dev/null || true
-            echo "Updated existing Opus 4.8 summary comment #$existing"
+            echo "Updated existing Fable 5 summary comment #$existing"
           else
             gh pr comment "$PR" --body-file /tmp/claude-summary.md || true
-            echo "Created new Opus 4.8 summary comment"
+            echo "Created new Fable 5 summary comment"
           fi
 
       # Fail-CLOSED gate. Gates on the action's OWN structured output
@@ -263,7 +290,7 @@ jobs:
       # Fail closed unless the step succeeded AND emitted structured output with
       # reviewed==true, so a review that errored / ran out of turns / produced no
       # verdict can never look clean.
-      - name: Gate on Opus 4.8 review
+      - name: Gate on Fable 5 review
         if: always()
         env:
           HEAD: ${{ github.event.pull_request.head.sha }}
@@ -275,31 +302,31 @@ jobs:
           # Pass the gate green rather than fail closed — dependency bumps are
           # covered by Semgrep, Dependency Audit, CodeQL and the build/tests.
           if [ "$ACTOR" = "dependabot[bot]" ]; then
-            echo "Dependabot PR ($ACTOR): Opus 4.8 AI review skipped (no Bedrock secrets/OIDC). Passing gate."
+            echo "Dependabot PR ($ACTOR): Fable 5 AI review skipped (no Bedrock secrets/OIDC). Passing gate."
             exit 0
           fi
           if [ "$REVIEW_OUTCOME" != "success" ]; then
-            echo "::error::Opus 4.8 review step did not succeed (outcome=$REVIEW_OUTCOME) for $HEAD. Failing closed."
+            echo "::error::Fable 5 review step did not succeed (outcome=$REVIEW_OUTCOME) for $HEAD. Failing closed."
             exit 1
           fi
           if [ -z "$SO" ]; then
-            echo "::error::Opus 4.8 review produced no structured output for $HEAD (review did not complete / ran out of turns). Failing closed — re-run or inspect the Opus 4.8 review step logs."
+            echo "::error::Fable 5 review produced no structured output for $HEAD (review did not complete / ran out of turns). Failing closed — re-run or inspect the Fable 5 review step logs."
             exit 1
           fi
           reviewed=$(printf '%s' "$SO" | jq -r '.reviewed // false')
           block=$(printf '%s' "$SO" | jq -r 'if has("block_merge") then (.block_merge|tostring) else "MISSING" end')
           if [ "$reviewed" != "true" ]; then
-            echo "::error::Opus 4.8 review did not confirm completion (reviewed != true) for $HEAD. Failing closed."
+            echo "::error::Fable 5 review did not confirm completion (reviewed != true) for $HEAD. Failing closed."
             printf 'structured_output: %s\n' "$SO"
             exit 1
           fi
           if [ "$block" = "MISSING" ]; then
-            echo "::error::Opus 4.8 structured output is missing block_merge for $HEAD. Failing closed."
+            echo "::error::Fable 5 structured output is missing block_merge for $HEAD. Failing closed."
             printf 'structured_output: %s\n' "$SO"
             exit 1
           fi
           if [ "$block" = "true" ]; then
-            echo "::error::Opus 4.8 review flagged a blocking (CRITICAL/HIGH) issue on $HEAD — see the posted review summary."
+            echo "::error::Fable 5 review flagged a blocking (CRITICAL/HIGH) issue on $HEAD — see the posted review summary."
             exit 1
           fi
-          echo "Opus 4.8 review completed for $HEAD with no blocking findings."
+          echo "Fable 5 review completed for $HEAD with no blocking findings."

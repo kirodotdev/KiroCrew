@@ -99,9 +99,15 @@ jobs:
           Brazil/AUTOSDE build tooling or internal-only infrastructure. Follow the
           conventions in CLAUDE.md and AGENTS.md (root and website/) when present.
 
-          You are reviewing a pull request. Inspect ONLY the changes this branch
-          introduces relative to the base commit, using:
+          You are reviewing a pull request. Start from the changes this branch
+          introduces relative to the base commit:
               git diff ${{ github.event.pull_request.base.sha }}...HEAD
+          FOCUS on the changed files. You MAY open the full changed files and any
+          surrounding or referenced files (the sandbox is read-only) for CONTEXT
+          -- to understand a changed line -- but do NOT review or report on code
+          outside the diff, and do not go on a whole-repo audit. Report findings
+          ONLY on lines this PR adds or changes; use context reads to judge those
+          lines, never to expand scope into unrelated code.
 
           Review the diff for:
           1. Security vulnerabilities (injection, path traversal, credential exposure)
@@ -112,6 +118,15 @@ jobs:
           6. Regression (removal of a guard/validation/error-handling a prior fix added)
           Performance, test-coverage, and style-adjacent observations are ADVISORY
           only (see the blocking contract below) -- report them as MEDIUM/LOW.
+
+          COVERAGE (mandatory): enumerate EVERY file in the diff and inspect each
+          one -- do not sample or stop early. Your review MUST account for all
+          changed files and surface the COMPLETE set of findings, never a
+          representative subset. This review runs in THREE sequential passes (the
+          workflow re-invokes you). When a later pass is given the findings
+          already reported by earlier passes, SKIP those and focus only on issues
+          and files not yet covered; when no prior findings are provided, do a
+          full review.
 
           Also enforce this repo's own rules. Read the BASE-branch rule
           snapshots at .review-base-rules/AUTOSDE.yaml (backend Python) and
@@ -166,13 +181,14 @@ jobs:
           AUTOSDE rules and the actual diff are authoritative -- never invent rules.
 
           SELF-CRITIQUE (run BEFORE you emit anything):
-          - Kill-filter: for each candidate finding ask "if I were the author,
-            would this change what I build or how I think about this code?" If no
-            (a style preference, a "consider", a nice-to-have) -- DROP it. Do not
-            emit nice-to-have comments.
+          - Kill-filter: DROP pure style preferences, "consider"/"nice-to-have"
+            nits, and anything that would not change the author's code or
+            understanding. But DO keep and emit every substantive MEDIUM -- real
+            correctness, robustness, maintainability, or clarity issues on changed
+            lines that would genuinely help the author -- as an ADVISORY
+            (non-blocking) finding. Valuable MEDIUMs are the point of the review;
+            only true nits get dropped, not useful non-blocking issues.
           - Merge: if two findings share one root cause, emit ONE finding.
-          - Re-run dedup: if an earlier revision's review already raised a finding,
-            do not repeat it -- only report issues not already covered.
 
           PREMISE / DESIGN CONCERNS (keep separate from the code verdict):
           A "should this exist / is this the right design" objection is ADVISORY
@@ -214,18 +230,79 @@ jobs:
           role-to-assume: ${{ secrets.AWS_CODEX_BEDROCK_ROLE_ARN }}
           aws-region: us-east-1
 
-      - name: GPT 5.6 review
+      - name: GPT 5.6 review (3 passes)
         if: github.actor != 'dependabot[bot]'
         env:
           # Codex's amazon-bedrock provider resolves the assumed role's SigV4
           # credentials via the AWS SDK credential chain and calls the Bedrock
           # Mantle Responses API directly -- no proxy, no bearer token, no key.
           AWS_REGION: us-east-1
+        # THREE-PASS review to maximize single-shot coverage. Each pass re-runs
+        # the SAME base prompt but is additionally fed the findings already
+        # reported by earlier passes and told to skip them and cover the files /
+        # issues not yet examined. The UNION of all three passes becomes the
+        # review output the comment + gate consume. Dedup here is enforceable
+        # (unlike the old cross-revision dedup) because prior-pass findings are
+        # visible within the same run. Actions runs this `run:` with the default
+        # shell `bash -e {0}` (errexit ON, pipefail OFF), so each pass uses
+        # `|| rc=$?` to capture its exit code without aborting the step — that is
+        # what makes a failed pass VISIBLE (::warning:: + banner) instead of
+        # tripping errexit; the script's own `set -uo pipefail` is what adds
+        # pipefail (load-bearing, not redundant). NOTE: a failed pass still writes
+        # a banner to codex-review-output.md, so when ALL passes fail the file is
+        # non-empty and the gate's `-s` check does NOT fire — the fail-closed
+        # backstop for that case is the ABSENT `[CODEX-REVIEWED] <sha>` marker.
         run: |
-          codex exec \
-            --sandbox read-only \
-            --output-last-message codex-review-output.md \
-            "$(cat /tmp/codex-prompt.md)"
+          set -uo pipefail
+          BASE_PROMPT="$(cat /tmp/codex-prompt.md)"
+          : > codex-review-output.md
+          prior=""
+          failed_passes=""
+          for pass in 1 2 3; do
+            if [ -n "$prior" ]; then
+              PROMPT=$(printf '%s\n\n%s\n%s\n' "$BASE_PROMPT" \
+                "==== ALREADY REPORTED IN EARLIER PASSES OF THIS SAME REVIEW (do NOT repeat any of these; report ONLY new issues not listed here, and make sure every changed file has been inspected): ====" \
+                "$prior")
+            else
+              PROMPT="$BASE_PROMPT"
+            fi
+            # Capture the real exit code so a failed pass is made VISIBLE rather
+            # than silently dropped. The default Actions shell is `bash -e {0}`
+            # (errexit ON), so `|| rc=$?` is REQUIRED: a bare `codex exec` failure
+            # would trip errexit and abort the step before the visibility code
+            # below runs.
+            rc=0
+            codex exec \
+              --sandbox read-only \
+              --output-last-message "codex-pass-${pass}.md" \
+              "$PROMPT" || rc=$?
+            if [ "$rc" -ne 0 ] || [ ! -s "codex-pass-${pass}.md" ]; then
+              # Surface the incomplete pass in the job log AND the posted comment
+              # so a degrade from 3-pass to fewer passes can never be silent /
+              # unauditable (Bedrock throttling or SigV4 expiry mid-loop).
+              echo "::warning::GPT 5.6 review pass ${pass} did not complete (exit ${rc}); three-pass coverage is reduced for this commit."
+              failed_passes="${failed_passes} ${pass}"
+              {
+                echo "### Review pass ${pass}"
+                echo "_⚠️ This pass did not complete (exit ${rc}); its findings are missing from this review._"
+                echo
+              } >> codex-review-output.md
+              continue
+            fi
+            {
+              echo "### Review pass ${pass}"
+              cat "codex-pass-${pass}.md"
+              echo
+            } >> codex-review-output.md
+            prior=$(printf '%s\n\n--- pass %s findings ---\n%s\n' \
+              "$prior" "$pass" "$(cat "codex-pass-${pass}.md")")
+          done
+          if [ -n "$failed_passes" ]; then
+            {
+              echo
+              echo "> ⚠️ **Incomplete multi-pass review:** pass(es)${failed_passes} did not complete, so the three-pass coverage guarantee was NOT fully met for this commit. Re-run the workflow for a complete review."
+            } >> codex-review-output.md
+          fi
 
       # Finding 2 (HIGH) mitigation: the reviewer runs agentically with AWS
       # creds in its environment while reading untrusted PR content. The
