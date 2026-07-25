@@ -57,6 +57,7 @@
       "auto-update.js",
       "gateway-stop.js",
       "gateway-wait.js",
+      "home-dir.js",
       "window-state.js",
       "gateway-liveness.js",
       "gateway-recovery.js",
@@ -84,6 +85,17 @@
           "!**/*.pyc"
         ]
       }
-    ]
-  }
+    ],
+    "win": {
+      "icon": "icon.png",
+      "target": [
+        "squirrel"
+      ]
+    },
+    "squirrelWindows": {
+      "name": "KiroCrew",
+      "iconUrl": "https://raw.githubusercontent.com/kirodotdev/KiroCrew/main/website/electron/icon.ico"
+    }
+  },
+  "author": "Kiro Crew"
 }

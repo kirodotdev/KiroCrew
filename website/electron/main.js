@@ -5,6 +5,42 @@ const os = require("os");
 const { spawn, execFile } = require("child_process");
 const path = require("path");
 const http = require("http");
+
+// Squirrel.Windows fires the app with --squirrel-install / -updated /
+// -uninstall / -obsolete during install lifecycle events; the app must
+// handle them (shortcut creation/removal) and exit WITHOUT starting the
+// gateway or opening windows. No-op on macOS/Linux. Kept dependency-free
+// (no electron-squirrel-startup package) to match the repo's built-in
+// updater philosophy.
+(function handleSquirrelEvents() {
+  if (process.platform !== "win32" || process.argv.length < 2) return;
+  const cmd = process.argv[1];
+  if (!cmd.startsWith("--squirrel-")) return;
+  const { app } = require("electron");
+  const { spawn } = require("child_process");
+  const updateExe = path.resolve(path.dirname(process.execPath), "..", "Update.exe");
+  const target = path.basename(process.execPath);
+  const run = (args) => {
+    try {
+      spawn(updateExe, args, { detached: true, stdio: "ignore" }).unref();
+    } catch (_) {
+      /* Update.exe missing (dev run) -- nothing to do */
+    }
+  };
+  if (cmd === "--squirrel-install" || cmd === "--squirrel-updated") {
+    run(["--createShortcut=" + target]);
+  } else if (cmd === "--squirrel-uninstall") {
+    run(["--removeShortcut=" + target]);
+  } else if (cmd !== "--squirrel-obsolete") {
+    // --squirrel-firstrun (Squirrel's normal launch after a fresh install)
+    // and any unknown --squirrel-* flag: continue normal startup. Quitting
+    // here would make the app exit on every first launch.
+    return;
+  }
+  // Lifecycle events (install/updated/uninstall/obsolete) end here.
+  app.quit();
+  process.exit(0);
+})();
 const { findKirocrewBin } = require("./find-bin");
 const { createTokenRetryHandler } = require("./token-retry");
 const { createDisplayMediaHandler } = require("./display-media");
@@ -43,7 +79,15 @@ const store = new Store({
   },
 });
 
-const KIROCREW_HOME = process.env.KIROCREW_HOME || path.join(os.homedir(), ".kirocrew");
+// The PRE-SPAWN read home (see home-dir.js for the full contract): whichever
+// directory's config.json governs this launch under the backend's migration
+// rules -- legacy ~/.kirocrew when it exists (the backend force-copies it
+// over ~/.kiro/crew, marker or not), canonical otherwise. Parity with
+// config/paths.py is gated by test/fixtures/home-resolution-cases.json.
+// Boot-time WRITES (mkdir, pycache prefix) use canonicalHome() instead --
+// writing into the legacy dir re-arms the migration every launch (#483).
+const { resolveHome, secretCandidates, canonicalHome } = require("./home-dir");
+const KIROCREW_HOME = resolveHome();
 
 function resolvePort() {
   const raw = process.env.KIROCREW_PORT;
@@ -286,9 +330,13 @@ function startGateway() {
 }
 
 function spawnGateway(resolve) {
-        // Ensure ~/.kirocrew/ directory exists before starting gateway
-        // (gateway generates .local_secret itself on startup via O_CREAT|O_TRUNC)
-        const kirocrewDir = KIROCREW_HOME;
+        // Pre-create the backend's POST-migration data root so the pycache
+        // prefix below has a live target. Deliberately NOT resolveHome():
+        // that answers "which config content governs this launch" and can be
+        // the legacy dir -- pre-creating or writing into ~/.kirocrew re-arms
+        // the backend's legacy migration on every launch (issue #483 class).
+        // The gateway creates/owns its home and .local_secret regardless.
+        const kirocrewDir = process.env.KIROCREW_HOME || canonicalHome();
         try {
           fs.mkdirSync(kirocrewDir, { recursive: true, mode: 0o700 });
         } catch (err) {
@@ -319,9 +367,27 @@ function spawnGateway(resolve) {
         // land AFTER the fresh child is assigned. Without an identity guard they
         // would null out the healthy replacement and set a bogus
         // gatewayStartFailure, breaking the very recovery they race with.
-        const child = spawn(bin, ["gateway", "--no-open"], {
+        // Windows bundled layout: spawn the interpreter directly instead of
+        // the .cmd shim. Node refuses spawn() of .cmd/.bat without
+        // shell:true (CVE-2024-27980 hardening), and shell-quoting a
+        // spaced install path is fragile -- the shim exists for humans and
+        // find-bin identity; the process tree runs python.exe.
+        let spawnBin = bin;
+        let spawnArgs = ["gateway", "--no-open"];
+        if (bin.endsWith("kirocrew.cmd")) {
+          const pyExe = path.resolve(path.dirname(bin), "..", "python.exe");
+          if (fs.existsSync(pyExe)) {
+            spawnBin = pyExe;
+            spawnArgs = ["-s", "-m", "kiro_crew", ...spawnArgs];
+          }
+        }
+        const child = spawn(spawnBin, spawnArgs, {
           stdio: ["ignore", childOut, childOut],
           detached: false,
+          // win32: the bundled interpreter is a console-subsystem binary;
+          // without this every app launch opens a persistent console window
+          // beside the Electron app. Ignored on POSIX.
+          windowsHide: true,
           env: {
             ...cleanEnv,
             KIROCREW_PROJECT_DIR: path.resolve(__dirname, ".."),
@@ -426,7 +492,20 @@ function fetchRemoteToken(port) {
 
 function fetchLocalToken(backendUrl = BACKEND_URL) {
   try {
-    const secret = fs.readFileSync(path.join(KIROCREW_HOME, ".local_secret"), "utf8").trim();
+    // Re-resolve at call time (NOT the boot-time KIROCREW_HOME pin): on the
+    // migration launch the backend deletes the legacy dir after this process
+    // booted, so the secret may exist only in the canonical home by now.
+    // Skip empty reads: the backend creates the file via O_CREAT|O_TRUNC, so
+    // an existing-but-truncated canonical file must not mask the legacy
+    // fallback.
+    let secret = "";
+    for (const candidate of secretCandidates()) {
+      try {
+        const v = fs.readFileSync(candidate, "utf8").trim();
+        if (v) { secret = v; break; }
+      } catch { /* try next */ }
+    }
+    if (!secret) return Promise.resolve("");
     return new Promise((resolve) => {
       const req = http.get(`${backendUrl}/api/token/local`, { headers: { "X-Local-Secret": secret }, timeout: 5000 }, (res) => {
         if (res.statusCode !== 200) { res.resume(); return resolve(""); }
@@ -755,9 +834,16 @@ function createWindow() {
     height: state.height,
     minWidth: 550,
     minHeight: 600,
-    titleBarStyle: "hidden",
     backgroundColor: "#0f1117",
   };
+  // Frameless chrome is macOS-only: the dashboard's 42px header doubles as
+  // the title bar with the native traffic lights inset into it. Windows has
+  // no equivalent inset controls -- hiding the title bar there would ship
+  // windows with no minimize/maximize/close at all -- so it keeps the native
+  // frame, exactly like the shipped Linux AppImage (Electron ignores
+  // titleBarStyle on Linux). A Windows title-bar overlay with inset controls
+  // is the tracked follow-up.
+  if (IS_MAC) opts.titleBarStyle = "hidden";
   // Inset the native traffic lights into the dashboard's 42px header row.
   // Kept in sync with zoom by positionTrafficLights().
   if (IS_MAC) opts.trafficLightPosition = trafficLightPositionForZoom(1);
@@ -1409,10 +1495,11 @@ async function openNewConnectionWindow() {
       height: 860,
       minWidth: 550,
       minHeight: 600,
-      titleBarStyle: "hidden",
       backgroundColor: "#0f1117",
     };
-    // Same traffic-light inset as the main window (see createWindow).
+    // Same platform-conditional chrome as the main window (see createWindow):
+    // frameless + inset traffic lights on macOS, native frame elsewhere.
+    if (IS_MAC) connOpts.titleBarStyle = "hidden";
     if (IS_MAC) connOpts.trafficLightPosition = trafficLightPositionForZoom(1);
     const connWin = new BaseWindow(connOpts);
 

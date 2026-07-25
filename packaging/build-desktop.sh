@@ -37,6 +37,11 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
+# Git Bash / MSYS on Windows reports MINGW64_NT-10.0-... / MSYS_NT-...;
+# normalize to "windows" so the branches below read naturally.
+case "$OS" in
+  mingw*|msys*|cygwin*) OS="windows" ;;
+esac
 HOST_ARCH="$(uname -m)"
 
 # Universal is the macOS default; Linux has no universal concept (AppImage is
@@ -132,7 +137,9 @@ provision_pbs() {
   local uv_key="$1" pattern="$2" dir
   uv python install "$uv_key" >/dev/null 2>&1 || true
   dir="$(find "$(uv python dir)" -maxdepth 1 -type d -name "$pattern" 2>/dev/null | sort -V | tail -1)"
-  if [ -z "$dir" ] || [ ! -x "$dir/bin/python3.12" ]; then
+  # POSIX PBS trees carry bin/python3.12; Windows PBS puts python.exe at
+  # the tree root. Accept either.
+  if [ -z "$dir" ] || { [ ! -x "$dir/bin/python3.12" ] && [ ! -x "$dir/python.exe" ]; }; then
     echo "ERROR: no managed python-build-standalone 3.12 matching ${pattern} under $(uv python dir)" >&2
     echo "       Run: uv python install $uv_key" >&2
     return 1
@@ -217,6 +224,51 @@ LAUNCH
   echo "    $(basename "$out") size: $(du -sh "$out" 2>/dev/null | cut -f1)"
 }
 
+# Build the Windows backend tree. Separate from build_backend because the
+# PBS Windows layout differs everywhere the POSIX function assumes bin/ and
+# lib/python3.12: python.exe sits at the tree root, site-packages at
+# Lib/site-packages, and the launcher is a .cmd shim (find-bin.js probes
+# bin/kirocrew.cmd on win32; Electron unwraps the shim and spawns
+# python.exe directly -- see main.js).
+#   $1 = PBS interpreter dir   $2 = output dir
+build_backend_windows() {
+  local pbs_dir="$1" out="$2" sp
+
+  log "Installing kiro_crew into the bundled interpreter ($(basename "$out"))…"
+  mkdir -p "$(dirname "$out")"
+  cp -R "$pbs_dir" "$out"
+  find "$out" -name "EXTERNALLY-MANAGED" -delete 2>/dev/null || true
+
+  env PYTHONNOUSERSITE=1 PYTHONPATH= KIROCREW_SKIP_FRONTEND=1 \
+    "$out/python.exe" -m pip install --prefer-binary \
+    --no-warn-script-location --disable-pip-version-check "$ROOT"
+
+  sp="$out/Lib/site-packages"
+  log "Staging dashboard dist into kiro_crew/static/dist…"
+  mkdir -p "$sp/kiro_crew/static"
+  ( cd "$sp/kiro_crew/static" && rm -rf dist && cp -R "$ROOT/website/dist" dist )
+  [ -f "$sp/kiro_crew/static/dist/index.html" ] || {
+    echo "ERROR: dashboard dist not staged" >&2; exit 1
+  }
+
+  # Relocatable launcher shim: %~dp0 is the .cmd's own directory (bin\),
+  # so the interpreter resolves relative to the bundle wherever it lands.
+  mkdir -p "$out/bin"
+  printf '@echo off\r\n"%%~dp0..\\python.exe" -s -m kiro_crew %%*\r\n' > "$out/bin/kirocrew.cmd"
+
+  log "Verifying self-containment ($(basename "$out"))…"
+  PYTHONNOUSERSITE=1 "$out/python.exe" -s -m kiro_crew --version >/dev/null \
+    || { echo "ERROR: bundled backend is NOT self-contained (missing dep under PYTHONNOUSERSITE=1)" >&2; exit 1; }
+
+  log "Pruning bundle ($(basename "$out"))…"
+  ( cd "$out"
+    find . -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
+    find Lib/site-packages -type d \( -name tests -o -name test \) -prune -exec rm -rf {} + 2>/dev/null || true
+    rm -rf Lib/test Lib/idlelib Lib/tkinter Lib/turtledemo Lib/ensurepip Lib/lib2to3 2>/dev/null || true )
+
+  echo "    $(basename "$out") size: $(du -sh "$out" 2>/dev/null | cut -f1)"
+}
+
 # Resolver-agreement gate: the Electron launcher (find-bin.js) must locate the
 # launcher we just wrote. This catches contract drift between this builder's
 # output layout and find-bin.js's candidate list — a silent mismatch there
@@ -237,7 +289,9 @@ resolver_gate() {
         ? findKirocrewBin(fs, os, path, process.argv[1], process.argv[1], arch)
         : findKirocrewBin(fs, os, path, process.argv[1], process.argv[1]);
       const expected = process.argv[2];
-      if (resolved !== expected) {
+      // Normalize separators: under Git Bash on Windows the expected path
+      // arrives with forward slashes while Node resolves backslashes.
+      if (path.resolve(resolved) !== path.resolve(expected)) {
         console.error("ERROR: find-bin.js resolved \x27" + resolved + "\x27, expected the bundled launcher \x27" + expected + "\x27.");
         console.error("       The builder output layout and find-bin.js candidate list have drifted apart.");
         process.exit(1);
@@ -273,14 +327,21 @@ else
   [ "$ARCH" = "arm64" ] && ARCH="aarch64"
   if [ "$OS" = "darwin" ]; then
     PBS_PATTERN="cpython-3.12*-macos-${ARCH}-none"
+  elif [ "$OS" = "windows" ]; then
+    PBS_PATTERN="cpython-3.12*-windows-${ARCH}-none"
   else
     PBS_PATTERN="cpython-3.12*-linux-${ARCH}-gnu"
   fi
   PBS_DIR="$(provision_pbs "cpython-3.12" "$PBS_PATTERN")"
   echo "    PBS interpreter: $PBS_DIR"
 
-  build_backend "$PBS_DIR" "$ELECTRON_DIR/backend-dist/kirocrew-backend" ""
-  resolver_gate "$ELECTRON_DIR/backend-dist/kirocrew-backend/bin/kirocrew" ""
+  if [ "$OS" = "windows" ]; then
+    build_backend_windows "$PBS_DIR" "$ELECTRON_DIR/backend-dist/kirocrew-backend"
+    resolver_gate "$ELECTRON_DIR/backend-dist/kirocrew-backend/bin/kirocrew.cmd" ""
+  else
+    build_backend "$PBS_DIR" "$ELECTRON_DIR/backend-dist/kirocrew-backend" ""
+    resolver_gate "$ELECTRON_DIR/backend-dist/kirocrew-backend/bin/kirocrew" ""
+  fi
 fi
 
 if [ "${SKIP_ELECTRON:-0}" = "1" ]; then
@@ -308,11 +369,24 @@ log "Packaging desktop app (electron-builder, version: $KC_VERSION)…"
       "-c.productName=KiroCrew Nightly"
       "-c.mac.icon=icon-nightly.png"
       "-c.linux.icon=icon-nightly.png"
+      "-c.win.icon=icon-nightly.png"
+      # Squirrel.Windows keys the INSTALL identity off squirrelWindows.name
+      # (install dir %LocalAppData%\<name>, shortcuts, and the RELEASES/
+      # .nupkg feed identity). On mac, a distinct productName alone gives
+      # side-by-side installs; on Windows the package name is the
+      # separator, so nightly MUST get its own -- otherwise a nightly
+      # install replaces a stable install in place. This identity persists
+      # on user machines at first install: changing it later orphans
+      # installed updaters, so it is pinned from the first shipped build.
+      "-c.squirrelWindows.name=KiroCrewNightly"
+      "-c.squirrelWindows.iconUrl=https://raw.githubusercontent.com/kirodotdev/KiroCrew/main/website/electron/icon-nightly.ico"
     )
   fi
   if [ "$OS" = "darwin" ]; then
     EB_ARGS+=( --mac )
     [ "$UNIVERSAL" = "1" ] && EB_ARGS+=( --universal )
+  elif [ "$OS" = "windows" ]; then
+    EB_ARGS+=( --win )
   else
     EB_ARGS+=( --linux )
   fi
@@ -368,6 +442,6 @@ if [ "$UNIVERSAL" = "1" ]; then
 fi
 
 log "Done. Installer(s) are in $ELECTRON_DIR/dist/"
-ls -1 "$ELECTRON_DIR/dist/"*.{dmg,AppImage,zip} 2>/dev/null | sed 's/^/   /' || true
+ls -1 "$ELECTRON_DIR/dist/"*.{dmg,AppImage,zip} "$ELECTRON_DIR/dist/squirrel-windows/"*.{exe,nupkg} "$ELECTRON_DIR/dist/squirrel-windows/"RELEASES 2>/dev/null | sed 's/^/   /' || true
 echo ""
 echo "    The .app embeds the backend, so it runs with no PATH kirocrew needed."

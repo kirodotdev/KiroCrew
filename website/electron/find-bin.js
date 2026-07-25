@@ -36,6 +36,15 @@ function findKirocrewBin(fs, os, path, resourcesPath, dirname, arch = process.ar
     );
   }
   candidates.push(
+    // 0b. Windows bundled layout (packaging/build-desktop.sh
+    //     build_backend_windows): the PBS interpreter ships python.exe at
+    //     the tree root with a bin\kirocrew.cmd launcher shim. Probed on
+    //     every platform (costs one ENOENT elsewhere) so this function
+    //     stays platform-agnostic and testable; only a Windows bundle
+    //     actually contains the .cmd. Keep in sync with
+    //     build-desktop.sh's bin/kirocrew.cmd.
+    path.join(resourcesPath || "", "backend-dist", "kirocrew-backend", "bin", "kirocrew.cmd"),
+    path.resolve(dirname, "backend-dist", "kirocrew-backend", "bin", "kirocrew.cmd"),
     // 1. Legacy PyInstaller layout: a flat frozen executable at the root of the
     //    bundle. The current builder (packaging/build-desktop.sh) no longer
     //    emits this; kept first only for backward-compat with older bundles.

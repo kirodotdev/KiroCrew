@@ -76,6 +76,9 @@ jobs:
     uses: ./.github/workflows/build-desktop.yml
     with:
       version: ${{ needs.version.outputs.nightly_version }}
+      # Windows is installer-only (publishes nothing): its failure must not
+      # skip publish-linux / sign-and-notarize via this workflow's result.
+      windows_soft_fail: true
 
   # ── CLI channel publish ───────────────────────────────────────────────
   # Publishes the built wheel to the nightly CLI channel (cli/ + latest-cli.json).

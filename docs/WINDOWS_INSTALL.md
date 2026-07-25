@@ -5,6 +5,23 @@ The cross-platform process / signal / file-lock / metrics behavior is routed
 through `kiro_crew.platform_compat`, so macOS + Linux behavior is unchanged and
 the same code path also runs on Windows.
 
+## Desktop installer (preview, CI-built)
+
+CI's desktop lane (`build-desktop.yml`) also builds a Windows desktop app:
+`KiroCrew Setup.exe` plus the Squirrel.Windows `RELEASES`/`.nupkg` pair, with
+the backend bundled (no separate Python install needed). Current status:
+
+- **CI artifact only** — produced on nightly/release runs and the manual
+  `workflow_dispatch` probe; not yet published to the download CDN (that is
+  the upcoming `publish-windows.yml` lane).
+- **Unsigned** — SmartScreen shows an "unrecognized app" interstitial
+  (More info > Run anyway). Authenticode signing is a tracked follow-up.
+- **No auto-update yet** — the app does not consume the Squirrel feed on
+  win32 until the publish + updater lane lands; installs update by running a
+  newer Setup.exe.
+
+The source install below remains the fully supported path.
+
 ## Prerequisites
 
 | Tool | Why | Get it |
