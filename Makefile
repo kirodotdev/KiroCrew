@@ -27,7 +27,7 @@ frontend:
 	# recipe line, so the target fails before npm is ever reached. An absent
 	# marker must degrade to "use whatever node is on PATH", not stop the build.
 	cd website && \
-	  NBD="$$(cat $$HOME/.kirocrew/node-bin-dir 2>/dev/null || true)"; \
+	  NBD="$$(cat "$${KIROCREW_HOME:-$$HOME/.kiro/crew}/node-bin-dir" 2>/dev/null || true)"; \
 	  { [ -z "$$NBD" ] || export PATH="$$NBD:$$PATH"; }; \
 	  if ! command -v npm >/dev/null 2>&1; then \
 	    echo "ERROR: npm not found. Install Node >= 18 (see ensure-node.sh) and re-run." >&2; \
@@ -43,7 +43,7 @@ backend:
 	bash ensure-python.sh || true
 	# Same `|| true` reasoning as the frontend target: an absent marker file must
 	# fall back to $(PY), not abort the recipe.
-	PY="$$(cat $$HOME/.kirocrew/python-bin 2>/dev/null || true)"; [ -n "$$PY" ] || PY="$(PY)"; \
+	PY="$$(cat "$${KIROCREW_HOME:-$$HOME/.kiro/crew}/python-bin" 2>/dev/null || true)"; [ -n "$$PY" ] || PY="$(PY)"; \
 	  if [ -x $(VENV)/bin/python ] && ! $(VENV)/bin/python -c 'import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)'; then \
 	    echo "  → recreating $(VENV) (existing interpreter < 3.10)"; rm -rf $(VENV); fi; \
 	  if ! "$$PY" -c 'import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)' 2>/dev/null; then \
@@ -100,7 +100,7 @@ backend-bin: frontend
 # script's npm step instead of installing it like every other target does.
 desktop:
 	bash ensure-node.sh || true
-	NBD="$$(cat $$HOME/.kirocrew/node-bin-dir 2>/dev/null || true)"; \
+	NBD="$$(cat "$${KIROCREW_HOME:-$$HOME/.kiro/crew}/node-bin-dir" 2>/dev/null || true)"; \
 	  { [ -z "$$NBD" ] || export PATH="$$NBD:$$PATH"; }; \
 	  bash packaging/build-desktop.sh
 

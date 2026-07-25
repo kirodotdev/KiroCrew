@@ -54,7 +54,8 @@ KiroCrew CLI installer (channel / wheel based).
 Installs the prebuilt `kirocrew` wheel for a release channel: resolves the
 channel feed, downloads the wheel over HTTPS, verifies its SHA-256 against
 the published manifest, then installs it (pipx if available, else a managed
-venv at ~/.kirocrew/venv). Records the channel to ~/.kirocrew/channel.
+venv under the data home — $KIROCREW_HOME or ~/.kiro/crew). Records the
+channel there too.
 
 Options / env:
   --channel <nightly|insider|stable>   (default: stable; env KIROCREW_CHANNEL)
@@ -149,7 +150,7 @@ if command -v pipx >/dev/null 2>&1; then
   pipx install --force --python "$PY" "$WHL" >/dev/null
   BIN="$(pipx environment --value PIPX_BIN_DIR 2>/dev/null || echo "$HOME/.local/bin")"
 else
-  VENV="$HOME/.kirocrew/venv"
+  VENV="${KIROCREW_HOME:-$HOME/.kiro/crew}/venv"
   echo "Installing into managed venv at $VENV ..."
   "$PY" -m venv "$VENV"
   "$VENV/bin/pip" install --quiet --upgrade pip >/dev/null 2>&1 || true
@@ -159,8 +160,9 @@ else
   BIN="$HOME/.local/bin"
 fi
 
-mkdir -p "$HOME/.kirocrew"
-printf '%s\n' "$CHANNEL" > "$HOME/.kirocrew/channel"
+_DATA_HOME="${KIROCREW_HOME:-$HOME/.kiro/crew}"
+mkdir -p "$_DATA_HOME"
+printf '%s\n' "$CHANNEL" > "$_DATA_HOME/channel"
 
 echo ""
 echo "Installed kirocrew $VER (channel: $CHANNEL)."

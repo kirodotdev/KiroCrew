@@ -38,7 +38,9 @@ done
 # ── Constants ──
 # Repo root = directory containing this script (run from a local clone).
 KIROCREW_APP_DIR="$(cd "$(dirname "$0")" && pwd)"
-KIROCREW_DATA_DIR="$HOME/.kirocrew"
+# Data home: honor KIROCREW_HOME, else the current default ~/.kiro/crew (NOT the
+# pre-move ~/.kirocrew, which the one-time data-home migration deletes).
+KIROCREW_DATA_DIR="${KIROCREW_HOME:-$HOME/.kiro/crew}"
 NODE_VERSION="20"
 PYTHON_VERSION="3.12"
 KIROCREW_PORT="${KIROCREW_PORT:-5476}"

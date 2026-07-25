@@ -4,8 +4,11 @@
 # Platforms: macOS, Amazon Linux 2 (glibc 2.26), Amazon Linux 2023, Linux
 #
 # On success this records the resolved node bin directory in
-# "$HOME/.kirocrew/node-bin-dir" so non-interactive callers (e.g. make) can put
-# the right node on PATH without re-running a version manager.
+# "<data-home>/node-bin-dir" so non-interactive callers (e.g. make) can put
+# the right node on PATH without re-running a version manager. The data home is
+# "$KIROCREW_HOME" when set, else "$HOME/.kiro/crew" (the current default) —
+# NOT the pre-move "$HOME/.kirocrew", which the one-time data-home migration
+# deletes, so writing there would resurrect the legacy dir on every build.
 
 MIN_VERSION=18
 TARGET_VERSION=20
@@ -69,11 +72,14 @@ _source_nvm() {
     fi
 }
 
-# Record where node ended up so make / other callers can find it.
+# Record where node ended up so make / other callers can find it. Writes into
+# the data home ($KIROCREW_HOME, else ~/.kiro/crew) — never the legacy
+# ~/.kirocrew (see header).
 _record_node_bin() {
     if command -v node >/dev/null 2>&1; then
-        mkdir -p "$HOME/.kirocrew"
-        dirname "$(command -v node)" > "$HOME/.kirocrew/node-bin-dir" 2>/dev/null || true
+        local home="${KIROCREW_HOME:-$HOME/.kiro/crew}"
+        mkdir -p "$home"
+        dirname "$(command -v node)" > "$home/node-bin-dir" 2>/dev/null || true
     fi
 }
 

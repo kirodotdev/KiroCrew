@@ -12,8 +12,11 @@
 # import (AL2023/3.9). Prefer any already-usable system Python >= 3.10;
 # otherwise install one via mise, whose python-build-standalone binaries run on
 # AL2's glibc 2.26. On success the chosen interpreter path is recorded in
-# "$HOME/.kirocrew/python-bin" so non-interactive callers (make) can use it
-# without re-running a version manager.
+# "<data-home>/python-bin" so non-interactive callers (make) can use it without
+# re-running a version manager. The data home is "$KIROCREW_HOME" when set, else
+# "$HOME/.kiro/crew" (the current default) — NOT the pre-move "$HOME/.kirocrew",
+# which the one-time data-home migration deletes, so writing there would
+# resurrect the legacy dir on every build.
 
 MIN_MAJOR=3
 MIN_MINOR=10
@@ -51,8 +54,9 @@ _mise_bin() {
 }
 
 _record() {
-    mkdir -p "$HOME/.kirocrew"
-    printf '%s\n' "$1" > "$HOME/.kirocrew/python-bin" 2>/dev/null || true
+    home="${KIROCREW_HOME:-$HOME/.kiro/crew}"
+    mkdir -p "$home"
+    printf '%s\n' "$1" > "$home/python-bin" 2>/dev/null || true
 }
 
 # 1. Existing usable system python.

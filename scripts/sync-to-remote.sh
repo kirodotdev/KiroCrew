@@ -91,9 +91,9 @@ echo "=== Syncing KiroCrew to $HOST (port=$PORT) $(${DRY_RUN} && echo '[DRY RUN]
 
 # --- Create remote dirs ---
 if ! $DRY_RUN; then
-  ssh "$HOST" "mkdir -p ~/.kirocrew/{workspace/memory,workspace/knowledge,workspace/kb-strategy,workspace/kb-docs,workspace/kiro-agents,workspace/scripts,tasks,skills,hooks,sessions}"
+  ssh "$HOST" "mkdir -p ~/.kiro/crew/{workspace/memory,workspace/knowledge,workspace/kb-strategy,workspace/kb-docs,workspace/kiro-agents,workspace/scripts,tasks,skills,hooks,sessions}"
 else
-  echo "  [dry-run] ssh $HOST mkdir -p ~/.kirocrew/{workspace/...,tasks,skills,hooks,sessions}"
+  echo "  [dry-run] ssh $HOST mkdir -p ~/.kiro/crew/{workspace/...,tasks,skills,hooks,sessions}"
 fi
 
 # --- [1] Memory databases (atomic snapshot via .backup) ---
@@ -102,30 +102,30 @@ if ! $DRY_RUN; then
   if command -v sqlite3 &>/dev/null; then
     TMP_DB=$(mktemp -t mc-memory-XXXXXX.db)
     trap "rm -f $TMP_DB $TMP_DB-wal $TMP_DB-shm" EXIT
-    sqlite3 ~/.kirocrew/memory.db ".backup '$TMP_DB'" || {
+    sqlite3 ~/.kiro/crew/memory.db ".backup '$TMP_DB'" || {
       echo "  Warning: sqlite3 .backup failed; falling back to raw copy (may be inconsistent if DB is active)" >&2
-      cp ~/.kirocrew/memory.db "$TMP_DB"
+      cp ~/.kiro/crew/memory.db "$TMP_DB"
     }
-    rsync -az "$TMP_DB" "$HOST":~/.kirocrew/memory.db
+    rsync -az "$TMP_DB" "$HOST":~/.kiro/crew/memory.db
     # Remove stale WAL/SHM from previous syncs — they'd corrupt the fresh backup
-    ssh "$HOST" "rm -f ~/.kirocrew/memory.db-wal ~/.kirocrew/memory.db-shm"
+    ssh "$HOST" "rm -f ~/.kiro/crew/memory.db-wal ~/.kiro/crew/memory.db-shm"
   else
     # Fallback: direct rsync of all DB files (less atomic but works without sqlite3)
-    rsync -az ~/.kirocrew/memory.db "$HOST":~/.kirocrew/
-    if [ -f ~/.kirocrew/memory.db-wal ]; then
-      rsync -az ~/.kirocrew/memory.db-wal "$HOST":~/.kirocrew/
+    rsync -az ~/.kiro/crew/memory.db "$HOST":~/.kiro/crew/
+    if [ -f ~/.kiro/crew/memory.db-wal ]; then
+      rsync -az ~/.kiro/crew/memory.db-wal "$HOST":~/.kiro/crew/
     else
-      ssh "$HOST" "rm -f ~/.kirocrew/memory.db-wal"
+      ssh "$HOST" "rm -f ~/.kiro/crew/memory.db-wal"
     fi
-    if [ -f ~/.kirocrew/memory.db-shm ]; then
-      rsync -az ~/.kirocrew/memory.db-shm "$HOST":~/.kirocrew/
+    if [ -f ~/.kiro/crew/memory.db-shm ]; then
+      rsync -az ~/.kiro/crew/memory.db-shm "$HOST":~/.kiro/crew/
     else
-      ssh "$HOST" "rm -f ~/.kirocrew/memory.db-shm"
+      ssh "$HOST" "rm -f ~/.kiro/crew/memory.db-shm"
     fi
   fi
   # memory_index.db is small and not in WAL mode — safe as direct rsync
-  if [ -f ~/.kirocrew/memory_index.db ]; then
-    rsync -az ~/.kirocrew/memory_index.db "$HOST":~/.kirocrew/
+  if [ -f ~/.kiro/crew/memory_index.db ]; then
+    rsync -az ~/.kiro/crew/memory_index.db "$HOST":~/.kiro/crew/
   fi
 else
   echo "  [dry-run] sqlite3 .backup → rsync atomic snapshot to $HOST"
@@ -134,36 +134,36 @@ fi
 
 # --- [2] Workspace ---
 echo "  [2/7] Workspace..."
-if [ -d ~/.kirocrew/workspace/memory/ ]; then
-  rsync_dry ~/.kirocrew/workspace/memory/ "$HOST":~/.kirocrew/workspace/memory/
+if [ -d ~/.kiro/crew/workspace/memory/ ]; then
+  rsync_dry ~/.kiro/crew/workspace/memory/ "$HOST":~/.kiro/crew/workspace/memory/
 fi
-if [ -d ~/.kirocrew/workspace/knowledge/ ]; then
-  rsync_dry ~/.kirocrew/workspace/knowledge/ "$HOST":~/.kirocrew/workspace/knowledge/
+if [ -d ~/.kiro/crew/workspace/knowledge/ ]; then
+  rsync_dry ~/.kiro/crew/workspace/knowledge/ "$HOST":~/.kiro/crew/workspace/knowledge/
 fi
-if [ -d ~/.kirocrew/workspace/kb-strategy/ ]; then
-  rsync_dry ~/.kirocrew/workspace/kb-strategy/ "$HOST":~/.kirocrew/workspace/kb-strategy/
+if [ -d ~/.kiro/crew/workspace/kb-strategy/ ]; then
+  rsync_dry ~/.kiro/crew/workspace/kb-strategy/ "$HOST":~/.kiro/crew/workspace/kb-strategy/
 fi
-if [ -d ~/.kirocrew/workspace/kb-docs/ ]; then
-  rsync_dry ~/.kirocrew/workspace/kb-docs/ "$HOST":~/.kirocrew/workspace/kb-docs/
+if [ -d ~/.kiro/crew/workspace/kb-docs/ ]; then
+  rsync_dry ~/.kiro/crew/workspace/kb-docs/ "$HOST":~/.kiro/crew/workspace/kb-docs/
 fi
-if [ -d ~/.kirocrew/workspace/kiro-agents/ ]; then
-  rsync_dry ~/.kirocrew/workspace/kiro-agents/ "$HOST":~/.kirocrew/workspace/kiro-agents/
+if [ -d ~/.kiro/crew/workspace/kiro-agents/ ]; then
+  rsync_dry ~/.kiro/crew/workspace/kiro-agents/ "$HOST":~/.kiro/crew/workspace/kiro-agents/
 fi
-if [ -d ~/.kirocrew/workspace/scripts/ ]; then
-  rsync_dry ~/.kirocrew/workspace/scripts/ "$HOST":~/.kirocrew/workspace/scripts/
+if [ -d ~/.kiro/crew/workspace/scripts/ ]; then
+  rsync_dry ~/.kiro/crew/workspace/scripts/ "$HOST":~/.kiro/crew/workspace/scripts/
 fi
-rsync_dry ~/.kirocrew/workspace/*.md "$HOST":~/.kirocrew/workspace/ 2>/dev/null || true
-rsync_dry ~/.kirocrew/workspace/*.yaml "$HOST":~/.kirocrew/workspace/ 2>/dev/null || true
-rsync_dry ~/.kirocrew/workspace/*.json "$HOST":~/.kirocrew/workspace/ 2>/dev/null || true
+rsync_dry ~/.kiro/crew/workspace/*.md "$HOST":~/.kiro/crew/workspace/ 2>/dev/null || true
+rsync_dry ~/.kiro/crew/workspace/*.yaml "$HOST":~/.kiro/crew/workspace/ 2>/dev/null || true
+rsync_dry ~/.kiro/crew/workspace/*.json "$HOST":~/.kiro/crew/workspace/ 2>/dev/null || true
 
 # --- [3] Config (copy + patch port) ---
 echo "  [3/7] Config (port=$PORT, auto_open_browser=false)..."
 if ! $DRY_RUN; then
-  scp -q ~/.kirocrew/config.json "$HOST":~/.kirocrew/config.json
+  scp -q ~/.kiro/crew/config.json "$HOST":~/.kiro/crew/config.json
   ssh "$HOST" python3 - "$PORT" <<'PY'
 import json, os, sys
 port = sys.argv[1]
-p = os.path.expanduser('~/.kirocrew/config.json')
+p = os.path.expanduser('~/.kiro/crew/config.json')
 with open(p) as f: cfg = json.load(f)
 cfg['dashboard']['url'] = f'http://localhost:{port}'
 cfg['dashboard']['auto_open_browser'] = False
@@ -175,14 +175,14 @@ fi
 
 # --- [4] Skills, hooks & tasks ---
 echo "  [4/7] Skills, hooks & tasks..."
-if [ -d ~/.kirocrew/skills/ ]; then
-  rsync_dry ~/.kirocrew/skills/ "$HOST":~/.kirocrew/skills/
+if [ -d ~/.kiro/crew/skills/ ]; then
+  rsync_dry ~/.kiro/crew/skills/ "$HOST":~/.kiro/crew/skills/
 fi
-if [ -d ~/.kirocrew/hooks/ ]; then
-  rsync_dry ~/.kirocrew/hooks/ "$HOST":~/.kirocrew/hooks/
+if [ -d ~/.kiro/crew/hooks/ ]; then
+  rsync_dry ~/.kiro/crew/hooks/ "$HOST":~/.kiro/crew/hooks/
 fi
-if [ -d ~/.kirocrew/tasks/ ]; then
-  rsync_dry ~/.kirocrew/tasks/ "$HOST":~/.kirocrew/tasks/
+if [ -d ~/.kiro/crew/tasks/ ]; then
+  rsync_dry ~/.kiro/crew/tasks/ "$HOST":~/.kiro/crew/tasks/
 fi
 
 # --- [5] Crons & dashboard metadata ---
@@ -193,8 +193,8 @@ fi
 # autonudge.json — autonudge loop state.
 echo "  [5/7] Crons & dashboard metadata..."
 for f in crons.json hooks.json folders.json tags.json tag_boards.json autonudge.json; do
-  if [ -f ~/.kirocrew/"$f" ]; then
-    run scp -q ~/.kirocrew/"$f" "$HOST":~/.kirocrew/
+  if [ -f ~/.kiro/crew/"$f" ]; then
+    run scp -q ~/.kiro/crew/"$f" "$HOST":~/.kiro/crew/
   fi
 done
 
@@ -205,8 +205,8 @@ echo "  [6/7] Dotfiles (skipped by default)..."
 
 # --- [7] Sessions ---
 echo "  [7/7] Sessions..."
-if [ -d ~/.kirocrew/sessions/ ]; then
-  rsync_dry ~/.kirocrew/sessions/ "$HOST":~/.kirocrew/sessions/
+if [ -d ~/.kiro/crew/sessions/ ]; then
+  rsync_dry ~/.kiro/crew/sessions/ "$HOST":~/.kiro/crew/sessions/
 fi
 
 echo ""
