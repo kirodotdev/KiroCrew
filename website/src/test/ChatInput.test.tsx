@@ -7,6 +7,12 @@ import ChatInput from '../components/ChatInput'
 import { SlotProvider } from '../providers/SlotContext'
 import type { PasteBlock } from '../utils/pasteTokens'
 
+// isTouchDevice gates the autoFocusKey effect (tapping a session must not pop
+// the soft keyboard). Default false so the desktop-focus tests below behave as
+// before; the touch-device case flips it on per-test.
+const touchEnv = vi.hoisted(() => ({ touch: false }))
+vi.mock('../utils/isTouchDevice', () => ({ isTouchDevice: () => touchEnv.touch }))
+
 const defaultProps = {
   value: '',
   onChange: vi.fn(),
@@ -16,6 +22,7 @@ const defaultProps = {
 beforeEach(() => {
   vi.restoreAllMocks()
   localStorage.clear()
+  touchEnv.touch = false
 })
 
 describe('ChatInput', () => {
@@ -1015,6 +1022,16 @@ describe('ChatInput', () => {
       const ta = screen.getByLabelText('Message input')
       ta.blur()
       rerender(<ChatInput {...defaultProps} autoFocusKey="A" />)
+      expect(ta).not.toHaveFocus()
+    })
+
+    it('does not focus on a touch device, even when the key changes', () => {
+      // Tapping a session on a phone/tablet must not pop the soft keyboard.
+      touchEnv.touch = true
+      const { rerender } = renderWithProviders(<ChatInput {...defaultProps} autoFocusKey="A" />)
+      const ta = screen.getByLabelText('Message input')
+      expect(ta).not.toHaveFocus()
+      rerender(<ChatInput {...defaultProps} autoFocusKey="B" />)
       expect(ta).not.toHaveFocus()
     })
 

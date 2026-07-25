@@ -31,6 +31,7 @@ import { useSessionActions } from '../hooks/useSessionActions'
 import { useChatPopouts } from '../hooks/useChatPopouts'
 import { useImeGuard } from '../hooks/useImeGuard'
 import { useIsMobile } from '../hooks/useIsMobile'
+import { isTouchDevice } from '../utils/isTouchDevice'
 import { safeSetItem } from '../utils/safeStorage'
 import { resolveFolderAgent, resolveFolderProjectDir } from '../utils/folderAgent'
 import ProjectPicker from '../components/ProjectPicker'
@@ -1442,7 +1443,7 @@ function ChatSidebar({
   // Create autopilot session mutation (consistent with useMutation pattern)
   const createAutopilotMutation = useMutation({
     mutationFn: () => dispatch(createSlot({ agent: defaultAgent || undefined, mode: 'orchestrator' })).unwrap(),
-    onSuccess: () => { requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message input"]')?.focus()) },
+    onSuccess: () => { requestAnimationFrame(() => { if (!isTouchDevice()) document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message input"]')?.focus() }) },
   })
 
   // Create default chat session mutation
@@ -1451,7 +1452,7 @@ function ChatSidebar({
       const effectiveMode = loadChatConfig().defaultAutopilot ? 'orchestrator' : (mode || '')
       return dispatch(createSlot({ agent: defaultAgent || undefined, mode: effectiveMode })).unwrap()
     },
-    onSuccess: () => { requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message input"]')?.focus()) },
+    onSuccess: () => { requestAnimationFrame(() => { if (!isTouchDevice()) document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message input"]')?.focus() }) },
   })
 
   // Session colors
@@ -2223,7 +2224,7 @@ function ChatSidebar({
                         const walk = (list: ChatFolder[], depth: number) => { for (const f of list) { items.push({ f, depth }); walk(childrenOf(f.id), depth + 1) } }
                         walk(roots, 0)
                         return items.map(({ f, depth }) => (
-                          <DropdownMenuItem key={f.id} style={{ paddingLeft: `${12 + depth * 16}px` }} onClick={() => { createChatInFolder(f.id); requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message input"]')?.focus()) }}>
+                          <DropdownMenuItem key={f.id} style={{ paddingLeft: `${12 + depth * 16}px` }} onClick={() => { createChatInFolder(f.id); requestAnimationFrame(() => { if (!isTouchDevice()) document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message input"]')?.focus() }) }}>
                             <Folder size={14} className={depth === 0 ? 'text-muted' : 'text-muted/60'} /> {f.name}
                           </DropdownMenuItem>
                         ))

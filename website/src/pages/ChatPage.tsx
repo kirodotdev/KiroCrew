@@ -4,6 +4,7 @@ import { useLocation, useNavigate, useNavigationType, useSearchParams } from 're
 import { useQuery, useQueries, useMutation, useQueryClient } from '@tanstack/react-query'
 import { modelListRefetchInterval } from '../providers/modelListHealth'
 import { useIsMobile } from '../hooks/useIsMobile'
+import { isTouchDevice } from '../utils/isTouchDevice'
 import { useSwipeEdge } from '../hooks/useSwipeEdge'
 import type { ResizeInfo } from '../utils/resizeImage'
 import { useAppSelector, useAppDispatch, store } from '../store'
@@ -2154,7 +2155,14 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
       widgetPrefillRef.current = text
       setInput(prev => (prev.trim() ? `${prev.trimEnd()}\n${text}` : text))
       setPrefillHint(true)
-      requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message input"]')?.focus())
+      // Touch: reveal the pre-filled composer without focusing (focus pops the
+      // soft keyboard); desktop: focus, which scrolls it into view anyway.
+      requestAnimationFrame(() => {
+        const ta = document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message input"]')
+        if (!ta) return
+        if (isTouchDevice()) { if (typeof ta.scrollIntoView === 'function') ta.scrollIntoView({ block: 'nearest' }) }
+        else ta.focus()
+      })
     }
     window.addEventListener('mc-widget-send', handler)
     return () => window.removeEventListener('mc-widget-send', handler)
@@ -2388,7 +2396,14 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
     })
     // Trigger flying animation
     setFlyingQuote({ text, from: rect })
-    requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message input"]')?.focus())
+    // Touch: reveal the pre-filled composer without focusing (focus pops the
+    // soft keyboard); desktop: focus, which scrolls it into view anyway.
+    requestAnimationFrame(() => {
+      const ta = document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message input"]')
+      if (!ta) return
+      if (isTouchDevice()) { if (typeof ta.scrollIntoView === 'function') ta.scrollIntoView({ block: 'nearest' }) }
+      else ta.focus()
+    })
   }, [])
 
   const handleEditResend = useCallback((index: number, ts: string, newContent: string) => {

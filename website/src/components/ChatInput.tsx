@@ -20,6 +20,7 @@ import { useSimplifiedToolNames } from '../hooks/useSimplifiedToolNames'
 import TrustDropdown from './TrustDropdown'
 import AutoNudgePopover, { type AutoNudgeLoop } from './AutoNudgePopover'
 import { useIsMobile } from '../hooks/useIsMobile'
+import { isTouchDevice } from '../utils/isTouchDevice'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { isScreenSnipSupported } from '../hooks/useScreenSnip'
 import { useImeGuard } from '../hooks/useImeGuard'
@@ -795,6 +796,15 @@ function ChatInput({
   // closure fresh, but a flip in either (e.g. AI finishes responding -> disabled
   // goes true -> false) MUST NOT steal focus while the user reads or scrolls.
   //
+  // Also bail on touch devices: programmatic .focus() there pops the on-screen
+  // keyboard, so merely tapping a session would cover half the screen before the
+  // user has decided to type. `isMobile` (viewport width < 768px) already covers
+  // portrait phones, but it's a LAYOUT signal — it misses tablets and phones in
+  // landscape (≥768px), which are still touch. `isTouchDevice()` (coarse pointer
+  // / no hover) is the precise keyboard-popping predicate. It's called inline,
+  // not in the dep array, because a device's touch capability is effectively
+  // static for the session (unlike `disabled`/`isMobile`, which flip at runtime).
+  //
   // IMPORTANT: bail on `disabled || isMobile` BEFORE advancing the ref. If a
   // session switch lands while disabled=true (e.g. the user picks a session that
   // is currently stopping), advancing the ref here would consume the focus
@@ -811,7 +821,7 @@ function ChatInput({
       prevAutoFocusKeyRef.current = autoFocusKey
       return
     }
-    if (disabled || isMobile) return
+    if (disabled || isMobile || isTouchDevice()) return
     prevAutoFocusKeyRef.current = autoFocusKey
     const ae = document.activeElement as HTMLElement | null
     if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable)) return
