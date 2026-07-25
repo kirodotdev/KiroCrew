@@ -1,0 +1,229 @@
+"""Windows-condition simulators for POSIX dev machines.
+
+KiroCrew is developed on macOS/Linux but must pass the ``Backend Tests
+(Windows)`` matrix. Several classes of Windows-only behaviour never occur on
+POSIX, so the buggy code path is never exercised by a local ``pytest`` run and
+the failure only shows up in CI:
+
+* **Coarse system clock (~15 ms tick).** ``datetime.now()`` on Windows advances
+  in ~15.6 ms steps, so a burst of rapid appends gets an *identical* ``ts``.
+  POSIX gives microsecond resolution, so the collision (and the bugs it exposes
+  — history-dedup duplication, ambiguous cross-session sort) never reproduces
+  locally.
+* **File-sharing semantics.** Reading a file another process holds open for
+  write raises a sharing violation (``PermissionError`` / ``WinError 32``), and
+  ``os.replace()`` over an open handle fails likewise. POSIX permits both.
+
+These context managers reproduce those conditions **deterministically on any
+OS**, so the *logic* of Windows-relevant code can be unit-tested locally. They
+do NOT reproduce the raw OS behaviour end-to-end (that still needs a real
+Windows host) — they let a POSIX test drive the exact code path a Windows
+machine would take.
+
+Guidance:
+    Any code that touches timestamps, cross-file/-process ordering, file locking
+    or atomic replacement should get a test that wraps it in the matching
+    simulator below, so a regression is caught on the Mac/Linux dev loop instead
+    of a CI round-trip.
+
+    from windows_sim import colliding_clock, read_sharing_violation
+
+    def test_no_dupe_under_colliding_ts(tmp_path):
+        with colliding_clock("kiro_crew.history"):
+            ...  # every datetime.now() in kiro_crew.history returns ONE instant
+
+Extending: keep each simulator small, name the real Windows behaviour it mimics
+in its docstring, and add a self-test in ``test_windows_sim.py``.
+"""
+
+from __future__ import annotations
+
+import datetime as _dt
+import os
+import pathlib
+from contextlib import contextmanager
+from typing import Iterator, Optional
+from unittest import mock
+
+__all__ = [
+    "colliding_clock",
+    "increasing_clock",
+    "read_sharing_violation",
+    "replace_sharing_violation",
+    "open_sharing_violation",
+]
+
+_DEFAULT_INSTANT = _dt.datetime(2026, 1, 1, 0, 0, 0, tzinfo=_dt.timezone.utc)
+
+
+def _fixed_datetime_class(value: _dt.datetime) -> type:
+    """A ``datetime`` subclass whose ``now()`` always returns *value*.
+
+    Subclassing the real ``datetime`` (rather than a bare stub) keeps every other
+    classmethod — ``fromisoformat``, ``strptime``, ``fromtimestamp``, … — working
+    for code under test that uses them alongside ``now()``.
+    """
+
+    class _FixedDatetime(_dt.datetime):
+        @classmethod
+        def now(cls, tz=None):  # type: ignore[override]
+            return value.astimezone(tz) if tz is not None else value
+
+    return _FixedDatetime
+
+
+def _increasing_datetime_class(start: _dt.datetime, step_seconds: float) -> type:
+    """A ``datetime`` subclass whose ``now()`` advances by *step_seconds* on every
+    call (strictly increasing, deterministic ordering)."""
+    state = {"n": 0}
+
+    class _IncreasingDatetime(_dt.datetime):
+        @classmethod
+        def now(cls, tz=None):  # type: ignore[override]
+            state["n"] += 1
+            value = start + _dt.timedelta(seconds=step_seconds * state["n"])
+            return value.astimezone(tz) if tz is not None else value
+
+    return _IncreasingDatetime
+
+
+@contextmanager
+def colliding_clock(
+    module_path: str, *, at: Optional[_dt.datetime] = None
+) -> Iterator[_dt.datetime]:
+    """Freeze ``<module_path>.datetime.now()`` to a single instant.
+
+    Mimics a burst of operations completing within one coarse Windows clock tick,
+    so every ``datetime.now().isoformat()`` stamp COLLIDES — the condition behind
+    the history colliding-timestamp bugs. *module_path* is the dotted module that
+    does ``from datetime import datetime`` (e.g. ``"kiro_crew.history"``).
+
+    Yields the fixed instant.
+    """
+    value = at if at is not None else _DEFAULT_INSTANT
+    with mock.patch(f"{module_path}.datetime", _fixed_datetime_class(value)):
+        yield value
+
+
+@contextmanager
+def increasing_clock(
+    module_path: str,
+    *,
+    start: Optional[_dt.datetime] = None,
+    step_seconds: float = 1.0,
+) -> Iterator[None]:
+    """Make ``<module_path>.datetime.now()`` strictly increasing.
+
+    The opposite extreme of :func:`colliding_clock`: guarantees distinct, ordered
+    timestamps regardless of how fast the calls happen, so a test that asserts a
+    time-ordered result is deterministic on every OS (a coarse Windows clock would
+    otherwise collide the stamps and leak the underlying merge order).
+    """
+    start = start if start is not None else _DEFAULT_INSTANT
+    with mock.patch(
+        f"{module_path}.datetime", _increasing_datetime_class(start, step_seconds)
+    ):
+        yield
+
+
+@contextmanager
+def read_sharing_violation(
+    *, match: Optional[str] = None, times: int = 1
+) -> Iterator[dict]:
+    """Make ``Path.read_bytes()`` raise a Windows-style sharing violation.
+
+    On Windows, reading a file another process holds open for write raises
+    ``PermissionError`` (``WinError 32``). POSIX permits the read, so code that
+    only guards ``FileNotFoundError`` (and treats every other ``OSError`` as
+    fatal) misbehaves only on Windows. This raises ``PermissionError`` for the
+    first *times* matching reads, then delegates to the real call.
+
+    *match*: if given, only paths whose name equals it OR whose string contains it
+    fault; otherwise every ``read_bytes`` faults. Yields a ``{"n": count}`` dict
+    of how many reads were intercepted (faulted or passed the match), useful for
+    asserting a retry happened.
+    """
+    real_read_bytes = pathlib.Path.read_bytes
+    state = {"n": 0}
+
+    def _patched(self: pathlib.Path):  # type: ignore[no-untyped-def]
+        if match is None or self.name == match or match in str(self):
+            state["n"] += 1
+            if state["n"] <= times:
+                raise PermissionError(
+                    f"[WinError 32] simulated sharing violation reading {self}"
+                )
+        return real_read_bytes(self)
+
+    with mock.patch.object(pathlib.Path, "read_bytes", _patched):
+        yield state
+
+
+@contextmanager
+def replace_sharing_violation(
+    *, match: Optional[str] = None, times: int = 1
+) -> Iterator[dict]:
+    """Make ``os.replace()`` raise a Windows-style sharing violation.
+
+    On Windows an atomic ``os.replace(src, dst)`` fails with ``PermissionError``
+    (``WinError 32``) if *dst* is currently open by another handle — POSIX allows
+    replacing an open file. Raises for the first *times* matching calls, then
+    delegates. *match* filters on either path (name-equality or substring).
+    Yields a ``{"n": count}`` dict.
+    """
+    real_replace = os.replace
+    state = {"n": 0}
+
+    def _patched(src, dst, *args, **kwargs):  # type: ignore[no-untyped-def]
+        if (
+            match is None
+            or os.path.basename(str(dst)) == match
+            or match in str(dst)
+            or match in str(src)
+        ):
+            state["n"] += 1
+            if state["n"] <= times:
+                raise PermissionError(
+                    f"[WinError 32] simulated sharing violation replacing {dst}"
+                )
+        return real_replace(src, dst, *args, **kwargs)
+
+    with mock.patch("os.replace", _patched):
+        yield state
+
+
+@contextmanager
+def open_sharing_violation(
+    *, match: Optional[str] = None, times: int = 1, create_only: bool = True
+) -> Iterator[dict]:
+    """Make ``os.open()`` raise a Windows-style sharing violation.
+
+    On Windows, opening a file another process holds open can raise
+    ``PermissionError`` (``WinError 32``) — notably an exclusive create
+    (``O_CREAT | O_EXCL``) racing a writer that still holds the just-created
+    file open. Raises for the first *times* matching ``os.open`` calls, then
+    delegates.
+
+    *match* filters on the path (basename-equality or substring); ``None`` faults
+    every ``os.open``. *create_only* (default ``True``) restricts faults to opens
+    that include ``os.O_CREAT`` — so plain reads (``pathlib`` read paths call
+    ``os.open`` with ``O_RDONLY``) are left untouched and only the exclusive
+    create is exercised. Yields a ``{"n": count}`` dict.
+    """
+    real_open = os.open
+    state = {"n": 0}
+
+    def _patched(path, flags, mode=0o777, *args, **kwargs):  # type: ignore[no-untyped-def]
+        p = str(path)
+        name_ok = match is None or os.path.basename(p) == match or match in p
+        create_ok = (not create_only) or bool(flags & os.O_CREAT)
+        if name_ok and create_ok:
+            state["n"] += 1
+            if state["n"] <= times:
+                raise PermissionError(
+                    f"[WinError 32] simulated sharing violation opening {p}"
+                )
+        return real_open(path, flags, mode, *args, **kwargs)
+
+    with mock.patch("os.open", _patched):
+        yield state

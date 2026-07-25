@@ -986,6 +986,35 @@ def test_signing_secret_read_contention_retries_not_ephemeral(tmp_path, monkeypa
     assert got == persisted, "must return the persisted key, not an ephemeral one"
 
 
+def test_signing_secret_create_contention_retries_not_ephemeral(tmp_path, monkeypatch) -> None:
+    """A TRANSIENT sharing violation on the EXCLUSIVE-CREATE of the key file must
+    be retried, not degraded to an ephemeral secret.
+
+    On Windows a racer's ``os.open(..., O_CREAT|O_EXCL)`` can hit a sharing
+    violation (``PermissionError`` / WinError 32) while the winner holds the
+    freshly-created file open — landing on ``os.open``, not the read. The
+    create-side companion to ``test_signing_secret_read_contention_retries_not_ephemeral``;
+    reproduced deterministically with the ``os.open`` simulator so it is caught
+    on the POSIX dev loop.
+    """
+    from windows_sim import open_sharing_violation
+
+    from kiro_crew.dashboard import token_secret as ts
+
+    monkeypatch.setattr("kiro_crew.config.loader.config_dir", lambda: tmp_path)
+    key_file = tmp_path / ts._SECRET_KEY_FILE
+
+    # Fault the FIRST exclusive-create of the key file; the retry must succeed.
+    with open_sharing_violation(match=ts._SECRET_KEY_FILE, times=1) as state:
+        secret = ts._load_or_create_secret()
+
+    assert state["n"] >= 2, "the contended exclusive-create was not retried"
+    assert key_file.exists(), "key must be persisted after retrying the create"
+    on_disk = key_file.read_bytes()
+    assert len(on_disk) >= ts._MIN_KEY_BYTES, "retry wrote a short/incomplete key"
+    assert secret == on_disk, "must return the persisted key, not an ephemeral one"
+
+
 def test_signing_secret_existing_file_never_overwritten(tmp_path, monkeypatch) -> None:
     """Regression (PR #338): warming must never overwrite or truncate an
     existing key file.

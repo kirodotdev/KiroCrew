@@ -187,6 +187,22 @@ def _load_or_create_secret() -> bytes:
                 # writer a beat, then loop back to read their bytes.
                 time.sleep(_CREATE_BACKOFF_SECONDS)
                 continue
+            except OSError:
+                # On Windows the winner may hold the freshly-created file open
+                # while it writes; a racer's exclusive-create can then hit a
+                # sharing violation (PermissionError / WinError 32) INSTEAD of
+                # FileExistsError. Treat it as contention — back off and retry
+                # within the bounded loop rather than propagating to the outer
+                # ephemeral fallback, which would make this racer diverge from
+                # the winner's persisted key (silent auth corruption). POSIX does
+                # not raise here; a genuinely unwritable dir still degrades to an
+                # ephemeral secret once the retry budget is exhausted.
+                logger.debug(  # nosemgrep: python-logger-credential-disclosure -- logs the path only, never key bytes
+                    "token signing key exclusive-create contended at %s; retrying",
+                    key_path,
+                )
+                time.sleep(_CREATE_BACKOFF_SECONDS)
+                continue
 
             # We hold the exclusive create. Capture the created file's identity
             # (device + inode) NOW, while we still hold the fd, so that if we
