@@ -15,20 +15,17 @@ export interface McNotificationDetail {
 export const TURN_DONE_KIND = 'turn' as const
 
 /**
- * Whether a finished turn warrants a chime. Principle: never chime at a user
- * who is already watching the reply land. Chime only when attention is
- * elsewhere — the turn finished in a background chat, the tab is hidden, or
- * the window is unfocused. Reconnect catch-up replays never chime (mirrors the
- * markSlotUnread suppression on the same event).
+ * Whether a finished turn warrants a chime. Policy: every real turn
+ * completion chimes — active chat or background, focused or not — so the
+ * user always gets an audible cue when any session finishes. Two
+ * suppressions remain: slot-less events (no real turn behind them) and
+ * reconnect catch-up replays (mirrors the markSlotUnread suppression;
+ * stale completions replayed on reconnect must not chime-storm — the
+ * unread badges already cover them).
  */
 export function shouldChimeOnTurnDone(opts: {
   slot: string | undefined | null
-  activeSlot: string | null
   reconnecting: boolean
-  hidden: boolean
-  focused: boolean
 }): boolean {
-  if (!opts.slot || opts.reconnecting) return false
-  if (opts.slot !== opts.activeSlot) return true
-  return opts.hidden || !opts.focused
+  return !!opts.slot && !opts.reconnecting
 }

@@ -20,7 +20,7 @@ const OVERRIDE_LABELS: string[] = ['Use default', ...PRESET_OPTIONS.map(p => PRE
 
 const CATEGORY_ROWS: { key: SoundCategory; label: string; description: string }[] = [
   { key: 'all',        label: 'Default (all categories)', description: 'Fallback sound when no category-specific override is set' },
-  { key: 'turn',       label: 'Agent replies', description: 'When the agent finishes a turn while you are in another chat, tab, or app' },
+  { key: 'turn',       label: 'Agent replies', description: 'When the agent finishes a turn in any chat' },
   { key: 'cron',       label: 'Cron',       description: 'Scheduled job completions' },
   { key: 'approval',   label: 'Approval',   description: 'Tool approval requests' },
   { key: 'hook',       label: 'Webhook',    description: 'External hook triggers' },

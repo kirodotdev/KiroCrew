@@ -531,17 +531,14 @@ export function useWebSocket() {
             flushChunks()
             if (data.slot) chunkBufRef.current.delete(data.slot)
             dispatch(sseChatMessage({ ...data, role: '_done' }))
-            // Turn-complete chime: sound-only (no feed entry, no toast). Plays
-            // only when the user isn't watching the reply land — background
-            // slot, hidden tab, or unfocused window — and never during
-            // reconnect catch-up replay. Preset/volume/mute resolve in
-            // useNotificationSound via the 'turn' category.
+            // Turn-complete chime: sound-only (no feed entry, no toast).
+            // Plays on every real turn completion — active or background
+            // chat — and never during reconnect catch-up replay.
+            // Preset/volume/mute resolve in useNotificationSound via the
+            // 'turn' category.
             if (shouldChimeOnTurnDone({
               slot: data.slot,
-              activeSlot: store.getState().chat.activeSlot,
               reconnecting: reconnectingRef.current,
-              hidden: document.hidden,
-              focused: document.hasFocus(),
             })) {
               try {
                 const detail: McNotificationDetail = { kind: TURN_DONE_KIND }
