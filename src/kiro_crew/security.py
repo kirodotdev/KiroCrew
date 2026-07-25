@@ -1058,14 +1058,14 @@ BUILTIN_DENIED_RULES: list[DeniedCommandRule] = [
     DeniedCommandRule(
         id="sensitive-file-read-cat-kirocrew-env",
         # The data home moved to ~/.kiro/crew; match the LIVE ~/.kiro/crew/.env
-        # plus the archived rollback copy and the pre-move legacy home, so this
-        # deny layer no longer guards only a path that holds no live secrets.
-        pattern=".*cat.*/(?:\\.kiro/crew|\\.kirocrew\\.archived|\\.kirocrew)/\\.env.*",
+        # plus the pre-move legacy home, so this deny layer no longer guards
+        # only a path that holds no live secrets.
+        pattern=".*cat.*/(?:\\.kiro/crew|\\.kirocrew)/\\.env.*",
         category="sensitive-file-read",
         description=(
             "Blocks using cat to read KiroCrew's own credential file (~/.kiro/crew/.env, "
-            "the archived rollback copy, or the pre-move ~/.kirocrew/.env), which holds "
-            "KiroCrew's own secrets and environment credentials."
+            "or the pre-move ~/.kirocrew/.env), which holds KiroCrew's own secrets and "
+            "environment credentials."
         ),
     ),
     DeniedCommandRule(
@@ -2471,12 +2471,12 @@ _SENSITIVE_HOME_DIRS: list[str] = [
 # opens these directly (NOT via this gate), so real functionality is unaffected.
 #
 # Each leaf is expanded under EVERY known crew data-home prefix so the secret is
-# gated identically whether it lives in the current home (``~/.kiro/crew``), the
-# archived rollback copy left by the ``~/.kirocrew`` -> ``~/.kiro/crew``
-# migration (``~/.kirocrew.archived`` — the copy still holds real secret bytes),
-# or a not-yet-migrated pre-move legacy home (``~/.kirocrew``). Keeping one leaf
-# list means a new secret is added once and covered in all three locations.
-_CREW_HOME_PREFIXES: tuple[str, ...] = (".kiro/crew", ".kirocrew.archived", ".kirocrew")
+# gated identically whether it lives in the current home (``~/.kiro/crew``) or a
+# not-yet-migrated pre-move legacy home (``~/.kirocrew``). Keeping one leaf list
+# means a new secret is added once and covered in both locations. The migration
+# force-deletes ``~/.kirocrew`` once the move completes — there is no rollback
+# copy left behind to gate.
+_CREW_HOME_PREFIXES: tuple[str, ...] = (".kiro/crew", ".kirocrew")
 _CREW_SECRET_LEAVES: list[str] = [
     ".env",
     "browser-cookies.txt",
@@ -2508,19 +2508,6 @@ _CREW_SECRET_LEAVES: list[str] = [
 _SENSITIVE_HOME_DIRS += [
     f"{prefix}/{leaf}" for prefix in _CREW_HOME_PREFIXES for leaf in _CREW_SECRET_LEAVES
 ]
-
-# The divergent-home backup left by the ``~/.kirocrew`` -> ``~/.kiro/crew``
-# migration when a pre-existing ``~/.kiro/crew`` DIVERGES from legacy: the
-# sidelined home is renamed to ``~/.kiro/crew.pre-migration/<timestamp>/`` and is
-# a FULL copy of a data home, so it holds the same credential leaves + governance
-# trust root as the live home. It is a SIBLING of ``~/.kiro/crew`` (not under it),
-# so the crew-prefix leaf entries above do NOT cover it, and owner-only perms only
-# stop OTHER OS users, not the same-user agent. Gate the ENTIRE backup root as a
-# subtree (a bare directory entry, matched by prefix in ``_path_in_home_dirs``) so
-# every timestamped copy — and every secret within it — is sensitive regardless of
-# the dynamic ``<timestamp>`` leaf name. This also flows into the bash read/write
-# command regexes via ``_SENSITIVE_SEGMENT_ALT``.
-_SENSITIVE_HOME_DIRS.append(".kiro/crew.pre-migration")
 
 # ── Write-protected paths (block modification, allow reads) ──
 # Runtime config files carry security-relevant resource ceilings (concurrent
@@ -2723,14 +2710,14 @@ def _path_in_home_dirs(path_str: str, home_dirs: list[str], base_dir: str | None
         sensitive_targets |= {_anchor(home_real, d) for d in home_dirs}
     # When KIROCREW_HOME points to a non-default path, the keystone secrets
     # (token_signing.key, refresh_chains.json, .local_secret, sel_hmac.key,
-    # security_policy.json etc.) live directly under it — NOT under any of the
-    # default crew home prefixes (~/.kiro/crew, ~/.kirocrew.archived,
-    # ~/.kirocrew). Without this expansion any "<crew-prefix>/X" entry in the
-    # home_dirs list would miss the real file location, letting the agent
-    # read/write its own signing key or governance ceiling via the custom
-    # KIROCREW_HOME. Strip whichever crew prefix an entry carries and re-anchor
-    # the leaf under the env-override root ADDITIONALLY (the ~/-rooted default
-    # forms stay, so every location is always covered).
+    # security_policy.json etc.) live directly under it — NOT under either of
+    # the default crew home prefixes (~/.kiro/crew, ~/.kirocrew). Without this
+    # expansion any "<crew-prefix>/X" entry in the home_dirs list would miss
+    # the real file location, letting the agent read/write its own signing key
+    # or governance ceiling via the custom KIROCREW_HOME. Strip whichever crew
+    # prefix an entry carries and re-anchor the leaf under the env-override
+    # root ADDITIONALLY (the ~/-rooted default forms stay, so every location is
+    # always covered).
     kiro_home_env = os.environ.get("KIROCREW_HOME")
     if kiro_home_env:
         try:
@@ -2802,8 +2789,7 @@ def is_sensitive_write_path(path_str: str, base_dir: str | None = None) -> bool:
 # though the bare home dir is not itself a sensitive-path entry.  Match the
 # destination-dir form specifically so normal home access (sessions.db,
 # config.json) is not over-blocked.  Covers every crew home root: the current
-# ``~/.kiro/crew``, the archived rollback copy ``~/.kirocrew.archived``, and a
-# pre-move legacy ``~/.kirocrew``.
+# ``~/.kiro/crew`` and a not-yet-migrated pre-move legacy ``~/.kirocrew``.
 _CREW_HOME_ALT = "|".join(re.escape("/" + p) for p in _CREW_HOME_PREFIXES)
 _EXTRACT_INTO_TRUST_ROOT_RE = re.compile(
     r"-(?:C|d)\s+(?:~|\$HOME|/home/[^/\s]+|/Users/[^/\s]+|"

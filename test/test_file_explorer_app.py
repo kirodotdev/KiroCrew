@@ -90,10 +90,10 @@ class TestIsSensitive:
         assert server._is_sensitive(tmp_tree / ".kirocrew" / ".env") is True
 
     def test_crew_home_nonsafe_file_is_sensitive(self, tmp_tree):
-        # config.json (Slack tokens) is NOT a safe subdir → blocked under all
-        # three crew-home spellings.
+        # config.json (Slack tokens) is NOT a safe subdir → blocked under both
+        # crew-home spellings.
         assert server._is_sensitive(tmp_tree / ".kiro" / "crew" / "config.json") is True
-        assert server._is_sensitive(tmp_tree / ".kirocrew.archived" / "config.json") is True
+        assert server._is_sensitive(tmp_tree / ".kirocrew" / "config.json") is True
 
     def test_crew_home_marker_match_is_case_insensitive(self, tmp_tree):
         # SECURITY regression: on a case-INSENSITIVE filesystem (macOS/Windows)
@@ -107,7 +107,6 @@ class TestIsSensitive:
             tmp_tree / ".kiro" / "CREW" / "config.json",
             tmp_tree / ".KiRo" / "CrEw" / "sessions" / "s.json",
             tmp_tree / ".KIROCREW" / "config.json",
-            tmp_tree / ".KIROCREW.ARCHIVED" / ".env",
         ):
             assert server._is_sensitive(variant) is True, variant
 
@@ -203,7 +202,9 @@ class TestGitStatus:
         probe.mkdir()
         for cand in [probe, *probe.parents]:
             if (cand / ".git").exists():
-                pytest.skip(f"ambient .git on walk-up path ({cand}/.git) - premise not testable here")
+                pytest.skip(
+                    f"ambient .git on walk-up path ({cand}/.git) - premise not testable here"
+                )
         assert server._git_repo_root(probe) is None
 
     def test_git_status_parsing(self, tmp_tree):
@@ -533,9 +534,9 @@ class TestAutoSdeRound1Findings:
         .kirocrew (the old glob set silently excluded them under rg)."""
         results = server._search_python(tmp_tree, "needle", "", "")
         files = {r["file"] for r in results}
-        assert any(f.endswith("src/main.py") for f in files), (
-            f"src/main.py missing from results — allowlist side-effect: {files}"
-        )
+        assert any(
+            f.endswith("src/main.py") for f in files
+        ), f"src/main.py missing from results — allowlist side-effect: {files}"
 
     def test_python_search_never_surfaces_kirocrew_root_files(self, tmp_tree):
         """#15/defense: .kirocrew root files (config.json) never appear in
@@ -546,9 +547,9 @@ class TestAutoSdeRound1Findings:
     def test_rg_glob_set_has_no_nonnegated_kirocrew_globs(self, tmp_tree):
         """#17: the rg command for an outside-root search contains only
         NEGATED crew-home globs (a non-negated glob would allowlist-restrict
-        the entire search). The data home now spans three prefixes — the current
-        ~/.kiro/crew, the archived rollback copy, and the pre-move legacy
-        ~/.kirocrew — so all three variants must appear and all must be negated."""
+        the entire search). The data home spans two prefixes — the current
+        ~/.kiro/crew and the pre-move legacy ~/.kirocrew — so both variants
+        must appear and both must be negated."""
         captured: dict = {}
 
         def fake_wrap(cmd):
@@ -566,7 +567,6 @@ class TestAutoSdeRound1Findings:
         crew_globs = [g for g in globs if ".kiro/crew" in g or ".kirocrew" in g]
         assert crew_globs == [
             "!**/.kiro/crew/**",
-            "!**/.kirocrew.archived/**",
             "!**/.kirocrew/**",
         ], crew_globs
         assert all(g.startswith("!") for g in crew_globs)
@@ -627,6 +627,5 @@ class TestAutoSdeRound1Findings:
             assert expanded.is_dir()
             # The handler's ALLOWED_ROOTS check:
             assert not any(
-                server._is_within(expanded, root)
-                for root in server.ALLOWED_ROOTS
+                server._is_within(expanded, root) for root in server.ALLOWED_ROOTS
             ), "attacker dir should NOT be within ALLOWED_ROOTS"

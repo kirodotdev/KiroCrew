@@ -21,8 +21,8 @@ import sys
 import tempfile
 from pathlib import Path
 
-CACHING_DISABLED = "4135ea2d-6df8-44a3-9df3-4b5a84be39ad"          # Managed-CachingDisabled
-ALL_VIEWER_EXCEPT_HOST = "b689b0a8-53d0-40ab-baf2-68738e2966ac"    # Managed-AllViewerExceptHostHeader
+CACHING_DISABLED = "4135ea2d-6df8-44a3-9df3-4b5a84be39ad"  # Managed-CachingDisabled
+ALL_VIEWER_EXCEPT_HOST = "b689b0a8-53d0-40ab-baf2-68738e2966ac"  # Managed-AllViewerExceptHostHeader
 OAC_NAME = "kirocrew-deploy-lambda-oac"
 
 
@@ -48,9 +48,11 @@ def aws(profile, region, *args):
     # Kernel RLIMIT ceiling on the child (fork bomb / FD / mem / CPU) — the
     # spawn-audit rule requires this on every sandbox-routed spawn.
     r = subprocess.run(  # noqa: S603
-        wrapped_argv, capture_output=True, text=True, env=env, preexec_fn=_preexec)
+        wrapped_argv, capture_output=True, text=True, env=env, preexec_fn=_preexec
+    )
     if cleanup:
         import os as _os
+
         try:
             _os.unlink(cleanup)
         except OSError:
@@ -62,7 +64,9 @@ def aws(profile, region, *args):
 
 
 def ensure_lambda_oac(profile, region):
-    data = json.loads(aws(profile, region, "cloudfront", "list-origin-access-controls", "--output", "json"))
+    data = json.loads(
+        aws(profile, region, "cloudfront", "list-origin-access-controls", "--output", "json")
+    )
     for it in (data.get("OriginAccessControlList") or {}).get("Items") or []:
         if it.get("Name") == OAC_NAME:
             return it["Id"]
@@ -73,8 +77,18 @@ def ensure_lambda_oac(profile, region):
         "SigningBehavior": "always",
         "OriginAccessControlOriginType": "lambda",
     }
-    res = json.loads(aws(profile, region, "cloudfront", "create-origin-access-control",
-                         "--origin-access-control-config", json.dumps(cfg), "--output", "json"))
+    res = json.loads(
+        aws(
+            profile,
+            region,
+            "cloudfront",
+            "create-origin-access-control",
+            "--origin-access-control-config",
+            json.dumps(cfg),
+            "--output",
+            "json",
+        )
+    )
     return res["OriginAccessControl"]["Id"]
 
 
@@ -91,7 +105,9 @@ def _validate_args(profile: str, region: str, dist_id: str, slug: str) -> None:
     if not _REGION_RE.match(region):
         errors.append(f"--region: not a valid AWS region: {region!r}")
     if not _DIST_ID_RE.match(dist_id):
-        errors.append(f"--dist-id: must match CloudFront distribution ID pattern (13-14 uppercase alphanumeric): {dist_id!r}")
+        errors.append(
+            f"--dist-id: must match CloudFront distribution ID pattern (13-14 uppercase alphanumeric): {dist_id!r}"
+        )
     if not _SLUG_RE.match(slug):
         errors.append(f"--slug: must be lowercase alphanumeric + hyphens, 1-63 chars: {slug!r}")
     if errors:
@@ -101,13 +117,29 @@ def _validate_args(profile: str, region: str, dist_id: str, slug: str) -> None:
 
 
 # Sensitive paths that must never be read via --origin-verify-secret-file.
-# Same list the deploy engine uses (duplicated here for standalone execution
-# where kiro_crew may not be importable).
+# Standalone list (duplicated here for standalone execution where kiro_crew
+# may not be importable) — covers both the current KiroCrew data home
+# (~/.kiro/crew, since the ~/.kirocrew -> ~/.kiro/crew move) and the pre-move
+# legacy home, so a not-yet-migrated box is covered too.
 _SENSITIVE_PREFIXES: tuple[str, ...] = (
-    ".aws", ".ssh", ".gnupg", ".gpg", ".config/gcloud", ".azure",
-    ".docker/config.json", ".kube/config", ".npmrc", ".pypirc",
-    ".netrc", ".git-credentials", ".kirocrew/.env",
-    ".kirocrew/sel_hmac.key", ".kirocrew/security_events.jsonl",
+    ".aws",
+    ".ssh",
+    ".gnupg",
+    ".gpg",
+    ".config/gcloud",
+    ".azure",
+    ".docker/config.json",
+    ".kube/config",
+    ".npmrc",
+    ".pypirc",
+    ".netrc",
+    ".git-credentials",
+    ".kiro/crew/.env",
+    ".kiro/crew/sel_hmac.key",
+    ".kiro/crew/security_events.jsonl",
+    ".kirocrew/.env",
+    ".kirocrew/sel_hmac.key",
+    ".kirocrew/security_events.jsonl",
 )
 
 
@@ -142,15 +174,12 @@ def _validate_secret_file_path(path: Path) -> None:
         sys.exit(2)
 
     import stat as stat_mod
+
     if stat_mod.S_ISLNK(st.st_mode):
-        sys.stderr.write(
-            f"error: --origin-verify-secret-file must not be a symlink: {path}\n"
-        )
+        sys.stderr.write(f"error: --origin-verify-secret-file must not be a symlink: {path}\n")
         sys.exit(2)
     if not stat_mod.S_ISREG(st.st_mode):
-        sys.stderr.write(
-            f"error: --origin-verify-secret-file must be a regular file: {path}\n"
-        )
+        sys.stderr.write(f"error: --origin-verify-secret-file must be a regular file: {path}\n")
         sys.exit(2)
 
     # Must be owned by current uid
@@ -195,12 +224,21 @@ def main():
     ap.add_argument("--dist-id", required=True)
     ap.add_argument("--slug", required=True)
     ap.add_argument("--origin-domain", required=True)
-    ap.add_argument("--oac", action="store_true",
-                    help="attach a Lambda OAC (only for Lambda Function URL origins)")
-    ap.add_argument("--origin-verify-secret", default="",
-                    help="random secret for x-kirocrew-origin-verify header (API GW authorizer)")
-    ap.add_argument("--origin-verify-secret-file", default="",
-                    help="path to file containing origin-verify secret (preferred over argv)")
+    ap.add_argument(
+        "--oac",
+        action="store_true",
+        help="attach a Lambda OAC (only for Lambda Function URL origins)",
+    )
+    ap.add_argument(
+        "--origin-verify-secret",
+        default="",
+        help="random secret for x-kirocrew-origin-verify header (API GW authorizer)",
+    )
+    ap.add_argument(
+        "--origin-verify-secret-file",
+        default="",
+        help="path to file containing origin-verify secret (preferred over argv)",
+    )
     a = ap.parse_args()
     profile = a.profile or ""
 
@@ -220,6 +258,7 @@ def main():
         # uses O_NOFOLLOW open directly (still race-free on the final component).
         try:
             from kiro_crew.hooks import safe_read_file
+
             try:
                 origin_verify_secret = safe_read_file(str(secret_path)).strip()
             except PermissionError as e:
@@ -262,8 +301,18 @@ def main():
     path_pattern = f"{a.slug}/api/*"
     oac_id = ensure_lambda_oac(profile, a.region) if a.oac else None
 
-    gdc = json.loads(aws(profile, a.region, "cloudfront", "get-distribution-config",
-                         "--id", a.dist_id, "--output", "json"))
+    gdc = json.loads(
+        aws(
+            profile,
+            a.region,
+            "cloudfront",
+            "get-distribution-config",
+            "--id",
+            a.dist_id,
+            "--output",
+            "json",
+        )
+    )
     etag = gdc["ETag"]
     cfg = gdc["DistributionConfig"]
 
@@ -273,10 +322,12 @@ def main():
     if origin_verify_secret:
         custom_headers = {
             "Quantity": 1,
-            "Items": [{
-                "HeaderName": "x-kirocrew-origin-verify",
-                "HeaderValue": origin_verify_secret,
-            }],
+            "Items": [
+                {
+                    "HeaderName": "x-kirocrew-origin-verify",
+                    "HeaderValue": origin_verify_secret,
+                }
+            ],
         }
     existing_origin = next((o for o in origins["Items"] if o["Id"] == origin_id), None)
     if existing_origin:
@@ -313,25 +364,27 @@ def main():
     cbs = cfg.get("CacheBehaviors") or {"Quantity": 0, "Items": []}
     cbs.setdefault("Items", [])
     if not any(b.get("PathPattern") == path_pattern for b in cbs["Items"]):
-        cbs["Items"].append({
-            "PathPattern": path_pattern,
-            "TargetOriginId": origin_id,
-            "ViewerProtocolPolicy": "redirect-to-https",
-            "CachePolicyId": CACHING_DISABLED,
-            "OriginRequestPolicyId": ALL_VIEWER_EXCEPT_HOST,
-            "Compress": True,
-            "AllowedMethods": {
-                "Quantity": 7,
-                "Items": ["GET", "HEAD", "OPTIONS", "PUT", "POST", "PATCH", "DELETE"],
-                "CachedMethods": {"Quantity": 2, "Items": ["GET", "HEAD"]},
-            },
-            "SmoothStreaming": False,
-            "FieldLevelEncryptionId": "",
-            "LambdaFunctionAssociations": {"Quantity": 0},
-            "FunctionAssociations": {"Quantity": 0},
-            "TrustedSigners": {"Enabled": False, "Quantity": 0},
-            "TrustedKeyGroups": {"Enabled": False, "Quantity": 0},
-        })
+        cbs["Items"].append(
+            {
+                "PathPattern": path_pattern,
+                "TargetOriginId": origin_id,
+                "ViewerProtocolPolicy": "redirect-to-https",
+                "CachePolicyId": CACHING_DISABLED,
+                "OriginRequestPolicyId": ALL_VIEWER_EXCEPT_HOST,
+                "Compress": True,
+                "AllowedMethods": {
+                    "Quantity": 7,
+                    "Items": ["GET", "HEAD", "OPTIONS", "PUT", "POST", "PATCH", "DELETE"],
+                    "CachedMethods": {"Quantity": 2, "Items": ["GET", "HEAD"]},
+                },
+                "SmoothStreaming": False,
+                "FieldLevelEncryptionId": "",
+                "LambdaFunctionAssociations": {"Quantity": 0},
+                "FunctionAssociations": {"Quantity": 0},
+                "TrustedSigners": {"Enabled": False, "Quantity": 0},
+                "TrustedKeyGroups": {"Enabled": False, "Quantity": 0},
+            }
+        )
         cbs["Quantity"] = len(cbs["Items"])
     cfg["CacheBehaviors"] = cbs
 
@@ -339,8 +392,20 @@ def main():
     try:
         json.dump(cfg, tmp)
         tmp.close()
-        aws(profile, a.region, "cloudfront", "update-distribution", "--id", a.dist_id,
-            "--distribution-config", f"file://{tmp.name}", "--if-match", etag, "--output", "json")
+        aws(
+            profile,
+            a.region,
+            "cloudfront",
+            "update-distribution",
+            "--id",
+            a.dist_id,
+            "--distribution-config",
+            f"file://{tmp.name}",
+            "--if-match",
+            etag,
+            "--output",
+            "json",
+        )
     finally:
         os.unlink(tmp.name)
     tail = f" via OAC {oac_id}" if oac_id else " (no OAC)"

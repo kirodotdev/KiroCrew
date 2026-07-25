@@ -1,6 +1,6 @@
 # Config Module
 
-Last Updated: 2026-07-24 (SessionConfig.empty_response_auto_continue added — default-ON gate for the dashboard chat runner's bounded empty-response auto-continue rung; see session.md "Empty-response recovery ladder". Prior — Divergent-new-home auto-reconcile: a pre-existing/stale `~/.kiro/crew` that diverges from legacy during the no-overwrite merge no longer strands the user on `~/.kirocrew` — reconciliation now completes the switch with legacy authoritative by renaming the divergent home aside to a keystone-gated (`~/.kiro/crew.pre-migration` is on `security._SENSITIVE_HOME_DIRS`), owner-locked `~/.kiro/crew.pre-migration/<ts>` backup, promoting the quiesced legacy snapshot into `~/.kiro/crew` (absolute intra-home symlinks retargeted), and marking complete; live data is unchanged (legacy, as the prior retain behavior), the sidelined home is a recoverable rollback, and a gateway live on the new home is never yanked aside. Prior — Data-home migration hardening: quiesce-before-compare closes the compare→archive TOCTOU (legacy tree atomically renamed to a per-PID `~/.kirocrew.quiescing.<pid>` snapshot before the divergence compare, then that frozen snapshot is compared + archived, so a concurrent legacy-era writer can't make stale state authoritative); regenerable bulk trees (`models`, `cache`) are RELOCATED (moved, not copied) from the snapshot into the new home so the GGUF model survives the upgrade for offline users (archive still carries no duplicate; falls back to strip-and-redownload on EXDEV); pre-copy stderr visibility notice; documented downgrade/rollback procedure; `kirocrew doctor` **Data Home** section surfaces the leftover `~/.kirocrew.archived` size + cleanup command. Prior — 2026-07-23 Data home moved from top-level `~/.kirocrew` to `~/.kiro/crew` — `config_dir()` now resolves to `~/.kiro/crew` by default (still overridable via `KIROCREW_HOME`), and triggers a one-time migration of a pre-move `~/.kirocrew` into the new home on first launch. See "Data Home Location & Migration" below. Prior — 2026-07-15 Removed the SecretaryConfig / TaskKeeperConfig / KeywordHook DTOs and the `secretary`/`taskkeeper` KiroCrewConfig fields — the Secretary/TaskKeeper features were dropped from the public fork (P472753900); config-baseline regenerated. Prior — 2026-07-13 Schema refresh: documented security-bounded load-time clamp — SUBAGENT_AUTO_MAX_CEILING=64 / SUBAGENT_MAX_TURNS_CEILING=200 / POOL_SIZE_MAX=10, `_clamp_security_bounds` + `config_bounds_clamped` SEL event; added clamped AgentConfig fields, SessionConfig.pool_size, MessagingConfig/SkillsConfig/TelemetryConfig/DashboardConfig (theme_mode/theme_color/onboarded) DTOs, `_resolve_named_agent_model`/`kiro_agents_dir`; corrected `_resolve_agent_model` fallback to `config_package_dir()/defaults.json`. 2026-06-22: AgentConfig: added sandbox_allow_no_isolation (SEC-009) field; agent_model_state.json sidecar: model_managed/cc_model moved out of kiro agent specs so kiro-cli deny_unknown_fields no longer drops KiroCrew agents)
+Last Updated: 2026-07-25 (Data-home migration simplified to copy-then-verify-then-delete: legacy `~/.kirocrew` is copied DIRECTLY into `~/.kiro/crew` — no staging dir, no quiesce snapshot — legacy files OVERWRITE anything already there (no more no-overwrite merge / byte-identical divergence guard / reconcile-with-backup) — and `~/.kirocrew` is deleted outright once verified, with no `~/.kirocrew.archived` rollback copy, no `~/.kiro/crew.pre-migration` divergent-home backup, no archive secret-expiry sweep. Symlinks are skipped entirely (not preserved, not dereferenced) rather than retargeted, which also removes the regenerable-bulk-dir relocation step (`models`/`cache` are simply never copied, matching a fresh install). `security._CREW_HOME_PREFIXES` dropped `.kirocrew.archived`; the `.kiro/crew.pre-migration` keystone entry is removed. Since an earlier (already-shipped) release could have left one of those now-ungated directories on disk, `config_dir()` added `_sweep_ungated_archive_leftovers` to delete either outright on every default-path resolution — see "Leftover-archive cleanup" below. There is now no downgrade/rollback path — see "No rollback" below; the release gate below is unchanged but now applies unconditionally (no install has an archive fallback). Prior — SessionConfig.empty_response_auto_continue added — default-ON gate for the dashboard chat runner's bounded empty-response auto-continue rung; see session.md "Empty-response recovery ladder". Prior — Divergent-new-home auto-reconcile: a pre-existing/stale `~/.kiro/crew` that diverges from legacy during the no-overwrite merge no longer strands the user on `~/.kirocrew` — reconciliation now completes the switch with legacy authoritative by renaming the divergent home aside to a keystone-gated (`~/.kiro/crew.pre-migration` is on `security._SENSITIVE_HOME_DIRS`), owner-locked `~/.kiro/crew.pre-migration/<ts>` backup, promoting the quiesced legacy snapshot into `~/.kiro/crew` (absolute intra-home symlinks retargeted), and marking complete; live data is unchanged (legacy, as the prior retain behavior), the sidelined home is a recoverable rollback, and a gateway live on the new home is never yanked aside. Prior — Data-home migration hardening: quiesce-before-compare closes the compare→archive TOCTOU (legacy tree atomically renamed to a per-PID `~/.kirocrew.quiescing.<pid>` snapshot before the divergence compare, then that frozen snapshot is compared + archived, so a concurrent legacy-era writer can't make stale state authoritative); regenerable bulk trees (`models`, `cache`) are RELOCATED (moved, not copied) from the snapshot into the new home so the GGUF model survives the upgrade for offline users (archive still carries no duplicate; falls back to strip-and-redownload on EXDEV); pre-copy stderr visibility notice; documented downgrade/rollback procedure; `kirocrew doctor` **Data Home** section surfaces the leftover `~/.kirocrew.archived` size + cleanup command. Prior — 2026-07-23 Data home moved from top-level `~/.kirocrew` to `~/.kiro/crew` — `config_dir()` now resolves to `~/.kiro/crew` by default (still overridable via `KIROCREW_HOME`), and triggers a one-time migration of a pre-move `~/.kirocrew` into the new home on first launch. See "Data Home Location & Migration" below. Prior — 2026-07-15 Removed the SecretaryConfig / TaskKeeperConfig / KeywordHook DTOs and the `secretary`/`taskkeeper` KiroCrewConfig fields — the Secretary/TaskKeeper features were dropped from the public fork (P472753900); config-baseline regenerated. Prior — 2026-07-13 Schema refresh: documented security-bounded load-time clamp — SUBAGENT_AUTO_MAX_CEILING=64 / SUBAGENT_MAX_TURNS_CEILING=200 / POOL_SIZE_MAX=10, `_clamp_security_bounds` + `config_bounds_clamped` SEL event; added clamped AgentConfig fields, SessionConfig.pool_size, MessagingConfig/SkillsConfig/TelemetryConfig/DashboardConfig (theme_mode/theme_color/onboarded) DTOs, `_resolve_named_agent_model`/`kiro_agents_dir`; corrected `_resolve_agent_model` fallback to `config_package_dir()/defaults.json`. 2026-06-22: AgentConfig: added sandbox_allow_no_isolation (SEC-009) field; agent_model_state.json sidecar: model_managed/cc_model moved out of kiro agent specs so kiro-cli deny_unknown_fields no longer drops KiroCrew agents)
 
 ## Overview
 
@@ -20,108 +20,78 @@ is the single accessor and resolves to:
 **One-time migration.** On the first launch after upgrading an existing install,
 `config_dir()` triggers a one-time relocation of the pre-move top-level
 `~/.kirocrew` into `~/.kiro/crew` (implemented in `kiro_crew/home_migration.py`).
-It is **copy-then-verify-then-quiesce-then-archive**: the legacy tree is copied
-into the new home and every regular file is verified present before the source is
-touched, then — before the final byte comparison — the legacy tree is
-**quiesced** by atomically renaming it out of its live path to a private, per-PID
-snapshot (`~/.kirocrew.quiescing.<pid>`), and it is that frozen snapshot that is
-compared against the new home and then renamed to `~/.kirocrew.archived` (a
-rollback copy — never auto-deleted). Quiescing before the compare closes a
-compare→archive **TOCTOU**: the migration lock only serializes *migrations*, but a
-normal legacy-era writer (an older release's CLI, or a cron-fired `kirocrew` on
-the old version) does not hold it — comparing the *live* tree and only then
-archiving it would leave a window in which such a writer mutates a file after the
-comparison but before the archive, so the newest bytes would survive only in the
-rollback archive, absent from the live home. Renaming the tree away first means no
-writer using the canonical legacy path can touch the bytes that are
-compared-then-archived. On a divergence the snapshot is restored to the canonical
-`~/.kirocrew` path (and the run falls back to it); if legacy cannot be quiesced at
-all, the migration retains it intact, does not archive, and does not mark complete
-(retried on the next cold start). An interruption at any stage leaves the current
-data intact under either `~/.kirocrew` or the snapshot (no data-loss window). The
-move is idempotent, skipped while a gateway is live on the legacy home (retried on
-the next cold start), and never runs when `KIROCREW_HOME` is set (dev/worktree
-homes are not migrated). Before the copy starts it prints a one-line `migrating
-data home …` notice to stderr so a slow first-run copy on a large home is not
+It is **copy-then-verify-then-delete**: the legacy tree is copied directly into
+the new home — OVERWRITING any file already present there under the same
+relative path, so the legacy copy always wins over whatever pre-existed at
+`~/.kiro/crew` (a partial prior migration, a dir a sibling Kiro tool created, or
+a `KIROCREW_HOME=~/.kiro/crew` experiment), while a new-home-only entry with no
+legacy counterpart is left untouched — every regular file is then verified
+present at the destination, and only after that verification succeeds is
+`~/.kirocrew` removed outright. **There is no rollback copy and no backup of
+whatever the new home held before the overwrite** — once the move completes,
+only `~/.kiro/crew` remains on disk. If the copy or verification fails,
+`~/.kirocrew` is left fully intact for a retry on the next start. The move is
+idempotent, skipped while a gateway is live on either home (retried on the next
+cold start), and never runs when `KIROCREW_HOME` is set (dev/worktree homes are
+not migrated). Before the copy starts it prints a one-line `migrating data
+home …` notice to stderr so a slow first-run copy on a large home is not
 mistaken for a hang.
 
-**Excluded bulk trees (copied? no — relocated).** `_EXCLUDED_TOP_LEVEL_DIRS`
-(`models`, `cache`) are large and regenerable, so they are never *copied* (that
-would be a slow first-run copy and a permanent second on-disk copy of hundreds of
-MB). But they are not destroyed either: after the divergence compare passes they
-are **relocated** (atomically renamed, not copied) from the quiesced legacy
-snapshot into the new home (`_relocate_excluded_dirs_into_new_home`), so the
-sha256-pinned GGUF embedding model survives the upgrade. This matters because
-embeddings are always-on in this fork — a migrating **offline / air-gapped /
-metered-connection** user who lost `models/` would silently lose memory/knowledge
-search until an HTTPS re-download succeeds (for an air-gapped host, possibly
-never). The relocate only fills a GAP — a `models/`/`cache/` already present in
-the new home (a fresh re-download or partial) is authoritative and kept, and the
-snapshot's redundant copy is then stripped from the archive. On a cross-device
-rename (`EXDEV`, new home on a different filesystem than the legacy home) or any
-other rename failure the dir is left in the snapshot and `_strip_excluded_dirs`
-removes it — falling back to the prior strip-and-redownload behavior (no worse
-than before). Either way the archive carries no duplicate of the model bytes. A
-same-named dir NESTED under real data is not excluded (the match is anchored at
-the legacy root).
+**Symlinks are skipped, not preserved.** The copy does not pass
+`symlinks=True` to `shutil.copytree`, so any symlink in the legacy tree —
+intra-home, pointing outside the home, or dangling — is skipped entirely
+(matched by `_make_copy_ignore` alongside sockets/FIFOs/devices) rather than
+followed or reproduced. This is a deliberate simplification: preserving
+symlinks across a merge has real edge cases (a legacy symlink can't overwrite
+a real file already at the destination; an absolute intra-home symlink would
+dangle once legacy is deleted; a dangling symlink would abort the whole
+`copytree` call if dereferenced), and the data home has no user-facing
+symlinks worth carrying forward. The practical effect is limited to internal
+convenience links a user or tool may have created inside the data home.
 
-**Archive hardening + secret end-of-life.** The archive is a frozen snapshot of
-the pre-move home, so it holds copies of the credential leaves (`.env`,
-`token_signing.key`, `sel_hmac.key`, `refresh_chains.json`, browser cookies,
-`profiles/`). The keystone gates those from the *agent* under the
-`.kirocrew.archived` prefix, but to also shrink exposure to backup/sync tools and
-other local processes: at archive time the archive tree is locked to the owner
-(`0o700` dirs + `restrict_to_owner`/`0o600` on the secret leaves), and the
-credential leaves are given an automatic **end-of-life** — once the completion
-marker is older than `_ARCHIVE_SECRET_GRACE_SECONDS` (7 days), a later
-`config_dir()` resolution shreds only the **replaceable credentials**
-(`_EXPIRABLE_CREDENTIAL_LEAVES`: `.env`, `token_signing.key`,
-`refresh_chains.json`, browser cookies, playwright state, `.local_secret`) from
-the archive (`shred_archive_secrets_if_stale`). The governance/security **ceiling**
-(`security_policy.json`, `profiles`, `admission_policy.json`,
-`denied_commands.json`) and the tamper-evident **audit chain** (`sel_hmac.key`,
-`security_events.jsonl`, `app_admission.json`) are DELIBERATELY retained — if the
-archive is later restored as `~/.kirocrew` (the downgrade path), those files carry
-the release's security ceiling, so expiring them would let a downgrade boot
-WITHOUT its ceiling (a permission widening, worse than a stale credential).
-Non-secret config/history is likewise kept as a rollback copy. Both the lockdown
-and the shred are best-effort and never block startup.
+**Excluded bulk trees.** `_EXCLUDED_TOP_LEVEL_DIRS` (`models`, `cache`) are
+large and regenerable, so they are never copied — carrying them forward would
+make the first-run copy needlessly slow for no benefit. The new home simply
+regenerates them on demand (the sha256-pinned GGUF embedding model re-downloads
+over HTTPS on next start), exactly as a fresh install does. A same-named dir
+NESTED under real data is not excluded (the match is anchored at the legacy
+root).
 
-**Downgrade / rollback.** A release older than the move knows nothing of
-`~/.kiro/crew` or `~/.kirocrew.archived`: on downgrade it finds no `~/.kirocrew`
-and starts empty (looks like data loss, is not). The documented recovery (see
-`INSTALL.md`) is to stop KiroCrew and `mv ~/.kirocrew.archived ~/.kirocrew`; the
-old release re-downloads the excluded `models/` on next start. Roll back within
-the 7-day grace window to keep the archived credentials; after that the secret
-leaves are shred (the live secrets remain in the new home) and Slack tokens must
-be re-entered on the downgraded release. On a subsequent re-upgrade,
-`_maybe_migrate_legacy_home()` does **not** blind-trust the completion marker
-while a legacy dir exists — it re-runs the merge + byte-identical divergence
-guard so interim downgrade data is reconciled, not stranded. `kirocrew doctor`
-surfaces the archive (size + `rm -rf` cleanup command) under **Data Home** so the
-permanent third keystone prefix has a user-driven end-of-life too.
+**No rollback.** Because the legacy home is deleted (not archived) and any
+pre-existing divergent `~/.kiro/crew` is overwritten (not backed up), there is no
+supported downgrade path: a release older than this move knows nothing of
+`~/.kiro/crew`, and after the migration completes there is nothing left under
+`~/.kirocrew` to restore from. A user who needs to preserve the pre-move state
+must back it up themselves (e.g. `cp -a ~/.kirocrew ~/.kirocrew.manual-backup`)
+BEFORE upgrading.
+
+**Leftover-archive cleanup (`_sweep_ungated_archive_leftovers`).** An EARLIER
+release of this migration (already shipped on `main` before this no-retention
+contract) could have left `~/.kirocrew.archived` (a full rollback copy) or
+`~/.kiro/crew.pre-migration/<timestamp>` (a sidelined divergent-home backup) on
+disk. Neither path is on the security keystone anymore (`_CREW_HOME_PREFIXES`
+dropped `.kirocrew.archived`; the `.kiro/crew.pre-migration` entry was removed
+outright — nothing creates them, so gating them was dead weight), which means a
+leftover one from that earlier release is now UNGATED: its frozen credentials
+would otherwise be agent-readable indefinitely with nothing to ever prompt a
+cleanup. `config_dir()` therefore deletes either directory outright (matching
+this migration's no-retention design — not just shredding the credential
+leaves) on every default-path resolution. It never follows a symlink at either
+root, is best-effort (a removal failure is logged and retried on the next
+start, never blocks startup), and is a quiet no-op once both are gone.
 
 **Uninstaller consideration (Zezhen's open question).** Because the data home now
 lives under `~/.kiro/`, a hypothetical Kiro-family uninstaller that removes
 `~/.kiro/` would also remove `~/.kiro/crew` and take KiroCrew's data — config,
 credentials, memory DB, session history, and the SEL audit chain — with it. This
-is a persisted-data one-way door.
+is a persisted-data one-way door, and — unlike when an archived rollback copy
+existed — there is now no `~/.kirocrew.archived` fallback for ANY install
+(upgrader or fresh), so such a wipe is unrecoverable total data loss.
 
-The `~/.kirocrew.archived` rollback copy is **only a partial mitigation, not a
-general safety net**, and the spec must not overstate it:
-
-- It exists **only for upgraders** — a machine migrated from a pre-move
-  `~/.kirocrew`. A **fresh install** (soon the majority of users) has no
-  `~/.kirocrew.archived` at all, so the archive protects nothing for them.
-- Even for an upgrader it is **stale by design** — a point-in-time snapshot taken
-  at migration; every config change, new session, and credential rotation after
-  that day is absent from it.
-
-The real requirements this raises (tracked, not solved by the archive): any
-Kiro-family uninstaller spec **MUST** either explicitly exclude `~/.kiro/crew`
-from a `~/.kiro/`-wide wipe, or prompt before deleting it. Independently, a user
-who wants the data home entirely outside `~/.kiro/` can set `KIROCREW_HOME` to
-relocate it.
+Any Kiro-family uninstaller spec **MUST** either explicitly exclude
+`~/.kiro/crew` from a `~/.kiro/`-wide wipe, or prompt before deleting it.
+Independently, a user who wants the data home entirely outside `~/.kiro/` can set
+`KIROCREW_HOME` to relocate it.
 
 **Technical hedge — recovery-pointer breadcrumb.** `config_dir()` writes a small,
 non-secret `~/.kirocrew.breadcrumb` pointer file at the top-level home
@@ -132,14 +102,14 @@ written only on the default path (a `KIROCREW_HOME` override carries no `~/.kiro
 wipe risk). It is **not a backup** — just a durable signpost that survives a
 `~/.kiro/`-wide uninstaller wipe so a user or support script can find any
 surviving data or understand what was removed. This narrows, but does not
-eliminate, the one-way-door risk below; the release gate still stands.
+eliminate, the one-way-door risk above; the release gate still stands.
 
 > **Release gate (UNINSTALLER-EXCLUDE-CREW).** This is a pre-release,
 > human-sign-off dependency, NOT a code change in this repo: the code cannot
 > constrain another product's uninstaller. Before the first release that ships
 > data under `~/.kiro/`, the KiroCrew product owner MUST confirm the
-> Kiro-family uninstaller either excludes `~/.kiro/crew` or prompts — because a
-> fresh install (soon the majority) has no `~/.kirocrew.archived` fallback, so a
+> Kiro-family uninstaller either excludes `~/.kiro/crew` or prompts — because
+> there is no `~/.kirocrew.archived` fallback for any install, so a
 > `~/.kiro/`-wide wipe would be unrecoverable total data loss. Until confirmed,
 > the placement decision is acknowledged-but-owned here under this name so it is
 > not lost. **Tracked as release-blocking in

@@ -100,7 +100,7 @@ Browse at `http://localhost:6777`. The backend serves the built frontend assets 
 
 | Env var | Purpose | Default |
 |---------|---------|---------|
-| `KIROCREW_HOME` | Config/data directory override | `~/.kirocrew` |
+| `KIROCREW_HOME` | Config/data directory override | `~/.kiro/crew` |
 | `KIROCREW_PORT` | Dashboard port override | `5476` |
 | `KIROCREW_KIRO_BIN` | Explicit path to the `kiro-cli` binary (overrides PATH auto-detection) | auto-detected |
 
@@ -205,10 +205,10 @@ Full reference: [AGENTS.md](AGENTS.md)
 
 ## Extending KiroCrew
 
-- **Skills** — drop markdown files in `skills/` or `~/.kirocrew/skills/`. See [skills/README.md](skills/README.md) for the full format reference
+- **Skills** — drop markdown files in `skills/` or `~/.kiro/crew/skills/`. See [skills/README.md](skills/README.md) for the full format reference
 - **MCP tools** — add to `mcp_core.py` or `mcp_cron.py`. Every LLM-facing command must have an MCP tool
-- **Hooks** — configure in `~/.kirocrew/config.json`
-- **Lessons** — self-learned from corrections, stored in `~/.kirocrew/lessons.jsonl`
+- **Hooks** — configure in `~/.kiro/crew/config.json`
+- **Lessons** — self-learned from corrections, stored in `~/.kiro/crew/lessons.jsonl`
 
 ## Tests
 

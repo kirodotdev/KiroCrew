@@ -1,15 +1,24 @@
 #!/bin/bash
-# Copy ~/.kirocrew into .kirocrew-dev/ for local development.
+# Copy the KiroCrew data home into .kirocrew-dev/ for local development.
 # Safe to re-run — wipes .kirocrew-dev first so you get a clean snapshot.
 #
 # Usage: ./dev-seed.sh
 set -e
 
-SRC="$HOME/.kirocrew"
+# The data home moved from the top-level ~/.kirocrew to ~/.kiro/crew. Prefer
+# the current location; fall back to the legacy one for a not-yet-migrated
+# box so this script doesn't silently no-op after the move.
+if [ -d "$HOME/.kiro/crew" ]; then
+  SRC="$HOME/.kiro/crew"
+elif [ -d "$HOME/.kirocrew" ]; then
+  SRC="$HOME/.kirocrew"
+else
+  SRC=""
+fi
 DST="$(cd "$(dirname "$0")" && pwd)/.kirocrew-dev"
 
-if [ ! -d "$SRC" ]; then
-  echo "No ~/.kirocrew found — nothing to seed."
+if [ -z "$SRC" ]; then
+  echo "No ~/.kiro/crew or ~/.kirocrew found — nothing to seed."
   exit 0
 fi
 
@@ -23,7 +32,7 @@ if [ -d "$DST" ]; then
   rm -rf "$DST"
 fi
 
-echo "Copying ~/.kirocrew → .kirocrew-dev/ ..."
+echo "Copying $SRC → .kirocrew-dev/ ..."
 cp -R "$SRC" "$DST"
 
 echo "Done. Start the gateway with:"

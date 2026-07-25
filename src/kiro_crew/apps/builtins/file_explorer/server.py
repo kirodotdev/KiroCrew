@@ -120,14 +120,22 @@ SENSITIVE_DIRS = {
 # access. Everything else under the data home is blocked (keys, tokens, DB,
 # sessions).
 _KIROCREW_SAFE_SUBDIRS = {
-    "workspace", "uploads", "skills", "artifacts", "apps",
-    "app-sources", "workflows", "pods", "logs", "crons",
+    "workspace",
+    "uploads",
+    "skills",
+    "artifacts",
+    "apps",
+    "app-sources",
+    "workflows",
+    "pods",
+    "logs",
+    "crons",
 }
 
 # The KiroCrew data home has moved from the top-level ~/.kirocrew to ~/.kiro/crew
 # (nested under kiro-cli's ~/.kiro). The granular deny-by-default listing policy
-# must recognize the home wherever it lives: the current ~/.kiro/crew, the
-# archived rollback copy ~/.kirocrew.archived, and a pre-move legacy ~/.kirocrew.
+# must recognize the home wherever it lives: the current ~/.kiro/crew, and a
+# pre-move legacy ~/.kirocrew.
 # Each marker is the tuple of trailing path segments that identify the home dir;
 # the segment(s) AFTER the marker are matched against _KIROCREW_SAFE_SUBDIRS.
 # Note ~/.kiro alone is NOT a marker — that is kiro-cli's own dir (agents,
@@ -142,7 +150,6 @@ _KIROCREW_SAFE_SUBDIRS = {
 # same reason; this mirrors it so the two gates agree.
 _CREW_HOME_MARKERS: tuple[tuple[str, ...], ...] = (
     (".kiro", "crew"),
-    (".kirocrew.archived",),
     (".kirocrew",),
 )
 _CREW_HOME_MARKERS_CF: tuple[tuple[str, ...], ...] = tuple(
@@ -313,15 +320,15 @@ def _is_sensitive(p: Path) -> bool:
     ``SENSITIVE_DIRS`` set so the access-deny gate can never be narrower than
     the listing-hide filter.
 
-    For the KiroCrew data home (``~/.kiro/crew``, plus the archived/legacy
-    variants), a granular policy applies: only subdirectories listed in
+    For the KiroCrew data home (``~/.kiro/crew``, plus the legacy variant), a
+    granular policy applies: only subdirectories listed in
     ``_KIROCREW_SAFE_SUBDIRS`` are accessible; everything else (keys, tokens,
     DB, sessions) is blocked.
     """
     if any(part in SENSITIVE_DIRS for part in p.parts):
         return True
     # Granular data-home policy: block unless the path descends into a safe
-    # subdir of the crew home (~/.kiro/crew or the archived/legacy variants).
+    # subdir of the crew home (~/.kiro/crew or the legacy variant).
     after = _crew_home_index(p.parts)
     if after != -1:
         # The home root itself is blocked (deny-by-default). Listing endpoints
@@ -646,11 +653,10 @@ def _search_rg(root: Path, query: str, include: str, exclude: str) -> list[dict]
     #    gate (_is_sensitive) already confirmed the subtree is safe.
     #  - Root outside the crew home: exclude the whole data-home tree
     #    (deny-by-default; safe subdirs are reachable by searching them
-    #    directly, which takes the branch above). Cover all home spellings:
-    #    ~/.kiro/crew, the archived rollback copy, and the legacy home.
+    #    directly, which takes the branch above). Cover both home spellings:
+    #    ~/.kiro/crew and the legacy home.
     if not _under_crew_home(root):
         cmd += ["--glob", "!**/.kiro/crew/**"]
-        cmd += ["--glob", "!**/.kirocrew.archived/**"]
         cmd += ["--glob", "!**/.kirocrew/**"]
     cmd += ["--", query, str(root)]
     try:

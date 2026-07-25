@@ -107,11 +107,9 @@ _CC_FILES: list[str] = [
     ".netrc",
     ".git-credentials",
     # KiroCrew's channel-credential file. The data home moved to ~/.kiro/crew,
-    # so the live .env is now ~/.kiro/crew/.env; the legacy ~/.kirocrew/.env and
-    # the archived rollback copy are kept covered too (a not-yet-migrated box, or
-    # the archived copy, still holds real secret bytes).
+    # so the live .env is now ~/.kiro/crew/.env; the legacy ~/.kirocrew/.env is
+    # kept covered too (a not-yet-migrated box still holds real secret bytes).
     ".kiro/crew/.env",
-    ".kirocrew.archived/.env",
     ".kirocrew/.env",
 ]
 
@@ -289,9 +287,7 @@ def _kick_background_warm() -> None:
     global _warm_thread
     if _warm_thread is not None and _warm_thread.is_alive():
         return  # dedupe: warm already in progress
-    _warm_thread = threading.Thread(
-        target=_background_warm, name="sandbox-probe-warm", daemon=True
-    )
+    _warm_thread = threading.Thread(target=_background_warm, name="sandbox-probe-warm", daemon=True)
     _warm_thread.start()
 
 
@@ -976,7 +972,7 @@ def _ensure_run_dir() -> str:
         # per-session sandbox launcher scripts and sockets that must NOT be
         # world-readable. Semgrep's 0o644 suggestion is wrong for a directory
         # (needs the execute/traverse bit) and would loosen, not tighten, access.
-        os.chmod(run_dir, 0o700)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions
+        os.chmod(run_dir, 0o700)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions  # noqa: E501  # fmt: skip
     except OSError:
         logger.warning("Cannot create %s; falling back to system tmpdir", run_dir)
         run_dir = tempfile.gettempdir()
@@ -1001,7 +997,9 @@ def namespace_argv(
 
     script = _build_launcher_script(sandbox_level, strip_python_env=strip_python_env)
     run_dir = _ensure_run_dir()
-    fd, path = tempfile.mkstemp(suffix=".py", prefix=f"kirocrew_sandbox_{os.getpid()}_", dir=run_dir)
+    fd, path = tempfile.mkstemp(
+        suffix=".py", prefix=f"kirocrew_sandbox_{os.getpid()}_", dir=run_dir
+    )
     os.write(fd, script.encode())
     os.close(fd)
     platform_compat.chmod_safe(path, 0o700)
@@ -1247,7 +1245,9 @@ def sandbox_exec_argv(
 
     profile = _build_seatbelt_profile(sandbox_level)
     run_dir = _ensure_run_dir()
-    fd, path = tempfile.mkstemp(suffix=".sb", prefix=f"kirocrew_sandbox_{os.getpid()}_", dir=run_dir)
+    fd, path = tempfile.mkstemp(
+        suffix=".sb", prefix=f"kirocrew_sandbox_{os.getpid()}_", dir=run_dir
+    )
     os.write(fd, profile.encode())
     os.close(fd)
     # Build env -u flags for sensitive vars present in current env. cc/strict
@@ -1330,7 +1330,7 @@ def cleanup_stale_sandbox_profiles(*, legacy_dir: str | None = None) -> int:
                     pass
                 continue
             # Fresh file — fall back to PID liveness check
-            middle = entry[len("kirocrew_sandbox_"):-len(suffix)]
+            middle = entry[len("kirocrew_sandbox_") : -len(suffix)]
             pid_str = middle.split("_", 1)[0]
             if not pid_str.isdigit():
                 continue
@@ -1813,9 +1813,7 @@ def scrub_agent_denied_env(env: dict[str, str]) -> dict[str, str]:
     the launcher's ENV_PREFIXES check.
     """
     return {
-        k: v
-        for k, v in env.items()
-        if not any(k.startswith(p) for p in _AGENT_DENIED_ENV_KEYS)
+        k: v for k, v in env.items() if not any(k.startswith(p) for p in _AGENT_DENIED_ENV_KEYS)
     }
 
 

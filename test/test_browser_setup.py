@@ -34,6 +34,7 @@ from kiro_crew.browser.setup import (
     patch_mcp_headless,
     refresh_storage_state,
 )
+from kiro_crew.config.paths import config_dir
 from kiro_crew.mcp_utils import mcp_server_alias
 from kiro_crew.platform_compat import IS_POSIX
 
@@ -409,8 +410,9 @@ class TestPatchWritesCanonicalKey:
 
     def test_patch_records_owned_key_in_manifest(self, tmp_path, monkeypatch):
         # Arbiter regression (manifest-on-write): patch_mcp_* records the canonical
-        # key it wrote in the ~/.kirocrew ownership manifest, so future migrations
-        # have an explicit authorship signal (not just the argv heuristic).
+        # key it wrote in the KiroCrew-owned ownership manifest, so future
+        # migrations have an explicit authorship signal (not just the argv
+        # heuristic).
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         monkeypatch.setattr(setup_mod, "_kirocrew_bin", lambda: "kirocrew")
         _write_mcp_json(tmp_path, {"other-mcp": {"command": "foo"}})
@@ -425,8 +427,8 @@ class TestPatchWritesCanonicalKey:
         # A superseded key recorded in the manifest is KiroCrew's even if its spec
         # was later mutated to no longer look like the proxy — the explicit
         # ownership marker wins over the argv heuristic.
+        monkeypatch.delenv("KIROCREW_HOME", raising=False)
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        (tmp_path / ".kirocrew").mkdir(parents=True)
         setup_mod._record_owned_mcp_key("playwright-proxy-mcp")
         servers = {
             _CANONICAL: {"command": "kirocrew", "args": ["mcp-playwright-proxy"]},
@@ -439,8 +441,8 @@ class TestPatchWritesCanonicalKey:
     def test_manifest_never_drops_unrecorded_user_direct_key(self, tmp_path, monkeypatch):
         # Defense: a manifest recording OTHER keys must not cause a user's direct
         # @playwright/mcp (not in the manifest, not a proxy) to be dropped.
+        monkeypatch.delenv("KIROCREW_HOME", raising=False)
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        (tmp_path / ".kirocrew").mkdir(parents=True)
         setup_mod._record_owned_mcp_key("playwright-proxy-mcp")
         servers = {
             "@playwright/mcp": {"command": "npx", "args": ["@playwright/mcp@latest"]},
@@ -934,16 +936,16 @@ class TestConvergePlaywrightAgentFiles:
 
 
 class TestConvergeKirocrewMcpJson:
-    """Arbiter regression: KiroCrew's own ~/.kirocrew/mcp.json is healed at the
+    """Arbiter regression: KiroCrew's own <data-home>/mcp.json is healed at the
     source, so a stale proxy key there isn't re-injected into the agent config on
     every rebuild for the per-rebuild backstop to undo forever."""
 
     def test_converges_stale_proxy_key_at_source(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
+        monkeypatch.delenv("KIROCREW_HOME", raising=False)
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        d = tmp_path / ".kirocrew"
-        d.mkdir(parents=True)
+        d = config_dir()
         f = d / "mcp.json"
         f.write_text(
             json.dumps(
@@ -966,14 +968,15 @@ class TestConvergeKirocrewMcpJson:
         assert set(json.loads(f.read_text())["mcpServers"]) == {_CANONICAL}
 
     def test_noop_when_absent(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.delenv("KIROCREW_HOME", raising=False)
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         setup_mod._converge_kirocrew_mcp_json()  # must not raise
 
     @pytest.mark.skipif(not IS_POSIX, reason="POSIX permission bits only")
     def test_preserves_file_mode(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.delenv("KIROCREW_HOME", raising=False)
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        d = tmp_path / ".kirocrew"
-        d.mkdir(parents=True)
+        d = config_dir()
         f = d / "mcp.json"
         f.write_text(
             json.dumps(
@@ -996,11 +999,11 @@ class TestConvergeKirocrewMcpJson:
     def test_leaves_user_direct_server_untouched(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
-        # A user's direct (non-proxy) server in ~/.kirocrew/mcp.json is not a
+        # A user's direct (non-proxy) server in <data-home>/mcp.json is not a
         # proxy, so convergence is a no-op and the file is left byte-identical.
+        monkeypatch.delenv("KIROCREW_HOME", raising=False)
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        d = tmp_path / ".kirocrew"
-        d.mkdir(parents=True)
+        d = config_dir()
         f = d / "mcp.json"
         original = json.dumps(
             {"mcpServers": {"@playwright/mcp": {"command": "npx", "args": ["@playwright/mcp"]}}}

@@ -19,11 +19,7 @@ from kiro_crew.agent import AGENT_FILENAME, KIRO_AGENTS_DIR
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.loader import config_dir
-from kiro_crew.config.paths import (
-    ARCHIVED_LEGACY_DIR_NAME,
-    LEGACY_CONFIG_DIR_NAME,
-    MIGRATION_MARKER_NAME,
-)
+from kiro_crew.config.paths import LEGACY_CONFIG_DIR_NAME
 from kiro_crew.dashboard.crash_dump_store import (
     dump_age_seconds,
     dump_first_stack_lines,
@@ -152,84 +148,23 @@ def _doctor_mcp_tools(agent_path: Path, issues: list[str]) -> None:
         issues.append(f"{ref} probe")
 
 
-def _dir_size_bytes(path: Path) -> int:
-    """Best-effort recursive size of *path* in bytes (0 on any error)."""
-    total = 0
-    try:
-        for root, _dirs, files in os.walk(path):
-            for name in files:
-                fp = Path(root) / name
-                try:
-                    if not fp.is_symlink():
-                        total += fp.stat().st_size
-                except OSError:
-                    continue
-    except OSError:
-        return total
-    return total
-
-
-def _human_size(num_bytes: int) -> str:
-    """Render *num_bytes* as a compact human-readable size (e.g. ``12.3 MB``)."""
-    size = float(num_bytes)
-    for unit in ("B", "KB", "MB", "GB", "TB"):
-        if size < 1024 or unit == "TB":
-            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
-        size /= 1024
-    return f"{size:.1f} TB"
-
-
 def _doctor_data_home() -> None:
-    """Report the data home and any leftover pre-move archive (rollback copy).
+    """Report the data home and any leftover pre-move legacy home.
 
-    The one-time ``~/.kirocrew`` -> ``~/.kiro/crew`` migration renames the old
-    home to ``~/.kirocrew.archived`` as a rollback copy that is intentionally
-    NEVER auto-deleted. That copy still holds credentials, so it should not live
-    on disk forever: once the new home is confirmed working, surface its size and
-    the exact command to remove it, giving the permanent third keystone prefix a
-    user-driven end-of-life. Purely informational — doctor never deletes it.
+    The one-time ``~/.kirocrew`` -> ``~/.kiro/crew`` migration force-copies the
+    old home into the new one (overwriting anything already there) and then
+    deletes ``~/.kirocrew`` outright — there is no rollback copy. A leftover
+    ``~/.kirocrew`` here means migration hasn't completed yet (a live gateway
+    held it, the delete failed, or this is the first cold start); it retries on
+    the next start. Purely informational — doctor never deletes it itself.
     """
     print("\nData Home")
     home = config_dir()
     print(f"  location:    ✅ {home}")
 
-    archived = Path.home() / ARCHIVED_LEGACY_DIR_NAME
     legacy = Path.home() / LEGACY_CONFIG_DIR_NAME
     if legacy.is_dir():
-        # The pre-move home is still present. This is either a transient "hasn't
-        # migrated yet" (a live gateway held it, or first cold start) OR a DELIBERATE
-        # abort: the migration completed once (marker present in the new home), then
-        # a downgrade wrote fresh state back to ~/.kirocrew that DIVERGES from the
-        # new home — the migration's divergence guard then retains legacy and refuses
-        # to archive/mark, and it will keep aborting on every start (NOT
-        # "retry-and-succeed"). Distinguish the two so the user isn't told to wait
-        # for a retry that can never complete.
-        marker = home / MIGRATION_MARKER_NAME
-        diverged: list[str] = []
-        if marker.exists():
-            try:
-                from kiro_crew.home_migration import _legacy_files_not_identical_in
-
-                diverged = _legacy_files_not_identical_in(legacy, home)
-            except Exception:  # pragma: no cover - defensive
-                diverged = []
-        if diverged:
-            print(f"  legacy:      ⚠️  {legacy} diverges from {home} — migration ABORTED (not retrying)")
-            print(f"               {len(diverged)} file(s) differ, e.g. {', '.join(diverged[:3])}")
-            print("               The legacy home holds current data and is being used as-is.")
-            print("               Reconcile, then remove the legacy home so migration completes:")
-            print(f"               diff -r {legacy} {home}   # inspect the differences")
-            print(f"               # then, once reconciled: rm -rf {legacy}")
-        else:
-            print(
-                f"  legacy:      ⏹ {legacy} still present (migration will retry on next cold start)"
-            )
-    if archived.is_dir():
-        size = _human_size(_dir_size_bytes(archived))
-        print(f"  archive:     ⚠️  rollback copy at {archived} ({size})")
-        print("               Holds pre-move credentials. Safe to delete once the new")
-        print("               home works (downgrading first needs it — see INSTALL.md):")
-        print(f"               rm -rf {archived}")
+        print(f"  legacy:      ⏹ {legacy} still present (migration will retry on next cold start)")
 
 
 def _doctor_model_url_reachable(issues: list[str]) -> None:
@@ -658,7 +593,9 @@ def _doctor(platform_boot_error: "Exception | None" = None) -> None:
                         print(f"    {_line}")
                 issues.append(f"recent loop-stall crash dump ({_age_h:.0f}h ago)")
             else:
-                print(f"  last dump:   ✅ oldest only ({_age_s / 86400:.0f}d ago, no recent stalls)")
+                print(
+                    f"  last dump:   ✅ oldest only ({_age_s / 86400:.0f}d ago, no recent stalls)"
+                )
         else:
             print("  dumps:       ✅ no crash dumps found (healthy)")
         print(f"  dump dir:    {dumps_dir}")

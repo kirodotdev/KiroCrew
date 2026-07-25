@@ -229,7 +229,8 @@ def _check_on_loop_persist_discipline(key: str) -> None:
             "without offloading; this drops the write under real contention "
             "(HistoryLockTimeout swallowed by best-effort callers). Route it "
             "through append_off_loop/save_slot_off_loop/asyncio.to_thread.",
-            key, stack_info=True,
+            key,
+            stack_info=True,
         )
 
 
@@ -269,17 +270,13 @@ def append_off_loop(
         try:
             _do()
         except Exception:  # noqa: BLE001 - best-effort durable copy
-            logger.warning(
-                "append_off_loop: inline append failed key=%s", key, exc_info=True
-            )
+            logger.warning("append_off_loop: inline append failed key=%s", key, exc_info=True)
         return
 
     def _report(fut: "asyncio.Future[None]") -> None:
         exc = fut.exception()
         if exc is not None:
-            logger.warning(
-                "append_off_loop: offloaded append failed key=%s: %r", key, exc
-            )
+            logger.warning("append_off_loop: offloaded append failed key=%s: %r", key, exc)
 
     loop.run_in_executor(None, _do).add_done_callback(_report)
 
@@ -319,7 +316,8 @@ def append_if_absent_off_loop(
         except Exception:  # noqa: BLE001 - best-effort durable copy
             logger.warning(
                 "append_if_absent_off_loop: inline append failed key=%s",
-                key, exc_info=True,
+                key,
+                exc_info=True,
             )
         return
 
@@ -328,7 +326,8 @@ def append_if_absent_off_loop(
         if exc is not None:
             logger.warning(
                 "append_if_absent_off_loop: offloaded append failed key=%s: %r",
-                key, exc,
+                key,
+                exc,
             )
 
     loop.run_in_executor(None, _do).add_done_callback(_report)
@@ -437,7 +436,9 @@ def _archive_dir(base: Path | None = None) -> Path:
     return (base or _sessions_dir()) / ARCHIVE_DIR_NAME
 
 
-def _archive_lines(key: str, lines: list[str], reason: str, base: Path | None = None) -> Path | None:
+def _archive_lines(
+    key: str, lines: list[str], reason: str, base: Path | None = None
+) -> Path | None:
     """Append dropped message lines to archive/{key}.{YYYYMMDD-HHMMSS}.jsonl. Returns path or None."""
     if not lines:
         return None
@@ -448,7 +449,17 @@ def _archive_lines(key: str, lines: list[str], reason: str, base: Path | None = 
     now = datetime.now()
     stamp = now.strftime("%Y%m%d-%H%M%S")
     safekey = _safe_key(key)
-    header = json.dumps({"_type": "archive", "reason": reason, "archived_at": now.isoformat(), "count": len(lines)}) + "\n"
+    header = (
+        json.dumps(
+            {
+                "_type": "archive",
+                "reason": reason,
+                "archived_at": now.isoformat(),
+                "count": len(lines),
+            }
+        )
+        + "\n"
+    )
     payload = header + "".join(lines)
     # Atomic exclusive-create to avoid TOCTOU clobber when two archives land in the same second.
     # Use '__' delimiter so keys containing dots (e.g. Slack thread_ts) don't confuse rfind('.') parsing.
@@ -462,7 +473,13 @@ def _archive_lines(key: str, lines: list[str], reason: str, base: Path | None = 
             break
         except FileExistsError:
             continue
-    logger.info("Archived %d lines from session %s to %s (reason=%s)", len(lines), key, candidate.name, reason)
+    logger.info(
+        "Archived %d lines from session %s to %s (reason=%s)",
+        len(lines),
+        key,
+        candidate.name,
+        reason,
+    )
     _cleanup_old_archives(base=base)
     return candidate
 
@@ -827,9 +844,7 @@ class ConversationLog:
                     except RuntimeError:
                         on_loop = False
                     if on_loop:
-                        if not platform_compat.try_acquire_lock(
-                            state[0], exclusive=True
-                        ):
+                        if not platform_compat.try_acquire_lock(state[0], exclusive=True):
                             logger.warning(
                                 "history: cross-process lock for %s busy on the "
                                 "event loop; abandoning mutation rather than "
@@ -843,16 +858,15 @@ class ConversationLog:
                             )
                     else:
                         deadline = _time.monotonic() + _FLOCK_ACQUIRE_TIMEOUT_S
-                        while not platform_compat.try_acquire_lock(
-                            state[0], exclusive=True
-                        ):
+                        while not platform_compat.try_acquire_lock(state[0], exclusive=True):
                             if _time.monotonic() >= deadline:
                                 logger.warning(
                                     "history: cross-process lock for %s not "
                                     "acquired within %.1fs; abandoning mutation "
                                     "to avoid an unlocked write that a "
                                     "concurrent rewrite could clobber",
-                                    key, _FLOCK_ACQUIRE_TIMEOUT_S,
+                                    key,
+                                    _FLOCK_ACQUIRE_TIMEOUT_S,
                                 )
                                 raise HistoryLockTimeout(
                                     f"could not acquire cross-process lock for "
@@ -899,9 +913,7 @@ class ConversationLog:
                     # its own fd under the guard, so a reuse cancels it.
                     self._schedule_flock_release(key, lock_key, state[0])
 
-    def _schedule_flock_release(
-        self, key: str, lock_key: str, fd: int
-    ) -> None:
+    def _schedule_flock_release(self, key: str, lock_key: str, fd: int) -> None:
         """Release+close *fd* off the loop iff the entry is still idle.
 
         Scheduled on a depth→0 exit of :meth:`_locked`. Runs the blocking
@@ -1167,9 +1179,7 @@ class ConversationLog:
         """
         return int(self._read_metadata(key).get("rotation_generation", 0) or 0)
 
-    def snapshot_for_consolidation(
-        self, key: str
-    ) -> tuple[list[dict], int, int]:
+    def snapshot_for_consolidation(self, key: str) -> tuple[list[dict], int, int]:
         """Atomically snapshot ``(unconsolidated_messages, total, generation)``.
 
         The consolidator needs the unconsolidated tail, the total message count
@@ -1197,9 +1207,7 @@ class ConversationLog:
             generation = int(meta.get("rotation_generation", 0) or 0)
             return list(messages[offset:]), len(messages), generation
 
-    def mark_consolidated(
-        self, key: str, offset: int, generation: int | None = None
-    ) -> None:
+    def mark_consolidated(self, key: str, offset: int, generation: int | None = None) -> None:
         """Rewrite metadata line with updated ``last_consolidated`` offset.
 
         *offset* is an absolute message index captured by the caller BEFORE a
@@ -1262,7 +1270,9 @@ class ConversationLog:
                     "mark_consolidated: rotation generation changed %s->%d for "
                     "%s (rotation during consolidation); resetting "
                     "last_consolidated to 0 to avoid skipping retained messages",
-                    generation, current_generation, key,
+                    generation,
+                    current_generation,
+                    key,
                 )
                 safe_offset = 0
             elif offset > msg_count:
@@ -1282,7 +1292,9 @@ class ConversationLog:
                     "%d for %s (rotation during consolidation); resetting "
                     "last_consolidated to 0 to avoid skipping post-rotation "
                     "messages",
-                    offset, msg_count, key,
+                    offset,
+                    msg_count,
+                    key,
                 )
                 safe_offset = 0
             else:
@@ -1570,7 +1582,10 @@ class ConversationLog:
                         head_lines.append(line)
                         try:
                             d = json.loads(line.strip())
-                            if d.get("_type") == "metadata" and d.get("memory_mode") in ("incognito", "temporary"):
+                            if d.get("_type") == "metadata" and d.get("memory_mode") in (
+                                "incognito",
+                                "temporary",
+                            ):
                                 is_restricted = True
                                 break
                         except (json.JSONDecodeError, ValueError):
@@ -1700,9 +1715,7 @@ class ConversationLog:
                 except OSError:
                     return False
         except HistoryLockTimeout:
-            logger.warning(
-                "delete_session: lock timeout, not deleting key=%s", key
-            )
+            logger.warning("delete_session: lock timeout, not deleting key=%s", key)
             return False
         if existed:
             self._invalidate_cache(key)
@@ -1756,11 +1769,7 @@ class ConversationLog:
         # reorder list_sessions. None when the file is absent (upsert): a
         # genuinely new session should get a natural mtime. See _restore_mtime.
         prev_mtime = _safe_mtime(path)
-        lines = (
-            path.read_text(encoding="utf-8").splitlines(keepends=True)
-            if path.exists()
-            else []
-        )
+        lines = path.read_text(encoding="utf-8").splitlines(keepends=True) if path.exists() else []
         # Parse the existing metadata line, or synthesize a fresh one when the
         # file is absent/empty (the upsert case). A first line that exists but
         # isn't valid metadata is left untouched -- we never clobber it.
@@ -2250,9 +2259,7 @@ class ConversationLog:
                 meta = json.loads(meta_line)
                 meta["last_consolidated"] = 0
                 meta["rotated_at"] = datetime.now().isoformat()
-                meta["rotation_generation"] = (
-                    int(meta.get("rotation_generation", 0) or 0) + 1
-                )
+                meta["rotation_generation"] = int(meta.get("rotation_generation", 0) or 0) + 1
                 meta_line = json.dumps(meta) + "\n"
             except json.JSONDecodeError:
                 pass
@@ -2293,10 +2300,9 @@ _SENSITIVE_TOOL_PATTERNS: tuple[str, ...] = (
     ".netrc",
     ".git-credentials",
     # KiroCrew's own credential file. The data home moved to ~/.kiro/crew, so the
-    # LIVE secret is ~/.kiro/crew/.env; cover the archived rollback copy and the
-    # pre-move legacy home too (substring match, so bare "/.env"-suffixed forms).
+    # LIVE secret is ~/.kiro/crew/.env; cover the pre-move legacy home too
+    # (substring match, so bare "/.env"-suffixed forms).
     ".kiro/crew/.env",
-    ".kirocrew.archived/.env",
     ".kirocrew/.env",
     "169.254.169.254",  # IMDS
 )
@@ -2522,9 +2528,7 @@ class HistoryConsolidator:
                 unconsolidated,
                 total,
                 generation_at_snapshot,
-            ) = await asyncio.to_thread(
-                self._log.snapshot_for_consolidation, key
-            )
+            ) = await asyncio.to_thread(self._log.snapshot_for_consolidation, key)
             if not unconsolidated:
                 return
 
@@ -2647,7 +2651,7 @@ class HistoryConsolidator:
                     '"procedure_md": "<concise markdown body with '
                     "## When to use / ## Steps / ## Gotchas sections, "
                     '<=8000 chars>"}. '
-                    'Return null if the session was trivial, a single-shot answer, '
+                    "Return null if the session was trivial, a single-shot answer, "
                     "a one-off failure, or involved sensitive paths. Do NOT "
                     "include absolute paths, credentials, tokens, or user PII in "
                     "the procedure body."
@@ -2723,9 +2727,7 @@ class HistoryConsolidator:
                 try:
                     self._process_auto_skills(result, key)
                 except Exception:
-                    logger.warning(
-                        "Auto-skill processing failed for %s", key, exc_info=True
-                    )
+                    logger.warning("Auto-skill processing failed for %s", key, exc_info=True)
 
             # Only advance the consolidated offset for history consolidation.
             # Prefs-only consolidation uses a separate in-memory offset.
@@ -2970,9 +2972,7 @@ class HistoryConsolidator:
         if isinstance(refined, dict):
             name = str(refined.get("name", "")).strip()
             if not self._skills_loader.is_auto_generated(name):
-                logger.info(
-                    "Auto-skill refine rejected for %s: not in auto namespace", name
-                )
+                logger.info("Auto-skill refine rejected for %s: not in auto namespace", name)
                 sel().log_tool_invocation(
                     session_key=key,
                     tool_name="auto_skill_refine",
@@ -3024,9 +3024,7 @@ class HistoryConsolidator:
                 # file missing, or other internal rejection.  Audit it so
                 # operators can trace why a refine was proposed but not
                 # applied.
-                logger.info(
-                    "Auto-skill refine rejected for %s (update_failed)", name
-                )
+                logger.info("Auto-skill refine rejected for %s (update_failed)", name)
                 sel().log_tool_invocation(
                     session_key=key,
                     tool_name="auto_skill_refine",

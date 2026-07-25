@@ -27,7 +27,6 @@ SKILL_SUFFIXES = {".md", ".sh", ".py"}
 # Top-level siblings that did NOT move and must stay spelled the legacy way:
 #   ~/.kirocrew-pods       -> KIROCREW_POD_ROOT default (pod/config.py)
 #   ~/.kirocrew-dev        -> per-worktree dev data dir (dev-backend.sh)
-#   ~/.kirocrew.archived   -> rollback copy left by the migration
 #   ~/.kirocrew.breadcrumb -> recovery pointer written beside the home
 # The negative lookahead below is what distinguishes them from the old home.
 LEGACY_HOME = re.compile(r"\.kirocrew(?![-.])")

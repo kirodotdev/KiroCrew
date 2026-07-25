@@ -159,28 +159,23 @@ of `kirocrew`.
 > `~/.kiro/crew` (was the top-level `~/.kirocrew`), sharing the `~/.kiro/` base
 > with other Kiro-family apps. An existing `~/.kirocrew` install migrates
 > automatically on first launch — its data (config, credentials, session
-> history, databases) is copied into `~/.kiro/crew` and the old directory is
-> renamed to `~/.kirocrew.archived` as a rollback copy. Re-downloadable bulk
-> content (the embedding `models/` and rebuildable `cache/`) is **not** copied
-> or archived — the new home regenerates it on first start. Set `KIROCREW_HOME`
-> to relocate the data home (e.g. outside `~/.kiro/` entirely).
+> history, databases) is copied into `~/.kiro/crew`, OVERWRITING any file
+> already there, and the old `~/.kirocrew` directory is then **deleted
+> outright**. There is no rollback copy. Re-downloadable bulk content (the
+> embedding `models/` and rebuildable `cache/`) is **not** copied — the new home
+> regenerates it on first start. Set `KIROCREW_HOME` to relocate the data home
+> (e.g. outside `~/.kiro/` entirely) BEFORE upgrading if you want to keep the
+> two homes separate.
 >
-> **Rolling back (downgrade).** A release older than the move knows nothing of
-> `~/.kiro/crew`; on downgrade it finds no `~/.kirocrew` and starts empty — this
-> looks like data loss but is not. To roll back, first stop KiroCrew, then
-> restore the archived copy:
+> **No rollback.** Because `~/.kirocrew` is deleted (not archived) once the move
+> completes, there is no supported way to go back to a release older than this
+> move — that release knows nothing of `~/.kiro/crew` and would find no
+> `~/.kirocrew` to read, starting empty. If you need to preserve your pre-move
+> data, back it up yourself BEFORE upgrading, e.g.:
 >
 > ```bash
-> mv ~/.kirocrew.archived ~/.kirocrew   # the old release reads this again
+> cp -a ~/.kirocrew ~/.kirocrew.manual-backup
 > ```
->
-> The old release re-downloads the embedding model on its next start. The
-> archive is locked to your user account and its credential files (`.env`, signing
-> keys) are **auto-removed after 7 days** — so roll back within that window to
-> keep the archived tokens, or just re-enter your Slack tokens on the downgraded
-> release. Once you are satisfied the new `~/.kiro/crew` home works, delete the
-> whole archive to reclaim disk (`rm -rf ~/.kirocrew.archived`). `kirocrew doctor`
-> reports the archive's size and this cleanup command under **Data Home**.
 
 > **Note:** `KIROCREW_PORT` is an environment variable (validated at CLI entry),
 > not a config key; it sets the port the gateway / dashboard binds to. You can

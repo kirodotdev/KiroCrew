@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -44,9 +45,20 @@ CONFIG_DIR_NAME = f"{KIRO_BASE_DIR_NAME}/{CONFIG_DIR_LEAF}"  # ".kiro/crew"
 # The pre-move top-level home. Retained as a constant (not an inline literal) so
 # the one-time migration and the security keystone reference the same source of
 # truth. Data here is copied into the new root at first run, then the directory
-# is renamed to ``ARCHIVED_LEGACY_DIR_NAME`` (rollback copy — never deleted).
+# is deleted outright — no rollback copy is kept.
 LEGACY_CONFIG_DIR_NAME = ".kirocrew"
-ARCHIVED_LEGACY_DIR_NAME = ".kirocrew.archived"
+
+# Names an EARLIER release of this migration (since retired) could have left on
+# disk: ``~/.kirocrew.archived`` (a full rollback copy of the pre-move home) and
+# ``~/.kiro/crew.pre-migration/<timestamp>`` (a sidelined divergent-home backup).
+# Neither is created by the current migration, and neither is on the security
+# keystone anymore (nothing creates them, so gating them was dead weight) — which
+# means a leftover one from that earlier release is now UNGATED: its frozen
+# ``.env`` / ``token_signing.key`` / ``security_policy.json`` etc. would be
+# agent-readable indefinitely, with nothing to ever prompt a cleanup. See
+# ``_sweep_ungated_archive_leftovers``.
+_ARCHIVED_LEGACY_DIR_NAME = ".kirocrew.archived"
+_PRE_MIGRATION_BACKUP_DIR_NAME = "crew.pre-migration"
 
 # Marker file written INTO the new home once migration (or a fresh-install
 # no-op) has fully completed and been verified. Its presence — NOT the bare
@@ -59,8 +71,8 @@ MIGRATION_MARKER_NAME = ".data-home-ready"
 # Recovery-pointer breadcrumb written at the TOP-LEVEL home (``~/.kirocrew.breadcrumb``),
 # deliberately OUTSIDE ``~/.kiro/``. The data home now nests under kiro-cli's
 # ``~/.kiro/`` base, so a hypothetical Kiro-family uninstaller that wipes
-# ``~/.kiro/`` would take KiroCrew's data with it — and a fresh install has no
-# ``~/.kirocrew.archived`` fallback. This tiny, non-secret pointer survives such a
+# ``~/.kiro/`` would take KiroCrew's data with it, and there is no rollback copy
+# anywhere to recover from. This tiny, non-secret pointer survives such a
 # wipe (it lives beside ``~/.kiro``, not inside it) and records where the data
 # home is, so a user/support script can find any surviving data or understand
 # what was lost. It is NOT a backup — just a durable signpost (the reviewer's
@@ -110,17 +122,17 @@ def _maybe_migrate_legacy_home() -> Path:
     never surfaces as data loss — and the cache pins that same legacy home for
     every later call (no mid-process home switch).
 
-    Fail-safe contract (mirrors KITCHEN-111): copy-then-verify-then-archive, so
-    an interruption at any point leaves the original ``~/.kirocrew`` fully
-    intact. Import is deferred to keep this module a stdlib-only leaf.
+    Fail-safe contract: force-copy-then-verify-then-delete, so an interruption
+    before the delete leaves the original ``~/.kirocrew`` fully intact. Import is
+    deferred to keep this module a stdlib-only leaf.
 
     The short-circuit is gated on a COMPLETION MARKER, not on bare directory
     existence: an empty or partial ``~/.kiro/crew`` (created by another Kiro
     tool, a user ``mkdir``, or an interrupted copy) must NOT be mistaken for a
     finished migration — otherwise a legacy ``~/.kirocrew`` full of real data
     would be silently stranded and every caller pinned to the empty home. When
-    no marker is present, migration runs (merging legacy data without
-    overwriting) and the marker is written only after a verified copy; a
+    no marker is present, migration runs (legacy files OVERWRITE anything already
+    at the new home) and the marker is written only after a verified copy; a
     fresh install with no legacy writes the marker immediately (nothing to do).
     """
     global _resolved_home
@@ -137,18 +149,11 @@ def _maybe_migrate_legacy_home() -> Path:
     # an old release that wrote fresh state back to ~/.kirocrew, then upgraded
     # again. Trusting the marker blindly would ignore that now-active legacy data.
     # So: marker + no legacy → trust the new home; marker + legacy present → fall
-    # through to migrate(), whose merge + byte-identical divergence guard
-    # reconciles (archive legacy only if the new home already holds every legacy
-    # file identically; otherwise retain legacy and don't mark). This single
-    # invariant — "never treat the new home as authoritative while a legacy home
-    # with non-identical content exists" — closes the whole family of edge cases.
+    # through to migrate(), which force-copies legacy over the new home again
+    # (legacy always wins) and re-deletes it — closing the whole family of edge
+    # cases without needing to compare or reconcile anything.
     if marker.exists() and not legacy.is_dir():
         _resolved_home = new_home
-        # Migration is durably complete. Opportunistically expire the credential
-        # half of the archived rollback copy once its grace window has elapsed, so
-        # a frozen ~/.kirocrew.archived/.env & keys don't linger indefinitely
-        # (best-effort; never blocks startup). Non-secret rollback data is kept.
-        _maybe_expire_archive_secrets()
         return new_home
 
     # No legacy data to migrate → this is a fresh install (the new home may or
@@ -158,9 +163,8 @@ def _maybe_migrate_legacy_home() -> Path:
         return _resolved_home
 
     # A legacy home exists (a pre-move install, OR a post-downgrade write-back
-    # even though the new home is marked). Migrate — merging legacy data into
-    # whatever is already there without overwriting, reconciling via the
-    # byte-identical divergence guard — then mark.
+    # even though the new home is marked). Migrate — legacy files force-overwrite
+    # whatever is already at the new home — then mark and delete legacy.
     try:
         from kiro_crew.home_migration import migrate_home
 
@@ -176,40 +180,49 @@ def _maybe_migrate_legacy_home() -> Path:
     return _resolved_home
 
 
-def _maybe_expire_archive_secrets() -> None:
-    """Shred stale secret leaves from ``~/.kirocrew.archived`` (best-effort).
+def _sweep_ungated_archive_leftovers() -> None:
+    """Delete any leftover archive/backup dir an EARLIER release created (best-effort).
 
-    Delegates to :func:`kiro_crew.home_migration.shred_archive_secrets_if_stale`,
-    which is a no-op unless the archive exists and the completion marker is older
-    than the grace window. Any error is swallowed so this never blocks startup.
-    Import is deferred to keep this module a stdlib-only leaf.
+    A release between the original ``~/.kirocrew`` -> ``~/.kiro/crew`` move and
+    this one could have left ``~/.kirocrew.archived`` (a full rollback copy) or
+    ``~/.kiro/crew.pre-migration/<timestamp>`` (a sidelined divergent-home
+    backup) on disk. Neither is created by the current migration, and neither
+    is on the security keystone anymore (see ``_ARCHIVED_LEGACY_DIR_NAME`` /
+    ``_PRE_MIGRATION_BACKUP_DIR_NAME`` above) — so a leftover one is now
+    UNGATED: its frozen credentials would otherwise be agent-readable
+    indefinitely, with nothing to ever prompt a cleanup. This matches the rest
+    of this migration's no-retention design: delete outright rather than shred
+    just the credential leaves, so nothing ungated is left partially behind.
+
+    Runs on every default-path ``config_dir()`` resolution (idempotent — a
+    no-op once both are gone) rather than gating on a one-shot marker, so a
+    leftover created between two starts (or one this sweep failed to remove)
+    is still caught on the next start. Never raises and never blocks startup —
+    a failure here is logged and left for the next start to retry.
     """
-    try:
-        from kiro_crew.home_migration import (
-            _ARCHIVE_SECRET_GRACE_SECONDS,
-            shred_archive_secrets_if_stale,
-        )
+    archived = Path.home() / _ARCHIVED_LEGACY_DIR_NAME
+    if archived.is_dir() and not archived.is_symlink():
+        try:
+            shutil.rmtree(archived)
+            logger.warning(
+                "removed ungated leftover data-home archive %s (from an earlier "
+                "release; the current migration keeps no rollback copy)",
+                archived,
+            )
+        except OSError:
+            logger.warning("could not remove leftover archive %s", archived, exc_info=True)
 
-        archived = Path.home() / ARCHIVED_LEGACY_DIR_NAME
-        marker = _default_home() / MIGRATION_MARKER_NAME
-        shred_archive_secrets_if_stale(
-            archived, marker, min_age_seconds=_ARCHIVE_SECRET_GRACE_SECONDS
-        )
-        # Divergent-home reconciliation leaves timestamped backups under
-        # ``~/.kiro/crew.pre-migration/`` that also hold frozen credential leaves.
-        # Give each the SAME marker-aged end-of-life as the archive so they are not
-        # a standing, ever-growing secret store (the live secrets stay in the new
-        # home; non-secret backup data is kept).
-        default_home = _default_home()
-        pre_migration_root = default_home.parent / f"{default_home.name}.pre-migration"
-        if pre_migration_root.is_dir():
-            for child in sorted(pre_migration_root.iterdir()):
-                if child.is_dir():
-                    shred_archive_secrets_if_stale(
-                        child, marker, min_age_seconds=_ARCHIVE_SECRET_GRACE_SECONDS
-                    )
-    except Exception:  # pragma: no cover - defensive: never block startup
-        logger.debug("archive-secret expiry sweep failed (non-fatal)", exc_info=True)
+    pre_migration_root = _default_home().parent / _PRE_MIGRATION_BACKUP_DIR_NAME
+    if pre_migration_root.is_dir() and not pre_migration_root.is_symlink():
+        try:
+            shutil.rmtree(pre_migration_root)
+            logger.warning(
+                "removed ungated leftover divergent-home backup %s (from an earlier "
+                "release; the current migration keeps no rollback copy)",
+                pre_migration_root,
+            )
+        except OSError:
+            logger.warning("could not remove leftover backup %s", pre_migration_root, exc_info=True)
 
 
 def _write_recovery_breadcrumb(data_home: Path) -> None:
@@ -277,6 +290,11 @@ def config_dir() -> Path:
     # Best-effort + idempotent; guarded so a breadcrumb failure never blocks the
     # data-home resolution the whole app depends on.
     _write_recovery_breadcrumb(d)
+    # One-shot (but re-checked every call, so a leftover created or missed
+    # between starts is still caught) removal of an ungated archive/backup an
+    # earlier release of this migration could have left behind. Default path
+    # only — see _sweep_ungated_archive_leftovers.
+    _sweep_ungated_archive_leftovers()
     return d
 
 

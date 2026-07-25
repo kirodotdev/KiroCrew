@@ -343,8 +343,7 @@ def _migrate_owned_kiro_registration() -> None:
     # NOT KiroCrew's (authorship is by launch target, not key name) and is left
     # untouched — only the ``npm:``-prefixed key is a KiroCrew legacy artifact.
     superseded_proxy_present = any(
-        key != canonical and _spec_is_proxy(servers.get(key))
-        for key in _SUPERSEDED_PLAYWRIGHT_KEYS
+        key != canonical and _spec_is_proxy(servers.get(key)) for key in _SUPERSEDED_PLAYWRIGHT_KEYS
     )
     legacy_direct = servers.get(_LEGACY_DIRECT_PLAYWRIGHT_KEY)
     legacy_direct_present = isinstance(legacy_direct, dict) and not _spec_is_proxy(legacy_direct)
@@ -368,7 +367,7 @@ def _migrate_owned_kiro_registration() -> None:
 
 
 def _converge_kirocrew_mcp_json() -> None:
-    """Converge Playwright proxies in KiroCrew's own ``~/.kirocrew/mcp.json``.
+    """Converge Playwright proxies in KiroCrew's own ``<data-home>/mcp.json``.
 
     ``rebuild_agent_config`` merges every server from this file into the agent
     config, so a stale duplicate proxy key here (e.g. a legacy
@@ -380,7 +379,7 @@ def _converge_kirocrew_mcp_json() -> None:
     Mode-preserving atomic write; silently skips an unreadable/non-dict/absent
     file and a no-op convergence.
     """
-    path = Path.home() / ".kirocrew" / "mcp.json"
+    path = config_dir() / "mcp.json"
     if not path.is_file():
         return
     try:
@@ -514,8 +513,7 @@ def converge_playwright_servers(config: dict) -> bool:
         servers.pop(n, None)
     servers[target] = survivor_spec
     logger.info(
-        "Converged Playwright proxy entries %s onto %r; dropped specs (env "
-        "values redacted): %s",
+        "Converged Playwright proxy entries %s onto %r; dropped specs (env " "values redacted): %s",
         proxy_names,
         target,
         dropped_specs,
@@ -582,15 +580,15 @@ def _converge_playwright_agent_files() -> None:
 # Sidecar manifest recording the MCP server keys KiroCrew itself has written.
 # kiro-cli validates ~/.kiro/settings/mcp.json (and agent specs) with
 # ``deny_unknown_fields``, so an in-spec ownership sentinel is impossible; the
-# manifest lives OUT of band under ~/.kirocrew/ (a dir KiroCrew owns outright).
-# It is the FIRST authorship signal for drop/converge decisions — the
-# ``mcp-playwright-proxy`` launch-target heuristic remains the fallback for
-# entries written by installs that predate this manifest.
+# manifest lives OUT of band under the KiroCrew data home (a dir KiroCrew owns
+# outright). It is the FIRST authorship signal for drop/converge decisions —
+# the ``mcp-playwright-proxy`` launch-target heuristic remains the fallback
+# for entries written by installs that predate this manifest.
 _OWNED_MCP_KEYS_MANIFEST = "owned-mcp-keys.json"
 
 
 def _owned_mcp_keys_path() -> Path:
-    return Path.home() / ".kirocrew" / _OWNED_MCP_KEYS_MANIFEST
+    return config_dir() / _OWNED_MCP_KEYS_MANIFEST
 
 
 def _load_owned_mcp_keys() -> set[str]:
