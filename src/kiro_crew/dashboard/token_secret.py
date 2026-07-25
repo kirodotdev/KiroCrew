@@ -179,8 +179,18 @@ def _load_or_create_secret() -> bytes:
             #    winner's bytes. This is what eliminates the divergence: only
             #    one key is ever generated.
             try:
+                # os.O_BINARY is REQUIRED on Windows: os.open() there defaults
+                # to TEXT mode, so the os.write() below would translate any
+                # 0x0A ('\n') byte in the random key to 0x0D 0x0A ('\r\n'),
+                # persisting a longer, corrupted key that the creator's
+                # in-memory bytes (and every sibling read) no longer match ->
+                # silent auth divergence. getattr(..., 0) makes it a no-op on
+                # POSIX, where os.O_BINARY does not exist and there is no text
+                # mode. Evaluated at call time so tests can simulate the flag.
                 fd = os.open(
-                    str(key_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600
+                    str(key_path),
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0),
+                    0o600,
                 )
             except FileExistsError:
                 # Someone else created it (possibly not yet written). Give the

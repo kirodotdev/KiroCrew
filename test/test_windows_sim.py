@@ -15,6 +15,7 @@ from windows_sim import (
     open_sharing_violation,
     read_sharing_violation,
     replace_sharing_violation,
+    windows_text_mode_write,
 )
 
 
@@ -143,3 +144,53 @@ class TestOpenSharingViolation:
             fd = os.open(str(f), os.O_RDONLY)  # no O_CREAT — not faulted
             os.close(fd)
         assert f.read_bytes() == b"x"
+
+
+class TestWindowsTextModeWrite:
+    _PAYLOAD = bytes(range(32))  # contains 0x0A (LF) at index 10
+
+    def _write_via_os(self, path, flags):
+        fd = os.open(str(path), flags, 0o600)
+        try:
+            os.write(fd, self._PAYLOAD)
+        finally:
+            os.close(fd)
+
+    def test_text_mode_fd_translates_newline(self, tmp_path):
+        f = tmp_path / "cred"
+        with windows_text_mode_write(match="cred") as state:
+            # No os.O_BINARY -> simulated text mode -> 0x0A becomes 0x0D 0x0A.
+            self._write_via_os(f, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
+        on_disk = f.read_bytes()
+        assert on_disk != self._PAYLOAD
+        assert len(on_disk) == len(self._PAYLOAD) + 1  # one '\n' -> '\r\n'
+        assert b"\r\n" in on_disk
+        assert state["translated"] == 1
+
+    def test_binary_fd_is_not_translated(self, tmp_path):
+        f = tmp_path / "cred"
+        with windows_text_mode_write(match="cred") as state:
+            # ORing the (simulated, non-zero) os.O_BINARY suppresses translation.
+            self._write_via_os(
+                f, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+            )
+        assert f.read_bytes() == self._PAYLOAD
+        assert state["translated"] == 0
+
+    def test_non_matching_path_unaffected(self, tmp_path):
+        f = tmp_path / "other"
+        with windows_text_mode_write(match="cred"):
+            self._write_via_os(f, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
+        assert f.read_bytes() == self._PAYLOAD  # different name — never translated
+
+    def test_os_write_returns_input_byte_count(self, tmp_path):
+        # Windows reports the INPUT bytes consumed even though more land on disk;
+        # a short-write loop relies on this to terminate correctly.
+        f = tmp_path / "cred"
+        with windows_text_mode_write(match="cred"):
+            fd = os.open(str(f), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            try:
+                n = os.write(fd, self._PAYLOAD)
+            finally:
+                os.close(fd)
+        assert n == len(self._PAYLOAD)

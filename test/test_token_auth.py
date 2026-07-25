@@ -1015,6 +1015,44 @@ def test_signing_secret_create_contention_retries_not_ephemeral(tmp_path, monkey
     assert secret == on_disk, "must return the persisted key, not an ephemeral one"
 
 
+def test_signing_secret_binary_write_survives_windows_text_mode(tmp_path, monkeypatch) -> None:
+    """Regression: the key must be written in BINARY mode.
+
+    On Windows ``os.open()`` defaults to TEXT mode, so the ``os.write()`` that
+    persists the random key translates every ``0x0A`` ('\\n') byte to
+    ``0x0D 0x0A`` ('\\r\\n'). The on-disk key then grows and no longer equals
+    the creator's in-memory bytes (nor a sibling's read) — silent auth
+    divergence, and the root cause of the flaky Windows failures in
+    ``test_signing_secret_{concurrent_first_init_converges,create_contention_retries_not_ephemeral,write_failure_cleans_up_incomplete_file}``.
+    The fix opens the file with ``os.O_BINARY``. Reproduced deterministically on
+    POSIX via the text-mode simulator plus a key that contains an ``0x0A`` byte.
+    """
+    from windows_sim import windows_text_mode_write
+
+    from kiro_crew.dashboard import token_secret as ts
+
+    monkeypatch.setattr("kiro_crew.config.loader.config_dir", lambda: tmp_path)
+    key_file = tmp_path / ts._SECRET_KEY_FILE
+
+    # A deterministic 32-byte key that CONTAINS 0x0A (LF) at index 10, so a
+    # text-mode write would demonstrably corrupt it (a purely random key might
+    # by chance contain no 0x0A and hide the bug).
+    fixed_key = bytes(range(ts._MIN_KEY_BYTES))
+    assert b"\n" in fixed_key
+    monkeypatch.setattr(os, "urandom", lambda n: fixed_key[:n])
+
+    with windows_text_mode_write(match=ts._SECRET_KEY_FILE):
+        secret = ts._load_or_create_secret()
+
+    on_disk = key_file.read_bytes()
+    # With the O_BINARY fix, no translation occurs: the persisted key is the
+    # exact 32 bytes and equals what was returned. Without it, the simulator
+    # would have written 33 bytes ('\r\n' for the '\n') and these would differ.
+    assert len(on_disk) == ts._MIN_KEY_BYTES, "newline translation changed the key length"
+    assert on_disk == fixed_key, "persisted key was corrupted by text-mode newline translation"
+    assert secret == on_disk, "returned key diverged from the persisted key"
+
+
 def test_signing_secret_existing_file_never_overwritten(tmp_path, monkeypatch) -> None:
     """Regression (PR #338): warming must never overwrite or truncate an
     existing key file.

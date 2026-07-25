@@ -51,6 +51,7 @@ __all__ = [
     "read_sharing_violation",
     "replace_sharing_violation",
     "open_sharing_violation",
+    "windows_text_mode_write",
 ]
 
 _DEFAULT_INSTANT = _dt.datetime(2026, 1, 1, 0, 0, 0, tzinfo=_dt.timezone.utc)
@@ -226,4 +227,95 @@ def open_sharing_violation(
         return real_open(path, flags, mode, *args, **kwargs)
 
     with mock.patch("os.open", _patched):
+        yield state
+
+
+# Real Windows uses 0x8000 for os.O_BINARY; reuse it so the simulated flag value
+# matches a real Windows host. It is high enough not to collide with the small
+# O_WRONLY/O_CREAT/O_EXCL flags the code under test ORs together.
+_SIM_O_BINARY = 0x8000
+
+
+@contextmanager
+def windows_text_mode_write(*, match: Optional[str] = None) -> Iterator[dict]:
+    """Mimic Windows ``os.open()`` defaulting to TEXT mode.
+
+    On Windows a descriptor from ``os.open()`` WITHOUT ``os.O_BINARY`` is in
+    text mode, so ``os.write()`` of bytes containing ``0x0A`` ('\\n') emits
+    ``0x0D 0x0A`` ('\\r\\n') to disk — silently corrupting binary payloads
+    (e.g. a random signing key). POSIX has no text mode and ``os.O_BINARY`` is
+    ``0``, so the corruption never reproduces locally: a binary writer that
+    forgets ``os.O_BINARY`` passes on Mac/Linux yet fails on Windows.
+
+    This installs a NON-ZERO synthetic ``os.O_BINARY`` and CRLF-translates
+    ``os.write`` for any fd opened WITHOUT that bit. To behave IDENTICALLY on
+    POSIX and on a real Windows host, every underlying fd is opened GENUINELY
+    BINARY: the real ``os.O_BINARY`` (captured before the patch below shadows
+    it) is always OR'd back into the real ``os.open`` flags, so the synthetic
+    translation here is the ONLY translation on any OS. Without this, on Windows
+    the CRT would translate too — double-translating the text case and breaking
+    the binary case — because the real flag and the synthetic sentinel share the
+    value ``0x8000``.
+
+    Code that ORs ``getattr(os, "O_BINARY", 0)`` into its open flags is
+    exercised as binary (no translation); code that omits it gets the Windows
+    corruption. ``os.write`` still returns the INPUT byte count (as Windows
+    does), so a caller's short-write loop stays correct.
+
+    *match* filters which paths are tracked (basename-equality or substring);
+    ``None`` tracks every ``os.open``. Reads are left untouched
+    (``Path.read_bytes`` is binary on Windows too). Yields
+    ``{"translated": extra_bytes_written}``.
+    """
+    real_open = os.open
+    real_write = os.write
+    real_close = os.close
+    # Capture the REAL os.O_BINARY BEFORE the mock.patch below shadows it with
+    # the synthetic sentinel. POSIX -> 0 (no-op); Windows -> 0x8000, which MUST
+    # be re-applied to every underlying fd so the CRT does not add its own
+    # translation on top of the synthetic one.
+    real_o_binary = getattr(os, "O_BINARY", 0)
+    opened_binary: dict[int, bool] = {}
+    state = {"translated": 0}
+
+    def _match(p: str) -> bool:
+        return match is None or os.path.basename(p) == match or match in p
+
+    def _open(path, flags, mode=0o777, *args, **kwargs):  # type: ignore[no-untyped-def]
+        want_binary = bool(flags & _SIM_O_BINARY)
+        # Strip the synthetic bit but FORCE the underlying fd genuinely binary
+        # (real_o_binary), so our synthetic translation is the only one on every
+        # OS — including Windows, where the sentinel value IS the real flag.
+        fd = real_open(
+            path, (flags & ~_SIM_O_BINARY) | real_o_binary, mode, *args, **kwargs
+        )
+        if _match(str(path)):
+            opened_binary[fd] = want_binary
+        return fd
+
+    def _write(fd, data):  # type: ignore[no-untyped-def]
+        # Only text-mode (non-binary) tracked fds translate; everything else is
+        # a straight passthrough.
+        if fd in opened_binary and not opened_binary[fd]:
+            raw = bytes(data)
+            translated = raw.replace(b"\n", b"\r\n")
+            # Write the whole translated buffer, tolerating short writes, then
+            # report the INPUT byte count consumed (as Windows text mode does).
+            mv = memoryview(translated)
+            while mv:
+                k = real_write(fd, mv)
+                if k <= 0:
+                    break
+                mv = mv[k:]
+            state["translated"] += len(translated) - len(raw)
+            return len(raw)
+        return real_write(fd, data)
+
+    def _close(fd):  # type: ignore[no-untyped-def]
+        opened_binary.pop(fd, None)
+        return real_close(fd)
+
+    with mock.patch("os.open", _open), mock.patch("os.write", _write), mock.patch(
+        "os.close", _close
+    ), mock.patch.object(os, "O_BINARY", _SIM_O_BINARY, create=True):
         yield state
