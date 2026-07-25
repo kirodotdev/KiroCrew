@@ -7,8 +7,9 @@
  * Order in this file = order in the rail (within each group). Add new
  * built-in surfaces here; do not add hardcoded badge logic to `App.tsx`.
  */
-import { MessageSquare, Bell, BookOpen, Component, CalendarDays, Users, Settings, ClipboardCheck, LayoutGrid } from 'lucide-react'
+import { MessageSquare, Bell, BookOpen, Component, CalendarDays, Settings, ClipboardCheck, LayoutGrid } from 'lucide-react'
 import { createSelector } from '@reduxjs/toolkit'
+import { KiroGhostMark } from '../components/KiroGhostMark'
 import { registerBuiltinSurface } from './registry'
 import type { RootState } from '../store'
 
@@ -111,11 +112,16 @@ registerBuiltinSurface({
 // destination. The /capabilities secondary panel hosts Agents (bindings),
 // Agent Templates, Integrations (MCP), Skills, Hooks, and Prompts;
 // /agents redirects there (see App.tsx routes).
+//
+// Icon: the Kiro ghost brand mark (not a Lucide glyph) — this row is the
+// agent-identity destination, so it carries the mascot. `KiroGhostMark` paints
+// the asset as a mask over `currentColor`, so it still follows the rail's
+// active/idle colour states.
 registerBuiltinSurface({
   navId: 'capabilities',
   route: '/capabilities',
   label: 'Agent Capabilities',
-  icon: <Users size={16} />,
+  icon: <KiroGhostMark size={16} />,
   group: 'Bottom',
 })
 

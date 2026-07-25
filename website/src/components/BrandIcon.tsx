@@ -2,16 +2,26 @@ import githubMarkUrl from '../assets/github-mark.svg'
 import discordMarkUrl from '../assets/discord-mark.svg'
 
 /**
- * Monochrome brand marks (GitHub, Discord) tinted via CSS `mask` so they
- * follow `currentColor` — matching the muted/hover treatment of adjacent
- * lucide icons. Same asset-file pattern as `SlackIcon` (Vite emits a hashed
- * URL under /assets); lucide-react ships no brand icons.
+ * Monochrome brand marks (GitHub, Discord, the Kiro ghost) tinted via CSS
+ * `mask` so they follow `currentColor` — matching the muted/hover treatment of
+ * adjacent lucide icons. Same asset-file pattern as `SlackIcon` (Vite emits a
+ * hashed URL under /assets); lucide-react ships no brand icons.
+ *
+ * Exported so every masked brand glyph shares ONE implementation of the
+ * URL-quoting fix below — a second hand-rolled copy could silently miss a
+ * future correction to it.
  */
-function BrandGlyph({ url, size }: { url: string; size: number }) {
+export function BrandGlyph({ url, size, className = 'inline-block shrink-0', testId }: {
+  url: string
+  size: number
+  className?: string
+  testId?: string
+}) {
   return (
     <span
       aria-hidden="true"
-      className="inline-block shrink-0"
+      data-testid={testId}
+      className={className}
       style={{
         width: size,
         height: size,
