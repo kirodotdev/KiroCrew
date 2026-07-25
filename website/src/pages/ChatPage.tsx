@@ -137,6 +137,7 @@ import { renderMcpOAuthMessage } from './chat/McpOAuthBanner'
 import TurnBlock from './chat/TurnBlock'
 import Clickable from '../components/Clickable'
 import StopEventCard from './chat/StopEventCard'
+import NudgeCard, { nudgeMatchesLoop } from './chat/NudgeCard'
 import WorkflowProgressBar from './chat/WorkflowProgressBar'
 import { tryQuickSend } from '../lib/quickSend'
 import { rewindWithRollback } from '../lib/rewindCall'
@@ -2540,7 +2541,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
       }
     }
     for (const item of raw) {
-      if (item.kind === 'single' && item.msg.role === 'user') {
+      // A nudge opens a new turn exactly like a user message does — it IS the
+      // turn's prompt. Without this it gets swallowed into the previous turn's
+      // collapsed step group and the cycle chip disappears.
+      if (item.kind === 'single' && (item.msg.role === 'user' || item.msg.role === 'nudge')) {
         if (turnItems.length > 0) { flushTurn(turnItems, true); turnItems = [] }
         turns.push(item)
       } else {
@@ -2867,6 +2871,15 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
       } catch { /* fall through to default */ }
     }
     if (m.role === 'queued') return null
+    // Auto-nudge turns are machine-facing instruction blobs — collapse them to
+    // a compact chip instead of rendering the whole payload as a chat bubble.
+    // The Loop button is offered only when this row's own loop is the one still
+    // bound to the slot, so a historical card never opens a successor loop's
+    // controls.
+    if (m.role === 'nudge') {
+      const ownLoop = nudgeMatchesLoop(m, autoNudgeLoop?.id)
+      return <NudgeCard key={key} message={m} onOpenLoop={ownLoop ? () => setAutoNudgeOpen(true) : undefined} />
+    }
     if (m.kind === 'stop_event' || m.meta?.kind === 'stop_event') return <StopEventCard key={m.meta?.id as string ?? key} message={m} />
     if (m.role === 'error') return <div key={key} className="bg-danger-subtle text-danger text-[13px] px-3 py-2 rounded-md border border-danger/15 self-center animate-scale-in">{m.content}</div>
     if (m.role === 'notice') return <div key={key} className="bg-card text-muted text-[13px] px-3 py-2 rounded-md border border-border self-center animate-scale-in">{m.content}</div>
@@ -2952,7 +2965,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
     // apply-plan handler, so it belongs here for correctness. approve/send/
     // dismissApproval are NOT referenced in this renderer (user/approval rows go
     // through renderUserContentCb), so they are omitted to keep it stable.
-  }, [messages, visibleIndexMap, slotRunning, slotState, lastTextIdx, handleFileOpen, handleFork, handleQuote, chatConfig, activeSlot, regenerating, handleRegenerate, handleEditResend, slotHasMore, renderUserContentCb, highlightTs, activeSlotTitle, mode, dispatch, handleOpenDiff, handlePlanFromHere, navigate, planTaskId, artifactPaths])
+  }, [messages, visibleIndexMap, slotRunning, slotState, lastTextIdx, handleFileOpen, handleFork, handleQuote, chatConfig, activeSlot, regenerating, handleRegenerate, handleEditResend, slotHasMore, renderUserContentCb, highlightTs, activeSlotTitle, mode, dispatch, handleOpenDiff, handlePlanFromHere, navigate, planTaskId, artifactPaths, autoNudgeLoop])
 
   const [mobileSessions, setMobileSessions] = useState(false)
   // Close mobile sessions panel when a session is selected

@@ -2574,7 +2574,23 @@ class GatewayOrchestrator:
                 )
                 return False
             # Show nudge as a distinct "nudge" role message in the slot history.
-            slot.append("nudge", tagged, "msg msg-nudge")
+            # The structured meta lets the dashboard render a compact cycle chip
+            # instead of echoing the whole instruction payload as a chat bubble.
+            # The tag stays in ``content`` because that is what the model reads,
+            # and the body is deliberately NOT duplicated into meta — the client
+            # derives it from content, so a multi-KB payload is stored and
+            # broadcast once rather than twice.
+            slot.append(
+                "nudge",
+                tagged,
+                "msg msg-nudge",
+                meta={
+                    "nudge": {
+                        "cycle": loop.cycle_count + 1,
+                        "loop_id": loop.id,
+                    }
+                },
+            )
             task = asyncio.create_task(
                 asyncio.wait_for(
                     _run_chat(self.dashboard_state, slot, tagged),
