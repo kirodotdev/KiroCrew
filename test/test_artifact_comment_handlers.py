@@ -255,7 +255,7 @@ class TestEditComment:
     async def test_edit_stores_agent_body_verbatim_no_emoji(self, store):
         # Agent provenance is the structured is_agent flag, not a body prefix —
         # an edit stores the new body verbatim, never stamping an emoji into it
-        # (the dashboard renders a lucide Bot icon from is_agent per CLAUDE.md).
+        # (the dashboard renders a lucide Bot icon from is_agent per AGENTS.md).
         root = await _post("doc", text="original", is_agent=True)
         resp = await h.api_artifact_edit_comment(
             _req(body={"text": "corrected"}, match={"slug": "doc", "comment_id": root["id"]})

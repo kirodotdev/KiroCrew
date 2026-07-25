@@ -2690,3 +2690,274 @@ async def api_webex_config_save(request: web.Request) -> web.Response:
             "verify_warning": verify_warning,
         }
     )
+
+
+# ── WeCom (WeChat) configuration API ──
+# Mirrors the Telegram config API above with one structural difference: WeCom
+# uses TWO credentials (WECOM_BOT_ID + WECOM_SECRET, both in config_dir/.env,
+# 0600) instead of a single bot token. Non-secret config (enabled,
+# allowed_users, soft_threshold_pct) lives in config.json under the "wechat"
+# key. GET returns masked previews + presence booleans; raw values are
+# write-only. The UI maps WECOM_SECRET onto the shared panel's primary secret
+# ("bot_token") and WECOM_BOT_ID onto its second credential field ("bot_id").
+
+
+def _is_valid_wecom_userid(v: str) -> bool:
+    """WeCom userid shape check (linear string ops, no regex).
+
+    WeCom userids are 1-64 chars: ASCII letters, digits, and ``.-_@`` — the
+    same charset the WeCom admin console accepts. ASCII-only on purpose:
+    ``str.isalnum()`` alone would admit Unicode letters/digits, which can
+    never match a real WeCom userid and would sit in the allow-list looking
+    authoritative. Fail closed on anything else (whitespace, display names,
+    zero-width blobs).
+    """
+    if not v or len(v) > 64:
+        return False
+    return all((ch.isascii() and ch.isalnum()) or ch in "._-@" for ch in v)
+
+
+async def api_wecom_config_get(request: web.Request) -> web.Response:
+    """GET /api/wecom/config — read WeCom config + masked credential status."""
+    from kiro_crew.config.loader import (  # noqa: F811
+        CRED_WECOM_BOT_ID,
+        CRED_WECOM_SECRET,
+        KiroCrewConfig,
+    )
+
+    cfg = KiroCrewConfig.load()
+    creds = cfg.load_credentials()
+    bot_id = creds.get(CRED_WECOM_BOT_ID, "")
+    secret = creds.get(CRED_WECOM_SECRET, "")
+    wc = cfg.wechat
+    userids = [
+        str(u.get("userid"))
+        for u in wc.allowed_users
+        if isinstance(u, dict) and u.get("userid")
+    ]
+    state: DashboardState = request.app["state"]
+    return web.json_response(
+        {
+            # True only when the WS transport actually started this session —
+            # NOT merely "credentials were present at boot".
+            "connected": bool(getattr(state, "wecom_connected", False)),
+            "connect_error": str(getattr(state, "wecom_connect_error", ""))[:120],
+            # allowed_users is part of "configured" unless allow-all is on:
+            # the transport fails closed and rejects every message while the
+            # allow-list is empty (the owner fallback still needs a userid
+            # entry to match on).
+            "configured": bool(
+                bot_id and secret and wc.enabled and (userids or wc.allow_all_users)
+            ),
+            # Remote sessions get a read-only view: config edits (PUT) are
+            # loopback-only, so the UI disables all inputs and hides Save.
+            "read_only": not is_direct_local_request(request),
+            # Primary secret slot of the shared panel = WECOM_SECRET.
+            "bot_token_set": bool(secret),
+            "bot_token_preview": _mask_secret(secret),
+            # Second credential slot = WECOM_BOT_ID.
+            "bot_id_set": bool(bot_id),
+            "bot_id_preview": _mask_secret(bot_id),
+            "enabled": bool(wc.enabled),
+            # Explicit opt-in: every org member may DM the bot (allow-list
+            # bypassed). Never inferred from an empty allow-list.
+            "allow_all_users": bool(wc.allow_all_users),
+            # Projected for the tag editor UI; the save path re-attaches the
+            # stored display names to surviving entries.
+            "allowed_user_ids": userids,
+            "soft_threshold_pct": int(wc.soft_threshold_pct),
+        }
+    )
+
+
+async def api_wecom_config_save(request: web.Request) -> web.Response:
+    """PUT /api/wecom/config — persist WeCom secrets (.env) + config (config.json).
+
+    Every WeCom field is read once at gateway startup (credentials, enabled
+    flag, and allow-list are consumed when ``maybe_start_wecom`` builds the
+    transport), so any actual change returns ``restart_required``.
+
+    Serialized with every other config.json writer via the repository-wide
+    ``_get_config_lock()`` — this handler read-modify-writes the shared
+    ``.env`` / ``config.json`` stores, so interleaving with ANY other config
+    writer would silently lose writes.
+    """
+    # circular import: agents imports from dashboard.handlers at module load
+    from kiro_crew.dashboard.handlers.agents import _get_config_lock  # noqa: F811
+
+    async with _get_config_lock():
+        return await _wecom_config_save_locked(request)
+
+
+async def _wecom_config_save_locked(request: web.Request) -> web.Response:
+    """Body of the WeCom save; caller holds ``_get_config_lock()``."""
+    from kiro_crew.agent import _atomic_json_write  # noqa: F811
+    from kiro_crew.config.loader import (  # noqa: F811
+        CRED_WECOM_BOT_ID,
+        CRED_WECOM_SECRET,
+        config_path,
+    )
+
+    caller = request.get("user", "dashboard")
+
+    def _deny(msg: str, status: int = 400) -> web.Response:
+        _sel().log_api_access(
+            caller=caller,
+            operation="wecom.config.update",
+            outcome="denied",
+            source="dashboard",
+            error=msg,
+        )
+        return web.json_response({"error": msg}, status=status)
+
+    # Remote sessions are read-only: config writes are accepted only from the
+    # machine running the gateway, so a remote or tunneled session (even with
+    # a valid dashboard token) cannot alter WeCom access or plant credentials.
+    if not is_direct_local_request(request):
+        return _deny("read-only from remote sessions (local machine only)", status=403)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return _deny("invalid JSON")
+    if not isinstance(body, dict):
+        return _deny("body must be an object")
+
+    # ── Phase 1: validate everything and stage changes. No writes happen until
+    # all validation passes, so a rejected field never leaves partial state. ──
+
+    env_updates: dict[str, str | None] = {}
+    # Two independent credential slots, each with the same set/clear contract
+    # as the single-token channels (clear wins over a simultaneously-sent value).
+    for field_key, clear_key, cred_key, label in (
+        ("bot_token", "bot_token_clear", CRED_WECOM_SECRET, "bot secret"),
+        ("bot_id", "bot_id_clear", CRED_WECOM_BOT_ID, "bot ID"),
+    ):
+        clear_flag = body.get(clear_key)
+        if clear_flag is not None and not isinstance(clear_flag, bool):
+            return _deny(f"{clear_key} must be a boolean")
+        if clear_flag is True:
+            env_updates[cred_key] = None
+            continue
+        raw = body.get(field_key)
+        if isinstance(raw, str):
+            cred_val = raw.strip()
+            if cred_val.startswith(f"{cred_key}="):  # accidental env line paste
+                cred_val = cred_val[len(cred_key) + 1 :].strip()
+            if cred_val:
+                if any(ch.isspace() for ch in cred_val):
+                    return _deny(f"{label} must not contain whitespace")
+                if len(cred_val) > 256:
+                    return _deny(f"{label} is implausibly long")
+                env_updates[cred_key] = cred_val
+
+    # Config → config.json under "wechat" (staged, applied only after Phase 1).
+    # Off-loop read: a large or slow config.json must not stall the gateway
+    # event loop. Reading under _get_config_lock() keeps the snapshot current
+    # relative to every other config writer.
+    path = config_path()
+
+    def _read_config() -> dict:
+        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+
+    try:
+        data = await asyncio.to_thread(_read_config)
+    except Exception:
+        return _deny("config.json is corrupt", status=500)
+    if not isinstance(data.get("wechat"), dict):
+        data["wechat"] = {}
+    wc_cfg = data["wechat"]
+    staged: dict[str, object] = {}
+    applied: list[str] = []
+
+    if "enabled" in body:
+        val = body.get("enabled")
+        if not isinstance(val, bool):
+            return _deny("enabled must be a boolean")
+        if val != bool(wc_cfg.get("enabled", False)):
+            staged["enabled"] = val
+            applied.append("enabled")
+
+    if "allow_all_users" in body:
+        val = body.get("allow_all_users")
+        if not isinstance(val, bool):
+            return _deny("allow_all_users must be a boolean")
+        if val != bool(wc_cfg.get("allow_all_users", False)):
+            staged["allow_all_users"] = val
+            applied.append("allow_all_users")
+
+    if "allowed_user_ids" in body:
+        raw_ids = body.get("allowed_user_ids")
+        if not isinstance(raw_ids, list):
+            return _deny("allowed_user_ids must be a list")
+        # Preserve stored display names for entries that survive the edit —
+        # the UI round-trips only userids, but ``{userid, name}`` is the
+        # canonical config shape consumed by the transport allow-list.
+        existing = {
+            str(u.get("userid")): u
+            for u in wc_cfg.get("allowed_users", [])
+            if isinstance(u, dict) and u.get("userid")
+        }
+        new_users: list[dict] = []
+        seen: set[str] = set()
+        for item in raw_ids:
+            s = str(item).strip()
+            if not s:
+                continue
+            if not _is_valid_wecom_userid(s):
+                return _deny(f"invalid WeCom userid: {s}")
+            if s in seen:
+                continue
+            seen.add(s)
+            new_users.append(existing.get(s) or {"userid": s, "name": ""})
+        if new_users != list(wc_cfg.get("allowed_users", [])):
+            staged["allowed_users"] = new_users
+            applied.append("allowed_users")
+
+    if "soft_threshold_pct" in body:
+        pct = body.get("soft_threshold_pct")
+        if not isinstance(pct, int) or isinstance(pct, bool) or not (1 <= pct <= 100):
+            return _deny("soft_threshold_pct must be an integer between 1 and 100")
+        if pct != int(wc_cfg.get("soft_threshold_pct", 80)):
+            staged["soft_threshold_pct"] = pct
+            applied.append("soft_threshold_pct")
+
+    # No Phase 1.5 credential verification: validating WeCom credentials
+    # requires opening the AI-bot WebSocket long-connection (no cheap REST
+    # "whoami" like Telegram's getMe), so credentials are stored as given and
+    # the status badge reports the truth after the next gateway restart.
+
+    # ── Phase 2: commit. All validation passed, so writes are safe. ──
+    if staged:
+        wc_cfg.update(staged)
+        # Off-loop: the atomic write (temp file + fsync + replace) must not
+        # block the gateway event loop.
+        await asyncio.to_thread(_atomic_json_write, path, data)
+    if env_updates:
+        # Off-loop: on Windows the owner-only lockdown shells out to icacls,
+        # which must not block the event loop.
+        await asyncio.to_thread(_write_env_updates, env_updates)
+        # Keep the live process environment in sync with the new .env state
+        # (load_credentials() lets os.environ win over .env — see the Slack
+        # save handler for the full rationale).
+        for key, new_val in env_updates.items():
+            if new_val is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = new_val
+
+    _sel().log_api_access(
+        caller=caller,
+        operation="wecom.config.update",
+        outcome="ok",
+        source="dashboard",
+        resources=",".join(applied + list(env_updates.keys())),
+    )
+    # The entire WeCom channel config is read once at gateway startup.
+    return web.json_response(
+        {
+            "ok": True,
+            "restart_required": bool(env_updates) or bool(staged),
+            "verify_warning": "",
+        }
+    )

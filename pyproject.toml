@@ -12,7 +12,12 @@ readme = "README.md"
 # requires-python from here (not setup.cfg), and an absent value makes the
 # build backend raise SpecifierSet(None) -> TypeError during wheel builds.
 requires-python = ">=3.10"
-dynamic = ["dependencies"]
+# optional-dependencies must be listed here too: the extras live in setup.cfg
+# ([options.extras_require]), and once a [project] table exists setuptools
+# ignores setup.cfg metadata unless the field is declared dynamic. Omitting it
+# silently drops every extra — `pip install -e ".[dev]"` then reports
+# "does not provide the extra 'dev'" and installs no test tooling.
+dynamic = ["dependencies", "optional-dependencies"]
 
 [project.urls]
 Homepage = "https://github.com/kirodotdev/KiroCrew"

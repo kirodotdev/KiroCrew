@@ -86,6 +86,27 @@ class WeComClient:
         self._ping_reqs: set[str] = set()
         # Live turn tasks — kept referenced so they aren't GC'd mid-flight.
         self._handler_tasks: set[asyncio.Task[None]] = set()
+        # Optional live connection-status callback (healthy: bool, reason: str),
+        # set by the gateway to keep the settings badge truthful. Fired from the
+        # reconnect loop on state TRANSITIONS only (deduped via _last_status):
+        # True once a connection is up + subscribed, False with a reason when a
+        # connect attempt fails, the server closes immediately (bad creds /
+        # anti-kick), or the server kicks the bot.
+        self.on_status: Callable[[bool, str], None] | None = None
+        self._last_status: bool | None = None
+
+    def _notify_status(self, healthy: bool, reason: str) -> None:
+        """Report a connection-state transition to on_status (deduped, safe)."""
+        if healthy == self._last_status:
+            return
+        self._last_status = healthy
+        cb = self.on_status
+        if cb is None:
+            return
+        try:
+            cb(healthy, reason)
+        except Exception:  # never let a status observer break the WS loop
+            logger.exception("WeCom on_status callback failed")
 
     async def start(self) -> None:
         """Launch the background connect/serve loop as a task."""
@@ -219,16 +240,23 @@ class WeComClient:
                 if time.monotonic() - started >= _MIN_HEALTHY_CONN_SECS:
                     attempt = 0
                     continue
-                reason = "server closed connection immediately"
+                reason = "server closed connection immediately (check bot ID / secret)"
 
             attempt += 1
             delay = min(1.0 * (2 ** (attempt - 1)), 30.0)
+            # Keep the settings badge truthful: surface the failure reason
+            # (deduped — only the transition and the first reason report).
+            self._notify_status(False, f"{reason}"[:120])
             logger.warning(
                 "WeCom WS disconnected (%s), reconnect in %.1fs",
                 reason,
                 delay,
             )
             await asyncio.sleep(delay)
+        if self._kicked:
+            self._notify_status(
+                False, "server kicked the bot (disconnected_event); reconnect stopped"
+            )
 
     async def _connect_and_serve(self) -> None:
         """Single connection lifecycle: connect, subscribe, serve."""
@@ -243,6 +271,11 @@ class WeComClient:
             subscribe_frame = _build_subscribe_frame(self._bot_id, self._secret)
             await self._ws_send(ws, subscribe_frame)
             logger.info("WeCom WS connected and subscribed")
+            # Healthy transition: the WS is up and the subscribe frame was
+            # accepted by the socket. If the server rejects the credentials it
+            # closes this connection immediately and the run loop reports
+            # not-healthy with a reason (deduped transition back).
+            self._notify_status(True, "")
 
             ping_task = asyncio.create_task(self._ping_loop(ws))
             try:

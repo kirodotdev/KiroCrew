@@ -67,6 +67,60 @@ class TestCronCreateApprovalMode:
         assert resp.status == 200
 
 
+class TestCronCreateTimezonePersistenceOwner:
+    """Arbiter item 2 / Design finding 2: the dashboard create path folded
+    ``timezone`` AFTER ``add_job`` via ``job.timezone = ...`` + a SECOND
+    ``_save()`` — leaving a crash/concurrent-read window where a job persists
+    WITHOUT its timezone, the exact hole ``add_job``'s docstring claims to
+    close. The dashboard caller must instead pass ``timezone`` THROUGH
+    ``add_job`` so it lands in the single first ``_save()``.
+    """
+
+    def _make_request(self, body: dict):
+        mock_state = MagicMock()
+        mock_state.has_slot.return_value = False
+        mock_job = MagicMock()
+        mock_job.id = "abc"
+        mock_state.crons.add_job.return_value = mock_job
+        request = MagicMock()
+        request.app = {"state": mock_state}
+        request.json = AsyncMock(return_value=body)
+        return request, mock_state
+
+    @pytest.mark.asyncio
+    async def test_timezone_passed_through_add_job_every(self):
+        request, state = self._make_request(
+            {"name": "t", "message": "m", "every": 300, "timezone": "America/New_York"}
+        )
+        resp = await api_crons_create(request)
+        assert resp.status == 200
+        # timezone reaches add_job (folded into the single first _save), NOT a
+        # post-hoc job.timezone assignment.
+        _, kwargs = state.crons.add_job.call_args
+        assert kwargs.get("timezone") == "America/New_York"
+
+    @pytest.mark.asyncio
+    async def test_timezone_passed_through_add_job_cron_expr(self):
+        request, state = self._make_request(
+            {"name": "t", "message": "m", "cron": "0 9 * * *", "timezone": "Europe/London"}
+        )
+        resp = await api_crons_create(request)
+        assert resp.status == 200
+        _, kwargs = state.crons.add_job.call_args
+        assert kwargs.get("timezone") == "Europe/London"
+
+    @pytest.mark.asyncio
+    async def test_no_post_hoc_timezone_only_save_not_called_for_tz_alone(self):
+        """When timezone is the ONLY non-add_job field, the post-hoc block must
+        no longer fire a second ``_save()`` (timezone is handled by add_job)."""
+        request, state = self._make_request(
+            {"name": "t", "message": "m", "every": 300, "timezone": "UTC"}
+        )
+        resp = await api_crons_create(request)
+        assert resp.status == 200
+        state.crons._save.assert_not_called()
+
+
 class TestCronCreateModel:
     """Test model validation on cron create (dashboard handler)."""
 

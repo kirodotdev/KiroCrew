@@ -17,6 +17,7 @@ const { chooseRecoveryStrategy } = require("./gateway-recovery");
 const { capturePySpyDump } = require("./pyspy-dump");
 const { identityFamily, decideGatewayAction, FAMILY_META, HEALTH_IDENTITY_PATH } = require("./instance-guard");
 const { clampZoomFactor, stepZoomFactor } = require("./zoom");
+const { buildMenuTemplate } = require("./app-menu");
 
 // ── Persistent settings for remote tunnel mode ──
 
@@ -1556,63 +1557,53 @@ app.whenReady().then(async () => {
     }
     return webContents.getFocusedWebContents();
   };
-  const zoomItem = (label, accelerator, apply) => ({
-    label,
-    accelerator,
-    click: () => {
-      const wc = webContents.getFocusedWebContents();
-      if (!wc) return;
-      apply(wc);
-      // Chromium applies per-origin zoom to every same-origin window at once,
-      // so recenter traffic lights on all shell windows, not just the focused one.
-      for (const win of BaseWindow.getAllWindows()) {
-        if (win._mcView) positionTrafficLights(win);
-      }
-    },
-  });
-  const appMenu = Menu.buildFromTemplate([
-    { role: "appMenu" },
-    { role: "editMenu" },
-    {
-      label: "View",
-      submenu: [
-        // Explicit handlers, not { role: ... }: the roles target the focused
-        // window's own webContents, which BaseWindow doesn't have.
-        { label: "Reload", accelerator: "CmdOrCtrl+R", click: () => { const wc = focusedDashboardWC(); if (wc) wc.reload(); } },
-        { label: "Force Reload", accelerator: "CmdOrCtrl+Shift+R", click: () => { const wc = focusedDashboardWC(); if (wc) wc.reloadIgnoringCache(); } },
-        { type: "separator" },
-        zoomItem("Actual Size", "CmdOrCtrl+0", (wc) => wc.setZoomFactor(1)),
-        zoomItem("Zoom In", "CmdOrCtrl+=", (wc) => wc.setZoomFactor(stepZoomFactor(wc.getZoomFactor(), +1))),
-        zoomItem("Zoom Out", "CmdOrCtrl+-", (wc) => wc.setZoomFactor(stepZoomFactor(wc.getZoomFactor(), -1))),
-        { type: "separator" },
-        { role: "togglefullscreen" },
-        { type: "separator" },
-        {
-          label: "Toggle Developer Tools",
-          accelerator: "CmdOrCtrl+Shift+I",
-          id: "devtools-toggle",
-          visible: false, // hidden until dev-mode IPC fires
-          click: () => {
-            const wc = focusedDashboardWC();
-            if (wc) wc.toggleDevTools();
-          },
-        },
-      ],
-    },
-    {
-      label: "Connection",
-      submenu: [
-        { label: "New Connection Window…", accelerator: "CmdOrCtrl+N", click: () => openNewConnectionWindow() },
-        // No accelerator: Cmd+Shift+R is Force Reload (platform standard).
-        { label: "Rename Window…", click: () => renameCurrentWindow() },
-        { type: "separator" },
-        { label: "Set Remote Host…", click: () => promptRemoteHost() },
-        { label: "Refresh Token", accelerator: "CmdOrCtrl+Shift+T", click: () => refreshToken() },
-        { label: "Open Config File", click: () => shell.openPath(store.path) },
-      ],
-    },
-    { role: "windowMenu" },
-  ]);
+  const zoomItem = (apply) => () => {
+    const wc = webContents.getFocusedWebContents();
+    if (!wc) return;
+    apply(wc);
+    // Chromium applies per-origin zoom to every same-origin window at once,
+    // so recenter traffic lights on all shell windows, not just the focused one.
+    for (const win of BaseWindow.getAllWindows()) {
+      if (win._mcView) positionTrafficLights(win);
+    }
+  };
+  // Menu → dashboard SPA navigation (Settings…, About). Targets the focused
+  // dashboard window, falling back to the main window so the items still work
+  // from the dock/tray-only state; surfaces the window before navigating.
+  // `_mcView` marks every window that hosts a dashboard (setupWindowContents),
+  // which skips modal prompt BrowserWindows that have no SPA to navigate.
+  const openSettingsPage = (tab) => {
+    const win = [BaseWindow.getFocusedWindow(), mainWindow].find(
+      (w) => w && !w.isDestroyed() && w._mcView
+    );
+    if (!win) return;
+    if (win.isMinimized()) win.restore();
+    win.show();
+    win.focus();
+    const wc = win._mcView.webContents;
+    if (wc && !wc.isDestroyed()) {
+      wc.send("navigate", tab ? `/settings?tab=${tab}` : "/settings");
+    }
+  };
+  const appMenu = Menu.buildFromTemplate(
+    buildMenuTemplate({
+      isMac: process.platform === "darwin",
+      appName: app.name,
+      openSettings: () => openSettingsPage(),
+      openAbout: () => openSettingsPage("about"),
+      reload: () => { const wc = focusedDashboardWC(); if (wc) wc.reload(); },
+      forceReload: () => { const wc = focusedDashboardWC(); if (wc) wc.reloadIgnoringCache(); },
+      toggleDevTools: () => { const wc = focusedDashboardWC(); if (wc) wc.toggleDevTools(); },
+      zoomActualSize: zoomItem((wc) => wc.setZoomFactor(1)),
+      zoomIn: zoomItem((wc) => wc.setZoomFactor(stepZoomFactor(wc.getZoomFactor(), +1))),
+      zoomOut: zoomItem((wc) => wc.setZoomFactor(stepZoomFactor(wc.getZoomFactor(), -1))),
+      openNewConnectionWindow: () => openNewConnectionWindow(),
+      renameCurrentWindow: () => renameCurrentWindow(),
+      promptRemoteHost: () => promptRemoteHost(),
+      refreshToken: () => refreshToken(),
+      openConfigFile: () => shell.openPath(store.path),
+    })
+  );
   Menu.setApplicationMenu(appMenu);
 
   // DevTools gate: renderer sends dev-mode state, we toggle menu visibility.

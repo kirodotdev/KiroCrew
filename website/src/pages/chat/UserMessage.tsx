@@ -164,7 +164,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, render
   }
 
   const bubble = (
-    <div ref={userRef} onCopy={handleCopy} className={`msg-content px-4 py-1.5 text-sm leading-relaxed rounded-xl overflow-hidden min-w-0 max-w-[550px] ${isSteer ? 'bg-accent/10 text-text border border-accent/40' : 'bg-card text-card-fg'}`} style={{ overflowWrap: 'anywhere', wordBreak: 'break-word' }}>
+    <div ref={userRef} onCopy={handleCopy} className={`msg-content px-4 py-1.5 text-sm leading-relaxed rounded-xl overflow-hidden min-w-0 max-w-[550px] ${isSteer ? 'bg-accent-subtle text-text' : 'bg-card text-card-fg'}`} style={{ overflowWrap: 'anywhere', wordBreak: 'break-word' }}>
       {renderContent(content, meta)}
     </div>
   )

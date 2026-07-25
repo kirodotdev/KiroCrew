@@ -1,6 +1,6 @@
 # Messaging Transport Module
 
-Last Updated: 2026-07-13 (Initial module spec: channel-neutral `kiro_crew.messaging` package — Layer 1 `MessagingTransport`/`TransportCapabilities`/`InboundMessage`, Layer 2 `TurnDriver` approval ladder, Layer 2b `Renderer`/`OutputEvent`/`chunk_text`, Layer 3 session-key namespacing + ConversationState generations; Slack reference impl + `messaging.use_transport` flag, default ON in KiroCrew; 2026-07-24: added Managed-MCP session-key resolution invariant — every channel transport-dispatch surface (Telegram DM + forum, Discord, Slack, Webex, WeCom) now publishes session_pid_<pid>.txt via the shared messaging.identity.publish_turn_identity helper so managed MCP tools resolve X-Session-Key, #232)
+Last Updated: 2026-07-13 (Initial module spec: channel-neutral `kiro_crew.messaging` package — Layer 1 `MessagingTransport`/`TransportCapabilities`/`InboundMessage`, Layer 2 `TurnDriver` approval ladder, Layer 2b `Renderer`/`OutputEvent`/`chunk_text`, Layer 3 session-key namespacing + ConversationState generations; Slack reference impl + `messaging.use_transport` flag, default ON in KiroCrew; 2026-07-24: added Managed-MCP session-key resolution invariant — every channel transport-dispatch surface (Telegram DM + forum, Discord, Slack, Webex, WeCom) now publishes session_pid_<pid>.txt via the shared messaging.identity.publish_turn_identity helper so managed MCP tools resolve X-Session-Key, #232; 2026-07-24: WeCom settings API — GET/PUT /api/wecom/config with dual credential slots (WECOM_BOT_ID + WECOM_SECRET), Settings→WeCom panel on the shared BotChannelPanel, wecom_connected/wecom_connect_error kept live via WeComClient.on_status transitions)
 
 ## Overview
 
@@ -476,3 +476,44 @@ approvals run decider-less (deny-by-default under INTERACTIVE mode).
   crash between the two cannot resurrect the plaintext copy). Writes are
   serialized under the repo-wide config lock. All fields are boot-read, so
   `restart_required` is true on any actual change.
+
+## WeCom settings API
+
+- `GET /api/wecom/config` — the shared bot-channel shape with TWO credential
+  slots: the panel's primary secret (`bot_token_set`/`bot_token_preview`)
+  maps to `WECOM_SECRET`, and a second slot (`bot_id_set`/`bot_id_preview`)
+  maps to `WECOM_BOT_ID`. `connected` is LIVE truth kept by the client's
+  status callback: `maybe_start_wecom` wires `WeComClient.on_status` into
+  dashboard state BEFORE opening the WS (so the first transition cannot be
+  missed), and the reconnect loop reports transitions — healthy once a
+  connection is up + subscribed; not-healthy with a reason on connect
+  failure, an immediate server close (bad credentials), or a server kick.
+  This callback is the compensating control for skipping save-time
+  credential verification: bad credentials surface on the badge within
+  seconds of the gateway starting, not silently never. `connect_error`
+  carries that reason, `configured` requires both credentials AND
+  enabled AND (a non-empty allow-list OR `allow_all_users`). `allowed_user_ids`
+  projects the
+  canonical `wechat.allowed_users` `{userid, name}` entries down to userid
+  strings for the tag editor. `allow_all_users` is the explicit
+  allow-everyone opt-in (default false) — it is a deliberate toggle, never
+  inferred from an empty allow-list, and the transport still denies frames
+  without a userid under it. Never returns a raw secret.
+- `PUT /api/wecom/config` — requires a direct-local request (loopback peer
+  AND no forwarding headers); remote gets 403. Validate-first/commit-last.
+  Each credential slot has independent set/clear fields (`bot_token`/
+  `bot_token_clear`, `bot_id`/`bot_id_clear`; clear flags must be strict
+  booleans, an accidental `WECOM_*=` env-line paste is stripped, inner
+  whitespace rejected). There is no pre-store verification: validating WeCom
+  credentials needs the AI-bot WebSocket long-connection (no cheap REST
+  "whoami"), so `verify_warning` is always empty; the live on_status
+  badge (above) surfaces bad credentials within seconds of the channel
+  starting. `allowed_user_ids`
+  entries must match the WeCom userid shape (1-64 chars of
+  letters/digits/`.-_@`, fail closed); the save re-attaches stored display
+  names to surviving entries and writes the canonical `{userid, name}` list
+  back to `config.json` under `wechat`. `allow_all_users` must be a strict
+  boolean. Secrets land in `config_dir/.env`
+  (atomic 0600) with `os.environ` synced. Writes are serialized under the
+  repo-wide config lock. All fields are boot-read, so `restart_required` is
+  true on any actual change.

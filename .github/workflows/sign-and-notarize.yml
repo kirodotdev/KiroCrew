@@ -24,6 +24,9 @@ name: Sign and Notarize macOS (reusable)
 #                instead of repeating two ~30-minute-budget Apple
 #                submissions, and so the expensive macOS runner never burns
 #                minutes on S3 uploads.
+# (Linux publishing is deliberately NOT here: the AppImage takes no part
+# in this trust chain. It ships from publish-linux.yml, its own lane
+# called directly by nightly.yml / release.yml beside publish-cli.yml.)
 #
 # DMG history (2026-07-21): the DMG was briefly withdrawn after a field
 # defect -- hdiutil-created DMGs carry an ADHOC signature, which the Apple

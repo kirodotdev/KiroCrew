@@ -32,6 +32,8 @@ import {
   RESERVED_PANEL_CODES,
 } from '../hooks/useKeyboardShortcuts'
 import { registerTheme, getRegisteredThemes } from '../hooks/useTheme'
+import { registerCapsuleSegment, getCapsuleSegments } from '../apps/capsuleSegments'
+import { registerOverviewStatCards, getOverviewStatCards } from '../pages/overviewStatCards'
 import { apiTransport } from '../api/apiTransport'
 // Importing the client installs the blessed transport (installApiTransport runs
 // at client module load), so `apiTransport` is populated for the test below.
@@ -249,6 +251,40 @@ describe('apiTransport — exported blessed transport (not a registry)', () => {
   })
 })
 
+describe('capsuleSegments — in-capsule segment seam', () => {
+  it('registers segments and returns them sorted by order', () => {
+    registerCapsuleSegment([{ id: 'testseg:b', order: 2, component: () => null }])
+    registerCapsuleSegment([{ id: 'testseg:a', order: 1, component: () => null }])
+    const ids = getCapsuleSegments().filter(s => s.id.startsWith('testseg:')).map(s => s.id)
+    expect(ids).toEqual(['testseg:a', 'testseg:b'])
+  })
+
+  it('throws on a duplicate id in dev/test', () => {
+    registerCapsuleSegment([{ id: 'testseg:dup', component: () => null }])
+    expect(() => registerCapsuleSegment([{ id: 'testseg:dup', component: () => null }])).toThrow(
+      /already registered/,
+    )
+    expect(getCapsuleSegments().filter(s => s.id === 'testseg:dup').length).toBe(1)
+  })
+})
+
+describe('overviewStatCards — settings status-card seam', () => {
+  it('registers cards and returns them sorted by order', () => {
+    registerOverviewStatCards([{ id: 'testcard:b', order: 2, component: () => null }])
+    registerOverviewStatCards([{ id: 'testcard:a', order: 1, component: () => null }])
+    const ids = getOverviewStatCards().filter(c => c.id.startsWith('testcard:')).map(c => c.id)
+    expect(ids).toEqual(['testcard:a', 'testcard:b'])
+  })
+
+  it('throws on a duplicate id in dev/test', () => {
+    registerOverviewStatCards([{ id: 'testcard:dup', component: () => null }])
+    expect(() =>
+      registerOverviewStatCards([{ id: 'testcard:dup', component: () => null }]),
+    ).toThrow(/already registered/)
+    expect(getOverviewStatCards().filter(c => c.id === 'testcard:dup').length).toBe(1)
+  })
+})
+
 describe('builtinRegistry — route-shape guard', () => {
   // BuiltinAppRoute resolves /:builtinApp from ONE pathname segment and never
   // the query/hash — so anything that isn't a bare plain segment registers but
@@ -330,6 +366,11 @@ describe('composition root — stock extensions.ts is empty', () => {
       .replace(/^\s*\/\/.*$/gm, '') // line comments
       .trim()
     expect(code).toBe('export {}')
+  })
+
+  it('capsule-segment + overview-stat-card seams are empty in the stock build', () => {
+    expect(getCapsuleSegments().every(s => !s.id.startsWith('edition:'))).toBe(true)
+    expect(getOverviewStatCards().every(c => !c.id.startsWith('edition:'))).toBe(true)
   })
 
   it('importing it adds no registrations beyond the seeded core state', async () => {

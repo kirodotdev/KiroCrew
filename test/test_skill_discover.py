@@ -287,3 +287,36 @@ class TestDiscoverSearch:
             assert data["results"][0]["installs"] == 4321
         finally:
             await client.close()
+
+    async def test_limit_query_is_clamped_to_at_least_one(self, fake_home, reset_registry):
+        """`limit` was clamped only on the upper end (min(..., 50)); a
+        <=0 value survived, and merged[:limit] then silently dropped the last
+        result (limit=-1) or returned nothing (limit=0), and &limit=-1 hit the
+        provider URL. The handler must now clamp to >=1."""
+        seen = {}
+
+        class RecordingProvider(FakeProvider):
+            async def search(self, query, *, limit=20):
+                seen["limit"] = limit
+                return self._results
+
+        state, _ = _state_with_skills_loader(fake_home)
+        app = _make_app(state, RecordingProvider())
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        try:
+            for raw in ("-1", "0"):
+                seen.clear()
+                resp = await client.get(
+                    "/api/skills/-/discover", params={"q": "fake", "limit": raw}
+                )
+                assert resp.status == 200
+                assert seen["limit"] >= 1, f"limit={raw!r} not clamped: {seen}"
+            # upper bound still enforced
+            seen.clear()
+            await client.get(
+                "/api/skills/-/discover", params={"q": "fake", "limit": "999"}
+            )
+            assert seen["limit"] == 50
+        finally:
+            await client.close()

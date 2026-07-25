@@ -146,6 +146,106 @@ def test_otlp_extra_declares_exact_http_exporter_version():
     assert requirements == ["opentelemetry-exporter-otlp-proto-http==1.44.0"]
 
 
+def _pyproject_path() -> pathlib.Path:
+    return pathlib.Path(__file__).resolve().parent.parent / "pyproject.toml"
+
+
+def _pyproject_text() -> str:
+    return _pyproject_path().read_text(encoding="utf-8")
+
+
+def test_pyproject_declares_optional_dependencies_dynamic():
+    """``optional-dependencies`` MUST be in pyproject's ``[project] dynamic``.
+
+    The extras (voice/desktop/dev/otlp) live in setup.cfg
+    ``[options.extras_require]``. Once a ``[project]`` table exists, setuptools
+    ignores setup.cfg metadata for any field not declared dynamic — so dropping
+    this entry silently strips EVERY extra from the built metadata. pip then
+    treats ``pip install -e ".[dev]"`` as a plain install and exits 0 with only
+    a warning ("does not provide the extra 'dev'"), so no test tooling is
+    installed and ``make test`` dies on a missing ``.venv/bin/pytest``. The same
+    omission also broke the published wheel's ``kirocrew[voice]`` install path.
+    """
+    text = _pyproject_text()
+    dynamic_lines = [
+        ln for ln in text.splitlines() if ln.strip().startswith("dynamic")
+    ]
+    assert dynamic_lines, "pyproject.toml [project] declares no `dynamic` field"
+    joined = " ".join(dynamic_lines)
+    assert "optional-dependencies" in joined, (
+        "pyproject.toml [project].dynamic must include "
+        '"optional-dependencies", otherwise setuptools drops every extra '
+        "declared in setup.cfg [options.extras_require] and "
+        'pip install ".[dev]" / ".[voice]" becomes a silent no-op.\n'
+        f"Found: {joined.strip()}"
+    )
+
+
+def test_declared_extras_match_setup_cfg():
+    """Every setup.cfg extra stays reachable; guards the dynamic wiring above."""
+    cfg = configparser.ConfigParser()
+    cfg.read(_setup_cfg_path())
+    assert cfg.has_section("options.extras_require")
+    extras = set(cfg.options("options.extras_require"))
+    # These four are referenced by docs, CI, and the Makefile; losing any of
+    # them breaks a documented install path.
+    assert {"otlp", "voice", "desktop", "dev"} <= extras, (
+        f"expected the documented extras to exist in setup.cfg; got {sorted(extras)}"
+    )
+
+
+def _extra_requirements(extra: str) -> list[str]:
+    cfg = configparser.ConfigParser()
+    cfg.read(_setup_cfg_path())
+    return [
+        line.strip()
+        for line in cfg.get("options.extras_require", extra).splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+
+
+def test_dev_extra_covers_test_imports():
+    """``[dev]`` MUST install everything ``test/conftest.py`` imports.
+
+    conftest.py imports hypothesis unconditionally at module scope, so a `[dev]`
+    install missing it makes the ENTIRE suite fail at collection with
+    ModuleNotFoundError — not one test, all of them.
+    """
+    declared = " ".join(_extra_requirements("dev")).lower()
+    for required in ("pytest", "hypothesis"):
+        assert required in declared, (
+            f"setup.cfg [options.extras_require] dev must declare {required!r} — "
+            "test/conftest.py imports it at module scope, so the whole suite "
+            f"fails to collect without it. Declared: {declared}"
+        )
+
+
+def test_python_requires_agrees_between_pyproject_and_setup_cfg():
+    """setup.cfg ``python_requires`` must match pyproject ``requires-python``.
+
+    pyproject's value is the one that lands in the built metadata, so a looser
+    bound in setup.cfg is dead config that advertises support for interpreters
+    the package cannot actually run on.
+    """
+    cfg = configparser.ConfigParser()
+    cfg.read(_setup_cfg_path())
+    cfg_req = cfg.get("options", "python_requires", fallback="").strip()
+
+    proj_req = ""
+    for line in _pyproject_text().splitlines():
+        stripped = line.strip()
+        if stripped.startswith("requires-python"):
+            proj_req = stripped.split("=", 1)[1].strip().strip('"').strip("'")
+            break
+
+    assert proj_req, "pyproject.toml declares no requires-python"
+    assert cfg_req == proj_req, (
+        "python_requires disagreement: setup.cfg says "
+        f"{cfg_req!r} but pyproject.toml requires-python says {proj_req!r}. "
+        "pyproject wins in the built metadata, so keep them identical."
+    )
+
+
 def _collect_unguarded_imports(filepath: pathlib.Path) -> list[tuple[str, str]]:
     """Unguarded module-level third-party imports in a single file."""
     source = filepath.read_text(encoding="utf-8", errors="replace")

@@ -14,9 +14,14 @@ export interface BotChannelConfigData {
   read_only: boolean
   bot_token_set: boolean
   bot_token_preview: string
+  /** Second credential slot (optional; only WeCom sends these). */
+  bot_id_set?: boolean
+  bot_id_preview?: string
   enabled: boolean
   allowed_user_ids: string[]
   allowed_thread_ids?: string[]
+  /** Explicit allow-everyone opt-in (optional; only WeCom sends this). */
+  allow_all_users?: boolean
   soft_threshold_pct: number
   /** Telegram forum per-topic config (optional; only Telegram sends these). */
   allow_forum?: boolean
@@ -27,9 +32,14 @@ export interface BotChannelConfigData {
 export interface BotChannelConfigSave {
   bot_token: string
   bot_token_clear: boolean
+  /** Second credential slot (optional; only WeCom sends these). */
+  bot_id?: string
+  bot_id_clear?: boolean
   enabled: boolean
   allowed_user_ids: string[]
   allowed_thread_ids?: string[]
+  /** Explicit allow-everyone opt-in (optional; only WeCom sends this). */
+  allow_all_users?: boolean
   soft_threshold_pct: number
   allow_forum?: boolean
   allowed_forum_chat_ids?: string[]
@@ -51,14 +61,44 @@ export interface BotChannelSpec {
   setupGuide: string
   /** Guide-card body content (how to create the bot / find your ID). */
   guideBody: ReactNode
+  /** Optional guide section title (default "Get your bot token"). */
+  guideTitle?: string
   /** Primary guide-card button: label + href. */
   guideLink: { label: string; href: string }
   /** Secret field labels. */
   tokenDescription: string
   tokenPlaceholder: string
+  /** Optional label override for the primary secret (default "<name> bot token"). */
+  tokenLabel?: string
+  /**
+   * Optional second credential rendered above the primary secret (WeCom's
+   * bot ID + secret pair). Channels that omit it are unaffected and never
+   * send ``bot_id`` fields.
+   */
+  secondCredential?: {
+    label: string
+    description: string
+    placeholder: string
+  }
+  /**
+   * Optional allow-everyone toggle rendered above the user allow-list
+   * (WeCom: every org member may DM the bot). Channels that omit it never
+   * send ``allow_all_users``.
+   */
+  allowAll?: {
+    label: string
+    description: ReactNode
+    /** Note shown under the allow-list while the toggle is on. */
+    bypassNote: string
+  }
   /** Allowlist copy. */
   allowlistDescription: string
   allowlistPlaceholder: string
+  /**
+   * Optional allow-list entry validator (default: digits only). WeCom userids
+   * are alphanumeric with ``.-_@``, so the numeric default would reject them.
+   */
+  allowlistValidate?: (v: string) => boolean
   /** Soft-threshold copy (command prefixes differ per channel). */
   thresholdDescription: string
   /** Fail-closed hint shown when enabled + token set but allowlist empty. */
@@ -96,6 +136,7 @@ type Draft = {
   enabled: boolean
   allowed_user_ids: string[]
   allowed_thread_ids: string[]
+  allow_all_users: boolean
   soft_threshold_pct: string
   allow_forum: boolean
   allowed_forum_chat_ids: string[]
@@ -106,6 +147,7 @@ function draftFrom(c: BotChannelConfigData): Draft {
     enabled: c.enabled,
     allowed_user_ids: [...c.allowed_user_ids],
     allowed_thread_ids: [...(c.allowed_thread_ids ?? [])],
+    allow_all_users: !!c.allow_all_users,
     soft_threshold_pct: String(c.soft_threshold_pct),
     allow_forum: !!c.allow_forum,
     allowed_forum_chat_ids: [...(c.allowed_forum_chat_ids ?? [])],
@@ -136,7 +178,7 @@ function connectionHint(spec: BotChannelSpec, config: BotChannelConfigData): str
   if (config.configured) {
     return 'Configuration is saved but the channel is not running. Restart the gateway to connect.'
   }
-  if (config.bot_token_set && config.enabled && config.allowed_user_ids.length === 0) {
+  if (config.bot_token_set && (config.bot_id_set ?? true) && config.enabled && config.allowed_user_ids.length === 0 && !config.allow_all_users) {
     return spec.emptyAllowlistHint
   }
   return ''
@@ -164,6 +206,8 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
   const [draft, setDraft] = useState<Draft | null>(null)
   const [botToken, setBotToken] = useState('')
   const [botClear, setBotClear] = useState(false)
+  const [botId, setBotId] = useState('')
+  const [botIdClear, setBotIdClear] = useState(false)
   const [formKey, setFormKey] = useState(0)  // bump to remount secret field after save
   const [saved, setSaved] = useState(false)
   const [restartHint, setRestartHint] = useState(false)
@@ -180,6 +224,7 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
       syncArmed.current = false
       setDraft(draftFrom(data))
       setBotToken(''); setBotClear(false)
+      setBotId(''); setBotIdClear(false)
     }
   }, [data])
 
@@ -226,14 +271,19 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
       soft_threshold_pct: pct,
     }
     if (spec.threadAllowlist) payload.allowed_thread_ids = draft.allowed_thread_ids
+    if (spec.allowAll) payload.allow_all_users = draft.allow_all_users
     if (spec.forum) {
       payload.allow_forum = draft.allow_forum
       payload.allowed_forum_chat_ids = draft.allowed_forum_chat_ids
     }
     if (botClear) payload.bot_token_clear = true
     else if (botToken.trim()) payload.bot_token = botToken.trim()
+    if (spec.secondCredential) {
+      if (botIdClear) payload.bot_id_clear = true
+      else if (botId.trim()) payload.bot_id = botId.trim()
+    }
     saveMut.mutate(payload)
-  }, [draft, botToken, botClear, saveMut])
+  }, [draft, botToken, botClear, botId, botIdClear, saveMut])
 
   if (isLoading) return <p className="text-[13px] text-muted p-4">Loading {spec.name} config…</p>
   if (isError || !data || !draft) return <p className="text-[13px] text-danger p-4">Cannot load {spec.name} config. Is the gateway running?</p>
@@ -275,7 +325,7 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
       )}
 
       {/* ── Credentials guide ── */}
-      <SettingsSection title="Get your bot token">
+      <SettingsSection title={spec.guideTitle ?? 'Get your bot token'}>
         <SettingsCard>
           <p className="text-[13px] text-text m-0">{spec.guideBody}</p>
           <div className="flex items-center gap-2 mt-2 flex-wrap">
@@ -304,9 +354,25 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
             onChange={v => upd({ enabled: v })}
             disabled={ro}
           />
+          {spec.secondCredential && (
+            <SecretField
+              key={`botid-${formKey}`}
+              label={spec.secondCredential.label}
+              description={spec.secondCredential.description}
+              placeholder={spec.secondCredential.placeholder}
+              isSet={!!data.bot_id_set}
+              preview={data.bot_id_preview ?? ''}
+              readOnly={ro}
+              value={botId}
+              onChange={setBotId}
+              cleared={botIdClear}
+              onClearedChange={setBotIdClear}
+              setupLink={{ href: spec.setupGuide, label: `Where to find the ${spec.secondCredential.label.toLowerCase()}` }}
+            />
+          )}
           <SecretField
             key={`bot-${formKey}`}
-            label={`${spec.name} bot token`}
+            label={spec.tokenLabel ?? `${spec.name} bot token`}
             description={spec.tokenDescription}
             placeholder={spec.tokenPlaceholder}
             isSet={data.bot_token_set}
@@ -324,15 +390,30 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
       {/* ── Identity & access ── */}
       <SettingsSection title="Identity & access">
         <SettingsCard>
+          {spec.allowAll && (
+            <>
+              <SettingsToggle
+                label={spec.allowAll.label}
+                description={spec.allowAll.description}
+                checked={draft.allow_all_users}
+                onChange={v => upd({ allow_all_users: v })}
+                disabled={ro}
+              />
+              <div className="border-t border-border mt-4 pt-4" />
+            </>
+          )}
           <TagListEditor
             label="Allowed user IDs"
             description={spec.allowlistDescription}
             values={draft.allowed_user_ids}
             placeholder={spec.allowlistPlaceholder}
             onChange={v => upd({ allowed_user_ids: v })}
-            validate={v => /^\d+$/.test(v)}
+            validate={spec.allowlistValidate ?? (v => /^\d+$/.test(v))}
             readOnly={ro}
           />
+          {spec.allowAll && draft.allow_all_users && (
+            <p className="text-[12px] text-muted mt-2 mb-0">{spec.allowAll.bypassNote}</p>
+          )}
           {spec.threadAllowlist && (
             <div className="border-t border-border mt-4 pt-4">
               <TagListEditor

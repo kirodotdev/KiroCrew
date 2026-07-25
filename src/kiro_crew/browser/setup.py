@@ -632,7 +632,16 @@ def patch_mcp_extension(token: str) -> None:
         return
     try:
         data = json.loads(mcp_json.read_text(encoding="utf-8"))
+        # A user-owned mcp.json may hold valid JSON that isn't an object (e.g.
+        # `[]`/`null`/a string after truncation or a hand-edit), or an
+        # mcpServers that isn't a dict. data.setdefault / servers[...] would
+        # then raise AttributeError/TypeError, which the except below does NOT
+        # catch. Reset a bad shape to {} — matches _migrate_playwright_to_proxy.
+        if not isinstance(data, dict):
+            data = {}
         servers = data.setdefault("mcpServers", {})
+        if not isinstance(servers, dict):
+            servers = data["mcpServers"] = {}
         entry = {
             "command": _kirocrew_bin(),
             "args": ["mcp-playwright-proxy", "--extension"],
@@ -655,7 +664,14 @@ def patch_mcp_headless() -> None:
         return
     try:
         data = json.loads(mcp_json.read_text(encoding="utf-8"))
+        # See patch_mcp_extension: guard a non-object mcp.json / non-dict
+        # mcpServers so setdefault/servers[...] can't raise an uncaught
+        # AttributeError/TypeError.
+        if not isinstance(data, dict):
+            data = {}
         servers = data.setdefault("mcpServers", {})
+        if not isinstance(servers, dict):
+            servers = data["mcpServers"] = {}
         config_path = str(config_dir() / "playwright-config.json")
         entry = {
             "command": _kirocrew_bin(),

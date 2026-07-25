@@ -70,6 +70,24 @@ class TestAuthorize:
         with patch("kiro_crew.wechat.transport.sel"):
             assert t.authorize(_msg("anyone")) is False
 
+    def test_allow_all_admits_any_userid(self) -> None:
+        t = WeComTransport(FakeClient(), allow_all=True)  # explicit opt-in
+        assert t.authorize(_msg("anyone")) is True
+        assert t.authorize(_msg("someone-else")) is True
+
+    def test_allow_all_still_denies_empty_userid(self) -> None:
+        # Even under allow-all, an anonymous/malformed frame never dispatches.
+        t = WeComTransport(FakeClient(), allow_all=True)
+        with patch("kiro_crew.wechat.transport.sel"):
+            assert t.authorize(_msg("")) is False
+
+    def test_allow_all_off_is_not_inferred_from_empty_list(self) -> None:
+        # The everybody grant is ONLY the explicit flag — an empty allow-list
+        # plus allow_all=False stays fail-closed.
+        t = WeComTransport(FakeClient(), allowed_users=[], allow_all=False)
+        with patch("kiro_crew.wechat.transport.sel"):
+            assert t.authorize(_msg("anyone")) is False
+
 
 class TestReceive:
     @pytest.mark.asyncio

@@ -28,7 +28,7 @@ class TestQueueHelpers:
         assert isinstance(qid, str)
         assert len(qid) == 12
         assert len(slot._queue) == 1
-        assert slot._queue[0] == {"id": qid, "content": "hello"}
+        assert slot._queue[0] == {"id": qid, "content": "hello", "kind": ""}
 
     def test_queue_append_unique_ids(self):
         slot = _ChatSlot("s1")
@@ -48,7 +48,7 @@ class TestQueueHelpers:
         slot = _ChatSlot("s1")
         qid = slot.queue_append("msg")
         item = slot.queue_pop(0)
-        assert item == {"id": qid, "content": "msg"}
+        assert item == {"id": qid, "content": "msg", "kind": ""}
         assert len(slot._queue) == 0
 
     def test_queue_pop_fifo(self):

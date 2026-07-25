@@ -220,6 +220,23 @@ jobs:
             give a cause -> mechanism -> long-term-consequence chain, and a
             concrete suggested fix.
 
+            SCOPE TEST (apply before escalating anything). Many findings flag
+            SIDE EFFECTS on components this PR does not target. Weighing that
+            blast radius is correct and valuable — but a related influence is
+            NOT automatically a blocker. Escalate an out-of-scope /
+            adjacent-component finding ONLY IF this PR itself CREATES or WORSENS
+            the long-term cost AND it is a one-way door — i.e. merging as-is
+            makes it materially harder or costlier to fix later (a persisted
+            schema/contract, a spreading ownership boundary, or a
+            security/data-correctness regression introduced BY this diff). If
+            the concern PRE-EXISTS this PR, is independently reversible in a
+            later change, or the PR merely touches nearby code without deepening
+            the problem, DO NOT block: route it to "Suggested follow-ups" so it
+            is tracked as a new issue instead of gating this PR. When the same
+            item could plausibly be either blocked or followed-up, PREFER the
+            follow-up. Opening a new issue for later is a legitimate outcome, not
+            a failure to act.
+
             FINAL OUTPUT (authoritative — your LAST message, captured verbatim
             from the transcript; do NOT call any tool to post it and write
             nothing after the marker line). The FIRST line is machine-parsed —
@@ -237,8 +254,20 @@ jobs:
             <one line per notable sub-threshold item you deliberately did NOT
             escalate, with the reason — so the author sees the judgment>
 
-            If PASS: write exactly:
+            If PASS, write this line:
             No sub-threshold finding meets the long-term-impact bar.
+
+            Then, under EITHER verdict, if the SCOPE TEST routed any
+            related-influence / sub-threshold items to be tracked without
+            blocking, append this section LAST. It is advisory and NEVER changes
+            the verdict (the machine-parsed verdict line is always the first line
+            above, regardless of what follows):
+
+            ### Suggested follow-ups (open as issues — non-blocking)
+            <one line per related-influence / sub-threshold item worth tracking
+            but NOT worth blocking this PR (per the SCOPE TEST): what it is, why
+            it can safely wait, and where it should be fixed. Omit this heading
+            only if there are genuinely none.>
 
             End with this exact line as proof the review ran for this commit:
             [ARBITER-REVIEWED] ${{ github.event.workflow_run.head_sha || github.event.pull_request.head.sha }}

@@ -317,18 +317,43 @@ def parse_cls_meta(cls_val: str) -> dict | None:
     return meta
 
 
-def _mark_permission_resolved(messages: list[dict], request_id: str, decision: str) -> None:
-    """Persist a resolved decision into a permission message's cls JSON."""
+def _mark_permission_resolved(
+    messages: list[dict],
+    request_id: str,
+    decision: str,
+    *,
+    only_if_pending: bool = False,
+) -> bool:
+    """Persist a resolved decision into a permission message's cls JSON.
+
+    Returns True when a permission message was written. Callers holding the
+    owning slot MUST set ``slot._dirty = True`` on a True return — the periodic
+    flush skips non-dirty slots, so an unflagged in-place mutation can be lost
+    on restart and the card comes back as an unanswerable orphan.
+
+    ``only_if_pending`` leaves an already-resolved message untouched (and
+    returns False). Use it for backstop callers that must not clobber a richer
+    decision already recorded by the primary resolver — e.g. "trust"/"yolo",
+    which the UI renders as "Trusted — auto-approving future calls" and would
+    otherwise be flattened to a bare "approved".
+    """
     for msg in reversed(messages):
         if msg.get("role") == "permission":
             try:
                 cls = json.loads(msg.get("cls", "{}"))
+                if not isinstance(cls, dict):
+                    # Valid JSON but not an object — cannot carry "resolved".
+                    # Mirrors parse_cls_meta() / _sweep_stale_permissions().
+                    continue
                 if cls.get("request_id") == request_id:
+                    if only_if_pending and "resolved" in cls:
+                        return False
                     cls["resolved"] = decision
                     msg["cls"] = json.dumps(cls)
-                    return
+                    return True
             except (json.JSONDecodeError, TypeError):
                 pass
+    return False
 
 
 # ── Constants ──
@@ -1020,16 +1045,26 @@ class _ChatSlot:
 
     # ── Queue helpers (dict-based queue items) ──
 
-    def queue_append(self, content: str) -> str:
-        """Append a message to the queue. Returns the generated queue ID."""
+    def queue_append(self, content: str, kind: str = "") -> str:
+        """Append a message to the queue. Returns the generated queue ID.
+
+        ``kind`` is a structural origin tag (e.g. ``"synthetic_recovery"`` for
+        runner-injected recovery instructions). Classification by metadata —
+        not by content equality — survives queue transformations and cannot
+        collide with user-typed text that happens to match an internal string.
+        Empty string = plain user/system content (default).
+        """
         qid = uuid.uuid4().hex[:12]
-        self._queue.append({"id": qid, "content": content})
+        self._queue.append({"id": qid, "content": content, "kind": kind})
         return qid
 
-    def queue_insert(self, index: int, content: str) -> str:
-        """Insert a message at a specific queue position. Returns the queue ID."""
+    def queue_insert(self, index: int, content: str, kind: str = "") -> str:
+        """Insert a message at a specific queue position. Returns the queue ID.
+
+        See :meth:`queue_append` for the ``kind`` structural origin tag.
+        """
         qid = uuid.uuid4().hex[:12]
-        self._queue.insert(index, {"id": qid, "content": content})
+        self._queue.insert(index, {"id": qid, "content": content, "kind": kind})
         return qid
 
     def queue_pop(self, index: int = 0) -> dict[str, str]:
@@ -1418,6 +1453,14 @@ class DashboardState:
         # Short reason from the most recent Webex connection failure, empty
         # when connected or never attempted. Read by the settings badge.
         self.webex_connect_error: str = ""
+        # True only while the WeCom (WeChat) channel's WebSocket is connected
+        # + subscribed (kept live by WeComClient.on_status, wired in
+        # maybe_start_wecom). Read by the WeCom settings status badge.
+        self.wecom_connected: bool = False
+        # Short reason from the most recent WeCom connection failure (connect
+        # error, immediate close on bad credentials, or server kick), empty
+        # when connected or never attempted. Read by the settings badge.
+        self.wecom_connect_error: str = ""
         # Live channel transports (Telegram/WeCom/...) for channel-neutral
         # cross-surface mirror delivery — registered at boot by each channel's
         # gateway via ``register_channel_transport``. Slack keeps its dedicated
@@ -1790,7 +1833,11 @@ class DashboardState:
             fut = slot._approval_futures.get(approval_id)
             if fut and not fut.done():
                 fut.set_result(decision)
-                _mark_permission_resolved(slot.messages, approval_id, decision)
+                if _mark_permission_resolved(slot.messages, approval_id, decision):
+                    # The periodic flush skips non-dirty slots; without this the
+                    # in-place mutation can be lost and the answered card comes
+                    # back on reload with a future that no longer exists.
+                    slot._dirty = True
                 self._audit_and_broadcast_approval(slot.key, approval_id, approved)
                 self.push_slots_update()
                 return True

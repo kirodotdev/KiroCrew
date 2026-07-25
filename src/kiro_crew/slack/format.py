@@ -143,7 +143,14 @@ def to_slack_mrkdwn(text: str, *, keep_tables: bool = False) -> str:
     text = _strip_ansi(text)
 
     if len(text) > SLACK_MAX_TEXT:
-        cut = text[:SLACK_MAX_TEXT].rfind("\n") or SLACK_MAX_TEXT
+        # rfind returns -1 (no newline in window) or the last newline's index —
+        # NOT a bool. `rfind(...) or SLACK_MAX_TEXT` mishandles both: -1 is
+        # truthy so text[:-1] keeps ~39000 chars (Slack then rejects the
+        # message), and a newline at index 0 falls through to the cap. Use the
+        # explicit -1 check already used by split_message().
+        cut = text[:SLACK_MAX_TEXT].rfind("\n")
+        if cut <= 0:
+            cut = SLACK_MAX_TEXT
         text = f"{text[:cut]}\n\n_…truncated ({len(text)} chars total)_"
 
     if not keep_tables:

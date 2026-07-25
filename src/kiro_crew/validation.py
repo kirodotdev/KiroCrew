@@ -834,7 +834,7 @@ ARTIFACT_COMMENT_TEXT_MAX = 10_000
 #: rendering). NOT persisted into the comment body and NOT an emoji: agent
 #: provenance is carried by the structured ``is_agent`` field, which the
 #: dashboard renders as a lucide ``Bot`` icon (no emoji in the UI, per
-#: CLAUDE.md). This constant is only for prefixing plain-text output.
+#: AGENTS.md). This constant is only for prefixing plain-text output.
 ARTIFACT_AGENT_MARKER = "[agent] "
 
 ARTIFACT_GET_COMMENTS_SCHEMA = ToolSchema(

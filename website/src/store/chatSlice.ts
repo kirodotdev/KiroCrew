@@ -674,6 +674,21 @@ export const selectSlotSubagentsActive = (state: RootState, slot: string): boole
   return false
 }
 
+/**
+ * Single source of truth for "hard-lock this slot's composer": the live WS
+ * subagent signal (:func:`selectSlotSubagentsActive`) UNION the slot snapshot's
+ * ``subagents_running`` flag. The snapshot fallback is load-bearing — right
+ * after a reload/reconnect the WS map can be momentarily empty while sub-agents
+ * are still running, and without the flag the composer would briefly unlock.
+ * Both ChatPage and ChatPane derive the composer lock from THIS selector so the
+ * invariant is enforced identically across every composer surface.
+ */
+export const selectSlotSubagentsRunning = (state: RootState, slot: string | null): boolean => {
+  if (!slot) return false
+  if (selectSlotSubagentsActive(state, slot)) return true
+  return !!state.dashboard.slots.find((sl) => sl.key === slot)?.subagents_running
+}
+
 // Stable empty result so the selector is referentially stable (with shallowEqual)
 // when a slot has no pending spawn approvals — avoids needless re-renders.
 const _EMPTY_PENDING_SPAWNS: SubagentActivity[] = []

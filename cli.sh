@@ -2,8 +2,8 @@
 # ──────────────────────────────────────────────────────────────────────
 # KiroCrew CLI installer (channel / wheel based).
 #
-#   curl -fsSL https://d28nxu9if70cmc.cloudfront.net/cli.sh | sh
-#   curl -fsSL https://d28nxu9if70cmc.cloudfront.net/cli.sh | sh -s -- --channel nightly
+#   curl -fsSL https://download.crew.kiro.dev/cli.sh | sh
+#   curl -fsSL https://download.crew.kiro.dev/cli.sh | sh -s -- --channel nightly
 #
 # Installs the prebuilt `kirocrew` wheel for a release channel. It resolves the
 # channel feed, downloads the wheel over HTTPS from CloudFront, verifies its
@@ -27,7 +27,12 @@ set -eu
 # venv -- producing a broken install (ImportError: No module named 'aiohttp').
 unset PYTHONPATH PYTHONHOME
 
-CDN="${KIROCREW_CDN_BASE:-https://d28nxu9if70cmc.cloudfront.net}"
+# The URL contract splits by class: FEED_BASE serves the mutable pointers
+# (latest-cli.json), ARTIFACT_BASE serves the bytes (wheels, SHA256SUMS).
+# Both are aliases of the same distribution today; --cdn / KIROCREW_CDN_BASE
+# overrides BOTH (test / alternate-CDN escape hatch).
+FEED_BASE="${KIROCREW_CDN_BASE:-https://updates.crew.kiro.dev}"
+ARTIFACT_BASE="${KIROCREW_CDN_BASE:-https://download.crew.kiro.dev}"
 CHANNEL="${KIROCREW_CHANNEL:-stable}"
 PIN_VERSION=""
 
@@ -37,14 +42,14 @@ while [ $# -gt 0 ]; do
     --channel=*) CHANNEL="${1#*=}"; shift ;;
     --version) PIN_VERSION="${2:?--version needs a value}"; shift 2 ;;
     --version=*) PIN_VERSION="${1#*=}"; shift ;;
-    --cdn) CDN="${2:?--cdn needs a value}"; shift 2 ;;
-    --cdn=*) CDN="${1#*=}"; shift ;;
+    --cdn) FEED_BASE="${2:?--cdn needs a value}"; ARTIFACT_BASE="$2"; shift 2 ;;
+    --cdn=*) FEED_BASE="${1#*=}"; ARTIFACT_BASE="${1#*=}"; shift ;;
     -h|--help)
       cat <<'EOF'
 KiroCrew CLI installer (channel / wheel based).
 
-  curl -fsSL https://d28nxu9if70cmc.cloudfront.net/cli.sh | sh
-  curl -fsSL https://d28nxu9if70cmc.cloudfront.net/cli.sh | sh -s -- --channel nightly
+  curl -fsSL https://download.crew.kiro.dev/cli.sh | sh
+  curl -fsSL https://download.crew.kiro.dev/cli.sh | sh -s -- --channel nightly
 
 Installs the prebuilt `kirocrew` wheel for a release channel: resolves the
 channel feed, downloads the wheel over HTTPS, verifies its SHA-256 against
@@ -61,7 +66,8 @@ EOF
     *) echo "kirocrew-install: unknown argument '$1'" >&2; exit 2 ;;
   esac
 done
-CDN="${CDN%/}"
+FEED_BASE="${FEED_BASE%/}"
+ARTIFACT_BASE="${ARTIFACT_BASE%/}"
 
 # Users say "insider"; the release pipeline publishes that channel under the
 # `beta` prefix (see docs/RELEASE_AUTOMATION.md channel naming). Map the
@@ -109,14 +115,14 @@ if [ -n "$PIN_VERSION" ]; then
   # against the SHA256SUMS published beside it at release time.
   VER="$PIN_VERSION"
   WHEEL_NAME="kirocrew-${VER}-py3-none-any.whl"
-  WHEEL_URL="$CDN/cli/$CHANNEL_PATH/$VER/$WHEEL_NAME"
+  WHEEL_URL="$ARTIFACT_BASE/cli/$CHANNEL_PATH/$VER/$WHEEL_NAME"
   echo "Resolving KiroCrew $VER ($CHANNEL channel, pinned) ..."
-  curl -fsSL "$CDN/cli/$CHANNEL_PATH/$VER/SHA256SUMS" -o "$TMP/SHA256SUMS" \
-    || err "version '$VER' not found on the $CHANNEL channel (no $CDN/cli/$CHANNEL_PATH/$VER/SHA256SUMS)"
+  curl -fsSL "$ARTIFACT_BASE/cli/$CHANNEL_PATH/$VER/SHA256SUMS" -o "$TMP/SHA256SUMS" \
+    || err "version '$VER' not found on the $CHANNEL channel (no $ARTIFACT_BASE/cli/$CHANNEL_PATH/$VER/SHA256SUMS)"
   SHA="$(awk -v w="$WHEEL_NAME" '$2==w{print $1}' "$TMP/SHA256SUMS")"
   [ -n "$SHA" ] || err "SHA256SUMS for $VER does not list $WHEEL_NAME"
 else
-  FEED="$CDN/feed/$CHANNEL_PATH/latest-cli.json"
+  FEED="$FEED_BASE/feed/$CHANNEL_PATH/latest-cli.json"
   echo "Resolving KiroCrew ($CHANNEL channel) ..."
   curl -fsSL "$FEED" -o "$TMP/feed.json" \
     || err "channel '$CHANNEL' has no feed at $FEED (try: --channel nightly)"

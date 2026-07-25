@@ -45,6 +45,7 @@ from kiro_crew.dashboard.token_auth import LINK_WINDOW_SECS, MAX_SESSION_TTL_SEC
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.hooks import safe_read_file
 from kiro_crew.mcp_discovery import list_servers
+from kiro_crew.messaging.link import canonical_key
 from kiro_crew.platform import current_context, safe_context_call
 from kiro_crew.platform.interfaces import InterceptDecision
 from kiro_crew.safety_override import safety_override
@@ -1535,6 +1536,65 @@ def _resolve_approval_mode(orch: "GatewayOrchestrator") -> str:
     return APPROVAL_AUTO if mode == APPROVAL_AUTO else APPROVAL_INTERACTIVE
 
 
+def _schedule_next_queued(orch: GatewayOrchestrator, session_key: str) -> None:
+    """Dispatch the next queued message for *session_key*, if any, and re-arm
+    itself so the whole backlog drains one turn at a time.
+
+    Single source of truth for the Slack queue-drain, shared by the
+    ``handle_message`` / transport turn-done callbacks and the gateway's
+    sub-agent-hold release (``_subagent_done``). Only acts when no live turn
+    already owns the session (``_session_tasks``), so a turn started elsewhere
+    keeps its own drain and we never double-dispatch. Prefers the session-level
+    queue, then the orchestrator-level pre-session pending queue. Best-effort:
+    a dispatch failure is logged, never raised into the done-callback.
+
+    Sub-agent hold: enforces the SAME invariant as the ``_route_message``
+    enqueue gate on the drain side too — if this session still has running
+    sub-agents (a turn that spawned fire-and-forget children can finish and
+    fire its ``_on_done`` drain while the children are still working), the
+    message stays queued and the LAST sub-agent's ``_subagent_done`` re-arms
+    this drain. Without this, a message queued behind such a turn would drain
+    into a fresh turn mid-fan-out — the exact context interleave the gate
+    prevents on ingest.
+    """
+    try:
+        if session_key in orch._session_tasks or not orch.sessions:
+            return
+        # running_agents_for matches the CANONICAL slack:<thread> parent key
+        # exactly; session_key here may be the bare ts (the queue's own key),
+        # so canonicalize for the lookup (mirrors the _route_message gate).
+        if orch.subagent_mgr and orch.subagent_mgr.running_agents_for(
+            canonical_key(session_key)
+        ):
+            return
+        _next = orch.sessions.dequeue(session_key)
+        if not _next:
+            _pq = orch._pending_queue.get(session_key)
+            if _pq:
+                _next = _pq.pop(0)
+                if not _pq:
+                    del orch._pending_queue[session_key]
+        if not _next:
+            return
+        _q_ts, _q_text, _q_kw = _next
+        _q_t = asyncio.ensure_future(
+            _dispatch_queued(orch, session_key, _q_ts, _q_text, _q_kw)
+        )
+        orch._session_tasks[session_key] = _q_t
+        orch._handler_tasks.add(_q_t)
+
+        def _next_done(task: "asyncio.Task") -> None:  # type: ignore[type-arg]
+            orch._handler_tasks.discard(task)
+            if orch._session_tasks.get(session_key) is task:
+                del orch._session_tasks[session_key]
+            # Re-arm: keep draining until the backlog is empty.
+            _schedule_next_queued(orch, session_key)
+
+        _q_t.add_done_callback(_next_done)
+    except Exception:
+        logger.exception("queue drain failed for %s", session_key)
+
+
 async def _dispatch_queued(
     orch: GatewayOrchestrator,
     session_key: str,
@@ -2295,7 +2355,22 @@ async def _route_message(
 
     # ── Queue check: if session is busy, enqueue instead of blocking ──
     session_key = thread_ts or msg_ts
-    _task_busy = session_key in orch._session_tasks
+    # Sub-agents run fire-and-forget: the parent Slack turn has already ended
+    # (no _session_tasks entry) while children are still working, so a new
+    # message would start a fresh turn and interleave into the SAME context as
+    # the pending [Subagent completion event] injections — the exact
+    # context-hygiene hole the dashboard composer lock closes on its surface.
+    # Mirror that invariant on the backend for Slack: while this session has
+    # running sub-agents, treat it as busy and queue. The queue is drained after
+    # the last sub-agent completes (see _subagent_done in gateway.py).
+    # running_agents_for matches parent_session_key EXACTLY (no fold), and the
+    # turn records the canonical ``slack:<thread>`` form (transport_dispatch /
+    # publish_turn_identity), so query with the canonical key, not the bare ts.
+    _subagents_busy = bool(
+        orch.subagent_mgr
+        and orch.subagent_mgr.running_agents_for(canonical_key(session_key))
+    )
+    _task_busy = session_key in orch._session_tasks or _subagents_busy
     if _task_busy:
         # A task is already running for this session key.  Try the session-level
         # queue first (semaphore-based); fall back to an orchestrator-level
@@ -2367,6 +2442,34 @@ async def _route_message(
         # its image temp-file paths.
         return
 
+    # Belt-and-braces: release lifts entirely via the last sub-agent's
+    # _subagent_done → _schedule_next_queued chain. If that terminal path was
+    # ever skipped (e.g. a recovery/teardown branch), an earlier message could
+    # sit stranded in the queue. We are here because THIS message isn't held
+    # (no live turn, no running sub-agents), so kick the drain: if a stranded
+    # message exists it claims the session, and we then enqueue THIS message
+    # behind it (FIFO) instead of dispatching — avoiding a second concurrent
+    # turn. The helper self-guards on _session_tasks + running sub-agents, so
+    # with an empty backlog this is a no-op and we fall through to dispatch.
+    _schedule_next_queued(orch, session_key)
+    if session_key in orch._session_tasks:
+        if orch.sessions and orch.sessions.enqueue(
+            session_key, msg_ts, clean_text, force=True,
+            channel=channel, thread_ts=thread_ts, sender_id=sender_id,
+            team_id=team_id, agent_override=agent_override,
+            user_display_name=_sender_display,
+            image_temp_paths=list(_image_temp_paths),
+        ):
+            logger.info(
+                "Message %s queued behind drained backlog for %s", msg_ts, session_key
+            )
+            if orch.slack:
+                try:
+                    await orch.slack.add_reaction(channel, msg_ts, "hourglass_flowing_sand")
+                except Exception:
+                    logger.debug("Failed to add queue reaction", exc_info=True)
+            return
+
     # ── New transport path: route to the messaging abstraction ──
     # When messaging.use_transport is True, drive the turn through
     # SlackTransport → TurnDriver → SlackRenderer instead of the native
@@ -2433,29 +2536,9 @@ async def _route_message(
             if orch._session_tasks.get(session_key) is task:
                 del orch._session_tasks[session_key]
             _cleanup_image_temps()
-            # Drain queue: only if no other task took over this session.
-            # Mirrors native _on_done so messages queued while this session was
-            # busy aren't stranded when the transport path is the active route.
-            try:
-                if session_key not in orch._session_tasks and orch.sessions:
-                    _next = orch.sessions.dequeue(session_key)
-                    # Fall back to orchestrator-level pending queue (pre-session).
-                    if not _next:
-                        _pq = orch._pending_queue.get(session_key)
-                        if _pq:
-                            _next = _pq.pop(0)
-                            if not _pq:
-                                del orch._pending_queue[session_key]
-                    if _next:
-                        _q_ts, _q_text, _q_kw = _next
-                        _q_t = asyncio.ensure_future(
-                            _dispatch_queued(orch, session_key, _q_ts, _q_text, _q_kw)
-                        )
-                        orch._session_tasks[session_key] = _q_t
-                        orch._handler_tasks.add(_q_t)
-                        _q_t.add_done_callback(_on_transport_done)
-            except Exception:
-                logger.exception("_on_transport_done drain failed for %s", session_key)
+            # Drain the next queued message (shared helper; re-arms itself) so a
+            # backlog queued while this session was busy isn't stranded.
+            _schedule_next_queued(orch, session_key)
 
         t.add_done_callback(_on_transport_done)
         orch._handler_tasks.add(t)
@@ -2498,27 +2581,8 @@ async def _route_message(
         if orch._session_tasks.get(session_key) is task:
             del orch._session_tasks[session_key]
         _cleanup_image_temps()
-        # Drain queue: only if no other task took over this session
-        try:
-            if session_key not in orch._session_tasks and orch.sessions:
-                _next = orch.sessions.dequeue(session_key)
-                # Fall back to orchestrator-level pending queue (pre-session messages)
-                if not _next:
-                    _pq = orch._pending_queue.get(session_key)
-                    if _pq:
-                        _next = _pq.pop(0)
-                        if not _pq:
-                            del orch._pending_queue[session_key]
-                if _next:
-                    _q_ts, _q_text, _q_kw = _next
-                    _q_t = asyncio.ensure_future(
-                        _dispatch_queued(orch, session_key, _q_ts, _q_text, _q_kw)
-                    )
-                    orch._session_tasks[session_key] = _q_t
-                    orch._handler_tasks.add(_q_t)
-                    _q_t.add_done_callback(_on_done)
-        except Exception:
-            logger.exception("_on_done drain failed for %s", session_key)
+        # Drain the next queued message (shared helper; re-arms itself).
+        _schedule_next_queued(orch, session_key)
 
     orch._handler_tasks.add(t)
     t.add_done_callback(_on_done)

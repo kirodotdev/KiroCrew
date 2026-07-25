@@ -169,7 +169,7 @@ export default function OnboardingFlow({
     return () => window.removeEventListener('resize', onResize)
   }, [open, step, positionFor])
 
-  // Step-1 modal a11y (website/CLAUDE.md): move focus into the dialog, trap Tab,
+  // Step-1 modal a11y (website/AGENTS.md): move focus into the dialog, trap Tab,
   // and dismiss on Escape. Steps 2-4 are non-modal popovers and are exempt.
   useEffect(() => {
     if (!open || step !== 1) return

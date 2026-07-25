@@ -109,6 +109,18 @@ class TestSkillsShProvider:
             assert results == []
 
     @pytest.mark.asyncio
+    async def test_search_handles_malformed_payload(self):
+        # A scalar JSON body (string/number) is not a list and has no .get()
+        # (AttributeError pre-fix); {"skills": null} yields items=None ->
+        # items[:limit] TypeError. Both must degrade to [] rather than crash.
+        for payload in ("maintenance", 42, {"skills": None}, {"skills": "x"}, {"nope": 1}):
+            with patch(
+                "kiro_crew.skill_providers.skillsh._sync_fetch_json",
+                return_value=payload,
+            ):
+                assert await SkillsShProvider().search("docker") == []
+
+    @pytest.mark.asyncio
     async def test_fetch_content_extracts_skill_md_from_bundle(self):
         bundle = {
             "files": [
@@ -372,6 +384,67 @@ class TestSkillsShDownloadUrl:
             assert await p.fetch_skill_bundle("") is None
 
         assert calls["n"] == 0  # malformed ids never reach the network
+
+
+class TestSkillsShBundleMalformedInput:
+    """skills.sh is an untrusted external registry: fetch_skill_bundle() must
+    coerce/drop malformed JSON rather than crash. Pre-fix, a non-object top-level
+    payload raised AttributeError at data.get(); a non-dict file entry raised
+    AttributeError at f.get(); a non-string ``path`` raised TypeError at the
+    ``".." in path`` check; and a truthy non-string ``contents`` (e.g. a JSON
+    number) slipped through and later blew up the install handler's
+    ``c.encode("utf-8")``. Each must now yield a clean None / dropped entry."""
+
+    @pytest.mark.asyncio
+    async def test_non_object_payload_returns_none(self):
+        # A list / string / number body (API error, maintenance page, CDN SPA)
+        # must not raise — it should be treated as "no bundle".
+        for payload in ([{"path": "SKILL.md", "contents": "x"}], "html", 42, None):
+            with patch(
+                "kiro_crew.skill_providers.skillsh._sync_fetch_json",
+                return_value=payload,
+            ):
+                assert await SkillsShProvider().fetch_skill_bundle("o/r/s") is None
+
+    @pytest.mark.asyncio
+    async def test_non_list_files_returns_none(self):
+        for files in ("abc", {"a": 1}, 5):
+            with patch(
+                "kiro_crew.skill_providers.skillsh._sync_fetch_json",
+                return_value={"files": files},
+            ):
+                assert await SkillsShProvider().fetch_skill_bundle("o/r/s") is None
+
+    @pytest.mark.asyncio
+    async def test_non_dict_entries_are_dropped(self):
+        payload = {"files": ["not-a-dict", 7, {"path": "SKILL.md", "contents": "ok"}]}
+        with patch(
+            "kiro_crew.skill_providers.skillsh._sync_fetch_json",
+            return_value=payload,
+        ):
+            bundle = await SkillsShProvider().fetch_skill_bundle("o/r/s")
+        assert bundle == [("SKILL.md", "ok")]
+
+    @pytest.mark.asyncio
+    async def test_non_string_path_or_contents_are_dropped(self):
+        # A JSON number in path (TypeError at `".." in path`) or in contents
+        # (survives pre-fix, then 500s the install handler at c.encode()).
+        payload = {
+            "files": [
+                {"path": 5, "contents": "x"},  # non-str path
+                {"path": "BAD.md", "contents": 42},  # non-str contents
+                {"path": "SKILL.md", "contents": "good"},  # valid
+            ]
+        }
+        with patch(
+            "kiro_crew.skill_providers.skillsh._sync_fetch_json",
+            return_value=payload,
+        ):
+            bundle = await SkillsShProvider().fetch_skill_bundle("o/r/s")
+        assert bundle == [("SKILL.md", "good")]
+        # every returned entry is (str, str) so the install handler's
+        # c.encode("utf-8") can never raise.
+        assert all(isinstance(p, str) and isinstance(c, str) for p, c in bundle)
 
 
 class TestIsInternalUrlSSRF:

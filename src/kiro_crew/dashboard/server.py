@@ -1289,6 +1289,8 @@ async def start_dashboard(
     app.router.add_put("/api/telegram/config", handlers.api_telegram_config_save)
     app.router.add_get("/api/webex/config", handlers.api_webex_config_get)
     app.router.add_put("/api/webex/config", handlers.api_webex_config_save)
+    app.router.add_get("/api/wecom/config", handlers.api_wecom_config_get)
+    app.router.add_put("/api/wecom/config", handlers.api_wecom_config_save)
 
     # Script Hooks
     app.router.add_get("/api/hooks", handlers.api_hooks)

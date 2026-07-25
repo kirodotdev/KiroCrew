@@ -35,6 +35,82 @@ logger = logging.getLogger(__name__)
 # Overflow gets an immediate JSON-RPC busy error instead of silence.
 PENDING_CALLS_MAX = 32
 
+# Max cancelled-request ids retained. ``notifications/cancelled`` can arrive
+# for any request id over the life of the (long-lived, per-session) MCP server
+# process; retaining them in an unbounded set leaks one entry per cancel. Once
+# this cap is reached the oldest ids are evicted FIFO.
+CANCELLED_IDS_MAX = 1024
+
+
+def _evict_oldest_evictable(
+    cancelled_ids: set[str],
+    order: "collections.deque[str]",
+    protected: set[str],
+) -> bool:
+    """Discard the oldest cancellation id that is NOT protected.
+
+    ``protected`` holds the ids of the currently active and still-queued
+    requests. Evicting one of those would drop a cancellation flag before the
+    dispatch loop consumes it, letting a cancelled queued call execute -- so
+    protected ids are rotated to the back of ``order`` and kept. Returns True
+    if a (non-protected or stale) id was evicted, False if only protected ids
+    remain (the caller then tolerates a bounded overflow -- ``protected`` is
+    bounded by the pending-queue cap + 1, far below ``CANCELLED_IDS_MAX``).
+    """
+    for _ in range(len(order)):
+        oldest = order.popleft()
+        if oldest in protected and oldest in cancelled_ids:
+            # Live request -- keep its cancellation flag; move to the back.
+            order.append(oldest)
+            continue
+        # Non-protected id, or a stale deque entry already gone from the set
+        # (``discard`` is a no-op for absent ids).
+        cancelled_ids.discard(oldest)
+        return True
+    return False
+
+
+def _remember_cancelled_id(
+    cancelled_ids: set[str],
+    order: "collections.deque[str]",
+    rid: str,
+    cap: int = CANCELLED_IDS_MAX,
+    protected: Optional[set[str]] = None,
+) -> None:
+    """Record a cancelled request id, bounding memory growth FIFO.
+
+    ``cancelled_ids`` holds membership (source of truth); ``order`` tracks
+    insertion order for eviction. When the number of live ids exceeds ``cap``,
+    the oldest *evictable* ids are dropped until back at the cap. Ids listed in
+    ``protected`` (the active + still-queued requests) are never evicted, so a
+    flood of unrelated cancels can never drop a live request's cancellation
+    flag and let a cancelled queued call execute (HIGH). Idempotent: a repeated
+    id is not re-appended. Kept module-level (not a closure) so the bound is
+    unit-testable.
+    """
+    if rid in cancelled_ids:
+        return
+    cancelled_ids.add(rid)
+    order.append(rid)
+    protected = protected or set()
+    # Two independent bounds keep the pair from leaking:
+    #   1. Set bound -- evict oldest evictable ids once membership exceeds cap.
+    #   2. Deque bound -- completion sites discard consumed ids from the *set*
+    #      only (the deque is untouched), so without this second guard the
+    #      deque would accumulate one stale entry per cancel and grow without
+    #      limit even while the set stays small. Popping stale entries (already
+    #      discarded from the set) is harmless.
+    # Eviction skips protected ids (rotating them to the back); if only
+    # protected ids remain, ``_evict_oldest_evictable`` returns False and we
+    # stop -- a bounded overflow is preferable to executing a cancelled call.
+    while len(cancelled_ids) > cap and order:
+        if not _evict_oldest_evictable(cancelled_ids, order, protected):
+            break
+    while len(order) > cap:
+        if not _evict_oldest_evictable(cancelled_ids, order, protected):
+            break
+
+
 # Thread-local cancel event set by run_mcp_stdio_loop worker threads.
 # Cooperative tools (wait, spawn_sub_agents) should call is_tool_cancelled()
 # in their polling loops.
@@ -468,10 +544,34 @@ def run_mcp_stdio_loop(
     _result_ready = threading.Event()
     _result_box: list = []  # [response_payload] or [] if cancelled
     _cancelled_ids: set = set()
+    # Insertion-order tracker for _cancelled_ids so it can be pruned FIFO once
+    # it reaches CANCELLED_IDS_MAX (prevents unbounded growth on long-lived
+    # per-session MCP processes that receive many cancels). Bounding is done by
+    # the module-level _remember_cancelled_id() so it is unit-testable.
+    _cancelled_order: collections.deque[str] = collections.deque()
+
     _current_tool_name: str = ""
     _worker_audited: list = [False]  # [bool], guarded by _result_lock
     # tools/call requests received while a worker was busy, dispatched FIFO.
     _pending_calls: collections.deque[dict[str, Any]] = collections.deque()
+
+    def _live_request_ids() -> set[str]:
+        """Ids of the active + still-queued requests whose cancellation flags
+        must survive FIFO eviction.
+
+        If a flood of unrelated cancels evicted one of these before the
+        dispatch loop consumed it (``str(req_id) in _cancelled_ids``), a
+        cancelled queued call would execute -- for a destructive tool that is a
+        data-mutation path. Passed to ``_remember_cancelled_id`` as protected.
+        """
+        ids: set[str] = set()
+        if _current_req_id is not None:
+            ids.add(str(_current_req_id))
+        for _pc in _pending_calls:
+            _pcid = _pc.get("id")
+            if _pcid is not None:
+                ids.add(str(_pcid))
+        return ids
 
     def _sel_audit(outcome: str, tool_name: str, req_id: Any) -> None:
         """Emit a SEL audit event for a tool invocation outcome.
@@ -554,6 +654,9 @@ def run_mcp_stdio_loop(
                             # arrived after the worker delivered) -- audit it.
                             _sel_audit("cancelled", _current_tool_name, _current_req_id)
                         _result_box.clear()
+                        # Consumed: drop the id so a completed request never
+                        # lingers in the cancelled set.
+                        _cancelled_ids.discard(str(_current_req_id))
                     _current_req_id = None
                     _cancel_event = None
                     _result_ready.clear()
@@ -573,7 +676,12 @@ def run_mcp_stdio_loop(
                 params = req.get("params", {})
                 cancelled_rid = params.get("requestId")
                 if cancelled_rid is not None:
-                    _cancelled_ids.add(str(cancelled_rid))
+                    _remember_cancelled_id(
+                        _cancelled_ids,
+                        _cancelled_order,
+                        str(cancelled_rid),
+                        protected=_live_request_ids(),
+                    )
                     if str(cancelled_rid) == str(_current_req_id) and _cancel_event:
                         _cancel_event.set()
                         logger.info("cancel received for in-flight request %s", cancelled_rid)
@@ -626,6 +734,9 @@ def run_mcp_stdio_loop(
                     # after the worker delivered) -- audit it.
                     _sel_audit("cancelled", _current_tool_name, _current_req_id)
                 _result_box.clear()
+                # Consumed: drop the id so a completed request never lingers
+                # in the cancelled set.
+                _cancelled_ids.discard(str(_current_req_id))
             _current_req_id = None
             _cancel_event = None
             _result_ready.clear()
@@ -655,11 +766,21 @@ def run_mcp_stdio_loop(
         elif method == "notifications/initialized":
             pass
         elif method == "notifications/cancelled":
-            # Cancel for a request that already completed -- ignore
+            # Cancel for a request that already completed -- ignore. Route
+            # through the bounded recorder (not a raw set.add) so this idle
+            # path honors the FIFO cap and keeps ``_cancelled_ids`` and
+            # ``_cancelled_order`` in lockstep -- a raw add would grow the set
+            # past the cap while the deque lagged, later crashing the eviction
+            # loop with an empty-deque popleft.
             params = req.get("params", {})
             cancelled_rid = params.get("requestId")
             if cancelled_rid is not None:
-                _cancelled_ids.add(str(cancelled_rid))
+                _remember_cancelled_id(
+                    _cancelled_ids,
+                    _cancelled_order,
+                    str(cancelled_rid),
+                    protected=_live_request_ids(),
+                )
         elif method == "tools/list":
             excluded = _resolve_excluded_tools()
             tools = list_tools_fn()

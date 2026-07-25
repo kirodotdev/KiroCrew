@@ -77,8 +77,16 @@ class SkillsShProvider:
         if data is None:
             return []
 
-        # skills.sh returns {"skills": [...]} or a flat list — handle both
-        items = data if isinstance(data, list) else data.get("skills", [])
+        # skills.sh returns {"skills": [...]} or a flat list — handle both.
+        # Guard the scalar case too: a JSON string/number body ("maintenance",
+        # an error page) is not a list and has no .get() (AttributeError), and
+        # {"skills": null} yields a non-list -> items[:limit] raises TypeError.
+        # Either way ProviderRegistry.search would swallow it and silently zero
+        # ALL skillsh results. Coerce anything that isn't a list to [] instead.
+        raw_items = data if isinstance(data, list) else (
+            data.get("skills") if isinstance(data, dict) else None
+        )
+        items: list[Any] = raw_items if isinstance(raw_items, list) else []
         results: list[SkillSearchResult] = []
         for item in items[:limit]:
             if not isinstance(item, dict):
@@ -172,17 +180,33 @@ class SkillsShProvider:
             return None
         url = f"{self._config.api_base}/download/{urllib.parse.quote(skill_id, safe='/')}"
         data = await _fetch_json(url)
-        if data is None:
+        # skills.sh is untrusted external input: an error/maintenance payload (or
+        # a CDN interposing its SPA HTML) can be valid JSON that is not an object,
+        # so guard the shape before .get() — a bare data.get() on a list/str/number
+        # raises AttributeError and the caller converts a clean not-found into a
+        # misleading 502 + spurious error audit. Mirrors the isinstance guard in
+        # search() above.
+        if not isinstance(data, dict):
             return None
 
-        files = data.get("files", [])
-        if not files:
+        files = data.get("files")
+        if not isinstance(files, list) or not files:
             return None
 
         result: list[tuple[str, str]] = []
         for f in files:
+            # Each entry and its path/contents are attacker-controllable. A
+            # non-dict entry crashes at f.get(); a truthy non-string contents
+            # (e.g. a JSON number) survives the checks below and later blows up
+            # the install handler's `c.encode("utf-8")` with AttributeError; a
+            # non-string path raises TypeError at the `".." in path` check.
+            # Coerce/drop instead of trusting, matching search()'s idiom.
+            if not isinstance(f, dict):
+                continue
             path = f.get("path", "")
             contents = f.get("contents", "")
+            if not isinstance(path, str) or not isinstance(contents, str):
+                continue
             if not path or not contents:
                 continue
             # Skip paths with traversal attempts

@@ -2524,6 +2524,7 @@
       "defaultValue": {
         "enabled": false,
         "allowed_users": [],
+        "allow_all_users": false,
         "ws_url": "wss://openws.work.weixin.qq.com",
         "soft_threshold_pct": 80,
         "hard_threshold_pct": 95
@@ -2574,6 +2575,22 @@
       "hasChildren": true,
       "enumValues": null,
       "defaultValue": null
+    },
+    {
+      "path": "wechat.allow_all_users",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "wechat"
+      ],
+      "label": "Allow All Users",
+      "help": "Let every member of the WeCom organization DM the bot, bypassing the allow-list. Safe-ish because a WeCom AI bot is reachable only inside your own org tenant (unlike globally addressable bots), but it grants agent access to the whole company. Default off.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "wechat.ws_url",

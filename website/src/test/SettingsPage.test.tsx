@@ -25,6 +25,7 @@ vi.mock('../pages/settings/NotificationsPanel', () => ({ NotificationsPanel: () 
 vi.mock('../pages/settings/SlackPanel', () => ({ SlackPanel: () => <div data-testid="slack-panel" /> }))
 vi.mock('../pages/settings/DiscordPanel', () => ({ DiscordPanel: () => <div data-testid="discord-panel" /> }))
 vi.mock('../pages/settings/TelegramPanel', () => ({ TelegramPanel: () => <div data-testid="telegram-panel" /> }))
+vi.mock('../pages/settings/WeComPanel', () => ({ WeComPanel: () => <div data-testid="wecom-panel" /> }))
 vi.mock('../pages/settings/GeneralPanel', () => ({ GeneralPanel: () => <div data-testid="general-panel" /> }))
 
 vi.mock('../store', () => ({ useAppSelector: () => '1.0.0' }))
@@ -87,5 +88,15 @@ describe('SettingsPage tabs', () => {
   it('renders the TelegramPanel when the telegram tab is active', () => {
     renderAt('/settings?tab=telegram')
     expect(screen.getByTestId('telegram-panel')).toBeInTheDocument()
+  })
+
+  it('lists the WeCom tab', () => {
+    renderAt('/settings')
+    expect(screen.getByText('WeCom')).toBeInTheDocument()
+  })
+
+  it('renders the WeComPanel when the wecom tab is active', () => {
+    renderAt('/settings?tab=wecom')
+    expect(screen.getByTestId('wecom-panel')).toBeInTheDocument()
   })
 })

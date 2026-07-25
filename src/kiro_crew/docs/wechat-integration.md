@@ -63,6 +63,11 @@ own, and it has no buttons (so `OPTIONS` arrive as plain text).
 
 - Authorized senders: the **owner** (`KIROCREW_OWNER_ID`) plus anyone listed in
   `allowed_users`. With no owner and an empty list, nobody gets in.
+- Whole-company access: set `"allow_all_users": true` (or flip **Allow all
+  organization members** in Settings → WeCom) to skip listing each userid.
+  This is an explicit opt-in — an empty list never means "everyone" — and it
+  works because a WeCom AI bot is only reachable inside your own org tenant.
+  Messages without a userid are still dropped.
 - The WeCom AI bot carries direct messages only — one conversation per userid.
 - Anyone else is quietly dropped and recorded in the audit log.
 

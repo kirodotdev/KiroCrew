@@ -351,6 +351,11 @@ class DefaultTunnelProvider:
         # standalone ``/api/tunnel/status`` payload is byte-identical to today.
         return None
 
+    async def ensure_available(self, *, install: bool = True) -> str:
+        # Standalone never auto-provisions a tunnel — pure no-op, so a shared
+        # dashboard link falls back to the local host:port exactly as today.
+        return "disabled"
+
 
 class DefaultTelemetryProvider:
     """No-op telemetry; RUM stays disabled (frontend shim already no-op)."""

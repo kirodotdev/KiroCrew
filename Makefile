@@ -20,9 +20,19 @@ build: frontend backend
 
 frontend:
 	bash ensure-node.sh || true
+	# `cat ... || true`, not `cat ... &&`: on a first run where ensure-node.sh
+	# could not record a bin dir (no network, unsupported platform, or node
+	# already fine on PATH but the write failed), the marker file is absent and
+	# `cat` exits 1. With `&&` chaining that non-zero exit aborts the whole
+	# recipe line, so the target fails before npm is ever reached. An absent
+	# marker must degrade to "use whatever node is on PATH", not stop the build.
 	cd website && \
-	  NBD="$$(cat $$HOME/.kirocrew/node-bin-dir 2>/dev/null)" && \
-	  { [ -z "$$NBD" ] || export PATH="$$NBD:$$PATH"; } && \
+	  NBD="$$(cat $$HOME/.kirocrew/node-bin-dir 2>/dev/null || true)"; \
+	  { [ -z "$$NBD" ] || export PATH="$$NBD:$$PATH"; }; \
+	  if ! command -v npm >/dev/null 2>&1; then \
+	    echo "ERROR: npm not found. Install Node >= 18 (see ensure-node.sh) and re-run." >&2; \
+	    exit 1; \
+	  fi; \
 	  if [ -f package-lock.json ]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi && \
 	  npm run build
 	rm -rf src/kiro_crew/static/dist
@@ -31,9 +41,19 @@ frontend:
 
 backend:
 	bash ensure-python.sh || true
-	PY="$$(cat $$HOME/.kirocrew/python-bin 2>/dev/null)"; [ -n "$$PY" ] || PY="$(PY)"; \
+	# Same `|| true` reasoning as the frontend target: an absent marker file must
+	# fall back to $(PY), not abort the recipe.
+	PY="$$(cat $$HOME/.kirocrew/python-bin 2>/dev/null || true)"; [ -n "$$PY" ] || PY="$(PY)"; \
 	  if [ -x $(VENV)/bin/python ] && ! $(VENV)/bin/python -c 'import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)'; then \
 	    echo "  → recreating $(VENV) (existing interpreter < 3.10)"; rm -rf $(VENV); fi; \
+	  if ! "$$PY" -c 'import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)' 2>/dev/null; then \
+	    echo "ERROR: '$$PY' is not Python >= 3.10 (package requires-python is >=3.10)." >&2; \
+	    echo "       Without this gate the venv is built from a too-old interpreter, the" >&2; \
+	    echo "       version guard above deletes it on every run, and the install either" >&2; \
+	    echo "       backtracks forever or crashes at import. Provision 3.10+ first:" >&2; \
+	    echo "         bash ensure-python.sh   # or: make backend PY=python3.12" >&2; \
+	    exit 1; \
+	  fi; \
 	  test -x $(VENV)/bin/python || "$$PY" -m venv $(VENV)
 	$(PIP) install --upgrade pip setuptools wheel
 	# --prefer-binary: on hosts below the modern manylinux baseline (e.g. Amazon
@@ -53,9 +73,16 @@ test: build
 
 # Self-contained pip wheel: builds + stages the dashboard, then produces a
 # wheel that bundles the SPA (see setup.py BuildWithFrontend + MANIFEST.in).
-wheel: frontend
-	$(PY) -m pip install --upgrade build
-	$(PY) -m build --wheel
+#
+# Runs through the venv the `backend` target provisions rather than a bare
+# `$(PY) -m pip install --upgrade build`: on hosts whose system python3 is older
+# than 3.10 (Amazon Linux 2023 ships 3.9) that bare form installs `build` into
+# the *system* interpreter — mutating it without a venv, and tripping PEP 668
+# "externally-managed-environment" where the marker exists. Depending on
+# `backend` guarantees a >= 3.10 venv exists first.
+wheel: frontend backend
+	$(PIP) install --upgrade build
+	$(VENV)/bin/python -m build --wheel
 
 # Frozen standalone backend binary (no system Python needed). Stages the
 # dashboard first so it's embedded in the bundle. Host-arch only (UNIVERSAL=0):
@@ -66,8 +93,16 @@ backend-bin: frontend
 # Full double-clickable desktop app. macOS: ONE universal DMG (arm64 + x86_64,
 # needs an Apple-Silicon host with Rosetta 2 — see docs/DESKTOP_APP.md;
 # UNIVERSAL=0 for a faster host-arch-only build). Linux: AppImage (host arch).
+#
+# build-desktop.sh runs `npm ci` / `npm run build` itself, so it needs node on
+# PATH. It provisions its own uv + PBS interpreter but NOT node, so bootstrap
+# node here — otherwise a first `make desktop` on a node-less host dies at the
+# script's npm step instead of installing it like every other target does.
 desktop:
-	bash packaging/build-desktop.sh
+	bash ensure-node.sh || true
+	NBD="$$(cat $$HOME/.kirocrew/node-bin-dir 2>/dev/null || true)"; \
+	  { [ -z "$$NBD" ] || export PATH="$$NBD:$$PATH"; }; \
+	  bash packaging/build-desktop.sh
 
 clean:
 	rm -rf build dist *.egg-info src/*.egg-info \

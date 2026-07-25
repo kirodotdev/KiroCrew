@@ -3172,7 +3172,9 @@ def _exfil_exempt_hosts() -> frozenset[str]:
 
 
 def _exfil_url_warning(
-    domain: str, path_and_query: str, exempt_hosts: frozenset[str]
+    domain: str,
+    path_and_query: str,
+    exempt_hosts: frozenset[str],
 ) -> str | None:
     """Classify one matched URL — the single per-URL exfil verdict.
 
@@ -3225,7 +3227,9 @@ def _exfil_url_warning(
     # decode-and-scan just above catches ENCODED credentials on every host, and
     # the heavy percent-encoding detector below runs even for exempted hosts, so
     # an encoded exfil payload to a trusted tenant is still caught.
-    if domain.lower() not in exempt_hosts:
+    _dom = domain.lower()
+    _exempt = _dom in exempt_hosts
+    if not _exempt:
         # (Valid S3 presigned URLs were already exempted at the top, so no
         # _is_safe_presigned re-check is needed here.)
         if len(query) >= _EXFIL_QUERY_MIN_LEN:
