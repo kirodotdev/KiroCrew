@@ -629,3 +629,140 @@ process — but the contract DIFFERS from builtins (`auto_research` etc.):
 - Dark mode: never pair a solid light accent bg with hardcoded dark text for
   selected states — use a translucent accent tint (e.g. `rgba(124,58,237,.14)`)
   with `var(--text)`/`var(--muted)`. Self-contained pills (own bg+fg) are fine.
+
+## Don't Reinvent the Dashboard (default posture)
+
+By DEFAULT, apps should look and behave like the dashboard they live in:
+
+- **Theme tokens over hardcoded colors**: `var(--accent)`, `var(--accent-fg)`,
+  `var(--accent-subtle)`, `var(--danger)`/`var(--danger-subtle)`, `var(--ok)`,
+  `var(--bg)`/`var(--card)`/`var(--border)`/`var(--text)`/`var(--muted)`.
+  Hardcoded hex breaks the moment a user picks a custom palette (and error
+  banners hardcoded for light mode glow in dark mode). Give tokens fallbacks
+  (`var(--accent, #7c3aed)`) so old hosts still render.
+- **Host components over hand-rolled ones**: the `@kirocrew/ui` module-map
+  export ships `Btn, Input, SearchInput, Badge, Toggle, EmptyState, Skeleton,
+  ContentSkeleton, PageHeader, SegmentedControl, MarkdownRenderer` and more;
+  `lucide-react` ships a subset of real icons. Feature-detect
+  (`window.__kirocrew_modules?.['@kirocrew/ui']`) and keep a small fallback for
+  old hosts — a thin wrapper per component (host when available, fallback
+  otherwise) keeps call sites clean.
+
+This is the default, **not a straitjacket**: if your app has a deliberate,
+preferred custom style or a novel interaction with no host equivalent (bespoke
+visualizations, a branded look, domain-specific widgets), a custom design is a
+legitimate choice — make it consciously and consistently, not as an accident of
+copy-pasted inline styles. Custom visuals should still respect the theme's
+background/text tokens so they don't break light/dark/custom palettes.
+
+## Embedded Chat (ChatEmbed) — native chat inside your app
+
+The host SDK ships the dashboard's real chat renderer. Use it instead of
+hand-rolling a transcript view — markdown, tool activity, streaming, and turn
+grouping come for free and stay consistent with the main chat.
+
+- Access: `const sdk = window.__kirocrew_modules?.['@kirocrew/app-sdk']`, then
+  render `sdk.ChatEmbed` with `{ slotKey, agent?, placeholder? }`. Feature-detect
+  and keep a lightweight fallback — the module map can lag one gateway version.
+- `slotKey` binds the embed to a chat slot (`<app-name>-<entity>` is the
+  convention). The embed polls `/api/chat/slots/<key>` (1s while running, 5s
+  idle) and POSTs to `/api/chat`.
+- **Manifest permissions (silent-failure trap):** the SDK gates fetches by the
+  app's `permissions.api` allowlist. ChatEmbed needs `"/api/chat"` +
+  `"/api/chat/*"`; if your users click Approve/Trust on tool cards you ALSO need
+  `"/api/approvals"` + `"/api/approvals/*"` — without it the button 403s with no
+  visible error.
+- Chrome quirks (as of current main): the embed draws its own bordered card,
+  a title strip, and an input row with a top border, and its initial auto-scroll
+  fires before markdown/tool cards finish layout (long transcripts open
+  mid-scroll). **Stopgap — tracked in issue #510** (ChatEmbed frameless/scroll
+  props): until that lands, override from the app with scoped `!important` CSS
+  on the embed's Tailwind classes for the chrome, and a small keeper that pins
+  the embed's scroller to the bottom (release when the user scrolls up, re-pin
+  near bottom). These overrides couple you to host DOM internals the repo has
+  never promised — expect them to break on upstream changes, keep them minimal,
+  and delete them when #510 ships.
+
+## Worker Slots — apps that own agent sessions
+
+**Stopgap — tracked in issue #509** (a supported `acquire_worker_slot(app,
+project, trust=…)` helper): these are underscore-private slot internals, not a
+promised API. Until #509 lands they are the only mechanism, but treat this
+recipe as scaffolding — re-check it against the SDK when you update an app.
+
+If your app creates chat slots for background/worker agents (spec writers,
+researchers), stamp these attributes — and re-stamp on EVERY acquisition, not
+just creation, because gateway restarts and other code paths (e.g. ChatEmbed's
+own POST) can recreate slots without them:
+
+- `slot._app = "<app-name>"` — keeps the session out of the main chat sidebar.
+- **Trust — grant it BOUNDED, never blanket-forever.** Approval prompts render
+  ONLY in the main chat UI, so an untrusted worker inside an app embed stalls
+  silently on its first shell command — but the fix is a *scoped* grant, not a
+  permanent one:
+  - *Preferred:* pattern-scoped trust via `slot._trusted_patterns` (supported
+    by `chat_runner`) — allowlist only the tool/command shapes your worker
+    actually needs.
+  - *If you must use blanket `slot._trust = True`:* time-box it. Mirror the
+    in-repo precedent (`auto_research`: 24h TTL, then trust expires and
+    re-authorization re-grants it) rather than re-stamping `True`
+    unconditionally forever. A permanent unscoped auto-approve worker silently
+    exempts a growing class of sessions from the interactive-approval layer —
+    a security regression that compounds as apps adopt the pattern.
+  - Always SEL-audit the grant, whichever form it takes.
+- `slot.project = <working_dir>` — sets the CLI process cwd (chat_runner runs
+  `cwd=slot.project`). Without it the agent prefixes every command with
+  `cd <long-path> && …`, which turns every tool pill in the transcript into
+  identical truncated noise; with it, commands are relative and readable, and
+  the worker inherits project-scoped steering files.
+
+## Positioning — your app is NOT in an iframe
+
+App UIs mount directly into the dashboard DOM. `position: fixed` therefore
+escapes your panel and covers the ENTIRE dashboard (sidebar, header). For
+overlays/modals scoped to your app: set `position: relative` on your app root
+and use `position: absolute; inset: 0` for the overlay.
+
+## Backend Change Ergonomics
+
+- UI hot-swaps in ~1s (dev mode); backend hooks load only on gateway restart or
+  an app disable→enable cycle. Batch backend edits and plan one reload.
+- Validation loop: `python3 -m py_compile backend/routes.py` then copy to the
+  installed dir — it takes effect on the NEXT reload, silently. Track what's
+  pending.
+- Verify the served UI module actually updated before debugging "my change
+  doesn't work": `curl -s <gateway>/apps/<name>/ui/index.mjs | md5sum` vs
+  `md5sum <src>/ui/index.mjs`. A mismatch means clobbered symlink or dev mode
+  off.
+- Probe a backend route without auth plumbing: an auth-gated route returning
+  401/403 proves it is REGISTERED; 404 means the module didn't load.
+
+## Graduating an External App to a Builtin
+
+When an app proves out and should ship with KiroCrew, port it into the repo —
+the contracts CHANGE on both sides. Template: `src/kiro_crew/apps/builtins/issue_radar/`.
+
+- Layout: `src/kiro_crew/apps/builtins/<snake_name>/` with `app.json`,
+  `backend/routes.py`, optional `skills/<skill>/SKILL.md`, `tests/`.
+- **Backend contract flips**: builtins use `register_routes(app: web.Application) -> None`
+  registering FULL paths (`/api/apps/<name>/…`) directly on the router — the
+  external AppRoute-list/RouteRegistry contract does not apply. Wrap every
+  handler in an enabled-check gate (see issue_radar's `_require_enabled`):
+  builtin routes exist at startup even while the app is disabled.
+- **Wiring**: in-process builtin backends must be listed in
+  `BUILTIN_NAMES` (`apps/builtins/__init__.py`) — that startup loop is what
+  calls `register_routes`. (Subprocess-backend builtins like dev_fleet use
+  `backend.entryPoint` + port instead and are NOT listed.) App Store discovery
+  is separate and automatic via `discover_builtin_apps()` scanning `app.json`.
+- **UI becomes a real React page**: `website/src/apps/<name>/…Page.tsx`
+  registered in `website/src/apps/builtinRegistry.ts` (lazy import). You now
+  import MarkdownRenderer, lucide-react, the ui kit, and app-sdk components
+  directly — delete the module-map feature detection and CSS override hacks.
+  Note ChatEmbed requires an `AppApiProvider` ancestor; builtin pages mount
+  their own.
+- Icon/assets: `website/public/app-assets/<name>/`; manifest `iconUrl`
+  `/app-assets/<name>/icon.svg`. Skills ride `manifest.skills` (paths relative
+  to the app root), registered at enable-time.
+- Keep `defaultEnabled: false`; users opt in via the App Store.
+- Full worktree + build-gate discipline applies (see the kirocrew-worktree-dev
+  skill) — this is now KiroCrew source.
