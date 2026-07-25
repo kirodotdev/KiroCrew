@@ -1,6 +1,6 @@
 # Conversation History Module
 
-Last Updated: 2026-07-24 (on-loop offload discipline enforcement via OnLoopPersistError + CI-enforced strict mode in the e2e gateway job + deferred single-writer-queue alternative; foreign-append timestamp-first bounded dedup with archive of ambiguous drops + creation-time uuid successor identity; agent_usage roster ordering, folder_id in session metadata, _SEARCH_SCAN_WINDOW relevance search; session archive, configurable autocompact)
+Last Updated: 2026-07-25 (foreign-append matcher hardened to a count-bounded, exact-`(ts,role,content)`-first two-pass with ambiguity-guarded ts-only matching — fixes colliding-timestamp duplication on coarse clocks AND the ts-greedy data-loss regression; on-loop offload discipline enforcement via OnLoopPersistError + CI-enforced strict mode in the e2e gateway job + deferred single-writer-queue alternative; foreign-append timestamp-first bounded dedup with archive of ambiguous drops + creation-time uuid successor identity; agent_usage roster ordering, folder_id in session metadata, _SEARCH_SCAN_WINDOW relevance search; session archive, configurable autocompact)
 
 ## Overview
 
@@ -127,26 +127,41 @@ no longer destroy older turns.
   lock in that gap. A bare `meta + frozen + window` replace would then delete
   that acknowledged append, so the save first scans the on-disk WINDOW region
   (the bytes after the frozen prefix) for lines the in-memory window does not
-  represent and carries them into the payload as `foreign_lines`. A disk line is
-  classified as **ours** (dropped — the window re-serializes it) when EITHER:
-  (a) its `ts` matches a window entry — covers in-place edits that keep `ts` but
-  change content; OR (b) as a **count-bounded** tiebreak, its `(role, content)`
-  matches an **as-yet-unconsumed** window entry — covers a same-process
-  `append_if_absent` durable copy persisted with a fresh `ts` (the workflow/
-  cron-result injectors reflect the message in the slot AND write it via
-  `append_if_absent_off_loop`, so the same message legitimately exists twice with
-  different timestamps and must NOT be double-persisted). Only a line matching
-  NEITHER is foreign and preserved.
-  - **Timestamp-first identity (the fix for GPT 5.6's HIGH data-loss finding).**
-    `ts` is the primary identity; `(role, content)` is only a bounded tiebreak in
-    which **each window entry absorbs at most ONE disk copy**. So if the on-disk
-    window region holds two lines with identical `(role, content)` but distinct
-    timestamps — the window's own persisted copy (ts-matched, dropped) PLUS a
-    *genuinely distinct* event from another process (e.g. a cron that reports the
-    same status text twice) — the first is folded and the **second is preserved
-    as a foreign append**. An earlier plain-`(role, content)`-set match collapsed
-    both real events into one; the bounded, timestamp-first identity fixes it
-    while still folding the common `append_if_absent` fresh-`ts` copy.
+  represent and carries them into the payload as `foreign_lines`. Matching is
+  **count-bounded** (deques of window-entry indices; each disk line matches at
+  most one window entry and each window entry absorbs at most one disk line) and
+  runs in TWO passes so the outcome is independent of disk-line order:
+  - **Pass 1 — exact `(ts, role, content)`** across all disk lines: an unchanged
+    re-serialization, unambiguously **ours** (dropped — the window re-writes it).
+    Resolving these first is what makes a burst of messages sharing ONE `ts`
+    (coarse clocks — notably Windows' ~15 ms tick — stamp rapid appends with an
+    identical `datetime.now().isoformat()`) match one-for-one instead of being
+    mis-classified and duplicated on disk.
+  - **Pass 2**, for each still-unmatched disk line, in order: (a) a **ts-only**
+    match — an in-place edit keeps `ts` but changes content, so the window's
+    version wins and the disk line is dropped — but applied ONLY when the `ts`
+    group is an unambiguous 1:1 (exactly one unmatched window entry AND exactly
+    one unmatched disk line share it); OR (b) a bounded `(role, content)`
+    tiebreak against an as-yet-unconsumed window entry — covers a same-process
+    `append_if_absent` durable copy persisted with a fresh `ts` (the workflow/
+    cron-result injectors reflect the message in the slot AND write it via
+    `append_if_absent_off_loop`, so the same message legitimately exists twice
+    with different timestamps and must NOT be double-persisted). A line matching
+    NEITHER is foreign and preserved.
+  - **Count-bounded, exact-first identity (the fix for GPT 5.6's HIGH data-loss
+    findings).** `(role, content)` is only a bounded tiebreak in which **each
+    window entry absorbs at most ONE disk copy**. So if the on-disk window region
+    holds two lines with identical `(role, content)` but distinct timestamps —
+    the window's own persisted copy PLUS a *genuinely distinct* event from
+    another process (e.g. a cron that reports the same status text twice) — the
+    first is folded and the **second is preserved as a foreign append** (an
+    earlier plain-`(role, content)`-set match collapsed both real events into
+    one). Symmetrically, because colliding timestamps make a ts-only match
+    AMBIGUOUS (a foreign append that happens to share the `ts` is
+    indistinguishable from an edited window entry), ts-only matching is applied
+    ONLY to unambiguous 1:1 `ts` groups; an ambiguous group preserves its disk
+    lines as foreign — favouring a rare stale duplicate over irreversibly
+    dropping an acknowledged cross-process append.
   - **Archive of ambiguous drops (no permanent loss).** A fresh-`ts` copy folded
     by tiebreak (b) is the genuinely ambiguous case (indistinguishable from a
     distinct same-content message without a stable id), so those drops are

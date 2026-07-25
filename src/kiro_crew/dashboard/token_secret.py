@@ -151,6 +151,21 @@ def _load_or_create_secret() -> bytes:
                 existing = key_path.read_bytes()
             except FileNotFoundError:
                 existing = b""
+            except OSError:
+                # A concurrent creator can hold the file open while it writes the
+                # fresh key; on Windows that read raises a sharing violation
+                # (PermissionError / WinError 32). This is TRANSIENT — back off and
+                # retry within the bounded loop rather than letting it propagate to
+                # the outer ephemeral fallback, which would make this racer diverge
+                # from the winner's persisted key (silent auth corruption). POSIX
+                # permits the concurrent read, so this branch is Windows-only; a
+                # genuinely unreadable file still degrades to ephemeral after the
+                # retry budget is exhausted (same as before, ~1s later).
+                logger.debug(  # nosemgrep: python-logger-credential-disclosure -- logs the path only, never key bytes
+                    "token signing key read contended at %s; retrying", key_path
+                )
+                time.sleep(_CREATE_BACKOFF_SECONDS)
+                continue
             if len(existing) >= _MIN_KEY_BYTES:
                 # Re-enforce 0600 at load time, not just at creation: perms may
                 # have been relaxed since (backup restore, manual edit,

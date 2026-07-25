@@ -8,6 +8,7 @@ import logging
 import re
 import time
 import uuid
+from collections import deque
 
 from kiro_crew import model_registry
 from kiro_crew.agent import KIRO_AGENTS_DIR
@@ -802,23 +803,52 @@ def _frozen_prefix_and_foreign_appends(
     # (role, content) used only as a COUNT-BOUNDED tiebreak so each window entry
     # absorbs at most ONE disk copy (see the module docstring / history.md).
     #
-    # ``window_ts`` maps each window entry's ``ts`` to its ``(role, content)`` so
-    # a ts-match can also decrement that entry's content budget — otherwise a
-    # ts-matched entry could ALSO absorb a later same-content disk line and
-    # over-collapse. ``remaining_rc`` is the per-``(role, content)`` budget of
-    # window entries still available to absorb a disk copy.
-    window_ts = {
-        e["ts"]: (e.get("role"), e.get("content", ""))
-        for e in window_entries
-        if e.get("ts")
-    }
-    remaining_rc: dict[tuple[object, object], int] = {}
-    for e in window_entries:
-        _k = (e.get("role"), e.get("content", ""))
-        remaining_rc[_k] = remaining_rc.get(_k, 0) + 1
-    consumed_ts: set[str] = set()
-    foreign: list[str] = []
-    dedup_dropped: list[str] = []
+    # Build COUNT-BOUNDED consumption budgets over the window entries so each
+    # on-disk window-region line is matched to AT MOST ONE window entry and each
+    # window entry absorbs AT MOST ONE disk line. Identity is checked in three
+    # tiers of decreasing confidence:
+    #   (a) exact (ts, role, content) — an unchanged re-serialization (the common
+    #       steady-save case), resolved first across ALL disk lines so a greedy
+    #       edit/tiebreak match can never steal an entry a later exact line needs;
+    #   (b) ts only — an in-place edit (same ``ts``, changed content: window wins);
+    #   (c) (role, content) only — a same-content copy persisted with a FRESH
+    #       ``ts`` (the ``append_if_absent`` case), routed to the archive.
+    # Keying every tier by COUNT (deques of entry indices guarded by a shared
+    # ``consumed`` flag) — rather than a ``ts -> entry`` dict plus a per-``ts``
+    # ``set`` — is what makes this correct when several messages share one ``ts``.
+    # Coarse system clocks (notably Windows' ~15ms tick) can stamp a burst of
+    # rapid appends with an IDENTICAL ``datetime.now().isoformat()``; the old
+    # dict/set collapsed those colliding-``ts`` entries to a single slot, so a
+    # genuine window line was mis-classified as a foreign append and DUPLICATED on
+    # disk. The bounded multiset below matches them one-for-one regardless of
+    # ``ts`` collisions.
+    exact_idx: dict[tuple[object, object, object], "deque[int]"] = {}
+    ts_idx: dict[object, "deque[int]"] = {}
+    rc_idx: dict[tuple[object, object], "deque[int]"] = {}
+    for _i, e in enumerate(window_entries):
+        _ets = e.get("ts")
+        _erole = e.get("role")
+        _econtent = e.get("content", "")
+        if _ets:
+            exact_idx.setdefault((_ets, _erole, _econtent), deque()).append(_i)
+            ts_idx.setdefault(_ets, deque()).append(_i)
+        rc_idx.setdefault((_erole, _econtent), deque()).append(_i)
+    consumed = [False] * len(window_entries)
+
+    def _take(dq: "deque[int] | None") -> bool:
+        """Consume the first not-yet-consumed entry index in ``dq`` (if any)."""
+        if not dq:
+            return False
+        while dq:
+            _idx = dq.popleft()
+            if not consumed[_idx]:
+                consumed[_idx] = True
+                return True
+        return False
+
+    # Parse the on-disk window-region lines once (skipping blank/corrupt/transient
+    # lines exactly as before), so the two matching passes share one parse.
+    disk_msgs: list[tuple[str, object, object, object]] = []  # (norm, ts, role, content)
     for ln in body[disk_older:]:
         if not ln.strip():
             continue
@@ -831,31 +861,72 @@ def _frozen_prefix_and_foreign_appends(
         role = entry.get("role")
         if role is None or role in _TRANSIENT_ROLES:
             continue
-        ts = entry.get("ts")
-        rc = (role, entry.get("content", ""))
         norm = ln if ln.endswith("\n") else ln + "\n"
-        # 1) ts-match: an in-place edit keeps the ``ts`` but changes content, so
-        #    the window's version wins. Consume the matched entry from the
-        #    content budget too so a later same-content line can't re-claim it.
-        if ts and ts in window_ts and ts not in consumed_ts:
-            consumed_ts.add(ts)
-            wkey = window_ts[ts]
-            if remaining_rc.get(wkey, 0) > 0:
-                remaining_rc[wkey] -= 1
-            continue  # same message (possibly edited in place) — window wins
-        # 2) content tiebreak (bounded): a window entry with this exact
-        #    (role, content) that no ts-match already consumed absorbs this disk
-        #    copy — the ``append_if_absent`` fresh-``ts`` case. A drop carrying a
-        #    DISTINCT non-empty ``ts`` is the genuinely ambiguous case (it could
-        #    be a distinct message we cannot tell apart without a stable id), so
-        #    route it through the archive; a ts-less / matching re-serialization
-        #    is a plain window copy and is dropped silently to avoid archive spam.
-        if remaining_rc.get(rc, 0) > 0:
-            remaining_rc[rc] -= 1
+        disk_msgs.append((norm, entry.get("ts"), role, entry.get("content", "")))
+
+    # Pass 1 — exact (ts, role, content): unambiguously our own unchanged
+    # re-serialization. Resolving these first makes the result independent of the
+    # disk-line order (an earlier edit/tiebreak match can no longer consume an
+    # entry that a later exact line requires).
+    handled = [False] * len(disk_msgs)
+    for _j, (_norm, ts, role, content) in enumerate(disk_msgs):
+        if ts and _take(exact_idx.get((ts, role, content))):
+            handled[_j] = True
+
+    foreign: list[str] = []
+    dedup_dropped: list[str] = []
+    # After the exact pass, an in-place EDIT (same ``ts``, changed content) is the
+    # only legitimate reason to drop a still-unmatched disk line by ``ts`` alone.
+    # But under COLLIDING timestamps a ts-only match is AMBIGUOUS: a foreign
+    # cross-process append that happens to share the ``ts`` is indistinguishable
+    # from an edited window entry, and greedily consuming the ts budget would
+    # silently DROP that acknowledged foreign line (data loss) — the exact guard
+    # this scan exists to uphold. So restrict ts-only matching to the UNAMBIGUOUS
+    # singleton case: a ``ts`` carried by EXACTLY ONE still-unmatched window entry
+    # AND EXACTLY ONE still-unmatched disk line. Any ts group with more than one
+    # unmatched line on either side is ambiguous, so its disk lines fall through
+    # to the content tiebreak / foreign preservation below (favouring a rare
+    # duplicate over irreversible data loss). Counts are taken from the
+    # post-exact-pass state and are static for pass 2 (the ``consumed`` guard in
+    # ``_take`` still prevents any double-consumption).
+    w_unmatched_ts: dict[object, int] = {}
+    for _i, e in enumerate(window_entries):
+        _wt = e.get("ts")
+        if _wt and not consumed[_i]:
+            w_unmatched_ts[_wt] = w_unmatched_ts.get(_wt, 0) + 1
+    d_unmatched_ts: dict[object, int] = {}
+    for _j, (_norm, ts, _role, _content) in enumerate(disk_msgs):
+        if ts and not handled[_j]:
+            d_unmatched_ts[ts] = d_unmatched_ts.get(ts, 0) + 1
+
+    # Pass 2 — for still-unmatched disk lines: ts-only (UNAMBIGUOUS in-place edit)
+    # then the bounded (role, content) tiebreak, else genuinely foreign.
+    for _j, (norm, ts, role, content) in enumerate(disk_msgs):
+        if handled[_j]:
+            continue
+        # ts-match: an in-place edit keeps the ``ts`` but changes content, so the
+        # window's version wins and the disk line is dropped silently — but ONLY
+        # when the ``ts`` group is an unambiguous 1:1 (else a colliding foreign
+        # append could be mistaken for the edit and lost).
+        if (
+            ts
+            and w_unmatched_ts.get(ts, 0) == 1
+            and d_unmatched_ts.get(ts, 0) == 1
+            and _take(ts_idx.get(ts))
+        ):
+            continue
+        # content tiebreak (bounded): a window entry with this exact
+        # (role, content) that no match already consumed absorbs this disk copy —
+        # the ``append_if_absent`` fresh-``ts`` case. A drop carrying a DISTINCT
+        # non-empty ``ts`` is the genuinely ambiguous case (it could be a distinct
+        # message we cannot tell apart without a stable id), so route it through
+        # the archive; a ts-less / matching re-serialization is a plain window
+        # copy and is dropped silently to avoid archive spam.
+        if _take(rc_idx.get((role, content))):
             if ts:
                 dedup_dropped.append(norm)
-            continue  # window already carries this content
-        # 3) genuinely foreign → preserve verbatim.
+            continue
+        # genuinely foreign → preserve verbatim.
         foreign.append(norm)
     # Cache the frozen prefix AND the foreign lines together, keyed on the
     # as-read (mtime, size). If this save's atomic_write later fails, the file

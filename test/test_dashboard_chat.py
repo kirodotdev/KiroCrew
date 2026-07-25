@@ -1407,6 +1407,115 @@ class TestInMemoryAuthority:
         contents = [m["content"] for m in disk]
         assert contents == [f"old msg {i}" for i in range(8)] + ["brand new msg"]
 
+    def test_append_only_colliding_ts_no_duplicate(self, tmp_path, monkeypatch):
+        """Colliding timestamps must not duplicate a genuine message on disk.
+
+        A coarse system clock (notably Windows' ~15ms tick) can stamp a burst of
+        rapid appends with an IDENTICAL ``datetime.now().isoformat()``. The
+        append-safe save must still match each on-disk window-region line to its
+        own window entry one-for-one — never mis-classifying a real window line
+        as a phantom "foreign append" and duplicating it. Regression for the
+        Windows ``Backend Tests`` failure in
+        ``test_append_only_preserves_full_disk_history``.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        # Freeze history.py's clock so every on-disk append shares ONE ts,
+        # reproducing the coarse-clock collision deterministically on any OS.
+        import datetime as _dt
+
+        from kiro_crew.dashboard.chat import _save_slot_to_history
+
+        _FROZEN = _dt.datetime(2026, 7, 25, 0, 0, 0, tzinfo=_dt.timezone.utc)
+
+        class _FrozenDateTime:
+            @classmethod
+            def now(cls, tz=None):
+                return _FROZEN
+
+        monkeypatch.setattr("kiro_crew.history.datetime", _FrozenDateTime)
+
+        state = _make_state(tmp_path)
+        log = state.conversation_log
+        # 8 messages on disk, ALL sharing the frozen ts.
+        for i in range(8):
+            log.append("dashboard:s5c", "user", f"old msg {i}")
+        disk = log.read_messages("dashboard:s5c")
+        # Every on-disk ts is identical — the exact condition that broke matching.
+        assert len({m.get("ts") for m in disk}) == 1
+
+        # Restore truncated to the last 3, re-appending WITH the persisted ts
+        # (mirrors production restore) — so those window entries also collide.
+        slot = state.get_or_create_slot("s5c")
+        for m in disk[5:]:
+            slot.append("user", m["content"], ts=m.get("ts", ""))
+        slot.drain()
+        slot._resumed_count = len(slot.messages)
+        slot._disk_window_len = len(slot.messages)
+        slot._disk_older_count = 5
+        slot.append("user", "brand new msg")
+        slot.drain()
+
+        _save_slot_to_history(state, slot)
+
+        # No phantom foreign append, nothing archived, full history preserved.
+        assert not (tmp_path / "archive").exists()
+        contents = [m["content"] for m in log.read_messages("dashboard:s5c")]
+        assert contents == [f"old msg {i}" for i in range(8)] + ["brand new msg"]
+
+    def test_append_only_colliding_ts_edit_preserves_foreign(self, tmp_path, monkeypatch):
+        """Colliding ts + in-place edit + foreign append must NOT drop the
+        foreign line (regression for GPT 5.6 HIGH on the count-bounded matcher).
+
+        The on-disk window region holds, sharing ONE coarse-clock ts: unchanged
+        ``A``, an acknowledged cross-process foreign append ``X``, and the
+        pre-edit copy of ``B`` — in that adversarial order (foreign BEFORE the
+        pre-edit copy). Memory holds ``A`` and the EDITED ``B'``. A greedy
+        ts-only match would consume ``X`` as if it were ``B``'s in-place edit and
+        silently DROP the acknowledged foreign append. The ambiguity guard must
+        instead preserve ``X`` (favouring a rare stale duplicate over
+        irreversible data loss).
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        import json as _json
+
+        from kiro_crew.dashboard.chat import _save_slot_to_history
+
+        state = _make_state(tmp_path)
+        log = state.conversation_log
+        t = "2026-07-25T00:00:00+00:00"  # single colliding timestamp
+
+        def _line(content: str) -> str:
+            return _json.dumps({"role": "user", "content": content, "ts": t}) + "\n"
+
+        # Craft the adversarial on-disk order directly: A, foreign X, pre-edit B.
+        path = log._path("dashboard:s5e")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            _json.dumps({"_type": "metadata", "created_at": t, "last_consolidated": 0})
+            + "\n"
+            + _line("msg A")
+            + _line("msg X (foreign)")
+            + _line("msg B"),
+            encoding="utf-8",
+        )
+
+        # Window: A unchanged, B edited in place (content changes, ts preserved).
+        slot = state.get_or_create_slot("s5e")
+        slot.append("user", "msg A", ts=t)
+        slot.append("user", "msg B (edited in place)", ts=t)
+        slot.drain()
+        slot._resumed_count = len(slot.messages)
+        slot._disk_window_len = len(slot.messages)
+        slot._dirty = True  # an in-place edit marks the slot dirty
+
+        _save_slot_to_history(state, slot)
+
+        contents = [m["content"] for m in log.read_messages("dashboard:s5e")]
+        # The acknowledged foreign append survived (no data loss) ...
+        assert "msg X (foreign)" in contents, "foreign append was dropped (data loss)"
+        # ... and the edited window content is present.
+        assert "msg B (edited in place)" in contents
+
     def test_append_only_no_duplicate_on_resave(self, tmp_path, monkeypatch):
         """Re-saving without new messages must not duplicate the tail on disk."""
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)

@@ -229,7 +229,6 @@ test/test_subagent_sizing.py::TestMacosMemoryProbe::test_zero_page_count_fails_o
 test/test_telegram_config_handlers.py::test_save_persists_token_and_config
 test/test_tips.py::TestStateFilePermissions::test_existing_world_readable_file_corrected_on_rewrite
 test/test_tips.py::TestStateFilePermissions::test_state_file_written_mode_600
-test/test_token_auth.py::test_signing_secret_persisted_across_loads
 test/test_transcribe.py::TestFindWhisper::test_configured_path_not_executable
 test/test_transcribe.py::TestFindWhisper::test_tilde_expansion
 test/test_vector_memory.py::TestSchemaInit::test_file_permissions

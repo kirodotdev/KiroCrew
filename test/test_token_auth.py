@@ -878,8 +878,12 @@ def test_signing_secret_persisted_across_loads(tmp_path, monkeypatch) -> None:
     key_file = tmp_path / ta._SECRET_KEY_FILE
     assert key_file.exists()
     assert len(s1) >= 32
-    # Owner-only permissions.
-    assert (key_file.stat().st_mode & 0o777) == 0o600
+    # Owner-only permissions. POSIX enforces this via chmod 0o600; Windows applies
+    # an owner DACL (icacls) that does not surface in st_mode (files report
+    # 0o666), so the POSIX-bit assertion is only meaningful off Windows (the
+    # Windows DACL path is covered by test_platform_compat::TestRestrictToOwner).
+    if os.name != "nt":
+        assert (key_file.stat().st_mode & 0o777) == 0o600
     # Second load returns the SAME secret (persistence).
     s2 = ta._load_or_create_secret()
     assert s1 == s2
@@ -937,8 +941,49 @@ def test_signing_secret_concurrent_first_init_converges(tmp_path, monkeypatch) -
     # Crux: every racer converged on the SINGLE key persisted on disk.
     assert all(r == on_disk for r in results), "concurrent inits diverged from the on-disk key"
     assert len(set(results)) == 1, "more than one distinct signing key was issued"
-    # Winner's create still locked the file down to owner-only.
-    assert (key_file.stat().st_mode & 0o777) == 0o600
+    # Winner's create still locked the file down to owner-only. POSIX enforces
+    # this via chmod 0o600; Windows applies an owner-only DACL (icacls) that does
+    # NOT surface in st_mode (files report 0o666), so the POSIX-bit assertion is
+    # only meaningful off Windows — the Windows DACL path has direct coverage in
+    # test_platform_compat::TestRestrictToOwner.
+    if os.name != "nt":
+        assert (key_file.stat().st_mode & 0o777) == 0o600
+
+
+def test_signing_secret_read_contention_retries_not_ephemeral(tmp_path, monkeypatch) -> None:
+    """A TRANSIENT read failure on the key file — e.g. a Windows sharing
+    violation while a concurrent creator holds it open to write the fresh key —
+    must be RETRIED, not degraded to an ephemeral secret. Otherwise racing
+    first-inits diverge from the persisted key (silent auth corruption). This is
+    the root cause of the flaky Windows `test_signing_secret_concurrent_first_init_converges`
+    divergence; reproduced deterministically here by faulting the first read.
+    """
+    import pathlib
+
+    from kiro_crew.dashboard import token_secret as ts
+
+    monkeypatch.setattr("kiro_crew.config.loader.config_dir", lambda: tmp_path)
+    key_file = tmp_path / ts._SECRET_KEY_FILE
+    persisted = b"K" * 48  # a valid, already-persisted key (>= 32 bytes)
+    key_file.write_bytes(persisted)
+
+    real_read_bytes = pathlib.Path.read_bytes
+    calls = {"n": 0}
+
+    def _flaky_read(self):  # type: ignore[no-untyped-def]
+        # Fault ONLY the first read of the key file with a sharing-violation-style
+        # PermissionError; the retry (and every other read) hits the real call.
+        if self.name == ts._SECRET_KEY_FILE:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise PermissionError("simulated Windows sharing violation")
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(pathlib.Path, "read_bytes", _flaky_read)
+
+    got = ts._load_or_create_secret()
+    assert calls["n"] >= 2, "the contended read was not retried"
+    assert got == persisted, "must return the persisted key, not an ephemeral one"
 
 
 def test_signing_secret_existing_file_never_overwritten(tmp_path, monkeypatch) -> None:
@@ -1026,9 +1071,22 @@ def test_signing_secret_write_failure_cleans_up_incomplete_file(
     on_disk = key_file.read_bytes()
     assert len(on_disk) >= ts._MIN_KEY_BYTES, "next init wrote a short/incomplete key"
     assert secret2 == on_disk, "next init did not return the persisted key"
-    assert (key_file.stat().st_mode & 0o777) == 0o600
+    # POSIX-only: Windows locks the key down via an owner DACL, not st_mode bits
+    # (see the concurrent-init test above / test_platform_compat).
+    if os.name != "nt":
+        assert (key_file.stat().st_mode & 0o777) == 0o600
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason=(
+        "Simulates the sibling-substitution race by os.replace()-ing the key "
+        "file while THIS process still holds it open. Windows forbids replacing "
+        "an open handle (WinError 32 sharing violation), so the distinct-inode "
+        "substitution cannot be reproduced. The identity guard's st_dev/st_ino "
+        "logic keeps full coverage on the POSIX matrix."
+    ),
+)
 def test_signing_secret_incomplete_file_not_deleted_if_replaced(
     tmp_path, monkeypatch
 ) -> None:

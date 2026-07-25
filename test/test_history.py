@@ -331,9 +331,28 @@ class TestRecentFromSource:
         result = log.recent_from_source("dashboard:")
         assert result == []
 
-    def test_recent_from_source_sorted_by_ts(self, tmp_path):
+    def test_recent_from_source_sorted_by_ts(self, tmp_path, monkeypatch):
+        import datetime as _dt
+
+        # history stamps ts with datetime.now().isoformat(); on a coarse clock
+        # (Windows' ~15ms tick) these rapid appends collide, so a ts-only sort
+        # across sessions is ambiguous and the merge order leaks through (the
+        # observed Windows failure: ['first', 'third', 'second']). Drive a
+        # strictly-increasing clock so the chronological order the test asserts is
+        # actually encoded in the timestamps, on every OS.
+        _base = _dt.datetime(2026, 7, 25, 0, 0, 0, tzinfo=_dt.timezone.utc)
+        _tick = {"n": 0}
+
+        class _IncDateTime:
+            @classmethod
+            def now(cls, tz=None):
+                _tick["n"] += 1
+                return _base + _dt.timedelta(seconds=_tick["n"])
+
+        monkeypatch.setattr("kiro_crew.history.datetime", _IncDateTime)
+
         log = ConversationLog(base_dir=tmp_path)
-        # Append in different sessions — timestamps will be ordered
+        # Append in different sessions — timestamps are strictly ordered.
         log.append("dashboard:chat-1-100", "user", "first")
         log.append("dashboard:chat-2-200", "user", "second")
         log.append("dashboard:chat-1-100", "user", "third")

@@ -564,8 +564,16 @@ async def test_credwatch_no_fire_on_byte_identical_rewrite(tmp_path: Path) -> No
         credwatch.watch_credential(cred, 0.01, stop, lambda: fired.append(True), logger)
     )
     await asyncio.sleep(0.05)  # let the baseline establish
-    # Byte-identical rewrite with a forced mtime move.
-    cred.write_bytes(b"secret-v1")
+    # Simulate a no-op refresh (byte-identical content, moved mtime) by touching
+    # ONLY the mtime — do NOT physically rewrite. The watcher's identity is
+    # (mtime, content-hash), so re-writing the SAME bytes is indistinguishable
+    # from an mtime touch; but a real ``write_bytes`` truncates-then-writes
+    # NON-atomically, and the ~10ms poller can read that transient empty/partial
+    # file (digest != baseline -> a spurious fire, then a second fire when the
+    # full bytes reappear). That truncate race — not the property under test — is
+    # what fails this on Windows. An mtime bump alone reproduces the exact
+    # observable state a well-behaved (atomic) refresh daemon leaves behind and is
+    # deterministic on every OS.
     import os
 
     st = cred.stat()
