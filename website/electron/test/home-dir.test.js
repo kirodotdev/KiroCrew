@@ -19,6 +19,7 @@ const FIXTURE = path.join(__dirname, "..", "..", "..", "test", "fixtures", "home
 const CASES = JSON.parse(fs.readFileSync(FIXTURE, "utf8")).cases;
 
 const EXPECTED_PATHS = { override: OVERRIDE, legacy: LEGACY, canonical: CANONICAL };
+const MARKER = path.join(CANONICAL, ".data-home-ready");
 
 describe("resolveHome (shared-fixture parity cases)", () => {
   assert.ok(CASES.length >= 7, "fixture must load");
@@ -28,6 +29,9 @@ describe("resolveHome (shared-fixture parity cases)", () => {
       const existing = [];
       if (c.legacy) existing.push(LEGACY);
       if (c.canonical) existing.push(CANONICAL);
+      // The marker lives inside the canonical home; resolveHome is
+      // marker-authoritative, so the fake fs must model it too.
+      if (c.marker) existing.push(MARKER);
       const fakeFs = { existsSync: (p) => existing.includes(p) };
       assert.equal(
         resolveHome({ env, os: fakeOs, path, fs: fakeFs }),
@@ -39,6 +43,37 @@ describe("resolveHome (shared-fixture parity cases)", () => {
   it("treats existsSync errors as absent (resolves canonical)", () => {
     const fakeFs = { existsSync: () => { throw new Error("EACCES"); } };
     assert.equal(resolveHome({ env: {}, os: fakeOs, path, fs: fakeFs }), CANONICAL);
+  });
+
+  it("rejects an invalid override (root / system dir) and falls through -- parity with paths.py", () => {
+    // Backend _valid_override_home refuses "/" and /usr,/System,/etc; Electron
+    // must agree or the two read different config/secret homes (GPT 5.6 MEDIUM).
+    const fakeFs = { existsSync: () => false };
+    for (const bad of ["/", "/etc", "/usr", "/System"]) {
+      assert.equal(
+        resolveHome({ env: { KIROCREW_HOME: bad }, os: fakeOs, path, fs: fakeFs }),
+        CANONICAL,
+        `override ${bad} should be rejected`,
+      );
+    }
+  });
+
+  it("expands a leading '~' in the override to an absolute path -- parity with Python expanduser()", () => {
+    // Python _valid_override_home returns Path(override).expanduser().resolve();
+    // Electron must NOT read a literal "~/foo" or the two diverge (GPT 5.6 MEDIUM).
+    const fakeFs = { existsSync: () => false };
+    assert.equal(
+      resolveHome({ env: { KIROCREW_HOME: "~/foo" }, os: fakeOs, path, fs: fakeFs }),
+      path.join(HOME, "foo"),
+    );
+    assert.equal(
+      resolveHome({ env: { KIROCREW_HOME: "~" }, os: fakeOs, path, fs: fakeFs }),
+      HOME,
+    );
+    // secretCandidates uses the same expanded, absolute override.
+    assert.deepEqual(secretCandidates({ env: { KIROCREW_HOME: "~/foo" }, os: fakeOs, path }), [
+      path.join(HOME, "foo", ".local_secret"),
+    ]);
   });
 });
 
@@ -56,6 +91,13 @@ describe("secretCandidates (post-spawn, call-time resolution)", () => {
     // canonical), but post-spawn the migrated secret lives in canonical;
     // legacy remains only as the backend's migration-failure pin.
     assert.deepEqual(secretCandidates({ env: {}, os: fakeOs, path }), [
+      path.join(CANONICAL, ".local_secret"),
+      path.join(LEGACY, ".local_secret"),
+    ]);
+  });
+
+  it("ignores an invalid (root) override and uses canonical+legacy -- parity", () => {
+    assert.deepEqual(secretCandidates({ env: { KIROCREW_HOME: "/" }, os: fakeOs, path }), [
       path.join(CANONICAL, ".local_secret"),
       path.join(LEGACY, ".local_secret"),
     ]);

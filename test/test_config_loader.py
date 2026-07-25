@@ -2766,6 +2766,62 @@ class TestConfigWriteProtection:
         assert is_sensitive_write_path("~/.kiro/crew/sessions.db") is False
         assert is_sensitive_write_path("~/.kirocrew/sessions.db") is False
 
+    def test_migration_marker_is_write_protected(self) -> None:
+        # The data-home completion marker is authoritative: an agent that could
+        # plant it in a pre-migration new home would make the next boot skip
+        # migration and ignore the legacy home's governance + secrets. Writes
+        # blocked; reads allowed (doctor/diagnostics read it).
+        from kiro_crew.config.paths import MIGRATION_MARKER_NAME
+        from kiro_crew.security import is_sensitive_path, is_sensitive_write_path
+
+        for prefix in ("~/.kiro/crew", "~/.kirocrew"):
+            marker = f"{prefix}/{MIGRATION_MARKER_NAME}"
+            assert is_sensitive_write_path(marker), marker
+            assert is_sensitive_write_path(str(Path.home() / prefix[2:] / MIGRATION_MARKER_NAME))
+            # reads are not blocked (superset gate is write-only for this leaf)
+            assert is_sensitive_path(marker) is False, marker
+
+    def test_migration_marker_shell_writes_blocked_reads_allowed(self) -> None:
+        # Bash-layer protection: unlike config.json (whose inflated values the
+        # loader clamps at load time), the marker's mere PRESENCE is the trust
+        # signal, so a shell command that plants/removes it must be blocked at
+        # the bash gate too — the file-edit tool gate alone is not enough. We
+        # block it VERB-INDEPENDENTLY (any command naming it), so a quoted
+        # redirect / cp / python open / novel write verb cannot bypass an
+        # enumerated allowlist. Reads are incidentally blocked too — harmless:
+        # the marker holds no secret and legitimate readers (doctor, migration)
+        # use Python os calls, not bash.
+        from kiro_crew.config.paths import MIGRATION_MARKER_NAME
+        from kiro_crew.security import (
+            _WRITE_PROTECTED_BASH_LEAVES,
+            is_sensitive_bash_command,
+        )
+
+        # drift guard: the bash leaf list must stay pinned to the real marker
+        assert MIGRATION_MARKER_NAME in _WRITE_PROTECTED_BASH_LEAVES
+
+        for prefix in ("~/.kiro/crew", "~/.kirocrew"):
+            marker = f"{prefix}/{MIGRATION_MARKER_NAME}"
+            blocked = [
+                f"touch {marker}",
+                f"echo done > {marker}",
+                f"echo done >> {marker}",
+                f"rm {marker}",
+                f"tee {marker}",
+                f"mv /tmp/x {marker}",
+                # bypasses an enumerated write-verb allowlist would miss:
+                f'echo done > "{marker}"',            # quoted redirect target
+                f"cp /tmp/x {marker}",                # copy write verb
+                f"python -c \"open('{marker}','w')\"",  # script open
+                f"mkdir -p {marker}/x",               # marker-as-dir also exists()
+                f"cat {marker}",                      # read (blocked too — no secret)
+            ]
+            for cmd in blocked:
+                assert is_sensitive_bash_command(cmd) is not None, cmd
+            # unrelated writes under the crew home stay allowed
+            assert is_sensitive_bash_command(f"touch {prefix}/sessions.db") is None
+            assert is_sensitive_bash_command(f"ls {prefix}/") is None
+
 
 class TestConfigEditToolBlocked:
     """The file-edit tool gate (HookManager.on_tool_call) denies edits to config."""

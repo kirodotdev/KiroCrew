@@ -20,7 +20,12 @@ Design (deliberately simple):
   exists and the new home is not yet marked complete; a second call is a no-op.
 * **Gateway-safe** — if a live gateway holds the legacy (or a pre-existing new)
   home's ``gateway.lock``, we skip the move for this run rather than relocating
-  files out from under a running process. It retries on the next cold start.
+  files out from under a running process, and the caller JOINS the live
+  gateway's home (whichever side holds the lock) so its ``.local_secret``
+  matches for internal IPC. The completion marker is NEVER written on a
+  liveness skip — it is reserved for a verified copy — so a fail-safe
+  ``_gateway_is_live`` OSError can't brand a partial home as migrated; the
+  one-time copy simply completes on the next clean cold start.
 * **No-op under ``KIROCREW_HOME``** — the caller only reaches here on the
   default (non-override) path, so dev/pod/worktree homes are never migrated.
 * **Excludes regenerable bulk trees** — the ``models`` (sha256-pinned GGUF,
@@ -145,10 +150,10 @@ def _copy_overwrite(src: str, dst: str, *, follow_symlinks: bool = True) -> obje
 
     ``shutil.copytree(..., dirs_exist_ok=True)`` defaults to ``copy2``, which
     opens each destination ``O_WRONLY|O_CREAT|O_TRUNC``. When the new home is
-    already populated (the very re-migration path this design relies on — marker
-    present + legacy still present → force-copy legacy over the new home again),
-    that ``open`` fails with ``PermissionError`` on any destination file that is
-    read-only. Git writes packfiles (``*.pack`` / ``*.idx`` / ``*.rev`` under
+    already populated — a no-marker migration re-running over a partial or
+    interrupted earlier copy, or over a directory another Kiro tool created —
+    the force-copy writes legacy over the new home, and that ``open`` fails
+    with ``PermissionError`` on any destination file that is read-only. Git writes packfiles (``*.pack`` / ``*.idx`` / ``*.rev`` under
     ``.git/objects/pack``) mode ``0o444``, and app-source checkouts under the
     data home carry them — so a real merge reliably hit ``[Errno 13]`` and
     aborted the whole migration, stranding the user in a permanent split-brain
@@ -208,10 +213,13 @@ def migrate_home(*, legacy: Path, new_home: Path, marker: Path) -> Path:
     Preconditions (asserted by the caller in ``config.paths``): *legacy* is an
     existing directory and *new_home* is NOT yet marked complete (it may be
     absent, empty, or hold unrelated content). Returns *new_home* on a
-    successful migration (with *marker* written), or *legacy* if the migration
-    is skipped/aborted for safety (a live gateway, or a verification failure)
-    so the current run still has a fully intact data root and a later start
-    retries.
+    successful migration (with *marker* written). When the migration is
+    skipped/aborted for safety, returns the home that keeps this process
+    coherent with reality: the LIVE GATEWAY's home when one is running
+    (legacy or new — whichever holds ``gateway.lock``; joining any other home
+    would desync ``.local_secret`` and 403 every internal API call), or the
+    still-intact *legacy* on a copy/verification failure. A skipped migration
+    retries on the next cold start.
 
     Every legacy file OVERWRITES a conflicting file of the same relative path
     already present at *new_home* — the legacy copy always wins on a conflict
@@ -257,7 +265,14 @@ def migrate_home(*, legacy: Path, new_home: Path, marker: Path) -> Path:
     try:
         # Re-check under the lock: a process that was blocked while the winner
         # migrated now sees the completion MARKER and must NOT migrate again.
-        if marker.exists() and not legacy.is_dir():
+        # The marker is AUTHORITATIVE regardless of whether the legacy dir
+        # still exists (matching _maybe_migrate_legacy_home): a winner that
+        # migrated + wrote the marker but could not delete legacy (permission,
+        # a still-open handle) must NOT let a blocked second starter recopy the
+        # now-debris legacy over the authoritative new home (GPT 5.6 HIGH — the
+        # concurrent-starter race). A legacy dir alongside the marker is debris,
+        # never authoritative; it is left in place, never promoted.
+        if marker.exists():
             return new_home
         return _do_migrate(legacy=legacy, new_home=new_home, marker=marker)
     finally:
@@ -275,21 +290,51 @@ def migrate_home(*, legacy: Path, new_home: Path, marker: Path) -> Path:
 def _do_migrate(*, legacy: Path, new_home: Path, marker: Path) -> Path:
     """Perform the copy + verify + delete. Caller holds the cross-process lock."""
     # A gateway running on the legacy home means files are open/being written —
-    # don't relocate underneath it. Try again on the next cold start.
+    # don't relocate underneath it. Joining the legacy home keeps this process
+    # IPC-coherent with that gateway (same ``.local_secret``); the move retries
+    # on the next cold start.
     if _gateway_is_live(legacy):
         logger.info(
-            "skipping data-home migration: a gateway is live on %s; will retry on next start",
+            "skipping data-home migration: a gateway is live on %s; joining it "
+            "(migration retries on next cold start)",
             legacy,
         )
         return legacy
     # A gateway running on a pre-existing new home is also live data — don't
-    # force-overwrite underneath it. Try again on the next cold start.
+    # force-overwrite underneath it. CRITICALLY, join the NEW home (the live
+    # gateway's home), NOT legacy: the gateway validates internal API calls
+    # against the ``.local_secret`` of the home it booted on, so a process
+    # pinned to legacy here would fail EVERY internal call with 403 (spawn,
+    # CLI, MCP) and — worse — keep writing into legacy, resurrecting it and
+    # making the split-brain permanent. Copy still retries on next cold start.
     if new_home.exists() and _gateway_is_live(new_home):
+        # Join the live gateway's home for IPC coherence, but do NOT stamp the
+        # completion marker here (GPT 5.6 HIGH): `_gateway_is_live` fails SAFE —
+        # any locking OSError (stale/unreadable lock, unsupported-locking FS)
+        # returns True, so a spurious entry to this branch must not brand a
+        # possibly-partial new home as fully migrated. The marker is reserved
+        # for a verified copy (`_verify_copy` success). Returning new_home keeps
+        # this process coherent with the live gateway; the one-time copy simply
+        # completes on the next clean cold start. (This branch is near-
+        # unreachable on the default path anyway: a default-path gateway on an
+        # UNMARKED new home cannot exist — migration marks before the gateway
+        # binds — and a KIROCREW_HOME override bypasses this resolver entirely.)
+        #
+        # INVARIANT — join-don't-mark on a liveness skip (please do NOT "fix"
+        # this by writing the marker here, nor by "distinguish confirmed
+        # contention from a probe error and retain legacy on error"): both were
+        # implemented and REVERTED. `_gateway_is_live` fails SAFE on purpose, so
+        # stamping the marker (or otherwise treating this branch as a verified
+        # migration) could brand a partial/empty new home as authoritative off a
+        # stale/unreadable lock — strictly worse than the near-unreachable
+        # next-cold-start overwrite it would prevent. The marker is written in
+        # exactly one place: after `_verify_copy` succeeds.
         logger.info(
-            "skipping data-home migration: a gateway is live on %s; will retry on next start",
+            "skipping data-home migration: a gateway is live on %s; joining it "
+            "(migration retries on next cold start)",
             new_home,
         )
-        return legacy
+        return new_home
 
     print(
         f"KiroCrew: migrating data home to {new_home} (one-time; this may take a moment)...",
@@ -354,21 +399,25 @@ def _do_migrate(*, legacy: Path, new_home: Path, marker: Path) -> Path:
     try:
         shutil.rmtree(legacy)
     except OSError:
-        # The new home is already good; a leftover legacy dir just means a later
-        # start sees marker + legacy present and re-runs (a no-op re-copy, since
-        # every file already matches, followed by another delete attempt).
+        # The new home is already good. The marker is written below, so a later
+        # start is marker-authoritative: it trusts the new home and does NOT
+        # re-migrate or re-attempt this delete. The leftover legacy is therefore
+        # RETAINED as debris — surfaced (never silently) as a data-home conflict
+        # via the one-time WARNING + `kirocrew doctor` line for manual cleanup.
         logger.warning(
-            "migrated data home to %s but could not remove %s; will retry removal on next start",
+            "migrated data home to %s but could not remove %s; it is now unused "
+            "leftover — delete it manually (see `kirocrew doctor`)",
             new_home,
             legacy,
             exc_info=True,
         )
 
     # Stamp the completion marker LAST — only now is the new home verified
-    # authoritative. A later start sees the marker (and no legacy dir) and skips
-    # migration; an interrupted run (crash before this line) leaves no marker,
-    # so the next start safely re-runs against the still-intact legacy data (or,
-    # if legacy could not be removed above, re-runs the delete only).
+    # authoritative. A later start sees the marker and skips migration outright
+    # (marker-authoritative: a legacy dir still present alongside it is treated
+    # as debris and left in place, never re-copied or re-deleted). An interrupted
+    # run (crash before this line) leaves no marker, so the next start safely
+    # re-runs against the still-intact legacy data.
     try:
         marker.write_text("migrated\n", encoding="utf-8")
     except OSError:  # pragma: no cover - defensive

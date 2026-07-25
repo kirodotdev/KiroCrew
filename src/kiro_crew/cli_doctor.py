@@ -19,7 +19,12 @@ from kiro_crew.agent import AGENT_FILENAME, KIRO_AGENTS_DIR
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.loader import config_dir
-from kiro_crew.config.paths import LEGACY_CONFIG_DIR_NAME
+from kiro_crew.config.paths import (
+    LEGACY_CONFIG_DIR_NAME,
+    MIGRATION_MARKER_NAME,
+    _valid_override_home,
+    detect_data_home_conflict,
+)
 from kiro_crew.dashboard.crash_dump_store import (
     dump_age_seconds,
     dump_first_stack_lines,
@@ -152,19 +157,54 @@ def _doctor_data_home() -> None:
     """Report the data home and any leftover pre-move legacy home.
 
     The one-time ``~/.kirocrew`` -> ``~/.kiro/crew`` migration force-copies the
-    old home into the new one (overwriting anything already there) and then
-    deletes ``~/.kirocrew`` outright — there is no rollback copy. A leftover
-    ``~/.kirocrew`` here means migration hasn't completed yet (a live gateway
-    held it, the delete failed, or this is the first cold start); it retries on
-    the next start. Purely informational — doctor never deletes it itself.
+    old home into the new one (overwriting anything already there), writes a
+    completion marker, and then deletes ``~/.kirocrew`` outright — there is no
+    rollback copy. A leftover ``~/.kirocrew`` here is rendered as one of several
+    states: a **conflict** (marker present + NON-EMPTY legacy → resurrection
+    debris that is never used and needs manual cleanup), **IGNORED** (a valid
+    ``KIROCREW_HOME`` override is active, so migration is disabled), **UNUSED**
+    (marker present + empty legacy → migration already completed, harmless
+    leftover), or a genuine **pending** migration (no marker yet → it retries on
+    the next cold start). Purely informational — doctor never deletes it itself.
     """
     print("\nData Home")
     home = config_dir()
     print(f"  location:    ✅ {home}")
 
+    conflict = detect_data_home_conflict()
     legacy = Path.home() / LEGACY_CONFIG_DIR_NAME
-    if legacy.is_dir():
-        print(f"  legacy:      ⏹ {legacy} still present (migration will retry on next cold start)")
+    if conflict:
+        # marker present + non-empty legacy → the legacy is debris, NOT a
+        # pending migration; it is never used and needs manual cleanup.
+        print(f"  ⚠ conflict:  {legacy} exists but is NOT used (migration already completed).")
+        print(f"               {conflict}")
+    elif legacy.is_dir():
+        override_home = _valid_override_home()
+        if override_home is not None:
+            try:
+                points_at_legacy = override_home == legacy.resolve()
+            except OSError:  # pragma: no cover - defensive
+                points_at_legacy = override_home == legacy
+            if points_at_legacy:
+                # The override points AT the legacy dir, so legacy IS the active
+                # data home — not ignored debris (GPT 5.6 MEDIUM: don't mislabel
+                # the home the process is actually using).
+                print(f"  legacy:      ✅ {legacy} is the ACTIVE data home "
+                      f"(KIROCREW_HOME override points to it)")
+            else:
+                # A valid KIROCREW_HOME override elsewhere bypasses migration on
+                # every start, so this legacy dir will NOT be migrated — don't
+                # imply a retry.
+                print(f"  legacy:      ⏹ {legacy} present but IGNORED "
+                      f"(KIROCREW_HOME override active — migration disabled until it is unset)")
+        elif (home / MIGRATION_MARKER_NAME).exists():
+            # Marker present + an (empty) legacy dir: migration already completed
+            # and is marker-authoritative, so it will NEVER retry or touch this
+            # dir. It is unused leftover, not a pending migration (GPT 5.6 MEDIUM).
+            print(f"  legacy:      ⏹ {legacy} present but UNUSED "
+                  f"(migration already completed; empty leftover, safe to delete)")
+        else:
+            print(f"  legacy:      ⏹ {legacy} still present (migration will retry on next cold start)")
 
 
 def _doctor_model_url_reachable(issues: list[str]) -> None:

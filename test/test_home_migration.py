@@ -87,31 +87,37 @@ class TestConfigDirTriggersMigration:
         assert (new_home / paths.MIGRATION_MARKER_NAME).exists()
         assert not legacy.exists()
 
-    def test_marked_new_home_with_legacy_writeback_force_overwrites(
+    def test_marked_new_home_ignores_legacy_writeback(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        # A COMPLETED migration (marker present) then a DOWNGRADE that writes
-        # fresh state back to ~/.kirocrew, then an upgrade. The marker must NOT
-        # blind-trust the (stale) new home while a legacy dir with data exists —
-        # migration re-runs and the legacy write-back force-overwrites the stale
-        # marked home's conflicting file.
+        # A COMPLETED migration (marker present) then a legacy dir REAPPEARS
+        # with data. This design has NO downgrade/rollback path (migration
+        # force-deletes legacy; security.py _CREW_HOME_PREFIXES note +
+        # config.md "No rollback"), so a legacy dir present after the marker is
+        # resurrection DEBRIS, never authoritative. The completion marker is
+        # authoritative: the new home is trusted and the debris legacy is NOT
+        # promoted over it. (The old rule re-migrated "legacy always wins",
+        # which reverted authoritative state — the split-brain data loss GPT
+        # 5.6 flagged.)
         monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
         new_home = tmp_path / ".kiro" / "crew"
         new_home.mkdir(parents=True)
-        (new_home / "config.json").write_text('{"old": true}', encoding="utf-8")
+        (new_home / "config.json").write_text('{"authoritative": true}', encoding="utf-8")
         (new_home / paths.MIGRATION_MARKER_NAME).write_text("migrated\n", encoding="utf-8")
-        # Post-downgrade write-back: legacy reappears with DIFFERENT current data.
+        # Debris legacy reappears with DIFFERENT (stale) data.
         legacy = _seed_legacy(tmp_path)
-        (legacy / "config.json").write_text('{"post_downgrade": true}', encoding="utf-8")
+        (legacy / "config.json").write_text('{"stale_debris": true}', encoding="utf-8")
         monkeypatch.setattr(home_migration, "_gateway_is_live", lambda home: False)
 
         result = paths.config_dir()
 
-        # The current (post-downgrade) legacy data wins.
+        # The marker wins: authoritative new-home data is preserved, debris
+        # is neither promoted nor deleted (left under the protected prefix).
         assert result == new_home
-        assert not legacy.exists()
-        assert (new_home / "config.json").read_text(encoding="utf-8") == '{"post_downgrade": true}'
-        assert (new_home / paths.MIGRATION_MARKER_NAME).exists()  # marked complete
+        assert (new_home / "config.json").read_text(
+            encoding="utf-8"
+        ) == '{"authoritative": true}'
+        assert legacy.exists()
 
     def test_partial_new_home_all_gaps_migrates_and_completes(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -208,28 +214,154 @@ class TestConfigDirTriggersMigration:
         assert (new_home / pack_rel).read_text(encoding="utf-8") == "legacy-pack"
         assert (new_home / paths.MIGRATION_MARKER_NAME).exists()
 
-    def test_divergent_new_home_gateway_live_retains_legacy(
+    def test_divergent_new_home_gateway_live_joins_new_home(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        # Safety: if a gateway is actively live on the pre-existing new home (e.g.
-        # one launched with KIROCREW_HOME=~/.kiro/crew), migration must NOT
-        # force-overwrite underneath it — retain legacy and retry on next start.
+        # Safety + coherence: if a gateway is actively live on the pre-existing
+        # new home, migration must NOT force-overwrite underneath it — the
+        # calling process JOINS the live gateway's home (NOT legacy; returning
+        # legacy pinned every fresh CLI/MCP process to a home whose
+        # .local_secret the gateway never loaded → 403 on every internal call
+        # + split-brain resurrection). The completion marker is NOT written on
+        # this liveness skip — it is reserved for a verified copy, so a
+        # fail-safe _gateway_is_live OSError can't brand a partial home as
+        # migrated (GPT 5.6 HIGH); the one-time copy completes on a clean cold
+        # start.
         monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
         legacy = _seed_legacy(tmp_path)
         new_home = tmp_path / ".kiro" / "crew"
         new_home.mkdir(parents=True)
-        (new_home / "config.json").write_text('{"stale": true}', encoding="utf-8")
+        (new_home / "config.json").write_text('{"live": true}', encoding="utf-8")
         # A gateway holds the NEW home's lock (but not legacy's).
         monkeypatch.setattr(home_migration, "_gateway_is_live", lambda home: home == new_home)
 
         result = paths.config_dir()
 
-        assert result == legacy  # not migrated — new home left untouched
-        assert legacy.exists()
+        assert result == new_home  # join the live gateway's home
+        assert legacy.exists()  # nothing relocated under the running process
         assert (new_home / "config.json").read_text(
             encoding="utf-8"
-        ) == '{"stale": true}'  # untouched
+        ) == '{"live": true}'  # untouched — no forced overwrite
+        # Migration still pending: NO completion marker written on a skip
+        # (reserved for a verified copy).
         assert not (new_home / paths.MIGRATION_MARKER_NAME).exists()
+
+    def test_marker_authoritative_cold_start_debris_not_promoted(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # Split-brain data-loss regression (GPT 5.6 HIGH). Migration COMPLETED
+        # (marker present) and the new home holds authoritative state. A legacy
+        # dir REAPPEARS as debris (a stale pre-move process wrote logs back).
+        # This is a COLD start — no gateway live on either home. The OLD rule
+        # "marker + legacy present -> re-migrate, legacy always wins" would copy
+        # the debris OVER the authoritative new home, reverting same-named files
+        # (sel_hmac.key / logs / workspace/). Under the marker-authoritative
+        # rule the marker wins unconditionally: new home is returned, the debris
+        # legacy is NEVER promoted, and the authoritative state is preserved.
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        new_home = tmp_path / ".kiro" / "crew"
+        new_home.mkdir(parents=True)
+        (new_home / paths.MIGRATION_MARKER_NAME).write_text("done\n", encoding="utf-8")
+        (new_home / "sel_hmac.key").write_text("AUTHORITATIVE", encoding="utf-8")
+        legacy = _seed_legacy(tmp_path)  # resurrection debris
+        (legacy / "sel_hmac.key").write_text("STALE-DEBRIS", encoding="utf-8")
+        # Cold start: no gateway live anywhere. Fail loudly if migrate_home is
+        # even reached — the marker must short-circuit before it.
+        monkeypatch.setattr(home_migration, "_gateway_is_live", lambda home: False)
+        monkeypatch.setattr(
+            home_migration, "_do_migrate",
+            lambda **kw: pytest.fail("migrate must not run when marker present"),
+        )
+
+        result = paths.config_dir()
+
+        assert result == new_home
+        # Authoritative state untouched — debris did NOT overwrite it.
+        assert (new_home / "sel_hmac.key").read_text(encoding="utf-8") == "AUTHORITATIVE"
+        # Debris is left in place and RETAINED (still under the credential-
+        # protected ``.kirocrew`` prefix; NOT auto-swept — manual cleanup, now
+        # surfaced by config_dir()'s warning + kirocrew doctor).
+        assert legacy.exists()
+
+    def test_marker_authoritative_regardless_of_gateway(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # The marker short-circuit fires before any gateway probe, so a
+        # re-created legacy is benign whether or not a gateway is live — the
+        # recreate / TOCTOU race can never promote stale state (GPT 5.6 HIGH).
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        new_home = tmp_path / ".kiro" / "crew"
+        new_home.mkdir(parents=True)
+        (new_home / paths.MIGRATION_MARKER_NAME).write_text("done\n", encoding="utf-8")
+        _seed_legacy(tmp_path)
+        # Even asserting a gateway is live on legacy must not change the outcome.
+        monkeypatch.setattr(home_migration, "_gateway_is_live", lambda home: True)
+
+        assert paths.config_dir() == new_home
+
+    def test_detect_data_home_conflict_flags_marker_plus_debris(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # Observability (GPT 5.6): marker + NON-EMPTY legacy is a conflicted
+        # state the detector surfaces (for a config_dir() WARNING + doctor).
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        monkeypatch.delenv("KIROCREW_HOME", raising=False)
+        new_home = tmp_path / ".kiro" / "crew"
+        new_home.mkdir(parents=True)
+        (new_home / paths.MIGRATION_MARKER_NAME).write_text("done\n", encoding="utf-8")
+        # No legacy yet → clean.
+        assert paths.detect_data_home_conflict() is None
+        # Empty legacy dir → not a conflict (nothing to lose).
+        legacy = tmp_path / ".kirocrew"
+        legacy.mkdir()
+        assert paths.detect_data_home_conflict() is None
+        # Non-empty legacy alongside the marker → conflict, with cleanup hint.
+        (legacy / "audit.log").write_text("stale", encoding="utf-8")
+        msg = paths.detect_data_home_conflict()
+        assert msg is not None and str(legacy) in msg and "rm -rf" in msg
+
+    def test_detect_data_home_conflict_none_under_override(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # KIROCREW_HOME override never migrates → never a conflict.
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "override"))
+        new_home = tmp_path / ".kiro" / "crew"
+        new_home.mkdir(parents=True)
+        (new_home / paths.MIGRATION_MARKER_NAME).write_text("done\n", encoding="utf-8")
+        legacy = _seed_legacy(tmp_path)
+        assert legacy.is_dir()
+        assert paths.detect_data_home_conflict() is None
+
+    def test_detect_data_home_conflict_invalid_override_still_detects(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # An INVALID (system-dir) KIROCREW_HOME is rejected by config_dir and
+        # falls back to the default home, so the conflict check must STILL run —
+        # it must not be suppressed like a valid override (GPT 5.6 MEDIUM).
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        monkeypatch.setenv("KIROCREW_HOME", "/")  # system dir → rejected
+        new_home = tmp_path / ".kiro" / "crew"
+        new_home.mkdir(parents=True)
+        (new_home / paths.MIGRATION_MARKER_NAME).write_text("done\n", encoding="utf-8")
+        _seed_legacy(tmp_path)  # non-empty debris
+        assert paths.detect_data_home_conflict() is not None  # not suppressed
+
+    def test_config_dir_warns_on_conflict(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        # The marker branch emits a one-time WARNING when a non-empty legacy
+        # coexists — the silent conflicted state is now observable.
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        monkeypatch.delenv("KIROCREW_HOME", raising=False)
+        new_home = tmp_path / ".kiro" / "crew"
+        new_home.mkdir(parents=True)
+        (new_home / paths.MIGRATION_MARKER_NAME).write_text("done\n", encoding="utf-8")
+        _seed_legacy(tmp_path)  # non-empty debris
+        with caplog.at_level("WARNING"):
+            assert paths.config_dir() == new_home
+        assert any("data-home conflict" in r.message for r in caplog.records)
 
     def test_idempotent_second_call_no_reprocess(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -449,6 +581,38 @@ class TestSweepUngatedArchiveLeftovers:
 
 
 class TestMigrateHomeDirect:
+    def test_marker_present_under_lock_never_recopies_debris(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # Concurrent-starter race (GPT 5.6 HIGH): two starters both saw no
+        # marker and entered migrate_home; the winner migrated and wrote the
+        # marker but could NOT delete legacy (permission / open handle), so the
+        # legacy dir still exists. The blocked second starter, now under the
+        # lock, must treat the marker as authoritative and return new_home —
+        # NOT fall through to _do_migrate and recopy the now-debris legacy over
+        # the authoritative new home. (Pre-fix the under-lock recheck required
+        # `not legacy.is_dir()`, so a surviving legacy re-triggered the copy.)
+        legacy = _seed_legacy(tmp_path)
+        (legacy / "config.json").write_text('{"stale_debris": true}', encoding="utf-8")
+        new_home = tmp_path / ".kiro" / "crew"
+        new_home.mkdir(parents=True)
+        (new_home / "config.json").write_text('{"authoritative": true}', encoding="utf-8")
+        marker = new_home / paths.MIGRATION_MARKER_NAME
+        marker.write_text("done\n", encoding="utf-8")  # winner already marked
+        # Fail loudly if the destructive copy is even reached.
+        monkeypatch.setattr(
+            home_migration, "_do_migrate",
+            lambda **kw: pytest.fail("must not migrate when marker present under lock"),
+        )
+
+        result = home_migration.migrate_home(legacy=legacy, new_home=new_home, marker=marker)
+
+        assert result == new_home
+        assert (new_home / "config.json").read_text(
+            encoding="utf-8"
+        ) == '{"authoritative": true}'  # debris did not overwrite it
+        assert legacy.is_dir()  # debris retained, not promoted
+
     def test_no_data_loss_when_verification_fails(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:

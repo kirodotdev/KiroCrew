@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shlex
 import shutil
 import sys
 from pathlib import Path
@@ -93,12 +94,14 @@ _WORKSPACE_DIR_NAME = "kirocrew-workspace"
 # migration runs at most once and every later config_dir() call returns the same
 # directory with no extra filesystem probing. We cache the resolved Path itself
 # (not merely a "did we try" boolean): when a migration is needed but skipped or
-# aborted (a live gateway, or a copy/verify failure), migrate_home() falls back
-# to the still-intact legacy ``~/.kirocrew`` for THIS process — and every
-# subsequent call must return that SAME legacy home, not the empty new home that
-# was never populated. A bare boolean guard would let call #1 return the legacy
-# home while call #2+ returned the untouched ~/.kiro/crew, splitting the process
-# across two data roots. ``None`` means "not yet resolved this process".
+# aborted, migrate_home() returns the home this process must join — the LIVE
+# GATEWAY's home when one is running (legacy or new, whichever holds
+# gateway.lock, so .local_secret matches for internal IPC), or the still-intact
+# legacy ``~/.kirocrew`` on a copy/verify failure — and every subsequent call
+# must return that SAME home, not the empty new home that was never populated.
+# A bare boolean guard would let call #1 return one home while call #2+ returned
+# the untouched ~/.kiro/crew, splitting the process across two data roots.
+# ``None`` means "not yet resolved this process".
 _resolved_home: Path | None = None
 
 
@@ -117,10 +120,13 @@ def _maybe_migrate_legacy_home() -> Path:
 
     Returns the directory the caller should use as the data root for THIS
     process, caching it so the result is stable for the process lifetime.
-    Normally that is the new default home; if a migration is needed but fails or
-    is skipped, we fall back to the still-intact legacy home so a botched copy
-    never surfaces as data loss — and the cache pins that same legacy home for
-    every later call (no mid-process home switch).
+    Normally that is the new default home. If a migration is needed but is
+    skipped because a gateway is already live, the caller joins whichever home
+    that live gateway holds (its new home when it booted post-migration, else
+    the still-intact legacy home) so IPC stays coherent; if a migration is
+    needed but fails, it falls back to the still-intact legacy home so a botched
+    copy never surfaces as data loss. Either way the cache pins that same home
+    for every later call (no mid-process home switch).
 
     Fail-safe contract: force-copy-then-verify-then-delete, so an interruption
     before the delete leaves the original ``~/.kirocrew`` fully intact. Import is
@@ -142,29 +148,70 @@ def _maybe_migrate_legacy_home() -> Path:
     marker = new_home / MIGRATION_MARKER_NAME
     legacy = _legacy_home()
 
-    # Trust the completion marker ONLY when there is no legacy dir alongside it.
-    # A marker means "this new home was authoritative at some point", but if a
-    # legacy ``~/.kirocrew`` ALSO exists now, the new home is not unconditionally
-    # authoritative: e.g. the user migrated (marker written), then DOWNGRADED to
-    # an old release that wrote fresh state back to ~/.kirocrew, then upgraded
-    # again. Trusting the marker blindly would ignore that now-active legacy data.
-    # So: marker + no legacy → trust the new home; marker + legacy present → fall
-    # through to migrate(), which force-copies legacy over the new home again
-    # (legacy always wins) and re-deletes it — closing the whole family of edge
-    # cases without needing to compare or reconcile anything.
-    if marker.exists() and not legacy.is_dir():
+    # The completion marker is AUTHORITATIVE: once written (after a verified
+    # copy), the new home won and the legacy home was force-deleted — this
+    # design has NO downgrade/rollback path (see security.py `_CREW_HOME_PREFIXES`
+    # note + config.md "No rollback"). So a legacy ``~/.kirocrew`` present
+    # ALONGSIDE the marker can only be resurrection DEBRIS: stale files an old
+    # or legacy-pinned process wrote back after the migration completed. It is
+    # NEVER authoritative, so we must NOT re-migrate it over the new home —
+    # doing so would revert same-named files (``sel_hmac.key``, logs,
+    # ``workspace/``) to stale versions (the split-brain data-loss GPT 5.6
+    # flagged). marker present (with or without a legacy dir) => trust the new
+    # home. The debris is left in place and RETAINED (not auto-swept — the
+    # leftover sweep only removes ``.kirocrew.archived`` / ``.kiro/crew.pre-
+    # migration``, not ``.kirocrew`` itself); it stays under the ``.kirocrew``
+    # sensitive-path prefix (credential-protected) for manual cleanup. A legacy
+    # dir RE-created later is likewise never promoted, so the recreate/TOCTOU
+    # race is benign.
+    #
+    # INVARIANT — marker-authoritative, no downgrade (please do NOT "fix" this
+    # by re-adding a legacy-wins branch): the pre-move guard `and not
+    # legacy.is_dir()` was removed ON PURPOSE. Re-adding it — or any variant
+    # ("prefer a confirmed-live legacy", "treat marker + non-empty legacy as an
+    # unresolved conflict needing reconciliation", "auto-recover newer legacy
+    # data after a downgrade") — reintroduces exactly the split-brain / stale-
+    # overwrite this change fixes. Downgrade/rollback is UNSUPPORTED BY DESIGN:
+    # `~/.kiro/crew` is the only home; legacy is read once at the first-launch
+    # copy, then never. A user who genuinely needs pre-move state restores it
+    # themselves; the conflict is surfaced (WARNING + `kirocrew doctor`), never
+    # silently reconciled.
+    if marker.exists():
+        # Observability (GPT 5.6): the new home is authoritative, but a
+        # non-empty legacy dir alongside the marker is a conflicted state
+        # (resurrection debris / a recreated legacy) that we proceed past
+        # silently. Surface it loudly ONCE so an operator can investigate /
+        # clean up, without changing the authoritative decision. Cheap check,
+        # gated on legacy actually having content (the healthy post-migration
+        # case has no legacy dir and never warns).
+        try:
+            if legacy.is_dir() and any(legacy.iterdir()):
+                logger.warning(
+                    "data-home conflict: completion marker present at %s but a "
+                    "non-empty legacy home %s also exists — the new home is "
+                    "authoritative and the legacy dir is NOT used (treated as "
+                    "debris). Any data written there is ignored. Investigate and "
+                    "remove it manually once confirmed stale (kirocrew doctor "
+                    "surfaces this).",
+                    new_home, legacy,
+                )
+        except OSError:
+            pass  # best-effort probe — never block resolution
         _resolved_home = new_home
         return new_home
 
+    # No marker yet → the migration has never completed. If a legacy home
+    # exists it is the REAL pre-move data root and must be migrated.
     # No legacy data to migrate → this is a fresh install (the new home may or
     # may not exist yet). Create it, drop the marker, and use it.
     if not legacy.is_dir():
         _resolved_home = _finalize_fresh_home(new_home, marker)
         return _resolved_home
 
-    # A legacy home exists (a pre-move install, OR a post-downgrade write-back
-    # even though the new home is marked). Migrate — legacy files force-overwrite
-    # whatever is already at the new home — then mark and delete legacy.
+    # A legacy home exists and migration has never completed (no marker) — this
+    # is a genuine pre-move install. Migrate: copy legacy into the new home,
+    # verify, mark, delete legacy. (A live gateway on either home defers the
+    # copy and joins that gateway's home; see migrate_home.)
     try:
         from kiro_crew.home_migration import migrate_home
 
@@ -274,16 +321,39 @@ def _finalize_fresh_home(new_home: Path, marker: Path) -> Path:
     return new_home
 
 
-def config_dir() -> Path:
+def _valid_override_home() -> Path | None:
+    """Return the resolved ``KIROCREW_HOME`` override iff it is set AND valid.
+
+    A filesystem/drive root (``/`` on POSIX, ``C:\\`` on Windows) or a known
+    POSIX system directory (``/usr``, ``/System``, ``/etc``) is refused —
+    ``config_dir()`` ignores it and falls back to the default home, so the
+    migration/conflict logic still applies. Shared by ``config_dir()`` and
+    ``detect_data_home_conflict()`` so both agree on when an override is
+    actually selected (GPT 5.6 MEDIUM: an invalid override must NOT suppress
+    conflict detection).
+    """
     override = os.environ.get("KIROCREW_HOME")
-    if override:
-        p = Path(override).expanduser().resolve()
-        # Refuse root or system directories as config home
-        if p == Path("/") or p.parts[:2] in (("/", "usr"), ("/", "System"), ("/", "etc")):
-            logger.warning("KIROCREW_HOME=%s is a system directory, ignoring", override)
-        else:
-            p.mkdir(parents=True, exist_ok=True)
-            return p
+    if not override:
+        return None
+    p = Path(override).expanduser().resolve()
+    # ``p == p.parent`` is the portable "is a root" test: a filesystem root or
+    # Windows drive root is its own parent (``/`` → ``/``, ``C:\`` → ``C:\``),
+    # so this refuses a bare "/" on every OS (not just POSIX).
+    if p == p.parent or p.parts[:2] in (("/", "usr"), ("/", "System"), ("/", "etc")):
+        return None
+    return p
+
+
+def config_dir() -> Path:
+    p = _valid_override_home()
+    if p is not None:
+        p.mkdir(parents=True, exist_ok=True)
+        return p
+    if os.environ.get("KIROCREW_HOME"):
+        logger.warning(
+            "KIROCREW_HOME=%s is a system directory, ignoring",
+            os.environ.get("KIROCREW_HOME"),
+        )
     d = _maybe_migrate_legacy_home()
     d.mkdir(parents=True, exist_ok=True)
     # Drop the recovery-pointer breadcrumb outside ~/.kiro/ (default path only).
@@ -317,6 +387,41 @@ def ensure_data_home() -> Path:
     home just creates the directory. Returns the resolved data home.
     """
     return config_dir()
+
+
+def detect_data_home_conflict() -> str | None:
+    """Return a human-readable description of a conflicted data-home state, or
+    ``None`` when the home is clean.
+
+    Conflicted = the completion marker exists at the new home AND a **non-empty**
+    legacy ``~/.kirocrew`` exists alongside it. Post-migration that legacy dir
+    can only be resurrection debris (a stale/old or legacy-pinned process wrote
+    back after the move completed); the new home is authoritative and the debris
+    is never used, so its presence is a silent signal worth surfacing — both
+    ``config_dir()`` (a one-time WARNING) and ``kirocrew doctor`` (a Data Home
+    line) call this. Non-destructive, best-effort: any probe error, or a VALID
+    ``KIROCREW_HOME`` override (which never migrates; an INVALID system-dir
+    override falls back to the default home so the check still runs), yields
+    ``None``.
+    """
+    if _valid_override_home() is not None:
+        return None
+    new_home = _default_home()
+    legacy = _legacy_home()
+    marker = new_home / MIGRATION_MARKER_NAME
+    try:
+        if marker.exists() and legacy.is_dir() and any(legacy.iterdir()):
+            return (
+                f"A legacy data home {legacy} still exists alongside the migrated, "
+                f"authoritative home {new_home}. The legacy dir is NOT used (treated "
+                f"as debris) — any data written there is ignored. Once you have "
+                f"confirmed it holds nothing you need, delete the directory "
+                f"{legacy} (POSIX: rm -rf {shlex.quote(str(legacy))} · Windows: "
+                f"rmdir /s /q the same path)."
+            )
+    except OSError:
+        return None
+    return None
 
 
 def config_package_dir() -> Path:

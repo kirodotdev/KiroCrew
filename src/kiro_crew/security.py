@@ -2531,8 +2531,58 @@ _SENSITIVE_HOME_DIRS += [
 _WRITE_PROTECTED_HOME_PATHS: list[str] = [
     f"{prefix}/{leaf}"
     for prefix in _CREW_HOME_PREFIXES
-    for leaf in ("config.json", "config.local.json")
+    # config.json / config.local.json: security-relevant resource ceilings.
+    # .data-home-ready: the data-home completion marker (config.paths
+    # MIGRATION_MARKER_NAME). It is AUTHORITATIVE — once present, boot trusts
+    # ~/.kiro/crew and never re-migrates the legacy home. A prompt-injected
+    # agent that could WRITE it into a pre-migration (empty/partial) new home
+    # would make the next boot skip migration and ignore the legacy home's
+    # governance policy + secrets. The migration code writes it directly and
+    # does NOT route through this gate, so legitimate stamping still works.
+    for leaf in ("config.json", "config.local.json", ".data-home-ready")
 ]
+
+# ── Bash-layer protection for write-protected leaves ──
+# Leaf files under the crew home that a bash command must not be able to
+# CREATE/MODIFY/DELETE. The file-edit tool gate already blocks tool writes to
+# these via ``is_sensitive_write_path``; this closes the SHELL path, which the
+# sensitive-command regex below otherwise only enforces for
+# ``_SENSITIVE_HOME_DIRS``.
+#
+# We block ANY bash command that NAMES one of these leaves — the same
+# verb-INDEPENDENT backstop the sensitive-dir matcher uses — rather than an
+# enumerated write-verb allowlist: a narrow allowlist is inherently bypassable
+# (quoted redirects ``> "$HOME/.../marker"``, ``cp``, ``python -c "open(...,'w')"``,
+# or any novel write verb slip past it). Naming-based blocking incidentally
+# denies bash READS of these leaves too, which is harmless: they carry no secret
+# (so this is NOT in ``_SENSITIVE_HOME_DIRS`` — file-read tools and
+# ``is_sensitive_path`` stay unaffected), and the only legitimate readers
+# (``kirocrew doctor``, the migration code) use Python ``os`` calls, not bash.
+#
+# The data-home marker is the sole entry: its mere PRESENCE is the migration
+# trust signal, and — unlike config.json, whose inflated values the loader
+# clamps at load time regardless of how they were written — nothing neutralizes
+# a planted marker. A prompt-injected agent that shell-plants it into a
+# pre-migration home makes the next boot skip migration and ignore the legacy
+# home's governance policy + secrets; shell-deleting it forces a needless
+# re-migration. The migration code stamps it directly in Python (not via bash),
+# so legitimate stamping is unaffected. Kept as a literal to avoid a
+# config->security import cycle; a drift guard in the tests pins it to
+# ``MIGRATION_MARKER_NAME``.
+#
+# SCOPE NOTE (please do NOT flag incremental regex gaps as new HIGHs): this
+# bash gate is DEFENSE-IN-DEPTH, not the primary control. The primary control
+# is the file-edit tool gate (`is_sensitive_write_path`, above) plus the fact
+# that the migration stamps the marker only from Python, never a tool/shell.
+# Like the credential/sensitive-dir rules, the bash matcher is HOME-ANCHORED and
+# shares their intrinsic limits — a `cd <home> && touch <leaf>` bare-relative
+# write, or an unusual `${VAR}`/quoting form, can evade the regex exactly as it
+# can for `~/.aws/credentials`. Chasing shell-parser completeness here is a
+# losing game and holds the marker to a higher bar than credentials get; the
+# realistic residual threat (skipping a one-time session-data copy) is low and
+# already covered on the tool path. Widen this only via the SHARED matcher (so
+# credentials benefit too), not with marker-only special cases.
+_WRITE_PROTECTED_BASH_LEAVES: tuple[str, ...] = (".data-home-ready",)
 
 # Regex for bash commands that read sensitive paths.
 # Matches: cat, head, tail, less, more, strings, xxd, base64, cp, scp, open,
@@ -2593,6 +2643,18 @@ def _build_sensitive_regex() -> re.Pattern[str]:
     escaped_dirs = [re.escape(d) for d in _SENSITIVE_HOME_DIRS]
     dirs_pattern = "|".join(escaped_dirs)
     sensitive_path = rf"{home_alts}/(?:{dirs_pattern})(?:/|\s|$|['\"])"
+    # Write-protected leaves (e.g. the data-home marker): a full home-anchored
+    # path to a specific leaf file, matched verb-INDEPENDENTLY (below) so no
+    # write form can bypass it. See _WRITE_PROTECTED_BASH_LEAVES for why reads
+    # are blocked too (harmless: no secret; legitimate readers use Python).
+    wp_prefixes = "|".join(re.escape(p) for p in _CREW_HOME_PREFIXES)
+    wp_leaves = "|".join(re.escape(leaf) for leaf in _WRITE_PROTECTED_BASH_LEAVES)
+    write_protected_path = (
+        # trailing ``/`` is included so ``mkdir -p ~/.kiro/crew/.data-home-ready/x``
+        # (which also MATERIALISES the marker as a directory, satisfying
+        # ``marker.exists()``) is caught, not just the exact-leaf forms.
+        rf"{home_alts}/(?:{wp_prefixes})/(?:{wp_leaves})(?:/|\s|$|['\"])"
+    )
     return re.compile(
         # (1) verb/redirect-anchored, OR (2) verb-independent: the sensitive path
         # appears anywhere as a token.  The token anchor accepts start-of-string
@@ -2601,9 +2663,13 @@ def _build_sensitive_regex() -> re.Pattern[str]:
         # colon lists, comma/semicolon-joined args) — without the latter a
         # ``FOO=bar:~/.aws/credentials`` or ``PATH=/x:~/.ssh/id_rsa`` token slips
         # past the backstop while no verb branch fires either.
+        # (3) write-protected leaf: matched verb-INDEPENDENTLY too (same token
+        # anchor), so a quoted redirect (``> "$HOME/.../marker"``), ``cp``,
+        # ``python -c "open(...,'w')"`` or any novel write verb is still caught.
         rf"(?:(?:{_READ_CMDS}.*|{_WRITE_CMDS}.*|{_SCRIPT_OPEN}.*|.*[<>|]\s*)"
         rf"{sensitive_path}"
-        rf"|(?:^|.*[\s'\"=:,;]){sensitive_path})",
+        rf"|(?:^|.*[\s'\"=:,;]){sensitive_path}"
+        rf"|(?:^|.*[\s'\"=:,;]){write_protected_path})",
         re.IGNORECASE,
     )
 

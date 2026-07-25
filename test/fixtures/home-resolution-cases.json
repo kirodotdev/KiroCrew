@@ -51,9 +51,9 @@
       "expected_read_home": "legacy"
     },
     {
-      "name": "downgrade_writeback_marker_plus_legacy_legacy_wins",
+      "name": "marker_plus_legacy_debris_canonical_wins",
       "env_override": false, "legacy": true, "canonical": true, "marker": true,
-      "expected_read_home": "legacy"
+      "expected_read_home": "canonical"
     }
   ]
 }
