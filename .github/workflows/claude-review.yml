@@ -29,10 +29,33 @@ jobs:
     # and the posted-summary heading — never here.
     name: Claude AI Review
     runs-on: ubuntu-latest
+    # Hard runtime ceiling: if the agentic review ever runs away, the job is
+    # cancelled at 40 min and the gate fails closed (a no-output review can't
+    # look clean). Pairs with --max-turns below to bound the review.
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+
+      # Non-blocking size signal: raise a concern when the REVIEWABLE diff is
+      # large enough that a single review pass may not cover it reliably. Only
+      # the vendored tree is excluded (src/kiro_crew/_vendor is excluded from
+      # source analysis repo-wide and recurs as large dependency syncs, so
+      # counting it would just create noise). This ONLY warns — it never fails
+      # the check — so the concern is visible on the run without blocking merge.
+      - name: Flag oversized reviewable diff (non-blocking)
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          MAX_REVIEWABLE_LINES: "15000"
+        run: |
+          changed=$(git diff --numstat "$BASE_SHA...$HEAD_SHA" -- . ':(exclude)src/kiro_crew/_vendor' 2>/dev/null \
+            | awk '{ a += $1; d += $2 } END { print a + d + 0 }')
+          echo "reviewable changed lines (excluding src/kiro_crew/_vendor): ${changed}"
+          if [ "${changed:-0}" -gt "$MAX_REVIEWABLE_LINES" ]; then
+            echo "::warning::This PR changes ${changed} reviewable lines (> ${MAX_REVIEWABLE_LINES}) — likely too large for one reliable review pass. Consider splitting it into smaller, self-contained PRs."
+          fi
 
       # Load AUTOSDE rules from the BASE commit, not the PR HEAD, so a PR
       # cannot weaken the rules that govern it. Fable 5 reads these snapshots
@@ -81,7 +104,7 @@ jobs:
           claude_args: |
             --model us.anthropic.claude-fable-5
             --fallback-model us.anthropic.claude-opus-4-8
-            --max-turns 100
+            --max-turns 60
             --allowedTools "Read,Grep,Glob,Bash(gh pr comment:*),Bash(gh pr view:*),Bash(gh api:*)"
             --json-schema '{"type":"object","additionalProperties":false,"required":["reviewed","block_merge","summary"],"properties":{"reviewed":{"type":"boolean","description":"true once you have completed the review of this commit"},"block_merge":{"type":"boolean","description":"true IFF at least one finding meets the BLOCKING BAR"},"summary":{"type":"string","description":"markdown review summary CI will post to the PR"}}}'
           prompt: |
