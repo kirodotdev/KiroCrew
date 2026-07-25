@@ -314,12 +314,12 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange }: {
               { label: 'Episodic', value: stats?.episodic_active ?? 0 },
               { label: 'Embedded', value: stats?.embedded_count ?? stats?.faiss_index_size ?? 0 },
             ].map(s => (
-              <div key={s.label} className="stat-accent bg-bg-elevated rounded-md px-3 py-2 border border-border">
+              <div key={s.label} className="stat-accent relative overflow-hidden bg-bg-elevated rounded-md px-3 py-2 border border-border">
                 <div className="text-muted text-[11px] uppercase tracking-wider">{s.label}</div>
                 <div className="text-lg font-bold text-text-strong">{s.value}</div>
               </div>
             ))}
-            <div className="stat-accent bg-bg-elevated rounded-md px-3 py-2 border border-border">
+            <div className="stat-accent relative overflow-hidden bg-bg-elevated rounded-md px-3 py-2 border border-border">
               <div className="text-muted text-[11px] uppercase tracking-wider">Embeddings</div>
               <div className="text-lg font-bold">
                 {embStatus?.setup_step && embStatus.setup_step !== 'idle' && embStatus.setup_step !== 'done'
