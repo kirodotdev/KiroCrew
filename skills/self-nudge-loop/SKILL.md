@@ -7,7 +7,7 @@ tags: [skill, kirocrew, autonudge, autonomy, loop]
 # Self-Nudge Loop
 
 ## Overview
-`AutoNudgeService` (in `kiro_crew.autonudge`) keeps a single dashboard chat slot working toward a goal by re-feeding a nudge message every time the slot goes idle. Unlike `cron_add`, the nudge runs IN the same slot — warm memory, same tools, same conversation history. State persists across gateway restarts via `~/.kirocrew/autonudge.json`.
+`AutoNudgeService` (in `kiro_crew.autonudge`) keeps a single dashboard chat slot working toward a goal by re-feeding a nudge message every time the slot goes idle. Unlike `cron_add`, the nudge runs IN the same slot — warm memory, same tools, same conversation history. State persists across gateway restarts via `~/.kiro/crew/autonudge.json`.
 
 ## Usage
 Use when the user wants:
@@ -25,7 +25,7 @@ Do NOT use for:
 
 On by default. To disable:
 ```bash
-export KIROCREW_AUTONUDGE=0   # add to systemd unit Environment= or ~/.kirocrew/env
+export KIROCREW_AUTONUDGE=0   # add to systemd unit Environment= or ~/.kiro/crew/env
 kirocrew restart
 ```
 
@@ -51,7 +51,7 @@ When disabled, the REST API returns 503 and the UI popover surfaces the error.
 
 **Warning:** a STOP sentinel file is ONLY checked if the loop was created with a non-empty `stop_sentinel_path`. If the path is empty, the sentinel file is ignored and nudges keep firing. Prefer the `autonudge_stop` MCP tool for in-loop halting.
 
-**Restart survival** — on `AutoNudgeService.start()`, loops marked `active:true` in `~/.kirocrew/autonudge.json` are reloaded and their idle timers re-armed. No catch-up fire — timer starts fresh from zero after restart.
+**Restart survival** — on `AutoNudgeService.start()`, loops marked `active:true` in `~/.kiro/crew/autonudge.json` are reloaded and their idle timers re-armed. No catch-up fire — timer starts fresh from zero after restart.
 
 ## How to start a loop
 
@@ -66,7 +66,7 @@ When disabled, the REST API returns 503 and the UI popover surfaces the error.
 
 ```bash
 # 1. Exchange the local-machine secret for a user token (loopback only).
-SECRET=$(cat ~/.kirocrew/.local_secret)
+SECRET=$(cat ~/.kiro/crew/.local_secret)
 TOKEN=$(curl -sf -H "X-Local-Secret: $SECRET" \
   "http://127.0.0.1:5476/api/token/local?ttl=1h" \
   | python3 -c 'import json,sys;print(json.load(sys.stdin)["token"])')

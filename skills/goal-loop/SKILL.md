@@ -87,7 +87,7 @@ install.
 ## Run it
 
 ```bash
-cd $(dirname $(readlink -f ~/.kirocrew/skills/goal-loop/SKILL.md))
+cd $(dirname $(readlink -f ~/.kiro/crew/skills/goal-loop/SKILL.md))
 ./scaffold.sh \
   --project my-goal-name \
   --anchor-dir /abs/path/to/goal/anchor \

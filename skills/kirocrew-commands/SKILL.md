@@ -70,7 +70,7 @@ gateway or shared data. Linux `systemd --user` only. `<wt>` is a worktree name
 | `kirocrew pod down <wt>` | Evict the pod and delete its isolated HOME |
 
 Port derivation: `base + (cksum(name) % 199) + 1` (base `7810` → `7811..8009`).
-Override with `PORT=` in `~/.kirocrew/pods/<name>.env`.
+Override with `PORT=` in `~/.kiro/crew/pods/<name>.env`.
 
 See `src/kiro_crew/pod/README.md` for the full reference.
 
@@ -294,7 +294,7 @@ LLM-generated UI components (widgets, HTML, markdown, SVG, JSON, text).
 
 | Variable | Purpose | Default |
 |----------|---------|---------|
-| `KIROCREW_HOME` | Override config/data directory | `~/.kirocrew` |
+| `KIROCREW_HOME` | Override config/data directory | `~/.kiro/crew` |
 | `KIROCREW_PORT` | Override dashboard port | `5476` |
 | `KIROCREW_PROJECT_DIR` | Override agent config/skills directory | Auto-detected |
 | `KIROCREW_POD_REPO` | Repo to resolve worktree names from | invoking cwd |

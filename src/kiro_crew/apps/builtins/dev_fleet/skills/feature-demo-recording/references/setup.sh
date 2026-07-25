@@ -8,7 +8,7 @@
 #   FFMPEG_PATH  — absolute path to a working ffmpeg (use this to transcode webm->mp4)
 set -euo pipefail
 
-VENV="${DEMO_VENV:-$HOME/.kirocrew/workspace/.demo-recording-venv}"
+VENV="${DEMO_VENV:-$HOME/.kiro/crew/workspace/.demo-recording-venv}"
 PY="$VENV/bin/python"
 REF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
