@@ -335,12 +335,12 @@ export default function AppsPage() {
                 )}
                 {uninstallTarget.origin === 'registry' && (
                   <div className="bg-bg-elevated border border-border rounded-md px-2.5 py-2 text-[12px] text-muted mb-2">
-                    Installed from App Store — KiroCrew metadata{uninstallTarget.resources === 'app' ? ', the app secret, and' : ' and'} the downloaded source code will be removed.{uninstallTarget.resources === 'app' && !uninstallTarget.manifest?.setup?.onUninstall ? ' The app itself is managed externally.' : ''}
+                    Installed from Apps — KiroCrew metadata{uninstallTarget.resources === 'app' ? ', the app secret, and' : ' and'} the downloaded source code will be removed.{uninstallTarget.resources === 'app' && !uninstallTarget.manifest?.setup?.onUninstall ? ' The app itself is managed externally.' : ''}
                   </div>
                 )}
                 {uninstallTarget.origin !== 'registry' && uninstallTarget.resources === 'app' && uninstallTarget.manifest?.setup?.onUninstall && (
                   <div className="bg-bg-elevated border border-border rounded-md px-2.5 py-2 text-[12px] text-muted mb-2">
-                    Not installed from App Store — your local source code will not be affected.
+                    Not installed from Apps — your local source code will not be affected.
                   </div>
                 )}
                 {(uninstallTarget.manifest?.agents?.length || 0) > 0 && (

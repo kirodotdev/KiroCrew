@@ -26,7 +26,7 @@ export default function MigrationBanner({ appName, migratedTo }: MigrationBanner
           This feature is moving to a standalone app
         </div>
         <div className="text-[13px] text-muted mt-1">
-          Install "{appName}" from the App Store before the next KiroCrew update to keep using it.
+          Install "{appName}" from Apps before the next KiroCrew update to keep using it.
         </div>
       </div>
       <Btn
@@ -34,7 +34,7 @@ export default function MigrationBanner({ appName, migratedTo }: MigrationBanner
         onClick={() => navigate(`/apps/detail/${encodeURIComponent(targetName)}`)}
         className="shrink-0"
       >
-        Install from App Store <ArrowRight size={14} />
+        Install from Apps <ArrowRight size={14} />
       </Btn>
     </div>
   )

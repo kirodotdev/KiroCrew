@@ -106,7 +106,7 @@ function AppCrashFallback({
           </p>
           <div className="flex gap-2 justify-center">
             <Btn onClick={onRetry}><RefreshCw size={14} /> Retry</Btn>
-            <Btn onClick={() => navigate('/apps')}><ArrowLeft size={14} /> App Store</Btn>
+            <Btn onClick={() => navigate('/apps')}><ArrowLeft size={14} /> Apps</Btn>
           </div>
         </div>
       </div>
@@ -141,8 +141,8 @@ function AppNotFound({ name }: { name: string }) {
       <div className="flex-1 flex items-center justify-center p-8">
         <div className="text-center">
           <div className="text-[48px] mb-4 opacity-20"><Package size={48} /></div>
-          <p className="text-muted mb-4">Install it from the App Store or via CLI</p>
-          <Btn onClick={() => navigate('/apps')}><ArrowLeft size={14} /> App Store</Btn>
+          <p className="text-muted mb-4">Install it from Apps or via CLI</p>
+          <Btn onClick={() => navigate('/apps')}><ArrowLeft size={14} /> Apps</Btn>
         </div>
       </div>
     </>
@@ -160,8 +160,8 @@ function AppDisabled({ app }: { app: AppHostProps['app'] }) {
       <div className="flex-1 flex items-center justify-center p-8">
         <div className="text-center max-w-md">
           <PowerOff size={48} className="text-muted mx-auto mb-4 opacity-30" />
-          <p className="text-sm text-muted mb-4">Enable this app from the App Store to use it.</p>
-          <Btn onClick={() => navigate('/apps')}><ArrowLeft size={14} /> App Store</Btn>
+          <p className="text-sm text-muted mb-4">Enable this app from Apps to use it.</p>
+          <Btn onClick={() => navigate('/apps')}><ArrowLeft size={14} /> Apps</Btn>
         </div>
       </div>
     </>
@@ -184,7 +184,7 @@ function AppNoUI({ app }: { app: AppHostProps['app'] }) {
             This app provides agents and skills but no visual interface.
             Use its agents from chat.
           </p>
-          <Btn onClick={() => navigate('/apps')}><ArrowLeft size={14} /> App Store</Btn>
+          <Btn onClick={() => navigate('/apps')}><ArrowLeft size={14} /> Apps</Btn>
         </div>
       </div>
     </>
@@ -236,7 +236,7 @@ function AppHostInner({ app }: AppHostProps) {
                 <AlertTriangle size={48} className="text-danger mx-auto mb-4" />
                 <h3 className="text-text font-medium mb-2">Failed to load {app.displayName || app.name}</h3>
                 <p className="text-sm text-muted mb-4">{err.message}</p>
-                <Btn onClick={() => navigate('/apps')}><ArrowLeft size={14} /> App Store</Btn>
+                <Btn onClick={() => navigate('/apps')}><ArrowLeft size={14} /> Apps</Btn>
               </div>
             </div>
           ),

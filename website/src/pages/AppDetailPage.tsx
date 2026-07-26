@@ -393,7 +393,7 @@ export default function AppDetailPage() {
   if (loading) {
     return (
       <>
-        <PageHeader title="App Store" subtitle="Loading…" />
+        <PageHeader title="Apps" subtitle="Loading…" />
         <div className="flex-1 flex items-center justify-center text-muted text-sm">
           <Loader2 size={16} className="animate-spin mr-2" /> Loading app details…
         </div>
@@ -406,7 +406,7 @@ export default function AppDetailPage() {
       <>
         <PageHeader title="App Not Found" subtitle={error || `"${name}" doesn't exist`} />
         <div className="flex-1 flex items-center justify-center p-8">
-          <Btn onClick={() => navigate('/apps')}><ArrowLeft size={14} /> Back to App Store</Btn>
+          <Btn onClick={() => navigate('/apps')}><ArrowLeft size={14} /> Back to Apps</Btn>
         </div>
       </>
     )
@@ -436,11 +436,11 @@ export default function AppDetailPage() {
 
   return (
     <>
-      <PageHeader title="App Store" subtitle={app.displayName} />
+      <PageHeader title="Apps" subtitle={app.displayName} />
       <div className="px-6 pb-8 overflow-y-auto flex-1 min-h-0">
         {/* Back link */}
         <button className="flex items-center gap-1.5 text-[13px] text-muted hover:text-text mb-5 bg-transparent border-none cursor-pointer p-0 font-body transition-colors" onClick={() => navigate('/apps')}>
-          <ArrowLeft size={14} /> Back to App Store
+          <ArrowLeft size={14} /> Back to Apps
         </button>
 
         {/* Error */}
@@ -648,7 +648,7 @@ export default function AppDetailPage() {
                   </p>
                 )}
                 <p className="text-[12px] text-muted mt-2">
-                  Once launched, the app will automatically connect to this KiroCrew instance and appear in the App Store.
+                  Once launched, the app will automatically connect to this KiroCrew instance and appear in Apps.
                 </p>
               </div>
             </div>

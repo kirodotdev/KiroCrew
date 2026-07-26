@@ -46,7 +46,7 @@ App-local runtime data lives under `~/.kirocrew/apps/code-review-sage/data/`
 ## Enable
 
 Code Review Sage is a built-in app (listed in `kiro_crew.apps.builtins`). Enable
-it from the dashboard App Store, or:
+it from the dashboard Apps page, or:
 
 ```bash
 kirocrew app enable code-review-sage

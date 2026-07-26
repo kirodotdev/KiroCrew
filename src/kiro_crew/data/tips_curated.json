@@ -100,13 +100,13 @@
     },
     {
       "id": "app-store",
-      "feature": "App Store",
-      "title": "Add capabilities from the App Store",
+      "feature": "Apps",
+      "title": "Add new capabilities with Apps",
       "body": "Open **Apps → Browse** and click **Enable** to add an app's agents, skills, and crons in one step.",
       "why": "",
       "doc": "",
       "cta_prompt": "",
-      "action": { "kind": "route", "label": "Open App Store", "route": "/apps" }
+      "action": { "kind": "route", "label": "Open Apps", "route": "/apps" }
     }
   ]
 }

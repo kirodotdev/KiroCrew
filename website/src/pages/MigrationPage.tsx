@@ -103,7 +103,7 @@ export default function MigrationPage() {
                 The old builtin entry has been removed. Your data has been preserved and is accessible to the standalone version.
               </div>
               <Btn primary onClick={() => navigate('/apps')}>
-                Back to App Store <ArrowRight size={14} />
+                Back to Apps <ArrowRight size={14} />
               </Btn>
             </div>
           </Card>
@@ -136,7 +136,7 @@ export default function MigrationPage() {
               {state === 'available' && (
                 <div className="flex items-center gap-3 mt-4">
                   <Btn primary onClick={() => navigate(`/apps/detail/${encodeURIComponent(targetName)}`)}>
-                    <Download size={14} /> Install from App Store
+                    <Download size={14} /> Install from Apps
                   </Btn>
                   <span className="text-[13px] text-muted">
                     Install the standalone version to continue using this feature.
@@ -147,7 +147,7 @@ export default function MigrationPage() {
               {state === 'not-in-registry' && (
                 <div className="bg-bg-elevated border border-border rounded-lg p-4 mt-4">
                   <div className="text-[13px] text-muted mb-3">
-                    Coming soon — this app is not yet available in the App Store. Check back after the next update.
+                    Coming soon — this app is not yet available in Apps. Check back after the next update.
                   </div>
                   <Btn onClick={() => refetch()}>
                     <RefreshCw size={14} /> Refresh
