@@ -1,8 +1,7 @@
 name: AI Review Human Override
 
-# Human judgment is authoritative over the three AI review gates. A PR author
-# or repository writer can record a SHA-scoped false-positive / not-applicable
-# decision with:
+# Human judgment is authoritative over the three AI review gates. A repository
+# writer can record a SHA-scoped false-positive / not-applicable decision with:
 #
 #   /ai-review override <fable|gpt|arbiter|all> <current-sha>: <reason>
 #
@@ -76,24 +75,19 @@ jobs:
 
           pr_json="$(gh api "repos/$REPO/pulls/$PR")"
           head="$(printf '%s' "$pr_json" | jq -r '.head.sha')"
-          author="$(printf '%s' "$pr_json" | jq -r '.user.login')"
           if [[ "$head" != "$requested_sha"* ]]; then
             post_notice "AI-review override not recorded: \`$requested_sha\` is not the current PR head. Re-run the command with \`$head\`."
             exit 1
           fi
 
           allowed=false
-          if [ "$ACTOR" = "$author" ]; then
-            allowed=true
-          else
-            permission="$(gh api "repos/$REPO/collaborators/$ACTOR/permission" \
-              --jq '.permission' 2>/dev/null || true)"
-            case "$permission" in
-              admin|maintain|write) allowed=true ;;
-            esac
-          fi
+          permission="$(gh api "repos/$REPO/collaborators/$ACTOR/permission" \
+            --jq '.permission' 2>/dev/null || true)"
+          case "$permission" in
+            admin|maintain|write) allowed=true ;;
+          esac
           if [ "$allowed" != "true" ]; then
-            post_notice "AI-review override not recorded: only the PR author or a repository writer may override an AI finding."
+            post_notice "AI-review override not recorded: only a repository writer may override an AI finding."
             exit 1
           fi
 

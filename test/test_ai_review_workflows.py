@@ -21,15 +21,16 @@ class TestHumanOverrideHandler:
         assert "actions/checkout@" not in workflow
         assert "/ai-review override <fable|gpt|arbiter|all> <current-sha>: <reason>" in workflow
 
-    def test_handler_requires_authority_fresh_sha_and_reason(self) -> None:
+    def test_handler_requires_write_permission_fresh_sha_and_reason(self) -> None:
         workflow = _workflow("ai-review-human-override.yml")
 
-        assert 'if [ "$ACTOR" = "$author" ]; then' in workflow
+        assert 'if [ "$ACTOR" = "$author" ]; then' not in workflow
+        assert "collaborators/$ACTOR/permission" in workflow
         assert "admin|maintain|write) allowed=true" in workflow
         assert 'if [[ "$head" != "$requested_sha"* ]]; then' in workflow
         assert 'if [ -z "$reason" ]; then' in workflow
         assert 'if [ "${#reason}" -gt 500 ]; then' in workflow
-        assert "only the PR author or a repository writer" in workflow
+        assert "only a repository writer" in workflow
 
     def test_handler_records_a_bot_marker_before_changing_checks(self) -> None:
         workflow = _workflow("ai-review-human-override.yml")

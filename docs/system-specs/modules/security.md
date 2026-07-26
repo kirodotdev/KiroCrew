@@ -140,8 +140,8 @@ under `(allow default)`, never an edition-resolved or user-writable executable.
 ### GitHub AI Review Human Overrides (`.github/workflows/`)
 
 Human judgment is the final authority over the Fable 5, GPT 5.6, and Arbiter
-AI-review results. A PR author or repository member with `write`, `maintain`, or
-`admin` permission can record a false-positive, not-applicable, or accepted-risk
+AI-review results. A repository member with `write`, `maintain`, or `admin`
+permission can record a false-positive, not-applicable, or accepted-risk
 decision with:
 
 ```text
@@ -159,7 +159,8 @@ or executes PR-controlled code. Before changing a result it requires:
 
 1. The exact command shape above and a non-empty, at-most-500-character reason.
 2. A current-head SHA match.
-3. The commenter to be the PR author or have repository write-level permission.
+3. The commenter to have `write`, `maintain`, or `admin` collaborator
+   permission. PR authors receive no exemption.
 
 After validation it posts a `github-actions[bot]` comment whose hidden marker
 binds `{target, full head SHA, actor, source comment id}`. Reviewer workflows
