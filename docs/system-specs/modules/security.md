@@ -137,6 +137,53 @@ under `(allow default)`, never an edition-resolved or user-writable executable.
 - **Cross-chunk streaming redaction** (`StreamRedactor`): per-chunk redaction misses a credential split across a token/streaming/Slack chunk boundary (a chunk ending `...AKIA` and the next starting `IOSFODNN7...` each individually escape `redact_credentials()`, so raw fragments reach WebSocket/SSE/Slack consumers). `StreamRedactor` is a rolling-buffer redactor: it withholds the trailing run of credential-class characters (`_CRED_CLASS` — letters/digits + URL/base64/connection-string punctuation, the possible start of a not-yet-complete credential) until a non-credential-class terminator arrives or the stream ends, then rejoins and redacts before emitting on the wire. Holdback is bounded by `_STREAM_HOLDBACK_MAX = 512` (larger than the longest fixed-format credential) so a split token is always rejoined; `flush()` redacts the buffered remainder at segment/stream end. Adds at most one chunk of latency. **Streaming JWT/JWE ceiling** (round-2 + round-3): JWTs (esp. RS256/ES256 with embedded claims) routinely exceed 512 chars, so a terminal token longer than the DoS floor would otherwise be bisected — the first `len-512` chars emitted raw before `flush()` redacts only the held tail. When the withheld tail matches `_PARTIAL_JWT_TAIL_RE` (`eyJ…` optionally followed by up to FOUR `.`-separated base64url segments — `{0,4}`, so a 5-segment compact JWE escalates too, matching the batch JWE ceiling — anchored to buffer end) the cap is raised to `_STREAM_HOLDBACK_JWT_MAX = 4096` so the whole token is rejoined before emission; the 512-char floor still applies to every non-credential run. **Split-Bearer holdback** (a8e5fe6a): an `Authorization: Bearer <token>` header spans whitespace (not in `_CRED_CLASS`), so the cred-class run alone would commit the `Authorization: Bearer ` prefix and leak the token on the next chunk. `_BEARER_ANCHOR_PARTIAL_RE` (case-insensitive, JSON-aware, `\Z`-anchored, matching any prefix of an in-progress `Authorization: Bearer <token>`) makes `feed` pull the commit index back to the anchor start (`i = min(i, anchor.start())`), holding header + token together, and escalates the cap so an opaque OAuth/refresh/SSO Bearer token >512 chars (no `eyJ`) is not bisected either. **Fail-closed ceiling** (round-3): when a credential-anchored tail (JWT/JWE/Bearer) exceeds the 4096 ceiling, `feed` FAILS CLOSED — it redacts+emits the confirmed-safe prefix, appends `_REDACTED_CREDENTIAL_TAG` (`[REDACTED: credential]`, shared with the batch redactor), and DROPS the oversized tail rather than bisecting it; a plain cred-class run with NO credential anchor is still committed verbatim (bisected — no data loss, DoS bound intact)
 - Defense against write-then-execute attacks: even if the LLM tricks kiro-cli into running a credential-extracting script, the output is scrubbed before the LLM can use it in follow-up messages
 
+### GitHub AI Review Human Overrides (`.github/workflows/`)
+
+Human judgment is the final authority over the Fable 5, GPT 5.6, and Arbiter
+AI-review results. A PR author or repository member with `write`, `maintain`, or
+`admin` permission can record a false-positive, not-applicable, or accepted-risk
+decision with:
+
+```text
+/ai-review override <fable|gpt|arbiter|all> <current-sha>: <reason>
+```
+
+The decision is intentionally explicit and commit-scoped. The handler resolves
+the current PR head and accepts a 7–40-character SHA prefix only when it matches
+that head; the trusted record stores the full SHA. Any subsequent push therefore
+invalidates the decision and causes normal AI review on the new commit.
+
+**Trust boundary** — `.github/workflows/ai-review-human-override.yml` runs on
+`issue_comment`, so GitHub loads it from the default branch. It never checks out
+or executes PR-controlled code. Before changing a result it requires:
+
+1. The exact command shape above and a non-empty, at-most-500-character reason.
+2. A current-head SHA match.
+3. The commenter to be the PR author or have repository write-level permission.
+
+After validation it posts a `github-actions[bot]` comment whose hidden marker
+binds `{target, full head SHA, actor, source comment id}`. Reviewer workflows
+trust only this bot-authored marker; a raw author or third-party comment cannot
+turn a gate green. The handler has only review-control permissions
+(`actions:write`, `checks:write`, `issues:write`, read-only repository/PR
+access), and receives no `id-token` or `contents:write`.
+
+For Fable 5 and GPT 5.6, the handler re-runs the existing PR workflow. The
+re-run resolves the trusted marker before acquiring AWS credentials, skips the
+model invocation, updates the existing summary with a human-override banner,
+and exits its original gate successfully. Arbiter's gating check is created via
+the Checks API, so the handler updates that check and its marker-keyed PR
+comment directly; later Arbiter runs also resolve the same trusted marker before
+calling the model. The broader `defer-longterm` label remains an accepted-risk
+override for Arbiter.
+
+All three marker-keyed comments expose the override command. GPT 5.6 and Arbiter
+also normalize each current-commit result into a top verdict plus one sentence:
+`✅ no blocking findings`, `🔴 changes requested (blocking)`, an incomplete
+state, or a human-override state. Arbiter refreshes its comment while waiting
+for new-commit reviewer inputs, so a green verdict from the previous commit is
+never left looking current.
+
 ### Denied Commands (`security.py` + `hooks.py`)
 
 130 first-class `DeniedCommandRule` records in `BUILTIN_DENIED_RULES` (`security.py`) — each a stable `id`, a Python regex `pattern`, a `category`, and a human `description` — blocking destructive and credential-exfiltrating operations. They are enforced **only** at KiroCrew's own `hooks.py` PreToolUse gate (`HookManager.on_tool_call` → `PolicyAuthority.is_denied`), never by kiro-cli. They are no longer a raw `deniedCommands` array injected into a kiro agent JSON, so there is no `execute_bash`/`shell` tool-settings copy and no project-dir `agents/defaults.json` override for them. Built-ins are **default-ON but user-DISABLEABLE** from Settings → Security (see "Denied-command rules, opt-out state, and read-only auto-approve" below). ada credential patterns are NOT in KiroCrew's denied commands — kiro-cli has its own built-in deny list for `ada credentials` that cannot be overridden via agent config.

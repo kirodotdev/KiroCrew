@@ -23,6 +23,9 @@ name: Arbiter
 #   pull_request [labeled, unlabeled] — so applying/removing the `defer-longterm`
 #     override label actually RE-EVALUATES the gate (label events do not trigger
 #     workflow_run, so without this the documented override would be a no-op).
+#   A SHA-scoped `/ai-review override arbiter ...` author decision is recorded
+#     by ai-review-human-override.yml and wins over the model verdict. Unlike the
+#     broader label, it expires automatically on the next commit.
 #
 # Runs in base-repo context (secrets + checks:write), fork-guarded. The model sees
 # ONLY pre-fetched files (Read-only, no gh/git tools), minimizing the prompt-
@@ -82,6 +85,7 @@ jobs:
       # `state`:
       #   skip     — Dependabot (mirror the reviewers' skip contract)
       #   deferred — the `defer-longterm` override label is present
+      #   human_override — trusted SHA-scoped author/writer judgment is present
       #   waiting  — not all three reviewer comments are present for this SHA
       #   ready    — all present; /tmp/subthreshold.md + /tmp/pr.diff written
       - name: Gather sub-threshold findings
@@ -109,6 +113,7 @@ jobs:
 
           STATE="ready"
           [ "$ACTOR" = "dependabot[bot]" ] && STATE="skip"
+          HUMAN_OVERRIDE=0
 
           DEFER=0
           if gh api "repos/$REPO/issues/$PR/labels" --paginate --jq '.[].name' 2>/dev/null | grep -qx 'defer-longterm'; then
@@ -125,6 +130,20 @@ jobs:
             claude="$(pick '<!-- claude-ai-review -->')"
             gpt="$(pick '<!-- codex-ai-review -->')"
             design="$(pick '<!-- design-review -->')"
+            override_exact="<!-- ai-review-human-override target=arbiter head=$SHA "
+            override_all="<!-- ai-review-human-override target=all head=$SHA "
+            override_record="$(printf '%s' "$comments" \
+              | jq -r --arg exact "$override_exact" --arg all "$override_all" \
+                '[.[] | select(.user.login == "github-actions[bot]")
+                | select((.body | startswith($exact)) or (.body | startswith($all)))]
+                | (last.body // "")')"
+            override_actor="$(printf '%s\n' "$override_record" | sed -nE '1s/^.* actor=([^ ]+) source=([0-9]+) -->$/\1/p')"
+            override_source="$(printf '%s\n' "$override_record" | sed -nE '1s/^.* actor=([^ ]+) source=([0-9]+) -->$/\2/p')"
+            if [ -n "$override_actor" ] && [ -n "$override_source" ]; then
+              HUMAN_OVERRIDE=1
+              echo "override_actor=$override_actor" >> "$GITHUB_OUTPUT"
+              echo "override_source=$override_source" >> "$GITHUB_OUTPUT"
+            fi
 
             present() { [ -n "$1" ] && printf '%s' "$1" | grep -qF "$SHA"; }
             # All three are REQUIRED. "Design Review" is a workflow_run trigger for
@@ -154,8 +173,14 @@ jobs:
             fi
           fi
 
-          # The override wins over ready/waiting, but never over the Dependabot skip.
-          if [ "$DEFER" = "1" ] && [ "$STATE" != "skip" ]; then STATE="deferred"; fi
+          # Human judgment wins over model readiness, but never over the
+          # Dependabot skip. The explicit decision is more precise than the
+          # broader accepted-risk label, so it wins when both are present.
+          if [ "$HUMAN_OVERRIDE" = "1" ] && [ "$STATE" != "skip" ]; then
+            STATE="human_override"
+          elif [ "$DEFER" = "1" ] && [ "$STATE" != "skip" ]; then
+            STATE="deferred"
+          fi
           echo "state=$STATE" >> "$GITHUB_OUTPUT"
           echo "Arbiter state: $STATE"
 
@@ -280,6 +305,7 @@ jobs:
       #   waiting  -> in_progress (pending; blocks merge until the authoritative
       #               fire finds all three reviewer comments — fail-closed)
       #   deferred -> success  (author acknowledged via the label)
+      #   human_override -> success (trusted SHA-scoped human judgment)
       #   ready + Arbiter-Verdict PASS    -> success
       #   ready + Arbiter-Verdict BLOCK   -> failure (escalated items to fix)
       #   ready + no/unparsable verdict   -> neutral (errored/overloaded; NOT
@@ -294,23 +320,29 @@ jobs:
           SHA: ${{ steps.gather.outputs.sha }}
           STATE: ${{ steps.gather.outputs.state }}
           MISSING: ${{ steps.gather.outputs.missing }}
+          OVERRIDE_ACTOR: ${{ steps.gather.outputs.override_actor }}
+          OVERRIDE_SOURCE: ${{ steps.gather.outputs.override_source }}
           EXEC_FILE: ${{ steps.review.outputs.execution_file }}
         run: |
           set -uo pipefail
           MARKER="<!-- longterm-arbiter -->"
-          STATUS="completed"; CONCLUSION="success"; TITLE=""; BODY=""
+          STATUS="completed"; CONCLUSION="success"; TITLE=""; BODY=""; DETAILS=""
 
           case "$STATE" in
             skip)
-              CONCLUSION="success"; TITLE="Skipped (Dependabot)"
+              CONCLUSION="success"; TITLE="✅ skipped for Dependabot"
               BODY="Arbiter skipped for a Dependabot PR." ;;
             waiting)
               STATUS="in_progress"; CONCLUSION=""
-              TITLE="Waiting for reviewers:${MISSING}"
-              BODY="The arbiter runs after all reviewers post for this commit. Missing for \`$SHA\`:${MISSING}. This re-fires as each reviewer (Claude / GPT 5.6 / Design) completes; the check stays pending (merge-blocking) until all are in." ;;
+              TITLE="⏳ review pending"
+              BODY="Arbiter is waiting for${MISSING} review output for \`$SHA\`; this replaces any stale verdict from the previous commit." ;;
             deferred)
-              CONCLUSION="success"; TITLE="Deferred via defer-longterm label"
-              BODY="An author applied the \`defer-longterm\` label, acknowledging and deferring the long-term items. Policy expects a justification comment on the PR." ;;
+              CONCLUSION="success"; TITLE="✅ deferred by human judgment"
+              BODY="A human applied \`defer-longterm\`, explicitly accepting the long-term items for \`$SHA\`; include the rationale in the PR discussion." ;;
+            human_override)
+              CONCLUSION="success"; TITLE="✅ human override accepted"
+              source_url="https://github.com/$REPO/pull/$PR#issuecomment-$OVERRIDE_SOURCE"
+              BODY="Human judgment by @$OVERRIDE_ACTOR overrides the Arbiter finding for \`$SHA\`; [the recorded reason]($source_url) is authoritative for this commit." ;;
             ready)
               summary=""
               if [ -n "${EXEC_FILE:-}" ] && [ -f "${EXEC_FILE:-}" ]; then
@@ -321,44 +353,65 @@ jobs:
               fi
               verdict="$(printf '%s\n' "$summary" | grep -iE '^Arbiter-Verdict:' | head -n1 | sed -E 's/^[^:]*:[[:space:]]*//' | tr -d '\r' | tr '[:lower:]' '[:upper:]')"
               if [ "$verdict" = "BLOCK" ]; then
-                CONCLUSION="failure"; TITLE="Long-term items to address before merge"
-                BODY="$summary"
+                CONCLUSION="failure"; TITLE="🔴 changes requested (blocking)"
+                BODY="Arbiter escalated at least one long-term item that must be resolved before merging \`$SHA\`."
+                DETAILS="$summary"
               elif [ "$verdict" = "PASS" ]; then
-                CONCLUSION="success"; TITLE="No blocking long-term items"
-                BODY="$summary"
+                CONCLUSION="success"; TITLE="✅ no blocking findings"
+                BODY="Arbiter found no unresolved long-term items that require action before merging \`$SHA\`."
+                DETAILS="$summary"
               else
                 # Errored / overloaded / no verdict header: do NOT hard-block, and
                 # do NOT post raw model/error text (may carry internal detail).
-                CONCLUSION="neutral"; TITLE="Arbiter could not complete (re-run)"
-                BODY="_The long-term impact review did not produce a verdict for \`$SHA\` (the model call errored or returned no header). See the Arbiter job logs; re-run to refresh. Non-blocking._"
+                CONCLUSION="neutral"; TITLE="⚠️ review incomplete"
+                BODY="Arbiter did not produce a verdict for \`$SHA\`; inspect the workflow logs and re-run it."
               fi ;;
+            *)
+              CONCLUSION="neutral"; TITLE="⚠️ review incomplete"
+              BODY="Arbiter could not resolve a review state for \`$SHA\`; inspect the workflow logs and re-run it." ;;
           esac
 
-          # Upsert the human-facing arbiter comment (skip only the pure 'waiting'
-          # heartbeat — no new signal for the author yet).
-          if [ "$STATE" != "waiting" ]; then
-            {
-              echo "$MARKER"
-              echo "## Arbiter — $TITLE"
+          # Always refresh the human-facing comment, including while waiting, so
+          # a green result from the prior commit never remains at the top.
+          {
+            echo "$MARKER"
+            echo "## Arbiter — $TITLE"
+            echo
+            echo "$BODY"
+            echo
+            echo "_Second-order review for \`$SHA\`; this comment is updated in place on each push._"
+            if [ -n "$DETAILS" ]; then
               echo
-              echo "_Second-order review of already-raised Medium/CONCERNS findings for \`$SHA\` — updated in place; add the \`defer-longterm\` label (with a justification) to override._"
-              echo
-              printf '%s\n' "$BODY"
-            } > /tmp/arbiter-comment.md
-            # Defense-in-depth redaction (mirror the design reviewer): scrub
-            # credential shapes, ARNs, and account ids before posting.
-            perl -i -pe 's/\b(?:AKIA|ASIA)[A-Z2-7]{16}\b/[REDACTED-AWS-KEY-ID]/g; s{arn:aws\S*}{[REDACTED-ARN]}g; s/\b[0-9]{12}\b/[REDACTED-ACCT]/g; s/(?i)(aws_secret_access_key|aws_session_token|x-amz-security-token)\s*[:=]\s*\S+/$1=[REDACTED]/g' /tmp/arbiter-comment.md
-            existing="$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
-              --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$MARKER\"))) | .id" 2>/dev/null \
-              | head -n1 || true)"
-            if [ -n "$existing" ] && [ "$existing" != "null" ]; then
-              gh api --method PATCH "repos/$REPO/issues/comments/$existing" \
-                --field body="$(cat /tmp/arbiter-comment.md)" >/dev/null || true
-              echo "Updated existing arbiter comment #$existing"
-            else
-              gh pr comment "$PR" --body-file /tmp/arbiter-comment.md || true
-              echo "Created new arbiter comment"
+              if [ "$CONCLUSION" = "failure" ]; then
+                printf '%s\n' "$DETAILS"
+              else
+                echo "<details>"
+                echo "<summary>Review details</summary>"
+                echo
+                printf '%s\n' "$DETAILS"
+                echo
+                echo "</details>"
+              fi
             fi
+            echo
+            echo "False positive or not applicable? The PR author or a repository writer can comment:"
+            echo "\`/ai-review override arbiter $SHA: <one-sentence reason>\`"
+            echo
+            echo "For a broader accepted-risk deferral, apply \`defer-longterm\` and explain why."
+          } > /tmp/arbiter-comment.md
+          # Defense-in-depth redaction (mirror the design reviewer): scrub
+          # credential shapes, ARNs, and account ids before posting.
+          perl -i -pe 's/\b(?:AKIA|ASIA)[A-Z2-7]{16}\b/[REDACTED-AWS-KEY-ID]/g; s{arn:aws\S*}{[REDACTED-ARN]}g; s/\b[0-9]{12}\b/[REDACTED-ACCT]/g; s/(?i)(aws_secret_access_key|aws_session_token|x-amz-security-token)\s*[:=]\s*\S+/$1=[REDACTED]/g' /tmp/arbiter-comment.md
+          existing="$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+            --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$MARKER\"))) | .id" 2>/dev/null \
+            | head -n1 || true)"
+          if [ -n "$existing" ] && [ "$existing" != "null" ]; then
+            gh api --method PATCH "repos/$REPO/issues/comments/$existing" \
+              --field body="$(cat /tmp/arbiter-comment.md)" >/dev/null || true
+            echo "Updated existing arbiter comment #$existing"
+          else
+            gh pr comment "$PR" --body-file /tmp/arbiter-comment.md || true
+            echo "Created new arbiter comment"
           fi
 
           # Post the check-run (title/summary trimmed for the check UI).

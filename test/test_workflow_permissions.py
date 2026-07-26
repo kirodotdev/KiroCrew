@@ -149,3 +149,17 @@ class TestReusableWorkflowPermissions:
             "id-token": "write",
             "attestations": "write",
         }
+
+
+class TestAiReviewOverridePermissions:
+    def test_override_handler_has_only_review_control_permissions(self) -> None:
+        """The trusted comment handler can re-run reviews and update their
+        checks/comments, but must never inherit model credentials or repository
+        contents write access."""
+        assert _workflow_permissions("ai-review-human-override.yml") == {
+            "actions": "write",
+            "checks": "write",
+            "contents": "read",
+            "issues": "write",
+            "pull-requests": "read",
+        }

@@ -1,0 +1,219 @@
+name: AI Review Human Override
+
+# Human judgment is authoritative over the three AI review gates. A PR author
+# or repository writer can record a SHA-scoped false-positive / not-applicable
+# decision with:
+#
+#   /ai-review override <fable|gpt|arbiter|all> <current-sha>: <reason>
+#
+# issue_comment workflows execute from the trusted default branch, never from
+# the PR head. The handler validates identity + commit freshness, records a
+# bot-authored decision that reviewer workflows can trust, then re-runs the
+# affected line reviewer or updates the API-owned Arbiter check.
+
+on:
+  issue_comment:
+    types: [created, edited]
+
+# Re-run completed Fable / GPT workflows, update the API-owned Arbiter check,
+# and record the trusted decision. Deliberately no id-token or contents:write.
+permissions:
+  actions: write
+  checks: write
+  contents: read
+  issues: write
+  pull-requests: read
+
+concurrency:
+  group: ai-review-human-override-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  record:
+    name: Record human judgment
+    if: >-
+      github.event.issue.pull_request != null
+      && startsWith(github.event.comment.body, '/ai-review override ')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate and record the decision
+        id: context
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.issue.number }}
+          ACTOR: ${{ github.event.comment.user.login }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        run: |
+          set -euo pipefail
+
+          post_notice() {
+            jq -n --arg body "$1" '{body: $body}' \
+              | gh api --method POST "repos/$REPO/issues/$PR/comments" \
+                  --input - >/dev/null
+          }
+
+          first_line="${COMMENT_BODY%%$'\n'*}"
+          pattern='^/ai-review override (fable|gpt|arbiter|all) ([0-9a-fA-F]{7,40}):[[:space:]]*(.+)$'
+          if [[ ! "$first_line" =~ $pattern ]]; then
+            post_notice 'AI-review override not recorded. Use `/ai-review override <fable|gpt|arbiter|all> <current-sha>: <one-sentence reason>`.'
+            exit 1
+          fi
+          target="${BASH_REMATCH[1]}"
+          requested_sha="${BASH_REMATCH[2],,}"
+          reason="${BASH_REMATCH[3]}"
+          reason="${reason#"${reason%%[![:space:]]*}"}"
+          reason="${reason%"${reason##*[![:space:]]}"}"
+          if [ -z "$reason" ]; then
+            post_notice "AI-review override not recorded: provide a brief reason."
+            exit 1
+          fi
+          if [ "${#reason}" -gt 500 ]; then
+            post_notice "AI-review override not recorded: keep the reason to 500 characters or fewer."
+            exit 1
+          fi
+
+          pr_json="$(gh api "repos/$REPO/pulls/$PR")"
+          head="$(printf '%s' "$pr_json" | jq -r '.head.sha')"
+          author="$(printf '%s' "$pr_json" | jq -r '.user.login')"
+          if [[ "$head" != "$requested_sha"* ]]; then
+            post_notice "AI-review override not recorded: \`$requested_sha\` is not the current PR head. Re-run the command with \`$head\`."
+            exit 1
+          fi
+
+          allowed=false
+          if [ "$ACTOR" = "$author" ]; then
+            allowed=true
+          else
+            permission="$(gh api "repos/$REPO/collaborators/$ACTOR/permission" \
+              --jq '.permission' 2>/dev/null || true)"
+            case "$permission" in
+              admin|maintain|write) allowed=true ;;
+            esac
+          fi
+          if [ "$allowed" != "true" ]; then
+            post_notice "AI-review override not recorded: only the PR author or a repository writer may override an AI finding."
+            exit 1
+          fi
+
+          marker="<!-- ai-review-human-override target=$target head=$head actor=$ACTOR source=$COMMENT_ID -->"
+          printf -v decision_body '%s\n## Human judgment recorded\n\n@%s marked the **%s** AI finding as false positive, not applicable, or explicitly accepted for `%s`.\n\n> %s\n\n_This decision applies only to this commit. A new push requires a new judgment._' \
+            "$marker" "$ACTOR" "$target" "$head" "$reason"
+          post_notice "$decision_body"
+
+          {
+            echo "target=$target"
+            echo "head=$head"
+            echo "actor=$ACTOR"
+            echo "source=$COMMENT_ID"
+            echo "reason=$reason"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Re-run line reviewers with the human decision
+        if: >-
+          steps.context.outputs.target == 'fable'
+          || steps.context.outputs.target == 'gpt'
+          || steps.context.outputs.target == 'all'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.issue.number }}
+          HEAD: ${{ steps.context.outputs.head }}
+          TARGET: ${{ steps.context.outputs.target }}
+        run: |
+          set -euo pipefail
+
+          rerun_reviewer() {
+            workflow="$1"
+            label="$2"
+            run_data="$(gh api --method GET \
+              "repos/$REPO/actions/workflows/$workflow/runs" \
+              -f event=pull_request -f head_sha="$HEAD" -f per_page=20)"
+            run_id="$(printf '%s' "$run_data" | jq -r --argjson pr "$PR" --arg head "$HEAD" \
+              '[.workflow_runs[]
+              | select(.head_sha == $head and (.pull_requests | any(.number == $pr)))][0].id // empty')"
+            status="$(printf '%s' "$run_data" | jq -r --argjson pr "$PR" --arg head "$HEAD" \
+              '[.workflow_runs[]
+              | select(.head_sha == $head and (.pull_requests | any(.number == $pr)))][0].status // empty')"
+            if [ -z "$run_id" ]; then
+              echo "::error::No $label workflow run found for PR #$PR at $HEAD"
+              return 1
+            fi
+
+            if [ "$status" != "completed" ]; then
+              # A pushback normally arrives after the review comment, while the
+              # final gate may still be running. Cancel that run so its stale
+              # verdict cannot race the authoritative human decision.
+              gh api --method POST "repos/$REPO/actions/runs/$run_id/cancel" \
+                >/dev/null 2>&1 || true
+              for _ in $(seq 1 30); do
+                status="$(gh api "repos/$REPO/actions/runs/$run_id" --jq '.status')"
+                [ "$status" = "completed" ] && break
+                sleep 2
+              done
+            fi
+            if [ "$status" != "completed" ]; then
+              echo "::error::$label workflow run $run_id did not stop in time"
+              return 1
+            fi
+
+            gh api --method POST "repos/$REPO/actions/runs/$run_id/rerun" >/dev/null
+            echo "Re-running $label workflow run $run_id for $HEAD"
+          }
+
+          if [ "$TARGET" = "fable" ] || [ "$TARGET" = "all" ]; then
+            rerun_reviewer "claude-review.yml" "Fable 5"
+          fi
+          if [ "$TARGET" = "gpt" ] || [ "$TARGET" = "all" ]; then
+            rerun_reviewer "codex-review.yml" "GPT 5.6"
+          fi
+
+      - name: Mark Arbiter green
+        if: >-
+          steps.context.outputs.target == 'arbiter'
+          || steps.context.outputs.target == 'all'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.issue.number }}
+          HEAD: ${{ steps.context.outputs.head }}
+          ACTOR: ${{ steps.context.outputs.actor }}
+          SOURCE: ${{ steps.context.outputs.source }}
+          REASON: ${{ steps.context.outputs.reason }}
+        run: |
+          set -euo pipefail
+          marker="<!-- longterm-arbiter -->"
+          source_url="https://github.com/$REPO/pull/$PR#issuecomment-$SOURCE"
+          printf -v body '%s\n## Arbiter — ✅ human override accepted\n\nHuman judgment by @%s overrides the Arbiter finding for `%s`; [the recorded reason](%s) is authoritative for this commit.\n\n> %s\n\n_A new push requires a new judgment. The `defer-longterm` label remains available for broader accepted-risk deferrals._' \
+            "$marker" "$ACTOR" "$HEAD" "$source_url" "$REASON"
+
+          existing="$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+            --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$marker\"))) | .id" 2>/dev/null \
+            | head -n1 || true)"
+          if [ -n "$existing" ] && [ "$existing" != "null" ]; then
+            jq -n --arg body "$body" '{body: $body}' \
+              | gh api --method PATCH "repos/$REPO/issues/comments/$existing" \
+                  --input - >/dev/null
+          else
+            jq -n --arg body "$body" '{body: $body}' \
+              | gh api --method POST "repos/$REPO/issues/$PR/comments" \
+                  --input - >/dev/null
+          fi
+
+          title="Human override accepted"
+          summary="@$ACTOR overrode the Arbiter finding for $HEAD; the recorded human judgment is authoritative."
+          check_id="$(gh api "repos/$REPO/commits/$HEAD/check-runs?per_page=100" \
+            | jq -r '[.check_runs[] | select(.name == "Arbiter — judge from comments")] | sort_by(.started_at) | last.id // empty')"
+          if [ -n "$check_id" ] && gh api --method PATCH \
+            "repos/$REPO/check-runs/$check_id" \
+            -f status=completed -f conclusion=success \
+            -f "output[title]=$title" -f "output[summary]=$summary" >/dev/null; then
+            echo "Updated Arbiter check-run $check_id to success"
+          else
+            gh api --method POST "repos/$REPO/check-runs" \
+              -f name="Arbiter — judge from comments" -f head_sha="$HEAD" \
+              -f status=completed -f conclusion=success \
+              -f "output[title]=$title" -f "output[summary]=$summary" >/dev/null
+            echo "Created successful Arbiter override check for $HEAD"
+          fi

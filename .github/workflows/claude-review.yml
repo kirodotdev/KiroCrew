@@ -45,6 +45,35 @@ jobs:
           git show "$BASE_SHA:AUTOSDE.yaml" > .review-base-rules/AUTOSDE.yaml 2>/dev/null || echo "# (no backend AUTOSDE rules on base)" > .review-base-rules/AUTOSDE.yaml
           git show "$BASE_SHA:website/AUTOSDE.yaml" > .review-base-rules/website-AUTOSDE.yaml 2>/dev/null || echo "# (no frontend AUTOSDE rules on base)" > .review-base-rules/website-AUTOSDE.yaml
 
+      # Human judgment may override an AI false positive / not-applicable
+      # finding, but only through the trusted default-branch handler. Never
+      # trust a raw author comment here: require the handler's bot-authored,
+      # SHA-scoped marker so another commenter cannot spoof a green gate.
+      - name: Resolve human override
+        id: human_override
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          exact="<!-- ai-review-human-override target=fable head=$HEAD "
+          all="<!-- ai-review-human-override target=all head=$HEAD "
+          record="$(gh api "repos/$REPO/issues/$PR/comments" --paginate 2>/dev/null \
+            | jq -sr --arg exact "$exact" --arg all "$all" \
+              'add // [] | [.[] | select(.user.login == "github-actions[bot]")
+              | select((.body | startswith($exact)) or (.body | startswith($all)))]
+              | (last.body // "")' 2>/dev/null || true)"
+          actor="$(printf '%s\n' "$record" | sed -nE '1s/^.* actor=([^ ]+) source=([0-9]+) -->$/\1/p')"
+          source="$(printf '%s\n' "$record" | sed -nE '1s/^.* actor=([^ ]+) source=([0-9]+) -->$/\2/p')"
+          if [ -n "$actor" ] && [ -n "$source" ]; then
+            echo "active=true" >> "$GITHUB_OUTPUT"
+            echo "actor=$actor" >> "$GITHUB_OUTPUT"
+            echo "source=$source" >> "$GITHUB_OUTPUT"
+          else
+            echo "active=false" >> "$GITHUB_OUTPUT"
+          fi
+
       # Dependabot PRs run with a read-only token and NO access to repo
       # secrets / OIDC, so the AWS role assumption below can never succeed —
       # it errors, the review step is skipped, and the gate fails closed on
@@ -53,14 +82,14 @@ jobs:
       # are mechanical and remain covered by the non-AI gates (Semgrep,
       # Dependency Audit, CodeQL, build/tests).
       - uses: aws-actions/configure-aws-credentials@517a711dbcd0e402f90c77e7e2f81e849156e31d # v6.2.2
-        if: github.actor != 'dependabot[bot]'
+        if: github.actor != 'dependabot[bot]' && steps.human_override.outputs.active != 'true'
         with:
           role-to-assume: ${{ secrets.AWS_BEDROCK_ROLE_ARN }}
           aws-region: us-west-2
 
       - name: Fable 5 review
         id: review
-        if: github.actor != 'dependabot[bot]'
+        if: github.actor != 'dependabot[bot]' && steps.human_override.outputs.active != 'true'
         uses: anthropics/claude-code-action@44423bdec74b97d67543eb16c110546762c110b2 # v1
         with:
           # Inference via Amazon Bedrock (region from the AWS creds step above).
@@ -237,10 +266,19 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
           HEAD: ${{ github.event.pull_request.head.sha }}
           SO: ${{ steps.review.outputs.structured_output }}
+          HUMAN_OVERRIDE: ${{ steps.human_override.outputs.active }}
+          OVERRIDE_ACTOR: ${{ steps.human_override.outputs.actor }}
+          OVERRIDE_SOURCE: ${{ steps.human_override.outputs.source }}
         run: |
-          [ -z "$SO" ] && { echo "no structured output to post"; exit 0; }
-          summary=$(printf '%s' "$SO" | jq -r '.summary // ""')
-          verdict=$(printf '%s' "$SO" | jq -r 'if .block_merge then "🔴 changes requested (blocking)" else "✅ no blocking findings" end')
+          if [ "$HUMAN_OVERRIDE" = "true" ]; then
+            verdict="✅ human override accepted"
+            source_url="https://github.com/$REPO/pull/$PR#issuecomment-$OVERRIDE_SOURCE"
+            summary="Human judgment by @$OVERRIDE_ACTOR overrides the Fable 5 finding for \`$HEAD\`; [the recorded reason]($source_url) is authoritative for this commit."
+          else
+            [ -z "$SO" ] && { echo "no structured output to post"; exit 0; }
+            summary=$(printf '%s' "$SO" | jq -r '.summary // ""')
+            verdict=$(printf '%s' "$SO" | jq -r 'if .block_merge then "🔴 changes requested (blocking)" else "✅ no blocking findings" end')
+          fi
           [ -z "$summary" ] && exit 0
           MARKER="<!-- claude-ai-review -->"
           {
@@ -251,7 +289,14 @@ jobs:
             echo
             printf '%s\n' "$summary"
             echo
-            echo "_Verdict recorded via the action's structured output for commit \`$HEAD\`._"
+            if [ "$HUMAN_OVERRIDE" = "true" ]; then
+              echo "_Verdict recorded from an authorized human decision for commit \`$HEAD\`._"
+            else
+              echo "_Verdict recorded via the action's structured output for commit \`$HEAD\`._"
+            fi
+            echo
+            echo "False positive or not applicable? The PR author or a repository writer can comment:"
+            echo "\`/ai-review override fable $HEAD: <one-sentence reason>\`"
           } > /tmp/claude-summary.md
           # Find the bot's existing marker comment (first match wins) and PATCH
           # it in place; create once if absent. PR timeline comments are issue
@@ -297,7 +342,13 @@ jobs:
           REVIEW_OUTCOME: ${{ steps.review.outcome }}
           SO: ${{ steps.review.outputs.structured_output }}
           ACTOR: ${{ github.actor }}
+          HUMAN_OVERRIDE: ${{ steps.human_override.outputs.active }}
+          OVERRIDE_ACTOR: ${{ steps.human_override.outputs.actor }}
         run: |
+          if [ "$HUMAN_OVERRIDE" = "true" ]; then
+            echo "Human judgment by $OVERRIDE_ACTOR overrides Fable 5 for $HEAD. Passing gate."
+            exit 0
+          fi
           # Dependabot PRs skip the review step above (no secrets/OIDC access).
           # Pass the gate green rather than fail closed — dependency bumps are
           # covered by Semgrep, Dependency Audit, CodeQL and the build/tests.
