@@ -2481,6 +2481,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
     window.addEventListener('resize', check)
     return () => window.removeEventListener('resize', check)
   }, [])
+  // On mobile the panel is full-width (SidePanel: effectiveWidth = '100%') and
+  // is rendered inline rather than in the actbar grid column, so "does it fit
+  // beside the chat" is the wrong question — the toggle stays enabled.
+  const actEnabled = isMobile || actSpace
   // Bridge explicit view requests (e.g. the /side slash command dispatches
   // openActivityToTab('side')) into the tab model.
   const activityTab = useAppSelector(s => s.chat.activityTab)
@@ -3241,14 +3245,17 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
               {/* Activity panel open toggle — relocated here from the top bar
                   (item 2.4) so opening the panel no longer narrows the now
                   full-width header. Shown only while the panel is closed; the
-                  panel's own header carries the close button. Disabled when the
-                  window is too narrow (the panel would be force-collapsed). */}
-              {!embedMode && !isMobile && !popout && !activityOpen && (
+                  panel's own header carries the close button. On desktop it is
+                  disabled when the window is too narrow (the panel would be
+                  force-collapsed); on mobile the panel takes the full width
+                  instead of sitting beside the chat, so the fits-beside test
+                  (actSpace) does not apply and the button is always live. */}
+              {!embedMode && !popout && !activityOpen && (
                 <Clickable
-                  className={`flex items-center justify-center w-7 h-7 rounded-md transition-colors bg-transparent border-none shrink-0 pointer-events-auto ${actSpace ? 'text-muted hover:text-text hover:bg-bg-hover cursor-pointer' : 'text-muted opacity-40 !cursor-not-allowed'}`}
-                  onClick={() => { if (actSpace) toggleAct() }}
-                  title={actSpace ? 'Open activity panel' : 'Window too narrow for the activity panel'}
-                  aria-label={actSpace ? 'Open activity panel' : 'Window too narrow for the activity panel'}
+                  className={`flex items-center justify-center w-7 h-7 rounded-md transition-colors bg-transparent border-none shrink-0 pointer-events-auto ${actEnabled ? 'text-muted hover:text-text hover:bg-bg-hover cursor-pointer' : 'text-muted opacity-40 !cursor-not-allowed'}`}
+                  onClick={() => { if (actEnabled) toggleAct() }}
+                  title={actEnabled ? 'Open activity panel' : 'Window too narrow for the activity panel'}
+                  aria-label={actEnabled ? 'Open activity panel' : 'Window too narrow for the activity panel'}
                 >
                   <PanelRight size={15} />
                 </Clickable>

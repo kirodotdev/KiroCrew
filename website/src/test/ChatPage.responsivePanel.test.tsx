@@ -51,6 +51,11 @@ vi.mock('../hooks/useBranding', () => ({ useBranding: () => ({ botName: 'Test', 
 vi.mock('../hooks/useAgents', () => ({ useAgents: () => ({ agents: [], defaultAgent: null }) }))
 vi.mock('../hooks/useFilteredDropdown', () => ({ useFilteredDropdown: () => ({ filtered: [], query: '', setQuery: vi.fn(), selectedIndex: 0, setSelectedIndex: vi.fn(), onKeyDown: vi.fn() }) }))
 vi.mock('../hooks/useVoiceInput', () => ({ useVoiceInput: () => ({ recording: false, transcribing: false, toggle: vi.fn() }), voiceInputSupported: false }))
+// useIsMobile reads window.matchMedia at MODULE load, so per-test matchMedia
+// stubs can't move it. Mock the hook with a mutable flag instead: desktop
+// (false) by default, flipped by the mobile describe below.
+let mockIsMobile = false
+vi.mock('../hooks/useIsMobile', () => ({ useIsMobile: () => mockIsMobile }))
 
 // --- Stub API ---
 vi.mock('../api/client', () => ({
@@ -279,5 +284,46 @@ describe('ChatPage — session-header activity toggle (relocated from the top ba
     await screen.findByLabelText('Open activity panel')
     resizeTo(800) // below the 880 space threshold (320 + 560)
     expect(await screen.findByLabelText('Window too narrow for the activity panel')).toBeInTheDocument()
+  })
+})
+
+/**
+ * Mobile regression: the toggle used to be gated on `!isMobile`, so a phone had
+ * NO way to open the activity panel even though SidePanel already renders
+ * full-width there and ChatPage keeps an inline (non-portal) render path
+ * specifically for mobile. The `actSpace` "does it fit beside the chat" test is
+ * also meaningless at full width, so it must not disable the button on mobile.
+ */
+describe('ChatPage — activity toggle on mobile', () => {
+  beforeEach(() => { mockIsMobile = true; setWindowWidth(390); localStorage.clear() })
+  afterEach(() => { mockIsMobile = false })
+
+  function renderWithSlot() {
+    const store = createTestStore()
+    act(() => {
+      store.dispatch(switchSlot.pending('req-mob', 'slot-mob'))
+      store.dispatch(switchSlot.fulfilled({
+        key: 'slot-mob',
+        messages: [{ role: 'assistant', content: 'hi', cls: '' }],
+        running: false, hasMore: false, total: 1, queue: [],
+      }, 'req-mob', 'slot-mob'))
+    })
+    return renderChat(store)
+  }
+
+  it('renders the toggle at a phone viewport and opens the panel', async () => {
+    const { store } = renderWithSlot()
+    const btn = await screen.findByLabelText('Open activity panel')
+    fireEvent.click(btn)
+    expect(store.getState().chat.activityOpen).toBe(true)
+    // Mobile has no actbar grid column, so the panel renders inline.
+    expect(await screen.findByTestId('side-panel')).toBeInTheDocument()
+  })
+
+  it('does not disable the toggle at widths below the desktop space threshold', async () => {
+    renderWithSlot()
+    // 390px is far below 880, which would disable it on desktop.
+    expect(await screen.findByLabelText('Open activity panel')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Window too narrow for the activity panel')).not.toBeInTheDocument()
   })
 })
