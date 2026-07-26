@@ -194,8 +194,12 @@ jobs:
             STAY WITHIN THE PR'S STATED PURPOSE — a suggested Fix MUST be
             achievable inside the scope of THIS PR. If resolving a finding would
             require work beyond the PR's goal (a new subsystem, refactoring
-            untouched code, or a cross-cutting change), do NOT demand it here:
-            downgrade to an advisory / "separate PR" follow-up. The review must
+            untouched code, or a cross-cutting change), do NOT demand that work
+            here: downgrade the DEMANDED FIX to a "separate PR" follow-up. This
+            NEVER lowers the severity of a finding that independently meets the
+            BLOCKING BAR — such a finding is always resolvable in-scope by
+            reverting the offending hunk, so it stays at its true severity and
+            still blocks. The review must
             converge — a fix that spawns MORE reviewable surface than the
             original problem is out of bounds and causes endless review.
             This trims SPECULATIVE additions, not NECESSARY ones: still raise

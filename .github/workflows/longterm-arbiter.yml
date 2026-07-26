@@ -6,7 +6,8 @@ name: Arbiter
 # findings and, with a DELIBERATELY NARROW rubric, blocks ONLY the few that are
 # genuinely hard to walk back once merged: a one-way door (an expensive-to-
 # reverse contract / API / schema / persisted-data decision) or concrete harm (a
-# latent security regression or data-correctness/loss bug this diff can trigger).
+# security regression, a data-correctness/loss bug, or an availability regression
+# — crash, hang, unbounded resource growth — this diff can trigger).
 # Everything else — architectural erosion, maintainability debt, missing
 # abstractions, "should eventually refactor" — is REVERSIBLE later, so it is
 # routed to non-blocking "Suggested follow-ups" rather than gating the PR. The
@@ -218,7 +219,7 @@ jobs:
               persisted-data / wire-format decision that merging as-is locks in,
               so fixing it later is materially harder or costlier (e.g. requires
               a data migration, a breaking API change, or coordinated rollout).
-            - CONCRETE HARM: a latent security regression, a data-correctness /
+            - CONCRETE HARM: a security regression, a data-correctness /
               data-loss bug, OR an availability / operational regression (a
               crash, hang / deadlock, or unbounded resource growth such as a
               memory / fd / thread leak or an unbounded retry loop) that this
@@ -291,17 +292,21 @@ jobs:
             If PASS, write this line:
             No sub-threshold finding meets the long-term-impact bar.
 
-            Then, under EITHER verdict, if the SCOPE TEST routed any
-            related-influence / sub-threshold items to be tracked without
-            blocking, append this section LAST. It is advisory and NEVER changes
-            the verdict (the machine-parsed verdict line is always the first line
-            above, regardless of what follows):
+            Then, under EITHER verdict, if you demoted ANY substantive
+            sub-threshold item to be tracked without blocking — whether routed
+            by the SCOPE TEST (related-influence / out-of-scope) OR demoted
+            because it is reversible-in-a-later-change (architectural erosion,
+            maintainability / tech-debt, missing abstraction) — append this
+            section LAST. It is advisory and NEVER changes the verdict (the
+            machine-parsed verdict line is always the first line above,
+            regardless of what follows):
 
             ### Suggested follow-ups (open as issues — non-blocking)
-            <one line per related-influence / sub-threshold item worth tracking
-            but NOT worth blocking this PR (per the SCOPE TEST): what it is, why
-            it can safely wait, and where it should be fixed. Omit this heading
-            only if there are genuinely none.>
+            <one line per substantive sub-threshold item worth tracking but NOT
+            worth blocking this PR (whether out-of-scope per the SCOPE TEST or an
+            in-scope-but-reversible item you demoted): what it is, why it can
+            safely wait, and where it should be fixed. Omit this heading only if
+            there are genuinely none.>
 
             End with this exact line as proof the review ran for this commit:
             [ARBITER-REVIEWED] ${{ github.event.workflow_run.head_sha || github.event.pull_request.head.sha }}
