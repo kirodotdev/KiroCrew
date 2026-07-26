@@ -347,18 +347,26 @@ jobs:
               follow) or the single reason it blocks. If ANY finding is
               CRITICAL/HIGH, this line MUST contain the literal [BLOCK-MERGE]
               marker (per SEVERITY↔BLOCK COHERENCE).
-            - Then findings ONLY, most-severe-first, each as ONE compact line:
-              `SEVERITY — file:line — <consequence in one clause> → Fix: <minimal
-              change>`, quoting the offending token/line inline for grounding
-              (not a multi-line block quote). Merge findings sharing a root cause
-              into one line.
+            - Then findings ONLY, most-severe-first, TIERED by severity:
+                • CRITICAL/HIGH (blocking): a short STRUCTURED finding — a bold
+                  one-line title `SEVERITY — file:line`, then on their own lines
+                  the quoted offending line(s), a one-line consequence chain
+                  (inputs → call path → failure → blast radius), and
+                  `Fix: <minimal change>`. Keep it tight (~2–4 lines) — enough for
+                  the author to understand it, fix it, and trust it is real, but
+                  NEVER four padded paragraphs.
+                • MEDIUM / advisory: ONE compact line each — `MEDIUM — file:line —
+                  <consequence in one clause> → Fix: <minimal change>`, quoting the
+                  offending token inline.
+              Merge findings sharing a root cause into one finding.
             - Render a severity group only if it has content — never emit an
               empty or "None" group, never pad. Drop pure LOW/nits entirely; keep
               only substantive MEDIUMs (real correctness / robustness / clarity
-              help) in the same one-line shape.
+              help).
             - A clean review (no blocking, no substantive MEDIUM) is JUST the
               punchline line — nothing else. Aim for the shortest text that still
-              conveys every real finding; a typical finding is one line.
+              conveys every real finding; an advisory finding is one line, a
+              blocking finding is a tight few.
 
       # Post the review summary for humans (best-effort, NON-gating). Reads the
       # summary from the action's structured output — not from a model-posted

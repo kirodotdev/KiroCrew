@@ -308,13 +308,22 @@ jobs:
           - NO preamble, NO restating the PR/diff, NO "Coverage"/methodology
             narration (which files you read, "I inspected...", "re-scanned"), NO
             praise, NO recap of what the change does -- that work is internal.
-          - Emit findings ONLY, most-severe-first, each as ONE compact line:
-              Severity: <LEVEL> -- <file>:<line> -- <consequence in one clause,
-              quoting the offending token> -> Fix: <minimal change>
-            Keep the leading "Severity: <LEVEL>" token verbatim at the start of
-            the line. Merge findings that share one root cause into ONE line.
+          - Emit findings ONLY, most-severe-first, TIERED by severity. EVERY
+            finding's line begins with the literal "Severity: <LEVEL>" token
+            (keep it verbatim at the start of the line):
+              • CRITICAL/HIGH (blocking): a short STRUCTURED finding -- first line
+                "Severity: <LEVEL> -- <file>:<line> -- <one-line title>", then on
+                their own lines the quoted offending line(s), a one-line
+                consequence chain (inputs -> call path -> observable failure ->
+                blast radius), and "Fix: <minimal change>". Keep it tight
+                (~2-4 lines) -- enough for the author to understand it, fix it, and
+                trust it is real, but NEVER four padded paragraphs.
+              • MEDIUM / advisory: ONE compact line -- "Severity: <LEVEL> --
+                <file>:<line> -- <consequence in one clause, quoting the offending
+                token> -> Fix: <minimal change>".
+            Merge findings that share one root cause into ONE finding.
           - Drop pure LOW/nits entirely; keep only substantive MEDIUMs (real
-            correctness / robustness / clarity help) in the same one-line shape.
+            correctness / robustness / clarity help).
           - Do NOT pad, do NOT add empty sections, do NOT add an end summary.
             Aim for the shortest output that still conveys every real finding; a
             typical finding is one line.
