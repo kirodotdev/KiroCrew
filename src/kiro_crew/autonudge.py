@@ -32,6 +32,8 @@ from typing import Any, Awaitable, Callable, Iterator
 
 from kiro_crew import platform_compat, shutdown_event
 from kiro_crew.config.loader import config_dir
+from kiro_crew.config.paths import legacy_home
+from kiro_crew.security import is_sensitive_path
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +91,128 @@ def binding_key_for(session_key: str) -> str | None:
 def enabled() -> bool:
     """Feature flag — on by default. Set ``KIROCREW_AUTONUDGE=0`` to disable."""
     return os.environ.get("KIROCREW_AUTONUDGE", "1").lower() not in ("0", "false", "no")
+
+
+def repair_sentinel_path(raw: str) -> str:
+    """Re-home a persisted ``stop_sentinel_path`` onto the CURRENT data home.
+
+    The kill-switch path is resolved once at arm time (``resolve_stop_sentinel``,
+    which builds it under ``workspace_dir_for(...)`` → normally
+    ``config_dir()/workspace``) and then persisted verbatim in the loop store.
+    That store survives the one-time ``~/.kirocrew`` → ``~/.kiro/crew`` data-home
+    migration (``config/paths.py``) and is re-armed on the next ``start()``, so a
+    loop armed BEFORE the move comes back pointing at a directory that no longer
+    exists. ``_timer`` only ever tests ``Path(stop_sentinel_path).exists()``, so
+    such a loop has a DEAD kill switch: a sentinel written at the freshly
+    resolved (current-home) path is never seen, and the only remaining stops are
+    ``max_cycles`` and an explicit remove.
+
+    Three transformations, in order:
+
+    1. **Pass through a path already under the CURRENT home.** Checked FIRST,
+       because ``KIROCREW_HOME`` may legally point *inside* the legacy root
+       (e.g. ``~/.kirocrew/dev``). Such a path is lexically under
+       ``~/.kirocrew`` yet already live and correct; re-homing it would produce
+       ``~/.kirocrew/dev/dev/workspace/…``, persist that, and — since the
+       rewrite is not idempotent — append another segment every boot, disabling
+       a WORKING kill switch with the very code meant to repair dead ones.
+    2. **Re-home a STRANDED legacy-rooted path.** A path under ``~/.kirocrew``
+       is rewritten onto the resolved current home. The migration relocated the
+       whole tree wholesale, so the tail after the home prefix is still correct.
+       Gated on the sentinel's directory no longer existing: an absolute
+       ``workspaces.<name>.dir`` may legitimately live inside that tree (and the
+       legacy root can survive as debris), and rewriting a live path would move
+       a working kill switch outside its configured workspace and persist that.
+       Skipped when the current home IS the legacy home (``KIROCREW_HOME``
+       pointing there, or the migration's fall-back-to-legacy path) — there the
+       persisted path is already live. Both sides are normalized LEXICALLY
+       (``os.path.normpath``, no filesystem access) before the containment
+       test, so an unnormalized value like ``~/.kirocrew/../workspace/STOP``
+       is not mistaken for a legacy-contained path and rewritten elsewhere.
+    3. **Re-apply the arm-time sensitivity refusal.** ``authorize_and_add_nudge``
+       refuses a sensitive ``stop_sentinel_path`` at arm time, but the denylist
+       can widen between releases and the persisted value outlives the original
+       check. A path that is sensitive NOW is dropped to ``""`` (no sentinel)
+       rather than kept, so the service never stats an attacker- or
+       credential-adjacent location on a timer. The check itself FAILS CLOSED:
+       if ``is_sensitive_path`` raises, the path is dropped rather than trusted,
+       because an unvalidated path is exactly what this step exists to reject.
+
+    Returns the (possibly rewritten) path, or ``""`` to mean "no sentinel".
+    Non-``str`` input (a malformed store where ``stop_sentinel_path`` is a
+    number or list) yields ``""`` instead of raising — this runs inside
+    ``_load()`` during ``start()``, so an exception here would abort gateway
+    startup entirely.
+
+    Deliberately does NOT require the path to live under the data home: an
+    absolute ``workspaces.<name>.dir`` is a legitimate configuration, and
+    clearing those would break working kill switches.
+
+    BLOCKING: performs no filesystem I/O itself, but ``is_sensitive_path``
+    resolves realpaths, which can block on an unavailable network mount.
+    ``start()`` therefore runs the whole load+repair phase in an executor.
+    """
+    if not isinstance(raw, str) or not raw.strip():
+        return ""
+    path = raw.strip()
+    try:
+        legacy = legacy_home()
+        current = config_dir()
+        candidate = Path(path).expanduser()
+        # Lexical normalization only — never touch the filesystem here.
+        norm_candidate = Path(os.path.normpath(str(candidate)))
+        norm_legacy = Path(os.path.normpath(str(legacy)))
+        norm_current = Path(os.path.normpath(str(current)))
+        if norm_candidate.is_relative_to(norm_current):
+            # Already live under the current home (including a nested
+            # KIROCREW_HOME inside the legacy root) — nothing to re-home.
+            pass
+        elif norm_current != norm_legacy and norm_candidate.is_relative_to(norm_legacy):
+            # Re-home ONLY when the legacy directory the sentinel lives in is
+            # gone. A path under ``~/.kirocrew`` is not necessarily a migration
+            # casualty: ``workspaces.<name>.dir`` may legitimately be configured
+            # as an absolute path inside that tree (and the legacy root can
+            # survive the migration as debris, which `kirocrew doctor` reports).
+            # Rewriting a still-existing directory's sentinel would move a
+            # WORKING kill switch outside its configured workspace and persist
+            # that. The migration deletes the tree it moved, so "parent no
+            # longer exists" is what distinguishes a stranded path from a live
+            # one. A dead path stays dead either way, so the existence probe
+            # only ever prevents damage.
+            if norm_candidate.parent.exists():
+                logger.debug(
+                    "AutoNudge: keeping legacy-rooted sentinel %s — its directory "
+                    "still exists, so it is a live configured path, not a "
+                    "migration leftover",
+                    path,
+                )
+            else:
+                rehomed = norm_current / norm_candidate.relative_to(norm_legacy)
+                logger.info(
+                    "AutoNudge: re-homed stop sentinel from legacy data home: %s → %s",
+                    path,
+                    rehomed,
+                )
+                path = str(rehomed)
+    except Exception:  # noqa: BLE001 - a repair failure must never block startup
+        logger.warning("AutoNudge: could not re-home sentinel %r", raw, exc_info=True)
+    try:
+        sensitive = is_sensitive_path(path)
+    except Exception:  # noqa: BLE001 - fail closed: unvalidated ⇒ untrusted
+        logger.warning(
+            "AutoNudge: sensitivity re-check failed for %r — dropping the sentinel",
+            path,
+            exc_info=True,
+        )
+        return ""
+    if sensitive:
+        logger.warning(
+            "AutoNudge: dropping stop sentinel %r — path is now sensitive; "
+            "the loop will be deactivated rather than left unstoppable by file",
+            path,
+        )
+        return ""
+    return path
 
 
 # Module-level singleton so hooks in chat.py / messaging.py can notify the
@@ -166,6 +290,10 @@ class AutoNudgeService:
         # fire callback runs the unattended turn INLINE, so cancelling it kills
         # the in-flight turn and loses its transcript and cycle bookkeeping.
         self._firing: set[str] = set()
+        # Set by _load() when a persisted loop was repaired in memory (currently
+        # a re-homed/dropped stop_sentinel_path) so start() can flush the
+        # correction back to disk ONCE instead of re-deriving it every boot.
+        self._store_dirty = False
         # Consecutive non-delivery count per loop (drives escalating re-arm
         # backoff + once-per-streak failure logging). Not persisted; resets on
         # a delivered fire, on removal, and on restart.
@@ -180,15 +308,44 @@ class AutoNudgeService:
     # ── Persistence ──
 
     def _load(self) -> None:
+        """Read the store and repair each entry. BLOCKING — see ``start()``.
+
+        Does file I/O (locked read) and, via ``repair_sentinel_path``, realpath
+        resolution that can stall on an unavailable network mount, so callers on
+        the event loop MUST offload this (``no-blocking-call-on-event-loop``).
+        """
         with _locked_file(self._path, "r") as fh:
             data = json.load(fh)
         for raw in data.get("loops", []):
             try:
                 loop = NudgeLoop(**{k: raw[k] for k in raw if k in NudgeLoop.__dataclass_fields__})
+                # Re-home / re-validate the persisted kill-switch path. A loop
+                # armed before the data-home move would otherwise be re-armed
+                # with a sentinel path nothing can ever create (see
+                # repair_sentinel_path). INSIDE the per-entry try: a malformed
+                # store entry must be skipped, never abort start() and take the
+                # gateway offline.
+                repaired = repair_sentinel_path(loop.stop_sentinel_path)
             except Exception:
                 logger.warning("AutoNudge: skipping malformed loop entry: %r", raw, exc_info=True)
                 continue
             self._loops[loop.id] = loop
+            if repaired != loop.stop_sentinel_path:
+                dropped = bool(loop.stop_sentinel_path) and not repaired
+                loop.stop_sentinel_path = repaired
+                if dropped:
+                    # FAIL CLOSED, matching the arm-time contract:
+                    # authorize_and_add_nudge REFUSES to arm a loop whose
+                    # sentinel is sensitive, so a persisted loop whose sentinel
+                    # has become sensitive must not be re-armed with no kill
+                    # switch at all. Deactivating leaves it inspectable and
+                    # restartable rather than silently unstoppable-by-file.
+                    logger.warning(
+                        "AutoNudge: deactivating loop %s — its stop sentinel was dropped",
+                        loop.id,
+                    )
+                    loop.active = False
+                self._store_dirty = True
         logger.info("AutoNudge: loaded %d loops", len(self._loops))
 
     def _serialize_state(self) -> dict:
@@ -244,7 +401,23 @@ class AutoNudgeService:
         if not enabled():
             logger.info("AutoNudge disabled (KIROCREW_AUTONUDGE not set)")
             return
-        self._load()
+        # Load + repair OFF the event loop: the locked read is file I/O and
+        # repair_sentinel_path's sensitivity check resolves realpaths, which can
+        # stall on an unavailable network-mounted sentinel. Freezing the loop
+        # here would take chat, heartbeat and liveness down until the watchdog
+        # restarts the gateway (no-blocking-call-on-event-loop).
+        await asyncio.get_running_loop().run_in_executor(None, self._load)
+        # Persist any repair _load() made (re-homed sentinel paths) before the
+        # timers go live, so the corrected value survives even if this process
+        # never mutates a loop again. Routed through _persist_locked so it obeys
+        # the one write protocol (snapshot under `_lock`, fsync off the loop)
+        # rather than snapshotting unlocked.
+        if self._store_dirty:
+            try:
+                await self._persist_locked()
+                self._store_dirty = False
+            except Exception:  # noqa: BLE001 - the in-memory repair still applies
+                logger.warning("AutoNudge: could not persist sentinel repair", exc_info=True)
         # Re-arm timers for active loops on startup.
         for loop in self._loops.values():
             if loop.active:

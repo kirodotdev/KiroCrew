@@ -5,9 +5,11 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+from pathlib import Path
 
 import pytest
 
+from kiro_crew import autonudge as _an
 from kiro_crew import autonudge_authz as _autonudge_mod
 from kiro_crew.autonudge import AutoNudgeService, NudgeLoop
 from kiro_crew.dashboard.handlers.autonudge import render_nudge_message
@@ -1241,5 +1243,402 @@ class TestAutonudgeUpdateConcurrency:
             assert finished == [True], "the in-flight turn was cancelled"
             assert svc._loops[loop_obj.id].message == "revised mid-fire"
             assert svc._loops[loop_obj.id].cycle_count == 1, "cycle accounting lost"
+        finally:
+            svc.stop()
+
+
+class TestSentinelPathRepair:
+    """A persisted stop_sentinel_path must survive the data-home move.
+
+    ``resolve_stop_sentinel`` builds the kill-switch path under the data home at
+    ARM time and the store keeps it verbatim, so a loop armed before the
+    ``~/.kirocrew`` → ``~/.kiro/crew`` migration is re-armed on the next start
+    pointing at a directory that no longer exists — a dead kill switch, since
+    ``_timer`` only tests ``Path(stop_sentinel_path).exists()``.
+    """
+
+    @staticmethod
+    def _write_store(base_dir, sentinel: str, *, loop_id: str = "abc123") -> None:
+        (base_dir / "autonudge.json").write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "loops": [
+                        {
+                            "id": loop_id,
+                            "slot_key": "chat-27-1784826855",
+                            "message": "babysit",
+                            "idle_secs": 300,
+                            "max_cycles": 24,
+                            "cycle_count": 3,
+                            "active": True,
+                            "stop_sentinel_path": sentinel,
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def test_legacy_rooted_path_is_rehomed(self, tmp_path, monkeypatch):
+        """A ~/.kirocrew-rooted sentinel is rewritten onto the current home."""
+        home = tmp_path / "home"
+        legacy = home / ".kirocrew"
+        current = home / ".kiro" / "crew"
+        current.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
+        monkeypatch.setattr(_an, "config_dir", lambda: current)
+
+        repaired = _an.repair_sentinel_path(str(legacy / "workspace" / ".stop-chat-27"))
+        assert repaired == str(current / "workspace" / ".stop-chat-27")
+
+    def test_current_home_path_is_untouched(self, tmp_path, monkeypatch):
+        """An already-current path is a pure no-op (no rewrite, no store churn)."""
+        home = tmp_path / "home"
+        current = home / ".kiro" / "crew"
+        current.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
+        monkeypatch.setattr(_an, "config_dir", lambda: current)
+
+        original = str(current / "workspace" / ".stop-chat-50")
+        assert _an.repair_sentinel_path(original) == original
+
+    def test_absolute_workspace_dir_outside_home_is_preserved(self, tmp_path, monkeypatch):
+        """An absolute workspaces.<name>.dir is legitimate — must NOT be cleared.
+
+        Guards against over-eager "must live under the data home" filtering,
+        which would break working kill switches for anyone whose workspace dir
+        is configured as an absolute path outside the data home.
+        """
+        home = tmp_path / "home"
+        current = home / ".kiro" / "crew"
+        current.mkdir(parents=True)
+        elsewhere = tmp_path / "srv" / "shared-ws"
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
+        monkeypatch.setattr(_an, "config_dir", lambda: current)
+
+        original = str(elsewhere / ".stop-chat-9")
+        assert _an.repair_sentinel_path(original) == original
+
+    def test_now_sensitive_path_is_dropped(self, tmp_path, monkeypatch):
+        """The arm-time sensitivity refusal is re-applied on load, not trusted."""
+        home = tmp_path / "home"
+        current = home / ".kiro" / "crew"
+        current.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
+        monkeypatch.setattr(_an, "config_dir", lambda: current)
+        monkeypatch.setattr(_an, "is_sensitive_path", lambda p: True)
+
+        assert _an.repair_sentinel_path(str(current / "workspace" / ".stop-x")) == ""
+
+    def test_legacy_home_as_current_home_is_noop(self, tmp_path, monkeypatch):
+        """When the live home IS ~/.kirocrew (override / migration fallback),
+        the persisted path is already correct and must not be rewritten."""
+        home = tmp_path / "home"
+        legacy = home / ".kirocrew"
+        legacy.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
+        monkeypatch.setattr(_an, "config_dir", lambda: legacy)
+
+        original = str(legacy / "workspace" / ".stop-chat-27")
+        assert _an.repair_sentinel_path(original) == original
+
+    @pytest.mark.parametrize("value", ["", "   "])
+    def test_blank_values_do_not_raise(self, value):
+        assert _an.repair_sentinel_path(value) == ""
+
+    @pytest.mark.parametrize("value", [None, 123, ["x"], {"a": 1}])
+    def test_non_string_values_yield_no_sentinel(self, value):
+        """A malformed store must not abort gateway startup.
+
+        ``NudgeLoop(**raw)`` accepts any type for ``stop_sentinel_path``, so a
+        numeric/list value reaches the repair. ``raw.strip()`` on it raised
+        AttributeError out of ``_load()`` -> ``start()``, taking the gateway
+        offline on boot.
+        """
+        assert _an.repair_sentinel_path(value) == ""
+
+    def test_nested_current_home_inside_legacy_is_not_rehomed(self, tmp_path, monkeypatch):
+        """KIROCREW_HOME may legally point INSIDE the legacy root.
+
+        ``~/.kirocrew/dev`` is lexically under ``~/.kirocrew`` but is the live
+        home, so its sentinel is already correct. Re-homing it would yield
+        ``~/.kirocrew/dev/dev/workspace/...``, persist that over the correct
+        value, and append another segment on every boot — disabling a WORKING
+        kill switch with the code meant to repair dead ones.
+        """
+        home = tmp_path / "home"
+        legacy = home / ".kirocrew"
+        current = legacy / "dev"
+        current.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
+        monkeypatch.setattr(_an, "config_dir", lambda: current)
+
+        original = str(current / "workspace" / ".stop-chat-1")
+        assert _an.repair_sentinel_path(original) == original
+        # Idempotent: a second pass must not append another segment either.
+        assert _an.repair_sentinel_path(_an.repair_sentinel_path(original)) == original
+
+    def test_unnormalized_path_escaping_legacy_is_preserved(self, tmp_path, monkeypatch):
+        """``~/.kirocrew/../workspace/STOP`` normalizes OUTSIDE the legacy root.
+
+        A purely lexical prefix test would treat it as legacy-contained and
+        rewrite an external workspace sentinel to the wrong location.
+        """
+        home = tmp_path / "home"
+        current = home / ".kiro" / "crew"
+        current.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
+        monkeypatch.setattr(_an, "config_dir", lambda: current)
+
+        original = str(home / ".kirocrew" / ".." / "workspace" / "STOP")
+        repaired = _an.repair_sentinel_path(original)
+        # Preserved verbatim — it normalizes outside the legacy root, so there is
+        # nothing to re-home, and rewriting it would point at the wrong place.
+        assert repaired == original
+        assert ".kiro/crew" not in repaired
+
+    def test_live_legacy_rooted_workspace_is_not_rehomed(self, tmp_path, monkeypatch):
+        """An absolute workspace dir INSIDE the legacy tree must be left alone.
+
+        ``workspaces.<name>.dir`` may legitimately be configured as an absolute
+        path under ``~/.kirocrew``, and the legacy root can survive the migration
+        as debris. Rewriting such a sentinel would move a WORKING kill switch
+        outside its configured workspace and persist that. The migration deletes
+        the tree it moved, so an existing directory means "live, not stranded".
+        """
+        home = tmp_path / "home"
+        legacy = home / ".kirocrew"
+        current = home / ".kiro" / "crew"
+        current.mkdir(parents=True)
+        live_ws = legacy / "myworkspace"
+        live_ws.mkdir(parents=True)  # still exists ⇒ not a migration casualty
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
+        monkeypatch.setattr(_an, "config_dir", lambda: current)
+
+        original = str(live_ws / ".stop-chat-1")
+        assert _an.repair_sentinel_path(original) == original
+
+    def test_stranded_legacy_path_is_still_rehomed(self, tmp_path, monkeypatch):
+        """The guard must not defeat the actual fix: a directory the migration
+        removed still gets re-homed."""
+        home = tmp_path / "home"
+        legacy = home / ".kirocrew"
+        current = home / ".kiro" / "crew"
+        current.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
+        monkeypatch.setattr(_an, "config_dir", lambda: current)
+
+        # legacy/workspace deliberately absent — the migration deleted it.
+        assert not (legacy / "workspace").exists()
+        repaired = _an.repair_sentinel_path(str(legacy / "workspace" / ".stop-chat-27"))
+        assert repaired == str(current / "workspace" / ".stop-chat-27")
+
+    def test_sensitivity_check_failure_fails_closed(self, tmp_path, monkeypatch):
+        """If is_sensitive_path RAISES, drop the sentinel rather than trust it.
+
+        Returning the unvalidated path let timers stat a location the check
+        exists to reject.
+        """
+        home = tmp_path / "home"
+        current = home / ".kiro" / "crew"
+        current.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
+        monkeypatch.setattr(_an, "config_dir", lambda: current)
+
+        def _boom(_p):
+            raise OSError("realpath exploded")
+
+        monkeypatch.setattr(_an, "is_sensitive_path", _boom)
+        assert _an.repair_sentinel_path(str(current / "workspace" / ".stop-x")) == ""
+
+    @pytest.mark.asyncio
+    async def test_malformed_entry_does_not_abort_start(self, tmp_path, monkeypatch):
+        """A bad entry is skipped; good entries in the same store still load."""
+        home = tmp_path / "home"
+        current = home / ".kiro" / "crew"
+        current.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
+        monkeypatch.setattr(_an, "config_dir", lambda: current)
+        (tmp_path / "autonudge.json").write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "loops": [
+                        {"id": "bad", "slot_key": "chat-1-1", "message": "m",
+                         "stop_sentinel_path": 12345},
+                        {"id": "good", "slot_key": "chat-2-2", "message": "m",
+                         "stop_sentinel_path": str(current / "workspace" / ".stop-ok")},
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        svc = AutoNudgeService(base_dir=tmp_path)
+        try:
+            await svc.start()  # must not raise
+            assert "good" in svc._loops
+            assert svc._loops["good"].stop_sentinel_path.endswith(".stop-ok")
+        finally:
+            svc.stop()
+
+    @pytest.mark.asyncio
+    async def test_dropped_sentinel_deactivates_the_loop(self, tmp_path, monkeypatch):
+        """Fail closed: arm-time REFUSES a sensitive sentinel, so a loop whose
+        sentinel became sensitive must not be re-armed with no kill switch."""
+        home = tmp_path / "home"
+        current = home / ".kiro" / "crew"
+        current.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
+        monkeypatch.setattr(_an, "config_dir", lambda: current)
+        monkeypatch.setattr(_an, "is_sensitive_path", lambda p: True)
+        self._write_store(tmp_path, str(current / "workspace" / ".stop-chat-27"))
+
+        svc = AutoNudgeService(base_dir=tmp_path)
+        try:
+            await svc.start()
+            loop = svc._loops["abc123"]
+            assert loop.stop_sentinel_path == ""
+            assert loop.active is False
+            assert loop.id not in svc._timers, "deactivated loop must not be armed"
+        finally:
+            svc.stop()
+
+    @pytest.mark.asyncio
+    async def test_repair_exception_skips_entry_instead_of_aborting_start(
+        self, tmp_path, monkeypatch
+    ):
+        """Even an UNEXPECTED repair failure must not take the gateway offline.
+
+        The repair runs inside ``_load()``'s per-entry try, so any escape is
+        contained to skipping that entry rather than propagating out of
+        ``start()``.
+        """
+        home = tmp_path / "home"
+        current = home / ".kiro" / "crew"
+        current.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
+        monkeypatch.setattr(_an, "config_dir", lambda: current)
+        self._write_store(tmp_path, str(current / "workspace" / ".stop-x"))
+
+        def _boom(_raw):
+            raise RuntimeError("repair exploded")
+
+        monkeypatch.setattr(_an, "repair_sentinel_path", _boom)
+        svc = AutoNudgeService(base_dir=tmp_path)
+        try:
+            await svc.start()  # must not raise
+            assert "abc123" not in svc._loops
+        finally:
+            svc.stop()
+
+    @pytest.mark.asyncio
+    async def test_load_runs_off_the_event_loop(self, tmp_path, monkeypatch):
+        """``is_sensitive_path`` resolves realpaths, which can stall on an
+        unavailable network mount — so load+repair must not run on the loop."""
+        import threading
+
+        home = tmp_path / "home"
+        current = home / ".kiro" / "crew"
+        current.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
+        monkeypatch.setattr(_an, "config_dir", lambda: current)
+        self._write_store(tmp_path, str(current / "workspace" / ".stop-x"))
+
+        loop_thread = threading.get_ident()
+        seen: list[int] = []
+        real_load = AutoNudgeService._load
+
+        def _spy(self):
+            seen.append(threading.get_ident())
+            return real_load(self)
+
+        monkeypatch.setattr(AutoNudgeService, "_load", _spy)
+        svc = AutoNudgeService(base_dir=tmp_path)
+        try:
+            await svc.start()
+            assert seen, "_load was never called"
+            assert seen[0] != loop_thread, "_load ran on the event loop thread"
+        finally:
+            svc.stop()
+
+    @pytest.mark.asyncio
+    async def test_load_rehomes_and_persists_once(self, tmp_path, monkeypatch):
+        """End-to-end: start() repairs the loaded loop AND flushes it to disk.
+
+        The re-armed loop must honour the CURRENT-home sentinel — that is the
+        whole point: the user (or the 🎯 stop control) creates the file at the
+        freshly resolved path, and a stale legacy path would ignore it.
+        """
+        home = tmp_path / "home"
+        legacy = home / ".kirocrew"
+        current = home / ".kiro" / "crew"
+        current.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
+        monkeypatch.setattr(_an, "config_dir", lambda: current)
+        self._write_store(tmp_path, str(legacy / "workspace" / ".stop-chat-27"))
+
+        svc = AutoNudgeService(base_dir=tmp_path)
+        try:
+            await svc.start()
+            loaded = svc._loops["abc123"]
+            expected = str(current / "workspace" / ".stop-chat-27")
+            assert loaded.stop_sentinel_path == expected
+            # Repair was flushed, so a later boot does not re-derive it.
+            on_disk = json.loads((tmp_path / "autonudge.json").read_text(encoding="utf-8"))
+            assert on_disk["loops"][0]["stop_sentinel_path"] == expected
+            assert svc._store_dirty is False
+        finally:
+            svc.stop()
+
+    @pytest.mark.asyncio
+    async def test_load_without_repair_does_not_rewrite_store(self, tmp_path, monkeypatch):
+        """A store that needs no repair is not rewritten on start()."""
+        home = tmp_path / "home"
+        current = home / ".kiro" / "crew"
+        current.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
+        monkeypatch.setattr(_an, "config_dir", lambda: current)
+        self._write_store(tmp_path, str(current / "workspace" / ".stop-chat-50"))
+        store = tmp_path / "autonudge.json"
+        before = store.read_bytes()
+
+        svc = AutoNudgeService(base_dir=tmp_path)
+        try:
+            await svc.start()
+            assert svc._store_dirty is False
+            assert store.read_bytes() == before
+        finally:
+            svc.stop()
+
+    @pytest.mark.asyncio
+    async def test_rehomed_sentinel_halts_the_loop(self, tmp_path, monkeypatch):
+        """The repaired path is the one _timer actually honours."""
+        home = tmp_path / "home"
+        legacy = home / ".kirocrew"
+        current = home / ".kiro" / "crew"
+        (current / "workspace").mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
+        monkeypatch.setattr(_an, "config_dir", lambda: current)
+        self._write_store(tmp_path, str(legacy / "workspace" / ".stop-chat-27"))
+
+        fired: list[NudgeLoop] = []
+
+        async def on_fire(loop):
+            fired.append(loop)
+            return True
+
+        async def _nosleep(_secs):
+            return None
+
+        monkeypatch.setattr(_an.asyncio, "sleep", _nosleep)
+        svc = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+        try:
+            await svc.start()
+            # Sentinel created at the CURRENT home, as any live stop control would.
+            (current / "workspace" / ".stop-chat-27").write_text("stop", encoding="utf-8")
+            await svc._timers["abc123"]
+            assert fired == [], "loop fired despite the sentinel being present"
+            assert "abc123" not in svc._loops, "sentinel did not remove the loop"
         finally:
             svc.stop()

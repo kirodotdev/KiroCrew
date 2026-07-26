@@ -115,6 +115,17 @@ def _legacy_home() -> Path:
     return Path.home() / LEGACY_CONFIG_DIR_NAME
 
 
+def legacy_home() -> Path:
+    """Public alias for the pre-move top-level home (``~/.kirocrew``).
+
+    Exported so modules that legitimately need to recognise a legacy-rooted
+    path — e.g. ``autonudge.repair_sentinel_path`` re-homing a persisted
+    kill-switch path — can do so without reaching into the private
+    ``_legacy_home``.
+    """
+    return _legacy_home()
+
+
 def _maybe_migrate_legacy_home() -> Path:
     """Relocate a pre-move ``~/.kirocrew`` into ``~/.kiro/crew`` exactly once.
 
