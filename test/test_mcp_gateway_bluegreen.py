@@ -18,6 +18,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from windows_sim import nonatomic_write, unlink_sharing_violation
 
 from kiro_crew.mcp_gateway.backend import Backend
 from kiro_crew.mcp_gateway.pool import (
@@ -498,6 +499,50 @@ def test_credwatch_streaming_digest_matches_oneshot(tmp_path: Path) -> None:
     assert credwatch._content_digest(tmp_path / "absent") is None
 
 
+def _atomic_cred_write(cred: Path, data: bytes) -> None:
+    """Create or replace the credential file ATOMICALLY (write a sibling temp,
+    then ``os.replace`` it into place).
+
+    ``Path.write_bytes`` truncates-then-writes non-atomically, leaving a brief
+    window where the file exists but is empty/partial. The ~10 ms credential
+    poller (which runs its digest read in a worker thread) can observe that
+    transient state as a distinct content change and fire a spurious EXTRA time
+    on the native Windows matrix — the same truncate race documented on
+    ``test_credwatch_no_fire_on_byte_identical_rewrite``. A real credential
+    refresh daemon rotates atomically; mirror that here so the watcher sees a
+    single absent→present (or old→new) transition on every OS.
+    """
+    import os
+
+    tmp = cred.with_name(f"{cred.name}.tmp")
+    tmp.write_bytes(data)
+    os.replace(tmp, cred)
+
+
+def _resilient_cred_unlink(cred: Path) -> None:
+    """Delete the credential, tolerating the transient Windows sharing violation.
+
+    On Windows a file cannot be deleted while another handle holds it open
+    without ``FILE_SHARE_DELETE`` — which the watcher's worker-thread digest read
+    (a plain ``open(..., "rb")``) does not grant. The test's ``unlink`` therefore
+    races that read and raises ``PermissionError`` (``WinError 32``); POSIX allows
+    deleting an open file, so this never reproduces locally. Retry within a
+    bounded window — exactly what an external credential deleter/rotator does —
+    until the watcher releases the handle between polls. The file still fully
+    EXISTS during the retries, so the watcher keeps reading the unchanged
+    baseline and does not fire until the delete finally lands.
+    """
+    deadline = time.monotonic() + 2.0
+    while True:
+        try:
+            cred.unlink()
+            return
+        except PermissionError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.01)
+
+
 @pytest.mark.asyncio
 async def test_credwatch_first_observation_is_baseline_no_fire(tmp_path: Path) -> None:
     """The first observation of the credential file establishes the baseline
@@ -541,7 +586,7 @@ async def test_credwatch_baseline_established_immediately(tmp_path: Path) -> Non
         credwatch.watch_credential(cred, 0.1, stop, lambda: fired.append(True), logger)
     )
     await asyncio.sleep(0.05)  # baseline (v1) captured by the immediate probe
-    cred.write_bytes(b"secret-v2-rotated")
+    _atomic_cred_write(cred, b"secret-v2-rotated")
     await asyncio.sleep(0.25)  # let the next poll(s) detect the rotation
     stop.set()
     await task
@@ -658,7 +703,7 @@ async def test_credwatch_absent_then_appearing_fires(tmp_path: Path) -> None:
         credwatch.watch_credential(cred, 0.01, stop, lambda: fired.append(True), logger)
     )
     await asyncio.sleep(0.05)  # polls against the missing file (absent baseline)
-    cred.write_bytes(b"secret-v1")  # appearance after an absent baseline → fires
+    _atomic_cred_write(cred, b"secret-v1")  # appearance after an absent baseline → fires
     await asyncio.sleep(0.1)
     stop.set()
     await task
@@ -702,7 +747,7 @@ async def test_credwatch_present_then_deleted_fires_revocation(tmp_path: Path) -
         credwatch.watch_credential(cred, 0.01, stop, lambda: fired.append(True), logger)
     )
     await asyncio.sleep(0.05)  # present baseline captured
-    cred.unlink()  # revocation
+    _resilient_cred_unlink(cred)  # revocation
     await asyncio.sleep(0.1)  # several absent polls
     stop.set()
     await task
@@ -727,14 +772,98 @@ async def test_credwatch_delete_then_reappear_fires_twice(tmp_path: Path) -> Non
         credwatch.watch_credential(cred, 0.01, stop, lambda: fired.append(True), logger)
     )
     await asyncio.sleep(0.05)  # present baseline
-    cred.unlink()  # -> absent (fire #1: revocation)
+    _resilient_cred_unlink(cred)  # -> absent (fire #1: revocation)
     await asyncio.sleep(0.05)
-    cred.write_bytes(b"secret-v2")  # -> present (fire #2: new credential)
+    _atomic_cred_write(cred, b"secret-v2")  # -> present (fire #2: new credential)
     await asyncio.sleep(0.1)
     stop.set()
     await task
 
     assert fired == [True, True]
+
+
+# --- Windows-condition regression locks (via test/windows_sim.py) -------------
+# These reproduce the two native-Windows credwatch failures DETERMINISTICALLY on
+# any OS, so a regression is caught on the Mac/Linux dev loop instead of a CI
+# round-trip. Each pairs the hazard (buggy pattern under the simulator) with the
+# fix (the _atomic_cred_write / _resilient_cred_unlink helpers surviving it).
+
+
+@pytest.mark.asyncio
+async def test_credwatch_nonatomic_appearance_double_fires_but_atomic_single(
+    tmp_path: Path,
+) -> None:
+    """A NON-ATOMIC appearance (bare write_bytes: truncate-then-write) exposes a
+    transient empty file the ~10 ms poller reads as its own revision — firing an
+    EXTRA time (this is the real Windows failure, made deterministic via
+    ``nonatomic_write``). The atomic helper collapses it to a single
+    absent→present transition and fires exactly once."""
+    from kiro_crew.mcp_gateway import credwatch
+
+    # Hazard: non-atomic appearance → the empty truncate window fires spuriously.
+    cred = tmp_path / "cred"
+    stop = asyncio.Event()
+    fired: list[bool] = []
+    task = asyncio.create_task(
+        credwatch.watch_credential(cred, 0.01, stop, lambda: fired.append(True), logger)
+    )
+    await asyncio.sleep(0.05)  # absent baseline
+    with nonatomic_write(cred, b"secret-v1"):
+        await asyncio.sleep(0.05)  # poller observes the EMPTY truncate window
+    await asyncio.sleep(0.05)  # poller observes the full payload
+    stop.set()
+    await task
+    assert fired == [True, True]  # empty→fire, then full→fire: the spurious extra
+
+    # Fix: an atomic appearance is a single transition — exactly one fire.
+    cred2 = tmp_path / "cred2"
+    stop2 = asyncio.Event()
+    fired2: list[bool] = []
+    task2 = asyncio.create_task(
+        credwatch.watch_credential(cred2, 0.01, stop2, lambda: fired2.append(True), logger)
+    )
+    await asyncio.sleep(0.05)  # absent baseline
+    _atomic_cred_write(cred2, b"secret-v1")
+    await asyncio.sleep(0.1)
+    stop2.set()
+    await task2
+    assert fired2 == [True]
+
+
+@pytest.mark.asyncio
+async def test_credwatch_resilient_unlink_survives_sharing_violation(
+    tmp_path: Path,
+) -> None:
+    """Deleting the credential while the watcher holds it open raises WinError 32
+    on Windows (``unlink_sharing_violation``). A bare ``unlink`` propagates it;
+    ``_resilient_cred_unlink`` retries through the transient violation, the file
+    is deleted, and the revocation fires exactly once."""
+    from kiro_crew.mcp_gateway import credwatch
+
+    # Hazard: a bare unlink propagates the sharing violation.
+    doomed = tmp_path / "cred"
+    doomed.write_bytes(b"secret-v1")
+    with unlink_sharing_violation(match="cred", times=1):
+        with pytest.raises(PermissionError):
+            doomed.unlink()
+    doomed.unlink()  # cleanup (violation window is closed)
+
+    # Fix: the resilient helper retries past the violation while the watcher runs.
+    cred = tmp_path / "cred"
+    cred.write_bytes(b"secret-v1")
+    stop = asyncio.Event()
+    fired: list[bool] = []
+    task = asyncio.create_task(
+        credwatch.watch_credential(cred, 0.01, stop, lambda: fired.append(True), logger)
+    )
+    await asyncio.sleep(0.05)  # present baseline
+    with unlink_sharing_violation(match="cred", times=1):
+        _resilient_cred_unlink(cred)  # first delete faults, retry lands
+    assert not cred.exists()
+    await asyncio.sleep(0.1)  # several absent polls
+    stop.set()
+    await task
+    assert fired == [True]  # exactly one revocation fire, no spurious extras
 
 
 # --- manager seam: --credential-watch-path argv threading ---------------------

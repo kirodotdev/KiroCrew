@@ -12,9 +12,11 @@ import pytest
 from windows_sim import (
     colliding_clock,
     increasing_clock,
+    nonatomic_write,
     open_sharing_violation,
     read_sharing_violation,
     replace_sharing_violation,
+    unlink_sharing_violation,
     windows_text_mode_write,
 )
 
@@ -144,6 +146,63 @@ class TestOpenSharingViolation:
             fd = os.open(str(f), os.O_RDONLY)  # no O_CREAT — not faulted
             os.close(fd)
         assert f.read_bytes() == b"x"
+
+
+class TestUnlinkSharingViolation:
+    def test_path_unlink_raises_then_succeeds(self, tmp_path):
+        f = tmp_path / "cred"
+        f.write_bytes(b"data")
+        with unlink_sharing_violation(match="cred", times=1) as state:
+            with pytest.raises(PermissionError):
+                f.unlink()
+            assert f.exists()  # the faulted delete did NOT remove the file
+            f.unlink()  # the retry succeeds
+        assert not f.exists()
+        assert state["n"] >= 2
+
+    def test_os_unlink_also_faults(self, tmp_path):
+        # Path.unlink routes through os.unlink, so patching os.unlink covers the
+        # bare os.unlink entry point too — with a single shared counter.
+        f = tmp_path / "cred"
+        f.write_bytes(b"data")
+        with unlink_sharing_violation(match="cred", times=1):
+            with pytest.raises(PermissionError):
+                os.unlink(str(f))
+            os.unlink(str(f))
+        assert not f.exists()
+
+    def test_non_matching_path_unaffected(self, tmp_path):
+        other = tmp_path / "other"
+        other.write_bytes(b"x")
+        with unlink_sharing_violation(match="cred"):
+            other.unlink()  # different name — never faults
+        assert not other.exists()
+
+    def test_times_zero_never_faults(self, tmp_path):
+        f = tmp_path / "cred"
+        f.write_bytes(b"data")
+        with unlink_sharing_violation(match="cred", times=0):
+            f.unlink()
+        assert not f.exists()
+
+
+class TestNonatomicWrite:
+    def test_empty_during_block_full_after(self, tmp_path):
+        cred = tmp_path / "cred"  # does not exist yet
+        with nonatomic_write(cred, b"secret-v1"):
+            # Truncate phase: the file exists but is EMPTY — exactly the
+            # transient a concurrent poller can observe as a spurious revision.
+            assert cred.exists()
+            assert cred.read_bytes() == b""
+        # Completion phase: the full payload has landed.
+        assert cred.read_bytes() == b"secret-v1"
+
+    def test_full_payload_lands_even_if_block_raises(self, tmp_path):
+        cred = tmp_path / "cred"
+        with pytest.raises(RuntimeError):
+            with nonatomic_write(cred, b"secret-v1"):
+                raise RuntimeError("boom")
+        assert cred.read_bytes() == b"secret-v1"  # finally-clause completes the write
 
 
 class TestWindowsTextModeWrite:

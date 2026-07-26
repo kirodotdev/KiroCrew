@@ -51,6 +51,8 @@ __all__ = [
     "read_sharing_violation",
     "replace_sharing_violation",
     "open_sharing_violation",
+    "unlink_sharing_violation",
+    "nonatomic_write",
     "windows_text_mode_write",
 ]
 
@@ -228,6 +230,100 @@ def open_sharing_violation(
 
     with mock.patch("os.open", _patched):
         yield state
+
+
+@contextmanager
+def unlink_sharing_violation(
+    *, match: Optional[str] = None, times: int = 1
+) -> Iterator[dict]:
+    """Make deleting a file raise a Windows-style sharing violation.
+
+    On Windows a file cannot be deleted while another handle holds it open
+    WITHOUT ``FILE_SHARE_DELETE`` — which Python's ``open`` / ``os.open`` do NOT
+    grant. ``os.unlink`` (and therefore ``Path.unlink``, which routes through it)
+    raises ``PermissionError`` (``WinError 32``). POSIX permits deleting an open
+    file, so an un-retried delete that races a concurrent reader (e.g. the
+    credential poller mid-digest-read) passes locally yet fails on Windows.
+    Raises for the first *times* matching deletes, then delegates to the real
+    call — so a bounded retry loop (what an external credential deleter/rotator
+    does) succeeds. *match* filters on the path (basename-equality or substring);
+    ``None`` faults every delete. Yields a ``{"n": count}`` dict.
+
+    Patches BOTH ``pathlib.Path.unlink`` (the method object itself) AND
+    ``os.unlink``, sharing one counter. Patching ``os.unlink`` alone is NOT
+    enough on every Python: on 3.10/3.11 ``Path.unlink`` calls
+    ``self._accessor.unlink``, which binds ``os.unlink`` at class-definition time
+    (before the patch), so a later ``mock.patch("os.unlink")`` never intercepts
+    it. Replacing the ``Path.unlink`` method faults regardless of that internal
+    routing on 3.10–3.12; the ``Path`` path deletes via the captured real
+    ``os.unlink`` on the non-fault branch (bypassing the accessor), so the two
+    entry points never nest and never double-count. ``os.remove`` is a distinct
+    alias object and is left untouched — credential deletion uses ``unlink``.
+    """
+    real_unlink = os.unlink
+    state = {"n": 0}
+
+    def _maybe_fault(p: str) -> None:
+        if match is None or os.path.basename(p) == match or match in p:
+            state["n"] += 1
+            if state["n"] <= times:
+                raise PermissionError(
+                    f"[WinError 32] simulated sharing violation deleting {p}"
+                )
+
+    def _patched_os_unlink(path, *args, **kwargs):  # type: ignore[no-untyped-def]
+        _maybe_fault(str(path))
+        return real_unlink(path, *args, **kwargs)
+
+    def _patched_path_unlink(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        # Fault-check, then delete via the REAL os.unlink directly — not through
+        # real Path.unlink — so this never re-enters the os.unlink patch (no
+        # double-count) and works identically across the 3.10 accessor binding
+        # and the 3.12 dynamic os.unlink lookup.
+        _maybe_fault(str(self))
+        return real_unlink(self)
+
+    with mock.patch("os.unlink", _patched_os_unlink), mock.patch.object(
+        pathlib.Path, "unlink", _patched_path_unlink
+    ):
+        yield state
+
+
+@contextmanager
+def nonatomic_write(cred: pathlib.Path, data: bytes) -> Iterator[None]:
+    """Reproduce a NON-ATOMIC ``write_bytes`` truncate window deterministically.
+
+    ``Path.write_bytes`` opens the file in ``"wb"`` mode, which TRUNCATES it to
+    zero bytes before the payload is written. A concurrent reader (e.g. the
+    credential poller, hashing every ~10 ms in a worker thread) can observe that
+    transient EMPTY/partial state as a distinct content revision — so an
+    appearance/rotation done with a bare ``write_bytes`` fires the watcher an
+    EXTRA, spurious time. On POSIX the truncate window is sub-microsecond and the
+    poll almost never lands inside it, so the bug surfaces only on the (slower,
+    under-load) native Windows matrix.
+
+    This models that window as an EXPLICIT, awaitable two-phase sequence: on
+    ENTER the file is left EMPTY (the truncate phase); the payload is written on
+    EXIT (the completion phase). ``await``/sleep inside the ``with`` block to let
+    a concurrent watcher observe the empty phase deterministically on any OS::
+
+        with nonatomic_write(cred, b"secret-v1"):
+            await asyncio.sleep(0.05)   # watcher observes the empty truncate window
+        await asyncio.sleep(0.05)       # watcher observes the full payload
+
+    Unlike the sharing-violation simulators this is NOT a ``mock.patch`` gate —
+    the hazard is a concurrency INTERLEAVING, not an API raising, and a blocking
+    patch inside the write call would freeze the event loop and starve the
+    watcher. Driving the two phases around real ``await`` points is what makes it
+    deterministic. A real refresh daemon writes atomically (temp + ``os.replace``),
+    so the fix under test collapses the whole sequence into a single
+    absent→present transition and the extra fire disappears.
+    """
+    cred.write_bytes(b"")  # truncate phase — file exists but is empty
+    try:
+        yield
+    finally:
+        cred.write_bytes(data)  # completion phase — full payload lands
 
 
 # Real Windows uses 0x8000 for os.O_BINARY; reuse it so the simulated flag value
