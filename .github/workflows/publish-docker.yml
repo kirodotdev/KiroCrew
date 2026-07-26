@@ -1,0 +1,340 @@
+name: Publish Docker (reusable)
+
+# Reusable workflow: build the multi-arch KiroCrew gateway image from the
+# already-built wheel artifact and publish it to GitHub Container Registry.
+# Called by nightly.yml (channel: nightly) and release.yml (channel:
+# insider | stable) as its own lane BESIDE publish-cli / publish-linux /
+# sign-and-notarize, mirroring the per-platform release design: the image
+# takes no part in the macOS trust chain and depends only on the wheel, so
+# neither a desktop build nor a signing failure can block it.
+#
+# Registry: ghcr.io/<owner>/kirocrew. Deliberately GHCR, not the
+# distribution CDN — OCI images are pulled through a registry protocol, the
+# CDN serves raw bytes. GHCR needs no AWS credentials at all: pushes
+# authenticate with the workflow's own GITHUB_TOKEN (packages:write), so
+# this lane runs even when the CDN/signing secrets are absent (forks
+# publish to their own ghcr.io/<fork-owner> namespace).
+#
+# Byte provenance: the image consumes the EXACT wheel artifact that
+# publish-cli ships to pip users (same bytes, same version stamp) — the
+# Dockerfile refuses to build from a source tree. SLSA provenance for the
+# image is attested in-lane against the manifest digest BEFORE any channel
+# alias moves, so a channel-tag pull always resolves to attested bytes.
+#
+# Tag discipline (mirrors the CDN key discipline):
+#   - The VERSION tag (e.g. 0.1.0-nightly.202607261234, 0.1.0) is treated
+#     as immutable: once published it is never repointed. A job re-run that
+#     finds the tag already present SKIPS the build, VERIFIES the existing
+#     digest already carries this repo's provenance (never re-signing bytes
+#     this run did not build), and does NOT move the channel alias —
+#     re-running an old release must never roll a channel backward.
+#   - The CHANNEL alias (nightly | insider | stable, + latest ≡ stable) is
+#     mutable and written AFTER the version tag + attestation, so it never
+#     points at bytes that are not yet live and attested.
+
+on:
+  workflow_call:
+    inputs:
+      channel:
+        description: "Release channel: nightly | insider | stable"
+        required: true
+        type: string
+      version:
+        description: "Image version tag (matches the CDN version label)"
+        required: true
+        type: string
+      publish:
+        description: "Push to the registry; false skips the job entirely"
+        required: false
+        type: boolean
+        default: true
+      wheel_artifact:
+        description: "Name of the uploaded artifact containing the wheel"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+  attestations: write
+
+jobs:
+  publish-docker:
+    name: Publish Docker Image (${{ inputs.channel }})
+    if: ${{ inputs.publish }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CHANNEL: ${{ inputs.channel }}
+      VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Download wheel artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ inputs.wheel_artifact }}
+          path: dist
+
+      - name: Verify exactly one wheel
+        run: |
+          set -euo pipefail
+          # The artifact carries wheel + sdist; the image consumes the wheel.
+          # Drop everything else so the Dockerfile's one-wheel guard (its own
+          # defense against a multi-wheel context) sees a clean dist/.
+          find dist -type f ! -name '*.whl' -delete
+          mapfile -t WHEELS < <(find dist -type f -name '*.whl')
+          if [ "${#WHEELS[@]}" -ne 1 ]; then
+            echo "Expected exactly one wheel, found ${#WHEELS[@]}:"; printf '%s\n' "${WHEELS[@]}"; exit 1
+          fi
+          ls -la dist/
+
+      - name: Compute image name
+        id: image
+        run: |
+          set -euo pipefail
+          # Owner lowercased: repository_owner may carry uppercase, OCI
+          # references must be lowercase. Forks resolve to their own
+          # namespace automatically — no hardcoded org.
+          OWNER="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          echo "name=ghcr.io/${OWNER}/kirocrew" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@abd2ef45e78c5afb21d64d4ca52ee8550d9572c7 # v4.5.1
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Immutable-version discipline: if the version tag already exists this
+      # is a job re-run — never republish different bytes under the same
+      # version. The build is skipped; provenance is verified; the channel
+      # alias does not move (see the alias step).
+      #
+      # Failure classification matters: ONLY an explicit not-found response
+      # ("manifest unknown" / "name unknown" — the registry saying the tag
+      # or repository does not exist) may select the build path. A transient
+      # transport/auth failure must FAIL the job instead: treating it as
+      # "absent" would rebuild and push different bytes under an
+      # already-published version tag, silently breaking digest-pinned
+      # deployments. Pinned by test_publish_docker_contract.py.
+      - name: Check for existing version tag
+        id: existing
+        run: |
+          set -euo pipefail
+          IMAGE="${{ steps.image.outputs.name }}"
+          set +e
+          INSPECT_OUT=$(docker buildx imagetools inspect "${IMAGE}:${VERSION}" --format '{{json .Manifest.Digest}}' 2>&1)
+          INSPECT_RC=$?
+          set -e
+          if [ "$INSPECT_RC" -eq 0 ]; then
+            DIGEST=$(echo "$INSPECT_OUT" | tr -d '"')
+            echo "Version tag already published (job re-run): ${IMAGE}:${VERSION}@${DIGEST}"
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+          elif echo "$INSPECT_OUT" | grep -qiE 'manifest unknown|name unknown|not found|MANIFEST_UNKNOWN|NAME_UNKNOWN'; then
+            echo "Version tag not published yet — building."
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::Could not determine whether ${IMAGE}:${VERSION} exists (transport/auth failure, NOT a clean not-found). Refusing to build: republishing an existing version tag would break digest-pinned deployments. Inspect output follows."
+            echo "$INSPECT_OUT"
+            exit 1
+          fi
+
+      - name: Set up QEMU (arm64 emulation)
+        if: steps.existing.outputs.exists == 'false'
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+
+      - name: Set up Docker Buildx
+        if: steps.existing.outputs.exists == 'false'
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      # Resolve the kiro-cli version BEFORE the build so (a) the Dockerfile
+      # can cross-check that the manifest did not move mid-build and (b) the
+      # resolved version lands in the dev.kirocrew.kiro-cli.version OCI
+      # label — an auditable record of the agent runtime a digest carries.
+      # The Dockerfile independently sha256-verifies the downloaded bytes
+      # against the manifest (fail-closed).
+      - name: Resolve kiro-cli version
+        if: steps.existing.outputs.exists == 'false'
+        id: kirocli
+        run: |
+          set -euo pipefail
+          VERSION_RESOLVED=$(curl --proto '=https' --tlsv1.2 -fsSL \
+            "https://desktop-release.q.us-east-1.amazonaws.com/latest/manifest.json" \
+            | python3 -c 'import json,sys;print(json.load(sys.stdin)["version"])')
+          echo "Resolved kiro-cli ${VERSION_RESOLVED}"
+          echo "version=${VERSION_RESOLVED}" >> "$GITHUB_OUTPUT"
+
+      # Version tag ONLY here — channel aliases move after attestation.
+      # provenance:false keeps the pushed manifest a plain two-arch index
+      # (no unknown/unknown attestation entries); SLSA provenance is
+      # attached by the dedicated attest step instead.
+      - name: Build and push (version tag)
+        if: steps.existing.outputs.exists == 'false'
+        id: build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: docker/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: false
+          tags: ${{ steps.image.outputs.name }}:${{ inputs.version }}
+          build-args: |
+            KIROCREW_VERSION=${{ inputs.version }}
+            VCS_REF=${{ github.sha }}
+            KIRO_CLI_VERSION=${{ steps.kirocli.outputs.version }}
+            SOURCE_REPO_URL=${{ github.server_url }}/${{ github.repository }}
+
+      # The digest every subsequent step operates on: fresh build OR the
+      # already-published manifest on a re-run. Selecting it ONCE keeps the
+      # attest + alias steps identical across both paths.
+      - name: Select published digest
+        id: digest
+        run: |
+          set -euo pipefail
+          if [ "${{ steps.existing.outputs.exists }}" = "true" ]; then
+            DIGEST="${{ steps.existing.outputs.digest }}"
+          else
+            DIGEST="${{ steps.build.outputs.digest }}"
+          fi
+          if [ -z "${DIGEST}" ]; then
+            echo "::error::No digest resolved (build skipped without an existing tag?)"; exit 1
+          fi
+          echo "value=${DIGEST}" >> "$GITHUB_OUTPUT"
+
+      # Signed SLSA provenance for the exact manifest this lane publishes,
+      # attested BEFORE the channel alias moves — a channel pull therefore
+      # always resolves to attested bytes (parity with publish-linux, which
+      # attests before the versioned S3 key goes live).
+      #
+      # FRESH BUILDS ONLY: this workflow must never sign bytes it did not
+      # build — attesting a pre-existing digest would let a pre-seeded tag
+      # acquire fraudulent provenance from the trusted release workflow.
+      # The existing-tag re-run path is handled by the VERIFY step below.
+      - name: Attest image provenance (fresh build)
+        if: steps.existing.outputs.exists == 'false'
+        uses: actions/attest-build-provenance@96b4a1ef7235a096b17240c259729fdd70c83d45 # v2
+        with:
+          subject-name: ${{ steps.image.outputs.name }}
+          subject-digest: ${{ steps.digest.outputs.value }}
+          push-to-registry: true
+
+      # Existing-tag re-run path: require that the already-published digest
+      # ALREADY carries provenance attested by THIS repository's workflows.
+      # Together with the fresh-build attest above this preserves both
+      # invariants: (a) the channel alias never moves to an unattested
+      # digest, and (b) this workflow never signs bytes it did not build.
+      # A first run that died between the version-tag push and its attest
+      # step therefore FAILS here on re-run instead of laundering the
+      # unattested digest into the channel alias — recover by deleting the
+      # orphaned version tag (registry UI) and re-running for a clean,
+      # attested rebuild. Pinned by test_publish_docker_contract.py.
+      - name: Verify existing digest provenance (re-run)
+        if: steps.existing.outputs.exists == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          IMAGE="${{ steps.image.outputs.name }}"
+          DIGEST="${{ steps.digest.outputs.value }}"
+          # --signer-workflow binds acceptance to attestations produced by
+          # THIS reusable workflow (sigstore cert job_workflow_ref), not
+          # merely "any attestation from this repo" — a pre-seeded tag
+          # pointing at a digest attested by some other workflow in the
+          # repo is rejected. (A registry-writer can still create tags and
+          # move mutable aliases directly — that power is outside what any
+          # workflow can police; this check keeps THIS lane from treating
+          # foreign digests as its own.)
+          if ! gh attestation verify "oci://${IMAGE}@${DIGEST}" \
+              --repo "${{ github.repository }}" \
+              --signer-workflow "${{ github.repository }}/.github/workflows/publish-docker.yml"; then
+            echo "::error::${IMAGE}:${VERSION}@${DIGEST} exists but has no provenance attested by this repo's publish-docker workflow. Refusing to treat it as a valid prior publish. If a prior run died between its tag push and attest step, delete the ${VERSION} tag in the ghcr.io package settings and re-run this job to rebuild and attest cleanly."
+            exit 1
+          fi
+          echo "Existing digest carries valid provenance from this workflow."
+
+      # FRESH BUILDS ONLY: re-running an OLD workflow (e.g. re-running the
+      # v0.1.0 publish after v0.1.1 shipped) hits the existing-tag path and
+      # would otherwise repoint nightly/stable/latest BACKWARD to the stale
+      # digest for every unpinned pull — a silent, permanent rollback. The
+      # provenance verify above still runs on re-runs (audit), but the
+      # alias never moves. Trade-off: a first run that dies between attest
+      # and this step leaves the alias one release stale until the next
+      # publish (nightly self-heals within a cycle; for stable, dispatch a
+      # fresh release or move the alias manually with the imagetools
+      # command below). Pinned by test_publish_docker_contract.py.
+      - name: Update channel alias (and latest for stable)
+        if: steps.existing.outputs.exists == 'false'
+        run: |
+          set -euo pipefail
+          IMAGE="${{ steps.image.outputs.name }}"
+          DIGEST="${{ steps.digest.outputs.value }}"
+          # imagetools create points a new tag at an existing manifest by
+          # digest — no rebuild, no byte movement, works for multi-arch
+          # indexes. Alias written AFTER the version tag + attestation.
+          docker buildx imagetools create -t "${IMAGE}:${CHANNEL}" "${IMAGE}@${DIGEST}"
+          if [ "${CHANNEL}" = "stable" ]; then
+            docker buildx imagetools create -t "${IMAGE}:latest" "${IMAGE}@${DIGEST}"
+          fi
+          echo "DIGEST=${DIGEST}" >> "$GITHUB_ENV"
+
+      - name: Reconcile aliases (re-run)
+        if: steps.existing.outputs.exists == 'true'
+        run: |
+          set -euo pipefail
+          IMAGE="${{ steps.image.outputs.name }}"
+          DIGEST="${{ steps.digest.outputs.value }}"
+          echo "DIGEST=${DIGEST}" >> "$GITHUB_ENV"
+          # Re-runs never move the CHANNEL alias (rollback protection — see
+          # the fresh-build alias step). One narrow, provably-safe repair IS
+          # allowed: a stable first run that died between its `stable` and
+          # `latest` writes leaves the two divergent. Repointing `latest` is
+          # gated on `stable` ALREADY resolving to this run's digest — i.e.
+          # this release owns the current channel state — so it can only
+          # ever converge latest toward stable, never roll either backward.
+          if [ "${CHANNEL}" = "stable" ]; then
+            STABLE_DIGEST=$(docker buildx imagetools inspect "${IMAGE}:stable" --format '{{json .Manifest.Digest}}' 2>/dev/null | tr -d '"' || true)
+            LATEST_DIGEST=$(docker buildx imagetools inspect "${IMAGE}:latest" --format '{{json .Manifest.Digest}}' 2>/dev/null | tr -d '"' || true)
+            if [ "${STABLE_DIGEST}" = "${DIGEST}" ] && [ "${LATEST_DIGEST}" != "${DIGEST}" ]; then
+              echo "Repairing divergent latest alias (stable already owns ${DIGEST})."
+              docker buildx imagetools create -t "${IMAGE}:latest" "${IMAGE}@${DIGEST}"
+              exit 0
+            fi
+          fi
+          echo "::notice::Version tag already existed — channel alias NOT moved (re-runs must never roll a channel backward). If this re-run was repairing an interrupted first publish and the alias is stale, move it manually: docker buildx imagetools create -t ${IMAGE}:${CHANNEL} ${IMAGE}@${DIGEST}"
+
+      # The documented anonymous `docker run` only works if the GHCR package
+      # is PUBLIC — but GHCR creates a package PRIVATE on its first-ever
+      # push. Verify with an unauthenticated pull so a private package fails
+      # the lane loudly instead of shipping a broken README command.
+      # Canonical repo only: forks legitimately keep private packages.
+      - name: Verify anonymous pull (package visibility)
+        if: github.repository_owner == 'kirodotdev'
+        run: |
+          set -euo pipefail
+          IMAGE="${{ steps.image.outputs.name }}"
+          docker logout ghcr.io
+          if ! docker buildx imagetools inspect "${IMAGE}:${VERSION}" > /dev/null 2>&1; then
+            echo "::error::Anonymous pull of ${IMAGE}:${VERSION} FAILED. On the first-ever publish GHCR creates the package PRIVATE — a repo admin must open ghcr.io package settings for 'kirocrew', change visibility to Public (one-time). No rebuild is needed: the image and alias are already published; visibility is the only gate."
+            exit 1
+          fi
+          echo "Anonymous pull OK — package is public."
+
+      - name: Summary
+        run: |
+          {
+            echo "## Publish Docker (${CHANNEL})"
+            echo "- Image: \`${{ steps.image.outputs.name }}:${VERSION}\`"
+            echo "- Digest: \`${DIGEST}\`"
+            echo "- Channel alias: \`${{ steps.image.outputs.name }}:${CHANNEL}\`"
+            if [ "${CHANNEL}" = "stable" ]; then
+              echo "- Latest alias: \`${{ steps.image.outputs.name }}:latest\`"
+            fi
+            if [ "${{ steps.existing.outputs.exists }}" = "true" ]; then
+              echo "- Note: version tag already existed (job re-run) — build skipped, provenance verified, channel alias NOT moved."
+            fi
+            echo "- Run: \`docker run -d -p 127.0.0.1:5476:5476 -v kirocrew-home:/home/kirocrew ${{ steps.image.outputs.name }}:${CHANNEL}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

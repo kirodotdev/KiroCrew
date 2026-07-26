@@ -119,6 +119,31 @@ jobs:
       appimage_artifact: build-linux-x64
     secrets: inherit
 
+  # ── Docker image publish ──────────────────────────────────────────────
+  # Builds the multi-arch gateway image FROM THE SAME WHEEL publish-cli
+  # ships and pushes it to ghcr.io (GITHUB_TOKEN only — no AWS credentials,
+  # no CDN vars, so this lane also works on forks). Its own lane beside
+  # publish-cli/publish-linux per the per-platform release design: only a
+  # wheel-build failure can block it. packages:write is scoped to this job
+  # alone (see test_workflow_permissions.py).
+  publish-docker:
+    name: Publish Docker Image (nightly channel)
+    needs: [version, build-wheel]
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/publish-docker.yml
+    with:
+      channel: nightly
+      version: ${{ needs.version.outputs.nightly_version }}
+      publish: true
+      wheel_artifact: cli-wheel
+    # No `secrets: inherit`: the lane authenticates with GITHUB_TOKEN only
+    # (implicitly available to reusable workflows). Inheriting would expose
+    # every repo secret (signing, CDN) to a lane documented as needing none.
+
   # Caller job for the reusable sign-and-notarize workflow: a workflow_call
   # callee can never exceed the caller job's permissions, so the caller must
   # grant id-token explicitly. attestations:write covers the sign job's

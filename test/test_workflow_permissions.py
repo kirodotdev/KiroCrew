@@ -78,6 +78,18 @@ class TestNightlyPermissions:
             "id-token": "write",
             "attestations": "write",
         }
+        # The Docker lane pushes to ghcr.io with the workflow's own
+        # GITHUB_TOKEN: packages:write is required for the push and MUST
+        # stay scoped to this caller job (never workflow-level -- a
+        # registry-poisoning capability in every job would defeat the
+        # least-privilege split). id-token + attestations cover the in-lane
+        # SLSA provenance push; never contents:write.
+        assert _permission_block(lines, "  publish-docker:") == {
+            "contents": "read",
+            "packages": "write",
+            "id-token": "write",
+            "attestations": "write",
+        }
         # Caller job for the reusable sign-and-notarize workflow: a
         # workflow_call callee can never exceed the caller job's permissions,
         # so the caller must grant id-token explicitly. attestations:write
@@ -114,6 +126,14 @@ class TestReleasePermissions:
             "id-token": "write",
             "attestations": "write",
         }
+        # Docker lane: ghcr.io push via GITHUB_TOKEN (packages:write scoped
+        # to this job only) + in-lane provenance (see nightly note).
+        assert _permission_block(lines, "  publish-docker:") == {
+            "contents": "read",
+            "packages": "write",
+            "id-token": "write",
+            "attestations": "write",
+        }
         assert _permission_block(lines, "  sign-and-notarize:") == {
             "id-token": "write",
             "contents": "read",
@@ -146,6 +166,18 @@ class TestReusableWorkflowPermissions:
     def test_publish_cli_declares_exact_capabilities(self) -> None:
         assert _workflow_permissions("publish-cli.yml") == {
             "contents": "read",
+            "id-token": "write",
+            "attestations": "write",
+        }
+
+    def test_publish_docker_declares_exact_capabilities(self) -> None:
+        """The Docker lane pushes to ghcr.io (packages:write via
+        GITHUB_TOKEN) and attests in-lane SLSA provenance (id-token +
+        attestations, pushed to the registry). contents stays read-only;
+        no AWS-facing capability exists in this lane at all."""
+        assert _workflow_permissions("publish-docker.yml") == {
+            "contents": "read",
+            "packages": "write",
             "id-token": "write",
             "attestations": "write",
         }

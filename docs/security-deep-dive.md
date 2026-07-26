@@ -296,7 +296,7 @@ HMAC-SHA256 signed tokens with dual expiry:
 - 5-minute link click window (`exp`)
 - Session TTL up to 20 hours (`session_exp`)
 - IP-pinned on first use
-- **Every request requires a valid token** — there is no unauthenticated path.
+- **Every request requires a valid token**, with three deliberate, secret-free exceptions: static assets (SPA bootstrap), the local-bootstrap endpoints (`/api/token/local`, `/api/shutdown` — loopback peer + filesystem secret required), and the three liveness probes (`/api/health`, `/api/live`, `/api/ready` — orchestrator-reachable, minimal payloads).
 
 Additional controls:
 - **Per-session logout** (CWE-613): the access cookie carries a per-session `nonce`; `POST /api/auth/logout` records that nonce in the `RevokedNonceStore` so the individual session is revoked without affecting others.
@@ -310,7 +310,7 @@ Origin/Referer validation on POST/PUT/DELETE. Shared `check_origin()` for both H
 
 ### Host-Header Validation (DNS-Rebinding Defense)
 
-A parallel `Host`-header barrier runs alongside the Origin check as the second middleware in the chain (`host_validation_middleware`, registered before `csrf_middleware`). Unlike CSRF, it runs on **every** method — GET-based data exfiltration is the DNS-rebinding payload, and it does **not** trust a loopback `request.remote` (a rebound request *is* loopback at the socket while `Host` carries the attacker's forged domain). `check_host()` derives a hostname allowlist from `app['allowed_origins']` plus a canonical-loopback floor via `build_allowed_hosts()`, so the Host and Origin layers share one source of truth and cannot drift. The comparison is port-independent (hostname only). It is deny-by-default: an empty/missing `allowed_origins` is treated as a denial (never fail-open), and a missing `Host` is allowed only from a loopback remote (non-browser local IPC). On rejection it returns 403 and emits a SEL audit event.
+A parallel `Host`-header barrier runs alongside the Origin check as the second middleware in the chain (`host_validation_middleware`, built by the shared `_make_host_validation_middleware` factory in both server entrypoints, registered before `csrf_middleware`). Unlike CSRF, it runs on **every** method — GET-based data exfiltration is the DNS-rebinding payload, and it does **not** trust a loopback `request.remote` (a rebound request *is* loopback at the socket while `Host` carries the attacker's forged domain). The single exemption is the three `origin.PROBE_PATHS` liveness probes (`/api/health`, `/api/live`, `/api/ready`): orchestrators address containers by IP, which is never in the allowlist; the probe handlers compensate by stripping build-identity fields unless the caller is direct-local **and** presents a served `Host`, so a rebound request learns only the liveness bit. `check_host()` derives a hostname allowlist from `app['allowed_origins']` plus a canonical-loopback floor via `build_allowed_hosts()`, so the Host and Origin layers share one source of truth and cannot drift. The comparison is port-independent (hostname only). It is deny-by-default: an empty/missing `allowed_origins` is treated as a denial (never fail-open), and a missing `Host` is allowed only from a loopback remote (non-browser local IPC). On rejection it returns 403 and emits a SEL audit event.
 
 ### Enterprise Grid Validation
 

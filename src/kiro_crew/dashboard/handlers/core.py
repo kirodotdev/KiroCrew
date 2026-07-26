@@ -30,7 +30,7 @@ from kiro_crew.config.loader import (
     config_path,
 )
 from kiro_crew.context_management import RESULT_FILE_MAX_BYTES
-from kiro_crew.dashboard.origin import is_direct_local_request
+from kiro_crew.dashboard.origin import check_host, is_direct_local_request
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.dashboard.token_auth import MAX_SESSION_TTL_SECS, generate_token, parse_duration
 from kiro_crew.security import SUSPICIOUS_BASH_PATTERNS
@@ -198,9 +198,19 @@ async def api_branding(request: web.Request) -> web.Response:
 
 
 def _liveness_payload(request: web.Request) -> dict[str, object]:
-    """Return public liveness plus identity only for direct-local callers."""
+    """Return public liveness plus identity only for direct-local callers.
+
+    Identity requires BOTH gates: a direct-local peer (loopback, no
+    forwarding headers) AND a Host header naming a host we serve. The probe
+    paths are exempt from the host_validation middleware (orchestrators
+    address pods by IP — see origin.PROBE_PATHS), so a DNS-rebound loopback
+    request CAN reach this handler with a forged Host; ``check_host`` here
+    keeps the exact-version fingerprint off that path. A rebound page then
+    learns only ``{"ok": true}`` — indistinguishable from the TCP connect
+    succeeding, which it could already observe.
+    """
     payload: dict[str, object] = {"ok": True}
-    if is_direct_local_request(request):
+    if is_direct_local_request(request) and check_host(request):
         # The desktop production/nightly cross-app guard calls over loopback and
         # needs exact identity to decide whether it can reuse the shared port.
         # Anonymous non-loopback probes get only the liveness bit, avoiding an
@@ -241,7 +251,12 @@ async def api_ready(request: web.Request) -> web.Response:
 
     Shutdown takes precedence over subsystem checks. The response carries only
     fixed, low-cardinality booleans/markers — no paths, ids, counts, secrets, or
-    user/session content — so it is safe on the unauthenticated probe boundary.
+    user/session content. The probe paths are exempt from the host_validation
+    middleware (orchestrators address pods by IP — see origin.PROBE_PATHS), so
+    a disallowed-Host request CAN reach this handler; the detail fields
+    (startup/shutdown/subsystem markers) are therefore gated on ``check_host``,
+    mirroring ``_liveness_payload``. A disallowed-Host caller gets only
+    ``{"ready": bool}`` — exactly the bit the status code already tells it.
     """
     # Graceful-shutdown gate: as soon as a stop is requested, stop advertising
     # readiness so traffic drains before the socket closes.
@@ -259,13 +274,15 @@ async def api_ready(request: web.Request) -> web.Response:
     # because the socket is already accepting probe requests.
     startup_complete = getattr(state, "ready", False) is True
     ready = all(checks.values()) and startup_complete and not shutting_down
-    payload: dict = {
-        "ready": ready,
-        "startup_complete": startup_complete,
-        "checks": checks,
-    }
-    if shutting_down:
-        payload["shutting_down"] = True
+    payload: dict = {"ready": ready}
+    if check_host(request):
+        # Diagnostic detail for operators/orchestrators addressing the
+        # gateway by an allowed hostname. Withheld from disallowed-Host
+        # callers (e.g. a DNS-rebound page reaching the probe exemption).
+        payload["startup_complete"] = startup_complete
+        payload["checks"] = checks
+        if shutting_down:
+            payload["shutting_down"] = True
     return web.json_response(payload, status=200 if ready else 503)
 
 

@@ -37,6 +37,16 @@ _CANONICALIZABLE_LOOPBACK_HOSTS = frozenset(
     {"127.0.0.1", "::1", "localhost", "kirocrew.localhost"}
 )
 
+#: Liveness/readiness probe paths. Orchestrators (Kubernetes kubelet, Docker
+#: HEALTHCHECK behind a remapped port, load balancers) address these by pod /
+#: container IP, so their Host header can never appear in the dashboard's
+#: host allowlist. The probe surface is exempted from the DNS-rebinding Host
+#: barrier — safe because the handlers are token-free, secret-free, and
+#: reveal build identity only when BOTH direct-local AND the Host allowlist
+#: agree (see handlers.core._liveness_payload), so a rebound request gets
+#: only the liveness bit an attacker can infer from the TCP connect anyway.
+PROBE_PATHS = frozenset({"/api/health", "/api/live", "/api/ready"})
+
 
 # ---------------------------------------------------------------------------
 # Hostname / IP helpers
@@ -248,8 +258,65 @@ def is_local_only(dashboard_host: str, slack_connected: bool) -> bool:
     return True
 
 
+#: Explicit bind-address override for container/orchestrated deployments.
+#: See :func:`bind_address_for`.
+_ENV_BIND = "KIROCREW_BIND"
+
+
 def bind_address_for(local_only: bool) -> str:
-    """Return the TCP bind address string for aiohttp."""
+    """Return the TCP bind address string for aiohttp.
+
+    ``KIROCREW_BIND`` (env) overrides the bind ADDRESS only — nothing else.
+    It exists for containers: inside Docker, published ports (``-p``) map to
+    the container's bridge interface, so a loopback-bound gateway is
+    unreachable from the host even though the operator explicitly asked for
+    the port to be exposed. The official image sets ``KIROCREW_BIND=0.0.0.0``;
+    binding all interfaces *inside the container's network namespace* exposes
+    nothing on the host beyond what ``-p`` explicitly publishes.
+
+    Deliberately narrow:
+
+    * ``local_only`` semantics are UNCHANGED — dashboard URLs, the CSRF
+      origin allowlist, host canonicalization, and the strict internal-path
+      rules keep their loopback behavior (correct for the common
+      ``-p 5476:5476`` + ``http://localhost:5476`` mapping). Only the TCP
+      bind widens.
+    * Safe by construction: ``token_auth_middleware`` is mounted
+      unconditionally in BOTH server paths (``start_dashboard`` and
+      ``start_api_server``, which both resolve their bind through this
+      function), so a wider bind never exposes an unauthenticated surface
+      beyond the three ``PROBE_PATHS`` liveness probes (token-exempt by
+      design, secret-free payloads). CSRF ``check_origin`` and the
+      DNS-rebinding ``check_host`` barrier apply to every request except
+      those same probe paths (orchestrators address pods by IP — see
+      ``PROBE_PATHS``), and the ``is_direct_local_request`` gates (secret
+      reveal, channel config writes) treat bridge peers as remote —
+      fail-closed.
+    * The value must parse as an IP address (``0.0.0.0``, ``::``, or a
+      specific interface address). Anything else is ignored with a warning
+      and the normal local-only resolution applies — a typo can only ever
+      *narrow* exposure back to loopback, never widen it.
+    """
+    override = os.environ.get(_ENV_BIND, "").strip()
+    if override:
+        try:
+            ipaddress.ip_address(override)
+        except ValueError:
+            logger.warning(
+                "Ignoring %s=%r: not a valid IP address; binding loopback",
+                _ENV_BIND,
+                override,
+            )
+        else:
+            logger.info(
+                "%s=%s: binding this address instead of loopback. Every client "
+                "must still present a valid dashboard token (token auth is "
+                "always mounted); config writes remain restricted to direct "
+                "local sessions.",
+                _ENV_BIND,
+                override,
+            )
+            return override
     return _BIND_LOCAL if local_only else _BIND_ALL
 
 

@@ -63,6 +63,22 @@ pip install "https://download.crew.kiro.dev/cli/nightly/0.1.0.dev20260718/kirocr
 The `cli.sh` installer above does exactly this resolution for you (reads the
 feed, verifies the hash, installs) — it is the recommended path.
 
+### Docker: run the gateway as a container
+
+For always-on servers (Slack/Discord bots, remote dashboards) the gateway
+ships as a multi-arch image on GHCR:
+
+```bash
+docker run -d --name kirocrew \
+  -p 127.0.0.1:5476:5476 \
+  -v kirocrew-home:/home/kirocrew \
+  ghcr.io/kirodotdev/kirocrew:stable
+```
+
+See **[docs/DOCKER.md](docs/DOCKER.md)** for first-run login, channel
+credentials, tags (`stable` / `insider` / `nightly` / pinned versions), and
+the container security model.
+
 To build from source instead (contributors, Windows native), follow the steps
 below.
 

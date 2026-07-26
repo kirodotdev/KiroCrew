@@ -43,6 +43,35 @@ async def test_remote_health_omits_build_identity() -> None:
 
 
 @pytest.mark.asyncio
+async def test_rebound_loopback_health_omits_build_identity() -> None:
+    """DNS-rebinding hardening for the probe Host-check exemption.
+
+    The probe paths bypass host_validation_middleware (orchestrators address
+    pods by IP), so a rebound loopback request with a forged Host CAN reach
+    this handler. The identity fields must then be withheld: check_host
+    inside _liveness_payload is the second gate.
+    """
+    req = _probe_req(headers={"Host": "attacker.example"})
+    req.app = {"allowed_origins": {"http://localhost:5476"}}
+    resp = await core_mod.api_health(req)
+    assert json.loads(resp.body) == {"ok": True}
+
+
+@pytest.mark.asyncio
+async def test_direct_local_health_with_served_host_keeps_identity() -> None:
+    """The desktop cross-app guard path (loopback + real served Host) still
+    receives identity after the check_host gate was added."""
+    from kiro_crew import __version__
+
+    req = _probe_req(headers={"Host": "127.0.0.1:5476"})
+    req.app = {"allowed_origins": {"http://localhost:5476"}}
+    resp = await core_mod.api_health(req)
+    body = json.loads(resp.body)
+    assert body["app"] == "kirocrew"
+    assert body["version"] == __version__
+
+
+@pytest.mark.asyncio
 async def test_forwarded_loopback_health_omits_build_identity() -> None:
     """A reverse-proxied remote request is not treated as desktop-local."""
     resp = await core_mod.api_health(
@@ -64,12 +93,46 @@ async def test_live_alias_returns_ok() -> None:
     assert body["version"] == __version__
 
 
-def _req_with_state(state, *, startup_complete: bool = True) -> web.Request:
+def _req_with_state(
+    state, *, startup_complete: bool = True, host_allowed: bool = True
+) -> web.Request:
+    """Fake readiness request. ``host_allowed`` models the check_host gate:
+    True = operator/orchestrator addressing an allowed host (full detail),
+    False = disallowed Host reaching the probe exemption (generic body).
+    Host/allowlist pairing mirrors the /api/health identity-gate tests."""
     if state is not None:
         state.ready = startup_complete
     req = MagicMock(spec=web.Request)
-    req.app = {"state": state} if state is not None else {}
+    req.headers = {
+        "Host": "127.0.0.1:5476" if host_allowed else "attacker.example"
+    }
+    app = {"state": state} if state is not None else {}
+    app["allowed_origins"] = {"http://localhost:5476"}
+    req.app = app
     return req
+
+
+@pytest.mark.asyncio
+async def test_ready_disallowed_host_gets_only_the_ready_bit() -> None:
+    """DNS-rebinding hardening for the probe Host-check exemption, readiness
+    edition: /api/ready bypasses host_validation_middleware, so a
+    disallowed-Host request CAN reach the handler. It must learn ONLY the
+    ready boolean — the exact bit the status code already carries — never
+    the startup/shutdown/subsystem markers."""
+    state = MagicMock()
+    state.sessions = MagicMock()
+    resp = await core_mod.api_ready(_req_with_state(state, host_allowed=False))
+    assert resp.status == 200
+    assert json.loads(resp.body) == {"ready": True}
+
+    resp = await core_mod.api_ready(
+        _req_with_state(state, startup_complete=False, host_allowed=False)
+    )
+    assert resp.status == 503
+    assert json.loads(resp.body) == {"ready": False}, (
+        "unready detail (startup/checks markers) must be withheld from "
+        "disallowed-Host callers"
+    )
 
 
 @pytest.mark.asyncio
@@ -271,3 +334,117 @@ async def test_ready_recovers_when_shutdown_flag_cleared() -> None:
     body = json.loads(serving.body)
     assert body["ready"] is True
     assert "shutting_down" not in body
+
+
+# ── Probe Host-exemption through the REAL middleware chain ───────────────────
+# The tests above call handlers directly, which cannot detect a revert of the
+# middleware exemption itself (a reverted middleware 403s the probe BEFORE the
+# handler runs). These tests mount the SHARED factory the servers install
+# (server._make_host_validation_middleware — single source of truth for the
+# barrier and its PROBE_PATHS carve-out) into a real aiohttp app and drive
+# real HTTP requests with a DISALLOWED Host header across the wire.
+
+
+def _host_barrier_app() -> web.Application:
+    from kiro_crew.dashboard import server as server_mod
+
+    app = web.Application(
+        middlewares=[server_mod._make_host_validation_middleware("dashboard_user")]
+    )
+    app["allowed_origins"] = {"http://localhost:5476"}
+    app.router.add_get("/api/health", core_mod.api_health)
+    app.router.add_get("/api/live", core_mod.api_live)
+    app.router.add_get("/api/ready", core_mod.api_ready)
+
+    async def protected(_req: web.Request) -> web.Response:
+        return web.json_response({"secret": True})
+
+    app.router.add_get("/api/sessions", protected)
+    return app
+
+
+@pytest.mark.asyncio
+async def test_disallowed_host_probes_pass_through_middleware_chain() -> None:
+    """An orchestrator probe with a Host outside the allowlist (pod IP,
+    container IP, LB VIP — never in the allowlist by construction) must
+    reach the probe handlers THROUGH the middleware. Reverting the
+    PROBE_PATHS exemption in the shared factory fails this test with a 403.
+    """
+    from aiohttp.test_utils import TestClient, TestServer
+
+    async with TestClient(TestServer(_host_barrier_app())) as client:
+        for path in ("/api/health", "/api/live"):
+            resp = await client.get(path, headers={"Host": "10.42.7.13:5476"})
+            assert resp.status == 200, f"{path} must be probe-reachable"
+            # And the identity gate holds on this path: forged/unknown Host ⇒
+            # liveness bit only, no build fingerprint.
+            assert await resp.json() == {"ok": True}
+        # /api/ready is exempt too: it must pass the barrier (its 503-until-
+        # ready status is orthogonal to the Host exemption under test).
+        resp = await client.get("/api/ready", headers={"Host": "10.42.7.13:5476"})
+        assert resp.status in (200, 503)
+
+
+@pytest.mark.asyncio
+async def test_disallowed_host_non_probe_still_403s_in_middleware_chain() -> None:
+    """The exemption is EXACTLY the three probe paths: any other route with a
+    disallowed Host keeps the DNS-rebinding 403. Guards against the carve-out
+    silently widening."""
+    from aiohttp.test_utils import TestClient, TestServer
+
+    async with TestClient(TestServer(_host_barrier_app())) as client:
+        resp = await client.get(
+            "/api/sessions", headers={"Host": "attacker.example"}
+        )
+        assert resp.status == 403
+        assert "Host header not allowed" in await resp.text()
+
+
+@pytest.mark.asyncio
+async def test_allowed_host_non_probe_passes_host_barrier() -> None:
+    """Coherence check: the barrier only rejects disallowed Hosts — an allowed Host
+    reaches the handler (this app mounts no token auth; the real servers
+    layer token_auth_middleware separately)."""
+    from aiohttp.test_utils import TestClient, TestServer
+
+    async with TestClient(TestServer(_host_barrier_app())) as client:
+        resp = await client.get(
+            "/api/sessions", headers={"Host": "localhost:5476"}
+        )
+        assert resp.status == 200
+
+
+def test_both_servers_install_the_shared_host_barrier() -> None:
+    """Wiring pin: BOTH entrypoints must build their Host barrier from the
+    shared factory (the single exemption point the chain tests above cover),
+    and neither may re-grow a private inline copy that could drop or widen
+    the exemption independently."""
+    import inspect
+
+    from kiro_crew.dashboard import server as server_mod
+
+    dashboard_src = inspect.getsource(server_mod.start_dashboard)
+    api_src = inspect.getsource(server_mod.start_api_server)
+    for src, name in ((dashboard_src, "start_dashboard"), (api_src, "start_api_server")):
+        assert "_make_host_validation_middleware(" in src, (
+            f"{name} no longer uses the shared host-validation factory"
+        )
+        assert "async def host_validation_middleware" not in src, (
+            f"{name} re-introduced an inline host-validation middleware; "
+            "keep the shared factory as the single exemption point"
+        )
+
+
+def test_api_server_resolves_bind_address_via_shared_helper() -> None:
+    """Wiring pin for the container bind override: start_api_server must
+    resolve its TCP bind through bind_address_for (KIROCREW_BIND-aware,
+    itself covered in test_dashboard_origin.py) rather than a hardcoded
+    loopback literal — otherwise `gateway --slack-only` in the official
+    image binds loopback and is unreachable through a published port."""
+    import inspect
+
+    from kiro_crew.dashboard import server as server_mod
+
+    src = inspect.getsource(server_mod.start_api_server)
+    assert "bind_address_for(local_only)" in src
+    assert 'TCPSite(runner, "127.0.0.1"' not in src

@@ -8,6 +8,7 @@ from unittest.mock import patch
 import pytest
 
 from kiro_crew.dashboard.origin import (
+    bind_address_for,
     build_allowed_origins,
     build_dashboard_url,
     check_origin,
@@ -17,6 +18,81 @@ from kiro_crew.dashboard.origin import (
     resolve_dashboard_host,
     should_canonicalize_host,
 )
+
+
+class TestBindAddressFor:
+    """KIROCREW_BIND overrides ONLY the TCP bind address (container support).
+
+    The override must never touch local_only semantics (URLs, CSRF origin
+    set, canonicalization) — those are covered by the existing suites; here
+    we pin the bind resolution itself plus the fail-narrow validation rule:
+    a malformed value falls back to loopback (can only narrow exposure,
+    never widen it).
+    """
+
+    def test_default_is_loopback(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("KIROCREW_BIND", raising=False)
+        assert bind_address_for(True) == "127.0.0.1"
+
+    def test_local_only_false_binds_all(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("KIROCREW_BIND", raising=False)
+        assert bind_address_for(False) == "0.0.0.0"
+
+    def test_env_override_binds_all_interfaces(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("KIROCREW_BIND", "0.0.0.0")
+        assert bind_address_for(True) == "0.0.0.0"
+
+    def test_env_override_specific_interface(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("KIROCREW_BIND", "10.0.0.7")
+        assert bind_address_for(True) == "10.0.0.7"
+
+    def test_env_override_ipv6_any(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("KIROCREW_BIND", "::")
+        assert bind_address_for(True) == "::"
+
+    def test_env_override_whitespace_stripped(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("KIROCREW_BIND", " 0.0.0.0 ")
+        assert bind_address_for(True) == "0.0.0.0"
+
+    def test_invalid_value_falls_back_to_loopback(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Fail-narrow: a typo must degrade to loopback, never widen exposure.
+        monkeypatch.setenv("KIROCREW_BIND", "all-interfaces-please")
+        assert bind_address_for(True) == "127.0.0.1"
+
+    def test_hostname_rejected(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Only IP literals: a hostname would resolve at bind time with
+        # environment-dependent results; reject rather than guess.
+        monkeypatch.setenv("KIROCREW_BIND", "eth0.local")
+        assert bind_address_for(True) == "127.0.0.1"
+
+    def test_empty_value_is_ignored(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("KIROCREW_BIND", "")
+        assert bind_address_for(True) == "127.0.0.1"
+
+    def test_override_does_not_touch_local_only_urls(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The override changes the TCP bind ONLY: URL building keeps
+        # local_only semantics (no token requirement change here — auth
+        # middleware is mounted unconditionally by the server paths).
+        monkeypatch.setenv("KIROCREW_BIND", "0.0.0.0")
+        assert resolve_dashboard_host(True) == "localhost"
+        origins = build_allowed_origins(5476, True)
+        assert "http://localhost:5476" in origins
+
+
+class TestProbePaths:
+    """PROBE_PATHS is the host_validation exemption set for orchestrator
+    health probes (kubelet / Docker HEALTHCHECK address pods by IP). Pin the
+    exact membership: adding a path here widens the unauthenticated,
+    Host-check-free surface and must be a deliberate, reviewed act."""
+
+    def test_exact_membership(self) -> None:
+        from kiro_crew.dashboard.origin import PROBE_PATHS
+
+        assert PROBE_PATHS == {"/api/health", "/api/live", "/api/ready"}
 
 
 class TestBuildAllowedOrigins:

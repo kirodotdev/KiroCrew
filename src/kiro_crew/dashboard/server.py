@@ -124,6 +124,7 @@ from kiro_crew.dashboard.handlers.source_providers import (
 from kiro_crew.dashboard.handlers.tunnel import api_tunnel_status
 from kiro_crew.dashboard.loop_watchdog import LoopStallWatchdog
 from kiro_crew.dashboard.origin import (
+    PROBE_PATHS,
     bind_address_for,
     build_allowed_origins,
     check_host,
@@ -226,6 +227,64 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         "/api/mcp/servers",
     }
 )
+
+
+def _make_host_validation_middleware(caller: str) -> Callable:
+    """Build the DNS-rebinding ``Host``-header barrier middleware.
+
+    SHARED by BOTH entrypoints (``start_dashboard`` and the ``--slack-only``
+    ``start_api_server``) so the two chains can never drift — same rationale
+    as ``_STRICT_INTERNAL_API_PATHS`` above. In particular this is the SINGLE
+    exemption point for ``origin.PROBE_PATHS``: a change to the exemption is
+    necessarily a change in both servers, where test_api_health.py pins it
+    through a real middleware chain (disallowed-Host probe allowed,
+    disallowed-Host non-probe denied).
+
+    Rejects any request whose ``Host`` header does not name a host we serve.
+    Runs on EVERY method (GET data-exfil is the rebinding payload) and
+    independently of the CSRF Origin check and loopback trust — a rebound
+    request is loopback at the socket but forges ``Host``. See
+    ``origin.check_host`` for the missing-Host and empty-allowlist
+    deny-by-default carve-outs.
+
+    Probe exemption: orchestrator health probes (kubelet, Docker HEALTHCHECK,
+    LBs) address the gateway by container/pod IP, which by construction is
+    never in the host allowlist. The probe handlers are token-free/secret-free
+    and additionally gate their identity fields on ``check_host``, so
+    exempting them leaks nothing a rebound page could not already infer from
+    a bare TCP connect (see ``origin.PROBE_PATHS``). This is a permanent,
+    deliberate carve-out in a security control: treat ANY addition to
+    ``PROBE_PATHS`` as a security review.
+
+    ``caller`` labels the SEL audit line (``dashboard_user`` for the full
+    dashboard, ``mcp_tool`` for the headless API server).
+    """
+
+    @web.middleware  # type: ignore[misc]
+    async def host_validation_middleware(
+        request: web.Request,
+        handler: object,
+    ) -> web.StreamResponse:
+        if request.path not in PROBE_PATHS and not check_host(request):
+            # SEL audit (security-relevant permission decision): make
+            # DNS-rebinding attempts visible in the audit log, mirroring the
+            # API-access audit. Non-critical write (no fail-closed fsync) so
+            # it never wedges the event loop.
+            sel().log_api_access(
+                caller=caller,
+                operation=f"{request.method} {request.path}",
+                outcome="denied",
+                resources=request.path,
+                error=f"host header not allowed: {request.headers.get('Host', '')[:100]}",
+            )
+            raise web.HTTPForbidden(
+                text="Host header not allowed.",
+                content_type="text/plain",
+            )
+        return await handler(request)  # type: ignore[operator]
+
+    return host_validation_middleware
+
 
 # Mixed internal API paths — called by BOTH internal processes (loopback +
 # ``X-Internal-Secret``) AND the browser (cookie auth), e.g. ``/api/spawn``
@@ -1944,34 +2003,10 @@ async def start_dashboard(
     # the browser and gateway are co-located on localhost.
     app["local_only"] = local_only
 
-    @web.middleware  # type: ignore[misc]
-    async def host_validation_middleware(
-        request: web.Request,
-        handler: object,
-    ) -> web.StreamResponse:
-        # DNS-rebinding defense-in-depth: reject any request whose
-        # Host header does not name a host we serve. Runs on EVERY method (GET
-        # data-exfil is the rebinding payload) and independently of the CSRF
-        # Origin check and loopback trust — a rebound request is loopback at the
-        # socket but forges Host. See origin.check_host for the missing-Host and
-        # empty-allowlist deny-by-default carve-outs.
-        if not check_host(request):
-            # SEL audit (security-relevant permission decision): make DNS-rebinding
-            # attempts visible in the audit log, mirroring the API-access audit.
-            # Non-critical write (no fail-closed fsync) so it never wedges the
-            # event loop.
-            sel().log_api_access(
-                caller="dashboard_user",
-                operation=f"{request.method} {request.path}",
-                outcome="denied",
-                resources=request.path,
-                error=f"host header not allowed: {request.headers.get('Host', '')[:100]}",
-            )
-            raise web.HTTPForbidden(
-                text="Host header not allowed.",
-                content_type="text/plain",
-            )
-        return await handler(request)  # type: ignore[operator]
+    # DNS-rebinding defense-in-depth — shared factory (single source of truth
+    # for the barrier AND the PROBE_PATHS exemption; see
+    # _make_host_validation_middleware).
+    host_validation_middleware = _make_host_validation_middleware("dashboard_user")
 
     @web.middleware  # type: ignore[misc]
     async def csrf_middleware(
@@ -2414,25 +2449,12 @@ async def start_api_server(
                 raise
         return await handler(request)  # type: ignore[operator]
 
-    @web.middleware  # type: ignore[misc]
-    async def host_validation_middleware(
-        request: web.Request,
-        handler: object,
-    ) -> web.StreamResponse:
-        # DNS-rebinding defense-in-depth, parity with start_dashboard.
-        if not check_host(request):
-            sel().log_api_access(
-                caller="mcp_tool",
-                operation=f"{request.method} {request.path}",
-                outcome="denied",
-                resources=request.path,
-                error=f"host header not allowed: {request.headers.get('Host', '')[:100]}",
-            )
-            raise web.HTTPForbidden(
-                text="Host header not allowed.",
-                content_type="text/plain",
-            )
-        return await handler(request)  # type: ignore[operator]
+    # DNS-rebinding defense-in-depth, parity with start_dashboard by
+    # construction — the SAME factory builds both barriers, including the
+    # orchestrator probe exemption (see _make_host_validation_middleware /
+    # origin.PROBE_PATHS): headless gateways are the instances most likely to
+    # sit behind an orchestrator addressing them by pod/container IP.
+    host_validation_middleware = _make_host_validation_middleware("mcp_tool")
 
     @web.middleware  # type: ignore[misc]
     async def csrf_middleware(
@@ -2501,7 +2523,13 @@ async def start_api_server(
 
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, "127.0.0.1", port)
+    # Same bind resolution as start_dashboard: loopback unless the operator
+    # widened it (dashboard.url opt-out of local_only, or the KIROCREW_BIND
+    # container override honored inside bind_address_for). Without this the
+    # documented `gateway --slack-only` container path would silently bind
+    # loopback and be unreachable through a published Docker port.
+    bind_addr = bind_address_for(local_only)
+    site = web.TCPSite(runner, bind_addr, port)
     await _start_site(site, port)
 
     # Port bind succeeded — now safe to persist the secret file (parity with
@@ -2517,7 +2545,7 @@ async def start_api_server(
         await runner.cleanup()
         raise
 
-    logger.info("API-only server listening on 127.0.0.1:%d", port)
+    logger.info("API-only server listening on %s:%d", bind_addr, port)
 
     # Boot-to-ready (rec #1): headless API server is bound and ready. Privacy-safe
     # fixed labels only; best-effort.

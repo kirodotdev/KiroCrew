@@ -123,6 +123,30 @@ jobs:
       appimage_artifact: build-linux-x64
     secrets: inherit
 
+  # ── Docker image publish ──────────────────────────────────────────────
+  # Multi-arch gateway image from the SAME wheel publish-cli ships, pushed
+  # to ghcr.io with the workflow's own GITHUB_TOKEN (no AWS credentials).
+  # Depends only on the wheel — a macOS signing failure never blocks the
+  # image (per-platform releases). Channel alias insider|stable; stable
+  # also moves :latest.
+  publish-docker:
+    name: Publish Docker Image (${{ needs.version.outputs.channel }} channel)
+    needs: [version, build-wheel]
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/publish-docker.yml
+    with:
+      channel: ${{ needs.version.outputs.channel }}
+      version: ${{ needs.version.outputs.version }}
+      publish: true
+      wheel_artifact: cli-wheel
+    # No `secrets: inherit`: the lane authenticates with GITHUB_TOKEN only
+    # (implicitly available to reusable workflows). Inheriting would expose
+    # every repo secret (signing, CDN) to a lane documented as needing none.
+
   # Caller job for the reusable sign-and-notarize workflow: a workflow_call
   # callee can never exceed the caller job's permissions, so the caller must
   # grant id-token explicitly. The signing job holds AWS creds (id-token)
