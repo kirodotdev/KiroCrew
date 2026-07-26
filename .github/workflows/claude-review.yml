@@ -209,6 +209,11 @@ jobs:
             Do not report a finding you cannot ground in quoted diff lines. When
             unsure, lower the severity rather than guess. Only the base-branch
             AUTOSDE rules and the actual diff are authoritative — never invent rules.
+            These four elements are the INTERNAL bar for whether a finding is real
+            and correctly severed — you must be able to produce all four. In the
+            POSTED summary, state them COMPACTLY per SUMMARY FORMAT below (one line:
+            severity — location — consequence → fix), NOT as four labelled
+            paragraphs per finding.
 
             PROPORTIONALITY (anti-over-engineering) — a suggested Fix MUST be the
             smallest change that resolves the named problem. Prefer simplifying
@@ -318,11 +323,38 @@ jobs:
               Otherwise false. Per SEVERITY↔BLOCK COHERENCE, block_merge MUST be
               true whenever any finding is CRITICAL/HIGH; never label a
               non-blocking finding above MEDIUM.
-            - summary: your full markdown review (findings with the evidence
-              chain, or an explicit "no blocking findings"). CI posts this to the
-              PR on your behalf.
+            - summary: the human-facing review the CI posts. This is
+              PRESENTATION ONLY — your internal analysis stays exhaustive per
+              COVERAGE / THOROUGHNESS / EVIDENCE above; the summary is the
+              DISTILLED result, not a transcript of that work. Format it EXACTLY
+              per SUMMARY FORMAT below.
             You MAY still post inline comments during the review, but the
             structured result is the single source of truth for the merge gate.
+
+            SUMMARY FORMAT (authoritative for the `summary` field — terse,
+            precise, punchline-first; presentation only, never widens or narrows
+            the gate, which reads `block_merge`):
+            - NO preamble, NO restating the PR/diff, NO "Coverage"/methodology
+              narration (which files you inspected, which rules matched, YAML or
+              indent checks, "re-scanned N times") — that is internal work, never
+              output. NO praise, NO recap of what the change does.
+            - LINE 1 is ONE bold punchline: the verdict in one breath — either
+              "no blocking findings" (optionally noting how many advisory items
+              follow) or the single reason it blocks. If ANY finding is
+              CRITICAL/HIGH, this line MUST contain the literal [BLOCK-MERGE]
+              marker (per SEVERITY↔BLOCK COHERENCE).
+            - Then findings ONLY, most-severe-first, each as ONE compact line:
+              `SEVERITY — file:line — <consequence in one clause> → Fix: <minimal
+              change>`, quoting the offending token/line inline for grounding
+              (not a multi-line block quote). Merge findings sharing a root cause
+              into one line.
+            - Render a severity group only if it has content — never emit an
+              empty or "None" group, never pad. Drop pure LOW/nits entirely; keep
+              only substantive MEDIUMs (real correctness / robustness / clarity
+              help) in the same one-line shape.
+            - A clean review (no blocking, no substantive MEDIUM) is JUST the
+              punchline line — nothing else. Aim for the shortest text that still
+              conveys every real finding; a typical finding is one line.
 
       # Post the review summary for humans (best-effort, NON-gating). Reads the
       # summary from the action's structured output — not from a model-posted
