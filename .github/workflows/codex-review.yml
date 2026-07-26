@@ -165,7 +165,11 @@ jobs:
           COVERAGE (mandatory): enumerate EVERY file in the diff and inspect each
           one -- do not sample or stop early. Your review MUST account for all
           changed files and surface the COMPLETE set of findings, never a
-          representative subset. This review runs in THREE sequential passes (the
+          representative subset. This enumeration is INTERNAL: inspect
+          exhaustively, but do NOT narrate what you inspected in your output (no
+          "Coverage" section, no file-by-file walkthrough, no "I read/re-scanned
+          X") -- emit only findings, per OUTPUT STYLE below. This review runs in
+          THREE sequential passes (the
           workflow re-invokes you). When a later pass is given the findings
           already reported by earlier passes, SKIP those and focus only on issues
           and files not yet covered; when no prior findings are provided, do a
@@ -213,18 +217,17 @@ jobs:
           labels and your block decision consistent.
 
           EVIDENCE REQUIREMENT (anti-hallucination) -- every finding MUST show
-          its work, or you MUST NOT report it. For each finding write, on their
-          own lines:
-            Severity: CRITICAL|HIGH|MEDIUM|LOW
-            Location: <file>:<line> from the diff
-            Evidence: quote the specific changed line(s) the finding is about
-            Reasoning (chain of consequences): trace the concrete path from the
-                       quoted code to the harm -- inputs -> call path -> observable
-                       failure -> how far the damage propagates. A CRITICAL/HIGH
-                       MUST demonstrate that blast radius; if you cannot name a
-                       concrete trigger AND outcome, it is not CRITICAL/HIGH:
-                       downgrade it or drop it.
-            Fix: a specific, minimal change
+          its work, or you MUST NOT report it. Before reporting, you MUST be able
+          to state all five: Severity (CRITICAL|HIGH|MEDIUM|LOW); Location
+          (<file>:<line> from the diff); Evidence (the specific changed line(s));
+          Reasoning (a concrete chain -- inputs -> call path -> observable failure
+          -> how far the damage propagates; a CRITICAL/HIGH MUST demonstrate that
+          blast radius, and if you cannot name a concrete trigger AND outcome it
+          is not CRITICAL/HIGH -- downgrade it or drop it); and Fix (a specific,
+          minimal change). These five are the INTERNAL bar for whether a finding
+          is real and correctly severed -- in your OUTPUT do NOT write them as
+          five separate labelled lines; state each finding as ONE compact line per
+          OUTPUT STYLE below.
           Do not report a finding you cannot ground in quoted diff lines. When
           unsure, lower the severity rather than guess. Only the base-branch
           AUTOSDE rules and the actual diff are authoritative -- never invent rules.
@@ -299,6 +302,24 @@ jobs:
             Trivial changes need NO new test -- pure refactors already covered by
             existing tests, comments, docs, formatting, config, and
             vendored/generated files. Do NOT ask for tests there.
+
+          OUTPUT STYLE (terse, precise, punchline-first -- presentation only; it
+          NEVER changes the gate, which reads the markers below):
+          - NO preamble, NO restating the PR/diff, NO "Coverage"/methodology
+            narration (which files you read, "I inspected...", "re-scanned"), NO
+            praise, NO recap of what the change does -- that work is internal.
+          - Emit findings ONLY, most-severe-first, each as ONE compact line:
+              Severity: <LEVEL> -- <file>:<line> -- <consequence in one clause,
+              quoting the offending token> -> Fix: <minimal change>
+            Keep the leading "Severity: <LEVEL>" token verbatim at the start of
+            the line. Merge findings that share one root cause into ONE line.
+          - Drop pure LOW/nits entirely; keep only substantive MEDIUMs (real
+            correctness / robustness / clarity help) in the same one-line shape.
+          - Do NOT pad, do NOT add empty sections, do NOT add an end summary.
+            Aim for the shortest output that still conveys every real finding; a
+            typical finding is one line.
+          - When a pass finds no new issues, output NOTHING but the required
+            marker line(s) below plus "No issues found - LGTM." -- no other prose.
 
           OUTPUT MARKERS (how CI gates the merge -- emit verbatim, each on its
           own line, with the SHA exactly as written):
