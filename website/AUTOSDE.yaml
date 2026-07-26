@@ -189,6 +189,45 @@ custom-rules:
 
       Existing inline SVGs are grandfathered but all new icons must use lucide-react.
 
+      BRAND-MARK EXCEPTION (narrow; documents existing practice, adds no new latitude):
+      lucide-react deliberately ships no brand, product, or mascot marks, so a logo /
+      wordmark / mascot has no Lucide equivalent to use. Such a mark is exempt from the
+      "use lucide-react" requirement ONLY when ALL of the following hold:
+
+        1. Asset, not code — the art lives in its own image file (`.svg`, or `.png` when
+           no vector original exists), either under `src/assets/` or co-located beside
+           its component (e.g. `components/icons/`), and is consumed through a plain URL
+           import. No `<svg>` element and no path data appear in any `.tsx` file (the
+           regex gate above still blocks that unconditionally, in every file, with no
+           exception).
+        2. Render matches the mark — a MONOCHROME mark that sits inline among lucide
+           glyphs is painted as a CSS `mask` over `currentColor` so it inherits their
+           size and colour states; reuse the `BrandGlyph` helper in
+           `components/BrandIcon.tsx` (export it if needed) rather than re-implementing
+           the mask, which has a non-obvious data-URI quoting requirement. A FULL-COLOUR
+           mark whose identity depends on its own colours (the channel logos) is rendered
+           as a plain `<img>` — do not flatten it to `currentColor`.
+        3. Brand identity, not affordance — it depicts an identity (a product, a
+           company, the Kiro ghost). Anything lucide-react can express — actions,
+           objects, status, navigation verbs — MUST use lucide-react. "No exact Lucide
+           match for the concept I want" is NOT a brand mark and does NOT qualify.
+
+      In-tree precedent this codifies — monochrome, CSS-mask over `currentColor`:
+      `components/BrandIcon.tsx` (GitHub, Discord marks — "lucide-react ships no brand
+      icons"), `components/icons/GithubLogo.tsx`, `components/icons/GitlabLogo.tsx`.
+      Full-colour, plain `<img>`: `components/SlackIcon.tsx`,
+      `components/TelegramLogo.tsx`, `components/WebexIcon.tsx`,
+      `components/WeComLogo.tsx` (all used as Settings tab glyphs at `size={16}`), and
+      `assets/onboarding/GhostIcons.tsx` (onboarding mascot).
+
+      Why write it down: the exception was already being applied per-PR from those
+      precedents, which made every branded-mark change an argument about intent rather
+      than a check against a rule. Stating the three conditions makes it verifiable in
+      review, and stating condition 3 keeps the escape hatch from widening into
+      "hand-roll any icon Lucide lacks", which is the abuse the rule exists to prevent.
+      This exception removes nothing: the rule stays `blocking: true`, the regex gate is
+      untouched, and ordinary icons remain lucide-only.
+
   - id: accessible-interactive-elements
     blocking: true
     file-patterns:
