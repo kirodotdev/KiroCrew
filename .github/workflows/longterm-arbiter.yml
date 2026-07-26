@@ -2,13 +2,18 @@ name: Arbiter
 
 # SECOND-ORDER GATE. The line-level reviewers (Claude / GPT 5.6) surface Medium
 # findings and the design reviewer surfaces CONCERNS — none of which block,
-# correctly, since most are not blockers. But some carry a real long-term cost
-# (architectural erosion, maintainability debt, latent security/data-correctness
-# risk, or an expensive-to-reverse contract) that an author can silently ignore.
-# This workflow reads the sub-threshold findings the three reviewers ALREADY
-# posted, judges — with a deliberately conservative rubric — which ones a human
-# must be forced to act on, posts an actionable checklist, and gates the PR via a
-# dedicated "Arbiter — judge from comments" check-run.
+# correctly, since most are not blockers. This workflow reads those sub-threshold
+# findings and, with a DELIBERATELY NARROW rubric, blocks ONLY the few that are
+# genuinely hard to walk back once merged: a one-way door (an expensive-to-
+# reverse contract / API / schema / persisted-data decision) or concrete harm (a
+# latent security regression or data-correctness/loss bug this diff can trigger).
+# Everything else — architectural erosion, maintainability debt, missing
+# abstractions, "should eventually refactor" — is REVERSIBLE later, so it is
+# routed to non-blocking "Suggested follow-ups" rather than gating the PR. The
+# author never needs a perfect/complete solution in one PR; a smaller in-scope
+# fix plus a tracked follow-up is the preferred outcome. It posts an actionable
+# checklist and gates the PR via a dedicated "Arbiter — judge from comments"
+# check-run.
 #
 # It is its OWN workflow (not a job inside design-review.yml) precisely so that
 # "Design Review" can be one of its workflow_run triggers — a job cannot be
@@ -205,37 +210,66 @@ jobs:
             /tmp/subthreshold.md. HIGH/CRITICAL items are already handled by the
             reviewers and block on their own — ignore them here.
 
-            ESCALATE a listed finding ONLY IF deferring it has a concrete, named
-            long-term cost in one of:
-            - architectural erosion / a wrong ownership boundary that will spread,
-            - maintainability / tech-debt that compounds (not a one-off nit),
-            - latent security or data-correctness risk,
-            - an expensive-to-reverse contract / API / schema / persisted-data
-              decision (a one-way door).
-            DO NOT escalate: style, naming, formatting, import order,
-            micro-optimizations, test-coverage nits, subjective preferences, or
-            "would be nice". When unsure, DO NOT escalate. Escalating everything
-            defeats the purpose — be sparing and specific. For each escalated
-            finding, name which reviewer raised it, quote the grounding line,
-            give a cause -> mechanism -> long-term-consequence chain, and a
-            concrete suggested fix.
+            THE BLOCKING BAR IS DELIBERATELY NARROW. Blocking a PR is reserved
+            for findings where merging as-is is genuinely hard to walk back or
+            can cause real harm. ESCALATE (BLOCK) a listed finding ONLY IF it
+            meets one of these two tests AND is caused or worsened BY THIS DIFF:
+            - ONE-WAY DOOR: an expensive-to-reverse contract / API / schema /
+              persisted-data / wire-format decision that merging as-is locks in,
+              so fixing it later is materially harder or costlier (e.g. requires
+              a data migration, a breaking API change, or coordinated rollout).
+            - CONCRETE HARM: a latent security regression, a data-correctness /
+              data-loss bug, OR an availability / operational regression (a
+              crash, hang / deadlock, or unbounded resource growth such as a
+              memory / fd / thread leak or an unbounded retry loop) that this
+              diff can actually trigger in production — name the concrete
+              trigger and outcome.
+
+            Two specific cases map INTO the two tests above (they are examples,
+            not a third category):
+            - A committed SECRET / CREDENTIAL (key, token, password) is BOTH
+              concrete harm and a one-way door — git history is permanent and it
+              forces rotation. This repo is public, so treat any real leaked
+              secret as blocking.
+            - A dependency with an INCOMPATIBLE LICENSE pulled into this public
+              repo is a one-way door (hard to unwind once released / consumed).
+
+            EVERYTHING ELSE IS A NON-BLOCKING FOLLOW-UP, not a block. In
+            particular, DO NOT block for: architectural erosion, ownership-
+            boundary drift, maintainability / tech-debt that compounds, missing
+            abstraction, duplication, or "this should eventually be refactored".
+            These are real and worth tracking, but they are reversible in a later
+            change, so route them to "Suggested follow-ups" instead of gating.
+            The author does NOT need a perfect or complete solution in THIS PR:
+            a smaller in-scope mitigation plus a tracked follow-up is an
+            acceptable, preferred outcome. Never demand a large, not-yet-designed
+            rework as a merge condition. Also DO NOT escalate: style, naming,
+            formatting, import order, micro-optimizations, test-coverage nits,
+            subjective preferences, or "would be nice".
+
+            When unsure whether something is a true one-way door or concrete
+            harm, it is NOT — route it to follow-ups. When the same item could
+            plausibly be blocked or followed-up, PREFER the follow-up. Escalating
+            everything defeats the purpose — be sparing and specific. For each
+            escalated finding, name which reviewer raised it, quote the grounding
+            line, give a cause -> mechanism -> long-term-consequence chain that
+            shows WHY it is a one-way door or concrete harm, and a concrete
+            suggested fix — the SMALLEST change that closes the door or removes
+            the harm, never a broad rework or speculative hardening. It must
+            still FULLY close the named door or harm — trim speculative extras,
+            not the necessary fix.
 
             SCOPE TEST (apply before escalating anything). Many findings flag
             SIDE EFFECTS on components this PR does not target. Weighing that
             blast radius is correct and valuable — but a related influence is
-            NOT automatically a blocker. Escalate an out-of-scope /
-            adjacent-component finding ONLY IF this PR itself CREATES or WORSENS
-            the long-term cost AND it is a one-way door — i.e. merging as-is
-            makes it materially harder or costlier to fix later (a persisted
-            schema/contract, a spreading ownership boundary, or a
-            security/data-correctness regression introduced BY this diff). If
-            the concern PRE-EXISTS this PR, is independently reversible in a
-            later change, or the PR merely touches nearby code without deepening
-            the problem, DO NOT block: route it to "Suggested follow-ups" so it
-            is tracked as a new issue instead of gating this PR. When the same
-            item could plausibly be either blocked or followed-up, PREFER the
-            follow-up. Opening a new issue for later is a legitimate outcome, not
-            a failure to act.
+            NOT a blocker unless it independently clears the narrow bar above
+            (one-way door OR concrete harm) AND this PR itself CREATES or WORSENS
+            it. If the concern PRE-EXISTS this PR, is independently reversible in
+            a later change, or the PR merely touches nearby code without
+            deepening the problem, DO NOT block: route it to "Suggested
+            follow-ups" so it is tracked as a new issue instead of gating this
+            PR. Opening a new issue for later is a legitimate outcome, not a
+            failure to act.
 
             FINAL OUTPUT (authoritative — your LAST message, captured verbatim
             from the transcript; do NOT call any tool to post it and write

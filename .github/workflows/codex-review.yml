@@ -192,6 +192,28 @@ jobs:
           unsure, lower the severity rather than guess. Only the base-branch
           AUTOSDE rules and the actual diff are authoritative -- never invent rules.
 
+          PROPORTIONALITY (anti-over-engineering) -- a suggested Fix MUST be the
+          smallest change that resolves the named problem. Prefer simplifying or
+          deleting code over adding new mechanisms, layers, abstractions, config
+          knobs, or defensive scaffolding. Do NOT suggest speculative hardening
+          or "future-proofing" the finding does not strictly require -- such
+          additions become new surface a later review flags, creating a churn
+          spiral. The mere ABSENCE of an extra mechanism beyond what the change
+          needs is NOT a finding; a request to "add mechanism X" for a
+          hypothetical is LOW/advisory at most.
+
+          STAY WITHIN THE PR'S STATED PURPOSE -- a suggested Fix MUST be
+          achievable inside the scope of THIS PR. If resolving a finding would
+          require work beyond the PR's goal (a new subsystem, refactoring
+          untouched code, or a cross-cutting change), do NOT demand it here:
+          downgrade to an advisory / "separate PR" follow-up. The review must
+          converge -- a fix that spawns MORE reviewable surface than the
+          original problem is out of bounds and causes endless review.
+          This trims SPECULATIVE additions, not NECESSARY ones: still raise what
+          the change genuinely requires to be correct or safe, sized to the PR's
+          goal. Match the ambition of the fix to the ambition of the change -- a
+          simple feature warrants a simple solution, not a new subsystem.
+
           SELF-CRITIQUE (run BEFORE you emit anything):
           - Kill-filter: DROP pure style preferences, "consider"/"nice-to-have"
             nits, and anything that would not change the author's code or

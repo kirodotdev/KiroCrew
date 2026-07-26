@@ -232,8 +232,17 @@ jobs:
             <for each design finding: a short title tagged (design | fidelity |
             blast-radius | contract), then Evidence (quoted hunk/sentence),
             Consequence (cause → mechanism → consequence), and Suggestion (the
-            strongest alternative or missing consideration). If none: "No
-            design-level concerns.">
+            strongest alternative or missing consideration). Keep the Suggestion
+            PROPORTIONATE: prefer the simplest design that solves the stated
+            problem; do NOT recommend extra layers, abstractions, or
+            future-proofing the problem does not require — over-engineered
+            suggestions become new surface a later review flags. Stay within THIS
+            PR's stated purpose: if an alternative would require work beyond the
+            PR's goal, mark it as a separate follow-up, not a change to make here.
+            This trims SPECULATIVE additions, not NECESSARY ones: still surface
+            what the design genuinely requires to be correct or safe, sized to
+            the PR's goal — a simple goal warrants a simple design, not a new
+            subsystem. If none: "No design-level concerns.">
 
             End with this exact line as proof the review ran for this commit:
             [DESIGN-REVIEWED] ${{ github.event.pull_request.head.sha }}
