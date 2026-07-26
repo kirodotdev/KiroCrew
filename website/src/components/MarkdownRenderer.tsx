@@ -183,7 +183,36 @@ const MD_COMPONENTS: Components = {
   h6({ node, children }) { const id = slugify(children); return <h6 {...sp(node)} id={id} className="text-[13px] font-medium mt-2 mb-1 text-muted">{children}</h6> },
   ul({ node, children, className }) { const isTasks = className?.includes('contains-task-list'); return <ul {...sp(node)} className={isTasks ? 'list-none pl-4 my-2 space-y-1' : 'list-disc pl-8 my-2 space-y-1 marker:text-muted'}>{children}</ul> },
   ol({ node, children, className }) { const isTasks = className?.includes('contains-task-list'); return <ol {...sp(node)} className={isTasks ? 'list-none pl-4 my-2 space-y-1' : 'list-decimal pl-8 my-2 space-y-1 marker:text-muted'}>{children}</ol> },
-  li({ node, children, className }) { const isTask = className?.includes('task-list-item'); return <li {...sp(node)} className={isTask ? 'text-sm leading-relaxed flex items-start gap-1.5' : 'text-sm leading-relaxed'}>{children}</li> },
+  li({ node, children, className }) {
+    const isTask = className?.includes('task-list-item')
+    if (!isTask) return <li {...sp(node)} className="text-sm leading-relaxed">{children}</li>
+    // Task items use block flow, NOT flex. The previous `flex items-start` row
+    // broke two ways: (1) an item containing a NESTED list (tasks.md shape)
+    // laid the child <ul> out BESIDE the text; (2) any item long enough to
+    // wrap turned each inline chunk (text node / code chip) into a separate
+    // flex item, so text wrapped inside one chunk while siblings floated next
+    // to it — and flex min-width:auto blocked wrapping entirely, forcing
+    // horizontal scroll. Block flow + hanging indent (pl/-indent pair) keeps
+    // the checkbox aligned with the first line and wrapped lines under the
+    // text; nested lists reset the indent and drop below.
+    //
+    // `text-indent` is inherited, so a LOOSE task list (blank line between
+    // items) needs care: remark-rehype wraps each item's content in <p> and
+    // puts the checkbox inside the FIRST <p>. The first <p> should keep the
+    // hanging indent, but every subsequent <p>/block would otherwise inherit
+    // the -1.25rem and jut left into the checkbox gutter — hence the
+    // `[&>p:not(:first-child)]:indent-0` reset. The checkbox margin/alignment
+    // uses a descendant combinator (`[&_input…]`) rather than direct-child so
+    // it also lands on the loose-mode checkbox nested inside that first <p>.
+    return (
+      <li
+        {...sp(node)}
+        className="text-sm leading-relaxed break-words pl-5 -indent-5 [&_input[type=checkbox]]:mr-1.5 [&_input[type=checkbox]]:align-middle [&>ul]:indent-0 [&>ol]:indent-0 [&>p:not(:first-child)]:indent-0 [&>ul]:mt-1 [&>ol]:mt-1"
+      >
+        {children}
+      </li>
+    )
+  },
   p({ node, children }) { return <p {...sp(node)} className="my-1.5 leading-relaxed">{children}</p> },
   strong({ node, children }) { return <strong {...sp(node)} className="font-semibold text-text-strong">{children}</strong> },
   em({ node, children }) { return <em {...sp(node)} className="italic">{children}</em> },
