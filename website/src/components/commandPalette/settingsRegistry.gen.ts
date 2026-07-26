@@ -22,6 +22,50 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "channels.owner-slack-member-id",
+    "label": "Owner Slack member ID",
+    "description": "The one member who can always interact with the bot (KIROCREW_OWNER_ID). Starts with U or W.",
+    "tab": "channels",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "channel": "slack"
+    }
+  },
+  {
+    "id": "channels.phase-reactions",
+    "label": "Phase reactions",
+    "description": "Show phase-aware emoji reactions (queued → thinking → coding → done) on messages.",
+    "tab": "channels",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "channel": "slack"
+    }
+  },
+  {
+    "id": "channels.show-thinking",
+    "label": "Show thinking",
+    "description": "Post the model's reasoning as a thread reply. Disable to keep responses concise.",
+    "tab": "channels",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "channel": "slack"
+    }
+  },
+  {
+    "id": "channels.slash-command",
+    "label": "Slash command",
+    "description": "Trigger word for the Slack slash command (without the leading /).",
+    "tab": "channels",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "channel": "slack"
+    }
+  },
+  {
     "id": "chat.auto-compact-threshold",
     "label": "Auto-Compact Threshold",
     "description": "Context usage % at which auto-compaction triggers. Lower = more frequent compaction, longer sessions",
@@ -302,38 +346,6 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
-    "id": "slack.owner-slack-member-id",
-    "label": "Owner Slack member ID",
-    "description": "The one member who can always interact with the bot (KIROCREW_OWNER_ID). Starts with U or W.",
-    "tab": "slack",
-    "type": "input",
-    "occurrence": 1
-  },
-  {
-    "id": "slack.phase-reactions",
-    "label": "Phase reactions",
-    "description": "Show phase-aware emoji reactions (queued → thinking → coding → done) on messages.",
-    "tab": "slack",
-    "type": "toggle",
-    "occurrence": 1
-  },
-  {
-    "id": "slack.show-thinking",
-    "label": "Show thinking",
-    "description": "Post the model's reasoning as a thread reply. Disable to keep responses concise.",
-    "tab": "slack",
-    "type": "toggle",
-    "occurrence": 1
-  },
-  {
-    "id": "slack.slash-command",
-    "label": "Slash command",
-    "description": "Trigger word for the Slack slash command (without the leading /).",
-    "tab": "slack",
-    "type": "input",
-    "occurrence": 1
-  },
-  {
     "id": "voice.auto-speak-responses",
     "label": "Auto-speak Responses",
     "description": "Speak every assistant reply automatically",
@@ -342,36 +354,36 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
-    "id": "voice.aws-profile",
-    "label": "AWS Profile",
+    "id": "voice.aws-profile-polly",
+    "label": "AWS Profile (Polly)",
+    "description": "AWS credentials profile for Polly",
+    "tab": "voice",
+    "type": "input",
+    "occurrence": 1
+  },
+  {
+    "id": "voice.aws-profile-transcribe",
+    "label": "AWS Profile (Transcribe)",
     "description": "AWS credentials profile for Transcribe (blank = default chain)",
     "tab": "voice",
     "type": "input",
     "occurrence": 1
   },
   {
-    "id": "voice.aws-profile-2",
-    "label": "AWS Profile",
-    "description": "AWS credentials profile for Polly",
-    "tab": "voice",
-    "type": "input",
-    "occurrence": 2
-  },
-  {
-    "id": "voice.aws-region",
-    "label": "AWS Region",
-    "description": "AWS region for Transcribe",
+    "id": "voice.aws-region-polly",
+    "label": "AWS Region (Polly)",
+    "description": "AWS region for Polly API",
     "tab": "voice",
     "type": "input",
     "occurrence": 1
   },
   {
-    "id": "voice.aws-region-2",
-    "label": "AWS Region",
-    "description": "AWS region for Polly API",
+    "id": "voice.aws-region-transcribe",
+    "label": "AWS Region (Transcribe)",
+    "description": "AWS region for Transcribe",
     "tab": "voice",
     "type": "input",
-    "occurrence": 2
+    "occurrence": 1
   },
   {
     "id": "voice.enabled",

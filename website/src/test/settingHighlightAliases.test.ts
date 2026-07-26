@@ -1,0 +1,40 @@
+/**
+ * resolveLegacyHighlightId — migrations for `?highlight=` deep-link ids.
+ *
+ * Registry ids are `<tab>.<kebab-label>`, so tab collapses and label renames
+ * orphan old ids in bookmarks and palette history. The resolver maps them to
+ * their current equivalents; unknown/current ids pass through unchanged.
+ */
+import { describe, it, expect } from 'vitest'
+import { resolveLegacyHighlightId } from '../hooks/useSettingHighlight'
+import { SETTINGS_REGISTRY } from '../components/commandPalette/settingsRegistry.gen'
+
+describe('resolveLegacyHighlightId', () => {
+  it('maps slack.* ids to channels.* (nav regroup tab collapse)', () => {
+    expect(resolveLegacyHighlightId('slack.slash-command')).toBe('channels.slash-command')
+    expect(resolveLegacyHighlightId('slack.owner-slack-member-id')).toBe('channels.owner-slack-member-id')
+  })
+
+  it('maps the four positional voice AWS ids to their qualified forms', () => {
+    expect(resolveLegacyHighlightId('voice.aws-profile')).toBe('voice.aws-profile-transcribe')
+    expect(resolveLegacyHighlightId('voice.aws-profile-2')).toBe('voice.aws-profile-polly')
+    expect(resolveLegacyHighlightId('voice.aws-region')).toBe('voice.aws-region-transcribe')
+    expect(resolveLegacyHighlightId('voice.aws-region-2')).toBe('voice.aws-region-polly')
+  })
+
+  it('passes current ids through unchanged', () => {
+    expect(resolveLegacyHighlightId('chat.quick-send')).toBe('chat.quick-send')
+    expect(resolveLegacyHighlightId('display.zoom-level')).toBe('display.zoom-level')
+  })
+
+  it('every migrated target exists in the generated registry', () => {
+    const ids = new Set(SETTINGS_REGISTRY.map(e => e.id))
+    for (const legacy of [
+      'slack.slash-command', 'slack.owner-slack-member-id', 'slack.phase-reactions', 'slack.show-thinking',
+      'voice.aws-profile', 'voice.aws-profile-2', 'voice.aws-region', 'voice.aws-region-2',
+    ]) {
+      const target = resolveLegacyHighlightId(legacy)
+      expect(ids.has(target), `${legacy} -> ${target} missing from registry`).toBe(true)
+    }
+  })
+})

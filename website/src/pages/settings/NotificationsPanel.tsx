@@ -68,15 +68,15 @@ function ChannelsSection() {
     })
   }
 
-  if (error) return <SettingsSection title="Channels"><div className="text-[12px] text-muted">{error}</div></SettingsSection>
+  if (error) return <SettingsSection title="Sources"><div className="text-[12px] text-muted">{error}</div></SettingsSection>
   if (channels === null || channels.length === 0) return null
 
   const sources = Array.from(new Set(channels.map(c => c.source)))
     .sort((a, b) => (a === 'system' ? -1 : b === 'system' ? 1 : a.localeCompare(b)))
 
   return (
-    <SettingsSection title="Channels">
-      <div className="text-[12px] text-muted -mt-1 mb-2">Mute channels or override their priority. Muted notifications stay in history but never badge, sound, or banner.</div>
+    <SettingsSection title="Sources">
+      <div className="text-[12px] text-muted -mt-1 mb-2">Mute notification sources or override their priority. Muted notifications stay in history but never badge, sound, or banner.</div>
       {sources.map(source => (
         <SettingsCard key={source}>
           <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[.05em] text-muted pb-1 border-b border-border">

@@ -211,8 +211,8 @@ export default function SttSettings() {
 
         {isTranscribe && (
           <>
-            <SettingsInput label="AWS Profile" description="AWS credentials profile for Transcribe (blank = default chain)" value={localProfile} onChange={setLocalProfile} onBlur={() => set({ transcribe_profile: localProfile.trim() })} placeholder="default" disabled={saving} />
-            <SettingsInput label="AWS Region" description="AWS region for Transcribe" value={localRegion} onChange={setLocalRegion} onBlur={() => set({ transcribe_region: localRegion.trim() })} placeholder="us-east-1" disabled={saving} />
+            <SettingsInput label="AWS Profile (Transcribe)" description="AWS credentials profile for Transcribe (blank = default chain)" value={localProfile} onChange={setLocalProfile} onBlur={() => set({ transcribe_profile: localProfile.trim() })} placeholder="default" disabled={saving} />
+            <SettingsInput label="AWS Region (Transcribe)" description="AWS region for Transcribe" value={localRegion} onChange={setLocalRegion} onBlur={() => set({ transcribe_region: localRegion.trim() })} placeholder="us-east-1" disabled={saving} />
           </>
         )}
 

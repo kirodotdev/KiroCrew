@@ -28,4 +28,12 @@ export interface SettingEntry {
    * the Nth matching element in DOM order.
    */
   occurrence: number
+  /**
+   * Extra query params required for the setting's panel to mount — e.g.
+   * `{ channel: 'slack' }` for entries living inside the Channels tab's
+   * list-detail sub-selection. Appended to the deep-link route by the
+   * settings provider; without them the highlight would silently no-op on
+   * a panel that never mounts.
+   */
+  params?: Record<string, string>
 }

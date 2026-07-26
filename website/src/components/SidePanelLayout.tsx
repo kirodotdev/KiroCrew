@@ -9,6 +9,12 @@ export interface SidePanelTab {
   description?: string
   /** Presence dot after the label (e.g. About while an update is available). */
   dot?: boolean
+  /** Optional group label. Desktop nav renders an uppercase header above the
+   *  first tab of each new group; tabs without a group render header-less.
+   *  Mobile ignores groups (flat pill row). */
+  group?: string
+  /** Render a divider above this tab in the desktop nav (e.g. before About). */
+  dividerBefore?: boolean
 }
 
 interface SidePanelLayoutProps {
@@ -66,22 +72,29 @@ export default function SidePanelLayout({ title, tabs, defaultTab, footer, heade
       ) : (
         <nav className="w-[200px] shrink-0 border-r border-border bg-bg overflow-y-auto py-3 px-3 flex flex-col gap-0.5">
           <div className="text-lg font-bold text-text-strong px-2.5 py-2 mb-1">{title}</div>
-          {tabs.map(t => (
-            <button
-              key={t.key}
-              className={`flex items-center gap-2.5 w-full px-2.5 py-2 rounded-md text-[13px] font-medium cursor-pointer border-none transition-all ${
-                tab === t.key
-                  ? 'bg-accent-subtle text-accent'
-                  : 'bg-transparent text-muted hover:text-text hover:bg-bg-hover'
-              }`}
-              onClick={() => setTab(t.key)}
-            >
-              <span className={`w-4 h-4 shrink-0 flex items-center justify-center ${tab === t.key ? 'text-accent' : 'text-muted'}`}>
-                {t.icon}
-              </span>
-              {t.label}
-              {t.dot && <span className="ml-auto w-2 h-2 bg-accent rounded-full shrink-0" role="status" aria-label="update available" />}
-            </button>
+          {tabs.map((t, i) => (
+            <React.Fragment key={t.key}>
+              {t.dividerBefore && <div className="h-px bg-border mx-2.5 my-2" role="separator" />}
+              {t.group && tabs[i - 1]?.group !== t.group && (
+                <div className="text-[11px] text-muted uppercase tracking-wider font-medium px-2.5 pt-2.5 pb-1 select-none" aria-hidden="true">
+                  {t.group}
+                </div>
+              )}
+              <button
+                className={`flex items-center gap-2.5 w-full px-2.5 py-2 rounded-md text-[13px] font-medium cursor-pointer border-none transition-all ${
+                  tab === t.key
+                    ? 'bg-accent-subtle text-accent'
+                    : 'bg-transparent text-muted hover:text-text hover:bg-bg-hover'
+                }`}
+                onClick={() => setTab(t.key)}
+              >
+                <span className={`w-4 h-4 shrink-0 flex items-center justify-center ${tab === t.key ? 'text-accent' : 'text-muted'}`}>
+                  {t.icon}
+                </span>
+                {t.label}
+                {t.dot && <span className="ml-auto w-2 h-2 bg-accent rounded-full shrink-0" role="status" aria-label="update available" />}
+              </button>
+            </React.Fragment>
           ))}
           {footer && <div className="mt-auto pt-3 px-2.5">{footer}</div>}
         </nav>

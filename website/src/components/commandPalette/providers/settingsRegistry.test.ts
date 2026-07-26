@@ -21,7 +21,7 @@ const SETTINGS_DIR = path.resolve(__dirname, '../../../pages/settings')
 // provider/secretary/sync/tasks tabs).
 const VALID_TABS = new Set([
   'overview', 'chat', 'voice', 'display', 'browser',
-  'instances', 'security', 'notifications', 'slack', 'developer', 'about',
+  'instances', 'security', 'notifications', 'channels', 'developer', 'about',
 ])
 
 describe('settingsRegistry.gen.ts — anti-stale guard', () => {

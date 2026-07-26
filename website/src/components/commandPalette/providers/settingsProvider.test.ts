@@ -70,6 +70,32 @@ describe('createSettingsProvider — search', () => {
     expect(url).toContain('highlight=')
   })
 
+  it('threads entry params into the route so sub-selected panels mount (channels)', async () => {
+    const { nav, spy } = navigate()
+    const p = createSettingsProvider(nav)
+    const arr = await run(p, 'slash command')
+    const hit = arr.find(r => r.title === 'Slash command')
+    expect(hit).toBeDefined()
+    hit!.onActivate()
+    const url = spy.mock.calls[0][0] as string
+    // Without channel=slack the Channels tab defaults elsewhere (or shows the
+    // bare list) and the highlight silently no-ops on an unmounted panel.
+    expect(url).toContain('tab=channels')
+    expect(url).toContain('channel=slack')
+    expect(url).toContain('highlight=')
+  })
+
+  it('scopes legacy per-channel tab prefixes (slack:) to the channels tab', async () => {
+    const { nav } = navigate()
+    const p = createSettingsProvider(nav)
+    // `slack:` was a valid tab filter before the nav regroup collapsed the
+    // five channel tabs into one; it must keep scoping instead of falling
+    // through to a full-corpus query that matches nothing.
+    const arr = await run(p, 'slack: slash')
+    const hit = arr.find(r => r.title === 'Slash command')
+    expect(hit).toBeDefined()
+  })
+
   it('returns empty results for empty query', async () => {
     const { nav } = navigate()
     const p = createSettingsProvider(nav)
@@ -178,8 +204,9 @@ describe('createSettingsProvider — tab filter', () => {
 })
 
 describe('resolveTabPrefix — unit', () => {
-  // Real fork tabs (KiroACP-only + de-Amazoned): no provider/secretary/tasks tabs.
-  const tabs = ['browser', 'chat', 'developer', 'display', 'notifications', 'slack', 'voice']
+  // Real fork tabs after the nav regroup: the five per-channel tabs collapsed
+  // into 'channels'; legacy channel keys resolve via LEGACY_TAB_ALIASES.
+  const tabs = ['overview', 'chat', 'display', 'voice', 'notifications', 'shortcuts', 'channels', 'browser', 'instances', 'security', 'developer', 'about']
 
   it('exact match returns tab key', () => {
     expect(resolveTabPrefix('voice', tabs)).toBe('voice')
@@ -192,16 +219,30 @@ describe('resolveTabPrefix — unit', () => {
     expect(resolveTabPrefix('bro', tabs)).toBe('browser')
     expect(resolveTabPrefix('not', tabs)).toBe('notifications')
     expect(resolveTabPrefix('disp', tabs)).toBe('display')
-    expect(resolveTabPrefix('sl', tabs)).toBe('slack')
+  })
+
+  it('legacy channel tab keys alias to channels (exact and prefix)', () => {
+    // Exact legacy keys
+    expect(resolveTabPrefix('slack', tabs)).toBe('channels')
+    expect(resolveTabPrefix('discord', tabs)).toBe('channels')
+    expect(resolveTabPrefix('telegram', tabs)).toBe('channels')
+    expect(resolveTabPrefix('webex', tabs)).toBe('channels')
+    expect(resolveTabPrefix('wecom', tabs)).toBe('channels')
+    // Unambiguous legacy prefixes keep working (muscle memory)
+    expect(resolveTabPrefix('sl', tabs)).toBe('channels')
+    expect(resolveTabPrefix('disc', tabs)).toBe('channels')
+    expect(resolveTabPrefix('tel', tabs)).toBe('channels')
+    // webex + wecom are two alias keys but ONE target — still unambiguous
+    expect(resolveTabPrefix('we', tabs)).toBe('channels')
   })
 
   it('ambiguous prefix returns null', () => {
-    // "d" matches developer, display
+    // "d" matches developer, display, and the discord alias
     expect(resolveTabPrefix('d', tabs)).toBeNull()
-    // "s" matches only slack — so that's unambiguous
-    expect(resolveTabPrefix('s', tabs)).toBe('slack')
-    // "c" matches only chat — unambiguous
-    expect(resolveTabPrefix('c', tabs)).toBe('chat')
+    // "s" matches shortcuts, security, and the slack alias
+    expect(resolveTabPrefix('s', tabs)).toBeNull()
+    // "ch" matches chat and channels
+    expect(resolveTabPrefix('ch', tabs)).toBeNull()
   })
 
   it('unknown prefix returns null', () => {

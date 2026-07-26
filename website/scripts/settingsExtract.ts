@@ -22,8 +22,17 @@ export type { SettingEntry, SettingPrimitiveType }
  *  fork is KiroACP-only and de-Amazoned, so upstream's Provider / Secretary /
  *  Sync / TaskKeeper panels are absent, and SharedMcpGatewayToggle /
  *  McpPoolableServers live on the standalone Developer page (not a Settings
- *  tab), so they are intentionally excluded to avoid dead deep-links. */
-const PANEL_TAB_MAP: Record<string, string> = {
+ *  tab), so they are intentionally excluded to avoid dead deep-links.
+ *
+ *  Entries may carry `params` — extra query params the deep link needs for
+ *  the panel to actually mount (the Channels tab is a list-detail view, so
+ *  its panels need `channel=<key>`). BotChannelPanel.tsx is intentionally
+ *  UNMAPPED: its labels render for four different channels (Discord,
+ *  Telegram, Webex, WeCom), so a registry entry would be ambiguous — there
+ *  is no single `channel` value to attach. */
+type PanelTarget = string | { tab: string; params: Record<string, string> }
+
+const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'OverviewPanel.tsx': 'overview',
   'ChatPanel.tsx': 'chat',
   'VoicePanel.tsx': 'voice',
@@ -32,7 +41,7 @@ const PANEL_TAB_MAP: Record<string, string> = {
   'InstancesPanel.tsx': 'instances',
   'SecurityPanel.tsx': 'security',
   'NotificationsPanel.tsx': 'notifications',
-  'SlackPanel.tsx': 'slack',
+  'SlackPanel.tsx': { tab: 'channels', params: { channel: 'slack' } },
   'GeneralPanel.tsx': 'developer',
   'AboutPanel.tsx': 'about',
   'SttSettings.tsx': 'voice',
@@ -78,8 +87,10 @@ export function extractFromSource(
   source: string,
   fileName: string,
 ): { entries: SettingEntry[]; skipped: number } {
-  const tab = PANEL_TAB_MAP[path.basename(fileName)]
-  if (!tab) return { entries: [], skipped: 0 }
+  const target = PANEL_TAB_MAP[path.basename(fileName)]
+  if (!target) return { entries: [], skipped: 0 }
+  const tab = typeof target === 'string' ? target : target.tab
+  const params = typeof target === 'string' ? undefined : target.params
 
   const entries: SettingEntry[] = []
   let skipped = 0
@@ -102,6 +113,7 @@ export function extractFromSource(
         tab,
         type: PRIMITIVE_MAP[primitiveName],
         occurrence: 1,
+        ...(params ? { params } : {}),
       })
     }
   }
