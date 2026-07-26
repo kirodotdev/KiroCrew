@@ -128,7 +128,9 @@ function mockProviders(providers: PublishProviderDescriptor[]) {
 beforeEach(() => {
   writeText.mockClear()
   queryClient.clear()
-  Object.assign(navigator, { clipboard: { writeText } })
+  // happy-dom defines navigator.clipboard as a getter-only prop, so a plain
+  // assignment throws; defineProperty (configurable) replaces it cleanly.
+  Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
   vi.mocked(api).publishArtifact = vi.fn().mockResolvedValue({})
   vi.mocked(api).updateArtifactSharing = vi.fn().mockResolvedValue({})
   vi.mocked(api).unpublishArtifact = vi.fn().mockResolvedValue({})

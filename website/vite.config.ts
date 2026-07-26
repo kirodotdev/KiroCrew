@@ -1,4 +1,10 @@
-// TODO(node18): jsdom pinned to 25.x, vitest to 3.x in package.json — both need Node 22+ for newer majors. Unpin after AL2→AL2023 migration.
+// Test DOM is happy-dom (see `test.environment` below). It replaced jsdom to
+// drop the transitively-deprecated whatwg-encoding dep; happy-dom also needs
+// only Node>=20 (CI's version). happy-dom does REAL network I/O for iframe
+// navigation + eager <script src> loading; that is neutralized in the msw
+// layer — the catch-all fallback handler in integration/mocks/server.ts answers
+// otherwise-unmatched requests before any dial — with happy-dom's official
+// disable-loading settings (below) as defense-in-depth. See both notes there.
 import { defineConfig, type Plugin } from 'vite'
 /// <reference types="vitest" />
 import react from '@vitejs/plugin-react'
@@ -293,7 +299,29 @@ export default defineConfig({
   },
   test: {
     globals: true,
-    environment: 'jsdom',
+    environment: 'happy-dom',
+    // happy-dom (unlike jsdom) actively NAVIGATES iframes and LOADS <script src>.
+    // WidgetFrame renders a live <iframe src={blobUrl}> whose page carries a
+    // same-origin <script src=".../tailwindcss-browser.js">, which happy-dom
+    // would fetch over the network (ECONNREFUSED spam + an unclean socket
+    // teardown that can crash the fork worker). The PRIMARY guard is the msw
+    // catch-all fallback in integration/mocks/server.ts (answers those requests
+    // with an empty 200 before any dial). These settings are cheap
+    // DEFENSE-IN-DEPTH via happy-dom's OFFICIAL config API (not a reach into its
+    // internals): if a request ever slips past msw, happy-dom still declines to
+    // load it. We test the DOM/serialization contract, never the sandboxed
+    // widget runtime, so disabling iframe nav + sub-resource loading + JS eval
+    // costs nothing.
+    environmentOptions: {
+      happyDOM: {
+        settings: {
+          disableIframePageLoading: true,
+          disableJavaScriptFileLoading: true,
+          disableJavaScriptEvaluation: true,
+          disableCSSFileLoading: true,
+        },
+      },
+    },
     setupFiles: './integration/setup.ts',
     css: true,
     pool: 'forks',  // More stable than threads on ARM64 build fleet (avoids ERR_IPC_CHANNEL_CLOSED)
@@ -303,7 +331,14 @@ export default defineConfig({
     // load-induced flakes while still failing real hangs.
     testTimeout: 15000,
     include: ['integration/**/*.test.{ts,tsx}', 'src/**/*.test.{ts,tsx}'],
-    onConsoleLog: (log) => !log.includes('was not wrapped in act('),
+    onConsoleLog: (log) =>
+      !log.includes('was not wrapped in act(') &&
+      // Insurance for the defense-in-depth path above: if a widget iframe
+      // <script>/page load ever reaches happy-dom's disable-loading settings
+      // (rather than being answered by the msw fallback first), happy-dom logs a
+      // NotSupportedError to console.error. That decline is INTENDED, not a
+      // failure — suppress it so widget tests don't spew expected exceptions.
+      !log.includes('loading is disabled'),
     // Coverage emitted when ``vitest run --coverage`` is passed (see the
     // ``test:website`` script in package.json). Off in watch mode to keep
     // local iteration snappy.
@@ -356,8 +391,67 @@ export default defineConfig({
   build: {
     outDir: './dist',
     emptyOutDir: true,
+    // The vendor split below extracts the heaviest eager libs into their own
+    // chunks, but two are irreducibly large: Monaco's `editor.main` (~3.81MB,
+    // the code-editor engine — already lazy-loaded) and the app-core `index`
+    // chunk (~3.79MB). Both are gzip-served (~1MB each). Set the ceiling just
+    // above the current max (3810KB) — NOT a round headroom number — so the
+    // window in which a NEW oversized chunk could slip in undetected is as
+    // small as physically possible. TRADEOFF (accept knowingly): this is a
+    // single global knob, so it cannot distinguish "known-large" from "new
+    // regression" — a new chunk up to ~3.81MB would not warn. That residual gap
+    // is unavoidable without per-chunk limits (unsupported by Vite); the honest
+    // alternatives — leaving the limit at 500KB (a permanent false-positive that
+    // trains reviewers to ignore it) or splitting Monaco's monolithic core (not
+    // feasible) — are worse. Lower this the moment `editor.main`/`index` shrink;
+    // do NOT raise it without first splitting the chunk that forced the raise.
+    chunkSizeWarningLimit: 3810,
     // The Slack brand mark must remain a physical file. The gateway serves
     // /assets, while an inline SVG would also conflict with security review.
     assetsInlineLimit: (filePath) => (filePath.endsWith('slack-logo.svg') || filePath.endsWith('discord-logo.svg') || filePath.endsWith('telegram-logo.svg') ? false : undefined),
+    rollupOptions: {
+      output: {
+        // Split the heaviest eager vendor libraries out of the ~6MB main
+        // `index` chunk into named, long-term-cacheable vendor chunks. This
+        // silences the >500kB chunk-size warning HONESTLY (the app core is
+        // genuinely large) and improves cache hit rate: a bump to one lib no
+        // longer busts the whole main bundle's content hash.
+        //
+        // Only SPECIFIC packages are matched — never a blanket
+        // `return 'vendor'` for all node_modules, which would force Rollup to
+        // pull mermaid/monaco's already-dynamic (lazy) chunks back into an
+        // eager vendor chunk and regress load time. Monaco (editor.main +
+        // *.worker) and mermaid diagrams already emit their own lazy chunks;
+        // leave them alone.
+        manualChunks(id) {
+          if (!id.includes('node_modules')) return
+          // React + all context-carrying singletons in ONE chunk so a single
+          // module instance is guaranteed and provider/init ordering is
+          // preserved (mirrors resolve.dedupe above). Splitting these apart
+          // risks "Invalid hook call" / "No QueryClient set".
+          if (/[\\/]node_modules[\\/](react|react-dom|scheduler|react-redux|@reduxjs|redux|redux-thunk|react-router|react-router-dom|@tanstack[\\/]react-query|@tanstack[\\/]query-core|framer-motion)[\\/]/.test(id)) {
+            return 'vendor-react'
+          }
+          // d3 in its OWN chunk: MemoryGraphTab + KnowledgeGraph both defer it
+          // with `import('d3')` (only their type imports are eager), so d3 is a
+          // deliberate lazy boundary. Grouping it with the eager sigma/graphology
+          // stack below would pull d3 into that eager chunk and defeat the lazy
+          // load. Keep it separate so `import('d3')` stays its own async chunk.
+          if (/[\\/]node_modules[\\/](d3|d3-[^\\/]+|internmap|delaunator|robust-predicates)[\\/]/.test(id)) {
+            return 'vendor-d3'
+          }
+          // Graph/network visualization stack (vis-network, vis-data, sigma,
+          // graphology, cytoscape) — large and only used by graph views.
+          if (/[\\/]node_modules[\\/](vis-network|vis-data|vis-util|sigma|graphology|graphology-[^\\/]+|cytoscape)[\\/]/.test(id)) {
+            return 'vendor-graph'
+          }
+          // Markdown/math/syntax rendering (katex, highlight.js, and the
+          // remark/rehype/unified pipeline).
+          if (/[\\/]node_modules[\\/](katex|highlight\.js|lowlight|refractor|react-markdown|remark-[^\\/]+|rehype-[^\\/]+|mdast-[^\\/]+|hast-[^\\/]+|micromark[^\\/]*|unified|unist-[^\\/]+)[\\/]/.test(id)) {
+            return 'vendor-markdown'
+          }
+        },
+      },
+    },
   },
 })

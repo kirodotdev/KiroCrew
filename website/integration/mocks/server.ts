@@ -545,4 +545,42 @@ export const handlers = [
   }),
 ]
 
+// Fallback (LAST — specific handlers above always win): happy-dom performs REAL
+// network I/O for DOM-driven loads (widget `<script src>`, blob: `<iframe>`
+// navigation) that jsdom never did; left alone they dial localhost — ECONNREFUSED
+// spam plus a fork-worker socket-teardown crash. This fallback answers any
+// otherwise-unmatched request so nothing dials.
+//
+// LOUD-BY-DEFAULT (fail-closed): rather than empty-200 everything-except-`/api`
+// (which would silently pass a test whose component fetched a mistyped
+// non-`/api` resource, an app-backend `/apps/{name}/api/*` route, or an external
+// URL), we 501 EVERYTHING except a NARROW allowlist of the same-origin
+// DOM-driven loads this fallback actually exists for. So a missing/typo'd mock —
+// API or otherwise — surfaces loudly instead of masquerading as success.
+//
+// Allowlisted (empty-200, no dial): `blob:`/`data:` URLs (live-iframe srcdoc /
+// blob navigation) and SAME-ORIGIN static asset paths happy-dom eager-loads for
+// a widget iframe (`/vendor/*` runtime scripts, `/assets/*`, `/static/*`, and
+// bare root files like `/logo.png`). Everything else — `/api/**`,
+// `/apps/*/api/*`, cross-origin — gets 501.
+const TEST_ORIGIN = 'http://localhost:3000' // vitest happy-dom default document origin
+const STATIC_ASSET_RE = /^\/(vendor|assets|static)\/|^\/[^/]+\.[a-z0-9]+$/i
+handlers.push(
+  http.all('*', ({ request }) => {
+    const scheme = request.url.slice(0, 5)
+    if (scheme === 'blob:' || scheme === 'data:') {
+      return new HttpResponse('', { status: 200 })
+    }
+    const url = new URL(request.url)
+    const sameOrigin = url.origin === TEST_ORIGIN
+    if (sameOrigin && STATIC_ASSET_RE.test(url.pathname)) {
+      return new HttpResponse('', { status: 200 })
+    }
+    return new HttpResponse(
+      `unmocked ${sameOrigin ? url.pathname : request.url} — add a handler in server.ts`,
+      { status: 501 },
+    )
+  }),
+)
+
 export const server = setupServer(...handlers)

@@ -6,6 +6,9 @@
   "repository": "https://github.com/kirodotdev/KiroCrew",
   "homepage": "https://github.com/kirodotdev/KiroCrew",
   "type": "module",
+  "engines": {
+    "node": "20 || >=22"
+  },
   "scripts": {
     "clean": "rm -rf dist && rm -rf node_modules",
     "dev": "vite",
@@ -90,8 +93,8 @@
     "eslint-plugin-jsx-a11y": "^6.10.2",
     "eslint-plugin-react-hooks": "7.0.1",
     "fast-check": "4.6.0",
+    "happy-dom": "^20.11.1",
     "jscpd": "3.5.10",
-    "jsdom": "^25.0.1",
     "msw": "2.12.14",
     "postcss": "8.5.8",
     "tailwindcss": "^3.4.19",
@@ -124,7 +127,10 @@
     "ajv": "6.14.0",
     "baseline-browser-mapping": "2.10.13",
     "brace-expansion": "1.1.13",
-    "test-exclude": "6.0.0",
+    "test-exclude": "8.0.0",
+    "minimatch@>=10": {
+      "brace-expansion": "5.0.8"
+    },
     "caniuse-lite": "1.0.30001782",
     "chevrotain-allstar": "0.3.1",
     "cytoscape": "3.33.1",
@@ -132,7 +138,7 @@
     "hasown": "2.0.2",
     "katex": "0.16.44",
     "langium": "4.2.1",
-    "lodash-es": "4.18.0",
+    "lodash-es": "4.18.1",
     "node-releases": "2.0.36",
     "playwright": "1.58.2",
     "playwright-core": "1.58.2",

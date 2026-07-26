@@ -299,6 +299,12 @@ export default function WidgetFrame({ html, title = 'Widget', slug, messageTs, w
     // the inner iframe so its origin doesn't grant LLM content access to the
     // parent app's cookies/storage.
     const doc = document.implementation.createHTMLDocument(title)
+    // Set the title through the setter too: createHTMLDocument's title arg
+    // creates the <title> element in jsdom/browsers, but happy-dom ignores it.
+    // The setter creates + text-assigns <title> on every engine, and the
+    // browser HTML-escapes the text on serialization (the XSS guard this
+    // popout relies on).
+    doc.title = title
     const charsetMeta = doc.createElement('meta')
     charsetMeta.setAttribute('charset', 'utf-8')
     doc.head.insertBefore(charsetMeta, doc.head.firstChild)

@@ -141,7 +141,8 @@ describe('Knowledge List View — source-first rows', () => {
 
   it('copies content of items selected inside a group', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined)
-    Object.assign(navigator, { clipboard: { writeText } })
+    // happy-dom's navigator.clipboard is getter-only; defineProperty replaces it.
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
     render(<KnowledgePage />, { wrapper: Wrapper })
     await userEvent.click(await screen.findByText('Artifacts'))
     // Check the group's item, then use the page-level bulk action.

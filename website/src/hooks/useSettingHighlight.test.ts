@@ -71,8 +71,18 @@ describe('useSettingHighlight', () => {
       act(() => {
         vi.advanceTimersByTime(150)
       })
-      // The second element should get the highlight outline (occurrence=2 → index 1)
-      expect(el2.style.outline).toContain('2px solid')
+      // The second element should get the highlight (occurrence=2 → index 1),
+      // the first should not. Assert on the two highlight properties happy-dom
+      // serializes faithfully — `outlineOffset` ('4px') AND `borderRadius`
+      // ('8px') — rather than the `outline` shorthand: happy-dom mis-parses
+      // `outline: 2px solid var(--accent)` (the var() throws off its shorthand
+      // splitter), so `.style.outline` is unreliable there. Checking two distinct
+      // highlight props (not just one) keeps the test tied to the highlight
+      // actually applying, not an incidental single property.
+      expect(el2.style.outlineOffset).toBe('4px')
+      expect(el2.style.borderRadius).toBe('8px')
+      expect(el1.style.outlineOffset).toBe('')
+      expect(el1.style.borderRadius).toBe('')
     }
 
     // Cleanup

@@ -366,7 +366,10 @@ describe('MarkdownRenderer strips leaked <tool_use> protocol markup', () => {
     expect(text).not.toContain('tool_calls')
     expect(text).not.toContain('write_file')
     expect(text).not.toContain('<tool_use>')
-    expect(container.querySelector('tool_use')).toBeNull()
+    // getElementsByTagName (not querySelector('tool_use')): happy-dom parses the
+    // arg as a CSS selector and rejects the bare `tool_use` tag name as invalid,
+    // whereas getElementsByTagName takes a literal tag name on every engine.
+    expect(container.getElementsByTagName('tool_use')).toHaveLength(0)
   })
 
   it('strips an unclosed <tool_use> opener (mid-stream)', () => {

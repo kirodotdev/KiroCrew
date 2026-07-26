@@ -267,9 +267,10 @@ describe('SelectionToolbar', () => {
   })
 
   it('calls copyToClipboard via useSelectionActions copy action', () => {
-    // Mock clipboard for jsdom
+    // Mock clipboard. happy-dom defines navigator.clipboard as getter-only, so
+    // a plain assignment throws; defineProperty (configurable) replaces it.
     const writeText = vi.fn().mockResolvedValue(undefined)
-    Object.assign(navigator, { clipboard: { writeText } })
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
 
     function UseActionsWrapper() {
       const ref = useRef<HTMLDivElement>(null)

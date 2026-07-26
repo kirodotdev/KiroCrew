@@ -24,7 +24,8 @@ const wrapper = ({ children }: { children: React.ReactNode }) => (
 beforeEach(() => {
   writeText.mockReset()
   queryClient.clear()
-  Object.assign(navigator, { clipboard: { writeText } })
+  // happy-dom's navigator.clipboard is getter-only; defineProperty replaces it.
+  Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
   // Default: no existing artifact for any path. Tests can override.
   vi.mocked(api).artifacts = vi.fn().mockResolvedValue({ artifacts: [] })
   vi.mocked(api).createArtifact = vi.fn().mockResolvedValue({ slug: 'test-doc-md', version: 1 })

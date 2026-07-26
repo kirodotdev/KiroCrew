@@ -1,6 +1,22 @@
 import '@testing-library/jest-dom'
 import { server } from './mocks/server'
 
+// happy-dom (unlike jsdom) performs REAL network I/O for DOM-driven loads: a
+// widget's `<script src=".../tailwindcss-browser.js">` and a live `<iframe>`'s
+// blob-page navigation are fetched over Node's http/https on DOM insertion.
+// Under test that dials localhost:<port> — ECONNREFUSED spam AND an unclean
+// libuv socket teardown that crashes the vitest fork worker
+// (ERR_IPC_CHANNEL_CLOSED). jsdom never navigated iframes or eager-loaded
+// scripts, so this whole class of dials is new to happy-dom.
+//
+// The neutralization lives in the msw layer, NOT in happy-dom internals: msw
+// (msw/node) patches the same Node http/https happy-dom's Fetch uses, so the
+// catch-all fallback handler in ./mocks/server.ts answers every otherwise
+// -unmatched request (the vendor script, the blob iframe page) with an empty
+// 200 before any real dial. This is instance-independent and version-robust —
+// it needs no reach into happy-dom's `lib/*` modules (whose identity is
+// unstable under Vite's transform) and cannot break msw's own interceptor.
+
 // jsdom polyfill: PointerEvent. Radix UI (@radix-ui/react-dropdown-menu,
 // @radix-ui/react-context-menu) checks `event instanceof PointerEvent` and
 // ignores events that aren't pointer events. jsdom doesn't implement
@@ -87,7 +103,7 @@ if (typeof window !== 'undefined' && !window.matchMedia) {
   })
 }
 
-// jsdom polyfill: IntersectionObserver. Used by:
+// IntersectionObserver stub. Used by:
 //   - WidgetFrame (lazy-load gate — needs to fire so `visible` flips true
 //     and srcdoc/iframe gets built; otherwise theme/srcdoc tests inspect
 //     an empty wrapper)
@@ -96,8 +112,11 @@ if (typeof window !== 'undefined' && !window.matchMedia) {
 //     visibleItems.length >= allItems.length and short-circuits when
 //     there's nothing more to load)
 // Fires synchronously on `observe()` with isIntersecting: true so both
-// behaviours work in the same tests.
-if (typeof window !== 'undefined' && !(window as unknown as { IntersectionObserver?: unknown }).IntersectionObserver) {
+// behaviours work in the same tests. Installed UNCONDITIONALLY (not guarded on
+// absence): happy-dom SHIPS an IntersectionObserver, but its native one never
+// fires in a no-layout test env, so `visible` would never flip. The
+// synchronous-firing stub must REPLACE it, not defer to it.
+if (typeof window !== 'undefined') {
   class StubIntersectionObserver {
     private readonly cb: IntersectionObserverCallback
     constructor(cb: IntersectionObserverCallback) { this.cb = cb }
@@ -162,6 +181,42 @@ if (typeof (globalThis as unknown as { EventSource?: unknown }).EventSource === 
     dispatchEvent() { return false }
   }
   ;(globalThis as unknown as { EventSource: unknown }).EventSource = StubEventSource
+}
+
+// WebSocket stub. useWebSocket opens `ws://<host>/api/ws` on mount. jsdom has no
+// WebSocket so the connect was a silent no-op under test; happy-dom SHIPS a
+// native WebSocket that opens a REAL TCP socket to localhost, producing
+// ECONNREFUSED spam and — worse — an unclean libuv socket teardown that crashes
+// the fork worker (ERR_IPC_CHANNEL_CLOSED) at pool shutdown. Install a no-op
+// stub UNCONDITIONALLY (replacing happy-dom's native class) so no test dials a
+// real socket. Tests that drive WS events install their own richer per-test mock
+// via vi.stubGlobal('WebSocket', …) / vi.mock('../hooks/useWebSocket'), which
+// overrides this.
+if (typeof window !== 'undefined') {
+  class StubWebSocket {
+    static readonly CONNECTING = 0
+    static readonly OPEN = 1
+    static readonly CLOSING = 2
+    static readonly CLOSED = 3
+    readonly CONNECTING = 0
+    readonly OPEN = 1
+    readonly CLOSING = 2
+    readonly CLOSED = 3
+    url: string
+    readyState = 0
+    onopen: ((ev: Event) => void) | null = null
+    onmessage: ((ev: MessageEvent) => void) | null = null
+    onerror: ((ev: Event) => void) | null = null
+    onclose: ((ev: CloseEvent) => void) | null = null
+    constructor(url: string) { this.url = url }
+    send() {}
+    close() { this.readyState = 3 }
+    addEventListener() {}
+    removeEventListener() {}
+    dispatchEvent() { return false }
+  }
+  ;(window as unknown as { WebSocket: unknown }).WebSocket = StubWebSocket
+  ;(globalThis as unknown as { WebSocket: unknown }).WebSocket = StubWebSocket
 }
 
 // jsdom polyfill: HTMLCanvasElement.getContext (used by scene canvases)
