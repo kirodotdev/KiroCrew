@@ -236,31 +236,49 @@ class TestTokenMint:
             build_remote_token_command("", ttl="20h", port=99999)
 
     def test_token_command_prefers_run_marker_for_port(self):
+        from kiro_crew.config.paths import CONFIG_DIR_NAME, LEGACY_CONFIG_DIR_NAME
         from kiro_crew.instances.token_mint import (
             build_candidate_command,
             build_remote_token_command,
         )
 
         # empty remote_bin + port -> run-marker clause runs BEFORE the candidate
-        # ladder, keyed by the same port, and execs the recorded launcher.
+        # ladder, keyed by the same port, and execs the recorded launcher. The
+        # marker is probed under each candidate data home (KIROCREW_HOME override,
+        # the current default, then the legacy home) so a migrated remote whose
+        # non-interactive SSH shell doesn't export KIROCREW_HOME still hits the
+        # marker written under the new default home. The default/legacy home
+        # segments are asserted via the SHARED config.paths constants (not
+        # re-hardcoded literals) so that re-hardcoding — the read/write desync
+        # this fix closes — fails this test loudly at PR time.
+        default_marker = f'"$HOME/{CONFIG_DIR_NAME}/run/gateway-7879.bin"'
+        legacy_marker = f'"$HOME/{LEGACY_CONFIG_DIR_NAME}/run/gateway-7879.bin"'
         cmd = build_remote_token_command("", ttl="20h", port=7879)
-        assert '"${KIROCREW_HOME:-$HOME/.kirocrew}/run/gateway-7879.bin"' in cmd
+        assert '"${KIROCREW_HOME:+$KIROCREW_HOME/run/gateway-7879.bin}"' in cmd
+        assert default_marker in cmd
+        assert legacy_marker in cmd
+        # new default home is probed before the legacy home
+        assert cmd.index(default_marker) < cmd.index(legacy_marker)
         assert 'exec "$__kb" token --ttl 20h --port 7879;' in cmd
-        assert cmd.index("__mk=") < cmd.index("for b in ")  # marker tried first
+        assert cmd.index("for __mk in ") < cmd.index("for b in ")  # marker tried first
         # it still falls through to the candidate ladder (older remotes/no marker)
         assert 'exec "$b" token --ttl 20h --port 7879;' in cmd
 
         # no port -> no marker clause (can't key it); pure candidate ladder.
+        # NOTE: guard on the sentinels the generator actually emits — the marker
+        # prelude is a "for __mk in ...done" loop over "…/gateway-<port>.bin"
+        # paths — NOT the retired "__mk=" token (which would make these vacuous).
         no_port = build_remote_token_command("", ttl="20h")
-        assert "__mk=" not in no_port and "gateway-" not in no_port
+        assert "for __mk in" not in no_port and "gateway-" not in no_port
 
         # explicit custom remote_bin is never overridden by the marker.
         custom = build_remote_token_command("~/bin/kirocrew", ttl="20h", port=7879)
-        assert "__mk=" not in custom
+        assert "for __mk in" not in custom and "gateway-" not in custom
         assert '"$HOME/bin/kirocrew" token --ttl 20h --port 7879' in custom
 
         # generic candidate builder: marker only when a port is supplied.
-        assert "__mk=" not in build_candidate_command("restart")
+        assert "for __mk in" not in build_candidate_command("restart")
+        assert "gateway-" not in build_candidate_command("restart")
         assert "gateway-7880.bin" in build_candidate_command("token", marker_port=7880)
 
         # the sibling remote-exec path (restart, via run_remote_kirocrew) also
@@ -270,7 +288,8 @@ class TestTokenMint:
         restart = build_remote_command("", "restart", marker_port=7781)
         assert "gateway-7781.bin" in restart and 'exec "$__kb" restart;' in restart
         # ...unless an explicit custom remote_bin is set (never overridden).
-        assert "__mk=" not in build_remote_command("~/bin/kirocrew", "restart", marker_port=7781)
+        pinned_restart = build_remote_command("~/bin/kirocrew", "restart", marker_port=7781)
+        assert "for __mk in" not in pinned_restart and "gateway-" not in pinned_restart
 
     def test_ssh_argv_shape(self):
         from kiro_crew.instances.token_mint import _build_ssh_argv

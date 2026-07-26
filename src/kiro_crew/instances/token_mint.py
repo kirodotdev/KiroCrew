@@ -24,6 +24,7 @@ import contextlib
 import logging
 import re
 
+from kiro_crew.config.paths import CONFIG_DIR_NAME, LEGACY_CONFIG_DIR_NAME
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 logger = logging.getLogger(__name__)
@@ -137,12 +138,13 @@ def build_candidate_command(
     a fixed literal or pre-validated string — never raw user input.
 
     When *marker_port* is given, the snippet first consults the run-marker the
-    *running* gateway wrote for that port
-    (``${KIROCREW_HOME:-$HOME/.kirocrew}/run/gateway-<port>.bin``) and execs the
-    launcher it names — so mint uses the same venv as the live gateway instead of
-    whatever ``~/.local/bin/kirocrew`` happens to point at. Falls through to the
-    candidate search when the marker is absent or doesn't name an executable
-    (older remotes, or gateway not running), so nothing regresses.
+    *running* gateway wrote for that port (``<data-home>/run/gateway-<port>.bin``,
+    probing ``$KIROCREW_HOME`` then ``$HOME/.kiro/crew`` then the legacy
+    ``$HOME/.kirocrew`` — see :func:`_run_marker_clause`) and execs the launcher
+    it names — so mint uses the same venv as the live gateway instead of whatever
+    ``~/.local/bin/kirocrew`` happens to point at. Falls through to the candidate
+    search when the marker is absent or doesn't name an executable (older
+    remotes, or gateway not running), so nothing regresses.
     See :mod:`kiro_crew.instances.run_marker`.
     """
     expanded = " ".join(f'"{p}"' for p in candidates)
@@ -163,31 +165,66 @@ def build_candidate_command(
 def _run_marker_clause(subcommand: str, port: int) -> str:
     """Shell prelude that execs the gateway's recorded launcher for *port*.
 
-    Reads ``${KIROCREW_HOME:-$HOME/.kirocrew}/run/gateway-<port>.bin`` (written by
-    :func:`kiro_crew.instances.run_marker.write_marker`). ``$HOME``/``$KIROCREW_HOME``
-    expand at remote-shell parse time; *port* is a bounded int (see
-    :func:`_validate_port`), so the path literal cannot inject shell syntax. Only
-    ``exec``s when the recorded path is an executable file.
+    Probes, in priority order, the run-marker
+    (``run/gateway-<port>.bin``, written by
+    :func:`kiro_crew.instances.run_marker.write_marker`) under each candidate
+    data home and ``exec``s the first launcher it names that is an executable
+    file:
 
-    Known limitation (non-interactive SSH env): the writer keys the marker off
-    the gateway process's ``config_dir()`` (its ``KIROCREW_HOME``), but this
-    prelude resolves ``${KIROCREW_HOME:-$HOME/.kirocrew}`` in the *remote* SSH
-    shell. If the remote gateway runs under a custom ``KIROCREW_HOME`` that the
-    non-interactive shell does not also export (a persistent one set in
-    ``~/.zshenv`` *is* inherited, so this is the uncommon case), the paths
-    diverge, the marker is missed, and mint falls through to the candidate search
-    — i.e. exactly today's behavior, no regression.
+    1. ``$KIROCREW_HOME`` — an explicit override, if exported into this shell.
+    2. ``$HOME/<CONFIG_DIR_NAME>`` — the current default data home.
+    3. ``$HOME/<LEGACY_CONFIG_DIR_NAME>`` — the pre-move legacy home (older remotes).
+
+    The default/legacy home segments are **interpolated from**
+    :data:`kiro_crew.config.paths.CONFIG_DIR_NAME` /
+    :data:`~kiro_crew.config.paths.LEGACY_CONFIG_DIR_NAME` — the same constants
+    ``config_dir()`` (the marker *writer*) derives its default from — so reader
+    and writer share one source of truth. A future data-home rename updates both
+    sides from that single edit instead of leaving these shell literals to drift
+    stale (which is precisely the read/write desync this whole mechanism guards).
+
+    ``$HOME``/``$KIROCREW_HOME`` expand at remote-shell parse time; *port* is a
+    bounded int (see :func:`_validate_port`) and the home segments are trusted
+    module constants, so the path literals cannot inject shell syntax.
+
+    Why the multi-home probe: the writer keys the marker off the gateway
+    process's ``config_dir()``, which now defaults to ``~/.kiro/crew`` after the
+    ``~/.kirocrew`` -> ``~/.kiro/crew`` data-home move. This prelude runs in the
+    *remote* non-interactive SSH shell, which usually does NOT export
+    ``KIROCREW_HOME`` — so a single ``${KIROCREW_HOME:-$HOME/.kirocrew}`` default
+    (the pre-move literal) would read the wrong, now-empty legacy path on every
+    migrated remote, miss the marker, and fall through to the blind candidate
+    search (which lands on whatever ``~/.local/bin/kirocrew`` points at, e.g. an
+    uninstalled worktree). Probing both the new default and the legacy home — and
+    still honoring an explicit ``KIROCREW_HOME`` above both — restores the marker
+    hit on migrated remotes while remaining a no-op on un-migrated ones. Falls
+    through to the candidate search when no marker names an executable, so
+    nothing regresses.
     """
-    marker = f'"${{KIROCREW_HOME:-$HOME/.kirocrew}}/run/gateway-{int(port)}.bin"'
+    fname = f"run/gateway-{int(port)}.bin"
+    # ``${KIROCREW_HOME:+...}`` expands to the value only when KIROCREW_HOME is
+    # set and non-empty (else an empty word, skipped below) — so an unset
+    # override never degrades to a bare ``/run/...`` absolute path. The default
+    # and legacy home segments come from the shared config.paths constants (not
+    # re-hardcoded here) so reader and writer never drift apart on a home move.
+    homes = " ".join(
+        [
+            f'"${{KIROCREW_HOME:+$KIROCREW_HOME/{fname}}}"',
+            f'"$HOME/{CONFIG_DIR_NAME}/{fname}"',
+            f'"$HOME/{LEGACY_CONFIG_DIR_NAME}/{fname}"',
+        ]
+    )
     return " ".join(
         [
-            f"__mk={marker};",
-            'if [ -f "$__mk" ]; then',
-            '  __kb="$(cat "$__mk" 2>/dev/null)";',
-            '  if [ -n "$__kb" ] && [ -x "$__kb" ]; then',
-            f'    exec "$__kb" {subcommand};',
+            f"for __mk in {homes}; do",
+            '  [ -n "$__mk" ] || continue;',
+            '  if [ -f "$__mk" ]; then',
+            '    __kb="$(cat "$__mk" 2>/dev/null)";',
+            '    if [ -n "$__kb" ] && [ -x "$__kb" ]; then',
+            f'      exec "$__kb" {subcommand};',
+            "    fi;",
             "  fi;",
-            "fi;",
+            "done;",
         ]
     )
 
