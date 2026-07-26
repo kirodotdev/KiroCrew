@@ -68,3 +68,26 @@ def test_pools_execute_work() -> None:
     assert ex.maintenance_executor().submit(lambda: 1 + 1).result(timeout=5) == 2
     assert ex.subprocess_executor().submit(lambda: 4 + 4).result(timeout=5) == 8
     assert ex.cron_executor().submit(lambda: 2 + 3).result(timeout=5) == 5
+
+
+def test_governance_pool_is_isolated_bounded_and_reset() -> None:
+    # GPT round-7 pass 3: the governance pool (externally-paced inbound channels
+    # gate + dashboard governance GETs) must be a DISTINCT, bounded, shutdown-
+    # resettable pool so a remote message burst can't occupy the maintenance
+    # workers the orphan sweeps need.
+    gov = ex.governance_executor()
+    # Distinct from every other pool.
+    assert gov is not ex.maintenance_executor()
+    assert gov is not ex.subprocess_executor()
+    assert gov is not ex.cron_executor()
+    assert gov is not ex.discovery_executor()
+    assert gov is not ex.embed_executor()
+    # Memoized, named, bounded.
+    assert ex.governance_executor() is gov
+    assert gov._thread_name_prefix == "mc-gov"
+    assert gov._max_workers == ex._MAX_GOVERNANCE_WORKERS
+    # Executes work.
+    assert gov.submit(lambda: 7 * 6).result(timeout=5) == 42
+    # Shutdown resets it (fresh pool next use).
+    ex.shutdown_maintenance_executor()
+    assert ex.governance_executor() is not gov

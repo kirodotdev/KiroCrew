@@ -181,9 +181,7 @@ async def test_extended_element_happy_path(orch_fixture: MagicMock) -> None:
     orch = orch_fixture
 
     base = json.dumps({"snooze": True})
-    payload, action, channel, msg_ts = _base_payload(
-        value="", action_id=f"action::{base}"
-    )
+    payload, action, channel, msg_ts = _base_payload(value="", action_id=f"action::{base}")
     action["selected_date"] = "2026-04-10"
     action["placeholder"] = {"text": "Pick date"}
 
@@ -206,9 +204,7 @@ async def test_malformed_json_in_action_id_no_crash(orch_fixture: MagicMock) -> 
     """Invalid JSON in action_id logs warning and returns gracefully."""
     from kiro_crew.slack import interactions
 
-    payload, action, channel, msg_ts = _base_payload(
-        value="", action_id="action::not{valid-json"
-    )
+    payload, action, channel, msg_ts = _base_payload(value="", action_id="action::not{valid-json")
     action["selected_date"] = "2026-04-10"
 
     with patch.object(interactions, "handle_message", new_callable=AsyncMock) as mock_hm:
@@ -222,9 +218,7 @@ async def test_non_dict_json_in_action_id_no_crash(orch_fixture: MagicMock) -> N
     """Non-dict JSON (e.g. a list) in action_id logs warning and returns."""
     from kiro_crew.slack import interactions
 
-    payload, action, channel, msg_ts = _base_payload(
-        value="", action_id='action::["a","b"]'
-    )
+    payload, action, channel, msg_ts = _base_payload(value="", action_id='action::["a","b"]')
     action["selected_date"] = "2026-04-10"
 
     with patch.object(interactions, "handle_message", new_callable=AsyncMock) as mock_hm:
@@ -240,9 +234,7 @@ async def test_post_message_failure_aborts(orch_fixture: MagicMock) -> None:
     orch = orch_fixture
     orch.slack.post_message = AsyncMock(return_value=None)
 
-    payload, action, channel, msg_ts = _base_payload(
-        value='action::{"k":"v"}', action_id="btn_x"
-    )
+    payload, action, channel, msg_ts = _base_payload(value='action::{"k":"v"}', action_id="btn_x")
 
     with patch.object(interactions, "handle_message", new_callable=AsyncMock) as mock_hm:
         await interactions._handle_options(payload, action, channel, msg_ts)
@@ -259,9 +251,7 @@ async def test_standard_options_post_message_failure_aborts(orch_fixture: MagicM
     orch.slack.update_message = AsyncMock(side_effect=Exception("API error"))
     orch.slack.post_blocks = AsyncMock(return_value=None)
 
-    payload, action, channel, msg_ts = _base_payload(
-        value="some choice", action_id="opt_0"
-    )
+    payload, action, channel, msg_ts = _base_payload(value="some choice", action_id="opt_0")
 
     with patch.object(interactions, "handle_message", new_callable=AsyncMock) as mock_hm:
         await interactions._handle_options(payload, action, channel, msg_ts)
@@ -717,6 +707,210 @@ class TestTransportApprovalAuth:
         orch_fixture.slack.update_message.assert_awaited()
 
     @pytest.mark.asyncio
+    async def test_channels_deny_drops_transport_approval(
+        self, orch_fixture: MagicMock, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        # HIGH (GPT round-8) + MEDIUM (GPT round-13 #3): an AUTHORIZED user's
+        # APPROVE click on the transport path must not EXECUTE the governed tool
+        # when a channels policy denies slack. Originally the gate silently returned
+        # without resolving — but that STRANDS the kiro-cli approval future until it
+        # times out (~300s). The fix resolves the pending future as DENIED (False)
+        # so the tool is refused promptly and never executes. Assert the resolve was
+        # a denial, not that it never happened.
+        import json
+
+        from kiro_crew.platform import governance_profiles as gp
+        from kiro_crew.slack import interactions
+        from kiro_crew.slack.renderer import SlackApprovalDecider
+
+        pdir = tmp_path / "profiles"
+        pdir.mkdir()
+        monkeypatch.setattr(gp, "_PROFILES_DIR", pdir)
+        gp.reset_store()
+        (pdir / "host.json").write_text(
+            json.dumps(
+                {
+                    "name": "host",
+                    "bind": {"type": "surface", "id": "host"},
+                    "channels": {"members": {"mode": "allow", "allow": ["discord"]}},
+                }
+            )
+        )
+        monkeypatch.setattr(interactions, "is_allowed_user", lambda uid: True)
+        spy = MagicMock(return_value=True)
+        monkeypatch.setattr(SlackApprovalDecider, "resolve_global", spy)
+        try:
+            await interactions.dispatch(self._payload("mc_tool_approve_rq1", "U_OWNER"))
+            # Denied by the channels gate → the approval is resolved as DENIED
+            # (False), never as approved (True), so the tool is refused, not run,
+            # and the pending future is not left to time out.
+            assert spy.call_count == 1
+            _args, _kwargs = spy.call_args
+            approved_arg = _kwargs.get("approved", _args[1] if len(_args) > 1 else None)
+            assert approved_arg is False, "denied-channel approve must resolve as False (refused)"
+        finally:
+            gp.reset_store()
+
+    @pytest.mark.asyncio
+    async def test_channels_deny_still_resolves_transport_reject(
+        self, orch_fixture: MagicMock, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        # MEDIUM (GPT round-13 #3): a REJECT click on a denied channel must STILL
+        # resolve the pending approval as refused (False) — a reject is a denial,
+        # exactly what a channels-deny wants, and dropping it would strand the
+        # kiro-cli future until timeout. The reject is NOT gated out.
+        import json
+
+        from kiro_crew.platform import governance_profiles as gp
+        from kiro_crew.slack import interactions
+        from kiro_crew.slack.renderer import SlackApprovalDecider
+
+        pdir = tmp_path / "profiles"
+        pdir.mkdir()
+        monkeypatch.setattr(gp, "_PROFILES_DIR", pdir)
+        gp.reset_store()
+        (pdir / "host.json").write_text(
+            json.dumps(
+                {
+                    "name": "host",
+                    "bind": {"type": "surface", "id": "host"},
+                    "channels": {"members": {"mode": "allow", "allow": ["discord"]}},
+                }
+            )
+        )
+        monkeypatch.setattr(interactions, "is_allowed_user", lambda uid: True)
+        spy = MagicMock(return_value=True)
+        monkeypatch.setattr(SlackApprovalDecider, "resolve_global", spy)
+        try:
+            await interactions.dispatch(self._payload("mc_tool_deny_rq1", "U_OWNER"))
+            assert spy.call_count == 1
+            _args, _kwargs = spy.call_args
+            approved_arg = _kwargs.get("approved", _args[1] if len(_args) > 1 else None)
+            assert approved_arg is False, "a reject must resolve the pending approval as False"
+        finally:
+            gp.reset_store()
+
+    @pytest.mark.asyncio
+    async def test_channels_deny_drops_review_approve(
+        self, orch_fixture: MagicMock, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        # HIGH (GPT round-9 #3): a review-mode APPROVE posts the stored agent draft
+        # to the channel. Under a slack channels deny, the dispatch gate must stop
+        # it BEFORE the handler runs — else stale agent content posts to a denied
+        # channel. Regression-locks the review-action call site.
+        import json
+
+        from kiro_crew.platform import governance_profiles as gp
+        from kiro_crew.slack import interactions
+
+        pdir = tmp_path / "profiles"
+        pdir.mkdir()
+        monkeypatch.setattr(gp, "_PROFILES_DIR", pdir)
+        gp.reset_store()
+        (pdir / "host.json").write_text(
+            json.dumps(
+                {
+                    "name": "host",
+                    "bind": {"type": "surface", "id": "host"},
+                    "channels": {"members": {"mode": "allow", "allow": ["discord"]}},
+                }
+            )
+        )
+        monkeypatch.setattr(interactions, "is_allowed_user", lambda uid: True)
+        handler = AsyncMock()
+        monkeypatch.setattr(interactions, "_handle_review_approve", handler)
+        try:
+            await interactions.dispatch(self._payload("mc_review_approve", "U_OWNER"))
+            # Gate dropped it before the posting handler ran.
+            handler.assert_not_called()
+        finally:
+            gp.reset_store()
+
+    @pytest.mark.asyncio
+    async def test_channels_deny_gates_native_tool_approval_but_not_reject(
+        self, orch_fixture: MagicMock, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        # MEDIUM (fleet review): the NATIVE _handle_tool_approval gate (approve/trust
+        # blocked, reject exempt) had no test, unlike the transport/Discord/Telegram
+        # paths. Under a slack channels deny: an APPROVE must be gated BEFORE
+        # handle_interaction runs (the governed tool never executes), but a REJECT
+        # must still REACH handle_interaction (a reject is a denial — dropping it
+        # would strand the pending approval until timeout).
+        import json
+
+        from kiro_crew.platform import governance_profiles as gp
+        from kiro_crew.slack import interactions
+
+        pdir = tmp_path / "profiles"
+        pdir.mkdir()
+        monkeypatch.setattr(gp, "_PROFILES_DIR", pdir)
+        gp.reset_store()
+        (pdir / "host.json").write_text(
+            json.dumps(
+                {
+                    "name": "host",
+                    "bind": {"type": "surface", "id": "host"},
+                    "channels": {"members": {"mode": "allow", "allow": ["discord"]}},
+                }
+            )
+        )
+        hi = AsyncMock(return_value="approve_tool")
+        monkeypatch.setattr(interactions, "handle_interaction", hi)
+        try:
+            # APPROVE on a denied channel → gated before handle_interaction.
+            await interactions._handle_tool_approval(
+                {"message": {}}, "approve_tool", "C1", "200.0", "U_OWNER"
+            )
+            hi.assert_not_called()
+            # REJECT on the same denied channel → still reaches handle_interaction
+            # (resolves the pending approval as refused, not stranded).
+            await interactions._handle_tool_approval(
+                {"message": {}}, "reject_tool", "C1", "200.0", "U_OWNER"
+            )
+            hi.assert_awaited_once()
+        finally:
+            gp.reset_store()
+
+    @pytest.mark.asyncio
+    async def test_channels_deny_drops_dashboard_link(
+        self, orch_fixture: MagicMock, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        # BLOCKING (GPT round-17): the Link-to-Dashboard button imports the Slack
+        # thread's content into a dashboard slot (_import_thread_to_slot). A channels
+        # policy denying slack must stop it BEFORE the import — else a stale link
+        # button moves denied Slack content into the dashboard. Regression-locks the
+        # LINK_DASHBOARD_ACTION call site.
+        import json
+
+        from kiro_crew.platform import governance_profiles as gp
+        from kiro_crew.slack import interactions
+
+        pdir = tmp_path / "profiles"
+        pdir.mkdir()
+        monkeypatch.setattr(gp, "_PROFILES_DIR", pdir)
+        gp.reset_store()
+        (pdir / "host.json").write_text(
+            json.dumps(
+                {
+                    "name": "host",
+                    "bind": {"type": "surface", "id": "host"},
+                    "channels": {"members": {"mode": "allow", "allow": ["discord"]}},
+                }
+            )
+        )
+        monkeypatch.setattr(interactions, "is_allowed_user", lambda uid: True)
+        importer = AsyncMock()
+        monkeypatch.setattr(interactions, "_import_thread_to_slot", importer)
+        try:
+            payload = self._payload("mc_link_dashboard", "U_OWNER")
+            payload["message"]["thread_ts"] = "200.0"  # a thread to import
+            await interactions.dispatch(payload)
+            # Gate dropped it before the content-importing handler ran.
+            importer.assert_not_called()
+        finally:
+            gp.reset_store()
+
+    @pytest.mark.asyncio
     async def test_authorized_trust_grants_session_then_resolves(
         self, orch_fixture: MagicMock, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -724,7 +918,9 @@ class TestTransportApprovalAuth:
         from kiro_crew.slack.renderer import SlackApprovalDecider
 
         monkeypatch.setattr(interactions, "is_allowed_user", lambda uid: True)
-        monkeypatch.setattr(SlackApprovalDecider, "session_for", classmethod(lambda cls, rid: "thread-1"))
+        monkeypatch.setattr(
+            SlackApprovalDecider, "session_for", classmethod(lambda cls, rid: "thread-1")
+        )
         monkeypatch.setattr(SlackApprovalDecider, "resolve_global", MagicMock(return_value=True))
         grant = MagicMock()
         monkeypatch.setattr(interactions, "add_trusted_session", grant)

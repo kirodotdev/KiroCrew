@@ -51,20 +51,14 @@ class _CapturingSessions(FakeSessions):
 
     async def get_or_create(self, session_key, agent=None, channel_id=None):
         self.agents.append(agent)
-        return await super().get_or_create(
-            session_key, agent=agent, channel_id=channel_id
-        )
+        return await super().get_or_create(session_key, agent=agent, channel_id=channel_id)
 
 
 def _run_transport(monkeypatch, thread_agent=None, agent_override=None):
     # Empty configured default -> exercises the canonical-agent fallback.
     monkeypatch.setattr(transport_dispatch, "_get_default_agent", lambda: "")
-    monkeypatch.setattr(
-        transport_dispatch, "_hydrate_thread_overrides", lambda *a, **k: None
-    )
-    monkeypatch.setattr(
-        transport_dispatch, "_hydrate_conv_flags", lambda *a, **k: None
-    )
+    monkeypatch.setattr(transport_dispatch, "_hydrate_thread_overrides", lambda *a, **k: None)
+    monkeypatch.setattr(transport_dispatch, "_hydrate_conv_flags", lambda *a, **k: None)
 
     thread_map: dict = {}
     if thread_agent is not None:
@@ -75,24 +69,28 @@ def _run_transport(monkeypatch, thread_agent=None, agent_override=None):
     monkeypatch.setattr(transport_dispatch, "_thread_agents", thread_map)
 
     slack = RecordingSlackClient()
-    provider = ScriptedProvider([
-        make_event(EVENT_TEXT_CHUNK, text="hi"),
-        make_event(EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN),
-    ])
+    provider = ScriptedProvider(
+        [
+            make_event(EVENT_TEXT_CHUNK, text="hi"),
+            make_event(EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN),
+        ]
+    )
     sessions = _CapturingSessions(provider)
 
-    asyncio.run(transport_dispatch.handle_message_transport(
-        slack=slack,
-        sessions=sessions,
-        channel="C1",
-        text="hello",
-        thread_ts=None,
-        msg_ts=_MSG_TS,
-        user_id="U_OWNER",
-        context_builder=None,
-        conversation_log=None,
-        agent_override=agent_override,
-    ))
+    asyncio.run(
+        transport_dispatch.handle_message_transport(
+            slack=slack,
+            sessions=sessions,
+            channel="C1",
+            text="hello",
+            thread_ts=None,
+            msg_ts=_MSG_TS,
+            user_id="U_OWNER",
+            context_builder=None,
+            conversation_log=None,
+            agent_override=agent_override,
+        )
+    )
     return sessions
 
 
@@ -118,6 +116,37 @@ class TestTransportAgentResolution:
             monkeypatch, thread_agent="kirocrew-research", agent_override="ops-agent"
         )
         assert sessions.agents == ["kirocrew-research"]
+
+    def test_channels_deny_drops_transport_message_before_session(self, monkeypatch, tmp_path):
+        # HIGH (GPT round-8): a channels policy that denies slack must stop
+        # handle_message_transport BEFORE it acquires a session — removing the gate
+        # would let a denied transport message start a turn. Regression-locks the
+        # transport call site (distinct from the native handle_message gate).
+        import json
+
+        from kiro_crew.platform import governance_profiles as gp
+
+        pdir = tmp_path / "profiles"
+        pdir.mkdir()
+        monkeypatch.setattr(gp, "_PROFILES_DIR", pdir)
+        gp.reset_store()
+        (pdir / "host.json").write_text(
+            json.dumps(
+                {
+                    "name": "host",
+                    "bind": {"type": "surface", "id": "host"},
+                    "channels": {"members": {"mode": "allow", "allow": ["discord"]}},
+                }
+            )
+        )
+        try:
+            sessions = _run_transport(monkeypatch)
+            # Gate dropped the message before session acquisition.
+            assert (
+                sessions.agents == []
+            ), "denied slack transport message must not acquire a session"
+        finally:
+            gp.reset_store()
 
 
 class TestTransportBookkeepingIsolation:
@@ -154,17 +183,27 @@ class TestTransportBookkeepingIsolation:
         monkeypatch.setattr(transport_dispatch, "_thread_agents", {})
 
         slack = RecordingSlackClient()
-        provider = ScriptedProvider([
-            make_event(EVENT_TEXT_CHUNK, text="hi"),
-            make_event(EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN),
-        ])
+        provider = ScriptedProvider(
+            [
+                make_event(EVENT_TEXT_CHUNK, text="hi"),
+                make_event(EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN),
+            ]
+        )
         sessions = _TrackSessions(provider)
 
-        asyncio.run(transport_dispatch.handle_message_transport(
-            slack=slack, sessions=sessions, channel="C1", text="hello",
-            thread_ts=None, msg_ts=_MSG_TS, user_id="U_OWNER",
-            context_builder=None, conversation_log=None,
-        ))
+        asyncio.run(
+            transport_dispatch.handle_message_transport(
+                slack=slack,
+                sessions=sessions,
+                channel="C1",
+                text="hello",
+                thread_ts=None,
+                msg_ts=_MSG_TS,
+                user_id="U_OWNER",
+                context_builder=None,
+                conversation_log=None,
+            )
+        )
         # Turn recorded success once; the audit failure was swallowed.
         assert calls == {"success": 1, "failure": 0}
 
@@ -212,35 +251,35 @@ def _run_transport_text(
     through to the normal LLM turn.
     """
     monkeypatch.setattr(transport_dispatch, "_get_default_agent", lambda: "kirocrew")
-    monkeypatch.setattr(
-        transport_dispatch, "_hydrate_thread_overrides", lambda *a, **k: None
-    )
-    monkeypatch.setattr(
-        transport_dispatch, "_hydrate_conv_flags", lambda *a, **k: None
-    )
+    monkeypatch.setattr(transport_dispatch, "_hydrate_thread_overrides", lambda *a, **k: None)
+    monkeypatch.setattr(transport_dispatch, "_hydrate_conv_flags", lambda *a, **k: None)
     monkeypatch.setattr(transport_dispatch, "_thread_agents", {})
 
     slack = RecordingSlackClient()
-    provider = ScriptedProvider([
-        make_event(EVENT_TEXT_CHUNK, text="hi"),
-        make_event(EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN),
-    ])
+    provider = ScriptedProvider(
+        [
+            make_event(EVENT_TEXT_CHUNK, text="hi"),
+            make_event(EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN),
+        ]
+    )
     sessions = _CapturingSessions(provider)
 
-    asyncio.run(transport_dispatch.handle_message_transport(
-        slack=slack,
-        sessions=sessions,
-        channel="C1",
-        text=text,
-        thread_ts=None,
-        msg_ts=_MSG_TS,
-        user_id=user_id,
-        context_builder=None,
-        conversation_log=None,
-        subagent_manager=subagent_manager,
-        task_runner=task_runner,
-        cron_service=cron_service,
-    ))
+    asyncio.run(
+        transport_dispatch.handle_message_transport(
+            slack=slack,
+            sessions=sessions,
+            channel="C1",
+            text=text,
+            thread_ts=None,
+            msg_ts=_MSG_TS,
+            user_id=user_id,
+            context_builder=None,
+            conversation_log=None,
+            subagent_manager=subagent_manager,
+            task_runner=task_runner,
+            cron_service=cron_service,
+        )
+    )
     return slack, sessions
 
 
@@ -277,9 +316,7 @@ class TestTransportKeywordCommands:
         # Deny-by-default: an unauthorized caller is refused, still no LLM turn.
         monkeypatch.setattr(_handler, "is_owner", lambda uid: False)
         monkeypatch.setattr(_handler, "is_allowed_user", lambda uid: False)
-        slack, sessions = _run_transport_text(
-            monkeypatch, "sessions", user_id="U_STRANGER"
-        )
+        slack, sessions = _run_transport_text(monkeypatch, "sessions", user_id="U_STRANGER")
         assert sessions.agents == []
         assert "_Permission denied._" in _posts(slack)
 
@@ -354,6 +391,7 @@ class TestTransportPrivacyModifiers:
                 @staticmethod
                 def on_message(text):
                     from kiro_crew.hooks import HookResult
+
                     return HookResult.passthrough()
 
             def build_message(self, text, is_new, session_key, **kw):
@@ -366,17 +404,27 @@ class TestTransportPrivacyModifiers:
         monkeypatch.setattr(transport_dispatch, "_thread_agents", {})
 
         slack = RecordingSlackClient()
-        provider = ScriptedProvider([
-            make_event(EVENT_TEXT_CHUNK, text="ok"),
-            make_event(EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN),
-        ])
+        provider = ScriptedProvider(
+            [
+                make_event(EVENT_TEXT_CHUNK, text="ok"),
+                make_event(EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN),
+            ]
+        )
         sessions = _CapturingSessions(provider)
 
-        asyncio.run(transport_dispatch.handle_message_transport(
-            slack=slack, sessions=sessions, channel="C1",
-            text="!incognito summarize the logs", thread_ts=None, msg_ts=_MSG_TS,
-            user_id="U_OWNER", context_builder=_CtxBuilder(), conversation_log=None,
-        ))
+        asyncio.run(
+            transport_dispatch.handle_message_transport(
+                slack=slack,
+                sessions=sessions,
+                channel="C1",
+                text="!incognito summarize the logs",
+                thread_ts=None,
+                msg_ts=_MSG_TS,
+                user_id="U_OWNER",
+                context_builder=_CtxBuilder(),
+                conversation_log=None,
+            )
+        )
         # Flag applied, LLM turn ran, and the token was stripped from the prompt.
         assert _handler.is_thread_incognito(self._KEY) is True
         assert sessions.agents == ["kirocrew"]
@@ -399,17 +447,27 @@ class TestTransportReactionsEnabled:
         monkeypatch.setattr(transport_dispatch, "_hydrate_conv_flags", lambda *a, **k: None)
         monkeypatch.setattr(transport_dispatch, "_thread_agents", {})
         slack = RecordingSlackClient()
-        provider = ScriptedProvider([
-            make_event(EVENT_TEXT_CHUNK, text="hi"),
-            make_event(EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN),
-        ])
+        provider = ScriptedProvider(
+            [
+                make_event(EVENT_TEXT_CHUNK, text="hi"),
+                make_event(EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN),
+            ]
+        )
         sessions = _CapturingSessions(provider)
-        asyncio.run(transport_dispatch.handle_message_transport(
-            slack=slack, sessions=sessions, channel="C1", text="hello",
-            thread_ts=None, msg_ts=_MSG_TS, user_id="U_OWNER",
-            context_builder=None, conversation_log=None,
-            reactions_enabled=reactions_enabled,
-        ))
+        asyncio.run(
+            transport_dispatch.handle_message_transport(
+                slack=slack,
+                sessions=sessions,
+                channel="C1",
+                text="hello",
+                thread_ts=None,
+                msg_ts=_MSG_TS,
+                user_id="U_OWNER",
+                context_builder=None,
+                conversation_log=None,
+                reactions_enabled=reactions_enabled,
+            )
+        )
         return [m for m, _ in slack.transcript]
 
     def test_reactions_disabled_emits_no_add_reaction(self, monkeypatch):
@@ -441,6 +499,7 @@ class _CapturingCtxBuilder:
         class _Hooks:
             def on_message(self, text):
                 from kiro_crew.hooks import HookResult
+
                 return hook_result or HookResult.passthrough()
 
         self.hooks = _Hooks()
@@ -458,22 +517,33 @@ class TestTransportNativeParity:
         monkeypatch.setattr(transport_dispatch, "_thread_agents", {})
 
     def _provider(self):
-        return ScriptedProvider([
-            make_event(EVENT_TEXT_CHUNK, text="hi"),
-            make_event(EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN),
-        ])
+        return ScriptedProvider(
+            [
+                make_event(EVENT_TEXT_CHUNK, text="hi"),
+                make_event(EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN),
+            ]
+        )
 
     def test_hook_reply_short_circuits_no_llm_turn(self, monkeypatch):
         from kiro_crew.hooks import HookResult
+
         self._prep(monkeypatch)
         cb = _CapturingCtxBuilder(hook_result=HookResult.reply("canned answer"))
         slack = RecordingSlackClient()
         sessions = _CapturingSessions(self._provider())
-        asyncio.run(transport_dispatch.handle_message_transport(
-            slack=slack, sessions=sessions, channel="C1", text="hi",
-            thread_ts=None, msg_ts=_MSG_TS, user_id="U_OWNER",
-            context_builder=cb, conversation_log=None,
-        ))
+        asyncio.run(
+            transport_dispatch.handle_message_transport(
+                slack=slack,
+                sessions=sessions,
+                channel="C1",
+                text="hi",
+                thread_ts=None,
+                msg_ts=_MSG_TS,
+                user_id="U_OWNER",
+                context_builder=cb,
+                conversation_log=None,
+            )
+        )
         # Hook answered → no LLM session acquired, canned reply posted.
         assert sessions.agents == []
         posts = [kw["text"] for m, kw in slack.transcript if m == "post_message"]
@@ -484,11 +554,20 @@ class TestTransportNativeParity:
         cons = _RecordingConsolidator()
         slack = RecordingSlackClient()
         sessions = _CapturingSessions(self._provider())
-        asyncio.run(transport_dispatch.handle_message_transport(
-            slack=slack, sessions=sessions, channel="C1", text="do it",
-            thread_ts=None, msg_ts=_MSG_TS, user_id="U_OWNER",
-            context_builder=None, conversation_log=None, consolidator=cons,
-        ))
+        asyncio.run(
+            transport_dispatch.handle_message_transport(
+                slack=slack,
+                sessions=sessions,
+                channel="C1",
+                text="do it",
+                thread_ts=None,
+                msg_ts=_MSG_TS,
+                user_id="U_OWNER",
+                context_builder=None,
+                conversation_log=None,
+                consolidator=cons,
+            )
+        )
         # maybe_consolidate receives the canonical namespaced session key.
         assert cons.calls == [canonical_key(_MSG_TS)]
 
@@ -497,11 +576,20 @@ class TestTransportNativeParity:
         cb = _CapturingCtxBuilder()
         slack = RecordingSlackClient()
         sessions = _CapturingSessions(self._provider())
-        asyncio.run(transport_dispatch.handle_message_transport(
-            slack=slack, sessions=sessions, channel="C1", text="hi",
-            thread_ts=None, msg_ts=_MSG_TS, user_id="U_OWNER",
-            context_builder=cb, conversation_log=None, user_display_name="Alice",
-        ))
+        asyncio.run(
+            transport_dispatch.handle_message_transport(
+                slack=slack,
+                sessions=sessions,
+                channel="C1",
+                text="hi",
+                thread_ts=None,
+                msg_ts=_MSG_TS,
+                user_id="U_OWNER",
+                context_builder=cb,
+                conversation_log=None,
+                user_display_name="Alice",
+            )
+        )
         assert cb.captured.get("user_display_name") == "Alice"
 
 
@@ -518,16 +606,25 @@ class TestTransportStatusIdentitySeam:
                 return f"{prefix}=OK"
 
         monkeypatch.setattr(
-            transport_dispatch, "current_context",
+            transport_dispatch,
+            "current_context",
             lambda: SimpleNamespace(identity=_Identity()),
         )
         slack = RecordingSlackClient()
         sessions = _CapturingSessions(ScriptedProvider([]))
-        asyncio.run(transport_dispatch.handle_message_transport(
-            slack=slack, sessions=sessions, channel="C1", text="status",
-            thread_ts=None, msg_ts=_MSG_TS, user_id="U_OWNER",
-            context_builder=None, conversation_log=None,
-        ))
+        asyncio.run(
+            transport_dispatch.handle_message_transport(
+                slack=slack,
+                sessions=sessions,
+                channel="C1",
+                text="status",
+                thread_ts=None,
+                msg_ts=_MSG_TS,
+                user_id="U_OWNER",
+                context_builder=None,
+                conversation_log=None,
+            )
+        )
         posts = [kw["text"] for m, kw in slack.transcript if m == "post_message"]
         # Status reply includes the identity seam's suffix; no LLM session.
         assert any(" · sso=OK" in p for p in posts), posts
@@ -535,6 +632,7 @@ class TestTransportStatusIdentitySeam:
 
     def test_no_direct_sso_stub_import(self):
         import kiro_crew.slack.transport_dispatch as td
+
         assert not hasattr(td, "get_sso_status_line")
 
 
@@ -567,20 +665,34 @@ class TestTransportToolGateWiring:
                 return text, {}
 
         slack = RecordingSlackClient()
-        provider = ScriptedProvider([
-            make_event(EVENT_PERMISSION_REQUEST, request_id="rq1", title="fs_write",
-                       raw_tool_params={"path": "~/.aws/credentials"},
-                       options=[{"id": "approve"}]),
-            make_event(EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN),
-        ])
+        provider = ScriptedProvider(
+            [
+                make_event(
+                    EVENT_PERMISSION_REQUEST,
+                    request_id="rq1",
+                    title="fs_write",
+                    raw_tool_params={"path": "~/.aws/credentials"},
+                    options=[{"id": "approve"}],
+                ),
+                make_event(EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN),
+            ]
+        )
         sessions = _CapturingSessions(provider)
 
-        asyncio.run(transport_dispatch.handle_message_transport(
-            slack=slack, sessions=sessions, channel="C1", text="read my creds",
-            thread_ts=None, msg_ts=_MSG_TS, user_id="U_OWNER",
-            context_builder=_CtxBuilder(), conversation_log=None,
-            approval_mode="interactive",
-        ))
+        asyncio.run(
+            transport_dispatch.handle_message_transport(
+                slack=slack,
+                sessions=sessions,
+                channel="C1",
+                text="read my creds",
+                thread_ts=None,
+                msg_ts=_MSG_TS,
+                user_id="U_OWNER",
+                context_builder=_CtxBuilder(),
+                conversation_log=None,
+                approval_mode="interactive",
+            )
+        )
         # Hard-denied by the hook → rejected, never approved, and NO approval
         # buttons were posted (post_blocks with "Tool approval requested") for
         # the owner to click. (The turn-end timing footer also uses post_blocks,
@@ -611,9 +723,7 @@ class TestHydrationBeforeHook:
             _handler._thread_incognito[session_key] = None
 
         monkeypatch.setattr(transport_dispatch, "_hydrate_conv_flags", _fake_hydrate)
-        monkeypatch.setattr(
-            transport_dispatch, "_hydrate_thread_overrides", lambda *a, **k: None
-        )
+        monkeypatch.setattr(transport_dispatch, "_hydrate_thread_overrides", lambda *a, **k: None)
 
         saved: list = []
         monkeypatch.setattr(
@@ -633,16 +743,23 @@ class TestHydrationBeforeHook:
         slack = RecordingSlackClient()
         sessions = _CapturingSessions(ScriptedProvider([]))
 
-        asyncio.run(transport_dispatch.handle_message_transport(
-            slack=slack, sessions=sessions, channel="C1", text="hi",
-            thread_ts=None, msg_ts=_MSG_TS, user_id="U_OWNER",
-            context_builder=_CtxBuilder(), conversation_log=object(),
-        ))
+        asyncio.run(
+            transport_dispatch.handle_message_transport(
+                slack=slack,
+                sessions=sessions,
+                channel="C1",
+                text="hi",
+                thread_ts=None,
+                msg_ts=_MSG_TS,
+                user_id="U_OWNER",
+                context_builder=_CtxBuilder(),
+                conversation_log=object(),
+            )
+        )
 
         # The canned hook reply WAS posted (the hook short-circuited the turn)...
         assert any(
-            m == "post_message" and kw.get("text") == "canned answer"
-            for m, kw in slack.transcript
+            m == "post_message" and kw.get("text") == "canned answer" for m, kw in slack.transcript
         )
         # ...but because hydration ran FIRST, the thread is restricted, so the
         # turn was NOT written to the conversation log. Pre-fix (hydrate after

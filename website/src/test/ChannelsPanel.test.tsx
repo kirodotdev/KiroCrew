@@ -31,6 +31,10 @@ vi.mock('../pages/settings/TelegramPanel', () => ({ TelegramPanel: () => <div da
 vi.mock('../pages/settings/WebexPanel', () => ({ WebexPanel: () => <div data-testid="webex-panel" /> }))
 vi.mock('../pages/settings/WeComPanel', () => ({ WeComPanel: () => <div data-testid="wecom-panel" /> }))
 
+const govChannelsMock = vi.fn().mockResolvedValue({
+  slack: true, discord: true, telegram: true, webex: true, wecom: true,
+})
+
 vi.mock('../api/client', () => ({
   api: {
     getSlackConfig: vi.fn().mockResolvedValue({ connected: true, configured: true }),
@@ -38,6 +42,9 @@ vi.mock('../api/client', () => ({
     getTelegramConfig: vi.fn().mockResolvedValue({ connected: false, configured: false }),
     getWebexConfig: vi.fn().mockResolvedValue({ connected: false, configured: false }),
     getWeComConfig: vi.fn().mockRejectedValue(new Error('boom')),
+    // Governance policy map; default all-permitted so the existing (non-governance)
+    // tests are unaffected. Governance-specific tests override it per case.
+    getGovernanceChannels: (...a: unknown[]) => govChannelsMock(...a),
   },
 }))
 
@@ -67,36 +74,45 @@ function renderAt(route = '/settings?tab=channels') {
   return { ...view, ui }
 }
 
-beforeEach(() => { mockWidth = null; slackMountCount = 0 })
+beforeEach(() => {
+  mockWidth = null
+  slackMountCount = 0
+  govChannelsMock.mockReset()
+  govChannelsMock.mockResolvedValue({
+    slack: true, discord: true, telegram: true, webex: true, wecom: true,
+  })
+})
 
 describe('ChannelsPanel — wide (two-pane)', () => {
-  it('shows the list and the first channel detail by default', () => {
+  it('shows the list and the first channel detail by default', async () => {
     mockWidth = 1000
     renderAt()
     expect(screen.getByRole('listbox', { name: 'Chat channels' })).toBeInTheDocument()
-    expect(screen.getByTestId('slack-panel')).toBeInTheDocument()
+    // findBy: the config panel renders once the channels-governance query
+    // confirms the channel is permitted (all-true default → near-instant).
+    expect(await screen.findByTestId('slack-panel')).toBeInTheDocument()
   })
 
-  it('honors ?channel= selection', () => {
+  it('honors ?channel= selection', async () => {
     mockWidth = 1000
     renderAt('/settings?tab=channels&channel=webex')
-    expect(screen.getByTestId('webex-panel')).toBeInTheDocument()
+    expect(await screen.findByTestId('webex-panel')).toBeInTheDocument()
     expect(screen.queryByTestId('slack-panel')).not.toBeInTheDocument()
   })
 
-  it('switches the detail pane when a row is clicked and keeps the list visible', () => {
+  it('switches the detail pane when a row is clicked and keeps the list visible', async () => {
     mockWidth = 1000
     renderAt()
     fireEvent.click(screen.getByRole('option', { name: /Telegram/ }))
-    expect(screen.getByTestId('telegram-panel')).toBeInTheDocument()
+    expect(await screen.findByTestId('telegram-panel')).toBeInTheDocument()
     expect(screen.getByRole('listbox', { name: 'Chat channels' })).toBeInTheDocument()
     expect(screen.queryByTestId('slack-panel')).not.toBeInTheDocument()
   })
 
-  it('treats unmeasured width (null) as wide to avoid a narrow flash', () => {
+  it('treats unmeasured width (null) as wide to avoid a narrow flash', async () => {
     mockWidth = null
     renderAt()
-    expect(screen.getByTestId('slack-panel')).toBeInTheDocument()
+    expect(await screen.findByTestId('slack-panel')).toBeInTheDocument()
   })
 
   it('marks the selected row aria-selected', () => {
@@ -124,11 +140,11 @@ describe('ChannelsPanel — narrow (list <-> detail)', () => {
     expect(screen.queryByTestId('slack-panel')).not.toBeInTheDocument()
   })
 
-  it('drills into a full-width detail with a back button on row click', () => {
+  it('drills into a full-width detail with a back button on row click', async () => {
     mockWidth = 500
     renderAt()
     fireEvent.click(screen.getByRole('option', { name: /Discord/ }))
-    expect(screen.getByTestId('discord-panel')).toBeInTheDocument()
+    expect(await screen.findByTestId('discord-panel')).toBeInTheDocument()
     expect(screen.queryByRole('listbox', { name: 'Chat channels' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Channels/ })).toBeInTheDocument()
   })
@@ -149,12 +165,14 @@ describe('ChannelsPanel — narrow (list <-> detail)', () => {
 })
 
 describe('ChannelsPanel — width transitions preserve the mounted panel', () => {
-  it('keeps the SAME panel instance mounted when the container narrows (draft preservation)', () => {
+  it('keeps the SAME panel instance mounted when the container narrows (draft preservation)', async () => {
     // Wide mount with NO explicit ?channel: Slack renders implicitly and the
-    // canonicalization effect writes channel=slack into the URL.
+    // canonicalization effect writes channel=slack into the URL. Await the first
+    // paint so the channels-governance query has confirmed the permit and the
+    // panel is mounted before we assert mount-survival across width transitions.
     mockWidth = 1000
     const { rerender, ui } = renderAt('/settings?tab=channels')
-    expect(screen.getByTestId('slack-panel')).toBeInTheDocument()
+    expect(await screen.findByTestId('slack-panel')).toBeInTheDocument()
     expect(slackMountCount).toBe(1)
 
     // Shrink below the two-pane breakpoint. The URL param persisted AND the
@@ -189,6 +207,61 @@ describe('ChannelsPanel — width transitions preserve the mounted panel', () =>
   })
 })
 
+describe('ChannelsPanel — channels governance', () => {
+  it('greys a denied channel row with "Off by admin" and shows the disabled panel', async () => {
+    // A policy that denies discord: its row shows "Off by admin" (not a status
+    // line) and its detail pane renders the disabled state, never the form.
+    mockWidth = 1000
+    govChannelsMock.mockResolvedValue({
+      slack: true, discord: false, telegram: true, webex: true, wecom: true,
+    })
+    renderAt('/settings?tab=channels&channel=discord')
+
+    expect(await screen.findByText('Off by admin')).toBeInTheDocument()
+    expect(await screen.findByText(/turned off by your administrator/)).toBeInTheDocument()
+    expect(screen.queryByTestId('discord-panel')).not.toBeInTheDocument()
+    const discordRow = screen.getByRole('option', { name: /Discord/ })
+    expect(discordRow.className).toContain('opacity-60')
+  })
+
+  it('greys Slack too when denied (Slack IS governed)', async () => {
+    mockWidth = 1000
+    govChannelsMock.mockResolvedValue({
+      slack: false, discord: true, telegram: true, webex: true, wecom: true,
+    })
+    renderAt('/settings?tab=channels&channel=slack')
+
+    expect(await screen.findByText(/turned off by your administrator/)).toBeInTheDocument()
+    expect(screen.queryByTestId('slack-panel')).not.toBeInTheDocument()
+    expect(screen.getByRole('option', { name: /Slack/ }).className).toContain('opacity-60')
+  })
+
+  it('shows the editable panel for a permitted channel (all-true default)', async () => {
+    mockWidth = 1000
+    renderAt('/settings?tab=channels&channel=discord')
+    expect(await screen.findByTestId('discord-panel')).toBeInTheDocument()
+    expect(screen.queryByText('Off by admin')).not.toBeInTheDocument()
+  })
+
+  it('shows "unavailable" (not the form) for a null (eval-error) channel', async () => {
+    mockWidth = 1000
+    govChannelsMock.mockResolvedValue({
+      slack: true, discord: null, telegram: true, webex: true, wecom: true,
+    })
+    renderAt('/settings?tab=channels&channel=discord')
+    expect(await screen.findByText(/policy status unavailable/)).toBeInTheDocument()
+    expect(screen.queryByTestId('discord-panel')).not.toBeInTheDocument()
+  })
+
+  it('shows "unavailable" (not the form) when the governance fetch fails', async () => {
+    mockWidth = 1000
+    govChannelsMock.mockRejectedValue(new Error('network'))
+    renderAt('/settings?tab=channels&channel=discord')
+    expect(await screen.findByText(/policy status unavailable/)).toBeInTheDocument()
+    expect(screen.queryByTestId('discord-panel')).not.toBeInTheDocument()
+  })
+})
+
 describe('ChannelsPanel — status polling', () => {
   it('re-fetches channel configs on the 30s refetch interval', async () => {
     vi.useFakeTimers()
@@ -200,6 +273,22 @@ describe('ChannelsPanel — status polling', () => {
       await act(async () => { await vi.advanceTimersByTimeAsync(31_000) })
       const after = (api.getDiscordConfig as ReturnType<typeof vi.fn>).mock.calls.length
       expect(after).toBeGreaterThan(initial)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('re-polls the channels-governance policy (Level-2 profiles hot-reload)', async () => {
+    // GPT round-10: the channels policy is a Level-2 PROFILE that hot-reloads at
+    // runtime, so the query must poll — an admin tightening a live profile flips
+    // a channel to "Off by admin" on an already-open page without a reload.
+    vi.useFakeTimers()
+    try {
+      mockWidth = 1000
+      renderAt()
+      const initial = govChannelsMock.mock.calls.length
+      await act(async () => { await vi.advanceTimersByTimeAsync(31_000) })
+      expect(govChannelsMock.mock.calls.length).toBeGreaterThan(initial)
     } finally {
       vi.useRealTimers()
     }

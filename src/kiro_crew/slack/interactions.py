@@ -24,6 +24,7 @@ import aiohttp
 
 from kiro_crew.config.loader import ACTIVATION_REVIEW
 from kiro_crew.cron import CronStoreBusy
+from kiro_crew.messaging.identity import channel_inbound_permitted
 from kiro_crew.security import redact_and_truncate, redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 from kiro_crew.slack.allowlist import (
@@ -315,12 +316,14 @@ async def _handle_message_shortcut(payload: dict) -> None:
     # the modal's display blocks. Slack caps private_metadata at 3000 chars;
     # the section block already truncates the visible copy to 2500, so store
     # the same 2500-char slice to stay well under the limit.
-    private = json.dumps({
-        "channel": msg_channel,
-        "ts": msg_ts,
-        "user": msg_user,
-        "text": msg_text[:2500],
-    })
+    private = json.dumps(
+        {
+            "channel": msg_channel,
+            "ts": msg_ts,
+            "user": msg_user,
+            "text": msg_text[:2500],
+        }
+    )
 
     view = {
         "type": "modal",
@@ -396,9 +399,7 @@ async def _handle_shortcut_submission(payload: dict) -> None:
 
     view = payload.get("view", {})
     values = view.get("state", {}).get("values", {})
-    comment = (
-        values.get("comment_block", {}).get("comment_input", {}).get("value") or ""
-    ).strip()
+    comment = (values.get("comment_block", {}).get("comment_input", {}).get("value") or "").strip()
 
     try:
         meta = json.loads(view.get("private_metadata", "{}"))
@@ -599,6 +600,20 @@ async def dispatch(payload: dict) -> None:
     if action_id == OPTIONS_CHECKBOXES_ACTION:
         return
 
+    # ── OPTIONS Send / legacy choice buttons ──
+    # Both RESOLVE an [OPTIONS:] choice: they edit/post the selection to the
+    # channel AND re-dispatch it as a fresh turn. So a ``channels`` policy that
+    # denies ``slack`` must stop them BEFORE that side effect — the re-dispatched
+    # handle_message() is gated, but the message edit/post precedes it. Gate here.
+    # (``_done_`` is a spent-marker no-op that posts nothing, so it stays exempt.)
+    _is_options = action_id == OPTIONS_SUBMIT_ACTION or (
+        action_id.startswith(OPTIONS_ACTION_PREFIX) and "_done_" not in action_id
+    )
+    if _is_options:
+        if not await channel_inbound_permitted("slack"):
+            logger.info("slack OPTIONS choice dropped: denied by channels governance policy")
+            return
+
     # ── OPTIONS Send button ──
     if action_id == OPTIONS_SUBMIT_ACTION:
         await _handle_options_submit(payload, channel, msg_ts)
@@ -693,17 +708,34 @@ async def dispatch(payload: dict) -> None:
         user_id = payload.get("user", {}).get("id", "")
         if not is_allowed_user(user_id):
             sel().log_tool_invocation(
-                session_key="", agent="kirocrew", source="slack",
-                tool_name="mc_link_dashboard", tool_kind="interaction",
+                session_key="",
+                agent="kirocrew",
+                source="slack",
+                tool_name="mc_link_dashboard",
+                tool_kind="interaction",
                 outcome="denied",
                 metadata={"user_id": user_id, "reason": "not_allowed_user"},
             )
             return
-        thread_ts = payload.get("message", {}).get("thread_ts") or payload.get("container", {}).get("thread_ts", "")
+        # Inbound channels-governance gate: linking imports the Slack thread's
+        # content into a dashboard slot (``_import_thread_to_slot`` below), so a
+        # ``channels`` policy that denies ``slack`` must stop it — otherwise a stale
+        # link button issued before the deny would move denied Slack content into
+        # the dashboard. Same gate as an inbound message / the OPTIONS + review
+        # actions; gated here BEFORE the import side effect.
+        if not await channel_inbound_permitted("slack"):
+            logger.info("slack dashboard-link dropped: denied by channels governance policy")
+            return
+        thread_ts = payload.get("message", {}).get("thread_ts") or payload.get("container", {}).get(
+            "thread_ts", ""
+        )
         if not thread_ts:
             sel().log_tool_invocation(
-                session_key="", agent="kirocrew", source="slack",
-                tool_name="mc_link_dashboard", tool_kind="interaction",
+                session_key="",
+                agent="kirocrew",
+                source="slack",
+                tool_name="mc_link_dashboard",
+                tool_kind="interaction",
                 outcome="failure",
                 metadata={"user_id": user_id, "reason": "no_thread_ts"},
             )
@@ -711,16 +743,22 @@ async def dispatch(payload: dict) -> None:
         ds = _orch.dashboard_state if _orch else None
         if not ds or not hasattr(ds, "get_or_create_slot"):
             sel().log_tool_invocation(
-                session_key="", agent="kirocrew", source="slack",
-                tool_name="mc_link_dashboard", tool_kind="interaction",
+                session_key="",
+                agent="kirocrew",
+                source="slack",
+                tool_name="mc_link_dashboard",
+                tool_kind="interaction",
                 outcome="failure",
                 metadata={"user_id": user_id, "reason": "no_dashboard"},
             )
             return
         if not _orch or not _orch.slack:
             sel().log_tool_invocation(
-                session_key="", agent="kirocrew", source="slack",
-                tool_name="mc_link_dashboard", tool_kind="interaction",
+                session_key="",
+                agent="kirocrew",
+                source="slack",
+                tool_name="mc_link_dashboard",
+                tool_kind="interaction",
                 outcome="failure",
                 metadata={"user_id": user_id, "reason": "no_slack_client"},
             )
@@ -728,8 +766,11 @@ async def dispatch(payload: dict) -> None:
         slot = await _import_thread_to_slot(_orch.slack, ds, channel, thread_ts)
         if not slot:
             sel().log_tool_invocation(
-                session_key="", agent="kirocrew", source="slack",
-                tool_name="mc_link_dashboard", tool_kind="interaction",
+                session_key="",
+                agent="kirocrew",
+                source="slack",
+                tool_name="mc_link_dashboard",
+                tool_kind="interaction",
                 outcome="failure",
                 metadata={"channel": channel, "thread_ts": thread_ts, "reason": "empty_thread"},
             )
@@ -748,8 +789,11 @@ async def dispatch(payload: dict) -> None:
                     )
             return
         sel().log_tool_invocation(
-            session_key=slot.key, agent="kirocrew", source="slack",
-            tool_name="mc_link_dashboard", tool_kind="interaction",
+            session_key=slot.key,
+            agent="kirocrew",
+            source="slack",
+            tool_name="mc_link_dashboard",
+            tool_kind="interaction",
             outcome="success",
             metadata={"slot": slot.key, "channel": channel, "thread_ts": thread_ts},
         )
@@ -827,6 +871,15 @@ async def dispatch(payload: dict) -> None:
         return
 
     # ── Review mode: approve / edit / cancel ──
+    # Inbound channels-governance gate for the CONTENT-POSTING review actions
+    # (approve/edit/revise all post the stored agent draft to the channel). A
+    # ``channels`` policy that denies ``slack`` must stop a stale review button
+    # from posting agent content to a now-denied channel — same gate as an inbound
+    # message. ``cancel`` only discards the draft (posts nothing), so it is exempt.
+    if action_id in ("mc_review_approve", "mc_review_edit", "mc_review_revise"):
+        if not await channel_inbound_permitted("slack"):
+            logger.info("slack review action dropped: denied by channels governance policy")
+            return
     if action_id == "mc_review_approve":
         await _handle_review_approve(payload, action)
         return
@@ -878,6 +931,27 @@ async def dispatch(payload: dict) -> None:
         # (session_key:request_id) so a click resolves ONLY its own session's
         # pending tool — kiro-cli request ids restart at 1 per session.
         approval_key = action.get("value", "") or action_id.rsplit("_", 1)[-1]
+        # Inbound channels-governance gate: a button press resolves a tool approval
+        # (executes the governed tool) or a Trust escalation, so a channels policy
+        # that denies ``slack`` must stop it — same gate as an inbound message.
+        # EXCEPTION: an explicit REJECT (not approve, not trust) is a DENIAL of the
+        # tool, which is exactly what a channels-deny wants anyway — so resolve it as
+        # False rather than silently dropping. Silently returning would strand the
+        # kiro-cli approval future until it times out (~300s) with the tool neither
+        # run nor cleanly refused. Only approve/trust are blocked outright.
+        if approved and not await channel_inbound_permitted("slack"):
+            logger.info("slack tool-approval dropped: denied by channels governance policy")
+            # Resolve the pending future as DENIED so the tool is refused promptly
+            # instead of left pending until timeout.
+            SlackApprovalDecider.resolve_global(approval_key, False)
+            sel().log_api_access(
+                caller=user_id,
+                operation="slack.transport_tool_approval",
+                outcome="denied",
+                source="slack",
+                resources=f"approval_key={approval_key} channels_policy",
+            )
+            return
         # Trust grants per-session auto-approve BEFORE resolving, so subsequent
         # tools in this session are auto-approved (mirrors native trust_tool).
         if is_trust:
@@ -960,7 +1034,13 @@ async def _handle_ch_activation(payload: dict, action: dict) -> None:
         from kiro_crew.config.loader import KiroCrewConfig
 
         _orch._cfg = KiroCrewConfig.load()
-    sel().log_api_access(caller=caller, operation="slack.channel_activation_change", outcome="allowed", source="slack", resources=f"{cid}={new_mode}")
+    sel().log_api_access(
+        caller=caller,
+        operation="slack.channel_activation_change",
+        outcome="allowed",
+        source="slack",
+        resources=f"{cid}={new_mode}",
+    )
     logger.info("Channel %s activation changed to %s", cid, new_mode)
 
 
@@ -983,7 +1063,13 @@ async def _handle_ch_agent(payload: dict, action: dict) -> None:
 
         _orch._cfg = KiroCrewConfig.load()
     logger.info("Channel %s agent changed to %s", cid, new_agent or "default")
-    sel().log_api_access(caller=caller, operation="slack.channel_agent_change", outcome="allowed", source="slack", resources=f"{cid}={new_agent or 'default'}")
+    sel().log_api_access(
+        caller=caller,
+        operation="slack.channel_agent_change",
+        outcome="allowed",
+        source="slack",
+        resources=f"{cid}={new_agent or 'default'}",
+    )
 
 
 async def _handle_ch_remove(payload: dict, action: dict) -> None:
@@ -1001,7 +1087,13 @@ async def _handle_ch_remove(payload: dict, action: dict) -> None:
     set_tracking_channels(_orch._tracking_channels)
     persist_tracking_channel(cid, remove=True)
     logger.info("Channel %s removed from tracking", cid)
-    sel().log_api_access(caller=caller, operation="slack.channel_remove", outcome="allowed", source="slack", resources=cid)
+    sel().log_api_access(
+        caller=caller,
+        operation="slack.channel_remove",
+        outcome="allowed",
+        source="slack",
+        resources=cid,
+    )
 
     view_id = payload.get("view", {}).get("id", "")
     if view_id:
@@ -1023,7 +1115,13 @@ async def _handle_ch_add(payload: dict, action: dict) -> None:
     set_tracking_channels(_orch._tracking_channels)
     persist_tracking_channel(cid)
     logger.info("Channel %s added to tracking", cid)
-    sel().log_api_access(caller=caller, operation="slack.channel_add", outcome="allowed", source="slack", resources=cid)
+    sel().log_api_access(
+        caller=caller,
+        operation="slack.channel_add",
+        outcome="allowed",
+        source="slack",
+        resources=cid,
+    )
 
     view_id = payload.get("view", {}).get("id", "")
     if view_id:
@@ -1132,9 +1230,7 @@ def _mark_button_clicked(blocks: list[dict], clicked_action_id: str, label: str)
             result.append(block)
             continue
         # Insert ✓ context block before the (possibly empty) actions block
-        result.append(
-            {"type": "context", "elements": [{"type": "mrkdwn", "text": f"✓ {label}"}]}
-        )
+        result.append({"type": "context", "elements": [{"type": "mrkdwn", "text": f"✓ {label}"}]})
         if remaining:
             result.append({**block, "elements": remaining})
     return result
@@ -1143,9 +1239,7 @@ def _mark_button_clicked(blocks: list[dict], clicked_action_id: str, label: str)
 _ACTION_PREFIX = "action::"
 
 
-def _replace_options_blocks(
-    blocks: list[dict], selected_blocks: list[dict]
-) -> list[dict]:
+def _replace_options_blocks(blocks: list[dict], selected_blocks: list[dict]) -> list[dict]:
     """Replace OPTIONS actions block(s) with *selected_blocks* in place.
 
     Walks *blocks* looking for any ``actions`` block whose elements include
@@ -1224,9 +1318,7 @@ async def _route_action_to_session(
     # Update the message: replace clicked element with ✓ label
     updated_blocks = _mark_button_clicked(blocks, action_id_value, label)
     try:
-        await _orch.slack.update_message(
-            channel, msg_ts, text=label, blocks=updated_blocks
-        )
+        await _orch.slack.update_message(channel, msg_ts, text=label, blocks=updated_blocks)
     except Exception:
         logger.debug("Failed to update action message", exc_info=True)
 
@@ -1295,7 +1387,11 @@ async def _import_thread_to_slot(slack: Any, ds: Any, channel: str, thread_ts: s
     if not msgs:
         return None
     # Pre-filter: drop empty text and !link-to-dashboard messages
-    msgs = [m for m in msgs if m.get("text", "").strip() and not m.get("text", "").startswith("!link-to-dashboard")]
+    msgs = [
+        m
+        for m in msgs
+        if m.get("text", "").strip() and not m.get("text", "").startswith("!link-to-dashboard")
+    ]
     if not msgs:
         return None
     # Cap to last 50 messages to avoid bloating the slot
@@ -1329,8 +1425,11 @@ async def _handle_options_submit(payload: dict, channel: str, msg_ts: str) -> No
 
     if not is_allowed_user(user_id):
         sel().log_tool_invocation(
-            session_key=thread_ts, agent="kirocrew", source="slack",
-            tool_name="options_submit", tool_kind="interaction",
+            session_key=thread_ts,
+            agent="kirocrew",
+            source="slack",
+            tool_name="options_submit",
+            tool_kind="interaction",
             outcome="denied",
             metadata={"user_id": user_id, "reason": "not_allowed_user"},
         )
@@ -1347,9 +1446,13 @@ async def _handle_options_submit(payload: dict, channel: str, msg_ts: str) -> No
 
     if not selected:
         sel().log_tool_invocation(
-            session_key=thread_ts, agent="kirocrew", source="slack",
-            tool_name="options_submit", tool_kind="interaction",
-            outcome="skipped", metadata={"reason": "empty_selection"},
+            session_key=thread_ts,
+            agent="kirocrew",
+            source="slack",
+            tool_name="options_submit",
+            tool_kind="interaction",
+            outcome="skipped",
+            metadata={"reason": "empty_selection"},
         )
         return  # nothing checked, ignore
 
@@ -1388,9 +1491,7 @@ async def _handle_options_submit(payload: dict, channel: str, msg_ts: str) -> No
     new_ts = msg_ts
     edited = False
     try:
-        await _orch.slack.update_message(
-            channel, msg_ts, text=combined, blocks=new_blocks
-        )
+        await _orch.slack.update_message(channel, msg_ts, text=combined, blocks=new_blocks)
         edited = True
     except Exception:
         logger.debug(
@@ -1399,15 +1500,17 @@ async def _handle_options_submit(payload: dict, channel: str, msg_ts: str) -> No
         )
 
     if not edited:
-        posted_ts = await _orch.slack.post_blocks(
-            channel, selected_blocks, combined, thread_ts
-        )
+        posted_ts = await _orch.slack.post_blocks(channel, selected_blocks, combined, thread_ts)
         if not posted_ts:
             logger.warning("Failed to post options choice — aborting")
             sel().log_tool_invocation(
-                session_key=thread_ts, agent="kirocrew", source="slack",
-                tool_name="options_submit", tool_kind="interaction",
-                outcome="failure", metadata={"reason": "post_blocks_failed"},
+                session_key=thread_ts,
+                agent="kirocrew",
+                source="slack",
+                tool_name="options_submit",
+                tool_kind="interaction",
+                outcome="failure",
+                metadata={"reason": "post_blocks_failed"},
             )
             return
         new_ts = posted_ts
@@ -1450,9 +1553,13 @@ async def _handle_options_submit(payload: dict, channel: str, msg_ts: str) -> No
     _orch._handler_tasks.add(t)
     t.add_done_callback(_orch._handler_tasks.discard)
     sel().log_tool_invocation(
-        session_key=thread_ts, agent="kirocrew", source="slack",
-        tool_name="options_submit", tool_kind="interaction",
-        outcome="success", metadata={"selected": combined, "channel": channel},
+        session_key=thread_ts,
+        agent="kirocrew",
+        source="slack",
+        tool_name="options_submit",
+        tool_kind="interaction",
+        outcome="success",
+        metadata={"selected": combined, "channel": channel},
     )
 
 
@@ -1473,23 +1580,30 @@ async def _handle_options(payload: dict, action: dict, channel: str, msg_ts: str
 
     # ── Action button: route payload to existing session as context ──
     if choice.startswith(_ACTION_PREFIX):
-        action_payload = choice[len(_ACTION_PREFIX):]
+        action_payload = choice[len(_ACTION_PREFIX) :]
         label = action.get("text", {}).get("text", "")
         # Overflow menus: label is on the selected_option
         if not label:
             label = (action.get("selected_option") or {}).get("text", {}).get("text", "")
         action_id_value = action.get("action_id", "")
         await _route_action_to_session(
-            channel, msg_ts, thread_ts, user_id, team_id,
-            label, action_payload, "Action button clicked",
-            action_id_value, blocks,
+            channel,
+            msg_ts,
+            thread_ts,
+            user_id,
+            team_id,
+            label,
+            action_payload,
+            "Action button clicked",
+            action_id_value,
+            blocks,
         )
         return
 
     # ── Extended element: action_id carries the action:: prefix ──
     action_id_value = action.get("action_id", "")
     if action_id_value.startswith(_ACTION_PREFIX):
-        base_json = action_id_value[len(_ACTION_PREFIX):]
+        base_json = action_id_value[len(_ACTION_PREFIX) :]
         raw_value, display_text = _extract_selected_value(action)
 
         # Merge selected_value into base payload
@@ -1509,9 +1623,16 @@ async def _handle_options(payload: dict, action: dict, channel: str, msg_ts: str
         label = f"{placeholder}: {display_text}" if placeholder else display_text
 
         await _route_action_to_session(
-            channel, msg_ts, thread_ts, user_id, team_id,
-            label, merged_json, "Action element selected",
-            action_id_value, blocks,
+            channel,
+            msg_ts,
+            thread_ts,
+            user_id,
+            team_id,
+            label,
+            merged_json,
+            "Action element selected",
+            action_id_value,
+            blocks,
         )
         return
 
@@ -1546,9 +1667,7 @@ async def _handle_options(payload: dict, action: dict, channel: str, msg_ts: str
     new_ts = msg_ts
     edited = False
     try:
-        await _orch.slack.update_message(
-            channel, msg_ts, text=choice, blocks=new_blocks
-        )
+        await _orch.slack.update_message(channel, msg_ts, text=choice, blocks=new_blocks)
         edited = True
     except Exception:
         logger.debug(
@@ -1557,15 +1676,17 @@ async def _handle_options(payload: dict, action: dict, channel: str, msg_ts: str
         )
 
     if not edited:
-        posted_ts = await _orch.slack.post_blocks(
-            channel, selected_blocks, choice, thread_ts
-        )
+        posted_ts = await _orch.slack.post_blocks(channel, selected_blocks, choice, thread_ts)
         if not posted_ts:
             logger.warning("Failed to post options choice — aborting")
             sel().log_tool_invocation(
-                session_key=thread_ts, agent="kirocrew", source="slack",
-                tool_name="options", tool_kind="interaction",
-                outcome="failure", metadata={"reason": "post_blocks_failed"},
+                session_key=thread_ts,
+                agent="kirocrew",
+                source="slack",
+                tool_name="options",
+                tool_kind="interaction",
+                outcome="failure",
+                metadata={"reason": "post_blocks_failed"},
             )
             return
         new_ts = posted_ts
@@ -1957,24 +2078,18 @@ async def _handle_stop_confirm(payload: dict, channel: str, msg_ts: str, user_id
 
             await _update_ephemeral(build_stopped_blocks(), "⏹ [Stopped]")
             if _orch and _orch.slack:
-                await _orch.slack.post_message(
-                    channel, "⏹ Execution stopped.", thread_ts
-                )
+                await _orch.slack.post_message(channel, "⏹ Execution stopped.", thread_ts)
 
         async def _on_hard() -> None:
             from kiro_crew.slack.blocks import build_stop_failed_blocks
 
-            await _update_ephemeral(
-                build_stop_failed_blocks(), "⛔ [Stop Failed, Session Reset]"
-            )
+            await _update_ephemeral(build_stop_failed_blocks(), "⛔ [Stop Failed, Session Reset]")
             if _orch and _orch.slack:
                 await _orch.slack.post_message(
                     channel, "⛔ Execution stopped — session reset.", thread_ts
                 )
 
-        outcome = await _orch.sessions.stop_turn(
-            thread_ts, on_soft=_on_soft, on_hard=_on_hard
-        )
+        outcome = await _orch.sessions.stop_turn(thread_ts, on_soft=_on_soft, on_hard=_on_hard)
         if active_task and not active_task.done():
             active_task.cancel()
         # If stop_turn returned "idle" (no active turn), neither callback
@@ -2196,7 +2311,9 @@ async def _handle_session_resume(
 
     if not is_owner(user_id):
         logger.warning("session_resume rejected: non-owner %s", user_id)
-        sel().log_api_access(caller=user_id, operation="slack.session_resume", outcome="denied", source="slack")
+        sel().log_api_access(
+            caller=user_id, operation="slack.session_resume", outcome="denied", source="slack"
+        )
         return
     if not (_orch and _orch.sessions and _orch.slack):
         return
@@ -2279,11 +2396,14 @@ async def _handle_session_resume(
     if response_url:
         try:
             async with aiohttp.ClientSession() as sess:
-                await sess.post(response_url, json={
-                    "replace_original": False,
-                    "text": f"Resume {title} \u2014 choose Thread or DM",
-                    "blocks": blocks,
-                })
+                await sess.post(
+                    response_url,
+                    json={
+                        "replace_original": False,
+                        "text": f"Resume {title} \u2014 choose Thread or DM",
+                        "blocks": blocks,
+                    },
+                )
         except Exception:
             logger.exception("session_resume: response_url POST failed")
     elif channel:
@@ -2316,7 +2436,12 @@ async def _handle_resume_choice(
 
     if not is_owner(user_id):
         logger.warning("resume_choice rejected: non-owner %s", user_id)
-        sel().log_api_access(caller=user_id, operation="slack.session_resume_choice", outcome="denied", source="slack")
+        sel().log_api_access(
+            caller=user_id,
+            operation="slack.session_resume_choice",
+            outcome="denied",
+            source="slack",
+        )
         return
     if not (_orch and _orch.sessions and _orch.slack):
         return
@@ -2350,16 +2475,32 @@ async def _handle_resume_choice(
         # Re-check: session may have been linked while user was choosing
         existing_thread, existing_channel = _orch.sessions.get_slack_link(session_key)
         if existing_thread and existing_channel:
-            link = f"https://slack.com/archives/{existing_channel}/p{existing_thread.replace('.', '')}"
+            link = (
+                f"https://slack.com/archives/{existing_channel}/p{existing_thread.replace('.', '')}"
+            )
             label = f"\U0001f9f5 Already active: <{link}|Go to conversation>"
             response_url = payload.get("response_url", "")
             if response_url:
                 import aiohttp
+
                 try:
                     async with aiohttp.ClientSession() as sess:
-                        await sess.post(response_url, json={"replace_original": True, "text": label})
+                        await sess.post(
+                            response_url, json={"replace_original": True, "text": label}
+                        )
                 except Exception:
                     pass
+            return
+
+        # Inbound channels-governance gate: resuming a session POSTS the stored
+        # transcript — including agent (assistant) content — to the channel (same
+        # class of side effect as the review actions above). A ``channels`` policy
+        # that denies ``slack`` must stop it, so stale agent content is never
+        # published to a now-denied channel. Owner-initiated, but the content leak
+        # is what the gate guards. (``!stop``-style cancellation exemptions do not
+        # apply — a resume is not cancellation.)
+        if not await channel_inbound_permitted("slack"):
+            logger.info("slack session resume dropped: denied by channels governance policy")
             return
 
         if mode == "thread":
@@ -2385,11 +2526,7 @@ async def _handle_resume_choice(
                 return
             if not dm_channel:
                 return
-            header = (
-                "\u2500" * 15 + "\n"
-                f"\U0001f504 Resumed: *{title}*\n"
-                + "\u2500" * 15
-            )
+            header = "\u2500" * 15 + "\n" f"\U0001f504 Resumed: *{title}*\n" + "\u2500" * 15
             try:
                 header_ts = await _orch.slack.post_message(dm_channel, header)
             except Exception:
@@ -2414,9 +2551,7 @@ async def _handle_resume_choice(
             resources=session_key,
         )
         if _orch.dashboard_state:
-            slot_name = (
-                session_key.split(":", 1)[-1] if ":" in session_key else session_key
-            )
+            slot_name = session_key.split(":", 1)[-1] if ":" in session_key else session_key
             _orch.dashboard_state.link_slack(slot_name, link_ts, link_channel)
 
         # Post last 5 messages as context
@@ -2448,7 +2583,9 @@ async def _handle_resume_choice(
                     icon = "\U0001f9d1" if role == "user" else "\U0001f916"
                     try:
                         await _orch.slack.post_message(
-                            target_channel, f"{icon} {txt}", thread_ts,
+                            target_channel,
+                            f"{icon} {txt}",
+                            thread_ts,
                         )
                     except Exception:
                         logger.debug("Failed to post context message", exc_info=True)
@@ -2459,10 +2596,12 @@ async def _handle_resume_choice(
         response_url = payload.get("response_url", "")
         if response_url:
             import aiohttp
+
             try:
                 async with aiohttp.ClientSession() as sess:
                     await sess.post(
-                        response_url, json={"replace_original": True, "text": label},
+                        response_url,
+                        json={"replace_original": True, "text": label},
                     )
             except Exception:
                 pass
@@ -2479,7 +2618,13 @@ async def _handle_session_end(
     if not (session_id and _orch and _orch.sessions):
         return
 
-    sel().log_api_access(caller=user_id, operation="slack.session_end", outcome="allowed", source="slack", resources=session_id)
+    sel().log_api_access(
+        caller=user_id,
+        operation="slack.session_end",
+        outcome="allowed",
+        source="slack",
+        resources=session_id,
+    )
 
     key_to_remove = _orch.sessions.find_key_by_sid(session_id)
     # Also try treating value as a direct session key (from /kirocrew sessions buttons)
@@ -2491,10 +2636,18 @@ async def _handle_session_end(
             try:
                 # Audit the consolidation trigger. Skill write auditing (log_tool_invocation
                 # with tool_name="auto_skill_create") is handled inside _process_auto_skills().
-                sel().log_api_access(caller=user_id, operation="consolidate_session_slack_end", outcome="allowed", source="slack", resources=key_to_remove)
+                sel().log_api_access(
+                    caller=user_id,
+                    operation="consolidate_session_slack_end",
+                    outcome="allowed",
+                    source="slack",
+                    resources=key_to_remove,
+                )
                 _orch.consolidator.consolidate_session(key_to_remove)
             except Exception:
-                logger.debug("consolidate_session (or SEL) failed for %s", key_to_remove, exc_info=True)
+                logger.debug(
+                    "consolidate_session (or SEL) failed for %s", key_to_remove, exc_info=True
+                )
         # Soft-remove: kill process but preserve session_map for future resume
         try:
             await _orch.sessions.remove(key_to_remove)
@@ -2524,14 +2677,32 @@ async def _handle_inline_stop(
 ) -> None:
     """Stop the active turn for a session via the inline stop button."""
     if not is_owner(user_id):
-        sel().log_api_access(caller=user_id, operation="slack.inline_stop", outcome="denied", source="slack", resources=action.get("value", ""))
+        sel().log_api_access(
+            caller=user_id,
+            operation="slack.inline_stop",
+            outcome="denied",
+            source="slack",
+            resources=action.get("value", ""),
+        )
         return
     session_key = action.get("value", "")
     if not (session_key and _orch and _orch.sessions):
-        sel().log_api_access(caller=user_id, operation="slack.inline_stop", outcome="invalid", source="slack", resources=session_key)
+        sel().log_api_access(
+            caller=user_id,
+            operation="slack.inline_stop",
+            outcome="invalid",
+            source="slack",
+            resources=session_key,
+        )
         return
 
-    sel().log_api_access(caller=user_id, operation="slack.inline_stop", outcome="allowed", source="slack", resources=session_key)
+    sel().log_api_access(
+        caller=user_id,
+        operation="slack.inline_stop",
+        outcome="allowed",
+        source="slack",
+        resources=session_key,
+    )
 
     # Immediate feedback — update the working message to show stopping
     if _orch.slack and channel and msg_ts:
@@ -2550,13 +2721,13 @@ async def _handle_inline_stop(
     async def _on_hard() -> None:
         if _orch.slack and channel and msg_ts:
             try:
-                await _orch.slack.update_message(channel, msg_ts, text="⛔ Execution stopped — session reset.")
+                await _orch.slack.update_message(
+                    channel, msg_ts, text="⛔ Execution stopped — session reset."
+                )
             except Exception:
                 pass
 
-    outcome = await _orch.sessions.stop_turn(
-        session_key, on_soft=_on_soft, on_hard=_on_hard
-    )
+    outcome = await _orch.sessions.stop_turn(session_key, on_soft=_on_soft, on_hard=_on_hard)
     if outcome == "idle" and _orch.slack and channel and msg_ts:
         try:
             await _orch.slack.update_message(channel, msg_ts, text="⏹ Nothing running.")
@@ -2581,7 +2752,13 @@ async def _handle_session_new(
         return
     if not (_orch and _orch.slack):
         return
-    sel().log_api_access(caller=user_id, operation="slack.session_new", outcome="allowed", source="slack", resources=channel)
+    sel().log_api_access(
+        caller=user_id,
+        operation="slack.session_new",
+        outcome="allowed",
+        source="slack",
+        resources=channel,
+    )
 
     # Post a new message that starts a fresh thread
     try:
@@ -2609,6 +2786,21 @@ async def _handle_tool_approval(
     payload: dict, action_id: str, channel: str, msg_ts: str, user_id: str
 ) -> None:
     """Route approve / trust / reject to the handler."""
+    # Inbound channels-governance gate: resolving a tool approval executes the
+    # governed tool, so a channels policy denying ``slack`` must stop it (same
+    # gate as an inbound message). Covers the native approval path; the transport
+    # path is gated at its own branch in dispatch().
+    # EXCEPTION: a REJECT is a denial of the tool — exactly what a channels-deny
+    # wants — so let it through to resolve the pending approval as refused, rather
+    # than silently dropping it (which strands the kiro-cli future until timeout).
+    # Only approve/trust are blocked outright.
+    _is_reject = action_id == "reject_tool"
+    if not _is_reject:
+        if not await channel_inbound_permitted("slack"):
+            logger.info(
+                "slack tool-approval (native) dropped: denied by channels governance policy"
+            )
+            return
     # Trust is restricted to DMs — fail-closed if orchestrator not ready
     if action_id == "trust_tool":
         if not _orch or not _orch.slack:
@@ -2621,7 +2813,15 @@ async def _handle_tool_approval(
 
     thread_ts = payload.get("message", {}).get("thread_ts", "")
     slack_ops = _orch.slack if _orch else None
-    effective_action = await handle_interaction(channel, msg_ts, action_id, user_id=user_id, thread_ts=thread_ts, slack=slack_ops, sessions=_orch.sessions if _orch else None)
+    effective_action = await handle_interaction(
+        channel,
+        msg_ts,
+        action_id,
+        user_id=user_id,
+        thread_ts=thread_ts,
+        slack=slack_ops,
+        sessions=_orch.sessions if _orch else None,
+    )
 
     # Replace buttons with outcome label — only when an action was processed.
     # When effective_action is None (unauthorized user or already resolved),
@@ -2644,9 +2844,7 @@ async def _handle_tool_approval(
 # ---------------------------------------------------------------------------
 
 # Shown when a non-authorized user clicks a review-mode button.
-_REVIEW_AUTH_DENIED_MSG = (
-    "⚠️ Only the bot owner or the user who requested this draft can act on it."
-)
+_REVIEW_AUTH_DENIED_MSG = "⚠️ Only the bot owner or the user who requested this draft can act on it."
 
 
 async def _delete_review_placeholder(channel: str, thread_ts: str) -> None:
@@ -2665,6 +2863,7 @@ async def _post_review_auth_error(response_url: str) -> None:
         return
     try:
         import aiohttp
+
         async with aiohttp.ClientSession() as sess:
             await sess.post(
                 response_url,
@@ -2729,6 +2928,7 @@ async def _handle_review_approve(payload: dict, action: dict) -> None:
     if response_url:
         try:
             import aiohttp
+
             async with aiohttp.ClientSession() as sess:
                 await sess.post(response_url, json={"delete_original": True})
         except Exception:
@@ -2781,6 +2981,7 @@ async def _handle_review_edit(payload: dict, action: dict) -> None:
     if response_url:
         try:
             import aiohttp
+
             async with aiohttp.ClientSession() as sess:
                 await sess.post(response_url, json={"delete_original": True})
         except Exception:
@@ -2825,6 +3026,7 @@ async def _handle_review_cancel(payload: dict, action: dict) -> None:
     if response_url:
         try:
             import aiohttp
+
             async with aiohttp.ClientSession() as sess:
                 await sess.post(response_url, json={"delete_original": True})
         except Exception:
@@ -2842,6 +3044,13 @@ async def _handle_review_cancel(payload: dict, action: dict) -> None:
 async def _handle_review_edit_submit(payload: dict) -> None:
     """Post the edited text from the review edit modal."""
     if not _orch or not _orch.slack:
+        return
+    # Inbound channels-governance gate: the modal may have opened while slack was
+    # permitted, then a profile hot-reload denied it before submit. Re-check HERE
+    # (not just at the button click that opened the modal) so a denied channel
+    # can't receive the edited agent content via a stale-modal submission.
+    if not await channel_inbound_permitted("slack"):
+        logger.info("slack review-edit submit dropped: denied by channels governance policy")
         return
     caller = payload.get("user", {}).get("id", "")
     view = payload.get("view", {})
@@ -2864,11 +3073,7 @@ async def _handle_review_edit_submit(payload: dict) -> None:
         )
         return
     values = view.get("state", {}).get("values", {})
-    edited = (
-        values.get("mc_review_edit_block", {})
-        .get("mc_review_edit_input", {})
-        .get("value", "")
-    )
+    edited = values.get("mc_review_edit_block", {}).get("mc_review_edit_input", {}).get("value", "")
     if not edited:
         return
 
@@ -2927,6 +3132,7 @@ async def _handle_review_revise(payload: dict, action: dict) -> None:
     if response_url:
         try:
             import aiohttp
+
             async with aiohttp.ClientSession() as sess:
                 await sess.post(response_url, json={"delete_original": True})
         except Exception:
@@ -2943,6 +3149,12 @@ async def _handle_review_revise(payload: dict, action: dict) -> None:
 async def _handle_review_revise_submit(payload: dict) -> None:
     """Take revision feedback, send to LLM with draft context, post new ephemeral draft."""
     if not _orch or not _orch.slack:
+        return
+    # Inbound channels-governance gate (same rationale as the edit-submit handler):
+    # a hot-reload deny after the modal opened must stop a revise from driving a
+    # new LLM turn + posting on the denied Slack channel.
+    if not await channel_inbound_permitted("slack"):
+        logger.info("slack review-revise submit dropped: denied by channels governance policy")
         return
     caller = payload.get("user", {}).get("id", "")
     view = payload.get("view", {})
@@ -2966,9 +3178,7 @@ async def _handle_review_revise_submit(payload: dict) -> None:
         return
     values = view.get("state", {}).get("values", {})
     feedback = (
-        values.get("mc_review_revise_block", {})
-        .get("mc_review_revise_input", {})
-        .get("value", "")
+        values.get("mc_review_revise_block", {}).get("mc_review_revise_input", {}).get("value", "")
     )
     if not feedback:
         return

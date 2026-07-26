@@ -39,7 +39,7 @@ from kiro_crew.discord.transport import DISCORD_CAPABILITIES
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.hooks import TOOL_AUTO_APPROVE, TOOL_DENY
 from kiro_crew.messaging.driver import APPROVAL_INTERACTIVE, TurnDriver
-from kiro_crew.messaging.identity import publish_turn_identity
+from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn_identity
 from kiro_crew.messaging.link import (
     ChannelLink,
     build_dm_session_key,
@@ -173,6 +173,14 @@ class DiscordDispatcher:
     ) -> None:
         """Drive one authorized inbound message through TurnDriver end-to-end."""
         assert self.client is not None, "DiscordDispatcher.client must be set"
+        # Inbound channels-governance gate (off-loop). The startup gate only stops
+        # a transport from CONNECTING; a host-profile deny added after it connected
+        # would otherwise keep dispatching inbound messages until restart. Recheck
+        # per message so a runtime deny takes effect immediately — silently drop
+        # (no reply) on deny, matching how an unauthorized user is ignored.
+        if not await channel_inbound_permitted("discord"):
+            logger.info("discord inbound dropped: denied by channels governance policy")
+            return
         user_id = msg.user_id
         channel_id = msg.conversation_id
         thread_id = msg.thread_id or ""
@@ -296,9 +304,7 @@ class DiscordDispatcher:
             # ── Post-turn bookkeeping (each guarded — see Telegram). ──
             self.sessions.record_success(session_key)
             try:
-                await asyncio.to_thread(
-                    self._persist_turn, session_key, text, accumulated, is_new
-                )
+                await asyncio.to_thread(self._persist_turn, session_key, text, accumulated, is_new)
             except Exception:
                 logger.warning(
                     "Discord: persist_turn failed session=%s",
@@ -495,9 +501,7 @@ class DiscordDispatcher:
         except Exception:
             logger.debug("discord: queue receipt cancel-finalize failed", exc_info=True)
 
-    async def _handle_stop(
-        self, user_id: str, channel_id: str, thread_id: str = ""
-    ) -> None:
+    async def _handle_stop(self, user_id: str, channel_id: str, thread_id: str = "") -> None:
         """Hard cancel: abort the in-flight turn and clear everything."""
         assert self.client is not None
         session_key = self._session_key(user_id, thread_id)
@@ -539,10 +543,28 @@ class DiscordDispatcher:
             or not await self.client.is_thread_channel(thread_id)
         ):
             return
-        # Ack to dismiss Discord's "interaction failed" state.
+        # Ack FIRST (after auth) to dismiss Discord's "interaction failed" state —
+        # the governance check below does off-loop profile-store I/O that can, on a
+        # slow FS, exceed Discord's ~3s interaction-ack deadline. Acking is a no-op
+        # UI dismissal; it does NOT resolve the approval or start a turn.
         await self.client.ack_component_interaction(itx.interaction_id, itx.interaction_token)
 
         data = itx.custom_id or ""
+
+        # Inbound channels-governance gate (off-loop) — a button press RESOLVES a
+        # tool approval (executes the governed tool) or injects an [OPTIONS:]
+        # choice (starts a turn), so it must pass the SAME gate as a message BEFORE
+        # any resolution. Without it, an admin deny added after connect could still
+        # execute a governed tool via a stale approval button.
+        # EXCEPTION: an explicit REJECT of a tool approval ("a:...:0") is a DENIAL —
+        # exactly what a channels-deny wants — so let it resolve the pending future
+        # as refused rather than silently dropping it (which would strand the
+        # kiro-cli approval until timeout, ~300s). Approve presses and [OPTIONS:]
+        # turns stay blocked.
+        _is_reject_press = data.startswith("a:") and data.rpartition(":")[2] == "0"
+        if not _is_reject_press and not await channel_inbound_permitted("discord"):
+            logger.info("discord interaction dropped: denied by channels governance policy")
+            return
 
         # Tool-approval decision: "a:<request_id>:<nonce>:<1|0>". The nonce is
         # validated by resolve_global — a stale button (reused request ID from
@@ -552,9 +574,7 @@ class DiscordDispatcher:
             head, _, flag = body.rpartition(":")
             rid, _, nonce = head.rpartition(":")
             approved = flag == "1"
-            key = DiscordApprovalDecider.key(
-                self._session_key(itx.user_id, thread_id), rid
-            )
+            key = DiscordApprovalDecider.key(self._session_key(itx.user_id, thread_id), rid)
             resolved = DiscordApprovalDecider.resolve_global(key, approved, nonce=nonce)
             if resolved:
                 verdict = "✅ Approved" if approved else "🚫 Denied"
@@ -649,9 +669,7 @@ class DiscordDispatcher:
             dm_scope=self.cfg.messaging.dm_scope,
         )
 
-    async def _handle_link(
-        self, user_id: str, channel_id: str, thread_id: str = ""
-    ) -> None:
+    async def _handle_link(self, user_id: str, channel_id: str, thread_id: str = "") -> None:
         """Mirror this conversation's dashboard tab back to Discord."""
         assert self.client is not None
         key = dashboard_mirror_key(self._session_key(user_id, thread_id))
@@ -662,9 +680,7 @@ class DiscordDispatcher:
             "also show up here. Send `!unlink` to stop.",
         )
 
-    async def _handle_unlink(
-        self, user_id: str, channel_id: str, thread_id: str = ""
-    ) -> None:
+    async def _handle_unlink(self, user_id: str, channel_id: str, thread_id: str = "") -> None:
         assert self.client is not None
         key = dashboard_mirror_key(self._session_key(user_id, thread_id))
         was_linked = self.sessions.clear_mirror_link(key)
@@ -701,9 +717,7 @@ class DiscordDispatcher:
                 "`!new` to start fresh.",
             )
 
-    async def _handle_compact(
-        self, user_id: str, channel_id: str, thread_id: str = ""
-    ) -> None:
+    async def _handle_compact(self, user_id: str, channel_id: str, thread_id: str = "") -> None:
         """In-place ACP ``/compact`` on the conversation's session."""
         assert self.client is not None
         session_key = self._session_key(user_id, thread_id)

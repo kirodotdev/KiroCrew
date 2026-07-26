@@ -33,7 +33,7 @@ from kiro_crew.acp.types import EVENT_COMPACTION_STATUS, EVENT_COMPLETE
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.hooks import TOOL_AUTO_APPROVE, TOOL_DENY
 from kiro_crew.messaging.driver import APPROVAL_INTERACTIVE, TurnDriver
-from kiro_crew.messaging.identity import publish_turn_identity
+from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn_identity
 from kiro_crew.messaging.link import (
     CHAT_TYPE_DIRECT,
     CHAT_TYPE_FORUM,
@@ -193,6 +193,12 @@ class TelegramDispatcher:
     ) -> None:
         """Drive one authorized inbound message through TurnDriver end-to-end."""
         assert self.client is not None, "TelegramDispatcher.client must be set"
+        # Inbound channels-governance gate (off-loop) — recheck per message so a
+        # host-profile deny added after connect stops dispatch without a restart
+        # (the startup gate only blocks CONNECTING). Silently drop on deny.
+        if not await channel_inbound_permitted("telegram"):
+            logger.info("telegram inbound dropped: denied by channels governance policy")
+            return
         user_id = int(msg.user_id)
         chat_id = int(msg.conversation_id)
         text = msg.text
@@ -234,16 +240,10 @@ class TelegramDispatcher:
 
         # ── Command intercept (no LLM session needed; skipped for override
         # payloads and drained queue content — see above) ──
-        cmd = (
-            parse_command(text)
-            if interpret_commands and override_mode is None
-            else None
-        )
+        cmd = parse_command(text) if interpret_commands and override_mode is None else None
         if cmd == "new":
             self._conv.bump_gen(route)
-            await self._reply(
-                chat_id, "✅ New conversation started.", thread=reply_thread
-            )
+            await self._reply(chat_id, "✅ New conversation started.", thread=reply_thread)
             return
         if cmd == "compact":
             self._conv.clear_awaiting(route)
@@ -269,9 +269,7 @@ class TelegramDispatcher:
         # of a silent block.
         session_key = self._session_key(route)
         if self.sessions.is_busy(session_key):
-            await self._handle_busy(
-                session_key, msg, text, override_mode, thread=reply_thread
-            )
+            await self._handle_busy(session_key, msg, text, override_mode, thread=reply_thread)
             return
 
         self._conv.maybe_rotate(
@@ -294,7 +292,10 @@ class TelegramDispatcher:
             else None
         )
         renderer = TelegramRenderer(
-            self.client, chat_id, TELEGRAM_CAPABILITIES, session_key=session_key,
+            self.client,
+            chat_id,
+            TELEGRAM_CAPABILITIES,
+            session_key=session_key,
             message_thread_id=int(thread) if thread else None,
         )
         # Expose this turn's renderer so a concurrent mid-turn steer (a separate
@@ -372,9 +373,7 @@ class TelegramDispatcher:
             # fall through to the except and re-record the successful turn). ──
             self.sessions.record_success(session_key)
             try:
-                await asyncio.to_thread(
-                    self._persist_turn, session_key, text, accumulated, is_new
-                )
+                await asyncio.to_thread(self._persist_turn, session_key, text, accumulated, is_new)
             except Exception:
                 logger.warning(
                     "Telegram: persist_turn failed session=%s", session_key, exc_info=True
@@ -472,13 +471,9 @@ class TelegramDispatcher:
                 steer_mid = getattr(msg, "message_id", 0)
                 if steer_mid:
                     try:
-                        await self.client.set_message_reaction(
-                            chat_id, steer_mid, _STEER_ACK_EMOJI
-                        )
+                        await self.client.set_message_reaction(chat_id, steer_mid, _STEER_ACK_EMOJI)
                     except Exception:
-                        logger.debug(
-                            "telegram: steer ack reaction failed", exc_info=True
-                        )
+                        logger.debug("telegram: steer ack reaction failed", exc_info=True)
                 return
         # queue mode (or /queue override, or steer unavailable). Enqueue + receipt
         # happen atomically under ``_receipt_lock`` (see ``_enqueue_with_receipt``)
@@ -487,9 +482,7 @@ class TelegramDispatcher:
         # bubble. If the turn finished in the window the message is not queued, so
         # we run it now (re-entering handle_message, which re-strips the directive
         # and runs it as a fresh turn) instead of stranding it.
-        if not await self._enqueue_with_receipt(
-            session_key, chat_id, text, thread=thread
-        ):
+        if not await self._enqueue_with_receipt(session_key, chat_id, text, thread=thread):
             await self.handle_message(msg)
 
     async def _drain_queue(
@@ -531,9 +524,7 @@ class TelegramDispatcher:
             for _ts, rtext, _kw in remainder:
                 self.sessions.enqueue(session_key, str(time.time()), rtext, force=True)
             if texts:
-                await self._receipt_flip_locked(
-                    session_key, chat_id, texts, len(remainder)
-                )
+                await self._receipt_flip_locked(session_key, chat_id, texts, len(remainder))
         if not texts:
             return
         if remainder:
@@ -581,19 +572,13 @@ class TelegramDispatcher:
         """
         assert self.client is not None
         async with self._receipt_lock:
-            if not self.sessions.enqueue(
-                session_key, str(time.time()), text, force=False
-            ):
+            if not self.sessions.enqueue(session_key, str(time.time()), text, force=False):
                 return False
             receipt = self._queue_receipts.get(session_key)
             if receipt is None:
-                msg_id = await self._reply(
-                    chat_id, _receipt_text([text]), thread=thread
-                )
+                msg_id = await self._reply(chat_id, _receipt_text([text]), thread=thread)
                 if msg_id is not None:
-                    self._queue_receipts[session_key] = _QueueReceipt(
-                        msg_id=msg_id, texts=[text]
-                    )
+                    self._queue_receipts[session_key] = _QueueReceipt(msg_id=msg_id, texts=[text])
                 return True
             receipt.texts.append(text)
             try:
@@ -628,9 +613,7 @@ class TelegramDispatcher:
         except Exception:
             logger.debug("telegram: queue receipt flip failed", exc_info=True)
 
-    async def _receipt_finish_cancelled_locked(
-        self, session_key: str, chat_id: int
-    ) -> None:
+    async def _receipt_finish_cancelled_locked(self, session_key: str, chat_id: int) -> None:
         """Finalize the receipt to a "🛑 Cancelled" record, if present. Caller
         MUST hold ``_receipt_lock`` (/stop holds it across clear_queue + this)."""
         assert self.client is not None
@@ -712,8 +695,28 @@ class TelegramDispatcher:
                 source="telegram",
             )
             return
-        # Answer to dismiss the button spinner for the authorized user.
+        # Answer FIRST (after auth) to dismiss the button spinner — the governance
+        # check below does off-loop profile-store I/O that could otherwise delay
+        # the callback answer past Telegram's expectation. Answering is a no-op UI
+        # dismissal; it does NOT resolve the approval or start a turn.
         await self.client.answer_callback(cb.callback_query_id)
+
+        data = cb.data or ""
+
+        # Inbound channels-governance gate (off-loop) — a callback press RESOLVES a
+        # tool approval (executes the governed tool) or injects an [OPTIONS:]
+        # choice (starts a turn), so it must pass the SAME gate as a message BEFORE
+        # any resolution. Without it, an admin deny added after connect could still
+        # execute a governed tool via a stale approval button.
+        # EXCEPTION: an explicit REJECT of a tool approval ("a:...:0") is a DENIAL —
+        # exactly what a channels-deny wants — so let it resolve the pending future
+        # as refused rather than silently dropping it (which would strand the
+        # kiro-cli approval until timeout, ~300s). Approve presses and [OPTIONS:]
+        # turns stay blocked.
+        _is_reject_press = data.startswith("a:") and data.rpartition(":")[2] == "0"
+        if not _is_reject_press and not await channel_inbound_permitted("telegram"):
+            logger.info("telegram callback dropped: denied by channels governance policy")
+            return
 
         # Route the callback to the same conversation identity its turn used so
         # an approval/[OPTIONS:] press resolves against the correct session key:
@@ -727,8 +730,6 @@ class TelegramDispatcher:
         )
         # Topic id to thread the [OPTIONS:] echo sends back into (None for a DM).
         cb_thread = self._route_thread(route)
-
-        data = cb.data or ""
 
         # Tool-approval decision: "a:<request_id>:<1|0>".
         if data.startswith("a:"):
@@ -789,9 +790,7 @@ class TelegramDispatcher:
                 conversation_id=str(cb.chat_id),
                 text=choice_text,
                 thread_id=(
-                    str(cb.message_thread_id)
-                    if getattr(cb, "message_thread_id", None)
-                    else None
+                    str(cb.message_thread_id) if getattr(cb, "message_thread_id", None) else None
                 ),
                 chat_type=cb.chat_type,
             )
@@ -863,9 +862,7 @@ class TelegramDispatcher:
         intentionally NOT routed here -- it is a callback ack, not a chat send.
         """
         assert self.client is not None
-        return await self.client.send_message(
-            chat_id, text, message_thread_id=thread, **kw
-        )
+        return await self.client.send_message(chat_id, text, message_thread_id=thread, **kw)
 
     def _session_key(self, route: tuple[str, str]) -> str:
         slot, comp = route
@@ -958,8 +955,7 @@ class TelegramDispatcher:
             assert self.client is not None
             await self._reply(
                 chat_id,
-                "⚠️ Context is getting long. Use /compact to compress or "
-                "/new to start fresh.",
+                "⚠️ Context is getting long. Use /compact to compress or " "/new to start fresh.",
                 thread=self._route_thread(route),
             )
 
@@ -987,21 +983,15 @@ class TelegramDispatcher:
                     thread=thread,
                 )
             else:
-                await self._reply(
-                    chat_id, "No active session to compact.", thread=thread
-                )
+                await self._reply(chat_id, "No active session to compact.", thread=thread)
             return
         try:
             provider = self.sessions.get_provider(session_key)
             if provider is None:
-                await self._reply(
-                    chat_id, "No active session to compact.", thread=thread
-                )
+                await self._reply(chat_id, "No active session to compact.", thread=thread)
                 return
 
-            status_id = await self._reply(
-                chat_id, "🔄 Compacting context…", thread=thread
-            )
+            status_id = await self._reply(chat_id, "🔄 Compacting context…", thread=thread)
             result_text: str | None = None
             try:
 
@@ -1017,9 +1007,7 @@ class TelegramDispatcher:
                                     else "✅ Context compacted."
                                 )
                             elif ev.text == "failed":
-                                result_text = (
-                                    f"❌ Compaction failed: {ev.title or 'unknown error'}"
-                                )
+                                result_text = f"❌ Compaction failed: {ev.title or 'unknown error'}"
                         elif ev.kind == EVENT_COMPLETE:
                             break
 

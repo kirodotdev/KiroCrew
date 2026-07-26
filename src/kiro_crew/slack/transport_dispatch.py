@@ -25,7 +25,7 @@ from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.hooks import HOOK_REPLY, TOOL_AUTO_APPROVE, TOOL_DENY
 from kiro_crew.llm_helpers import save_conversation_turn
 from kiro_crew.messaging.driver import APPROVAL_INTERACTIVE, TurnDriver
-from kiro_crew.messaging.identity import publish_turn_identity
+from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn_identity
 from kiro_crew.messaging.link import canonical_key
 from kiro_crew.platform import current_context
 from kiro_crew.sel import sel
@@ -101,6 +101,13 @@ async def handle_message_transport(
     reply_ts = thread_ts or msg_ts
     session_key = canonical_key(reply_ts)
 
+    # Inbound channels-governance gate (off-loop), same as native handle_message:
+    # a ``channels`` policy that denies ``slack`` drops the message before any
+    # processing. Default build (no policy) permits — behavior unchanged.
+    if not await channel_inbound_permitted("slack"):
+        logger.info("slack inbound (transport) dropped: denied by channels governance policy")
+        return
+
     # ── Re-hydrate durable thread state FIRST (mirrors native ordering) ──
     # The per-thread agent/project overrides AND the durable incognito/temporary
     # privacy flags must be restored before ANY early path consults
@@ -118,9 +125,7 @@ async def handle_message_transport(
     # Entry marker: lets operators confirm the NEW transport path handled a
     # message (grep gateway.log for "transport_dispatch: handling"). Fires for
     # every message including the status/ping shortcuts below.
-    logger.info(
-        "transport_dispatch: handling message session=%s user=%s", session_key, user_id
-    )
+    logger.info("transport_dispatch: handling message session=%s user=%s", session_key, user_id)
 
     # ── Linked thread intercept: route to a linked dashboard slot if any ──
     # Shared with native handle_message so a thread linked via
@@ -218,7 +223,9 @@ async def handle_message_transport(
             else None
         )
         renderer = SlackRenderer(
-            slack, channel, reply_ts,
+            slack,
+            channel,
+            reply_ts,
             react_ts=msg_ts,
             reactions_enabled=reactions_enabled,
             show_thinking=show_thinking,
@@ -307,9 +314,7 @@ async def handle_message_transport(
             # Preserve native handle_message's auto_approve_subagent_spawn hook:
             # auto-approve spawn_run when the context builder's hook is enabled,
             # regardless of the interactive ladder.
-            auto_approve_tool=lambda title: _should_auto_approve_spawn(
-                context_builder, title
-            ),
+            auto_approve_tool=lambda title: _should_auto_approve_spawn(context_builder, title),
             # Per-session Trust (set via the Trust button) auto-approves all
             # subsequent tools for THIS session, mirroring native. Checked per
             # permission request so a mid-turn Trust click takes effect for the

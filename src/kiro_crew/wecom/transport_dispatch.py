@@ -31,7 +31,7 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.hooks import TOOL_AUTO_APPROVE, TOOL_DENY
 from kiro_crew.messaging.driver import APPROVAL_INTERACTIVE, TurnDriver
-from kiro_crew.messaging.identity import publish_turn_identity
+from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn_identity
 from kiro_crew.messaging.link import build_dm_session_key, seed_generation
 from kiro_crew.sel import sel
 from kiro_crew.wecom.client import new_stream_id
@@ -90,6 +90,12 @@ class WeComDispatcher:
     async def handle_message(self, inbound: "WeComInbound") -> None:
         """Drive one authorized inbound WeCom message through TurnDriver."""
         assert self.client is not None, "WeComDispatcher.client must be set"
+        # Inbound channels-governance gate (off-loop) — recheck per message so a
+        # host-profile deny added after connect stops dispatch without a restart
+        # (the startup gate only blocks CONNECTING). Silently drop on deny.
+        if not await channel_inbound_permitted("wecom"):
+            logger.info("wecom inbound dropped: denied by channels governance policy")
+            return
         userid = inbound.userid
         text = inbound.text
         logger.info("WeCom inbound from %s: %d chars", userid, len(text or ""))
@@ -110,8 +116,7 @@ class WeComDispatcher:
             # explicitly rather than silently record an inert link.
             await self.client.send_reply(
                 inbound.response_url,
-                "ℹ️ 本渠道回复绑定在收到的消息上,不支持从 dashboard 主动推送,"
-                "/link 暂不可用。",
+                "ℹ️ 本渠道回复绑定在收到的消息上,不支持从 dashboard 主动推送," "/link 暂不可用。",
             )
             return
 
@@ -219,19 +224,13 @@ class WeComDispatcher:
             # fall through to the except and re-record the successful turn). ──
             self.sessions.record_success(session_key)
             try:
-                await asyncio.to_thread(
-                    self._persist_turn, session_key, text, accumulated, is_new
-                )
+                await asyncio.to_thread(self._persist_turn, session_key, text, accumulated, is_new)
             except Exception:
-                logger.warning(
-                    "WeCom: persist_turn failed session=%s", session_key, exc_info=True
-                )
+                logger.warning("WeCom: persist_turn failed session=%s", session_key, exc_info=True)
             try:
                 await self._maybe_notice(inbound, session_key, provider)
             except Exception:
-                logger.warning(
-                    "WeCom: maybe_notice failed session=%s", session_key, exc_info=True
-                )
+                logger.warning("WeCom: maybe_notice failed session=%s", session_key, exc_info=True)
             try:
                 sel().log_api_access(
                     caller=f"wecom:{userid}",
@@ -347,9 +346,7 @@ class WeComDispatcher:
         except Exception:
             logger.debug("WeCom: notice bubble send failed", exc_info=True)
 
-    async def _maybe_notice(
-        self, inbound: "WeComInbound", session_key: str, provider: Any
-    ) -> None:
+    async def _maybe_notice(self, inbound: "WeComInbound", session_key: str, provider: Any) -> None:
         """Context-length handling, surfaced as a separate bubble post-turn.
 
         Soft threshold nudges the user to /compact or /new; hard threshold forces

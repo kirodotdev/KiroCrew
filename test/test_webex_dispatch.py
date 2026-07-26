@@ -201,7 +201,43 @@ def _inbound(text: str = "hello", email: str = _EMAIL) -> WebexInbound:
 # ------------------------------------------------------------------
 
 
+def _deny_webex_profile(monkeypatch, tmp_path):
+    import json
+
+    from kiro_crew.platform import governance_profiles as gp
+
+    pdir = tmp_path / "profiles"
+    pdir.mkdir(exist_ok=True)
+    monkeypatch.setattr(gp, "_PROFILES_DIR", pdir)
+    gp.reset_store()
+    (pdir / "host.json").write_text(
+        json.dumps(
+            {
+                "name": "host",
+                "bind": {"type": "surface", "id": "host"},
+                "channels": {"members": {"mode": "allow", "allow": ["slack"]}},
+            }
+        )
+    )
+
+
 class TestTurn:
+    @pytest.mark.asyncio
+    async def test_channels_deny_drops_inbound_message(self, tmp_path, monkeypatch) -> None:
+        # HIGH (GPT round-4 #2): a channels DENY must stop handle_message from
+        # driving a turn. Regression-locks the Webex inbound chokepoint.
+        from kiro_crew.platform import governance_profiles as gp
+
+        _deny_webex_profile(monkeypatch, tmp_path)
+        provider = FakeProvider([AcpEvent(kind=EVENT_COMPLETE)])
+        sessions = FakeSessions(provider)
+        d = _dispatcher(sessions, FakeCtx(), FakeClient())
+        try:
+            await d.handle_message(_inbound("hello"))
+            assert sessions.successes == []  # no turn ran
+        finally:
+            gp.reset_store()
+
     @pytest.mark.asyncio
     async def test_text_turn_bookkeeping(self) -> None:
         provider = FakeProvider(

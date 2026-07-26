@@ -4340,3 +4340,236 @@ class TestCountInFlightWork:
         undone.done.return_value = False
         orch._session_tasks = {"x": undone}
         assert orch._count_in_flight_work() == 2
+
+
+class TestChannelTransportStartGate:
+    """`_start_channel_transports` gates each non-Slack transport start on the
+    ``channels`` governance scope, using the same member ids as the send/receive
+    chokepoints. Clients are mocked — no real network connections are opened.
+    """
+
+    def _install_policy(self, policy_body):
+        import dataclasses
+
+        from kiro_crew.platform import context as ctx_mod
+        from kiro_crew.platform.bootstrap import build_default_context
+        from kiro_crew.platform.governance import parse_policy
+
+        base = build_default_context(KiroCrewConfig.load())
+        ceiling = parse_policy(policy_body) if policy_body is not None else None
+        ctx_mod.set_context(dataclasses.replace(base, governance=ceiling))
+
+    @staticmethod
+    def _enable_all_transports(orch):
+        # The start gate now evaluates governance ONLY for config-enabled
+        # transports (enabled-only eval), so a test that expects a transport to
+        # reach maybe_start_* must mark it enabled — a transport is credential-
+        # gated in real use anyway. Set the four flags the orchestrator would set
+        # from config so the governance decision (not an off switch) is what
+        # decides whether each transport starts.
+        for _m in ("wecom", "telegram", "discord", "webex"):
+            setattr(orch, f"_{_m}_enabled", True)
+
+    def _patch_starts(self, stack, *, discord_ret=None):
+        import contextlib as _cl  # local import; keeps module import block untouched
+
+        assert isinstance(stack, _cl.ExitStack)  # documents the contract
+        # slack.gateway imports the four maybe_start_* at module top (hoisted; no
+        # cycle), so patch the names bound IN the gateway module, not their source
+        # modules — patching the source would not affect the already-bound refs.
+        mocks = {}
+        mocks["wecom"] = stack.enter_context(
+            patch("kiro_crew.slack.gateway.maybe_start_wecom", new=AsyncMock())
+        )
+        mocks["telegram"] = stack.enter_context(
+            patch("kiro_crew.slack.gateway.maybe_start_telegram", new=AsyncMock())
+        )
+        mocks["discord"] = stack.enter_context(
+            patch(
+                "kiro_crew.slack.gateway.maybe_start_discord",
+                new=AsyncMock(return_value=discord_ret),
+            )
+        )
+        mocks["webex"] = stack.enter_context(
+            patch("kiro_crew.slack.gateway.maybe_start_webex", new=AsyncMock())
+        )
+        return mocks
+
+    def teardown_method(self):
+        from kiro_crew.platform import context as ctx_mod
+        from kiro_crew.platform import governance_profiles as gp
+
+        ctx_mod.reset_context()
+        gp.reset_store()
+
+    @pytest.mark.asyncio
+    async def test_denied_transport_is_skipped_and_client_stays_none(self):
+        import contextlib
+
+        # Policy allows only discord → telegram/wecom/webex must NOT start.
+        self._install_policy(
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "channels": {"members": {"mode": "allow", "allow": ["discord"]}},
+            }
+        )
+        orch = _make_orchestrator()
+        self._enable_all_transports(orch)
+        discord_client = MagicMock(name="discord_client")
+        with contextlib.ExitStack() as stack:
+            mocks = self._patch_starts(stack, discord_ret=discord_client)
+            await orch._start_channel_transports()
+
+        # Denied members: maybe_start_* never invoked, clients stay None.
+        mocks["wecom"].assert_not_awaited()
+        mocks["telegram"].assert_not_awaited()
+        mocks["webex"].assert_not_awaited()
+        assert orch._wecom_client is None
+        assert orch._telegram_client is None
+        assert orch._webex_client is None
+        # Allowed member: started, client wired.
+        mocks["discord"].assert_awaited_once()
+        assert orch._discord_client is discord_client
+
+    @pytest.mark.asyncio
+    async def test_no_policy_starts_every_transport_as_today(self):
+        import contextlib
+
+        # Default OSS build: no policy governing channels → all maybe_start_*
+        # invoked exactly as before (byte-identical default behavior).
+        self._install_policy(None)
+        orch = _make_orchestrator()
+        self._enable_all_transports(orch)
+        with contextlib.ExitStack() as stack:
+            mocks = self._patch_starts(stack)
+            await orch._start_channel_transports()
+
+        mocks["wecom"].assert_awaited_once()
+        mocks["telegram"].assert_awaited_once()
+        mocks["discord"].assert_awaited_once()
+        mocks["webex"].assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_host_profile_deny_skips_transport(self, tmp_path, monkeypatch):
+        import contextlib
+        import json
+
+        from kiro_crew.platform import governance_profiles as gp
+
+        # Policy ALLOWS telegram + discord, but a surface:host profile narrows to
+        # discord only → telegram must NOT start. This exercises the full
+        # _start_channel_transports path (through the executor) and proves the
+        # gate binds the host profile (session_key=HOST_SESSION_KEY); an empty key
+        # would classify to "unknown" and silently ignore this profile.
+        self._install_policy(
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "channels": {"members": {"mode": "allow", "allow": ["telegram", "discord"]}},
+            }
+        )
+        profiles_dir = tmp_path / "profiles"
+        profiles_dir.mkdir()
+        (profiles_dir / "host.json").write_text(
+            json.dumps(
+                {
+                    "name": "host",
+                    "bind": {"type": "surface", "id": "host"},
+                    "channels": {"members": {"mode": "allow", "allow": ["discord"]}},
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(gp, "_PROFILES_DIR", profiles_dir)
+        gp.reset_store()
+
+        orch = _make_orchestrator()
+        self._enable_all_transports(orch)
+        discord_client = MagicMock(name="discord_client")
+        with contextlib.ExitStack() as stack:
+            mocks = self._patch_starts(stack, discord_ret=discord_client)
+            await orch._start_channel_transports()
+
+        # Host profile narrows telegram out even though the policy allowed it.
+        mocks["telegram"].assert_not_awaited()
+        assert orch._telegram_client is None
+        # discord is in BOTH policy and profile → starts.
+        mocks["discord"].assert_awaited_once()
+        assert orch._discord_client is discord_client
+
+    @pytest.mark.asyncio
+    async def test_disabled_transport_not_evaluated_for_governance(self, monkeypatch):
+        import contextlib
+
+        from kiro_crew.slack import gateway as gw
+
+        # Enabled-only eval: a config-disabled transport is NEVER passed to the
+        # governance gate (avoids a spurious deny-SEL for a channel that would
+        # never connect anyway). Permissive policy, but only telegram enabled →
+        # the gate is queried for telegram alone; the other three never start.
+        self._install_policy(None)
+        orch = _make_orchestrator()
+        orch._telegram_enabled = True  # only telegram enabled
+        orch._wecom_enabled = False
+        orch._discord_enabled = False
+        orch._webex_enabled = False
+
+        queried = []
+        real_gate = gw._channel_transport_permitted
+
+        def _spy(member):
+            queried.append(member)
+            return real_gate(member)
+
+        monkeypatch.setattr(gw, "_channel_transport_permitted", _spy)
+        with contextlib.ExitStack() as stack:
+            mocks = self._patch_starts(stack)
+            await orch._start_channel_transports()
+
+        # Only the enabled transport was evaluated + started.
+        assert queried == ["telegram"]
+        mocks["telegram"].assert_awaited_once()
+        mocks["wecom"].assert_not_awaited()
+        mocks["discord"].assert_not_awaited()
+        mocks["webex"].assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_slack_connect_denied_by_policy_drops_socket_client(self):
+        # BLOCKING (GPT #593): Slack is a GOVERNED transport like every other
+        # channel. A `channels` policy that denies `slack` must stop it from
+        # CONNECTING — not merely drop its inbound messages — and must drop the
+        # socket client so nothing can reconnect it later.
+        self._install_policy(
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "channels": {"members": {"mode": "allow", "allow": ["discord"]}},
+            }
+        )
+        orch = _make_orchestrator()
+        socket_client = MagicMock(name="socket_client")
+        socket_client.connect = AsyncMock()
+        orch._socket_client = socket_client
+
+        connected = await orch._connect_slack()
+
+        assert connected is False, "a channels deny must stop the Slack connect"
+        socket_client.connect.assert_not_awaited()
+        assert orch._socket_client is None, "the denied socket client must be dropped"
+
+    @pytest.mark.asyncio
+    async def test_slack_connect_permitted_with_no_policy_connects_as_today(self):
+        # Default-build invariant: with no `channels` policy the Slack connect is
+        # byte-identical to today (the gate permits and the socket client connects).
+        self._install_policy(None)
+        orch = _make_orchestrator()
+        socket_client = MagicMock(name="socket_client")
+        socket_client.connect = AsyncMock()
+        orch._socket_client = socket_client
+
+        connected = await orch._connect_slack()
+
+        assert connected is True
+        socket_client.connect.assert_awaited_once()
+        assert orch._socket_client is socket_client

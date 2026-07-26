@@ -149,25 +149,27 @@ async def api_status(request: web.Request) -> web.Response:
         except Exception:
             owner_hash = "unknown"
     so_status = safety_override().status()
-    data.update({
-        "uptime_secs": int(uptime),
-        "messages_received": state.messages_received,
-        "cron": state.crons.status(),
-        "stats": Stats().snapshot(),
-        "stats_summary": Stats().summary(),
-        "update_progress": state._update_progress,
-        "version": kiro_crew.__version__,
-        "platform": sys.platform,
-        "yolo": so_status.active,
-        "yolo_active": so_status.active,
-        "yolo_expires_at": so_status.expires_at_iso or "",
-        "yolo_remaining_secs": so_status.remaining_secs,
-        "owner_id_hash": owner_hash,
-        "os_type": static_info.get("os", ""),
-        "arch": static_info.get("arch", ""),
-        "cpu_count": static_info.get("cpu_count", 0),
-        "mem_total_gb": static_info.get("mem_total_gb", 0),
-    })
+    data.update(
+        {
+            "uptime_secs": int(uptime),
+            "messages_received": state.messages_received,
+            "cron": state.crons.status(),
+            "stats": Stats().snapshot(),
+            "stats_summary": Stats().summary(),
+            "update_progress": state._update_progress,
+            "version": kiro_crew.__version__,
+            "platform": sys.platform,
+            "yolo": so_status.active,
+            "yolo_active": so_status.active,
+            "yolo_expires_at": so_status.expires_at_iso or "",
+            "yolo_remaining_secs": so_status.remaining_secs,
+            "owner_id_hash": owner_hash,
+            "os_type": static_info.get("os", ""),
+            "arch": static_info.get("arch", ""),
+            "cpu_count": static_info.get("cpu_count", 0),
+            "mem_total_gb": static_info.get("mem_total_gb", 0),
+        }
+    )
     # Frontend RUM config blob (PlatformContext telemetry).  The Default
     # TelemetryProvider returns None (RUM off), so the standalone status payload
     # is byte-for-byte unchanged and the SPA's RUM shim stays a no-op.  The
@@ -214,9 +216,7 @@ def _get_static_system_info() -> dict[str, object]:
     # Total memory (static) — cross-platform
     if sys.platform == "darwin":
         try:
-            out = (
-                subprocess.check_output([_SYSCTL, "-n", "hw.memsize"], timeout=2).decode().strip()
-            )
+            out = subprocess.check_output([_SYSCTL, "-n", "hw.memsize"], timeout=2).decode().strip()
             info["mem_total_gb"] = round(int(out) / (1024**3), 1)
         except Exception:
             pass
@@ -237,16 +237,14 @@ def _get_static_system_info() -> dict[str, object]:
 
 def _get_owner_hash(state: DashboardState) -> str:
     """Return a cached HMAC-SHA256 hash of the owner identity. Stored on state to avoid stale globals."""
-    cached = getattr(state, '_owner_hash', None)
+    cached = getattr(state, "_owner_hash", None)
     if cached is not None:
         return cached
     try:
         raw_owner = state.owner_id or f"{platform.node()}:{getpass.getuser()}"
     except (OSError, KeyError):
         raw_owner = f"{platform.node()}:unknown"
-    h = hmac.new(
-        _get_telemetry_salt(), raw_owner.encode(), hashlib.sha256
-    ).hexdigest()
+    h = hmac.new(_get_telemetry_salt(), raw_owner.encode(), hashlib.sha256).hexdigest()
     state._owner_hash = h
     return h
 
@@ -268,9 +266,7 @@ def _collect_system_metrics() -> dict[str, object]:
     # System-wide memory — cross-platform
     try:
         if sys.platform == "darwin":
-            out = (
-                subprocess.check_output([_SYSCTL, "-n", "hw.memsize"], timeout=2).decode().strip()
-            )
+            out = subprocess.check_output([_SYSCTL, "-n", "hw.memsize"], timeout=2).decode().strip()
             total_bytes = int(out)
             data["mem_total_gb"] = round(total_bytes / (1024**3), 1)
             vm = subprocess.check_output([_VM_STAT], timeout=2).decode()
@@ -561,3 +557,97 @@ async def api_compliance_yolo_status(request: web.Request) -> web.Response:
     """GET /api/admin/compliance/yolo-status — safety override governance status."""
     status = safety_override().status()
     return web.json_response(asdict(status))
+
+
+def _channel_members() -> tuple[str, ...]:
+    """Canonical ``channel_type`` ids for the messaging channels, derived from
+    each transport's ``channel_type`` class attribute — the single source of
+    truth — so this list can never drift from the transports themselves.
+    Imported here (off the event loop, inside the executor worker) so the
+    transport modules' own imports don't run on the aiohttp loop.
+    """
+    from kiro_crew.discord.transport import DiscordTransport
+    from kiro_crew.slack.transport import SlackTransport
+    from kiro_crew.telegram.transport import TelegramTransport
+    from kiro_crew.webex.transport import WebexTransport
+    from kiro_crew.wecom.transport import WeComTransport
+
+    return tuple(
+        t.channel_type
+        for t in (
+            SlackTransport,
+            DiscordTransport,
+            TelegramTransport,
+            WebexTransport,
+            WeComTransport,
+        )
+    )
+
+
+def _collect_channel_governance() -> dict[str, object]:
+    """Resolve the effective ``channels`` policy decision for every transport.
+
+    Returns ``{channel_type: true|false|null}`` — ``true`` permitted, ``false``
+    denied by policy, ``null`` when governance evaluation transiently FAILED (the
+    UI renders ``null`` as "policy status unavailable", never "Off by admin").
+
+    Runs in a thread-pool executor (``governance_permits`` may read profile
+    files from disk via the ProfileStore). ``session_key=HOST_SESSION_KEY``
+    binds the host surface, matching the messaging chokepoint
+    (``mcp_core._vet_channel_governance``) and the app-activation gate.
+
+    Byte-identical default: with NO policy governing ``channels`` (the standard
+    OSS build), ``governance_permits`` returns ``permitted=True`` for every
+    member, so this returns all-true and the Settings UI is unchanged.
+    """
+    from kiro_crew.platform.governance_profiles import (
+        GOVERNANCE_ERROR_REASON,
+        HOST_SESSION_KEY,
+        governance_permits,
+    )
+
+    result: dict[str, object] = {}
+    for member in _channel_members():
+        # fail_closed=True so a genuine governance-evaluation ERROR denies (agrees
+        # with the connect-time startup gate). But for the read-only DISPLAY we
+        # must distinguish a real POLICY deny (``false`` → "Off by admin") from a
+        # transient EVALUATION error (which fail-closed also renders as a denying
+        # Decision): mislabeling a transient failure as an explicit admin denial is
+        # misleading. ``governance_permits`` marks an eval-error degrade with
+        # ``rule == "default"`` AND a ``GOVERNANCE_ERROR_REASON`` reason (a real deny
+        # carries a governing rule/layer), so we surface those as ``null`` → the UI
+        # shows "policy status unavailable", not "Off by admin". Matching the shared
+        # constant (not a hand-copied string) keeps this in lockstep with the reason
+        # the evaluator emits. Byte-identical on the no-policy default build: every
+        # member is a permitting Decision → ``true``.
+        decision = governance_permits(
+            "channels", member, session_key=HOST_SESSION_KEY, fail_closed=True
+        )
+        permitted = bool(getattr(decision, "permitted", False))
+        reason = str(getattr(decision, "reason", "") or "")
+        if not permitted and GOVERNANCE_ERROR_REASON in reason:
+            result[member] = None  # transient eval failure → "unavailable", not a deny
+        else:
+            result[member] = permitted
+    return result
+
+
+async def api_governance_channels(request: web.Request) -> web.Response:
+    """GET /api/governance/channels — effective per-channel policy decision.
+
+    Returns a ``{channel_type: true|false|null}`` map (``true`` permitted,
+    ``false`` denied by the ``channels`` governance policy, ``null`` governance
+    evaluation transiently failed → "unavailable"). The Settings UI greys out and
+    disables a policy-denied channel tab ("Off by admin") rather than hiding it.
+    Read-only; behind the same dashboard token auth as the sibling GETs.
+
+    Offloaded to the dedicated ``governance_executor`` (``mc-gov``), NOT the shared
+    default executor: this walks the ProfileStore (filesystem) and is browser-
+    triggerable, so several concurrent requests on a slow profile FS would
+    otherwise pin the default-pool workers the event loop shares for DNS.
+    """
+    from kiro_crew.executors import governance_executor
+
+    loop = asyncio.get_running_loop()
+    data = await loop.run_in_executor(governance_executor(), _collect_channel_governance)
+    return web.json_response(data)

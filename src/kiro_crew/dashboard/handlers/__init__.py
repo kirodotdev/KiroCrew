@@ -15,6 +15,7 @@ from typing import Any
 from kiro_crew.config.loader import KiroCrewConfig, config_dir, config_path  # noqa: F401
 from kiro_crew.dashboard.handlers_system import (  # noqa: F401
     api_compliance_yolo_status,
+    api_governance_channels,
     api_sso_ttl,
     api_status,
     api_system,
@@ -525,4 +526,5 @@ from kiro_crew.dashboard.handlers.security import (  # noqa: E402, F401
     api_denied_command_user_toggle,
     api_denied_commands_disable_all,
     api_denied_commands_list,
+    api_governance_policy,
 )

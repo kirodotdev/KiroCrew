@@ -23,10 +23,12 @@ vi.mock('../../api/client', () => ({
     addUserDeniedCommand: vi.fn(),
     toggleUserDeniedCommand: vi.fn(),
     deleteUserDeniedCommand: vi.fn(),
+    governancePolicy: vi.fn(),
   },
 }))
 
 import { api } from '../../api/client'
+import type { GovernancePolicyData } from '../../api/client'
 import { SecurityPanel } from './SecurityPanel'
 
 const PINNED_DESC = 'Blocks EC2 instance termination'
@@ -79,6 +81,42 @@ async function renderPanel(data: DeniedCommandsData = snapshot()) {
   return utils
 }
 
+/** No-policy (standalone) governance snapshot: every scope ungoverned. */
+function govNoPolicy(overrides: Partial<GovernancePolicyData> = {}): GovernancePolicyData {
+  return {
+    version: null,
+    has_policy: false,
+    profile: null,
+    unavailable: false,
+    scopes: [
+      { scope: 'tools', archetype: 'ruleset', governed: false, source: 'ungoverned', detail: {} },
+      { scope: 'commands', archetype: 'ruleset', governed: false, source: 'ungoverned', detail: {} },
+    ],
+    ...overrides,
+  }
+}
+
+/** A governed governance snapshot exercising every archetype + a profile. */
+function govGoverned(overrides: Partial<GovernancePolicyData> = {}): GovernancePolicyData {
+  return {
+    version: 1,
+    has_policy: true,
+    profile: 'host-tight',
+    unavailable: false,
+    scopes: [
+      { scope: 'tools', archetype: 'ruleset', governed: true, source: 'policy+profile', detail: { mode: 'intersect', components: [{ mode: 'allow', allow_count: 3, deny_count: 0 }, { mode: 'allow', allow_count: 1, deny_count: 0 }] } },
+      { scope: 'commands', archetype: 'ruleset', governed: true, source: 'policy', detail: { mode: 'deny', allow_count: 0, deny_count: 2 } },
+      { scope: 'mcp', archetype: 'ruleset', governed: false, source: 'ungoverned', detail: {} },
+      { scope: 'channels', archetype: 'scopedmap', governed: true, source: 'policy', detail: { members: { mode: 'allow', allow_count: 1, deny_count: 0 }, posture: { slack: { allowed_enterprise_ids: { mode: 'allow', allow_count: 1, deny_count: 0 } } } } },
+      { scope: 'sandbox.min_level', archetype: 'ordinal', governed: true, source: 'policy', detail: { scale: 'sandbox', floor: 'cc' } },
+      { scope: 'capabilities.cron', archetype: 'capability', governed: true, source: 'policy', detail: { enabled: false, inner: {} } },
+      { scope: 'capabilities.spawn', archetype: 'capability', governed: true, source: 'policy', detail: { enabled: true, inner: { agents: { mode: 'allow', allow_count: 1, deny_count: 0 } } } },
+      { scope: 'capabilities.messaging', archetype: 'capability', governed: false, source: 'ungoverned', detail: {} },
+    ],
+    ...overrides,
+  }
+}
+
 describe('SecurityPanel — denied commands', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -87,6 +125,7 @@ describe('SecurityPanel — denied commands', () => {
     ;(api.addUserDeniedCommand as ReturnType<typeof vi.fn>).mockResolvedValue(snapshot())
     ;(api.toggleUserDeniedCommand as ReturnType<typeof vi.fn>).mockResolvedValue(snapshot())
     ;(api.deleteUserDeniedCommand as ReturnType<typeof vi.fn>).mockResolvedValue(snapshot())
+    ;(api.governancePolicy as ReturnType<typeof vi.fn>).mockResolvedValue(govNoPolicy())
   })
 
   it('toggling a built-in OFF opens the confirm modal and only mutates after ack', async () => {
@@ -225,5 +264,61 @@ describe('SecurityPanel — denied commands', () => {
     const showButtons = screen.getAllByLabelText('Show pattern')
     fireEvent.click(showButtons[0])
     expect(screen.getByText('aws.*cloudformation.*delete-stack.*')).toBeInTheDocument()
+  })
+})
+
+describe('SecurityPanel — governance policy viewer', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(api.deniedCommands as ReturnType<typeof vi.fn>).mockResolvedValue(snapshot())
+  })
+
+  it('shows the standalone "no enterprise policy" state when has_policy is false', async () => {
+    ;(api.governancePolicy as ReturnType<typeof vi.fn>).mockResolvedValue(govNoPolicy())
+    renderWithProviders(<SecurityPanel />)
+
+    expect(await screen.findByText('No enterprise policy in effect')).toBeInTheDocument()
+    expect(
+      screen.getByText(/No policy or host profile restricts the host surface \(standalone mode\)/),
+    ).toBeInTheDocument()
+    // No governed rows are rendered in standalone mode.
+    expect(screen.queryByText('policy ∩ profile')).not.toBeInTheDocument()
+  })
+
+  it('renders governed + ungoverned rows with effective state and source', async () => {
+    ;(api.governancePolicy as ReturnType<typeof vi.fn>).mockResolvedValue(govGoverned())
+    renderWithProviders(<SecurityPanel />)
+
+    // Policy + profile badges.
+    expect(await screen.findByText('Policy v1')).toBeInTheDocument()
+    expect(screen.getByText('Profile: host-tight')).toBeInTheDocument()
+
+    // POSTURE labels only — counts, never rule contents (the ceiling the agent
+    // is fenced from). Ruleset (deny) → "Block-list · N rules"; capability off →
+    // "Disabled by policy"; ordinal → "Floor: cc"; capability on → inner count.
+    expect(screen.getByText(/Block-list · 2 rules/)).toBeInTheDocument()
+    expect(screen.getByText('Disabled by policy')).toBeInTheDocument()
+    expect(screen.getByText('Floor: cc')).toBeInTheDocument()
+    expect(screen.getByText(/Enabled · agents: Allow-list · 1 rule/)).toBeInTheDocument()
+    // The raw deny pattern must never appear in the DOM.
+    expect(screen.queryByText(/git push\*/)).not.toBeInTheDocument()
+
+    // policy+profile intersection badge is shown for the composed tools scope.
+    expect(screen.getAllByText('policy ∩ profile').length).toBeGreaterThan(0)
+    // A source badge is shown for EVERY governed source, not only the composed
+    // case — a policy-only scope (e.g. commands) shows a "policy" badge.
+    expect(screen.getAllByText('policy').length).toBeGreaterThan(0)
+
+    // An ungoverned scope (messaging) shows the muted "Not restricted".
+    expect(screen.getAllByText('Not restricted').length).toBeGreaterThan(0)
+  })
+
+  it('shows a soft notice when governance resolution is unavailable', async () => {
+    ;(api.governancePolicy as ReturnType<typeof vi.fn>).mockResolvedValue(
+      govNoPolicy({ unavailable: true }),
+    )
+    renderWithProviders(<SecurityPanel />)
+
+    expect(await screen.findByText(/Governance status is temporarily unavailable/)).toBeInTheDocument()
   })
 })

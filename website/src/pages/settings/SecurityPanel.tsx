@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { ShieldCheck, ShieldAlert, Lock, Eye, EyeOff, FileWarning, Terminal, Globe, Fingerprint, KeyRound, ScanLine, Layers, AlertTriangle, CheckCircle2, ExternalLink, ChevronRight, ChevronDown, Plus, Trash2 } from 'lucide-react'
+import { ShieldCheck, ShieldAlert, Lock, Eye, EyeOff, FileWarning, Terminal, Globe, Fingerprint, KeyRound, ScanLine, Layers, AlertTriangle, CheckCircle2, ExternalLink, ChevronRight, ChevronDown, Plus, Trash2, Gavel, Building2, Gauge, ToggleRight, MessageSquare, ListChecks } from 'lucide-react'
 import { useAppSelector } from '../../store'
 import { Badge, Btn, Input, Toggle, Checkbox } from '../../components/ui'
 import { SettingsSection, SettingsCard } from '../../components/settings'
 import Modal from '../../components/Modal'
 import InfoTip from '../../components/InfoTip'
-import { api, type DeniedCommandsData, type DeniedCommandRule, type DeniedUserRule } from '../../api/client'
+import { api, type DeniedCommandsData, type DeniedCommandRule, type DeniedUserRule, type GovernancePolicyData, type GovernanceScope, type GovernanceScopeDetail } from '../../api/client'
 
 /* ── Security feature registry (static — derived from security-deep-dive.md) ── */
 
@@ -243,6 +243,246 @@ function AddDenyInput({ onAdd, busy }: { onAdd: (pattern: string) => void; busy:
   )
 }
 
+/* ── Governance Policy viewer (read-only effective ceiling) ── */
+
+/** Human-readable scope name, e.g. "capabilities.cron" → "Cron",
+ *  "filesystem.read" → "Filesystem read", "sandbox.min_level" → "Sandbox". */
+function scopeLabel(scope: string): string {
+  const SPECIAL: Record<string, string> = {
+    mcp: 'MCP servers',
+    'filesystem.read': 'Filesystem read',
+    'filesystem.write': 'Filesystem write',
+    'network.egress': 'Network egress',
+    'sandbox.min_level': 'Sandbox level',
+    approval_mode: 'Tool approval',
+    'capabilities.memory_writes': 'Memory writes',
+    'capabilities.script_hooks': 'Script hooks',
+    'capabilities.theme_persona': 'Theme persona',
+    'capabilities.theme_install': 'Theme install',
+  }
+  if (SPECIAL[scope]) return SPECIAL[scope]
+  const leaf = scope.includes('.') ? scope.slice(scope.indexOf('.') + 1) : scope
+  return leaf.charAt(0).toUpperCase() + leaf.slice(1)
+}
+
+/** Pluralize a count with its noun, e.g. 3 → "3 rules", 1 → "1 rule". */
+function nRules(n: number): string {
+  return `${n} ${n === 1 ? 'rule' : 'rules'}`
+}
+
+/** Short human label for one governed ruleset (or a composed intersection).
+ *  Works off COUNTS only — the endpoint never sends rule contents to the browser
+ *  (they are the security ceiling the agent is fenced from), so the viewer shows
+ *  posture: the mode and how many rules are in effect, not which. */
+function rulesetLabel(d: GovernanceScopeDetail): string {
+  if (d.mode === 'intersect') {
+    return (d.components ?? []).map(rulesetLabel).join(' ∩ ')
+  }
+  if (d.mode === 'allow') {
+    return (d.allow_count ?? 0) === 0 ? 'Nothing allowed' : `Allow-list · ${nRules(d.allow_count ?? 0)}`
+  }
+  if (d.mode === 'deny') {
+    return (d.deny_count ?? 0) === 0 ? 'All allowed' : `Block-list · ${nRules(d.deny_count ?? 0)}`
+  }
+  return ''
+}
+
+/** Compact human label for a scope's EFFECTIVE state, by archetype. */
+function effectiveLabel(row: GovernanceScope): string {
+  if (!row.governed) return 'Not restricted'
+  const d = row.detail
+  switch (row.archetype) {
+    case 'ruleset':
+      return rulesetLabel(d)
+    case 'ordinal':
+      return `Floor: ${d.floor ?? '?'}`
+    case 'capability': {
+      if (!d.enabled) return 'Disabled by policy'
+      const inner = Object.entries(d.inner ?? {})
+      if (inner.length === 0) return 'Enabled'
+      // Use rulesetLabel (not the allow-count alone) so a deny-mode inner ruleset
+      // reads as a block-list, not a misleading "none".
+      return `Enabled · ${inner.map(([k, v]) => `${k}: ${rulesetLabel(v)}`).join('; ')}`
+    }
+    case 'scopedmap': {
+      const members = d.members ? rulesetLabel(d.members) : ''
+      const postureN = Object.keys(d.posture ?? {}).length
+      return postureN > 0 ? `${members} · posture pinned` : members
+    }
+    default:
+      return ''
+  }
+}
+
+/** Plane grouping for the viewer — a clean split by governed surface. */
+interface GovPlane {
+  key: string
+  title: string
+  icon: React.ReactNode
+  scopes: string[]
+}
+const GOV_PLANES: GovPlane[] = [
+  { key: 'access', title: 'Tools & Commands', icon: <Terminal size={13} />, scopes: ['tools', 'mcp', 'apps', 'commands'] },
+  { key: 'io', title: 'Filesystem & Network', icon: <Globe size={13} />, scopes: ['filesystem.read', 'filesystem.write', 'network.egress'] },
+  { key: 'channels', title: 'Messaging Channels', icon: <MessageSquare size={13} />, scopes: ['channels'] },
+  { key: 'modes', title: 'Enforcement Modes', icon: <Gauge size={13} />, scopes: ['approval_mode', 'sandbox.min_level'] },
+  { key: 'capabilities', title: 'Capabilities', icon: <ToggleRight size={13} />, scopes: [] /* catch-all: every capabilities.* */ },
+  // Catch-all: any scope a future release (or the companion) registers that
+  // matches none of the planes above and is not a capabilities.* leaf. Without
+  // it, such a scope would be silently omitted, so the "all scopes" claim would
+  // be false. Empty (hidden) on today's build.
+  { key: 'other', title: 'Other governed scopes', icon: <ShieldCheck size={13} />, scopes: [] },
+]
+
+/** Short badge naming WHERE a governed scope's ceiling comes from. Rendered for
+ *  every governed row (not just the composed case) so the viewer's source-
+ *  reporting is complete: policy-only, profile-only, or the intersection. */
+function sourceBadgeLabel(source: GovernanceScope['source']): string {
+  switch (source) {
+    case 'policy+profile':
+      return 'policy ∩ profile'
+    case 'profile':
+      return 'profile'
+    case 'policy':
+      return 'policy'
+    default:
+      return source
+  }
+}
+
+/** A single read-only governance scope row. */
+function GovernanceRow({ row }: { row: GovernanceScope }) {
+  const label = effectiveLabel(row)
+  return (
+    <div className="flex items-center justify-between py-2 gap-3">
+      <div className="flex items-center gap-2 min-w-0 shrink">
+        {row.governed
+          ? <Lock size={12} className="lucide-inline shrink-0 text-muted" />
+          : <span className="shrink-0 w-3" />}
+        <span className={`text-[13px] font-semibold truncate ${row.governed ? 'text-text' : 'text-muted'}`}>{scopeLabel(row.scope)}</span>
+        {row.governed && <Badge variant="muted">{sourceBadgeLabel(row.source)}</Badge>}
+      </div>
+      <div className="flex items-center gap-1.5 min-w-0">
+        {row.governed ? (
+          <>
+            {/* min-w-0 + truncate so a long posture value shrinks/ellipsizes on
+                narrow (mobile) widths rather than overflowing; the full value
+                stays available via the title tooltip. */}
+            <span className="text-[12px] text-text-strong text-right truncate" title={label}>{label}</span>
+            <InfoTip text={PINNED_TOOLTIP} />
+          </>
+        ) : (
+          <span className="text-[12px] text-muted italic shrink-0">Not restricted</span>
+        )}
+      </div>
+    </div>
+  )
+}
+
+/** Read-only viewer: the effective governance ceiling across every scope. */
+function GovernancePolicyViewer() {
+  const { data, isLoading, isError } = useQuery<GovernancePolicyData>({
+    queryKey: ['governance-policy'],
+    queryFn: api.governancePolicy,
+    staleTime: 60_000,
+    // The effective ceiling includes the Level-2 host PROFILE, which hot-reloads
+    // at runtime — so poll modestly to keep an open Security page from showing a
+    // stale ceiling after an operator edits a profile. (Level-1 policy is
+    // boot-frozen, but the intersection shown here can still change with a
+    // profile edit.)
+    refetchInterval: 30_000,
+  })
+  // A failed fetch (data === undefined) must NOT read as "No enterprise policy in
+  // effect" — that would tell an operator their ceiling is off when it may well
+  // be on. Treat a query error as the same soft "temporarily unavailable" state
+  // the backend returns via `unavailable`. Enforcement is server-side and
+  // unaffected either way; this only governs what the viewer claims.
+  const unavailable = isError || data?.unavailable
+
+  const byScope = useMemo(() => {
+    const m = new Map<string, GovernanceScope>()
+    for (const s of data?.scopes ?? []) m.set(s.scope, s)
+    return m
+  }, [data])
+
+  // Assign each scope to its plane; the Capabilities plane catches every
+  // capabilities.* scope, and the "Other governed scopes" plane catches anything
+  // matched by no explicit plane (e.g. a companion-registered scope) so the
+  // "all scopes" claim can never silently drop a row.
+  const planeRows = useMemo(() => {
+    const explicit = new Set(GOV_PLANES.flatMap(p => p.scopes))
+    const all = data?.scopes ?? []
+    return GOV_PLANES.map(plane => {
+      let rows: GovernanceScope[]
+      if (plane.key === 'capabilities') {
+        rows = all.filter(s => s.scope.startsWith('capabilities.'))
+      } else if (plane.key === 'other') {
+        rows = all.filter(s => !explicit.has(s.scope) && !s.scope.startsWith('capabilities.'))
+      } else {
+        rows = plane.scopes.map(sc => byScope.get(sc)).filter((s): s is GovernanceScope => !!s)
+      }
+      return { plane, rows }
+    })
+  }, [data, byScope])
+
+  return (
+    <SettingsSection title="Governance Policy">
+      <SettingsCard>
+        <div className="flex items-start gap-3 pb-1">
+          <div className="mt-0.5 shrink-0 w-7 h-7 rounded-md bg-accent-subtle flex items-center justify-center text-accent">
+            <Gavel size={14} className="lucide-inline" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="text-[13px] font-semibold text-text-strong">Effective security ceiling</div>
+            <div className="text-[12px] text-muted mt-0.5 leading-relaxed">
+              The strictest boundary in effect for each governed scope on the <strong>host surface</strong>, resolved as your organization's policy intersected with the host profile. Narrower profiles bound to a specific surface, app, or task (cron, Slack, subagents) can tighten a scope further at runtime. Read-only — the ceiling is authored in <code className="font-mono text-[11px]">security_policy.json</code> and cannot be changed here.
+            </div>
+          </div>
+        </div>
+
+        {isLoading ? (
+          <div className="text-[12px] text-muted py-2">Loading governance policy…</div>
+        ) : unavailable ? (
+          <div className="flex items-start gap-2.5 py-2 mt-1">
+            <AlertTriangle size={14} className="lucide-inline text-warn shrink-0 mt-0.5" />
+            <span className="text-[12px] text-muted leading-relaxed">Governance status is temporarily unavailable. Enforcement is unaffected — this view could not resolve the ceiling for display.</span>
+          </div>
+        ) : !data?.has_policy && !data?.profile ? (
+          <div className="flex items-start gap-2.5 py-3 mt-1 rounded-md bg-bg-elevated border border-border px-3">
+            <ShieldCheck size={16} className="lucide-inline text-ok shrink-0 mt-0.5" />
+            <div>
+              <div className="text-[13px] font-semibold text-text">No enterprise policy in effect</div>
+              <div className="text-[12px] text-muted mt-0.5 leading-relaxed">No policy or host profile restricts the host surface (standalone mode). Narrower profiles bound to a specific surface, app, or task may still apply elsewhere. To enforce a ceiling, author <code className="font-mono text-[11px]">~/.kiro/crew/security_policy.json</code> and per-surface <code className="font-mono text-[11px]">profiles/*.json</code>.</div>
+            </div>
+          </div>
+        ) : (
+          <>
+            <div className="flex items-center gap-2 mt-1 mb-1 flex-wrap">
+              {data?.has_policy && (
+                <Badge variant="aim"><Building2 size={11} className="lucide-inline" /> Policy v{data.version ?? '?'}</Badge>
+              )}
+              {data?.profile && (
+                <Badge variant="muted"><ListChecks size={11} className="lucide-inline" /> Profile: {data.profile}</Badge>
+              )}
+            </div>
+            {planeRows.map(({ plane, rows }) => rows.length === 0 ? null : (
+              <div key={plane.key} className="border-t border-border first:border-t-0 pt-1.5 mt-1.5 first:mt-0 first:pt-0">
+                <div className="flex items-center gap-1.5 py-1">
+                  <span className="text-muted">{plane.icon}</span>
+                  <span className="text-[11px] font-semibold uppercase tracking-[.04em] text-muted">{plane.title}</span>
+                </div>
+                <div className="divide-y divide-border">
+                  {rows.map(row => <GovernanceRow key={row.scope} row={row} />)}
+                </div>
+              </div>
+            ))}
+          </>
+        )}
+      </SettingsCard>
+    </SettingsSection>
+  )
+}
+
 /* ── Confirm modal target ── */
 type ConfirmTarget =
   | { kind: 'builtin'; id: string; description: string }
@@ -373,6 +613,9 @@ export function SecurityPanel() {
           />
         </SettingsCard>
       </SettingsSection>
+
+      {/* ── Governance Policy (read-only effective ceiling) ── */}
+      <GovernancePolicyViewer />
 
       {/* ── Denied Commands ── */}
       <SettingsSection title="Denied Commands">

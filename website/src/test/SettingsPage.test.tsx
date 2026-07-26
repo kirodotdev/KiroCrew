@@ -44,6 +44,11 @@ vi.mock('../api/client', () => ({
     getTelegramConfig: vi.fn().mockResolvedValue({ connected: false, configured: false }),
     getWebexConfig: vi.fn().mockResolvedValue({ connected: false, configured: false }),
     getWeComConfig: vi.fn().mockResolvedValue({ connected: false, configured: false }),
+    // ChannelsPanel gates each channel on the `channels` governance policy;
+    // all-permitted default so the remap tests see the editable panel render.
+    getGovernanceChannels: vi.fn().mockResolvedValue({
+      slack: true, discord: true, telegram: true, webex: true, wecom: true,
+    }),
   },
 }))
 

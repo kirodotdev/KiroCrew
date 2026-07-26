@@ -31,7 +31,7 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.hooks import TOOL_AUTO_APPROVE, TOOL_DENY
 from kiro_crew.messaging.driver import APPROVAL_INTERACTIVE, TurnDriver
-from kiro_crew.messaging.identity import publish_turn_identity
+from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn_identity
 from kiro_crew.messaging.link import build_dm_session_key, seed_generation
 from kiro_crew.sel import sel
 from kiro_crew.webex.commands import HELP_TEXT, ConversationState, parse_command
@@ -87,6 +87,12 @@ class WebexDispatcher:
     async def handle_message(self, inbound: "WebexInbound") -> None:
         """Drive one authorized inbound Webex message through TurnDriver."""
         assert self.client is not None, "WebexDispatcher.client must be set"
+        # Inbound channels-governance gate (off-loop) — recheck per message so a
+        # host-profile deny added after connect stops dispatch without a restart
+        # (the startup gate only blocks CONNECTING). Silently drop on deny.
+        if not await channel_inbound_permitted("webex"):
+            logger.info("webex inbound dropped: denied by channels governance policy")
+            return
         email = inbound.person_email
         room_id = inbound.room_id
         text = inbound.text
@@ -204,9 +210,7 @@ class WebexDispatcher:
             # fall through to the except and re-record the successful turn). ──
             self.sessions.record_success(session_key)
             try:
-                await asyncio.to_thread(
-                    self._persist_turn, session_key, text, accumulated, is_new
-                )
+                await asyncio.to_thread(self._persist_turn, session_key, text, accumulated, is_new)
             except Exception:
                 logger.warning("Webex: persist_turn failed session=%s", session_key, exc_info=True)
             try:

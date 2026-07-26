@@ -493,6 +493,415 @@ class TestChannelsGate:
         assert mcp_core._vet_channel_governance("cli_chat", "slack") is None
 
 
+# ── channels per-transport STARTUP gate (slack/gateway) ──
+class TestChannelTransportStartGate:
+    """The transport-start gate shares the ``channels`` scope + member ids with
+    the send/receive chokepoints, so one policy governs a transport everywhere.
+    """
+
+    def test_denied_member_not_permitted_to_start(self):
+        # Only discord is permitted; the others are denied → skip their start.
+        _install(
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "channels": {"members": {"mode": "allow", "allow": ["discord"]}},
+            }
+        )
+        from kiro_crew.slack.gateway import _channel_transport_permitted
+
+        assert _channel_transport_permitted("telegram") is False
+        assert _channel_transport_permitted("webex") is False
+        assert _channel_transport_permitted("wecom") is False
+        # The single allowed member still starts.
+        assert _channel_transport_permitted("discord") is True
+
+    def test_allowed_member_permitted_to_start(self):
+        _install(
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "channels": {"members": {"mode": "allow", "allow": ["telegram", "discord"]}},
+            }
+        )
+        from kiro_crew.slack.gateway import _channel_transport_permitted
+
+        assert _channel_transport_permitted("telegram") is True
+        assert _channel_transport_permitted("discord") is True
+
+    def test_deny_mode_blocks_named_member_only(self):
+        # deny-mode: everything permitted EXCEPT the named member.
+        _install(
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "channels": {"members": {"mode": "deny", "deny": ["telegram"]}},
+            }
+        )
+        from kiro_crew.slack.gateway import _channel_transport_permitted
+
+        assert _channel_transport_permitted("telegram") is False
+        assert _channel_transport_permitted("discord") is True
+        assert _channel_transport_permitted("wecom") is True
+
+    def test_ungoverned_starts_as_today(self):
+        # Default OSS build: no policy governing channels → byte-identical start.
+        _install(None)
+        from kiro_crew.slack.gateway import _channel_transport_permitted
+
+        for member in ("wecom", "telegram", "discord", "webex"):
+            assert _channel_transport_permitted(member) is True
+
+    def test_policy_without_channels_scope_starts_all(self):
+        # A policy present but not governing ``channels`` → every transport starts.
+        _install({"version": 1, "boot": {"fail_closed": True}})
+        from kiro_crew.slack.gateway import _channel_transport_permitted
+
+        for member in ("wecom", "telegram", "discord", "webex"):
+            assert _channel_transport_permitted(member) is True
+
+    def test_platform_composition_error_propagates(self, monkeypatch):
+        # Fail-closed: a broken CPP composition must NOT degrade to permit here.
+        # gateway imports governance_permits at module top (hoisted; no cycle),
+        # so patch the name bound IN the gateway module, not its source.
+        from kiro_crew.platform import context as _ctx
+        from kiro_crew.slack import gateway as gw
+
+        def _boom(*_a, **_k):
+            raise _ctx.PlatformCompositionError("composition broken")
+
+        monkeypatch.setattr(gw, "governance_permits", _boom)
+        with pytest.raises(_ctx.PlatformCompositionError):
+            gw._channel_transport_permitted("telegram")
+
+    def test_unexpected_error_fails_closed(self, monkeypatch):
+        # FAIL-CLOSED (deliberate divergence from apps/manager + mcp_core, which
+        # fail open): a transport is an externally-reachable network surface, so a
+        # non-composition governance error must DENY the connect (return False),
+        # not permit it. The degrade is audited failed_closed (see
+        # test_unexpected_error_emits_failed_closed_degrade_audit).
+        from kiro_crew.slack import gateway as gw
+
+        def _boom(*_a, **_k):
+            raise RuntimeError("unexpected governance failure")
+
+        monkeypatch.setattr(gw, "governance_permits", _boom)
+        assert gw._channel_transport_permitted("telegram") is False
+
+    def test_host_session_key_and_fail_closed_are_passed(self, monkeypatch):
+        # HIGH: the host chokepoint MUST resolve with session_key=HOST_SESSION_KEY
+        # (so a surface:host profile is honoured) AND fail_closed=True (network
+        # surface → deny-by-default on an internal governance error).
+        from kiro_crew.platform.governance import Decision
+        from kiro_crew.platform.governance_profiles import HOST_SESSION_KEY
+        from kiro_crew.slack import gateway as gw
+
+        seen = {}
+
+        def _capture(scope, member, **kwargs):
+            seen["scope"] = scope
+            seen["member"] = member
+            seen["session_key"] = kwargs.get("session_key")
+            seen["fail_closed"] = kwargs.get("fail_closed")
+            return Decision(True, "ok", rule="default")
+
+        monkeypatch.setattr(gw, "governance_permits", _capture)
+        assert gw._channel_transport_permitted("telegram") is True
+        assert seen["scope"] == "channels"
+        assert seen["member"] == "telegram"
+        assert seen["session_key"] == HOST_SESSION_KEY
+        assert seen["fail_closed"] is True
+
+    def test_host_profile_deny_skips_transport(self):
+        # Regression: policy ALLOWS telegram, but a surface:host profile denies
+        # it → the host chokepoint must skip telegram (profile ∩ policy, tightest
+        # wins). Proves session_key=HOST_SESSION_KEY actually binds the profile
+        # (an empty key would classify to "unknown" and never match this profile).
+        import json
+
+        _install(
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "channels": {"members": {"mode": "allow", "allow": ["telegram", "discord"]}},
+            }
+        )
+        from kiro_crew.slack.gateway import _channel_transport_permitted
+
+        # Write into the store's dir (the autouse _isolate fixture points
+        # gp._PROFILES_DIR at a tmp dir) and reset so the store re-reads it.
+        (gp._PROFILES_DIR / "host.json").write_text(
+            json.dumps(
+                {
+                    "name": "host",
+                    "bind": {"type": "surface", "id": "host"},
+                    "channels": {"members": {"mode": "allow", "allow": ["discord"]}},
+                }
+            ),
+            encoding="utf-8",
+        )
+        gp.reset_store()
+        # Policy allows telegram, but the host profile narrows to discord only.
+        assert _channel_transport_permitted("telegram") is False
+        assert _channel_transport_permitted("discord") is True
+
+    def test_denial_emits_governance_decision_sel(self, monkeypatch):
+        # HIGH: a policy deny must be audited by the CALLER via
+        # log_governance_decision (governance_permits audits only its own degrade,
+        # never a normal deny).
+        _install(
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "channels": {"members": {"mode": "allow", "allow": ["discord"]}},
+            }
+        )
+        from kiro_crew.platform.governance_profiles import HOST_SESSION_KEY
+        from kiro_crew.slack import gateway as gw
+
+        calls = []
+
+        class _FakeSel:
+            def log_governance_decision(self, **kwargs):
+                calls.append(kwargs)
+
+        monkeypatch.setattr(gw, "sel", lambda: _FakeSel())
+        assert gw._channel_transport_permitted("telegram") is False
+        assert len(calls) == 1
+        rec = calls[0]
+        assert rec["session_key"] == HOST_SESSION_KEY
+        assert rec["tool_name"] == "start_transport:telegram"
+        assert rec["scope"] == "channels"
+        assert rec["item"] == "telegram"
+        assert rec["outcome"] == "denied"
+
+    def test_unexpected_error_emits_failed_closed_degrade_audit(self, monkeypatch):
+        # HIGH: the fail-closed branch must record a governance-degraded SEL with
+        # failed_closed=True so the deny-on-error is auditable.
+        from kiro_crew.slack import gateway as gw
+
+        def _boom(*_a, **_k):
+            raise RuntimeError("unexpected governance failure")
+
+        degrades = []
+
+        def _capture_degrade(chokepoint, **kwargs):
+            degrades.append((chokepoint, kwargs))
+
+        monkeypatch.setattr(gw, "governance_permits", _boom)
+        monkeypatch.setattr(gw, "audit_governance_degraded", _capture_degrade)
+        assert gw._channel_transport_permitted("telegram") is False
+        assert len(degrades) == 1
+        chokepoint, kwargs = degrades[0]
+        assert chokepoint == "start_transport"
+        assert kwargs.get("scope") == "channels"
+        assert kwargs.get("failed_closed") is True
+
+    def test_governed_allow_audited_critical(self, monkeypatch):
+        # FIX B: a GOVERNED positive permit is audited (outcome="allowed") AND is
+        # audit-or-deny → written critical=True (synchronous + raising) so a
+        # persistence failure would deny the start.
+        _install(
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "channels": {"members": {"mode": "allow", "allow": ["telegram"]}},
+            }
+        )
+        from kiro_crew.platform.governance_profiles import HOST_SESSION_KEY
+        from kiro_crew.slack import gateway as gw
+
+        calls = []
+
+        class _FakeSel:
+            def log_governance_decision(self, **kwargs):
+                calls.append(kwargs)
+
+        monkeypatch.setattr(gw, "sel", lambda: _FakeSel())
+        assert gw._channel_transport_permitted("telegram") is True
+        assert len(calls) == 1
+        rec = calls[0]
+        assert rec["session_key"] == HOST_SESSION_KEY
+        assert rec["tool_name"] == "start_transport:telegram"
+        assert rec["scope"] == "channels"
+        assert rec["item"] == "telegram"
+        assert rec["outcome"] == "allowed"
+        # Governed allow → critical=True (audit-or-deny).
+        assert rec["critical"] is True
+
+    def test_ungoverned_allow_audited_best_effort(self, monkeypatch):
+        # FIX B/F1-2 split: an UNGOVERNED allow (no ceiling at all — the
+        # governance_permits early-return carries layer="") is audited best-effort
+        # (critical=False) so OSS transport availability never depends on SEL disk
+        # health. "governed" is decided by Decision.layer ∈ {policy,profile,both},
+        # not rule.
+        _install(None)  # no ceiling at all
+        from kiro_crew.slack import gateway as gw
+
+        calls = []
+
+        class _FakeSel:
+            def log_governance_decision(self, **kwargs):
+                calls.append(kwargs)
+
+        monkeypatch.setattr(gw, "sel", lambda: _FakeSel())
+        assert gw._channel_transport_permitted("telegram") is True
+        assert len(calls) == 1
+        assert calls[0]["outcome"] == "allowed"
+        # Ungoverned allow → best-effort (NOT critical).
+        assert calls[0]["critical"] is False
+
+    def test_policy_present_but_channels_ungoverned_is_best_effort(self, monkeypatch):
+        # F1-2 (the regression): a policy EXISTS but does NOT govern channels.
+        # resolve() returns rule="rule2-intersect" (which the old rule-based check
+        # mis-read as governed) but layer="default" — so this is UNGOVERNED and
+        # must be audited best-effort (critical=False), NOT critical. Otherwise an
+        # SEL failure would wrongly DENY an ungoverned transport.
+        _install(
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                # governs tools, NOT channels
+                "tools": {"mode": "deny", "deny": []},
+            }
+        )
+        from kiro_crew.slack import gateway as gw
+
+        calls = []
+
+        class _FakeSel:
+            def log_governance_decision(self, **kwargs):
+                calls.append(kwargs)
+
+        monkeypatch.setattr(gw, "sel", lambda: _FakeSel())
+        assert gw._channel_transport_permitted("telegram") is True
+        assert len(calls) == 1
+        rec = calls[0]
+        assert rec["outcome"] == "allowed"
+        assert rec["rule"] == "rule2-intersect"  # resolve() always uses this for a permit
+        assert rec["layer"] == "default"  # but layer says channels is NOT governed
+        assert rec["critical"] is False  # → best-effort, the F1-2 fix
+
+    def test_governed_allow_persistence_failure_denies_start(self, monkeypatch):
+        # Arbiter item 1: a GOVERNED allow whose CRITICAL SEL write fails at
+        # PERSISTENCE time (not a synchronous fake-raise — a real disk failure that
+        # only surfaces because critical=True makes the write synchronous+raising)
+        # → transport NOT started (return False), failed-closed degrade audited.
+        _install(
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "channels": {"members": {"mode": "allow", "allow": ["telegram"]}},
+            }
+        )
+        from kiro_crew.slack import gateway as gw
+
+        # Simulate the SEL layer: a persistence failure surfaces ONLY on the
+        # critical (synchronous+raising) path; the best-effort path swallows it
+        # (mirrors the real background writer with raise_on_error=False).
+        class _PersistSel:
+            def log_governance_decision(self, *, critical=False, **kwargs):
+                if critical:
+                    raise OSError("SEL file unwritable (disk full)")
+                # best-effort: swallow, as the background writer does
+
+        degrades = []
+        monkeypatch.setattr(gw, "sel", lambda: _PersistSel())
+        monkeypatch.setattr(
+            gw, "audit_governance_degraded", lambda *a, **k: degrades.append((a, k))
+        )
+        # Governed → critical write → persistence OSError → outer except → deny.
+        assert gw._channel_transport_permitted("telegram") is False
+        assert degrades and degrades[0][1].get("failed_closed") is True
+
+    def test_ungoverned_allow_audit_error_still_starts(self, monkeypatch):
+        # F3-1: even if the ungoverned best-effort audit itself RAISES (e.g. a
+        # corrupt HMAC key during sel() init/redaction, not just a swallowed
+        # enqueue), the transport must STILL start — OSS availability must not
+        # depend on SEL ill-health. The caller wraps the ungoverned allow-audit and
+        # returns True on error; only a GOVERNED (critical) audit failure denies.
+        _install(None)  # ungoverned → layer "" → not critical
+        from kiro_crew.slack import gateway as gw
+
+        class _BoomSel:
+            def log_governance_decision(self, **kwargs):
+                raise RuntimeError("SEL init/HMAC failure")
+
+        monkeypatch.setattr(gw, "sel", lambda: _BoomSel())
+        # Ungoverned allow + audit raises → best-effort → transport STILL starts.
+        assert gw._channel_transport_permitted("telegram") is True
+
+    def test_ungoverned_allow_composition_error_still_propagates(self, monkeypatch):
+        # F3-1 guard: even for an ungoverned allow, a PlatformCompositionError from
+        # the audit path must still propagate (never swallowed into a best-effort
+        # start) — a broken CPP composition is not an SEL-health issue.
+        from kiro_crew.platform.context import PlatformCompositionError
+        from kiro_crew.slack import gateway as gw
+
+        _install(None)
+
+        class _CompErrSel:
+            def log_governance_decision(self, **kwargs):
+                raise PlatformCompositionError("composition broken")
+
+        monkeypatch.setattr(gw, "sel", lambda: _CompErrSel())
+        with pytest.raises(PlatformCompositionError):
+            gw._channel_transport_permitted("telegram")
+
+    def test_governed_allow_real_sel_persistence_failure_denies(self, tmp_path, monkeypatch):
+        # F2-2 (end-to-end, REAL SecurityEventLog): prove the critical→log→
+        # synchronous-raise chain end to end. A GOVERNED transport start whose
+        # audit file CANNOT be written is DENIED. Uses a REAL SecurityEventLog in
+        # sync mode whose file append is forced to fail (monkeypatch os.open in the
+        # sel module to raise OSError). This proves production
+        # log_governance_decision forwards critical= to log(critical=True) →
+        # _flush_batch(raise_on_error=True) → raise; reverting that forwarding
+        # would make the write a swallowed enqueue and the transport would WRONGLY
+        # start, failing this test.
+        import dataclasses
+
+        from kiro_crew import sel as sel_mod
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.platform import context as ctx_mod
+        from kiro_crew.platform.bootstrap import build_default_context
+        from kiro_crew.platform.governance import parse_policy
+        from kiro_crew.slack import gateway as gw
+
+        # Fresh REAL sync SEL in a valid tmp dir (reset the singleton first).
+        sel_mod.SecurityEventLog._instance = None
+        sel_mod.SecurityEventLog._initialized = False
+        real_sel = sel_mod.SecurityEventLog(base_dir=tmp_path, sync=True)
+        sel_mod.SecurityEventLog._instance = None
+        sel_mod.SecurityEventLog._initialized = False
+
+        # Force the audit FILE APPEND to fail (a genuine persistence failure that
+        # only surfaces because critical=True makes _flush_batch raise).
+        def _boom_open(*_a, **_k):
+            raise OSError("SEL append failed (disk full)")
+
+        monkeypatch.setattr(sel_mod.os, "open", _boom_open)
+        monkeypatch.setattr(gw, "sel", lambda: real_sel)
+
+        # Governed ceiling that permits telegram → the gate audits critical=True.
+        base = build_default_context(KiroCrewConfig.load())
+        ceiling = parse_policy(
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "channels": {"members": {"mode": "allow", "allow": ["telegram"]}},
+            }
+        )
+        ctx_mod.set_context(dataclasses.replace(base, governance=ceiling))
+        try:
+            # Governed allow → critical audit → real sync write RAISES → outer
+            # except → transport DENIED.
+            assert gw._channel_transport_permitted("telegram") is False
+        finally:
+            ctx_mod.set_context(None)
+            sel_mod.SecurityEventLog._instance = None
+            sel_mod.SecurityEventLog._initialized = False
+
+
 # ── apps activation allowlist ──
 class TestAppsGate:
     def test_app_not_in_allowlist_blocked(self):

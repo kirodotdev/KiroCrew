@@ -227,6 +227,56 @@ export interface DeniedCommandsData {
   governance_locked: boolean
 }
 
+/** Serialized effective control for one governed scope (archetype-specific). */
+export interface GovernanceScopeDetail {
+  /** ruleset / scopedmap-members / capability-inner: the set MODE plus how many
+   *  entries it holds. POSTURE ONLY — the endpoint deliberately never sends the
+   *  rule CONTENTS (allow/deny globs, command patterns) to the browser, because
+   *  the dashboard is reachable by the agent's own Playwright tooling and the
+   *  exact deny patterns are the security ceiling the agent is fenced from. The
+   *  human operator reads the authoritative rules from the policy files directly. */
+  mode?: string
+  allow_count?: number
+  deny_count?: number
+  /** ruleset intersection (allow∩ that can't flatten): the composed halves. */
+  components?: GovernanceScopeDetail[]
+  /** ordinal: the enforced floor value + its strictness scale. */
+  scale?: string
+  floor?: string
+  /** capability: on/off + inner allowlists (e.g. spawn→agents). */
+  enabled?: boolean
+  inner?: Record<string, GovernanceScopeDetail>
+  /** scopedmap (channels): allowed members + per-member posture. */
+  members?: GovernanceScopeDetail
+  posture?: Record<string, Record<string, GovernanceScopeDetail>>
+}
+
+/** One row of the effective governance ceiling for a single scope. */
+export interface GovernanceScope {
+  scope: string
+  archetype: 'ruleset' | 'ordinal' | 'capability' | 'scopedmap'
+  /** false = neither policy nor profile governs it → the scope permits. */
+  governed: boolean
+  source: 'policy' | 'profile' | 'policy+profile' | 'ungoverned'
+  detail: GovernanceScopeDetail
+}
+
+/** GET /api/governance/policy — the read-only effective ceiling across scopes. */
+export interface GovernancePolicyData {
+  /** Policy schema version, or null when no enterprise ceiling is present. */
+  version: number | null
+  /** Whether a Level-1 enterprise ceiling is in effect at all. */
+  has_policy: boolean
+  /** The bound host-surface profile name, or null. */
+  profile: string | null
+  /** The surface this snapshot resolved (always "host"); narrower per-surface/
+   *  app/task profiles can tighten a scope further at runtime. */
+  surface?: string
+  /** True when governance resolution failed — the viewer shows a soft notice. */
+  unavailable: boolean
+  scopes: GovernanceScope[]
+}
+
 let _sessionExpiredShown = false
 
 /**
@@ -627,6 +677,9 @@ export const api = {
     patch('/api/security/denied-commands/user/' + encodeURIComponent(id), { enabled }).then(j) as Promise<DeniedCommandsData>,
   deleteUserDeniedCommand: (id: string) =>
     del('/api/security/denied-commands/user/' + encodeURIComponent(id)).then(j) as Promise<DeniedCommandsData>,
+  // Read-only governance policy viewer (Settings → Security). No write path —
+  // the enterprise ceiling is file-authored and un-editable via the UI.
+  governancePolicy: () => get('/api/governance/policy').then(j) as Promise<GovernancePolicyData>,
   suggestions: (force?: boolean) => fetch(`/api/suggestions${force ? '?force=1' : ''}`).then(j) as Promise<{ suggestions: string[]; generated_at: number; stale: boolean }>,
   branding: () => fetch('/api/dashboard/branding').then(j) as Promise<{ bot_name: string; avatar: string }>,
   // Instances (multi-instance management) — owner-only, gated by instances.enabled.
@@ -1345,6 +1398,13 @@ export const api = {
   // Webex integration config
   getWebexConfig: () => get('/api/webex/config').then(j) as Promise<WebexConfigData>,
   saveWebexConfig: (body: Partial<WebexConfigSave>) => put('/api/webex/config', body).then(j) as Promise<{ ok: boolean; restart_required: boolean; verify_warning: string }>,
+  // Effective per-channel governance policy decision: { slack: true, discord: false, ... }
+  // (true = permitted, false = denied by the `channels` policy, null = governance
+  // evaluation transiently failed → shown as "unavailable", NOT "Off by admin").
+  // All-true when no policy governs channels (standard build). Drives the Settings
+  // channel-tab "Off by admin" greying — the editable panel is replaced by a
+  // disabled/unavailable state.
+  getGovernanceChannels: () => get('/api/governance/channels').then(j) as Promise<Record<string, boolean | null>>,
 
   // Auto-research
   researchValidate: (body: object) => post("/api/apps/auto-research/validate", body).then(j),

@@ -61,7 +61,7 @@ from kiro_crew.hooks import (
     validate_file_path,
 )
 from kiro_crew.llm_helpers import record_interaction_event, save_conversation_turn
-from kiro_crew.messaging.identity import publish_turn_identity
+from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn_identity
 from kiro_crew.messaging.link import canonical_key
 from kiro_crew.platform import current_context
 from kiro_crew.providers.base import (
@@ -2489,6 +2489,17 @@ async def handle_message(
     # conversation log, and the per-thread override maps across two keys.
     reply_ts = thread_ts or msg_ts
     session_key = canonical_key(reply_ts)
+
+    # Inbound channels-governance gate (off-loop). Slack is a governed transport
+    # like the others: a ``channels`` policy that denies ``slack`` stops inbound
+    # dispatch on the very next message without a restart (the ProfileStore
+    # hot-reloads by mtime). Default OSS build (no policy) permits, so behavior is
+    # unchanged. Silently drop on deny — matching how an unauthorized user is
+    # ignored — before any hook/command/turn processing.
+    if not await channel_inbound_permitted("slack"):
+        logger.info("slack inbound dropped: denied by channels governance policy")
+        return
+
     _hydrate_thread_overrides(session_key, conversation_log)
     _hydrate_conv_flags(sessions, session_key)
 
@@ -3862,9 +3873,7 @@ async def _maybe_auto_title_slack(
         await slack.set_thread_title(channel, session_key, title)
         if conversation_log:
             try:
-                await asyncio.to_thread(
-                    conversation_log.set_title, session_key, title
-                )
+                await asyncio.to_thread(conversation_log.set_title, session_key, title)
             except Exception:
                 logger.debug(
                     "Failed to set conversation log title for %s", session_key, exc_info=True

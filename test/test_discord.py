@@ -632,9 +632,7 @@ class TestTransportReceive:
     @pytest.mark.asyncio
     async def test_allowlisted_thread_dispatches_for_allowed_user(self) -> None:
         t, dispatched, _ = self._transport(["u1"], ["t1"])
-        await t.receive(
-            DiscordInbound(channel_id="t1", user_id="u1", text="hello", guild_id="g1")
-        )
+        await t.receive(DiscordInbound(channel_id="t1", user_id="u1", text="hello", guild_id="g1"))
         assert len(dispatched) == 1
         assert dispatched[0].thread_id == "t1"
 
@@ -642,17 +640,13 @@ class TestTransportReceive:
     async def test_normal_channel_denied_even_if_id_is_allowlisted(self) -> None:
         t, dispatched, client = self._transport(["u1"], ["c1"])
         client.thread_channels.clear()
-        await t.receive(
-            DiscordInbound(channel_id="c1", user_id="u1", text="hello", guild_id="g1")
-        )
+        await t.receive(DiscordInbound(channel_id="c1", user_id="u1", text="hello", guild_id="g1"))
         assert dispatched == []
 
     @pytest.mark.asyncio
     async def test_allowlisted_thread_denies_unapproved_user(self) -> None:
         t, dispatched, _ = self._transport(["u1"], ["t1"])
-        await t.receive(
-            DiscordInbound(channel_id="t1", user_id="u2", text="hello", guild_id="g1")
-        )
+        await t.receive(DiscordInbound(channel_id="t1", user_id="u2", text="hello", guild_id="g1"))
         assert dispatched == []
 
     @pytest.mark.asyncio
@@ -999,6 +993,124 @@ class TestInteractions:
         finally:
             DiscordApprovalDecider._REGISTRY.pop(key, None)
             DiscordApprovalDecider._NONCES.pop(key, None)
+
+    @pytest.mark.asyncio
+    async def test_channels_deny_drops_approval_interaction(self, tmp_path, monkeypatch) -> None:
+        # HIGH (GPT pass 1 #1 + #4): a channels-governance DENY must stop a button
+        # press from resolving a pending tool approval — otherwise a policy denial
+        # applied after connect could still execute a governed tool via a stale
+        # approval button. This regression-locks the on_interaction chokepoint
+        # (removing the gate makes the pending future resolve → test fails).
+        import json
+
+        from kiro_crew.platform import governance_profiles as gp
+
+        pdir = tmp_path / "profiles"
+        pdir.mkdir()
+        monkeypatch.setattr(gp, "_PROFILES_DIR", pdir)
+        gp.reset_store()
+        (pdir / "host.json").write_text(
+            json.dumps(
+                {
+                    "name": "host",
+                    "bind": {"type": "surface", "id": "host"},
+                    "channels": {"members": {"mode": "allow", "allow": ["slack"]}},
+                }
+            )
+        )
+        d, cli, _ = _dispatcher({"u1"})
+        key = DiscordApprovalDecider.key(d._session_key("u1"), "r1")
+        fut: "asyncio.Future[bool]" = asyncio.get_running_loop().create_future()
+        DiscordApprovalDecider._REGISTRY[key] = fut
+        nonce = DiscordApprovalDecider.register_nonce(key)
+        try:
+            await d.on_interaction(self._itx(f"a:r1:{nonce}:1"))
+            # The interaction IS acked (ack happens after auth, before the gate, to
+            # meet Discord's ~3s deadline — acking is a no-op UI dismissal), but the
+            # approval is DROPPED before resolution: the pending future stays
+            # unresolved, so the governed tool never executes.
+            assert not fut.done(), "denied channel must not resolve the tool approval"
+            assert cli.acked == ["i1"]
+            # No verdict edit (Approved/Denied) — resolution never happened.
+            assert not any("Approved" in t or "Denied" in t for _, t, _ in cli.edits)
+        finally:
+            DiscordApprovalDecider._REGISTRY.pop(key, None)
+            DiscordApprovalDecider._NONCES.pop(key, None)
+            gp.reset_store()
+
+    @pytest.mark.asyncio
+    async def test_channels_deny_still_resolves_reject_interaction(self, tmp_path, monkeypatch):
+        # MEDIUM (GPT round-13 #3): a REJECT press ("a:...:0") on a denied channel
+        # must STILL resolve the pending approval as refused (False) — a reject is a
+        # denial, exactly what a channels-deny wants, and silently dropping it would
+        # strand the pending future until timeout (~300s). Only APPROVE is gated out.
+        import json
+
+        from kiro_crew.platform import governance_profiles as gp
+
+        pdir = tmp_path / "profiles"
+        pdir.mkdir()
+        monkeypatch.setattr(gp, "_PROFILES_DIR", pdir)
+        gp.reset_store()
+        (pdir / "host.json").write_text(
+            json.dumps(
+                {
+                    "name": "host",
+                    "bind": {"type": "surface", "id": "host"},
+                    "channels": {"members": {"mode": "allow", "allow": ["slack"]}},
+                }
+            )
+        )
+        d, cli, _ = _dispatcher({"u1"})
+        key = DiscordApprovalDecider.key(d._session_key("u1"), "r1")
+        fut: "asyncio.Future[bool]" = asyncio.get_running_loop().create_future()
+        DiscordApprovalDecider._REGISTRY[key] = fut
+        nonce = DiscordApprovalDecider.register_nonce(key)
+        try:
+            await d.on_interaction(self._itx(f"a:r1:{nonce}:0"))  # reject (flag 0)
+            assert fut.done() and fut.result() is False, (
+                "a reject on a denied channel must resolve the approval as refused, "
+                "not strand it"
+            )
+            assert any("Denied" in t for _, t, _ in cli.edits)
+        finally:
+            DiscordApprovalDecider._REGISTRY.pop(key, None)
+            DiscordApprovalDecider._NONCES.pop(key, None)
+            gp.reset_store()
+
+    @pytest.mark.asyncio
+    async def test_channels_deny_drops_inbound_message(self, tmp_path, monkeypatch) -> None:
+        # HIGH (GPT pass 1 #4): a channels DENY must stop handle_message from
+        # driving a turn. Regression-locks the dispatcher's inbound chokepoint.
+        import json
+
+        from kiro_crew.platform import governance_profiles as gp
+
+        pdir = tmp_path / "profiles"
+        pdir.mkdir()
+        monkeypatch.setattr(gp, "_PROFILES_DIR", pdir)
+        gp.reset_store()
+        (pdir / "host.json").write_text(
+            json.dumps(
+                {
+                    "name": "host",
+                    "bind": {"type": "surface", "id": "host"},
+                    "channels": {"members": {"mode": "allow", "allow": ["slack"]}},
+                }
+            )
+        )
+        d, cli, sess = _dispatcher({"u1"})
+        try:
+            await d.handle_message(
+                InboundMessage(
+                    channel_type="discord", user_id="u1", conversation_id="c1", text="hello"
+                )
+            )
+            # No turn ran: nothing sent, no session success recorded.
+            assert cli.final_text() in (None, "")
+            assert sess.successes == []
+        finally:
+            gp.reset_store()
 
     @pytest.mark.asyncio
     async def test_wrong_nonce_reports_expiry_not_approval(self) -> None:

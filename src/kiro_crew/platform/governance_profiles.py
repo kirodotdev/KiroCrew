@@ -29,7 +29,8 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import replace
+import threading
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
@@ -43,6 +44,35 @@ from kiro_crew.platform.governance import (
     parse_profile,
 )
 
+
+@dataclass(frozen=True)
+class _Snapshot:
+    """One IMMUTABLE, atomically-published view of the loaded profiles.
+
+    ``by_name`` (stem → Profile), ``by_bind`` (surface/app/task → stem), and
+    ``unrecoverable`` are published together as a SINGLE object reference so a
+    lock-free reader can never observe a torn state — e.g. the new ``by_name``
+    with the old ``by_bind`` after a rename, which would make ``for_bind`` miss
+    the new binding and fail OPEN to policy-only. A reader grabs ``self._snap``
+    once (an atomic attribute read) and reads all three from that consistent
+    object; a reload swaps in a brand-new ``_Snapshot`` in one assignment.
+
+    ``loaded`` distinguishes "we have read the profiles dir and this is the
+    answer" from the INITIAL, never-loaded snapshot. Without it an empty
+    never-loaded snapshot is indistinguishable from a genuine "no profiles
+    configured" host, so a caller that declined to reload would authorize against
+    ``profile=None`` and ``governance_permits`` would return its
+    ``ungoverned`` default-permit — a fail-OPEN on a host that does have
+    restrictive profiles. ``_ensure_fresh`` uses this to decide that the FIRST
+    load may not be skipped.
+    """
+
+    by_name: Dict[str, Profile] = field(default_factory=dict)
+    by_bind: Dict[Tuple[str, str], str] = field(default_factory=dict)
+    unrecoverable: Tuple[str, ...] = ()
+    loaded: bool = False
+
+
 logger = logging.getLogger(__name__)
 
 # Optional override slot for the profiles dir. Left ``None`` at import — NOT a
@@ -52,6 +82,15 @@ logger = logging.getLogger(__name__)
 # (``ensure_data_home()`` in the CLI prologue). ``_profiles_dir()`` resolves the
 # real path lazily; tests set this attribute to redirect it.
 _PROFILES_DIR: "Path | None" = None
+
+# Marker prefix on a fail-closed / degraded evaluation Decision's ``reason``. A
+# transient governance-evaluation error yields a Decision whose ``reason`` STARTS
+# with this and whose ``rule`` is ``"default"`` — distinct from a real policy deny.
+# Consumers that must tell "eval error" apart from "explicitly denied" (e.g. the
+# dashboard channels endpoint, which renders an eval error as "unavailable" rather
+# than "Off by admin") match on THIS constant, not a hand-copied substring, so a
+# reword here can't silently drift the two matchers apart.
+GOVERNANCE_ERROR_REASON = "governance error"
 
 
 def audit_governance_degraded(
@@ -204,21 +243,38 @@ def _salvage_bind(data: object) -> Optional[Bind]:
 def _dir_fingerprint(directory: Path) -> Tuple:
     """Cheap signature of the profiles dir — busts the cache on any edit.
 
-    Mirrors ``config.loader._config_fingerprint``: ``st_mtime_ns + st_size`` per
-    file plus the set of names, so a create / edit / truncate / delete all change
-    the fingerprint.  A missing directory yields a stable sentinel.
+    Per file: ``st_mtime_ns + st_size + st_ctime_ns`` plus the name set, so a
+    create / edit / truncate / delete all change the fingerprint. ``st_ctime_ns``
+    is included specifically so a ``chmod`` that makes a previously-UNREADABLE
+    profile readable busts the cache: chmod/chown/rename-in-place bump ctime but
+    NOT mtime/size, so without ctime the unreadable fallback would stay cached
+    forever after a permission fix and the profile's restrictions would remain
+    bypassed indefinitely. A missing directory and an UNREADABLE directory yield
+    DISTINCT sentinels: otherwise a reload that PRESERVED profiles on an
+    enumeration error would see the identical fingerprint after the dir is later
+    DELETED and never rescan — leaving stale profiles active. Distinct sentinels
+    make the delete a fingerprint change that forces a fresh reload.
     """
     try:
         entries = sorted(directory.iterdir())
-    except OSError:
+    except FileNotFoundError:
         return (("<absent>", str(directory)),)
+    except OSError:
+        # Includes NotADirectoryError (a non-dir at the path) + EACCES/EIO — all
+        # treated as "present but unreadable", distinct from the absent sentinel,
+        # so the reload's fail-closed/preserve handling (not the empty-absent path)
+        # runs and a later fix/delete busts the cache.
+        return (("<unreadable>", str(directory)),)
     sig: list = []
     for p in entries:
         if p.suffix != ".json":
             continue
         try:
             st = p.stat()
-            sig.append((p.name, st.st_mtime_ns, st.st_size))
+            # ctime included so a chmod (perms fix on an unreadable file) — which
+            # changes ctime but not mtime/size — still busts the cache and forces
+            # a re-read, so a fixed-permissions profile recovers its restrictions.
+            sig.append((p.name, st.st_mtime_ns, st.st_size, st.st_ctime_ns))
         except OSError:
             sig.append((p.name, None))
     return tuple(sig)
@@ -234,32 +290,243 @@ class ProfileStore:
     """
 
     def __init__(self) -> None:
+        # Gives the reload transaction (re-stat → reload → publish → commit) a
+        # single owner. The inbound channels gate resolves profiles OFF the event
+        # loop — all five transport dispatchers can call into the store from mc-gov
+        # worker threads concurrently — so without this several threads would each
+        # run the full iterdir + read_text walk and publish competing snapshots for
+        # the same directory state. The lock makes one thread do that work while the
+        # others either wait (unprimed store) or serve the current snapshot (warm);
+        # the fast path (loaded + fingerprint unchanged) never contends.
+        self._lock = threading.Lock()
         self._fingerprint: Optional[Tuple] = None
-        self._by_name: Dict[str, Profile] = {}
-        # surface/app/task index → profile name, built from each profile's bind.
-        self._by_bind: Dict[Tuple[str, str], str] = {}
+        # The current profiles view, published ATOMICALLY as one immutable object
+        # (see ``_Snapshot``). A reader grabs this reference once; a reload swaps a
+        # fresh ``_Snapshot`` in a single assignment, so name/bind/unrecoverable are
+        # never observed torn. ``unrecoverable`` records files that were PRESENT but
+        # whose bind could not be recovered — a GOVERNED fleet turns a non-empty set
+        # into a boot-abort via ``assert_profiles_within_ceiling``; a standalone host
+        # tolerates it (lenient).
+        self._snap: _Snapshot = _Snapshot()
 
-    def _ensure_fresh(self) -> None:
+    def _ensure_fresh(self) -> bool:
+        """Reload the profiles if the directory fingerprint changed.
+
+        Returns whether the snapshot is RESOLVED — i.e. safe to authorize against.
+        ``False`` means "this store has never loaded and another thread is loading
+        it right now", so the caller must fail CLOSED rather than treat the empty
+        snapshot as "no profiles configured" (see ``_Snapshot.loaded``). Callers
+        that only READ profiles (the CLI, the boot floor) can ignore the result;
+        the authorization path (:func:`resolve_active_scope`) must not.
+
+        This NEVER blocks. The path is reachable on the event loop (the
+        synchronous PreToolUse gate), where waiting on another thread's filesystem
+        I/O would wedge the gateway — a slow first profile load in a worker plus a
+        concurrent dashboard tool approval is exactly that stall. So a caller that
+        can't take the reload lock does not wait:
+
+        * **Warm** (already loaded): serve the current immutable snapshot and
+          return ``True``. Safe because ``_snap`` is only ever REPLACED wholesale
+          (an atomic ref swap), so a concurrent reader sees a coherent
+          prior-or-next snapshot; since a prior snapshot exists the worst case is
+          authorizing against the last committed state for ONE call, and the next
+          access self-heals.
+        * **Unprimed**: return ``False`` — there is no safe snapshot to serve, so
+          the decision fails closed instead of failing open.
+
+        mtime hot-reload still works exactly as documented: an operator edit is
+        picked up without a restart. What this deliberately does NOT have is a
+        per-thread "always block" discipline for off-loop callers. Its only benefit
+        on a warm store is closing a staleness window one call wide while a reload
+        is in flight, which is not worth a thread-local plus a dual code path — and
+        it invites someone to later reach for the blocking path from the loop,
+        reintroducing the wedge.
+
+        There is likewise NO same-metadata retry: an unreadable/malformed profile
+        fails CLOSED (its surface is a bind-preserving deny-all, see ``_reload``),
+        so there is nothing STALE being served that a retry would need to refresh.
+        """
         directory = _profiles_dir()
-        fp = _dir_fingerprint(directory)
-        if fp == self._fingerprint:
-            return
-        self._reload(directory)
-        self._fingerprint = fp
+        fp: Optional[Tuple] = None
+        if self._snap.loaded:
+            fp = _dir_fingerprint(directory)
+            if fp == self._fingerprint:
+                return True
+        # NEVER block: this is reachable on the event loop (the synchronous PreToolUse
+        # gate), and waiting on another thread's filesystem I/O there would wedge the
+        # gateway — a first profile load in a worker on a slow FS, plus a concurrent
+        # dashboard tool approval, is exactly that stall.
+        if not self._lock.acquire(blocking=False):
+            # Another thread owns this reload. If we are WARM we serve the current
+            # immutable snapshot (worst case: the last committed state for one call).
+            # If we are UNPRIMED there is nothing safe to serve — an empty
+            # never-loaded snapshot is indistinguishable from a genuine "no profiles
+            # configured" host, so the caller would resolve ``profile=None`` and
+            # ``governance_permits`` would hand back its ``ungoverned`` default-PERMIT:
+            # a fail-OPEN that ``fail_closed=True`` cannot catch (the default-permit is
+            # a normal return, not an exception). So report UNRESOLVED and let the
+            # caller fail closed. Concurrent first-touch is the EXPECTED case, not an
+            # exotic one: nothing primes the store on the ungoverned / profile-only
+            # boot path, so a startup burst across the transports puts several threads
+            # here at once.
+            return self._snap.loaded
+        try:
+            # Re-stat under the lock only when we did not already do it above (an
+            # unprimed caller has no pre-lock fingerprint). A warm caller reuses its
+            # pre-lock value: it acquired without waiting, so that value is still
+            # current, and re-statting would run a SECOND iterdir+stat walk on the
+            # event loop (a slow-FS stall) for no freshness gain. Either way the value
+            # used for the freshness test is the one committed below, so the committed
+            # fingerprint always describes the snapshot actually published.
+            if fp is None:
+                fp = _dir_fingerprint(directory)
+            if self._snap.loaded and fp == self._fingerprint:
+                return True  # already fresh (another thread reloaded, or unchanged)
+            self._reload(directory)
+            # Commit the fingerprint. An unreadable/malformed file is a
+            # bind-preserving deny-all (fail-closed), so the cached state is the SAFE
+            # (denying) state; a metadata change (fix/delete/chmod — all bump the
+            # ctime-inclusive fingerprint) busts the cache and reloads normally.
+            self._fingerprint = fp
+        finally:
+            self._lock.release()
+        return True
 
     def _reload(self, directory: Path) -> None:
+        # Snapshot the last-known-good index BEFORE mutating, so a per-file blip can
+        # recover the prior BIND (to keep the surface bound to a fail-closed deny-all
+        # rather than dropping it to policy-only). NOTE: a present-but-unreadable or
+        # malformed file does NOT carry its prior PERMISSIONS forward — it fails
+        # CLOSED (bind-preserving deny-all) so a tightened-then-unreadable profile
+        # can never leave newly-denied operations authorized.
+        prior_by_name = self._snap.by_name
         by_name: Dict[str, Profile] = {}
         by_bind: Dict[Tuple[str, str], str] = {}
+        unrecoverable: list[str] = []
         try:
             files = [p for p in sorted(directory.iterdir()) if p.suffix == ".json"]
-        except OSError:
+        except FileNotFoundError:
+            # The directory does not exist — the NORMAL "no profiles configured"
+            # case (a fresh KIROCREW_HOME has no profiles/ dir). This is ABSENT,
+            # not an enumeration failure: publish an EMPTY index (no profiles bind
+            # anything → every surface is policy-only), exactly as before, and do
+            # NOT warn. Falls through to the normal publish below with no files.
+            # (NotADirectoryError is deliberately NOT caught here — a non-directory
+            # at the profiles path is a MISCONFIG where Level-2 restrictions would
+            # silently vanish, so it must fail closed via the OSError branch below,
+            # NOT be treated as benign absence.)
             files = []
+        except OSError:
+            # The directory EXISTS but could not be enumerated: EACCES/EIO, OR a
+            # NON-directory at the profiles path (NotADirectoryError, a subclass of
+            # OSError — a misconfig where honouring "empty" would silently drop all
+            # Level-2 narrowing). A genuinely MISSING dir was already handled as
+            # absent above, so this never fires on the common no-profiles host.
+            # Two cases:
+            #   * WARM (we hold a prior index): preserve it untouched and return —
+            #     clearing here would drop every active profile to policy-only
+            #     (fail-OPEN). The prior IS the safe state, so we do NOT mark it
+            #     unrecoverable (no boot-abort for a transient blip on a running,
+            #     already-validated host). The ``<absent>`` fingerprint sentinel
+            #     differs from the real one, so a later successful re-enumeration
+            #     reloads.
+            #   * COLD (no prior — e.g. an unreadable dir at BOOT): there is nothing
+            #     to preserve AND we cannot prove the fleet is within its ceiling.
+            #     Record a sentinel in ``unrecoverable`` so a GOVERNED fleet
+            #     boot-aborts via ``assert_profiles_within_ceiling`` rather than
+            #     starting with zero (fail-open) profiles; a standalone host
+            #     tolerates it (empty index → policy-only, no crash).
+            logger.warning(
+                "profiles dir %s could not be enumerated; %s",
+                directory,
+                (
+                    "preserving last-known-good profiles"
+                    if prior_by_name
+                    else "no prior snapshot — a governed fleet fails closed at boot"
+                ),
+                exc_info=True,
+            )
+            if prior_by_name:
+                # WARM: keep the existing snapshot untouched (do not clear the
+                # unrecoverable flag on the live snapshot — it already reflects a
+                # clean prior load). Nothing to publish.
+                return
+            # COLD: publish an empty index but flag it (one atomic snapshot) so a
+            # governed boot aborts rather than run with zero profiles.
+            self._snap = _Snapshot(
+                by_name={},
+                by_bind={},
+                unrecoverable=(f"<dir:{directory}>",),
+                loaded=True,
+            )
+            return
         # Pass 1: parse each file independently; an invalid one becomes deny-all.
         for path in files:
             stem = path.stem
             data: object = None
+            # Read the bytes FIRST, separately from parsing, so a present-but-
+            # UNREADABLE file is distinguished from a genuine parse error. The two
+            # fail closed the same way but recover their BIND differently: a parse
+            # error has parsed content, so ``_salvage_bind`` can often read the real
+            # bind out of it; an unreadable file has none, so it can only fall back
+            # to a prior entry's bind. See the two except-branches below.
             try:
-                data = json.loads(path.read_text(encoding="utf-8"))
+                raw = path.read_text(encoding="utf-8")
+            except FileNotFoundError:
+                # Vanished between iterdir() and read (TOCTOU) — the file is now
+                # ABSENT, not a present policy. A missing file is not a deny, so
+                # skip it (don't manufacture a fail-closed for a surface that has
+                # no profile at all).
+                continue
+            except (OSError, UnicodeError):
+                # PRESENT but UNREADABLE — an IO/permission error (OSError) or an
+                # invalid encoding (UnicodeDecodeError, whose base is UnicodeError):
+                # either way the content, and thus the intended bind, cannot be read.
+                # Catching UnicodeError alongside OSError is REQUIRED — it is not an
+                # OSError, so without it a corrupt-encoding profile escapes both
+                # handlers and crashes boot inside assert_profiles_within_ceiling.
+                #
+                # Fail CLOSED. The prior PERMISSIONS are NOT carried forward: a
+                # profile that was just tightened and then became unreadable would
+                # otherwise keep its newly-DENIED operations authorized (a real
+                # fail-open, especially for a composed child whose parent changed).
+                # The surface resolves to a deny-all instead. Two sub-cases:
+                #   * PRIOR entry exists → reuse only its BIND, so the surface stays
+                #     BOUND to that deny-all rather than dropping to policy-only
+                #     (which would fail OPEN). A metadata change (fix / delete /
+                #     chmod — all bump the ctime-inclusive fingerprint) transitions
+                #     it out.
+                #   * NO prior (first-ever load of an unreadable file) → the bind
+                #     cannot be recovered, so it is an UNBOUND deny-all recorded as
+                #     unrecoverable. We do NOT guess a bind from the filename: the
+                #     stem does not reliably encode it (an unreadable file that binds
+                #     app:file-explorer is NOT surface:<stem>), so a guess would
+                #     mis-bind and STILL fail open on the real lookup. A governed
+                #     fleet boot-aborts via assert_profiles_within_ceiling; a
+                #     standalone host tolerates it (lenient, no crash).
+                prior = prior_by_name.get(stem)
+                fallback = deny_all_profile(stem)
+                if prior is not None and prior.bind is not None:
+                    logger.warning(
+                        "profile %s is present but unreadable; denying its surface "
+                        "(bind-preserving deny-all) until the file is fixed.",
+                        path.name,
+                        exc_info=True,
+                    )
+                    by_name[stem] = replace(fallback, bind=prior.bind)
+                else:
+                    logger.warning(
+                        "profile %s is present but unreadable (no recoverable bind); "
+                        "deny-all fallback (unbound). A governed fleet fails closed "
+                        "at boot.",
+                        path.name,
+                        exc_info=True,
+                    )
+                    by_name[stem] = fallback
+                    unrecoverable.append(path.name)
+                continue
+            try:
+                data = json.loads(raw)
                 if not isinstance(data, dict):
                     raise PlatformCompositionError("profile is not a JSON object")
                 by_name[stem] = parse_profile(data)
@@ -269,16 +536,27 @@ class ProfileStore:
                     path.name,
                     exc_info=True,
                 )
-                # Preserve a salvageable bind so the BOUND surface still resolves
-                # to deny-all (not policy-only).  Without this, an invalid profile
-                # with a valid bind would be dropped from the bind index and its
-                # surface would fail OPEN to the policy ceiling — defeating
-                # Validation rule 5 on the binding path.
+                # Fail CLOSED (deny-all), preserving a salvageable bind so the BOUND
+                # surface still resolves to that deny-all rather than dropping to
+                # policy-only — which would fail OPEN to the ceiling and defeat
+                # Validation rule 5 on the binding path. The prior PERMISSIONS are
+                # NOT preserved: a just-tightened-then-malformed profile must not keep
+                # its newly-denied operations authorized. Bind recovery order: the
+                # parsed dict first (a parse error means the JSON parsed, or partially
+                # did, so ``_salvage_bind`` can often read the real bind out of it),
+                # else the prior entry's bind. Only when NEITHER yields a bind is it an
+                # UNBOUND deny-all recorded as unrecoverable (governed fleet
+                # boot-aborts; standalone tolerates).
                 fallback = deny_all_profile(stem)
                 salvaged = _salvage_bind(data)
+                if salvaged is None:
+                    prior = prior_by_name.get(stem)
+                    salvaged = prior.bind if prior is not None else None
                 if salvaged is not None:
-                    fallback = replace(fallback, bind=salvaged)
-                by_name[stem] = fallback
+                    by_name[stem] = replace(fallback, bind=salvaged)
+                else:
+                    by_name[stem] = fallback
+                    unrecoverable.append(path.name)
         # Pass 2: resolve ``extends`` (monotonic narrowing) now that all are parsed.
         # The "non-trivial chain" guard must read each parent's ORIGINAL ``extends``,
         # not the live dict: ``compose_profiles`` resets a composed profile's
@@ -328,22 +606,106 @@ class ProfileStore:
                         name,
                     )
                 by_bind[key] = name
-        self._by_name = by_name
-        self._by_bind = by_bind
+        unrec = tuple(unrecoverable)
+        # Publish the freshly-built index as ONE immutable snapshot (single atomic
+        # assignment) so a lock-free reader never sees new names with old bindings.
+        # Preservation is PER-PROFILE, handled inline in Pass 1: an unreadable file
+        # whose profile was parsed in a prior reload carried its last-known-good
+        # entry into ``by_name`` above, so valid updates to OTHER profiles in this
+        # same reload are still published (no whole-store rollback that would
+        # discard them). A never-before-seen unreadable file has no prior entry, so
+        # it stays an UNBOUND deny-all and is recorded in ``unrecoverable`` — a
+        # governed fleet boot-aborts via ``assert_profiles_within_ceiling``; a
+        # standalone host tolerates it. A directory that could not be enumerated
+        # already returned early above, leaving the prior snapshot fully intact.
+        self._snap = _Snapshot(by_name=by_name, by_bind=by_bind, unrecoverable=unrec, loaded=True)
+        # Runtime observability for a POST-BOOT unrecoverable file. The boot floor
+        # (``assert_profiles_within_ceiling``) only runs once; a governed RUNNING
+        # host that hot-loads a NEW unreadable profile (no prior entry to preserve)
+        # gets an unbound deny-all that never matches its intended surface, so that
+        # surface silently falls to policy-only until the file is fixed. We do NOT
+        # lock the whole fleet down on one bad file (that would let a single stray
+        # unreadable profile DoS every surface); instead we make it LOUD +
+        # observable so an operator/monitor catches the fail-open window: an ERROR
+        # log and a governance-health incident (the dashboard indicator). Only when
+        # a ceiling is actually present (governed) — an ungoverned standalone host
+        # has no narrowing to lose.
+        if unrec:
+            try:
+                from kiro_crew.platform.context import current_context
+
+                if getattr(current_context(), "governance", None) is not None:
+                    logger.error(
+                        "governed host has unrecoverable profile(s) %s at runtime; their "
+                        "bound surfaces fall to policy-only until fixed (boot floor does "
+                        "not re-run) — resolve the file(s) to restore narrowing",
+                        unrec,
+                    )
+                    try:
+                        from kiro_crew.platform.governance_health import (
+                            mark_governance_incident,
+                        )
+
+                        mark_governance_incident(
+                            "unrecoverable_profile",
+                            detail=",".join(unrec),
+                        )
+                    except Exception:
+                        logger.debug("governance health mark unavailable", exc_info=True)
+            except Exception:
+                # current_context() unavailable (pre-boot / tests) — the boot floor
+                # covers boot; nothing to escalate here.
+                logger.debug("runtime unrecoverable escalation skipped", exc_info=True)
+
+    def unrecoverable_files(self) -> Tuple[str, ...]:
+        """File names that were PRESENT but whose bind could not be recovered.
+
+        Populated by the last reload (unreadable content / invalid encoding, or a
+        parse error with no salvageable bind). A governed fleet turns a non-empty
+        result into a boot-abort via :func:`assert_profiles_within_ceiling`; a
+        standalone host tolerates it (lenient). Reads through ``_ensure_fresh`` so
+        the value reflects the current on-disk state.
+        """
+        self._ensure_fresh()
+        return self._snap.unrecoverable
 
     def get(self, name: str) -> Optional[Profile]:
         self._ensure_fresh()
-        return self._by_name.get(name)
+        return self._snap.by_name.get(name)
 
     def for_bind(self, bind: Bind) -> Optional[Profile]:
         self._ensure_fresh()
-        name = self._by_bind.get((bind.type, bind.id))
-        return self._by_name.get(name) if name else None
+        # Grab the snapshot ONCE so the two lookups read a consistent view — a
+        # concurrent reload swaps in a whole new _Snapshot, never mutates this one.
+        snap = self._snap
+        name = snap.by_bind.get((bind.type, bind.id))
+        return snap.by_name.get(name) if name else None
+
+    def resolved(self) -> bool:
+        """True when the snapshot is safe to AUTHORIZE against.
+
+        False only while this store has never loaded and another thread is doing
+        that first load: the empty never-loaded snapshot would otherwise read as
+        "no profiles configured" and fail OPEN. Refreshes first, so a caller that
+        wins the race simply gets ``True``.
+        """
+        return self._ensure_fresh()
+
+    def snapshot(self) -> _Snapshot:
+        """The current immutable snapshot, WITHOUT refreshing.
+
+        For a caller that already called :meth:`resolved` and wants every lookup in
+        one resolution to read ONE consistent state — a concurrent reload swaps in a
+        whole new ``_Snapshot``, so re-reading per lookup could mix bindings from two
+        different states (e.g. an app bind from before a reload and a surface bind
+        from after). Pin it once, read it many times.
+        """
+        return self._snap
 
     def all_profiles(self) -> "list[Profile]":
         """Every loaded profile (for the boot-time floor assertion)."""
         self._ensure_fresh()
-        return list(self._by_name.values())
+        return list(self._snap.by_name.values())
 
 
 # Process-global store (cheap; hot-reloads itself on access).
@@ -395,6 +757,26 @@ def assert_profiles_within_ceiling(ceiling: "object") -> None:
 
     if not isinstance(ceiling, GovernanceCeiling):
         return
+    # Governed fleet + a PRESENT profile whose bind could not be recovered
+    # (unreadable content / invalid encoding / unsalvageable parse error) →
+    # fail closed to a boot-abort. Such a file may carry a restrictive bind that
+    # was silently dropped from the bind index; a governed fleet must refuse to
+    # run rather than run with the operator's narrowing missing. (No-op for a
+    # standalone host — ``ceiling is None`` returned above — so a profile blip on
+    # an ungoverned install never crashes boot.) There is no transient-vs-permanent
+    # distinction to make here: this gate runs ONCE at boot against whatever the
+    # bundle shipped, and the store commits the fingerprint for an unrecoverable
+    # reload too (the fail-closed deny-all IS the safe cached state), so a file
+    # that is unreadable at boot aborts boot. Recovery is an operator fix +
+    # restart, which is the correct response to a broken bundle.
+    unrecoverable = _STORE.unrecoverable_files()
+    if unrecoverable:
+        raise PlatformCompositionError(
+            "governed fleet: profile file(s) present but unrecoverable "
+            f"(bind cannot be resolved): {', '.join(sorted(unrecoverable))}. "
+            "Refusing to boot with a silently-dropped restrictive profile "
+            "(fail-closed). Fix or remove the file(s)."
+        )
     for profile in _STORE.all_profiles():
         assert_governance_floor(ceiling, profile)  # raises PlatformCompositionError on weakening
 
@@ -474,8 +856,8 @@ def governance_permits(
             # Authorization chokepoint (e.g. artifact publish): a degraded
             # evaluation must DENY, not degrade-to-permit — the blast radius of a
             # wrong permit is data exfiltration.
-            return _D(False, "governance error; denied (fail-closed)", rule="default")
-        return _D(True, "governance error; no opinion", rule="default")
+            return _D(False, f"{GOVERNANCE_ERROR_REASON}; denied (fail-closed)", rule="default")
+        return _D(True, f"{GOVERNANCE_ERROR_REASON}; no opinion", rule="default")
 
 
 def governance_floor_ordinal(
@@ -537,13 +919,44 @@ def resolve_active_scope(
     (policy ceiling alone governs).  Returns ``deny_all_profile()`` when an
     unattended surface has no bound profile and no proven identity — fail-closed,
     never a permissive fall-through.
+
+    Freshness is resolved ONCE, up front, and every binding lookup then reads a
+    SINGLE pinned snapshot. Both properties matter for correctness:
+
+    * **Resolve before looking up.** Checking resolution only *after* a lookup
+      missed would be a check-after-use: the lookup could read the empty
+      never-loaded snapshot, the first load could complete, and the late check
+      would then report "resolved" — so the miss (really "not loaded yet") would
+      be reported as the authoritative "no profile bound", i.e. policy-only.
+    * **One pinned snapshot.** Re-reading ``_STORE`` per lookup lets a concurrent
+      reload swap the snapshot mid-resolution, so the app/task/surface precedence
+      chain could mix bindings from two different states.
     """
+    surface = _infer_surface(session_key)
+    if not _STORE.resolved():
+        # The store has never loaded and another thread owns that first load. An
+        # empty snapshot is indistinguishable from a genuine no-profiles host, so
+        # reporting "no profile bound" here would let governance_permits answer
+        # with its ``ungoverned`` default-PERMIT (a normal return, so fail_closed
+        # cannot catch it). Deny this ONE call instead; the next access resolves.
+        logger.warning(
+            "profile store not yet loaded (concurrent first load); denying %r this "
+            "call rather than treating an unloaded store as ungoverned",
+            surface,
+        )
+        return deny_all_profile(f"_deny_all_unloaded:{surface}")
+    snap = _STORE.snapshot()
+
+    def _for_bind(bind: Bind) -> Optional[Profile]:
+        name = snap.by_bind.get((bind.type, bind.id))
+        return snap.by_name.get(name) if name else None
+
     if app:
-        prof = _STORE.for_bind(Bind(type="app", id=app))
+        prof = _for_bind(Bind(type="app", id=app))
         if prof is not None:
             return prof
     if task:
-        prof = _STORE.for_bind(Bind(type="task", id=task))
+        prof = _for_bind(Bind(type="task", id=task))
         if prof is not None:
             return prof
 
@@ -551,12 +964,11 @@ def resolve_active_scope(
     # "researcher" agent), checked before the broad surface binding so a spawned
     # agent's own ceiling wins over its surface's default.
     if agent:
-        prof = _STORE.for_bind(Bind(type="task", id=agent))
+        prof = _for_bind(Bind(type="task", id=agent))
         if prof is not None:
             return prof
 
-    surface = _infer_surface(session_key)
-    prof = _STORE.for_bind(Bind(type="surface", id=surface))
+    prof = _for_bind(Bind(type="surface", id=surface))
     if prof is not None:
         return prof
 
@@ -572,5 +984,7 @@ def resolve_active_scope(
     if surface in _UNATTENDED_SURFACES and not identity_proven:
         return deny_all_profile(f"_deny_all:{surface}")
 
-    # Attended/proven surface with no profile → policy ceiling alone governs.
+    # Attended/proven surface with no profile → policy ceiling alone governs. This
+    # "no profile bound" verdict is trustworthy because resolution was confirmed
+    # BEFORE the lookups above (see the docstring).
     return None

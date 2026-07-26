@@ -45,6 +45,7 @@ from kiro_crew.dashboard.token_auth import LINK_WINDOW_SECS, MAX_SESSION_TTL_SEC
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.hooks import safe_read_file
 from kiro_crew.mcp_discovery import list_servers
+from kiro_crew.messaging.identity import channel_inbound_permitted
 from kiro_crew.platform import current_context, safe_context_call
 from kiro_crew.platform.interfaces import InterceptDecision
 from kiro_crew.safety_override import safety_override
@@ -2013,6 +2014,51 @@ async def _route_message(
                 source="slack",
                 resources=channel,
                 error="activation=off",
+            )
+            return
+
+    # ── Inbound channels-governance gate (off-loop) — BEFORE any side effect ──
+    # A ``channels`` policy that denies ``slack`` must stop inbound processing
+    # before _route_message does anything observable: the observe-mode and
+    # non-observe ``channel_history.push`` (denied content must not be recorded,
+    # or a later ALLOWED turn in the channel could pull it into agent context),
+    # sender display-name lookups, audio transcription, image/file downloads, the
+    # ``!restart`` bang alias (a gateway restart), and session queueing/dispatch.
+    # The gate inside handle_message() runs too late for this path — every one of
+    # those side effects precedes it — so we gate HERE, right after auth /
+    # interceptor / activation-off and before the first side effect.
+    #
+    # EXEMPT only cancellation (``!stop``): a denied channel must still be able to
+    # halt a runaway session it previously started. ``!restart`` is NOT
+    # cancellation and stays gated. Default OSS build (no ``channels`` policy)
+    # permits, so this is byte-identical to today. handle_message keeps its own
+    # gate as defense-in-depth for its other entry points (interaction
+    # re-dispatch, synthetic sends).
+    #
+    # The exemption requires a PURE cancellation: text is exactly ``!stop`` AND
+    # there are NO attachments. A ``!stop`` message carrying files/voice is not a
+    # real cancellation — the transcription/attachment injection below rewrites
+    # ``text`` so the downstream ``clean_text == "!stop"`` intercept no longer
+    # matches — and exempting it would let the denied channel still DOWNLOAD the
+    # attachment, TRANSCRIBE the voice memo, and PUSH the content to
+    # channel_history (the very leak this gate prevents) before any turn is
+    # blocked. So an attachment-bearing ``!stop`` is gated like any other message.
+    _gate_text = text
+    if is_mention and _gate_text.startswith("<@"):
+        _gt_end = _gate_text.find(">")
+        if _gt_end != -1:
+            _gate_text = _gate_text[_gt_end + 1 :].lstrip()
+    _is_pure_stop = _gate_text.strip().lower() == "!stop" and not files
+    if not _is_pure_stop:
+        if not await channel_inbound_permitted("slack"):
+            logger.info("slack inbound dropped: denied by channels governance policy")
+            sel().log_api_access(
+                caller=sender_id,
+                operation="slack.message",
+                outcome="denied",
+                source="slack",
+                resources=channel,
+                error="channels governance policy",
             )
             return
 

@@ -154,3 +154,62 @@ class TestInterceptOrderingIsBeforeContentRecording:
                 f"intercept_message must run BEFORE {marker} — an intercepted "
                 "message must not be transcribed/downloaded before the gate decides."
             )
+
+
+class TestChannelsGatePrecedesSideEffects:
+    """Security-critical ordering: the ``channels`` governance gate MUST run in
+    ``_route_message`` BEFORE any observable side effect.
+
+    The per-message ``channel_inbound_permitted("slack")`` gate lived only inside
+    ``handle_message`` — which ``_route_message`` calls LAST, after transcription,
+    file download, ``channel_history.push``, and the ``!restart`` bang alias. So a
+    ``channels``-denied Slack message still downloaded attachments, persisted its
+    text to channel history (where a later ALLOWED turn could pull it into agent
+    context), and could restart the gateway. This guards the fix: the gate call
+    must precede those side-effect call sites in ``_route_message`` source.
+    """
+
+    def _call_offsets(self, needle: str) -> list[int]:
+        import inspect
+        import re
+
+        from kiro_crew.slack import events
+
+        raw = inspect.getsource(events._route_message)
+        code = "\n".join(re.sub(r"#.*$", "", ln) for ln in raw.splitlines())
+        return [m.start() for m in re.finditer(re.escape(needle) + r"\(", code)]
+
+    def test_gate_precedes_content_recording_and_download(self) -> None:
+        gates = self._call_offsets("channel_inbound_permitted")
+        assert gates, "channel_inbound_permitted call not found in _route_message"
+        for marker in (
+            "channel_history.push",
+            "_transcribe_with_reaction",
+            "process_slack_files",
+            "handle_message",
+        ):
+            marks = self._call_offsets(marker)
+            assert marks, f"{marker} call not found in _route_message"
+            assert min(gates) < min(marks), (
+                f"channel_inbound_permitted must run BEFORE {marker} — a "
+                "channels-denied message must not be recorded/downloaded/dispatched."
+            )
+
+    def test_stop_is_exempt_from_the_gate(self) -> None:
+        # Cancellation (``!stop``) must remain reachable on a denied channel so a
+        # runaway session can still be halted. The gate is guarded by a
+        # ``!stop``-exempting check; pin that the exemption is present so a refactor
+        # can't accidentally gate cancellation (which would strand a live session).
+        import inspect
+
+        from kiro_crew.slack import events
+
+        src = inspect.getsource(events._route_message)
+        gate_idx = src.find("channel_inbound_permitted(")
+        assert gate_idx != -1
+        # The exemption test appears just above the gate call.
+        preamble = src[:gate_idx]
+        assert '!= "!stop"' in preamble or "!stop" in preamble, (
+            "the channels gate must exempt !stop (cancellation) so a denied channel "
+            "can still halt a runaway session"
+        )

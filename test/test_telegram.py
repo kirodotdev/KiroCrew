@@ -72,16 +72,27 @@ class FakeClient:
         return None
 
     async def send_message_draft(
-        self, chat_id: int, draft_id: int, text: str, *, parse_mode: Any = None,
+        self,
+        chat_id: int,
+        draft_id: int,
+        text: str,
+        *,
+        parse_mode: Any = None,
         message_thread_id: Any = None,
     ) -> bool:
         self.drafts.append((draft_id, text))
         return True
 
     async def send_message(
-        self, chat_id: int, text: str, *, parse_mode: Any = None,
-        reply_markup: Any = None, retry_plain: bool = True,
-        reply_to_message_id: Any = None, message_thread_id: Any = None,
+        self,
+        chat_id: int,
+        text: str,
+        *,
+        parse_mode: Any = None,
+        reply_markup: Any = None,
+        retry_plain: bool = True,
+        reply_to_message_id: Any = None,
+        message_thread_id: Any = None,
     ) -> int:
         await asyncio.sleep(0)  # yield like a real network await (exposes races)
         self._mid += 1
@@ -297,8 +308,12 @@ def _cfg(
 
 
 def _dispatcher(
-    allowed: set[int], *, raise_on_get: bool = False, default_agent: str = "",
-    allow_forum: bool = False, allowed_forum_chat_ids: list | None = None,
+    allowed: set[int],
+    *,
+    raise_on_get: bool = False,
+    default_agent: str = "",
+    allow_forum: bool = False,
+    allowed_forum_chat_ids: list | None = None,
 ) -> tuple[TelegramDispatcher, FakeClient, FakeSessions]:
     sess = FakeSessions(raise_on_get=raise_on_get)
     d = TelegramDispatcher(
@@ -1011,7 +1026,120 @@ class TestApprovalDecider:
 # ── transport_dispatch.py: turn + callback routing ─────────────────────────
 
 
+def _deny_channel_profile(monkeypatch, tmp_path, allow=("slack",)):
+    """Point the ProfileStore at a host profile that allows only ``allow`` — so
+    any other channel is denied by the inbound gate. Returns nothing; resets the
+    store so the next resolve sees the profile."""
+    import json
+
+    from kiro_crew.platform import governance_profiles as gp
+
+    pdir = tmp_path / "profiles"
+    pdir.mkdir(exist_ok=True)
+    monkeypatch.setattr(gp, "_PROFILES_DIR", pdir)
+    gp.reset_store()
+    (pdir / "host.json").write_text(
+        json.dumps(
+            {
+                "name": "host",
+                "bind": {"type": "surface", "id": "host"},
+                "channels": {"members": {"mode": "allow", "allow": list(allow)}},
+            }
+        )
+    )
+
+
 class TestDispatcher:
+    def test_channels_deny_drops_inbound_message(self, tmp_path, monkeypatch) -> None:
+        # HIGH (GPT round-4 #2): a channels DENY must stop handle_message from
+        # driving a turn. Regression-locks the Telegram inbound chokepoint —
+        # removing the gate makes this test fail (a turn would run).
+        from kiro_crew.platform import governance_profiles as gp
+
+        _deny_channel_profile(monkeypatch, tmp_path)
+        d, cli, sess = _dispatcher({7})
+        try:
+            asyncio.run(
+                d.handle_message(
+                    InboundMessage(
+                        channel_type="telegram", user_id="7", conversation_id="7", text="hello"
+                    )
+                )
+            )
+            assert cli.final_text() in (None, "")
+            assert sess.successes == []
+        finally:
+            gp.reset_store()
+
+    def test_channels_deny_drops_callback_approval(self, tmp_path, monkeypatch) -> None:
+        # HIGH (GPT round-4 #2): a callback press must not resolve a pending tool
+        # approval on a denied channel. Regression-locks the on_callback gate.
+        from kiro_crew.platform import governance_profiles as gp
+
+        _deny_channel_profile(monkeypatch, tmp_path)
+        d, cli, _ = _dispatcher({7})
+
+        async def _go() -> bool:
+            key = TelegramApprovalDecider.key(d._session_key(("direct", "7")), "rq1")
+            fut: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
+            TelegramApprovalDecider._REGISTRY[key] = fut
+            try:
+                cb = SimpleNamespace(
+                    callback_query_id="q1",
+                    user_id=7,
+                    chat_id=7,
+                    message_id=100,
+                    data="a:rq1:1",
+                    label="",
+                    chat_type="private",
+                )
+                await d.on_callback(cb)  # type: ignore[arg-type]
+                return fut.done()
+            finally:
+                TelegramApprovalDecider._REGISTRY.pop(key, None)
+
+        try:
+            assert asyncio.run(_go()) is False, "denied channel must not resolve the tool approval"
+        finally:
+            gp.reset_store()
+
+    def test_channels_deny_still_resolves_callback_reject(self, tmp_path, monkeypatch) -> None:
+        # MEDIUM (GPT round-13 #3): a REJECT callback ("a:...:0") on a denied channel
+        # must STILL resolve the pending approval as refused (False) — a reject is a
+        # denial, and dropping it would strand the pending future until timeout.
+        # Only APPROVE is gated out.
+        from kiro_crew.platform import governance_profiles as gp
+
+        _deny_channel_profile(monkeypatch, tmp_path)
+        d, cli, _ = _dispatcher({7})
+
+        async def _go() -> "tuple[bool, bool]":
+            key = TelegramApprovalDecider.key(d._session_key(("direct", "7")), "rq1")
+            fut: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
+            TelegramApprovalDecider._REGISTRY[key] = fut
+            try:
+                cb = SimpleNamespace(
+                    callback_query_id="q1",
+                    user_id=7,
+                    chat_id=7,
+                    message_id=100,
+                    data="a:rq1:0",  # reject (flag 0)
+                    label="",
+                    chat_type="private",
+                )
+                await d.on_callback(cb)  # type: ignore[arg-type]
+                return fut.done(), (fut.result() if fut.done() else True)
+            finally:
+                TelegramApprovalDecider._REGISTRY.pop(key, None)
+
+        try:
+            done, result = asyncio.run(_go())
+            assert (
+                done and result is False
+            ), "a reject on a denied channel must resolve the approval as refused"
+        finally:
+            gp.reset_store()
+
     def test_full_turn_records_success_and_releases(self) -> None:
         d, cli, sess = _dispatcher({7})
 
@@ -1625,9 +1753,7 @@ class TestLinkCommand:
         # Fix 2 (issue #211): /link inside a forum Topic must store the Topic id
         # on the mirror link so dashboard-mirrored replies thread back into the
         # Topic (not the supergroup General).
-        d, cli, sess = _dispatcher(
-            {7}, allow_forum=True, allowed_forum_chat_ids=[-1001234567890]
-        )
+        d, cli, sess = _dispatcher({7}, allow_forum=True, allowed_forum_chat_ids=[-1001234567890])
         route = ("forum", "-1001234567890:5")
         asyncio.run(d._handle_link(route, -1001234567890))
         link = sess.mirror_links[dashboard_mirror_key(d._session_key(route))]
@@ -1674,9 +1800,7 @@ class TestForumGateOutcome:
 
     def test_private_is_authorized(self) -> None:
         assert (
-            forum_gate_outcome(
-                "private", 7, None, allow_forum=False, allowed_forum_chat_ids=[]
-            )
+            forum_gate_outcome("private", 7, None, allow_forum=False, allowed_forum_chat_ids=[])
             is None
         )
 
@@ -1825,12 +1949,13 @@ class TestForumTransportGate:
 
     def test_forum_allowed_dispatches_with_thread(self) -> None:
         inbound = TelegramInbound(
-            chat_id=-1001234567890, user_id=7, text="hi",
-            chat_type="supergroup", message_thread_id=5,
+            chat_id=-1001234567890,
+            user_id=7,
+            text="hi",
+            chat_type="supergroup",
+            message_thread_id=5,
         )
-        out = self._run_receive(
-            inbound, allow_forum=True, allowed_forum_chat_ids=[-1001234567890]
-        )
+        out = self._run_receive(inbound, allow_forum=True, allowed_forum_chat_ids=[-1001234567890])
         assert len(out) == 1
         assert getattr(out[0], "chat_type", None) == "supergroup"
         assert out[0].thread_id == "5"  # Topic id rides the base thread_id
@@ -1841,37 +1966,40 @@ class TestForumTransportGate:
         # General chat (no message_thread_id) is NOT a real Topic -> DENIED at
         # the gate even when allow_forum is on and the chat_id is allow-listed.
         inbound = TelegramInbound(
-            chat_id=-1001234567890, user_id=7, text="hi",
-            chat_type="supergroup", message_thread_id=None,
+            chat_id=-1001234567890,
+            user_id=7,
+            text="hi",
+            chat_type="supergroup",
+            message_thread_id=None,
         )
         assert (
-            self._run_receive(
-                inbound, allow_forum=True, allowed_forum_chat_ids=[-1001234567890]
-            )
+            self._run_receive(inbound, allow_forum=True, allowed_forum_chat_ids=[-1001234567890])
             == []
         )
 
     def test_forum_denied_when_allow_forum_false(self) -> None:
         inbound = TelegramInbound(
-            chat_id=-1001234567890, user_id=7, text="hi",
-            chat_type="supergroup", message_thread_id=5,
+            chat_id=-1001234567890,
+            user_id=7,
+            text="hi",
+            chat_type="supergroup",
+            message_thread_id=5,
         )
         assert (
-            self._run_receive(
-                inbound, allow_forum=False, allowed_forum_chat_ids=[-1001234567890]
-            )
+            self._run_receive(inbound, allow_forum=False, allowed_forum_chat_ids=[-1001234567890])
             == []
         )
 
     def test_forum_denied_when_chat_id_not_allowlisted(self) -> None:
         inbound = TelegramInbound(
-            chat_id=-1001234567890, user_id=7, text="hi",
-            chat_type="supergroup", message_thread_id=5,
+            chat_id=-1001234567890,
+            user_id=7,
+            text="hi",
+            chat_type="supergroup",
+            message_thread_id=5,
         )
         assert (
-            self._run_receive(
-                inbound, allow_forum=True, allowed_forum_chat_ids=[-1009999999999]
-            )
+            self._run_receive(inbound, allow_forum=True, allowed_forum_chat_ids=[-1009999999999])
             == []
         )
 
@@ -1883,8 +2011,13 @@ class TestForumDispatchRouting:
         self, thread: str | None, *, chat_id: str = "-1001234567890", text: str = "hello"
     ) -> TelegramInboundMessage:
         return TelegramInboundMessage(
-            channel_type="telegram", user_id="7", conversation_id=chat_id,
-            text=text, chat_type="supergroup", thread_id=thread, message_id=1,
+            channel_type="telegram",
+            user_id="7",
+            conversation_id=chat_id,
+            text=text,
+            chat_type="supergroup",
+            thread_id=thread,
+            message_id=1,
         )
 
     def test_forum_topic_session_key(self) -> None:
@@ -1903,9 +2036,7 @@ class TestForumDispatchRouting:
         d, cli, sess = _dispatcher({7})
         asyncio.run(
             d.handle_message(
-                InboundMessage(
-                    channel_type="telegram", user_id="7", conversation_id="7", text="hi"
-                )
+                InboundMessage(channel_type="telegram", user_id="7", conversation_id="7", text="hi")
             )
         )
         assert sess.successes == ["telegram:kirocrew:direct:7"]
@@ -1925,7 +2056,9 @@ class TestForumDispatchRouting:
         # run completing at all proves edits are unthreaded).
         cli = FakeClient()
         r = TelegramRenderer(
-            cli, -1001234567890, TELEGRAM_CAPABILITIES,  # type: ignore[arg-type]
+            cli,
+            -1001234567890,
+            TELEGRAM_CAPABILITIES,  # type: ignore[arg-type]
             session_key="telegram:kirocrew:forum:-1001234567890:5",
             message_thread_id=5,
         )
@@ -1957,9 +2090,7 @@ class TestForumConfig:
             json.dump(data, f)
             tmp = Path(f.name)
         try:
-            with unittest.mock.patch(
-                "kiro_crew.config.loader.config_path", return_value=tmp
-            ):
+            with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp):
                 return KiroCrewConfig.load()
         finally:
             tmp.unlink(missing_ok=True)
@@ -1993,9 +2124,13 @@ class TestForumReplyThreading:
     @staticmethod
     def _forum_msg(text: str, thread: str | None = "5") -> TelegramInboundMessage:
         return TelegramInboundMessage(
-            channel_type="telegram", user_id="7",
-            conversation_id="-1001234567890", text=text,
-            chat_type="supergroup", thread_id=thread, message_id=1,
+            channel_type="telegram",
+            user_id="7",
+            conversation_id="-1001234567890",
+            text=text,
+            chat_type="supergroup",
+            thread_id=thread,
+            message_id=1,
         )
 
     def test_new_confirmation_threads_into_topic(self) -> None:
@@ -2018,8 +2153,10 @@ class TestForumReplyThreading:
         asyncio.run(
             d.handle_message(
                 InboundMessage(
-                    channel_type="telegram", user_id="7",
-                    conversation_id="7", text="/new",
+                    channel_type="telegram",
+                    user_id="7",
+                    conversation_id="7",
+                    text="/new",
                 )
             )
         )
@@ -2037,8 +2174,11 @@ class TestForumQueueDrain:
         sess.queued.append(("t0", "queued in the topic", {}))
         asyncio.run(
             d._drain_queue(
-                forum_key, 7, -1001234567890,
-                chat_type="supergroup", thread="5",
+                forum_key,
+                7,
+                -1001234567890,
+                chat_type="supergroup",
+                thread="5",
             )
         )
         # The drained turn resolved to the FORUM key (carried via chat_type +
@@ -2063,15 +2203,18 @@ class TestForumCallbackGate:
     @staticmethod
     def _opt_cb() -> Any:
         return SimpleNamespace(
-            callback_query_id="qf", user_id=7, chat_id=-1001234567890,
-            message_id=50, data="opt:0", label="Say Hi",
-            chat_type="supergroup", message_thread_id=5,
+            callback_query_id="qf",
+            user_id=7,
+            chat_id=-1001234567890,
+            message_id=50,
+            data="opt:0",
+            label="Say Hi",
+            chat_type="supergroup",
+            message_thread_id=5,
         )
 
     def test_forum_callback_processed_when_allowlisted(self) -> None:
-        d, cli, sess = _dispatcher(
-            {7}, allow_forum=True, allowed_forum_chat_ids=[-1001234567890]
-        )
+        d, cli, sess = _dispatcher({7}, allow_forum=True, allowed_forum_chat_ids=[-1001234567890])
         asyncio.run(d.on_callback(self._opt_cb()))  # type: ignore[arg-type]
         # Acked, and the [OPTIONS:] choice re-dispatched under the FORUM key.
         assert cli.answered == ["qf"]
@@ -2081,9 +2224,7 @@ class TestForumCallbackGate:
 
     def test_forum_callback_denied_when_chat_id_not_allowlisted(self) -> None:
         # allow_forum on, but the supergroup's chat_id is NOT allow-listed.
-        d, cli, sess = _dispatcher(
-            {7}, allow_forum=True, allowed_forum_chat_ids=[-1009999999999]
-        )
+        d, cli, sess = _dispatcher({7}, allow_forum=True, allowed_forum_chat_ids=[-1009999999999])
         asyncio.run(d.on_callback(self._opt_cb()))  # type: ignore[arg-type]
         # Fail closed: not even acked, no keyboard retire, no re-dispatch.
         assert cli.answered == []
@@ -2094,13 +2235,16 @@ class TestForumCallbackGate:
         # A press from the supergroup General chat (no message_thread_id) is NOT
         # a real Topic -> DENIED even when allow_forum is on and the chat_id IS
         # allow-listed. Mirrors the receive() gate exactly (fail closed).
-        d, cli, sess = _dispatcher(
-            {7}, allow_forum=True, allowed_forum_chat_ids=[-1001234567890]
-        )
+        d, cli, sess = _dispatcher({7}, allow_forum=True, allowed_forum_chat_ids=[-1001234567890])
         cb = SimpleNamespace(
-            callback_query_id="qg", user_id=7, chat_id=-1001234567890,
-            message_id=51, data="opt:0", label="Say Hi",
-            chat_type="supergroup", message_thread_id=None,
+            callback_query_id="qg",
+            user_id=7,
+            chat_id=-1001234567890,
+            message_id=51,
+            data="opt:0",
+            label="Say Hi",
+            chat_type="supergroup",
+            message_thread_id=None,
         )
         asyncio.run(d.on_callback(cb))  # type: ignore[arg-type]
         assert cli.answered == []
@@ -2109,21 +2253,22 @@ class TestForumCallbackGate:
 
     def test_forum_callback_approval_resolves_only_when_allowlisted(self) -> None:
         # Allow-listed: the approval decision resolves under the forum key.
-        d, cli, _ = _dispatcher(
-            {7}, allow_forum=True, allowed_forum_chat_ids=[-1001234567890]
-        )
+        d, cli, _ = _dispatcher({7}, allow_forum=True, allowed_forum_chat_ids=[-1001234567890])
 
         async def _go() -> bool:
-            key = TelegramApprovalDecider.key(
-                d._session_key(("forum", "-1001234567890:5")), "rqF"
-            )
+            key = TelegramApprovalDecider.key(d._session_key(("forum", "-1001234567890:5")), "rqF")
             fut: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
             TelegramApprovalDecider._REGISTRY[key] = fut
             try:
                 cb = SimpleNamespace(
-                    callback_query_id="qF", user_id=7, chat_id=-1001234567890,
-                    message_id=60, data="a:rqF:1", label="",
-                    chat_type="supergroup", message_thread_id=5,
+                    callback_query_id="qF",
+                    user_id=7,
+                    chat_id=-1001234567890,
+                    message_id=60,
+                    data="a:rqF:1",
+                    label="",
+                    chat_type="supergroup",
+                    message_thread_id=5,
                 )
                 await d.on_callback(cb)  # type: ignore[arg-type]
                 return fut.done() and fut.result() is True
@@ -2135,21 +2280,22 @@ class TestForumCallbackGate:
     def test_forum_callback_not_resolved_when_allow_forum_false(self) -> None:
         # allow_forum OFF -> the identical approval press must NOT resolve the
         # decider (fail closed) and must not even ack.
-        d, cli, _ = _dispatcher(
-            {7}, allow_forum=False, allowed_forum_chat_ids=[-1001234567890]
-        )
+        d, cli, _ = _dispatcher({7}, allow_forum=False, allowed_forum_chat_ids=[-1001234567890])
 
         async def _go() -> bool:
-            key = TelegramApprovalDecider.key(
-                d._session_key(("forum", "-1001234567890:5")), "rqF"
-            )
+            key = TelegramApprovalDecider.key(d._session_key(("forum", "-1001234567890:5")), "rqF")
             fut: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
             TelegramApprovalDecider._REGISTRY[key] = fut
             try:
                 cb = SimpleNamespace(
-                    callback_query_id="qF", user_id=7, chat_id=-1001234567890,
-                    message_id=61, data="a:rqF:1", label="",
-                    chat_type="supergroup", message_thread_id=5,
+                    callback_query_id="qF",
+                    user_id=7,
+                    chat_id=-1001234567890,
+                    message_id=61,
+                    data="a:rqF:1",
+                    label="",
+                    chat_type="supergroup",
+                    message_thread_id=5,
                 )
                 await d.on_callback(cb)  # type: ignore[arg-type]
                 return fut.done()
@@ -2283,9 +2429,7 @@ class TestTelegramSessionPidPublish:
         sess._pid = 4242  # SessionManager.get_pid -> kiro-cli host PID
 
         async def _go() -> None:
-            with patch(
-                "kiro_crew.telegram.transport_dispatch.publish_turn_identity"
-            ) as pub:
+            with patch("kiro_crew.telegram.transport_dispatch.publish_turn_identity") as pub:
                 await d.handle_message(
                     InboundMessage(
                         channel_type="telegram",

@@ -173,7 +173,9 @@ class TestHandleMessage:
 
         def _patched_load():
             cfg = _real_load()
-            return dataclasses.replace(cfg, slack=dataclasses.replace(cfg.slack, reactions_enabled=True))
+            return dataclasses.replace(
+                cfg, slack=dataclasses.replace(cfg.slack, reactions_enabled=True)
+            )
 
         monkeypatch.setattr(KiroCrewConfig, "load", _patched_load)
 
@@ -191,6 +193,38 @@ class TestHandleMessage:
 
         updates = [a for a in slack.actions if a[0] == "update"]
         assert any("42" in u[1]["text"] for u in updates)
+
+    @pytest.mark.asyncio
+    async def test_channels_deny_drops_slack_inbound(self, tmp_path, monkeypatch):
+        # HIGH (GPT round-7 pass 2, user-directed): Slack is a GOVERNED transport.
+        # A channels policy that allows only non-slack members must drop a Slack
+        # inbound message before any turn runs — no reply posted.
+        import json
+
+        from kiro_crew.platform import governance_profiles as gp
+
+        pdir = tmp_path / "profiles"
+        pdir.mkdir()
+        monkeypatch.setattr(gp, "_PROFILES_DIR", pdir)
+        gp.reset_store()
+        (pdir / "host.json").write_text(
+            json.dumps(
+                {
+                    "name": "host",
+                    "bind": {"type": "surface", "id": "host"},
+                    "channels": {"members": {"mode": "allow", "allow": ["discord"]}},
+                }
+            )
+        )
+        slack = MockSlackClient()
+        provider = FakeProvider([LLMEvent(kind="text_chunk", text="should not run")])
+        sessions = FakeSessionManager(provider)
+        try:
+            await handle_message(slack, sessions, "C1", "hi", None, "msg1", "U1")
+            # No streaming/update actions — the message was dropped at the gate.
+            assert not [a for a in slack.actions if a[0] in ("update", "append_stream")]
+        finally:
+            gp.reset_store()
 
     @pytest.mark.asyncio
     async def test_streaming_credential_split_across_chunks_not_leaked(self, monkeypatch):
@@ -325,9 +359,7 @@ class TestHandleMessage:
             cfg = _real_load()
             return dataclasses.replace(
                 cfg,
-                slack=dataclasses.replace(
-                    cfg.slack, reactions_enabled=True, show_thinking=True
-                ),
+                slack=dataclasses.replace(cfg.slack, reactions_enabled=True, show_thinking=True),
             )
 
         monkeypatch.setattr(KiroCrewConfig, "load", _patched)
@@ -429,9 +461,7 @@ class TestHandleMessage:
         thinking_ts = placeholder_posts[0][1]["ts"]
         # No reasoning → empty placeholder deleted, never updated.
         assert [a for a in slack.actions if a[0] == "delete" and a[1]["ts"] == thinking_ts]
-        assert not [
-            a for a in slack.actions if a[0] == "update" and a[1]["ts"] == thinking_ts
-        ]
+        assert not [a for a in slack.actions if a[0] == "update" and a[1]["ts"] == thinking_ts]
 
     @pytest.mark.asyncio
     async def test_empty_reasoning_placeholder_cleaned_up(self, monkeypatch):
@@ -455,11 +485,7 @@ class TestHandleMessage:
         thinking_ts = placeholder_posts[0][1]["ts"]
         # No reasoning text captured → placeholder is deleted, not updated.
         assert [a for a in slack.actions if a[0] == "delete" and a[1]["ts"] == thinking_ts]
-        assert not [
-            a
-            for a in slack.actions
-            if a[0] == "update" and a[1]["ts"] == thinking_ts
-        ]
+        assert not [a for a in slack.actions if a[0] == "update" and a[1]["ts"] == thinking_ts]
 
     @pytest.mark.asyncio
     async def test_cancelled_turn_deletes_thinking_placeholder(self, monkeypatch):
@@ -592,12 +618,17 @@ class TestHandleMessage:
         slack = MockSlackClient()
         sessions = FakeSessionManager(_RaisingProvider())
         await handle_message(
-            slack, sessions, "C1", "[TASK:abc]", None, "msg1", "U_BOT",
+            slack,
+            sessions,
+            "C1",
+            "[TASK:abc]",
+            None,
+            "msg1",
+            "U_BOT",
             from_trusted_bot=False,
         )
         all_text = " ".join(
-            a[1].get("text", "") for a in slack.actions
-            if a[0] in ("post", "stop_stream", "update")
+            a[1].get("text", "") for a in slack.actions if a[0] in ("post", "stop_stream", "update")
         )
         assert "auth expired" in all_text or "error" in all_text.lower()
 
@@ -614,13 +645,18 @@ class TestHandleMessage:
         slack = MockSlackClient()
         sessions = FakeSessionManager(_RaisingProvider())
         await handle_message(
-            slack, sessions, "C1", "hi", None, "msg1", "U1",
+            slack,
+            sessions,
+            "C1",
+            "hi",
+            None,
+            "msg1",
+            "U1",
             from_trusted_bot=False,
         )
         # Some reply (post or stop_stream) should mention the error
         all_text = " ".join(
-            a[1].get("text", "") for a in slack.actions
-            if a[0] in ("post", "stop_stream", "update")
+            a[1].get("text", "") for a in slack.actions if a[0] in ("post", "stop_stream", "update")
         )
         assert "auth expired" in all_text or "error" in all_text.lower()
 
@@ -633,8 +669,7 @@ class TestHandleMessage:
         slack = MockSlackClient()
         await handle_message(slack, _FailingSessions(), "C1", "hi", None, "msg1", "U1")
         all_text = " ".join(
-            a[1].get("text", "") for a in slack.actions
-            if a[0] in ("post", "stop_stream", "update")
+            a[1].get("text", "") for a in slack.actions if a[0] in ("post", "stop_stream", "update")
         )
         assert "went wrong" in all_text.lower() or "🔧" in all_text
 
@@ -679,14 +714,25 @@ class TestHookIntegration:
 
         try:
             await handle_message(
-                slack, sessions, "C1", "ping", "thread1", "msg1", "U1",
-                context_builder=ctx, conversation_log=log,
+                slack,
+                sessions,
+                "C1",
+                "ping",
+                "thread1",
+                "msg1",
+                "U1",
+                context_builder=ctx,
+                conversation_log=log,
             )
 
             # save_conversation_turn should have been called with agent="ops"
             log.append.assert_any_call(
-                "thread1", "user", "ping",
-                source_thread="thread1", source_user="U1", agent="ops",
+                "thread1",
+                "user",
+                "ping",
+                source_thread="thread1",
+                source_user="U1",
+                agent="ops",
             )
         finally:
             _hydrated_sessions.discard("thread1")
@@ -714,14 +760,26 @@ class TestHookIntegration:
 
         try:
             await handle_message(
-                slack, sessions, "C1", "spawn do stuff", "thread2", "msg2", "U1",
-                conversation_log=log, subagent_manager=mgr, channel_agent="research",
+                slack,
+                sessions,
+                "C1",
+                "spawn do stuff",
+                "thread2",
+                "msg2",
+                "U1",
+                conversation_log=log,
+                subagent_manager=mgr,
+                channel_agent="research",
             )
 
             # save_conversation_turn should have been called with agent="research"
             log.append.assert_any_call(
-                "thread2", "user", "spawn do stuff",
-                source_thread="thread2", source_user="U1", agent="research",
+                "thread2",
+                "user",
+                "spawn do stuff",
+                source_thread="thread2",
+                source_user="U1",
+                agent="research",
             )
         finally:
             _hydrated_sessions.discard("thread2")
@@ -732,6 +790,7 @@ class TestToolApproval:
     @pytest.fixture(autouse=True)
     def _reset_globals(self):
         from kiro_crew.slack.handler import _trusted_sessions
+
         _trusted_sessions.clear()
         set_owner_id("U1")
         yield
@@ -1070,8 +1129,7 @@ class TestToolApproval:
             await _request_approval(slack, provider, "D1", "ts1", event, "sess1")
 
         assert provider.rejected == [0], (
-            "tool was not rejected after approval post failed — "
-            "ACP subprocess would wedge"
+            "tool was not rejected after approval post failed — " "ACP subprocess would wedge"
         )
 
     @pytest.mark.asyncio
@@ -1127,6 +1185,7 @@ class TestAllowedUsers:
     @pytest.fixture(autouse=True)
     def _reset_globals(self):
         from kiro_crew.slack.handler import _trusted_sessions
+
         _trusted_sessions.clear()
         yield
         _trusted_sessions.clear()
@@ -1172,6 +1231,7 @@ class TestAllowedUsers:
         set_owner_id("U1")
         set_allowed_users({"U1"})
         import kiro_crew.slack.handler as _h
+
         monkeypatch.setattr(_h, "_trusted_sessions", type(_h._trusted_sessions)())
         slack = MockSlackClient()
         gate = asyncio.Event()
@@ -1751,7 +1811,12 @@ class TestStopCommand:
         await handle_message(slack, sessions, "C1", "!stop", "thread1", "msg1", "U_ALLOWED")
         assert "reset:thread1" not in sessions.removed
         posts = [a for a in slack.actions if a[0] == "post"]
-        assert any("Not authorized" in p[1]["text"] or "Owner-only" in p[1]["text"] or "authorized" in p[1]["text"].lower() for p in posts)
+        assert any(
+            "Not authorized" in p[1]["text"]
+            or "Owner-only" in p[1]["text"]
+            or "authorized" in p[1]["text"].lower()
+            for p in posts
+        )
 
     @pytest.mark.asyncio
     async def test_stop_denied_for_unauthorized(self):
@@ -1814,7 +1879,9 @@ class TestStopCommand:
         sessions._stop_outcome = "soft"
         await handle_message(slack, sessions, "C1", "!stop", "thread1", "msg1", "U_OWNER")
         posts = [a for a in slack.actions if a[0] == "post"]
-        assert any("Execution stopped" in p[1]["text"] and "reset" not in p[1]["text"] for p in posts)
+        assert any(
+            "Execution stopped" in p[1]["text"] and "reset" not in p[1]["text"] for p in posts
+        )
 
     @pytest.mark.asyncio
     async def test_slack_stop_updates_ephemeral_on_hard(self):
@@ -1918,9 +1985,7 @@ class TestThreadTitle:
         set_allowed_users({"U_OWNER"})
         slack = MockSlackClient()
         sessions = FakeSessionManager()
-        await handle_message(
-            slack, sessions, "C1", "!title Sneaky", "thread1", "msg1", "U_RANDOM"
-        )
+        await handle_message(slack, sessions, "C1", "!title Sneaky", "thread1", "msg1", "U_RANDOM")
         title_actions = [a for a in slack.actions if a[0] == "set_thread_title"]
         assert len(title_actions) == 0
         posts = [a for a in slack.actions if a[0] == "post"]
@@ -1963,9 +2028,7 @@ class TestAutoTitleSlack:
 
         slack = MockSlackClient()
         sessions = FakeSessionManager()
-        sessions._provider = FakeProvider(
-            [LLMEvent(kind="text_chunk", text="ETL Debug Session")]
-        )
+        sessions._provider = FakeProvider([LLMEvent(kind="text_chunk", text="ETL Debug Session")])
         _mark_titled("sk1")
         await _maybe_auto_title_slack(slack, sessions, "C1", "sk1", None, "help me", "sure")
         title_actions = [a for a in slack.actions if a[0] == "set_thread_title"]
@@ -2006,12 +2069,14 @@ class TestAutoTitleSlack:
 
         slack = MockSlackClient()
         sessions = FakeSessionManager()
-        sessions._provider = FakeProvider(
-            [LLMEvent(kind="text_chunk", text="JSON Debug Session")]
-        )
+        sessions._provider = FakeProvider([LLMEvent(kind="text_chunk", text="JSON Debug Session")])
         _mark_titled("sk4")
         await _maybe_auto_title_slack(
-            slack, sessions, "C1", "sk4", None,
+            slack,
+            sessions,
+            "C1",
+            "sk4",
+            None,
             'parse this: {"key": "value"}',
             "sure, here's the parsed output",
         )
@@ -2031,10 +2096,17 @@ class TestAutoTitleSlack:
         sessions = FakeSessionManager()
         await _handle_slash_command(
             "!title ETL Debug",
-            slack, sessions, "C1", "thread1", "msg1", "thread1", "U_OWNER",
+            slack,
+            sessions,
+            "C1",
+            "thread1",
+            "msg1",
+            "thread1",
+            "U_OWNER",
             conversation_log=mock_log,
         )
         mock_log.set_title.assert_called_once_with("thread1", "ETL Debug")
+
 
 # ── Reaction emoji config override tests ──
 
@@ -2199,6 +2271,7 @@ class TestContextFooter:
     async def test_fallback_on_runtime_error(self):
         def _raise():
             raise RuntimeError("no data")
+
         text, _ = await self._get_footer(pct_side_effect=_raise)
         assert "Finished in" in text
         assert "ctx" not in text
@@ -2207,6 +2280,7 @@ class TestContextFooter:
     async def test_fallback_on_attribute_error(self):
         def _raise():
             raise AttributeError("missing method")
+
         text, _ = await self._get_footer(pct_side_effect=_raise)
         assert "Finished in" in text
         assert "ctx" not in text
@@ -2221,8 +2295,10 @@ class TestContextFooter:
     @pytest.mark.asyncio
     async def test_fallback_still_has_duration(self):
         """Even on error, the duration portion must be present."""
+
         def _raise():
             raise RuntimeError("boom")
+
         text, _ = await self._get_footer(pct_side_effect=_raise)
         assert text.startswith("Finished in ")
         assert "s" in text  # duration always ends with 's'
@@ -2264,12 +2340,7 @@ class TestToSlackMrkdwnTruncation:
 class TestToSlackMrkdwnKeepTables:
     """Tests for the keep_tables parameter in to_slack_mrkdwn."""
 
-    TABLE = (
-        "| Model | Cost |\n"
-        "|-------|------|\n"
-        "| GPT-4 | $30  |\n"
-        "| Claude | $15 |"
-    )
+    TABLE = "| Model | Cost |\n" "|-------|------|\n" "| GPT-4 | $30  |\n" "| Claude | $15 |"
 
     def test_tables_converted_by_default(self):
         from kiro_crew.slack.format import to_slack_mrkdwn
@@ -2353,10 +2424,7 @@ class TestStreamingTablePreservation:
     """Tests that tables are preserved when using the streaming API path."""
 
     TABLE_RESPONSE = (
-        "| Name | Value |\n"
-        "|------|-------|\n"
-        "| foo  | 42    |\n"
-        "| bar  | 99    |"
+        "| Name | Value |\n" "|------|-------|\n" "| foo  | 42    |\n" "| bar  | 99    |"
     )
 
     def _streaming_client(self):
@@ -2374,7 +2442,9 @@ class TestStreamingTablePreservation:
         await handle_message(slack, sessions, "C1", "hi", None, "msg1", "U1")
 
         updates = [a for a in slack.actions if a[0] == "update"]
-        assert len(updates) == 0, "chat.update must not fire on the streaming path without redaction"
+        assert (
+            len(updates) == 0
+        ), "chat.update must not fire on the streaming path without redaction"
 
     @pytest.mark.asyncio
     async def test_stop_stream_text_preserves_tables(self):
@@ -2413,8 +2483,9 @@ class TestStreamingTablePreservation:
 
         # Fallback path uses update or post — either way tables must be bullets
         all_text_actions = [a for a in slack.actions if a[0] in ("post", "update")]
-        assert any("•" in a[1]["text"] for a in all_text_actions), \
-            "Tables should be converted to bullets when stream fails to start"
+        assert any(
+            "•" in a[1]["text"] for a in all_text_actions
+        ), "Tables should be converted to bullets when stream fails to start"
 
     @pytest.mark.asyncio
     async def test_streaming_redaction_triggers_update_with_converted_tables(self):
@@ -2446,9 +2517,13 @@ class TestCompactCommand:
     def _make_provider_with_compact(self, events=None):
         """Create a FakeProvider that supports stream_command for /compact."""
         provider = FakeProvider(events)
-        compact_events = events if events is not None else [
-            LLMEvent(kind="compaction_status", text="completed", title="Summary preserved"),
-        ]
+        compact_events = (
+            events
+            if events is not None
+            else [
+                LLMEvent(kind="compaction_status", text="completed", title="Summary preserved"),
+            ]
+        )
 
         async def stream_command(command):
             for e in compact_events:
@@ -2511,9 +2586,11 @@ class TestCompactCommand:
 
     @pytest.mark.asyncio
     async def test_compact_failed_reports_error(self):
-        provider = self._make_provider_with_compact([
-            LLMEvent(kind="compaction_status", text="failed", title="out of memory"),
-        ])
+        provider = self._make_provider_with_compact(
+            [
+                LLMEvent(kind="compaction_status", text="failed", title="out of memory"),
+            ]
+        )
         sessions = self._make_sessions_with_active(provider)
         slack = MockSlackClient()
 
@@ -2524,9 +2601,11 @@ class TestCompactCommand:
 
     @pytest.mark.asyncio
     async def test_compact_with_summary(self):
-        provider = self._make_provider_with_compact([
-            LLMEvent(kind="compaction_status", text="completed", title="Kept 5 key topics"),
-        ])
+        provider = self._make_provider_with_compact(
+            [
+                LLMEvent(kind="compaction_status", text="completed", title="Kept 5 key topics"),
+            ]
+        )
         sessions = self._make_sessions_with_active(provider)
         slack = MockSlackClient()
 
@@ -2608,7 +2687,9 @@ class TestCompactCommand:
 
         texts = self._posted_texts(slack)
         assert any("unexpectedly" in t for t in texts)
-        assert "destroy:thread1" in sessions.removed, "Session must be destroyed after compact failure"
+        assert (
+            "destroy:thread1" in sessions.removed
+        ), "Session must be destroyed after compact failure"
 
     @pytest.mark.asyncio
     async def test_compact_posts_timing_footer_without_ctx(self):
@@ -2682,7 +2763,9 @@ class TestStopReasonCancelled:
 
         def _patched_load():
             cfg = _real_load()
-            return dataclasses.replace(cfg, slack=dataclasses.replace(cfg.slack, reactions_enabled=True))
+            return dataclasses.replace(
+                cfg, slack=dataclasses.replace(cfg.slack, reactions_enabled=True)
+            )
 
         monkeypatch.setattr(KiroCrewConfig, "load", _patched_load)
 
@@ -2740,7 +2823,13 @@ class TestStopReasonCancelled:
         mock_consolidator = MagicMock()
 
         await handle_message(
-            slack, sessions, "C1", "hello", None, "msg1", "U1",
+            slack,
+            sessions,
+            "C1",
+            "hello",
+            None,
+            "msg1",
+            "U1",
             consolidator=mock_consolidator,
         )
 
@@ -2774,7 +2863,13 @@ class TestStopReasonCancelled:
         mock_conversation_log = MagicMock()
 
         await handle_message(
-            slack, sessions, "C1", "hello", None, "msg1", "U1",
+            slack,
+            sessions,
+            "C1",
+            "hello",
+            None,
+            "msg1",
+            "U1",
             conversation_log=mock_conversation_log,
             consolidator=mock_consolidator,
         )
@@ -3055,9 +3150,12 @@ class TestCondenseThinking:
         text = "alpha beta gamma delta epsilon zeta"
         out = _condense_thinking(text, limit=18)
         # Should not cut in the middle of a word.
-        body = out.split("\n", 1)[1].replace("> ", "").replace(
-            "_…full reasoning in dashboard Activity_", ""
-        ).strip()
+        body = (
+            out.split("\n", 1)[1]
+            .replace("> ", "")
+            .replace("_…full reasoning in dashboard Activity_", "")
+            .strip()
+        )
         assert not body.endswith("gam")
         assert "alpha" in body
 
@@ -3167,8 +3265,13 @@ class TestSlackTrustSubagentPropagation:
 
         with patch("kiro_crew.session.SessionMap", return_value=fake_map):
             result = await handle_interaction(
-                "C9", "ts9", "trust_tool", user_id="U1",
-                thread_ts="thread-9", slack=slack, sessions=sessions,
+                "C9",
+                "ts9",
+                "trust_tool",
+                user_id="U1",
+                thread_ts="thread-9",
+                slack=slack,
+                sessions=sessions,
             )
 
         assert result == "trust_tool"

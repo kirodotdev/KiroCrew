@@ -62,6 +62,7 @@ __all__ = [
     "cron_executor",
     "discovery_executor",
     "embed_executor",
+    "governance_executor",
     "run_in_embed_pool",
     "shutdown_maintenance_executor",
 ]
@@ -110,12 +111,23 @@ _MAX_DISCOVERY_WORKERS = 4
 # so the cap only bites — deliberately — when Ollama is wedged.
 _MAX_EMBED_WORKERS = 8
 
+# Governance checks for EXTERNALLY-triggered surfaces: the per-inbound-message
+# channels gate (every Slack/Discord/Telegram/Webex/WeCom message + approval
+# callback)
+# and the dashboard governance GETs.  These walk the ProfileStore (filesystem)
+# and may do a synchronous SEL write, and their rate is driven by REMOTE senders
+# — a burst of inbound messages could otherwise occupy every mc-maint worker and
+# starve the orphan sweeps.  Own bounded pool so externally-paced governance I/O
+# queues among ITSELF, never evicting the maintenance sweeps.
+_MAX_GOVERNANCE_WORKERS = 4
+
 _lock = threading.Lock()
 _pool: ThreadPoolExecutor | None = None
 _subprocess_pool: ThreadPoolExecutor | None = None
 _cron_pool: ThreadPoolExecutor | None = None
 _discovery_pool: ThreadPoolExecutor | None = None
 _embed_pool: ThreadPoolExecutor | None = None
+_governance_pool: ThreadPoolExecutor | None = None
 
 
 def maintenance_executor() -> ThreadPoolExecutor:
@@ -218,6 +230,28 @@ def embed_executor() -> ThreadPoolExecutor:
     return _embed_pool
 
 
+def governance_executor() -> ThreadPoolExecutor:
+    """Return the process-wide governance-check pool, creating it on first use.
+
+    Threads are named ``mc-gov``.  Separate from :func:`maintenance_executor` so
+    the externally-paced per-inbound-message channels gate (and the dashboard
+    governance GETs) — which walk the ProfileStore and may do a synchronous SEL
+    write — can never occupy the workers the orphan-reaping sweeps need.  A remote
+    burst of inbound messages queues among ITSELF here instead of starving the
+    maintenance sweeps.
+    """
+    global _governance_pool
+    if _governance_pool is None:
+        with _lock:
+            if _governance_pool is None:
+                _governance_pool = ThreadPoolExecutor(
+                    max_workers=_MAX_GOVERNANCE_WORKERS,
+                    thread_name_prefix="mc-gov",
+                )
+                atexit.register(shutdown_maintenance_executor)
+    return _governance_pool
+
+
 async def run_in_embed_pool(func: Callable[..., _T], /, *args: Any, **kwargs: Any) -> _T:
     """Run a blocking Ollama embed/probe callable on :func:`embed_executor`.
 
@@ -232,12 +266,14 @@ async def run_in_embed_pool(func: Callable[..., _T], /, *args: Any, **kwargs: An
 def shutdown_maintenance_executor() -> None:
     """Shut down all maintenance pools if they were created.  Idempotent."""
     global _pool, _subprocess_pool, _cron_pool, _discovery_pool, _embed_pool
+    global _governance_pool
     with _lock:
         pool, _pool = _pool, None
         subprocess_pool, _subprocess_pool = _subprocess_pool, None
         cron_pool, _cron_pool = _cron_pool, None
         discovery_pool, _discovery_pool = _discovery_pool, None
         embed_pool, _embed_pool = _embed_pool, None
+        governance_pool, _governance_pool = _governance_pool, None
     if pool is not None:
         pool.shutdown(wait=False, cancel_futures=True)
     if subprocess_pool is not None:
@@ -248,3 +284,5 @@ def shutdown_maintenance_executor() -> None:
         discovery_pool.shutdown(wait=False, cancel_futures=True)
     if embed_pool is not None:
         embed_pool.shutdown(wait=False, cancel_futures=True)
+    if governance_pool is not None:
+        governance_pool.shutdown(wait=False, cancel_futures=True)

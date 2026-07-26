@@ -607,6 +607,7 @@ class SecurityEventLog:
         rule: str = "",
         layer: str = "",
         reason: str = "",
+        critical: bool = False,
     ) -> None:
         """Convenience: log a governance (Level 1 ∩ Level 2) decision.
 
@@ -620,6 +621,14 @@ class SecurityEventLog:
         are redacted HERE (before ``log``) via ``redact_via_context`` — a command
         body or path that tripped governance must not leak a credential into the
         audit log.
+
+        Pass ``critical=True`` when the caller enforces "audit-or-deny" for a
+        GOVERNED decision (e.g. a governed transport-start allow): the event is
+        written SYNCHRONOUSLY and a persistence failure (unwritable SEL file,
+        full disk) is re-raised, so the caller can refuse the action rather than
+        proceed unaudited. Without it the write is enqueued to the background
+        writer, which swallows persistence failures — fine for best-effort audits
+        (e.g. an ungoverned allow) but NOT for audit-or-deny.
         """
         # Lazy import: sel.py is imported very early (security.py imports it), and
         # platform.context imports security indirectly — keep this off the
@@ -646,7 +655,8 @@ class SecurityEventLog:
                     "layer": layer,
                     "reason": safe_reason[:_MAX_ARG_LEN],
                 },
-            )
+            ),
+            critical=critical,
         )
 
     def log_governance_degraded(

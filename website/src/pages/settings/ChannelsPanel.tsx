@@ -1,6 +1,6 @@
 import React, { useEffect } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { useQueries } from '@tanstack/react-query'
+import { useQueries, useQuery } from '@tanstack/react-query'
 import { ChevronRight, ArrowLeft } from 'lucide-react'
 import { api } from '../../api/client'
 import { useContainerWidth } from '../../hooks/useContainerWidth'
@@ -14,6 +14,7 @@ import { DiscordPanel } from './DiscordPanel'
 import { TelegramPanel } from './TelegramPanel'
 import { WebexPanel } from './WebexPanel'
 import { WeComPanel } from './WeComPanel'
+import { ChannelDisabledPanel } from './ChannelDisabledPanel'
 
 /** Minimal status shape every channel config endpoint shares. */
 interface ChannelStatus {
@@ -61,6 +62,28 @@ function statusLine(s: ChannelStatus | undefined, isError: boolean): { text: str
  *  list alone, drilling into a full-width detail view with a back button.
  *  Selection is URL-backed (?channel=slack) so deep links and the legacy
  *  ?tab=slack remap land on the right channel. */
+/** Per-channel `channels`-governance state, driven off the policy map. Every
+ *  channel (Slack included) is governed: a policy that denies a channel blocks
+ *  its inbound + tool-approval chokepoints, so the UI must reflect that. The
+ *  editable config panel renders ONLY on a confirmed ALLOW — never while the
+ *  policy is unknown, so a user can't edit config that won't take effect. */
+type ChannelGovState = 'allowed' | 'denied' | 'pending' | 'unavailable'
+
+function govState(
+  key: string,
+  policy: Record<string, boolean | null> | undefined,
+  isLoading: boolean,
+  isError: boolean,
+): ChannelGovState {
+  if (isError) return 'unavailable'
+  if (isLoading || policy === undefined) return 'pending'
+  const v = policy[key]
+  if (v === true) return 'allowed'
+  if (v === false) return 'denied'
+  // null (eval error) or a missing key → cannot confirm ALLOW → unavailable.
+  return 'unavailable'
+}
+
 export function ChannelsPanel() {
   const [params, setParams] = useSearchParams()
   const [containerRef, width] = useContainerWidth<HTMLDivElement>()
@@ -105,6 +128,27 @@ export function ChannelsPanel() {
     })),
   })
 
+  // Effective per-channel `channels` governance policy: { slack: true, ... }
+  // (true permitted, false denied, null eval-error). All-true when no policy
+  // governs channels (standard OSS build) → nothing greyed, UI unchanged.
+  const {
+    data: govPolicy,
+    isLoading: govLoading,
+    isError: govError,
+  } = useQuery({
+    queryKey: ['governance-channels'],
+    queryFn: api.getGovernanceChannels,
+    staleTime: 60_000,
+    // The channels policy is a Level-2 PROFILE, which HOT-RELOADS at runtime (the
+    // ProfileStore mtime watch) — unlike the boot-frozen Level-1 ceiling. So poll
+    // on a modest interval: an admin tightening a live profile flips a channel to
+    // "Off by admin" on an already-open Settings page within ~30s, no reload.
+    refetchInterval: 30_000,
+    retry: false,
+  })
+  const channelGov = (key: string): ChannelGovState =>
+    govState(key, govPolicy, govLoading, govError)
+
   const list = (
     <div
       className={twoPane ? 'w-[280px] shrink-0' : 'w-full'}
@@ -115,6 +159,8 @@ export function ChannelsPanel() {
         {CHANNELS.map((c, i) => {
           const st = statusLine(statuses[i].data as ChannelStatus | undefined, statuses[i].isError)
           const active = twoPane && c.key === effectiveKey
+          const gov = channelGov(c.key)
+          const denied = gov === 'denied'
           return (
             <button
               key={c.key}
@@ -123,15 +169,27 @@ export function ChannelsPanel() {
               onClick={() => setChannel(c.key)}
               className={`flex items-center gap-3 w-full text-left px-3.5 py-2.5 cursor-pointer border-none transition-colors ${
                 i > 0 ? 'border-t border-t-border border-solid border-x-0 border-b-0' : ''
-              } ${active ? 'bg-accent-subtle' : 'bg-transparent hover:bg-bg-hover'}`}
+              } ${active ? 'bg-accent-subtle' : 'bg-transparent hover:bg-bg-hover'} ${denied ? 'opacity-60' : ''}`}
             >
               <span className="w-5 h-5 shrink-0 flex items-center justify-center">{c.logo}</span>
               <span className="flex-1 min-w-0">
                 <span className={`block text-[13.5px] font-semibold ${active ? 'text-accent' : 'text-text-strong'}`}>{c.name}</span>
-                <span className="flex items-center gap-1.5 text-[11.5px]" style={{ color: st.color }}>
-                  {st.dot && <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: st.color }} />}
-                  {st.text}
-                </span>
+                {denied ? (
+                  // A policy-denied channel shows "Off by admin" instead of its
+                  // connection status — the status is moot while the channel is
+                  // governed off. Full text in the title for the compact chip.
+                  <span
+                    className="inline-block mt-0.5 px-1.5 py-px rounded-full text-[11px] font-semibold uppercase bg-bg-hover text-muted border border-border whitespace-nowrap"
+                    title="Off by admin"
+                  >
+                    Off by admin
+                  </span>
+                ) : (
+                  <span className="flex items-center gap-1.5 text-[11.5px]" style={{ color: st.color }}>
+                    {st.dot && <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: st.color }} />}
+                    {st.text}
+                  </span>
+                )}
               </span>
               {!twoPane && <ChevronRight size={14} className="text-muted shrink-0" />}
             </button>
@@ -161,7 +219,19 @@ export function ChannelsPanel() {
           </button>
         )}
         <div className={twoPane ? 'flex-1 min-w-0' : 'w-full'}>
-          {selected && <selected.Panel key={selected.key} />}
+          {selected && (
+            // The editable config panel renders ONLY on a confirmed ALLOW; a
+            // denied / still-loading / unavailable governance state shows the
+            // corresponding notice instead, so a user never edits (or the page
+            // never flashes) a form whose config wouldn't take effect.
+            channelGov(selected.key) === 'allowed'
+              ? <selected.Panel key={selected.key} />
+              : <ChannelDisabledPanel
+                  key={`${selected.key}-gov`}
+                  label={selected.name}
+                  variant={channelGov(selected.key) as 'denied' | 'pending' | 'unavailable'}
+                />
+          )}
         </div>
       </div>
     </div>
