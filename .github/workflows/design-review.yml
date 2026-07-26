@@ -3,12 +3,12 @@ name: Design Review
 # ADVISORY design-level AI review using Claude "Fable 5" via Amazon Bedrock.
 # Complements the two line-level reviewers (claude-review.yml, codex-review.yml)
 # with a Sage-Phase-1-style DESIGN gate: does the change actually solve the PR's
-# stated problem, is the underlying approach/logic sound, and how wide is its
-# blast radius. It does NOT re-review line-level code/style/security (the other
-# two own that). It is ADVISORY — it upserts a verdict comment and is
+# stated problem, is the underlying approach/logic sound, and does the solution
+# fit the intended scope. It does NOT re-review line-level code/style/security
+# (the other two own that). It is ADVISORY — it upserts a verdict comment and is
 # NON-BLOCKING because it is not a required status check (the check MAY go red
-# if the review errors, but that red is override-able by a human). Same auth path as
-# claude-review.yml: OIDC → Amazon Bedrock; Fable 5 is a Claude model, so it
+# if the review errors, but that red is override-able by a human). Same auth path
+# as claude-review.yml: OIDC → Amazon Bedrock; Fable 5 is a Claude model, so it
 # runs through anthropics/claude-code-action with use_bedrock.
 
 on:
@@ -176,15 +176,6 @@ jobs:
                concurrency, malformed input, dependency outage? No failure story
                on a fallible path is a design risk.
 
-            HIGH-INFLUENCE / BLAST-RADIUS CALL-OUT (required; sets `blast_radius`):
-            rate how far this change reaches so humans review it with the right
-            depth. Weigh IMPACT, not diff size — a tiny diff to auth, data,
-            persistence, security controls, the platform/governance seam,
-            deploy/CI, or a widely-imported shared helper is HIGH; a large diff
-            confined to one leaf feature may be LOW. Blast radius sets review
-            DEPTH and is a prominent call-out; it is NEVER, on its own, grounds
-            for a BLOCK verdict.
-
             DESCRIPTION ↔ DIFF FIDELITY (bidirectional, strict):
             - Description → diff: every claimed behavior/fix must have backing
               code; a claim with no code is a "phantom description" finding.
@@ -212,8 +203,7 @@ jobs:
               human.)
             Tie-breaker: when torn between BLOCK and CONCERNS, choose CONCERNS.
             Only reach for BLOCK when the DESIGN is wrong — never merely because
-            the change is large or far-reaching (that is the blast-radius call-out,
-            not the verdict).
+            the change is large or far-reaching.
 
             FINAL OUTPUT (authoritative — this is your LAST message; the workflow
             captures it verbatim from the run transcript, so do NOT call any tool
@@ -221,18 +211,16 @@ jobs:
 
             STYLE: terse, precise, punchline-first. NO preamble, NO restating the
             PR, NO echoing the design-gate questions, NO praise, NO summary of
-            what the change does. The badge already shows the verdict and blast
-            radius — do NOT repeat them in prose. A clean PASS is TWO header lines
-            + a one-line punchline + the marker; nothing else. Aim for the
-            shortest output that conveys every real signal — usually well under
-            ~150 words. Every sentence must be something the author would ACT on.
+            what the change does. The badge already shows the verdict — do NOT
+            repeat it in prose. A clean PASS is ONE header line + a one-line
+            punchline + the marker; nothing else. Aim for the shortest output
+            that conveys every real signal — usually well under ~150 words.
+            Every sentence must be something the author would ACT on.
 
             Output EXACTLY this shape and nothing more:
 
-            The FIRST two lines are machine-parsed — emit them verbatim, each on
-            its own line, values only:
+            The FIRST line is machine-parsed — emit it verbatim, value only:
             Design-Verdict: <PASS | CONCERNS | BLOCK>
-            Design-Blast-Radius: <low | medium | high>
 
             Then a blank line and ONE bold punchline (≤25 words): the single most
             important takeaway — for PASS, why it's sound; for CONCERNS/BLOCK, the
@@ -308,9 +296,7 @@ jobs:
           fi
           # Machine-parse the verdict header the prompt requires (case-insensitive).
           verdict="$(printf '%s\n' "$summary" | grep -iE '^Design-Verdict:' | head -n1 | sed -E 's/^[^:]*:[[:space:]]*//' | tr -d '\r' | tr '[:lower:]' '[:upper:]')"
-          blast="$(printf '%s\n' "$summary" | grep -iE '^Design-Blast-Radius:' | head -n1 | sed -E 's/^[^:]*:[[:space:]]*//' | tr -d '\r' | tr '[:upper:]' '[:lower:]')"
           [ -z "$verdict" ] && verdict="UNKNOWN"
-          [ -z "$blast" ] && blast="unknown"
           echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
           MARKER="<!-- design-review -->"
           case "$verdict" in
@@ -323,7 +309,7 @@ jobs:
             # Valid verdict → post the review body (redacted below).
             {
               echo "$MARKER"
-              echo "## Design Review (Fable 5) — $badge · blast radius: $blast"
+              echo "## Design Review (Fable 5) — $badge"
               echo
               echo "_Advisory design-level review of \`$HEAD\` — updated in place on each push; does **not** block merge._"
               echo

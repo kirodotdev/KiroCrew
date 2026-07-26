@@ -15,13 +15,13 @@ on:
     types: [created, edited]
 
 # Re-run completed Fable / GPT workflows, update the API-owned Arbiter check,
-# and record the trusted decision. Deliberately no id-token or contents:write.
+# and record the trusted decision. PR-write is required because the trusted
+# record is a pull-request comment. Deliberately no id-token or contents:write.
 permissions:
   actions: write
   checks: write
   contents: read
-  issues: write
-  pull-requests: read
+  pull-requests: write
 
 concurrency:
   group: ai-review-human-override-${{ github.event.issue.number }}
@@ -210,4 +210,20 @@ jobs:
               -f status=completed -f conclusion=success \
               -f "output[title]=$title" -f "output[summary]=$summary" >/dev/null
             echo "Created successful Arbiter override check for $HEAD"
+          fi
+
+      - name: Refresh PR Readiness after Arbiter override
+        if: >-
+          steps.context.outputs.target == 'arbiter'
+          || steps.context.outputs.target == 'all'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.issue.number }}
+          HEAD: ${{ steps.context.outputs.head }}
+        run: |
+          default_branch="$(gh api "repos/$REPO" --jq '.default_branch')"
+          if ! gh workflow run pr-readiness.yml --ref "$default_branch" \
+            -f pr="$PR" -f sha="$HEAD"; then
+            echo "::warning::could not dispatch PR Readiness refresh"
           fi

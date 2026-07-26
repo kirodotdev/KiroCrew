@@ -171,8 +171,11 @@ After validation it posts a `github-actions[bot]` comment whose hidden marker
 binds `{target, full head SHA, actor, source comment id}`. Reviewer workflows
 trust only this bot-authored marker; a raw author or third-party comment cannot
 turn a gate green. The handler has only review-control permissions
-(`actions:write`, `checks:write`, `issues:write`, read-only repository/PR
-access), and receives no `id-token` or `contents:write`.
+(`actions:write`, `checks:write`, `pull-requests:write`, and
+`contents:read`), and receives no `id-token` or `contents:write`.
+`pull-requests:write` is required for the handler to create the trusted record
+on a pull request; `issues:write` alone does not make that write reliable for a
+GitHub Actions installation token.
 
 For Fable 5 and GPT 5.6, the handler re-runs the existing PR workflow. The
 re-run resolves the trusted marker before acquiring AWS credentials, skips the
@@ -180,15 +183,113 @@ model invocation, updates the existing summary with a human-override banner,
 and exits its original gate successfully. Arbiter's gating check is created via
 the Checks API, so the handler updates that check and its marker-keyed PR
 comment directly; later Arbiter runs also resolve the same trusted marker before
-calling the model. The broader `defer-longterm` label remains an accepted-risk
-override for Arbiter.
+calling the model. Arbiter also re-reads the trusted marker immediately after
+creating its check and patches that exact check plus its summary comment when an
+override arrived during model execution. If the override arrives after that
+read, the handler sees and patches the newly created check instead; either event
+ordering leaves the SHA-scoped human decision authoritative. The broader
+`defer-longterm` label remains an accepted-risk override for Arbiter.
 
-All three marker-keyed comments expose the override command. GPT 5.6 and Arbiter
-also normalize each current-commit result into a top verdict plus one sentence:
-`✅ no blocking findings`, `🔴 changes requested (blocking)`, an incomplete
-state, or a human-override state. Arbiter refreshes its comment while waiting
-for new-commit reviewer inputs, so a green verdict from the previous commit is
-never left looking current.
+All three marker-keyed comments expose the override command to repository
+writers. GPT 5.6 and Arbiter also normalize each current-commit result into a
+top verdict plus one sentence: `✅ no blocking findings`,
+`🔴 changes requested (blocking)`, an incomplete state, or a human-override
+state. Arbiter refreshes its comment while waiting for new-commit reviewer
+inputs, so a green verdict from the previous commit is never left looking
+current.
+
+When no current-SHA override is active, GPT 5.6 captures convergence context
+before replacing its marker-keyed comment: the prior bot review, prior
+bot-recorded GPT/`all` override decisions, and recent review dispositions from
+authors whose current collaborator permission is `write`, `maintain`, or
+`admin`. Bodies are capped at 6,000 characters each and the complete bundle at
+24,000 bytes. The two discovery outputs are likewise capped at 12,000 bytes
+each before prompt assembly. The bundle is nonce-delimited and explicitly
+untrusted: old SHA-scoped decisions are evidence only, never authorization for
+a new SHA.
+
+GPT still makes exactly three model calls. Passes 1 and 2 discover candidates;
+pass 3 receives both bounded discovery outputs plus the bounded cross-round
+context, rechecks the full diff, resolves contradictions, deduplicates, and
+emits the only verdict exposed to the comment and gate. A materially identical
+settled finding, or a reversal of earlier GPT guidance, must identify a concrete
+changed-code or newly identified evidence delta; a new SHA alone is not a
+delta. A prior disposition never hides a currently provable bug, but absent such
+a delta the reconciler drops the repeated or contradictory finding. Any failed
+call makes the three-pass review incomplete and leaves no current-SHA reviewed
+marker, so the gate fails closed.
+
+### Pull Request Readiness (`.github/workflows/` + `prepare-pr`)
+
+`.github/workflows/pr-readiness.yml` publishes one current-revision answer for
+the repository's fan-out of CI and AI reviews. The commit status context is
+`PR Readiness`; the PR carries exactly one matching managed label:
+`readiness: checking`, `readiness: action required`, or `readiness: passed`.
+The workflow creates missing labels idempotently, replaces the prior readiness
+label, and removes readiness labels when the PR closes. A passed label means
+the automated lanes passed for that SHA; it does not represent human approval.
+Making `PR Readiness` a required status remains an explicit branch-protection
+or ruleset setting outside the workflow.
+
+For same-repository PRs, the aggregate covers the latest PR run for CI, Build,
+Code Review, Claude AI Review, GPT 5.6 Review (the reconciled result of its three
+calls), and Design Review, plus the managed dynamic CodeQL workflow conclusion
+and the API-owned `Arbiter — judge from comments` check. Grading the CodeQL
+workflow conclusion, rather than its neutral summary check, preserves failures
+from any managed Analyze job. Fork PRs cannot receive repository secrets or
+OIDC credentials, and this repository's managed default-setup CodeQL workflow
+is not scheduled for fork heads. CodeQL, the three secret-backed AI workflows,
+and Arbiter are therefore explicitly ineligible for forks; CI, Build, and Code
+Review still determine their readiness. Missing or running eligible lanes
+produce `checking`; blocking workflow/check failures produce
+`action required`; drafts remain `checking`.
+Design Review completion is required as Arbiter input, but its verdict and
+infrastructure conclusion are advisory. It emits one `PASS | CONCERNS | BLOCK`
+verdict and no separate blast-radius rating. Mergeability, behind-base state,
+and human review decisions are not part of this event-driven aggregate because
+they can change without an aggregate refresh event; branch protection and the
+live `prepare-pr` status check own them.
+
+Every event resolves the PR's current head through the GitHub API. An event or
+explicit Arbiter refresh carrying an older expected SHA is ignored, so a late
+run cannot relabel the new revision. A code-free `pull_request_target` handler
+updates same-repository and fork PRs from the trusted base workflow. Actions
+that start or restart validation for the same SHA, including a PR description
+edit that re-runs Code Review, force the aggregate to `checking` before run
+lookup so an older successful same-SHA run cannot keep readiness green. Trusted
+base-repository `workflow_run` events refresh it as eligible lanes finish.
+Arbiter dispatches an explicit refresh after replacing its API-owned check
+because its own `workflow_run` completion is not associated with the source PR.
+The dispatch capability lives in a separate non-model job and runs only after
+the check publication succeeds. Readiness-label events cannot recursively
+rerun or cancel Arbiter: its label path accepts only `defer-longterm`, and
+ignored label events use a per-run concurrency key, so they cannot cancel an
+active review or replace a pending authoritative reviewer event.
+
+The bundled `prepare-pr` skill front-loads the same review contract before the
+first push. Description/diff reconciliation and every allowed commit mutation
+happen before review. After local gates, it dispatches two independent,
+read-only subagents over the finished base-to-head diff: one owns correctness,
+security, and platform compatibility; the other owns contracts, tests, error
+paths, and the user workflow. Both use the canonical severity and output rules
+from `.github/workflows/codex-review.yml`. Legitimate Critical/High findings are
+fixed before publication; Medium/Low findings remain advisory unless Arbiter
+or a human escalates them. If a blocker fix changes code, one focused verifier
+checks that fix. The skill records the verifier-cleared SHA and fails closed if
+HEAD changes before push; it does not start an unbounded local review loop.
+During a post-submit round, it records one concise, marker-keyed GPT disposition
+comment before re-pushing whenever findings were fixed or rebutted. That record
+names the prior reviewed SHA, finding identity, outcome, and evidence so the
+next reconciliation call can distinguish a real delta from a repeated argument;
+the record remains untrusted evidence and does not carry an override forward.
+
+`prepare-pr/scripts/pr_status.py` treats the aggregate status as authoritative
+when present, including over stale failed or pending duplicate checks in
+GitHub's rollup. Older PRs without the aggregate retain the fail-closed legacy
+rollup behavior. Only the commit-status `context` named `PR Readiness` is
+trusted as the aggregate; a same-named CheckRun cannot mask another failure.
+Unresolved review threads are reported for visibility but are advisory rather
+than an automatic readiness failure.
 
 ### Denied Commands (`security.py` + `hooks.py`)
 

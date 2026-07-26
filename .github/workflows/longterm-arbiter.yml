@@ -26,10 +26,11 @@ name: Arbiter
 #     the job FAILS CLOSED (leaves the check pending/in_progress) until all three
 #     reviewer comments are present for the head SHA, so early fires are harmless
 #     and the last-completing fire is authoritative.
-#   pull_request [labeled, unlabeled] — so applying/removing the `defer-longterm`
-#     override label actually RE-EVALUATES the gate (label events do not trigger
-#     workflow_run, so without this the documented override would be a no-op).
-#   A SHA-scoped `/ai-review override arbiter ...` author decision is recorded
+#   pull_request [labeled, unlabeled] — applying/removing `defer-longterm`
+#     RE-EVALUATES the gate (label events do not trigger workflow_run). Other
+#     labels, including the PR Readiness labels, are ignored so they cannot
+#     create an AI-review loop.
+#   A SHA-scoped `/ai-review override arbiter ...` writer decision is recorded
 #     by ai-review-human-override.yml and wins over the model verdict. Unlike the
 #     broader label, it expires automatically on the next commit.
 #
@@ -49,22 +50,45 @@ on:
   pull_request:
     types: [labeled, unlabeled]
 
+# Keep the workflow default read-only. The model job and the readiness-dispatch
+# job declare disjoint write capabilities below.
 permissions:
   contents: read
-  pull-requests: write
-  checks: write     # posts the "Arbiter — judge from comments" check-run
-  id-token: write   # required for AWS OIDC (configure-aws-credentials)
 
 concurrency:
-  # Head SHA is the natural key; it is exposed under different event shapes, so
-  # coalesce. Both events resolve to the PR head commit.
-  group: longterm-arbiter-${{ github.event.workflow_run.head_sha || github.event.pull_request.head.sha }}
-  cancel-in-progress: true
+  # Head SHA is the natural key for authoritative reviewer/defer events. Ignored
+  # labels get a unique group: GitHub replaces an older pending run even when
+  # cancel-in-progress is false, so sharing the SHA group could evict the final
+  # reviewer event before its job condition is evaluated.
+  group: >-
+    longterm-arbiter-${{
+      (github.event_name == 'pull_request'
+        && github.event.label.name != 'defer-longterm'
+        && github.run_id)
+      || github.event.workflow_run.head_sha
+      || github.event.pull_request.head.sha
+    }}
+  # Readiness-label events are ignored by the job condition. They must also be
+  # unable to cancel a real review already running for the same head.
+  cancel-in-progress: >-
+    ${{
+      github.event_name != 'pull_request'
+      || github.event.label.name == 'defer-longterm'
+    }}
 
 jobs:
   arbiter:
     name: Arbiter
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      checks: write
+      id-token: write
+    outputs:
+      pr: ${{ steps.gather.outputs.pr }}
+      sha: ${{ steps.gather.outputs.sha }}
+      published: ${{ steps.publish.outputs.published }}
     # Same-repo PRs only (forks have no OIDC/secrets); handle BOTH event shapes.
     if: >-
       ( github.event_name == 'workflow_run'
@@ -72,6 +96,7 @@ jobs:
         && github.event.workflow_run.head_repository.full_name == github.repository
         && github.event.workflow_run.pull_requests[0].number != null )
       || ( github.event_name == 'pull_request'
+           && github.event.label.name == 'defer-longterm'
            && github.event.pull_request.head.repo.full_name == github.repository )
     steps:
       # Check out the PR HEAD (workflow_run defaults to the base branch, not the
@@ -91,7 +116,7 @@ jobs:
       # `state`:
       #   skip     — Dependabot (mirror the reviewers' skip contract)
       #   deferred — the `defer-longterm` override label is present
-      #   human_override — trusted SHA-scoped author/writer judgment is present
+      #   human_override — trusted SHA-scoped writer judgment is present
       #   waiting  — not all three reviewer comments are present for this SHA
       #   ready    — all present; /tmp/subthreshold.md + /tmp/pr.diff written
       - name: Gather sub-threshold findings
@@ -287,7 +312,7 @@ jobs:
 
             SCOPE TEST (apply before escalating anything). Many findings flag
             SIDE EFFECTS on components this PR does not target. Weighing that
-            blast radius is correct and valuable — but a related influence is
+            scope of impact is correct and valuable — but a related influence is
             NOT a blocker unless it independently clears the narrow bar above
             (one-way door OR concrete harm) AND this PR itself CREATES or WORSENS
             it. If the concern PRE-EXISTS this PR, is independently reversible in
@@ -351,7 +376,11 @@ jobs:
       #               blocking, re-run — mirrors the design reviewer's philosophy
       #               that an incomplete review never hard-blocks)
       - name: Decide, comment, and post check
-        if: always()
+        id: publish
+        if: >-
+          always()
+          && steps.gather.outputs.pr != ''
+          && steps.gather.outputs.sha != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
@@ -433,7 +462,7 @@ jobs:
               fi
             fi
             echo
-            echo "False positive or not applicable? The PR author or a repository writer can comment:"
+            echo "False positive or not applicable? A repository writer can comment:"
             echo "\`/ai-review override arbiter $SHA: <one-sentence reason>\`"
             echo
             echo "For a broader accepted-risk deferral, apply \`defer-longterm\` and explain why."
@@ -457,18 +486,108 @@ jobs:
           ck_title="$(printf '%s' "$TITLE" | head -c 120)"
           ck_summary="$(printf '%s' "$BODY" | head -c 600)"
           [ -z "$ck_summary" ] && ck_summary="See the Arbiter PR comment."
+          check_json=""
           if [ "$STATUS" = "completed" ]; then
-            gh api --method POST "repos/$REPO/check-runs" \
+            if ! check_json="$(gh api --method POST "repos/$REPO/check-runs" \
               -f name="Arbiter — judge from comments" -f head_sha="$SHA" \
               -f status="completed" -f conclusion="$CONCLUSION" \
-              -f "output[title]=$ck_title" -f "output[summary]=$ck_summary" >/dev/null \
-              && echo "Posted Arbiter — judge from comments check-run: $CONCLUSION" \
-              || echo "::warning::failed to post Arbiter — judge from comments check-run"
+              -f "output[title]=$ck_title" -f "output[summary]=$ck_summary" \
+              )"; then
+              echo "::error::could not publish Arbiter — judge from comments check-run"
+              exit 1
+            fi
+            echo "Posted Arbiter — judge from comments check-run: $CONCLUSION"
           else
-            gh api --method POST "repos/$REPO/check-runs" \
+            if ! check_json="$(gh api --method POST "repos/$REPO/check-runs" \
               -f name="Arbiter — judge from comments" -f head_sha="$SHA" \
               -f status="in_progress" \
-              -f "output[title]=$ck_title" -f "output[summary]=$ck_summary" >/dev/null \
-              && echo "Posted Arbiter — judge from comments check-run: pending (waiting)" \
-              || echo "::warning::failed to post Arbiter — judge from comments check-run"
+              -f "output[title]=$ck_title" -f "output[summary]=$ck_summary" \
+              )"; then
+              echo "::error::could not publish pending Arbiter — judge from comments check-run"
+              exit 1
+            fi
+            echo "Posted Arbiter — judge from comments check-run: pending (waiting)"
+          fi
+          check_id="$(jq -r '.id // empty' <<<"$check_json")"
+          if [ -z "$check_id" ]; then
+            echo "::error::Arbiter check publication returned no check id"
+            exit 1
+          fi
+
+          # Close the race where a writer records an override while the model is
+          # running. The handler patches whichever check is latest at that moment;
+          # after publishing, re-read the trusted marker and patch THIS exact check.
+          # If the override arrives after this read, the handler sees this check as
+          # latest and patches it, so either ordering leaves human judgment green.
+          if ! latest_comments="$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+            | jq -s 'add // []')"; then
+            echo "::error::could not re-read trusted override markers"
+            exit 1
+          fi
+          override_exact="<!-- ai-review-human-override target=arbiter head=$SHA "
+          override_all="<!-- ai-review-human-override target=all head=$SHA "
+          latest_override="$(printf '%s' "$latest_comments" \
+            | jq -r --arg exact "$override_exact" --arg all "$override_all" \
+              '[.[] | select(.user.login == "github-actions[bot]")
+              | select((.body | startswith($exact)) or (.body | startswith($all)))]
+              | (last.body // "")')"
+          latest_override_actor="$(printf '%s\n' "$latest_override" \
+            | sed -nE '1s/^.* actor=([^ ]+) source=([0-9]+) -->$/\1/p')"
+          latest_override_source="$(printf '%s\n' "$latest_override" \
+            | sed -nE '1s/^.* actor=([^ ]+) source=([0-9]+) -->$/\2/p')"
+          if [ -n "$latest_override_actor" ] && [ -n "$latest_override_source" ]; then
+            override_title="Human override accepted"
+            override_summary="@$latest_override_actor overrode the Arbiter finding for $SHA; the recorded human judgment is authoritative."
+            gh api --method PATCH "repos/$REPO/check-runs/$check_id" \
+              -f status=completed -f conclusion=success \
+              -f "output[title]=$override_title" \
+              -f "output[summary]=$override_summary" >/dev/null
+
+            source_url="https://github.com/$REPO/pull/$PR#issuecomment-$latest_override_source"
+            printf -v override_body '%s\n## Arbiter — ✅ human override accepted\n\nHuman judgment by @%s overrides the Arbiter finding for `%s`; [the recorded reason](%s) is authoritative for this commit.\n\n_A new push requires a new judgment. The `defer-longterm` label remains available for broader accepted-risk deferrals._' \
+              "$MARKER" "$latest_override_actor" "$SHA" "$source_url"
+            latest_comment_id="$(printf '%s' "$latest_comments" \
+              | jq -r --arg marker "$MARKER" \
+                '[.[] | select(.user.login == "github-actions[bot]")
+                | select(.body | startswith($marker))]
+                | last.id // empty')"
+            if [ -n "$latest_comment_id" ]; then
+              jq -n --arg body "$override_body" '{body: $body}' \
+                | gh api --method PATCH \
+                    "repos/$REPO/issues/comments/$latest_comment_id" --input - >/dev/null
+            else
+              jq -n --arg body "$override_body" '{body: $body}' \
+                | gh api --method POST \
+                    "repos/$REPO/issues/$PR/comments" --input - >/dev/null
+            fi
+            echo "Re-applied human override to Arbiter check-run $check_id"
+          fi
+          echo "published=true" >> "$GITHUB_OUTPUT"
+
+      # workflow_run events for this workflow are attached to main rather than
+      # the original PR, so PR Readiness cannot recover the PR number from an
+      # "Arbiter completed" event. Dispatch it explicitly with the trusted
+      # gather outputs after the API-owned Arbiter check has been refreshed.
+  refresh-readiness:
+    name: Refresh PR Readiness
+    needs: arbiter
+    if: always() && needs.arbiter.outputs.published == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Refresh PR Readiness
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ needs.arbiter.outputs.pr }}
+          SHA: ${{ needs.arbiter.outputs.sha }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          if ! gh workflow run pr-readiness.yml --ref "$DEFAULT_BRANCH" \
+            -f pr="$PR" -f sha="$SHA"; then
+            # During the rollout PR the workflow does not exist on main yet.
+            # The normal workflow_run triggers take over once it is merged.
+            echo "::warning::could not dispatch PR Readiness refresh"
           fi

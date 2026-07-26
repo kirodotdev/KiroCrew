@@ -444,7 +444,7 @@ jobs:
               echo "_Verdict recorded via the action's structured output for commit \`$HEAD\`._"
             fi
             echo
-            echo "False positive or not applicable? The PR author or a repository writer can comment:"
+            echo "False positive or not applicable? A repository writer can comment:"
             echo "\`/ai-review override fable $HEAD: <one-sentence reason>\`"
           } > /tmp/claude-summary.md
           # Find the bot's existing marker comment (first match wins) and PATCH

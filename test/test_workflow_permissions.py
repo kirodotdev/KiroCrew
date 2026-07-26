@@ -160,6 +160,30 @@ class TestAiReviewOverridePermissions:
             "actions": "write",
             "checks": "write",
             "contents": "read",
+            "pull-requests": "write",
+        }
+
+    def test_arbiter_model_and_dispatch_capabilities_are_separate(self) -> None:
+        lines = _lines("longterm-arbiter.yml")
+
+        assert _workflow_permissions("longterm-arbiter.yml") == {"contents": "read"}
+        assert _permission_block(lines, "  arbiter:") == {
+            "contents": "read",
+            "pull-requests": "write",
+            "checks": "write",
+            "id-token": "write",
+        }
+        assert _permission_block(lines, "  refresh-readiness:") == {
+            "actions": "write",
+            "contents": "read",
+        }
+
+    def test_readiness_has_only_aggregation_and_label_permissions(self) -> None:
+        assert _workflow_permissions("pr-readiness.yml") == {
+            "actions": "read",
+            "checks": "read",
+            "contents": "read",
             "issues": "write",
-            "pull-requests": "read",
+            "pull-requests": "write",
+            "statuses": "write",
         }
