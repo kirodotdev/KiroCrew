@@ -1,15 +1,19 @@
 # Issue Radar Module
 
-Last Updated: 2026-07-24
+Last Updated: 2026-07-25
 
 ## Overview
 
 Issue Radar is an opt-in (`defaultEnabled: false`) built-in app for GitHub
-issue triage. It connects one or more repos via the user's own `gh` CLI session
-(no GitHub App, no PAT management) and provides a 3-column workbench:
-browse/filter issues, view AI-summarized detail + timeline, apply triage actions
-(label, close/reopen), and record per-issue investigation findings in a local
-ledger. A background watcher optionally notifies on new issues.
+issue and pull-request triage. It connects one or more repos via the user's own
+`gh` CLI session (no GitHub App, no PAT management) and provides a 3-column
+workbench: browse/filter issues, view AI-summarized detail + timeline, apply
+triage actions (label, close/reopen), and record per-issue investigation findings
+in a local ledger. A parallel PULL REQUESTS section reuses the same shape —
+filter by lifecycle (open / merged / closed-unmerged), person, draft and label;
+read an AI summary of the description plus the whole review conversation; and see
+the automated checks ("auto review") on the head commit. A background watcher
+optionally notifies on new issues.
 
 ## Routes
 
@@ -29,6 +33,10 @@ wrapped in `_require_enabled` (returns 403 when the app is disabled).
 | GET | `/me` | Current `gh` login |
 | GET/PUT | `/settings` | Per-repo triage settings |
 | GET | `/issue-ai` | AI summary + suggested labels (kirocrew-lite) |
+| GET | `/pulls` | List open/closed PRs (cached; rows enriched with diff size + check tally via ONE GraphQL call, topped up by number for rows outside its window). Rows whose enrichment failed carry `null` (unknown, not zero) and are deliberately NOT written to the cache, so the next read retries |
+| GET | `/pulls/search` | PRs matching a per-person filter, resolved server-side by GitHub search (escapes the list's page cap). Paginates only as far as its own cap and reports `truncated` so the UI says "newest N" rather than implying completeness |
+| GET | `/pull` | Full PR detail + conversation (issue timeline merged with inline review comments) + automated checks on the head commit. Cache-first with a short server-side TTL (`PR_DETAIL_CACHE_TTL_SEC`), so a plain GET self-refreshes and no caller has to pass `refresh=1` to stay current |
+| GET | `/pull-ai` | AI summary of a PR (description + whole conversation + check state), cached against a fingerprint that hashes the conversation's CONTENT — so an edited comment invalidates it, not just a new one |
 | POST | `/labels/apply` | Apply label changes (add/remove) |
 | POST | `/issue/state` | Close/reopen an issue |
 | GET/PUT | `/investigation` | Per-issue investigation record |
@@ -48,6 +56,10 @@ repos/<owner>/<repo>/
   members-cache.json                # Collaborators roster + source
   issue-<N>.json                    # Per-issue detail cache
   issue-<N>-ai.json                 # AI summary cache
+  pulls-cache.json                  # Open PRs (schema-versioned)
+  pulls-closed-cache.json           # Closed+merged PRs (capped at 100)
+  pull-<N>.json                     # Per-PR detail + timeline + checks cache
+  pull-<N>-ai.json                  # PR AI summary + the fingerprint it was built from
   recommendations-cache.json        # AI label taxonomy
   investigation-<N>.json            # Per-issue investigation record
   watch-state.json                  # Watcher high-water mark
@@ -77,6 +89,13 @@ permission is denied, not allowed). Read-only repos degrade to suggest-only.
   JSON stdin, never argv. Request bodies validated as `dict` before `.get()`.
 - **Enabled-state guard**: All handlers wrapped in `_require_enabled`; returns 403
   when the app is disabled.
+- **Prompt-injection containment**: The AI routes feed UNTRUSTED repo text to the
+  model — an issue body, and for `/pull-ai` the PR description plus every comment
+  and review. That payload is fenced in explicit markers and declared as data, the
+  call runs in a tool-less ephemeral session (`REJECT_ALL` approvals), and the
+  output is redacted. Issue label suggestions are additionally intersected with the
+  repo's real label set, so injected text cannot invent a label; a PR summary is
+  prose that nothing downstream acts on.
 
 ## Background Watcher
 

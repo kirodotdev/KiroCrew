@@ -1,19 +1,20 @@
-import { LayoutDashboard, CircleDot, Settings, Radar } from 'lucide-react'
+import { LayoutDashboard, CircleDot, Settings, Radar, GitPullRequest } from 'lucide-react'
 import { useIssueRadar } from '../context'
 import { APP_VERSION } from '../lib/format'
 import AccordionSection from './Accordion'
 import DashboardsSection from './DashboardsSection'
 import FiltersSection from './FiltersSection'
+import PrFiltersSection from './PrFiltersSection'
 import SettingsSection from './SettingsSection'
 import RepoSwitcher from './RepoSwitcher'
 
 /** The left rail: a prominent repo switcher pinned at the top, then a
- * three-section accordion (Dashboards / Issues / Settings) that follows the
- * main view (see context follow-mode), with the app identity at the very
- * bottom. Clicking a section header navigates to that section's default page
- * (not just expand it), so you never stay on the previous view. */
+ * four-section accordion (Dashboards / Issues / Pull requests / Settings) that
+ * follows the main view (see context follow-mode), with the app identity at the
+ * very bottom. Clicking a section header navigates to that section's default
+ * page (not just expand it), so you never stay on the previous view. */
 export default function LeftRail() {
-  const { expanded, openDashboard, openIssues, openSettings } = useIssueRadar()
+  const { expanded, openDashboard, openIssues, openPulls, openSettings } = useIssueRadar()
 
   return (
     <aside className="w-72 flex-shrink-0 flex flex-col min-h-0 py-2 gap-2">
@@ -38,6 +39,15 @@ export default function LeftRail() {
         onToggle={() => openIssues()}
       >
         <FiltersSection />
+      </AccordionSection>
+
+      <AccordionSection
+        title="Pull requests"
+        icon={GitPullRequest}
+        expanded={expanded === 'pulls'}
+        onToggle={() => openPulls()}
+      >
+        <PrFiltersSection />
       </AccordionSection>
 
       <AccordionSection

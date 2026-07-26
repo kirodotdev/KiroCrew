@@ -13,10 +13,10 @@ import {
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   issueRadarApi, DEFAULT_REPO_SETTINGS,
-  type ConnectedRepo, type Issue, type RepoLabel, type RepoMember, type RepoPermissions, type RepoSettings,
+  type ConnectedRepo, type Issue, type PullRequest, type RepoLabel, type RepoMember, type RepoPermissions, type RepoSettings,
 } from './api'
 import type {
-  ActiveRepo, DashboardTab, ExpandedSection, MainView, SettingsTarget, SortDir, SortKey, StateFilter,
+  ActiveRepo, DashboardTab, ExpandedSection, MainView, PrSortKey, PrStateFilter, SettingsTarget, SortDir, SortKey, StateFilter,
 } from './lib/types'
 import { asArray, loadUiState, saveUiState } from './lib/format'
 
@@ -104,11 +104,63 @@ export interface IssueRadarContextValue {
   selectedIssue: number | null
   setSelectedIssue: (n: number | null) => void
 
+  // ── pull requests ──
+  pulls: PullRequest[]
+  pullsLoading: boolean
+  pullsError: Error | null
+  refreshPulls: () => void
+  pullsRefreshing: boolean
+  /** Epoch-ms when the pulls query last produced data; 0 before first load. */
+  pullsUpdatedAt: number
+  /** True when a per-person PR filter is on, so the list came from GitHub SEARCH
+   * (whole-repo, complete for that person) rather than the bounded list. The
+   * list footer uses it to drop the "capped at 100" caveat. */
+  prPersonFilterActive: boolean
+  /** Set when the SEARCH result itself hit the server's cap, so the footer can say
+   * "newest N" — the search escapes the list's page cap but has one of its own,
+   * and claiming completeness anyway would just move the original lie. */
+  prSearchTruncatedAt: number | null
+  /** Open PR count per label name (drives the PR filter counts). */
+  countByPrLabel: Map<string, number>
+  /** Free-text search over the PR list (title, #number, author, branch, labels). */
+  prQuery: string
+  setPrQuery: (q: string) => void
+  prSelectedLabels: Set<string>
+  togglePrLabel: (name: string) => void
+  prAuthoredByMe: boolean
+  togglePrAuthoredByMe: () => void
+  prAssignedToMe: boolean
+  togglePrAssignedToMe: () => void
+  prReviewRequestedByMe: boolean
+  togglePrReviewRequestedByMe: () => void
+  prDraftOnly: boolean
+  togglePrDraftOnly: () => void
+  /** Keep only PRs opened by a repo member (roster role, or GitHub's
+   * author_association as a fallback) — the PR twin of createdByMember. */
+  prCreatedByMember: boolean
+  togglePrCreatedByMember: () => void
+  /** False when the current PR set contains no member-authored PR, so the row
+   * can be hidden rather than offering a filter that yields nothing. */
+  hasMemberPulls: boolean
+  prStateFilter: PrStateFilter
+  setPrStateFilter: (s: PrStateFilter) => void
+  anyPrFilterActive: boolean
+  clearPrFilters: () => void
+  prSortKey: PrSortKey
+  prSortDir: SortDir
+  cyclePrSort: (key: PrSortKey) => void
+  selectedPull: number | null
+  setSelectedPull: (n: number | null) => void
+  filteredPulls: PullRequest[]
+  sortedPulls: PullRequest[]
+  activePull: PullRequest | null
+
   // ── navigation ──
   mainView: MainView
   dashboardTab: DashboardTab
   openDashboard: (tab: DashboardTab) => void
   openIssues: () => void
+  openPulls: () => void
   openSettings: (target?: SettingsTarget) => void
   /** What the Settings main area is showing (the General page, or a repo page). */
   settingsTarget: SettingsTarget
@@ -169,12 +221,26 @@ export function IssueRadarProvider({
   const [settingsTarget, setSettingsTarget] = useState<SettingsTarget>(restored.settingsTarget ?? { kind: 'general', anchor: 'account' })
   const [expanded, setExpanded] = useState<ExpandedSection>('dashboards')
 
+  // ── pull-request view state (parallels the issue filters/sort/selection) ──
+  const [prQuery, setPrQuery] = useState(restored.prQuery ?? '')
+  const [prSelectedLabels, setPrSelectedLabels] = useState<Set<string>>(() => new Set(restored.prSelectedLabels ?? []))
+  const [prAuthoredByMe, setPrAuthoredByMe] = useState(restored.prAuthoredByMe ?? false)
+  const [prAssignedToMe, setPrAssignedToMe] = useState(restored.prAssignedToMe ?? false)
+  const [prReviewRequestedByMe, setPrReviewRequestedByMe] = useState(restored.prReviewRequestedByMe ?? false)
+  const [prDraftOnly, setPrDraftOnly] = useState(restored.prDraftOnly ?? false)
+  const [prCreatedByMember, setPrCreatedByMember] = useState(restored.prCreatedByMember ?? false)
+  const [selectedPull, setSelectedPull] = useState<number | null>(restored.selectedPull ?? null)
+  const [prStateFilter, setPrStateFilter] = useState<PrStateFilter>(restored.prStateFilter ?? 'open')
+  const [prSortKey, setPrSortKey] = useState<PrSortKey>(restored.prSortKey ?? 'number')
+  const [prSortDir, setPrSortDir] = useState<SortDir>(restored.prSortDir ?? 'desc')
+
   // Follow-mode: switching main view auto-expands the matching accordion
   // section. A manual header click (setExpanded) overrides until the next
   // mode change.
   const SECTION_FOR_VIEW: Record<MainView, ExpandedSection> = {
     dashboard: 'dashboards',
     issues: 'filters',
+    pulls: 'pulls',
     settings: 'settings',
   }
   useEffect(() => {
@@ -191,10 +257,17 @@ export function IssueRadarProvider({
       selectedLabels: [...selectedLabels],
       requestedByMe, assignedToMe, createdByMember,
       stateFilter, sortKey, sortDir,
+      selectedPull, prQuery,
+      prSelectedLabels: [...prSelectedLabels],
+      prAuthoredByMe, prAssignedToMe, prReviewRequestedByMe, prDraftOnly,
+      prCreatedByMember,
+      prStateFilter, prSortKey, prSortDir,
     })
   }, [
     mainView, dashboardTab, settingsTarget, selectedIssue, query,
     selectedLabels, requestedByMe, assignedToMe, createdByMember, stateFilter, sortKey, sortDir,
+    selectedPull, prQuery, prSelectedLabels, prAuthoredByMe, prAssignedToMe,
+    prReviewRequestedByMe, prDraftOnly, prCreatedByMember, prStateFilter, prSortKey, prSortDir,
   ])
 
   const meQuery = useQuery({ queryKey: ['issue-radar', 'me'], queryFn: () => issueRadarApi.me() })
@@ -222,6 +295,50 @@ export function IssueRadarProvider({
     queryFn: () => issueRadarApi.getSettings(owner, repo),
   })
   const repoSettings = settingsQuery.data?.settings ?? DEFAULT_REPO_SETTINGS
+
+  // Pull requests. 'merged' and 'closed' both fetch the CLOSED set from GitHub
+  // (the split is client-side on merged_at), so the fetch key collapses them to
+  // 'closed' — one cache entry serves both filters.
+  const prFetchState: 'open' | 'closed' = prStateFilter === 'open' ? 'open' : 'closed'
+  // Only fetched once the PR surface is actually in use: this request also runs
+  // the GraphQL enrichment server-side, so firing it while the user sits on the
+  // dashboard or the issue list would spend GitHub API budget on data they may
+  // never look at. The rail's Pull requests section counts as "in use" (opening
+  // it sets mainView), so the list is already loading by the time it is shown.
+  const prSurfaceActive = mainView === 'pulls' || expanded === 'pulls'
+  const pullsQuery = useQuery({
+    queryKey: ['issue-radar', 'pulls', owner, repo, prFetchState],
+    queryFn: () => issueRadarApi.pulls(owner, repo, { state: prFetchState }),
+    enabled: prSurfaceActive,
+  })
+  const refreshPullsMutation = useMutation({
+    mutationFn: () => issueRadarApi.pulls(owner, repo, { refresh: true, state: prFetchState }),
+    onSuccess: (data) => {
+      queryClient.setQueryData(['issue-radar', 'pulls', owner, repo, prFetchState], data)
+    },
+  })
+
+  // Per-person filters are answered SERVER-side by GitHub search rather than by
+  // filtering the bounded list: the closed list is capped at one page, so a
+  // client-side "authored by me" would silently miss your older PRs on a busy
+  // repo (a PR merged days ago can already rank outside the window). When any
+  // person filter is on we swap the data source to the search query, which
+  // covers the whole repo; the list view keeps its bound.
+  const prPersonFilterActive = !!me && (prAuthoredByMe || prAssignedToMe || prReviewRequestedByMe)
+  const prSearchArgs = {
+    state: prStateFilter,
+    author: prAuthoredByMe && me ? me : undefined,
+    assignee: prAssignedToMe && me ? me : undefined,
+    reviewRequested: prReviewRequestedByMe && me ? me : undefined,
+  }
+  const pullsSearchQuery = useQuery({
+    queryKey: [
+      'issue-radar', 'pulls-search', owner, repo, prStateFilter,
+      prSearchArgs.author ?? '', prSearchArgs.assignee ?? '', prSearchArgs.reviewRequested ?? '',
+    ],
+    queryFn: () => issueRadarApi.searchPulls(owner, repo, prSearchArgs),
+    enabled: prPersonFilterActive,
+  })
 
   const refreshMutation = useMutation({
     mutationFn: async () => {
@@ -288,12 +405,16 @@ export function IssueRadarProvider({
   // itself carries a member author_association. The roster is authoritative and
   // complete, so it's the primary signal; the per-issue association is a
   // graceful fallback.
-  const isMemberIssue = useCallback(
-    (iss: Issue) =>
-      (iss.author != null && memberRoleByLogin.has(iss.author)) ||
-      MEMBER_ASSOCS.has(iss.author_association ?? ''),
+  // Typed on the two fields it actually reads so ONE predicate serves both
+  // issues and pull requests (their rows carry the same author identity fields).
+  const isMemberAuthored = useCallback(
+    (row: { author?: string | null; author_association?: string | null }) =>
+      (row.author != null && memberRoleByLogin.has(row.author)) ||
+      MEMBER_ASSOCS.has(row.author_association ?? ''),
     [memberRoleByLogin],
   )
+  const isMemberIssue = isMemberAuthored
+  const isMemberPull = isMemberAuthored
   const hasMemberIssues = useMemo(() => issues.some(isMemberIssue), [issues, isMemberIssue])
 
   const openIssues = () => setMainView('issues')
@@ -363,14 +484,122 @@ export function IssueRadarProvider({
     return arr
   }, [filteredIssues, sortKey, sortDir])
 
-  const activeIssue = sortedIssues.find((i) => i.number === selectedIssue)
-    ?? issues.find((i) => i.number === selectedIssue)
-    ?? null
+  // Deliberately resolved from the FILTERED+sorted list only, with no fallback
+  // to the unfiltered fetch: if the current filters/search exclude the selected
+  // issue, the detail pane clears rather than showing an item the list no longer
+  // offers. (A fallback here also made the behaviour inconsistent with the PR
+  // pane, whose "me" filters swap the data source entirely, so nothing was left
+  // to fall back to.)
+  const activeIssue = sortedIssues.find((i) => i.number === selectedIssue) ?? null
+
+  // ── pull requests: derived list (parallels the issue derivations) ──
+  // Source depends on whether a person filter is active (see prPersonFilterActive).
+  const pulls = useMemo(
+    () => prPersonFilterActive
+      ? asArray<PullRequest>(pullsSearchQuery.data?.pulls)
+      : asArray<PullRequest>(pullsQuery.data?.pulls),
+    [prPersonFilterActive, pullsSearchQuery.data, pullsQuery.data],
+  )
+
+  const countByPrLabel = useMemo(() => {
+    const m = new Map<string, number>()
+    for (const pr of pulls) for (const name of pr.labels) m.set(name, (m.get(name) ?? 0) + 1)
+    return m
+  }, [pulls])
+
+  const openPulls = () => setMainView('pulls')
+
+  const togglePrLabel = (name: string) => {
+    setMainView('pulls')
+    setPrSelectedLabels((prev) => {
+      const next = new Set(prev)
+      if (next.has(name)) next.delete(name)
+      else next.add(name)
+      return next
+    })
+  }
+  const togglePrAuthoredByMe = () => { setPrAuthoredByMe((v) => !v); setMainView('pulls') }
+  const togglePrAssignedToMe = () => { setPrAssignedToMe((v) => !v); setMainView('pulls') }
+  const togglePrReviewRequestedByMe = () => { setPrReviewRequestedByMe((v) => !v); setMainView('pulls') }
+  const togglePrDraftOnly = () => { setPrDraftOnly((v) => !v); setMainView('pulls') }
+  const togglePrCreatedByMember = () => { setPrCreatedByMember((v) => !v); setMainView('pulls') }
+  const hasMemberPulls = useMemo(() => pulls.some(isMemberPull), [pulls, isMemberPull])
+
+  const anyPrFilterActive = prSelectedLabels.size > 0 || prAuthoredByMe || prAssignedToMe
+    || prReviewRequestedByMe || prDraftOnly || prCreatedByMember
+  const clearPrFilters = () => {
+    setPrSelectedLabels(new Set())
+    setPrAuthoredByMe(false); setPrAssignedToMe(false)
+    setPrReviewRequestedByMe(false); setPrDraftOnly(false)
+    setPrCreatedByMember(false)
+  }
+
+  const cyclePrSort = (key: PrSortKey) => {
+    setMainView('pulls')
+    if (key === prSortKey) setPrSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))
+    else setPrSortKey(key)
+  }
+
+  const filteredPulls = useMemo(() => {
+    const q = prQuery.trim().toLowerCase()
+    const qNum = q.replace(/^#/, '')
+    return pulls.filter((pr) => {
+      // When the rows came from SEARCH, the state split and the person filters
+      // were already applied by the query's qualifiers (is:merged / is:unmerged /
+      // author: / assignee: / review-requested:). Re-applying them here would be
+      // wrong as well as redundant: search rows carry no requested_reviewers, so
+      // a client-side "review requested" check would reject every row.
+      if (!prPersonFilterActive) {
+        // merged / closed split (both fetched from the closed set on GitHub):
+        // 'merged' keeps PRs with a merge timestamp; 'closed' keeps those closed
+        // WITHOUT being merged. 'open' needs no split.
+        if (prStateFilter === 'merged' && !pr.merged_at) return false
+        if (prStateFilter === 'closed' && pr.merged_at) return false
+        if (prAuthoredByMe && (!me || pr.author !== me)) return false
+        if (prAssignedToMe && (!me || !(pr.assignees ?? []).includes(me))) return false
+        if (prReviewRequestedByMe && (!me || !(pr.requested_reviewers ?? []).includes(me))) return false
+      }
+      if (prDraftOnly && !pr.draft) return false
+      if (prCreatedByMember && !isMemberPull(pr)) return false
+      const set = new Set(pr.labels)
+      for (const want of prSelectedLabels) if (!set.has(want)) return false
+      if (q) {
+        const hit =
+          String(pr.number).includes(qNum) ||
+          pr.title.toLowerCase().includes(q) ||
+          (pr.author ?? '').toLowerCase().includes(q) ||
+          (pr.head ?? '').toLowerCase().includes(q) ||
+          (pr.base ?? '').toLowerCase().includes(q) ||
+          pr.labels.some((l) => l.toLowerCase().includes(q))
+        if (!hit) return false
+      }
+      return true
+    })
+  }, [pulls, prPersonFilterActive, prStateFilter, prDraftOnly, prCreatedByMember, isMemberPull,
+      prAuthoredByMe, prAssignedToMe, prReviewRequestedByMe, prSelectedLabels, me, prQuery])
+
+  const sortedPulls = useMemo(() => {
+    const arr = [...filteredPulls]
+    arr.sort((a, b) => {
+      let d = 0
+      if (prSortKey === 'number') d = a.number - b.number
+      else d = new Date(a.updated_at).getTime() - new Date(b.updated_at).getTime()
+      return prSortDir === 'asc' ? d : -d
+    })
+    return arr
+  }, [filteredPulls, prSortKey, prSortDir])
+
+  // Same rule as activeIssue: filtered list only, no fallback — the detail pane
+  // never outlives the row that opened it.
+  const activePull = sortedPulls.find((p) => p.number === selectedPull) ?? null
 
   const switchRepo = (r: ActiveRepo) => {
     setSelectedIssue(null)
     setQuery('')
     clearFilters()
+    setSelectedPull(null)
+    setPrQuery('')
+    clearPrFilters()
     onSwitch(r)
   }
 
@@ -397,7 +626,41 @@ export function IssueRadarProvider({
     anyFilterActive, clearFilters,
     sortKey, sortDir, cycleSort,
     selectedIssue, setSelectedIssue,
-    mainView, dashboardTab, openDashboard, openIssues, openSettings, settingsTarget,
+    pulls,
+    pullsLoading: prPersonFilterActive ? pullsSearchQuery.isLoading : pullsQuery.isLoading,
+    // A manual refresh goes through refreshPullsMutation, so its failure has to be
+    // reported here too — otherwise the spinner just stops and the stale rows stay
+    // on screen as if the refresh had worked.
+    pullsError: ((prPersonFilterActive
+      ? pullsSearchQuery.error
+      : (pullsQuery.error ?? refreshPullsMutation.error)) as Error) ?? null,
+    // Refresh targets the ACTIVE source: a refetch of the search query when a
+    // person filter is on (the search route is uncached server-side, so a plain
+    // refetch already hits GitHub), else the cache-busting list refresh.
+    refreshPulls: () => {
+      if (prPersonFilterActive) pullsSearchQuery.refetch()
+      else refreshPullsMutation.mutate()
+    },
+    pullsRefreshing: prPersonFilterActive ? pullsSearchQuery.isFetching : refreshPullsMutation.isPending,
+    pullsUpdatedAt: prPersonFilterActive ? pullsSearchQuery.dataUpdatedAt : pullsQuery.dataUpdatedAt,
+    prPersonFilterActive,
+    prSearchTruncatedAt: prPersonFilterActive && pullsSearchQuery.data?.truncated
+      ? (pullsSearchQuery.data.limit ?? pullsSearchQuery.data.pulls.length)
+      : null,
+    countByPrLabel,
+    prQuery, setPrQuery,
+    prSelectedLabels, togglePrLabel,
+    prAuthoredByMe, togglePrAuthoredByMe,
+    prAssignedToMe, togglePrAssignedToMe,
+    prReviewRequestedByMe, togglePrReviewRequestedByMe,
+    prDraftOnly, togglePrDraftOnly,
+    prCreatedByMember, togglePrCreatedByMember, hasMemberPulls,
+    prStateFilter, setPrStateFilter,
+    anyPrFilterActive, clearPrFilters,
+    prSortKey, prSortDir, cyclePrSort,
+    selectedPull, setSelectedPull,
+    filteredPulls, sortedPulls, activePull,
+    mainView, dashboardTab, openDashboard, openIssues, openPulls, openSettings, settingsTarget,
     expanded, setExpanded,
   }
 

@@ -20,6 +20,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from urllib.parse import quote, urlparse
 
 GH_TIMEOUT_SEC = 20.0
@@ -553,6 +554,25 @@ def _normalize_timeline_event(ev: dict) -> dict | None:
     if etype == "referenced":
         return {"kind": "referenced", "actor": _actor_login(ev), "created_at": created,
                 "commit_id": ev.get("commit_id")}
+    # ── pull-request-only timeline events (never emitted for plain issues) ──
+    # A PR's timeline additionally carries code reviews and commits. They are
+    # additive here: an issue timeline never contains them, so keeping them in
+    # the shared normalizer only enriches the PR detail pane. ``reviewed`` uses
+    # ``submitted_at`` (not ``created_at``) and ``committed`` uses the commit
+    # author's date, so both fall back to those before the generic ``created``.
+    if etype == "reviewed":
+        return {"kind": "reviewed", "actor": (ev.get("user") or {}).get("login"),
+                "created_at": ev.get("submitted_at") or created,
+                "review_state": ev.get("state"), "body": ev.get("body") or ""}
+    if etype == "committed":
+        # Commit events have no ``actor`` object — the author is embedded, and
+        # the human-facing login (when present) lives on ``.author`` too.
+        author = ev.get("author") or {}
+        return {"kind": "committed",
+                "actor": author.get("name") or (ev.get("committer") or {}).get("name"),
+                "created_at": author.get("date") or (ev.get("committer") or {}).get("date") or created,
+                "commit_id": ev.get("sha"),
+                "message": (ev.get("message") or "").splitlines()[0] if ev.get("message") else ""}
     return None
 
 
@@ -568,6 +588,79 @@ def list_issue_timeline(owner: str, repo: str, number: int, *, timeout: float = 
     path = f"repos/{owner}/{repo}/issues/{int(number)}/timeline?per_page=100"
     raw = _run_gh_api(path, ".[]", timeout=timeout, paginate=True)
     events = [e for e in (_normalize_timeline_event(ev) for ev in raw) if e is not None]
+    events.sort(key=lambda e: e.get("created_at") or "")
+    return events
+
+
+# Inline review comments live on their own endpoint: the issues TIMELINE does not
+# carry them, so a PR read purely from the timeline is missing exactly the
+# comments that carry the review's substance ("this retry is unbounded" attached
+# to the line it is about).
+_PR_REVIEW_COMMENT_JQ = (
+    # The endpoint answers a top-level ARRAY, so the projection is per element —
+    # without the `.[] |` gh fails with "expected an object but got: array".
+    ".[] | {kind: \"review_comment\", actor: (.user.login // null), "
+    "created_at: .created_at, body: (.body // \"\"), "
+    "author_association: (.author_association // null), "
+    "path: (.path // null), line: (.line // .original_line // null), "
+    "url: (.html_url // null)}"
+)
+
+
+def list_pr_review_comments(
+    owner: str, repo: str, number: int, *, timeout: float = GH_PAGINATE_TIMEOUT_SEC
+) -> list[dict]:
+    """Normalized INLINE (code-anchored) review comments for one PR.
+
+    Same normalized shape as the timeline events so the two can be merged and
+    sorted together; ``kind`` is ``review_comment`` and the row carries the file
+    path + line it is anchored to. Paginated, like the timeline.
+    """
+    path = f"repos/{owner}/{repo}/pulls/{int(number)}/comments?per_page=100"
+    rows = _run_gh_api(path, _PR_REVIEW_COMMENT_JQ, timeout=timeout, paginate=True)
+    return [r for r in rows if isinstance(r, dict)]
+
+
+def _is_absent_or_forbidden(exc: GhCliError) -> bool:
+    """Whether a `gh` failure means "this surface does not exist for you" (404 /
+    403) as opposed to a TRANSIENT or recoverable failure (timeout, network, rate
+    limit, expired credentials).
+
+    The distinction decides whether a partial result may be treated as complete:
+    a permanently unavailable endpoint can be skipped, but swallowing a timeout
+    would cache a truncated conversation as if it were the whole thing.
+
+    401 is deliberately NOT here. It means the session needs re-authenticating, so
+    every other call is about to fail too — treating it as "endpoint absent" would
+    quietly cache half a conversation, or a check list missing whichever surface
+    the expiry happened to hit.
+    """
+    text = str(exc)
+    return any(code in text for code in ("HTTP 404", "HTTP 403"))
+
+
+def list_pr_timeline(
+    owner: str, repo: str, number: int, *, timeout: float = GH_PAGINATE_TIMEOUT_SEC
+) -> list[dict]:
+    """The full PR conversation: issue timeline PLUS inline review comments,
+    merged and sorted oldest->newest.
+
+    A PR's review substance is split across two endpoints; reading only the
+    timeline drops every code-anchored objection, which would leave both the
+    detail pane and the AI summary claiming a quieter review than actually
+    happened. Only a 404/403/401 on the inline endpoint is tolerated (that repo
+    or token genuinely cannot serve it); a transient failure is raised, because
+    the caller CACHES this list and a swallowed timeout would persist a partial
+    conversation as complete.
+    """
+    events = list_issue_timeline(owner, repo, number, timeout=timeout)
+    try:
+        events.extend(list_pr_review_comments(owner, repo, number, timeout=timeout))
+    except GhCliError as exc:
+        if not _is_absent_or_forbidden(exc):
+            raise
+        # Endpoint unavailable for this repo/token; _gh_run already emitted an SEL
+        # event for the failed call.
     events.sort(key=lambda e: e.get("created_at") or "")
     return events
 
@@ -747,3 +840,760 @@ def create_label(
         raise
     shaped = _shape_labels([data] if isinstance(data, dict) else [])
     return shaped[0] if shaped else dict(payload)
+
+
+# ── pull requests (list + detail + changed files) ───────────────────────────
+#
+# PRs are fetched from the dedicated ``repos/{o}/{r}/pulls`` endpoint (NOT the
+# issues endpoint) so the list carries PR-native fields the triage view needs:
+# draft state, base/head refs, requested reviewers, and ``merged_at`` (the
+# signal that distinguishes a merged PR from one closed unmerged). The single-PR
+# detail endpoint adds the diff stats (additions/deletions/changed_files),
+# review/comment counts, and mergeability. A PR's activity timeline reuses the
+# shared ``list_issue_timeline`` (the ``issues/{n}/timeline`` endpoint serves
+# PRs too — and now also yields ``reviewed`` / ``committed`` events).
+
+# The pulls LIST endpoint omits diff stats + comment counts (those need the
+# per-PR detail call), so the list JQ stays to the fields a row card renders.
+_PR_JQ = (
+    ".[] | {number: .number, title: .title, url: .html_url, state: .state, "
+    "draft: (.draft // false), labels: [.labels[].name], "
+    "author: (.user.login // null), "
+    "author_association: (.author_association // null), "
+    "updated_at: .updated_at, created_at: .created_at, "
+    "closed_at: .closed_at, merged_at: .merged_at, "
+    "assignees: [.assignees[].login], "
+    "requested_reviewers: [.requested_reviewers[].login], "
+    "base: (.base.ref // null), head: (.head.ref // null), "
+    "body: (.body // \"\")}"
+)
+
+
+def _list_pulls(owner: str, repo: str, state: str, *, timeout: float, paginate: bool) -> list[dict]:
+    """List pull requests of ``state`` (open|closed), most-recently-updated first.
+
+    ``paginate=True`` loads the FULL set across every page (used for open PRs);
+    ``paginate=False`` caps at a single ``per_page=100`` page (used for closed
+    PRs, whose history can be very long — same bounded-backlog policy as
+    ``_list_issues``). ``merged_at`` is present on every closed row, so the
+    frontend derives "merged vs closed-unmerged" without an extra call.
+    """
+    path = f"repos/{owner}/{repo}/pulls?state={state}&sort=updated&direction=desc&per_page=100"
+    return _run_gh_api(path, _PR_JQ, timeout=timeout, paginate=paginate)
+
+
+def list_open_pulls(owner: str, repo: str, *, timeout: float = GH_PAGINATE_TIMEOUT_SEC) -> list[dict]:
+    """ALL open pull requests (paginated across every page — see ``_list_pulls``)."""
+    return _list_pulls(owner, repo, "open", timeout=timeout, paginate=True)
+
+
+def list_closed_pulls(owner: str, repo: str, *, timeout: float = GH_TIMEOUT_SEC) -> list[dict]:
+    """The 100 most-recently-updated CLOSED pull requests (bounded — includes
+    both merged and closed-unmerged; the frontend splits them on ``merged_at``)."""
+    return _list_pulls(owner, repo, "closed", timeout=timeout, paginate=False)
+
+
+# The single-PR detail — a superset of the list row: adds diff stats, review /
+# comment counts, mergeability, merged-by, and full label objects.
+_PR_DETAIL_JQ = (
+    "{number: .number, title: .title, body: (.body // \"\"), state: .state, "
+    "draft: (.draft // false), merged: (.merged // false), url: .html_url, "
+    "author: (.user.login // null), author_association: (.author_association // null), "
+    "created_at: .created_at, updated_at: .updated_at, closed_at: .closed_at, "
+    "merged_at: .merged_at, merged_by: (.merged_by.login // null), "
+    "comments: (.comments // 0), review_comments: (.review_comments // 0), "
+    "commits: (.commits // 0), additions: (.additions // 0), "
+    "deletions: (.deletions // 0), changed_files: (.changed_files // 0), "
+    "mergeable: .mergeable, mergeable_state: (.mergeable_state // null), "
+    "base: (.base.ref // null), head: (.head.ref // null), "
+    "head_sha: (.head.sha // null), "
+    "labels: [.labels[] | {name: .name, color: .color, description: (.description // \"\")}], "
+    "assignees: [.assignees[].login], "
+    "requested_reviewers: [.requested_reviewers[].login], "
+    "milestone: (if .milestone then {title: .milestone.title, state: .milestone.state, "
+    "due_on: .milestone.due_on} else null end)}"
+)
+
+
+def get_pr_detail(owner: str, repo: str, number: int, *, timeout: float = GH_TIMEOUT_SEC) -> dict:
+    """Full detail for one pull request via ``gh api repos/{o}/{r}/pulls/{n}``.
+
+    Returns the richer field set the detail pane needs but the list view omits
+    (diff stats, review/comment counts, mergeability — see ``_PR_DETAIL_JQ``).
+    ``number`` is coerced to ``int`` before it reaches the argv, so it cannot
+    inject path segments. Same single-object subprocess pattern as
+    ``get_issue_detail``.
+
+    Mergeability needs a SECOND request. GitHub computes a PR's merge commit
+    lazily: the first GET kicks off that background job and answers
+    ``mergeable: null`` / ``mergeable_state: "unknown"``, and only a follow-up
+    request sees the real verdict (measured on this repo: every PR reported
+    ``unknown`` first, then ``true`` / ``blocked`` a moment later). So when the
+    first answer is unknown we wait briefly and ask once more — otherwise the
+    detail pane would permanently read "Unknown", and the cache would store it.
+    """
+    detail = _fetch_pr_detail_once(owner, repo, number, timeout=timeout)
+    if detail.get("mergeable") is None or detail.get("mergeable_state") in (None, "unknown"):
+        time.sleep(_MERGEABLE_RETRY_DELAY_SEC)
+        try:
+            retried = _fetch_pr_detail_once(owner, repo, number, timeout=timeout)
+        except GhCliError:
+            # The retry is an OPTIONAL improvement on an answer we already have.
+            # Letting its failure propagate would turn a usable detail response
+            # into a 502 and render no PR at all.
+            return detail
+        # Only accept the retry if it actually resolved: a still-unknown answer
+        # (or a PR GitHub genuinely cannot compute) leaves the first one in place.
+        if retried.get("mergeable") is not None or retried.get("mergeable_state") not in (None, "unknown"):
+            return retried
+    return detail
+
+
+# How long to wait before re-asking for a PR whose mergeability came back
+# unknown. Long enough for GitHub's background computation on a normal PR, short
+# enough that it is not felt on top of the detail fetch.
+_MERGEABLE_RETRY_DELAY_SEC = 1.5
+
+
+def _fetch_pr_detail_once(
+    owner: str, repo: str, number: int, *, timeout: float = GH_TIMEOUT_SEC
+) -> dict:
+    """One ``gh api pulls/{n}`` round-trip, parsed. See :func:`get_pr_detail`."""
+    argv = [
+        "gh", "api", f"repos/{owner}/{repo}/pulls/{int(number)}",
+        "--jq", _PR_DETAIL_JQ,
+    ]
+    proc = _gh_run(argv, timeout=timeout)
+
+    if proc.returncode != 0:
+        tail = " ".join((proc.stderr or "").strip().splitlines()[-3:])
+        raise GhCliError(f"could not read {owner}/{repo} PR #{int(number)} (exit {proc.returncode}): {tail}")
+
+    try:
+        return json.loads(proc.stdout.strip())
+    except json.JSONDecodeError as exc:
+        raise GhCliError(f"gh returned unexpected output for {owner}/{repo} PR #{int(number)}") from exc
+
+
+# ── automated checks on a PR ("auto review" results) ─────────────────────────
+#
+# What actually reviews a PR automatically is TWO different GitHub surfaces, and
+# a triage view needs both merged into one list:
+#   * check-runs  (``commits/{sha}/check-runs``)  — GitHub Actions jobs and
+#     Checks-API apps, i.e. CI plus any review bot;
+#   * commit statuses (``commits/{sha}/status``)  — the older Status API, still
+#     used by plenty of external services.
+# Both hang off the PR's HEAD COMMIT, so the caller passes the head sha (taken
+# from the PR detail it already fetched — no extra PR round-trip).
+#
+# Every row is normalized to one shape with a coarse ``bucket`` the UI can act on
+# without re-deriving GitHub's ~10 conclusion values: failures and in-flight runs
+# are surfaced explicitly, successes collapse behind a count.
+
+# ``source`` is the PUBLISHER identity (the app that reported the check), kept
+# because de-duplication keys on it: GitHub lets two different apps publish
+# checks under the SAME display name, and collapsing those by name alone would
+# let one app's success hide the other's failure.
+_CHECK_RUN_JQ = (
+    ".check_runs[] | {name: .name, status: .status, conclusion: .conclusion, "
+    "url: (.details_url // .html_url // null), "
+    "started_at: .started_at, completed_at: .completed_at, "
+    "summary: ((.output.title // .output.summary) // \"\"), "
+    "app: (.app.name // null), "
+    "source: ((.app.slug // .app.name) // \"check\")}"
+)
+
+# Commit statuses have no queued/in-progress distinction: the state itself
+# carries "pending", so status is reported as completed and the mapping below
+# routes "pending" into the running bucket.
+_COMMIT_STATUS_JQ = (
+    ".statuses[] | {name: .context, status: \"completed\", conclusion: .state, "
+    "url: (.target_url // null), started_at: .created_at, completed_at: .updated_at, "
+    "summary: (.description // \"\"), app: null, "
+    "source: \"status\"}"
+)
+
+# GitHub conclusion / state -> coarse bucket. Anything unrecognized is treated as
+# "other" (informational), never silently as success.
+_CHECK_FAILURE_CONCLUSIONS = {
+    "failure", "timed_out", "action_required", "startup_failure", "stale", "error",
+}
+_CHECK_RUNNING_STATES = {
+    "queued", "in_progress", "pending", "waiting", "requested",
+    # GraphQL's rollup/context vocabulary adds this one; harmless for REST.
+    "expected",
+}
+_CHECK_OTHER_CONCLUSIONS = {"neutral", "skipped", "cancelled", "canceled"}
+
+
+def _check_bucket(status: str | None, conclusion: str | None) -> str:
+    """Coarse bucket for one check: ``failure`` | ``running`` | ``success`` |
+    ``other``. Status is consulted first — an in-flight run has no conclusion
+    yet — then the conclusion value.
+
+    This is the ONLY bucketing table in the module: the REST check rows, the
+    GraphQL per-context rows and the GraphQL aggregate rollup all funnel through
+    it (values are case-folded, so GraphQL's ``IN_PROGRESS`` and REST's
+    ``in_progress`` are the same input). Keeping one table is what actually makes
+    "a card dot and the detail sidebar can never disagree about red" true —
+    parallel tables would only be edit-locked by convention.
+    """
+    st = (status or "").lower()
+    cc = (conclusion or "").lower()
+    if st in _CHECK_RUNNING_STATES or cc in _CHECK_RUNNING_STATES:
+        return "running"
+    if cc in _CHECK_FAILURE_CONCLUSIONS:
+        return "failure"
+    if cc == "success":
+        return "success"
+    if cc in _CHECK_OTHER_CONCLUSIONS:
+        return "other"
+    # Completed with an unknown/absent conclusion — informational, not passing.
+    return "other"
+
+
+def _check_identity(row: dict) -> tuple[str, str]:
+    """The identity two check rows must share to be considered the same check.
+
+    NOT the display name alone: different apps (and the legacy Status API) may
+    publish a check with the same name, and collapsing across publishers would
+    let one app's later success hide another app's failure. ``source`` is the
+    publishing app's slug (or ``"status"`` for a commit status).
+    """
+    return (str(row.get("source") or ""), str(row.get("name") or ""))
+
+
+def _dedupe_checks(rows: list[dict]) -> list[dict]:
+    """Keep only the LATEST row per (publisher, check name).
+
+    Two rows can share an identity for the same head sha even though GitHub's
+    ``filter=latest`` already collapses re-ATTEMPTS: the same workflow file can be
+    started as two separate RUNS for one sha (observed on this repo —
+    ``code-review.yml`` triggered twice 12s apart, two check-suites, each
+    ``run_attempt: 1``), and each run contributes its own row per job. The later
+    run supersedes the earlier one, so latest wins.
+    """
+    def _key(r: dict) -> tuple[str, str]:
+        # started_at first: an OLDER run that finished (completed 10:10) must not
+        # outrank a NEWER run that is still going (started 10:15, no completed_at),
+        # which is exactly what comparing completed_at first would do — the UI
+        # would show a stale pass while its replacement was still running.
+        return (str(r.get("started_at") or ""), str(r.get("completed_at") or ""))
+
+    best: dict[tuple[str, str], dict] = {}
+    for r in rows:
+        if not r.get("name"):
+            # A nameless row would render as a blank line.
+            continue
+        ident = _check_identity(r)
+        prev = best.get(ident)
+        if prev is None or _key(r) >= _key(prev):
+            best[ident] = r
+    return list(best.values())
+
+
+def list_pr_checks(
+    owner: str, repo: str, sha: str, *, timeout: float = GH_TIMEOUT_SEC
+) -> list[dict]:
+    """The automated checks on a PR's head commit — CI jobs, Checks-API review
+    bots, and legacy commit statuses — merged, de-duplicated, and bucketed.
+
+    ``sha`` is charset-validated before it reaches the path (a commit sha is hex,
+    so anything else is rejected outright). A surface that answers 403/404 is
+    skipped — many repos use only one of the two — but a TRANSIENT failure is
+    raised even if the other surface returned rows, because a partial answer gets
+    cached and one passing check-run would then mask a failing commit status. If
+    every surface is unavailable the error is raised rather than reported as "no
+    checks".
+    Result is ordered failures → running → other → success, then by name, so the
+    rows that need attention come first.
+    """
+    if not re.match(r"^[0-9a-fA-F]{7,64}$", sha or ""):
+        raise GhCliError(f"invalid commit sha: {sha!r}")
+
+    rows: list[dict] = []
+    errors: list[str] = []
+    for path, jq_filter in (
+        (f"repos/{owner}/{repo}/commits/{sha}/check-runs?per_page=100", _CHECK_RUN_JQ),
+        (f"repos/{owner}/{repo}/commits/{sha}/status?per_page=100", _COMMIT_STATUS_JQ),
+    ):
+        try:
+            rows.extend(_run_gh_api(path, jq_filter, timeout=timeout, paginate=True))
+        except GhCliError as exc:
+            # A 403/404 means this repo/token does not have that surface at all —
+            # plenty of repos use only one of the two — so it is skipped. Anything
+            # else (auth expired, network, timeout, 5xx) is TRANSIENT, and a
+            # transient failure must not be absorbed even when the other surface
+            # returned rows: one passing check-run would then be cached and shown
+            # as "passing" while a required commit status was actually failing.
+            if not _is_absent_or_forbidden(exc):
+                raise GhCliError(
+                    f"could not read checks for {owner}/{repo}@{sha[:12]}: {exc}"
+                ) from exc
+            errors.append(str(exc))
+            continue
+    if errors and not rows:
+        # Every surface this repo has is unavailable to us; an empty list would be
+        # cached and written over a known failure as "no checks" — a silent lie.
+        raise GhCliError(
+            f"could not read checks for {owner}/{repo}@{sha[:12]}: " + " | ".join(errors)
+        )
+
+    out: list[dict] = []
+    for r in _dedupe_checks(rows):
+        out.append({
+            "name": r.get("name"),
+            "bucket": _check_bucket(r.get("status"), r.get("conclusion")),
+            "status": r.get("status"),
+            "conclusion": r.get("conclusion"),
+            "url": r.get("url"),
+            "summary": (r.get("summary") or "")[:300],
+            "app": r.get("app"),
+            "started_at": r.get("started_at"),
+            "completed_at": r.get("completed_at"),
+        })
+    order = {"failure": 0, "running": 1, "other": 2, "success": 3}
+    out.sort(key=lambda c: (order.get(c["bucket"], 9), (c["name"] or "").lower()))
+    return out
+
+
+# ── list-card enrichment: diff size + aggregate check state (ONE GraphQL call) ─
+#
+# The REST ``pulls`` list omits ``additions``/``deletions`` (they exist only on
+# the single-PR GET) and carries no check state at all. Getting either per row
+# over REST would cost one detail call plus one-or-two check calls PER PR — ~100+
+# subprocess spawns for a 50-PR repo, minutes of latency.
+#
+# GraphQL answers both for the WHOLE list in a single request (measured: ~2.4s
+# for 50 open PRs on kirodotdev/KiroCrew), so the enrichment is one extra call
+# regardless of list size. It is also strictly OPTIONAL: a failure here leaves the
+# rows un-enriched rather than failing the list, because the diff size and the
+# check dot are nice-to-have decoration on a card, not its reason to exist.
+
+# Our own lifecycle names -> GraphQL PullRequestState literals. The values are
+# interpolated into the query, so they come from THIS map only — never from
+# caller input — which keeps the query free of injection surface.
+_GRAPHQL_PR_STATES = {"open": "OPEN", "closed": "CLOSED, MERGED"}
+
+# The bucket keys every counts dict carries, so the frontend never has to guard a
+# missing key and the render order of the card's badges is fixed.
+_CHECK_BUCKETS = ("failure", "running", "success", "other")
+
+# How many rollup contexts one GraphQL page carries. A PR with more than this has
+# a TRUNCATED tally, which the row reports so the card can fall back to the
+# aggregate rollup instead of presenting an incomplete count as complete.
+_ROLLUP_CONTEXT_PAGE = 100
+
+# One PR's contexts, projected into the SAME row shape the REST check list uses
+# (name / source / status / conclusion / timestamps) so they can go through
+# _dedupe_checks and _check_bucket unchanged. Re-implementing either on a
+# bespoke string protocol is what previously let the card and the sidebar
+# disagree; sharing the code makes agreement structural.
+_ROLLUP_CONTEXTS_JQ = (
+    "[(.commits.nodes[0].commit.statusCheckRollup.contexts.nodes[]? | "
+    "{name: ((.name // .context) // \"\"), "
+    "source: ((.checkSuite.app.slug // .checkSuite.app.name) // \"status\"), "
+    "status: (.status // null), "
+    "conclusion: ((.conclusion // .state) // null), "
+    "started_at: ((.startedAt // .createdAt) // null), "
+    "completed_at: (.completedAt // null)})]"
+)
+
+# The GraphQL selection for one PR's card enrichment, shared by both fetchers so
+# the two paths can never drift apart in what they ask for.
+_PR_SUMMARY_SELECTION = (
+    " number additions deletions changedFiles"
+    " commits(last:1){nodes{commit{statusCheckRollup{state"
+    f"  contexts(first:{_ROLLUP_CONTEXT_PAGE}){{pageInfo{{hasNextPage}} nodes{{ __typename"
+    "   ... on CheckRun{name conclusion status startedAt completedAt"
+    "    checkSuite{app{slug name}}}"
+    "   ... on StatusContext{context state createdAt} }}}}}}"
+)
+
+# The JQ projection applied to ONE PR node (shared for the same reason).
+_PR_SUMMARY_JQ_BODY = (
+    "{number: .number, additions: .additions, deletions: .deletions, "
+    "changed_files: (.changedFiles // 0), "
+    "rollup: (.commits.nodes[0].commit.statusCheckRollup.state // null), "
+    "contexts_truncated: "
+    "(.commits.nodes[0].commit.statusCheckRollup.contexts.pageInfo.hasNextPage // false), "
+    f"contexts: {_ROLLUP_CONTEXTS_JQ}}}"
+)
+
+
+def fetch_pr_summaries(
+    owner: str, repo: str, state: str = "open", *, timeout: float = GH_TIMEOUT_SEC
+) -> dict[int, dict]:
+    """``{number: {additions, deletions, changed_files, checks_state, checks_counts}}``
+    for a repo's PRs, in ONE GraphQL call (see the module note above).
+
+    ``checks_state`` is the aggregate status-check rollup and ``checks_counts`` the
+    per-bucket tally of the individual checks, both bucketed the same way as
+    :func:`list_pr_checks` (``success`` / ``failure`` / ``running`` / ``other``).
+    ``checks_state`` is ``None`` when the PR has no checks at all. Raises
+    :class:`GhCliError` on a failed call — callers treat the enrichment as
+    optional and continue without it.
+    """
+    gql_state = _GRAPHQL_PR_STATES.get(state)
+    if gql_state is None:
+        raise GhCliError(f"unsupported state for PR summaries: {state!r}")
+    query = (
+        "query($owner:String!,$name:String!){"
+        " repository(owner:$owner,name:$name){"
+        f"  pullRequests(states:[{gql_state}], first:100,"
+        "   orderBy:{field:UPDATED_AT,direction:DESC}){"
+        "   nodes{" + _PR_SUMMARY_SELECTION + " } } } }"
+    )
+    argv = [
+        "gh", "api", "graphql",
+        "-f", f"query={query}",
+        "-F", f"owner={owner}",
+        "-F", f"name={repo}",
+        "--jq", f".data.repository.pullRequests.nodes[] | {_PR_SUMMARY_JQ_BODY}",
+    ]
+    proc = _gh_run(argv, timeout=timeout)
+    if proc.returncode != 0:
+        tail = " ".join((proc.stderr or "").strip().splitlines()[-3:])
+        raise GhCliError(f"gh api graphql (pr summaries) failed (exit {proc.returncode}): {tail}")
+
+    return _parse_summary_rows(proc.stdout or "")
+
+
+# How many PR numbers to request per by-number GraphQL call. Each number costs
+# one aliased field, so this bounds the query size while keeping the call count
+# low (the search cap of 300 rows -> at most 3 calls).
+_SUMMARY_BATCH = 100
+
+
+def fetch_pr_summaries_by_number(
+    owner: str, repo: str, numbers: list[int], *, timeout: float = GH_TIMEOUT_SEC
+) -> dict[int, dict]:
+    """Same payload as :func:`fetch_pr_summaries`, but for an EXPLICIT number list.
+
+    The state-scoped variant only covers the most recently updated 100 PRs, which
+    is exactly the window the search path exists to escape: a person filter can
+    legitimately return a PR that ranks 147th by update time. Addressing PRs by
+    number keeps enrichment complete for whatever the search returned.
+
+    Numbers are ints (validated by the caller's own parsing), so they carry no
+    injection surface even though they are interpolated as GraphQL aliases.
+    """
+    out: dict[int, dict] = {}
+    wanted = [n for n in numbers if isinstance(n, int) and n > 0]
+    for start in range(0, len(wanted), _SUMMARY_BATCH):
+        batch = wanted[start:start + _SUMMARY_BATCH]
+        fields = " ".join(
+            f"p{n}: pullRequest(number:{n}){{{_PR_SUMMARY_SELECTION} }}"
+            for n in batch
+        )
+        query = (
+            "query($owner:String!,$name:String!){"
+            f" repository(owner:$owner,name:$name){{ {fields} }} }}"
+        )
+        argv = [
+            "gh", "api", "graphql",
+            "-f", f"query={query}",
+            "-F", f"owner={owner}",
+            "-F", f"name={repo}",
+            "--jq", ".data.repository | to_entries[] | .value | select(. != null) | "
+                    + _PR_SUMMARY_JQ_BODY,
+        ]
+        proc = _gh_run(argv, timeout=timeout)
+        if proc.returncode != 0:
+            tail = " ".join((proc.stderr or "").strip().splitlines()[-3:])
+            raise GhCliError(
+                f"gh api graphql (pr summaries by number) failed (exit {proc.returncode}): {tail}"
+            )
+        out.update(_parse_summary_rows(proc.stdout or ""))
+    return out
+
+
+def _count_context_buckets(contexts: object) -> dict[str, int]:
+    """Tally normalized rollup context rows into the four buckets.
+
+    The rows arrive in the same shape as the REST check rows, so they go through
+    the SAME :func:`_dedupe_checks` (publisher + name identity, latest run wins)
+    and the SAME :func:`_check_bucket` — a card's counts and the detail sidebar's
+    list therefore cannot disagree about how many checks a PR has or what colour
+    they are.
+
+    Every bucket key is always present so the card never has to guard a hole, and
+    an unrecognized state counts as ``other`` rather than passing.
+    """
+    rows = [c for c in contexts if isinstance(c, dict)] if isinstance(contexts, list) else []
+    counts = {bucket: 0 for bucket in _CHECK_BUCKETS}
+    for row in _dedupe_checks(rows):
+        counts[_check_bucket(row.get("status"), row.get("conclusion"))] += 1
+    return counts
+
+
+def _parse_summary_rows(stdout: str) -> dict[int, dict]:
+    """Parse the shared per-PR summary JQ stream (see ``_PR_SUMMARY_JQ_BODY``)."""
+    out: dict[int, dict] = {}
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        number = row.get("number")
+        if not isinstance(number, int):
+            continue
+        rollup = row.get("rollup")
+        out[number] = {
+            "additions": row.get("additions") or 0,
+            "deletions": row.get("deletions") or 0,
+            "changed_files": row.get("changed_files") or 0,
+            # Same bucketing table as every other surface; an unrecognized rollup
+            # value lands in "other" and so must not read as passing.
+            "checks_state": _check_bucket(None, rollup) if rollup else None,
+            "checks_counts": _count_context_buckets(row.get("contexts")),
+            # More contexts than one page: the tally is incomplete, so the card
+            # must show the aggregate rollup rather than a partial count that
+            # could omit the only failing check.
+            "checks_truncated": bool(row.get("contexts_truncated")),
+        }
+    return out
+
+
+def summarize_checks(checks: list[dict]) -> dict:
+    """``{checks_counts, checks_state}`` derived from an ALREADY-bucketed check list.
+
+    Lets a fresh ``/pull`` fetch update the list card without re-running the
+    GraphQL enrichment: the detail call has just read the authoritative checks, so
+    the card's tally and dot are computed from exactly those rows. Priority for
+    the single ``checks_state`` mirrors what the rollup means — anything failing
+    dominates, then anything still running, then passing, then informational —
+    so the dot never reads greener than the list it summarizes.
+    """
+    counts = {bucket: 0 for bucket in _CHECK_BUCKETS}
+    for c in checks:
+        if not isinstance(c, dict):
+            continue
+        bucket = c.get("bucket")
+        counts[bucket if isinstance(bucket, str) and bucket in counts else "other"] += 1
+    for bucket in ("failure", "running", "success", "other"):
+        if counts[bucket]:
+            state: str | None = bucket
+            break
+    else:
+        state = None  # no checks at all -> the card shows no dot
+    # Derived from the authoritative, fully-paginated detail read, so the tally is
+    # complete by construction.
+    return {"checks_counts": counts, "checks_state": state, "checks_truncated": False}
+
+
+def enrich_pulls(owner: str, repo: str, pulls: list[dict], state: str) -> list[dict]:
+    """Merge :func:`fetch_pr_summaries` into REST list rows, in place-ish.
+
+    The state-scoped GraphQL query returns at most 100 PRs while the REST list
+    paginates ALL of them, so any row beyond that window is topped up by a
+    by-number lookup. Without it those rows would report ``0`` additions and no
+    checks — unavailable data rendered as a confident "no diff, no checks".
+
+    Best effort by design: on any failure the affected rows report ``None`` for
+    diff size and check state (unknown, not "nothing"), so the list still renders
+    and the route declines to cache the incomplete rows.
+    """
+    try:
+        summaries = fetch_pr_summaries(owner, repo, state)
+    except GhCliError:
+        summaries = {}
+    missing = [
+        n for n in (pr.get("number") for pr in pulls)
+        if isinstance(n, int) and n not in summaries
+    ]
+    if missing:
+        try:
+            summaries.update(fetch_pr_summaries_by_number(owner, repo, missing))
+        except GhCliError:
+            pass
+    return _apply_summaries(pulls, summaries)
+
+
+def enrich_pulls_by_number(owner: str, repo: str, pulls: list[dict]) -> list[dict]:
+    """Enrichment for SEARCH rows, addressed by the numbers actually returned.
+
+    Same best-effort contract as :func:`enrich_pulls`: a failed call leaves the
+    rows un-enriched rather than failing the response.
+    """
+    try:
+        summaries = fetch_pr_summaries_by_number(
+            owner, repo, [pr.get("number") for pr in pulls]  # type: ignore[misc]
+        )
+    except GhCliError:
+        summaries = {}
+    return _apply_summaries(pulls, summaries)
+
+
+def _apply_summaries(pulls: list[dict], summaries: dict[int, dict]) -> list[dict]:
+    """Write the enrichment fields onto every row.
+
+    A row with no summary gets ``None`` — NOT ``0`` / empty counts. The distinction
+    matters because the caller persists these rows: zeros would present an
+    unavailable diff size and an unread check state as confident facts ("no
+    changes, no checks") and the unbounded list cache would keep serving that
+    until a manual refresh. ``None`` says "unknown", which the card renders as
+    absent and :func:`enrichment_complete` reports so the route can skip caching.
+    """
+    for pr in pulls:
+        number = pr.get("number")
+        extra = summaries.get(number) if isinstance(number, int) else None
+        if not extra:
+            pr["additions"] = None
+            pr["deletions"] = None
+            pr["changed_files"] = None
+            pr["checks_state"] = None
+            pr["checks_counts"] = None
+            pr["checks_truncated"] = False
+            continue
+        pr["additions"] = extra.get("additions", 0)
+        pr["deletions"] = extra.get("deletions", 0)
+        pr["changed_files"] = extra.get("changed_files", 0)
+        pr["checks_state"] = extra.get("checks_state")
+        pr["checks_counts"] = extra.get("checks_counts") or {b: 0 for b in _CHECK_BUCKETS}
+        pr["checks_truncated"] = bool(extra.get("checks_truncated"))
+    return pulls
+
+
+def enrichment_complete(pulls: list[dict]) -> bool:
+    """Whether every row actually got its card enrichment.
+
+    ``False`` means at least one row's diff size / check state is unknown (the
+    GraphQL call failed), which the route uses to keep the incomplete rows OUT of
+    the on-disk list cache so the next read retries instead of serving unknowns
+    forever.
+    """
+    return all(pr.get("checks_counts") is not None for pr in pulls)
+
+
+# ── server-side PR search ("by person" filters) ──────────────────────────────
+#
+# The bounded ``list_open_pulls`` / ``list_closed_pulls`` pair deliberately caps
+# the closed set at one page, which keeps a big repo's list view fast — but it
+# makes any CLIENT-side "authored by me" style filter unsound: your older PRs
+# simply are not in the window (kirodotdev/KiroCrew has 363 closed PRs, so a PR
+# merged a couple of days ago already ranks ~147th and falls outside).
+#
+# So the per-person filters are answered by GitHub's SEARCH API instead: the
+# qualifier does the filtering server-side over the WHOLE repo, and the result
+# set is complete for that person regardless of repo size. The list view keeps
+# its bound; only these filters switch data source.
+#
+# Search results are issue-shaped, so a few PR-native fields are unavailable
+# (``base``/``head`` refs, ``requested_reviewers``). That is fine: the filters
+# that need them are expressed as QUALIFIERS (``review-requested:<login>``), so
+# the query itself does the work and the missing field is never read back.
+
+_PR_SEARCH_JQ = (
+    ".items[] | {number: .number, title: .title, url: .html_url, "
+    "state: .state, draft: (.draft // false), labels: [.labels[].name], "
+    "author: (.user.login // null), "
+    "author_association: (.author_association // null), "
+    "updated_at: .updated_at, created_at: .created_at, "
+    "closed_at: .closed_at, "
+    "merged_at: (.pull_request.merged_at // null), "
+    "assignees: [.assignees[].login], "
+    "requested_reviewers: [], base: null, head: null, "
+    "body: (.body // \"\")}"
+)
+
+# Bound the search too — a person filter should never stream thousands of rows.
+# Public because the route reports it to the client: the UI has to be able to say
+# "newest 300" rather than implying completeness.
+PR_SEARCH_MAX = 300
+
+# Hard stop on pages walked, so a pathological `per_page`/`limit` combination can
+# never turn one filter toggle into an unbounded request loop.
+_SEARCH_MAX_PAGES = 10
+
+# GitHub logins: alphanumerics and hyphens only. Validated before a login can
+# reach the search query string, so it cannot inject extra qualifiers.
+_LOGIN_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$")
+
+# PR lifecycle -> search qualifiers. ``closed`` means closed WITHOUT being
+# merged, matching the frontend's three-way split (open / merged / closed).
+_PR_STATE_QUALIFIERS = {
+    "open": ["is:open"],
+    "merged": ["is:merged"],
+    "closed": ["is:closed", "is:unmerged"],
+}
+
+
+class PrSearchError(ValueError):
+    """Raised when a PR search is asked for with an invalid login or state."""
+
+
+def build_pr_search_query(
+    owner: str, repo: str, *, state: str = "open",
+    author: str | None = None, assignee: str | None = None,
+    review_requested: str | None = None,
+) -> str:
+    """Assemble the search ``q`` for a per-person PR query.
+
+    Scoped to one repo and to pull requests, plus the lifecycle qualifiers for
+    ``state`` and one qualifier per supplied login. Every login is charset-
+    validated (:data:`_LOGIN_RE`) BEFORE it lands in the query, so a hostile
+    value cannot smuggle in extra qualifiers. Raises :class:`PrSearchError` on an
+    unknown state, an invalid login, or when no person qualifier was given (an
+    unfiltered search would just duplicate the list endpoint).
+    """
+    if state not in _PR_STATE_QUALIFIERS:
+        raise PrSearchError(f"unsupported state for PR search: {state!r}")
+    parts = [f"repo:{owner}/{repo}", "is:pr", *_PR_STATE_QUALIFIERS[state]]
+    people = [
+        ("author", author),
+        ("assignee", assignee),
+        ("review-requested", review_requested),
+    ]
+    added = 0
+    for qualifier, login in people:
+        if not login:
+            continue
+        if not _LOGIN_RE.match(login):
+            raise PrSearchError(f"invalid GitHub login: {login!r}")
+        parts.append(f"{qualifier}:{login}")
+        added += 1
+    if added == 0:
+        raise PrSearchError("PR search needs at least one person qualifier")
+    return " ".join(parts)
+
+
+def search_pulls(
+    owner: str, repo: str, *, state: str = "open",
+    author: str | None = None, assignee: str | None = None,
+    review_requested: str | None = None,
+    timeout: float = GH_PAGINATE_TIMEOUT_SEC, limit: int = PR_SEARCH_MAX,
+) -> list[dict]:
+    """Search a repo's PRs by person, server-side (see the module note above).
+
+    Returns rows in the SAME shape as ``list_open_pulls`` so the frontend can
+    swap data sources without a second row type — with ``base``/``head`` null and
+    ``requested_reviewers`` empty (not exposed by the search API). Paginated and
+    then capped at ``limit``.
+    """
+    q = build_pr_search_query(
+        owner, repo, state=state, author=author, assignee=assignee,
+        review_requested=review_requested,
+    )
+    cap = max(1, int(limit))
+    # Paginated EXPLICITLY, one page at a time, stopping as soon as the cap is
+    # met: `gh --paginate` would walk every page GitHub offers (up to the search
+    # maximum) before we sliced it down, so a prolific author's filter could burn
+    # a dozen extra requests — and hit the timeout — for rows nobody asked for.
+    per_page = min(100, cap)
+    rows: list[dict] = []
+    page = 1
+    while len(rows) < cap and page <= _SEARCH_MAX_PAGES:
+        path = (
+            f"search/issues?q={quote(q, safe='')}&sort=updated&order=desc"
+            f"&per_page={per_page}&page={page}"
+        )
+        batch = _run_gh_api(path, _PR_SEARCH_JQ, timeout=timeout, paginate=False)
+        rows.extend(batch)
+        if len(batch) < per_page:
+            break  # last page
+        page += 1
+    return rows[:cap]

@@ -1,19 +1,16 @@
 // The "Investigate" control in the issue-detail header. Opens (or resumes) a
 // KiroCrew chat session that investigates this issue — see lib/investigate.ts —
-// and reflects the issue's saved investigation state:
-//   * never investigated → "Investigate"
-//   * has a session       → "Resume" + a status pill (Investigating / Investigated)
-// The record is read cache-first; on click we optimistically write the returned
-// record back into the query cache so the badge is right if the user returns.
+// and reflects the issue's saved investigation state (never investigated →
+// "Investigate"; has a session → "Resume" + a status pill). The record is read
+// cache-first; on click we optimistically write the returned record back into
+// the query cache so the badge is right if the user returns.
+//
+// Presentation is shared with the PR "Review" control (AgentSessionButton).
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Telescope, Loader2, Check } from 'lucide-react'
+import { Telescope } from 'lucide-react'
 import { issueRadarApi, type Issue, type InvestigationResponse } from '../api'
 import { useInvestigate } from '../lib/investigate'
-
-const BTN =
-  'inline-flex items-center gap-1 text-[12px] px-2 py-1 rounded-md border border-border ' +
-  'text-muted hover:text-text hover:border-accent/50 disabled:opacity-40 disabled:cursor-default ' +
-  'cursor-pointer bg-transparent whitespace-nowrap'
+import AgentSessionButton from './AgentSessionButton'
 
 export default function InvestigateButton({
   owner, repo, issue,
@@ -31,9 +28,12 @@ export default function InvestigateButton({
   })
   const record = recordQuery.data?.investigation ?? null
   const { investigate, busy, error } = useInvestigate()
+  // Same rule as ReviewButton: a pending or failed lookup must not be read as
+  // "no session", or clicking would start a second one and orphan the first.
+  const unresolved = !recordQuery.isSuccess
 
   const onClick = async () => {
-    if (busy) return
+    if (busy || unresolved) return
     const saved = await investigate(owner, repo, issue, record)
     if (saved) {
       queryClient.setQueryData<InvestigationResponse>(key, {
@@ -42,48 +42,23 @@ export default function InvestigateButton({
     }
   }
 
-  const hasSession = !!record?.slot_key
-  const resolved = record?.status === 'resolved'
-  const verdict = record?.findings?.verdict
-  const summary = record?.findings?.summary
-
   return (
-    <span className="inline-flex items-center gap-1.5">
-      <button
-        onClick={onClick}
-        disabled={busy}
-        title={
-          hasSession
-            ? 'Resume the AI investigation chat session for this issue'
-            : 'Open an AI investigation chat session for this issue'
-        }
-        className={BTN}
-      >
-        {busy ? (
-          <Loader2 size={13} className="animate-spin" />
-        ) : (
-          <Telescope size={13} className="text-accent" />
-        )}
-        {hasSession ? 'Resume' : 'Investigate'}
-      </button>
-
-      {record && (
-        <span
-          title={summary || (resolved ? 'Investigation complete' : 'Investigation in progress')}
-          className={
-            'text-[10.5px] px-1.5 py-0.5 rounded-full font-medium ' +
-            (resolved ? 'bg-aim-subtle text-aim' : 'bg-accent-subtle text-accent')
-          }
-        >
-          {resolved ? (verdict ? <><Check size={10} className="lucide-inline" /> {verdict}</> : 'Investigated') : 'Investigating'}
-        </span>
-      )}
-
-      {error && (
-        <span className="text-[10.5px] text-danger" title={error.message}>
-          couldn't start
-        </span>
-      )}
-    </span>
+    <AgentSessionButton
+      icon={Telescope}
+      label="Investigate"
+      record={record}
+      busy={busy || recordQuery.isLoading}
+      disabled={unresolved}
+      error={error ?? (recordQuery.error as Error | null) ?? null}
+      onClick={onClick}
+      startHint={
+        recordQuery.isError
+          ? 'Could not check for an existing investigation — retrying on refresh'
+          : 'Open an AI investigation chat session for this issue'
+      }
+      resumeHint="Resume the AI investigation chat session for this issue"
+      pendingLabel="Investigating"
+      donePillLabel="Investigated"
+    />
   )
 }

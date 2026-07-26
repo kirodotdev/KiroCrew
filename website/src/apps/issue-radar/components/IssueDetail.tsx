@@ -30,12 +30,14 @@ import {
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import MarkdownRenderer from '../../../components/MarkdownRenderer'
+import AiSummaryCard from './AiSummaryCard'
 import Clickable from '../../../components/Clickable'
 import LabelChip from './LabelChip'
 import LabelPicker from './LabelPicker'
+import MemberBadge from './MemberBadge'
 import InvestigateButton from './InvestigateButton'
 import { useIssueRadar } from '../context'
-import { relativeTimeOrDate, hexToRgba, asArray } from '../lib/format'
+import { relativeTimeOrDate, hexToRgba, asArray, detailPollMs } from '../lib/format'
 import {
   issueRadarApi,
   type Issue, type Reactions, type TimelineEvent, type DetailLabel,
@@ -85,47 +87,6 @@ function ReactionStrip({ reactions }: { reactions: Reactions }) {
       ))}
     </div>
   )
-}
-
-const ASSOC_LABEL: Record<string, string> = {
-  OWNER: 'Owner', MEMBER: 'Member', COLLABORATOR: 'Collaborator',
-  CONTRIBUTOR: 'Contributor', FIRST_TIME_CONTRIBUTOR: 'First-time contributor',
-  FIRST_TIMER: 'First-timer',
-}
-
-/** Small role badge next to an author. Maintainers (owner/member/collaborator)
- * read as accent; first-timers as warn (a triage signal — they may need extra
- * guidance); other associations stay muted. NONE renders nothing. */
-function AssociationBadge({ assoc }: { assoc?: string | null }) {
-  if (!assoc || assoc === 'NONE') return null
-  const label = ASSOC_LABEL[assoc]
-  if (!label) return null
-  const isFirst = assoc === 'FIRST_TIME_CONTRIBUTOR' || assoc === 'FIRST_TIMER'
-  const isMaint = assoc === 'OWNER' || assoc === 'MEMBER' || assoc === 'COLLABORATOR'
-  const cls = isFirst ? 'bg-warn-subtle text-warn' : isMaint ? 'bg-accent-subtle text-accent' : 'bg-bg-elevated text-muted'
-  return <span className={`text-[10.5px] px-1.5 py-0.5 rounded-full font-medium ${cls}`}>{label}</span>
-}
-
-/** Human labels for a member's repo role (collaborators roster) and, for the
- * read-only derived fallback, the author_association vocabulary. */
-const ROLE_LABEL: Record<string, string> = {
-  admin: 'Admin', maintain: 'Maintainer', write: 'Write', triage: 'Triage', read: 'Read',
-  OWNER: 'Owner', MEMBER: 'Member', COLLABORATOR: 'Collaborator', member: 'Member',
-}
-/** Roles that are collaborators but not maintainers — muted rather than accent. */
-const ROLE_MUTED = new Set(['read'])
-
-/** The badge shown next to an author. A repo-roster ROLE takes precedence
- * (Admin/Maintainer read as accent; read-only collaborators muted); when the
- * author isn't a member it falls back to their per-issue author_association
- * (first-timer / contributor signals). */
-function MemberBadge({ role, assoc }: { role?: string | null; assoc?: string | null }) {
-  if (role) {
-    const label = ROLE_LABEL[role] ?? role
-    const cls = ROLE_MUTED.has(role) ? 'bg-bg-elevated text-muted' : 'bg-accent-subtle text-accent'
-    return <span className={`text-[10.5px] px-1.5 py-0.5 rounded-full font-medium ${cls}`}>{label}</span>
-  }
-  return <AssociationBadge assoc={assoc} />
 }
 
 /** The open/closed pill. Closed splits on state_reason: completed (accent-ish
@@ -200,115 +161,6 @@ function StateActions({
           </div>
         </>
       )}
-    </div>
-  )
-}
-
-/** A single skeleton bar: a soft GRAY base with only a FAINT teal/purple tint
- * drifting across it (a restrained "AI is generating" cue). Reuses the shared
- * `animate-shimmer` utility (background-position sweep); `delay` offsets each
- * bar so the lines flow as a gentle wave. No new keyframes. */
-function ShimmerLine({ w, delay = 0 }: { w: string; delay?: number }) {
-  return (
-    <div
-      className="relative h-3 rounded overflow-hidden"
-      style={{ width: w, backgroundColor: 'color-mix(in srgb, var(--muted) 18%, transparent)' }}
-    >
-      <div
-        className="absolute inset-0 animate-shimmer"
-        style={{
-          backgroundImage:
-            'linear-gradient(90deg, transparent,' +
-            ' color-mix(in srgb, var(--accent) 18%, transparent),' +
-            ' color-mix(in srgb, var(--aim) 18%, transparent), transparent)',
-          backgroundSize: '200% 100%',
-          animationDelay: `${delay}s`,
-        }}
-      />
-    </div>
-  )
-}
-
-/** Fast typewriter reveal for a freshly-generated summary. Returns a growing
- * prefix of `text` plus a `typing` flag. When `enabled` is false (a cached
- * result the user has already seen, or reduced-motion) it returns the full text
- * immediately — the reveal only plays for a brand-new generation. */
-function useTypewriter(text: string, enabled: boolean): { shown: string; typing: boolean } {
-  const [shown, setShown] = useState(text)
-  useEffect(() => {
-    if (!enabled || !text) {
-      setShown(text)
-      return
-    }
-    setShown('')
-    let i = 0
-    const total = text.length
-    // ~36 frames at ~22ms → the whole summary types in well under a second.
-    const step = Math.max(6, Math.ceil(total / 36))
-    const id = window.setInterval(() => {
-      i = Math.min(total, i + step)
-      setShown(text.slice(0, i))
-      if (i >= total) window.clearInterval(id)
-    }, 22)
-    return () => window.clearInterval(id)
-  }, [text, enabled])
-  return { shown, typing: shown.length < text.length }
-}
-
-/** The AI triage summary card at the top of the main column. Auto-loads when an
- * issue opens (cache-first server-side); a small refresh regenerates it. */
-function AiSummaryCard({
-  summary, fromCache, loading, fetching, error, onRegenerate,
-}: {
-  summary: string
-  fromCache: boolean
-  loading: boolean
-  fetching: boolean
-  error: Error | null
-  onRegenerate: () => void
-}) {
-  const reduce = useReducedMotion()
-  // Typewriter only for a freshly-generated summary (not a cached one the user
-  // has already seen, and not under reduced-motion).
-  const { shown, typing } = useTypewriter(summary, !fromCache && !!summary && !reduce)
-  return (
-    <div className="mb-5 rounded-lg border border-accent/25 bg-accent-subtle/40 overflow-hidden">
-      <div className="flex items-center gap-1.5 px-3.5 py-2 border-b border-accent/20 text-[11px] uppercase tracking-wider text-accent font-medium">
-        <Sparkles size={12} className={loading || typing ? 'animate-pulse' : ''} /> AI summary
-        <button
-          onClick={onRegenerate}
-          disabled={fetching}
-          title="Regenerate summary"
-          aria-label="Regenerate AI summary"
-          className="ml-auto inline-flex items-center text-accent/70 hover:text-accent disabled:opacity-40 cursor-pointer bg-transparent p-0.5"
-        >
-          <RefreshCw size={12} className={fetching ? 'animate-spin' : ''} />
-        </button>
-      </div>
-      <div className="px-3.5 py-2.5 text-[13px] leading-relaxed text-text">
-        {loading ? (
-          <div role="status" aria-label="Generating AI summary">
-            <div className="flex items-center gap-1.5 text-[11.5px] text-accent mb-2">
-              <Sparkles size={12} className="animate-pulse" />
-              <span className="animate-pulse">Reading &amp; summarizing…</span>
-            </div>
-            <div className="space-y-1.5">
-              <ShimmerLine w="100%" />
-              <ShimmerLine w="94%" delay={0.12} />
-              <ShimmerLine w="72%" delay={0.24} />
-            </div>
-          </div>
-        ) : error ? (
-          <span className="text-danger">
-            Couldn't generate a summary.{' '}
-            <button onClick={onRegenerate} className="underline cursor-pointer bg-transparent text-danger">Retry</button>
-          </span>
-        ) : summary ? (
-          <MarkdownRenderer content={typing ? shown : summary} />
-        ) : (
-          <span className="text-muted">No summary available for this issue.</span>
-        )}
-      </div>
     </div>
   )
 }
@@ -635,14 +487,25 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
   // (?refresh=1) through react-query's normal refetch(), without a second
   // query key. Cleared inside queryFn so only that one refetch bypasses cache.
   const refreshRef = useRef(false)
+  // False until this pane has fetched the CURRENT item once; see queryFn.
+  const fetchedOnceRef = useRef(false)
+  useEffect(() => { fetchedOnceRef.current = false }, [owner, repo, issue.number])
   const detailKey = ['issue-radar', 'issue', owner, repo, issue.number]
   const detailQuery = useQuery({
     queryKey: detailKey,
     queryFn: () => {
-      const useRefresh = refreshRef.current
+      // Cache-first on the FIRST fetch after opening (instant paint from the
+      // server's cache); every later fetch — the poll below, a window-focus
+      // refetch, or the header button — forces a real GitHub read, because the
+      // backend detail cache has no TTL and would otherwise never move.
+      const useRefresh = refreshRef.current || fetchedOnceRef.current
       refreshRef.current = false
+      fetchedOnceRef.current = true
       return issueRadarApi.issueDetail(owner, repo, issue.number, { refresh: useRefresh })
     },
+    // A CLOSED issue backs off by an order of magnitude: only late commentary can
+    // still arrive, and each poll costs a fully-paginated timeline read.
+    refetchInterval: detailPollMs(issue.state !== 'closed'),
   })
   const refreshDetail = () => { refreshRef.current = true; detailQuery.refetch() }
 
@@ -853,11 +716,11 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
       </header>
 
       {/* ── Scroll area: timeline + sidebar ── */}
-      <div className="flex-1 min-h-0 overflow-y-auto scrollbar-none" style={{ scrollbarWidth: 'none' }}>
-        <div className="flex gap-6 px-6 py-5 items-start">
+      <div className="flex-1 min-h-0 overflow-hidden">
+        <div className="flex gap-6 px-6 py-5 h-full items-stretch">
           {/* Main column — AI summary, the pinned description, linked refs,
               then the activity timeline (newest-first). */}
-          <main className="flex-1 min-w-0">
+          <main className="flex-1 min-w-0 overflow-y-auto scrollbar-none" style={{ scrollbarWidth: 'none' }}>
             <AiSummaryCard
               summary={aiQuery.data?.summary ?? ''}
               fromCache={aiQuery.data?.from_cache ?? false}
@@ -865,6 +728,7 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
               fetching={aiQuery.isFetching}
               error={!aiQuery.data ? (aiQuery.error as Error | null) : null}
               onRegenerate={regenerateAi}
+              generatedAt={aiQuery.data?.generated_at ?? null}
             />
 
             {/* Original description — pinned to the top, NOT on the timeline. */}
@@ -919,7 +783,7 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
           </main>
 
           {/* Sidebar — most triage-useful GitHub metadata. */}
-          <aside className="w-[236px] flex-shrink-0 self-start sticky top-0 text-[12.5px]">
+          <aside className="w-[236px] flex-shrink-0 overflow-y-auto scrollbar-none text-[12.5px]" style={{ scrollbarWidth: 'none' }}>
             <Section title="Assignees" icon={<Users size={12} />}>
               {assignees.length > 0 ? (
                 <div className="flex flex-col gap-1">

@@ -9,18 +9,23 @@ export interface ActiveRepo {
 export type SortKey = 'number' | 'updated' | 'ranking'
 export type SortDir = 'asc' | 'desc'
 
+/** Sort fields the pull-request list supports (no AI ranking — that is an
+ * issue-only concept). A subset of ``SortKey``. */
+export type PrSortKey = 'number' | 'updated'
+
 /** Which full-page dashboard is showing in the main area. Extend this union
  * (plus the registry in views/registry.tsx) to add a new dashboard — no other
  * shared file needs to change, so views can be built by separate agents. */
 export type DashboardTab = 'overview' | 'tagging' | 'ranking' | 'insights' | 'duplicates'
 
-/** Main-area mode: a dashboard page, the issue list + detail split, or the
- * settings page. Each corresponds to one left-rail accordion section. */
-export type MainView = 'dashboard' | 'issues' | 'settings'
+/** Main-area mode: a dashboard page, the issue list + detail split, the pull-
+ * request list + detail split, or the settings page. Each corresponds to one
+ * left-rail accordion section. */
+export type MainView = 'dashboard' | 'issues' | 'pulls' | 'settings'
 
 /** Which left-rail accordion section is expanded (the others collapse to their
  * title bar). Follows MainView by default; a header click overrides. */
-export type ExpandedSection = 'dashboards' | 'filters' | 'settings'
+export type ExpandedSection = 'dashboards' | 'filters' | 'pulls' | 'settings'
 
 /** Sub-sections of the General settings page the rail nav can jump to. */
 export type GeneralAnchor = 'account' | 'repos'
@@ -34,3 +39,8 @@ export type SettingsTarget =
   | { kind: 'repo'; owner: string; repo: string }
 
 export type StateFilter = 'open' | 'closed'
+
+/** Pull-request state filter. ``merged`` and ``closed`` both fetch the closed
+ * set from GitHub; the frontend splits them on ``merged_at`` (merged = has a
+ * merge timestamp; closed = closed WITHOUT being merged). */
+export type PrStateFilter = 'open' | 'closed' | 'merged'

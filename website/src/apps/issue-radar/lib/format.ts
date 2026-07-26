@@ -1,7 +1,7 @@
 // Pure, side-effect-free helpers + localStorage accessors + constants for
 // Issue Radar. No React, no component imports — safe to pull into any module.
 import { Clock, Hash, Sparkles, type LucideIcon } from 'lucide-react'
-import type { ActiveRepo, DashboardTab, MainView, SettingsTarget, SortDir, SortKey, StateFilter } from './types'
+import type { ActiveRepo, DashboardTab, MainView, PrSortKey, PrStateFilter, SettingsTarget, SortDir, SortKey, StateFilter } from './types'
 
 export const ACTIVE_KEY = 'kc:issue-radar:active-repo'
 export const LIST_WIDTH_KEY = 'kc:issue-radar:list-width'
@@ -22,6 +22,27 @@ export const APP_VERSION = '0.1.0'
  * their OWN queries must too. */
 export function asArray<T>(v: unknown): T[] {
   return Array.isArray(v) ? (v as T[]) : []
+}
+
+/** How often an OPEN detail pane re-reads its item from GitHub. A detail pane is
+ * a thing you leave on screen while work happens elsewhere (a review lands, CI
+ * flips, someone replies), so it polls rather than going stale silently.
+ *
+ * 30s is chosen for watching CI: a check flipping red is the thing you are
+ * waiting on, and each poll costs a handful of `gh` calls for ONE item (not the
+ * whole list), so the traffic stays proportionate. */
+export const DETAIL_POLL_MS = 30_000
+
+/** Poll interval for a MERGED or CLOSED item. Its expensive parts — the diff
+ * shape, the check run, the commit list — are frozen; only late commentary can
+ * still arrive. Polling those at the open-item rate spends the same 5-7 `gh`
+ * calls every 30s to observe state that cannot change, so closed items back off
+ * by an order of magnitude instead of being switched off entirely. */
+export const CLOSED_DETAIL_POLL_MS = 300_000
+
+/** The poll interval an item deserves, given whether it is still open. */
+export function detailPollMs(open: boolean): number {
+  return open ? DETAIL_POLL_MS : CLOSED_DETAIL_POLL_MS
 }
 
 /** Compact "just now / 5m ago / 3h ago / 2d ago" from an epoch-ms timestamp.
@@ -125,6 +146,13 @@ export const SORT_FIELDS: { key: SortKey; label: string; icon: LucideIcon; soon?
   { key: 'updated', label: 'Last update', icon: Clock },
 ]
 
+/** Sort options for the pull-request list — same fields as issues minus the
+ * AI ``ranking`` (an issue-only concept). */
+export const PR_SORT_FIELDS: { key: PrSortKey; label: string; icon: LucideIcon }[] = [
+  { key: 'number', label: 'Number', icon: Hash },
+  { key: 'updated', label: 'Last update', icon: Clock },
+]
+
 // ── Persisted UI state ────────────────────────────────────────────────────
 // The whole app view (which dashboard / issues / settings page is showing, the
 // selected issue, and the active filters + sort) is persisted here so leaving
@@ -146,6 +174,18 @@ export interface PersistedUiState {
   stateFilter: StateFilter
   sortKey: SortKey
   sortDir: SortDir
+  // ── pull-request view ──
+  selectedPull: number | null
+  prQuery: string
+  prSelectedLabels: string[]
+  prAuthoredByMe: boolean
+  prAssignedToMe: boolean
+  prReviewRequestedByMe: boolean
+  prDraftOnly: boolean
+  prCreatedByMember: boolean
+  prStateFilter: PrStateFilter
+  prSortKey: PrSortKey
+  prSortDir: SortDir
 }
 
 /** Load the persisted UI state. Partial by design — any missing field falls

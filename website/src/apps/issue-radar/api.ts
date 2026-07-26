@@ -41,6 +41,141 @@ export interface IssuesResponse {
   from_cache: boolean
 }
 
+/** One pull-request list row. A PR-native shape (from the `pulls` endpoint, not
+ * `issues`): it carries `draft`, base/head refs, requested reviewers, and
+ * `merged_at` (the signal that a closed PR was merged vs closed-unmerged). */
+export interface PullRequest {
+  number: number
+  title: string
+  url: string
+  /** GitHub state — "open" | "closed". Merged PRs are "closed" with merged_at set. */
+  state: string
+  draft: boolean
+  labels: string[]
+  author?: string | null
+  author_association?: string | null
+  updated_at: string
+  created_at?: string
+  closed_at?: string | null
+  /** ISO timestamp when merged, or null. The only reliable merged/closed split. */
+  merged_at?: string | null
+  assignees?: string[]
+  requested_reviewers?: string[]
+  base?: string | null
+  head?: string | null
+  /** Lines added — from the GraphQL list enrichment. `null` means UNKNOWN (the
+   * enrichment call failed); it is deliberately not 0, which would claim the PR
+   * changes nothing. */
+  additions?: number | null
+  /** Lines removed — same enrichment, same null-means-unknown rule. */
+  deletions?: number | null
+  /** Files touched — same enrichment, same null-means-unknown rule. */
+  changed_files?: number | null
+  /** Aggregate status-check rollup, bucketed exactly like `PrCheck.bucket`;
+   * null when the PR has no checks or the enrichment call failed. */
+  checks_state?: 'failure' | 'running' | 'success' | 'other' | null
+  /** Per-bucket tally of the individual checks, using the same buckets as
+   * `PrCheck.bucket`. All four keys are present when it is there at all; `null`
+   * means the enrichment did not run. */
+  checks_counts?: Record<'failure' | 'running' | 'success' | 'other', number> | null
+  /** True when the PR has more checks than one API page, so `checks_counts` is
+   * incomplete and the card must show the aggregate rollup instead. */
+  checks_truncated?: boolean
+  body?: string
+}
+
+export interface PullsResponse {
+  owner: string
+  repo: string
+  state?: string
+  pulls: PullRequest[]
+  from_cache: boolean
+  /** Set by /pulls/search when the result hit the server's cap, so the UI can say
+   * "newest N" instead of implying it listed every match. */
+  truncated?: boolean
+  /** The cap that produced `truncated`. */
+  limit?: number
+}
+
+/** The full single-PR payload the detail pane renders — a superset of the list
+ * `PullRequest` (adds diff stats, review/comment counts, mergeability, full
+ * label objects, milestone). */
+export interface PrDetailData {
+  number: number
+  title: string
+  body: string
+  state: string
+  draft: boolean
+  merged: boolean
+  url: string
+  author: string | null
+  author_association: string | null
+  created_at: string
+  updated_at: string
+  closed_at: string | null
+  merged_at: string | null
+  merged_by: string | null
+  comments: number
+  review_comments: number
+  commits: number
+  additions: number
+  deletions: number
+  changed_files: number
+  /** GitHub mergeability: true/false, or null while GitHub is still computing. */
+  mergeable: boolean | null
+  mergeable_state: string | null
+  base: string | null
+  head: string | null
+  /** Head commit sha — the commit the automated checks hang off. */
+  head_sha: string | null
+  labels: DetailLabel[]
+  assignees: string[]
+  requested_reviewers: string[]
+  milestone: Milestone | null
+}
+
+/** One automated check on a PR's head commit — a CI job, a Checks-API review
+ * bot, or a legacy commit status, all normalized to one shape. `bucket` is the
+ * coarse server-computed grouping the UI acts on, so it never has to re-derive
+ * GitHub's ~10 conclusion values. */
+export interface PrCheck {
+  name: string
+  /** failure | running | success | other (neutral/skipped/cancelled). */
+  bucket: 'failure' | 'running' | 'success' | 'other'
+  /** Raw GitHub status (queued/in_progress/completed), for the tooltip. */
+  status: string | null
+  /** Raw GitHub conclusion (success/failure/timed_out/…), shown on the row. */
+  conclusion: string | null
+  /** Link to the run's details page, when the provider gave one. */
+  url: string | null
+  /** Short one-line summary/description from the check output. */
+  summary: string
+  /** The GitHub App that reported it (null for legacy commit statuses). */
+  app: string | null
+  started_at: string | null
+  completed_at: string | null
+}
+
+export interface PullDetailResponse {
+  owner: string
+  repo: string
+  number: number
+  detail: PrDetailData
+  timeline: TimelineEvent[]
+  checks: PrCheck[]
+  /** The card-level tally + rollup derived from `checks` by the same code the
+   * list enrichment uses, so the client can patch its cached list row instead of
+   * refetching the whole list. */
+  checks_summary?: {
+    checks_counts: Record<'failure' | 'running' | 'success' | 'other', number>
+    checks_state: 'failure' | 'running' | 'success' | 'other' | null
+    /** Always false here: a detail read is fully paginated, so its tally is
+     * complete by construction. */
+    checks_truncated?: boolean
+  }
+  from_cache: boolean
+}
+
 /** Per-reaction counts on an issue or comment (`total` is the sum). */
 export interface Reactions {
   total: number
@@ -96,6 +231,7 @@ export interface TimelineEvent {
     | 'comment' | 'labeled' | 'unlabeled' | 'assigned' | 'unassigned'
     | 'closed' | 'reopened' | 'renamed' | 'milestoned' | 'demilestoned'
     | 'cross-referenced' | 'referenced'
+    | 'reviewed' | 'committed' | 'review_comment'
   actor: string | null
   created_at: string
   // comment
@@ -115,6 +251,15 @@ export interface TimelineEvent {
   milestone?: string | null
   // cross-referenced
   source?: { number: number; title: string; url: string; state: string; is_pr: boolean }
+  // reviewed (PR only) — "approved" | "changes_requested" | "commented" | "dismissed"
+  review_state?: string | null
+  // committed (PR only) — first line of the commit message
+  message?: string
+  // review_comment (PR only) — an INLINE comment anchored to a file + line. These
+  // come from /pulls/{n}/comments, which the issues timeline does not carry.
+  path?: string | null
+  line?: number | null
+  url?: string | null
 }
 
 export interface IssueDetailResponse {
@@ -140,6 +285,21 @@ export interface IssueAiResponse {
   number: number
   summary: string
   suggested_labels: SuggestedLabel[]
+  /** ISO timestamp the summary was produced. Null for caches written before it
+   * was stamped — the UI then omits the age. */
+  generated_at?: string | null
+  from_cache: boolean
+}
+
+/** GET /pull-ai — a PR's AI summary. No label suggestions: a PR's actionable
+ * output is the review itself (see the Review button), not a taxonomy edit. */
+export interface PrAiResponse {
+  owner: string
+  repo: string
+  number: number
+  summary: string
+  /** ISO timestamp the summary was produced (null for pre-stamp caches). */
+  generated_at?: string | null
   from_cache: boolean
 }
 
@@ -361,12 +521,66 @@ export const issueRadarApi = {
     return r.json()
   },
 
+  /** List pull requests for a repo. `state` is 'open' (default) or 'closed'
+   * (closed is bounded to the 100 most-recently-updated, merged + unmerged). */
+  pulls: async (owner: string, repo: string, opts?: { refresh?: boolean; state?: 'open' | 'closed' }): Promise<PullsResponse> => {
+    const q = new URLSearchParams({ owner, repo })
+    if (opts?.state) q.set('state', opts.state)
+    if (opts?.refresh) q.set('refresh', '1')
+    const r = await fetch(`${API}/pulls?${q.toString()}`, { credentials: 'same-origin' })
+    if (!r.ok) throw new Error(await parseErrorBody(r))
+    return r.json()
+  },
+
+  /** PRs matching a per-person filter, resolved server-side by GitHub search.
+   * Use INSTEAD of `pulls()` when a person filter is on: the bounded list caps
+   * closed PRs at one page, so a client-side "authored by me" filter misses
+   * older PRs, while search covers the whole repo. `state` is open | merged |
+   * closed (closed = closed without merge). At least one person is required.
+   * Rows come back in the same shape, with `base`/`head` null and
+   * `requested_reviewers` empty (the search API doesn't expose them). */
+  searchPulls: async (
+    owner: string, repo: string,
+    opts: { state?: 'open' | 'closed' | 'merged'; author?: string; assignee?: string; reviewRequested?: string },
+  ): Promise<PullsResponse> => {
+    const q = new URLSearchParams({ owner, repo })
+    if (opts.state) q.set('state', opts.state)
+    if (opts.author) q.set('author', opts.author)
+    if (opts.assignee) q.set('assignee', opts.assignee)
+    if (opts.reviewRequested) q.set('review_requested', opts.reviewRequested)
+    const r = await fetch(`${API}/pulls/search?${q.toString()}`, { credentials: 'same-origin' })
+    if (!r.ok) throw new Error(await parseErrorBody(r))
+    return r.json()
+  },
+
+  /** One PR's full detail + normalized timeline + changed files, cache-first;
+   * pass refresh to force a fresh `gh` fetch. */
+  pullDetail: async (owner: string, repo: string, number: number, opts?: { refresh?: boolean }): Promise<PullDetailResponse> => {
+    const q = new URLSearchParams({ owner, repo, number: String(number) })
+    if (opts?.refresh) q.set('refresh', '1')
+    const r = await fetch(`${API}/pull?${q.toString()}`, { credentials: 'same-origin' })
+    if (!r.ok) throw new Error(await parseErrorBody(r))
+    return r.json()
+  },
+
   /** AI triage (summary + suggested labels), cache-first server-side; pass
    * refresh to force a regenerate. */
   issueAi: async (owner: string, repo: string, number: number, opts?: { refresh?: boolean }): Promise<IssueAiResponse> => {
     const q = new URLSearchParams({ owner, repo, number: String(number) })
     if (opts?.refresh) q.set('refresh', '1')
     const r = await fetch(`${API}/issue-ai?${q.toString()}`, { credentials: 'same-origin' })
+    if (!r.ok) throw new Error(await parseErrorBody(r))
+    return r.json()
+  },
+
+  /** AI summary of a pull request — its description, whole conversation, and
+   * check state. Cache-first server-side, and the cache self-invalidates when
+   * the PR moves (new comment / push / flipped check), so no manual refresh is
+   * needed to pick up changes; pass refresh to force a regenerate anyway. */
+  pullAi: async (owner: string, repo: string, number: number, opts?: { refresh?: boolean }): Promise<PrAiResponse> => {
+    const q = new URLSearchParams({ owner, repo, number: String(number) })
+    if (opts?.refresh) q.set('refresh', '1')
+    const r = await fetch(`${API}/pull-ai?${q.toString()}`, { credentials: 'same-origin' })
     if (!r.ok) throw new Error(await parseErrorBody(r))
     return r.json()
   },

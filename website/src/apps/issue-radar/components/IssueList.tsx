@@ -2,9 +2,11 @@ import { useEffect, useState } from 'react'
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion'
 import { RefreshCw, Search, X } from 'lucide-react'
 import { useIssueRadar } from '../context'
-import { relativeDate, relativeTime } from '../lib/format'
+import { relativeTimeOrDate, relativeTime } from '../lib/format'
 import type { Issue } from '../api'
 import LabelChip from './LabelChip'
+import ListSkeleton from './ListSkeleton'
+import ListEmptyState from './ListEmptyState'
 
 /** Above this many rendered rows we skip the per-card layout/enter animation:
  * Framer's layout pass measures every node, which janks on large repos (Kiro
@@ -46,7 +48,7 @@ export default function IssueList() {
           <span className="font-bold text-accent">#{iss.number}</span>
           {iss.author ? ` · ${iss.author}` : ''}
         </span>
-        <span className="flex-shrink-0">{relativeDate(iss.updated_at)}</span>
+        <span className="flex-shrink-0">{relativeTimeOrDate(iss.updated_at)}</span>
       </div>
       <div className="text-[14px] leading-snug text-text line-clamp-2">{iss.title}</div>
       {iss.labels.length > 0 && (
@@ -71,7 +73,7 @@ export default function IssueList() {
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search issues…"
+            placeholder="Search Issues…"
             aria-label="Search issues"
             className="flex-1 min-w-0 bg-transparent py-2.5 text-[13px] text-text placeholder:text-muted outline-none"
           />
@@ -92,12 +94,10 @@ export default function IssueList() {
           old hard divider line above the footer). */}
       <div className="relative flex-1 min-h-0">
         <div className="absolute inset-0 overflow-y-auto scrollbar-none px-2 pb-2 flex flex-col gap-2" style={{ scrollbarWidth: 'none' }}>
-          {issuesLoading && <div className="px-1 py-2 text-[14px] text-muted">Loading issues…</div>}
+          {issuesLoading && <ListSkeleton />}
           {issuesError && <div className="px-1 py-2 text-[14px] text-danger">{issuesError.message}</div>}
           {!issuesLoading && filteredIssues.length === 0 && (
-            <div className="px-1 py-2 text-[14px] text-muted">
-              {query.trim() ? 'No issues match your search.' : 'No matching issues.'}
-            </div>
+            <ListEmptyState searching={Boolean(query.trim())} label="Issues" />
           )}
           {animate ? (
             <AnimatePresence initial={false} mode="popLayout">

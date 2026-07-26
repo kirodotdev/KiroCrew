@@ -13,7 +13,7 @@
 // visible in every mode. All shared state comes from useIssueRadar(); this file
 // owns only presentational layout (column resize).
 import { useState } from 'react'
-import { CircleDot } from 'lucide-react'
+import { CircleDot, GitPullRequest } from 'lucide-react'
 import { useIssueRadar } from './context'
 import {
   loadListWidth, LIST_WIDTH_KEY, MIN_LIST_WIDTH, MAX_LIST_WIDTH,
@@ -21,11 +21,13 @@ import {
 import LeftRail from './components/LeftRail'
 import IssueList from './components/IssueList'
 import IssueDetail from './components/IssueDetail'
+import PrList from './components/PrList'
+import PrDetail from './components/PrDetail'
 import SettingsView from './views/SettingsView'
 import { dashboardComponent } from './views/registry'
 
 export default function Workspace() {
-  const { mainView, dashboardTab, activeIssue } = useIssueRadar()
+  const { mainView, dashboardTab, activeIssue, activePull } = useIssueRadar()
   const [listWidth, setListWidth] = useState<number>(loadListWidth)
 
   const startResize = (e: React.MouseEvent) => {
@@ -74,8 +76,8 @@ export default function Workspace() {
               ? <IssueDetail issue={activeIssue} />
               : (
                 <div className="h-full flex flex-col items-center justify-center text-muted gap-2">
-                  <CircleDot size={28} className="opacity-40" />
-                  <div className="text-xs">Select an issue to see its details.</div>
+                  <CircleDot size={26} strokeWidth={1.5} className="opacity-50" />
+                  <div className="text-[13px]">Select an issue to see its details.</div>
                 </div>
               )}
           </main>
@@ -84,6 +86,30 @@ export default function Workspace() {
         <main className="flex-1 min-w-0 min-h-0">
           <SettingsView />
         </main>
+      ) : mainView === 'pulls' ? (
+        <>
+          <section style={{ width: listWidth }} className="flex-shrink-0 min-h-0">
+            <PrList />
+          </section>
+
+          {/* Drag handle — resize the PR-list column. */}
+          <div
+            onMouseDown={startResize}
+            title="Drag to resize"
+            className="w-1.5 flex-shrink-0 cursor-col-resize hover:bg-accent/30 transition-colors"
+          />
+
+          <main className="flex-1 min-w-0 min-h-0">
+            {activePull
+              ? <PrDetail pull={activePull} />
+              : (
+                <div className="h-full flex flex-col items-center justify-center text-muted gap-2">
+                  <GitPullRequest size={26} strokeWidth={1.5} className="opacity-50" />
+                  <div className="text-[13px]">Select a Pull Request to see its details.</div>
+                </div>
+              )}
+          </main>
+        </>
       ) : (
         <main className="flex-1 min-w-0 overflow-y-auto scrollbar-none" style={{ scrollbarWidth: 'none' }}>
           <DashboardView />

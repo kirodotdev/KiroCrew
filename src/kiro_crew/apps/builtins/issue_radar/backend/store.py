@@ -20,6 +20,7 @@ from __future__ import annotations
 import contextlib
 import json
 import shutil
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -438,10 +439,34 @@ def issue_ai_cache_path(owner: str, repo: str, number: int, root: Path | None = 
     return repo_data_dir(owner, repo, root) / f"issue-{int(number)}-ai.json"
 
 
+def _cache_generated_at(data: dict, path: Path) -> str | None:
+    """The stamped ``generated_at``, falling back to the file's mtime.
+
+    Caches written before the field existed carry no stamp, and the UI would then
+    show no age at all until the user manually regenerated. The mtime is when the
+    cache was written, which IS when the summary was generated — so it is the
+    right answer, not a guess.
+    """
+    stamped = data.get("generated_at")
+    if isinstance(stamped, str) and stamped:
+        return stamped
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return None
+    return datetime.fromtimestamp(mtime, timezone.utc).isoformat(
+        timespec="microseconds"
+    ).replace("+00:00", "Z")
+
+
 def write_issue_ai_cache(
     owner: str, repo: str, number: int, payload: dict, *, root: Path | None = None
 ) -> None:
-    """Cache one issue's AI triage result (``{summary, suggested_labels}``)."""
+    """Cache one issue's AI triage result (``{summary, suggested_labels}``).
+
+    Stamped with ``generated_at`` so the UI can show how old the summary is —
+    without it a cached card gives no hint whether it was written minutes or
+    months ago."""
     atomic_write(
         issue_ai_cache_path(owner, repo, number, root),
         json.dumps(
@@ -449,6 +474,7 @@ def write_issue_ai_cache(
                 "owner": owner, "repo": repo, "number": int(number),
                 "summary": payload.get("summary", ""),
                 "suggested_labels": payload.get("suggested_labels", []),
+                "generated_at": _now_iso(),
             },
             indent=2,
         ),
@@ -456,7 +482,9 @@ def write_issue_ai_cache(
 
 
 def read_issue_ai_cache(owner: str, repo: str, number: int, root: Path | None = None) -> dict | None:
-    """Return ``{"summary", "suggested_labels"}`` for a cached issue, or None."""
+    """Return ``{"summary", "suggested_labels", "generated_at"}`` for a cached
+    issue, or None. Caches written before the stamp existed fall back to the
+    file's mtime (see _cache_generated_at)."""
     path = issue_ai_cache_path(owner, repo, number, root)
     if not path.is_file():
         return None
@@ -467,12 +495,70 @@ def read_issue_ai_cache(owner: str, repo: str, number: int, root: Path | None = 
     return {
         "summary": data.get("summary", ""),
         "suggested_labels": data.get("suggested_labels", []),
+        "generated_at": _cache_generated_at(data, path),
     }
 
 
 def delete_issue_ai_cache(owner: str, repo: str, number: int, root: Path | None = None) -> None:
     """Drop a cached AI result (called after a label edit so it recomputes)."""
     issue_ai_cache_path(owner, repo, number, root).unlink(missing_ok=True)
+
+
+# ── PR AI summary cache ──────────────────────────────────────────────────────
+#
+# Unlike an issue's triage result, a PR summary goes stale on its own: it reads
+# the description, EVERY comment/review, and the check state, all of which move
+# while the PR is open. So the cache is keyed by a FINGERPRINT of those inputs
+# (see routes._pr_ai_fingerprint) and a mismatch reads as a miss — a new comment
+# or a flipped check silently earns a fresh summary, with no user action and no
+# repeated model call while nothing has changed.
+
+
+def pr_ai_cache_path(owner: str, repo: str, number: int, root: Path | None = None) -> Path:
+    return repo_data_dir(owner, repo, root) / f"pull-{int(number)}-ai.json"
+
+
+def write_pr_ai_cache(
+    owner: str, repo: str, number: int, payload: dict, *, root: Path | None = None
+) -> None:
+    """Cache one PR's AI summary together with the fingerprint it was built from."""
+    atomic_write(
+        pr_ai_cache_path(owner, repo, number, root),
+        json.dumps(
+            {
+                "owner": owner, "repo": repo, "number": int(number),
+                "summary": payload.get("summary", ""),
+                "fingerprint": payload.get("fingerprint", ""),
+                "generated_at": _now_iso(),
+            },
+            indent=2,
+        ),
+    )
+
+
+def read_pr_ai_cache(
+    owner: str, repo: str, number: int, root: Path | None = None, *, fingerprint: str | None = None
+) -> dict | None:
+    """Return ``{"summary", "generated_at"}`` for a cached PR summary, or None.
+
+    A stored fingerprint that does not match ``fingerprint`` is a MISS: the PR has
+    moved (new comment, new push, check flipped) since the summary was written.
+    """
+    path = pr_ai_cache_path(owner, repo, number, root)
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
+    # A syntactically VALID but non-object root (``[]``, a bare string) would blow
+    # up on .get() and keep failing every request until the file is deleted by
+    # hand. Treat it as a miss and let the route rewrite it.
+    if not isinstance(data, dict):
+        return None
+    if fingerprint is not None and data.get("fingerprint") != fingerprint:
+        return None
+    return {"summary": data.get("summary", ""), "generated_at": _cache_generated_at(data, path)}
 
 
 # ── AI label recommendations (per-repo taxonomy proposal) ────────────────────
@@ -641,6 +727,12 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
+# Public alias: the routes layer stamps freshly-computed AI results with the same
+# clock the caches use, so a "generated N minutes ago" label reads identically
+# whether the response came from cache or was just computed.
+now_iso = _now_iso
+
+
 def investigation_path(owner: str, repo: str, number: int, root: Path | None = None) -> Path:
     return repo_data_dir(owner, repo, root) / f"investigation-{int(number)}.json"
 
@@ -732,3 +824,226 @@ def write_investigation(
 
             atomic_write(investigation_path(owner, repo, number, root), json.dumps(record, indent=2))
     return record
+
+
+# ── pull-request caches (mirror the issue list + detail caches) ──────────────
+#
+# Same cache-first philosophy as issues: the PR list is cached per state
+# (open/closed) and each PR's detail (detail + normalized timeline + changed
+# files) gets one file, so a PR view opens instantly (and offline) on re-visit.
+# Both live under the repo's cache dir, so ``remove_connected_repo``'s rmtree
+# cleans them up on disconnect. ``refresh=1`` on the route bypasses either.
+
+# Bump when the shape of a cached PR row changes (i.e. when ``_PR_JQ`` in
+# github_client gains/renames/drops a field), so an older-schema cache is a MISS
+# on read and the route transparently refetches with the current field set.
+#   v1: initial PR list shape
+#   v2: added additions / deletions / checks_state (GraphQL list enrichment)
+#   v3: added changed_files / checks_counts (per-bucket check tally on the card)
+#   v4: checks_counts now collapses same-name runs, so v3 tallies are inflated
+#   v5: unavailable enrichment is now null (unknown) instead of 0/empty, and rows
+#       carry checks_truncated; v4 rows cannot express either
+PULLS_CACHE_SCHEMA = 5
+
+
+def pulls_cache_path(owner: str, repo: str, root: Path | None = None, state: str = "open") -> Path:
+    fname = "pulls-cache.json" if state == "open" else f"pulls-{state}-cache.json"
+    return repo_data_dir(owner, repo, root) / fname
+
+
+@contextlib.contextmanager
+def _pulls_cache_lock(owner: str, repo: str, root: Path | None, state: str):
+    """Serialize writes to ONE pulls list cache across threads and processes.
+
+    ``atomic_write`` prevents a torn file but not a lost update: a detail poll's
+    read→patch→write (``apply_pr_checks_to_list_cache``) can overlap a full
+    ``/pulls?refresh=1`` write and replace the whole refreshed document with its
+    own stale copy. Both writers hold this lock, so the patch always reads what
+    the refresh wrote. Same reasoning as :func:`_config_lock`.
+    """
+    path = pulls_cache_path(owner, repo, root, state)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path.with_suffix(".json.lock"), "w") as fd:
+        with platform_compat.file_lock(fd.fileno(), exclusive=True):
+            yield
+
+
+def write_pulls_cache(
+    owner: str, repo: str, pulls: list[dict], *, root: Path | None = None, state: str = "open"
+) -> None:
+    with _pulls_cache_lock(owner, repo, root, state):
+        atomic_write(
+            pulls_cache_path(owner, repo, root, state),
+            json.dumps(
+                {"schema": PULLS_CACHE_SCHEMA, "owner": owner, "repo": repo,
+                 "state": state, "pulls": pulls},
+                indent=2,
+            ),
+        )
+
+
+def read_pulls_cache(
+    owner: str, repo: str, root: Path | None = None, state: str = "open"
+) -> list[dict] | None:
+    """Return cached pull requests for the given state, or None when there is no
+    current-schema cache (a stale/absent schema stamp is treated as a miss so
+    the route refetches with the current PR shape)."""
+    path = pulls_cache_path(owner, repo, root, state)
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict) or data.get("schema") != PULLS_CACHE_SCHEMA:
+        return None
+    pulls = data.get("pulls")
+    return pulls if isinstance(pulls, list) else None
+
+
+def apply_pr_checks_to_list_cache(
+    owner: str, repo: str, number: int, summary: dict, *, root: Path | None = None
+) -> None:
+    """Write a PR's fresh check tally back into whichever list cache holds its row.
+
+    Without this the two views drift apart the moment you open a PR: the detail
+    pane re-reads the checks every couple of minutes, while the card keeps
+    whatever the last LIST refresh computed — so a check that turned red in the
+    sidebar stayed green on the card until the whole list was refetched. The
+    detail fetch has the authoritative rows in hand, so it patches the row it
+    just learned about (same write-through idea as apply_label_change_to_caches).
+
+    ``summary`` is ``github_client.summarize_checks``'s output. Only the two
+    check fields are touched; a cache whose schema is stale is left alone, since
+    it will be refetched wholesale anyway.
+    """
+    for state in ("open", "closed"):
+        path = pulls_cache_path(owner, repo, root, state)
+        if not path.is_file():
+            continue
+        # The whole read→patch→write runs under the cache's lock so a concurrent
+        # full refresh cannot be clobbered by this partial update (or vice versa).
+        with _pulls_cache_lock(owner, repo, root, state):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, FileNotFoundError):
+                continue
+            if not isinstance(data, dict) or data.get("schema") != PULLS_CACHE_SCHEMA:
+                continue
+            changed = False
+            for row in data.get("pulls") or []:
+                if isinstance(row, dict) and row.get("number") == int(number):
+                    row["checks_counts"] = summary.get("checks_counts")
+                    row["checks_state"] = summary.get("checks_state")
+                    # Also clear a stale truncation flag: this tally comes from the
+                    # fully-paginated detail read, so it is complete even if the
+                    # GraphQL enrichment had to give up on a >1-page PR.
+                    row["checks_truncated"] = bool(summary.get("checks_truncated"))
+                    changed = True
+            if changed:
+                atomic_write(path, json.dumps(data, indent=2))
+
+
+def drop_pulls_cache(owner: str, repo: str, state: str = "open", *, root: Path | None = None) -> None:
+    """Delete a PR list cache file.
+
+    Used when a fresh fetch could not be fully enriched: skipping the WRITE alone
+    would leave the previous (non-expiring) cache in place, so the very next plain
+    request would serve those older rows instead of retrying the enrichment.
+    Removing it makes the next read a real fetch.
+
+    Holds the same lock as every other mutation of this file. Without it a
+    concurrent write-through could read the old list, have this call unlink it, and
+    then atomically write its stale copy back — leaving the cache we meant to
+    invalidate in place.
+    """
+    path = pulls_cache_path(owner, repo, root, state)
+    with _pulls_cache_lock(owner, repo, root, state):
+        with contextlib.suppress(OSError):
+            path.unlink(missing_ok=True)
+
+
+def pr_detail_cache_path(owner: str, repo: str, number: int, root: Path | None = None) -> Path:
+    return repo_data_dir(owner, repo, root) / f"pull-{int(number)}.json"
+
+
+# Bump whenever the shape of a cached PR DETAIL entry changes (a new field on the
+# detail JQ, or a new sibling payload like ``checks``). An entry written under an
+# older schema — or with no stamp at all — is treated as a MISS on read, so the
+# route transparently refetches with the current field set.
+#
+# Without this, a field added later is silently absent FOREVER on any PR the user
+# had already opened: the cache hit short-circuits the fetch and the route serves
+# the old payload with the new key defaulting to empty. That is exactly how the
+# automated-check results came back empty on already-visited PRs. The issues list
+# cache guards the same way (see ISSUES_CACHE_SCHEMA).
+#
+#   v2: replaced the changed-files payload with ``checks``
+#   v3: mergeability is now resolved via a retry (see get_pr_detail), so caches
+#       written earlier hold a permanent ``mergeable_state: "unknown"``
+#   v4: checks are de-duplicated per (publisher, name) rather than by name alone,
+#       so v3 entries can be missing a same-named check from another app
+PR_DETAIL_CACHE_SCHEMA = 4
+
+# How long a cached PR detail may be served to a plain (non-``refresh=1``) read.
+# Freshness belongs to the cache, not to the caller: this is what lets the detail
+# pane simply poll, and keeps the route honest for any other consumer.
+PR_DETAIL_CACHE_TTL_SEC = 30.0
+
+
+def write_pr_detail_cache(
+    owner: str, repo: str, number: int, detail: dict, timeline: list[dict], checks: list[dict],
+    *, root: Path | None = None,
+) -> None:
+    """Cache one PR's full detail + normalized timeline + automated-check results.
+
+    One file per PR (``pull-{number}.json``) so a detail view opens instantly on
+    re-visit; ``refresh=1`` on the route bypasses it.
+    """
+    atomic_write(
+        pr_detail_cache_path(owner, repo, number, root),
+        json.dumps(
+            {
+                "schema": PR_DETAIL_CACHE_SCHEMA,
+                "owner": owner, "repo": repo, "number": int(number),
+                "detail": detail, "timeline": timeline, "checks": checks,
+            },
+            indent=2,
+        ),
+    )
+
+
+def read_pr_detail_cache(
+    owner: str, repo: str, number: int, root: Path | None = None,
+    *, max_age_sec: float | None = None,
+) -> dict | None:
+    """Return ``{"detail", "timeline", "checks"}`` for a cached PR, or None when
+    there is no CURRENT-schema entry (a stale or unstamped file is a miss, so the
+    route refetches — see PR_DETAIL_CACHE_SCHEMA).
+
+    ``max_age_sec`` makes freshness a property of the CACHE rather than of the
+    caller: an entry older than that reads as a miss. Without it, correctness
+    would depend on every consumer of ``/pull`` knowing to pass ``refresh=1``
+    after its first read — a plain GET from any second consumer (an MCP tool,
+    another pane) would otherwise be served indefinitely-old data.
+    """
+    path = pr_detail_cache_path(owner, repo, number, root)
+    if not path.is_file():
+        return None
+    if max_age_sec is not None:
+        try:
+            if (time.time() - path.stat().st_mtime) > max_age_sec:
+                return None
+        except OSError:
+            return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict) or data.get("schema") != PR_DETAIL_CACHE_SCHEMA:
+        return None
+    return {
+        "detail": data.get("detail"),
+        "timeline": data.get("timeline", []),
+        "checks": data.get("checks", []),
+    }

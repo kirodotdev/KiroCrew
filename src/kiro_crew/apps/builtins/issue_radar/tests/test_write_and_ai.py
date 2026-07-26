@@ -34,6 +34,8 @@ class TestAiCache(unittest.TestCase):
         assert got is not None
         self.assertEqual(got["summary"], "It crashes on start.")
         self.assertEqual(got["suggested_labels"], [{"name": "bug", "reason": "crash"}])
+        # Stamped so the card can show how long ago it was generated.
+        self.assertTrue(got["generated_at"])
         store.delete_issue_ai_cache("o", "r", 7, self.tmp)
         self.assertIsNone(store.read_issue_ai_cache("o", "r", 7, self.tmp))
 
