@@ -47,11 +47,20 @@ const MAX_PERSISTED_SOURCE_URLS = 512
 const MAX_PERSISTED_SOURCE_URL_LENGTH = 2048
 const MAX_PERSISTED_SLOT_LENGTH = 512
 
-// Cheap URL candidate scan; each candidate is then parsed with the URL API
-// and validated with linear string ops (no lazy-quantifier regex: the prior
-// pattern had the same polynomial-backtracking shape CodeQL flagged on the
-// backend parser).
-const URL_CANDIDATE_RE = /https:\/\/[^\s<>()[\]{}"']+/g
+// Cheap URL candidate scan; each candidate is then parsed with the URL API and
+// validated with linear string ops. This is an ALLOWLIST of URL-safe ASCII
+// characters (RFC 3986 unreserved + gen-/sub-delims + '%'), minus the bracket
+// and quote characters we deliberately treat as delimiters -- ()[]{}"' -- so a
+// PR wrapped in parens or a markdown link still parses. Because it is an
+// allowlist, the scan stops at the first byte that cannot appear in a URL,
+// including every CJK ideograph and fullwidth punctuation mark. A URL packed
+// against CJK text with no ASCII space -- routine in Chinese/Japanese/Korean
+// messages, e.g. a fullwidth "(" placed right after the PR number -- therefore
+// no longer swallows the trailing text and fails the numeric-tail check.
+// extractChatLinks.ts uses the same allowlist approach for its bare-URL scan.
+// Still a single greedy character class (no lazy quantifier), preserving the
+// linear, no-backtracking shape CodeQL flagged on the old backend parser.
+const URL_CANDIDATE_RE = /https:\/\/[A-Za-z0-9!#$%&*+,.\/:;=?@_~-]+/g
 
 function parseCandidate(raw: string): PullRequestLink | null {
   // Trim trailing punctuation and markdown emphasis (**bold**, *italic*,

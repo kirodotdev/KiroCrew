@@ -307,3 +307,59 @@ describe('first-mention attribution (Changes vs Resources)', () => {
     expect(result.map(l => l.url)).toEqual([agentPr])
   })
 })
+
+describe('CJK / fullwidth punctuation after a PR URL (issue #507)', () => {
+  const gh = 'https://github.com/kirodotdev/KiroCrew/pull/436'
+  const gl = 'https://gitlab.com/acme/platform/-/merge_requests/42'
+
+  // Fullwidth / CJK punctuation is kept as literals (the repo pre-commit hook
+  // blocks only CJK ideographs U+4E00-9FFF, not punctuation); the few ideographs
+  // needed to prove the scan stops on Han text are written as \u escapes, so the
+  // source stays free of literal Chinese words while the runtime strings are the
+  // genuine characters.
+  it.each([
+    ['a fullwidth open paren U+FF08', `PR up: ${gh}（one commit）`],
+    ['a fullwidth comma U+FF0C', `done ${gh}，then test`],
+    ['an ideographic full stop U+3002', `merged ${gh}。`],
+    ['adjacent Han text U+66F4 U+65B0', `see ${gh}\u66F4\u65B0 notes`],
+    ['an ideographic space U+3000', `see ${gh}\u3000thanks`],
+    ['fullwidth corner brackets U+300C U+300D', `ref 「${gh}」ok`],
+  ])('extracts the PR when the URL is followed by %s', (_label, content) => {
+    expect(extractPullRequestLinks(messages(content)).map(link => link.url)).toEqual([gh])
+  })
+
+  it('extracts a PR wrapped in a fullwidth-parenthesised clause', () => {
+    expect(extractPullRequestLinks(messages(`（see ${gh}，ok）`)).map(link => link.url)).toEqual([gh])
+  })
+
+  it('extracts a GitLab MR followed by fullwidth punctuation', () => {
+    expect(extractPullRequestLinks(messages(`MR up ${gl}，waiting review`)).map(link => link.url)).toEqual([gl])
+  })
+
+  it('still parses an ASCII query/fragment tail (no over-trim regression)', () => {
+    expect(extractPullRequestLinks(messages(
+      `see ${gh}?tab=checks and ${gh}#issuecomment-1`,
+    )).map(link => link.url)).toEqual([gh])
+  })
+
+  it('separates two PRs joined only by fullwidth punctuation', () => {
+    const a = 'https://github.com/acme/widgets/pull/436'
+    const b = 'https://github.com/acme/widgets/pull/9'
+    // No ASCII space anywhere: the old denylist scan swallowed both URLs into a
+    // single un-parseable candidate, so BOTH were lost. The allowlist stops at
+    // each fullwidth mark, recovering each URL independently.
+    expect(extractPullRequestLinks(messages(`${a}，${b}。`)).map(link => link.url)).toEqual([a, b])
+  })
+
+  it('extracts the PR from a realistic CJK assistant message', () => {
+    // Runtime string reads (translated): "PR opened: <url>(single commit,
+    // Fixes #435), CI all green, merge after approve." Han ideographs are \u
+    // escapes; fullwidth punctuation (（），。：) is literal.
+    const content =
+      `PR \u5DF2\u5F00：${gh}（\u5355 commit，Fixes #435），`
+      + `CI \u5168\u7EFF，approve \u540E merge。`
+    expect(extractPullRequestLinks(messages(content))).toEqual([
+      { url: gh, provider: 'github', number: 436, repo: 'KiroCrew' },
+    ])
+  })
+})
