@@ -56,6 +56,26 @@ METHOD_SUBAGENT_LIST_UPDATE = "_kiro.dev/subagent/list_update"
 METHOD_KIRO_SESSION_UPDATE = "_kiro.dev/session/update"
 METHOD_SET_CONFIG_OPTION = "session/set_config_option"
 
+# Capabilities we advertise during `initialize`. Previously omitted entirely,
+# which made the agent assume the all-false default.
+#
+# `elicitation` is a deliberate forward-bet: kiro-cli 2.14.0 compiles the
+# `elicitation/create` schema (form + url modes) and gates it on this
+# capability, but does NOT yet route an MCP server's `elicitation/create` out
+# over ACP — a stub MCP server issuing one gets back
+# `-32601 method not found`. Declaring support costs nothing today and means
+# the agent can start using the richer prompt the moment kiro-cli ships the
+# bridge.
+#
+# `fs` and `terminal` stay false: KiroCrew does not serve the agent's file or
+# terminal requests over ACP — the agent uses its own tools for that, and
+# advertising them would invite requests we have no handler for.
+ACP_CLIENT_CAPABILITIES: dict = {
+    "fs": {"readTextFile": False, "writeTextFile": False},
+    "terminal": False,
+    "elicitation": {"form": {}, "url": {}},
+}
+
 # ── ACP Backend Identifiers ──
 
 ACP_BACKEND_CLAUDE = "claude"

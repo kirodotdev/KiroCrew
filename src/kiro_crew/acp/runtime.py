@@ -36,6 +36,7 @@ from kiro_crew.acp.session_handle import (
     AcpSessionHandle,
 )
 from kiro_crew.acp.types import (
+    ACP_CLIENT_CAPABILITIES,
     METHOD_SESSION_LOAD,
     METHOD_SESSION_NEW,
     METHOD_SESSION_TERMINATE,
@@ -503,6 +504,7 @@ class AcpRuntime:
                     "clientName": CLIENT_NAME,
                     "clientVersion": CLIENT_VERSION,
                     "protocolVersion": PROTOCOL_VERSION,
+                    "clientCapabilities": ACP_CLIENT_CAPABILITIES,
                 },
             )
             self._can_load_session = bool(

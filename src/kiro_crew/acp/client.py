@@ -39,6 +39,7 @@ from kiro_crew.acp._dispatch import parse_usage_update
 from kiro_crew.acp.liveness import VERDICT_UNKNOWN, VERDICT_WORKING, LivenessOracle
 from kiro_crew.acp.types import (
     ACP_BACKEND_CLAUDE,
+    ACP_CLIENT_CAPABILITIES,
     EVENT_AGENT_SWITCHED,
     EVENT_CLEAR_STATUS,
     EVENT_COMPACTION_STATUS,
@@ -2110,6 +2111,7 @@ class AcpClient:
             {
                 "protocolVersion": protocol_version,
                 "clientInfo": {"name": CLIENT_NAME, "version": CLIENT_VERSION},
+                "clientCapabilities": ACP_CLIENT_CAPABILITIES,
             },
         )
         init_resp = await self._wait_for_response(init_id, timeout=_INIT_TIMEOUT)
