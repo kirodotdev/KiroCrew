@@ -12,6 +12,14 @@ def _workflow(name: str) -> str:
     return (WORKFLOWS / name).read_text(encoding="utf-8")
 
 
+def _line_containing(text: str, *substrings: str) -> str:
+    """First line in `text` that contains every one of `substrings`."""
+    for line in text.splitlines():
+        if all(s in line for s in substrings):
+            return line
+    raise AssertionError(f"no line contains all of {substrings!r}")
+
+
 class TestHumanOverrideHandler:
     def test_handler_runs_from_trusted_issue_comment_context(self) -> None:
         workflow = _workflow("ai-review-human-override.yml")
@@ -93,3 +101,36 @@ class TestArbiterPresentation:
         assert 'TITLE="✅ human override accepted"' in workflow
         assert "/ai-review override arbiter $SHA:" in workflow
         assert "defer-longterm" in workflow
+
+
+class TestClaudeReviewCodeOnlyScope:
+    """The Claude reviewer is CODE-ONLY and fast-by-scope: it fetches the diff
+    via `gh pr diff` (diff only, no prose), cannot pull PR title/description or
+    comments, and scales re-scanning to the diff size."""
+
+    def test_reviewer_is_code_only_and_cannot_fetch_pr_prose(self) -> None:
+        workflow = _workflow("claude-review.yml")
+
+        # Scope the tool check to the --allowedTools line (other steps use gh api).
+        tools = _line_containing(workflow, "--allowedTools")
+        assert "Read,Grep,Glob" in tools
+        assert "gh pr diff" in tools        # diff-only source (no prose)
+        assert "gh pr comment" in tools     # may post findings
+        assert "gh pr view" not in tools    # must NOT fetch title/description/comments
+        assert "gh api" not in tools        # must NOT fetch arbitrary PR data
+        # Prompt states the code-only input discipline explicitly.
+        assert "review the CODE only" in workflow
+        assert "OUT OF SCOPE" in workflow
+
+    def test_reviewer_gets_the_diff_from_gh_pr_diff(self) -> None:
+        workflow = _workflow("claude-review.yml")
+
+        # The diff source is the tool, not an inlined prompt blob.
+        assert "Get the diff by running `gh pr diff`" in workflow
+
+    def test_rescan_is_scaled_to_diff_size(self) -> None:
+        workflow = _workflow("claude-review.yml")
+
+        # Small diffs get one pass; a second pass is mandatory on
+        # security/data-sensitive or large diffs.
+        assert "make a SECOND full pass" in workflow
