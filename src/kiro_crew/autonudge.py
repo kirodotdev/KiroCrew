@@ -156,6 +156,16 @@ class AutoNudgeService:
         self._on_fire = on_fire
         self._loops: dict[str, NudgeLoop] = {}
         self._timers: dict[str, asyncio.Task] = {}
+        # Loop ids whose re-arm was requested while their fire window was open.
+        # Applied when the window closes (see _timer): a dashboard turn can
+        # complete while the firing task is still persisting, and honouring the
+        # hook immediately would cancel that task mid-persist.
+        self._rearm_pending: set[str] = set()
+        # Loop ids whose timer task is CURRENTLY inside its ``_on_fire`` await.
+        # ``update()`` must not cancel such a timer: for channel-bound loops the
+        # fire callback runs the unattended turn INLINE, so cancelling it kills
+        # the in-flight turn and loses its transcript and cycle bookkeeping.
+        self._firing: set[str] = set()
         # Consecutive non-delivery count per loop (drives escalating re-arm
         # backoff + once-per-streak failure logging). Not persisted; resets on
         # a delivered fire, on removal, and on restart.
@@ -333,7 +343,59 @@ class AutoNudgeService:
         logger.info("AutoNudge: added loop %s on slot %s (idle=%ds)", loop.id, slot_key, idle_secs)
         return loop
 
+    async def _persist_locked(self) -> None:
+        """Snapshot under the service lock and write on a worker thread.
+
+        The SINGLE async persistence path for post-arm mutations. Two properties
+        matter and both were violated before:
+
+        * **Serialization.** Every writer must snapshot while holding
+          ``_lock``; otherwise a writer that snapshots, releases, and then
+          writes can land a STALE payload on top of a newer one (e.g. a
+          concurrent ``update()`` overwriting the post-fire ``cycle_count`` /
+          ``active`` bookkeeping, which then resurrects obsolete state after a
+          restart).
+        * **Non-blocking.** ``_write_state`` fsyncs, so it must never run on the
+          event loop.
+        """
+        async with self._lock:
+            payload = self._serialize_state()
+            await asyncio.get_running_loop().run_in_executor(None, self._write_state, payload)
+
     async def update(
+        self,
+        loop_id: str,
+        *,
+        message: str | None = None,
+        idle_secs: int | None = None,
+        max_cycles: int | None = None,
+        active: bool | None = None,
+    ) -> NudgeLoop | None:
+        # CANCELLATION SAFETY: same contract as add(). The mutate+persist runs
+        # as a SHIELDED, supervised task so a caller cancelled mid-write cannot
+        # release ``_lock`` while the executor write is still in flight — which
+        # would let a later write land first and then be clobbered by this
+        # operation's stale snapshot (lost update after restart).
+        inner: "asyncio.Task[NudgeLoop | None]" = asyncio.ensure_future(
+            self._update_locked(
+                loop_id,
+                message=message,
+                idle_secs=idle_secs,
+                max_cycles=max_cycles,
+                active=active,
+            )
+        )
+        self._inflight_adds.add(inner)
+
+        def _finish(t: "asyncio.Task[NudgeLoop | None]") -> None:
+            self._inflight_adds.discard(t)
+            if not t.cancelled() and t.exception() is not None:
+                logger.warning("AutoNudge: detached update() failed", exc_info=t.exception())
+
+        inner.add_done_callback(_finish)
+        return await asyncio.shield(inner)
+
+    async def _update_locked(
         self,
         loop_id: str,
         *,
@@ -354,11 +416,32 @@ class AutoNudgeService:
                 loop.max_cycles = max(0, int(max_cycles))
             if active is not None:
                 loop.active = bool(active)
-            self._save()
-            # Re-arm timer with new settings.
-            self._cancel_timer(loop_id)
-            if loop.active:
-                self._arm_timer(loop)
+            # Persist WITHOUT blocking the event loop — _write_state fsyncs, and
+            # a wedged disk must not freeze chat/heartbeat/liveness. Snapshot
+            # under THIS lock hold (mutation safety + serialization vs the
+            # post-fire write) and await the offloaded write so a persistence
+            # failure still reaches the caller. Same contract as _add_locked.
+            payload = self._serialize_state()
+            await asyncio.get_running_loop().run_in_executor(None, self._write_state, payload)
+            # Re-arm the timer with the new settings — but NEVER while its
+            # callback is mid-fire. Cancelling a firing timer cancels the
+            # in-flight turn itself (channel loops run the turn inline in
+            # _on_fire), destroying the response and the cycle accounting. A
+            # firing timer re-arms itself on every exit path anyway (backoff
+            # re-arm when undelivered, self-re-arm for channel keys,
+            # notify_turn_complete for dashboard slots), and each of those reads
+            # the freshly-updated idle_secs/active, so the new settings still
+            # take effect on the next cycle.
+            if loop.id in self._firing:
+                logger.info(
+                    "AutoNudge: loop %s updated mid-fire — deferring re-arm to the "
+                    "running timer so the in-flight turn is not cancelled",
+                    loop.id,
+                )
+            else:
+                self._cancel_timer(loop_id)
+                if loop.active:
+                    self._arm_timer(loop)
         self._emit("updated", loop)
         return loop
 
@@ -370,6 +453,7 @@ class AutoNudgeService:
             return
         self._cancel_timer(loop_id)
         self._rearm_fail_count.pop(loop_id, None)
+        self._rearm_pending.discard(loop_id)
         if persist:
             self._save()
         self._emit("removed", loop)
@@ -393,16 +477,43 @@ class AutoNudgeService:
     # ── Reactive arming ──
 
     def notify_turn_complete(self, slot_key: str) -> None:
-        """Called by gateway after HOOK_EVENT_STOP — (re)arm idle timer for this slot."""
+        """Called by gateway after HOOK_EVENT_STOP — (re)arm idle timer for this slot.
+
+        DEFERS while the loop's own timer task is mid-fire: ``_arm_timer``
+        cancels the existing task, and during the fire window that task may be
+        parked on ``_persist_locked()`` writing the delivered cycle. Cancelling
+        it there loses the ``cycle_count`` bump and lets the loop run extra
+        cycles after a restart. The deferred re-arm is applied when the window
+        closes.
+        """
         loop = self._find_by_slot(slot_key)
         if not loop or not loop.active:
+            return
+        if loop.id in self._firing:
+            self._rearm_pending.add(loop.id)
             return
         self._arm_timer(loop)
 
     def notify_user_input(self, slot_key: str) -> None:
-        """Called when user sends a message — cancel pending nudge (user takes priority)."""
+        """Called when user sends a message — cancel pending nudge (user takes priority).
+
+        While the loop is mid-fire this must NOT cancel the timer: that task may
+        be parked on ``_persist_locked()`` writing the delivered cycle, and
+        cancelling it there abandons an in-flight executor write whose stale
+        payload can later overwrite a newer update/delete (state resurrected
+        after a restart). User priority is still honoured — the deferred re-arm
+        is dropped, so no further nudge is scheduled from this cycle.
+        """
         loop = self._find_by_slot(slot_key)
         if not loop:
+            return
+        if loop.id in self._firing:
+            self._rearm_pending.discard(loop.id)
+            logger.info(
+                "AutoNudge: user input during loop %s's fire window — dropped the "
+                "deferred re-arm instead of cancelling mid-persist",
+                loop.id,
+            )
             return
         self._cancel_timer(loop.id)
 
@@ -440,6 +551,38 @@ class AutoNudgeService:
         # prematurely trip max_cycles. Missing callback → nothing to deliver.
         if self._on_fire is None:
             return
+        self._firing.add(loop.id)
+        try:
+            await self._run_fire_cycle(loop)
+        finally:
+            self._firing.discard(loop.id)
+            # A re-arm requested DURING the fire window (a dashboard turn that
+            # completed while we were still persisting) was deferred rather than
+            # applied, because applying it would have cancelled this very task
+            # mid-persist. Apply it now that the window is closed — dropping it
+            # would leave a dashboard loop with no armed timer at all, since the
+            # delivered path relies on notify_turn_complete for those slots.
+            if loop.id in self._rearm_pending:
+                self._rearm_pending.discard(loop.id)
+                if loop.active and loop.id in self._loops:
+                    self._arm_timer(loop)
+
+    async def _run_fire_cycle(self, loop: NudgeLoop) -> None:
+        """Fire once, then persist bookkeeping and decide the re-arm.
+
+        Runs entirely inside the caller's ``_firing`` window so a concurrent
+        ``update()`` never cancels this task between delivery and persistence.
+        """
+        if self._on_fire is None:
+            return
+        # Mark the fire window so a concurrent update() defers its re-arm
+        # instead of cancelling this task mid-turn (see update()). The window
+        # stays open through the post-delivery bookkeeping and the re-arm
+        # decision, NOT just the callback: clearing it the moment _on_fire
+        # returned let a waiting update() cancel this task while it was parked
+        # on _persist_locked(), so the delivered cycle was never written and the
+        # loop could run extra cycles after a restart. _run_fire_cycle owns the
+        # window; this method is the body.
         try:
             delivered = await self._on_fire(loop)
         except Exception:
@@ -462,6 +605,19 @@ class AutoNudgeService:
             if loop.id not in self._loops:
                 self._rearm_fail_count.pop(loop.id, None)
                 return
+            # A concurrent update() may have DEACTIVATED this loop while the
+            # callback was in flight; that update deliberately deferred the
+            # cancel to avoid killing the turn, so the failure path must honour
+            # the pause instead of re-arming. Otherwise "stop the loop" during a
+            # cycle whose delivery then fails silently resumes unattended tool
+            # execution.
+            if not loop.active:
+                logger.info(
+                    "AutoNudge: loop %s was deactivated mid-fire — not re-arming",
+                    loop.id,
+                )
+                self._rearm_fail_count.pop(loop.id, None)
+                return
             # Slot was busy mid-turn, or the fire callback errored. Do NOT end
             # the loop — re-arm so it self-heals and never depends solely on the
             # external notify_turn_complete hook (skipped on a slot's error/
@@ -482,7 +638,10 @@ class AutoNudgeService:
         self._rearm_fail_count.pop(loop.id, None)
         loop.cycle_count += 1
         loop.last_fire_ts = time.time()
-        self._save()
+        # Persist through the shared locked+offloaded path so this bookkeeping
+        # cannot be clobbered by a concurrent update()'s snapshot (and so the
+        # fsync stays off the event loop).
+        await self._persist_locked()
         self._emit("fired", loop)
         # Channel-bound loops (Slack/Discord/...) have no dashboard
         # turn-lifecycle hook to re-arm them (notify_turn_complete never fires

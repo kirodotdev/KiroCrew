@@ -507,6 +507,19 @@ MONITOR_START_SCHEMA = ToolSchema(
     ],
 )
 
+# monitor_update revises the loop already bound to the calling session. Every
+# field is optional (a no-field call is a no-op the handler rejects), and the
+# bounds mirror MONITOR_START_SCHEMA so a loop cannot be updated into a state
+# that monitor_start would have refused to create.
+MONITOR_UPDATE_SCHEMA = ToolSchema(
+    tool_name="monitor_update",
+    fields=[
+        FieldSpec("message", str, max_len=8000),
+        FieldSpec("interval_secs", int, min_val=15, max_val=86400),
+        FieldSpec("max_cycles", int, min_val=0, max_val=1000),
+    ],
+)
+
 # delete_message reads args["channel"] and args["ts"] by subscript. Without a
 # schema, a call omitting either key raised KeyError, which is NOT caught by
 # call_tool_with_logging (only ValidationError is) and propagated out of the
@@ -1243,6 +1256,7 @@ MCP_CORE_SCHEMAS: dict[str, ToolSchema] = {
     "file_send": FILE_SEND_SCHEMA,
     "autonudge_stop": AUTONUDGE_STOP_SCHEMA,
     "monitor_start": MONITOR_START_SCHEMA,
+    "monitor_update": MONITOR_UPDATE_SCHEMA,
     "delete_message": DELETE_MESSAGE_SCHEMA,
     "local_knowledge_search": LOCAL_KNOWLEDGE_SEARCH_SCHEMA,
     "knowledge_dedup": KNOWLEDGE_DEDUP_SCHEMA,

@@ -57,6 +57,136 @@ def resolve_stop_sentinel(slot_key: str, workspace: str = "default") -> str:
     return str(ws_dir / f".stop-{safe_key}")
 
 
+async def authorize_and_update_nudge(
+    *,
+    svc: Any,
+    loop_id: str,
+    message: Any = None,
+    idle_secs: Any = None,
+    max_cycles: Any = None,
+    active: Any = None,
+    source: str,
+    caller: str = "",
+) -> tuple[Any | None, str | None, int]:
+    """Validate + audit + apply a loop update; return ``(loop, error, status)``.
+
+    The update-side twin of :func:`authorize_and_add_nudge`, and for the same
+    reason it lives here rather than in the HTTP handler: ``message`` is the
+    field that gets PERSISTED and re-injected into chat (or posted to a
+    messaging channel) on every fire, so its redaction must sit at a
+    transport-agnostic chokepoint. Redacting only on the arm path would make an
+    update a trivial bypass of the arm-time guard, and putting the guard in the
+    HTTP layer would leave any future non-HTTP caller uncovered.
+
+    Enforces, in order: type/length validation of ``message`` (a non-string
+    yields 400 rather than a ``len()`` TypeError 500), integer coercion of
+    ``idle_secs``/``max_cycles`` (matching the arm handler, so ``"abc"``/``[]``
+    is a 400 and not a 500), credential + exfiltration-URL redaction, then an
+    AUDIT-OR-DENY critical ``invoked`` event BEFORE the mutation — if that write
+    fails the update is DENIED with 503, because a recurring instruction that
+    drives unattended turns must never be rewritten unaudited.
+
+    Ownership is NOT checked here: ``loop_id`` is opaque and this module has no
+    session identity. Callers that have one (the ``monitor_update`` MCP tool)
+    resolve the id from their own binding key so a cross-session update is
+    unrepresentable; the REST route is user-token gated for the dashboard UI.
+    """
+    loop_id = (loop_id or "").strip()
+
+    def _audit(outcome: str, err: str | None = None, **extra: Any) -> None:
+        try:
+            sel().log_tool_invocation(
+                session_key=str(extra.pop("session_key", "")),
+                source=source,
+                tool_name="autonudge_update",
+                outcome=outcome,
+                error=err or "",
+                metadata={"loop_id": loop_id, "caller": caller, **extra},
+            )
+        except Exception:  # noqa: BLE001 - auditing must never break the flow
+            logger.warning("autonudge update audit failed", exc_info=True)
+
+    def _deny(reason: str, status: int) -> tuple[None, str, int]:
+        _audit("denied", reason)
+        return None, reason, status
+
+    if svc is None:
+        _audit("error", "autonudge disabled")
+        return None, "auto-nudge disabled (KIROCREW_AUTONUDGE not set)", 503
+    if not loop_id:
+        return _deny("loop_id required", 400)
+    if message is not None:
+        if not isinstance(message, str):
+            return _deny("message must be a string", 400)
+        if len(message) > 8000:
+            return _deny("message too long (max 8000 chars)", 400)
+        message, _ = redact_exfiltration_urls(message)
+        message, _ = redact_credentials(message)
+    try:
+        # Reject non-integral values rather than silently truncating: idle_secs
+        # 59.9 must not become 59, and `Infinity` (legal JSON in many parsers)
+        # raises OverflowError from int(), which would surface as a 500.
+        for _name, _val in (("idle_secs", idle_secs), ("max_cycles", max_cycles)):
+            if _val is None or isinstance(_val, bool):
+                continue
+            if isinstance(_val, float) and not _val.is_integer():
+                return _deny(f"{_name} must be a whole number", 400)
+        idle_secs = None if idle_secs is None else int(idle_secs)
+        max_cycles = None if max_cycles is None else int(max_cycles)
+    except (TypeError, ValueError, OverflowError):
+        return _deny("idle_secs and max_cycles must be integers", 400)
+    # ``active`` must be a real boolean. bool("false") is True, so accepting a
+    # JSON string would turn an explicit pause request into a RESUME — the
+    # opposite of what the caller asked for on a loop that runs tools
+    # unattended.
+    if active is not None and not isinstance(active, bool):
+        return _deny("active must be a boolean", 400)
+
+    def _critical_invoked_audit() -> None:
+        sel().log_tool_invocation(
+            session_key=loop_id,
+            source=source,
+            tool_name="autonudge_update",
+            outcome="invoked",
+            critical=True,
+            metadata={
+                "loop_id": loop_id,
+                "fields": sorted(
+                    k
+                    for k, v in (
+                        ("message", message),
+                        ("idle_secs", idle_secs),
+                        ("max_cycles", max_cycles),
+                        ("active", active),
+                    )
+                    if v is not None
+                ),
+                "caller": caller,
+            },
+        )
+
+    try:
+        await asyncio.get_running_loop().run_in_executor(None, _critical_invoked_audit)
+    except Exception:  # noqa: BLE001 - fail closed: no audit ⇒ no mutation
+        logger.error("autonudge update denied: SEL audit unavailable", exc_info=True)
+        return None, "audit log unavailable — nudge loop not updated", 503
+    try:
+        loop = await svc.update(
+            loop_id,
+            message=message,
+            idle_secs=idle_secs,
+            max_cycles=max_cycles,
+            active=active,
+        )
+    except Exception as exc:  # noqa: BLE001 - audit the failure, then propagate
+        _audit("error", f"svc.update failed: {type(exc).__name__}")
+        raise
+    if loop is None:
+        return _deny("loop not found", 404)
+    _audit("success", session_key=loop.slot_key)
+    return loop, None, 200
+
+
 async def authorize_and_add_nudge(
     *,
     svc: Any,

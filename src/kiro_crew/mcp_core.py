@@ -22,6 +22,7 @@ import mimetypes
 import os
 import platform
 import re as _re
+import socket
 import subprocess
 import tempfile
 import threading
@@ -98,6 +99,7 @@ from kiro_crew.validation import (
     MAX_SHORT_STRING,
     MCP_CORE_SCHEMAS,
     MONITOR_START_SCHEMA,
+    MONITOR_UPDATE_SCHEMA,
     REGISTER_HOOK_SCHEMA,
     SEARCH_CHAT_HISTORY_SCHEMA,
     SET_PROJECT_SCHEMA,
@@ -1218,8 +1220,13 @@ def _list_tools() -> list[dict[str, Any]]:
                 "put the check instructions and the exit condition in the "
                 "message, then END YOUR TURN — the loop wakes you on the "
                 "interval. When the exit condition is met (or the user says "
-                "stop), call autonudge_stop. One loop per session; starting a "
-                "new one replaces the old. Survives gateway restarts."
+                "stop), call autonudge_stop — reaching max_cycles is a runaway "
+                "backstop, NOT a successful finish. Use monitor_update to "
+                "revise the instruction if what you are watching changes. One "
+                "loop per session; starting a new one replaces the old. "
+                "Survives gateway restarts. Every cycle appends a full turn to "
+                "this same session, so keep per-cycle output small and report "
+                "only real signals."
             ),
             "inputSchema": {
                 "type": "object",
@@ -1234,17 +1241,66 @@ def _list_tools() -> list[dict[str, Any]]:
                     "interval_secs": {
                         "type": "integer",
                         "description": (
-                            "Idle seconds between cycles (15-86400, default 300)"
+                            "IDLE seconds between cycles, measured from when your "
+                            "turn ENDS — not a fixed period. Real cadence is "
+                            "interval_secs + however long each turn takes, so a "
+                            "300s interval with 5-minute checks wakes you roughly "
+                            "every 10 minutes (15-86400, default 300)"
                         ),
                     },
                     "max_cycles": {
                         "type": "integer",
                         "description": (
-                            "Safety cap on delivered cycles; 0 = unlimited (default 0)"
+                            "Safety cap on delivered cycles (default "
+                            f"{_MONITOR_DEFAULT_MAX_CYCLES}). Pass 0 for "
+                            "unlimited only when the user explicitly wants an "
+                            "unbounded loop — an unbounded loop whose exit "
+                            "condition is never recognised runs forever"
                         ),
                     },
                 },
                 "required": ["message"],
+            },
+        },
+        {
+            "name": "monitor_update",
+            "description": (
+                "Revise the monitoring loop already running on YOUR CURRENT "
+                "session — change the recurring instruction, the interval, or "
+                "the cycle cap without tearing the loop down and losing its "
+                "cycle count. Use when what you are watching has moved on and "
+                "the instruction you armed is now stale (the PR advanced past "
+                "the blocker you described, the check you were told to run "
+                "changed, the exit condition needs tightening). Only ever "
+                "touches your own session's loop. To stop the loop entirely, "
+                "use autonudge_stop instead."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "message": {
+                        "type": "string",
+                        "description": (
+                            "Replacement instruction for future cycles "
+                            "(max 8000 chars). Omit to leave it unchanged"
+                        ),
+                    },
+                    "interval_secs": {
+                        "type": "integer",
+                        "description": (
+                            "New IDLE gap between cycles, measured from when "
+                            "your turn ENDS (15-86400). Omit to leave unchanged"
+                        ),
+                    },
+                    "max_cycles": {
+                        "type": "integer",
+                        "description": (
+                            "New cap on delivered cycles; raise it when a loop "
+                            "is close to its cap but the work is still live. "
+                            "Omit to leave unchanged"
+                        ),
+                    },
+                },
             },
         },
         {
@@ -1641,6 +1697,15 @@ _USER_TOKEN_CACHE: tuple[str, float] = ("", 0.0)
 def _local_user_token() -> str:
     """Exchange the local secret for a short-lived user-scoped token.
 
+    Thin wrapper over :func:`_local_user_token_with_reason` for callers that
+    only care whether a token exists. Returns ``""`` on failure.
+    """
+    return _local_user_token_with_reason()[0]
+
+
+def _local_user_token_with_reason() -> tuple[str, str]:
+    """Mint a user-scoped token, returning ``(token, failure_reason)``.
+
     A few routes (notably ``/api/autonudge*``) deliberately reject the
     machine-to-machine ``X-Internal-Secret`` handshake and require a
     user-scoped token instead. ``GET /api/token/local`` mints one for any
@@ -1648,17 +1713,25 @@ def _local_user_token() -> str:
     header. We cache the token in-process and refresh it shortly before
     expiry so a self-halting loop doesn't pay the round-trip every call.
 
-    Returns ``""`` if the exchange fails; callers surface that as the usual
-    ``{"error": ...}`` path rather than crashing.
+    On success returns ``(token, "")``. On failure returns ``("", reason)``
+    where *reason* NAMES the failing step. This matters operationally: the
+    original code collapsed every failure into a bare ``""``, so
+    ``monitor_start`` could only report an undifferentiated "Failed to start
+    monitor loop", which is indistinguishable from a transient MCP reconnect —
+    and in practice arm failures were repeatedly written off as exactly that
+    while the loop silently never existed. Callers surface *reason* verbatim.
     """
     global _USER_TOKEN_CACHE
     cached, expires_at = _USER_TOKEN_CACHE
     # 30s safety margin so a token doesn't expire mid-request.
     if cached and time.monotonic() < expires_at - 30:
-        return cached
+        return cached, ""
     secret = _internal_secret()
     if not secret:
-        return ""
+        return "", (
+            "no local gateway secret is readable from this process, so no "
+            "user-scoped token could be minted"
+        )
     req = urllib.request.Request(
         f"{_API}/api/token/local?ttl=15m",
         headers={"X-Local-Secret": secret},
@@ -1666,14 +1739,21 @@ def _local_user_token() -> str:
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read())
-    except Exception:
-        return ""
+    except urllib.error.HTTPError as e:
+        # 429 / 5xx are retryable server-side conditions, not a definite
+        # refusal, so mark them transient for the arm-failure message.
+        kind = "transiently failed" if e.code == 429 or e.code >= 500 else "returned"
+        if kind == "transiently failed":
+            return "", f"{_TRANSIENT_TOKEN_MARKER} HTTP {e.code}"
+        return "", f"GET /api/token/local returned HTTP {e.code}"
+    except Exception as e:
+        return "", f"{_TRANSIENT_TOKEN_MARKER} {type(e).__name__}: {e}"
     token = str(data.get("token", ""))
     if not token:
-        return ""
+        return "", "GET /api/token/local returned no token"
     ttl = float(data.get("expires_in", 900) or 900)
     _USER_TOKEN_CACHE = (token, time.monotonic() + ttl)
-    return token
+    return token, ""
 
 
 def _ppid_via_libproc(pid: int) -> int:
@@ -1882,7 +1962,8 @@ def _resolve_session_key_strict() -> str:
        signed with the SEL trust root (``sel_hmac.key``), which agents
        cannot read, and binds the pid into the MAC so another pid's
        pair cannot be replayed. Without this branch,
-       ``monitor_start``/``autonudge_stop``/``set_project`` fail closed
+       ``monitor_start``/``monitor_update``/``autonudge_stop``/``set_project``
+       fail closed
        in every sandboxed dashboard session even though the session is
        fully identified.
 
@@ -2271,9 +2352,9 @@ def _get_user(path: str) -> dict:
     These routes reject ``X-Internal-Secret``; authenticate with a
     bootstrapped user token passed as the ``?token=`` query param instead.
     """
-    token = _local_user_token()
+    token, why = _local_user_token_with_reason()
     if not token:
-        return {"error": "could not obtain local user token"}
+        return {"error": f"could not obtain local user token — {why}"}
     req = urllib.request.Request(f"{_API}{_with_token(path, token)}")
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
@@ -2286,9 +2367,9 @@ def _get_user(path: str) -> dict:
 
 def _delete_user(path: str) -> dict:
     """DELETE a user-token-gated route (e.g. ``/api/autonudge/{id}``)."""
-    token = _local_user_token()
+    token, why = _local_user_token_with_reason()
     if not token:
-        return {"error": "could not obtain local user token"}
+        return {"error": f"could not obtain local user token — {why}"}
     req = urllib.request.Request(
         f"{_API}{_with_token(path, token)}",
         method="DELETE",
@@ -2304,12 +2385,22 @@ def _delete_user(path: str) -> dict:
 
 def _post_user(path: str, body: dict) -> dict:
     """POST JSON to a user-token-gated route (e.g. ``POST /api/autonudge``)."""
-    token = _local_user_token()
+    return _write_user(path, body, method="POST")
+
+
+def _patch_user(path: str, body: dict) -> dict:
+    """PATCH JSON to a user-token-gated route (e.g. ``PATCH /api/autonudge/{id}``)."""
+    return _write_user(path, body, method="PATCH")
+
+
+def _write_user(path: str, body: dict, *, method: str) -> dict:
+    """Send a JSON body to a user-token-gated route via *method*."""
+    token, why = _local_user_token_with_reason()
     if not token:
-        return {"error": "could not obtain local user token"}
+        return {"error": f"could not obtain local user token — {why}"}
     req = urllib.request.Request(
         f"{_API}{_with_token(path, token)}",
-        method="POST",
+        method=method,
         data=json.dumps(body).encode(),
         headers={"Content-Type": "application/json"},
     )
@@ -2320,7 +2411,80 @@ def _post_user(path: str, body: dict) -> dict:
     except urllib.error.HTTPError as e:
         return _http_error_body(e)
     except Exception as e:
-        return {"error": str(e)}
+        # A write whose RESPONSE never arrived is INDETERMINATE: the server-side
+        # mutation is shielded, so it may well have landed. Flag it structurally
+        # rather than leaving callers to string-match exception text (which does
+        # not work — http.client.RemoteDisconnected stringifies to "Remote end
+        # closed connection without response", not its class name).
+        # A refusal or DNS failure happens BEFORE the request is sent, so
+        # nothing could have been applied — that is a definite failure. Only a
+        # connection lost mid-exchange leaves the outcome unknown.
+        reason = getattr(e, "reason", None)
+        pre_connect = isinstance(
+            reason, (ConnectionRefusedError, socket.gaierror)
+        ) or isinstance(e, (ConnectionRefusedError, socket.gaierror))
+        out: dict[str, Any] = {"error": f"{type(e).__name__}: {e}"}
+        if not pre_connect:
+            out["indeterminate"] = True
+        return out
+
+
+# Default cycle cap for monitor_start when the caller omits max_cycles. An
+# unbounded loop only ever stops when the model volunteers autonudge_stop, and
+# real loop stores show that is unreliable — observed babysit loops ran to 24/24
+# and 20/20 delivered cycles and stopped only because a cap was set. 24 cycles
+# is ~2h at the default 300s idle gap: long enough for a CI/review cycle, short
+# enough that a forgotten loop dies on its own.
+_MONITOR_DEFAULT_MAX_CYCLES = 24
+
+# Marker embedded in the token-mint reason when the request itself RAISED
+# (timeout / connection reset / DNS) rather than returning a definite refusal.
+# Those failures can be transient, so the arm-failure message must not claim a
+# retry is futile — see _monitor_arm_failure.
+_TRANSIENT_TOKEN_MARKER = "GET /api/token/local failed:"
+
+
+def _monitor_arm_failure(tool: str, binding_key: str, resp: dict) -> str:
+    """Render an arming failure so it cannot be mistaken for a flaky connection.
+
+    ``POST /api/autonudge`` failures used to collapse into a bare "Failed to
+    start monitor loop: <error>", which reads exactly like the transient MCP
+    reconnects agents are told to retry through — so genuine arm failures got
+    written off as flakiness while the loop silently did not exist. Name the
+    failing step and state plainly that no loop is running.
+    """
+    err = str(resp.get("error") or "unknown error")
+    # A write that never got an answer (timeout / reset mid-POST) is
+    # INDETERMINATE, not a clean failure: the server-side arm is shielded, so it
+    # may well have landed. Saying "NO monitoring is active" there would be a
+    # false negative that leads to a duplicate arm.
+    if resp.get("indeterminate"):
+        return (
+            f"{tool} did NOT get a confirmed answer from the gateway on "
+            f"{binding_key}: {err}. The arm MAY have landed — check whether a "
+            "loop exists before arming another one, and do not assume "
+            "monitoring is either running or absent."
+        )
+    detail = f"{tool} could NOT arm a loop on {binding_key}: {err}."
+    if _TRANSIENT_TOKEN_MARKER in err:
+        # The token endpoint raised (timeout, connection reset, DNS): this one
+        # CAN be transient, so don't claim a retry is futile — only that nothing
+        # is armed right now.
+        detail += (
+            " The gateway's own loopback token endpoint could not be reached, "
+            "which may be transient — one retry is reasonable."
+        )
+    elif "local user token" in err:
+        detail += (
+            " This is a token-minting failure on the gateway's own loopback API, "
+            "not a transient MCP disconnect — retrying the tool will not fix it."
+        )
+    elif "audit log unavailable" in err:
+        detail += (
+            " The gateway refused to arm an unaudited loop (audit-or-deny policy);"
+            " the SEL audit log is unwritable."
+        )
+    return detail + " NO monitoring is active — fall back to an in-turn wait+poll loop."
 
 
 def _autonudge_binding_key(sk: str) -> str | None:
@@ -4314,7 +4478,13 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         if not message:
             return "monitor_start: message must not be empty."
         interval_secs = int(args.get("interval_secs") or 300)
-        max_cycles = int(args.get("max_cycles") or 0)
+        # Default to a BOUNDED cap. An unbounded loop only ever stops when the
+        # model volunteers an autonudge_stop, and observed loop stores show that
+        # is not reliable: real babysit loops ran to 24/24 and 20/20 cycles and
+        # terminated solely because a cap happened to be set. ``max_cycles=0``
+        # (explicit unlimited) is still honoured for callers that mean it.
+        raw_max = args.get("max_cycles")
+        max_cycles = _MONITOR_DEFAULT_MAX_CYCLES if raw_max is None else int(raw_max)
         resp = _post_user(
             "/api/autonudge",
             {
@@ -4328,7 +4498,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             sel().log_tool_invocation(
                 session_key=sk, source="mcp", tool_name="monitor_start", outcome="error"
             )
-            return f"Failed to start monitor loop: {resp['error']}"
+            return _monitor_arm_failure("monitor_start", binding_key, resp)
         loop = resp.get("loop") or {}
         sel().log_tool_invocation(
             session_key=sk,
@@ -4344,11 +4514,207 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         )
         return (
             f"Monitor loop {loop.get('id', '?')} started on session {binding_key}: "
-            f"the message will be re-injected into this session after every "
-            f"~{interval_secs}s of idle"
-            + (f", stopping after {max_cycles} cycles" if max_cycles else "")
+            f"the message will be re-injected {interval_secs}s after each of your "
+            f"turns ENDS (idle gap, not a fixed period — real cadence is "
+            f"{interval_secs}s plus however long each turn takes)"
+            + (
+                f", stopping after {max_cycles} cycles"
+                if max_cycles
+                else ", with NO cycle cap"
+            )
             + ". End your turn now — the loop wakes you. Call autonudge_stop "
-            "when the exit condition is met."
+            "when the exit condition is met; hitting the cap is a runaway "
+            "backstop, not a finish. Use monitor_update if the instruction "
+            "goes stale."
+        )
+
+    if name == "monitor_update":
+        args = validate_tool_args(args, MONITOR_UPDATE_SCHEMA)
+        # STRICT resolution, same rationale as monitor_start/autonudge_stop:
+        # this mutates persistent loop state that drives unattended turns, so a
+        # subagent must not PID-walk into the parent's identity and rewrite the
+        # parent session's instruction.
+        sk = _resolve_session_key_strict()
+        binding_key = _autonudge_binding_key(sk)
+        if binding_key is None:
+            sel().log_tool_invocation(
+                session_key=sk, source="mcp", tool_name="monitor_update", outcome="noop"
+            )
+            return (
+                "monitor_update only works from within a dashboard, Slack, or "
+                f"Discord session (current session_key={sk!r})."
+            )
+        patch: dict[str, Any] = {}
+        if args.get("message") is not None:
+            new_message = str(args["message"]).strip()
+            if not new_message:
+                return "monitor_update: message must not be empty (omit it to leave unchanged)."
+            patch["message"] = new_message
+        if args.get("interval_secs") is not None:
+            patch["idle_secs"] = int(args["interval_secs"])
+        if args.get("max_cycles") is not None:
+            patch["max_cycles"] = int(args["max_cycles"])
+        if not patch:
+            sel().log_tool_invocation(
+                session_key=sk, source="mcp", tool_name="monitor_update", outcome="noop"
+            )
+            return (
+                "monitor_update: nothing to change — pass at least one of "
+                "message, interval_secs, max_cycles."
+            )
+        # OWNERSHIP: resolve the loop id from THIS session's binding key rather
+        # than accepting one from the caller. PATCH /api/autonudge/{loop_id}
+        # takes an opaque id and cannot tell whose loop it is, so letting the
+        # model name the id would let one session rewrite another session's
+        # instruction. Looking it up by binding key makes cross-session updates
+        # unrepresentable.
+        lookup = _get_user(f"/api/autonudge/slot/{quote(binding_key, safe='')}")
+        if lookup.get("error"):
+            sel().log_tool_invocation(
+                session_key=sk, source="mcp", tool_name="monitor_update", outcome="error"
+            )
+            return f"Failed to look up loop: {lookup['error']}"
+        loop = lookup.get("loop")
+        if not loop:
+            sel().log_tool_invocation(
+                session_key=sk, source="mcp", tool_name="monitor_update", outcome="noop"
+            )
+            return (
+                "No monitor loop on this session to update — start one with "
+                "monitor_start."
+            )
+        loop_id = loop.get("id", "")
+        # A loop that hit max_cycles has active=False. update() mutates fields
+        # but only re-arms when the loop is active, so raising the cap on a
+        # capped loop would report "the loop wakes you" while nothing is armed —
+        # exactly the false-success class this PR exists to remove. Decide from
+        # the POST-patch cap whether another cycle is even possible.
+        cycle_count = int(loop.get("cycle_count") or 0)
+        current_cap = int(loop.get("max_cycles") or 0)
+        new_cap = patch.get("max_cycles", current_cap)
+        can_fire_again = new_cap == 0 or new_cap > cycle_count
+        if not can_fire_again:
+            sel().log_tool_invocation(
+                session_key=sk, source="mcp", tool_name="monitor_update", outcome="denied"
+            )
+            return (
+                f"monitor_update: max_cycles={new_cap} is at or below this loop's "
+                f"delivered cycle count ({cycle_count}), so the loop would "
+                "deactivate without ever firing again. Pass a larger cap, or 0 "
+                "for unlimited."
+            )
+        # ``cycle_count`` only increments once a fire is DELIVERED, so a cycle
+        # running right now is not yet counted. A cap of exactly count+1 may
+        # therefore be consumed by that in-flight cycle, leaving no further
+        # wake — say so instead of promising one.
+        tight_cap = new_cap != 0 and new_cap == cycle_count + 1
+        revived = False
+        # Revive ONLY a loop that stopped because it hit its cap, and only when
+        # the caller is actually raising that cap. An explicitly PAUSED loop
+        # (active=False set by the user or the stop control) must stay paused —
+        # silently resuming unattended tool execution as a side effect of a
+        # metadata edit is not something the caller asked for.
+        stopped_at_cap = current_cap > 0 and cycle_count >= current_cap
+        raising_cap = "max_cycles" in patch and (new_cap == 0 or new_cap > current_cap)
+        if not loop.get("active", True):
+            if stopped_at_cap and raising_cap:
+                patch["active"] = True
+                revived = True
+            else:
+                sel().log_tool_invocation(
+                    session_key=sk, source="mcp", tool_name="monitor_update", outcome="denied"
+                )
+                return (
+                    f"Monitor loop {loop_id} on {binding_key} is PAUSED "
+                    f"(cycle {cycle_count}"
+                    + (f" of {current_cap}" if current_cap else ", no cap")
+                    + "). monitor_update will not resume a paused loop as a side "
+                    "effect: raise max_cycles above the cap to revive a "
+                    "cap-stopped loop, or use monitor_start to begin a new one."
+                )
+        resp = _patch_user(f"/api/autonudge/{quote(str(loop_id), safe='')}", patch)
+        if resp.get("error"):
+            sel().log_tool_invocation(
+                session_key=sk, source="mcp", tool_name="monitor_update", outcome="error"
+            )
+            if resp.get("indeterminate"):
+                # The PATCH got no response, but the server-side update is
+                # shielded, so it may have applied. Re-read the loop so the
+                # report reflects reality instead of guessing.
+                recheck = _get_user(f"/api/autonudge/slot/{quote(binding_key, safe='')}")
+                latest = recheck.get("loop") or {}
+                # EVERY patched field must match, not just the message: a patch
+                # that raised max_cycles while leaving the message unchanged
+                # would "verify" on the message alone and report success while
+                # the stale cap keeps the loop stopped.
+                field_map = {"message": "message", "idle_secs": "idle_secs",
+                             "max_cycles": "max_cycles", "active": "active"}
+                # Pin the IDENTITY too: a loop replaced concurrently (a fresh
+                # monitor_start on the same slot) can carry matching fields and
+                # would otherwise be reported as this update having applied.
+                applied = (
+                    bool(latest)
+                    and str(latest.get("id") or "") == str(loop_id)
+                    and all(
+                        latest.get(field_map[k]) == v
+                        for k, v in patch.items()
+                        if k in field_map
+                    )
+                )
+                if applied:
+                    return (
+                        f"Monitor loop {loop_id} was updated on {binding_key}, but the "
+                        f"gateway response was lost ({resp['error']}). Verified applied "
+                        f"by re-reading the loop ({', '.join(sorted(patch))})."
+                    )
+                return (
+                    f"monitor_update on {binding_key} got NO confirmed answer "
+                    f"({resp['error']}). The change MAY have applied — re-read the "
+                    "loop before retrying so you do not double-apply."
+                )
+            return f"Failed to update monitor loop {loop_id}: {resp['error']}"
+        updated = resp.get("loop") or {}
+        sel().log_tool_invocation(
+            session_key=sk,
+            source="mcp",
+            tool_name="monitor_update",
+            outcome="success",
+            metadata={
+                "binding_key": binding_key,
+                "loop_id": loop_id,
+                "fields": sorted(patch),
+            },
+        )
+        return (
+            f"Monitor loop {loop_id} updated on session {binding_key} "
+            f"({', '.join(sorted(patch))}). Now at cycle "
+            f"{updated.get('cycle_count', '?')}"
+            + (
+                f" of {updated.get('max_cycles')}"
+                if updated.get("max_cycles")
+                else " with no cap"
+            )
+            + f", {updated.get('idle_secs', '?')}s idle gap"
+            + (
+                " — the loop had stopped at its cap and has been re-armed"
+                if revived
+                else ""
+            )
+            + (
+                # Authoritative: the loop's state AFTER the patch. The pre-PATCH
+                # GET can be stale (the cap may have deactivated the loop in
+                # between), so never promise a wake the response contradicts.
+                ". The loop is currently INACTIVE, so it will NOT wake — start a "
+                "new one with monitor_start if you still need monitoring"
+                if not updated.get("active", True)
+                else ". NOTE: the new cap allows only one more delivered cycle, "
+                "which a currently-running cycle may already consume — do not "
+                "count on another wake"
+                if tight_cap
+                else ". End your turn — the loop wakes you with the revised "
+                "instruction"
+            )
+            + "."
         )
 
     if name == "search_chat_history":

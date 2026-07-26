@@ -583,7 +583,7 @@ a trust root on its own; publication therefore also writes a
 - **Writes are atomic** (`atomic_write` → `os.replace`): a pre-planted
   symlink at the predictable paths is replaced, never followed.
 - **Consumers**: STRICT identity resolvers for state-mutating MCP tools
-  (`monitor_start`, `autonudge_stop`, `set_project`) accept the direct
+  (`monitor_start`, `monitor_update`, `autonudge_stop`, `set_project`) accept the direct
   `KIROCREW_HOST_PID` → mapping lookup only via
   `session_pid_sig.verify_session_pid`, which fails closed to `""` on a
   missing/short key, missing files, or MAC mismatch. Lenient (read-only)

@@ -15,6 +15,7 @@ from kiro_crew.autonudge import get_instance as _autonudge_get
 # is intentionally a THIN HTTP mapping over it.
 from kiro_crew.autonudge_authz import (  # noqa: F401 - re-exported
     authorize_and_add_nudge,
+    authorize_and_update_nudge,
     resolve_stop_sentinel,
 )
 from kiro_crew.dashboard.state import DashboardState
@@ -93,7 +94,13 @@ async def api_autonudge_start(request: web.Request) -> web.Response:
 
 
 async def api_autonudge_update(request: web.Request) -> web.Response:
-    """PATCH /api/autonudge/{loop_id} — update message / idle_secs / active."""
+    """PATCH /api/autonudge/{loop_id} — update message / idle_secs / active.
+
+    Thin HTTP mapping over ``authorize_and_update_nudge``, which owns the
+    message redaction, the integer coercion, and the audit-or-deny policy — see
+    its docstring for why those live in the transport-agnostic module and not
+    here.
+    """
     svc = _autonudge_get()
     if svc is None:
         return web.json_response({"error": "auto-nudge disabled"}, status=503)
@@ -102,28 +109,18 @@ async def api_autonudge_update(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
-    if "message" in body and len(body["message"]) > 8000:
-        return web.json_response({"error": "message too long"}, status=400)
-    loop = await svc.update(
-        loop_id,
+    loop, error, status = await authorize_and_update_nudge(
+        svc=svc,
+        loop_id=loop_id,
         message=body.get("message"),
         idle_secs=body.get("idle_secs"),
         max_cycles=body.get("max_cycles"),
         active=body.get("active"),
-    )
-    if loop is None:
-        return web.json_response({"error": "loop not found"}, status=404)
-    sel().log_tool_invocation(
-        session_key=loop.slot_key,
         source="dashboard",
-        tool_name="autonudge_update",
-        outcome="success",
-        metadata={
-            "loop_id": loop_id,
-            "fields": [k for k in ("message", "idle_secs", "max_cycles", "active") if k in body],
-            "caller": request.remote or "",
-        },
+        caller=request.remote or "",
     )
+    if error is not None:
+        return web.json_response({"error": error}, status=status)
     return web.json_response({"ok": True, "loop": _serialize(loop)})
 
 

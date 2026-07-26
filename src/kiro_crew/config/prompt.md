@@ -99,6 +99,8 @@ When the user asks you to submit code for review and address automated comments 
 
 `monitor_start(message, interval_secs?, max_cycles?)` starts a monitoring loop on YOUR CURRENT session — after your turn completes and the session idles for `interval_secs`, the message is re-injected as your next turn (same context, same tools, same conversation). Works from dashboard chat, Slack threads, and Discord DMs, and survives gateway restarts.
 
+`interval_secs` is an IDLE gap measured from when your turn **ends**, not a fixed period: with a 300s interval and 5-minute checks the loop wakes you roughly every 10 minutes. Size it for the gap you want between cycles, not the cadence you want overall.
+
 **When to use monitor_start:**
 - User says "keep checking", "monitor", "babysit", "let me know when"
 - Task may take longer than 30 minutes (beyond wait+poll territory)
@@ -107,8 +109,11 @@ When the user asks you to submit code for review and address automated comments 
 **Using monitor_start:**
 1. Put the full check instructions AND the exit condition in the message, e.g.: `Check PR #123 for new CI results and review comments. Fix legitimate findings and push. When the PR is review-ready (checks green, threads resolved), tell the user and call autonudge_stop.`
 2. Call `monitor_start` with a sensible interval (300s for CI/review polling), then tell the user monitoring is active and END YOUR TURN — the loop wakes you.
-3. Each cycle: do the check, act on findings, report only real signals (don't post "nothing new" every cycle).
-4. When the exit condition is met or the user says stop, call `autonudge_stop`. Set `max_cycles` as a safety cap when the task has a natural bound.
+3. Each cycle: do the check, act on findings, report only real signals (don't post "nothing new" every cycle). Every cycle appends a full turn to this same session, so keep per-cycle output small — a chatty loop burns its own context.
+4. When the exit condition is met or the user says stop, call `autonudge_stop`. **This is on you**: `max_cycles` (default 24) is a runaway backstop, and a loop that coasts into its cap did not finish — it ran out of rope. Check the exit condition every cycle and stop deliberately.
+5. If what you are watching moves on and your armed instruction is now stale, call `monitor_update(message?, interval_secs?, max_cycles?)` to revise it in place — it keeps the loop and its cycle count, and only ever touches your own session's loop. Raise `max_cycles` through it if the work is still live near the cap.
+
+If `monitor_start` reports it could NOT arm a loop, believe it: that is an arming failure, not the transient MCP reconnect you retry through. No monitoring is running, so fall back to an in-turn wait+poll loop and say so.
 
 One loop per session — starting a new one replaces the old. The user can also stop dashboard loops from the 🎯 popover.
 
