@@ -101,6 +101,39 @@ esac
 
 log() { printf '\n\033[1;36m▶ %s\033[0m\n' "$*"; }
 
+# Recursively remove a directory tree, defeating the macOS .DS_Store/ENOTEMPTY
+# race. macOS Desktop Services (Finder/Spotlight) can drop a fresh .DS_Store
+# into a subdirectory *between* rm's child-sweep and its final rmdir, so a plain
+# `rm -rf` aborts with ENOTEMPTY (the -f flag suppresses ENOENT, not ENOTEMPTY;
+# electron-userland/electron-builder#6890). Every destructive rm of a build
+# output dir in this script is exposed to that race, so route them all through
+# here: sweep any .DS_Store, rm, and if the tree survives (the race re-created a
+# file) sweep + retry a bounded number of times. Success is detected by the
+# directory being gone — NOT by grepping stderr — so it is locale-independent
+# (a non-English macOS emits a translated "Directory not empty" that a string
+# match would silently miss). No-op when the path is already absent.
+rm_rf_resilient() {
+  local target="$1" attempt=1 max_attempts=5
+  # A dangling symlink is "not -e" but must still be removed (leaving it makes
+  # the following build step operate on a broken link), so treat -e OR -L as
+  # present; only a truly absent path is the no-op.
+  { [ -e "$target" ] || [ -L "$target" ]; } || return 0
+  while : ; do
+    find "$target" -name .DS_Store -delete 2>/dev/null || true
+    rm -rf "$target" 2>/dev/null || true
+    { [ -e "$target" ] || [ -L "$target" ]; } || return 0
+    if [ "$attempt" -ge "$max_attempts" ]; then
+      echo "  ⚠ '$target' survived $max_attempts rm attempts (macOS .DS_Store race?); one final attempt with errors surfaced…" >&2
+      # Let a genuine, non-transient failure abort the build under `set -e`
+      # instead of looping forever or masking a real permissions problem.
+      rm -rf "$target"
+      return 0
+    fi
+    attempt=$((attempt + 1))
+    sleep 1
+  done
+}
+
 # --- 1. Frontend ------------------------------------------------------------
 if [ "${SKIP_FRONTEND:-0}" != "1" ]; then
   log "Building dashboard (npm)…"
@@ -305,7 +338,7 @@ resolver_gate() {
 }
 
 # --- 3. Build the backend tree(s) --------------------------------------------
-rm -rf "$ELECTRON_DIR/backend-dist"
+rm_rf_resilient "$ELECTRON_DIR/backend-dist"
 mkdir -p "$ELECTRON_DIR/backend-dist"
 
 if [ "$UNIVERSAL" = "1" ]; then
@@ -394,7 +427,10 @@ log "Packaging desktop app (electron-builder, version: $KC_VERSION)…"
   # Start from a pristine output dir. A prior interrupted universal build can
   # leave dist/mac-universal-<arch>-temp dirs behind (with a .DS_Store inside);
   # those linger and re-trip the ENOTEMPTY cleanup below on every later run.
-  rm -rf dist
+  # This pre-clean is itself exposed to the .DS_Store race (Finder re-drops one
+  # mid-removal), so it MUST go through the resilient helper — a plain rm here
+  # aborts the build before the retry loop below is ever reached.
+  rm_rf_resilient dist
 
   # macOS universal .DS_Store/ENOTEMPTY race:
   # electron-builder's universal step stages each arch into
