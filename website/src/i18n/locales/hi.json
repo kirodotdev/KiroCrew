@@ -114,6 +114,9 @@
       "send_message": "संदेश भेजें",
       "session_ready_type_a_message_to_start": "सत्र तैयार है। शुरू करने के लिए संदेश टाइप करें।",
       "streaming": "स्ट्रीमिंग"
+    },
+    "chatMessageList": {
+      "open_path": "{{path}} खोलो"
     }
   },
   "apps": {
@@ -2748,6 +2751,162 @@
         "verification_not_checkable_label": "sent, not confirmed",
         "verification_not_checkable_meaning": "The {{verb}} was accepted, but this app cannot observe whether it took effect — an acknowledgement leaves an alert firing by design, so the alarm's state says nothing either way.",
         "verification_pending_meaning_at": "The {{verb}} returned success, which only means the provider accepted the request. The next heartbeat after {{when}} re-reads the signal to find out whether it took effect."
+      }
+    },
+    "specBuilder": {
+      "api": {
+        "something_went_wrong": "कुछ गड़बड़ हो गई ({{status}})",
+        "phase_new": "अभी शुरू हुआ",
+        "phase_requirements": "आवश्यकताएं",
+        "phase_design": "डिज़ाइन",
+        "phase_tasks": "योजना तैयार",
+        "phase_building": "बन रहा है",
+        "phase_ready": "तैयार"
+      },
+      "components": {
+        "chatColumn": {
+          "reply_to_the_spec_agent": "Spec एजेंट को उत्तर दो…"
+        },
+        "columnSplitter": {
+          "drag_or_use_to_resize": "आकार बदलने के लिए खींचो या ← → का उपयोग करो"
+        },
+        "docView": {
+          "add_comment": "टिप्पणी जोड़ो",
+          "comment": "टिप्पणी करो",
+          "comment_on_the_selected_passage": "चुने गए अंश पर टिप्पणी करो",
+          "discard_this_comment": "इस टिप्पणी को छोड़ दो",
+          "document_file_name": "{{name}}.md",
+          "nothing_here_yet": "यहाँ अभी कुछ नहीं है।",
+          "your_feedback_on_the_passage_in": "{{document}} में चुने गए अंश पर तुम्हारी प्रतिक्रिया",
+          "your_feedback_on_this_passage_enter_adds_it_to_t": "इस अंश पर तुम्हारी प्रतिक्रिया… (Enter इसे सूची में जोड़ता है)",
+          "empty_requirements": "अभी कोई आवश्यकताएं नहीं लिखी गई हैं — बातचीत में बताओ कि तुम क्या चाहते हो और एजेंट यह दस्तावेज़ लिख देगा।",
+          "empty_design": "अभी कोई डिज़ाइन नहीं है। जैसे ही तुम बातचीत में आवश्यकताएं स्वीकृत कर दोगे, तकनीकी डिज़ाइन यहाँ आ जाएगा।",
+          "empty_tasks": "अभी कोई कार्य सूची नहीं है। डिज़ाइन स्वीकृत करने के बाद क्रमबद्ध कार्य सूची यहाँ आ जाएगी।"
+        },
+        "newSpecView": {
+          "describe_what_you_want_to_do": "बताओ कि तुम क्या करना चाहते हो",
+          "e_g_add_login_with_google_so_users_don_t_need_pa": "उदाहरण: “Google से लॉगिन जोड़ो ताकि उपयोगकर्ताओं को पासवर्ड की ज़रूरत न पड़े” या “बड़ी फ़ाइलों पर एक्सपोर्ट बटन क्रैश हो जाता है”",
+          "fresh_worktree_option_pick_a_project_folder_abov": "नया worktree विकल्प: ऊपर कोई प्रोजेक्ट फ़ोल्डर चुनो — यदि वह git रिपॉज़िटरी है, तो मैं एक अलग worktree में योजना बनाकर काम कर सकता हूँ, जिससे तुम्हारा मुख्य checkout अछूता रहता है।",
+          "keeps_your_main_checkout_untouched_branch": "तुम्हारा मुख्य checkout अछूता रहता है: मैं रिपॉज़िटरी के बगल में अपने अलग फ़ोल्डर में {{branch}} ब्रांच बनाऊँगा, और वहीं योजना बनाकर काम करूँगा।",
+          "let_s_plan_something": "कुछ योजना बनाएं",
+          "never_mind": "रद्द करें",
+          "settings": "सेटिंग्स",
+          "start_the_conversation": "बातचीत शुरू करो →",
+          "starting": "शुरू हो रहा है…",
+          "tell_me_what_you_have_in_mind_i_ll_ask_a_few_cla": "बताओ कि तुम्हारे मन में क्या है। मैं चैट में कुछ स्पष्टीकरण प्रश्न पूछूँगा, एक योजना लिखूँगा जिसे तुम देख सको, और फिर जब तुम तैयार हो तो उसे बनाऊँगा।",
+          "this_folder_isn_t_a_git_repository_so_i_ll_work": "यह फ़ोल्डर git रिपॉज़िटरी नहीं है, इसलिए मैं सीधे इसी में काम करूँगा। नया worktree विकल्प पाने के लिए कोई git रिपॉज़िटरी चुनो (तुम्हारा मुख्य checkout अछूता रहता है)।",
+          "what_do_you_want_to_do": "तुम क्या करना चाहते हो?",
+          "what_kind_of_work_is_it": "यह किस तरह का काम है?",
+          "which_project_is_this_for": "यह किस प्रोजेक्ट के लिए है?",
+          "work_in_a_fresh_worktree": "नए worktree में काम करें",
+          "your_plan_is_saved_as_plain_markdown_inside_your": "तुम्हारी योजना प्रोजेक्ट के भीतर सामान्य markdown के रूप में सहेजी जाती है (.kiro/specs), इसलिए यह Kiro IDE और CLI के साथ भी काम करती है। spec कहाँ रखे जाएँ, यह बदलो",
+          "type_feature_title": "कुछ नया बनाओ",
+          "type_feature_blurb": "पूरी योजना: आवश्यकताएं, तकनीकी डिज़ाइन और कार्य सूची।",
+          "type_bug_title": "कोई बग ठीक करो",
+          "type_bug_blurb": "समस्या की जाँच करो, मूल कारण खोजो, और उसे ठीक करने की योजना बनाओ।",
+          "type_quick_title": "झटपट योजना",
+          "type_quick_blurb": "औपचारिकता छोड़ो — केवल एक लक्ष्य और कार्य सूची।"
+        },
+        "projectPicker": {
+          "browse": "ब्राउज़ करो",
+          "change": "बदलें",
+          "choose_a_project_folder": "प्रोजेक्ट फ़ोल्डर चुनो…",
+          "choose_a_project_folder_aria": "प्रोजेक्ट फ़ोल्डर चुनो",
+          "go_to_parent_folder": "मूल फ़ोल्डर पर जाओ",
+          "hide_path_input": "पथ इनपुट छिपाओ",
+          "home_you_projects_my_app": "/home/you/projects/my-app",
+          "loading": "लोड हो रहा है…",
+          "no_subfolders_here_use_use_this_folder_above_to": "यहाँ कोई सब-फ़ोल्डर नहीं है — इसी को चुनने के लिए ऊपर “इस फ़ोल्डर का उपयोग करो” दबाओ।",
+          "open_folder": "फ़ोल्डर {{name}} खोलो",
+          "project_folder_change": "प्रोजेक्ट फ़ोल्डर: {{path}} — बदलो",
+          "project_folder_path": "प्रोजेक्ट फ़ोल्डर का पथ",
+          "recent_projects": "हाल के प्रोजेक्ट",
+          "type_a_path_instead": "इसके बजाय पथ लिखो",
+          "up": "ऊपर",
+          "use_recent_project": "हाल का प्रोजेक्ट {{path}} इस्तेमाल करो",
+          "use_this_folder": "इस फ़ोल्डर का उपयोग करो",
+          "use_this_folder_path": "इस फ़ोल्डर का उपयोग करो: {{path}}"
+        },
+        "settingsModal": {
+          "cancel": "रद्द करें",
+          "empty_keep_specs_with_each_project_recommended": "खाली = spec को उसी प्रोजेक्ट के साथ रखें (अनुशंसित)",
+          "leave_this_empty_to_keep_specs_inside_each_proje": "spec को हर प्रोजेक्ट के भीतर रखने के लिए इसे खाली छोड़ो (तुम्हारे कोड के बगल में .kiro/specs फ़ोल्डर — Kiro का मानक)। या सभी spec को एक जगह इकट्ठा करने के लिए फ़ोल्डर पथ सेट करो।",
+          "save": "सहेजो",
+          "saving": "सहेजा जा रहा है…",
+          "settings": "सेटिंग्स",
+          "spec_storage_folder_path": "spec संग्रह फ़ोल्डर का पथ",
+          "where_should_specs_be_saved": "spec कहाँ सहेजे जाने चाहिए?"
+        },
+        "shimmer": {
+          "loading_specs": "spec लोड हो रहे हैं…",
+          "loading_the_conversation": "बातचीत लोड हो रही है…",
+          "writing_this_document": "यह दस्तावेज़ लिखा जा रहा है…"
+        },
+        "specDetail": {
+          "an_agent_will_work_through_the_task_list": "एक एजेंट कार्य सूची पूरी करेगा",
+          "clear": "खाली करें",
+          "close_esc": "बंद करें (Esc)",
+          "close_review_view": "समीक्षा दृश्य बंद करें",
+          "document_file_name": "{{name}}.md",
+          "drag_or_use_to_resize": "आकार बदलने के लिए खींचें या ← → का उपयोग करें",
+          "expand_document_for_review": "समीक्षा के लिए दस्तावेज़ बड़ा करो",
+          "expand_for_review_esc_to_close": "समीक्षा के लिए बड़ा करो (Esc से बंद)",
+          "pause": "रोको",
+          "pausing": "रोका जा रहा है…",
+          "pending_comment_one": "{{count}} लंबित टिप्पणी",
+          "pending_comment_other": "{{count}} लंबित टिप्पणियाँ",
+          "remove_comment_on": "{{document}} पर की गई टिप्पणी हटाओ",
+          "resize_document_panel": "दस्तावेज़ पैनल का आकार बदलें",
+          "review_document": "{{document}} की समीक्षा करो",
+          "send_all_to_agent": "सब कुछ एजेंट को भेजें",
+          "sending": "भेजा जा रहा है…",
+          "start_building": "बनाना शुरू करो",
+          "starting": "शुरू हो रहा है…",
+          "tells_the_agent_this_phase_is_approved_and_to_mo": "एजेंट को बताता है कि यह चरण स्वीकृत है और वह आगे बढ़ सकता है — चैट में लिखने के समान",
+          "working": "काम चल रहा है…",
+          "tab_requirements": "आवश्यकताएं",
+          "tab_design": "डिज़ाइन",
+          "tab_tasks": "कार्य",
+          "advance_to_design": "स्वीकृत करो → डिज़ाइन",
+          "advance_to_tasks": "स्वीकृत करो → कार्य"
+        },
+        "specRail": {
+          "agent_working": "एजेंट काम कर रहा है",
+          "an_agent_is_working": "एक एजेंट काम कर रहा है",
+          "filter_specs": "spec फ़िल्टर करें",
+          "filter_specs_by_name": "नाम से spec फ़िल्टर करें",
+          "new_spec": "नया spec",
+          "plan_ready": "योजना तैयार",
+          "settings": "सेटिंग्स",
+          "show_spec_list": "spec सूची दिखाएं",
+          "show_specs": "spec दिखाएं",
+          "spec_builder": "Spec Builder",
+          "spec_builder_settings": "Spec Builder सेटिंग्स",
+          "specs": "SPECS",
+          "v": "v"
+        },
+        "specStatePanel": {
+          "answer_with": "“{{title}}” का उत्तर कैसे दिया जाए?",
+          "decision_title": "निर्णय — {{title}}",
+          "options_for": "{{title}} के विकल्प",
+          "recommended": "अनुशंसित",
+          "template": "टेम्पलेट",
+          "tool_calls": "टूल कॉल",
+          "turns": "चक्र",
+          "worktree": "Worktree"
+        },
+        "workspace": {
+          "describe_what_you_want_to_build_answer_a_few_que": "बताओ कि तुम क्या बनाना चाहते हो, कुछ प्रश्नों के उत्तर दो, और एक समीक्षित योजना पाओ — आवश्यकताएं, डिज़ाइन और कार्य — जिसे कोई एजेंट पूरा कर सके।",
+          "pick_a_spec_to_continue_where_you_left_off": "जहाँ छोड़ा था वहीं से जारी रखने के लिए एक spec चुनो",
+          "plan_your_next_feature_with_a_spec": "spec के साथ अपनी अगली सुविधा की योजना बनाओ",
+          "resize_spec_list": "spec सूची का आकार बदलें",
+          "start_your_first_spec": "अपना पहला spec बनाओ"
+        }
+      },
+      "specBuilderPage": {
+        "dismiss_error": "त्रुटि हटाएं",
+        "spec_builder": "Spec Builder",
+        "talk_through_an_idea_review_the_plan_then_let_an": "किसी विचार पर बात करो, योजना की समीक्षा करो, और फिर किसी एजेंट से उसे बनवाओ।"
       }
     }
   },

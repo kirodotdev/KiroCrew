@@ -8,8 +8,11 @@
  * ChatEmbed wraps this in a simple scrollable div.
  */
 import React, { useMemo, useCallback, memo } from 'react'
-import { Wrench, CheckCircle, XCircle, Clock } from 'lucide-react'
-import AssistantMessage from '../pages/chat/AssistantMessage'
+import { Clock, LoaderCircle, CircleSlash, CircleDot, Lock, PanelRight } from 'lucide-react'
+import { i18nT } from '../i18n/t'
+import { extractToolFilePath } from '../utils/toolFilePath'
+import { isSafePath } from '../utils/safePath'
+import AssistantMessage, { type TurnStats } from '../pages/chat/AssistantMessage'
 import UserMessage from '../pages/chat/UserMessage'
 import CollapsibleToolGroup from '../pages/chat/CollapsibleToolGroup'
 import TurnBlock from '../pages/chat/TurnBlock'
@@ -90,28 +93,70 @@ function msgKey(m: ChatMessage, i: number): string {
 
 // ── ToolCallPill (prop-driven, no Redux) ──
 
-const ToolCallPill = memo(function ToolCallPill({ message, running: _running }: { message: ChatMessage; running: boolean }) {
+const ToolCallPill = memo(function ToolCallPill({ message, running, onFileOpen }: { message: ChatMessage; running: boolean; onFileOpen?: (path: string) => void }) {
   const [expanded, setExpanded] = React.useState(false)
-  const label = (message.content || '').replace(/^🔧\s*/, '').split('\n')[0].slice(0, 80)
   const isDone = message.role === 'tool_result'
   const isRejected = message.meta?.resolved === 'rejected'
+  const hasPendingPerm = message.role === 'permission' && !message.meta?.resolved
+
+  // Prefer the backend-stamped purpose ("Add teams_data dict guard…") over the
+  // raw command, matching the main chat. The raw label is the fallback, and is
+  // no longer hard-truncated to 80 chars — CSS truncation keeps one line without
+  // destroying the text for the expanded panel or the file probe.
+  const rawLabel = (message.content || '').replace(/^🔧\s*/, '').split('\n')[0]
+  const purpose = typeof message.meta?.purpose === 'string' ? message.meta.purpose : ''
+  const label = purpose || rawLabel || message.role
+
+  // Status icon + colour mirror ToolCallLine so an embedded transcript reads
+  // with the same visual grammar as a main session: spinner while running,
+  // green dot when done, red slash when rejected, amber lock when awaiting
+  // approval. Previously EVERY state showed one accent-purple spinning wrench,
+  // so a finished call was indistinguishable from an in-flight one.
+  const Icon = isDone ? (isRejected ? CircleSlash : CircleDot) : hasPendingPerm ? Lock : LoaderCircle
+  const tone = isRejected
+    ? 'text-danger bg-danger-subtle'
+    : isDone
+      ? 'text-ok bg-ok/5'
+      : hasPendingPerm
+        ? 'text-warn bg-warn-subtle'
+        : 'text-accent bg-accent/5'
+  // Animate ONLY while the session is actually running. A tool call left
+  // un-terminated by a dropped turn used to spin forever, so an idle transcript
+  // still looked busy — the loading state has to reflect the session, not just
+  // the message role.
+  const iconClass = !isDone && !hasPendingPerm && !isRejected && running ? 'animate-spin' : ''
+
+  // File affordance: same pure helpers the main chat uses (no store needed).
+  const filePath = React.useMemo(() => {
+    const src = typeof message.meta?.input_preview === 'string' ? message.meta.input_preview : rawLabel
+    const p = extractToolFilePath(src)
+    return p && isSafePath(p) ? p : null
+  }, [message.meta?.input_preview, rawLabel])
 
   return (
-    <div className="animate-scale-in">
+    <div className="animate-scale-in flex items-center gap-1.5 flex-wrap">
       <button
         onClick={() => setExpanded(e => !e)}
-        className={`inline-flex items-center gap-1 text-[13px] font-mono px-2 py-0.5 rounded-md cursor-pointer transition-all max-w-[min(600px,90%)] hover:brightness-110 ${
-          isRejected ? 'text-danger bg-danger-subtle' :
-          isDone ? 'text-ok bg-ok/5' :
-          'text-accent bg-accent/5'
-        }`}
+        aria-expanded={expanded}
+        className={`inline-flex items-center gap-1 text-[13px] font-mono px-2 py-0.5 rounded-md cursor-pointer transition-all max-w-[min(600px,90%)] hover:brightness-110 ${tone}`}
       >
-        {isRejected ? <XCircle size={12} /> : isDone ? <CheckCircle size={12} /> : <Wrench size={12} className="animate-spin" style={{ animationDuration: '2s' }} />}
-        <span className="truncate">{label || message.role}</span>
+        <Icon size={12} className={iconClass} />
+        <span className="truncate">{label}</span>
       </button>
+      {filePath && onFileOpen && (
+        <button
+          onClick={() => onFileOpen(filePath)}
+          title={i18nT('appSdk.chatMessageList.open_path', { path: filePath })}
+          aria-label={i18nT('appSdk.chatMessageList.open_path', { path: filePath })}
+          className="inline-flex items-center gap-1 text-[12px] font-mono px-1.5 py-0.5 rounded-md border border-border text-muted cursor-pointer hover:text-text hover:border-border-strong transition-all"
+        >
+          {filePath.split('/').pop()}
+          <PanelRight size={11} />
+        </button>
+      )}
       {expanded && message.content && (
-        <pre className="text-[11px] font-mono text-muted bg-bg-elevated rounded-md p-2 mt-1 ml-4 max-h-40 overflow-auto whitespace-pre-wrap break-all border border-border">
-          {message.content}
+        <pre className="w-full text-[11px] font-mono text-muted bg-bg-elevated rounded-md p-2 mt-1 ml-4 max-h-40 overflow-auto whitespace-pre-wrap break-all border border-border">
+          {purpose && rawLabel && purpose !== rawLabel ? rawLabel + '\n\n' + message.content : message.content}
         </pre>
       )}
     </div>
@@ -231,6 +276,7 @@ const ChatMessageList = memo(function ChatMessageList({
             onFileOpen={onFileOpen}
             variants={m.variants}
             variantIdx={m.variant_idx}
+            turnStats={(m.meta as Record<string, unknown> | undefined)?.turn_stats as TurnStats | undefined}
           />
         </div>
       )
@@ -239,7 +285,7 @@ const ChatMessageList = memo(function ChatMessageList({
     if (m.role === 'tool' && m.content?.startsWith('🔧')) {
       return (
         <div key={key} className="px-5 mx-auto w-full py-0.5" style={{ maxWidth: `var(--mc-content-width, ${contentWidth})` }}>
-          {renderTool ? renderTool(m) : <ToolCallPill message={m} running={running} />}
+          {renderTool ? renderTool(m) : <ToolCallPill message={m} running={running} onFileOpen={onFileOpen} />}
         </div>
       )
     }
@@ -247,7 +293,7 @@ const ChatMessageList = memo(function ChatMessageList({
     if (m.role === 'tool_call' || m.role === 'tool_result') {
       return (
         <div key={key} className="px-5 mx-auto w-full py-0.5" style={{ maxWidth: `var(--mc-content-width, ${contentWidth})` }}>
-          {renderTool ? renderTool(m) : <ToolCallPill message={m} running={running} />}
+          {renderTool ? renderTool(m) : <ToolCallPill message={m} running={running} onFileOpen={onFileOpen} />}
         </div>
       )
     }

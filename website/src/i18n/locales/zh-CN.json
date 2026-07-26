@@ -114,6 +114,9 @@
       "send_message": "发送消息",
       "session_ready_type_a_message_to_start": "会话已就绪。输入消息即可开始。",
       "streaming": "流式输出中"
+    },
+    "chatMessageList": {
+      "open_path": "打开 {{path}}"
     }
   },
   "apps": {
@@ -2711,6 +2714,161 @@
         "verification_not_checkable_label": "sent, not confirmed",
         "verification_not_checkable_meaning": "The {{verb}} was accepted, but this app cannot observe whether it took effect — an acknowledgement leaves an alert firing by design, so the alarm's state says nothing either way.",
         "verification_pending_meaning_at": "The {{verb}} returned success, which only means the provider accepted the request. The next heartbeat after {{when}} re-reads the signal to find out whether it took effect."
+      }
+    },
+    "specBuilder": {
+      "api": {
+        "something_went_wrong": "出了点问题（{{status}}）",
+        "phase_new": "刚开始",
+        "phase_requirements": "需求",
+        "phase_design": "设计",
+        "phase_tasks": "方案就绪",
+        "phase_building": "构建中",
+        "phase_ready": "就绪"
+      },
+      "components": {
+        "chatColumn": {
+          "reply_to_the_spec_agent": "回复 Spec 代理…"
+        },
+        "columnSplitter": {
+          "drag_or_use_to_resize": "拖动或使用 ← → 调整大小"
+        },
+        "docView": {
+          "add_comment": "添加评论",
+          "comment": "评论",
+          "comment_on_the_selected_passage": "对所选段落发表评论",
+          "discard_this_comment": "放弃此评论",
+          "document_file_name": "{{name}}.md",
+          "nothing_here_yet": "这里还没有内容。",
+          "your_feedback_on_the_passage_in": "你对 {{document}} 中所选段落的反馈",
+          "your_feedback_on_this_passage_enter_adds_it_to_t": "你对这段内容的反馈…（按 Enter 加入队列）",
+          "empty_requirements": "尚未写下任何需求——在对话中描述你想要的内容，代理会起草这份文档。",
+          "empty_design": "还没有设计。当你在对话中通过需求后，技术设计就会出现在这里。",
+          "empty_tasks": "还没有任务清单。你通过设计之后，排好顺序的任务清单会出现在这里。"
+        },
+        "newSpecView": {
+          "describe_what_you_want_to_do": "描述你想做的事",
+          "e_g_add_login_with_google_so_users_don_t_need_pa": "例如“添加 Google 登录，这样用户不需要密码”或“导出按钮在处理大文件时崩溃”",
+          "fresh_worktree_option_pick_a_project_folder_abov": "全新工作树选项：在上方选择一个项目文件夹——如果它是 git 仓库，我可以在专用工作树中规划并构建。",
+          "keeps_your_main_checkout_untouched_branch": "保持你的主检出不受影响：我会在仓库旁边的独立文件夹中创建分支 {{branch}}，并在那里规划和构建。",
+          "let_s_plan_something": "来规划一下",
+          "never_mind": "取消",
+          "settings": "设置",
+          "start_the_conversation": "开始对话 →",
+          "starting": "正在开始…",
+          "tell_me_what_you_have_in_mind_i_ll_ask_a_few_cla": "告诉我你的想法。我会在聊天中问几个澄清问题，写出一份可供你审阅的方案，等你准备好后再动手构建。",
+          "this_folder_isn_t_a_git_repository_so_i_ll_work": "该文件夹不是 git 仓库，因此我会直接在其中工作。选择一个 git 仓库即可获得全新工作树的选项。",
+          "what_do_you_want_to_do": "你想做什么？",
+          "what_kind_of_work_is_it": "这属于哪类工作？",
+          "which_project_is_this_for": "这是为哪个项目做的？",
+          "work_in_a_fresh_worktree": "在全新工作树中工作",
+          "your_plan_is_saved_as_plain_markdown_inside_your": "你的方案以纯 markdown 形式保存在项目内（.kiro/specs），因此也可配合 Kiro IDE 和 CLI 使用。你可以更改 spec 的存放位置：",
+          "type_feature_title": "构建新东西",
+          "type_feature_blurb": "完整方案：需求、技术设计和任务清单。",
+          "type_bug_title": "修复 bug",
+          "type_bug_blurb": "排查问题，找出根本原因，并规划修复方案。",
+          "type_quick_title": "快速方案",
+          "type_quick_blurb": "跳过正式流程——只要一个目标和一份任务清单。"
+        },
+        "projectPicker": {
+          "browse": "浏览",
+          "change": "更改",
+          "choose_a_project_folder": "选择项目文件夹…",
+          "choose_a_project_folder_aria": "选择项目文件夹",
+          "go_to_parent_folder": "转到上级文件夹",
+          "hide_path_input": "隐藏路径输入框",
+          "home_you_projects_my_app": "/home/you/projects/my-app",
+          "loading": "正在加载…",
+          "no_subfolders_here_use_use_this_folder_above_to": "此处没有子文件夹——请使用上方的“使用此文件夹”来选择当前文件夹。",
+          "open_folder": "打开文件夹 {{name}}",
+          "project_folder_change": "项目文件夹：{{path}} — 更改",
+          "project_folder_path": "项目文件夹路径",
+          "recent_projects": "最近的项目",
+          "type_a_path_instead": "改为输入路径",
+          "up": "向上",
+          "use_recent_project": "使用最近的项目 {{path}}",
+          "use_this_folder": "使用此文件夹",
+          "use_this_folder_path": "使用此文件夹：{{path}}"
+        },
+        "settingsModal": {
+          "cancel": "取消",
+          "empty_keep_specs_with_each_project_recommended": "留空 = 将 spec 保存在各自的项目中（推荐）",
+          "leave_this_empty_to_keep_specs_inside_each_proje": "留空即可将 spec 保存在每个项目内部（代码旁的 .kiro/specs 文件夹，这是 Kiro 的标准做法）。或者设置一个文件夹路径，把所有 spec 集中存放。",
+          "save": "保存",
+          "saving": "正在保存…",
+          "settings": "设置",
+          "spec_storage_folder_path": "spec 存放文件夹路径",
+          "where_should_specs_be_saved": "spec 应保存在哪里？"
+        },
+        "shimmer": {
+          "loading_specs": "正在加载 spec…",
+          "loading_the_conversation": "正在加载对话…",
+          "writing_this_document": "正在撰写此文档…"
+        },
+        "specDetail": {
+          "an_agent_will_work_through_the_task_list": "代理将逐项完成任务清单",
+          "clear": "清空",
+          "close_esc": "关闭（Esc）",
+          "close_review_view": "关闭审阅视图",
+          "document_file_name": "{{name}}.md",
+          "drag_or_use_to_resize": "拖动或使用 ← → 调整大小",
+          "expand_document_for_review": "展开文档以便审阅",
+          "expand_for_review_esc_to_close": "展开以便审阅（按 Esc 关闭）",
+          "pause": "暂停",
+          "pausing": "正在暂停…",
+          "pending_comment_other": "{{count}} 条待处理评论",
+          "remove_comment_on": "移除对 {{document}} 的评论",
+          "resize_document_panel": "调整文档面板大小",
+          "review_document": "审阅 {{document}}",
+          "send_all_to_agent": "全部发送给代理",
+          "sending": "正在发送…",
+          "start_building": "开始构建",
+          "starting": "正在启动…",
+          "tells_the_agent_this_phase_is_approved_and_to_mo": "告知代理此阶段已通过、可以继续——与在聊天中输入相同",
+          "working": "正在处理…",
+          "tab_requirements": "需求",
+          "tab_design": "设计",
+          "tab_tasks": "任务",
+          "advance_to_design": "通过 → 设计",
+          "advance_to_tasks": "通过 → 任务"
+        },
+        "specRail": {
+          "agent_working": "代理工作中",
+          "an_agent_is_working": "有代理正在工作",
+          "filter_specs": "筛选 spec",
+          "filter_specs_by_name": "按名称筛选 spec",
+          "new_spec": "新建 spec",
+          "plan_ready": "方案就绪",
+          "settings": "设置",
+          "show_spec_list": "显示 spec 列表",
+          "show_specs": "显示 spec",
+          "spec_builder": "Spec Builder",
+          "spec_builder_settings": "Spec Builder 设置",
+          "specs": "SPEC",
+          "v": "v"
+        },
+        "specStatePanel": {
+          "answer_with": "“{{title}}”应如何回答？",
+          "decision_title": "决定 — {{title}}",
+          "options_for": "{{title}} 的选项",
+          "recommended": "推荐",
+          "template": "模板",
+          "tool_calls": "工具调用",
+          "turns": "轮次",
+          "worktree": "工作树"
+        },
+        "workspace": {
+          "describe_what_you_want_to_build_answer_a_few_que": "描述你想构建的内容，回答几个问题，然后获得一份经过审阅的方案——需求、设计和任务——供代理执行。",
+          "pick_a_spec_to_continue_where_you_left_off": "选择一个 spec，从上次中断处继续",
+          "plan_your_next_feature_with_a_spec": "用 spec 规划你的下一个功能",
+          "resize_spec_list": "调整 spec 列表大小",
+          "start_your_first_spec": "创建你的第一个 spec"
+        }
+      },
+      "specBuilderPage": {
+        "dismiss_error": "关闭错误提示",
+        "spec_builder": "Spec Builder",
+        "talk_through_an_idea_review_the_plan_then_let_an": "聊清一个想法，审阅方案，然后让代理去实现。"
       }
     }
   },

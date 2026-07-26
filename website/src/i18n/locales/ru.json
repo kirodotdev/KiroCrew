@@ -114,6 +114,9 @@
       "send_message": "Отправить сообщение",
       "session_ready_type_a_message_to_start": "Сессия готова. Введите сообщение, чтобы начать.",
       "streaming": "потоковая передача"
+    },
+    "chatMessageList": {
+      "open_path": "Открыть {{path}}"
     }
   },
   "apps": {
@@ -2822,6 +2825,164 @@
         "verification_not_checkable_label": "sent, not confirmed",
         "verification_not_checkable_meaning": "The {{verb}} was accepted, but this app cannot observe whether it took effect — an acknowledgement leaves an alert firing by design, so the alarm's state says nothing either way.",
         "verification_pending_meaning_at": "The {{verb}} returned success, which only means the provider accepted the request. The next heartbeat after {{when}} re-reads the signal to find out whether it took effect."
+      }
+    },
+    "specBuilder": {
+      "api": {
+        "something_went_wrong": "Что-то пошло не так ({{status}})",
+        "phase_new": "только начали",
+        "phase_requirements": "требования",
+        "phase_design": "дизайн",
+        "phase_tasks": "план готов",
+        "phase_building": "сборка",
+        "phase_ready": "готово"
+      },
+      "components": {
+        "chatColumn": {
+          "reply_to_the_spec_agent": "Ответить агенту Spec…"
+        },
+        "columnSplitter": {
+          "drag_or_use_to_resize": "Потяните или используйте ← →, чтобы изменить размер"
+        },
+        "docView": {
+          "add_comment": "Добавить комментарий",
+          "comment": "Комментировать",
+          "comment_on_the_selected_passage": "Комментировать выделенный фрагмент",
+          "discard_this_comment": "Отменить этот комментарий",
+          "document_file_name": "{{name}}.md",
+          "nothing_here_yet": "Здесь пока ничего нет.",
+          "your_feedback_on_the_passage_in": "Ваш отзыв о выделенном фрагменте в {{document}}",
+          "your_feedback_on_this_passage_enter_adds_it_to_t": "Ваш отзыв об этом фрагменте… (Enter добавит его в очередь)",
+          "empty_requirements": "Требования пока не написаны — опишите в чате, что вам нужно, и агент подготовит этот документ.",
+          "empty_design": "Дизайна пока нет. Как только вы согласуете требования в чате, здесь появится технический дизайн.",
+          "empty_tasks": "Списка задач пока нет. После того как вы согласуете дизайн, здесь появится упорядоченный список задач."
+        },
+        "newSpecView": {
+          "describe_what_you_want_to_do": "Опишите, что вы хотите сделать",
+          "e_g_add_login_with_google_so_users_don_t_need_pa": "например: «Добавить вход через Google, чтобы пользователям не нужны были пароли» или «Кнопка экспорта падает на больших файлах»",
+          "fresh_worktree_option_pick_a_project_folder_abov": "Вариант с новым рабочим деревом: выберите папку проекта выше — если это репозиторий git, я могу планировать и собирать в отдельном рабочем дереве.",
+          "keeps_your_main_checkout_untouched_branch": "Ваш основной рабочий каталог остаётся нетронутым: я создам ветку {{branch}} в отдельной папке рядом с репозиторием и буду планировать и собирать там.",
+          "let_s_plan_something": "Давайте что-нибудь спланируем",
+          "never_mind": "Отмена",
+          "settings": "Настройки",
+          "start_the_conversation": "Начать разговор →",
+          "starting": "Запуск…",
+          "tell_me_what_you_have_in_mind_i_ll_ask_a_few_cla": "Расскажите, что вы задумали. Я задам несколько уточняющих вопросов в чате, составлю план, который вы сможете проверить, а затем реализую его, когда вы будете готовы.",
+          "this_folder_isn_t_a_git_repository_so_i_ll_work": "Эта папка не является репозиторием git, поэтому я буду работать прямо в ней. Выберите репозиторий git, чтобы получить вариант с новым рабочим деревом.",
+          "what_do_you_want_to_do": "Что вы хотите сделать?",
+          "what_kind_of_work_is_it": "Какого рода эта работа?",
+          "which_project_is_this_for": "Для какого проекта это?",
+          "work_in_a_fresh_worktree": "Работать в новом рабочем дереве",
+          "your_plan_is_saved_as_plain_markdown_inside_your": "Ваш план сохраняется как обычный markdown внутри проекта (.kiro/specs), поэтому он работает и с Kiro IDE и CLI. Изменить место хранения спеков можно в",
+          "type_feature_title": "Создать что-то новое",
+          "type_feature_blurb": "Полный план: требования, технический дизайн и список задач.",
+          "type_bug_title": "Исправить ошибку",
+          "type_bug_blurb": "Разобраться в проблеме, найти первопричину и спланировать исправление.",
+          "type_quick_title": "Быстрый план",
+          "type_quick_blurb": "Без формальностей — только цель и список задач."
+        },
+        "projectPicker": {
+          "browse": "Обзор",
+          "change": "изменить",
+          "choose_a_project_folder": "Выберите папку проекта…",
+          "choose_a_project_folder_aria": "Выбрать папку проекта",
+          "go_to_parent_folder": "Перейти в родительскую папку",
+          "hide_path_input": "Скрыть поле пути",
+          "home_you_projects_my_app": "/home/you/projects/my-app",
+          "loading": "Загрузка…",
+          "no_subfolders_here_use_use_this_folder_above_to": "Здесь нет вложенных папок — нажмите «Использовать эту папку» выше, чтобы выбрать текущую.",
+          "open_folder": "Открыть папку {{name}}",
+          "project_folder_change": "Папка проекта: {{path}} — изменить",
+          "project_folder_path": "Путь к папке проекта",
+          "recent_projects": "Недавние проекты",
+          "type_a_path_instead": "Ввести путь вручную",
+          "up": "Вверх",
+          "use_recent_project": "Использовать недавний проект {{path}}",
+          "use_this_folder": "Использовать эту папку",
+          "use_this_folder_path": "Использовать эту папку: {{path}}"
+        },
+        "settingsModal": {
+          "cancel": "Отмена",
+          "empty_keep_specs_with_each_project_recommended": "Пусто = хранить спеки вместе с каждым проектом (рекомендуется)",
+          "leave_this_empty_to_keep_specs_inside_each_proje": "Оставьте поле пустым, чтобы хранить спеки внутри каждого проекта (папка .kiro/specs рядом с кодом — стандарт Kiro). Либо укажите путь к папке, чтобы собирать все спеки в одном месте.",
+          "save": "Сохранить",
+          "saving": "Сохранение…",
+          "settings": "Настройки",
+          "spec_storage_folder_path": "Путь к папке хранения спеков",
+          "where_should_specs_be_saved": "Где сохранять спеки?"
+        },
+        "shimmer": {
+          "loading_specs": "Загрузка спеков…",
+          "loading_the_conversation": "Загрузка беседы…",
+          "writing_this_document": "Документ пишется…"
+        },
+        "specDetail": {
+          "an_agent_will_work_through_the_task_list": "Агент пройдёт по списку задач",
+          "clear": "Очистить",
+          "close_esc": "Закрыть (Esc)",
+          "close_review_view": "Закрыть режим просмотра",
+          "document_file_name": "{{name}}.md",
+          "drag_or_use_to_resize": "Потяните или используйте ← →, чтобы изменить размер",
+          "expand_document_for_review": "Развернуть документ для проверки",
+          "expand_for_review_esc_to_close": "Развернуть для проверки (Esc закрывает)",
+          "pause": "Пауза",
+          "pausing": "Приостановка…",
+          "pending_comment_few": "{{count}} неотправленных комментария",
+          "pending_comment_many": "{{count}} неотправленных комментариев",
+          "pending_comment_one": "{{count}} неотправленный комментарий",
+          "pending_comment_other": "{{count}} неотправленных комментария",
+          "remove_comment_on": "Удалить комментарий к {{document}}",
+          "resize_document_panel": "Изменить размер панели документа",
+          "review_document": "Проверить {{document}}",
+          "send_all_to_agent": "Отправить всё агенту",
+          "sending": "Отправка…",
+          "start_building": "Начать сборку",
+          "starting": "Запуск…",
+          "tells_the_agent_this_phase_is_approved_and_to_mo": "Сообщает агенту, что этот этап согласован и можно двигаться дальше — то же, что написать это в чате",
+          "working": "работает…",
+          "tab_requirements": "Требования",
+          "tab_design": "Дизайн",
+          "tab_tasks": "Задачи",
+          "advance_to_design": "Согласовать → Дизайн",
+          "advance_to_tasks": "Согласовать → Задачи"
+        },
+        "specRail": {
+          "agent_working": "агент работает",
+          "an_agent_is_working": "Агент работает",
+          "filter_specs": "Фильтровать спеки",
+          "filter_specs_by_name": "Фильтровать спеки по имени",
+          "new_spec": "Новая спека",
+          "plan_ready": "ПЛАН ГОТОВ",
+          "settings": "Настройки",
+          "show_spec_list": "Показать список спеков",
+          "show_specs": "Показать спеки",
+          "spec_builder": "Spec Builder",
+          "spec_builder_settings": "Настройки Spec Builder",
+          "specs": "СПЕКИ",
+          "v": "v"
+        },
+        "specStatePanel": {
+          "answer_with": "Как следует ответить на «{{title}}»?",
+          "decision_title": "Решение — {{title}}",
+          "options_for": "Варианты для {{title}}",
+          "recommended": "РЕКОМЕНДУЕТСЯ",
+          "template": "Шаблон",
+          "tool_calls": "Вызовы инструментов",
+          "turns": "Циклы",
+          "worktree": "Рабочее дерево"
+        },
+        "workspace": {
+          "describe_what_you_want_to_build_answer_a_few_que": "Опишите, что вы хотите создать, ответьте на несколько вопросов и получите проверенный план — требования, дизайн и задачи — который сможет выполнить агент.",
+          "pick_a_spec_to_continue_where_you_left_off": "Выберите спеку, чтобы продолжить с того места, где остановились",
+          "plan_your_next_feature_with_a_spec": "Спланируйте следующую функцию с помощью спеки",
+          "resize_spec_list": "Изменить размер списка спеков",
+          "start_your_first_spec": "Создайте свою первую спеку"
+        }
+      },
+      "specBuilderPage": {
+        "dismiss_error": "Скрыть ошибку",
+        "spec_builder": "Spec Builder",
+        "talk_through_an_idea_review_the_plan_then_let_an": "Обсудите идею, проверьте план, а затем поручите агенту её реализовать."
       }
     }
   },

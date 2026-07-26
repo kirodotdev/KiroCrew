@@ -16,7 +16,13 @@ from dataclasses import dataclass
 from typing import Any
 
 #: Slack ts format: ``"{epoch_seconds}.{microseconds}"`` -- pure digits + one dot.
-_SLACK_TS_RE = re.compile(r"\d+\.\d+")
+#: Both runs are BOUNDED. Unbounded ``\d+`` on either side of the dot makes
+#: ``fullmatch`` backtrack quadratically on a long all-digits string, and this
+#: predicate is reached with keys that originate outside Slack (any caller
+#: resolving a session key, including app backends restoring a saved
+#: conversation), so the input is not guaranteed to be a real timestamp. A real
+#: ts is 10 digits + 6; 20 each leaves an order of magnitude of headroom.
+_SLACK_TS_RE = re.compile(r"\d{1,20}\.\d{1,20}")
 
 SLACK_NAMESPACE = "slack"
 

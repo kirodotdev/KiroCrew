@@ -131,6 +131,8 @@ export default [
       // Key glyphs / key-cap names only (⌘ ⇧ ⌥ / Ctrl Win Alt) — a machine
       // grammar the OS parses, not translatable copy. Same rationale as above.
       'src/apps/mochi/src/shared/shortcut.ts',
+      // CSS text injected through <style>; a stylesheet is not translatable copy.
+      'src/apps/spec-builder/inlineStyles.ts',
     ],
     linterOptions: {
       // Every `eslint-disable` comment in this codebase targets the MAIN config's

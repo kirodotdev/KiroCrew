@@ -68,6 +68,9 @@
       "send_message": "Send message",
       "session_ready_type_a_message_to_start": "Session ready. Type a message to start.",
       "streaming": "streaming"
+    },
+    "chatMessageList": {
+      "open_path": "Open {{path}}"
     }
   },
   "apps": {
@@ -2347,6 +2350,162 @@
         "verification_not_checkable_label": "sent, not confirmed",
         "verification_not_checkable_meaning": "The {{verb}} was accepted, but this app cannot observe whether it took effect — an acknowledgement leaves an alert firing by design, so the alarm's state says nothing either way.",
         "verification_pending_meaning_at": "The {{verb}} returned success, which only means the provider accepted the request. The next heartbeat after {{when}} re-reads the signal to find out whether it took effect."
+      }
+    },
+    "specBuilder": {
+      "api": {
+        "something_went_wrong": "Something went wrong ({{status}})",
+        "phase_new": "just started",
+        "phase_requirements": "requirements",
+        "phase_design": "design",
+        "phase_tasks": "plan ready",
+        "phase_building": "building",
+        "phase_ready": "ready"
+      },
+      "components": {
+        "chatColumn": {
+          "reply_to_the_spec_agent": "Reply to the Spec agent…"
+        },
+        "columnSplitter": {
+          "drag_or_use_to_resize": "Drag or use ← → to resize"
+        },
+        "docView": {
+          "add_comment": "Add comment",
+          "comment": "Comment",
+          "comment_on_the_selected_passage": "Comment on the selected passage",
+          "discard_this_comment": "Discard this comment",
+          "document_file_name": "{{name}}.md",
+          "nothing_here_yet": "Nothing here yet.",
+          "your_feedback_on_the_passage_in": "Your feedback on the selected passage in {{document}}",
+          "your_feedback_on_this_passage_enter_adds_it_to_t": "Your feedback on this passage… (Enter adds it to the stack)",
+          "empty_requirements": "No requirements written yet — describe what you want in the conversation and the agent will draft this document.",
+          "empty_design": "No design yet. Once you approve the requirements in the conversation, the technical design lands here.",
+          "empty_tasks": "No task list yet. After you approve the design, the ordered task list lands here."
+        },
+        "newSpecView": {
+          "describe_what_you_want_to_do": "Describe what you want to do",
+          "e_g_add_login_with_google_so_users_don_t_need_pa": "e.g. “Add login with Google so users don’t need passwords” or “The export button crashes on large files”",
+          "fresh_worktree_option_pick_a_project_folder_abov": "Fresh-worktree option: pick a project folder above — if it’s a git repository, I can plan and build in a dedicated worktree so your main checkout stays untouched.",
+          "keeps_your_main_checkout_untouched_branch": "Keeps your main checkout untouched: I'll create a branch {{branch}} in its own folder next to the repo, and plan + build there.",
+          "let_s_plan_something": "Let’s plan something",
+          "never_mind": "Never mind",
+          "settings": "Settings",
+          "start_the_conversation": "Start the conversation →",
+          "starting": "Starting…",
+          "tell_me_what_you_have_in_mind_i_ll_ask_a_few_cla": "Tell me what you have in mind. I’ll ask a few clarifying questions in chat, write up a plan you can review, and\n          then build it when you’re ready.",
+          "this_folder_isn_t_a_git_repository_so_i_ll_work": "This folder isn’t a git repository, so I’ll work in it directly. Pick a git repo to get the option of a fresh worktree (keeps your main checkout untouched).",
+          "what_do_you_want_to_do": "What do you want to do?",
+          "what_kind_of_work_is_it": "What kind of work is it?",
+          "which_project_is_this_for": "Which project is this for?",
+          "work_in_a_fresh_worktree": "Work in a fresh worktree",
+          "your_plan_is_saved_as_plain_markdown_inside_your": "Your plan is saved as plain markdown inside your project (.kiro/specs), so it also works with the Kiro IDE and CLI. You can change where specs are stored in",
+          "type_feature_title": "Build something new",
+          "type_feature_blurb": "A full plan: requirements, technical design, and a task list.",
+          "type_bug_title": "Fix a bug",
+          "type_bug_blurb": "Investigate the problem, find the root cause, and plan the fix.",
+          "type_quick_title": "Quick plan",
+          "type_quick_blurb": "Skip the formality — just a goal and a task list."
+        },
+        "projectPicker": {
+          "browse": "Browse",
+          "change": "change",
+          "choose_a_project_folder": "Choose a project folder…",
+          "choose_a_project_folder_aria": "Choose a project folder",
+          "go_to_parent_folder": "Go to parent folder",
+          "hide_path_input": "Hide the path input",
+          "home_you_projects_my_app": "/home/you/projects/my-app",
+          "loading": "Loading…",
+          "no_subfolders_here_use_use_this_folder_above_to": "No subfolders here — use “Use this folder” above to pick this one.",
+          "open_folder": "Open folder {{name}}",
+          "project_folder_change": "Project folder: {{path}} — change",
+          "project_folder_path": "Project folder path",
+          "recent_projects": "Recent projects",
+          "type_a_path_instead": "Type a path instead",
+          "up": "Up",
+          "use_recent_project": "Use recent project {{path}}",
+          "use_this_folder": "Use this folder",
+          "use_this_folder_path": "Use this folder: {{path}}"
+        },
+        "settingsModal": {
+          "cancel": "Cancel",
+          "empty_keep_specs_with_each_project_recommended": "Empty = keep specs with each project (recommended)",
+          "leave_this_empty_to_keep_specs_inside_each_proje": "Leave this empty to keep specs inside each project (a .kiro/specs folder next to your code — the Kiro standard).\n        Or set a folder path to collect all specs in one place instead.",
+          "save": "Save",
+          "saving": "Saving…",
+          "settings": "Settings",
+          "spec_storage_folder_path": "Spec storage folder path",
+          "where_should_specs_be_saved": "Where should specs be saved?"
+        },
+        "shimmer": {
+          "loading_specs": "Loading specs…",
+          "loading_the_conversation": "Loading the conversation…",
+          "writing_this_document": "Writing this document…"
+        },
+        "specDetail": {
+          "an_agent_will_work_through_the_task_list": "An agent will work through the task list",
+          "clear": "Clear",
+          "close_esc": "Close (Esc)",
+          "close_review_view": "Close review view",
+          "document_file_name": "{{name}}.md",
+          "drag_or_use_to_resize": "Drag or use ← → to resize",
+          "expand_document_for_review": "Expand document for review",
+          "expand_for_review_esc_to_close": "Expand for review (Esc to close)",
+          "pause": "Pause",
+          "pausing": "Pausing…",
+          "pending_comment_one": "{{count}} pending comment",
+          "pending_comment_other": "{{count}} pending comments",
+          "remove_comment_on": "Remove comment on {{document}}",
+          "resize_document_panel": "Resize document panel",
+          "review_document": "Review {{document}}",
+          "send_all_to_agent": "Send all to agent",
+          "sending": "Sending…",
+          "start_building": "Start building",
+          "starting": "Starting…",
+          "tells_the_agent_this_phase_is_approved_and_to_mo": "Tells the agent this phase is approved and to move on — same as typing it in the chat",
+          "working": "working…",
+          "tab_requirements": "Requirements",
+          "tab_design": "Design",
+          "tab_tasks": "Tasks",
+          "advance_to_design": "Approve → Design",
+          "advance_to_tasks": "Approve → Tasks"
+        },
+        "specRail": {
+          "agent_working": "agent working",
+          "an_agent_is_working": "An agent is working",
+          "filter_specs": "Filter specs",
+          "filter_specs_by_name": "Filter specs by name",
+          "new_spec": "New spec",
+          "plan_ready": "PLAN READY",
+          "settings": "Settings",
+          "show_spec_list": "Show spec list",
+          "show_specs": "Show specs",
+          "spec_builder": "Spec Builder",
+          "spec_builder_settings": "Spec Builder settings",
+          "specs": "SPECS",
+          "v": "v"
+        },
+        "specStatePanel": {
+          "answer_with": "How should “{{title}}” be answered?",
+          "decision_title": "Decision — {{title}}",
+          "options_for": "Options for {{title}}",
+          "recommended": "RECOMMENDED",
+          "template": "Template",
+          "tool_calls": "Tool calls",
+          "turns": "Turns",
+          "worktree": "Worktree"
+        },
+        "workspace": {
+          "describe_what_you_want_to_build_answer_a_few_que": "Describe what you want to build, answer a few questions, and get a reviewed plan — requirements, design, and tasks — that an agent can execute for you.",
+          "pick_a_spec_to_continue_where_you_left_off": "Pick a spec to continue where you left off",
+          "plan_your_next_feature_with_a_spec": "Plan your next feature with a spec",
+          "resize_spec_list": "Resize spec list",
+          "start_your_first_spec": "Start your first spec"
+        }
+      },
+      "specBuilderPage": {
+        "dismiss_error": "Dismiss error",
+        "spec_builder": "Spec Builder",
+        "talk_through_an_idea_review_the_plan_then_let_an": "Talk through an idea, review the plan, then let an agent build it."
       }
     }
   },

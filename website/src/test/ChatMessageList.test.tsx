@@ -165,6 +165,69 @@ describe('ChatMessageList', () => {
     })
   })
 
+  describe('tool pill parity with the main chat', () => {
+    // The embed used to render EVERY tool call as one accent-purple spinning
+    // wrench with the raw command truncated to 80 chars — visually unrelated to
+    // a main session, where the same call shows its purpose, a status colour and
+    // a file affordance. These lock the parity so it can't silently drift back.
+
+    it('prefers the backend purpose over the raw command', () => {
+      render(
+        <ChatMessageList
+          messages={[
+            msg('user', 'Q'),
+            msg('tool_call', 'Running: cd /very/long/path && python -c "..."', {
+              meta: { purpose: 'Add teams_data dict guard in the parse block.' },
+            } as Partial<ChatMessage>),
+          ]}
+          running
+        />,
+      )
+      expect(screen.getByText('Add teams_data dict guard in the parse block.')).toBeInTheDocument()
+    })
+
+    it('does not spin any icon once the session is idle', () => {
+      const { container } = render(
+        <ChatMessageList messages={[msg('user', 'Q'), msg('tool_call', 'Running: ls')]} running={false} />,
+      )
+      expect(container.querySelectorAll('.animate-spin').length).toBe(0)
+    })
+
+    it('spins only while the session is running', () => {
+      const { container } = render(
+        <ChatMessageList messages={[msg('user', 'Q'), msg('tool_call', 'Running: ls')]} running />,
+      )
+      expect(container.querySelectorAll('.animate-spin').length).toBe(1)
+    })
+
+    it('marks a completed call done rather than perpetually busy', () => {
+      const { container } = render(
+        <ChatMessageList messages={[msg('user', 'Q'), msg('tool_result', 'output')]} running />,
+      )
+      expect(container.querySelectorAll('.animate-spin').length).toBe(0)
+      expect(container.querySelector('.text-ok')).toBeTruthy()
+    })
+
+    it('offers a file affordance when the tool input names a safe path', () => {
+      const onFileOpen = vi.fn()
+      render(
+        <ChatMessageList
+          messages={[
+            msg('user', 'Q'),
+            msg('tool_call', '🔧 read_file', {
+              meta: { input_preview: '{"path":"/home/me/project/loader.py"}' },
+            } as Partial<ChatMessage>),
+          ]}
+          running={false}
+          onFileOpen={onFileOpen}
+        />,
+      )
+      const chip = screen.getByRole('button', { name: 'Open /home/me/project/loader.py' })
+      chip.click()
+      expect(onFileOpen).toHaveBeenCalledWith('/home/me/project/loader.py')
+    })
+  })
+
   describe('grouping: thinking + permission messages', () => {
     it('groups consecutive thinking messages into CollapsibleToolGroup', () => {
       const msgs: ChatMessage[] = [
