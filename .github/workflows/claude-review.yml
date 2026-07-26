@@ -162,11 +162,16 @@ jobs:
             merge ONLY if it is CRITICAL or HIGH AND one of: a real, reachable
             security hole with a concrete trigger; a broken security keystone /
             sensitive-path control; a crash / data-loss / corruption bug on a code
-            path the diff adds or changes; or a violation of a `blocking: true`
-            AUTOSDE.yaml rule whose file-patterns match a changed file. Style,
-            naming, speculative performance, hypothetical edge cases, and
-            test-coverage suggestions are NEVER blocking — label them MEDIUM/LOW
-            and keep them advisory.
+            path the diff adds or changes; a violation of a `blocking: true`
+            AUTOSDE.yaml rule whose file-patterns match a changed file; or a
+            missing regression test per the REGRESSION TESTS rule under SCOPE &
+            REGRESSION below (a bug fix or security/data-integrity/correctness
+            change that ships no test which would fail if it were reverted). Style,
+            naming, speculative performance, and hypothetical edge cases are
+            NEVER blocking — label them MEDIUM/LOW and keep them advisory.
+            Test-coverage gaps are ADVISORY (MEDIUM) by default, with ONE
+            exception that IS a blocking-bar item: the REGRESSION TESTS rule
+            under SCOPE & REGRESSION below.
 
             SEVERITY–BLOCK COHERENCE: reserve CRITICAL/HIGH for findings that meet
             the BLOCKING BAR above; anything that does not meet the bar MUST be
@@ -202,6 +207,26 @@ jobs:
               handling that a prior fix added, and the PR description does not say
               why, that is a blocking-bar finding (it re-exposes a bug on a changed
               path).
+            - Regression tests (mandatory check): for every PR that adds or
+              changes non-trivial LOGIC — a bug fix, a behavior change, a new
+              branch / edge-case handler, or a security/data-integrity control —
+              verify it ships unit tests that LOCK IN the new or fixed behavior:
+              a test that would FAIL if this change were reverted. This is the
+              guard against a future edit silently undoing valuable behavior.
+              Read the actual test files (Grep/Glob) to confirm a real assertion
+              on the changed behavior exists — do not accept an unrelated or
+              pre-existing test as coverage. Report the absence as:
+                * BLOCKING (HIGH) when the change FIXES A BUG or alters a
+                  security / data-integrity / correctness path AND ships no test
+                  that would catch its regression (nothing pins the behavior).
+                  Name the exact function/behavior and the specific test that is
+                  missing.
+                * ADVISORY (MEDIUM) for general new-feature logic whose behavior
+                  is untested but which is not a fix and not on a
+                  security/data/correctness path.
+              Trivial changes need NO new test — pure refactors already covered by
+              existing tests, comments, docs, formatting, config, and
+              vendored/generated files. Do NOT ask for tests there.
 
             FINAL OUTPUT (authoritative for the gate) — when you finish, return
             the structured result required by the --json-schema. The action
@@ -211,7 +236,10 @@ jobs:
             - block_merge: true IF AND ONLY IF at least one finding meets the
               BLOCKING BAR above (a real reachable security hole, a broken
               keystone/sensitive-path control, a crash/data-loss on a changed
-              path, or a violation of a `blocking: true` AUTOSDE.yaml rule).
+              path, a violation of a `blocking: true` AUTOSDE.yaml rule, or a
+              missing regression test per the REGRESSION TESTS rule — a bug fix
+              or security/data-integrity/correctness change shipping no test that
+              would fail if reverted).
               Otherwise false. Per SEVERITY↔BLOCK COHERENCE, block_merge MUST be
               true whenever any finding is CRITICAL/HIGH; never label a
               non-blocking finding above MEDIUM.

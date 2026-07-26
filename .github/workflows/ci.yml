@@ -300,13 +300,13 @@ jobs:
           name: coverage-frontend
           path: frontend-cov
 
-      - name: Check backend coverage (min 50%)
+      - name: Check backend coverage (min 70%)
         run: |
           F=backend-cov/coverage.xml
           test -f "$F" || { echo "::error::coverage.xml missing from coverage-backend artifact"; exit 1; }
           # Compare the raw line-rate against the threshold; round only for
-          # display (a round-then-compare would let 49.95%..49.99% pass 50%).
-          python3 - "$F" 50 Backend <<'PY'
+          # display (a round-then-compare would let 69.95%..69.99% pass 70%).
+          python3 - "$F" 70 Backend <<'PY'
           import sys, xml.etree.ElementTree as ET
           path, floor, label = sys.argv[1], float(sys.argv[2]), sys.argv[3]
           rate = float(ET.parse(path).getroot().attrib["line-rate"]) * 100
@@ -316,11 +316,11 @@ jobs:
               sys.exit(1)
           PY
 
-      - name: Check frontend coverage (min 40%)
+      - name: Check frontend coverage (min 60%)
         run: |
           F=$(find frontend-cov -name 'cobertura*.xml' 2>/dev/null | head -1)
           test -n "$F" || { echo "::error::cobertura report missing from coverage-frontend artifact"; exit 1; }
-          python3 - "$F" 40 Frontend <<'PY'
+          python3 - "$F" 60 Frontend <<'PY'
           import sys, xml.etree.ElementTree as ET
           path, floor, label = sys.argv[1], float(sys.argv[2]), sys.argv[3]
           rate = float(ET.parse(path).getroot().attrib["line-rate"]) * 100
@@ -339,12 +339,12 @@ jobs:
           BF=backend-cov/coverage.xml
           if [ -f "$BF" ]; then
             B=$(python3 -c "import xml.etree.ElementTree as ET; print(f\"{float(ET.parse('$BF').getroot().attrib['line-rate'])*100:.2f}\")")
-            echo "| Backend | ${B}% | 50% |" >> "$GITHUB_STEP_SUMMARY"
+            echo "| Backend | ${B}% | 70% |" >> "$GITHUB_STEP_SUMMARY"
           fi
           FF=$(find frontend-cov -name 'cobertura*.xml' 2>/dev/null | head -1)
           if [ -n "$FF" ]; then
             FR=$(python3 -c "import xml.etree.ElementTree as ET; print(f\"{float(ET.parse('$FF').getroot().attrib['line-rate'])*100:.2f}\")")
-            echo "| Frontend | ${FR}% | 40% |" >> "$GITHUB_STEP_SUMMARY"
+            echo "| Frontend | ${FR}% | 60% |" >> "$GITHUB_STEP_SUMMARY"
           fi
 
   frontend-lint:
