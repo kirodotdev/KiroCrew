@@ -247,6 +247,106 @@ jobs:
           name: coverage-backend
           path: coverage.xml
 
+  # ── Coverage Gate ──────────────────────────────────────────────────────
+  # Enforces minimum line-coverage thresholds. Rather than re-running the
+  # entire backend + frontend suites (which duplicated ~30 min of work the
+  # test jobs already did on a single serial runner), this job CONSUMES the
+  # coverage artifacts those jobs already produced in this same run:
+  #   * backend-test (3.12 shards) -> coverage-combine -> coverage.xml
+  #     (artifact: coverage-backend)
+  #   * frontend-test -> build/coverage/cobertura-coverage.xml
+  #     (artifact: coverage-frontend)
+  # Result: download + parse + threshold-check only -- runs in seconds.
+  #
+  # Fail-closed: if an expected artifact/report is missing the job errors
+  # (download-artifact errors on a missing artifact; the report presence is
+  # asserted below), so a broken coverage pipeline can never silently pass.
+  # Lives here (not code-review.yml) so it can use `needs:` for a
+  # deterministic same-run handoff instead of a cross-workflow artifact race.
+  # The check name "Coverage Gate" is unchanged, so branch protection that
+  # requires it is still satisfied.
+  coverage-gate:
+    name: Coverage Gate
+    runs-on: ubuntu-latest
+    needs: [coverage-combine, frontend-test]
+    # Always run so the required check emits a real verdict. Without
+    # `if: always()`, a failing OR skipped dependency would SKIP this job, and
+    # GitHub treats a skipped required check as SATISFIED -- silently defeating
+    # the fail-closed guarantee (including the `if-no-files-found: error` upload
+    # guard this workflow relies on). The first step below converts any
+    # non-success upstream result into an explicit failure.
+    if: ${{ always() }}
+    steps:
+      - name: Require upstream coverage jobs to have succeeded
+        env:
+          CC: ${{ needs.coverage-combine.result }}
+          FE: ${{ needs.frontend-test.result }}
+        run: |
+          echo "coverage-combine=$CC  frontend-test=$FE"
+          if [ "$CC" != "success" ] || [ "$FE" != "success" ]; then
+            echo "::error::Upstream coverage jobs did not succeed (coverage-combine=$CC, frontend-test=$FE) -- failing closed."
+            exit 1
+          fi
+
+      - name: Download backend coverage
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: coverage-backend
+          path: backend-cov
+
+      - name: Download frontend coverage
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: coverage-frontend
+          path: frontend-cov
+
+      - name: Check backend coverage (min 50%)
+        run: |
+          F=backend-cov/coverage.xml
+          test -f "$F" || { echo "::error::coverage.xml missing from coverage-backend artifact"; exit 1; }
+          # Compare the raw line-rate against the threshold; round only for
+          # display (a round-then-compare would let 49.95%..49.99% pass 50%).
+          python3 - "$F" 50 Backend <<'PY'
+          import sys, xml.etree.ElementTree as ET
+          path, floor, label = sys.argv[1], float(sys.argv[2]), sys.argv[3]
+          rate = float(ET.parse(path).getroot().attrib["line-rate"]) * 100
+          print(f"{label} coverage: {rate:.2f}%")
+          if rate < floor:
+              print(f"::error::{label} coverage {rate:.2f}% below {floor:.0f}% minimum")
+              sys.exit(1)
+          PY
+
+      - name: Check frontend coverage (min 40%)
+        run: |
+          F=$(find frontend-cov -name 'cobertura*.xml' 2>/dev/null | head -1)
+          test -n "$F" || { echo "::error::cobertura report missing from coverage-frontend artifact"; exit 1; }
+          python3 - "$F" 40 Frontend <<'PY'
+          import sys, xml.etree.ElementTree as ET
+          path, floor, label = sys.argv[1], float(sys.argv[2]), sys.argv[3]
+          rate = float(ET.parse(path).getroot().attrib["line-rate"]) * 100
+          print(f"{label} coverage: {rate:.2f}%")
+          if rate < floor:
+              print(f"::error::{label} coverage {rate:.2f}% below {floor:.0f}% minimum")
+              sys.exit(1)
+          PY
+
+      - name: Coverage summary
+        if: always()
+        run: |
+          echo "## Coverage" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Component | Coverage | Min |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-----------|----------|-----|" >> "$GITHUB_STEP_SUMMARY"
+          BF=backend-cov/coverage.xml
+          if [ -f "$BF" ]; then
+            B=$(python3 -c "import xml.etree.ElementTree as ET; print(f\"{float(ET.parse('$BF').getroot().attrib['line-rate'])*100:.2f}\")")
+            echo "| Backend | ${B}% | 50% |" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          FF=$(find frontend-cov -name 'cobertura*.xml' 2>/dev/null | head -1)
+          if [ -n "$FF" ]; then
+            FR=$(python3 -c "import xml.etree.ElementTree as ET; print(f\"{float(ET.parse('$FF').getroot().attrib['line-rate'])*100:.2f}\")")
+            echo "| Frontend | ${FR}% | 40% |" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
   frontend-lint:
     name: Frontend Lint & Type Check
     runs-on: ubuntu-latest
@@ -324,7 +424,13 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: coverage-frontend
-          path: website/coverage/
+          # vitest's reportsDirectory is website/build/coverage (see
+          # vite.config.ts) -- NOT website/coverage. Uploading the wrong dir
+          # produced an empty artifact, which is why the Coverage Gate used to
+          # re-run vitest instead of consuming this. Fail loudly if the
+          # cobertura report is ever missing again.
+          path: website/build/coverage/
+          if-no-files-found: error
 
   e2e:
     name: E2E (stub ACP backend, offline)

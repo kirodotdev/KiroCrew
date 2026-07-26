@@ -250,94 +250,11 @@ jobs:
           npm audit --audit-level=high
 
   # ── Coverage Gate ────────────────────────────────────────────────────
-  # Prevents coverage regression below minimum thresholds.
-  # Downloads artifacts from the CI workflow's test jobs.
-  coverage-gate:
-    name: Coverage Gate
-    runs-on: ubuntu-latest
-    # This job needs the test artifacts from ci.yml. We use workflow_run
-    # instead of needs: since these are separate workflow files. However,
-    # since ci.yml and code-review.yml both trigger on pull_request, the
-    # artifacts may not be ready yet. Use a polling approach or rely on
-    # the branch protection rule requiring CI to pass first.
-    #
-    # Simpler approach: just re-run the coverage commands here (fast, <60s).
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
-          cache: pip
-
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: 20
-          cache: npm
-          cache-dependency-path: website/package-lock.json
-
-      - name: Install and run backend tests with coverage
-        run: |
-          pip install -e ".[voice,desktop,dev]" --quiet
-          pytest -q -n auto --timeout=120 --cov=kiro_crew --cov-report=xml \
-            --deselect=test/test_script_hooks.py \
-            --deselect=test/test_cron_script.py \
-            --deselect=test/test_run_aim_path.py \
-            --no-header 2>/dev/null || true
-
-      - name: Check backend coverage (min 50%)
-        run: |
-          if [ ! -f coverage.xml ]; then
-            echo "::warning::No backend coverage report — skipping"
-            exit 0
-          fi
-          LINE_RATE=$(python3 -c "
-          import xml.etree.ElementTree as ET
-          tree = ET.parse('coverage.xml')
-          print(f\"{float(tree.getroot().attrib['line-rate']) * 100:.1f}\")
-          ")
-          echo "Backend coverage: ${LINE_RATE}%"
-          python3 -c "import sys; sys.exit(0 if float('${LINE_RATE}') >= 50 else 1)" \
-            || { echo "::error::Backend coverage ${LINE_RATE}% below 50% minimum"; exit 1; }
-
-      - name: Install and run frontend tests with coverage
-        working-directory: website
-        run: |
-          npm ci --no-audit --no-fund
-          npx vitest run --coverage --reporter=dot 2>/dev/null || true
-
-      - name: Check frontend coverage (min 40%)
-        run: |
-          # Vitest outputs cobertura XML (not json-summary). Search likely paths.
-          COV_FILE=$(find website/build/coverage website/coverage -name "cobertura*.xml" 2>/dev/null | head -1)
-          if [ -z "$COV_FILE" ]; then
-            echo "::warning::No frontend coverage report found — skipping"
-            exit 0
-          fi
-          LINE_PCT=$(python3 -c "
-          import xml.etree.ElementTree as ET
-          tree = ET.parse('$COV_FILE')
-          print(f\"{float(tree.getroot().attrib['line-rate']) * 100:.1f}\")
-          ")
-          echo "Frontend coverage: ${LINE_PCT}%"
-          python3 -c "import sys; sys.exit(0 if float('${LINE_PCT}') >= 40 else 1)" \
-            || { echo "::error::Frontend coverage ${LINE_PCT}% below 40% minimum"; exit 1; }
-
-      - name: Coverage summary
-        if: always()
-        run: |
-          echo "## Coverage" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Component | Coverage | Min |" >> "$GITHUB_STEP_SUMMARY"
-          echo "|-----------|----------|-----|" >> "$GITHUB_STEP_SUMMARY"
-          if [ -f coverage.xml ]; then
-            B=$(python3 -c "import xml.etree.ElementTree as ET; print(f\"{float(ET.parse('coverage.xml').getroot().attrib['line-rate'])*100:.1f}\")")
-            echo "| Backend | ${B}% | 50% |" >> "$GITHUB_STEP_SUMMARY"
-          fi
-          COV_F=$(find website/build/coverage website/coverage -name "cobertura*.xml" 2>/dev/null | head -1)
-          if [ -n "$COV_F" ]; then
-            F=$(python3 -c "import xml.etree.ElementTree as ET; print(f\"{float(ET.parse('$COV_F').getroot().attrib['line-rate'])*100:.1f}\")")
-            echo "| Frontend | ${F}% | 40% |" >> "$GITHUB_STEP_SUMMARY"
-          fi
+  # MOVED to ci.yml. It now consumes the coverage-backend / coverage-frontend
+  # artifacts that ci.yml's test jobs already produce in the same run (via
+  # `needs:`), instead of re-installing everything and re-running the full
+  # backend + frontend suites here (~30 min of duplicated work). The check
+  # name "Coverage Gate" is unchanged, so branch protection is unaffected.
 
   # ── SAST (Semgrep) ───────────────────────────────────────────────────
   # Static Application Security Testing. Catches vulnerability patterns
