@@ -110,6 +110,22 @@ export function sendToTerminalSession(sessionId: string, code: string): boolean 
   }
 }
 
+/**
+ * Send raw bytes to a terminal session WITHOUT appending a newline — used by
+ * inline path completion to type an accepted suggestion into the shell's line
+ * editor. Returns false if that session has no open socket.
+ */
+export function sendRawToTerminalSession(sessionId: string, data: string): boolean {
+  const ws = getTerminalWs(sessionId)
+  if (!ws) return false
+  try {
+    ws.send(new TextEncoder().encode(data))
+    return true
+  } catch {
+    return false
+  }
+}
+
 /* ── Persistent per-session connection manager ──
  * The WebSocket lives here (module scope), NOT in the TerminalView component,
  * so unmounting the terminal tab (activity-bar close, tab switch, chat switch,

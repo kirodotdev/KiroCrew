@@ -321,6 +321,7 @@ from kiro_crew.dashboard.handlers.telemetry import (  # noqa: E402, F401
     api_telemetry_startup,
 )
 from kiro_crew.dashboard.handlers.terminal import (  # noqa: E402, F401
+    api_terminal_complete,
     api_terminal_create,
     api_terminal_delete,
     api_terminal_list,

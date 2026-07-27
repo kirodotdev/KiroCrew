@@ -6,6 +6,7 @@ import '@xterm/xterm/css/xterm.css'
 import { useMutation } from '@tanstack/react-query'
 import { MessageSquarePlus, Copy, Check } from 'lucide-react'
 import { ensureTerminalConnection, disposeTerminalConnection, getTerminalCwd } from '../utils/terminalRegistry'
+import TerminalCompletion from './TerminalCompletion'
 
 /* ── Per-session xterm instance cache ──
  * Keyed by PTY session id. Instances persist across tab switches / chat
@@ -348,6 +349,11 @@ function TerminalView({ sessionId, cwd, visible, onSendToChat }: { sessionId: st
       style={{ display: visible ? 'block' : 'none' }}
     >
       <div ref={containerRef} className="w-full h-full overflow-hidden" />
+      {/* Owns xterm's SINGLE `attachCustomKeyEventHandler` slot for this term
+          (it reserves Tab/Enter/arrows/Escape while its menu is open). A later
+          feature that attaches its own handler here would silently replace it —
+          extend the handler inside TerminalCompletion instead. */}
+      <TerminalCompletion term={term} sessionId={sessionId} active={visible} />
       {sel && (
         // Positioning-only container; the interactive affordances are the
         // native <button>s inside. The mouse handlers merely guard event
