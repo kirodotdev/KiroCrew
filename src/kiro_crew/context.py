@@ -508,6 +508,61 @@ def _build_docs_section() -> str:
     )
 
 
+# Slug → prompt-ready description maps for the [USER PROFILE] block. Slugs are
+# the values enforced by the dashboard.user_role / dashboard.user_technical_level
+# enums in handlers/core.py _EDITABLE_CONFIG; keep the three places in sync.
+# "other"/"" role and "" level contribute nothing — the block only names what
+# the user actually told us.
+_USER_ROLE_DESCRIPTIONS: dict[str, str] = {
+    "developer": "a software developer",
+    "designer": "a UX / product designer",
+    "product-manager": "a product manager",
+    "data-ml": "a data / ML practitioner",
+    "it-ops": "an IT / operations professional",
+}
+
+_TECHNICAL_LEVEL_DESCRIPTIONS: dict[str, str] = {
+    "codes": "writes code daily — comfortable with full technical depth",
+    "somewhat-technical": (
+        "somewhat technical — reads some code but doesn't write it daily"
+    ),
+    "non-technical": "not technical — prefers plain language over code and jargon",
+}
+
+
+def _build_user_profile_section(cfg: "KiroCrewConfig") -> str:
+    """Build the [USER PROFILE] block from onboarding answers.
+
+    Collected by onboarding step 2 (and editable in Settings > General >
+    About You), stored as dashboard.user_role / dashboard.user_technical_level.
+    Returns "" when the user skipped both questions so un-profiled installs
+    see byte-identical context.
+
+    The wording deliberately calibrates HOW the agent communicates, not WHAT
+    it may do — a designer who asks for code must still get code.
+    """
+    role_desc = _USER_ROLE_DESCRIPTIONS.get(cfg.dashboard.user_role, "")
+    tech_desc = _TECHNICAL_LEVEL_DESCRIPTIONS.get(cfg.dashboard.user_technical_level, "")
+    if not role_desc and not tech_desc:
+        return ""
+    facts: list[str] = []
+    if role_desc:
+        facts.append(f"The user is {role_desc}.")
+    if tech_desc:
+        facts.append(f"Technical comfort: {tech_desc}.")
+    return (
+        "[USER PROFILE]\n"
+        + " ".join(facts)
+        + "\n"
+        "Calibrate communication to this profile: match vocabulary, depth of "
+        "explanation, and examples to their role and technical comfort. Explain "
+        "concepts outside their domain plainly; skip basic explanations inside "
+        "it. This adjusts HOW you communicate, never WHAT you can do — if they "
+        "ask for code, provide code.\n"
+        "[End of user profile]\n\n"
+    )
+
+
 def _load_steering_resources() -> str:
     """Load steering files from the agent config's resources array.
 
@@ -1188,6 +1243,16 @@ class ContextBuilder:
                 f"or the task requires it.\n\n"
             )
 
+        # User profile — onboarding answers (role + technical comfort).
+        # Injected for ALL agents like date/agent identity: it describes the
+        # person, not the project or workspace. Empty (no block at all) when
+        # the user skipped the questions. The load below is mtime-cached and
+        # shared with the skills lazy-load gate further down.
+        _cfg = KiroCrewConfig.load()
+        profile_ctx = _build_user_profile_section(_cfg)
+        if profile_ctx:
+            parts.append(profile_ctx)
+
         # Workspace identity — kirocrew-only (custom agents don't use workspaces)
         if not is_custom:
             ws_name = workspace or "default"
@@ -1218,8 +1283,7 @@ class ContextBuilder:
         # the skills block is the legacy full dump under a single flat 165k
         # ceiling (unchanged behavior). ON: each section gets its own cap and
         # the global ceiling is their sum (~190k), so skills/steering can't
-        # crowd out memory/lessons.
-        _cfg = KiroCrewConfig.load()
+        # crowd out memory/lessons. (_cfg loaded above at the profile block.)
         lazy_skills = bool(getattr(_cfg.skills, "lazy_load", False))
         max_context_chars = caps.max_context if lazy_skills else caps.base
 

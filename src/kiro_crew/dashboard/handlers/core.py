@@ -1114,6 +1114,17 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     "auto_update": {"type": "bool"},
     "dashboard.mcp_probe_timeout_secs": {"type": "int", "min": 5, "max": 120},
     "dashboard.recent_tint_count": {"type": "int", "min": 0, "max": 10},
+    # User profile (onboarding step 2 + Settings > General > About You).
+    # Structured slugs, not free text: context.py maps them to prompt-ready
+    # descriptions in its [USER PROFILE] block. "" = unspecified/cleared.
+    "dashboard.user_role": {
+        "type": "enum",
+        "values": ["", "developer", "designer", "product-manager", "data-ml", "it-ops", "other"],
+    },
+    "dashboard.user_technical_level": {
+        "type": "enum",
+        "values": ["", "codes", "somewhat-technical", "non-technical"],
+    },
     # SSO login flags for an edition that supplies a real sso_login_handler.
     # Bounded to a short string here; the companion login handler re-validates
     # each token against its own flag allowlist before spawning the login PTY

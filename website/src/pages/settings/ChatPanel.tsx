@@ -10,6 +10,12 @@ const RESTORE_LABELS = ['15m', '30m', '1h', '2h', '6h', '12h', '24h', 'No limit'
 const COMPACT_OPTIONS = ['20', '40', '60', '80', '90']
 const COMPACT_LABELS = ['20% (aggressive)', '40%', '60%', '80%', '90% (default)']
 
+// About You — slugs shared with onboarding step 2 and context.py's prompt maps.
+const ROLE_OPTIONS = ['', 'developer', 'designer', 'product-manager', 'data-ml', 'it-ops', 'other']
+const ROLE_LABELS = ['Not set', 'Developer', 'UX Designer', 'Product Manager', 'Data / ML', 'IT / Ops', 'Other']
+const TECH_OPTIONS = ['', 'codes', 'somewhat-technical', 'non-technical']
+const TECH_LABELS = ['Not set', 'I write code', 'Somewhat', 'Not technical']
+
 const SOFT_STOP_MIN = 0.5
 const SOFT_STOP_MAX = 60
 const SOFT_STOP_DEFAULT = 10.0
@@ -87,11 +93,25 @@ export function ChatPanel() {
       completion_keep?: CompletionKeepMode
       completion_keep_chars?: number
     }
+    dashboard?: { user_role?: string; user_technical_level?: string }
   }>({
     queryKey: ['kirocrewConfig'],
     queryFn: () => api.kirocrewConfig(),
   })
   const mcCfg = mcQ.data
+
+  // ── User profile (About You) ──
+  // Same slugs as onboarding step 2 (OnboardingFlow.tsx), validated by the
+  // config PATCH allowlist (handlers/core.py) and mapped to the prompt's
+  // [USER PROFILE] block in context.py.
+  const userRole = mcCfg?.dashboard?.user_role ?? ''
+  const userTechLevel = mcCfg?.dashboard?.user_technical_level ?? ''
+  const profileMut = useMutation({
+    mutationFn: ({ path, value }: { path: string; value: string }) =>
+      api.patchConfig(path, value),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['kirocrewConfig'] }),
+    onError: () => setSaveError('Failed to save profile'),
+  })
 
   const [localBudget, setLocalBudget] = useState('')
   const budgetInitRef = useRef(false)
@@ -175,6 +195,27 @@ export function ChatPanel() {
           <button className="underline cursor-pointer bg-transparent border-none text-danger" onClick={() => mcQ.refetch()}>Retry</button>
         </div>
       )}
+
+      <SettingsSection title="About You">
+        <SettingsCard>
+          <SettingsSelect
+            label="Your Role"
+            description="Kiro matches vocabulary and examples to your professional background"
+            value={userRole}
+            options={ROLE_OPTIONS}
+            optionLabels={ROLE_LABELS}
+            onChange={v => profileMut.mutate({ path: 'dashboard.user_role', value: v })}
+          />
+          <SettingsSelect
+            label="Technical Comfort"
+            description="Sets how deep explanations go — plain language vs. full technical detail"
+            value={userTechLevel}
+            options={TECH_OPTIONS}
+            optionLabels={TECH_LABELS}
+            onChange={v => profileMut.mutate({ path: 'dashboard.user_technical_level', value: v })}
+          />
+        </SettingsCard>
+      </SettingsSection>
 
       <SettingsSection title="Composer">
         <SettingsCard>

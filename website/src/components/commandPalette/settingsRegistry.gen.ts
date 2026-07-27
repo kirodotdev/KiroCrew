@@ -244,6 +244,14 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "chat.technical-comfort",
+    "label": "Technical Comfort",
+    "description": "Sets how deep explanations go — plain language vs. full technical detail",
+    "tab": "chat",
+    "type": "select",
+    "occurrence": 1
+  },
+  {
     "id": "chat.text-streaming-style",
     "label": "Text Streaming Style",
     "description": "Immediate mode shows raw chunks as they arrive. Smooth mode buffers and fades text in at a steady pace.",
@@ -255,6 +263,14 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "chat.widget-density",
     "label": "Widget Density",
     "description": "How aggressively the agent uses inline widgets for visual content",
+    "tab": "chat",
+    "type": "select",
+    "occurrence": 1
+  },
+  {
+    "id": "chat.your-role",
+    "label": "Your Role",
+    "description": "Kiro matches vocabulary and examples to your professional background",
     "tab": "chat",
     "type": "select",
     "occurrence": 1

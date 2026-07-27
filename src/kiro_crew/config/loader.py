@@ -1468,6 +1468,25 @@ class DashboardConfig:
             "Whether the user has completed or skipped foreign-agent import onboarding.",
         ),
     )
+    user_role: str = field(
+        default="",
+        metadata=_meta(
+            "User Role",
+            "The user's professional background, collected during onboarding "
+            "(developer, designer, product-manager, data-ml, it-ops, other). "
+            "Injected into the agent prompt so responses match the user's "
+            "domain vocabulary. Empty = unspecified.",
+        ),
+    )
+    user_technical_level: str = field(
+        default="",
+        metadata=_meta(
+            "User Technical Level",
+            "How technical the user is (codes, somewhat-technical, non-technical), "
+            "collected during onboarding. Injected into the agent prompt to "
+            "calibrate explanation depth. Empty = unspecified.",
+        ),
+    )
     tips_enabled: bool = field(
         default=True,
         metadata=_meta(
@@ -3523,6 +3542,8 @@ class KiroCrewConfig:
                     dashboard_data.get("import_onboarded"),
                     _safe_bool(dashboard_data.get("onboarded"), False),
                 ),
+                user_role=str(dashboard_data.get("user_role", "")),
+                user_technical_level=str(dashboard_data.get("user_technical_level", "")),
                 tips_enabled=bool(dashboard_data.get("tips_enabled", True)),
                 tips_cadence_hours=_safe_float(
                     dashboard_data.get("tips_cadence_hours", 6.0), 6.0, lo=0.0

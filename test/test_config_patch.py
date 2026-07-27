@@ -312,3 +312,46 @@ class TestCompletionKeepHotReload:
         async with TestClient(TestServer(app)) as c:
             resp = await _patch(c, "agent.completion_keep", "both")
             assert resp.status == 200
+
+
+# ── User profile fields (onboarding step 2 / Settings > General) ─────────
+
+
+class TestUserProfilePatch:
+    @pytest.mark.asyncio
+    async def test_valid_role_persists(self, tmp_config) -> None:
+        async with TestClient(TestServer(_make_app())) as c:
+            resp = await _patch(c, "dashboard.user_role", "designer")
+            assert resp.status == 200
+        data = json.loads(tmp_config.read_text(encoding="utf-8"))
+        assert data["dashboard"]["user_role"] == "designer"
+
+    @pytest.mark.asyncio
+    async def test_valid_technical_level_persists(self, tmp_config) -> None:
+        async with TestClient(TestServer(_make_app())) as c:
+            resp = await _patch(c, "dashboard.user_technical_level", "somewhat-technical")
+            assert resp.status == 200
+        data = json.loads(tmp_config.read_text(encoding="utf-8"))
+        assert data["dashboard"]["user_technical_level"] == "somewhat-technical"
+
+    @pytest.mark.asyncio
+    async def test_empty_clears_profile_field(self, tmp_config) -> None:
+        """'' is a legal enum value — deselecting an answer clears it."""
+        async with TestClient(TestServer(_make_app())) as c:
+            assert (await _patch(c, "dashboard.user_role", "developer")).status == 200
+            assert (await _patch(c, "dashboard.user_role", "")).status == 200
+        data = json.loads(tmp_config.read_text(encoding="utf-8"))
+        assert data["dashboard"]["user_role"] == ""
+
+    @pytest.mark.asyncio
+    async def test_invalid_role_rejected(self, tmp_config) -> None:
+        """Free text must not sneak into the structured slug field."""
+        async with TestClient(TestServer(_make_app())) as c:
+            resp = await _patch(c, "dashboard.user_role", "designing a banking app")
+            assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_invalid_technical_level_rejected(self, tmp_config) -> None:
+        async with TestClient(TestServer(_make_app())) as c:
+            resp = await _patch(c, "dashboard.user_technical_level", "expert")
+            assert resp.status == 400
