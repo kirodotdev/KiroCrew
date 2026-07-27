@@ -32,7 +32,8 @@ wrapped in `_require_enabled` (returns 403 when the app is disabled).
 | GET | `/recent-repos` | Repos the `gh` user contributed to recently (connect-dialog picker) |
 | DELETE | `/repos` | Disconnect a repo (drops config + cache) |
 | GET | `/me` | Current `gh` login |
-| GET/PUT | `/settings` | Per-repo triage settings |
+| GET/PUT | `/settings` | Per-repo triage settings. The PUT replaces the whole document, so it carries the `revision` it read and is refused with **409** if the stored revision has moved — otherwise a stale tab would erase a label appended meanwhile |
+| POST | `/settings/role` | APPEND one label to a triage-label role, under the config lock. Exists because the PUT replaces the whole document, so a client read-modify-write only serializes itself — two dashboard tabs would each read the same settings and the later full replacement would drop the other's label |
 | GET | `/issue-ai` | AI summary + suggested labels (kirocrew-lite) |
 | GET | `/pulls` | List open/closed PRs (cached; rows enriched with diff size + check tally via ONE GraphQL call, topped up by number for rows outside its window). Rows whose enrichment failed carry `null` (unknown, not zero) and are deliberately NOT written to the cache, so the next read retries |
 | GET | `/pulls/search` | PRs matching a per-person filter, resolved server-side by GitHub search (escapes the list's page cap). Paginates only as far as its own cap and reports `truncated` so the UI says "newest N" rather than implying completeness |
@@ -43,6 +44,9 @@ wrapped in `_require_enabled` (returns 403 when the app is disabled).
 | GET/PUT | `/investigation` | Per-issue investigation record |
 | GET/POST | `/recommendations` | AI label taxonomy recommendations |
 | POST | `/labels/create` | Create a new repo label |
+| GET | `/tagging` | The untagged queue (also serves `bulk_max`, the bulk-apply cap, so the client chunks on the server's real limit; and `titles` bounded to the slice a recommendation's examples can cite) (open issues with ZERO labels) plus any cached per-issue label suggestions for it. Never runs the model, so opening the Tagging dashboard costs nothing; suggestions for issues that have since been labelled elsewhere are filtered out |
+| POST | `/tagging` | Generate per-issue label suggestions with ONE batched model call (`_TAG_BATCH_MAX` = 50 issues). Without `numbers` it takes the next un-analysed slice, so repeated calls walk a long backlog without re-paying; with `numbers` it re-analyses specific issues. Proposals are intersected with the repo's real label set AND with the batch that was shown, so injected issue text can neither invent a label nor reach an issue outside the batch |
+| POST | `/labels/apply-bulk` | Apply label ADDITIONS to many issues at once (add-only — removal stays a per-issue action). Unknown labels are rejected before any write, so a typo cannot half-apply the batch; per-issue failures are reported rather than swallowed, and only the issues that actually got labelled leave the queue |
 
 ## Storage Schema
 
@@ -62,16 +66,23 @@ repos/<owner>/<repo>/
   pull-<N>.json                     # Per-PR detail + timeline + checks cache
   pull-<N>-ai.json                  # PR AI summary + the fingerprint it was built from
   recommendations-cache.json        # AI label taxonomy
+  tagging-cache.json                # Per-issue label proposals for the untagged queue
   investigation-<N>.json            # Per-issue investigation record
   watch-state.json                  # Watcher high-water mark
 ```
 
 `config.json` RMW operations are serialized via a cross-process file lock
-(`platform_compat.file_lock` on `config.json.lock`).
+(`platform_compat.file_lock` on `config.json.lock`). `tagging-cache.json` holds
+the same lock discipline on its own `.lock` sidecar: every mutation is a merge
+(generate) or a prune (apply) over the whole document, so overlapping cycles
+would otherwise lose an update. An analysed issue the model declined to label is
+stored as an EMPTY list, not omitted — otherwise "the next un-analysed slice"
+would return the same unlabelable issues forever.
 
 ## Permissions
 
-Write routes (`/labels/apply`, `/issue/state`, `/labels/create`) are gated on
+Write routes (`/labels/apply`, `/labels/apply-bulk`, `/issue/state`,
+`/labels/create`) are gated on
 confirmed `triage` or `push` access (`_repo_can_write` returns `True` — unknown
 permission is denied, not allowed). Read-only repos degrade to suggest-only.
 

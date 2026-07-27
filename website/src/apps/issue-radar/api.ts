@@ -374,6 +374,11 @@ export interface RepoSettings {
   /** Watch this repo in the background and push a KiroCrew notification when a
    * new issue is opened. Opt-in (default false). */
   notify_on_new_issue: boolean
+  /** Monotonic counter bumped by every write. A PUT replaces the whole document,
+   * so it must echo the revision it read — the server refuses (409) a write built
+   * on a snapshot that has since moved, which is what stops one tab from erasing
+   * a label another tab appended. */
+  revision: number
 }
 
 /** Backwards-compatible defaults: no configured labels + "unlabeled == untriaged"
@@ -383,6 +388,7 @@ export const DEFAULT_REPO_SETTINGS: RepoSettings = {
   unlabeled_is_untriaged: true,
   good_first_issue_labels: [],
   notify_on_new_issue: false,
+  revision: 0,
 }
 
 export interface SettingsResponse {
@@ -417,6 +423,75 @@ export interface CreateLabelResponse {
   repo: string
   label: RepoLabel
   created: boolean
+}
+
+/** Cached label proposals for the untagged queue, keyed by issue number (as a
+ * string, because it comes straight off a JSON object). Each entry is the labels
+ * the model proposed for that issue; an EMPTY array means "analysed, nothing
+ * clearly applies" — which is why it is kept rather than omitted. */
+export type TaggingSuggestions = Record<string, SuggestedLabel[]>
+
+/** One row of the untagged queue. Carried in the response rather than resolved
+ * client-side against the shared issue list, which follows the user's
+ * open/closed filter — entering Tagging from a Closed filter used to show an
+ * empty queue even with untagged issues waiting. */
+export interface UntaggedIssue {
+  number: number
+  title: string
+  url: string
+  author?: string | null
+  created_at?: string
+  updated_at?: string
+}
+
+/** GET /tagging — the untagged queue for a repo plus any cached suggestions.
+ * Read-only: opening the Tagging dashboard never runs the model. */
+export interface TaggingResponse {
+  owner: string
+  repo: string
+  /** Open issues carrying NO labels, newest first. */
+  issues: UntaggedIssue[]
+  /** Their numbers, in the same order — the key the suggestion map uses. */
+  untagged: number[]
+  /** OPEN-issue count per label name. Served here rather than derived from the
+   * shared issue list, which follows the user's open/closed filter. */
+  label_counts: Record<string, number>
+  /** Open-issue titles by number, for rendering example links. Same reason.
+   * Bounded to the slice a recommendation's examples can cite, not every open
+   * issue. */
+  titles: Record<string, string>
+  /** How many issues ONE bulk-apply request accepts. Served rather than
+   * hardcoded: a copy in the client silently 400s if the backend cap changes. */
+  bulk_max: number
+  /** Total open issues, so the dashboard can show untagged as a share. */
+  open_count: number
+  suggestions: TaggingSuggestions
+  generated_at: string | null
+  /** How many issues one generate call covers — drives the button's label. */
+  batch_size: number
+}
+
+/** POST /tagging — result of one batched generate. */
+export interface GenerateTaggingResponse {
+  owner: string
+  repo: string
+  /** The merged cache (this batch plus everything generated before). */
+  suggestions: TaggingSuggestions
+  /** Issue numbers this call analysed (including ones it declined to label). */
+  analyzed: number[]
+  /** Untagged issues still awaiting a first analysis after this call. */
+  remaining: number
+  generated_at: string | null
+}
+
+/** POST /labels/apply-bulk — per-issue outcome of a bulk apply. Partial failure
+ * is normal (GitHub can reject one issue), so successes and failures both come
+ * back and the caller reports rather than retries blindly. */
+export interface BulkApplyResponse {
+  owner: string
+  repo: string
+  applied: { number: number; labels: DetailLabel[] }[]
+  failed: { number: number; error: string }[]
 }
 
 export interface ConnectedRepo {
@@ -513,6 +588,17 @@ export interface InvestigationPatch {
 
 export interface ApiError {
   error: string
+}
+
+/** Thrown by `putSettings` on a 409. Carries the settings the server currently
+ * holds, so the caller can re-apply its edit on top instead of losing it. */
+export class SettingsConflictError extends Error {
+  current: RepoSettings
+  constructor(message: string, current: RepoSettings) {
+    super(message)
+    this.name = 'SettingsConflictError'
+    this.current = current
+  }
 }
 
 async function parseErrorBody(r: Response): Promise<string> {
@@ -694,6 +780,10 @@ export const issueRadarApi = {
     return r.json()
   },
 
+  /** Replace a repo's settings. `settings.revision` is REQUIRED — the whole
+   * document is replaced, so the server refuses (409) a write built on a revision
+   * that has since moved, which is what stops one tab erasing another's change.
+   * A 409 throws `SettingsConflictError` carrying the newer settings. */
   putSettings: async (owner: string, repo: string, settings: RepoSettings): Promise<SettingsResponse> => {
     const r = await fetch(`${API}/settings`, {
       method: 'PUT',
@@ -701,6 +791,13 @@ export const issueRadarApi = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ owner, repo, settings }),
     })
+    if (r.status === 409) {
+      const body = (await r.json().catch(() => ({}))) as { error?: string; settings?: RepoSettings }
+      throw new SettingsConflictError(
+        body.error || 'These settings changed elsewhere.',
+        body.settings ?? DEFAULT_REPO_SETTINGS,
+      )
+    }
     if (!r.ok) throw new Error(await parseErrorBody(r))
     return r.json()
   },
@@ -770,6 +867,73 @@ export const issueRadarApi = {
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ owner, repo, ...label }),
+    })
+    if (!r.ok) throw new Error(await parseErrorBody(r))
+    return r.json()
+  },
+
+  /** Read the untagged queue + any cached label suggestions for it. Never runs
+   * the model, so it is safe to call whenever the Tagging dashboard mounts.
+   * Pass refresh to re-read the issues from GitHub rather than the local cache
+   * (needed to notice labels added on GitHub itself). */
+  tagging: async (
+    owner: string, repo: string, opts?: { refresh?: boolean },
+  ): Promise<TaggingResponse> => {
+    const q = new URLSearchParams({ owner, repo })
+    if (opts?.refresh) q.set('refresh', '1')
+    const r = await fetch(`${API}/tagging?${q.toString()}`, { credentials: 'same-origin' })
+    if (!r.ok) throw new Error(await parseErrorBody(r))
+    return r.json()
+  },
+
+  /** Generate label suggestions with ONE batched model call. Omit `numbers` to
+   * take the next un-analysed slice of the queue (repeat to walk a long backlog);
+   * pass `numbers` to (re)analyse specific issues. */
+  generateTagging: async (
+    owner: string, repo: string, numbers?: number[],
+  ): Promise<GenerateTaggingResponse> => {
+    const r = await fetch(`${API}/tagging`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      // `=== undefined`, not truthiness: an explicit empty array means
+      // "analyse exactly these (none)", and collapsing it to an omission
+      // started a whole automatic batch.
+      body: JSON.stringify(numbers === undefined ? { owner, repo } : { owner, repo, numbers }),
+    })
+    if (!r.ok) throw new Error(await parseErrorBody(r))
+    return r.json()
+  },
+
+  /** Append ONE label to a repo's local triage-label role, server-side under the
+   * config lock. Use INSTEAD of getSettings + putSettings: the PUT replaces the
+   * whole document, so a client read-modify-write can only serialize itself and
+   * two tabs would drop each other's label. */
+  addSettingLabel: async (
+    owner: string, repo: string,
+    role: 'triage_labels' | 'good_first_issue_labels', label: string,
+  ): Promise<SettingsResponse> => {
+    const r = await fetch(`${API}/settings/role`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ owner, repo, role, label }),
+    })
+    if (!r.ok) throw new Error(await parseErrorBody(r))
+    return r.json()
+  },
+
+  /** Apply label ADDITIONS to many issues in one request. Requires triage/push
+   * access (403 otherwise). Resolves even when some issues fail — inspect
+   * `failed` rather than assuming success. */
+  applyLabelsBulk: async (
+    owner: string, repo: string, changes: { number: number; add: string[] }[],
+  ): Promise<BulkApplyResponse> => {
+    const r = await fetch(`${API}/labels/apply-bulk`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ owner, repo, changes }),
     })
     if (!r.ok) throw new Error(await parseErrorBody(r))
     return r.json()

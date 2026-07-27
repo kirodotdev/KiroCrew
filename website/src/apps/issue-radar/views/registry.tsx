@@ -21,7 +21,7 @@ interface DashboardEntry {
 
 export const DASHBOARDS: DashboardEntry[] = [
   { key: 'overview', label: 'Overview', icon: LayoutDashboard, component: OverviewView },
-  { key: 'tagging', label: 'Tagging', icon: Tags, soon: true, component: TaggingView },
+  { key: 'tagging', label: 'Tagging', icon: Tags, component: TaggingView },
   { key: 'ranking', label: 'Ranking', icon: Sparkles, soon: true, component: RankingView },
   { key: 'insights', label: 'Insights', icon: BarChart3, soon: true, component: InsightsView },
   { key: 'duplicates', label: 'Duplicates', icon: CopyCheck, soon: true, component: DuplicatesView },

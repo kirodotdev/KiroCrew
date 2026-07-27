@@ -1,17 +1,17 @@
-import { useMemo, useState, type ReactNode } from 'react'
+import { useMemo, useRef, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
-  Bell, RefreshCw, ExternalLink, Trash2, AlertTriangle, Sparkles, ListChecks, Users, Wand2, Plus, Check, type LucideIcon,
+  Bell, RefreshCw, ExternalLink, Trash2, AlertTriangle, Sparkles, ListChecks, Users, Wand2, Tags, Check, type LucideIcon,
 } from 'lucide-react'
 import GithubLogo from '../../../../components/icons/GithubLogo'
 import {
-  issueRadarApi, DEFAULT_REPO_SETTINGS,
-  type RepoSettings, type LabelRecommendation, type RepoLabel, type Issue, type RepoMember,
+  issueRadarApi, DEFAULT_REPO_SETTINGS, SettingsConflictError,
+  type RepoSettings, type RepoLabel, type Issue, type RepoMember,
 } from '../../api'
 import { useIssueRadar } from '../../context'
 import ReadOnlyTag, { isReadOnly } from '../../components/ReadOnlyTag'
 import LabelPicker from '../../components/LabelPicker'
-import { readableText, relativeDate, asArray } from '../../lib/format'
+import { asArray } from '../../lib/format'
 
 // Heuristic name patterns used only to *suggest* likely labels (one-click add);
 // the user always confirms. Repos name these things a dozen different ways.
@@ -34,7 +34,7 @@ const ROLE_MUTED = new Set(['read'])
  * local disconnect. Nothing here is written back to GitHub. */
 export default function RepoSettings({ owner, repo }: { owner: string; repo: string }) {
   const qc = useQueryClient()
-  const { repos, openSettings } = useIssueRadar()
+  const { repos, active, openSettings, openDashboard, switchRepo } = useIssueRadar()
   const entry = repos.find((r) => r.owner === owner && r.repo === repo)
 
   const labelsQuery = useQuery({
@@ -78,12 +78,139 @@ export default function RepoSettings({ owner, repo }: { owner: string; repo: str
   const [draft, setDraft] = useState<RepoSettings | null>(null)
   const settings = draft ?? settingsQuery.data?.settings ?? DEFAULT_REPO_SETTINGS
 
+  /** Saves are SERIALIZED and the newest draft always wins.
+   *
+   * Every toggle autosaves, so two quick clicks used to send two writes built on
+   * the same revision: the first succeeded, the second 409'd, and clearing the
+   * draft threw away the newer edit — the user's last click silently undone.
+   *
+   * So: one save at a time through `saveChain`, each one sending the LATEST draft
+   * with the LATEST known revision at send time. A 409 can then only come from
+   * another tab, and it is recovered rather than discarded — the conflicting
+   * server document becomes the new base, this tab's edit is re-applied on top,
+   * and the write is retried once. */
+  const saveChain = useRef<Promise<unknown>>(Promise.resolve())
+  const latestDraft = useRef<RepoSettings | null>(null)
+  const knownRevision = useRef<number | null>(null)
+  /** The newest document the SERVER is known to hold. Every queued payload is
+   * built from this plus the dirty keys, never from the whole local draft: after a
+   * conflict rebase advanced the revision, sending the draft wholesale would
+   * submit this tab's stale copy of the OTHER tab's fields under an accepted
+   * revision, silently reverting them. */
+  const serverSettings = useRef<RepoSettings | null>(null)
+  /** Monotonic edit counter. A save carries the sequence it was queued at, so a
+   * response that lands while a NEWER edit is already waiting does not overwrite
+   * it — adopting unconditionally made edit A's success replace the pending draft
+   * B, so B then re-sent A and the user's latest change vanished. */
+  const editSeq = useRef(0)
+
+  const applySaved = ({ res, seq }: { res: { settings: RepoSettings }; seq: number }) => {
+    // The revision and the cache always advance: they describe the server, not
+    // the user's in-flight intent.
+    knownRevision.current = res.settings.revision
+    serverSettings.current = res.settings
+    qc.setQueryData(['issue-radar', 'settings', owner, repo], res)
+    // Retire each dirty key the server now AGREES with, rather than clearing the
+    // whole set on the last edit. Blanket-clearing was wrong in one direction and
+    // never clearing in the other: if save A landed while B was queued, B failed,
+    // another tab then changed A's field and C conflicted, A stayed dirty and the
+    // retry restored this tab's stale value over theirs.
+    const current = latestDraft.current ?? res.settings
+    for (const k of [...dirtyKeys.current]) {
+      if (JSON.stringify(current[k]) === JSON.stringify(res.settings[k])) {
+        dirtyKeys.current.delete(k)
+      }
+    }
+    // The local view only follows when this really was the last edit.
+    if (seq === editSeq.current) {
+      setDraft(res.settings)
+      latestDraft.current = res.settings
+    }
+  }
+
+  /** The keys this tab actually CHANGED, relative to the value it started from.
+   *
+   * Re-sending the whole draft on a conflict would overwrite the other tab's
+   * field with this tab's stale copy of it — trading one lost edit for another.
+   * Only the changed keys are re-applied, so both survive. */
+  const changedKeys = (base: RepoSettings, next: RepoSettings): (keyof RepoSettings)[] =>
+    (Object.keys(next) as (keyof RepoSettings)[]).filter(
+      (k) => k !== 'revision' && JSON.stringify(next[k]) !== JSON.stringify(base[k]),
+    )
+
+  /** Keys edited since the last SUCCESSFUL save.
+   *
+   * A single save's own diff is not enough: if save A fails and edit B then hits a
+   * conflict, rebasing only B's keys drops A entirely — from the draft and from
+   * what gets persisted. So dirty keys accumulate and are only cleared once a save
+   * lands. */
+  const dirtyKeys = useRef<Set<keyof RepoSettings>>(new Set())
+
   const saveMutation = useMutation({
-    mutationFn: (next: RepoSettings) => issueRadarApi.putSettings(owner, repo, next),
-    onSuccess: (res) => qc.setQueryData(['issue-radar', 'settings', owner, repo], res),
+    mutationFn: ({ next, base, seq }: { next: RepoSettings; base: RepoSettings; seq: number }) => {
+      latestDraft.current = next
+      for (const k of changedKeys(base, next)) dirtyKeys.current.add(k)
+      /** This tab's dirty keys applied on top of a given base. The base is always
+       * the newest document the server is known to hold, so fields this tab never
+       * touched are carried through exactly as they are rather than from a stale
+       * local copy. The cast is the narrow price of a keyed assignment across a
+       * union of value types; `dirtyKeys` only ever holds real keys. */
+      const payloadFrom = (base: RepoSettings): RepoSettings => {
+        const out: RepoSettings = { ...base }
+        const src = latestDraft.current ?? next
+        for (const k of dirtyKeys.current) {
+          (out as unknown as Record<string, unknown>)[k] =
+            (src as unknown as Record<string, unknown>)[k]
+        }
+        return out
+      }
+
+      const run = saveChain.current.then(async () => {
+        const base = serverSettings.current ?? next
+        const revision = knownRevision.current ?? base.revision
+        try {
+          return {
+            res: await issueRadarApi.putSettings(owner, repo, { ...payloadFrom(base), revision }),
+            seq,
+          }
+        } catch (e) {
+          if (!(e instanceof SettingsConflictError)) throw e
+          // Another tab moved these settings. Rebase onto theirs: their document
+          // becomes the base, and only this tab's dirty keys go back on top.
+          knownRevision.current = e.current.revision
+          serverSettings.current = e.current
+          return {
+            res: await issueRadarApi.putSettings(owner, repo, payloadFrom(e.current)),
+            seq,
+          }
+        }
+      })
+      // The chain must survive a rejection, or every later save is skipped.
+      saveChain.current = run.catch(() => undefined)
+      return run
+    },
+    onSuccess: applySaved,
   })
 
-  const commit = (next: RepoSettings) => { setDraft(next); saveMutation.mutate(next) }
+  // `base` is the value this edit started from, so a conflict can be rebased by
+  // re-applying only what changed.
+  /** True only once the repo's real settings are in hand.
+   *
+   * Until then `settings` is DEFAULT_REPO_SETTINGS, whose revision is 0 — and a
+   * pre-revision config on disk ALSO normalizes to 0, so a PUT built from the
+   * defaults would be accepted as current and overwrite the saved label roles
+   * with empty ones. Editing is therefore disabled rather than merely
+   * discouraged: there is no revision value that makes the write safe. */
+  const settingsReady = settingsQuery.isSuccess
+
+  const commit = (next: RepoSettings) => {
+    // Belt and braces: the controls are disabled, but a stray call must not write.
+    if (!settingsReady) return
+    const base = settings
+    const seq = ++editSeq.current
+    setDraft(next)
+    saveMutation.mutate({ next, base, seq })
+  }
   const update = (patch: Partial<RepoSettings>) => commit({ ...settings, ...patch })
   const toggleIn = (key: 'triage_labels' | 'good_first_issue_labels', name: string) => {
     const set = new Set(settings[key])
@@ -141,32 +268,10 @@ export default function RepoSettings({ owner, repo }: { owner: string; repo: str
     },
   })
 
-  // ── AI label recommendations (propose NEW labels for this repo) ──
-  const writable = !isReadOnly(entry?.permissions)
-  const recoQuery = useQuery({
-    queryKey: ['issue-radar', 'recommendations', owner, repo],
-    queryFn: () => issueRadarApi.getRecommendations(owner, repo),
-  })
-  const recommendations = recoQuery.data?.recommendations ?? null
-  const generateReco = useMutation({
-    mutationFn: () => issueRadarApi.generateRecommendations(owner, repo),
-    onSuccess: (res) => qc.setQueryData(['issue-radar', 'recommendations', owner, repo], res),
-  })
-  const [dismissedRecos, setDismissedRecos] = useState<Set<string>>(new Set())
-  const [createdLabels, setCreatedLabels] = useState<Set<string>>(new Set())
-  const createLabel = useMutation({
-    mutationFn: (rec: LabelRecommendation) =>
-      issueRadarApi.createLabel(owner, repo, { name: rec.name, color: rec.color, description: rec.description }),
-    onSuccess: (_res, rec) => {
-      setCreatedLabels((prev) => new Set(prev).add(rec.name))
-      // The new label now exists — refresh the pickers, and for triage/newcomer
-      // roles map it straight into the corresponding settings set.
-      qc.invalidateQueries({ queryKey: ['issue-radar', 'labels', owner, repo] })
-      if (rec.category === 'triage') addMany('triage_labels', [rec.name])
-      else if (rec.category === 'first-issue') addMany('good_first_issue_labels', [rec.name])
-    },
-  })
-  const visibleRecos = asArray<LabelRecommendation>(recommendations).filter((r) => !dismissedRecos.has(r.name))
+  // ── AI label recommendations moved to the Tagging dashboard ──
+  // The taxonomy proposals ("what labels is this repo missing?") now live next to
+  // the untagged issues they get applied to; this page keeps only the LOCAL
+  // definitions above. See views/tagging/LabelsPanel.tsx.
 
   return (
     <div className="w-full max-w-6xl px-8 py-8">
@@ -192,6 +297,9 @@ export default function RepoSettings({ owner, repo }: { owner: string; repo: str
           <RefreshCw size={13} className={refreshMutation.isPending ? 'animate-spin' : ''} /> Refresh
         </button>
       </div>
+      {!settingsReady && !settingsQuery.isError && (
+        <p className="text-[13px] text-muted mb-4">Loading this repo's saved settings…</p>
+      )}
       <p className="text-[13px] text-muted mb-4">
         Local triage settings for this repo — they teach Issue Radar how {repo} organises its issues and are never written back to GitHub.
         {saveMutation.isPending
@@ -218,6 +326,7 @@ export default function RepoSettings({ owner, repo }: { owner: string; repo: str
       >
         <SettingToggle
           on={settings.notify_on_new_issue}
+          disabled={!settingsReady}
           onClick={() => update({ notify_on_new_issue: !settings.notify_on_new_issue })}
         >
           Notify me when a <strong>new issue</strong> is opened in {owner}/{repo}
@@ -236,6 +345,7 @@ export default function RepoSettings({ owner, repo }: { owner: string; repo: str
       >
         <SettingToggle
           on={settings.unlabeled_is_untriaged}
+          disabled={!settingsReady}
           onClick={() => update({ unlabeled_is_untriaged: !settings.unlabeled_is_untriaged })}
         >
           Also treat issues with <strong>no labels</strong> as needing triage
@@ -282,118 +392,28 @@ export default function RepoSettings({ owner, repo }: { owner: string; repo: str
       <Card
         icon={Wand2}
         title="AI label recommendations"
-        desc="Analyze this repo + its open issues and propose NEW labels to add — priority / area / type / triage / newcomer. Suggestions only; you choose what to create on GitHub."
+        desc="Proposing NEW labels for this repo now lives on the Tagging dashboard, next to the untagged issues those labels get applied to."
       >
-        <div className="flex items-center gap-3 flex-wrap mb-4">
-          <button
-            onClick={() => generateReco.mutate()}
-            disabled={generateReco.isPending}
-            className="inline-flex items-center gap-1.5 text-[13px] px-3 py-1.5 rounded-md bg-accent text-white hover:opacity-90 disabled:opacity-50 cursor-pointer"
-          >
-            <Wand2 size={13} className={generateReco.isPending ? 'animate-pulse' : ''} />
-            {generateReco.isPending
-              ? 'Analyzing issues…'
-              : recommendations === null ? 'Recommend labels' : 'Regenerate'}
-          </button>
-          {recoQuery.data?.generated_at && !generateReco.isPending && (
-            <span className="text-[12px] text-muted">Generated {relativeDate(recoQuery.data.generated_at)}</span>
-          )}
-          {!writable && (
-            <span className="text-[12px] text-muted inline-flex items-center gap-1">
-              <ReadOnlyTag /> creating labels needs write access
-            </span>
-          )}
-        </div>
-
-        {(generateReco.isError || recoQuery.isError) && (
-          <div className="text-[12px] text-danger mb-3">
-            {((generateReco.error ?? recoQuery.error) as Error)?.message}
-          </div>
-        )}
-
-        {generateReco.isPending && (
-          <div className="text-[12px] text-muted">
-            Reading the repo's labels and a sample of open issues, then proposing a taxonomy — one model call, ~10–30s.
-          </div>
-        )}
-
-        {!generateReco.isPending && recommendations === null && !recoQuery.isLoading && (
-          <div className="text-[13px] text-muted">No recommendations yet — click “Recommend labels” to analyze this repo.</div>
-        )}
-
-        {!generateReco.isPending && recommendations !== null && visibleRecos.length === 0 && (
-          <div className="text-[13px] text-muted">
-            {asArray<LabelRecommendation>(recommendations).length === 0
-              ? 'No new labels suggested — the repo’s taxonomy already covers what its open issues need.'
-              : 'All suggestions dismissed.'}
-          </div>
-        )}
-
-        <div className="flex flex-col gap-3">
-          {visibleRecos.map((rec) => {
-            const isCreated = createdLabels.has(rec.name)
-            const isCreating = createLabel.isPending && createLabel.variables?.name === rec.name
-            const failed = createLabel.isError && createLabel.variables?.name === rec.name
-            const examples = asArray<number>(rec.examples)
-            return (
-              <div key={rec.name} className="rounded-lg border border-border p-3.5">
-                <div className="flex items-start gap-2 flex-wrap">
-                  <span
-                    className="inline-flex items-center rounded-full px-2.5 py-0.5 text-[12px] font-semibold"
-                    style={{ backgroundColor: `#${rec.color}`, color: readableText(rec.color) }}
-                  >
-                    {rec.name}
-                  </span>
-                  <span className="text-[10px] uppercase tracking-wide rounded px-1.5 py-0.5 bg-bg-hover text-muted self-center">
-                    {rec.category}
-                  </span>
-                  <div className="ml-auto flex items-center gap-2">
-                    {isCreated ? (
-                      <span className="inline-flex items-center gap-1 text-[12px] text-accent"><Check size={13} /> Created</span>
-                    ) : (
-                      <button
-                        onClick={() => createLabel.mutate(rec)}
-                        disabled={!writable || isCreating}
-                        title={writable ? 'Create this label on GitHub' : 'Read-only repo — needs triage/push access'}
-                        className="inline-flex items-center gap-1 text-[12px] px-2.5 py-1 rounded-md border border-border text-text hover:bg-bg-hover disabled:opacity-40 cursor-pointer bg-transparent"
-                      >
-                        <Plus size={12} /> {isCreating ? 'Creating…' : 'Create on GitHub'}
-                      </button>
-                    )}
-                    <button
-                      onClick={() => setDismissedRecos((prev) => new Set(prev).add(rec.name))}
-                      title="Dismiss this suggestion"
-                      className="text-[12px] text-muted hover:text-text cursor-pointer bg-transparent px-1"
-                    >
-                      Dismiss
-                    </button>
-                  </div>
-                </div>
-                {rec.description && <div className="text-[13px] text-text mt-2">{rec.description}</div>}
-                {rec.rationale && <div className="text-[12px] text-muted mt-1">{rec.rationale}</div>}
-                {examples.length > 0 && (
-                  <div className="flex items-center gap-1.5 mt-2 flex-wrap">
-                    <span className="text-[11px] text-muted">e.g.</span>
-                    {examples.map((n) => (
-                      <a
-                        key={n}
-                        href={`https://github.com/${owner}/${repo}/issues/${n}`}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="text-[11px] px-1.5 py-0.5 rounded-full border border-border text-muted hover:text-text hover:border-border-strong"
-                      >
-                        #{n}
-                      </a>
-                    ))}
-                  </div>
-                )}
-                {failed && (
-                  <div className="text-[11px] text-danger mt-2">{(createLabel.error as Error).message}</div>
-                )}
-              </div>
-            )
-          })}
-        </div>
+        <button
+          onClick={() => {
+            // Switch first: the settings page can be open for a repo that is NOT
+            // the active one, and navigating without this showed the Tagging
+            // dashboard for a different repository than the page you came from.
+            // Only when it actually differs, though — switchRepo resets the saved
+            // issue and PR filters, which would be a surprising side effect of
+            // navigating within the repo you are already on.
+            if (active.owner !== owner || active.repo !== repo) switchRepo({ owner, repo })
+            openDashboard('tagging')
+          }}
+          className="inline-flex items-center gap-1.5 text-[13px] px-3 py-1.5 rounded-md border border-border text-text hover:bg-bg-hover cursor-pointer bg-transparent"
+        >
+          <Tags size={13} /> Open Tagging
+        </button>
+        <StatLine>
+          Recommending a taxonomy and applying it to issues are two halves of one job, so they share a
+          page. This settings page keeps the local definitions above — which of {repo}'s labels mean
+          “needs triage” or “good first issue”.
+        </StatLine>
       </Card>
 
       <Card
@@ -518,14 +538,17 @@ function Card({ icon: Icon, title, desc, children }: {
   )
 }
 
-function SettingToggle({ on, onClick, children }: { on: boolean; onClick: () => void; children: ReactNode }) {
+function SettingToggle({ on, onClick, disabled, children }: {
+  on: boolean; onClick: () => void; disabled?: boolean; children: ReactNode
+}) {
   return (
     <button
       type="button"
       role="switch"
       aria-checked={on}
       onClick={onClick}
-      className="flex items-center gap-2.5 mb-4 cursor-pointer bg-transparent text-left"
+      disabled={disabled}
+      className="flex items-center gap-2.5 mb-4 cursor-pointer bg-transparent text-left disabled:opacity-50 disabled:cursor-default"
     >
       <span className={`relative w-9 h-5 rounded-full flex-shrink-0 transition-colors ${on ? 'bg-accent' : 'bg-bg-hover border border-border'}`}>
         <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-all ${on ? 'left-[18px]' : 'left-0.5'}`} />

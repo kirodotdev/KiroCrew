@@ -23,7 +23,7 @@ import shutil
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from kiro_crew import platform_compat
 from kiro_crew.apps.manager import app_data_dir
@@ -105,7 +105,55 @@ def issues_cache_path(owner: str, repo: str, root: Path | None = None, state: st
 ISSUES_CACHE_SCHEMA = 2
 
 
+@contextlib.contextmanager
+def issues_cache_lock(owner: str, repo: str, root: Path | None = None, state: str = "open"):
+    """Serialize writers of ONE issues list cache across threads AND processes.
+
+    Two different writers touch this file: a full refresh (``write_issues_cache``)
+    and the post-write patches that keep it coherent after a label or state change
+    (``apply_label_change_to_caches`` / ``apply_state_change_to_caches``, which
+    read-modify-write it). ``atomic_write`` prevents a torn file but not a lost
+    update, so a patch that read before a refresh wrote would replace the whole
+    refreshed document with its own stale copy — and with two dashboard tabs or a
+    second API client that is a routine interleaving, not a rare race. Same
+    discipline as :func:`_config_lock` and :func:`_pulls_cache_lock`.
+
+    Public because the routes layer holds it across a read-then-write pair.
+    """
+    path = issues_cache_path(owner, repo, root, state)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path.with_suffix(".json.lock"), "w") as fd:
+        with platform_compat.file_lock(fd.fileno(), exclusive=True):
+            yield
+
+
+@contextlib.contextmanager
+def issue_write_lock(owner: str, repo: str, number: int, root: Path | None = None):
+    """Serialize ONE issue's GitHub mutation together with its cache patch.
+
+    Two concurrent applies to the same issue each get an authoritative label set
+    back from GitHub, but nothing orders the two cache patches — so the SECOND
+    response can be written before the first, leaving the cache showing a label
+    set that is missing whatever the later mutation added. It self-heals on the
+    next refresh, which is exactly why it is easy to miss.
+
+    Per-issue, so applies to different issues still run concurrently. Held across
+    the network call, which is the point: ordering the writes is what matters."""
+    path = repo_data_dir(owner, repo, root) / f"issue-{int(number)}.write.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w") as fd:
+        with platform_compat.file_lock(fd.fileno(), exclusive=True):
+            yield
+
+
 def write_issues_cache(
+    owner: str, repo: str, issues: list[dict], *, root: Path | None = None, state: str = "open"
+) -> None:
+    with issues_cache_lock(owner, repo, root, state):
+        _write_issues_cache_unlocked(owner, repo, issues, root=root, state=state)
+
+
+def _write_issues_cache_unlocked(
     owner: str, repo: str, issues: list[dict], *, root: Path | None = None, state: str = "open"
 ) -> None:
     atomic_write(
@@ -115,6 +163,28 @@ def write_issues_cache(
             indent=2,
         ),
     )
+
+
+def refresh_issues_cache(
+    owner: str, repo: str, fetch: Callable[[], list[dict]], *,
+    root: Path | None = None, state: str = "open",
+) -> list[dict]:
+    """Fetch a fresh issue list and store it, holding the cache lock ACROSS BOTH.
+
+    Locking only the write leaves a window that loses data rather than merely
+    ordering it: fetch returns a list from before a label was applied, an apply
+    then patches the cache, and the refresh's write replaces that patch with the
+    pre-write snapshot — so a label the user just applied silently disappears from
+    the dashboard until the next refresh.
+
+    The cost is that a concurrent patch waits for the network call. That is the
+    right trade: a refresh is a deliberate user action on one repo, and the
+    alternative is losing writes. ``fetch`` is called at most once.
+    """
+    with issues_cache_lock(owner, repo, root, state):
+        issues = fetch()
+        _write_issues_cache_unlocked(owner, repo, issues, root=root, state=state)
+        return issues
 
 
 def read_issues_cache(
@@ -145,13 +215,51 @@ def labels_cache_path(owner: str, repo: str, root: Path | None = None) -> Path:
     return repo_data_dir(owner, repo, root) / "labels-cache.json"
 
 
+@contextlib.contextmanager
+def labels_cache_lock(owner: str, repo: str, root: Path | None = None):
+    """Serialize writers of ONE repo's label cache across threads and processes.
+
+    Two writers touch it: a full refresh, and ``add_label_to_cache``'s
+    read-modify-write after creating a label. Client-side serialization cannot
+    help here — separate tabs are separate processes — so a newly created label
+    could be dropped and stay invisible until a manual refresh."""
+    path = labels_cache_path(owner, repo, root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path.with_suffix(".json.lock"), "w") as fd:
+        with platform_compat.file_lock(fd.fileno(), exclusive=True):
+            yield
+
+
 def write_labels_cache(
+    owner: str, repo: str, labels: list[dict], *, root: Path | None = None
+) -> None:
+    with labels_cache_lock(owner, repo, root):
+        _write_labels_cache_unlocked(owner, repo, labels, root=root)
+
+
+def _write_labels_cache_unlocked(
     owner: str, repo: str, labels: list[dict], *, root: Path | None = None
 ) -> None:
     atomic_write(
         labels_cache_path(owner, repo, root),
         json.dumps({"owner": owner, "repo": repo, "labels": labels}, indent=2),
     )
+
+
+def refresh_labels_cache(
+    owner: str, repo: str, fetch: Callable[[], list[dict]], *, root: Path | None = None
+) -> list[dict]:
+    """Fetch the repo's labels and store them, holding the cache lock ACROSS BOTH.
+
+    Locking only the write leaves a window that loses data: the fetch returns a
+    list from before a label was created, ``add_label_to_cache`` appends it, and
+    this write replaces the cache with the pre-create snapshot — so a label that
+    exists on GitHub is invisible in every picker until the next refresh.
+    ``fetch`` is called at most once."""
+    with labels_cache_lock(owner, repo, root):
+        labels = fetch()
+        _write_labels_cache_unlocked(owner, repo, labels, root=root)
+        return labels
 
 
 def read_labels_cache(owner: str, repo: str, root: Path | None = None) -> list[dict] | None:
@@ -284,6 +392,9 @@ DEFAULT_REPO_SETTINGS: dict[str, Any] = {
     "unlabeled_is_untriaged": True,
     "good_first_issue_labels": [],
     "notify_on_new_issue": False,
+    # Bumped by every write; a full-document PUT must echo what it read so a
+    # stale snapshot cannot overwrite a newer change. See SettingsConflict.
+    "revision": 0,
 }
 
 
@@ -307,11 +418,20 @@ def _normalize_settings(raw: dict[str, Any] | None) -> dict[str, Any]:
                     out.append(name)
         return out
 
+    try:
+        revision = int(raw.get("revision", 0))
+    except (TypeError, ValueError):
+        revision = 0
     return {
         "triage_labels": _labels("triage_labels"),
         "unlabeled_is_untriaged": bool(raw.get("unlabeled_is_untriaged", True)),
         "good_first_issue_labels": _labels("good_first_issue_labels"),
         "notify_on_new_issue": bool(raw.get("notify_on_new_issue", False)),
+        # Monotonic per-repo counter, bumped by every write. A full-document PUT
+        # carries the revision it read, so a write built on a snapshot that has
+        # since moved is REFUSED instead of silently discarding the newer change
+        # (see SettingsConflict). Absent in pre-revision configs -> 0.
+        "revision": max(0, revision),
     }
 
 
@@ -323,24 +443,80 @@ def read_repo_settings(owner: str, repo: str, root: Path | None = None) -> dict[
     return dict(DEFAULT_REPO_SETTINGS)
 
 
+class SettingsConflict(Exception):
+    """A full-document settings write was built on a stale snapshot.
+
+    The PUT replaces every field, so a client that read revision N and writes
+    while the stored revision is N+1 would silently discard whatever produced
+    N+1 — typically a label appended by ``add_setting_label`` from another tab.
+    Carries the current settings so the caller can re-read and retry."""
+
+    def __init__(self, current: dict[str, Any]) -> None:
+        super().__init__("settings changed since they were read")
+        self.current = current
+
+
 def write_repo_settings(
-    owner: str, repo: str, settings: dict[str, Any], *, root: Path | None = None
+    owner: str, repo: str, settings: dict[str, Any], *,
+    expected_revision: int | None = None, root: Path | None = None,
 ) -> dict[str, Any]:
-    """Persist (after normalizing) a repo's triage settings into its config
-    entry. Raises ``KeyError`` if the repo is not connected. Returns the
-    normalized object that was stored."""
+    """Persist (after normalizing) a repo's triage settings into its config entry.
+
+    Raises ``KeyError`` if the repo is not connected. When ``expected_revision``
+    is given and does not match what is stored, raises :class:`SettingsConflict`
+    rather than overwriting — this is what stops a stale tab from erasing a label
+    appended meanwhile. Returns the normalized object that was stored, with its
+    revision bumped."""
     normalized = _normalize_settings(settings)
     with _config_lock(root):
         config = read_config(root)
-        found = False
         for r in config.get("repos", []):
             if r["owner"] == owner and r["repo"] == repo:
+                current = _normalize_settings(r.get("settings"))
+                if expected_revision is not None and expected_revision != current["revision"]:
+                    raise SettingsConflict(current)
+                normalized["revision"] = current["revision"] + 1
                 r["settings"] = normalized
-                found = True
-        if not found:
-            raise KeyError(f"{owner}/{repo} is not connected")
-        write_config(config, root)
-    return normalized
+                write_config(config, root)
+                return normalized
+        raise KeyError(f"{owner}/{repo} is not connected")
+
+
+_SETTINGS_LABEL_ROLES = ("triage_labels", "good_first_issue_labels")
+
+
+def add_setting_label(
+    owner: str, repo: str, role: str, label: str, *, root: Path | None = None
+) -> dict[str, Any]:
+    """Append ONE label to a repo's triage-label role, under the config lock.
+
+    This exists because the settings PUT replaces the whole document, so a client
+    doing read-modify-write can only serialize itself. Two dashboard tabs — or a
+    tab and an API client — each read the same settings and issue competing full
+    replacements, and the later write permanently drops the other's label. Doing
+    the append here makes the read and the write one critical section for every
+    caller, which no amount of client-side chaining can achieve.
+
+    Idempotent: appending a label the role already carries is a no-op. Raises
+    ``KeyError`` if the repo is not connected, ``ValueError`` on an unknown role.
+    Returns the repo's full normalized settings after the append.
+    """
+    if role not in _SETTINGS_LABEL_ROLES:
+        raise ValueError(f"unknown settings role: {role}")
+    with _config_lock(root):
+        config = read_config(root)
+        for r in config.get("repos", []):
+            if r["owner"] == owner and r["repo"] == repo:
+                current = _normalize_settings(r.get("settings"))
+                if label not in current[role]:
+                    current[role] = [*current[role], label]
+                    # Bump so a PUT built on the pre-append snapshot is refused
+                    # rather than silently dropping this label.
+                    current["revision"] = current["revision"] + 1
+                r["settings"] = current
+                write_config(config, root)
+                return current
+        raise KeyError(f"{owner}/{repo} is not connected")
 
 
 # ── new-issue watch state (background watcher high-water mark) ────────────────
@@ -618,21 +794,155 @@ def read_recommendations_cache(owner: str, repo: str, root: Path | None = None) 
     }
 
 
+# ── tagging suggestions (which EXISTING labels an untagged issue should get) ──
+#
+# One cache per repo, keyed by issue number. Distinct from the per-issue AI cache
+# (issue-ai-{n}.json), which holds a summary for ONE issue the user opened: this
+# is the Tagging dashboard's queue, produced by analysing many untagged issues in
+# a single batched model call.
+#
+# Written INCREMENTALLY. The dashboard analyses untagged issues in bounded
+# batches, so each generate merges its batch into whatever is already cached
+# rather than replacing the document, and applying a suggestion prunes just that
+# issue's entry. Both are read-modify-write over the whole file, hence the lock.
+
+TAGGING_CACHE_SCHEMA = 1
+
+
+def tagging_cache_path(owner: str, repo: str, root: Path | None = None) -> Path:
+    return repo_data_dir(owner, repo, root) / "tagging-cache.json"
+
+
+@contextlib.contextmanager
+def _tagging_cache_lock(owner: str, repo: str, root: Path | None = None):
+    """Serialize the tagging cache's read-modify-write across threads AND
+    processes. ``atomic_write`` prevents a torn file but not a lost update: a
+    merge (generate) overlapping a prune (apply) would replace the whole document
+    with its own stale copy. Same reasoning as :func:`_config_lock`."""
+    path = tagging_cache_path(owner, repo, root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path.with_suffix(".json.lock"), "w") as fd:
+        with platform_compat.file_lock(fd.fileno(), exclusive=True):
+            yield
+
+
+def _normalize_tagging(raw: Any) -> dict[str, list[dict]]:
+    """Coerce a suggestions map to ``{"<number>": [{name, reason}]}``.
+
+    Deliberately tolerant: a partially-written or hand-edited document should
+    degrade to "fewer suggestions", never break the dashboard. Keys are
+    normalized through ``int`` so ``"12"`` and ``12`` can't both be present."""
+    out: dict[str, list[dict]] = {}
+    if not isinstance(raw, dict):
+        return out
+    for key, items in raw.items():
+        try:
+            number = int(key)
+        except (TypeError, ValueError):
+            continue
+        if number <= 0 or not isinstance(items, list):
+            continue
+        rows: list[dict] = []
+        seen: set[str] = set()
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "").strip()
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            rows.append({"name": name, "reason": str(item.get("reason") or "").strip()})
+        out[str(number)] = rows
+    return out
+
+
+def read_tagging_cache(owner: str, repo: str, root: Path | None = None) -> dict | None:
+    """Return ``{"suggestions", "generated_at"}`` for a repo, or None when
+    nothing has been generated yet (an unreadable / stale-schema file is a miss,
+    same guard as the other caches)."""
+    path = tagging_cache_path(owner, repo, root)
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict) or data.get("schema") != TAGGING_CACHE_SCHEMA:
+        return None
+    return {
+        "suggestions": _normalize_tagging(data.get("suggestions")),
+        "generated_at": str(data.get("generated_at") or ""),
+    }
+
+
+def _write_tagging_cache_unlocked(
+    owner: str, repo: str, suggestions: dict[str, list[dict]], generated_at: str,
+    root: Path | None = None,
+) -> None:
+    atomic_write(
+        tagging_cache_path(owner, repo, root),
+        json.dumps(
+            {
+                "schema": TAGGING_CACHE_SCHEMA, "owner": owner, "repo": repo,
+                "suggestions": suggestions, "generated_at": generated_at,
+            },
+            indent=2,
+        ),
+    )
+
+
+def merge_tagging_suggestions(
+    owner: str, repo: str, batch: dict[str, list[dict]], *, root: Path | None = None
+) -> dict:
+    """Merge one generated batch into the repo's cached suggestions; return the
+    merged document.
+
+    The batch WINS for the issues it covers — a regenerate must replace a stale
+    proposal — while every issue outside the batch keeps its existing entry, so
+    analysing the queue in slices accumulates instead of overwriting."""
+    with _tagging_cache_lock(owner, repo, root):
+        current = read_tagging_cache(owner, repo, root)
+        merged = dict(current["suggestions"]) if current else {}
+        merged.update(_normalize_tagging(batch))
+        generated_at = _now_iso()
+        _write_tagging_cache_unlocked(owner, repo, merged, generated_at, root)
+    return {"suggestions": merged, "generated_at": generated_at}
+
+
+def drop_tagging_suggestions(
+    owner: str, repo: str, numbers: list[int], *, root: Path | None = None
+) -> dict:
+    """Forget the cached suggestions for ``numbers`` (applied or dismissed) and
+    return what remains. No-op when nothing is cached."""
+    with _tagging_cache_lock(owner, repo, root):
+        current = read_tagging_cache(owner, repo, root)
+        if current is None:
+            return {"suggestions": {}, "generated_at": ""}
+        drop = {int(n) for n in numbers}
+        remaining = {k: v for k, v in current["suggestions"].items() if int(k) not in drop}
+        _write_tagging_cache_unlocked(owner, repo, remaining, current["generated_at"], root)
+        return {"suggestions": remaining, "generated_at": current["generated_at"]}
+
+
 def add_label_to_cache(owner: str, repo: str, label: dict, *, root: Path | None = None) -> None:
     """Append a newly-created label to the labels cache so the pickers show it
     immediately. No-op when the cache doesn't exist yet (a later refresh fetches
     the full set) or the label is already present."""
-    labels = read_labels_cache(owner, repo, root)
-    if labels is None:
-        return
-    if any(isinstance(lab, dict) and lab.get("name") == label.get("name") for lab in labels):
-        return
-    labels.append({
-        "name": label.get("name"),
-        "color": label.get("color") or "888888",
-        "description": label.get("description") or "",
-    })
-    write_labels_cache(owner, repo, labels, root=root)
+    # Read and write under ONE lock: a concurrent refresh (or another tab's
+    # create) would otherwise land between them and drop this label, leaving it
+    # invisible until someone hits refresh.
+    with labels_cache_lock(owner, repo, root):
+        labels = read_labels_cache(owner, repo, root)
+        if labels is None:
+            return
+        if any(isinstance(lab, dict) and lab.get("name") == label.get("name") for lab in labels):
+            return
+        labels.append({
+            "name": label.get("name"),
+            "color": label.get("color") or "888888",
+            "description": label.get("description") or "",
+        })
+        _write_labels_cache_unlocked(owner, repo, labels, root=root)
 
 
 # ── post-write cache coherence ───────────────────────────────────────────────
@@ -675,16 +985,19 @@ def apply_label_change_to_caches(
             pass
 
     for st in ("open", "closed"):
-        data, path = _load_list_cache(owner, repo, root, st)
-        if not data:
-            continue
-        changed = False
-        for iss in data.get("issues", []):
-            if iss.get("number") == int(number):
-                iss["labels"] = names
-                changed = True
-        if changed:
-            atomic_write(path, json.dumps(data, indent=2))
+        # Hold the lock across read AND write: a concurrent full refresh would
+        # otherwise land between them and be clobbered by this stale copy.
+        with issues_cache_lock(owner, repo, root, st):
+            data, path = _load_list_cache(owner, repo, root, st)
+            if not data:
+                continue
+            changed = False
+            for iss in data.get("issues", []):
+                if iss.get("number") == int(number):
+                    iss["labels"] = names
+                    changed = True
+            if changed:
+                atomic_write(path, json.dumps(data, indent=2))
 
     delete_issue_ai_cache(owner, repo, number, root)
 
@@ -708,13 +1021,14 @@ def apply_state_change_to_caches(
             pass
 
     drop_from = "open" if state == "closed" else "closed"
-    data, path = _load_list_cache(owner, repo, root, drop_from)
-    if data:
-        issues = data.get("issues", [])
-        kept = [i for i in issues if i.get("number") != int(number)]
-        if len(kept) != len(issues):
-            data["issues"] = kept
-            atomic_write(path, json.dumps(data, indent=2))
+    with issues_cache_lock(owner, repo, root, drop_from):
+        data, path = _load_list_cache(owner, repo, root, drop_from)
+        if data:
+            issues = data.get("issues", [])
+            kept = [i for i in issues if i.get("number") != int(number)]
+            if len(kept) != len(issues):
+                data["issues"] = kept
+                atomic_write(path, json.dumps(data, indent=2))
 
 
 # ── investigation records (the "Investigate" button) ─────────────────────────

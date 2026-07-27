@@ -14,7 +14,7 @@ import RepoSwitcher from './RepoSwitcher'
  * very bottom. Clicking a section header navigates to that section's default
  * page (not just expand it), so you never stay on the previous view. */
 export default function LeftRail() {
-  const { expanded, openDashboard, openIssues, openPulls, openSettings } = useIssueRadar()
+  const { expanded, dashboardTab, openDashboard, openIssues, openPulls, openSettings } = useIssueRadar()
 
   return (
     <aside className="w-72 flex-shrink-0 flex flex-col min-h-0 py-2 gap-2">
@@ -27,7 +27,10 @@ export default function LeftRail() {
         title="Dashboards"
         icon={LayoutDashboard}
         expanded={expanded === 'dashboards'}
-        onToggle={() => openDashboard('overview')}
+        // Return to the dashboard you were last on, not Overview: `dashboardTab`
+        // is already persisted, so resetting it here threw away the one piece of
+        // state the section was meant to remember.
+        onToggle={() => openDashboard(dashboardTab)}
       >
         <DashboardsSection />
       </AccordionSection>
