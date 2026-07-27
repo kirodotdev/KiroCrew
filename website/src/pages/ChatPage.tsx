@@ -16,7 +16,7 @@ import {
   setSlotRunning, startLocalTurn, syncSlotRunningFromServer, setPendingInput, resolveByApprovalId, clearPendingPermissions, cancelQueuedMessage, editQueuedMessage,
   selectComposerBusy,
   setVoiceAudio,
-  toggleActivity, openActivityPanel,
+  toggleActivity, openActivityPanel, openActivityToTab,
   setActiveSlot, truncateAfterIndex, replaceMessages,
   requestStop, clearQuestionCard, clearFollowupCard, dismissFollowupItem,
 } from '../store/chatSlice'
@@ -2534,6 +2534,31 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
     })
   }, [])
 
+  // "Ask" (Select-to-Ask): open the isolated /side conversation seeded with the
+  // selection, WITHOUT touching the main chat context (unlike handleQuote, which
+  // injects into the main composer). Mirrors the /side slash command's
+  // openActivityToTab('side') bridge, then hands the selection to SideChat via a
+  // `side-seed` CustomEvent (same event-bridge pattern as openActivityToTab /
+  // reveal-slot — no new prop-drilling, no backend change). No transit
+  // animation: the popup routes the selection straight to the Side panel
+  // (matches Codex's "Ask in side chat" behavior).
+  const handleAsk = useCallback((text: string) => {
+    dispatch(openActivityToTab('side'))
+    // The Side panel (and its `side-seed` listener) mounts asynchronously once
+    // the panel opens. Poll a few frames for the Side input as a mount signal,
+    // then dispatch the seed. Fall back to dispatching after a cap so the
+    // feature still works even if the input never resolves.
+    const trySeed = (attempt = 0) => {
+      const mounted = document.querySelector('textarea[aria-label="Ask a side question"]')
+      if (mounted || attempt >= 20) {
+        window.dispatchEvent(new CustomEvent('side-seed', { detail: { text } }))
+      } else {
+        requestAnimationFrame(() => trySeed(attempt + 1))
+      }
+    }
+    requestAnimationFrame(() => trySeed())
+  }, [dispatch])
+
   const handleEditResend = useCallback((index: number, ts: string, newContent: string) => {
     if (!activeSlot || slotRunning) return
     const snapshot = [...messages]
@@ -3083,7 +3108,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
             })()
           ) : (
             <div className="flex flex-col gap-0">
-              <AssistantMessage content={m.content} isStreaming={isStreaming} isRegenerating={regenerating && i === lastTextIdx} onFileOpen={handleFileOpen} onQuote={handleQuote} slotRunning={slotRunning} planTaskId={planTaskId} timestamp={chatConfig.showTimestamps ? msgTime : undefined} messageTs={m.ts} slotKey={activeSlot || undefined} slotTitle={activeSlotTitle} mode={mode} fileChanges={(m.meta as Record<string, unknown> | undefined)?.file_changes as FileChangeEntry[] | undefined} turnStats={chatConfig.showTurnStats ? (m.meta as Record<string, unknown> | undefined)?.turn_stats as TurnStats | undefined : undefined} onOpenDiff={handleOpenDiff} fileChipStyle={chatConfig.fileChipStyle} artifactPaths={artifactPaths} showFooter={(() => {
+              <AssistantMessage content={m.content} isStreaming={isStreaming} isRegenerating={regenerating && i === lastTextIdx} onFileOpen={handleFileOpen} onQuote={handleQuote} onAsk={handleAsk} slotRunning={slotRunning} planTaskId={planTaskId} timestamp={chatConfig.showTimestamps ? msgTime : undefined} messageTs={m.ts} slotKey={activeSlot || undefined} slotTitle={activeSlotTitle} mode={mode} fileChanges={(m.meta as Record<string, unknown> | undefined)?.file_changes as FileChangeEntry[] | undefined} turnStats={chatConfig.showTurnStats ? (m.meta as Record<string, unknown> | undefined)?.turn_stats as TurnStats | undefined : undefined} onOpenDiff={handleOpenDiff} fileChipStyle={chatConfig.fileChipStyle} artifactPaths={artifactPaths} showFooter={(() => {
                 // Show footer on the last assistant message of each completed turn
                 if (isStreaming) return false
                 // Find next message after this one that's assistant, user, or streaming
@@ -3115,7 +3140,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
     // apply-plan handler, so it belongs here for correctness. approve/send/
     // dismissApproval are NOT referenced in this renderer (user/approval rows go
     // through renderUserContentCb), so they are omitted to keep it stable.
-  }, [messages, visibleIndexMap, slotRunning, slotState, lastTextIdx, handleFileOpen, handleFork, handleQuote, chatConfig, activeSlot, regenerating, handleRegenerate, handleEditResend, slotHasMore, renderUserContentCb, highlightTs, activeSlotTitle, mode, dispatch, handleOpenDiff, handlePlanFromHere, navigate, planTaskId, artifactPaths, autoNudgeLoop])
+  }, [messages, visibleIndexMap, slotRunning, slotState, lastTextIdx, handleFileOpen, handleFork, handleQuote, handleAsk, chatConfig, activeSlot, regenerating, handleRegenerate, handleEditResend, slotHasMore, renderUserContentCb, highlightTs, activeSlotTitle, mode, dispatch, handleOpenDiff, handlePlanFromHere, navigate, planTaskId, artifactPaths, autoNudgeLoop])
 
   const [mobileSessions, setMobileSessions] = useState(false)
   // Close mobile sessions panel when a session is selected
