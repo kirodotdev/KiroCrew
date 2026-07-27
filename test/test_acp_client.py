@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import signal
+import threading
 import time
 import types
 from collections import deque
@@ -218,9 +219,7 @@ class TestAcpClientToolHooks:
     @staticmethod
     def _call_ev(title="Reading /x/SKILL.md", tool_input=None, call_id="tc1"):
         # Stand-in for an EVENT_TOOL_CALL AcpEvent (reads .title/.tool_input).
-        return types.SimpleNamespace(
-            title=title, tool_input=tool_input, tool_call_id=call_id
-        )
+        return types.SimpleNamespace(title=title, tool_input=tool_input, tool_call_id=call_id)
 
     @staticmethod
     def _result_ev(output="---\nname: x\n---", call_id="tc1"):
@@ -242,8 +241,7 @@ class TestAcpClientToolHooks:
     async def test_pre_and_post_fire_when_audit_source_set(self, monkeypatch):
         store = self._Store()
         monkeypatch.setattr(acp_client, "get_global_hook_store", lambda: store)
-        client = AcpClient(session_key="sk", agent="code-review-sage",
-                           audit_source="subagent")
+        client = AcpClient(session_key="sk", agent="code-review-sage", audit_source="subagent")
         # Pre-side: fire_tool_hooks (Pre-only) for the tool_call.
         await client._maybe_fire_pre_tool_hooks(self._call_ev())
         # Post-side: the result event has no title, so the name is recovered
@@ -284,8 +282,7 @@ class TestAcpClientToolHooks:
         """
         store = self._Store()
         monkeypatch.setattr(acp_client, "get_global_hook_store", lambda: store)
-        client = AcpClient(session_key="sk", agent="code-review-sage",
-                           audit_source="subagent")
+        client = AcpClient(session_key="sk", agent="code-review-sage", audit_source="subagent")
         client._observed_tool_calls["tc1"] = ("Reading /x/SKILL.md", "read")
         # Credential near the front + padding to blow past the 2000-char bound.
         raw_output = "secret: AKIAIOSFODNN7EXAMPLE\n" + ("x" * 3000)
@@ -310,8 +307,7 @@ class TestAcpClientToolHooks:
         """
         store = self._Store()
         monkeypatch.setattr(acp_client, "get_global_hook_store", lambda: store)
-        client = AcpClient(session_key="sk", agent="code-review-sage",
-                           audit_source="subagent")
+        client = AcpClient(session_key="sk", agent="code-review-sage", audit_source="subagent")
         raw_input = '{"cmd": "aws configure set key AKIAIOSFODNN7EXAMPLE"}'
         await client._maybe_fire_pre_tool_hooks(self._call_ev(tool_input=raw_input))
 
@@ -334,8 +330,7 @@ class TestAcpClientToolHooks:
         """
         store = self._Store()
         monkeypatch.setattr(acp_client, "get_global_hook_store", lambda: store)
-        client = AcpClient(session_key="sk", agent="code-review-sage",
-                           audit_source="subagent")
+        client = AcpClient(session_key="sk", agent="code-review-sage", audit_source="subagent")
         raw_input = {"cmd": "aws configure set key AKIAIOSFODNN7EXAMPLE"}
         await client._maybe_fire_pre_tool_hooks(self._call_ev(tool_input=raw_input))
 
@@ -357,8 +352,7 @@ class TestAcpClientToolHooks:
         """
         store = self._Store()
         monkeypatch.setattr(acp_client, "get_global_hook_store", lambda: store)
-        client = AcpClient(session_key="sk", agent="code-review-sage",
-                           audit_source="subagent")
+        client = AcpClient(session_key="sk", agent="code-review-sage", audit_source="subagent")
         await client._maybe_fire_pre_tool_hooks(self._call_ev(title=None))
 
         pre = [c for c in store.calls if c["event"] == "PreToolUse"]
@@ -376,8 +370,7 @@ class TestAcpClientToolHooks:
         """
         store = self._Store()
         monkeypatch.setattr(acp_client, "get_global_hook_store", lambda: store)
-        client = AcpClient(session_key="sk", agent="code-review-sage",
-                           audit_source="subagent")
+        client = AcpClient(session_key="sk", agent="code-review-sage", audit_source="subagent")
         # Deliberately do NOT populate _observed_tool_calls for this call_id.
         await client._maybe_fire_post_tool_hooks(self._result_ev(call_id="missing"))
 
@@ -432,26 +425,33 @@ class TestAcpClientToolHooks:
         """
         store = self._Store()
         monkeypatch.setattr(acp_client, "get_global_hook_store", lambda: store)
-        client = AcpClient(session_key="sk", agent="knowledge-worker",
-                           audit_source="subagent")
+        client = AcpClient(session_key="sk", agent="knowledge-worker", audit_source="subagent")
         # Isolate hook behavior from the SEL audit sink (covered separately).
         client._maybe_audit_tool_call = AsyncMock()
 
         # Synthetic ACP session updates: a tool_call then its tool_call_update
         # result (only .params is read by the update branch; .result by complete).
-        call_msg = types.SimpleNamespace(params={"update": {
-            "sessionUpdate": "tool_call",
-            "toolCallId": "tc9",
-            "title": "@builder-mcp/ReadInternalWebsites",
-            "kind": "read",
-            "rawInput": {"inputs": ["https://w.amazon.com/x"]},
-        }})
-        result_msg = types.SimpleNamespace(params={"update": {
-            "sessionUpdate": "tool_call_update",
-            "toolCallId": "tc9",
-            "status": "completed",
-            "content": [{"content": {"type": "text", "text": "ok"}}],
-        }})
+        call_msg = types.SimpleNamespace(
+            params={
+                "update": {
+                    "sessionUpdate": "tool_call",
+                    "toolCallId": "tc9",
+                    "title": "@builder-mcp/ReadInternalWebsites",
+                    "kind": "read",
+                    "rawInput": {"inputs": ["https://w.amazon.com/x"]},
+                }
+            }
+        )
+        result_msg = types.SimpleNamespace(
+            params={
+                "update": {
+                    "sessionUpdate": "tool_call_update",
+                    "toolCallId": "tc9",
+                    "status": "completed",
+                    "content": [{"content": {"type": "text", "text": "ok"}}],
+                }
+            }
+        )
         complete_msg = types.SimpleNamespace(result={"stopReason": "end_turn"})
 
         async def _fake_loop(req_id, timeout):
@@ -483,18 +483,26 @@ class TestAcpClientToolHooks:
         monkeypatch.setattr(acp_client, "get_global_hook_store", lambda: store)
         client = AcpClient(session_key="sk")  # audit_source defaults to None
 
-        call_msg = types.SimpleNamespace(params={"update": {
-            "sessionUpdate": "tool_call",
-            "toolCallId": "tc9",
-            "title": "SomeTool",
-            "kind": "read",
-        }})
-        result_msg = types.SimpleNamespace(params={"update": {
-            "sessionUpdate": "tool_call_update",
-            "toolCallId": "tc9",
-            "status": "completed",
-            "content": [{"content": {"type": "text", "text": "ok"}}],
-        }})
+        call_msg = types.SimpleNamespace(
+            params={
+                "update": {
+                    "sessionUpdate": "tool_call",
+                    "toolCallId": "tc9",
+                    "title": "SomeTool",
+                    "kind": "read",
+                }
+            }
+        )
+        result_msg = types.SimpleNamespace(
+            params={
+                "update": {
+                    "sessionUpdate": "tool_call_update",
+                    "toolCallId": "tc9",
+                    "status": "completed",
+                    "content": [{"content": {"type": "text", "text": "ok"}}],
+                }
+            }
+        )
         complete_msg = types.SimpleNamespace(result={"stopReason": "end_turn"})
 
         async def _fake_loop(req_id, timeout):
@@ -515,16 +523,14 @@ class TestAcpClientSessionKey:
     @pytest.mark.asyncio
     async def test_spawn_sets_env_with_session_key(self, tmp_path):
         client = AcpClient(work_dir=tmp_path, session_key="test-key")
-        with patch(
-            "kiro_crew.acp.client._resolve_kiro_bin", return_value="/usr/bin/kiro-cli"
-        ), patch(
-            "kiro_crew.acp.client.wrap_argv", return_value=(["/usr/bin/kiro-cli", "acp"], None)
-        ), patch(
-            "asyncio.create_subprocess_exec", new_callable=AsyncMock
-        ) as mock_exec, patch(
-            "kiro_crew.session._track_pid"
-        ), patch(
-            "kiro_crew.session._track_session_pid"
+        with (
+            patch("kiro_crew.acp.client._resolve_kiro_bin", return_value="/usr/bin/kiro-cli"),
+            patch(
+                "kiro_crew.acp.client.wrap_argv", return_value=(["/usr/bin/kiro-cli", "acp"], None)
+            ),
+            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
+            patch("kiro_crew.session._track_pid"),
+            patch("kiro_crew.session._track_session_pid"),
         ):
             mock_proc = MagicMock()
             mock_proc.pid = 12345
@@ -541,16 +547,14 @@ class TestAcpClientSessionKey:
     @pytest.mark.asyncio
     async def test_spawn_sets_env_with_channel_id(self, tmp_path):
         client = AcpClient(work_dir=tmp_path, session_key="k", channel_id="C0ABC123")
-        with patch(
-            "kiro_crew.acp.client._resolve_kiro_bin", return_value="/usr/bin/kiro-cli"
-        ), patch(
-            "kiro_crew.acp.client.wrap_argv", return_value=(["/usr/bin/kiro-cli", "acp"], None)
-        ), patch(
-            "asyncio.create_subprocess_exec", new_callable=AsyncMock
-        ) as mock_exec, patch(
-            "kiro_crew.session._track_pid"
-        ), patch(
-            "kiro_crew.session._track_session_pid"
+        with (
+            patch("kiro_crew.acp.client._resolve_kiro_bin", return_value="/usr/bin/kiro-cli"),
+            patch(
+                "kiro_crew.acp.client.wrap_argv", return_value=(["/usr/bin/kiro-cli", "acp"], None)
+            ),
+            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
+            patch("kiro_crew.session._track_pid"),
+            patch("kiro_crew.session._track_session_pid"),
         ):
             mock_proc = MagicMock()
             mock_proc.pid = 12345
@@ -576,18 +580,18 @@ class TestAcpClientSessionKey:
             acp_backend=ACP_BACKEND_CLAUDE,
             extra_env={"CLAUDE_CONFIG_DIR": iso, "CLAUDE_CODE_USE_BEDROCK": "1"},
         )
-        with patch(
-            "kiro_crew.acp.client._resolve_claude_acp_bin",
-            return_value=["/usr/bin/node", "/x/acp.js"],
-        ), patch(
-            "kiro_crew.acp.client.wrap_argv",
-            return_value=(["/usr/bin/node", "/x/acp.js"], None),
-        ), patch(
-            "asyncio.create_subprocess_exec", new_callable=AsyncMock
-        ) as mock_exec, patch(
-            "kiro_crew.session._track_pid"
-        ), patch(
-            "kiro_crew.session._track_session_pid"
+        with (
+            patch(
+                "kiro_crew.acp.client._resolve_claude_acp_bin",
+                return_value=["/usr/bin/node", "/x/acp.js"],
+            ),
+            patch(
+                "kiro_crew.acp.client.wrap_argv",
+                return_value=(["/usr/bin/node", "/x/acp.js"], None),
+            ),
+            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
+            patch("kiro_crew.session._track_pid"),
+            patch("kiro_crew.session._track_session_pid"),
         ):
             mock_proc = MagicMock()
             mock_proc.pid = 12345
@@ -606,16 +610,14 @@ class TestAcpClientSessionKey:
     @pytest.mark.asyncio
     async def test_spawn_no_channel_id_env_absent(self, tmp_path):
         client = AcpClient(work_dir=tmp_path, session_key="k", channel_id=None)
-        with patch(
-            "kiro_crew.acp.client._resolve_kiro_bin", return_value="/usr/bin/kiro-cli"
-        ), patch(
-            "kiro_crew.acp.client.wrap_argv", return_value=(["/usr/bin/kiro-cli", "acp"], None)
-        ), patch(
-            "asyncio.create_subprocess_exec", new_callable=AsyncMock
-        ) as mock_exec, patch(
-            "kiro_crew.session._track_pid"
-        ), patch(
-            "kiro_crew.session._track_session_pid"
+        with (
+            patch("kiro_crew.acp.client._resolve_kiro_bin", return_value="/usr/bin/kiro-cli"),
+            patch(
+                "kiro_crew.acp.client.wrap_argv", return_value=(["/usr/bin/kiro-cli", "acp"], None)
+            ),
+            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
+            patch("kiro_crew.session._track_pid"),
+            patch("kiro_crew.session._track_session_pid"),
         ):
             mock_proc = MagicMock()
             mock_proc.pid = 12345
@@ -633,18 +635,15 @@ class TestAcpClientSessionKey:
     async def test_spawn_channel_id_only_no_session_key(self, tmp_path):
         clean_env = {k: v for k, v in os.environ.items() if k != "KIROCREW_SESSION_KEY"}
         client = AcpClient(work_dir=tmp_path, session_key=None, channel_id="C0ABC123")
-        with patch(
-            "kiro_crew.acp.client._resolve_kiro_bin", return_value="/usr/bin/kiro-cli"
-        ), patch(
-            "kiro_crew.acp.client.wrap_argv", return_value=(["/usr/bin/kiro-cli", "acp"], None)
-        ), patch(
-            "asyncio.create_subprocess_exec", new_callable=AsyncMock
-        ) as mock_exec, patch(
-            "kiro_crew.session._track_pid"
-        ), patch(
-            "kiro_crew.session._track_session_pid"
-        ), patch.dict(
-            os.environ, clean_env, clear=True
+        with (
+            patch("kiro_crew.acp.client._resolve_kiro_bin", return_value="/usr/bin/kiro-cli"),
+            patch(
+                "kiro_crew.acp.client.wrap_argv", return_value=(["/usr/bin/kiro-cli", "acp"], None)
+            ),
+            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
+            patch("kiro_crew.session._track_pid"),
+            patch("kiro_crew.session._track_session_pid"),
+            patch.dict(os.environ, clean_env, clear=True),
         ):
             mock_proc = MagicMock()
             mock_proc.pid = 12345
@@ -662,16 +661,14 @@ class TestAcpClientSessionKey:
     @pytest.mark.asyncio
     async def test_spawn_no_session_key_env_none(self, tmp_path):
         client = AcpClient(work_dir=tmp_path, session_key=None)
-        with patch(
-            "kiro_crew.acp.client._resolve_kiro_bin", return_value="/usr/bin/kiro-cli"
-        ), patch(
-            "kiro_crew.acp.client.wrap_argv", return_value=(["/usr/bin/kiro-cli", "acp"], None)
-        ), patch(
-            "asyncio.create_subprocess_exec", new_callable=AsyncMock
-        ) as mock_exec, patch(
-            "kiro_crew.session._track_pid"
-        ), patch(
-            "kiro_crew.session._track_session_pid"
+        with (
+            patch("kiro_crew.acp.client._resolve_kiro_bin", return_value="/usr/bin/kiro-cli"),
+            patch(
+                "kiro_crew.acp.client.wrap_argv", return_value=(["/usr/bin/kiro-cli", "acp"], None)
+            ),
+            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
+            patch("kiro_crew.session._track_pid"),
+            patch("kiro_crew.session._track_session_pid"),
         ):
             mock_proc = MagicMock()
             mock_proc.pid = 12345
@@ -716,18 +713,19 @@ class TestAcpClientBackendSelection:
     @pytest.mark.asyncio
     async def test_spawn_claude_backend_uses_claude_acp_bin(self, tmp_path):
         client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_CLAUDE)
-        with patch(
-            "kiro_crew.acp.client._resolve_claude_acp_bin",
-            return_value=["/usr/local/bin/node", "/usr/local/lib/claude-agent-acp/index.js"],
-        ), patch("kiro_crew.acp.client._resolve_kiro_bin", return_value="/usr/bin/kiro-cli"), patch(
-            "kiro_crew.acp.client.wrap_argv",
-            side_effect=lambda argv, mode, **kwargs: (argv, None),
-        ), patch(
-            "asyncio.create_subprocess_exec", new_callable=AsyncMock
-        ) as mock_exec, patch(
-            "kiro_crew.session._track_pid"
-        ), patch(
-            "kiro_crew.session._track_session_pid"
+        with (
+            patch(
+                "kiro_crew.acp.client._resolve_claude_acp_bin",
+                return_value=["/usr/local/bin/node", "/usr/local/lib/claude-agent-acp/index.js"],
+            ),
+            patch("kiro_crew.acp.client._resolve_kiro_bin", return_value="/usr/bin/kiro-cli"),
+            patch(
+                "kiro_crew.acp.client.wrap_argv",
+                side_effect=lambda argv, mode, **kwargs: (argv, None),
+            ),
+            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
+            patch("kiro_crew.session._track_pid"),
+            patch("kiro_crew.session._track_session_pid"),
         ):
             mock_proc = MagicMock()
             mock_proc.pid = 12345
@@ -745,8 +743,9 @@ class TestAcpClientBackendSelection:
     @pytest.mark.asyncio
     async def test_spawn_claude_backend_missing_bin_raises(self, tmp_path):
         client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_CLAUDE)
-        with patch("kiro_crew.acp.client._resolve_claude_acp_bin", return_value=None), patch(
-            "asyncio.create_subprocess_exec", new_callable=AsyncMock
+        with (
+            patch("kiro_crew.acp.client._resolve_claude_acp_bin", return_value=None),
+            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock),
         ):
             with pytest.raises(AcpError, match="claude-agent-acp not found"):
                 await client._spawn()
@@ -755,17 +754,15 @@ class TestAcpClientBackendSelection:
     async def test_spawn_kiro_backend_unchanged(self, tmp_path):
         """Default (non-claude) backend still spawns `kiro-cli acp --agent <name>`."""
         client = AcpClient(work_dir=tmp_path)
-        with patch(
-            "kiro_crew.acp.client._resolve_kiro_bin", return_value="/usr/bin/kiro-cli"
-        ), patch(
-            "kiro_crew.acp.client.wrap_argv",
-            side_effect=lambda argv, mode, **kwargs: (argv, None),
-        ), patch(
-            "asyncio.create_subprocess_exec", new_callable=AsyncMock
-        ) as mock_exec, patch(
-            "kiro_crew.session._track_pid"
-        ), patch(
-            "kiro_crew.session._track_session_pid"
+        with (
+            patch("kiro_crew.acp.client._resolve_kiro_bin", return_value="/usr/bin/kiro-cli"),
+            patch(
+                "kiro_crew.acp.client.wrap_argv",
+                side_effect=lambda argv, mode, **kwargs: (argv, None),
+            ),
+            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
+            patch("kiro_crew.session._track_pid"),
+            patch("kiro_crew.session._track_session_pid"),
         ):
             mock_proc = MagicMock()
             mock_proc.pid = 12345
@@ -1099,9 +1096,7 @@ class TestAcpClientStaleTurn:
         return client
 
     @pytest.mark.asyncio
-    async def test_recent_stderr_activity_prevents_stale_turn(
-        self, tmp_path, caplog
-    ):
+    async def test_recent_stderr_activity_prevents_stale_turn(self, tmp_path, caplog):
         """thinking_tokens on stderr (recent _last_activity) keeps the turn alive.
 
         With a tiny stale timeout, a turn whose stdout is silent but whose
@@ -1129,18 +1124,14 @@ class TestAcpClientStaleTurn:
         with patch("kiro_crew.acp.client._STALE_TURN_TIMEOUT", 0.2):
             with caplog.at_level("WARNING", logger="kiro_crew.acp.client"):
                 actions = []
-                async for action, _msg in client._prompt_loop(
-                    req_id=1, timeout=1.0
-                ):
+                async for action, _msg in client._prompt_loop(req_id=1, timeout=1.0):
                     actions.append(action)
 
         assert actions == []  # stdout silent → nothing yielded
         assert "Stale turn detected" not in caplog.text  # fix: not falsely stale
 
     @pytest.mark.asyncio
-    async def test_genuine_silence_still_triggers_stale_turn(
-        self, tmp_path, caplog
-    ):
+    async def test_genuine_silence_still_triggers_stale_turn(self, tmp_path, caplog):
         """Silence on BOTH stdout and stderr still trips the stale-turn guard."""
         client = self._client_with_silent_stdout(tmp_path)
         # _last_activity never refreshes → genuinely silent on both clocks.
@@ -1149,9 +1140,7 @@ class TestAcpClientStaleTurn:
         with patch("kiro_crew.acp.client._STALE_TURN_TIMEOUT", 0.05):
             with caplog.at_level("WARNING", logger="kiro_crew.acp.client"):
                 actions = []
-                async for action, _msg in client._prompt_loop(
-                    req_id=7, timeout=5.0
-                ):
+                async for action, _msg in client._prompt_loop(req_id=7, timeout=5.0):
                     actions.append(action)
 
         assert actions == []  # returned via stale-turn early return
@@ -1190,9 +1179,7 @@ class TestAcpClientStaleTurnOracleGate:
         with patch("kiro_crew.acp.client._STALE_TURN_TIMEOUT", 0.1):
             with caplog.at_level("WARNING", logger="kiro_crew.acp.client"):
                 actions = []
-                async for action, _msg in client._prompt_loop(
-                    req_id=11, timeout=0.6
-                ):
+                async for action, _msg in client._prompt_loop(req_id=11, timeout=0.6):
                     actions.append(action)
 
         assert actions == []
@@ -1224,9 +1211,7 @@ class TestAcpClientStaleTurnOracleGate:
         def _write_pid(pid: int, *, children: list[int], io_bytes: int) -> None:
             d = proc / str(pid)
             (d / "task" / str(pid)).mkdir(parents=True, exist_ok=True)
-            (d / "task" / str(pid) / "children").write_text(
-                " ".join(str(c) for c in children)
-            )
+            (d / "task" / str(pid) / "children").write_text(" ".join(str(c) for c in children))
             # stat: pid (comm) state ... starttime(field 22); huge starttime →
             # negative age so the oracle's start-time guard accepts the pid.
             fields = ["0"] * 50
@@ -1265,9 +1250,7 @@ class TestAcpClientStaleTurnOracleGate:
             with patch("kiro_crew.acp.client._READ_TIMEOUT", 0.02):
                 with caplog.at_level("WARNING", logger="kiro_crew.acp.client"):
                     actions = []
-                    async for action, _msg in client._prompt_loop(
-                        req_id=42, timeout=0.5
-                    ):
+                    async for action, _msg in client._prompt_loop(req_id=42, timeout=0.5):
                         actions.append(action)
 
         assert actions == []
@@ -1284,9 +1267,7 @@ class TestAcpClientStaleTurnOracleGate:
         with patch("kiro_crew.acp.client._STALE_TURN_TIMEOUT", 0.05):
             with caplog.at_level("WARNING", logger="kiro_crew.acp.client"):
                 actions = []
-                async for action, _msg in client._prompt_loop(
-                    req_id=12, timeout=5.0
-                ):
+                async for action, _msg in client._prompt_loop(req_id=12, timeout=5.0):
                     actions.append(action)
 
         assert actions == []
@@ -1304,9 +1285,7 @@ class TestAcpClientStaleTurnOracleGate:
         with patch("kiro_crew.acp.client._STALE_TURN_TIMEOUT", 0.05):
             with caplog.at_level("WARNING", logger="kiro_crew.acp.client"):
                 actions = []
-                async for action, _msg in client._prompt_loop(
-                    req_id=13, timeout=5.0
-                ):
+                async for action, _msg in client._prompt_loop(req_id=13, timeout=5.0):
                     actions.append(action)
 
         assert actions == []
@@ -1715,7 +1694,10 @@ class TestIsOurChild:
             lambda cmd, **kw: b"some-future-mcp-server",
         )
         # Novel binary name that would have failed the old allowlist
-        assert _is_our_child(999, expected_start=42, expected_basename=b"some-future-mcp-server") is True
+        assert (
+            _is_our_child(999, expected_start=42, expected_basename=b"some-future-mcp-server")
+            is True
+        )
 
     def test_none_basename_denied_fail_closed(self, monkeypatch):
         """When no basename was recorded, deny (fail-closed)."""
@@ -2458,9 +2440,7 @@ class TestDrainStderrSuppression:
     def _reader(self, lines):
         """A mock StreamReader that yields *lines* (str) then EOF."""
         reader = AsyncMock(spec=["readline"])
-        reader.readline = AsyncMock(
-            side_effect=[line.encode() + b"\n" for line in lines] + [b""]
-        )
+        reader.readline = AsyncMock(side_effect=[line.encode() + b"\n" for line in lines] + [b""])
         return reader
 
     @pytest.mark.asyncio
@@ -3189,9 +3169,12 @@ class TestKillProcess:
         client._pid = 12345
         client._child_pids = {}
 
-        with patch("os.killpg") as mock_killpg, patch("os.getpgid", return_value=12345), patch(
-            "kiro_crew.acp.client._get_child_pids", return_value=[]
-        ), patch("kiro_crew.acp.client._kill_escaped_children") as mock_esc:
+        with (
+            patch("os.killpg") as mock_killpg,
+            patch("os.getpgid", return_value=12345),
+            patch("kiro_crew.acp.client._get_child_pids", return_value=[]),
+            patch("kiro_crew.acp.client._kill_escaped_children") as mock_esc,
+        ):
             await client._kill_process()
             mock_killpg.assert_called_once_with(12345, signal.SIGTERM)
             mock_esc.assert_called_once()
@@ -3216,10 +3199,11 @@ class TestKillProcess:
         def fake_killpg(pgid, sig):
             killpg_calls.append(sig)
 
-        with patch("os.killpg", side_effect=fake_killpg), patch(
-            "os.getpgid", return_value=99
-        ), patch("kiro_crew.acp.client._get_child_pids", return_value=[]), patch(
-            "kiro_crew.acp.client._kill_escaped_children"
+        with (
+            patch("os.killpg", side_effect=fake_killpg),
+            patch("os.getpgid", return_value=99),
+            patch("kiro_crew.acp.client._get_child_pids", return_value=[]),
+            patch("kiro_crew.acp.client._kill_escaped_children"),
         ):
             await client._kill_process()
 
@@ -3246,10 +3230,11 @@ class TestKillProcess:
         def fake_killpg(pgid, sig):
             killpg_sigs.append(sig)
 
-        with patch("os.killpg", side_effect=fake_killpg), patch(
-            "os.getpgid", return_value=55
-        ), patch("kiro_crew.acp.client._get_child_pids", return_value=[]), patch(
-            "kiro_crew.acp.client._kill_escaped_children"
+        with (
+            patch("os.killpg", side_effect=fake_killpg),
+            patch("os.getpgid", return_value=55),
+            patch("kiro_crew.acp.client._get_child_pids", return_value=[]),
+            patch("kiro_crew.acp.client._kill_escaped_children"),
         ):
             await client._kill_process(force=True)
 
@@ -3271,10 +3256,11 @@ class TestKillProcess:
         client._pid = 77
         client._child_pids = {}
 
-        with patch("os.killpg", side_effect=ProcessLookupError()), patch(
-            "os.getpgid", return_value=77
-        ), patch("kiro_crew.acp.client._get_child_pids", return_value=[]), patch(
-            "kiro_crew.acp.client._kill_escaped_children"
+        with (
+            patch("os.killpg", side_effect=ProcessLookupError()),
+            patch("os.getpgid", return_value=77),
+            patch("kiro_crew.acp.client._get_child_pids", return_value=[]),
+            patch("kiro_crew.acp.client._kill_escaped_children"),
         ):
             await client._kill_process(force=True)
 
@@ -3379,11 +3365,12 @@ class TestResetStateExtended:
         client._pid = 1234
         client._child_pids = {5678: None, 9012: None}
 
-        with patch(
-            "kiro_crew.session_pid._pid_gone_or_unmanaged", return_value=True
-        ), patch("kiro_crew.session._untrack_child_pids") as mock_uc, patch(
-            "kiro_crew.session._untrack_pid"
-        ) as mock_up, patch("kiro_crew.session._untrack_session_pid") as mock_usp:
+        with (
+            patch("kiro_crew.session_pid._pid_gone_or_unmanaged", return_value=True),
+            patch("kiro_crew.session._untrack_child_pids") as mock_uc,
+            patch("kiro_crew.session._untrack_pid") as mock_up,
+            patch("kiro_crew.session._untrack_session_pid") as mock_usp,
+        ):
             client._reset_state()
 
         mock_uc.assert_called_once_with({5678: None, 9012: None})
@@ -3402,11 +3389,11 @@ class TestResetStateExtended:
         client._pid = 4242
         client._child_pids = {}
 
-        with patch(
-            "kiro_crew.session_pid._pid_gone_or_unmanaged", return_value=False
-        ), patch("kiro_crew.session._untrack_pid") as mock_up, patch(
-            "kiro_crew.session._untrack_session_pid"
-        ) as mock_usp:
+        with (
+            patch("kiro_crew.session_pid._pid_gone_or_unmanaged", return_value=False),
+            patch("kiro_crew.session._untrack_pid") as mock_up,
+            patch("kiro_crew.session._untrack_session_pid") as mock_usp,
+        ):
             client._reset_state()
 
         mock_up.assert_not_called()
@@ -3424,9 +3411,10 @@ class TestResetStateExtended:
         def _gone(pid):
             return pid == 5678  # 5678 dead -> untrack; 9012 alive -> retain
 
-        with patch(
-            "kiro_crew.session_pid._pid_gone_or_unmanaged", side_effect=_gone
-        ), patch("kiro_crew.session._untrack_child_pids") as mock_uc:
+        with (
+            patch("kiro_crew.session_pid._pid_gone_or_unmanaged", side_effect=_gone),
+            patch("kiro_crew.session._untrack_child_pids") as mock_uc,
+        ):
             client._reset_state()
 
         mock_uc.assert_called_once_with({5678: None})
@@ -4554,8 +4542,8 @@ class TestBuildPermissionEvent:
             params={
                 "toolCall": {"title": "shell"},
                 "options": [
-                    "allow",                        # non-dict
-                    None,                           # non-dict
+                    "allow",  # non-dict
+                    None,  # non-dict
                     {"id": 42, "label": "int id"},  # non-string id
                     {"id": "allow_once", "label": "Allow once"},
                 ],
@@ -5286,7 +5274,9 @@ class TestToolStallWatchdog:
         # watchdog (0.2s stall window) must NOT fire — the loop runs to its own
         # 0.5s deadline. If the `self._tool_dispatched and ...` guard were
         # removed, the loop would exit ~0.2s early and this assertion would fail.
-        assert elapsed >= 0.4, f"loop exited too early ({elapsed:.2f}s) — watchdog gate may be broken"
+        assert (
+            elapsed >= 0.4
+        ), f"loop exited too early ({elapsed:.2f}s) — watchdog gate may be broken"
 
     @pytest.mark.asyncio
     async def test_progress_frame_then_stall_still_trips(self, tmp_path, monkeypatch):
@@ -5372,7 +5362,8 @@ class TestToolStallWatchdog:
         monkeypatch.setattr(client, "_extract_text_chunk", lambda msg: ("", False))
         monkeypatch.setattr(client, "_extract_tool_event", lambda msg: None)
         monkeypatch.setattr(
-            client, "_extract_tool_call_update",
+            client,
+            "_extract_tool_call_update",
             lambda msg: AcpEvent(kind=EVENT_TOOL_CALL_UPDATE, tool_call_id="t1"),
         )
         monkeypatch.setattr(client, "_extract_tool_call_refinement", lambda msg: None)
@@ -5448,9 +5439,7 @@ class TestToolStallKeepalive:
         await pinger
 
         # Loop ran to outer timeout (1.2s), NOT cut short by stall watchdog (0.5s).
-        assert elapsed >= 1.0, (
-            f"loop exited at {elapsed:.2f}s — watchdog fired despite keepalive"
-        )
+        assert elapsed >= 1.0, f"loop exited at {elapsed:.2f}s — watchdog fired despite keepalive"
         assert actions == []
 
     @pytest.mark.asyncio
@@ -5578,9 +5567,12 @@ class TestKillProcessPipeClose:
         client._pid = 100
         client._child_pids = {}
 
-        with patch("os.killpg"), patch("os.getpgid", return_value=100), patch(
-            "kiro_crew.acp.client._get_child_pids", return_value=[]
-        ), patch("kiro_crew.acp.client._kill_escaped_children"):
+        with (
+            patch("os.killpg"),
+            patch("os.getpgid", return_value=100),
+            patch("kiro_crew.acp.client._get_child_pids", return_value=[]),
+            patch("kiro_crew.acp.client._kill_escaped_children"),
+        ):
             await client._kill_process()
 
         stdin_mock.close.assert_called_once()
@@ -5601,9 +5593,12 @@ class TestKillProcessPipeClose:
         client._pid = 101
         client._child_pids = {}
 
-        with patch("os.killpg"), patch("os.getpgid", return_value=101), patch(
-            "kiro_crew.acp.client._get_child_pids", return_value=[]
-        ), patch("kiro_crew.acp.client._kill_escaped_children"):
+        with (
+            patch("os.killpg"),
+            patch("os.getpgid", return_value=101),
+            patch("kiro_crew.acp.client._get_child_pids", return_value=[]),
+            patch("kiro_crew.acp.client._kill_escaped_children"),
+        ):
             await client._kill_process()  # should not raise
 
 
@@ -5684,14 +5679,16 @@ class TestExtractToolCallUpdate:
         # fs_read / shell-style tools land their output in items[].Text —
         # this is the common case for native sub-agent read/summary tools.
         client = self._client()
-        msg = self._make_msg({
-            "sessionUpdate": "tool_call_update",
-            "toolCallId": "tc-text",
-            "status": "completed",
-            "rawOutput": {
-                "items": [{"Text": "file contents line 1\nline 2"}],
-            },
-        })
+        msg = self._make_msg(
+            {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "tc-text",
+                "status": "completed",
+                "rawOutput": {
+                    "items": [{"Text": "file contents line 1\nline 2"}],
+                },
+            }
+        )
         event = client._extract_tool_call_update(msg)
         assert event is not None
         assert event.tool_call_id == "tc-text"
@@ -5702,13 +5699,15 @@ class TestExtractToolCallUpdate:
         # When an item carries both Text and Json, Text wins (it's the
         # human-readable rendering kiro-cli already produced).
         client = self._client()
-        msg = self._make_msg({
-            "sessionUpdate": "tool_call_update",
-            "toolCallId": "tc-both",
-            "rawOutput": {
-                "items": [{"Text": "rendered text", "Json": {"stdout": "raw json"}}],
-            },
-        })
+        msg = self._make_msg(
+            {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "tc-both",
+                "rawOutput": {
+                    "items": [{"Text": "rendered text", "Json": {"stdout": "raw json"}}],
+                },
+            }
+        )
         event = client._extract_tool_call_update(msg)
         assert event is not None
         assert "rendered text" in event.tool_output
@@ -5718,11 +5717,13 @@ class TestExtractToolCallUpdate:
         # Empty Text must not short-circuit to a useless empty result; an
         # item with empty Text and no Json yields no output.
         client = self._client()
-        msg = self._make_msg({
-            "sessionUpdate": "tool_call_update",
-            "toolCallId": "tc-empty",
-            "rawOutput": {"items": [{"Text": ""}]},
-        })
+        msg = self._make_msg(
+            {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "tc-empty",
+                "rawOutput": {"items": [{"Text": ""}]},
+            }
+        )
         assert client._extract_tool_call_update(msg) is None
 
     def test_content_takes_priority_over_raw(self):
@@ -6035,9 +6036,9 @@ class TestCaptureAvailableModels:
         a minimal/degenerate response) must not clobber a previously-resolved
         model id — _track_metadata's window resolution should keep working."""
         c = self._client()
-        c._capture_available_models({
-            "models": {"currentModelId": "claude-opus-4.6", "availableModels": []}
-        })
+        c._capture_available_models(
+            {"models": {"currentModelId": "claude-opus-4.6", "availableModels": []}}
+        )
         assert c._resolved_model_id == "claude-opus-4.6"
         c._capture_available_models({"models": {"availableModels": []}})
         assert c._resolved_model_id == "claude-opus-4.6"
@@ -6478,7 +6479,7 @@ class TestFormatAcpError:
             "data": (
                 "Encountered an error in the response stream: "
                 "CodewhispererChatResponseStream(ServiceError(ServiceError "
-                "{ name: \"InternalServerError\", ... please try again ... })) "
+                '{ name: "InternalServerError", ... please try again ... })) '
                 "(request_id: 91c99864-7d2e-4f0a-9b1c-2a3b4c5d6e7f)"
             ),
         }
@@ -6686,7 +6687,10 @@ class TestIsTransientRawError:
         assert _is_transient_raw_error({"data": "max_tokens 500 exceeded"}) is False
         # 501 Not Implemented is terminal — only 500/502/503/504 + 529 retry.
         assert _is_transient_raw_error({"data": "HTTP 501 Not Implemented"}) is False
-        assert _is_transient_raw_error({"code": -32603, "message": "Internal error", "data": ""}) is False
+        assert (
+            _is_transient_raw_error({"code": -32603, "message": "Internal error", "data": ""})
+            is False
+        )
         assert _is_transient_raw_error(None) is False
         assert _is_transient_raw_error("boom") is False
 
@@ -6853,14 +6857,257 @@ class TestResolveKiroBinEnvOverride:
     """_resolve_kiro_bin honors the KIROCREW_KIRO_BIN override for environments
     (e.g. AgentSpaces/DevSpaces) where the toolbox shim is broken."""
 
+    @pytest.mark.asyncio
+    async def test_cancelled_resolve_reclaims_late_snapshot(self, tmp_path):
+        from kiro_crew.acp import client as client_module
+
+        backing = tmp_path / "sealed-kiro-cli"
+        backing.write_bytes(b"sealed")
+        snapshot_fd = os.open(backing, os.O_RDONLY)
+        launch_path = f"/proc/self/fd/{snapshot_fd}"
+        started = asyncio.Event()
+        release = asyncio.Event()
+        event_loop_thread = threading.get_ident()
+        close_threads: list[int] = []
+        real_close = os.close
+
+        async def delayed_to_thread(_function):
+            started.set()
+            await release.wait()
+            client_module._KIRO_EXECUTABLE_SNAPSHOTS[launch_path] = snapshot_fd
+            return launch_path
+
+        def tracked_close(fd: int) -> None:
+            close_threads.append(threading.get_ident())
+            real_close(fd)
+
+        with (
+            patch.object(asyncio, "to_thread", side_effect=delayed_to_thread),
+            patch.object(client_module.os, "close", side_effect=tracked_close),
+        ):
+            resolve_task = asyncio.create_task(client_module._resolve_kiro_bin_for_spawn())
+            await started.wait()
+            resolve_task.cancel()
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await resolve_task
+
+        assert launch_path not in client_module._KIRO_EXECUTABLE_SNAPSHOTS
+        assert close_threads
+        assert all(thread_id != event_loop_thread for thread_id in close_threads)
+        with pytest.raises(OSError):
+            os.fstat(snapshot_fd)
+
     def test_env_override_used_when_valid(self, tmp_path):
         from kiro_crew.acp.client import _resolve_kiro_bin
+        from kiro_crew.kiro_prerequisite import TrustedAcpExecutableSnapshot
 
         fake = tmp_path / "kiro-cli"
         fake.write_text("#!/bin/sh\n")
         fake.chmod(0o755)
-        with patch.dict("os.environ", {"KIROCREW_KIRO_BIN": str(fake)}):
-            assert _resolve_kiro_bin() == str(fake)
+        with (
+            patch(
+                "kiro_crew.acp.client.resolve_kiro_cli",
+                return_value=str(fake),
+            ),
+            patch(
+                "kiro_crew.kiro_prerequisite.snapshot_trusted_acp_executable",
+                return_value=TrustedAcpExecutableSnapshot("/immutable/kiro-cli"),
+            ),
+        ):
+            assert _resolve_kiro_bin() == "/immutable/kiro-cli"
+
+    @pytest.mark.asyncio
+    async def test_cleanup_unlinks_private_macos_snapshot(self, tmp_path):
+        from kiro_crew.acp import client as client_module
+        from kiro_crew.kiro_prerequisite import TrustedAcpExecutableSnapshot
+
+        source = tmp_path / "kiro-cli"
+        source.write_bytes(b"source")
+        source.chmod(0o700)
+        snapshot = tmp_path / "protected" / "kiro-cli-acp"
+        snapshot.parent.mkdir()
+        snapshot.write_bytes(b"trusted snapshot")
+        with (
+            patch.object(client_module, "resolve_kiro_cli", return_value=str(source)),
+            patch(
+                "kiro_crew.kiro_prerequisite.snapshot_trusted_acp_executable",
+                return_value=TrustedAcpExecutableSnapshot(
+                    str(snapshot),
+                    cleanup_path=str(snapshot),
+                ),
+            ),
+        ):
+            launch_path = client_module._resolve_kiro_bin()
+
+        assert launch_path == str(snapshot)
+        assert str(snapshot) in client_module._KIRO_EXECUTABLE_SNAPSHOT_PATHS
+
+        client_module._schedule_kiro_executable_descriptor_cleanup(launch_path)
+
+        assert snapshot.exists()
+        assert str(snapshot) in client_module._KIRO_EXECUTABLE_SNAPSHOT_PATHS
+
+        await client_module._cleanup_kiro_executable_snapshot(launch_path)
+
+        assert not snapshot.exists()
+        assert str(snapshot) not in client_module._KIRO_EXECUTABLE_SNAPSHOT_PATHS
+
+    def test_windows_resolver_rejects_candidate_outside_program_files(self, tmp_path):
+        from kiro_crew.acp import client as client_module
+
+        untrusted = tmp_path / "venv" / "Scripts" / "kiro-cli.exe"
+        untrusted.parent.mkdir(parents=True)
+        untrusted.write_bytes(b"untrusted")
+        program_files = tmp_path / "Program Files"
+
+        with (
+            patch.object(client_module.platform_compat, "IS_WINDOWS", True),
+            patch.object(
+                client_module,
+                "resolve_kiro_cli",
+                return_value=str(untrusted),
+            ),
+            patch.dict(
+                "os.environ",
+                {"ProgramFiles": str(program_files)},
+                clear=True,
+            ),
+            pytest.raises(
+                client_module._KiroExecutableTrustError,
+                match="trusted Program Files",
+            ),
+        ):
+            client_module._resolve_kiro_bin()
+
+    @pytest.mark.asyncio
+    async def test_spawn_rejects_override_replaced_after_readiness(self, tmp_path):
+        from kiro_crew.acp import client as client_module
+        from kiro_crew.kiro_prerequisite import KiroPrerequisiteService
+
+        fake = tmp_path / "kiro-cli"
+        fake.write_bytes(b"#!/bin/sh\n# trusted\n")
+        fake.chmod(0o755)
+        mock_exec = AsyncMock()
+        with (
+            patch.dict("os.environ", {"KIROCREW_KIRO_BIN": str(fake)}),
+            patch.object(
+                client_module,
+                "resolve_kiro_cli",
+                return_value=str(fake),
+            ),
+            patch(
+                "asyncio.create_subprocess_exec",
+                mock_exec,
+            ),
+        ):
+            # Service construction is the gateway-start trust boundary. A
+            # replacement after that readiness pin must never reach ACP spawn.
+            KiroPrerequisiteService(home=tmp_path, data_home=tmp_path / "data")
+            fake.write_bytes(b"#!/bin/sh\n# replacement\n")
+            fake.chmod(0o755)
+
+            client = AcpClient(work_dir=tmp_path / "workspace")
+            with pytest.raises(AcpError, match="provenance is not trusted"):
+                await client._spawn()
+            mock_exec.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_spawn_passes_fd_snapshot_through_exact_wrappers(self, tmp_path):
+        from kiro_crew.acp import client as client_module
+
+        fake = tmp_path / "sealed-kiro-cli"
+        fake.write_bytes(b"#!/bin/sh\n# sealed\n")
+        snapshot_fd = os.open(fake, os.O_RDONLY)
+        launch_path = f"/proc/self/fd/{snapshot_fd}"
+        client_module._KIRO_EXECUTABLE_SNAPSHOTS[launch_path] = snapshot_fd
+        mock_exec = AsyncMock(side_effect=RuntimeError("spawn failed"))
+        wrapped: dict[str, object] = {}
+
+        def capture_wrap(argv, mode, **kwargs):
+            wrapped.update(argv=list(argv), mode=mode, kwargs=kwargs)
+            return ["sandbox-wrapper", *argv], None
+
+        with (
+            patch.object(
+                client_module,
+                "_resolve_kiro_bin",
+                return_value=launch_path,
+            ),
+            patch.object(client_module, "wrap_argv", side_effect=capture_wrap),
+            patch.object(
+                client_module,
+                "cgroup_scope_argv",
+                side_effect=lambda argv: ["cgroup-wrapper", *argv],
+            ),
+            patch(
+                "asyncio.create_subprocess_exec",
+                mock_exec,
+            ),
+        ):
+            client = AcpClient(work_dir=tmp_path / "workspace")
+
+            with pytest.raises(RuntimeError, match="spawn failed"):
+                await client._spawn()
+
+        launch_argv = wrapped["argv"]
+        assert isinstance(launch_argv, list)
+        assert launch_argv == [launch_path, "acp", "--agent", client._agent]
+        assert wrapped["mode"] == "auto"
+        assert wrapped["kwargs"] == {
+            "strip_python_env": True,
+            "is_kiro_cli": True,
+        }
+        spawn_call = mock_exec.await_args
+        assert spawn_call.args == (
+            "cgroup-wrapper",
+            "sandbox-wrapper",
+            launch_path,
+            "acp",
+            "--agent",
+            client._agent,
+        )
+        pass_fds = spawn_call.kwargs["pass_fds"]
+        assert isinstance(pass_fds, tuple) and len(pass_fds) == 1
+        assert pass_fds == (snapshot_fd,)
+        with pytest.raises(OSError):
+            os.fstat(pass_fds[0])
+
+    @pytest.mark.asyncio
+    async def test_spawn_cleans_private_snapshot_when_wrapper_fails(self, tmp_path):
+        from kiro_crew.acp import client as client_module
+
+        fake = tmp_path / "sealed-kiro-cli"
+        fake.write_bytes(b"#!/bin/sh\n# sealed\n")
+        snapshot_fd = os.open(fake, os.O_RDONLY)
+        launch_path = f"/proc/self/fd/{snapshot_fd}"
+        client_module._KIRO_EXECUTABLE_SNAPSHOTS[launch_path] = snapshot_fd
+
+        def fail_wrap(argv, mode, **kwargs):
+            del mode, kwargs
+            assert argv[0] == launch_path
+            raise RuntimeError("wrapper failed")
+
+        with (
+            patch.object(
+                client_module,
+                "_resolve_kiro_bin",
+                return_value=launch_path,
+            ),
+            patch.object(
+                client_module,
+                "wrap_argv",
+                side_effect=fail_wrap,
+            ),
+        ):
+            client = AcpClient(work_dir=tmp_path / "workspace")
+
+            with pytest.raises(RuntimeError, match="wrapper failed"):
+                await client._spawn()
+
+        assert launch_path not in client_module._KIRO_EXECUTABLE_SNAPSHOTS
+        with pytest.raises(OSError):
+            os.fstat(snapshot_fd)
 
     def test_env_override_ignored_when_missing_file(self, tmp_path):
         # A configured-but-nonexistent path must not be returned; resolution
@@ -6868,8 +7115,14 @@ class TestResolveKiroBinEnvOverride:
         from kiro_crew.acp.client import _resolve_kiro_bin
 
         missing = str(tmp_path / "does-not-exist")
-        with patch.dict("os.environ", {"KIROCREW_KIRO_BIN": missing}):
-            assert _resolve_kiro_bin() != missing
+        with (
+            patch.dict("os.environ", {"KIROCREW_KIRO_BIN": missing}),
+            patch(
+                "kiro_crew.acp.client.resolve_kiro_cli",
+                return_value=None,
+            ),
+        ):
+            assert _resolve_kiro_bin() is None
 
     def test_env_override_ignored_when_not_executable(self, tmp_path):
         from kiro_crew.acp.client import _resolve_kiro_bin
@@ -6877,8 +7130,14 @@ class TestResolveKiroBinEnvOverride:
         nonexec = tmp_path / "kiro-cli"
         nonexec.write_text("#!/bin/sh\n")
         nonexec.chmod(0o644)  # not executable
-        with patch.dict("os.environ", {"KIROCREW_KIRO_BIN": str(nonexec)}):
-            assert _resolve_kiro_bin() != str(nonexec)
+        with (
+            patch.dict("os.environ", {"KIROCREW_KIRO_BIN": str(nonexec)}),
+            patch(
+                "kiro_crew.acp.client.resolve_kiro_cli",
+                return_value=None,
+            ),
+        ):
+            assert _resolve_kiro_bin() is None
 
     def test_no_env_falls_through(self):
         # With no override set, resolution uses the normal candidate/PATH path
@@ -6886,7 +7145,13 @@ class TestResolveKiroBinEnvOverride:
         from kiro_crew.acp.client import _resolve_kiro_bin
 
         env = {k: v for k, v in os.environ.items() if k != "KIROCREW_KIRO_BIN"}
-        with patch.dict("os.environ", env, clear=True):
+        with (
+            patch.dict("os.environ", env, clear=True),
+            patch(
+                "kiro_crew.acp.client.resolve_kiro_cli",
+                return_value=None,
+            ),
+        ):
             # Should not raise; returns either a real path or None.
             result = _resolve_kiro_bin()
             assert result is None or isinstance(result, str)
@@ -6911,15 +7176,32 @@ class TestDispatchSubagentEvents:
         frames = [
             ("subagent_list", JsonRpcMessage(params={"subagents": subs})),
             # tool_call_chunk → toolCallId attribution
-            ("subagent_activity", JsonRpcMessage(params={
-                "sessionId": "s1",
-                "update": {"sessionUpdate": "tool_call_chunk", "toolCallId": "tc-1", "title": "read"},
-            })),
+            (
+                "subagent_activity",
+                JsonRpcMessage(
+                    params={
+                        "sessionId": "s1",
+                        "update": {
+                            "sessionUpdate": "tool_call_chunk",
+                            "toolCallId": "tc-1",
+                            "title": "read",
+                        },
+                    }
+                ),
+            ),
             # agent_message_chunk → sub-agent text
-            ("subagent_activity", JsonRpcMessage(params={
-                "sessionId": "s1",
-                "update": {"sessionUpdate": "agent_message_chunk", "text": "hello from sub"},
-            })),
+            (
+                "subagent_activity",
+                JsonRpcMessage(
+                    params={
+                        "sessionId": "s1",
+                        "update": {
+                            "sessionUpdate": "agent_message_chunk",
+                            "text": "hello from sub",
+                        },
+                    }
+                ),
+            ),
             # non-dict subagents payload must be ignored (no yield)
             ("subagent_list", JsonRpcMessage(params={"subagents": "nope"})),
             ("complete", JsonRpcMessage(result={"stopReason": "end_turn"})),
@@ -6960,22 +7242,32 @@ class TestDispatchSubagentEvents:
 
         frames = [
             # tool_call_chunk with a credential embedded in the title
-            ("subagent_activity", JsonRpcMessage(params={
-                "sessionId": "s1",
-                "update": {
-                    "sessionUpdate": "tool_call_chunk",
-                    "toolCallId": "tc-1",
-                    "title": "leak AKIAIOSFODNN7EXAMPLE now",
-                },
-            })),
+            (
+                "subagent_activity",
+                JsonRpcMessage(
+                    params={
+                        "sessionId": "s1",
+                        "update": {
+                            "sessionUpdate": "tool_call_chunk",
+                            "toolCallId": "tc-1",
+                            "title": "leak AKIAIOSFODNN7EXAMPLE now",
+                        },
+                    }
+                ),
+            ),
             # agent_message_chunk with the text under nested content.text (2.10.0)
-            ("subagent_activity", JsonRpcMessage(params={
-                "sessionId": "s1",
-                "update": {
-                    "sessionUpdate": "agent_message_chunk",
-                    "content": {"text": "secret AKIAIOSFODNN7EXAMPLE here"},
-                },
-            })),
+            (
+                "subagent_activity",
+                JsonRpcMessage(
+                    params={
+                        "sessionId": "s1",
+                        "update": {
+                            "sessionUpdate": "agent_message_chunk",
+                            "content": {"text": "secret AKIAIOSFODNN7EXAMPLE here"},
+                        },
+                    }
+                ),
+            ),
             ("complete", JsonRpcMessage(result={"stopReason": "end_turn"})),
         ]
 
@@ -7017,31 +7309,46 @@ class TestDispatchSubagentEvents:
 
         frames = [
             # (1) empty nested content.text + populated flat text -> flat wins
-            ("subagent_activity", JsonRpcMessage(params={
-                "sessionId": "s1",
-                "update": {
-                    "sessionUpdate": "agent_message_chunk",
-                    "content": {"text": ""},
-                    "text": "flat fallback output",
-                },
-            })),
+            (
+                "subagent_activity",
+                JsonRpcMessage(
+                    params={
+                        "sessionId": "s1",
+                        "update": {
+                            "sessionUpdate": "agent_message_chunk",
+                            "content": {"text": ""},
+                            "text": "flat fallback output",
+                        },
+                    }
+                ),
+            ),
             # (2) reasoning/thinking content block -> suppressed (no user text)
-            ("subagent_activity", JsonRpcMessage(params={
-                "sessionId": "s1",
-                "update": {
-                    "sessionUpdate": "agent_message_chunk",
-                    "content": {"type": "thinking", "text": "internal reasoning"},
-                },
-            })),
+            (
+                "subagent_activity",
+                JsonRpcMessage(
+                    params={
+                        "sessionId": "s1",
+                        "update": {
+                            "sessionUpdate": "agent_message_chunk",
+                            "content": {"type": "thinking", "text": "internal reasoning"},
+                        },
+                    }
+                ),
+            ),
             # (3) non-dict content -> must not crash; flat text used if present
-            ("subagent_activity", JsonRpcMessage(params={
-                "sessionId": "s1",
-                "update": {
-                    "sessionUpdate": "agent_message_chunk",
-                    "content": ["a", "list", "block"],
-                    "text": "flat when content is a list",
-                },
-            })),
+            (
+                "subagent_activity",
+                JsonRpcMessage(
+                    params={
+                        "sessionId": "s1",
+                        "update": {
+                            "sessionUpdate": "agent_message_chunk",
+                            "content": ["a", "list", "block"],
+                            "text": "flat when content is a list",
+                        },
+                    }
+                ),
+            ),
             ("complete", JsonRpcMessage(result={"stopReason": "end_turn"})),
         ]
 
@@ -7076,8 +7383,7 @@ class TestTrackMetadataCredits:
             params={
                 "contextUsagePercentage": pct,
                 "meteringUsage": [
-                    {"value": v, "unit": "credit", "unitPlural": "credits"}
-                    for v in credit_values
+                    {"value": v, "unit": "credit", "unitPlural": "credits"} for v in credit_values
                 ],
             },
         )
@@ -7211,7 +7517,9 @@ class TestTrackMetadataWindowResolution:
         client._resolved_model_id = "claude-opus-4.6"
         client.last_prompt_stats.context_pct = 42.0
         client._track_metadata(
-            JsonRpcMessage(method="_kiro.dev/metadata", params={"contextUsagePercentage": "not-a-number"})
+            JsonRpcMessage(
+                method="_kiro.dev/metadata", params={"contextUsagePercentage": "not-a-number"}
+            )
         )
         assert client.last_prompt_stats.context_pct == 42.0
         assert client.last_prompt_stats.context_window_tokens == 0
@@ -7275,7 +7583,9 @@ class TestSubstitutionAdvisory:
         assert _is_model_substitution_advisory(None) is False
 
     def test_empty_or_missing_data_not_advisory(self):
-        assert _is_model_substitution_advisory({"code": -32603, "message": "Internal error"}) is False
+        assert (
+            _is_model_substitution_advisory({"code": -32603, "message": "Internal error"}) is False
+        )
         assert _is_model_substitution_advisory({"code": -32603, "data": ""}) is False
 
     def test_partial_wording_not_advisory(self):
@@ -7373,8 +7683,7 @@ class TestSubstitutionAdvisory:
 
         assert out == {}, "advisory must surface as empty dict, not raise"
         assert (
-            client._last_substitution_model
-            == "global.anthropic.claude-sonnet-4-6[1m]"
+            client._last_substitution_model == "global.anthropic.claude-sonnet-4-6[1m]"
         ), "substitute model must be recorded for the session/new caller to adopt"
 
 
@@ -7392,10 +7701,7 @@ class TestSubstituteModelExtractor:
                 )
             },
         }
-        assert (
-            _substitute_model_from_advisory(err)
-            == "global.anthropic.claude-sonnet-4-6[1m]"
-        )
+        assert _substitute_model_from_advisory(err) == "global.anthropic.claude-sonnet-4-6[1m]"
 
     def test_extracts_with_trailing_period_and_quotes(self):
         err = {
@@ -7695,7 +8001,8 @@ class TestSubstitutionWrappersAndRedaction:
 
         # Find the warning call that mentions the substitution adoption.
         adopt_calls = [
-            c for c in mock_logger.warning.call_args_list
+            c
+            for c in mock_logger.warning.call_args_list
             if c.args and "adopting gateway-served model" in c.args[0]
         ]
         assert adopt_calls, "expected an 'adopting gateway-served model' warning"
@@ -7705,15 +8012,15 @@ class TestSubstitutionWrappersAndRedaction:
         # redactor diagnostic marker. The redactor preserves the host name
         # inside "[REDACTED: suspicious URL to <host>]" so operators can
         # investigate the leak source -- that is BY DESIGN, not a bypass.
-        assert "AKIAIOSFODNN7EXAMPLE" not in emitted, (
-            "AWS access-key substring MUST be redacted before logging"
-        )
-        assert "REDACTED" in emitted, (
-            "the redactor marker MUST appear, proving the URL was rewritten"
-        )
-        assert "http://attacker.example.com/exfil?token=" not in emitted, (
-            "the bare exfil URL MUST NOT be emitted verbatim"
-        )
+        assert (
+            "AKIAIOSFODNN7EXAMPLE" not in emitted
+        ), "AWS access-key substring MUST be redacted before logging"
+        assert (
+            "REDACTED" in emitted
+        ), "the redactor marker MUST appear, proving the URL was rewritten"
+        assert (
+            "http://attacker.example.com/exfil?token=" not in emitted
+        ), "the bare exfil URL MUST NOT be emitted verbatim"
 
     @pytest.mark.asyncio
     async def test_initialize_session_redacts_model_in_info_log(self, tmp_path):
@@ -7755,7 +8062,8 @@ class TestSubstitutionWrappersAndRedaction:
             await client._initialize_session()
 
         info_calls = [
-            c for c in mock_logger.info.call_args_list
+            c
+            for c in mock_logger.info.call_args_list
             if c.args and "ACP session created" in c.args[0]
         ]
         assert info_calls, "expected an 'ACP session created' info log"
@@ -7764,15 +8072,15 @@ class TestSubstitutionWrappersAndRedaction:
         emitted_model = info_calls[0].args[2]
         # See sibling test for the design note: redactor keeps the host as a
         # diagnostic label inside "[REDACTED: suspicious URL to <host>]".
-        assert "AKIAIOSFODNN7EXAMPLE" not in emitted_model, (
-            "AWS access-key substring MUST be redacted before logging"
-        )
-        assert "REDACTED" in emitted_model, (
-            "the redactor marker MUST appear, proving the URL was rewritten"
-        )
-        assert "http://attacker.example.com/m?token=" not in emitted_model, (
-            "the bare exfil URL MUST NOT be emitted verbatim"
-        )
+        assert (
+            "AKIAIOSFODNN7EXAMPLE" not in emitted_model
+        ), "AWS access-key substring MUST be redacted before logging"
+        assert (
+            "REDACTED" in emitted_model
+        ), "the redactor marker MUST appear, proving the URL was rewritten"
+        assert (
+            "http://attacker.example.com/m?token=" not in emitted_model
+        ), "the bare exfil URL MUST NOT be emitted verbatim"
 
     @pytest.mark.asyncio
     async def test_initialize_session_acperror_redacts_substitute_model(self, tmp_path):
@@ -7810,9 +8118,9 @@ class TestSubstitutionWrappersAndRedaction:
             await client._initialize_session()
 
         msg = str(excinfo.value)
-        assert "AKIAIOSFODNN7EXAMPLE" not in msg, (
-            "AWS access-key-shaped substitute MUST be redacted before reaching the AcpError message"
-        )
+        assert (
+            "AKIAIOSFODNN7EXAMPLE" not in msg
+        ), "AWS access-key-shaped substitute MUST be redacted before reaching the AcpError message"
         assert "even after adopting substitute model" in msg
 
     @pytest.mark.asyncio
@@ -7847,9 +8155,7 @@ class TestSubstitutionWrappersAndRedaction:
             "AWS access-key-shaped substring in msg.error MUST be redacted "
             "before reaching the catch-all AcpError message"
         )
-        assert "JSON-RPC error" in emitted, (
-            "the catch-all AcpError prefix MUST still be present"
-        )
+        assert "JSON-RPC error" in emitted, "the catch-all AcpError prefix MUST still be present"
 
 
 class TestAcpClientIsShellSignal:
@@ -8098,7 +8404,9 @@ class TestSpawnEnvChannelCredentialScrub:
 
         monkeypatch.setattr(acp_client, "_resolve_kiro_bin", lambda: "/fake/kiro")
         monkeypatch.setattr(
-            acp_client, "wrap_argv", lambda argv, mode, strip_python_env=False: (argv, None)
+            acp_client,
+            "wrap_argv",
+            lambda argv, mode, strip_python_env=False, is_kiro_cli=None: (argv, None),
         )
         monkeypatch.setattr(acp_client, "cgroup_scope_argv", lambda argv: argv)
         monkeypatch.setattr(acp_client, "augmented_path", lambda p: p)

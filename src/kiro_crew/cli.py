@@ -455,7 +455,8 @@ def _resolve_gateway_args(args: argparse.Namespace) -> dict:
     json_ready = getattr(args, "json_ready", False)
     approval = getattr(args, "approval", None)
     no_open = getattr(args, "no_open", False)
-    if getattr(args, "test_mode", False):
+    test_mode = bool(getattr(args, "test_mode", False))
+    if test_mode:
         # Bundle defaults; explicit flags above take precedence (they are
         # already populated in the locals when the user passed them).
         if port is None:
@@ -536,6 +537,7 @@ def _resolve_gateway_args(args: argparse.Namespace) -> dict:
         "port_override": port,
         "json_ready": json_ready,
         "approval_mode": approval,
+        "test_mode": test_mode,
     }
 
 
@@ -1643,6 +1645,15 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
         return
 
     args = parser.parse_args()
+
+    # Direct agent-bearing CLI commands do not construct the long-lived
+    # prerequisite service. Pin an explicit override before the jail gate or
+    # provider factory can launch it, preserving the same process-start trust
+    # boundary as the gateway.
+    if args.command in _JAILED_COMMANDS:
+        from kiro_crew.kiro_prerequisite import register_process_start_override_attestation
+
+        register_process_start_override_attestation()
 
     # ``gateway --seed <fixture>`` populates $KIROCREW_HOME from a hand-authored
     # fixture BEFORE the gateway starts — lets a dev spin up a pre-populated

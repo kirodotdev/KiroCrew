@@ -30,6 +30,7 @@ def _make_orchestrator(
     no_dashboard: bool = False,
     no_crons: bool = False,
     no_open: bool = False,
+    test_mode: bool = False,
 ) -> GatewayOrchestrator:
     """Build a GatewayOrchestrator with mocked credentials."""
     cfg = KiroCrewConfig()
@@ -49,6 +50,7 @@ def _make_orchestrator(
             no_dashboard=no_dashboard,
             no_crons=no_crons,
             no_open=no_open,
+            test_mode=test_mode,
         )
     return orch
 
@@ -1462,7 +1464,7 @@ class TestInitDashboard:
 
     @pytest.mark.asyncio
     async def test_init_dashboard_creates_state(self):
-        orch = _make_orchestrator()
+        orch = _make_orchestrator(test_mode=True)
         orch.sessions = _mock_sessions()
         orch.cron_svc = MagicMock()
         orch.subagent_mgr = MagicMock()
@@ -1477,10 +1479,11 @@ class TestInitDashboard:
             "kiro_crew.slack.gateway.start_dashboard",
             new_callable=AsyncMock,
             return_value=(runner, ds),
-        ):
+        ) as start:
             await orch._init_dashboard()
         assert orch.dashboard_state is ds
         assert orch._dashboard_runner is runner
+        assert start.await_args.kwargs["assume_kiro_ready"] is True
 
     def test_init_mcp_discovery_logs(self):
         orch = _make_orchestrator()
@@ -1957,7 +1960,7 @@ class TestInitApiServer:
 
     @pytest.mark.asyncio
     async def test_init_api_server(self):
-        orch = _make_orchestrator()
+        orch = _make_orchestrator(test_mode=True)
         orch.sessions = _mock_sessions()
         orch.cron_svc = MagicMock()
         orch.subagent_mgr = MagicMock()
@@ -1969,9 +1972,10 @@ class TestInitApiServer:
             "kiro_crew.dashboard.start_api_server",
             new_callable=AsyncMock,
             return_value=(runner, ds),
-        ):
+        ) as start:
             await orch._init_api_server()
         assert orch.dashboard_state is ds
+        assert start.await_args.kwargs["assume_kiro_ready"] is True
 
 
 # ═══════════════════════════════════════════════════════════════════════════

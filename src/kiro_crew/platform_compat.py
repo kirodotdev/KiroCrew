@@ -21,7 +21,7 @@ import subprocess
 import sys
 from ctypes import wintypes  # type aliases only; imports cleanly on every platform
 from pathlib import Path
-from typing import Callable, Iterator, Optional
+from typing import Callable, Iterator, Mapping, Optional
 
 from kiro_crew.executors import subprocess_executor
 
@@ -132,14 +132,21 @@ else:
 
 
 @contextlib.contextmanager
-def file_lock(fd: int, *, exclusive: bool = True) -> Iterator[None]:
+def file_lock(
+    fd: int,
+    *,
+    exclusive: bool = True,
+    required: bool = False,
+) -> Iterator[None]:
     """Acquire an advisory lock on ``fd`` for the duration of the block.
 
     POSIX: ``fcntl.flock(LOCK_EX|LOCK_SH)`` with ``LOCK_UN`` release.
     Windows: ``msvcrt.locking`` on the first byte. ``msvcrt`` has no shared
     mode, so a shared request is satisfied with an exclusive lock (correctness
     over concurrency — readers serialize, but never see torn writes). Windows
-    locking is best-effort: failures are swallowed (non-fatal).
+    locking is best-effort by default for backward compatibility.
+    ``required=True`` propagates acquisition failure for security-sensitive
+    transactions that must never continue without cross-process exclusion.
 
     Note: on Windows, ``msvcrt.locking`` requires seeking to byte 0, so the
     ``fd`` must be a dedicated lock file; callers must not rely on the file
@@ -162,7 +169,8 @@ def file_lock(fd: int, *, exclusive: bool = True) -> Iterator[None]:
             msvcrt.locking(fd, msvcrt.LK_LOCK, 1)  # type: ignore[attr-defined]
             locked = True
         except OSError:
-            pass  # best-effort
+            if required:
+                raise
         try:
             yield
         finally:
@@ -211,6 +219,31 @@ def release_lock(fd: int) -> None:
         msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)  # type: ignore[attr-defined]
     except OSError:
         pass
+
+
+def seal_memfd(fd: int) -> None:
+    """Make a populated Linux memfd permanently immutable.
+
+    ``fcntl`` is POSIX-only and remains behind this compatibility seam. The
+    caller creates the memfd with ``MFD_ALLOW_SEALING`` and writes all content
+    before calling this helper. Returning successfully guarantees that no
+    process holding or reopening the descriptor can change its bytes or size.
+    """
+
+    if not IS_LINUX:
+        raise OSError("memfd sealing is only available on Linux")
+    add_seals = getattr(fcntl, "F_ADD_SEALS", 1033)
+    get_seals = getattr(fcntl, "F_GET_SEALS", 1034)
+    required = (
+        getattr(fcntl, "F_SEAL_SEAL", 0x0001)
+        | getattr(fcntl, "F_SEAL_SHRINK", 0x0002)
+        | getattr(fcntl, "F_SEAL_GROW", 0x0004)
+        | getattr(fcntl, "F_SEAL_WRITE", 0x0008)
+    )
+    fcntl.fcntl(fd, add_seals, required)
+    actual = int(fcntl.fcntl(fd, get_seals))
+    if actual & required != required:
+        raise OSError("kernel did not apply all required memfd seals")
 
 
 def try_acquire_lock(fd: int, *, exclusive: bool = False) -> bool:
@@ -262,8 +295,11 @@ def get_ppid(pid: int) -> int:
                 return -1
             lib = ctypes.CDLL(path)
             lib.proc_pidinfo.argtypes = [
-                ctypes.c_int, ctypes.c_int, ctypes.c_uint64,
-                ctypes.c_void_p, ctypes.c_int,
+                ctypes.c_int,
+                ctypes.c_int,
+                ctypes.c_uint64,
+                ctypes.c_void_p,
+                ctypes.c_int,
             ]
             lib.proc_pidinfo.restype = ctypes.c_int
             buf = ctypes.create_string_buffer(136)
@@ -320,6 +356,439 @@ def get_ppid(pid: int) -> int:
         except Exception:
             return -1
     return -1
+
+
+def _descendants_from_parent_map(root_pid: int, parent_map: dict[int, int]) -> list[int]:
+    """Return a breadth-first descendant list from a PID -> PPID snapshot."""
+
+    result: list[int] = []
+    frontier = [root_pid]
+    seen = {root_pid}
+    while frontier:
+        parents = set(frontier)
+        frontier = []
+        for child_pid, parent_pid in parent_map.items():
+            if parent_pid in parents and child_pid not in seen:
+                seen.add(child_pid)
+                result.append(child_pid)
+                frontier.append(child_pid)
+    return result
+
+
+def _windows_process_parent_map() -> dict[int, int]:
+    """Return one Toolhelp PID -> PPID snapshot, raising if enumeration fails."""
+
+    if not IS_WINDOWS:
+        return {}
+    try:
+        th32cs_snapprocess = 0x00000002
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+
+        class ProcessEntry32(ctypes.Structure):
+            _fields_ = [
+                ("dwSize", wintypes.DWORD),
+                ("cntUsage", wintypes.DWORD),
+                ("th32ProcessID", wintypes.DWORD),
+                ("th32DefaultHeapID", ctypes.POINTER(ctypes.c_ulong)),
+                ("th32ModuleID", wintypes.DWORD),
+                ("cntThreads", wintypes.DWORD),
+                ("th32ParentProcessID", wintypes.DWORD),
+                ("pcPriClassBase", ctypes.c_long),
+                ("dwFlags", wintypes.DWORD),
+                ("szExeFile", ctypes.c_char * 260),
+            ]
+
+        kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+        kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+        kernel32.Process32First.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(ProcessEntry32),
+        ]
+        kernel32.Process32First.restype = wintypes.BOOL
+        kernel32.Process32Next.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(ProcessEntry32),
+        ]
+        kernel32.Process32Next.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        set_last_error = getattr(kernel32, "SetLastError", None)
+        get_last_error = getattr(kernel32, "GetLastError", None)
+
+        snapshot = kernel32.CreateToolhelp32Snapshot(th32cs_snapprocess, 0)
+        if snapshot == wintypes.HANDLE(-1).value:
+            raise OSError("Windows process snapshot creation failed")
+        try:
+            entry = ProcessEntry32()
+            entry.dwSize = ctypes.sizeof(ProcessEntry32)
+            if not kernel32.Process32First(snapshot, ctypes.byref(entry)):
+                raise OSError("Windows first process enumeration failed")
+            result: dict[int, int] = {}
+            while True:
+                result[int(entry.th32ProcessID)] = int(entry.th32ParentProcessID)
+                if callable(set_last_error):
+                    set_last_error(0)
+                else:
+                    ctypes_set_last_error = getattr(ctypes, "set_last_error", None)
+                    if callable(ctypes_set_last_error):
+                        ctypes_set_last_error(0)
+                if not kernel32.Process32Next(snapshot, ctypes.byref(entry)):
+                    error = (
+                        int(get_last_error()) if callable(get_last_error) else _windows_last_error()
+                    )
+                    if error not in (0, 18):  # ERROR_NO_MORE_FILES
+                        raise OSError(error, "Windows process enumeration failed")
+                    return result
+        finally:
+            kernel32.CloseHandle(snapshot)
+    except OSError:
+        raise
+    except Exception as exc:
+        raise OSError("Windows process enumeration failed") from exc
+
+
+def descendant_pids(pid: int) -> list[int]:
+    """Return a retained Windows process-tree snapshot for timeout cleanup.
+
+    Windows loses parent-child linkage after a launcher exits, so callers that
+    need reliable cleanup should sample this while the root is alive and retain
+    the returned PIDs. POSIX callers use process groups and receive an empty
+    list.
+    """
+
+    if type(pid) is not int or pid <= 1:
+        raise ValueError(f"descendant_pids: refusing non-int/reserved pid {pid!r}")
+    if not IS_WINDOWS:
+        return []
+    return _descendants_from_parent_map(pid, _windows_process_parent_map())
+
+
+def _open_process_termination_handle(pid: int) -> int | None:
+    """Open an identity-stable Windows handle suitable for later termination."""
+
+    if not IS_WINDOWS:
+        return None
+    try:
+        process_terminate = 0x0001
+        process_query_limited_information = 0x1000
+        synchronize = 0x00100000
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+        kernel32.OpenProcess.argtypes = [
+            wintypes.DWORD,
+            wintypes.BOOL,
+            wintypes.DWORD,
+        ]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        handle = kernel32.OpenProcess(
+            process_terminate | process_query_limited_information | synchronize,
+            False,
+            pid,
+        )
+        return int(handle) if handle else None
+    except Exception:
+        return None
+
+
+def duplicate_asyncio_process_handle(process: object) -> int | None:
+    """Duplicate asyncio's original Windows process handle for tree anchoring."""
+
+    if not IS_WINDOWS:
+        return None
+    try:
+        transport = getattr(process, "_transport", None)
+        get_extra_info = getattr(transport, "get_extra_info", None)
+        popen = get_extra_info("subprocess") if callable(get_extra_info) else None
+        source_value = int(getattr(popen, "_handle", 0))
+        if source_value <= 0:
+            return None
+
+        duplicate_same_access = 0x00000002
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+        kernel32.GetCurrentProcess.argtypes = []
+        kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+        kernel32.DuplicateHandle.argtypes = [
+            wintypes.HANDLE,
+            wintypes.HANDLE,
+            wintypes.HANDLE,
+            ctypes.POINTER(wintypes.HANDLE),
+            wintypes.DWORD,
+            wintypes.BOOL,
+            wintypes.DWORD,
+        ]
+        kernel32.DuplicateHandle.restype = wintypes.BOOL
+        owner = kernel32.GetCurrentProcess()
+        duplicate = wintypes.HANDLE()
+        if not kernel32.DuplicateHandle(
+            owner,
+            wintypes.HANDLE(source_value),
+            owner,
+            ctypes.byref(duplicate),
+            0,
+            False,
+            duplicate_same_access,
+        ):
+            return None
+        return int(duplicate.value) if duplicate.value else None
+    except Exception:
+        return None
+
+
+def _windows_last_error() -> int:
+    """Return ctypes' thread-local Win32 error without POSIX stub assumptions."""
+
+    getter = getattr(ctypes, "get_last_error", None)
+    return int(getter()) if callable(getter) else 0
+
+
+def _windows_process_handle_identity(handle: int) -> tuple[int, int, int | None] | None:
+    """Return ``(pid, creation_time, exit_time)`` for an exact process handle."""
+
+    if not IS_WINDOWS or type(handle) is not int or handle <= 0:
+        return None
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+        kernel32.GetProcessId.argtypes = [wintypes.HANDLE]
+        kernel32.GetProcessId.restype = wintypes.DWORD
+        kernel32.GetExitCodeProcess.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+        kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+        kernel32.GetProcessTimes.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(wintypes.FILETIME),
+            ctypes.POINTER(wintypes.FILETIME),
+            ctypes.POINTER(wintypes.FILETIME),
+            ctypes.POINTER(wintypes.FILETIME),
+        ]
+        kernel32.GetProcessTimes.restype = wintypes.BOOL
+        process_handle = wintypes.HANDLE(handle)
+        pid = int(kernel32.GetProcessId(process_handle))
+        creation = wintypes.FILETIME()
+        exit_ = wintypes.FILETIME()
+        kernel = wintypes.FILETIME()
+        user = wintypes.FILETIME()
+        exit_code = wintypes.DWORD()
+
+        def _read_times() -> bool:
+            return bool(
+                kernel32.GetProcessTimes(
+                    process_handle,
+                    ctypes.byref(creation),
+                    ctypes.byref(exit_),
+                    ctypes.byref(kernel),
+                    ctypes.byref(user),
+                )
+            )
+
+        if (
+            pid <= 1
+            or not _read_times()
+            or not kernel32.GetExitCodeProcess(
+                process_handle,
+                ctypes.byref(exit_code),
+            )
+        ):
+            return None
+        still_active = 259
+        active = exit_code.value == still_active
+        # The exit FILETIME is not defined for a live process. If the status
+        # says the process exited, read the times again after that observation
+        # so the returned exit bound belongs to the terminated object.
+        if not active and not _read_times():
+            return None
+
+        def _filetime_value(value: "wintypes.FILETIME") -> int:
+            return (int(value.dwHighDateTime) << 32) | int(value.dwLowDateTime)
+
+        creation_value = _filetime_value(creation)
+        exit_value = _filetime_value(exit_)
+        if creation_value <= 0 or (not active and exit_value <= 0):
+            return None
+        return pid, creation_value, None if active else exit_value
+    except Exception:
+        return None
+
+
+def _windows_lineage_matches_lifetimes(
+    child_pid: int,
+    root_pid: int,
+    parent_map: Mapping[int, int],
+    identities: Mapping[int, tuple[int, int, int | None]],
+) -> bool:
+    """Bind numeric Toolhelp ancestry to the exact handles' lifetimes."""
+
+    current = child_pid
+    seen: set[int] = set()
+    while current != root_pid:
+        if current in seen:
+            return False
+        seen.add(current)
+        parent_pid = parent_map.get(current)
+        child_identity = identities.get(current)
+        parent_identity = identities.get(parent_pid) if parent_pid is not None else None
+        if (
+            parent_pid is None
+            or child_identity is None
+            or parent_identity is None
+            or child_identity[0] != current
+            or parent_identity[0] != parent_pid
+        ):
+            return False
+        child_created = child_identity[1]
+        parent_created = parent_identity[1]
+        parent_exited = parent_identity[2]
+        if child_created < parent_created:
+            return False
+        if parent_exited is not None and child_created >= parent_exited:
+            return False
+        current = parent_pid
+    return True
+
+
+def descendant_termination_handles(
+    pid: int,
+    retained_handles: Mapping[int, int] | None = None,
+    root_handle: int | None = None,
+) -> dict[int, int]:
+    """Return exact Windows process handles for newly observed descendants.
+
+    Toolhelp exposes numeric parent PIDs, which can be recycled as soon as a
+    process exits. Every edge is therefore checked against creation/exit times
+    from exact root, retained-parent, and newly-opened child handles in two
+    snapshots. This admits a genuine child created before an immediate launcher
+    exit while rejecting a tree attached to a recycled root or intermediate PID.
+    """
+
+    if type(pid) is not int or pid <= 1:
+        raise ValueError(f"descendant_termination_handles: refusing non-int/reserved pid {pid!r}")
+    if not IS_WINDOWS:
+        return {}
+    if type(root_handle) is not int or root_handle <= 0:
+        raise ValueError("descendant_termination_handles: exact root handle required")
+    retained = dict(retained_handles or {})
+    root_identity = _windows_process_handle_identity(root_handle)
+    if root_identity is None or root_identity[0] != pid:
+        raise ValueError("descendant_termination_handles: root handle identity mismatch")
+
+    first_map = _windows_process_parent_map()
+    first = set(_descendants_from_parent_map(pid, first_map))
+    opened: dict[int, int] = {}
+    for child_pid in sorted(first - set(retained)):
+        handle = _open_process_termination_handle(child_pid)
+        if handle is not None:
+            opened[child_pid] = handle
+    if not opened:
+        return {}
+
+    try:
+        handles = {**retained, **opened, pid: root_handle}
+        first_identities = {
+            process_pid: identity
+            for process_pid, handle in handles.items()
+            if (identity := _windows_process_handle_identity(handle)) is not None
+        }
+        eligible = {
+            child_pid
+            for child_pid in opened
+            if child_pid in first
+            and _windows_lineage_matches_lifetimes(
+                child_pid,
+                pid,
+                first_map,
+                first_identities,
+            )
+        }
+
+        second_map = _windows_process_parent_map()
+        still_descendants = set(_descendants_from_parent_map(pid, second_map))
+        second_identities = {
+            process_pid: identity
+            for process_pid, handle in handles.items()
+            if (identity := _windows_process_handle_identity(handle)) is not None
+        }
+        for child_pid in tuple(opened):
+            if (
+                child_pid not in eligible
+                or child_pid not in still_descendants
+                or not _windows_lineage_matches_lifetimes(
+                    child_pid,
+                    pid,
+                    second_map,
+                    second_identities,
+                )
+            ):
+                close_process_handle(opened.pop(child_pid))
+        return opened
+    except Exception:
+        for handle in opened.values():
+            close_process_handle(handle)
+        raise
+
+
+def terminate_process_handle(handle: int) -> bool:
+    """Terminate the exact Windows process object referenced by *handle*."""
+
+    if type(handle) is not int or handle <= 0:
+        raise ValueError(f"terminate_process_handle: refusing invalid handle {handle!r}")
+    if not IS_WINDOWS:
+        return False
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+    kernel32.GetExitCodeProcess.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+    kernel32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    kernel32.TerminateProcess.restype = wintypes.BOOL
+    process_handle = wintypes.HANDLE(handle)
+    exit_code = wintypes.DWORD()
+    still_active = 259
+    if not kernel32.GetExitCodeProcess(process_handle, ctypes.byref(exit_code)):
+        raise OSError(_windows_last_error(), "GetExitCodeProcess failed")
+    if exit_code.value != still_active:
+        return False
+    if not kernel32.TerminateProcess(process_handle, 1):
+        raise OSError(_windows_last_error(), "TerminateProcess failed")
+    return True
+
+
+def process_handle_active(handle: int) -> bool:
+    """Return whether an identity-stable Windows process handle is still live."""
+
+    if type(handle) is not int or handle <= 0:
+        raise ValueError(f"process_handle_active: refusing invalid handle {handle!r}")
+    if not IS_WINDOWS:
+        return False
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+        kernel32.GetExitCodeProcess.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+        kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+        exit_code = wintypes.DWORD()
+        return bool(
+            kernel32.GetExitCodeProcess(
+                wintypes.HANDLE(handle),
+                ctypes.byref(exit_code),
+            )
+            and exit_code.value == 259
+        )
+    except Exception:
+        return False
+
+
+def close_process_handle(handle: int) -> None:
+    """Close a handle returned by :func:`descendant_termination_handles`."""
+
+    if not IS_WINDOWS or type(handle) is not int or handle <= 0:
+        return
+    with contextlib.suppress(Exception):
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        kernel32.CloseHandle(wintypes.HANDLE(handle))
 
 
 def process_matches(pid: int, needles: tuple[str, ...]) -> bool:
@@ -430,13 +899,12 @@ def find_listening_pids(port: int) -> list[int]:
         try:
             out = subprocess.check_output(
                 ["lsof", "-ti", f"TCP:{port}", "-sTCP:LISTEN"],
-                text=True, stderr=subprocess.DEVNULL,
+                text=True,
+                stderr=subprocess.DEVNULL,
             )
         except (FileNotFoundError, subprocess.CalledProcessError, OSError):
             return []
-        return list(dict.fromkeys(
-            int(p) for p in out.split() if p.strip().isdigit()
-        ))
+        return list(dict.fromkeys(int(p) for p in out.split() if p.strip().isdigit()))
     # Windows: netstat -ano. Lines look like:
     #   TCP    127.0.0.1:7777         0.0.0.0:0    LISTENING    17152   (IPv4)
     #   TCP    [::1]:7777             [::]:0       LISTENING    17152   (IPv6)
@@ -456,8 +924,10 @@ def find_listening_pids(port: int) -> list[int]:
             # locales — which, as a ValueError, would escape a
             # (SubprocessError, OSError) net and crash stop/status instead of
             # degrading to []. errors="replace" belts the rest.
-            encoding="oem", errors="replace",
-            stderr=subprocess.DEVNULL, timeout=10,
+            encoding="oem",
+            errors="replace",
+            stderr=subprocess.DEVNULL,
+            timeout=10,
             creationflags=_SUBPROCESS_NO_WINDOW,
         )
     except (FileNotFoundError, subprocess.SubprocessError, OSError, ValueError):
@@ -516,7 +986,9 @@ def process_command_line(pid: int) -> str:
         if sys.platform == "darwin":
             out = subprocess.check_output(
                 ["ps", "-o", "command=", "-p", str(pid)],
-                text=True, stderr=subprocess.DEVNULL, timeout=2,
+                text=True,
+                stderr=subprocess.DEVNULL,
+                timeout=2,
             )
             return out.strip()
         if IS_WINDOWS:
@@ -524,11 +996,16 @@ def process_command_line(pid: int) -> str:
             # present on supported Windows; -NoProfile keeps it fast.
             out = subprocess.check_output(
                 [
-                    "powershell", "-NoProfile", "-NonInteractive", "-Command",
+                    "powershell",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
                     f"(Get-CimInstance Win32_Process -Filter 'ProcessId={int(pid)}')"
                     ".CommandLine",
                 ],
-                text=True, stderr=subprocess.DEVNULL, timeout=10,
+                text=True,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
                 creationflags=_SUBPROCESS_NO_WINDOW,
             )
             return out.strip()
@@ -538,8 +1015,8 @@ def process_command_line(pid: int) -> str:
 
 
 # Tri-state liveness results for pid_liveness().
-PID_DEAD = "dead"                  # confirmed not running -> safe to prune
-PID_ALIVE = "alive"                # confirmed running
+PID_DEAD = "dead"  # confirmed not running -> safe to prune
+PID_ALIVE = "alive"  # confirmed running
 PID_UNSIGNALABLE = "unsignalable"  # exists but we cannot signal it (POSIX EPERM)
 
 
@@ -639,7 +1116,9 @@ def kill_pid(pid: int, sig: int = SIGTERM) -> bool:
     try:
         r = subprocess.run(
             ["taskkill", "/F", "/PID", str(pid)],
-            check=False, capture_output=True, timeout=5,
+            check=False,
+            capture_output=True,
+            timeout=5,
             creationflags=_SUBPROCESS_NO_WINDOW,
         )
     except (OSError, subprocess.SubprocessError) as exc:
@@ -677,7 +1156,9 @@ def kill_process_tree(pid: int, sig: int = SIGTERM) -> bool:
         if pgid <= 1 or pgid == _OWN_PGID:
             logger.error(
                 "kill_process_tree: refusing broadcast/self pgid %d for pid %d; "
-                "falling back to pid-scoped kill", pgid, pid,
+                "falling back to pid-scoped kill",
+                pgid,
+                pid,
             )
             os.kill(pid, sig)
             return True
@@ -686,7 +1167,9 @@ def kill_process_tree(pid: int, sig: int = SIGTERM) -> bool:
     try:
         r = subprocess.run(
             ["taskkill", "/T", "/F", "/PID", str(pid)],
-            check=False, capture_output=True, timeout=5,
+            check=False,
+            capture_output=True,
+            timeout=5,
             creationflags=_SUBPROCESS_NO_WINDOW,
         )
     except (OSError, subprocess.SubprocessError) as exc:
@@ -736,9 +1219,29 @@ async def kill_process_tree_async(pid: int, sig: int = SIGTERM) -> bool:
     return await loop.run_in_executor(subprocess_executor(), kill_process_tree, pid, sig)
 
 
+async def descendant_termination_handles_async(
+    pid: int,
+    retained_handles: Mapping[int, int] | None = None,
+    root_handle: int | None = None,
+) -> dict[int, int]:
+    """Async variant of :func:`descendant_termination_handles`."""
+
+    if not IS_WINDOWS:
+        return {}
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(
+        subprocess_executor(),
+        descendant_termination_handles,
+        pid,
+        dict(retained_handles or {}),
+        root_handle,
+    )
+
+
 # ---------------------------------------------------------------------------
 # File permissions
 # ---------------------------------------------------------------------------
+
 
 def fchmod_safe(fd: int, mode: int) -> None:
     """Apply ``mode`` to ``fd``. Logs warning on failure.
@@ -802,7 +1305,9 @@ def _current_user_sid() -> str | None:
     try:
         r = subprocess.run(
             [whoami, "/user", "/fo", "csv", "/nh"],
-            check=False, capture_output=True, timeout=5,
+            check=False,
+            capture_output=True,
+            timeout=5,
             creationflags=_SUBPROCESS_NO_WINDOW,
         )
     except (OSError, subprocess.SubprocessError):
@@ -867,14 +1372,20 @@ def restrict_to_owner(path: str | os.PathLike) -> None:
             f"users out of {path!s} — see _current_user_sid docstring)."
         )
     argv: list[str] = [
-        icacls, os.fspath(path), "/inheritance:r",
-        "/grant:r", f"{_OWNER_RIGHTS_SID}:F",
+        icacls,
+        os.fspath(path),
+        "/inheritance:r",
+        "/grant:r",
+        f"{_OWNER_RIGHTS_SID}:F",
     ]
     if user_sid != _OWNER_RIGHTS_SID:
         argv += ["/grant:r", f"{user_sid}:F"]
     try:
         r = subprocess.run(
-            argv, check=False, capture_output=True, timeout=10,
+            argv,
+            check=False,
+            capture_output=True,
+            timeout=10,
             creationflags=_SUBPROCESS_NO_WINDOW,
         )
     except (OSError, subprocess.SubprocessError) as exc:
@@ -893,7 +1404,11 @@ def restrict_to_owner(path: str | os.PathLike) -> None:
 _WINDOWS_RUNNABLE_HOOK_SUFFIXES = (".sh", ".ps1", ".cmd", ".bat", ".py", ".exe")
 
 
-def is_executable_file(path: str | os.PathLike) -> bool:
+def is_executable_file(
+    path: str | os.PathLike,
+    *,
+    platform_name: str | None = None,
+) -> bool:
     """Should this file be treated as a runnable hook/script for *this* platform?
 
     POSIX: the file must carry an execute bit (``os.access(X_OK)``) — unchanged
@@ -905,14 +1420,18 @@ def is_executable_file(path: str | os.PathLike) -> bool:
     Windows we instead accept a regular file whose extension is a known script
     type (``.sh``/``.ps1``/``.cmd``/``.bat``/``.py``/``.exe``) — runnability is
     determined when KiroCrew actually invokes it, not by a meaningless bit.
+    ``platform_name`` lets cross-platform discovery apply the target platform's
+    rules instead of the host's. A Windows host cannot represent POSIX execute
+    bits, so an existing regular file is accepted for an explicit POSIX target.
     """
     try:
-        if IS_POSIX:
-            return os.path.isfile(path) and os.access(path, os.X_OK)
         if not os.path.isfile(path):
             return False
-        suffix = os.path.splitext(str(path))[1].lower()
-        return suffix in _WINDOWS_RUNNABLE_HOOK_SUFFIXES
+        target_is_windows = IS_WINDOWS if platform_name is None else platform_name == "win32"
+        if target_is_windows:
+            suffix = os.path.splitext(str(path))[1].lower()
+            return suffix in _WINDOWS_RUNNABLE_HOOK_SUFFIXES
+        return not IS_POSIX or os.access(path, os.X_OK)
     except OSError:
         return False
 
@@ -992,6 +1511,7 @@ def find_python_interpreter(reject: Optional[Callable[[str], bool]] = None) -> s
 # Resource limits
 # ---------------------------------------------------------------------------
 
+
 def proc_rss_bytes() -> int:
     """Return this process's resident set size in bytes, or 0 on failure.
 
@@ -1057,8 +1577,10 @@ def proc_cpu_seconds() -> float:
         user = wintypes.FILETIME()
         if not kernel32.GetProcessTimes(
             kernel32.GetCurrentProcess(),
-            ctypes.byref(creation), ctypes.byref(exit_),
-            ctypes.byref(kernel), ctypes.byref(user),
+            ctypes.byref(creation),
+            ctypes.byref(exit_),
+            ctypes.byref(kernel),
+            ctypes.byref(user),
         ):
             return 0.0
 
@@ -1073,6 +1595,7 @@ def proc_cpu_seconds() -> float:
 # ---------------------------------------------------------------------------
 # strftime portability
 # ---------------------------------------------------------------------------
+
 
 def strftime(dt: "object", fmt: str) -> str:
     """``dt.strftime(fmt)`` with the GNU/BSD no-pad directives made portable.
@@ -1092,7 +1615,7 @@ def strftime(dt: "object", fmt: str) -> str:
                     out.append("%#" + fmt[i + 2])
                     i += 3
                     continue
-                out.append(fmt[i:i + 2])
+                out.append(fmt[i : i + 2])
                 i += 2
                 continue
             out.append(fmt[i])

@@ -16,7 +16,6 @@ from __future__ import annotations
 import http.cookiejar
 import json
 import os
-import sys
 import time
 import urllib.request
 
@@ -36,10 +35,19 @@ def gateway():
     No state cleanup between tests; each test must be tolerant of
     prior-test side effects, or use a fresh per-test gateway.
     """
+    from kiro_crew.testing import fake_acp_backend
     from kiro_crew.testing.harness import spawn_feature_gateway
 
-    with spawn_feature_gateway(fixture="minimal", approval="reads") as handle:
-        yield handle
+    previous = os.environ.get("KIROCREW_KIRO_BIN")
+    os.environ["KIROCREW_KIRO_BIN"] = str(fake_acp_backend.__file__)
+    try:
+        with spawn_feature_gateway(fixture="minimal", approval="reads") as handle:
+            yield handle
+    finally:
+        if previous is None:
+            os.environ.pop("KIROCREW_KIRO_BIN", None)
+        else:
+            os.environ["KIROCREW_KIRO_BIN"] = previous
 
 
 _openers: dict[int, urllib.request.OpenerDirector] = {}
@@ -82,9 +90,7 @@ def _api_get(gateway, path: str) -> dict:
 def _api_post(gateway, path: str, body: dict) -> dict:
     """POST to an API endpoint via the session cookie, return parsed JSON."""
     data = json.dumps(body).encode()
-    req = urllib.request.Request(
-        f"http://localhost:{gateway.port}{path}", data=data, method="POST"
-    )
+    req = urllib.request.Request(f"http://localhost:{gateway.port}{path}", data=data, method="POST")
     req.add_header("Content-Type", "application/json")
     with _opener(gateway).open(req, timeout=30) as resp:
         return json.loads(resp.read())
@@ -141,12 +147,12 @@ def _api_delete(gateway, path: str) -> dict:
         return json.loads(resp.read())
 
 
-def _api_post_with_session(gateway, path: str, body: dict, session_key: str = "dashboard:ui") -> dict:
+def _api_post_with_session(
+    gateway, path: str, body: dict, session_key: str = "dashboard:ui"
+) -> dict:
     """POST via the session cookie + X-Session-Key header."""
     data = json.dumps(body).encode()
-    req = urllib.request.Request(
-        f"http://localhost:{gateway.port}{path}", data=data, method="POST"
-    )
+    req = urllib.request.Request(f"http://localhost:{gateway.port}{path}", data=data, method="POST")
     req.add_header("Content-Type", "application/json")
     req.add_header("X-Session-Key", session_key)
     with _opener(gateway).open(req, timeout=30) as resp:
@@ -228,8 +234,9 @@ def test_session_search(gateway):
 # a turn spawn the fake instead of a real ``kiro-cli`` -- no new provider enum,
 # no config-key override, nothing remotely selectable.
 
+
 @pytest.fixture()
-def acp_gateway(monkeypatch, tmp_path):
+def acp_gateway(monkeypatch):
     """Gateway whose ``kiro-cli`` is the offline fake ACP backend.
 
     Function-scoped (separate from the module ``gateway``): only these tests
@@ -239,17 +246,9 @@ def acp_gateway(monkeypatch, tmp_path):
     from kiro_crew.testing import fake_acp_backend
     from kiro_crew.testing.harness import spawn_feature_gateway
 
-    # Launch the *packaged* fake by path under this test's interpreter, so it
-    # runs under a known-present python (no fleet-PATH ``python3`` dependency)
-    # and exercises the shipped module rather than a copy.
-    launcher = tmp_path / "fake_acp_backend"
-    launcher.write_text(
-        f"#!{sys.executable}\n"
-        "import runpy\n"
-        f"runpy.run_path({fake_acp_backend.__file__!r}, run_name='__main__')\n"
-    )
-    launcher.chmod(0o755)
-    monkeypatch.setenv("KIROCREW_KIRO_BIN", str(launcher))
+    # Execute the packaged fake itself so readiness probes and ACP turns use
+    # the same deterministic backend rather than a test-only copy.
+    monkeypatch.setenv("KIROCREW_KIRO_BIN", str(fake_acp_backend.__file__))
 
     with spawn_feature_gateway(fixture="minimal", approval="reads") as handle:
         # The KIROCREW_KIRO_BIN seam only fires when the provider resolves to
@@ -258,7 +257,9 @@ def acp_gateway(monkeypatch, tmp_path):
         # breaks, rather than surfacing it 60s later as a "no reply" timeout.
         cfg = handle.home / "config.json"
         if cfg.is_file():
-            provider = json.loads(cfg.read_text(encoding="utf-8")).get("agent", {}).get("provider", "acp")
+            provider = (
+                json.loads(cfg.read_text(encoding="utf-8")).get("agent", {}).get("provider", "acp")
+            )
             assert provider == "acp", (
                 "acp_gateway needs provider=acp for the KIROCREW_KIRO_BIN seam; "
                 f"minimal fixture resolved provider={provider!r}"

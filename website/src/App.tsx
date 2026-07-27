@@ -20,7 +20,6 @@ import { useRumPageView } from './hooks/useRumPageView'
 import { useIsMobile } from './hooks/useIsMobile'
 import { useNativeNotification } from './hooks/useNativeNotification'
 import { useNotificationSound } from './hooks/useNotificationSound'
-import { useRefreshScheduler } from './hooks/useRefreshScheduler'
 import { recordSessionStart, recordEvent } from './rum'
 import { ZoomProvider } from './hooks/ZoomProvider'
 import { api, isAuthBannerShown } from './api/client'
@@ -763,10 +762,6 @@ export default function App() {
   useUpdateSubscription()
   const { botName: _botName, avatar: _avatar } = useBranding()
 
-  // OAuth-style token refresh: silently rotates the access cookie before
-  // it expires so the user does not have to re-mint via `kirocrew token`
-  // URL every ~20h. See KiroCrew docs/token-refresh/REQUIREMENTS.md
-  useRefreshScheduler()
   // Per-theme branding (bot name, logo, favicon, top-bar decoration, overlays,
   // activation side-effect) comes from the theme-branding registry so the shell
   // never hard-codes `colorTheme === 'x' ? …` chains. Falls back to the

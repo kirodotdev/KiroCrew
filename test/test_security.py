@@ -2009,6 +2009,14 @@ class TestIsSensitivePath:
         assert is_sensitive_path("~/.kiro/crew/.local_secret") is True
         assert is_sensitive_path("~/.kirocrew/.local_secret") is True
 
+    def test_kiro_cli_binary_attestation(self) -> None:
+        assert is_sensitive_path("~/.kiro/crew/.kiro_cli_binary_trust.json") is True
+        assert is_sensitive_path("~/.kirocrew/.kiro_cli_binary_trust.json") is True
+
+    def test_kiro_auth_staging_parent(self) -> None:
+        assert is_sensitive_path("~/.kiro/crew-auth-staging") is True
+        assert is_sensitive_path("~/.kiro/crew-auth-staging/auth-123/token.json") is True
+
     def test_dashboard_secrets_absolute_path(self) -> None:
         home = str(Path.home())
         assert is_sensitive_path(f"{home}/.kiro/crew/token_signing.key") is True

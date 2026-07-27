@@ -23,6 +23,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from chat_test_helpers import _make_ready_kiro_prerequisite
 
 from kiro_crew import artifacts as art_mod
 from kiro_crew.artifacts import ArtifactStore
@@ -40,7 +41,7 @@ def _make_state(tmp_path, **kwargs):
     sessions.remove = AsyncMock()
     sessions.recycle_background = AsyncMock()
     sessions.get_pid = MagicMock(return_value=None)
-    return DashboardState(
+    state = DashboardState(
         sessions=sessions,
         crons=MagicMock(list_jobs=MagicMock(return_value=[]), status=MagicMock(return_value={})),
         lessons=MagicMock(load_all=MagicMock(return_value=[])),
@@ -48,6 +49,8 @@ def _make_state(tmp_path, **kwargs):
         conversation_log=ConversationLog(base_dir=tmp_path),
         **kwargs,
     )
+    state.kiro_prerequisite_service = _make_ready_kiro_prerequisite()
+    return state
 
 
 def _make_app(state) -> web.Application:

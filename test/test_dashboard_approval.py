@@ -7,6 +7,7 @@ from contextlib import contextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from chat_test_helpers import _make_ready_kiro_prerequisite
 
 from kiro_crew.dashboard.chat import _run_chat
 from kiro_crew.dashboard.state import (
@@ -83,6 +84,7 @@ def _make_state(
         start_time=0.0,
         conversation_log=ConversationLog(base_dir=tmp_path),
     )
+    state.kiro_prerequisite_service = _make_ready_kiro_prerequisite()
     state.context_builder = context_builder
     state._hook_store = hook_store or _make_hook_store()
     state.broadcast_ws = MagicMock()

@@ -513,6 +513,191 @@ class TestPidLivenessPosix:
         assert pc.pid_exists(os.getpid()) is True
 
 
+class TestProcessDescendants:
+    def test_descendants_from_parent_map_walks_full_tree(self):
+        parent_map = {
+            11: 10,
+            12: 11,
+            13: 10,
+            14: 12,
+            99: 1,
+            10: 14,
+        }
+
+        assert pc._descendants_from_parent_map(10, parent_map) == [11, 13, 12, 14]
+
+    @pytest.mark.asyncio
+    async def test_descendant_termination_handles_async_is_empty_on_posix(self):
+        if pc.IS_WINDOWS:
+            pytest.skip("POSIX process groups do not need retained descendants")
+
+        assert await pc.descendant_termination_handles_async(os.getpid()) == {}
+
+    def test_windows_parent_map_raises_when_snapshot_creation_fails(self, monkeypatch):
+        class FakeCall:
+            def __init__(self, result):
+                self.result = result
+
+            def __call__(self, *_args):
+                return self.result
+
+        kernel32 = types.SimpleNamespace(
+            CreateToolhelp32Snapshot=FakeCall(pc.wintypes.HANDLE(-1).value),
+            Process32First=FakeCall(False),
+            Process32Next=FakeCall(False),
+            CloseHandle=FakeCall(True),
+        )
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(
+            pc.ctypes,
+            "windll",
+            types.SimpleNamespace(kernel32=kernel32),
+            raising=False,
+        )
+
+        with pytest.raises(OSError, match="process snapshot"):
+            pc._windows_process_parent_map()
+
+    def test_windows_parent_map_raises_when_initial_enumeration_fails(self, monkeypatch):
+        class FakeCall:
+            def __init__(self, result):
+                self.result = result
+                self.calls = 0
+
+            def __call__(self, *_args):
+                self.calls += 1
+                return self.result
+
+        close_handle = FakeCall(True)
+        kernel32 = types.SimpleNamespace(
+            CreateToolhelp32Snapshot=FakeCall(123),
+            Process32First=FakeCall(False),
+            Process32Next=FakeCall(False),
+            CloseHandle=close_handle,
+        )
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(
+            pc.ctypes,
+            "windll",
+            types.SimpleNamespace(kernel32=kernel32),
+            raising=False,
+        )
+
+        with pytest.raises(OSError, match="first process"):
+            pc._windows_process_parent_map()
+
+        assert close_handle.calls == 1
+
+    def test_windows_parent_map_raises_when_later_enumeration_fails(self, monkeypatch):
+        class FakeCall:
+            def __init__(self, result):
+                self.result = result
+                self.calls = 0
+
+            def __call__(self, *_args):
+                self.calls += 1
+                return self.result
+
+        close_handle = FakeCall(True)
+        kernel32 = types.SimpleNamespace(
+            CreateToolhelp32Snapshot=FakeCall(123),
+            Process32First=FakeCall(True),
+            Process32Next=FakeCall(False),
+            CloseHandle=close_handle,
+            SetLastError=FakeCall(True),
+            GetLastError=FakeCall(5),
+        )
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(
+            pc.ctypes,
+            "windll",
+            types.SimpleNamespace(kernel32=kernel32),
+            raising=False,
+        )
+        with pytest.raises(OSError, match="process enumeration"):
+            pc._windows_process_parent_map()
+
+        assert close_handle.calls == 1
+
+    def test_windows_descendant_lifetime_accepts_genuine_pre_exit_child(
+        self,
+        monkeypatch,
+    ):
+        parent_maps = iter(({101: 100}, {101: 100}))
+        closed: list[int] = []
+        identities = {
+            8001: (100, 10, 20),
+            9001: (101, 15, None),
+        }
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc, "_windows_process_parent_map", lambda: next(parent_maps))
+        monkeypatch.setattr(pc, "_open_process_termination_handle", lambda _pid: 9001)
+        monkeypatch.setattr(
+            pc,
+            "_windows_process_handle_identity",
+            identities.get,
+        )
+        monkeypatch.setattr(pc, "close_process_handle", closed.append)
+
+        assert pc.descendant_termination_handles(100, {}, 8001) == {101: 9001}
+        assert closed == []
+
+    def test_windows_descendant_lifetime_rejects_post_exit_recycled_child(
+        self,
+        monkeypatch,
+    ):
+        parent_maps = iter(({101: 100}, {101: 100}))
+        closed: list[int] = []
+        identities = {
+            8001: (100, 10, 20),
+            9001: (101, 21, None),
+        }
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc, "_windows_process_parent_map", lambda: next(parent_maps))
+        monkeypatch.setattr(pc, "_open_process_termination_handle", lambda _pid: 9001)
+        monkeypatch.setattr(
+            pc,
+            "_windows_process_handle_identity",
+            identities.get,
+        )
+        monkeypatch.setattr(pc, "close_process_handle", closed.append)
+
+        assert pc.descendant_termination_handles(100, {}, 8001) == {}
+        assert closed == [9001]
+
+    @pytest.mark.skipif(not pc.IS_WINDOWS, reason="Windows process handles only")
+    def test_retained_handle_targets_original_windows_child(self):
+        child = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            creationflags=pc.CREATE_NEW_PROCESS_GROUP,
+        )
+        handles: dict[int, int] = {}
+        root_handle = pc._open_process_termination_handle(os.getpid())
+        assert root_handle is not None
+        try:
+            deadline = time.monotonic() + 5
+            while child.pid not in handles and time.monotonic() < deadline:
+                handles.update(
+                    pc.descendant_termination_handles(
+                        os.getpid(),
+                        handles,
+                        root_handle,
+                    )
+                )
+                if child.pid not in handles:
+                    time.sleep(0.05)
+            assert child.pid in handles
+            assert pc.terminate_process_handle(handles[child.pid]) is True
+            child.wait(timeout=5)
+        finally:
+            if child.poll() is None:
+                child.kill()
+                child.wait(timeout=5)
+            for handle in handles.values():
+                pc.close_process_handle(handle)
+            pc.close_process_handle(root_handle)
+
+
 class TestKillSubprocessPosix:
     @pytest.mark.skipif(pc.IS_WINDOWS, reason="POSIX os.kill path; Windows uses taskkill")
     def test_kill_pid_terminates_real_child_posix(self):

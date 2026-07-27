@@ -47,6 +47,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Any, Callable, Iterator, Optional
 
+from kiro_crew.kiro_prerequisite import FAKE_ACP_TEST_MODE_ENV
+
 _LOGGER = logging.getLogger(__name__)
 
 # 60 s default — config init + MCP probe + dashboard bind takes meaningful
@@ -152,25 +154,19 @@ def parse_ready_line(line: str) -> dict[str, Any]:
         should surface clearly.
     """
     if not line.startswith(READY_PREFIX):
-        raise GatewaySpawnError(
-            f"line does not start with {READY_PREFIX}: {line!r}"
-        )
+        raise GatewaySpawnError(f"line does not start with {READY_PREFIX}: {line!r}")
     try:
-        payload = json.loads(line[len(READY_PREFIX):])
+        payload = json.loads(line[len(READY_PREFIX) :])
     except json.JSONDecodeError as exc:
-        raise GatewaySpawnError(
-            f"malformed {READY_PREFIX} line: {line!r} ({exc})"
-        ) from exc
+        raise GatewaySpawnError(f"malformed {READY_PREFIX} line: {line!r} ({exc})") from exc
     if not isinstance(payload, dict):
         raise GatewaySpawnError(
-            f"{READY_PREFIX} payload was {type(payload).__name__}, "
-            f"expected dict: {line!r}"
+            f"{READY_PREFIX} payload was {type(payload).__name__}, " f"expected dict: {line!r}"
         )
     for required_key in ("port", "token"):
         if required_key not in payload:
             raise GatewaySpawnError(
-                f"{READY_PREFIX} payload missing required key "
-                f"{required_key!r}: {line!r}"
+                f"{READY_PREFIX} payload missing required key " f"{required_key!r}: {line!r}"
             )
     return payload
 
@@ -372,8 +368,7 @@ def terminate_pgid(
         pass
     except PermissionError:
         _LOGGER.warning(
-            "terminate_pgid(%d): SIGKILL to pgid %d denied — group may "
-            "still be running",
+            "terminate_pgid(%d): SIGKILL to pgid %d denied — group may " "still be running",
             pid,
             pgid,
         )
@@ -461,6 +456,10 @@ def spawn_feature_gateway(
             **os.environ,
             "PYTHONPATH": str(src) + os.pathsep + os.environ.get("PYTHONPATH", ""),
             "KIROCREW_HOME": str(home),
+            # Allows only the exact packaged fake ACP entry point to bypass the
+            # production macOS Developer ID requirement. Arbitrary overrides
+            # remain subject to normal provenance and signature checks.
+            FAKE_ACP_TEST_MODE_ENV: "1",
             # Force unbuffered Python so we see READY without waiting for the
             # next flush. ``--json-ready`` already calls ``flush=True`` on the
             # READY print itself, but other prints leading up to it (e.g.

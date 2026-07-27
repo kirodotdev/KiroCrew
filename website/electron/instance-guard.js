@@ -6,7 +6,7 @@
  * INSTALLS sharing ONE bundle identifier (com.amazon.kiro.crew — Finder
  * separates installs by filename; Squirrel validates updates against the
  * host's designated requirement, which pins the id), ONE data home
- * (~/.kirocrew), and ONE gateway port (5476). That makes the port a mutex:
+ * (~/.kiro/crew), and ONE gateway port (5476). That makes the port a mutex:
  * only one KiroCrew-family gateway may run at a time. Electron's
  * requestSingleInstanceLock is keyed on userData (per productName), so it
  * cannot stop "KiroCrew Nightly" launching while "KiroCrew" runs — this
@@ -36,8 +36,10 @@ const HEALTH_IDENTITY_PATH = "/api/health";
 // on two update lanes; nightly is a separate side-by-side install. Both
 // share the bundle id, so the app NAME is the takeover-targeting handle.
 const FAMILY_META = {
-  prod: { appName: "KiroCrew" },
-  nightly: { appName: "KiroCrew Nightly" },
+  // appName is the technical Finder/AppleScript target. displayName is the
+  // product spelling shown in dialogs and status text.
+  prod: { appName: "KiroCrew", displayName: "Kiro Crew" },
+  nightly: { appName: "KiroCrew Nightly", displayName: "Kiro Crew Nightly" },
 };
 
 /**

@@ -28,6 +28,7 @@ from aiohttp import web
 from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
 from kiro_crew.dashboard.chat_runner import _run_chat
 from kiro_crew.dashboard.chat_utils import _history_key_for
+from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_not_ready
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
@@ -63,6 +64,9 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
     edited prompt against it. Slot key, title, folder, sidebar position, and
     color are unchanged.
     """
+    blocked = await reject_if_kiro_not_ready(request)
+    if blocked is not None:
+        return blocked
     state: DashboardState = request.app["state"]
     name = request.match_info["slot"]
     slot = state._slots.get(name)
@@ -75,8 +79,11 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
     if request_app:
         if not slot._app or slot._app != request_app:
             sel().log_api_access(
-                caller=request_app, operation="chat.slot_rewind", outcome="denied",
-                source="app_isolation", resources=f"slot={name}",
+                caller=request_app,
+                operation="chat.slot_rewind",
+                outcome="denied",
+                source="app_isolation",
+                resources=f"slot={name}",
                 error="app cannot rewind unscoped or unowned slot",
             )
             # 404 (not 403): indistinguishable from a missing slot —
@@ -139,30 +146,36 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
                         logger.debug("rewind: chained scan for ts failed", exc_info=True)
                         chained = []
                     if any(
-                        m.get("ts") == ts and m.get("role") == "user"
-                        for m in chained[:disk_older]
+                        m.get("ts") == ts and m.get("role") == "user" for m in chained[:disk_older]
                     ):
                         return web.json_response(
-                            {"error": "cannot rewind into archived history; "
-                                      "reload the slot or use fork instead"},
+                            {
+                                "error": "cannot rewind into archived history; "
+                                "reload the slot or use fork instead"
+                            },
                             status=400,
                         )
                 return web.json_response({"error": "user message not found for ts"}, status=400)
         elif isinstance(raw_index, bool) or not isinstance(raw_index, int):
             return web.json_response(
-                {"error": "at_message_index must be a non-negative integer"}, status=400,
+                {"error": "at_message_index must be a non-negative integer"},
+                status=400,
             )
         elif raw_index < 0 or raw_index >= chained_len:
             return web.json_response(
-                {"error": f"at_message_index {raw_index} out of range "
-                          f"(have {chained_len} messages)"},
+                {
+                    "error": f"at_message_index {raw_index} out of range "
+                    f"(have {chained_len} messages)"
+                },
                 status=400,
             )
         elif raw_index < disk_older:
             return web.json_response(
-                {"error": f"cannot rewind to index {raw_index}: in archived history "
-                          f"(older than offset {disk_older}); "
-                          f"reload the slot or use fork instead"},
+                {
+                    "error": f"cannot rewind to index {raw_index}: in archived history "
+                    f"(older than offset {disk_older}); "
+                    f"reload the slot or use fork instead"
+                },
                 status=400,
             )
         elif msgs[raw_index - disk_older].get("role") != "user":
@@ -200,7 +213,9 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
                 await state.sessions.remove(session_key)
             except Exception:
                 logger.warning(
-                    "rewind: failed to remove ACP session for %s", session_key, exc_info=True,
+                    "rewind: failed to remove ACP session for %s",
+                    session_key,
+                    exc_info=True,
                 )
 
         # Best-effort cleanup of the orphaned kiro-cli session JSONL so it

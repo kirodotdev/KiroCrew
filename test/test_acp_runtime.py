@@ -96,6 +96,7 @@ async def _stop_reader(task: asyncio.Task) -> None:
 
 # ── Notification routing by sessionId ──
 
+
 @pytest.mark.asyncio
 async def test_notification_routed_to_named_session():
     rt, reader, _ = _make_runtime()
@@ -142,6 +143,7 @@ async def test_null_session_notification_broadcasts_to_all():
 
 
 # ── Response routing by id ──
+
 
 @pytest.mark.asyncio
 async def test_awaited_response_resolves_pending_future():
@@ -289,10 +291,80 @@ def test_runtime_uses_clients_augmented_kiro_bin_resolver():
     import kiro_crew.acp.client as client_mod
     import kiro_crew.acp.runtime as runtime_mod
 
-    assert runtime_mod._resolve_kiro_bin is client_mod._resolve_kiro_bin
+    assert runtime_mod._resolve_kiro_bin_for_spawn is client_mod._resolve_kiro_bin_for_spawn
+
+
+@pytest.mark.asyncio
+async def test_runtime_spawn_passes_fd_snapshot_through_exact_wrappers(
+    tmp_path,
+    monkeypatch,
+):
+    import kiro_crew.acp.client as client_mod
+    import kiro_crew.acp.runtime as runtime_mod
+
+    executable = tmp_path / "sealed-kiro-cli"
+    executable.write_bytes(b"#!/bin/sh\n# sealed\n")
+    snapshot_fd = os.open(executable, os.O_RDONLY)
+    launch_path = f"/proc/{os.getpid()}/fd/{snapshot_fd}"
+    client_mod._KIRO_EXECUTABLE_SNAPSHOTS[launch_path] = snapshot_fd
+    wrapped: dict[str, object] = {}
+
+    class _StopSpawn(Exception):
+        pass
+
+    def capture_wrap(argv, mode, **kwargs):
+        wrapped.update(argv=list(argv), mode=mode, kwargs=kwargs)
+        return ["sandbox-wrapper", *argv], None
+
+    async def stop_spawn(*args, **kwargs):
+        wrapped["spawn_args"] = args
+        wrapped["spawn_kwargs"] = kwargs
+        raise _StopSpawn()
+
+    async def resolve_snapshot():
+        return launch_path
+
+    monkeypatch.setattr(
+        runtime_mod,
+        "_resolve_kiro_bin_for_spawn",
+        resolve_snapshot,
+    )
+    monkeypatch.setattr(runtime_mod, "wrap_argv", capture_wrap)
+    monkeypatch.setattr(
+        runtime_mod,
+        "cgroup_scope_argv",
+        lambda argv: ["cgroup-wrapper", *argv],
+    )
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", stop_spawn)
+
+    runtime = AcpRuntime(work_dir=tmp_path / "workspace")
+    with pytest.raises(_StopSpawn):
+        await runtime.spawn()
+
+    assert wrapped["argv"] == [launch_path, "acp", "--agent", runtime._agent]
+    assert wrapped["mode"] == "auto"
+    assert wrapped["kwargs"] == {
+        "strip_python_env": True,
+        "is_kiro_cli": True,
+    }
+    assert wrapped["spawn_args"] == (
+        "cgroup-wrapper",
+        "sandbox-wrapper",
+        launch_path,
+        "acp",
+        "--agent",
+        runtime._agent,
+    )
+    spawn_kwargs = wrapped["spawn_kwargs"]
+    assert isinstance(spawn_kwargs, dict)
+    assert spawn_kwargs["pass_fds"] == (snapshot_fd,)
+    assert launch_path not in client_mod._KIRO_EXECUTABLE_SNAPSHOTS
+    with pytest.raises(OSError):
+        os.fstat(snapshot_fd)
 
 
 # ── Process death propagation ──
+
 
 @pytest.mark.asyncio
 async def test_process_exit_marks_dead_and_poisons_queues():
@@ -324,6 +396,7 @@ async def test_mark_dead_is_idempotent():
 
 
 # ── Send paths ──
+
 
 @pytest.mark.asyncio
 async def test_send_request_registers_routing_and_increments_id():
@@ -371,6 +444,7 @@ async def test_send_request_on_dead_runtime_raises():
 
 
 # ── AcpSessionHandle behaviour ──
+
 
 @pytest.mark.asyncio
 async def test_handle_destroy_terminates_and_unregisters_session():
@@ -600,6 +674,7 @@ async def test_concurrent_prompt_on_same_handle_rejected():
 
 # ── Headline: one runtime, many sessions, correct routing ──
 
+
 @pytest.mark.asyncio
 async def test_multiple_sessions_routed_independently():
     """Two concurrent prompt turns on ONE runtime each receive only their own
@@ -627,14 +702,26 @@ async def test_multiple_sessions_routed_independently():
         assert set(sid_to_req) == {"sA", "sB"}, "both prompts must be in flight"
 
         # Interleave text chunks for the two sessions (out of order on purpose).
-        _feed(reader, {"method": METHOD_SESSION_UPDATE, "params": {
-            "sessionId": "sB",
-            "update": {"sessionUpdate": "agent_message_chunk", "text": "Bravo"},
-        }})
-        _feed(reader, {"method": METHOD_SESSION_UPDATE, "params": {
-            "sessionId": "sA",
-            "update": {"sessionUpdate": "agent_message_chunk", "text": "Alpha"},
-        }})
+        _feed(
+            reader,
+            {
+                "method": METHOD_SESSION_UPDATE,
+                "params": {
+                    "sessionId": "sB",
+                    "update": {"sessionUpdate": "agent_message_chunk", "text": "Bravo"},
+                },
+            },
+        )
+        _feed(
+            reader,
+            {
+                "method": METHOD_SESSION_UPDATE,
+                "params": {
+                    "sessionId": "sA",
+                    "update": {"sessionUpdate": "agent_message_chunk", "text": "Alpha"},
+                },
+            },
+        )
         # Complete each turn via its own prompt response (routed by id).
         _feed(reader, {"id": sid_to_req["sA"], "result": {"stopReason": "end_turn"}})
         _feed(reader, {"id": sid_to_req["sB"], "result": {"stopReason": "end_turn"}})
@@ -875,21 +962,41 @@ async def test_dispatch_permission_request():
         await asyncio.sleep(0.05)
         req_id = rt._next_id - 1
         # First a tool_call update (seeds the trusted is_shell cache).
-        _feed(reader, {"method": METHOD_SESSION_UPDATE, "params": {
-            "sessionId": "sA",
-            "update": {"sessionUpdate": "tool_call", "toolCallId": "tcP",
-                       "title": "git status", "kind": "execute"},
-        }})
-        # Then the permission request in kiro's real toolCall-nested shape.
-        _feed(reader, {
-            "id": 5001, "method": METHOD_REQUEST_PERMISSION,
-            "params": {
-                "sessionId": "sA",
-                "toolCall": {"title": "git status", "kind": "execute", "toolCallId": "tcP"},
-                "options": [{"optionId": "allow_once", "name": "Allow once", "kind": "allow_once"},
-                            {"optionId": "allow_always", "name": "Allow always", "kind": "allow_always"}],
+        _feed(
+            reader,
+            {
+                "method": METHOD_SESSION_UPDATE,
+                "params": {
+                    "sessionId": "sA",
+                    "update": {
+                        "sessionUpdate": "tool_call",
+                        "toolCallId": "tcP",
+                        "title": "git status",
+                        "kind": "execute",
+                    },
+                },
             },
-        })
+        )
+        # Then the permission request in kiro's real toolCall-nested shape.
+        _feed(
+            reader,
+            {
+                "id": 5001,
+                "method": METHOD_REQUEST_PERMISSION,
+                "params": {
+                    "sessionId": "sA",
+                    "toolCall": {"title": "git status", "kind": "execute", "toolCallId": "tcP"},
+                    "options": [
+                        {"optionId": "allow_once", "name": "Allow once", "kind": "allow_once"},
+                        {
+                            "optionId": "allow_always",
+                            "name": "Allow always",
+                            "kind": "allow_always",
+                        },
+                    ],
+                },
+            },
+        )
         # Then complete the turn
         _feed(reader, {"id": req_id, "result": {"stopReason": "end_turn"}})
         await asyncio.wait_for(driver, timeout=3.0)
@@ -903,9 +1010,7 @@ async def test_dispatch_permission_request():
         # gate does not reject the long shell command title on the length cap.
         assert perm[0].is_shell is True
         # Advertised optionIds recorded so approve/reject echo the exact ids.
-        assert handle._permission_options[5001] == {
-            "once": "allow_once", "always": "allow_always"
-        }
+        assert handle._permission_options[5001] == {"once": "allow_once", "always": "allow_always"}
     finally:
         await _stop_reader(task)
 
@@ -957,16 +1062,36 @@ async def test_dispatch_tool_call_and_result():
         await asyncio.sleep(0.05)
         req_id = rt._next_id - 1
         # Tool call
-        _feed(reader, {"method": METHOD_SESSION_UPDATE, "params": {
-            "sessionId": "sA",
-            "update": {"sessionUpdate": "tool_call", "toolCallId": "tc1", "title": "bash", "kind": "shell"},
-        }})
+        _feed(
+            reader,
+            {
+                "method": METHOD_SESSION_UPDATE,
+                "params": {
+                    "sessionId": "sA",
+                    "update": {
+                        "sessionUpdate": "tool_call",
+                        "toolCallId": "tc1",
+                        "title": "bash",
+                        "kind": "shell",
+                    },
+                },
+            },
+        )
         # Tool result (real kiro 2.10.0 shape: nested block.content.text)
-        _feed(reader, {"method": METHOD_SESSION_UPDATE, "params": {
-            "sessionId": "sA",
-            "update": {"sessionUpdate": "tool_call_update", "toolCallId": "tc1",
-                       "content": [{"content": {"type": "text", "text": "output here"}}]},
-        }})
+        _feed(
+            reader,
+            {
+                "method": METHOD_SESSION_UPDATE,
+                "params": {
+                    "sessionId": "sA",
+                    "update": {
+                        "sessionUpdate": "tool_call_update",
+                        "toolCallId": "tc1",
+                        "content": [{"content": {"type": "text", "text": "output here"}}],
+                    },
+                },
+            },
+        )
         _feed(reader, {"id": req_id, "result": {"stopReason": "end_turn"}})
         await asyncio.wait_for(driver, timeout=3.0)
 
@@ -990,11 +1115,13 @@ async def test_tool_stall_cancels_session_not_runtime(monkeypatch):
     q = _register(rt, "sA")
     rt.send_notification = AsyncMock()  # type: ignore[method-assign]
     handle = AcpSessionHandle(
-        "sA", q["sA"], rt,
+        "sA",
+        q["sA"],
+        rt,
         watchdog=WatchdogSettings(check_after_secs=0.01, tool_stall_suspect_secs=0.05),
     )
-    handle._tool_dispatched = True   # a tool was dispatched this turn
-    handle._stale_eligible = False   # the stale-turn check must NOT be what fires
+    handle._tool_dispatched = True  # a tool was dispatched this turn
+    handle._stale_eligible = False  # the stale-turn check must NOT be what fires
 
     # Queue that always times out (empty forever), advancing the wall clock a
     # little each poll so the stall idle window is crossed deterministically.
@@ -1030,7 +1157,9 @@ async def test_tool_stall_recovery_completes_even_if_cancel_fails(monkeypatch):
     rt, reader, _ = _make_runtime()
     q = _register(rt, "sA")
     handle = AcpSessionHandle(
-        "sA", q["sA"], rt,
+        "sA",
+        q["sA"],
+        rt,
         watchdog=WatchdogSettings(check_after_secs=0.01, tool_stall_suspect_secs=0.05),
     )
     handle._tool_dispatched = True
@@ -1074,10 +1203,16 @@ async def test_dispatch_thinking_chunk():
         driver = asyncio.ensure_future(drive())
         await asyncio.sleep(0.05)
         req_id = rt._next_id - 1
-        _feed(reader, {"method": METHOD_SESSION_UPDATE, "params": {
-            "sessionId": "sA",
-            "update": {"sessionUpdate": "agent_thought_chunk", "text": "thinking..."},
-        }})
+        _feed(
+            reader,
+            {
+                "method": METHOD_SESSION_UPDATE,
+                "params": {
+                    "sessionId": "sA",
+                    "update": {"sessionUpdate": "agent_thought_chunk", "text": "thinking..."},
+                },
+            },
+        )
         _feed(reader, {"id": req_id, "result": {"stopReason": "end_turn"}})
         await asyncio.wait_for(driver, timeout=3.0)
         think = [e for e in events if e.kind == EVENT_THINKING_CHUNK]
@@ -1110,9 +1245,17 @@ async def test_dispatch_compaction_and_clear():
         driver = asyncio.ensure_future(drive())
         await asyncio.sleep(0.05)
         req_id = rt._next_id - 1
-        _feed(reader, {"method": METHOD_COMPACTION_STATUS, "params": {
-            "sessionId": "sA", "status": {"type": "compacting"}, "summary": "50%",
-        }})
+        _feed(
+            reader,
+            {
+                "method": METHOD_COMPACTION_STATUS,
+                "params": {
+                    "sessionId": "sA",
+                    "status": {"type": "compacting"},
+                    "summary": "50%",
+                },
+            },
+        )
         _feed(reader, {"method": METHOD_CLEAR_STATUS, "params": {"sessionId": "sA"}})
         _feed(reader, {"id": req_id, "result": {"stopReason": "end_turn"}})
         await asyncio.wait_for(driver, timeout=3.0)
@@ -1143,9 +1286,16 @@ async def test_dispatch_agent_switched():
         driver = asyncio.ensure_future(drive())
         await asyncio.sleep(0.05)
         req_id = rt._next_id - 1
-        _feed(reader, {"method": METHOD_AGENT_SWITCHED, "params": {
-            "sessionId": "sA", "agentName": "kirocrew-lite",
-        }})
+        _feed(
+            reader,
+            {
+                "method": METHOD_AGENT_SWITCHED,
+                "params": {
+                    "sessionId": "sA",
+                    "agentName": "kirocrew-lite",
+                },
+            },
+        )
         _feed(reader, {"id": req_id, "result": {"stopReason": "end_turn"}})
         await asyncio.wait_for(driver, timeout=3.0)
         sw = [e for e in events if e.kind == EVENT_AGENT_SWITCHED]
@@ -1173,9 +1323,17 @@ async def test_dispatch_mcp_oauth_request():
         driver = asyncio.ensure_future(drive())
         await asyncio.sleep(0.05)
         req_id = rt._next_id - 1
-        _feed(reader, {"method": METHOD_MCP_OAUTH_REQUEST, "params": {
-            "sessionId": "sA", "serverName": "github-mcp", "oauthUrl": "https://auth.example.com",
-        }})
+        _feed(
+            reader,
+            {
+                "method": METHOD_MCP_OAUTH_REQUEST,
+                "params": {
+                    "sessionId": "sA",
+                    "serverName": "github-mcp",
+                    "oauthUrl": "https://auth.example.com",
+                },
+            },
+        )
         _feed(reader, {"id": req_id, "result": {"stopReason": "end_turn"}})
         await asyncio.wait_for(driver, timeout=3.0)
         oauth = [e for e in events if e.kind == EVENT_MCP_OAUTH_REQUEST]
@@ -1205,9 +1363,16 @@ async def test_dispatch_mcp_server_initialized():
         driver = asyncio.ensure_future(drive())
         await asyncio.sleep(0.05)
         req_id = rt._next_id - 1
-        _feed(reader, {"method": METHOD_MCP_SERVER_INITIALIZED, "params": {
-            "sessionId": "sA", "serverName": "builder-mcp",
-        }})
+        _feed(
+            reader,
+            {
+                "method": METHOD_MCP_SERVER_INITIALIZED,
+                "params": {
+                    "sessionId": "sA",
+                    "serverName": "builder-mcp",
+                },
+            },
+        )
         _feed(reader, {"id": req_id, "result": {"stopReason": "end_turn"}})
         await asyncio.wait_for(driver, timeout=3.0)
         init = [e for e in events if e.kind == EVENT_MCP_SERVER_INITIALIZED]
@@ -1235,9 +1400,17 @@ async def test_dispatch_mcp_server_init_failure():
         driver = asyncio.ensure_future(drive())
         await asyncio.sleep(0.05)
         req_id = rt._next_id - 1
-        _feed(reader, {"method": METHOD_MCP_SERVER_INIT_FAILURE, "params": {
-            "sessionId": "sA", "serverName": "bad-mcp", "error": "timeout",
-        }})
+        _feed(
+            reader,
+            {
+                "method": METHOD_MCP_SERVER_INIT_FAILURE,
+                "params": {
+                    "sessionId": "sA",
+                    "serverName": "bad-mcp",
+                    "error": "timeout",
+                },
+            },
+        )
         _feed(reader, {"id": req_id, "result": {"stopReason": "end_turn"}})
         await asyncio.wait_for(driver, timeout=3.0)
         fail = [e for e in events if e.kind == EVENT_MCP_SERVER_INIT_FAILURE]
@@ -1299,11 +1472,20 @@ async def test_dispatch_tool_call_update_raw_output():
         driver = asyncio.ensure_future(drive())
         await asyncio.sleep(0.05)
         req_id = rt._next_id - 1
-        _feed(reader, {"method": METHOD_SESSION_UPDATE, "params": {
-            "sessionId": "sA",
-            "update": {"sessionUpdate": "tool_call_update", "toolCallId": "tc2",
-                       "rawOutput": {"items": [{"Text": "raw stuff"}]}},
-        }})
+        _feed(
+            reader,
+            {
+                "method": METHOD_SESSION_UPDATE,
+                "params": {
+                    "sessionId": "sA",
+                    "update": {
+                        "sessionUpdate": "tool_call_update",
+                        "toolCallId": "tc2",
+                        "rawOutput": {"items": [{"Text": "raw stuff"}]},
+                    },
+                },
+            },
+        )
         _feed(reader, {"id": req_id, "result": {"stopReason": "end_turn"}})
         await asyncio.wait_for(driver, timeout=3.0)
         tr = [e for e in events if e.kind == EVENT_TOOL_RESULT]
@@ -1331,11 +1513,22 @@ async def test_dispatch_tool_call_update_refinement():
         driver = asyncio.ensure_future(drive())
         await asyncio.sleep(0.05)
         req_id = rt._next_id - 1
-        _feed(reader, {"method": METHOD_SESSION_UPDATE, "params": {
-            "sessionId": "sA",
-            "update": {"sessionUpdate": "tool_call_update", "toolCallId": "tc3",
-                       "title": "Reading file", "kind": "fs", "rawInput": "/etc/hosts"},
-        }})
+        _feed(
+            reader,
+            {
+                "method": METHOD_SESSION_UPDATE,
+                "params": {
+                    "sessionId": "sA",
+                    "update": {
+                        "sessionUpdate": "tool_call_update",
+                        "toolCallId": "tc3",
+                        "title": "Reading file",
+                        "kind": "fs",
+                        "rawInput": "/etc/hosts",
+                    },
+                },
+            },
+        )
         _feed(reader, {"id": req_id, "result": {"stopReason": "end_turn"}})
         await asyncio.wait_for(driver, timeout=3.0)
         tu = [e for e in events if e.kind == EVENT_TOOL_CALL_UPDATE]
@@ -1362,10 +1555,19 @@ async def test_dispatch_usage_update():
         driver = asyncio.ensure_future(drive())
         await asyncio.sleep(0.05)
         req_id = rt._next_id - 1
-        _feed(reader, {"method": METHOD_SESSION_UPDATE, "params": {
-            "sessionId": "sA",
-            "update": {"sessionUpdate": "usage_update", "usage": {"used": 5000, "size": 10000}},
-        }})
+        _feed(
+            reader,
+            {
+                "method": METHOD_SESSION_UPDATE,
+                "params": {
+                    "sessionId": "sA",
+                    "update": {
+                        "sessionUpdate": "usage_update",
+                        "usage": {"used": 5000, "size": 10000},
+                    },
+                },
+            },
+        )
         _feed(reader, {"id": req_id, "result": {"stopReason": "end_turn"}})
         await asyncio.wait_for(driver, timeout=3.0)
         assert handle.last_prompt_stats.context_pct == 50.0
@@ -1377,10 +1579,10 @@ async def test_dispatch_usage_update():
 @pytest.mark.parametrize(
     "used,size",
     [
-        ("5000", "10000"),   # numeric strings
+        ("5000", "10000"),  # numeric strings
         (float("inf"), 10000),
         (float("nan"), float("nan")),
-        (10**400, 10000),    # bignum: math.isfinite itself raises OverflowError
+        (10**400, 10000),  # bignum: math.isfinite itself raises OverflowError
         ([5000], {"n": 1}),
         (True, True),
     ],
@@ -1426,15 +1628,21 @@ async def test_dispatch_metadata_credits():
         driver = asyncio.ensure_future(drive())
         await asyncio.sleep(0.05)
         req_id = rt._next_id - 1
-        _feed(reader, {"method": METHOD_METADATA, "params": {
-            "sessionId": "sA",
-            "contextUsagePercentage": 12.5,
-            "meteringUsage": [
-                {"unit": "credit", "value": 1.0},
-                {"unit": "token", "value": 999},   # not a credit — ignored
-                {"unit": "credit", "value": 0.23},
-            ],
-        }})
+        _feed(
+            reader,
+            {
+                "method": METHOD_METADATA,
+                "params": {
+                    "sessionId": "sA",
+                    "contextUsagePercentage": 12.5,
+                    "meteringUsage": [
+                        {"unit": "credit", "value": 1.0},
+                        {"unit": "token", "value": 999},  # not a credit — ignored
+                        {"unit": "credit", "value": 0.23},
+                    ],
+                },
+            },
+        )
         _feed(reader, {"id": req_id, "result": {"stopReason": "end_turn"}})
         await asyncio.wait_for(driver, timeout=3.0)
         assert handle.last_prompt_stats.credits == pytest.approx(1.23)
@@ -1464,11 +1672,19 @@ async def test_dispatch_metadata_credits_robust():
         driver = asyncio.ensure_future(drive())
         await asyncio.sleep(0.05)
         req_id = rt._next_id - 1
-        _feed(reader, {"method": METHOD_METADATA, "params": {
-            "sessionId": "sA",
-            "meteringUsage": [{"unit": "credit", "value": "oops"}, {"unit": "credit"}],
-        }})
-        _feed(reader, {"method": METHOD_METADATA, "params": {"sessionId": "sA"}})  # no meteringUsage
+        _feed(
+            reader,
+            {
+                "method": METHOD_METADATA,
+                "params": {
+                    "sessionId": "sA",
+                    "meteringUsage": [{"unit": "credit", "value": "oops"}, {"unit": "credit"}],
+                },
+            },
+        )
+        _feed(
+            reader, {"method": METHOD_METADATA, "params": {"sessionId": "sA"}}
+        )  # no meteringUsage
         _feed(reader, {"id": req_id, "result": {"stopReason": "end_turn"}})
         await asyncio.wait_for(driver, timeout=3.0)
         assert handle.last_prompt_stats.credits == 0.0
@@ -1499,12 +1715,26 @@ async def test_metadata_credits_routed_per_session():
         sid_to_req = {sid: rid for rid, sid in rt._routed_requests.items()}
         assert set(sid_to_req) == {"sA", "sB"}, "both prompts must be in flight"
 
-        _feed(reader, {"method": METHOD_METADATA, "params": {
-            "sessionId": "sA", "meteringUsage": [{"unit": "credit", "value": 2.0}],
-        }})
-        _feed(reader, {"method": METHOD_METADATA, "params": {
-            "sessionId": "sB", "meteringUsage": [{"unit": "credit", "value": 0.5}],
-        }})
+        _feed(
+            reader,
+            {
+                "method": METHOD_METADATA,
+                "params": {
+                    "sessionId": "sA",
+                    "meteringUsage": [{"unit": "credit", "value": 2.0}],
+                },
+            },
+        )
+        _feed(
+            reader,
+            {
+                "method": METHOD_METADATA,
+                "params": {
+                    "sessionId": "sB",
+                    "meteringUsage": [{"unit": "credit", "value": 0.5}],
+                },
+            },
+        )
         _feed(reader, {"id": sid_to_req["sA"], "result": {"stopReason": "end_turn"}})
         _feed(reader, {"id": sid_to_req["sB"], "result": {"stopReason": "end_turn"}})
         await asyncio.wait_for(asyncio.gather(da, db), timeout=5.0)
@@ -1537,9 +1767,16 @@ async def test_dispatch_subagent_list():
         driver = asyncio.ensure_future(drive())
         await asyncio.sleep(0.05)
         req_id = rt._next_id - 1
-        _feed(reader, {"method": METHOD_SUBAGENT_LIST_UPDATE, "params": {
-            "sessionId": "sA", "subagents": [{"id": "sub1"}],
-        }})
+        _feed(
+            reader,
+            {
+                "method": METHOD_SUBAGENT_LIST_UPDATE,
+                "params": {
+                    "sessionId": "sA",
+                    "subagents": [{"id": "sub1"}],
+                },
+            },
+        )
         _feed(reader, {"id": req_id, "result": {"stopReason": "end_turn"}})
         await asyncio.wait_for(driver, timeout=3.0)
         sl = [e for e in events if e.kind == EVENT_SUBAGENT_LIST]
@@ -1572,10 +1809,17 @@ async def test_dispatch_subagent_activity_tool():
         driver = asyncio.ensure_future(drive())
         await asyncio.sleep(0.05)
         req_id = rt._next_id - 1
-        q["sA"].put_nowait(JsonRpcMessage.from_dict({
-            "method": METHOD_KIRO_SESSION_UPDATE,
-            "params": {"sessionId": "sub-1", "update": {"toolCallId": "tc5", "title": "read file"}},
-        }))
+        q["sA"].put_nowait(
+            JsonRpcMessage.from_dict(
+                {
+                    "method": METHOD_KIRO_SESSION_UPDATE,
+                    "params": {
+                        "sessionId": "sub-1",
+                        "update": {"toolCallId": "tc5", "title": "read file"},
+                    },
+                }
+            )
+        )
         _feed(reader, {"id": req_id, "result": {"stopReason": "end_turn"}})
         await asyncio.wait_for(driver, timeout=3.0)
         sa = [e for e in events if e.kind == EVENT_SUBAGENT_ACTIVITY]
@@ -1605,11 +1849,20 @@ async def test_dispatch_subagent_activity_text():
         driver = asyncio.ensure_future(drive())
         await asyncio.sleep(0.05)
         req_id = rt._next_id - 1
-        q["sA"].put_nowait(JsonRpcMessage.from_dict({
-            "method": METHOD_KIRO_SESSION_UPDATE,
-            "params": {"sessionId": "sub-2",
-                       "update": {"sessionUpdate": "agent_message_chunk", "text": "hello from sub"}},
-        }))
+        q["sA"].put_nowait(
+            JsonRpcMessage.from_dict(
+                {
+                    "method": METHOD_KIRO_SESSION_UPDATE,
+                    "params": {
+                        "sessionId": "sub-2",
+                        "update": {
+                            "sessionUpdate": "agent_message_chunk",
+                            "text": "hello from sub",
+                        },
+                    },
+                }
+            )
+        )
         _feed(reader, {"id": req_id, "result": {"stopReason": "end_turn"}})
         await asyncio.wait_for(driver, timeout=3.0)
         sa = [e for e in events if e.kind == EVENT_SUBAGENT_ACTIVITY]
@@ -1639,12 +1892,20 @@ async def test_dispatch_subagent_activity_text_is_redacted():
         driver = asyncio.ensure_future(drive())
         await asyncio.sleep(0.05)
         req_id = rt._next_id - 1
-        q["sA"].put_nowait(JsonRpcMessage.from_dict({
-            "method": METHOD_KIRO_SESSION_UPDATE,
-            "params": {"sessionId": "sub-3",
-                       "update": {"sessionUpdate": "agent_message_chunk",
-                                  "text": "leaked AKIAIOSFODNN7EXAMPLE key"}},
-        }))
+        q["sA"].put_nowait(
+            JsonRpcMessage.from_dict(
+                {
+                    "method": METHOD_KIRO_SESSION_UPDATE,
+                    "params": {
+                        "sessionId": "sub-3",
+                        "update": {
+                            "sessionUpdate": "agent_message_chunk",
+                            "text": "leaked AKIAIOSFODNN7EXAMPLE key",
+                        },
+                    },
+                }
+            )
+        )
         _feed(reader, {"id": req_id, "result": {"stopReason": "end_turn"}})
         await asyncio.wait_for(driver, timeout=3.0)
         sa = [e for e in events if e.kind == EVENT_SUBAGENT_ACTIVITY]
@@ -1668,6 +1929,7 @@ async def test_prompt_error_response_raises():
     handle = AcpSessionHandle("sA", q["sA"], rt)
     task = await _start_reader(rt)
     try:
+
         async def drive():
             async for _ in handle.prompt("hi", timeout=3.0):
                 pass
@@ -1695,6 +1957,7 @@ async def test_prompt_transient_error_sets_transient_flag():
     handle = AcpSessionHandle("sA", q["sA"], rt)
     task = await _start_reader(rt)
     try:
+
         async def drive():
             async for _ in handle.prompt("hi", timeout=3.0):
                 pass
@@ -1735,6 +1998,7 @@ async def test_prompt_auth_error_not_transient():
     handle = AcpSessionHandle("sA", q["sA"], rt)
     task = await _start_reader(rt)
     try:
+
         async def drive():
             async for _ in handle.prompt("hi", timeout=3.0):
                 pass
@@ -1829,10 +2093,16 @@ async def test_n_sessions_routed_independently():
 
         # Feed each session a uniquely-identifying text chunk, reverse order.
         for sid in reversed(sids):
-            _feed(reader, {"method": METHOD_SESSION_UPDATE, "params": {
-                "sessionId": sid,
-                "update": {"sessionUpdate": "agent_message_chunk", "text": f"text-{sid}"},
-            }})
+            _feed(
+                reader,
+                {
+                    "method": METHOD_SESSION_UPDATE,
+                    "params": {
+                        "sessionId": sid,
+                        "update": {"sessionUpdate": "agent_message_chunk", "text": f"text-{sid}"},
+                    },
+                },
+            )
         # Complete every turn (responses routed by id).
         for sid in sids:
             _feed(reader, {"id": sid_to_req[sid], "result": {"stopReason": "end_turn"}})
@@ -1884,10 +2154,16 @@ async def test_one_session_errors_others_unaffected():
         sid_to_req = {sid: rid for rid, sid in rt._routed_requests.items()}
         # sErr gets an error response; sOk gets text + normal completion.
         _feed(reader, {"id": sid_to_req["sErr"], "error": {"code": -1, "message": "boom"}})
-        _feed(reader, {"method": METHOD_SESSION_UPDATE, "params": {
-            "sessionId": "sOk",
-            "update": {"sessionUpdate": "agent_message_chunk", "text": "fine"},
-        }})
+        _feed(
+            reader,
+            {
+                "method": METHOD_SESSION_UPDATE,
+                "params": {
+                    "sessionId": "sOk",
+                    "update": {"sessionUpdate": "agent_message_chunk", "text": "fine"},
+                },
+            },
+        )
         _feed(reader, {"id": sid_to_req["sOk"], "result": {"stopReason": "end_turn"}})
 
         await asyncio.wait_for(asyncio.gather(d_ok, d_err), timeout=5.0)
@@ -1931,14 +2207,36 @@ async def test_interleaved_tool_calls_routed_per_session():
         await asyncio.sleep(0.05)
         sid_to_req = {sid: rid for rid, sid in rt._routed_requests.items()}
         # Interleave tool calls for each session.
-        _feed(reader, {"method": METHOD_SESSION_UPDATE, "params": {
-            "sessionId": "sA",
-            "update": {"sessionUpdate": "tool_call", "toolCallId": "a1", "title": "toolA", "kind": "shell"},
-        }})
-        _feed(reader, {"method": METHOD_SESSION_UPDATE, "params": {
-            "sessionId": "sB",
-            "update": {"sessionUpdate": "tool_call", "toolCallId": "b1", "title": "toolB", "kind": "fs"},
-        }})
+        _feed(
+            reader,
+            {
+                "method": METHOD_SESSION_UPDATE,
+                "params": {
+                    "sessionId": "sA",
+                    "update": {
+                        "sessionUpdate": "tool_call",
+                        "toolCallId": "a1",
+                        "title": "toolA",
+                        "kind": "shell",
+                    },
+                },
+            },
+        )
+        _feed(
+            reader,
+            {
+                "method": METHOD_SESSION_UPDATE,
+                "params": {
+                    "sessionId": "sB",
+                    "update": {
+                        "sessionUpdate": "tool_call",
+                        "toolCallId": "b1",
+                        "title": "toolB",
+                        "kind": "fs",
+                    },
+                },
+            },
+        )
         _feed(reader, {"id": sid_to_req["sA"], "result": {"stopReason": "end_turn"}})
         _feed(reader, {"id": sid_to_req["sB"], "result": {"stopReason": "end_turn"}})
         await asyncio.wait_for(asyncio.gather(da, db), timeout=5.0)
@@ -1972,15 +2270,27 @@ async def test_destroyed_session_stops_receiving_frames():
     task = await _start_reader(rt)
     try:
         # Frame for the destroyed session must be dropped (not broadcast to sB).
-        _feed(reader, {"method": METHOD_SESSION_UPDATE, "params": {
-            "sessionId": "sA",
-            "update": {"sessionUpdate": "agent_message_chunk", "text": "ghost"},
-        }})
+        _feed(
+            reader,
+            {
+                "method": METHOD_SESSION_UPDATE,
+                "params": {
+                    "sessionId": "sA",
+                    "update": {"sessionUpdate": "agent_message_chunk", "text": "ghost"},
+                },
+            },
+        )
         # A legitimate frame for sB still routes.
-        _feed(reader, {"method": METHOD_SESSION_UPDATE, "params": {
-            "sessionId": "sB",
-            "update": {"sessionUpdate": "agent_message_chunk", "text": "live"},
-        }})
+        _feed(
+            reader,
+            {
+                "method": METHOD_SESSION_UPDATE,
+                "params": {
+                    "sessionId": "sB",
+                    "update": {"sessionUpdate": "agent_message_chunk", "text": "live"},
+                },
+            },
+        )
         msg = await asyncio.wait_for(q["sB"].get(), timeout=1.0)
         assert msg.params["sessionId"] == "sB"
         # sB's queue must not contain the ghost frame.
@@ -2011,9 +2321,7 @@ class TestAcpSessionHandleCommands:
             req_id = req_counter[0]
             req_counter[0] += 1
             # Put a fake response in the queue so _wait_for_response resolves
-            resp_msg = JsonRpcMessage.from_dict(
-                {"id": req_id, "result": {"text": "compacted"}}
-            )
+            resp_msg = JsonRpcMessage.from_dict({"id": req_id, "result": {"text": "compacted"}})
             await q["s1"].put(resp_msg)
             return req_id
 
@@ -2038,9 +2346,7 @@ class TestAcpSessionHandleCommands:
             sent_payloads.append((method, params))
             req_id = req_counter[0]
             req_counter[0] += 1
-            resp_msg = JsonRpcMessage.from_dict(
-                {"id": req_id, "result": {"text": "ok"}}
-            )
+            resp_msg = JsonRpcMessage.from_dict({"id": req_id, "result": {"text": "ok"}})
             await q["s1"].put(resp_msg)
             return req_id
 
@@ -2066,9 +2372,7 @@ class TestAcpSessionHandleCommands:
             sent_payloads.append((method, params))
             req_id = req_counter[0]
             req_counter[0] += 1
-            resp_msg = JsonRpcMessage.from_dict(
-                {"id": req_id, "result": {}}
-            )
+            resp_msg = JsonRpcMessage.from_dict({"id": req_id, "result": {}})
             await q["s1"].put(resp_msg)
             return req_id
 
@@ -2138,11 +2442,14 @@ class TestAcpSessionHandleState:
         handle = AcpSessionHandle("s1", q["s1"], rt)
 
         handle._config_options = [
-            {"id": "effort", "options": [
-                {"value": "low", "label": "Low"},
-                {"value": "medium", "label": "Medium"},
-                {"value": "high", "label": "High"},
-            ]},
+            {
+                "id": "effort",
+                "options": [
+                    {"value": "low", "label": "Low"},
+                    {"value": "medium", "label": "Medium"},
+                    {"value": "high", "label": "High"},
+                ],
+            },
         ]
         assert handle.get_valid_effort_levels() == ["low", "medium", "high"]
 
@@ -2161,18 +2468,20 @@ class TestAcpSessionHandleState:
         q = _register(rt, "s1")
         handle = AcpSessionHandle("s1", q["s1"], rt)
 
-        msg = JsonRpcMessage.from_dict({
-            "method": METHOD_SESSION_UPDATE,
-            "params": {
-                "sessionId": "s1",
-                "update": {
-                    "sessionUpdate": "config_option_update",
-                    "configOptions": [
-                        {"id": "effort", "options": [{"value": "extreme"}]},
-                    ],
+        msg = JsonRpcMessage.from_dict(
+            {
+                "method": METHOD_SESSION_UPDATE,
+                "params": {
+                    "sessionId": "s1",
+                    "update": {
+                        "sessionUpdate": "config_option_update",
+                        "configOptions": [
+                            {"id": "effort", "options": [{"value": "extreme"}]},
+                        ],
+                    },
                 },
-            },
-        })
+            }
+        )
         events = handle._handle_update(msg)
         assert events == []  # No event emitted
         assert len(handle._config_options) == 1
@@ -2433,18 +2742,36 @@ async def test_steer_notifications_yield_steer_events():
         driver = asyncio.ensure_future(drive())
         await asyncio.sleep(0.05)
         req_id = rt._next_id - 1
-        _feed(reader, {"method": METHOD_SESSION_UPDATE, "params": {
-            "sessionId": "sA",
-            "update": {"sessionUpdate": "steering_queued", "content": "please focus on X"},
-        }})
-        _feed(reader, {"method": METHOD_SESSION_UPDATE, "params": {
-            "sessionId": "sA",
-            "update": {"sessionUpdate": "steering_consumed", "content": "focus on X"},
-        }})
-        _feed(reader, {"method": METHOD_SESSION_UPDATE, "params": {
-            "sessionId": "sA",
-            "update": {"sessionUpdate": "steering_cleared"},
-        }})
+        _feed(
+            reader,
+            {
+                "method": METHOD_SESSION_UPDATE,
+                "params": {
+                    "sessionId": "sA",
+                    "update": {"sessionUpdate": "steering_queued", "content": "please focus on X"},
+                },
+            },
+        )
+        _feed(
+            reader,
+            {
+                "method": METHOD_SESSION_UPDATE,
+                "params": {
+                    "sessionId": "sA",
+                    "update": {"sessionUpdate": "steering_consumed", "content": "focus on X"},
+                },
+            },
+        )
+        _feed(
+            reader,
+            {
+                "method": METHOD_SESSION_UPDATE,
+                "params": {
+                    "sessionId": "sA",
+                    "update": {"sessionUpdate": "steering_cleared"},
+                },
+            },
+        )
         _feed(reader, {"id": req_id, "result": {"stopReason": "end_turn"}})
         await asyncio.wait_for(driver, timeout=3.0)
 
@@ -2486,11 +2813,19 @@ async def test_tool_interrupted_marker_synthesizes_complete(monkeypatch):
         driver = asyncio.ensure_future(drive())
         await asyncio.sleep(0.05)
         # Only the marker text chunk — NO {"id": req_id, "result": ...} response.
-        _feed(reader, {"method": METHOD_SESSION_UPDATE, "params": {
-            "sessionId": "sA",
-            "update": {"sessionUpdate": "agent_message_chunk",
-                       "content": {"type": "text", "text": marker}},
-        }})
+        _feed(
+            reader,
+            {
+                "method": METHOD_SESSION_UPDATE,
+                "params": {
+                    "sessionId": "sA",
+                    "update": {
+                        "sessionUpdate": "agent_message_chunk",
+                        "content": {"type": "text", "text": marker},
+                    },
+                },
+            },
+        )
         # Must finish WITHOUT the turn response (the synthesized complete ends it).
         await asyncio.wait_for(driver, timeout=3.0)
 
@@ -2548,14 +2883,25 @@ async def test_drain_init_consumes_init_frames_and_captures_config():
     q = _register(rt, "sA")
     handle = AcpSessionHandle("sA", q["sA"], rt)
     cfg = [{"id": "effort", "options": ["low", "high"]}]
-    q["sA"].put_nowait(JsonRpcMessage.from_dict({"method": METHOD_SESSION_UPDATE, "params": {
-        "sessionId": "sA",
-        "update": {"sessionUpdate": "config_option_update", "configOptions": cfg},
-    }}))
-    q["sA"].put_nowait(JsonRpcMessage.from_dict({
-        "method": "_kiro.dev/mcp/server_initialized",
-        "params": {"sessionId": "sA", "serverName": "builder-mcp"},
-    }))
+    q["sA"].put_nowait(
+        JsonRpcMessage.from_dict(
+            {
+                "method": METHOD_SESSION_UPDATE,
+                "params": {
+                    "sessionId": "sA",
+                    "update": {"sessionUpdate": "config_option_update", "configOptions": cfg},
+                },
+            }
+        )
+    )
+    q["sA"].put_nowait(
+        JsonRpcMessage.from_dict(
+            {
+                "method": "_kiro.dev/mcp/server_initialized",
+                "params": {"sessionId": "sA", "serverName": "builder-mcp"},
+            }
+        )
+    )
     await handle.drain_init(duration=0.5, idle_exit=0.05)
     assert q["sA"].empty()  # frames drained, not left for the first prompt
     assert handle._config_options == cfg
@@ -2586,9 +2932,14 @@ def test_backfill_context_window_from_pct(monkeypatch):
     q = _register(rt, "sA")
     handle = AcpSessionHandle("sA", q["sA"], rt)
     handle._model = "some-model"
-    handle._track_metadata(JsonRpcMessage.from_dict({
-        "method": "_kiro.dev/metadata", "params": {"contextUsagePercentage": 25},
-    }))
+    handle._track_metadata(
+        JsonRpcMessage.from_dict(
+            {
+                "method": "_kiro.dev/metadata",
+                "params": {"contextUsagePercentage": 25},
+            }
+        )
+    )
     assert handle.last_prompt_stats.context_pct == 25.0
     assert handle.last_prompt_stats.context_window_tokens == 200000
     assert handle.last_prompt_stats.context_used_tokens == 50000
@@ -2597,9 +2948,14 @@ def test_backfill_context_window_from_pct(monkeypatch):
     handle2 = AcpSessionHandle("sA", q["sA"], rt)
     handle2._model = "some-model"
     handle2.last_prompt_stats.context_window_tokens = 999
-    handle2._track_metadata(JsonRpcMessage.from_dict({
-        "method": "_kiro.dev/metadata", "params": {"contextUsagePercentage": 80},
-    }))
+    handle2._track_metadata(
+        JsonRpcMessage.from_dict(
+            {
+                "method": "_kiro.dev/metadata",
+                "params": {"contextUsagePercentage": 80},
+            }
+        )
+    )
     assert handle2.last_prompt_stats.context_window_tokens == 999
 
 
@@ -2608,9 +2964,14 @@ def test_backfill_context_window_no_model_is_safe(monkeypatch):
     rt, _, _ = _make_runtime()
     q = _register(rt, "sA")
     handle = AcpSessionHandle("sA", q["sA"], rt)
-    handle._track_metadata(JsonRpcMessage.from_dict({
-        "method": "_kiro.dev/metadata", "params": {"contextUsagePercentage": 30},
-    }))
+    handle._track_metadata(
+        JsonRpcMessage.from_dict(
+            {
+                "method": "_kiro.dev/metadata",
+                "params": {"contextUsagePercentage": 30},
+            }
+        )
+    )
     assert handle.last_prompt_stats.context_pct == 30.0
     assert handle.last_prompt_stats.context_window_tokens == 0
 
@@ -2634,9 +2995,14 @@ def test_backfill_uses_resolved_model_id_from_session_config(monkeypatch):
     )
     assert handle._resolved_model_id == "resolved-model"
     assert handle._model == ""  # must NOT pollute the user-picked model field
-    handle._track_metadata(JsonRpcMessage.from_dict({
-        "method": "_kiro.dev/metadata", "params": {"contextUsagePercentage": 40},
-    }))
+    handle._track_metadata(
+        JsonRpcMessage.from_dict(
+            {
+                "method": "_kiro.dev/metadata",
+                "params": {"contextUsagePercentage": 40},
+            }
+        )
+    )
     assert handle.last_prompt_stats.context_window_tokens == 300000
     assert handle.last_prompt_stats.context_used_tokens == 120000
 
@@ -2813,23 +3179,50 @@ async def test_dispatch_mcp_oauth_guard_and_dedup():
         req_id = rt._next_id - 1
         base = {"sessionId": "sA"}
         # unsafe scheme -> dropped
-        _feed(reader, {"method": METHOD_MCP_OAUTH_REQUEST,
-                       "params": {**base, "serverName": "evil", "oauthUrl": "javascript:alert(1)"}})
+        _feed(
+            reader,
+            {
+                "method": METHOD_MCP_OAUTH_REQUEST,
+                "params": {**base, "serverName": "evil", "oauthUrl": "javascript:alert(1)"},
+            },
+        )
         # empty serverName -> dropped
-        _feed(reader, {"method": METHOD_MCP_OAUTH_REQUEST,
-                       "params": {**base, "serverName": "", "oauthUrl": "https://ok.example.com"}})
+        _feed(
+            reader,
+            {
+                "method": METHOD_MCP_OAUTH_REQUEST,
+                "params": {**base, "serverName": "", "oauthUrl": "https://ok.example.com"},
+            },
+        )
         # safe -> emitted
-        _feed(reader, {"method": METHOD_MCP_OAUTH_REQUEST,
-                       "params": {**base, "serverName": "gh", "oauthUrl": "https://auth.example.com"}})
+        _feed(
+            reader,
+            {
+                "method": METHOD_MCP_OAUTH_REQUEST,
+                "params": {**base, "serverName": "gh", "oauthUrl": "https://auth.example.com"},
+            },
+        )
         # duplicate same server -> deduped
-        _feed(reader, {"method": METHOD_MCP_OAUTH_REQUEST,
-                       "params": {**base, "serverName": "gh", "oauthUrl": "https://auth.example.com"}})
+        _feed(
+            reader,
+            {
+                "method": METHOD_MCP_OAUTH_REQUEST,
+                "params": {**base, "serverName": "gh", "oauthUrl": "https://auth.example.com"},
+            },
+        )
         # server_initialized -> discard dedupe entry
-        _feed(reader, {"method": METHOD_MCP_SERVER_INITIALIZED,
-                       "params": {**base, "serverName": "gh"}})
+        _feed(
+            reader,
+            {"method": METHOD_MCP_SERVER_INITIALIZED, "params": {**base, "serverName": "gh"}},
+        )
         # safe again after discard -> re-emitted
-        _feed(reader, {"method": METHOD_MCP_OAUTH_REQUEST,
-                       "params": {**base, "serverName": "gh", "oauthUrl": "https://auth.example.com"}})
+        _feed(
+            reader,
+            {
+                "method": METHOD_MCP_OAUTH_REQUEST,
+                "params": {**base, "serverName": "gh", "oauthUrl": "https://auth.example.com"},
+            },
+        )
         _feed(reader, {"id": req_id, "result": {"stopReason": "end_turn"}})
         await asyncio.wait_for(driver, timeout=3.0)
 
@@ -2871,12 +3264,14 @@ async def test_set_model_syncs_resolved_model_id():
 def test_normalize_models_shape():
     """Contract parity: available_models normalized to {modelId,name,description}
     with guaranteed keys (mirrors AcpClient._capture_available_models)."""
-    out = AcpSessionHandle._normalize_models([
-        {"modelId": "m1", "name": "Model One", "description": "d"},
-        {"value": "m2"},        # value fallback; name defaults to id
-        {"name": "no-id"},      # dropped: no id
-        "garbage",              # dropped: not a dict
-    ])
+    out = AcpSessionHandle._normalize_models(
+        [
+            {"modelId": "m1", "name": "Model One", "description": "d"},
+            {"value": "m2"},  # value fallback; name defaults to id
+            {"name": "no-id"},  # dropped: no id
+            "garbage",  # dropped: not a dict
+        ]
+    )
     assert out == [
         {"modelId": "m1", "name": "Model One", "description": "d"},
         {"modelId": "m2", "name": "m2", "description": ""},
@@ -2888,6 +3283,7 @@ def test_store_session_config_syncs_effort_levels(monkeypatch):
     validation set (mirrors AcpClient._sync_effort_levels)."""
     import sys
     import types
+
     calls = []
     fake = types.ModuleType("kiro_crew.dashboard.chat_persistence")
     fake.update_reasoning_effort_values = lambda levels: calls.append(levels)
@@ -2953,14 +3349,16 @@ def test_build_permission_event_sets_raw_tool_params():
     from kiro_crew.acp.types import METHOD_REQUEST_PERMISSION
 
     raw_cache = {"tc-1": {"path": "/home/u/.ssh/id_rsa", "content": "x"}}
-    msg = JsonRpcMessage.from_dict({
-        "id": 5,
-        "method": METHOD_REQUEST_PERMISSION,
-        "params": {
-            "toolCall": {"toolCallId": "tc-1", "title": "Editing"},
-            "options": [],
-        },
-    })
+    msg = JsonRpcMessage.from_dict(
+        {
+            "id": 5,
+            "method": METHOD_REQUEST_PERMISSION,
+            "params": {
+                "toolCall": {"toolCallId": "tc-1", "title": "Editing"},
+                "options": [],
+            },
+        }
+    )
     event, _recorded = build_permission_event(msg, raw_params_cache=raw_cache)
     assert event.raw_tool_params == {"path": "/home/u/.ssh/id_rsa", "content": "x"}
     assert "tc-1" not in raw_cache  # consumed on use
@@ -2971,11 +3369,13 @@ def test_build_permission_event_raw_params_none_without_cache():
     from kiro_crew.acp._dispatch import build_permission_event
     from kiro_crew.acp.types import METHOD_REQUEST_PERMISSION
 
-    msg = JsonRpcMessage.from_dict({
-        "id": 6,
-        "method": METHOD_REQUEST_PERMISSION,
-        "params": {"toolCall": {"toolCallId": "tc-x", "title": "Editing"}, "options": []},
-    })
+    msg = JsonRpcMessage.from_dict(
+        {
+            "id": 6,
+            "method": METHOD_REQUEST_PERMISSION,
+            "params": {"toolCall": {"toolCallId": "tc-x", "title": "Editing"}, "options": []},
+        }
+    )
     event, _ = build_permission_event(msg, raw_params_cache={})
     assert event.raw_tool_params is None
 
@@ -2990,20 +3390,22 @@ def test_build_permission_event_non_string_option_entries_skipped():
     from kiro_crew.acp._dispatch import build_permission_event
     from kiro_crew.acp.types import METHOD_REQUEST_PERMISSION
 
-    msg = JsonRpcMessage.from_dict({
-        "id": 7,
-        "method": METHOD_REQUEST_PERMISSION,
-        "params": {
-            "toolCall": {"toolCallId": "tc-y", "title": "shell"},
-            "options": [
-                "allow",                          # non-dict
-                None,                             # non-dict
-                {"id": 42, "label": "int id"},    # non-string id → skipped
-                {"id": "allow_once", "label": 7, "kind": ["x"]},  # coerced
-                {"id": "allow_always", "label": "Always"},
-            ],
-        },
-    })
+    msg = JsonRpcMessage.from_dict(
+        {
+            "id": 7,
+            "method": METHOD_REQUEST_PERMISSION,
+            "params": {
+                "toolCall": {"toolCallId": "tc-y", "title": "shell"},
+                "options": [
+                    "allow",  # non-dict
+                    None,  # non-dict
+                    {"id": 42, "label": "int id"},  # non-string id → skipped
+                    {"id": "allow_once", "label": 7, "kind": ["x"]},  # coerced
+                    {"id": "allow_always", "label": "Always"},
+                ],
+            },
+        }
+    )
     event, recorded = build_permission_event(msg, raw_params_cache={})  # must not raise
     assert event.options == [
         {"id": "allow_once", "label": ""},
@@ -3124,9 +3526,18 @@ async def test_runtime_spawn_scrubs_channel_creds_on_default_auto(monkeypatch):
         captured["env"] = kwargs.get("env")
         raise _StopSpawn()
 
-    monkeypatch.setattr(runtime_mod, "_resolve_kiro_bin", lambda: "/fake/kiro")
+    async def resolve_kiro_bin():
+        return "/fake/kiro"
+
     monkeypatch.setattr(
-        runtime_mod, "wrap_argv", lambda argv, mode, strip_python_env=False: (argv, None)
+        runtime_mod,
+        "_resolve_kiro_bin_for_spawn",
+        resolve_kiro_bin,
+    )
+    monkeypatch.setattr(
+        runtime_mod,
+        "wrap_argv",
+        lambda argv, mode, strip_python_env=False, is_kiro_cli=None: (argv, None),
     )
     monkeypatch.setattr(runtime_mod, "cgroup_scope_argv", lambda argv: argv)
     monkeypatch.setattr(runtime_mod, "augmented_path", lambda p: p)

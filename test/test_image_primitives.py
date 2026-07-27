@@ -8,8 +8,9 @@ Covers the two primitives that shipped from the image-generation work:
 2. The ``image`` artifact kind — lets authored SVG illustrations be saved as
    artifacts with ``kind="image"`` and ``source_path`` pointing to the file.
 """
+
 import asyncio
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -44,8 +45,14 @@ class TestRuntimeModelParam:
             captured.extend(argv)
             raise RuntimeError("abort-after-capture")
 
-        with patch("kiro_crew.acp.runtime._resolve_kiro_bin", return_value="/bin/kiro-cli"), \
-             patch("kiro_crew.acp.runtime.wrap_argv", side_effect=_capture):
+        with (
+            patch(
+                "kiro_crew.acp.runtime._resolve_kiro_bin_for_spawn",
+                new_callable=AsyncMock,
+                return_value="/bin/kiro-cli",
+            ),
+            patch("kiro_crew.acp.runtime.wrap_argv", side_effect=_capture),
+        ):
             with pytest.raises(RuntimeError, match="abort-after-capture"):
                 asyncio.get_event_loop().run_until_complete(rt.spawn())
         return captured
@@ -65,12 +72,15 @@ class TestRuntimeModelParam:
 class TestImageArtifactKind:
     def test_image_in_allowed_kinds(self):
         from kiro_crew.artifacts import ALLOWED_KINDS
+
         assert "image" in ALLOWED_KINDS
 
     def test_validation_kind_regex_accepts_image(self):
         from kiro_crew.validation import _ARTIFACT_KIND_RE
+
         assert _ARTIFACT_KIND_RE.match("image")
 
     def test_validation_kind_regex_rejects_unknown(self):
         from kiro_crew.validation import _ARTIFACT_KIND_RE
+
         assert not _ARTIFACT_KIND_RE.match("video")

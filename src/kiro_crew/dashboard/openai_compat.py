@@ -22,6 +22,7 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew.dashboard.chat_runner import _run_chat
+from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_not_ready
 from kiro_crew.dashboard.state import DashboardState, _normalize_slot_key
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
@@ -92,6 +93,18 @@ def _redact(text: str) -> str:
 
 async def api_completions(request: web.Request) -> web.StreamResponse:
     """POST /v1/chat/completions — OpenAI-compatible chat endpoint."""
+    blocked = await reject_if_kiro_not_ready(request)
+    if blocked is not None:
+        return web.json_response(
+            {
+                "error": {
+                    "message": "Kiro CLI setup or sign-in is required before starting a session.",
+                    "type": "service_unavailable_error",
+                    "code": "kiro_prerequisite_required",
+                }
+            },
+            status=503,
+        )
     state: DashboardState = request.app["state"]
 
     try:

@@ -487,8 +487,13 @@ def _cc_models(request: web.Request, configured_default: str = "") -> list[dict]
 
 async def api_models(request: web.Request) -> web.Response:
     """GET /api/models — list available models from the live kiro-cli ACP session."""
+    kiro_bin: str | None = None
     try:
-        from kiro_crew.acp.client import _resolve_kiro_bin, _resolve_ssh_auth_sock  # noqa: F811
+        from kiro_crew.acp.client import (  # noqa: F811
+            _kiro_executable_pass_fds,
+            _resolve_kiro_bin_for_spawn,
+            _resolve_ssh_auth_sock,
+        )
         from kiro_crew.env import augmented_path  # noqa: F811
         from kiro_crew.sandbox import (  # noqa: F811
             cgroup_scope_argv,
@@ -496,7 +501,7 @@ async def api_models(request: web.Request) -> web.Response:
             wrap_argv,
         )
 
-        kiro_bin = _resolve_kiro_bin()
+        kiro_bin = await _resolve_kiro_bin_for_spawn()
         if not kiro_bin:
             # Degraded (binary not resolved yet), NOT a genuine "zero models"
             # result. Return 503 so the client retries instead of caching an
@@ -521,6 +526,7 @@ async def api_models(request: web.Request) -> web.Response:
                 start_new_session=True,
                 env=env,
                 preexec_fn=resource_limit_preexec(),
+                pass_fds=_kiro_executable_pass_fds(kiro_bin),
             )
             try:
                 stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
@@ -601,6 +607,11 @@ async def api_models(request: web.Request) -> web.Response:
         # 503 so the client retries instead of caching an empty picker.
         logger.warning("api_models failed; returning 503 for client retry", exc_info=True)
         return web.json_response({"error": "model list unavailable"}, status=503)
+    finally:
+        if kiro_bin:
+            from kiro_crew.acp.client import _cleanup_kiro_executable_snapshot
+
+            await _cleanup_kiro_executable_snapshot(kiro_bin)
 
 
 async def api_effort_levels(request: web.Request) -> web.Response:

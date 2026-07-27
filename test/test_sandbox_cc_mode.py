@@ -70,6 +70,14 @@ class TestCcFilesList:
 
 
 class TestBuildLauncherScriptCcMode:
+    def test_extra_hidden_directory_is_bound_over(self):
+        script = _build_launcher_script(
+            "strict",
+            extra_hidden_dirs=("/private/kiro/crew",),
+        )
+
+        assert "/private/kiro/crew" in script
+
     def test_cc_mode_uses_cc_dirs(self):
         script = _build_launcher_script("cc")
         for d in _CC_DIRS:
@@ -109,6 +117,16 @@ class TestBuildLauncherScriptCcMode:
 
 
 class TestBuildSeatbeltProfileCcMode:
+    def test_extra_hidden_directory_denies_reads_and_writes(self):
+        profile = _build_seatbelt_profile(
+            "strict",
+            extra_hidden_dirs=("/private/kiro/crew",),
+        )
+
+        assert '(deny file-read* (subpath "/private/kiro/crew"))' in profile
+        assert '(deny file-write* (subpath "/private/kiro/crew"))' in profile
+        assert '(deny file-link (subpath "/private/kiro/crew"))' in profile
+
     def test_cc_does_not_deny_aws(self):
         """CC seatbelt does NOT deny .aws — macOS needs full .aws access for
         credential_process and SSO token caches. LLM deny patterns provide

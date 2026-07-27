@@ -64,9 +64,7 @@ NATIVE_SUBAGENT_TERMINAL_KEEP = 50
 NATIVE_SUBAGENT_TERMINAL_TTL_SECS = 3600.0
 
 
-def native_subagent_output_tail(
-    chunks: list[str], limit: int = NATIVE_SUBAGENT_OUTPUT_TAIL
-) -> str:
+def native_subagent_output_tail(chunks: list[str], limit: int = NATIVE_SUBAGENT_OUTPUT_TAIL) -> str:
     """Join only the trailing ``limit`` characters of native-card output."""
     if limit <= 0:
         return ""
@@ -378,9 +376,7 @@ _MAX_SOURCE_LINKS_PER_SLOT = 64
 # renders at most this many chips). Shared with the periodic check-status
 # refresh so the driver and the serializer cannot drift.
 _SERIALIZED_SOURCE_LINKS_PER_SLOT = 3
-_NON_DURABLE_SOURCE_LINK_ROLES = frozenset(
-    {"chunk", "done", "streaming", "queued", "permission"}
-)
+_NON_DURABLE_SOURCE_LINK_ROLES = frozenset({"chunk", "done", "streaming", "queued", "permission"})
 # FIFO ceiling on a slot's pending-context queue (app-kit context inject +
 # Slack thread backfill). Shared so the two eviction sites cannot drift.
 _MAX_PENDING_CONTEXT = 50
@@ -455,7 +451,10 @@ def should_queue_refusal_recovery(
     - The turn was cancelled by the user (not a policy block)
     """
     return bool(
-        refusal_reasons and not stopping and not needs_reset and stop_reason != STOP_REASON_CANCELLED
+        refusal_reasons
+        and not stopping
+        and not needs_reset
+        and stop_reason != STOP_REASON_CANCELLED
     )
 
 
@@ -624,15 +623,15 @@ VALID_MEMORY_MODES = ("persistent", "incognito", "temporary")
 def _ascii_slot_key(name: str) -> str:
     """Return *name* with any character outside printable ASCII replaced by ``-``.
 
-    A slot key becomes the session key (``dashboard:{slot.key}``) that
-    kirocrew-core sends as the ``X-Session-Key`` HTTP header on every gateway
-    call. Header values are latin-1 per RFC 7230, so a non-latin-1 char (e.g.
-    an em-dash from a title-derived slot name) would abort every tool call
-   . ASCII control characters (notably CR/LF) are excluded too, so
-    a name can never inject into or split the header. Idempotent;
-    printable-ASCII names — including the auto-generated ``chat-N-<ts>`` keys —
-    are returned unchanged. (Path-separator/traversal containment for keys later
-    used as filesystem paths is enforced separately at the persistence layer.)
+     A slot key becomes the session key (``dashboard:{slot.key}``) that
+     kirocrew-core sends as the ``X-Session-Key`` HTTP header on every gateway
+     call. Header values are latin-1 per RFC 7230, so a non-latin-1 char (e.g.
+     an em-dash from a title-derived slot name) would abort every tool call
+    . ASCII control characters (notably CR/LF) are excluded too, so
+     a name can never inject into or split the header. Idempotent;
+     printable-ASCII names — including the auto-generated ``chat-N-<ts>`` keys —
+     are returned unchanged. (Path-separator/traversal containment for keys later
+     used as filesystem paths is enforced separately at the persistence layer.)
     """
     return re.sub(r"[^\x20-\x7e]", "-", name)
 
@@ -670,9 +669,9 @@ def _normalize_slot_key(name: str) -> str:
     auto-generated ``chat-N-<ts>`` keys are returned unchanged.
     """
     if name.startswith("dashboard:"):
-        name = name[len("dashboard:"):]
+        name = name[len("dashboard:") :]
     while name.startswith("dashboard_"):
-        name = name[len("dashboard_"):]
+        name = name[len("dashboard_") :]
     return _SLOT_KEY_FILENAME_UNSAFE_RE.sub("_", _ascii_slot_key(name))
 
 
@@ -727,6 +726,7 @@ class _ChatSlot:
         "tags",
         "_pending_subagent_failures",
         "_pending_synthesis",
+        "_synthesis_inflight",
         "_subagent_deliveries_inflight",
         "_recovery_retrigger_count",
         "_prompt_busy_retries",
@@ -847,6 +847,10 @@ class _ChatSlot:
         # single post-fan-out synthesis turn. Cleared if a user message drains
         # first (user takes over).
         self._pending_synthesis: bool = False
+        # True while chat_runner owns the one readiness-wait/synthesis task.
+        # Kept separate from _pending_synthesis so readiness loss does not
+        # consume the one-shot request or permit duplicate waiters.
+        self._synthesis_inflight: bool = False
         # Fix 2 (B1) race guard: number of sub-agent completion deliveries
         # currently in flight for this slot (incremented in gateway._subagent_done
         # from entry until the completion is queued/launched). The synthesis
@@ -897,7 +901,9 @@ class _ChatSlot:
         # requires this to match the persona read from disk (fail-closed None).
         self.theme_consent_sha: str | None = None
         if memory_mode not in VALID_MEMORY_MODES:
-            raise ValueError(f"invalid memory_mode {memory_mode!r}, must be one of {VALID_MEMORY_MODES}")
+            raise ValueError(
+                f"invalid memory_mode {memory_mode!r}, must be one of {VALID_MEMORY_MODES}"
+            )
         self.memory_mode: str = memory_mode
         self._ephemeral: bool = ephemeral  # Incognito mode: no memory writes
         self._pending_context: list[dict[str, Any]] = []
@@ -908,7 +914,9 @@ class _ChatSlot:
         self.forked_from: str | None = None  # parent slot key if this is a fork
         self._fork_lock: asyncio.Lock = asyncio.Lock()  # serialises concurrent forks on this slot
         self._tab_id: str = ""  # permanent tab identity for cross-restart session chaining
-        self._disk_older_count: int = 0  # count of disk messages OLDER than in-memory window (stable, set at restore/resume)
+        self._disk_older_count: int = (
+            0  # count of disk messages OLDER than in-memory window (stable, set at restore/resume)
+        )
         # Count of in-memory window messages the LAST save persisted to disk
         # (the on-disk window region). Trimming may only fold a leading window
         # message into the frozen prefix once it is known to be on disk; this
@@ -933,7 +941,9 @@ class _ChatSlot:
         # overwriting (the default save skips archiving). Cleared on a
         # successful rewrite save.
         self._pending_rewrite: bool = False
-        self._file_changes: list[dict[str, str]] = []  # [{path, content}] before-snapshots accumulated per turn for file-chip diffs
+        self._file_changes: list[dict[str, str]] = (
+            []
+        )  # [{path, content}] before-snapshots accumulated per turn for file-chip diffs
         self.linked_session_key: str = ""  # when set, _run_chat uses this as session key
         self._browse_mode: bool = False  # per-turn: True when user explicitly enables browser
         self._side: SideState | None = None
@@ -969,7 +979,16 @@ class _ChatSlot:
     def _stopping(self, value: bool) -> None:
         self._stop_state = "soft_pending" if value else "idle"
 
-    def append(self, role: str, content: str, cls: str = "", ts: str = "", *, broadcast: bool = True, meta: dict | None = None) -> None:
+    def append(
+        self,
+        role: str,
+        content: str,
+        cls: str = "",
+        ts: str = "",
+        *,
+        broadcast: bool = True,
+        meta: dict | None = None,
+    ) -> None:
         msg: dict[str, Any] = {
             "role": role,
             "content": content,
@@ -986,7 +1005,12 @@ class _ChatSlot:
         self.event.set()
         # Broadcast via global SSE when no HTTP stream reader is active
         # Skip: chunk (too noisy), done (internal), user (frontend adds optimistically)
-        if broadcast and self._on_message and role not in ("chunk", "done", "user") and not self._has_reader:
+        if (
+            broadcast
+            and self._on_message
+            and role not in ("chunk", "done", "user")
+            and not self._has_reader
+        ):
             self._on_message(self.key, msg)  # type: ignore[operator]
         # Trim old messages to bound memory usage
         if len(self.messages) > _MAX_SLOT_MESSAGES:
@@ -1005,7 +1029,8 @@ class _ChatSlot:
                 logger.warning(
                     "Slot %s trimmed %d messages not yet flushed to disk; "
                     "they will not be recoverable from history",
-                    self.key, excess - persisted_trim,
+                    self.key,
+                    excess - persisted_trim,
                 )
             # The frozen prefix grew → its cached bytes are stale.
             self._frozen_prefix_cache = None
@@ -1124,9 +1149,7 @@ class _ChatSlot:
     def enqueue_or_run_prompt(
         self,
         prompt: str,
-        run_chat_coro: Callable[
-            [DashboardState, _ChatSlot, str], Coroutine[Any, Any, None]
-        ],
+        run_chat_coro: Callable[[DashboardState, _ChatSlot, str], Coroutine[Any, Any, None]],
         state: DashboardState,
     ) -> bool:
         """Queue *prompt* if busy, otherwise start an agent turn.
@@ -1164,9 +1187,7 @@ class _ChatSlot:
         fork, slack) are unaffected since their title != key.
         """
         if not self._titled and (
-            not self.title
-            or self.title == self.key
-            or _SLOT_KEY_TITLE_RE.match(self.title)
+            not self.title or self.title == self.key or _SLOT_KEY_TITLE_RE.match(self.title)
         ):
             return NEW_SESSION_TITLE
         return self.title
@@ -1181,24 +1202,18 @@ class _ChatSlot:
         Linear scan (no regex backtracking) validated by the source-provider
         URL parser and cached behind an explicit content revision.
         """
-        if (
-            self._source_links_cache
-            and self._source_links_cache[0] == self._source_links_revision
-        ):
+        if self._source_links_cache and self._source_links_cache[0] == self._source_links_revision:
             return self._source_links_cache[1]
         # Local import: handlers.source_providers does not import state, but
         # keep the dependency lazy to stay out of module-load ordering.
         from kiro_crew.dashboard.handlers.source_providers import parse_source_url
 
-        stop_chars = set(' \t\n<>()[]{}"\'')
+        stop_chars = set(" \t\n<>()[]{}\"'")
         found: dict[str, dict] = {}
         for msg in self.messages:
             if len(found) >= _MAX_SOURCE_LINKS_PER_SLOT:
                 break
-            if (
-                not isinstance(msg, dict)
-                or msg.get("role") in _NON_DURABLE_SOURCE_LINK_ROLES
-            ):
+            if not isinstance(msg, dict) or msg.get("role") in _NON_DURABLE_SOURCE_LINK_ROLES:
                 continue
             content = msg.get("content")
             if not isinstance(content, str) or "https://" not in content:
@@ -1250,7 +1265,11 @@ class _ChatSlot:
             msg_meta = m.get("meta") or {}
             is_compaction = role == "assistant" and msg_meta.get("kind") == "compaction"
             # Capture last_activity_ts from the most recent actionable message
-            if not last_activity_ts and role in ("tool_call", "tool_result", "assistant") and not is_compaction:
+            if (
+                not last_activity_ts
+                and role in ("tool_call", "tool_result", "assistant")
+                and not is_compaction
+            ):
                 last_activity_ts = m.get("ts") or ""
             # Capture the last conversational message (role/options once, and
             # the newest non-empty preview). Skip compaction
@@ -1418,6 +1437,10 @@ class DashboardState:
         # The socket binds earlier, so /api/ready can truthfully return 503
         # while session restoration, channel relaunch, and tunnel setup finish.
         self.ready: bool = False
+        # Wired by server.py after the gateway-owned prerequisite service is
+        # constructed. The central chat runner reads this latch so every turn
+        # entry path is protected, including task/workflow continuations.
+        self.kiro_prerequisite_service: Any = None
         self.subagents = subagents
         self.channel_manager: Any = None  # lazy-init in server.py
         self.tunnel_manager: Any = None  # lazy-init in server.py (TunnelManager)
@@ -1557,6 +1580,7 @@ class DashboardState:
         self._ephemeral_keys: set[str] = set()
         # Per-project file index registry (shared across slots)
         from kiro_crew.dashboard.file_index import FileIndexRegistry
+
         self.file_indexes = FileIndexRegistry()
 
     def register_channel_transport(self, transport: "MessagingTransport") -> None:
@@ -1577,12 +1601,10 @@ class DashboardState:
     def wire_session_compact_callback(self) -> None:
         """Register the dashboard's compaction callback on the session manager."""
 
-        async def _on_compacted(
-            key: str, pct: float, *, success: bool
-        ) -> None:
+        async def _on_compacted(key: str, pct: float, *, success: bool) -> None:
             if not key.startswith("dashboard:"):
                 return
-            slot_key = key[len("dashboard:"):]
+            slot_key = key[len("dashboard:") :]
             slot = self.get_slot(slot_key)
             if slot is None:
                 return
@@ -1597,9 +1619,7 @@ class DashboardState:
                 # (Routing through the chat_utils chokepoint would create a
                 # state<->chat_utils import cycle; the notice is a hardcoded
                 # template with no LLM content, so its redaction pass is moot.)
-                slot.append(
-                    "assistant", message, "msg msg-a", meta={"kind": "compaction"}
-                )
+                slot.append("assistant", message, "msg msg-a", meta={"kind": "compaction"})
             except Exception:
                 logging.getLogger(__name__).exception(
                     "Failed to append compact notice to slot %s", slot_key
@@ -1607,9 +1627,7 @@ class DashboardState:
             if success:
                 # Reset the context bar — successful compact dropped usage.
                 try:
-                    self.broadcast_ws(
-                        "context_usage", {"slot": slot_key, "pct": 0.0}
-                    )
+                    self.broadcast_ws("context_usage", {"slot": slot_key, "pct": 0.0})
                 except Exception:
                     logging.getLogger(__name__).exception(
                         "Failed to broadcast context_usage for slot %s", slot_key
@@ -1627,7 +1645,7 @@ class DashboardState:
         async def _on_recycled(key: str, *, reason: str) -> None:
             if not key.startswith("dashboard:"):
                 return
-            slot_key = key[len("dashboard:"):]
+            slot_key = key[len("dashboard:") :]
             slot = self.get_slot(slot_key)
             if slot is None:
                 return
@@ -1636,9 +1654,7 @@ class DashboardState:
                 # Tag kind="compaction" so the dashboard's follow-up [OPTIONS:]
                 # backward scan skips this proactive system notice, matching the
                 # auto-compact notice invariant.
-                slot.append(
-                    "assistant", message, "msg msg-a", meta={"kind": "compaction"}
-                )
+                slot.append("assistant", message, "msg msg-a", meta={"kind": "compaction"})
             except Exception:
                 logging.getLogger(__name__).exception(
                     "Failed to append recycle notice to slot %s", slot_key
@@ -1792,7 +1808,9 @@ class DashboardState:
             self._pending_approvals.pop(approval_id, None)
             self._approval_futures.pop(approval_id, None)
 
-    def _audit_and_broadcast_approval(self, session_key: str, approval_id: str, approved: bool) -> None:
+    def _audit_and_broadcast_approval(
+        self, session_key: str, approval_id: str, approved: bool
+    ) -> None:
         """Emit SEL audit event and broadcast WS notification for an approval decision."""
         try:
             sel().log_tool_invocation(
@@ -1922,7 +1940,8 @@ class DashboardState:
             # "persistent" memory_mode so any non-default mode (incognito,
             # temporary, future variants) is excluded.
             keys = [
-                name for name, slot in list(self._slots.items())
+                name
+                for name, slot in list(self._slots.items())
                 if getattr(slot, "memory_mode", "persistent") == "persistent"
             ]
             payload = json.dumps({"keys": keys, "ts": time.time()})
@@ -2127,6 +2146,7 @@ class DashboardState:
                         }
                     )
         if terminal_limit >= 0 and len(done) > terminal_limit:
+
             def snapshot_done_at(snapshot: dict[str, object]) -> float:
                 value = snapshot.get("done_at")
                 return float(value) if isinstance(value, (int, float)) else 0.0
@@ -2181,7 +2201,7 @@ class DashboardState:
         for key, s in self._slots.items():
             if not key.startswith(prefix):
                 continue
-            tail = key[len(prefix):]
+            tail = key[len(prefix) :]
             try:
                 ts = int(tail)
             except ValueError:
@@ -2263,7 +2283,14 @@ class DashboardState:
             self._slot_counter += 1
             ts = int(time.time())
             name = _mint_slot_key("chat", self._slot_counter, ts)
-        slot = _ChatSlot(name, agent=agent, workspace=workspace, model=model, mode=mode, memory_mode=memory_mode or "persistent")
+        slot = _ChatSlot(
+            name,
+            agent=agent,
+            workspace=workspace,
+            model=model,
+            mode=mode,
+            memory_mode=memory_mode or "persistent",
+        )
         if requested_name and requested_name != name:
             # The caller asked for a human-readable name (e.g. "Artifact: My
             # Doc"); the key had to be folded, but the pretty form makes a
@@ -2368,7 +2395,13 @@ class DashboardState:
     _DEFAULT_TAGS: list[dict[str, Any]] = [
         {"id": "planned", "name": "Planned", "color": "#6b7280", "order": 0, "status": True},
         {"id": "todo", "name": "ToDo", "color": "#3b82f6", "order": 1, "status": True},
-        {"id": "implementation", "name": "Implementation", "color": "#8b5cf6", "order": 2, "status": True},
+        {
+            "id": "implementation",
+            "name": "Implementation",
+            "color": "#8b5cf6",
+            "order": 2,
+            "status": True,
+        },
         {"id": "review", "name": "Review", "color": "#f59e0b", "order": 3, "status": True},
         {"id": "done", "name": "Done", "color": "#10b981", "order": 4, "status": True},
     ]
@@ -2378,7 +2411,7 @@ class DashboardState:
         path = config_dir() / self._FOLDERS_FILE
         try:
             if path.exists():
-                self._folders = json.loads(path.read_text(encoding='utf-8'))
+                self._folders = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
             logger.warning("Failed to load folders", exc_info=True)
 
@@ -2425,7 +2458,7 @@ class DashboardState:
         file_existed = tags_path.exists()
         try:
             if file_existed:
-                raw = json.loads(tags_path.read_text(encoding='utf-8'))
+                raw = json.loads(tags_path.read_text(encoding="utf-8"))
                 if isinstance(raw, list):
                     self._tags = [t for t in raw if isinstance(t, dict) and t.get("id")]
         except Exception:
@@ -2452,7 +2485,7 @@ class DashboardState:
         columns_path = config_dir() / self._TAG_BOARDS_FILE
         try:
             if columns_path.exists():
-                raw = json.loads(columns_path.read_text(encoding='utf-8'))
+                raw = json.loads(columns_path.read_text(encoding="utf-8"))
                 if isinstance(raw, list):
                     self._tag_boards = [c for c in raw if isinstance(c, dict) and c.get("id")]
         except Exception:
@@ -2499,8 +2532,7 @@ class DashboardState:
         urls: list[str] = []
         for s in self._slots.values():
             urls.extend(
-                link["url"]
-                for link in s._pr_source_links()[:_SERIALIZED_SOURCE_LINKS_PER_SLOT]
+                link["url"] for link in s._pr_source_links()[:_SERIALIZED_SOURCE_LINKS_PER_SLOT]
             )
         return urls
 
@@ -2515,9 +2547,7 @@ class DashboardState:
         subs = getattr(self, "subagents", None)
         for s in self._slots.values():
             d = s.to_dict(include_check_status=include_check_status)
-            d["subagents_running"] = bool(
-                subs and subs.running_agents_for(f"dashboard:{s.key}")
-            )
+            d["subagents_running"] = bool(subs and subs.running_agents_for(f"dashboard:{s.key}"))
             out.append(d)
         return out
 

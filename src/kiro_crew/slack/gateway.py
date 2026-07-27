@@ -531,6 +531,7 @@ class GatewayOrchestrator:
         port_override: str | None = None,
         json_ready: bool = False,
         approval_mode: str | None = None,
+        test_mode: bool = False,
     ) -> None:
         # NOTE: test_heartbeat_prompt_deliver.py creates instances via __new__
         # (bypassing __init__). Update that fixture if new attributes are added.
@@ -541,6 +542,7 @@ class GatewayOrchestrator:
         self._port_override = port_override
         self._json_ready = json_ready
         self._approval_mode = approval_mode
+        self._test_mode = test_mode
         creds = cfg.load_credentials()
         self._app_token = creds.get(CRED_SLACK_APP_TOKEN, "")
         self._bot_token = creds.get(CRED_SLACK_BOT_TOKEN, "")
@@ -4154,6 +4156,7 @@ class GatewayOrchestrator:
             dashboard_url=self._cfg.dashboard.url,
             slack_client=self.slack,
             owner_id=self._owner_id,
+            assume_kiro_ready=self._test_mode,
         )
         # When --port auto was requested, read the OS-assigned ephemeral port
         # back from the runner so subsequent URL building and the READY line
@@ -4193,6 +4196,7 @@ class GatewayOrchestrator:
             owner_id=self._owner_id,
             local_only=self._local_only,
             configured_host=configured_host,
+            assume_kiro_ready=self._test_mode,
         )
         if dashboard_port == 0 and self._dashboard_runner is not None:
             addresses = self._dashboard_runner.addresses
@@ -5159,6 +5163,7 @@ async def run_gateway(
     port_override: str | None = None,
     json_ready: bool = False,
     approval_mode: str | None = None,
+    test_mode: bool = False,
 ) -> None:
     """Start the Slack Socket Mode gateway (blocks until shutdown).
 
@@ -5181,5 +5186,6 @@ async def run_gateway(
         port_override=port_override,
         json_ready=json_ready,
         approval_mode=approval_mode,
+        test_mode=test_mode,
     )
     await orchestrator.run()

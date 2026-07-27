@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import chatReducer from '../store/chatSlice'
 import SideChat from '../pages/chat/SideChat'
+import { KiroReadinessProvider } from '../providers/KiroReadinessContext'
 
 vi.mock('../api/client', () => ({
   api: {
@@ -53,12 +54,14 @@ function makeStore(parentMessages: Array<{ role: string; content: string }> = []
   })
 }
 
-function renderWithStore(store: ReturnType<typeof makeStore>) {
+function renderWithStore(store: ReturnType<typeof makeStore>, ready = true) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
   return render(
     <QueryClientProvider client={qc}>
       <Provider store={store}>
-        <SideChat slot="slot-1" />
+        <KiroReadinessProvider ready={ready}>
+          <SideChat slot="slot-1" />
+        </KiroReadinessProvider>
       </Provider>
     </QueryClientProvider>
   )
@@ -123,5 +126,19 @@ describe('SideChat stale-context banner', () => {
     await waitFor(() => {
       expect(screen.queryByText('doomed q')).not.toBeInTheDocument()
     })
+  })
+
+  it('disables side questions while Kiro CLI setup is incomplete', async () => {
+    const { api } = await import('../api/client')
+    const store = makeStore()
+    renderWithStore(store, false)
+
+    const textarea = screen.getByLabelText('Ask a side question')
+    expect(textarea).toBeDisabled()
+    expect(textarea).toHaveAttribute('placeholder', 'Finish Kiro CLI setup first')
+    fireEvent.change(textarea, { target: { value: 'blocked question' } })
+    fireEvent.keyDown(textarea, { key: 'Enter' })
+    expect(api.sideOpen).not.toHaveBeenCalled()
+    expect(api.sideTurn).not.toHaveBeenCalled()
   })
 })

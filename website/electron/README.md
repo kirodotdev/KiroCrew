@@ -1,6 +1,7 @@
 # KiroCrew Desktop (Electron)
 
-Native macOS app wrapping the KiroCrew web dashboard. Automatically starts `kirocrew gateway` and connects to `localhost:5476`.
+Desktop shell for the Kiro Crew web dashboard on macOS and Linux. It
+automatically starts `kirocrew gateway` and connects to `localhost:5476`.
 
 ## Quick Start
 
@@ -11,9 +12,23 @@ npx electron .
 ```
 
 The app will:
-1. Launch `kirocrew gateway` if it's not already running
-2. Show a loading screen while the backend boots
-3. Load the dashboard once ready
+
+1. Reuse an existing gateway if one is already reachable
+2. Launch `kirocrew gateway` when needed
+3. Show a loading screen while the backend boots
+4. Load the dashboard
+5. Guide the user through Kiro CLI installation and device sign-in on the
+   gateway host when either prerequisite is missing
+
+The Electron shell uses the same gateway-hosted setup screen as every browser;
+it has no separate installer or login runner. On macOS and Linux, **Install Kiro
+CLI** downloads and runs Kiro's official HTTPS installer only after the user
+clicks the button. Native Windows gateways expose the same workflow through the
+browser dashboard. **Sign in to Kiro** starts
+`kiro-cli login --use-device-flow`; the app waits for `kiro-cli whoami` to
+succeed before continuing. Candidate selection is fail-closed: a broken
+higher-priority Kiro CLI is shown as needing repair and is not skipped in favor
+of a later candidate. Remote tunnel sessions check the remote gateway host.
 
 ## Install as macOS App
 
@@ -112,7 +127,8 @@ each launch to get a fresh JWT — no manual paste required.
 ### Token flow (per tab)
 
 ```
-1. Try local ~/.kirocrew/.local_secret  →  /api/token/local on tab's port
+1. Try local ~/.kiro/crew/.local_secret → /api/token/local on the tab's port
+   (with a temporary ~/.kirocrew read fallback during one-time migration)
 2. If remote host configured for this port:
    SSH: export PATH=<remotePath> KIROCREW_PORT=<port>; <bin> token
 3. Fallback: show manual token prompt
@@ -169,4 +185,6 @@ Open via **Tab menu → Open Config File** or tray menu.
 
 - Closing the window hides to tray — right-click the tray icon or Cmd+Q to quit
 - External links open in your default browser
-- The backend must be set up first (`source setup.sh` from the project root)
+- Desktop leaves the child `PATH` unchanged; the gateway-side prerequisite
+  service independently probes Kiro CLI's supported user-local, Homebrew,
+  macOS app-bundle, and Windows MSI locations

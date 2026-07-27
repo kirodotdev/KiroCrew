@@ -265,6 +265,32 @@ class TestBuildLauncherScript:
         # Standard dirs don't include .aws
         assert "HIDE_SSH = False" in script
 
+    def test_auth_staging_is_hidden_except_for_trusted_auth_spawn(self):
+        home = Path.home()
+        staging = home / ".kiro" / "crew-auth-staging"
+        workspace = staging / "auth-123"
+        data_home = home / ".kiro" / "crew"
+
+        regular_script = _build_launcher_script("standard")
+        auth_script = _build_launcher_script(
+            "standard",
+            extra_hidden_dirs=(str(data_home),),
+            extra_visible_dirs=(str(workspace),),
+        )
+        regular_profile = _build_seatbelt_profile("standard")
+        auth_profile = _build_seatbelt_profile(
+            "standard",
+            extra_hidden_dirs=(str(data_home),),
+            extra_visible_dirs=(str(workspace),),
+        )
+
+        assert str(staging) in regular_script
+        assert str(staging) in regular_profile
+        assert str(staging) not in auth_script
+        assert str(staging) not in auth_profile
+        assert str(data_home) in auth_script
+        assert str(data_home) in auth_profile
+
     def test_cc_script_exposes_aws_config(self):
         script = _build_launcher_script("cc")
         assert ".aws/config" in script
@@ -317,7 +343,9 @@ class TestBuildLauncherScript:
                 if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name)
             }
             forbidden = used_modules & {"platform_compat", "kiro_crew", "logger", "logging"}
-            assert not forbidden, f"{level}: launcher references un-importable module(s) {forbidden}"
+            assert (
+                not forbidden
+            ), f"{level}: launcher references un-importable module(s) {forbidden}"
 
 
 class TestLauncherStdlibShadowing:
@@ -343,7 +371,9 @@ class TestLauncherStdlibShadowing:
         launcher.write_text(_build_launcher_script("standard"))
         return subprocess.run(
             [sys.executable, str(launcher)],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
 
     def test_prelude_removes_script_dir_from_syspath(self, tmp_path):
@@ -361,10 +391,13 @@ class TestLauncherStdlibShadowing:
         probe.write_text(prelude + "import json\nprint(json.dumps(sys.path))\n")
         result = subprocess.run(
             [sys.executable, str(probe)],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         assert result.returncode == 0, result.stderr
         import json
+
         paths = json.loads(result.stdout.strip().splitlines()[-1])
         assert str(tmp_path) not in paths, f"script dir not stripped: {paths}"
         assert "" not in paths, f"cwd entry not stripped: {paths}"
@@ -382,9 +415,9 @@ class TestLauncherStdlibShadowing:
         # the imports survived the poison; only the argv guard is unreachable.
         if "unshare" in result.stderr and "no command given" not in result.stderr:
             pytest.skip("launcher needs Linux-only libc unshare; not this host")
-        assert "no command given" in result.stderr, (
-            f"launcher did not reach the argv guard; stderr={result.stderr!r}"
-        )
+        assert (
+            "no command given" in result.stderr
+        ), f"launcher did not reach the argv guard; stderr={result.stderr!r}"
 
     def test_control_unstripped_launcher_would_crash(self, tmp_path):
         """Sanity: prove the poison is real — an un-hardened launcher DOES crash.
@@ -397,14 +430,14 @@ class TestLauncherStdlibShadowing:
         """
         (tmp_path / "struct.py").write_text(self._POISON)
         hardened = _build_launcher_script("standard")
-        unstripped = "\n".join(
-            ln for ln in hardened.splitlines() if "sys.path[:]" not in ln
-        )
+        unstripped = "\n".join(ln for ln in hardened.splitlines() if "sys.path[:]" not in ln)
         launcher = tmp_path / "launcher.py"
         launcher.write_text(unstripped)
         result = subprocess.run(
             [sys.executable, str(launcher)],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         if "no command given" in result.stderr:
             pytest.skip(
@@ -491,15 +524,12 @@ class TestSignalBroadcastGuard:
             text=True,
             timeout=60,
         )
-        if (
-            "unshare(NEWUSER) failed" in result.stderr
-            or "unshare(NEWNS) failed" in result.stderr
-        ):
+        if "unshare(NEWUSER) failed" in result.stderr or "unshare(NEWNS) failed" in result.stderr:
             pytest.skip("namespaces unavailable on this host")
         assert result.returncode == 0, result.stderr
-        assert "BROADCAST_EPERM" in result.stdout, (
-            f"kill(-1, 0) not denied: stdout={result.stdout!r} stderr={result.stderr!r}"
-        )
+        assert (
+            "BROADCAST_EPERM" in result.stdout
+        ), f"kill(-1, 0) not denied: stdout={result.stdout!r} stderr={result.stderr!r}"
         assert "TARGETED_OK" in result.stdout, result.stdout
         assert "HOSTPID_SET" in result.stdout, result.stdout
 
@@ -527,9 +557,7 @@ class TestSandboxExecArgv:
         # NOT inherit KiroCrew's PYTHONPATH/PYTHONHOME, or it prepends KiroCrew's
         # site-packages to sys.path and imports KiroCrew's fastmcp/cryptography
         # instead of its own. strip_python_env=True unsets them.
-        argv, profile_path = sandbox_exec_argv(
-            ["kiro-cli", "acp"], "strict", strip_python_env=True
-        )
+        argv, profile_path = sandbox_exec_argv(["kiro-cli", "acp"], "strict", strip_python_env=True)
         try:
             assert "PYTHONPATH" in argv
             assert "PYTHONHOME" in argv
@@ -633,8 +661,9 @@ class TestAgentExecutableResolver:
         resolver.resolve_executable.side_effect = PlatformCompositionError("companion unavailable")
         context = MagicMock()
         context.agent_executable = resolver
-        with patch("kiro_crew.sandbox.current_context", return_value=context), pytest.raises(
-            PlatformCompositionError
+        with (
+            patch("kiro_crew.sandbox.current_context", return_value=context),
+            pytest.raises(PlatformCompositionError),
         ):
             _resolve_agent_executable("/usr/local/bin/kiro-cli")
 
@@ -651,15 +680,19 @@ class TestSandboxNoWarningWhenExpected:
     @patch("kiro_crew.sandbox._allow_unsandboxed_exec", return_value=True)
     @patch("kiro_crew.sandbox._allow_no_isolation", return_value=True)
     @patch("kiro_crew.sandbox.detect_backend", return_value="none")
-    def test_no_sandbox_opted_in_logs_info_not_warning(self, mock_detect, mock_optin, mock_allow, caplog):
+    def test_no_sandbox_opted_in_logs_info_not_warning(
+        self, mock_detect, mock_optin, mock_allow, caplog
+    ):
         import logging
+
         if hasattr(wrap_argv, "_warned"):
             del wrap_argv._warned  # type: ignore[attr-defined]
         with caplog.at_level(logging.DEBUG, logger="kiro_crew.sandbox"):
             wrap_argv(["kiro-cli", "acp"], mode="auto")
         warning_msgs = [r for r in caplog.records if r.levelno == logging.WARNING]
         info_msgs = [
-            r for r in caplog.records
+            r
+            for r in caplog.records
             if r.levelno == logging.INFO and "isolation" in r.message.lower()
         ]
         assert not warning_msgs, f"Expected no WARNING but got: {warning_msgs}"
@@ -679,9 +712,7 @@ class TestCleanupStaleSandboxProfiles:
         stale_file.write_text("(version 1)")
 
         with patch("kiro_crew.sandbox.config_dir", return_value=tmp_path / ".kirocrew"):
-            with patch(
-                "kiro_crew.sandbox.platform_compat.pid_exists", return_value=False
-            ):
+            with patch("kiro_crew.sandbox.platform_compat.pid_exists", return_value=False):
                 removed = cleanup_stale_sandbox_profiles(legacy_dir=str(tmp_path / "nonexistent"))
 
         assert not stale_file.exists()
@@ -1043,7 +1074,9 @@ class TestCgroupScopeArgv:
             available, _ = sb._probe_cgroup_scope()
             if not available:
                 pytest.skip("no cgroup v2 delegation on this host")
-            with patch("kiro_crew.sandbox._cgroup_limits_from_config", return_value=(20, 8192, 50, 0)):
+            with patch(
+                "kiro_crew.sandbox._cgroup_limits_from_config", return_value=(20, 8192, 50, 0)
+            ):
                 argv = sb.cgroup_scope_argv(
                     [
                         sys.executable,
@@ -1124,6 +1157,25 @@ class TestKiroInternalSandboxExclusion:
         # Delegation decided before backend detection (covers backend=none too)
         mock_detect.assert_not_called()
 
+    def test_darwin_explicit_kiro_classification_delegates_nonstandard_path(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Launch-path shape must not erase Kiro's internal-sandbox identity."""
+        self._write_settings(tmp_path, monkeypatch, '{"sandbox": true}')
+        monkeypatch.setattr("kiro_crew.sandbox.sys.platform", "darwin")
+        launch = "/Applications/Kiro CLI.app/Contents/MacOS/kiro"
+        with patch("kiro_crew.sandbox.detect_backend") as mock_detect:
+            argv, cleanup = wrap_argv(
+                [launch, "acp"],
+                mode="auto",
+                is_kiro_cli=True,
+            )
+        assert argv[-2:] == [launch, "acp"]
+        assert cleanup is None
+        mock_detect.assert_not_called()
+
     def test_darwin_kiro_spawn_delegation_scrubs_env(self, tmp_path, monkeypatch):
         """The delegated spawn keeps the seatbelt path's env scrub."""
         self._write_settings(tmp_path, monkeypatch, '{"sandbox": true}')
@@ -1138,10 +1190,13 @@ class TestKiroInternalSandboxExclusion:
         """Non-kiro spawns have no internal sandbox — seatbelt stays on."""
         self._write_settings(tmp_path, monkeypatch, '{"sandbox": true}')
         monkeypatch.setattr("kiro_crew.sandbox.sys.platform", "darwin")
-        with patch("kiro_crew.sandbox.detect_backend", return_value="sandbox-exec"), patch(
-            "kiro_crew.sandbox.sandbox_exec_argv",
-            return_value=(["sandbox-exec", "python3"], "/tmp/p.sb"),
-        ) as mock_sb:
+        with (
+            patch("kiro_crew.sandbox.detect_backend", return_value="sandbox-exec"),
+            patch(
+                "kiro_crew.sandbox.sandbox_exec_argv",
+                return_value=(["sandbox-exec", "python3"], "/tmp/p.sb"),
+            ) as mock_sb,
+        ):
             wrap_argv(["python3", "-m", "worker"], mode="auto")
         mock_sb.assert_called_once()
 
@@ -1149,10 +1204,13 @@ class TestKiroInternalSandboxExclusion:
         """kiro sandbox OFF -> KiroCrew's seatbelt ON (the inverse rule)."""
         self._write_settings(tmp_path, monkeypatch, '{"sandbox": false}')
         monkeypatch.setattr("kiro_crew.sandbox.sys.platform", "darwin")
-        with patch("kiro_crew.sandbox.detect_backend", return_value="sandbox-exec"), patch(
-            "kiro_crew.sandbox.sandbox_exec_argv",
-            return_value=(["sandbox-exec", "kiro-cli"], "/tmp/p.sb"),
-        ) as mock_sb:
+        with (
+            patch("kiro_crew.sandbox.detect_backend", return_value="sandbox-exec"),
+            patch(
+                "kiro_crew.sandbox.sandbox_exec_argv",
+                return_value=(["sandbox-exec", "kiro-cli"], "/tmp/p.sb"),
+            ) as mock_sb,
+        ):
             wrap_argv(["kiro-cli", "acp"], mode="auto")
         mock_sb.assert_called_once()
 
@@ -1160,10 +1218,13 @@ class TestKiroInternalSandboxExclusion:
         """Mutual exclusion is macOS-only — Linux namespace path unchanged."""
         self._write_settings(tmp_path, monkeypatch, '{"sandbox": true}')
         monkeypatch.setattr("kiro_crew.sandbox.sys.platform", "linux")
-        with patch("kiro_crew.sandbox.detect_backend", return_value="namespace"), patch(
-            "kiro_crew.sandbox.namespace_argv",
-            return_value=["/bin/sh", "/tmp/launcher.sh", "kiro-cli"],
-        ) as mock_ns:
+        with (
+            patch("kiro_crew.sandbox.detect_backend", return_value="namespace"),
+            patch(
+                "kiro_crew.sandbox.namespace_argv",
+                return_value=["/bin/sh", "/tmp/launcher.sh", "kiro-cli"],
+            ) as mock_ns,
+        ):
             wrap_argv(["kiro-cli", "acp"], mode="auto")
         mock_ns.assert_called_once()
 
@@ -1172,10 +1233,13 @@ class TestKiroInternalSandboxExclusion:
         is refused and the spawn falls back to KiroCrew's own seatbelt."""
         self._write_settings(tmp_path, monkeypatch, '{"sandbox": true}')
         monkeypatch.setattr("kiro_crew.sandbox.sys.platform", "darwin")
-        with patch("kiro_crew.sel.sel", side_effect=RuntimeError("audit down")), patch(
-            "kiro_crew.sandbox.sandbox_exec_argv",
-            return_value=(["sandbox-exec", "-f", "/tmp/p.sb", "kiro-cli", "acp"], "/tmp/p.sb"),
-        ) as mock_sb:
+        with (
+            patch("kiro_crew.sel.sel", side_effect=RuntimeError("audit down")),
+            patch(
+                "kiro_crew.sandbox.sandbox_exec_argv",
+                return_value=(["sandbox-exec", "-f", "/tmp/p.sb", "kiro-cli", "acp"], "/tmp/p.sb"),
+            ) as mock_sb,
+        ):
             argv, cleanup = wrap_argv(["kiro-cli", "acp"], mode="auto")
         mock_sb.assert_called_once()
         assert "sandbox-exec" in argv
@@ -1216,9 +1280,12 @@ class TestKiroInternalSandboxExclusion:
         monkeypatch.setattr("kiro_crew.sandbox._kiro_delegation_warned", False)
 
         # First call: SEL down -> seatbelt fallback, no delegation warning.
-        with patch("kiro_crew.sel.sel", side_effect=RuntimeError("audit down")), patch(
-            "kiro_crew.sandbox.sandbox_exec_argv",
-            return_value=(["sandbox-exec", "-f", "/tmp/p.sb", "kiro-cli"], "/tmp/p.sb"),
+        with (
+            patch("kiro_crew.sel.sel", side_effect=RuntimeError("audit down")),
+            patch(
+                "kiro_crew.sandbox.sandbox_exec_argv",
+                return_value=(["sandbox-exec", "-f", "/tmp/p.sb", "kiro-cli"], "/tmp/p.sb"),
+            ),
         ):
             wrap_argv(["kiro-cli", "acp"], mode="auto")
         import kiro_crew.sandbox as sb

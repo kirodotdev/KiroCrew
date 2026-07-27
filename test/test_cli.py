@@ -2,6 +2,7 @@
 
 import argparse
 import contextlib
+import hashlib
 import json
 import subprocess
 import sys
@@ -1009,6 +1010,49 @@ class TestSandboxActiveMarkerCleared:
             main()
         assert seen.get("marker") is None
         assert os.environ.get("KIROCREW_SANDBOX_ACTIVE") is None
+
+
+class TestDirectCliOverrideAttestation:
+    def test_agent_command_pins_override_before_jail_gate(self, tmp_path, monkeypatch):
+        """A direct CLI agent command must pin its override before any re-exec or spawn."""
+        from kiro_crew import cli, kiro_prerequisite
+
+        executable = tmp_path / "kiro-cli"
+        executable.write_bytes(b"direct CLI override")
+        executable.chmod(0o700)
+        data_home = tmp_path / "data"
+        observed = {}
+
+        monkeypatch.setenv("KIROCREW_HOME", str(data_home))
+        monkeypatch.setenv("KIROCREW_KIRO_BIN", str(executable))
+        monkeypatch.setattr(cli, "boot_platform", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(cli.sys, "argv", ["kirocrew", "chat", "--no-jail"])
+        # Exercise the POSIX-only override contract on every CI platform.
+        register_attestation = kiro_prerequisite.register_process_start_override_attestation
+        monkeypatch.setattr(
+            kiro_prerequisite,
+            "register_process_start_override_attestation",
+            lambda: register_attestation(
+                platform_name="linux",
+                environ=cli.os.environ,
+            ),
+        )
+
+        def inspect_before_provider(_command, _no_jail):
+            observed["digest"] = kiro_prerequisite._trusted_acp_binary_digest(
+                str(executable),
+                data_home=data_home,
+                platform_name="linux",
+                environ=cli.os.environ,
+            )
+            raise SystemExit(0)
+
+        monkeypatch.setattr(cli, "_jail_reexec_gate", inspect_before_provider)
+
+        with pytest.raises(SystemExit, match="0"):
+            cli.main()
+
+        assert observed["digest"] == hashlib.sha256(executable.read_bytes()).hexdigest()
 
 
 class TestSetupTimezone:

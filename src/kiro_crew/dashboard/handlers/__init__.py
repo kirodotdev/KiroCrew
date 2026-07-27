@@ -145,6 +145,11 @@ from kiro_crew.dashboard.handlers.hooks import (  # noqa: E402, F401
     api_hooks_create,
     api_kiro_hooks,
 )
+from kiro_crew.dashboard.handlers.kiro_prerequisite import (  # noqa: E402, F401
+    api_kiro_prerequisite_install,
+    api_kiro_prerequisite_login,
+    api_kiro_prerequisite_status,
+)
 
 # ── MCP (extracted to handlers/mcp.py) ──
 from kiro_crew.dashboard.handlers.mcp import (  # noqa: E402, F401

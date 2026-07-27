@@ -2403,6 +2403,10 @@ def _emit_push_allow_event(command: str) -> None:
 # Patterns are resolved relative to $HOME at check time.
 
 _SENSITIVE_HOME_DIRS: list[str] = [
+    # Gateway-owned Kiro auth staging. Owner-only filesystem mode does not
+    # isolate another process running as the same UID, so every agent sandbox
+    # and the shared read/write hook floor hide this fixed parent.
+    ".kiro/crew-auth-staging",
     ".aws",
     ".ssh",
     ".gnupg",
@@ -2491,6 +2495,10 @@ _CREW_SECRET_LEAVES: list[str] = [
     "token_signing.key",
     "refresh_chains.json",
     ".local_secret",
+    # Pinned installer provenance authorizes an executable to receive staged
+    # Kiro identity credentials. Agent reads/writes must not be able to replace
+    # this trust decision.
+    ".kiro_cli_binary_trust.json",
     # Runtime exec dir. ``run/`` holds paths the gateway executes OUTSIDE the
     # agent sandbox: the sandbox launcher scripts (``sandbox.py`` execs
     # ``python <home>/run/kirocrew_sandbox_*.py``) and the remote-instance

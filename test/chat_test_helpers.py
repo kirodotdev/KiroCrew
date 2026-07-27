@@ -8,6 +8,21 @@ from aiohttp import web
 
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.history import ConversationLog
+from kiro_crew.kiro_prerequisite import KiroPrerequisiteService
+
+
+class _ReadyKiroPrerequisiteService(KiroPrerequisiteService):
+    async def session_ready(self) -> bool:
+        return True
+
+
+_READY_KIRO_PREREQUISITE = object.__new__(_ReadyKiroPrerequisiteService)
+
+
+def _make_ready_kiro_prerequisite() -> KiroPrerequisiteService:
+    """Return a filesystem-free ready prerequisite for embedded test apps."""
+
+    return _READY_KIRO_PREREQUISITE
 
 
 def _make_state(tmp_path, **kwargs):
@@ -16,7 +31,7 @@ def _make_state(tmp_path, **kwargs):
     sessions.remove = AsyncMock()
     sessions.recycle_background = AsyncMock()
     sessions.get_pid = MagicMock(return_value=None)
-    return DashboardState(
+    state = DashboardState(
         sessions=sessions,
         crons=MagicMock(list_jobs=MagicMock(return_value=[]), status=MagicMock(return_value={})),
         lessons=MagicMock(load_all=MagicMock(return_value=[])),
@@ -24,6 +39,8 @@ def _make_state(tmp_path, **kwargs):
         conversation_log=ConversationLog(base_dir=tmp_path),
         **kwargs,
     )
+    state.kiro_prerequisite_service = _make_ready_kiro_prerequisite()
+    return state
 
 
 def _make_app(state: DashboardState) -> web.Application:

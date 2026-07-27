@@ -15,9 +15,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
+import kiro_crew.acp.client as acp_client_module
 from kiro_crew.dashboard.handlers import agents
 
 
@@ -44,6 +48,22 @@ def _body(resp) -> object:
     return json.loads(resp.body)
 
 
+def _register_snapshot() -> tuple[str, int]:
+    fd = os.open(os.devnull, os.O_RDONLY)
+    path = f"/proc/self/fd/{fd}"
+    acp_client_module._KIRO_EXECUTABLE_SNAPSHOTS[path] = fd
+    return path, fd
+
+
+def _discard_snapshot(path: str) -> None:
+    fd = acp_client_module._KIRO_EXECUTABLE_SNAPSHOTS.pop(path, None)
+    if fd is not None:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+
 class _FakeProc:
     """Minimal async subprocess stand-in for model-list branches."""
 
@@ -61,7 +81,7 @@ class _FakeProc:
 
 def test_kiro_binary_unresolved_returns_503():
     with patch.object(agents.KiroCrewConfig, "load", return_value=_kiro_cfg()), patch(
-        "kiro_crew.acp.client._resolve_kiro_bin", return_value=""
+        "kiro_crew.acp.client._resolve_kiro_bin_for_spawn", return_value=""
     ):
         resp = _run(agents.api_models(_kiro_request()))
     assert resp.status == 503
@@ -70,7 +90,7 @@ def test_kiro_binary_unresolved_returns_503():
 
 def test_list_models_timeout_returns_503():
     with patch.object(agents.KiroCrewConfig, "load", return_value=_kiro_cfg()), patch(
-        "kiro_crew.acp.client._resolve_kiro_bin", return_value="/usr/bin/kiro-cli"
+        "kiro_crew.acp.client._resolve_kiro_bin_for_spawn", return_value="/usr/bin/kiro-cli"
     ), patch("kiro_crew.acp.client._resolve_ssh_auth_sock", lambda env: None), patch(
         "kiro_crew.env.augmented_path", lambda p: p
     ), patch(
@@ -92,7 +112,7 @@ def test_list_models_timeout_returns_503():
 def test_list_models_nonzero_exit_returns_503():
     proc = _FakeProc(stderr=b"sandbox initialization failed", returncode=71)
     with patch.object(agents.KiroCrewConfig, "load", return_value=_kiro_cfg()), patch(
-        "kiro_crew.acp.client._resolve_kiro_bin", return_value="/usr/bin/kiro-cli"
+        "kiro_crew.acp.client._resolve_kiro_bin_for_spawn", return_value="/usr/bin/kiro-cli"
     ), patch("kiro_crew.acp.client._resolve_ssh_auth_sock", lambda env: None), patch(
         "kiro_crew.env.augmented_path", lambda p: p
     ), patch(
@@ -114,7 +134,7 @@ def test_list_models_nonzero_exit_returns_503():
 def test_list_models_empty_stdout_returns_503():
     proc = _FakeProc(returncode=0)
     with patch.object(agents.KiroCrewConfig, "load", return_value=_kiro_cfg()), patch(
-        "kiro_crew.acp.client._resolve_kiro_bin", return_value="/usr/bin/kiro-cli"
+        "kiro_crew.acp.client._resolve_kiro_bin_for_spawn", return_value="/usr/bin/kiro-cli"
     ), patch("kiro_crew.acp.client._resolve_ssh_auth_sock", lambda env: None), patch(
         "kiro_crew.env.augmented_path", lambda p: p
     ), patch(
@@ -134,7 +154,7 @@ def test_list_models_empty_stdout_returns_503():
 def test_list_models_invalid_json_returns_503():
     proc = _FakeProc(stdout=b"not-json", returncode=0)
     with patch.object(agents.KiroCrewConfig, "load", return_value=_kiro_cfg()), patch(
-        "kiro_crew.acp.client._resolve_kiro_bin", return_value="/usr/bin/kiro-cli"
+        "kiro_crew.acp.client._resolve_kiro_bin_for_spawn", return_value="/usr/bin/kiro-cli"
     ), patch("kiro_crew.acp.client._resolve_ssh_auth_sock", lambda env: None), patch(
         "kiro_crew.env.augmented_path", lambda p: p
     ), patch(
@@ -155,7 +175,7 @@ def test_list_models_invalid_payload_returns_503():
     payload = json.dumps({"models": {"unexpected": "mapping"}}).encode()
     proc = _FakeProc(stdout=payload, returncode=0)
     with patch.object(agents.KiroCrewConfig, "load", return_value=_kiro_cfg()), patch(
-        "kiro_crew.acp.client._resolve_kiro_bin", return_value="/usr/bin/kiro-cli"
+        "kiro_crew.acp.client._resolve_kiro_bin_for_spawn", return_value="/usr/bin/kiro-cli"
     ), patch("kiro_crew.acp.client._resolve_ssh_auth_sock", lambda env: None), patch(
         "kiro_crew.env.augmented_path", lambda p: p
     ), patch(
@@ -176,7 +196,7 @@ def test_unexpected_exception_returns_503():
     # A failure inside the try (here: kiro-bin resolution raising) must be
     # caught and surfaced as 503, not a cached empty 200.
     with patch.object(agents.KiroCrewConfig, "load", return_value=_kiro_cfg()), patch(
-        "kiro_crew.acp.client._resolve_kiro_bin", side_effect=RuntimeError("boom")
+        "kiro_crew.acp.client._resolve_kiro_bin_for_spawn", side_effect=RuntimeError("boom")
     ):
         resp = _run(agents.api_models(_kiro_request()))
     assert resp.status == 503
@@ -185,7 +205,7 @@ def test_unexpected_exception_returns_503():
 def test_successful_list_returns_200_with_models():
     payload = json.dumps({"models": [{"model_name": "claude-opus-4.8", "description": "x"}]}).encode()
     with patch.object(agents.KiroCrewConfig, "load", return_value=_kiro_cfg()), patch(
-        "kiro_crew.acp.client._resolve_kiro_bin", return_value="/usr/bin/kiro-cli"
+        "kiro_crew.acp.client._resolve_kiro_bin_for_spawn", return_value="/usr/bin/kiro-cli"
     ), patch("kiro_crew.acp.client._resolve_ssh_auth_sock", lambda env: None), patch(
         "kiro_crew.env.augmented_path", lambda p: p
     ), patch(
@@ -201,6 +221,32 @@ def test_successful_list_returns_200_with_models():
     assert resp.status == 200
     models = _body(resp)
     assert any(m["model_name"] == "claude-opus-4.8" for m in models)
+
+
+def test_successful_list_inherits_and_releases_snapshot():
+    payload = json.dumps({"models": [{"model_name": "claude-opus-4.8"}]}).encode()
+    path, fd = _register_snapshot()
+    spawn = AsyncMock(return_value=_FakeProc(payload))
+    try:
+        with (
+            patch.object(agents.KiroCrewConfig, "load", return_value=_kiro_cfg()),
+            patch("kiro_crew.acp.client._resolve_kiro_bin_for_spawn", return_value=path),
+            patch("kiro_crew.acp.client._resolve_ssh_auth_sock", lambda env: None),
+            patch("kiro_crew.env.augmented_path", lambda p: p),
+            patch("kiro_crew.sandbox.wrap_argv", lambda argv: (argv, None)),
+            patch("kiro_crew.sandbox.cgroup_scope_argv", lambda argv: argv),
+            patch("kiro_crew.sandbox.resource_limit_preexec", lambda: None),
+            patch.object(agents.asyncio, "create_subprocess_exec", spawn),
+        ):
+            resp = _run(agents.api_models(_kiro_request()))
+
+        assert resp.status == 200
+        assert spawn.await_args.kwargs.get("pass_fds") == (fd,)
+        assert path not in acp_client_module._KIRO_EXECUTABLE_SNAPSHOTS
+        with pytest.raises(OSError):
+            os.fstat(fd)
+    finally:
+        _discard_snapshot(path)
 
 
 def test_structured_context_window_seeds_central_authority():
@@ -232,7 +278,7 @@ def test_structured_context_window_seeds_central_authority():
         }
     ).encode()
     with patch.object(agents.KiroCrewConfig, "load", return_value=_kiro_cfg()), patch(
-        "kiro_crew.acp.client._resolve_kiro_bin", return_value="/usr/bin/kiro-cli"
+        "kiro_crew.acp.client._resolve_kiro_bin_for_spawn", return_value="/usr/bin/kiro-cli"
     ), patch("kiro_crew.acp.client._resolve_ssh_auth_sock", lambda env: None), patch(
         "kiro_crew.env.augmented_path", lambda p: p
     ), patch(

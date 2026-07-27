@@ -31,7 +31,9 @@ selectable from a real gateway. Run standalone as
 ``python -m kiro_crew.testing.fake_acp_backend`` (the pytest harness and the
 live-test harness both point ``KIROCREW_KIRO_BIN`` at a launcher that runs it).
 ``AcpClient`` invokes it as ``<launcher> acp [--agent NAME ...]`` -- argv is
-ignored; the protocol is driven entirely over stdio.
+ignored on that path and the protocol is driven entirely over stdio. The
+``--version`` and ``whoami`` commands return deterministic success so the
+offline gateway exercises the same first-run readiness gate as production.
 """
 
 from __future__ import annotations
@@ -45,6 +47,8 @@ PROTOCOL_VERSION = "2025-08-22"
 # Stable, searchable marker the send->assert test asserts on. Kept distinctive
 # so a real backend's output could never masquerade as this fake's reply.
 REPLY_TEXT = "pong from the fake ACP backend"
+FAKE_VERSION = "kiro-cli fake-e2e"
+FAKE_IDENTITY = "fake-e2e-user"
 
 # Prompt sentinels. Absent by default so a plain prompt stays text-only.
 TOOL_TRIGGER = "[[TOOL]]"
@@ -93,9 +97,7 @@ def _prompt_text(params: dict[str, Any]) -> str:
     if not isinstance(blocks, list):
         return ""
     parts = [
-        str(b.get("text", ""))
-        for b in blocks
-        if isinstance(b, dict) and b.get("type") == "text"
+        str(b.get("text", "")) for b in blocks if isinstance(b, dict) and b.get("type") == "text"
     ]
     return "".join(parts)
 
@@ -190,6 +192,13 @@ def _handle(msg: dict[str, Any]) -> None:
 
 
 def main() -> None:
+    args = sys.argv[1:]
+    if args == ["--version"]:
+        print(FAKE_VERSION)
+        return
+    if args == ["whoami"]:
+        print(FAKE_IDENTITY)
+        return
     while True:
         msg = _read_message()
         if msg is None:

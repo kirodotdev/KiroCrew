@@ -274,6 +274,33 @@ describe('useRefreshScheduler', () => {
     expect(meCalls.length).toBeGreaterThanOrEqual(2)
   })
 
+  it('invalidates Kiro prerequisite state after a successful auth refresh', async () => {
+    const nowSec = Math.floor(Date.now() / 1000)
+    fetchMock.mockResolvedValueOnce(okJson({
+      user_id: 'alice',
+      session_exp: nowSec + TWENTY_H,
+      refresh_exp: 0,
+    }))
+    const { Wrapper, qc } = makeWrapper()
+    qc.setQueryData(['kiro-prerequisite'], { ready: false })
+    render(<ProbeComponent />, { wrapper: Wrapper })
+    await vi.advanceTimersByTimeAsync(0)
+
+    fetchMock.mockResolvedValueOnce(status(200, {
+      refreshed_at: nowSec + 1,
+      session_exp: nowSec + TWENTY_H + 100,
+      refresh_exp: 0,
+    }))
+    fetchMock.mockResolvedValueOnce(okJson({
+      user_id: 'alice',
+      session_exp: nowSec + TWENTY_H + 100,
+      refresh_exp: 0,
+    }))
+    await vi.advanceTimersByTimeAsync(19 * ONE_HOUR_MS + 1000)
+
+    expect(qc.getQueryState(['kiro-prerequisite'])?.isInvalidated).toBe(true)
+  })
+
   it('TR-F-11: 403 + X-Auth-Required on /api/auth/me triggers proactive refresh (cold-reopen banner fix)', async () => {
     // The auth middleware denies an expired/absent access cookie
     // with 403 + X-Auth-Required (KiroCrew token_auth._deny), NOT 401. The

@@ -1056,6 +1056,7 @@ async def start_dashboard(
     dashboard_url: str = "",
     slack_client: Any = None,
     owner_id: str = "",
+    assume_kiro_ready: bool = False,
 ) -> tuple[web.AppRunner, DashboardState]:
     """Start the dashboard web server.  Returns ``(runner, state)``."""
     # Auto-create consolidator if conversation_log available but no consolidator
@@ -1202,6 +1203,13 @@ async def start_dashboard(
         client_max_size=60 * 1024 * 1024
     )  # 60 MB: covers 50 MB upload + multipart overhead
     app["state"] = state
+    from kiro_crew.kiro_prerequisite import KiroPrerequisiteService
+
+    app["kiro_prerequisite_service"] = await asyncio.to_thread(
+        KiroPrerequisiteService,
+        assume_ready=assume_kiro_ready,
+    )
+    state.kiro_prerequisite_service = app["kiro_prerequisite_service"]
     state.load_folders()
     state.load_tags()
     app["port"] = port
@@ -1237,6 +1245,18 @@ async def start_dashboard(
     app.router.add_get("/api/ready", handlers.api_ready)
     app.router.add_get("/api/theme/boot", handlers.api_theme_boot)
     app.router.add_get("/api/admin/compliance/yolo-status", handlers.api_compliance_yolo_status)
+    app.router.add_get(
+        "/api/kiro-prerequisite",
+        handlers.api_kiro_prerequisite_status,
+    )
+    app.router.add_post(
+        "/api/kiro-prerequisite/install",
+        handlers.api_kiro_prerequisite_install,
+    )
+    app.router.add_post(
+        "/api/kiro-prerequisite/login",
+        handlers.api_kiro_prerequisite_login,
+    )
 
     # Suggestions (pre-computed contextual prompts)
     app.router.add_get("/api/suggestions", api_suggestions)
@@ -1396,7 +1416,9 @@ async def start_dashboard(
     app.router.add_post("/api/capability/mcp/uninstall", handlers.api_capability_mcp_uninstall)
     app.router.add_get("/api/capability/skills", handlers.api_capability_skills_list)
     app.router.add_post("/api/capability/skills/install", handlers.api_capability_skills_install)
-    app.router.add_post("/api/capability/skills/uninstall", handlers.api_capability_skills_uninstall)
+    app.router.add_post(
+        "/api/capability/skills/uninstall", handlers.api_capability_skills_uninstall
+    )
 
     # Chat
     app.router.add_post("/api/chat", chat.api_chat)
@@ -1651,7 +1673,9 @@ async def start_dashboard(
     app.router.add_post("/api/notifications/unack", handlers.api_notification_unack)
     app.router.add_post("/api/notifications/ack-all", handlers.api_notifications_ack_all)
     app.router.add_get("/api/notifications/channels", handlers.api_notification_channels)
-    app.router.add_put("/api/notifications/channels/settings", handlers.api_notification_channel_settings)
+    app.router.add_put(
+        "/api/notifications/channels/settings", handlers.api_notification_channel_settings
+    )
     app.router.add_get("/api/update/check", handlers.api_update_check)
     app.router.add_get("/api/changelog", handlers.api_changelog)
     app.router.add_post("/api/update", handlers.api_update_apply)
@@ -2074,6 +2098,11 @@ async def start_dashboard(
 
     app.on_cleanup.append(_watchdog_shutdown)
 
+    async def _kiro_prerequisite_shutdown(app_: web.Application) -> None:
+        await app_["kiro_prerequisite_service"].close()
+
+    app.on_cleanup.append(_kiro_prerequisite_shutdown)
+
     # ── Instances (multi-instance management) ────────────────────────────────
     # Register the opt-in instances startup/cleanup hooks HERE, before
     # ``runner.setup()`` freezes the app's signal lists. See
@@ -2304,9 +2333,7 @@ async def start_dashboard(
     # ``server``/``outcome`` enums. Best-effort; never blocks the return.
     # Publish readiness at the exact boundary measured as boot-to-ready.
     state.ready = True
-    record_boot_to_ready(
-        (time.time() - state.start_time) * 1000.0, server="dashboard"
-    )
+    record_boot_to_ready((time.time() - state.start_time) * 1000.0, server="dashboard")
 
     return runner, state
 
@@ -2322,6 +2349,7 @@ async def start_api_server(
     owner_id: str = "",
     local_only: bool = True,
     configured_host: str = "",
+    assume_kiro_ready: bool = False,
 ) -> tuple[web.AppRunner, DashboardState]:
     """Start a minimal API-only server for MCP tool transport (no UI).
 
@@ -2360,6 +2388,13 @@ async def start_api_server(
         client_max_size=60 * 1024 * 1024
     )  # 60 MB: covers 50 MB upload + multipart overhead
     app["state"] = state
+    from kiro_crew.kiro_prerequisite import KiroPrerequisiteService
+
+    app["kiro_prerequisite_service"] = await asyncio.to_thread(
+        KiroPrerequisiteService,
+        assume_ready=assume_kiro_ready,
+    )
+    state.kiro_prerequisite_service = app["kiro_prerequisite_service"]
     state.load_folders()
     state.load_tags()
     app["port"] = port
@@ -2499,6 +2534,11 @@ async def start_api_server(
     # the deploy_artifact MCP tool 404s in Slack-only/headless mode.
     _register_deploy_routes(app)
 
+    async def _kiro_prerequisite_shutdown(app_: web.Application) -> None:
+        await app_["kiro_prerequisite_service"].close()
+
+    app.on_cleanup.append(_kiro_prerequisite_shutdown)
+
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "127.0.0.1", port)
@@ -2523,8 +2563,6 @@ async def start_api_server(
     # fixed labels only; best-effort.
     # Publish readiness at the exact boundary measured as boot-to-ready.
     state.ready = True
-    record_boot_to_ready(
-        (time.time() - state.start_time) * 1000.0, server="api"
-    )
+    record_boot_to_ready((time.time() - state.start_time) * 1000.0, server="api")
 
     return runner, state

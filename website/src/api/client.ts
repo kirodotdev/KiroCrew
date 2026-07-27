@@ -525,11 +525,40 @@ export interface TunnelStatus {
   reconnect_attempt: number
 }
 
+export interface KiroPrerequisiteOperation {
+  kind: '' | 'install' | 'login'
+  status: 'idle' | 'running' | 'succeeded' | 'failed'
+  message: string
+  detail: string
+  url: string
+  error: string
+}
+
+export interface KiroPrerequisiteStatus {
+  platform: string
+  installed: boolean
+  authenticated: boolean
+  ready: boolean
+  initial_setup_complete: boolean
+  can_auto_install: boolean
+  can_login: boolean
+  repair_required: boolean
+  docs_url: string
+  setup_allowed: boolean
+  operation: KiroPrerequisiteOperation
+}
+
 export const api = {
   status: () => fetch('/api/status').then(j),
   tunnelStatus: () => fetch('/api/tunnel/status').then(j) as Promise<TunnelStatus>,
   system: () => fetch('/api/system').then(j),
   telemetryStartup: () => fetch('/api/telemetry/startup').then(j),
+  kiroPrerequisite: () =>
+    get('/api/kiro-prerequisite').then(j) as Promise<KiroPrerequisiteStatus>,
+  installKiroPrerequisite: () =>
+    post('/api/kiro-prerequisite/install').then(j) as Promise<KiroPrerequisiteStatus>,
+  loginKiroPrerequisite: () =>
+    post('/api/kiro-prerequisite/login').then(j) as Promise<KiroPrerequisiteStatus>,
   securityStats: () => fetch('/api/security/stats').then(j) as Promise<{ denied_commands: number; suspicious_patterns: number; tool_schemas: number; redaction_paths: number }>,
   // Denied commands (Settings → Security). Every endpoint returns the full
   // refreshed snapshot so callers can seed their query cache from the response.

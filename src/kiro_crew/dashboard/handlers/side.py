@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from aiohttp import web
 
 from kiro_crew.config.loader import KiroCrewConfig, resolve_agent_bindings
+from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_not_ready
 from kiro_crew.dashboard.side_context import build_side_message
 from kiro_crew.dashboard.side_state import SideState
 from kiro_crew.dashboard.state import DashboardState
@@ -117,14 +118,11 @@ async def _run_side_turn(
         except PromptBusyExhaustedError:
             logger.warning(
                 "Side turn aborted (prompt busy exhausted): slot=%s run_id=%s",
-                slot.key, run_id,
+                slot.key,
+                run_id,
             )
             response_text = redact("".join(chunks))
-            if (
-                slot._side is not None
-                and slot._side.open
-                and slot._side.last_run_id == run_id
-            ):
+            if slot._side is not None and slot._side.open and slot._side.last_run_id == run_id:
                 slot._side.append_assistant(response_text)
             broadcast_side_result(
                 state,
@@ -146,16 +144,12 @@ async def _run_side_turn(
                 "different approach."
             )
             logger.info(
-                "Side turn produced no text (tool rejection): "
-                "slot=%s run_id=%s",
-                slot.key, run_id,
+                "Side turn produced no text (tool rejection): " "slot=%s run_id=%s",
+                slot.key,
+                run_id,
             )
 
-        if (
-            slot._side is not None
-            and slot._side.open
-            and slot._side.last_run_id == run_id
-        ):
+        if slot._side is not None and slot._side.open and slot._side.last_run_id == run_id:
             slot._side.append_assistant(response_text)
 
         broadcast_side_result(
@@ -171,7 +165,9 @@ async def _run_side_turn(
         raise
     except Exception:
         logger.exception(
-            "Side turn failed: slot=%s run_id=%s", slot.key, run_id,
+            "Side turn failed: slot=%s run_id=%s",
+            slot.key,
+            run_id,
         )
         broadcast_side_result(
             state,
@@ -192,7 +188,8 @@ async def _run_side_turn(
                 state.sessions.release(acquired_key)
             except Exception:
                 logger.debug(
-                    "Failed to release side session %s", acquired_key,
+                    "Failed to release side session %s",
+                    acquired_key,
                     exc_info=True,
                 )
 
@@ -221,7 +218,8 @@ def _check_slot_ownership(
             error="app cannot access unscoped slots",
         )
         return web.json_response(
-            {"error": "not found"}, status=404,
+            {"error": "not found"},
+            status=404,
         )
     if slot._app != request_app:
         sel().log_api_access(
@@ -235,7 +233,8 @@ def _check_slot_ownership(
         # 404 (not 403) so a foreign/unscoped slot is indistinguishable from a
         # missing one — anti-enumeration (CWE-204); true reason logged via SEL.
         return web.json_response(
-            {"error": "not found"}, status=404,
+            {"error": "not found"},
+            status=404,
         )
     return None
 
@@ -282,6 +281,9 @@ async def api_side_turn(request: web.Request) -> web.Response:
     Returns ``{ok, run_id}`` immediately and drives the LLM stream in a
     background task; chunks are broadcast on ``chat.side_result``.
     """
+    blocked = await reject_if_kiro_not_ready(request)
+    if blocked is not None:
+        return blocked
     state: DashboardState = request.app["state"]
     name = request.match_info["slot"]
     slot = state._slots.get(name)
@@ -300,18 +302,21 @@ async def api_side_turn(request: web.Request) -> web.Response:
         return web.json_response({"error": "invalid JSON body"}, status=400)
     if not isinstance(body, dict):
         return web.json_response(
-            {"error": "body must be a JSON object"}, status=400,
+            {"error": "body must be a JSON object"},
+            status=400,
         )
 
     question = body.get("question")
     if not isinstance(question, str):
         return web.json_response(
-            {"error": "question must be a string"}, status=400,
+            {"error": "question must be a string"},
+            status=400,
         )
     question = question.strip()
     if not question:
         return web.json_response(
-            {"error": "question must not be empty"}, status=400,
+            {"error": "question must not be empty"},
+            status=400,
         )
     if len(question.encode("utf-8")) > _MAX_QUESTION_BYTES:
         return web.json_response(
@@ -323,7 +328,8 @@ async def api_side_turn(request: web.Request) -> web.Response:
     # ``await request.json()``.
     if slot._side is None or not slot._side.open:
         return web.json_response(
-            {"error": "side conversation is not open"}, status=409,
+            {"error": "side conversation is not open"},
+            status=409,
         )
 
     if slot._side.last_run_id and not slot._side.is_complete:
@@ -332,10 +338,7 @@ async def api_side_turn(request: web.Request) -> web.Response:
             operation="chat.side_turn",
             outcome="denied",
             source="dashboard",
-            resources=(
-                f"slot={slot.key},"
-                f"in_flight_run_id={slot._side.last_run_id}"
-            ),
+            resources=(f"slot={slot.key}," f"in_flight_run_id={slot._side.last_run_id}"),
             error="side turn already in flight",
         )
         return web.json_response(
@@ -350,9 +353,7 @@ async def api_side_turn(request: web.Request) -> web.Response:
         )
 
     run_id = uuid.uuid4().hex
-    is_first_turn = not any(
-        m.get("role") == "assistant" for m in slot._side.messages
-    )
+    is_first_turn = not any(m.get("role") == "assistant" for m in slot._side.messages)
     slot._side.last_run_id = run_id
     slot._side.is_complete = False
     slot._side.append_user(question)
@@ -367,7 +368,11 @@ async def api_side_turn(request: web.Request) -> web.Response:
 
     task = asyncio.create_task(
         _run_side_turn(
-            state, slot, run_id, question, is_first_turn=is_first_turn,
+            state,
+            slot,
+            run_id,
+            question,
+            is_first_turn=is_first_turn,
         )
     )
     state._background_tasks.add(task)
@@ -413,7 +418,9 @@ async def api_side_close(request: web.Request) -> web.Response:
         await state.sessions.destroy(side_key)
     except Exception:
         logger.debug(
-            "Failed to destroy side session %s", side_key, exc_info=True,
+            "Failed to destroy side session %s",
+            side_key,
+            exc_info=True,
         )
 
     sel().log_api_access(

@@ -3,7 +3,8 @@
 Every subprocess spawn in ``src/kiro_crew`` must be either
 
 * routed through the sandbox chokepoint (its enclosing function calls
-  ``sandboxed_spawn_argv`` or ``wrap_argv``), so the spawned process gets
+  ``sandboxed_spawn_argv``, ``wrap_argv``, or the regression-pinned async
+  adapter around ``sandboxed_spawn_argv``), so the spawned process gets
   OS-level filesystem isolation and a credential-scrubbed environment, or
 * explicitly listed in ``BENIGN_SPAWNS`` below as a spawn whose command,
   arguments, and working directory are NOT agent-influenced.
@@ -70,8 +71,14 @@ _SPAWN_ATTRS = {
 _SPAWN_BASES = {"subprocess", "asyncio"}
 
 # Tokens whose presence anywhere in the enclosing function marks the spawn as
-# routed through the sandbox chokepoint.
-_ROUTED_TOKENS = ("sandboxed_spawn_argv", "wrap_argv")
+# routed through the sandbox chokepoint. ``_prepare_sandboxed_spawn`` is the
+# prerequisite flow's async adapter; the dedicated regression test below pins
+# it to ``sandboxed_spawn_argv`` so this indirection cannot weaken the gate.
+_ROUTED_TOKENS = (
+    "sandboxed_spawn_argv",
+    "wrap_argv",
+    "_prepare_sandboxed_spawn",
+)
 
 # Token marking a routed function as also applying a kernel resource ceiling
 # (RLIMIT_NPROC/NOFILE/CPU/AS) to its child via ``preexec_fn`` — the second
@@ -135,7 +142,6 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # carries resource_limit_preexec() — routing again here would nest
         # sandboxes. The chokepoint is applied at the call sites.
         "apps/builtins/dev_fleet/server.py::worker",
-
         # Dev Fleet builtin backend: async version routes all git/gh through
         # _run_cmd which calls sandboxed_spawn_argv (the chokepoint). Only
         # _resolve_primary_checkout uses subprocess.run directly (one-shot
@@ -201,6 +207,10 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "instances/ssh_tunnel_manager.py::start",
         "instances/token_mint.py::mint_remote_token",
         "instances/token_mint.py::run_remote_kirocrew",
+        # macOS Kiro signature verification uses fixed /usr/bin/codesign
+        # argv/requirements against the canonical official app target. No
+        # command, argument, cwd, or environment value is agent-controlled.
+        "kiro_prerequisite.py::_macos_codesign_allows_official_kiro",
         "mcp_caller.py::_parent_pid",
         "mcp_core.py::_get_ppid",
         "mcp_discovery.py::sync_to_agent_config",
@@ -314,14 +324,19 @@ def _collect_routed_spawns_without_preexec() -> set[str]:
     return {
         key
         for key, fsrc in _collect_spawn_functions().items()
-        if any(tok in fsrc for tok in _ROUTED_TOKENS) and not any(tok in fsrc for tok in _PREEXEC_TOKENS)
+        if any(tok in fsrc for tok in _ROUTED_TOKENS)
+        and not any(tok in fsrc for tok in _PREEXEC_TOKENS)
     }
 
 
 # A routed spawn function applies the cgroup v2 DoS ceiling either directly
 # (``cgroup_scope_argv``) or via the ``sandboxed_spawn_argv`` chokepoint, which
 # wraps every routed argv in the scope internally.
-_CGROUP_TOKENS = ("cgroup_scope_argv", "sandboxed_spawn_argv")
+_CGROUP_TOKENS = (
+    "cgroup_scope_argv",
+    "sandboxed_spawn_argv",
+    "_prepare_sandboxed_spawn",
+)
 
 
 def _collect_routed_spawns_without_cgroup() -> set[str]:
@@ -348,6 +363,22 @@ def test_every_spawn_is_routed_or_allowlisted():
         "file::function key to BENIGN_SPAWNS in this test with a justification. "
         "See security-review finding 92e24570."
     )
+
+
+def test_prerequisite_async_adapter_keeps_sandbox_chokepoint():
+    """The off-loop prerequisite adapter must remain a thin sandbox wrapper."""
+
+    path = _SRC_ROOT / "kiro_prerequisite.py"
+    source = path.read_text(encoding="utf-8")
+    tree = ast.parse(source, str(path))
+    adapter = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_prepare_sandboxed_spawn"
+    )
+    adapter_source = ast.get_source_segment(source, adapter) or ""
+    assert "asyncio.to_thread" in adapter_source
+    assert "sandboxed_spawn_argv" in adapter_source
 
 
 def test_benign_allowlist_has_no_stale_entries():

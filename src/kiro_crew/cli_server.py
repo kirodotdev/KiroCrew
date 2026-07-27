@@ -818,6 +818,7 @@ async def _gateway(
     port_override: str | None = None,
     json_ready: bool = False,
     approval_mode: str | None = None,
+    test_mode: bool = False,
 ) -> None:
     """Load config and start the Slack Socket Mode gateway."""
     # Activate mise once at gateway start so every subprocess we
@@ -864,6 +865,7 @@ async def _gateway(
         port_override=port_override,
         json_ready=json_ready,
         approval_mode=approval_mode,
+        test_mode=test_mode,
     )
 
 

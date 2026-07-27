@@ -5,10 +5,12 @@ _fetch_usage_bg gating/redaction logic.
 from __future__ import annotations
 
 import asyncio
+import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+import kiro_crew.acp.client as acp_client_module
 import kiro_crew.dashboard.handlers.sessions as sessions_mod
 from kiro_crew.dashboard.handlers.sessions import (
     _normalize_text_usage,
@@ -94,6 +96,22 @@ def _mock_proc(stdout: bytes):
     return proc
 
 
+def _register_snapshot() -> tuple[str, int]:
+    fd = os.open(os.devnull, os.O_RDONLY)
+    path = f"/proc/self/fd/{fd}"
+    acp_client_module._KIRO_EXECUTABLE_SNAPSHOTS[path] = fd
+    return path, fd
+
+
+def _discard_snapshot(path: str) -> None:
+    fd = acp_client_module._KIRO_EXECUTABLE_SNAPSHOTS.pop(path, None)
+    if fd is not None:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+
 class TestFetchUsageBg:
     @pytest.fixture(autouse=True)
     def _reset(self, monkeypatch):
@@ -114,13 +132,13 @@ class TestFetchUsageBg:
 
     @pytest.mark.asyncio
     async def test_no_kiro_bin_caches_unavailable(self):
-        with patch.object(sessions_mod, "_resolve_kiro_bin", return_value=None):
+        with patch.object(sessions_mod, "_resolve_kiro_bin_for_spawn", return_value=None):
             await sessions_mod._fetch_usage_bg()
         assert sessions_mod._usage_cache == {"available": False}
 
     @pytest.mark.asyncio
     async def test_parseable_usage_is_cached(self):
-        with patch.object(sessions_mod, "_resolve_kiro_bin", return_value="/bin/kiro"), \
+        with patch.object(sessions_mod, "_resolve_kiro_bin_for_spawn", return_value="/bin/kiro"), \
              patch("asyncio.create_subprocess_exec",
                    AsyncMock(return_value=_mock_proc(SAMPLE_USAGE.encode()))):
             await sessions_mod._fetch_usage_bg()
@@ -128,8 +146,26 @@ class TestFetchUsageBg:
         assert sessions_mod._usage_cache.get("plan") == "KIRO POWER"
 
     @pytest.mark.asyncio
+    async def test_text_fallback_inherits_and_releases_snapshot(self):
+        path, fd = _register_snapshot()
+        spawn = AsyncMock(return_value=_mock_proc(SAMPLE_USAGE.encode()))
+        try:
+            with (
+                patch.object(sessions_mod, "_resolve_kiro_bin_for_spawn", return_value=path),
+                patch("asyncio.create_subprocess_exec", spawn),
+            ):
+                await sessions_mod._fetch_usage_bg()
+
+            assert spawn.await_args.kwargs.get("pass_fds") == (fd,)
+            assert path not in acp_client_module._KIRO_EXECUTABLE_SNAPSHOTS
+            with pytest.raises(OSError):
+                os.fstat(fd)
+        finally:
+            _discard_snapshot(path)
+
+    @pytest.mark.asyncio
     async def test_unparseable_usage_caches_unavailable(self):
-        with patch.object(sessions_mod, "_resolve_kiro_bin", return_value="/bin/kiro"), \
+        with patch.object(sessions_mod, "_resolve_kiro_bin_for_spawn", return_value="/bin/kiro"), \
              patch("asyncio.create_subprocess_exec",
                    AsyncMock(return_value=_mock_proc(b"no usage block here"))):
             await sessions_mod._fetch_usage_bg()
@@ -137,7 +173,7 @@ class TestFetchUsageBg:
 
     @pytest.mark.asyncio
     async def test_string_fields_redacted_before_cache(self):
-        with patch.object(sessions_mod, "_resolve_kiro_bin", return_value="/bin/kiro"), \
+        with patch.object(sessions_mod, "_resolve_kiro_bin_for_spawn", return_value="/bin/kiro"), \
              patch("asyncio.create_subprocess_exec",
                    AsyncMock(return_value=_mock_proc(SAMPLE_USAGE.encode()))), \
              patch.object(sessions_mod, "redact_credentials", lambda s: (s, 0)), \
@@ -150,7 +186,7 @@ class TestFetchUsageBg:
     @pytest.mark.asyncio
     async def test_reentrancy_guard_skips_when_already_fetching(self):
         sessions_mod._usage_fetching = True
-        with patch.object(sessions_mod, "_resolve_kiro_bin") as resolve:
+        with patch.object(sessions_mod, "_resolve_kiro_bin_for_spawn") as resolve:
             await sessions_mod._fetch_usage_bg()
         resolve.assert_not_called()
 
@@ -159,7 +195,7 @@ class TestFetchUsageBg:
         proc = _mock_proc(b"")
         proc.returncode = None  # still running
         proc.communicate = AsyncMock(side_effect=asyncio.TimeoutError)
-        with patch.object(sessions_mod, "_resolve_kiro_bin", return_value="/bin/kiro"), \
+        with patch.object(sessions_mod, "_resolve_kiro_bin_for_spawn", return_value="/bin/kiro"), \
              patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)):
             await sessions_mod._fetch_usage_bg()
         assert sessions_mod._usage_cache == {"available": False}
@@ -172,7 +208,7 @@ class TestFetchUsageBg:
         proc = _mock_proc(b"")
         proc.returncode = None  # still running
         proc.communicate = AsyncMock(side_effect=RuntimeError("boom"))
-        with patch.object(sessions_mod, "_resolve_kiro_bin", return_value="/bin/kiro"), \
+        with patch.object(sessions_mod, "_resolve_kiro_bin_for_spawn", return_value="/bin/kiro"), \
              patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)):
             await sessions_mod._fetch_usage_bg()
         assert sessions_mod._usage_cache == {"available": False}
@@ -228,7 +264,7 @@ class TestFetchUsageBgApi:
             "source": "api",
         }
         spawn = AsyncMock()
-        with patch.object(sessions_mod, "_resolve_kiro_bin", return_value="/bin/kiro"), \
+        with patch.object(sessions_mod, "_resolve_kiro_bin_for_spawn", return_value="/bin/kiro"), \
              patch.object(sessions_mod.kiro_usage_api, "fetch_usage_limits",
                           return_value=api_dict), \
              patch("asyncio.create_subprocess_exec", spawn):
@@ -240,8 +276,36 @@ class TestFetchUsageBgApi:
         spawn.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_api_result_releases_unused_snapshot(self):
+        path, fd = _register_snapshot()
+        api_dict = {
+            "credits_used": 1.0,
+            "credits_plan": 10.0,
+            "credits_overage": 0.0,
+            "credits_covered": 1.0,
+            "percentage": 10.0,
+            "source": "api",
+        }
+        try:
+            with (
+                patch.object(sessions_mod, "_resolve_kiro_bin_for_spawn", return_value=path),
+                patch.object(
+                    sessions_mod.kiro_usage_api,
+                    "fetch_usage_limits",
+                    return_value=api_dict,
+                ),
+            ):
+                await sessions_mod._fetch_usage_bg()
+
+            assert path not in acp_client_module._KIRO_EXECUTABLE_SNAPSHOTS
+            with pytest.raises(OSError):
+                os.fstat(fd)
+        finally:
+            _discard_snapshot(path)
+
+    @pytest.mark.asyncio
     async def test_api_none_falls_back_to_text_scrape(self):
-        with patch.object(sessions_mod, "_resolve_kiro_bin", return_value="/bin/kiro"), \
+        with patch.object(sessions_mod, "_resolve_kiro_bin_for_spawn", return_value="/bin/kiro"), \
              patch.object(sessions_mod.kiro_usage_api, "fetch_usage_limits",
                           return_value=None), \
              patch("asyncio.create_subprocess_exec",
@@ -255,7 +319,7 @@ class TestFetchUsageBgApi:
     @pytest.mark.asyncio
     async def test_api_string_fields_redacted_before_cache(self):
         api_dict = {"credits_used": 1.0, "credits_plan": 10.0, "plan": "SENSITIVE"}
-        with patch.object(sessions_mod, "_resolve_kiro_bin", return_value="/bin/kiro"), \
+        with patch.object(sessions_mod, "_resolve_kiro_bin_for_spawn", return_value="/bin/kiro"), \
              patch.object(sessions_mod.kiro_usage_api, "fetch_usage_limits",
                           return_value=api_dict), \
              patch.object(sessions_mod, "redact_credentials", lambda s: (s, 0)), \

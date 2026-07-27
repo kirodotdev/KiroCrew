@@ -22,7 +22,11 @@ from aiohttp import web
 # binds via sys.modules and defers attribute access to call time, which also
 # keeps tests' monkeypatching of handlers.redact_* effective (late binding).
 import kiro_crew.dashboard.handlers as _h
-from kiro_crew.acp.client import _resolve_kiro_bin
+from kiro_crew.acp.client import (
+    _cleanup_kiro_executable_snapshot,
+    _kiro_executable_pass_fds,
+    _resolve_kiro_bin_for_spawn,
+)
 from kiro_crew.dashboard.handlers import kiro_usage_api
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.executors import subprocess_executor
@@ -208,8 +212,9 @@ async def _fetch_usage_bg() -> None:
     _usage_fetching = True
     proc = None
     sandbox_cleanup = None
+    kiro_bin: str | None = None
     try:
-        kiro_bin = _resolve_kiro_bin()
+        kiro_bin = await _resolve_kiro_bin_for_spawn()
         if not kiro_bin:
             # kiro-cli absent (non-Kiro provider): cache an unavailable marker so
             # the dashboard hides the credit pill instead of polling forever.
@@ -253,6 +258,7 @@ async def _fetch_usage_bg() -> None:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             preexec_fn=resource_limit_preexec(),
+            pass_fds=_kiro_executable_pass_fds(kiro_bin),
         )
         out, err = await asyncio.wait_for(proc.communicate(), timeout=60)
         raw = (out or err or b"").decode(errors="replace")
@@ -304,6 +310,7 @@ async def _fetch_usage_bg() -> None:
                 os.remove(sandbox_cleanup)
             except OSError:
                 pass
+        await _cleanup_kiro_executable_snapshot(kiro_bin)
 
 
 async def api_sessions_usage(request: web.Request) -> web.Response:

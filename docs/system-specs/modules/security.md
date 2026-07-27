@@ -1,5 +1,8 @@
 # Security Module
 
+Latest amendment: 2026-07-26 (pre-request installer redirect validation,
+direct-CLI ACP attestation, and fail-closed Windows process enumeration).
+
 Last Updated: 2026-07-24 (`file_send` Slack audience is now decided by a strict three-state caller-identity classification (`_classify_slack_identity` → `thread`/`non_slack`/`unresolved`) resolved via `_resolve_session_key_strict()` only; an `unresolved` caller's Slack upload is REFUSED (SEL `slack_identity_unresolved_upload_refused`, dashboard delivery still succeeds) rather than broadcast at the channel root — see "Slack Delivery Audience" under Binary File Handling. Prior — Data home moved from top-level `~/.kirocrew` to `~/.kiro/crew` (nested under kiro-cli's `~/.kiro/` base). The sensitive-path floor now expands each KiroCrew secret/trust-root leaf under EVERY known crew-home prefix — `_CREW_HOME_PREFIXES = (".kiro/crew", ".kirocrew.archived", ".kirocrew")` — so `.env`/`sel_hmac.key`/`security_events.jsonl`/`app_admission.json`/`security_policy.json`/`profiles`/`admission_policy.json`/`denied_commands.json`/`token_signing.key`/`refresh_chains.json`/`.local_secret`/`run` are read+write-blocked in the current home, the archived rollback copy `~/.kirocrew.archived` (which still holds real secret bytes after the one-time migration), AND a not-yet-migrated pre-move `~/.kirocrew`. `_WRITE_PROTECTED_HOME_PATHS` (`config.json`/`config.local.json`) is expanded the same way; multi-segment leaves are re-joined with the OS separator so a `.kiro/crew/...` target still matches on Windows. The file-explorer crew-home deny-by-default matcher (`_crew_home_index`) now casefolds so an uppercase `~/.KIRO/crew/...` path can't slip past it on case-insensitive filesystems. Prior — 2026-07-24 remote-instance run-marker exec dir on the sensitive floor — the gateway records its own venv `kirocrew` launcher at `<home>/run/gateway-<port>.bin` (`instances/run_marker.py`, written via `atomic_write`) and the SSH token-mint + `restart_remote` `exec` it first, keyed by the remote port (marker-first resolution, falling back to the PATH candidate ladder); `run` was added to the crew-home secret leaves (full read+write block under every prefix) because its contents are exec'd unsandboxed over SSH, so an agent that could write a marker or a sandbox launcher there could escalate to unsandboxed execution — the gateway's own writers open these paths directly and do NOT route through `is_sensitive_path`. Prior: federated registry URL support: `POST /api/apps/registries` now admits a vetted full git URL as `repo` (not just a bare name) via `_is_safe_repo_identifier`, requires `https://` for HTTP-style remotes (plaintext `http://` rejected — CWE-319 MITM), derives a collision-safe default `name` from URL host+path (`_derive_registry_name`), and defaults `branch` to `main` (was `mainline`); all cache-path derivations (`_safe_cache_stem`/`_external_registry_cache_path`/`_blob_cache_key`) keep pure-safe names byte-identical but slug+sha256 disambiguate URL-derived names so a traversal/collision entry can neither escape `_manifest_cache_dir()` nor clobber another's cache; new `POST /api/apps/registries/refresh` fetch-then-swap re-warm returns `{ok, refreshed, failed, results, apps, lastSyncedAt}` and only overwrites a cache on a successful fetch (stale > missing); an untrusted registry index is treated as untrusted input on two trust boundaries — `is_clone_host_trusted` (fail-closed SSRF/rebinding gate at the three clone chokepoints `_fetch_git_blob`/`_fetch_app_manifest`/`_git_clone_or_pull`, host-level not IP) refuses cloning any host outside the public-forge ∪ configured-registry set, and a `KEBAB_RE` entry-name filter drops non-kebab index entries before they reach a filesystem op (path-traversal defense, warning-logged only); admitting a new registry host emits a distinct per-host `registries.host_trust_granted` SEL event and returns `newlyTrustedHosts` so the one-way trust grant is auditable. Prior: user-configurable denied commands — opt-out state on the KEYSTONE floor. The opt-out state (`{disable_all, disabled_ids, user_added}`) lives in `~/.kirocrew/denied_commands.json`, added to `_SENSITIVE_HOME_DIRS` (full read+write block) + the governance boot-integrity `required` tuple — NOT in the agent-readable `config.json`. So the agent can neither read nor write its own deny ceiling via ANY shell form, inheriting the mature `is_sensitive_path` gate (variable-indirection, symlinks, KIROCREW_HOME, interpreters, casefold, realpath) at the same protection level as `security_policy.json`. This REPLACED an earlier config.json + bespoke bash write-matcher approach (removed) that a series of shell-obfuscation vectors kept bypassing. Boot merges the keystone state over config.json's flat `hooks` keys (`hooks_config_from_config_dict`); the 6 dashboard mutations + `_write_denied_state` target the keystone file (0600); `_reload_live_hooks` splices the new opt-out fields onto the live `HookManager` preserving flat keys. Other invariants retained from the feature build: `HooksConfig.from_dict` is fully defensive against malformed hand-edited values (type-checks every field; `_coerce_bool` for booleans so `"false"` is not truthy); `_DenyMatcher` runs the fast fragment-split path ONLY for the RE2-authored, parity-tested built-ins; EVERY user custom regex uses the exact bounded whole-regex engine (backtracking preserved, ReDoS-safe via `is_safe_user_regex`), so a user pattern like `(ab|a).*b` or a greedy `rm .+.*x` cannot under-match the forward-only fragment matcher and let a denied command through — the bound is the first `_DENY_FALLBACK_SCAN_MAX_CHARS` (2000) chars, a DOCUMENTED trade-off (Python `re` can't give exact-semantics + full-input + ReDoS-safety at once, and true full-input would need an RE2 dependency the project avoids); the residual is user-custom-regex-only (the 137 built-in security rules are full-input via the fragment matcher) and the only bypass is a single >2000-char shell segment defeating the user's OWN custom rule; the Settings > Security disable-all toggle stays functional when governance-locked (backend keeps pinned rules enforced under `disable_all`); `pinned_builtin_command_ids()` is ceiling-only for ENFORCEMENT while `pinned_builtin_command_ids_for_snapshot()` unions all profiles for DISPLAY; heartbeat hooks rebuild per run. Prior: macOS sandbox mutual exclusion: kiro-cli >= 2.13 ships an internal agent sandbox toggled by `"sandbox"` in `~/.kiro/settings/amazon-internal.json`; it cannot nest inside KiroCrew's seatbelt (kernel EPERM), so `wrap_argv()` delegates isolation to it for kiro-cli spawns on macOS when enabled (`kiro_internal_sandbox_enabled()`/`_delegate_to_kiro_internal_sandbox()`), audit-or-deny SEL + shared env scrub + fail-toward-KiroCrew's-sandbox; macOS-only. Also Stop hooks now receive the full final assistant segment on stdin as `assistant_text` (env `KIROCREW_HOOK_CONTEXT` capped at 500 for ARG_MAX). Prior: independent source-tabs hardening: authenticated GitHub/GitLab provider spawns now fail closed unless the CLI path is canonical, root-owned end to end, non-writable by the gateway user, and contains no symlinks, which makes path validation stable through exec against a same-UID agent; ordinary user-owned Homebrew/Linuxbrew binaries are deliberately rejected. Provider commands use 1 MiB metadata/check, 2 MiB discussion, and 4 MiB diff stdout ceilings; unique direct full/check tasks hold conservative 64/8 MiB reservations under a 128 MiB aggregate ceiling until task completion, with same-URL coalescing before admission and detached stale work retaining its lease. Frontend source indexing admits only durable messages, and backend/frontend/panel source retention stops at 64 first-seen links per slot. Prior: authenticated GitHub/GitLab source-provider CLI spawns use validated absolute executables, `sandboxed_spawn_argv(..., mode="standard")`, fixed provider environments and public hosts, bounded outputs/payloads, and global process/admission caps; review-thread resolution remains exact-owner-only with coarse redacted SEL audit and pre-dispatch cache-generation invalidation. Prior: edition-neutral agent executable resolver seam: the public core no longer contains edition-specific launcher detection; `PlatformContext.agent_executable` resolves argv[0] before the unchanged outer sandbox, with identity standalone behavior and fail-closed composition semantics. Prior: Sandbox probe cache policy — transient probe failures never cached, prewarm_backend() boot hook + never-block-on-loop invariant; see "Probe failure classification + cache policy". Prior: macOS 26 sandbox restored: removed the wrong hard-coded `major >= 26 -> return False` gate in `_probe_sandbox_exec()` — Seatbelt/`sandbox-exec` still work on macOS 26 (Tahoe), so the empirical probe now decides on all versions. macOS 26 users get full Seatbelt isolation (credential-path + hardlink denies) instead of the fail-closed no-isolation path; verified the real profile compiles, runs kiro-cli, and enforces `~/.aws` denies on 26.5. Commit 92e24570: added the `sandboxed_spawn_argv` chokepoint — `wrap_argv` OS isolation + `scrub_env` credential-env scrub in one call — and routed the three agent-influenced subprocess spawns through it (`mcp_discovery.probe_server`, `task_executor.run_tests`, `git_coord._git`/`_is_git_repo`), which previously ran with the full inherited environment and no wrapper; added `test/test_spawn_audit.py`, an AST tripwire asserting every spawn in `src/kiro_crew` is either chokepoint-routed or in an explicit benign allowlist. Prior: Gateway boot resilience: `apps/backend.py:start_enabled_app_backends()` now wraps each `start_app_backend()` in try/except so a per-app spawn failure — notably `wrap_argv()` fail-closing when no sandbox backend exists, e.g. macOS 26 where `sandbox-exec` is gone — is logged + `error`-audited + skipped instead of crashing the whole gateway. Prior: documented the advisory-only App Kit manifest permission model — `apps/permissions.py:validate_permissions`/`format_permissions_summary` are unwired dead code (only exercised by tests), `check_tool_permission` empty-list fail-open, distinct from the enforced HTTP app-token scope; in-process enforcement deferred to app-sandbox-roadmap.md. Also: contained App Kit admission gate (`apps/admission.py`, banned/approved/optional-HMAC-signature, fail-closed on unreadable policy) on install/update/enable/register/registry, and canonical path-containment on `backend.entryPoint` + absolute-path rejection in `AppManifest.validate` with a runtime backstop in `apps/backend.py`; hard off-switch `agent.apps_allow_third_party` refuses in-process AND out-of-process third-party app Python (per input-validation guidance); reverse-proxy HMAC now binds `sha256(body)`; `~/.kirocrew/app_admission.json` added to the sensitive-path floor. Prior commit 78224f3f: exfil-URL scan now covers the full path (not just query-after-`?`) via `_HARD_CREDENTIAL_RE` and `_URL_RE` matches raw IPv4 / bracketed IPv6 literal hosts, closing the path-embedded-secret and raw-IP-destination bypasses; commit 5682f92b: data-egress/reverse-shell command shapes (`_BASH_EXFIL_PATTERNS` / `audit_bash_exfiltration()`) are now DENIED at the tool-invocation gate (`hooks.on_tool_call` + `mcp_cron`), previously only advisory-audited. Prior: Consolidated redaction/SSRF/XPIA follow-ups: PEM round-3 (05687e60) — truncated-key run crosses a single blank line via `(?=\r?\n[A-Za-z0-9+/=])` so RFC 1421 ENCRYPTED bodies past the `DEK-Info:` blank line are redacted, TWO+ blanks still terminate; JWT/JWE union (cc1d6bdd/a8e5fe6a) — `_CREDENTIAL_PATTERNS` `eyJ` quantifier widened to `(?:\.[A-Za-z0-9_-]*){2,4}` (JWS + 5-seg JWE incl. dir/ECDH-ES empty segment) and Bearer alternative made JSON-aware + case-insensitive (`(?i:Authorization)["']?[:=]["']?(?i:Bearer)`); `StreamRedactor` split-Bearer + ceiling — `_BEARER_ANCHOR_PARTIAL_RE` holds a split `Authorization: Bearer <token>` across chunks, `_PARTIAL_JWT_TAIL_RE` (`{0,4}`) + `_STREAM_HOLDBACK_JWT_MAX=4096` un-bisect a terminal JWT/JWE/opaque-Bearer, and a credential-anchored tail past the ceiling FAILS CLOSED via `_REDACTED_CREDENTIAL_TAG` (plain runs still committed); entropy glued-secret (bf7b1baf) — pass 3 gates each `{40,}` run through `_contains_bare_secret()` sliding a 40-char window so a secret glued to an adjacent base64 char is caught; XPIA round-2 (1fde6107) — case-insensitive/whitespace-tolerant thread-parent fence neutralization (`_neutralize_fence_markers`) + explicit WITHHELD branch for an injection-tripped parent, and `scan_memory()` degrades on ANY import failure (was `ImportError`-only); SSRF trailing-dot (76640a75) — `_resolve_blocked_addr` rstrips a trailing dot before parsing so `169.254.169.254.`/`127.0.0.1.` classify as blocked. Also folds the empty-user DB-URI fix (`://[^\s:/@]*:`). Prior: shared redacting `_dm_owner` owner-DM exit point for the Slack expiry notification; Spec drift sync: documented protected-branch git-push gate (`_PROTECTED_BRANCHES` + ambiguous refs + `_PUSH_ALL_BRANCHES_FLAGS` deny, pure `_is_git_publish` detector, centralized allow/deny + `push_allowed`/deny SEL in `is_denied`, per-segment `_is_push_to_protected_branch`); Host-header DNS-rebinding validation (`check_host`/`build_allowed_hosts`/`host_validation_middleware`); conditional PYTHONPATH/PYTHONHOME strip on the kiro-cli spawn path (`_PYTHON_ENV_PREFIXES`); denied-command count 113→116 + bundled-defaults path fix to `src/kiro_crew/config/defaults.json`. Prior: widget-postMessage forged-turn: backend deny-by-default guard in `api_chat` refuses orchestrator `go`/`go all` auto-run escalation for `meta.origin='widget'` turns — SEL `auto_run_denied` — completing item 5 backend half; frontend human-gesture pre-fill + `origin` tag already shipped. Prior: Pentest round 2 + auth hardening: `StreamRedactor` cross-chunk credential holdback (`_STREAM_HOLDBACK_MAX=512`) + ~12 third-party provider token families (GitHub/GitLab/Stripe/SendGrid/OpenAI/Anthropic/npm/PyPI/DigitalOcean/Google OAuth) + DB connection URIs added to `redact_credentials`; `is_sensitive_path()` symlink resolution (realpath/`Path.resolve` + casefold home-realpath anchor, CWE-59) + `ln`/`cp` symlink-staging block; per-session logout `RevokedNonceStore` denylist + `revoke_access_cookie()` deny-by-default (CWE-613), link-click mints a separate session cookie (`register_nonce=False`) and denylists the link nonce; app-token `_enforce_app_scope` least-privilege confinement (CWE-269); `mc_token_<port>` `Secure` via `origin.is_https_request()`. Prior: challenge-and-redirect for Slack REMOVED — messages processed inline; SEC-009 loud no-isolation fallback + `agent.sandbox_allow_no_isolation`; time-limited safety override replacing permanent YOLO, per-segment deny pattern evaluation, 3-tier interactive trust escalation, SSH tunnel -N flag fix)
 
 ## Overview
@@ -558,6 +561,160 @@ Sidebar status follows the same read-only boundary. `GET /api/chat/slots` and th
 
 **App-token least-privilege scope (CWE-269)** (`token_auth.py`): an app token is confined to its own app namespace + the API path prefixes the app declares in its manifest `permissions.api` allowlist; everything else is denied. `_enforce_app_scope()` is **deny-by-default** — `_app_api_allowlist()` returns an empty tuple on any failure (app not installed, manifest unreadable), confining the app to its own namespace only. Enforced at all grant points (the normal cookie/query-param flow and the cross-app `/apps/<other>/api` reverse-proxy path re-check); dashboard-user tokens (empty `app` claim) bypass the gate entirely. Denials emit a `log_api_access` SEL event (`operation="app_scope_check"`, `outcome="denied"`).
 
+**Kiro prerequisite setup boundary (`kiro_prerequisite.py`)**: the dashboard's
+status/install/login endpoints require the exact configured owner. Before an
+owner exists, only the signed `local-app` and `local-startup` dashboard subjects
+may use them; generic dashboard-user and app-token callers are denied and
+audited. The two mutations also pass the shared Origin/Referer CSRF check. They
+expose exactly three fixed verbs and accept no request-selected executable,
+argv, installer URL, redirect downgrade, output path, or shell fragment.
+macOS/Linux download only `https://cli.kiro.dev/install`; Windows downloads only
+`https://cli.kiro.dev/install.ps1`. Every redirect and the final URL must remain
+on the exact `cli.kiro.dev:443` host and expected path, with no credentials,
+query, or fragment. Automatic redirect following is disabled: each `Location`
+is resolved and validated before its destination request, with a three-redirect
+limit. The downloader rejects oversized bodies, supports explicit HTTP(S)
+proxies while bypassing `.netrc`, then requires both a release-pinned SHA-256
+digest and the platform-specific official marker. An upstream installer change
+therefore fails closed until KiroCrew updates the pin. The same validated bytes
+remain in memory and execute through the fixed system interpreter's standard
+input, closing the validation/execution replacement window. The unsandboxed
+official installer receives a system-only `PATH`. Explicit login
+inherits only the allowlisted user-path, UI/device-flow, TLS, and proxy values;
+passive probes receive a narrower environment that excludes proxy credentials
+and desktop-session IPC as well as ambient cloud, Slack, SSH-agent, and
+application credentials.
+
+Output and client-visible errors are bounded and credential/exfiltration-
+redacted. Only HTTPS URLs on the exact official `app.kiro.dev` host or the
+`/start` device path on `view.awsapps.com` are linkable. User-triggered
+install/login records a critical `invoked` SEL event before spawn (audit failure
+denies execution), followed by a best-effort terminal event. Passive
+`--version`/`whoami` probes use the same paired audit lifecycle; probe events
+contain only the probe kind and coarse outcome, never argv, candidate path,
+output, or environment. One operation may run at a time. Filesystem candidate
+and interpreter discovery runs off the asyncio event loop. Timeout,
+cancellation, and gateway shutdown terminate and reap the full child tree using
+`platform_compat`. A private POSIX supervisor remains the process-group leader
+until all group members exit, so a pipe-holding descendant cannot outlive an
+exited command leader or turn a retained PGID into a reuse hazard. The gateway
+captures the supervisor source before agent sessions begin and
+invokes it from memory with isolated Python; the supervisor wraps the completed
+sandbox launcher as the outermost process, resolving a sandbox or cgroup
+wrapper's executable to an absolute path before the supervisor's `execve`.
+An agent cannot replace a mutable
+supervisor file immediately before an owner-triggered operation, and the Linux
+namespace launcher and supervisor never wait on each other.
+Windows synchronously retains an identity-stable handle for the primary process
+after spawn, and successful process completion awaits the descendant tracker
+until every retained child is inactive and terminally scanned. An immediate-exit
+launcher therefore cannot disappear before its helpers are anchored or report
+success while a detached installer remains live. Discovery continues from every
+live child, so late helpers are still terminated before the deadline. Each exact
+root receives one final post-exit snapshot before tracking removes it, closing
+the between-polls child spawn/parent exit race. Every Toolhelp parent-PID edge is
+checked twice against
+creation and exit times read from the exact root, retained-parent, and
+newly-opened child handles. Genuine children created before an immediate-exit
+parent remain eligible, while a child attached to a recycled root or
+intermediate PID is rejected. Failure to retain the primary handle or validate
+its identity, create a Toolhelp snapshot, or complete any initial or later
+enumeration fails the operation closed; opened child handles are closed before
+the error propagates. One deadline covers process exit, initial and terminal
+discovery, and inherited output-pipe closure.
+
+Unverified candidate version probes route through
+`sandboxed_spawn_argv(..., mode="strict")` on POSIX. The outer sandbox launches
+an unverified candidate through the absolute system `/usr/bin/env` entrypoint,
+preventing a planted `kiro-cli` basename from selecting the provider's trusted
+internal macOS delegation path. The strict wrapper additionally hides the
+configured data home, `~/.kiro/crew`, `~/.kirocrew`, and all known Kiro
+identity stores, so setup probes cannot read Kiro Crew state or bearer tokens.
+Passing `--version` never promotes a user-writable candidate into credential
+access. `whoami` and device login require either an immutable system/operator
+candidate or an exact path + SHA-256 attestation written after the validated
+official installer completes. The attestation file is included in
+`_CREW_SECRET_LEAVES`, making the trust decision unreadable and unwritable to
+agent tools. Installation can attest only the exact official platform target,
+and only when the installer created it or changed its digest; an unchanged or
+shadowed pre-existing candidate fails closed. A POSIX operator override is
+pinned to its canonical path and SHA-256 on the owning process's first
+registration. The gateway registers through its prerequisite service; direct
+agent-bearing CLI commands register before their jail gate or provider factory.
+Mutation before credential access fails closed, and the digest is required
+again while copying the private auth executable. It is rechecked before staging
+credentials; POSIX auth commands then execute a private verified-byte snapshot
+inside the per-call auth workspace rather than the mutable discovery pathname.
+ACP launches use the same byte-binding rule: Linux executes a sealed memfd,
+while macOS verifies the official Developer ID source and copies its exact
+digest-checked bytes below the agent-protected `<data-home>/run` directory
+before spawn. Registered snapshot descriptors and private files are released
+after every ACP, usage, and model-list spawn path.
+Auth commands use `mode="standard"` only with HOME/XDG/AppData redirected below
+the fixed `~/.kiro/crew-auth-staging` parent. That parent is on the shared
+sensitive-path floor and hidden by every agent sandbox. The separately
+constructed sandbox for the provenance-verified Kiro auth process exposes that
+fixed staging root, with HOME directed at its random per-call workspace, while
+the complete Kiro Crew data home remains hidden. The staging root contains only
+per-call workspaces and a dedicated publication lock; each workspace contains
+only the allowlisted `kiro-auth-token*.json` and Kiro CLI identity SQLite files.
+Login publishes
+changes only after exit zero; nonzero exit, timeout, cancellation, and shutdown
+discard the workspace. SQLite sidecars are consolidated through SQLite's
+backup API into one atomically replaced main database rather than copied as a
+mixed generation. Before publication, the gateway verifies that the live
+identity generation still matches the copy taken at operation start. The check
+and all allowlisted publications share one cross-process file lock, so two
+gateway processes cannot both validate one generation and then overwrite each
+other. Lock acquisition is required and fails the publication closed on
+Windows as well as POSIX; a concurrent user login wins and the staged
+generation is discarded rather than clobbering newer credentials. A matched
+live identity file that cannot be captured under the bounded regular-file rules
+fails both initial staging and the locked generation scan; it is never omitted
+as though absent, so staged login state cannot replace it. The
+temporary home is then removed;
+unrelated AWS SSO/MCP cache files, SSH, GitHub, Kubernetes, and Kiro Crew state
+remain hidden. Windows discovery does not trust user-writable `PATH`
+entries or an explicit override because no equivalent OS sandbox protects a
+passive probe: it executes only candidates under the fixed Program Files
+`Kiro-Cli` tree. If an executable untrusted explicit override would shadow the fixed
+candidate in ACP resolution, readiness fails without executing either binary
+until the override is removed or moved under that trusted tree; a nonexistent
+override is ignored just as it is by the shared resolver. The shared ACP
+resolver retains inherited Windows `PATH`, the interpreter Scripts directory,
+and the explicit operator override, while setup asks that resolver for fixed
+passive-probe locations only. Status requests never mutate
+`KIROCREW_KIRO_BIN`. Electron delegates entirely to this gateway service and
+does not execute a second candidate or installer path. For each local-token
+request Electron re-resolves the authoritative migrated or pinned data home,
+reads exactly that home's one bootstrap secret, and sends it only to the
+literal `127.0.0.1` gateway bind address; it never probes canonical and legacy
+secrets across multiple loopback addresses. ACP launch independently
+re-enforces executable provenance. The shared client/runtime resolver requires
+the official-installer trust digest, immutable system provenance, or the
+operator override digest captured by the process-start registration, and
+canonicalizes symlinks before its final no-follow open. Linux copies verified
+bytes into a kernel write-sealed `MFD_EXEC` memfd, passes its descriptor through
+every wrapper as `/proc/self/fd/<fd>`, and closes the gateway copy after process
+creation. Older kernels that reject `MFD_EXEC` with `EINVAL` retry creation
+without that flag; other creation errors fail closed. Snapshot registry
+ownership is removed synchronously, while descriptor close runs on the
+dedicated subprocess executor so cancellation and startup teardown cannot block
+the gateway event loop. Because Mach-O does not reliably launch through
+`/dev/fd` and a normal drag-installed app bundle is user-owned, macOS executes
+only the canonical
+official app target after approved protected-installer, process-start override,
+or immutable-system provenance and pinned Developer
+ID/identifier/team/hardened-runtime checks succeed; explicit Kiro
+classification preserves internal-sandbox delegation without relying on the
+executable basename. Arbitrary unsandboxed same-user native code is outside the
+enforceable in-process boundary on macOS; excluding it would require a
+privileged helper or a platform installer ownership change. Windows relies on
+its fixed protected Program Files tree: the ACP resolver canonicalizes and
+rejects override, inherited-`PATH`, or interpreter-Scripts candidates outside
+that tree before spawn. This is an operator-triggered system prerequisite,
+accepts no LLM input, and is absent from the headless MCP server route set.
+
 **App manifest permission model — advisory (`apps/permissions.py`)**: distinct from the HTTP app-token scope above, the App Kit manifest `permissions` block (`mcpTools`, `network`, `memory`) is currently **advisory, not enforced in-process**. `validate_permissions()` and `format_permissions_summary()` exist but are **not wired into the install or runtime path** — they have no callers outside `test/`, so the manifest `permissions` block is neither enforced nor even surfaced today. `check_tool_permission()` **fails open on an empty `mcpTools` allowlist** (returns `True`) and is not called at the tool-dispatch boundary, so `mcpTools` is a review/display signal rather than a runtime capability gate. (Install-time path-traversal blocking is a separate mechanism: `_check_path_safety(name)` + `manifest.validate()` in `_validate_source_path`, not the permission validator.) Real in-process enforcement (and per-resource `owner_app` ownership) is tracked in `docs/app-kit/app-sandbox-roadmap.md`; today an installed app runs with the user's full trust, confined only by the HTTP app-token scope, the OS sandbox, the `agent.apps_allow_third_party` off-switch, and destructive-command deny patterns (TRACKING).
 
 **App admission gate (`apps/admission.py`)** (CWE-829): a contained App Kit admission decision core, gating the app install / update / enable / `register_external_app` / registry paths. It is **distinct** from the CPP-seam plugin admission engine (`platform/admission.py`), which gates signed plugin entry-points from `~/.kiro/crew/admission_policy.json`; this gate governs App Kit apps from a separate `config_dir()/app_admission.json`. The fleet-controlled policy carries a kill-switch (`banned`, always wins), a marketplace `approved` allowlist (non-empty = only-these), and an optional HMAC `require_signature` check (verified against a `trust_keys` secret the *policy* — never the app — holds, over `AppManifest.signing_payload()`). `app_admission_denied()` runs **before** the app's files are copied or its `onInstall` script runs, so a denied app never lands on disk or executes. **Fail-closed** on a present-but-unreadable policy (deny-all + `critical` SEL audit); an **absent** policy admits (interim default preserving today's no-policy behavior — the seeded-default mechanism that makes absence itself fail-closed belongs to the CPP governance seam). Asymmetric signing + trusted-publisher-key distribution + a per-app capability ceiling remain follow-on.
@@ -742,6 +899,9 @@ All outbox downloads include:
 - Filename sensitivity check unchanged (`redact(filename) == filename`)
 - Text content redaction unchanged for UTF-8 files
 - Binary files: filename validated, content scan skipped (binary data cannot be meaningfully redacted)
+- Dashboard multipart uploads open their destination with `O_BINARY` when the
+  host provides it, so Windows cannot translate embedded LF bytes to CRLF and
+  corrupt archives or media between validation and the restricted write.
 
 #### Slack Delivery Audience — Strict Caller-Identity Classification (`file_send`)
 

@@ -113,4 +113,5 @@ class TestNoOpenCliFlag:
                 port_override=None,
                 json_ready=False,
                 approval_mode=None,
+                test_mode=False,
             )

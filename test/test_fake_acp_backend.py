@@ -89,9 +89,7 @@ def test_tool_prompt_emits_tool_call_without_permission(monkeypatch):
     )
     msgs = _messages(buf)
     updates = [
-        m["params"]["update"]["sessionUpdate"]
-        for m in msgs
-        if m.get("method") == "session/update"
+        m["params"]["update"]["sessionUpdate"] for m in msgs if m.get("method") == "session/update"
     ]
     assert updates == ["tool_call", "tool_call_update", "agent_message_chunk"]
     assert not any(m.get("method") == "session/request_permission" for m in msgs)
@@ -120,20 +118,42 @@ def test_prompt_text_handles_missing_and_nontext_blocks():
     assert fake._prompt_text({"prompt": "not-a-list"}) == ""
     assert (
         fake._prompt_text(
-            {"prompt": [{"type": "image"}, {"type": "text", "text": "a"}, {"type": "text", "text": "b"}]}
+            {
+                "prompt": [
+                    {"type": "image"},
+                    {"type": "text", "text": "a"},
+                    {"type": "text", "text": "b"},
+                ]
+            }
         )
         == "ab"
     )
 
 
 def test_read_message_skips_blank_and_invalid_json(monkeypatch):
-    monkeypatch.setattr(fake.sys, "stdin", io.StringIO('\n  \nnot json\n{"id": 1, "method": "x"}\n'))
+    monkeypatch.setattr(
+        fake.sys, "stdin", io.StringIO('\n  \nnot json\n{"id": 1, "method": "x"}\n')
+    )
     assert fake._read_message() == {"id": 1, "method": "x"}
     assert fake._read_message() is None  # EOF
 
 
+def test_main_answers_readiness_probes(monkeypatch):
+    buf = _capture(monkeypatch)
+    monkeypatch.setattr(fake.sys, "argv", ["fake_acp_backend", "--version"])
+    fake.main()
+    assert buf.getvalue().strip() == fake.FAKE_VERSION
+
+    buf.seek(0)
+    buf.truncate()
+    monkeypatch.setattr(fake.sys, "argv", ["fake_acp_backend", "whoami"])
+    fake.main()
+    assert buf.getvalue().strip() == fake.FAKE_IDENTITY
+
+
 def test_main_processes_messages_until_eof(monkeypatch):
     buf = _capture(monkeypatch)
+    monkeypatch.setattr(fake.sys, "argv", ["fake_acp_backend", "acp"])
     monkeypatch.setattr(
         fake.sys,
         "stdin",

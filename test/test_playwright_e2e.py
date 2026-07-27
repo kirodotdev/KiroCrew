@@ -21,7 +21,6 @@ import os
 import re
 import shutil
 import subprocess
-import sys
 from pathlib import Path
 from typing import NoReturn
 
@@ -88,7 +87,7 @@ def _resolve_website_dir() -> Path | None:
     return in_tree if (in_tree / "playwright").is_dir() else None
 
 
-def test_dashboard_playwright_suite(tmp_path) -> None:
+def test_dashboard_playwright_suite() -> None:
     """Boot a gateway and run the credential-less Playwright spec set against it."""
 
     def _unresolved(msg: str) -> NoReturn:
@@ -121,20 +120,8 @@ def test_dashboard_playwright_suite(tmp_path) -> None:
     from kiro_crew.testing import fake_acp_backend
     from kiro_crew.testing.harness import spawn_feature_gateway
 
-    # Mirror the smoke suite's acp_gateway fixture: exec the packaged fake via a
-    # sys.executable-pinned launcher rather than its own ``#!/usr/bin/env
-    # python3`` shebang, which need not resolve to a valid interpreter. runpy
-    # runs it as __main__ so its entrypoint fires.
-    launcher = tmp_path / "fake_acp_backend"
-    launcher.write_text(
-        f"#!{sys.executable}\n"
-        "import runpy\n"
-        f"runpy.run_path({fake_acp_backend.__file__!r}, run_name='__main__')\n"
-    )
-    launcher.chmod(0o755)
-
     prev_kiro_bin = os.environ.get("KIROCREW_KIRO_BIN")
-    os.environ["KIROCREW_KIRO_BIN"] = str(launcher)
+    os.environ["KIROCREW_KIRO_BIN"] = str(fake_acp_backend.__file__)
     try:
         with spawn_feature_gateway(fixture="minimal", approval="reads") as gw:
             env = dict(os.environ)

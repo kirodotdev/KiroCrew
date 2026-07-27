@@ -9,6 +9,7 @@ from aiohttp import web
 
 from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
 from kiro_crew.dashboard.chat_runner import _run_chat
+from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_not_ready
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
@@ -20,6 +21,9 @@ _MAX_VARIANTS = 20
 
 async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
     """POST /api/chat/slots/{slot}/regenerate — regenerate the last assistant reply."""
+    blocked = await reject_if_kiro_not_ready(request)
+    if blocked is not None:
+        return blocked
     state: DashboardState = request.app["state"]
     name = request.match_info["slot"]
     slot = state._slots.get(name)
@@ -59,7 +63,7 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
         if len(variants) > _MAX_VARIANTS:
             variants = variants[-_MAX_VARIANTS:]
 
-        del slot.messages[u_idx + 1:]
+        del slot.messages[u_idx + 1 :]
         slot.invalidate_source_links()
         slot._dirty = True
         slot._resumed_count = 0
@@ -177,6 +181,9 @@ async def api_chat_slot_switch_variant(request: web.Request) -> web.Response:
 
 async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
     """POST /api/chat/slots/{slot}/edit-resend — edit a user message and resend."""
+    blocked = await reject_if_kiro_not_ready(request)
+    if blocked is not None:
+        return blocked
     state: DashboardState = request.app["state"]
     name = request.match_info["slot"]
     slot = state._slots.get(name)
@@ -247,7 +254,9 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
 
         def _on_done(t: asyncio.Task) -> None:
             if not t.cancelled() and t.exception() is not None:
-                logger.error("edit-resend _run_chat failed for %s", slot.key, exc_info=t.exception())
+                logger.error(
+                    "edit-resend _run_chat failed for %s", slot.key, exc_info=t.exception()
+                )
 
         task.add_done_callback(_on_done)
 

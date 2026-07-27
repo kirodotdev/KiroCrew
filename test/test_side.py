@@ -32,20 +32,39 @@ from kiro_crew.dashboard.handlers.side import (
     api_side_turn,
 )
 from kiro_crew.dashboard.side_state import SideState
+from kiro_crew.kiro_prerequisite import KiroPrerequisiteService
 from kiro_crew.learn import LessonStore
 from kiro_crew.memory import MemoryStore
 from kiro_crew.skills import SkillsLoader
 
 _SIDE_QUESTION = "what is the difference between TCP and UDP?"
 _SIDE_ANSWER = "TCP is connection-oriented and UDP is not."
-_MAIN_CHAT_EVENT_TYPES = frozenset(
-    {"chat_message", "chat_done", "chat_segment", "chat_status"}
-)
+_MAIN_CHAT_EVENT_TYPES = frozenset({"chat_message", "chat_done", "chat_segment", "chat_status"})
 
 
-def _make_side_app(state) -> web.Application:
+class _ReadyKiroPrerequisiteService(KiroPrerequisiteService):
+    async def session_ready(self) -> bool:
+        return True
+
+
+_READY_KIRO_PREREQUISITE = object.__new__(_ReadyKiroPrerequisiteService)
+
+
+async def _no_audit(**kwargs: Any) -> None:
+    del kwargs
+
+
+def _make_side_app(
+    state,
+    prerequisite_service: KiroPrerequisiteService | None = None,
+) -> web.Application:
     app = web.Application()
     app["state"] = state
+    app["kiro_prerequisite_service"] = (
+        prerequisite_service
+        if prerequisite_service is not None
+        else _READY_KIRO_PREREQUISITE
+    )
     app.router.add_post("/api/chat/slots/{slot}/side/open", api_side_open)
     app.router.add_post("/api/chat/slots/{slot}/side/turn", api_side_turn)
     app.router.add_post("/api/chat/slots/{slot}/side/close", api_side_close)
@@ -63,15 +82,11 @@ def _stub_run_side_turn(monkeypatch, *, answer: str = _SIDE_ANSWER):
         if slot._side is not None and slot._side.open:
             slot._side.append_assistant(answer)
 
-    monkeypatch.setattr(
-        "kiro_crew.dashboard.handlers.side._run_side_turn", _fake_run
-    )
+    monkeypatch.setattr("kiro_crew.dashboard.handlers.side._run_side_turn", _fake_run)
 
 
 @pytest.mark.asyncio
-async def test_memory_isolation_byte_equal_after_round_trip(
-    tmp_path, monkeypatch
-):
+async def test_memory_isolation_byte_equal_after_round_trip(tmp_path, monkeypatch):
     """Parent build_session_context is byte-equal pre/post a /side round-trip."""
     _stub_run_side_turn(monkeypatch)
     state = _make_state(tmp_path)
@@ -85,9 +100,7 @@ async def test_memory_isolation_byte_equal_after_round_trip(
 
     builder = ContextBuilder(
         memory=MemoryStore(workspace=tmp_path / "ws"),
-        skills=SkillsLoader(
-            skills_path=tmp_path / "skills", install_builtins=False
-        ),
+        skills=SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False),
         lessons=LessonStore(base_dir=tmp_path / "lessons"),
         conversation_log=state.conversation_log,
     )
@@ -148,9 +161,7 @@ async def test_side_turn_returns_before_run_finishes(tmp_path, monkeypatch):
         started.set()
         await release.wait()
 
-    monkeypatch.setattr(
-        "kiro_crew.dashboard.handlers.side._run_side_turn", _blocking
-    )
+    monkeypatch.setattr("kiro_crew.dashboard.handlers.side._run_side_turn", _blocking)
     state = _make_state(tmp_path)
     state.get_or_create_slot("parent")
     app = _make_side_app(state)
@@ -174,6 +185,39 @@ async def test_side_turn_returns_before_run_finishes(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_paused_readiness_rejects_side_turn_without_mutation(tmp_path):
+    state = _make_state(tmp_path)
+    parent = state.get_or_create_slot("parent")
+    service = KiroPrerequisiteService(
+        platform_name="linux",
+        environ={"HOME": str(tmp_path), "PATH": ""},
+        home=tmp_path,
+        audit_writer=_no_audit,
+        clock=lambda: 1.0,
+    )
+    service._has_probed = True
+    service._last_probe_at = 1.0
+    app = _make_side_app(state, service)
+
+    async with TestClient(TestServer(app)) as client:
+        opened = await client.post("/api/chat/slots/parent/side/open", json={})
+        assert opened.status == 200
+        assert parent._side is not None
+        before = list(parent._side.messages)
+        response = await client.post(
+            "/api/chat/slots/parent/side/turn",
+            json={"question": _SIDE_QUESTION},
+        )
+        body = await response.json()
+
+    assert response.status == 503
+    assert body["code"] == "kiro_prerequisite_required"
+    assert parent._side is not None
+    assert parent._side.messages == before
+    assert not state._background_tasks
+
+
+@pytest.mark.asyncio
 async def test_side_run_id_never_leaks_to_main_channels(tmp_path, monkeypatch):
     """Side broadcasts go on chat.side_result; run_id never appears on main channels."""
     side_started = asyncio.Event()
@@ -185,13 +229,14 @@ async def test_side_run_id_never_leaks_to_main_channels(tmp_path, monkeypatch):
         side_started.set()
         await side_release.wait()
         broadcast_side_result(
-            state, slot_key=slot.key, run_id=run_id,
-            role="assistant", content="answer",
+            state,
+            slot_key=slot.key,
+            run_id=run_id,
+            role="assistant",
+            content="answer",
         )
 
-    monkeypatch.setattr(
-        "kiro_crew.dashboard.handlers.side._run_side_turn", _streaming
-    )
+    monkeypatch.setattr("kiro_crew.dashboard.handlers.side._run_side_turn", _streaming)
     state = _make_state(tmp_path)
     events = _capture_broadcasts(state)
     state.get_or_create_slot("parent")
@@ -217,9 +262,7 @@ async def test_side_run_id_never_leaks_to_main_channels(tmp_path, monkeypatch):
 
     main = [(t, p) for t, p in events if t in _MAIN_CHAT_EVENT_TYPES]
     for etype, payload in main:
-        assert side_run_id not in repr(payload), (
-            f"side run_id leaked into main {etype}: {payload}"
-        )
+        assert side_run_id not in repr(payload), f"side run_id leaked into main {etype}: {payload}"
     side_payloads = [p for t, p in events if t == "chat.side_result"]
     assert any(p.get("run_id") == side_run_id for p in side_payloads)
 
@@ -248,12 +291,14 @@ async def test_empty_llm_output_produces_visible_fallback(tmp_path, monkeypatch)
     )
 
     await _run_side_turn(
-        state, parent, "run-abc", "run ls /tmp", is_first_turn=True,
+        state,
+        parent,
+        "run-abc",
+        "run ls /tmp",
+        is_first_turn=True,
     )
 
-    assistant_broadcasts = [
-        (t, d) for t, d in events if d.get("role") == "assistant"
-    ]
+    assistant_broadcasts = [(t, d) for t, d in events if d.get("role") == "assistant"]
     assert assistant_broadcasts, "expected at least one assistant broadcast"
     last_content = assistant_broadcasts[-1][1]["content"]
     assert last_content and "tool" in last_content.lower()
@@ -305,15 +350,12 @@ async def test_side_turn_resolves_slot_agent_to_kiro_agent(tmp_path, monkeypatch
     await _run_side_turn(state, parent, "run-1", "q", is_first_turn=True)
 
     assert captured["agent"] == "kirocrew", (
-        f"side turn passed an unresolved agent to get_or_create: "
-        f"{captured.get('agent')!r}"
+        f"side turn passed an unresolved agent to get_or_create: " f"{captured.get('agent')!r}"
     )
 
 
 @pytest.mark.asyncio
-async def test_side_turn_agent_resolution_falls_back_on_error(
-    tmp_path, monkeypatch
-):
+async def test_side_turn_agent_resolution_falls_back_on_error(tmp_path, monkeypatch):
     """If binding resolution raises, fall back to the raw slot.agent rather
     than crashing the side turn before it starts."""
     state = _make_state(tmp_path)
@@ -337,9 +379,7 @@ async def test_side_turn_agent_resolution_falls_back_on_error(
     def _boom(*_a, **_k):
         raise RuntimeError("config unavailable")
 
-    monkeypatch.setattr(
-        "kiro_crew.dashboard.handlers.side.KiroCrewConfig.load", _boom
-    )
+    monkeypatch.setattr("kiro_crew.dashboard.handlers.side.KiroCrewConfig.load", _boom)
     monkeypatch.setattr(
         "kiro_crew.dashboard.handlers.side.stream_and_collect",
         AsyncMock(return_value="ok"),
@@ -347,15 +387,13 @@ async def test_side_turn_agent_resolution_falls_back_on_error(
 
     await _run_side_turn(state, parent, "run-1", "q", is_first_turn=True)
 
-    assert captured["agent"] == "kirocrew", (
-        f"fallback did not use raw slot.agent: {captured.get('agent')!r}"
-    )
+    assert (
+        captured["agent"] == "kirocrew"
+    ), f"fallback did not use raw slot.agent: {captured.get('agent')!r}"
 
 
 @pytest.mark.asyncio
-async def test_side_stream_redacts_credential_split_across_chunks(
-    tmp_path, monkeypatch
-):
+async def test_side_stream_redacts_credential_split_across_chunks(tmp_path, monkeypatch):
     """A credential split across streaming chunk boundaries must never reach
     the wire, and the stored/final text must be redacted.
 
@@ -393,17 +431,13 @@ async def test_side_stream_redacts_credential_split_across_chunks(
         on_chunk(f"IOSFODNN7EXAMPLE see {exfil_url} done")
         return f"here is a key AKIAIOSFODNN7EXAMPLE see {exfil_url} done"
 
-    monkeypatch.setattr(
-        "kiro_crew.dashboard.handlers.side.stream_and_collect", _fake_stream
-    )
+    monkeypatch.setattr("kiro_crew.dashboard.handlers.side.stream_and_collect", _fake_stream)
 
     await _run_side_turn(state, parent, "run-1", "q", is_first_turn=True)
 
     side_events = [d for t, d in events if t == "chat.side_result"]
     # Concatenation of every streamed delta must not reveal the raw secrets.
-    streamed = "".join(
-        d["content"] for d in side_events if not d.get("final")
-    )
+    streamed = "".join(d["content"] for d in side_events if not d.get("final"))
     assert raw_cred not in streamed, f"raw credential leaked in stream: {streamed!r}"
     assert exfil_payload not in streamed, f"exfil URL leaked in stream: {streamed!r}"
 

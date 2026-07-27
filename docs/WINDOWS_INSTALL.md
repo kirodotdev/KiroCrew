@@ -27,7 +27,7 @@ The source install below remains the fully supported path.
 | Tool | Why | Get it |
 |------|-----|--------|
 | **Git for Windows** | clone the repo | https://git-scm.com/download/win |
-| **kiro-cli** | the agent backend (ACP) — must be on `PATH` | kiro-cli's native Windows release |
+| **kiro-cli** | the agent backend (ACP); the first dashboard launch can install it | Kiro Crew setup page or kiro-cli's native Windows release |
 | **Python 3.10–3.12** | the venv runtime (3.12 preferred; numpy 1.x has no 3.13 wheel) | https://python.org — install user-scoped, or `winget install Python.Python.3.12` |
 | **Node.js** (optional) | builds the full React dashboard; without it the gateway serves the prebuilt bundle | `winget install OpenJS.NodeJS.LTS` |
 
@@ -64,6 +64,14 @@ Then:
 kirocrew setup
 kirocrew gateway
 ```
+
+Open the dashboard URL printed by the gateway. On first launch, Kiro Crew checks
+the **Windows gateway host** for a runnable and authenticated Kiro CLI. If it is
+missing, choose **Install Kiro CLI** to download and run the fixed official
+PowerShell installer; if it is signed out, choose **Sign in to Kiro** and
+complete the device-code flow in the browser. The dashboard opens automatically
+after `kiro-cli whoami` succeeds. This setup runs on the gateway machine, which
+may be different from the computer running the browser.
 
 `kirocrew` / `kirocrew-browse` land in `.venv\Scripts\`. If a launched (non-shell)
 gateway can't find the built-in `kirocrew-cron` / `kirocrew-core` MCP servers,

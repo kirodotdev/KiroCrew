@@ -201,6 +201,7 @@ class TestStartApiServerWiring:
         import kiro_crew.config.loader as _loader
         import kiro_crew.dashboard.server as _srv
         import kiro_crew.dashboard.state as _st
+        import kiro_crew.kiro_prerequisite as _prerequisite
 
         # start_api_server now persists .local_secret via server.config_dir and
         # warms the token_auth revoked-nonce store via loader.config_dir; patch
@@ -208,6 +209,14 @@ class TestStartApiServerWiring:
         monkeypatch.setattr(_st, "config_dir", lambda: tmp_path)
         monkeypatch.setattr(_srv, "config_dir", lambda: tmp_path)
         monkeypatch.setattr(_loader, "config_dir", lambda: tmp_path)
+        service = MagicMock()
+        service.close = AsyncMock()
+        service_factory = MagicMock(return_value=service)
+        monkeypatch.setattr(
+            _prerequisite,
+            "KiroPrerequisiteService",
+            service_factory,
+        )
 
         from kiro_crew.dashboard.server import start_api_server
 
@@ -220,9 +229,13 @@ class TestStartApiServerWiring:
             ),
             lessons=MagicMock(load_all=MagicMock(return_value=[])),
             port=0,
+            assume_kiro_ready=True,
         )
         try:
             assert state._hook_store is not None
+            assert runner.app["kiro_prerequisite_service"] is service
+            assert state.kiro_prerequisite_service is service
+            service_factory.assert_called_once_with(assume_ready=True)
             # start_api_server publishes readiness only at its final return
             # boundary, after bind and secret persistence complete.
             assert state.ready is True
@@ -240,6 +253,7 @@ class TestStartApiServerWiring:
                 assert ("GET", probe) in routes
         finally:
             await runner.cleanup()
+        service.close.assert_awaited_once_with()
 
 
 class TestApiServerAuth:

@@ -8,6 +8,7 @@ import { useBranding } from '../hooks/useBranding'
 import { useAppSelector, useAppDispatch } from '../store'
 import { resolveByApprovalId, openActivityToTool, openActivityToTab, selectSlotPendingApproval, selectSlotPendingSpawnApprovals } from '../store/chatSlice'
 import { useSlotId } from '../providers/SlotContext'
+import { useKiroSessionReady } from '../providers/KiroReadinessContext'
 import { useToolPillVisible } from '../store/toolPillRegistry'
 import { ToolDetails } from '../pages/chat/ToolDetails'
 import { api, ApiError } from '../api/client'
@@ -366,7 +367,7 @@ function ChatInput({
   onSend,
   canSteer,
   onSteer,
-  disabled = false,
+  disabled: disabledProp = false,
   placeholder = '',
   prefillHint,
   onScreenshot,
@@ -432,6 +433,9 @@ function ChatInput({
   connected = true,
   onOptimizeResult,
 }: ChatInputProps) {
+  const kiroSessionReady = useKiroSessionReady()
+  const kiroSetupRequired = !kiroSessionReady
+  const disabled = disabledProp || kiroSetupRequired
   const dispatch = useAppDispatch()
   const slotId = useSlotId()
   const pendingApproval = useAppSelector(s => selectSlotPendingApproval(s, slotId), shallowEqual)
@@ -663,9 +667,13 @@ function ChatInput({
   // (normal send, or server-side queue while running).
   const steerActive = isRunning && (!stopState || stopState === 'idle') && !!canSteer && !!onSteer && busySendMode === 'steer'
   const fireComposer = useCallback(() => {
+    if (disabled) return
     if (steerActive && onSteer) onSteer()
     else onSend()
-  }, [steerActive, onSteer, onSend])
+  }, [disabled, steerActive, onSteer, onSend])
+  const sendFollowUp = useCallback((text?: string) => {
+    if (!disabled) onFollowUpSend?.(text)
+  }, [disabled, onFollowUpSend])
   const { botName } = useBranding()
   const isMobile = useIsMobile()
   const ime = useImeGuard()
@@ -1133,7 +1141,7 @@ function ChatInput({
     // Guard on the RAW lifecycle so a second optimize can't start while one is
     // in flight — even from a different session where scoped `optimizing` reads
     // false (a single mutation backs this instance).
-    if (!txt || optimizePendingRef.current) return
+    if (!kiroSessionReady || !txt || optimizePendingRef.current) return
     // Pin the slot that owns this optimize so the overlay and the completion
     // handler stay bound to it across session switches.
     optimizeSlotRef.current = slotId
@@ -1150,7 +1158,7 @@ function ChatInput({
     const referenced = pruneBlocks(txt, pasteBlocks)
     const pastes = referenced.map(b => ({ seq: b.seq, content: b.content }))
     runOptimize({ prompt: txt, context, pastes, slotId })
-  }, [runOptimize, chatMessages, pasteBlocks, slotId])
+  }, [runOptimize, chatMessages, pasteBlocks, slotId, kiroSessionReady])
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // Cmd/Ctrl+Shift+V → next paste inserts full text inline (no chip collapse).
@@ -1368,7 +1376,7 @@ function ChatInput({
     // the disabled-state on the Optimize button (line ~1734).
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && e.shiftKey) {
       e.preventDefault()
-      if (connected) optimizePrompt()
+      if (connected && kiroSessionReady) optimizePrompt()
       return
     }
     // Mode: enter-ctrl-newline — Ctrl/Cmd+Enter inserts newline, Enter sends
@@ -1457,7 +1465,7 @@ function ChatInput({
       }
       e.preventDefault()
     }
-  }, [fireComposer, onChange, sentMessages, sendOnEnter, pasteBlocks, onPasteBlocksChange, connected, ime, optimizePrompt])
+  }, [fireComposer, onChange, sentMessages, sendOnEnter, pasteBlocks, onPasteBlocksChange, connected, kiroSessionReady, ime, optimizePrompt])
 
   /** Intercept clipboard paste — files go to upload path, big text gets collapsed into a token. */
   const handlePaste = useCallback((e: React.ClipboardEvent<HTMLTextAreaElement>) => {
@@ -1671,7 +1679,7 @@ function ChatInput({
 
       {/* Ghost follow-up bubbles floating above input */}
       {!showGhost && followUpOptions && followUpOptions.length > 0 && onFollowUpSelect && (
-          <FollowUpBar options={followUpOptions} picked={followUpPicked ?? new Set()} onSelect={onFollowUpSelect} onSend={onFollowUpSend} quickSend={quickSend} layout={followUpLayout} />
+          <FollowUpBar options={followUpOptions} picked={followUpPicked ?? new Set()} onSelect={onFollowUpSelect} onSend={sendFollowUp} quickSend={quickSend} layout={followUpLayout} />
       )}
 
       {/* Drag handle — always visible, sits above approval bar or input */}
@@ -1899,7 +1907,7 @@ function ChatInput({
           aria-label="Message input"
           className={`relative w-full bg-transparent border-none ${INPUT_TYPO} text-text outline-none min-h-[44px] max-h-[50vh] placeholder:text-muted resize-none ${manualHeight !== null ? 'flex-1' : ''} ${disabled ? 'opacity-40 pointer-events-none' : ''} ${optimizing ? 'opacity-30' : ''}`}
           style={manualHeight !== null ? { height: '100%' } : undefined}
-          placeholder={!connected ? 'Gateway offline — message will not send' : disabled ? 'Stopping…' : voiceRecording ? 'Recording… click mic to stop' : voiceTranscribing ? 'Transcribing, please wait…' : resolvedPlaceholder}
+          placeholder={!connected ? 'Gateway offline — message will not send' : kiroSetupRequired ? 'Finish Kiro CLI setup to start chatting' : disabledProp ? 'Stopping…' : voiceRecording ? 'Recording… click mic to stop' : voiceTranscribing ? 'Transcribing, please wait…' : resolvedPlaceholder}
           readOnly={optimizing}
           rows={1}
           value={value}
@@ -2120,6 +2128,7 @@ function ChatInput({
                       <button
                         className="w-8 h-8 bg-transparent border-none flex items-center justify-center cursor-pointer hover:bg-black/15 transition-all text-inherit"
                         onClick={fireComposer}
+                        disabled={disabled}
                         title={busySendMode === 'steer' ? 'Steer — inject into the running turn (Enter)' : 'Queue — run after the current turn finishes (Enter)'}
                         aria-label={busySendMode === 'steer' ? 'Steer' : 'Queue message'}
                         data-testid="busy-send-button"
@@ -2172,7 +2181,7 @@ function ChatInput({
                     )}
                   </div>
                 ) : (
-                  <button className="w-8 h-8 rounded-full bg-warn text-warn-fg border-none flex items-center justify-center cursor-pointer hover:bg-warn/80 transition-all" onClick={onSend} title="Queue message" aria-label="Queue message">
+                  <button className="w-8 h-8 rounded-full bg-warn text-warn-fg border-none flex items-center justify-center cursor-pointer hover:bg-warn/80 disabled:opacity-30 disabled:cursor-not-allowed transition-all" onClick={fireComposer} disabled={disabled} title="Queue message" aria-label="Queue message">
                     <ArrowUpFromLine size={18} />
                   </button>
                 )
@@ -2192,9 +2201,9 @@ function ChatInput({
                 // still in flight — matching the re-entrancy guard in
                 // optimizePrompt(). optimizing ⊂ optimizePending, so this stays
                 // disabled on the originating session too.
-                disabled={!value.trim() || optimizePending || !connected}
+                disabled={!value.trim() || optimizePending || !connected || kiroSetupRequired}
                 aria-label={optimizePending && !optimizing ? 'Optimize prompt — busy optimizing another chat' : 'Optimize prompt'}
-                title={optimizePending && !optimizing ? 'Optimizing another chat — please wait' : `Optimize prompt (${platformShortcut('Cmd+Shift+Enter')})`}
+                title={kiroSetupRequired ? 'Finish Kiro CLI setup to optimize prompts' : optimizePending && !optimizing ? 'Optimizing another chat — please wait' : `Optimize prompt (${platformShortcut('Cmd+Shift+Enter')})`}
                 {...offlineProps(connected, 'optimize', 'Optimize')}
               >
                 {optimizing ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />}
@@ -2202,7 +2211,7 @@ function ChatInput({
               {/* 'primary' is a stable theming hook (button.primary) — see website/docs/theming-contract.md */}
               <button
                 className="primary w-8 h-8 rounded-full bg-accent text-accent-fg border-none flex items-center justify-center cursor-pointer hover:bg-accent-hover disabled:opacity-30 disabled:cursor-not-allowed transition-all"
-                onClick={onSend}
+                onClick={fireComposer}
                 disabled={(!value.trim() && !pendingFiles.length) || disabled || optimizing || !connected}
                 aria-label="Send"
                 {...offlineProps(connected, 'send', 'Send')}

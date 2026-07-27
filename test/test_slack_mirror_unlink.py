@@ -14,6 +14,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from chat_test_helpers import _make_ready_kiro_prerequisite
 
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.history import ConversationLog
@@ -50,6 +51,7 @@ def _make_state(tmp_path, session_map):
         start_time=0.0,
         conversation_log=ConversationLog(base_dir=tmp_path),
     )
+    state.kiro_prerequisite_service = _make_ready_kiro_prerequisite()
     state.broadcast_ws = MagicMock()
     state.push_slots_update = MagicMock()
     state.context_builder = _make_context_builder()

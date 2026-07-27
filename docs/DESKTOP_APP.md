@@ -244,10 +244,52 @@ same way). Key details:
 ## How the app finds and launches the backend
 
 When the app starts, [`main.js`](../website/electron/main.js) first checks
-whether a gateway is already running; if not, it locates the backend binary via
-[`find-bin.js`](../website/electron/find-bin.js) and spawns it as
-`kirocrew gateway --no-open`, then polls `/api/status` (up to 2 minutes)
-and loads the dashboard once it is healthy.
+whether a gateway is already running. An existing gateway—including a local SSH
+forward to a remote gateway—is reused. Otherwise the shell locates the backend
+binary via [`find-bin.js`](../website/electron/find-bin.js), spawns it as
+`kirocrew gateway --no-open`, polls `/api/status`, and loads the dashboard once
+it is healthy.
+
+The gateway-hosted dashboard then checks both prerequisites needed by the ACP
+provider:
+
+1. It discovers `kiro-cli` in the inherited `PATH`, `~/.local/bin`,
+   `~/.cargo/bin`, Homebrew locations, or the macOS `Kiro CLI.app` bundle.
+2. It verifies the first candidate selected by the shared ACP resolver with
+   `kiro-cli --version`. A broken or untrusted higher-priority candidate blocks
+   readiness instead of approving a later binary that ACP would not launch.
+3. It verifies authentication with `kiro-cli whoami`.
+
+If either check fails, the shared React setup gate appears in both the desktop
+shell and browser dashboard. On macOS, Linux, and native Windows, the user can
+explicitly choose **Install Kiro CLI**. The gateway downloads the fixed official
+HTTPS installer for the host platform, validates its size and
+platform-specific marker in memory, and pipes those same bytes to the fixed
+system interpreter. The installer itself verifies the downloaded Kiro CLI
+package. The second step runs `kiro-cli login --use-device-flow`, displays the
+secure sign-in URL and code, and opens the Kiro Crew dashboard only after
+`kiro-cli whoami` succeeds.
+An installed candidate that cannot start is shown as needing repair rather than
+as merely signed out. A broken existing macOS app bundle or Linux user-local
+binary is repaired through the official interactive guide when the upstream
+installer requires terminal confirmation before replacing it. Installation and
+sign-in never start silently in the background. Setup subprocesses receive a
+minimal allowlisted environment rather than the desktop shell's credentials;
+unverified version probes use the strict OS sandbox and hide every known Kiro
+identity store. The fixed `whoami` and device-login calls run only after
+Kiro Crew verifies immutable system/operator provenance or a SHA-256
+attestation recorded immediately after the pinned official installer. Those
+installer bytes may attest only the exact platform install target, and only
+when that target is new or changed; a higher-priority shadowing executable is
+reported for repair instead of receiving credential access. Those
+calls use a standard sandbox with a temporary home containing only Kiro
+identity token files; unrelated AWS, SSH, GitHub, Kubernetes, and Kiro Crew
+state remain unavailable. Timed-out commands signal a POSIX process group only
+while its leader still anchors that identity; on Windows, exact retained process
+handles terminate observed descendants without trusting recycled PIDs. Cleanup
+finishes before the gateway permits a retry.
+Hosting setup in the gateway provides one implementation and one UI for the
+desktop app, local browser, remote browser, Linux, and Windows.
 
 ### `find-bin.js` — locating the binary
 
@@ -279,13 +321,20 @@ unit-testable without mocking globals.
 
 ### `main.js` — spawning the gateway
 
-- Ensures `KIROCREW_HOME` (default `~/.kirocrew`, overridable via the
+- Ensures `KIROCREW_HOME` (default `~/.kiro/crew`, overridable via the
   `KIROCREW_HOME` env var) exists, then spawns the backend with
-  `["gateway", "--no-open"]`.
+  `["gateway", "--no-open"]`. If a real pre-move `~/.kirocrew` directory exists,
+  the shell reads its startup config first while the backend performs the
+  one-time migration; token lookup then falls through to the canonical home.
+  A clean install never creates the legacy directory.
 - Honors the **`KIROCREW_PORT`** env var for the dashboard port (default `5476`,
   validated to `1–65535`). `BACKEND_URL` / health checks target that port.
 - Sets `KIROCREW_PROJECT_DIR` to the Electron app's parent directory so the
   bundled `agents/` and `skills/` are discovered.
+- Leaves the inherited child `PATH` unchanged. The gateway prerequisite service
+  probes supported Kiro CLI locations independently, so Finder-launched macOS
+  apps and Linux desktop launchers still find user-local installations without
+  mutating the shell environment.
 - On window close the app hides to the tray; quitting sends `SIGTERM` to the
   gateway process.
 

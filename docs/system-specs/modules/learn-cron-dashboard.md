@@ -1,5 +1,9 @@
 # Self-Learning, Cron & Dashboard Modules
 
+Latest amendment: 2026-07-26 (cross-platform Kiro CLI prerequisite
+status/install/login service, first-run SPA gate, and readiness-resumable
+post-fan-out synthesis).
+
 Last Updated: 2026-07-23 (source payloads gain normalized `mergeable`/`mergeStateStatus` merge-state fields for GitHub and GitLab; PullRequestPanel surfaces a merge-blocker banner for open PRs — conflicts/behind carry an agent chat handoff, branch-protection blocks do not. Prior: left-nav IA restructure: sidebar toggle moved into the rail's menu row; Sessions label; Apps header with accent Explore link; per-frame Apps scrolling; bottom-pinned Agent Capabilities/Settings/Contact Us; Agents + Capabilities merged into the /capabilities panel — /agents redirects there. Prior: independent source-tabs hardening: provider binaries must be canonical root-owned non-writable paths; command-specific output ceilings and task-lifetime retained-byte reservations bound provider memory; only durable messages contribute sources; backend/frontend/panel retain at most 64 first-seen sources per slot. Prior: pull-request source links, source/check/resolve APIs, bounded sidebar CI refresh, SidePanel Changes view; learn_add session-recovery resolver now probes cron JSONL names; artifact companion-chat updates; silent-cron failure-alert suppression; CHAT_TURN_TIMEOUT remains aligned with ACP)
 
 ## Overview
@@ -211,6 +215,43 @@ Modular aiohttp package at `127.0.0.1:5476` (configurable). Split into:
 - `chat.py` — multi-slot chat with per-tab kiro-cli sessions (`dashboard:{slot.key}`), background LLM streaming (survives browser disconnect), session lifecycle management (active ↔ history), chunk cleanup, tool approval flow. Each tab gets its own kiro-cli process for true multi-agent parallelism — tabs can run tools simultaneously. Sessions idle-expire; on restart, the live tab set is restored from `~/.kirocrew/open_slots.json` (snapshotted on every flush + shutdown by `DashboardState._persist_open_slots()`, replayed on startup by `restore_open_slots()` before the legacy mtime-based `restore_recent_sessions()` so long-running tabs survive regardless of message age; after both restore paths `DashboardState.reseed_slot_counter()` advances `_slot_counter` past the highest restored `chat-<N>-<ts>` index so a newly minted tab can't reuse a low index that collides with a restored tab and scrambles the tab↔session binding), and full tab history is re-injected. Cross-tab context (recent messages from other dashboard sessions, capped at 5k chars) is injected at session start for continuity. `?ws=1` mode returns JSON immediately and pushes chunks via WS. `_prepare_messages()` collapses `chunk` entries into `streaming` role for API responses during active streaming. Timestamp preservation on resume (original `ts` from JSONL) and save (single-pass JSONL write preserving `ts` and `created_at`). **Agent persistence**: `slot.agent` saved to JSONL metadata on close, restored on resume — custom agent sessions survive close/reopen. Pushes `refresh("history")` after chat completion. **Bidirectional Slack sync**: mirrors user messages to linked Slack threads when `slack_client` is available. Stop resets the per-tab session; delete kills the per-tab session via `sessions.remove()` to free resources. **Slash commands**: `_SLASH_COMMANDS` frozenset skips context injection (sent verbatim to kiro-cli). `_BLOCKED_SLASH_COMMANDS` (`/quit`, `/exit`, `/q`, `/chat`, `/paste`, `/reply`, `/editor`) are rejected before session acquisition — returns warning message without touching kiro-cli. **ACP extension events**: `_run_chat` handles `compaction_status` (shows ✅/❌ completion/failure), `clear_status` (clears slot messages + broadcasts `slot_clear`), `agent_switched` (updates `slot.agent` + resets session + broadcasts `slot_agent_switch`).
 - `ws.py` — WebSocket endpoint at `/api/ws`. Single multiplexed connection for all real-time events. Pushes dashboard status every 5s, current slots on connect, log ring buffer replay on subscribe. The lesson/cron counts in the status snapshot refresh only every 30s (`_WS_COUNTS_CACHE_TTL`) and are computed OFF the event loop by `_load_status_counts` (`asyncio.to_thread` for both `LessonStore.load_all` — blocking JSONL `stat()`+`read_text()` — and `CronService.count_enabled_from_disk`), so slow/large/NFS home-dir latency cannot stall the loop and starve every other WebSocket/coroutine. It deliberately uses `count_enabled_from_disk` (a pure read) rather than `list_jobs`, whose off-thread `_arm_timer` would raise `RuntimeError` and silently cancel all cron timers (see cron spec § Enabled Predicate & Off-Thread Count). Server→Client: `{"type": "dashboard|slots|slot_title|notification|refresh|chat_message|chat_chunk|chat_done|log|refine|sessions_restarting|slot_clear|slot_agent_switch", "data": {...}}`. Client→Server: `{"type": "subscribe_logs|unsubscribe_logs"}`. `sessions_restarting` event pushed by `_reset_all_sessions()` with `{"status": "restarting"|"ready"}` so the frontend knows when sessions are being recycled. Each provider shutdown is bounded by `_SHUTDOWN_TIMEOUT_SECS` (5s) via `asyncio.wait_for`; on timeout, `_sync_kill_provider` force-kills the process tree to prevent leaks (see `docs/resource-protection.md`). `slot_clear` pushed on `/clear` (frontend clears messages for active slot). `slot_agent_switch` pushed on `/agent` switch (frontend re-fetches slots for updated agent label). Uses `asyncio.ensure_future(ws.send_str())` because aiohttp 3.13's `send_str()` is a coroutine. **Security**: `_check_ws_origin()` validates the `Origin` header before accepting the upgrade — rejects missing or cross-origin requests (allowed: `127.0.0.1`, `localhost`, `kirocrew.localhost`). Max 5 concurrent WS connections (`_MAX_WS_CLIENTS`).
 - `handlers.py` — status, system (live CPU/memory/network), memory CRUD, cron CRUD, lesson CRUD, skills, agent config (save + auto-restart sessions), logs SSE with persistent ring buffer (1000 entries, replays on connect) + queue-based handler (also pushes to WS log subscribers via `ensure_future`), log level control, session delete, refine status push via `broadcast_ws` with throttled chunks (~4/sec). `start_time` included in SSE/WS dashboard status payload. MCP management: probe cache (`_bg_mcp_probe()` at startup, 10-min TTL, merges enabled/disabledTools from global mcp.json), server/tool toggle writes to `~/.kiro/settings/mcp.json` + syncs to kirocrew.json, bulk toggle-all, `_sync_mcp_to_agent()` helper.
+- `handlers/kiro_prerequisite.py` + `kiro_prerequisite.py` — authenticated
+  first-run readiness surface. `GET /api/kiro-prerequisite` discovers viable
+  `kiro-cli` candidates and checks `whoami`; exact owners receive structured
+  platform/install/auth/operation progress, while authenticated non-owner
+  dashboard users receive only redacted `ready` and
+  `initial_setup_complete` results plus `setup_allowed=false`, so readiness
+  cannot lock them out and host details do not leak. Successful authentication
+  persists an owner-only setup-complete marker; existing installations are
+  inferred only from that marker or non-empty persisted session/history
+  content. Empty directories and zero-byte files created during gateway startup
+  do not bypass first-run setup. App tokens remain denied. The two
+  owner-only POST routes start one serialized background install or device-login
+  operation and return `202`. The React gate polls every second during an
+  operation, every three seconds for a waiting non-owner, and every 30 seconds
+  otherwise, including after readiness, so later sign-out or CLI removal
+  returns the dashboard to the repair state. Backend session-start guards share
+  the last known state without waiting on CLI subprocesses; after 30 seconds a
+  guard schedules one deduplicated background refresh, while the polled status
+  endpoint continues to await the short-cache probe directly.
+  If readiness disappears after a turn while that slot has queued messages,
+  the ending turn hands the FIFO queue to a separately tracked readiness-waiter
+  task. The waiter is not charged against the completed turn's timeout and does
+  not pop the queue until setup recovers, so later messages cannot leapfrog the
+  older entry. Once that pre-dequeue check succeeds, the spawned successor
+  inherits the successful check instead of probing again after the item has
+  already been removed from the queue. A readiness failure is also posted to a
+  linked Slack thread before the dashboard turn exits, so a user driving the
+  linked session remotely is not left without a response. Both the full
+  dashboard and the headless Slack/API server attach the service to application
+  and dashboard state and close it during runner cleanup. A missing or invalid
+  service fails closed; explicit offline test gateways use the service's
+  `assume_ready` mode.
+  Post-fan-out synthesis follows the same no-loss rule: one tracked waiter owns
+  the pending synthesis while readiness is false, leaving
+  `_pending_synthesis` armed and using `_synthesis_inflight` to prevent a
+  duplicate waiter. It consumes the arm only after readiness and sub-agent
+  delivery guards pass, immediately before the synthesis turn begins.
 - `handlers/source_providers.py` — validates public GitHub PR and GitLab MR URLs, delegates authentication to `gh`/`glab`, normalizes metadata/files/comments/reviews/checks, recursively redacts provider strings, enforces subprocess and aggregate-payload limits, and maintains separate bounded caches for full source payloads and lightweight sidebar check state. Full source payloads carry a normalized merge-state pair shared by both providers: `mergeable` is `mergeable|conflicting|unknown` (`''` when the provider omitted it) and `mergeStateStatus` uses GitHub's lowercased merge-state vocabulary extended with a GitLab-specific value (`clean|dirty|behind|blocked|unstable|draft|need_rebase|unknown|''`). GitHub maps `mergeable`/`mergeStateStatus` from `gh pr view` directly; GitLab derives `mergeable` from `detailed_merge_status` (falling back to legacy `merge_status`) and maps `detailed_merge_status` onto the shared vocabulary (`conflict`→`dirty`, `need_rebase`→`need_rebase` (kept distinct: on fast-forward-only projects a merge commit cannot unblock the MR, so it must not be conflated with `behind`), approval/CI/discussion/policy/security gates (including `status_checks_must_pass`, `policies_denied`, `security_policy_violations`, `merge_request_blocked`)→`blocked`, `ci_still_running`→`unstable`, unrecognized non-empty values→`unknown`). Provider CLIs run through `sandboxed_spawn_argv(..., mode="standard")` using only fixed absolute candidates or explicit absolute `KIROCREW_GH_BIN` / `KIROCREW_GLAB_BIN` overrides. Resolution fails closed unless the path is already canonical, contains no symlinks, and the executable plus every ancestor through the filesystem root is root-owned and neither mode-writable nor effectively writable by the non-root gateway user. Ordinary same-user Homebrew/Linuxbrew installs are deliberately rejected because a provider child receives provider authentication and a same-UID-replaceable path is not a trust boundary; root-owned ancestry makes validation stable through execution without a path TOCTOU. Operators using those package managers must provision a privileged canonical copy under `/usr/local/libexec/kirocrew/` or `/usr/libexec/kirocrew/` (or another root-owned hierarchy), point `KIROCREW_GH_BIN` / `KIROCREW_GLAB_BIN` at it when it is outside the fixed candidates, and refresh that copy after CLI upgrades. The child receives a fixed system `PATH`, never the gateway/workspace `PATH`; `resource_limit_preexec()`, a minimal provider-specific environment, and pinned public hosts remain enforced, and unrelated gateway/AWS/Slack credentials are not inherited. Provider stdout is section-bounded at 1 MiB for metadata/checks, 2 MiB for discussions, and 4 MiB for diffs/changes; normalized full payloads are capped at 8 MiB. A global four-command semaphore covers full-source, direct-check, resolve, and sidebar work. Unique direct full/check tasks share a 16-task ceiling and a conservative 128 MiB retained-byte budget: full tasks reserve 64 MiB and checks tasks reserve 8 MiB until the underlying task terminates. Same-URL callers coalesce before admission, detached stale full fetches retain their leases, and a stale pre-mutation fetch plus its required fresh successor can coexist at the exact aggregate ceiling. Successful thread resolution advances that URL's cache generation and detaches older shared fetches so pre-mutation results cannot refill the cache or satisfy the post-resolution refresh. Secondary metadata endpoints degrade independently so core source details remain available, but every failed files, commits, discussion/thread, pipeline, or job request is named in `partialSections` before its data falls back to an empty section; provider page limits and overflow evidence use the same deduplicated markers. Native Windows returns a clear 503 without spawning because no supported OS-level provider sandbox exists. Every provider execution emits credential-free SEL `invoked` plus `completed`/`failed` lifecycle events; policy and provenance rejections emit `denied`. The critical `invoked` append is shielded and awaited on a worker thread before spawn, preserving audit-or-deny ordering without blocking the gateway event loop; cancellation waits for that worker, pairs a landed `invoked` event with `failed/request_cancelled`, and never spawns, while other terminal events are best effort. Events contain only the logical provider and coarse reason, never argv, URL, repository, output, environment, credentials, thread id, or exception text. Sidebar refreshes run outside slot serialization with inflight deduplication, a 16-task pending ceiling, one-TTL overflow backoff, and a 512-entry status cache. Scheduling requires an exact dashboard-owner request. Cached check state is otherwise only repopulated at WebSocket-connect and slots-GET time, so each owner WebSocket connection additionally runs a background refresh driver that re-schedules refreshes for its currently-rendered sidebar chip URLs (`DashboardState.source_link_urls()` — the first `_SERIALIZED_SOURCE_LINKS_PER_SLOT` links of every slot) once per cache TTL (`CHECK_STATUS_TTL_SECS`, sleeping exactly one TTL so each round finds the previous round's entries just expired — one provider fetch per URL per TTL, coalesced across tabs by the inflight dedup); without it a PR merged or a CI run completed after page load would keep its stale connect-time chip until a full reload. The driver is owner-gated (never created for non-owner connections), cancelled with the connection, and advances a per-round starting offset by the pending admission cap (`CHECK_STATUS_PENDING_MAX`) each round so that when the number of stale chips exceeds the cap the admitted window rotates across every chip within `ceil(len/cap)` rounds instead of the same slot-order prefix winning every TTL and starving newer slots' chips indefinitely. Each round's work is individually guarded so a transient failure is logged and the loop continues rather than the driver dying silently and reverting to frozen chips. Generic slot serialization and broadcasts omit cached `state`/`ci`; owner HTTP and WebSocket snapshots opt in, and changed statuses trigger a debounced generic update followed by an owner-WebSocket-only overlay. `_ChatSlot` retains only the first 64 unique durable source links and stops scanning at the cap; `to_dict()` exposes up to three sidebar chips as `{url, provider, number}` to all authenticated callers and adds `{state?, ci?}` only at an owner-authorized serialization boundary. `state` is `open|draft|merged|closed` and `ci` is `running|passed|failed` when known.
 - `server.py` — app factory, route registration, startup, SPA fallback middleware for React Router, `/api/ws` WebSocket route, token auth middleware, loopback-only binding (`127.0.0.1`). Fires background MCP probe at startup via `asyncio.create_task()`. Honors `agent.yolo=true` config at startup via `_apply_startup_yolo()` — attempts SEL audit first and only activates dashboard YOLO (6h TTL) if the audit succeeds (fail-closed).
 
@@ -221,6 +262,12 @@ Modular aiohttp package at `127.0.0.1:5476` (configurable). Split into:
 - **WebSocket origin validation**: `ws.py:_check_ws_origin()` validates the `Origin` header on every WebSocket upgrade request before accepting the connection. Rejects missing Origin (non-browser clients) and cross-origin requests. Only allows `http://127.0.0.1:{port}`, `http://localhost:{port}`, and `http://kirocrew.localhost:5476`. Prevents cross-origin WebSocket hijacking where a malicious page could connect to `ws://127.0.0.1:5476/api/ws` and passively exfiltrate conversation data.
 - **Token authentication**: `dashboard/token_auth.py` validates the signed HMAC session token on every request including WebSocket upgrades. Pure stdlib — no external deps. Returns `401` if invalid. The enterprise SSO status surface (`dashboard/sso_status.py`) is an inert stub in the OSS build — no cookie validation is performed.
 - **CSRF protection**: `server.py` CSRF middleware validates `Origin` header on all non-safe HTTP methods (POST, PUT, DELETE). Same allowed origins as WebSocket.
+- **Prerequisite mutations**: install/login are ordinary authenticated,
+  CSRF-protected dashboard routes. They accept no body-controlled command, URL,
+  argument, or path. All three handlers require an explicit empty app claim, so
+  an app token stays denied even if its manifest declares the route prefix.
+  Invoked actions are critical-audited before spawn and terminal outcomes are
+  best-effort audited.
 - Static assets (`/assets/`, `/static/`) bypass auth check.
 
 ### Session Lifecycle
@@ -305,6 +352,48 @@ A pending tool approval has **two** pieces of state that must stay in lockstep: 
 **MCP Custom Servers** (manual JSON path — Add Custom modal + per-server Edit JSON): POST `/api/mcp/custom` `{servers: {name: spec}, enable?: bool=false}` — user-authored specs (stdio `command`/`args`/`env` XOR remote `url`, unknown keys rejected by name), validate-all-then-write (no partial batch), collision → 409 with `conflicts` list, servers land disabled unless `enable: true` (the modal's "Enable immediately" tick is the consent act). GET `/api/mcp/custom/{name}` — full editable spec including env (the list endpoint omits env; prefilling from it would drop vars on save). PUT `/api/mcp/custom/{name}` — replace spec, 404 when not KiroCrew-managed, always preserves enabled/disabled state (editing is not consent to run; a pasted `disabled: false` cannot smuggle an enable). Non-allowlisted keys already on the entry (`disabledTools`, `autoApprove`, `headers`, …) round-trip: an unmodified GET→PUT save succeeds and their on-disk values are preserved verbatim — they cannot be edited or removed via this endpoint (dropping `disabledTools` would silently widen the tool surface); modifying one → 400. Fresh POSTs carry nothing, so the tight allowlist still applies. All three SEL-audited; writes share the mcp.py file lock + entry helpers with discover-install. Consent-disabled entries (custom adds + registry installs) surface in the servers table as `Disabled` rows — `list_servers()` marks KiroCrew-scope `disabled: true` entries (incl. when config sync mirrors the disable into the agent file) and `probe_all()` never probes them (a probe would spawn the unconsented process); the table's enable action is the reachable consent step. `GET /api/mcp` rows carry `kirocrewManaged` (gates the Edit JSON action).
 
 ### Frontend (React SPA)
+
+`KiroPrerequisiteGate` wraps the main dashboard route (the independent
+`/worlds-popout` route is not gated). `DashboardBootstrap` mounts the proactive
+auth-cookie refresh scheduler outside this gate, so a stale access cookie can
+still refresh while the dashboard body is blocked. On a new gateway it:
+
+1. displays the connected gateway's OS so a remote browser does not imply the
+   install occurs on the browser machine;
+2. offers the fixed official installer when the gateway reports it is safe;
+3. unlocks Kiro device sign-in only after a viable CLI is found;
+4. polls setup operations every second, surfaces the HTTPS login URL and code
+   as React text, and records first-run completion when `ready=true`.
+
+On Linux, an existing unverified default target (`~/.local/bin/kiro-cli`) cannot
+be overwritten automatically because the official installer would require an
+interactive terminal prompt, and reinstalling outside Kiro Crew would not create
+the binary attestation required before credential access. The setup and
+reauthentication surfaces therefore direct the owner to remove that exact target,
+choose **Check again**, and then use the newly enabled dashboard installer. This
+validated dashboard install is what writes the attestation before sign-in.
+
+Ready dashboards continue prerequisite polling every 30 seconds so later
+sign-out or CLI damage is detected without a reload. Paused session-start
+attempts also re-probe behind the service's short cache, so a manual host login
+can recover without first opening the status screen. Main chat, regenerate,
+edit-resend, rewind, prompt optimization, and side-turn handlers all reject
+before acquiring or mutating an ACP session. Every sidebar session-creation
+control is disabled while readiness is false; folder-management controls remain
+available because they do not start an ACP session. If readiness is lost between
+a turn and its queued successor, the queued card remains intact and the current
+turn completes its normal `done`/idle lifecycle.
+
+The query fails open for a rolling deployment whose older gateway does not yet
+provide the endpoint, preserving dashboard access during frontend/backend
+version skew. Once first-run setup has completed, later sign-out or CLI damage
+leaves the dashboard mounted and shows a nonblocking reauthentication/repair
+banner instead of restoring the full-screen gate. The banner is pointer-transparent
+outside its own controls, so it cannot block established dashboard interactions.
+Non-owner browsers poll the
+redacted readiness endpoint every three seconds while waiting for the owner, so
+they observe completion without a reload; a manual **Check again** covers
+external changes immediately.
 
 React 18 + TypeScript + Vite 5 + Redux Toolkit + React Router v7 + Tailwind CSS 3 + DOMPurify. Source in `frontend/`, builds to `src/kiro_crew/static/dist/`.
 

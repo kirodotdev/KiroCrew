@@ -11,8 +11,9 @@ CLI / Slack DM / Dashboard → KiroCrew → LLM agent (kiro-cli over ACP) + MCP 
 
 KiroCrew drives an LLM through the **`kiro-cli`** agent over the
 [Agent Client Protocol](https://github.com/zed-industries/agent-client-protocol)
-(ACP). kiro-cli is the only provider — install it and log in, and KiroCrew
-talks to it for every session. See [Configuration](#configuration).
+(ACP). kiro-cli is the only provider. The desktop app and dashboard guide a
+first-time user through installing it on the gateway host and completing
+device-code sign-in before chat opens. See [Configuration](#configuration).
 
 ## Quick Start
 
@@ -96,12 +97,12 @@ npm run build
 
 ### 3. Install the agent backend
 
-KiroCrew drives the **`kiro-cli`** agent over ACP. Install `kiro-cli` per its
-own docs, make sure it is on your `PATH`, and log in:
-
-```bash
-kiro-cli login
-```
+KiroCrew drives the **`kiro-cli`** agent over ACP. On the first desktop or
+dashboard launch, the **Set up Kiro** page can install it on macOS, Linux, or
+Windows and guide device-code sign-in. Run user-local Kiro CLI installation
+through this page: its validated installer records the executable attestation
+KiroCrew requires before starting an agent. Complete device-code sign-in there
+after installation.
 
 `kirocrew doctor` reports whether `kiro-cli` is found and logged in.
 

@@ -6,6 +6,7 @@ import { useAppSelector, useAppDispatch } from '../../store'
 import { sideClose, sideOptimisticAppend, sideOptimisticRollback } from '../../store/chatSlice'
 import { copyToClipboard } from '../../utils/clipboard'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
+import { useKiroSessionReady } from '../../providers/KiroReadinessContext'
 import type { SideMessage } from '../../store/chatSlice'
 
 const MAX_QUESTION_BYTES = 32_768
@@ -62,6 +63,7 @@ function relativeTime(iso: string): string | null {
 }
 
 export default function SideChat({ slot }: { slot: string }) {
+  const kiroSessionReady = useKiroSessionReady()
   const dispatch = useAppDispatch()
   const reduxSide = useAppSelector(s => s.chat.slotSide[slot])
   const parentTurnCount = useAppSelector(s =>
@@ -116,13 +118,13 @@ export default function SideChat({ slot }: { slot: string }) {
 
   const send = useCallback(() => {
     const q = draft.trim()
-    if (!q || sendMutation.isPending || !slot) return
+    if (!kiroSessionReady || !q || sendMutation.isPending || !slot) return
     if (new Blob([q]).size > MAX_QUESTION_BYTES) {
       setLocalError(`Question too long (max ${MAX_QUESTION_BYTES.toLocaleString()} bytes)`)
       return
     }
     sendMutation.mutate(q)
-  }, [draft, slot, sendMutation])
+  }, [draft, slot, sendMutation, kiroSessionReady])
 
   const onKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -202,14 +204,14 @@ export default function SideChat({ slot }: { slot: string }) {
           onChange={e => setDraft(e.target.value)}
           onKeyDown={onKeyDown}
           aria-label="Ask a side question"
-          placeholder="Ask a side question…"
+          placeholder={kiroSessionReady ? 'Ask a side question…' : 'Finish Kiro CLI setup first'}
           rows={2}
-          disabled={sendMutation.isPending}
+          disabled={sendMutation.isPending || !kiroSessionReady}
           className="flex-1 resize-none rounded-md border border-border bg-bg px-2 py-1.5 text-[13px] text-text focus:outline-none focus:border-accent disabled:opacity-60"
         />
         <button
           onClick={() => void send()}
-          disabled={sendMutation.isPending || !draft.trim()}
+          disabled={sendMutation.isPending || !kiroSessionReady || !draft.trim()}
           className="shrink-0 px-2.5 py-1.5 rounded-md bg-accent text-accent-fg text-[12px] font-medium cursor-pointer hover:bg-accent-hover disabled:opacity-40 disabled:cursor-not-allowed border-none"
           title="Send"
           aria-label="Send"

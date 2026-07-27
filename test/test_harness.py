@@ -183,12 +183,12 @@ def test_parse_ready_line_valid() -> None:
 @pytest.mark.parametrize(
     "bad_payload",
     [
-        "not-json",              # invalid JSON
-        "[1, 2, 3]",             # valid JSON, not a dict
-        '"scalar"',              # valid JSON, scalar
-        '{"foo": 1}',            # dict, missing both required keys
-        '{"port": 1}',           # dict, missing token
-        '{"token": "t"}',        # dict, missing port
+        "not-json",  # invalid JSON
+        "[1, 2, 3]",  # valid JSON, not a dict
+        '"scalar"',  # valid JSON, scalar
+        '{"foo": 1}',  # dict, missing both required keys
+        '{"port": 1}',  # dict, missing token
+        '{"token": "t"}',  # dict, missing port
     ],
 )
 def test_parse_ready_line_rejects_bad_payload(bad_payload: str) -> None:
@@ -202,7 +202,7 @@ def test_parse_ready_line_rejects_bad_payload(bad_payload: str) -> None:
     "non_matching_line",
     [
         "Some unrelated log line",
-        '{"port": 1, "token": "t"}',                     # payload without prefix
+        '{"port": 1, "token": "t"}',  # payload without prefix
         f"  {READY_PREFIX}" + '{"port": 1, "token": "t"}',  # prefix not at col 0
         "",
     ],
@@ -498,9 +498,13 @@ def test_spawn_feature_gateway_happy_path() -> None:
         terminated["called"] = True
 
     captured_cmd: list[list[str]] = []
+    captured_env: dict[str, str] = {}
 
-    def fake_popen(cmd: list[str], **_kw: object) -> FakePopen:
+    def fake_popen(cmd: list[str], **kwargs: object) -> FakePopen:
         captured_cmd.append(cmd)
+        env = kwargs["env"]
+        assert isinstance(env, dict)
+        captured_env.update(env)
         return fake_proc
 
     with (
@@ -529,6 +533,7 @@ def test_spawn_feature_gateway_happy_path() -> None:
     assert "--test-mode" in cmd_str
     assert "--seed empty" in cmd_str
     assert "--approval reads" in cmd_str
+    assert captured_env["KIROCREW_FAKE_ACP_TEST_MODE"] == "1"
     # ``crons`` defaults to False so the safe ``--no-crons`` flag is
     # included — a stray cron firing during an unrelated test is the
     # exact flake the default guards against.

@@ -115,6 +115,7 @@ export function useRefreshScheduler(opts: UseRefreshSchedulerOptions = {}): void
       // session info will see the rotated value automatically.
       backoffIdxRef.current = 0
       void queryClient.invalidateQueries({ queryKey: ['auth-me'] })
+      void queryClient.invalidateQueries({ queryKey: ['kiro-prerequisite'] })
     },
     onError: (err: RefreshError) => {
       if (stoppedRef.current) return

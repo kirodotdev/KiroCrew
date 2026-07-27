@@ -42,6 +42,7 @@ const http = require("http");
   process.exit(0);
 })();
 const { findKirocrewBin } = require("./find-bin");
+const { findConfiguredDashboardPort } = require("./data-home");
 const { createTokenRetryHandler } = require("./token-retry");
 const { createDisplayMediaHandler } = require("./display-media");
 const { initAutoUpdate } = require("./auto-update");
@@ -86,7 +87,8 @@ const store = new Store({
 // config/paths.py is gated by test/fixtures/home-resolution-cases.json.
 // Boot-time WRITES (mkdir, pycache prefix) use canonicalHome() instead --
 // writing into the legacy dir re-arms the migration every launch (#483).
-const { resolveHome, secretCandidates, canonicalHome } = require("./home-dir");
+const { resolveHome, canonicalHome } = require("./home-dir");
+const { fetchLocalToken: fetchTokenFromHome } = require("./local-token");
 const KIROCREW_HOME = resolveHome();
 
 function resolvePort() {
@@ -102,19 +104,11 @@ function resolvePort() {
   // No env override — derive the gateway port from config.json. The fork's
   // DashboardConfig has no `dashboard.port` key; the port lives in
   // `dashboard.url` (see backend cli_server.resolve_client_port /
-  // dashboard/origin.parse_dashboard_url), so parse the URL. The scheme-prepend
-  // mirrors the backend's _ensure_scheme so a bare "host:7778" parses.
-  try {
-    const cfg = JSON.parse(fs.readFileSync(path.join(KIROCREW_HOME, "config.json"), "utf8"));
-    let url = cfg && cfg.dashboard && cfg.dashboard.url;
-    if (url) {
-      if (!url.includes("://")) url = "http://" + url;
-      const p = parseInt(new URL(url).port, 10);
-      if (Number.isInteger(p) && p > 0 && p <= 65535) return p;
-    }
-  } catch (e) {
-    console.debug(`No usable dashboard.url port in config.json (${e.message}), falling back to 5476`);
-  }
+  // dashboard/origin.parse_dashboard_url). A real legacy home is checked first
+  // because the backend migration makes legacy data authoritative on conflict.
+  const configuredPort = findConfiguredDashboardPort(fs, path, [KIROCREW_HOME]);
+  if (configuredPort) return configuredPort;
+  console.debug("No usable dashboard.url port in the data home, falling back to 5476");
   return 5476;
 }
 
@@ -129,6 +123,14 @@ const HEALTH_URL = `${BACKEND_URL}/api/status`;
 const POLL_INTERVAL_MS = 500;
 const MAX_WAIT_MS = 30_000; // 30s max wait for backend
 const IS_MAC = process.platform === "darwin";
+const DEFAULT_THEME_ACCENT = "#8E48FF";
+const THEME_ACCENT_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
+
+function currentThemeAccent() {
+  const configured = store.get("themeAccent") || "";
+  return THEME_ACCENT_RE.test(configured) ? configured : DEFAULT_THEME_ACCENT;
+}
+
 // The dashboard view fills the whole content area on all platforms. On macOS
 // the window is frameless (titleBarStyle:"hidden") and the dashboard's own
 // 42px header doubles as the title bar: an injected drag region makes it
@@ -146,7 +148,7 @@ app.name = identityFamily(app.getVersion()) === "nightly" ? "Kiro Crew Nightly" 
 // when the user relaunches from the Dock / Spotlight, so a second instance is
 // harmless (a no-op there). The fork's supported non-mac target is the Linux
 // AppImage, which has no such reuse — double-clicking the AppImage again spawns
-// a fresh process. Two instances against the same ~/.kirocrew racing
+// a fresh process. Two instances against the same ~/.kiro/crew racing
 // .local_secret and stopping each other's gateway on before-quit is bad news
 // (kills the shared gateway out from under the other instance). Grab the lock;
 // if we can't, exit immediately and let the existing instance surface itself.
@@ -220,7 +222,7 @@ function glog(line) {
   console.log(`[gateway-launch] ${line}`);
 }
 
-// ── Cross-app gateway ownership (shared ~/.kirocrew, shared port) ──────────
+// ── Cross-app gateway ownership (shared ~/.kiro/crew, shared port) ─────────
 // The nightly app and the production app are different bundles sharing one
 // data home and one port, so the port is the mutex. When a gateway is already
 // listening, we must decide REUSE (same family / dev / legacy) vs TAKEOVER
@@ -281,23 +283,23 @@ async function resolveGatewayConflict() {
   const canTakeover = process.platform === "darwin";
   const { response } = await dialog.showMessageBox({
     type: "warning",
-    title: `${other.appName} is running`,
-    message: `${other.appName} (${decision.otherVersion}) is already running with your KiroCrew data.`,
+    title: `${other.displayName} is running`,
+    message: `${other.displayName} (${decision.otherVersion}) is already running with your Kiro Crew data.`,
     detail: canTakeover
-      ? `Only one KiroCrew app can use ~/.kirocrew at a time. Quit ${other.appName} and continue here?`
-      : `Only one KiroCrew app can use ~/.kirocrew at a time. Quit ${other.appName}, then reopen this app.`,
-    buttons: canTakeover ? [`Quit ${other.appName} & Continue`, "Cancel"] : ["OK"],
+      ? `Only one Kiro Crew app can use ~/.kiro/crew at a time. Quit ${other.displayName} and continue here?`
+      : `Only one Kiro Crew app can use ~/.kiro/crew at a time. Quit ${other.displayName}, then reopen this app.`,
+    buttons: canTakeover ? [`Quit ${other.displayName} & Continue`, "Cancel"] : ["OK"],
     defaultId: 0,
     cancelId: canTakeover ? 1 : 0,
   });
   if (!canTakeover || response !== 0) return "abort";
-  sendStatus(`Waiting for ${other.appName} to quit…`);
+  sendStatus(`Waiting for ${other.displayName} to quit…`);
   await quitOtherApp(other.appName);
   if (!(await waitForPortFree())) {
     glog(`takeover failed: ${other.appName} did not release :${PORT}`);
     await dialog.showMessageBox({
       type: "error",
-      message: `${other.appName} did not quit.`,
+      message: `${other.displayName} did not quit.`,
       detail: "Quit it manually, then relaunch this app.",
       buttons: ["OK"],
     });
@@ -308,19 +310,22 @@ async function resolveGatewayConflict() {
 }
 
 function startGateway() {
+  glog(`launch: port=${PORT} home=${KIROCREW_HOME} packaged=${app.isPackaged} resourcesPath=${process.resourcesPath || "(none)"} log=${gatewayLogPath()}`);
+  sendStatus("Checking if gateway is running…");
   return new Promise((resolve) => {
-    glog(`launch: port=${PORT} home=${KIROCREW_HOME} packaged=${app.isPackaged} resourcesPath=${process.resourcesPath || "(none)"} log=${gatewayLogPath()}`);
-    sendStatus("Checking if gateway is running…");
     checkBackend()
       .then(async () => {
         // A gateway is already listening on this port. Same-family, dev, and
-        // legacy gateways are reused as before (the developer's usual path —
-        // note reuse HIDES any bug in the spawn path below; only a clean
-        // machine exercises the spawn). A gateway owned by the OTHER channel
-        // app triggers the takeover prompt instead.
+        // legacy gateways are reused as before. A gateway owned by the other
+        // channel app triggers the takeover prompt.
         const outcome = await resolveGatewayConflict();
         if (outcome === "reuse") { resolve(true); return; }
-        if (outcome === "abort") { isQuitting = true; app.quit(); resolve(false); return; }
+        if (outcome === "abort") {
+          isQuitting = true;
+          app.quit();
+          resolve(false);
+          return;
+        }
         spawnGateway(resolve);
       })
       .catch(() => {
@@ -490,38 +495,17 @@ function fetchRemoteToken(port) {
   });
 }
 
-function fetchLocalToken(backendUrl = BACKEND_URL) {
-  try {
-    // Re-resolve at call time (NOT the boot-time KIROCREW_HOME pin): on the
-    // migration launch the backend deletes the legacy dir after this process
-    // booted, so the secret may exist only in the canonical home by now.
-    // Skip empty reads: the backend creates the file via O_CREAT|O_TRUNC, so
-    // an existing-but-truncated canonical file must not mask the legacy
-    // fallback.
-    let secret = "";
-    for (const candidate of secretCandidates()) {
-      try {
-        const v = fs.readFileSync(candidate, "utf8").trim();
-        if (v) { secret = v; break; }
-      } catch { /* try next */ }
-    }
-    if (!secret) return Promise.resolve("");
-    return new Promise((resolve) => {
-      const req = http.get(`${backendUrl}/api/token/local`, { headers: { "X-Local-Secret": secret }, timeout: 5000 }, (res) => {
-        if (res.statusCode !== 200) { res.resume(); return resolve(""); }
-        let data = "";
-        res.on("error", () => resolve(""));
-        res.on("data", (c) => (data += c));
-        res.on("end", () => {
-          try { resolve(JSON.parse(data).token || ""); } catch { resolve(""); }
-        });
-      });
-      req.on("error", () => resolve(""));
-      req.on("timeout", () => { req.destroy(); resolve(""); });
-    });
-  } catch {
-    return Promise.resolve("");
-  }
+async function fetchLocalToken(backendUrl = BACKEND_URL) {
+  // Re-resolve the authoritative home at call time: migration may move or pin
+  // the live secret after Electron starts. Send exactly that one secret to the
+  // gateway's literal IPv4 bind address; never probe alternate homes/addresses.
+  return fetchTokenFromHome({
+    backendUrl,
+    resolveHome,
+    path,
+    fs,
+    http,
+  });
 }
 
 function checkBackend(healthUrl = HEALTH_URL) {
@@ -1336,10 +1320,9 @@ async function showLoadingThenConnect(win, backendUrl = BACKEND_URL) {
   const wc = win.webContents;
   // Paint the splash in the user's chosen accent (persisted from a prior session
   // via the "theme-accent-changed" IPC). Defaults to the Kiro brand purple.
-  const accent = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(store.get("themeAccent") || "")
-    ? store.get("themeAccent")
-    : "#8E48FF";
-  wc.loadFile(path.join(__dirname, "loading.html"), { query: { accent } });
+  wc.loadFile(path.join(__dirname, "loading.html"), {
+    query: { accent: currentThemeAccent() },
+  });
   win.show();
 
   try {

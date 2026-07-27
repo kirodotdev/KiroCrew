@@ -30,7 +30,7 @@ import subprocess as subprocess_mod
 import sys
 import time
 from collections import deque
-from contextlib import aclosing
+from contextlib import aclosing, suppress
 from pathlib import Path
 from typing import AsyncGenerator, AsyncIterator
 
@@ -99,6 +99,7 @@ from kiro_crew.hooks import (
     fire_tool_hooks,
     get_global_hook_store,
 )
+from kiro_crew.kiro_cli import resolve_kiro_cli
 from kiro_crew.mcp_gateway.claim import schedule_claim
 from kiro_crew.sandbox import (
     cgroup_scope_argv,
@@ -195,6 +196,12 @@ _SUPPRESSED_STDERR_MARKERS = ("thinking_tokens",)
 # Minimum seconds between throttled debug summaries of the suppressed-line count,
 # so the suppression itself stays observable without re-introducing a flood.
 _SUPPRESSED_STDERR_SUMMARY_INTERVAL_SECS = 60.0
+_KIRO_EXECUTABLE_SNAPSHOTS: dict[str, int] = {}
+_KIRO_EXECUTABLE_SNAPSHOT_PATHS: dict[str, str] = {}
+
+
+class _KiroExecutableTrustError(RuntimeError):
+    """Resolved Kiro CLI bytes are not approved for credential-bearing ACP."""
 
 
 def _is_safe_oauth_url(url: str) -> bool:
@@ -226,22 +233,125 @@ def _normalize_exe_casing(path: str | None) -> str | None:
 
 
 def _resolve_kiro_bin() -> str | None:
-    """Find the kiro-cli binary, or None when it is not installed.
+    """Resolve Kiro CLI and snapshot attestation-checked bytes for ACP."""
 
-    kiro-cli is the agent backend for the public build. Honours an explicit
-    ``KIROCREW_KIRO_BIN`` override first (only when it points at an existing
-    executable; ignored otherwise), then resolves from PATH (augmented with the
-    usual local bin dirs so a non-login gateway still finds a user install) and
-    returns ``None`` rather than raising when it is absent, so the caller can
-    surface a clear "install kiro-cli" error instead of crashing. Windows: the
-    returned path is realpath-cased so a case-sensitive multiplexer launcher
-    dispatches correctly (see :func:`_normalize_exe_casing`).
-    """
-    env_bin = os.environ.get("KIROCREW_KIRO_BIN")
-    if env_bin and platform_compat.is_executable_file(env_bin):
-        return _normalize_exe_casing(env_bin)
-    search_path = augmented_path(os.environ.get("PATH", ""))
-    return _normalize_exe_casing(shutil.which(KIRO_CLI_BIN, path=search_path))
+    executable = resolve_kiro_cli()
+    if not executable:
+        return executable
+    # Deferred to keep the low-level resolver import graph acyclic:
+    # kiro_prerequisite imports sandbox helpers that this module also uses.
+    from kiro_crew.kiro_prerequisite import snapshot_trusted_acp_executable
+
+    try:
+        if platform_compat.IS_WINDOWS:
+            snapshot = snapshot_trusted_acp_executable(
+                executable,
+                platform_name="win32",
+                environ=os.environ,
+            )
+        else:
+            snapshot = snapshot_trusted_acp_executable(executable)
+    except (OSError, ValueError) as exc:
+        raise _KiroExecutableTrustError(str(exc)) from exc
+    if snapshot.fd is not None:
+        _KIRO_EXECUTABLE_SNAPSHOTS[snapshot.launch_path] = snapshot.fd
+    if snapshot.cleanup_path is not None:
+        _KIRO_EXECUTABLE_SNAPSHOT_PATHS[snapshot.launch_path] = snapshot.cleanup_path
+    return snapshot.launch_path
+
+
+def _pop_kiro_executable_snapshot(
+    executable: str | None,
+) -> tuple[int | None, str | None]:
+    """Remove and return resources owned by *executable*, if any."""
+
+    if not executable:
+        return None, None
+    return (
+        _KIRO_EXECUTABLE_SNAPSHOTS.pop(executable, None),
+        _KIRO_EXECUTABLE_SNAPSHOT_PATHS.pop(executable, None),
+    )
+
+
+def _dispose_kiro_executable_snapshot(
+    snapshot_fd: int | None,
+    snapshot_path: str | None,
+) -> None:
+    """Release one snapshot's descriptor and private path off-loop."""
+
+    if snapshot_fd is not None:
+        with suppress(OSError):
+            os.close(snapshot_fd)
+    if snapshot_path is not None:
+        with suppress(OSError):
+            os.unlink(snapshot_path)
+
+
+async def _cleanup_kiro_executable_snapshot(executable: str | None) -> None:
+    """Remove a private ACP snapshot and close its descriptor off-loop."""
+
+    snapshot_fd, snapshot_path = _pop_kiro_executable_snapshot(executable)
+    if snapshot_fd is not None or snapshot_path is not None:
+        await asyncio.get_running_loop().run_in_executor(
+            subprocess_executor(),
+            _dispose_kiro_executable_snapshot,
+            snapshot_fd,
+            snapshot_path,
+        )
+
+
+def _schedule_kiro_executable_snapshot_cleanup(executable: str | None) -> None:
+    """Remove a snapshot and enqueue its close without adding an await point."""
+
+    snapshot_fd, snapshot_path = _pop_kiro_executable_snapshot(executable)
+    if snapshot_fd is not None or snapshot_path is not None:
+        subprocess_executor().submit(
+            _dispose_kiro_executable_snapshot,
+            snapshot_fd,
+            snapshot_path,
+        )
+
+
+def _schedule_kiro_executable_descriptor_cleanup(executable: str | None) -> None:
+    """Close an inherited descriptor while retaining any launch path."""
+
+    if not executable:
+        return
+    snapshot_fd = _KIRO_EXECUTABLE_SNAPSHOTS.pop(executable, None)
+    if snapshot_fd is not None:
+        subprocess_executor().submit(
+            _dispose_kiro_executable_snapshot,
+            snapshot_fd,
+            None,
+        )
+
+
+def _kiro_executable_pass_fds(executable: str | None) -> tuple[int, ...]:
+    """Return the immutable snapshot descriptor inherited by POSIX wrappers."""
+
+    if not executable:
+        return ()
+    snapshot = _KIRO_EXECUTABLE_SNAPSHOTS.get(executable)
+    return (snapshot,) if snapshot is not None else ()
+
+
+async def _resolve_kiro_bin_for_spawn() -> str | None:
+    """Resolve off-loop and reclaim a snapshot if the caller is cancelled."""
+
+    task = asyncio.create_task(asyncio.to_thread(_resolve_kiro_bin))
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        # ``to_thread`` cannot cancel work already running. Await the shielded
+        # result so a newly-created memfd is never orphaned in the process-wide
+        # snapshot registry when its owning spawn disappears.
+        try:
+            executable = await task
+        except BaseException:
+            pass
+        else:
+            await _cleanup_kiro_executable_snapshot(executable)
+        raise
 
 
 def _mise_which(tool: str) -> str | None:
@@ -651,8 +761,7 @@ class AcpPromptBusy(AcpError):  # noqa: N818
 # (non-retryable) instead of churning through the retry ladder.
 _NOT_LOGGED_IN_RE = re.compile(r"not\s+logged\s+in", re.IGNORECASE)
 _NOT_LOGGED_IN_MESSAGE = (
-    "kiro-cli is not logged in. Run `kiro-cli login` in your terminal, "
-    "then start a new chat."
+    "kiro-cli is not logged in. Run `kiro-cli login` in your terminal, " "then start a new chat."
 )
 
 
@@ -1260,6 +1369,7 @@ class AcpClient:
         )
         self._mcp_gateway_socket = str(mcp_gateway_socket) if mcp_gateway_socket else None
         self._sandbox_cleanup: str | None = None
+        self._kiro_executable_snapshot: str | None = None
         self._process: asyncio.subprocess.Process | None = None
         self._pid: int | None = None
         self._start_time: int | None = None  # process start time for PID recycling detection
@@ -1635,9 +1745,7 @@ class AcpClient:
                 try:
                     _seed()
                 except (OSError, ValueError, TypeError):
-                    logger.warning(
-                        "initial seed of settings.local.json failed", exc_info=True
-                    )
+                    logger.warning("initial seed of settings.local.json failed", exc_info=True)
             global _claude_acp_argv_cache  # noqa: PLW0603
             if _claude_acp_argv_cache is _UNRESOLVED:
                 _claude_acp_argv_cache = await asyncio.to_thread(_resolve_claude_acp_bin)
@@ -1651,22 +1759,34 @@ class AcpClient:
                 )
             argv: list[str] = claude_argv
         else:
-            kiro_bin = _resolve_kiro_bin()
+            try:
+                kiro_bin = await _resolve_kiro_bin_for_spawn()
+            except _KiroExecutableTrustError as exc:
+                raise AcpError(str(exc)) from exc
             if not kiro_bin:
                 raise AcpError(f"{KIRO_CLI_BIN} not found in PATH")
+            self._kiro_executable_snapshot = kiro_bin
             argv = [kiro_bin, KIRO_CLI_SUBCMD, "--agent", self._agent]
 
         # OS-level sandbox: wrap the command to hide sensitive paths.
         # strip_python_env keeps the host PYTHONPATH/PYTHONHOME out of kiro-cli's
         # foreign MCP subprocesses (which bundle their own interpreter + deps).
-        argv, self._sandbox_cleanup = wrap_argv(
-            argv, mode=self._sandbox_mode, strip_python_env=True
-        )
-        # cgroup v2 scope (OUTERMOST): bound this agent + all its MCP-server /
-        # tool descendants with pids.max (fork bomb) + memory.max (RSS balloon).
-        # No-op + loud warning where cgroup delegation is unavailable. --scope
-        # execs into the target, so self._pid below is still the real child.
-        argv = cgroup_scope_argv(argv)
+        try:
+            argv, self._sandbox_cleanup = wrap_argv(
+                argv,
+                mode=self._sandbox_mode,
+                strip_python_env=True,
+                is_kiro_cli=not self._is_claude,
+            )
+            # cgroup v2 scope (OUTERMOST): bound this agent + all its MCP-server /
+            # tool descendants with pids.max (fork bomb) + memory.max (RSS balloon).
+            # No-op + loud warning where cgroup delegation is unavailable. --scope
+            # execs into the target, so self._pid below is still the real child.
+            argv = cgroup_scope_argv(argv)
+        except BaseException:
+            await _cleanup_kiro_executable_snapshot(self._kiro_executable_snapshot)
+            self._kiro_executable_snapshot = None
+            raise
 
         # Build the child environment (process-group isolation flags are set on
         # the spawn kwargs below, per-platform).
@@ -1728,18 +1848,30 @@ class AcpClient:
         # stops an inherited Ctrl-C propagating into the gateway. The flag comes
         # from platform_compat (getattr) so referencing it doesn't fail mypy's
         # [attr-defined] check on Linux where subprocess.* lacks it.
-        self._process = await asyncio.create_subprocess_exec(
-            *argv,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=str(self._work_dir),
-            limit=_STDOUT_BUFFER_LIMIT,
-            env=env,
-            start_new_session=platform_compat.IS_POSIX,
-            creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
-            preexec_fn=session_host_preexec(),
-        )
+        pass_fds = _kiro_executable_pass_fds(self._kiro_executable_snapshot)
+        try:
+            self._process = await asyncio.create_subprocess_exec(
+                *argv,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=str(self._work_dir),
+                limit=_STDOUT_BUFFER_LIMIT,
+                env=env,
+                start_new_session=platform_compat.IS_POSIX,
+                creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
+                preexec_fn=session_host_preexec(),
+                pass_fds=pass_fds,
+            )
+        except BaseException:
+            await _cleanup_kiro_executable_snapshot(self._kiro_executable_snapshot)
+            self._kiro_executable_snapshot = None
+            raise
+        # The child now owns an inherited descriptor; /proc/self/fd resolves in
+        # that wrapper chain, so the gateway must not retain a second handle.
+        # A private macOS path stays registered until the ACP handshake proves
+        # the sandbox wrapper has opened and executed it.
+        _schedule_kiro_executable_descriptor_cleanup(self._kiro_executable_snapshot)
         self._pid = self._process.pid
         self._start_time = await asyncio.get_running_loop().run_in_executor(
             subprocess_executor(), _get_start_time, self._pid
@@ -1821,9 +1953,7 @@ class AcpClient:
         (the internal MCP server, node) may not exist until after _initialize_session().
         """
         _loop = asyncio.get_running_loop()
-        descendants = await _loop.run_in_executor(
-            subprocess_executor(), _get_child_pids, self._pid
-        )
+        descendants = await _loop.run_in_executor(subprocess_executor(), _get_child_pids, self._pid)
         if not descendants:
             # Retry once — children may not have forked yet
             await asyncio.sleep(0.5)
@@ -1834,9 +1964,7 @@ class AcpClient:
         new_pids = [p for p in descendants if p not in self._child_pids]
         if new_pids:
             self._child_pids.update(
-                await _loop.run_in_executor(
-                    subprocess_executor(), _capture_child_records, new_pids
-                )
+                await _loop.run_in_executor(subprocess_executor(), _capture_child_records, new_pids)
             )
 
         if self._child_pids:
@@ -1880,9 +2008,7 @@ class AcpClient:
         if new_pids:
             # capture (start_time, basename) off-loop — on macOS these spawn `ps`
             merged.update(
-                await _loop.run_in_executor(
-                    subprocess_executor(), _capture_child_records, new_pids
-                )
+                await _loop.run_in_executor(subprocess_executor(), _capture_child_records, new_pids)
             )
 
         if not force:
@@ -1893,34 +2019,26 @@ class AcpClient:
                 # variant offloads the Windows taskkill spawn to
                 # subprocess_executor so the event loop keeps ticking while
                 # taskkill.exe runs.
-                await platform_compat.kill_process_tree_async(
-                    pid, platform_compat.SIGTERM
-                )
+                await platform_compat.kill_process_tree_async(pid, platform_compat.SIGTERM)
             except (ProcessLookupError, OSError):
                 pass
             try:
                 await asyncio.wait_for(self._process.wait(), timeout=3.0)
                 # _kill_escaped_children -> _is_our_child -> _get_start_time/
                 # _read_basename spawn `ps` on macOS; run it off the loop.
-                await _loop.run_in_executor(
-                    subprocess_executor(), _kill_escaped_children, merged
-                )
+                await _loop.run_in_executor(subprocess_executor(), _kill_escaped_children, merged)
                 return
             except asyncio.TimeoutError:
                 pass
         # Force kill (async variant offloads Windows taskkill).
         try:
-            await platform_compat.kill_process_tree_async(
-                pid, platform_compat.SIGKILL
-            )
+            await platform_compat.kill_process_tree_async(pid, platform_compat.SIGKILL)
         except (ProcessLookupError, OSError):
             try:
                 self._process.kill()
             except (ProcessLookupError, OSError):
                 pass
-        await _loop.run_in_executor(
-            subprocess_executor(), _kill_escaped_children, merged
-        )
+        await _loop.run_in_executor(subprocess_executor(), _kill_escaped_children, merged)
         try:
             await asyncio.wait_for(self._process.wait(), timeout=1.0)
         except asyncio.TimeoutError:
@@ -1942,6 +2060,8 @@ class AcpClient:
             except OSError:
                 pass
             self._sandbox_cleanup = None
+        _schedule_kiro_executable_snapshot_cleanup(getattr(self, "_kiro_executable_snapshot", None))
+        self._kiro_executable_snapshot = None
         # Remove settings.local.json so bypassPermissions doesn't persist after crash
         if self._is_claude:
             _stale = self._work_dir / ".claude" / "settings.local.json"
@@ -2287,6 +2407,8 @@ class AcpClient:
                         _startup_spawned = True
 
                     await self._initialize_session()
+                    await _cleanup_kiro_executable_snapshot(self._kiro_executable_snapshot)
+                    self._kiro_executable_snapshot = None
                     try:
                         await self._snapshot_process_tree()
                     except Exception:
@@ -2513,9 +2635,7 @@ class AcpClient:
                         # requested model. The session is already live on the
                         # substitute -- keep going; log loudly so operators see it.
                         detail = _extract_advisory_detail(msg.error)
-                        self._last_substitution_model = _substitute_model_from_advisory(
-                            msg.error
-                        )
+                        self._last_substitution_model = _substitute_model_from_advisory(msg.error)
                         # Redact before logging. The advisory payload originates
                         # from the ACP backend and flows to the dashboard activity
                         # feed and Slack via the gateway log. Match the existing
@@ -2643,9 +2763,7 @@ class AcpClient:
             if idle_remaining <= 0:
                 break
             try:
-                read_msg = await self._read_message(
-                    timeout=min(remaining, idle_remaining, 2.0)
-                )
+                read_msg = await self._read_message(timeout=min(remaining, idle_remaining, 2.0))
                 if not read_msg:
                     continue
                 # Any received message counts as activity (servers still talking),
@@ -2806,7 +2924,9 @@ class AcpClient:
                                 logger.debug(
                                     "Stale-turn deferral for req %d — idle %.0fs but "
                                     "backend WORKING (%s)",
-                                    req_id, time.monotonic() - last_seen, evidence,
+                                    req_id,
+                                    time.monotonic() - last_seen,
+                                    evidence,
                                 )
                                 continue
                             logger.warning(
@@ -2842,12 +2962,16 @@ class AcpClient:
                     # keep the watchdog satisfied even though no JSON-RPC frames
                     # arrive on stdout during their execution.
                     _tool_last_seen = max(last_data_ts, self._last_activity)
-                    if self._tool_dispatched and (time.monotonic() - _tool_last_seen) > _TOOL_STALL_TIMEOUT:
+                    if (
+                        self._tool_dispatched
+                        and (time.monotonic() - _tool_last_seen) > _TOOL_STALL_TIMEOUT
+                    ):
                         _stall_idle = time.monotonic() - _tool_last_seen
                         logger.warning(
                             "Tool stall detected for req %d — tool dispatched but no data for %.0fs. "
                             "Killing agent to recover the slot.",
-                            req_id, _stall_idle,
+                            req_id,
+                            _stall_idle,
                         )
                         await self._kill_process(force=True)
                         raise AcpProcessDied(
@@ -3086,7 +3210,11 @@ class AcpClient:
                 self._tool_dispatched = False
                 self._last_stop_reason = reason
                 self._turn_done.set()
-                yield AcpEvent(kind=EVENT_COMPLETE, stop_reason=reason, usage=TurnUsage(credits=self.last_prompt_stats.credits))
+                yield AcpEvent(
+                    kind=EVENT_COMPLETE,
+                    stop_reason=reason,
+                    usage=TurnUsage(credits=self.last_prompt_stats.credits),
+                )
                 return
             if action == "error":
                 _raise_acp_error(msg.error)
@@ -3115,7 +3243,10 @@ class AcpClient:
                         got_complete = True
                         for tr_event in await asyncio.to_thread(self._read_new_tool_results_sync):
                             yield tr_event
-                        yield AcpEvent(kind=EVENT_COMPLETE, usage=TurnUsage(credits=self.last_prompt_stats.credits))
+                        yield AcpEvent(
+                            kind=EVENT_COMPLETE,
+                            usage=TurnUsage(credits=self.last_prompt_stats.credits),
+                        )
                         return
                 tool_event = self._extract_tool_event(msg)
                 if tool_event:
@@ -3313,7 +3444,11 @@ class AcpClient:
                     "Synthesizing EVENT_COMPLETE after stale turn (chunks=%d)",
                     self.last_prompt_stats.text_chunks,
                 )
-                yield AcpEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN, usage=TurnUsage(credits=self.last_prompt_stats.credits))
+                yield AcpEvent(
+                    kind=EVENT_COMPLETE,
+                    stop_reason=STOP_REASON_END_TURN,
+                    usage=TurnUsage(credits=self.last_prompt_stats.credits),
+                )
                 return
             raise AcpTimeoutError()
 
@@ -3855,9 +3990,10 @@ class AcpClient:
         if hook_store is None:
             return
         # Fall back to "unknown" to match the Pre path (Pre/Post tool_name consistency).
-        tool_name = self._observed_tool_calls.get(
-            tool_result_event.tool_call_id or "", ("unknown", "")
-        )[0] or "unknown"
+        tool_name = (
+            self._observed_tool_calls.get(tool_result_event.tool_call_id or "", ("unknown", ""))[0]
+            or "unknown"
+        )
         if tool_name.startswith("Running: "):
             tool_name = tool_name[9:]
         try:
@@ -4359,9 +4495,7 @@ class AcpClient:
         # same toolCallId reads this same cache, so popping here would make that
         # refinement wrongly report is_shell=False if it arrives after the
         # permission event. The per-turn dispatch-loop .clear() handles cleanup.
-        cached_shell = (
-            self._tool_call_is_shell.get(tool_call_id) if tool_call_id else None
-        )
+        cached_shell = self._tool_call_is_shell.get(tool_call_id) if tool_call_id else None
         is_shell = bool(cached_shell)
         if cached_shell is None and tool_input:
             # Input resolved but the shell signal did not — the cache invariant
@@ -4369,7 +4503,9 @@ class AcpClient:
             # miss is observable rather than silently enforcing the length cap.
             logger.info(
                 "Permission event resolved tool_input but missed is_shell cache "
-                "(req=%s tool_call_id=%s)", request_id, tool_call_id,
+                "(req=%s tool_call_id=%s)",
+                request_id,
+                tool_call_id,
             )
 
         logger.info("Permission requested for tool: %s (req=%s)", title, request_id)

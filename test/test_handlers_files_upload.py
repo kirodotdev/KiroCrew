@@ -23,7 +23,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from kiro_crew.dashboard.handlers.files import api_upload_file
+from kiro_crew.dashboard.handlers.files import _write_file_restricted, api_upload_file
 
 
 def _make_app() -> web.Application:
@@ -64,6 +64,23 @@ def _minimal_docx_bytes() -> bytes:
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr("[Content_Types].xml", "<types/>")
     return buf.getvalue()
+
+
+def test_write_file_restricted_preserves_binary_bytes_in_windows_text_mode(
+    tmp_path: Path,
+) -> None:
+    """The upload writer must request ``O_BINARY`` on Windows."""
+    from windows_sim import windows_text_mode_write
+
+    destination = tmp_path / "payload.bin"
+    payload = bytes(range(32))
+    assert b"\n" in payload
+
+    with windows_text_mode_write(match=destination.name) as state:
+        _write_file_restricted(destination, payload)
+
+    assert destination.read_bytes() == payload
+    assert state["translated"] == 0
 
 
 @pytest.mark.asyncio

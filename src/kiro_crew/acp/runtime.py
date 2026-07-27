@@ -28,7 +28,15 @@ from kiro_crew.acp._dispatch import (
     build_session_new_params,
     set_mode_params,
 )
-from kiro_crew.acp.client import _NOT_LOGGED_IN_RE, _get_start_time, _resolve_kiro_bin
+from kiro_crew.acp.client import (
+    _NOT_LOGGED_IN_RE,
+    _cleanup_kiro_executable_snapshot,
+    _get_start_time,
+    _kiro_executable_pass_fds,
+    _KiroExecutableTrustError,
+    _resolve_kiro_bin_for_spawn,
+    _schedule_kiro_executable_descriptor_cleanup,
+)
 from kiro_crew.acp.session_handle import (
     AcpRuntimeDead,
     AcpRuntimeError,
@@ -132,9 +140,11 @@ def _get_rss_mb(pid: int) -> float | None:
     # macOS / other: no /proc, fall back to ps (mirrors the sysctl/ps pattern
     # used elsewhere in this codebase for darwin system info).
     try:
-        out = subprocess.check_output(
-            ["ps", "-o", "rss=", "-p", str(pid)], timeout=2
-        ).decode().strip()
+        out = (
+            subprocess.check_output(["ps", "-o", "rss=", "-p", str(pid)], timeout=2)
+            .decode()
+            .strip()
+        )
         return int(out) / 1024.0
     except (OSError, ValueError, subprocess.SubprocessError):
         return None
@@ -200,11 +210,7 @@ def _get_rss_tree_mb(pid: int) -> float | None:
     # macOS / other: build a ppid map from a single ps snapshot, then sum the
     # descendant subtree rooted at pid (ps reports RSS in KiB).
     try:
-        out = (
-            subprocess.check_output(["ps", "-Ao", "pid=,ppid=,rss="], timeout=2)
-            .decode()
-            .strip()
-        )
+        out = subprocess.check_output(["ps", "-Ao", "pid=,ppid=,rss="], timeout=2).decode().strip()
     except (OSError, subprocess.SubprocessError):
         return _get_rss_mb(pid)
     children: dict[int, list[int]] = {}
@@ -282,6 +288,7 @@ class AcpRuntime:
         )
         self._mcp_gateway_socket = str(mcp_gateway_socket) if mcp_gateway_socket else None
         self._sandbox_cleanup: str | None = None
+        self._kiro_executable_snapshot: str | None = None
 
         # Recycling thresholds — see _is_stale(). Long-lived multiplexed
         # runtimes (e.g. the kirocrew-lite background runtime) have no
@@ -323,11 +330,7 @@ class AcpRuntime:
 
     def is_alive(self) -> bool:
         """True if the underlying process exists and has not exited."""
-        return (
-            self._process is not None
-            and self._process.returncode is None
-            and not self._dead
-        )
+        return self._process is not None and self._process.returncode is None and not self._dead
 
     def _stale_by_age(self) -> bool:
         """True if uptime exceeds max_age_secs. Cheap, no I/O — safe to call
@@ -396,9 +399,13 @@ class AcpRuntime:
 
         self._work_dir.mkdir(parents=True, exist_ok=True)
 
-        kiro_bin = _resolve_kiro_bin()
+        try:
+            kiro_bin = await _resolve_kiro_bin_for_spawn()
+        except _KiroExecutableTrustError as exc:
+            raise AcpRuntimeError(str(exc)) from exc
         if not kiro_bin:
             raise AcpRuntimeError(f"{KIRO_CLI_BIN} not found in PATH")
+        self._kiro_executable_snapshot = kiro_bin
 
         argv: list[str] = [kiro_bin, KIRO_CLI_SUBCMD, "--agent", self._agent]
         if self._model:
@@ -414,14 +421,22 @@ class AcpRuntime:
         # constructor/caller compatibility but do nothing here. strip_python_env
         # IS applied to keep the host PYTHONPATH/PYTHONHOME out of kiro-cli's
         # foreign MCP subprocesses (which bundle their own interpreter + deps).
-        argv, self._sandbox_cleanup = wrap_argv(
-            argv, mode=self._sandbox_mode, strip_python_env=True
-        )
-        # cgroup v2 scope (OUTERMOST): bound this agent + all its MCP-server /
-        # tool descendants with pids.max (fork bomb) + memory.max (RSS balloon).
-        # No-op + loud warning where cgroup delegation is unavailable. --scope
-        # execs into the target, so self._pid below is still the real child.
-        argv = cgroup_scope_argv(argv)
+        try:
+            argv, self._sandbox_cleanup = wrap_argv(
+                argv,
+                mode=self._sandbox_mode,
+                strip_python_env=True,
+                is_kiro_cli=True,
+            )
+            # cgroup v2 scope (OUTERMOST): bound this agent + all its MCP-server /
+            # tool descendants with pids.max (fork bomb) + memory.max (RSS balloon).
+            # No-op + loud warning where cgroup delegation is unavailable. --scope
+            # execs into the target, so self._pid below is still the real child.
+            argv = cgroup_scope_argv(argv)
+        except BaseException:
+            await _cleanup_kiro_executable_snapshot(self._kiro_executable_snapshot)
+            self._kiro_executable_snapshot = None
+            raise
 
         env = {**os.environ}
         if self._extra_env:
@@ -443,22 +458,34 @@ class AcpRuntime:
         # @playwright/mcp`` -> node) are identifiable as ours.
         env[KIROCREW_SPAWNED_ENV] = KIROCREW_SPAWNED_VALUE
 
-        self._process = await asyncio.create_subprocess_exec(
-            *argv,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=str(self._work_dir),
-            limit=_STDOUT_BUFFER_LIMIT,
-            # POSIX: setsid so kill() can killpg the whole tree. Windows:
-            # start_new_session is silently ignored; CREATE_NEW_PROCESS_GROUP
-            # makes the child tree taskkill /T-reapable (see platform_compat
-            # spawn-isolation note).
-            start_new_session=platform_compat.IS_POSIX,
-            creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
-            env=env,
-            preexec_fn=session_host_preexec(),
-        )
+        pass_fds = _kiro_executable_pass_fds(self._kiro_executable_snapshot)
+        try:
+            self._process = await asyncio.create_subprocess_exec(
+                *argv,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=str(self._work_dir),
+                limit=_STDOUT_BUFFER_LIMIT,
+                # POSIX: setsid so kill() can killpg the whole tree. Windows:
+                # start_new_session is silently ignored; CREATE_NEW_PROCESS_GROUP
+                # makes the child tree taskkill /T-reapable (see platform_compat
+                # spawn-isolation note).
+                start_new_session=platform_compat.IS_POSIX,
+                creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
+                env=env,
+                preexec_fn=session_host_preexec(),
+                pass_fds=pass_fds,
+            )
+        except BaseException:
+            await _cleanup_kiro_executable_snapshot(self._kiro_executable_snapshot)
+            self._kiro_executable_snapshot = None
+            raise
+        # The child owns the inherited descriptor from this point; its wrapper
+        # chain resolves /proc/self/fd, so close the gateway's duplicate now.
+        # A private macOS path stays registered until the handshake proves the
+        # sandbox wrapper has opened and executed it.
+        _schedule_kiro_executable_descriptor_cleanup(self._kiro_executable_snapshot)
         self._pid = self._process.pid
         self._start_time = _get_start_time(self._pid)
         self._spawn_monotonic = time.monotonic()
@@ -511,6 +538,8 @@ class AcpRuntime:
                 init_resp.get("agentCapabilities", {}).get("loadSession", False)
             )
             self._initialized = True
+            await _cleanup_kiro_executable_snapshot(self._kiro_executable_snapshot)
+            self._kiro_executable_snapshot = None
             logger.info("AcpRuntime initialized (PID %d)", self._pid)
         except BaseException:
             try:
@@ -593,7 +622,8 @@ class AcpRuntime:
                 # it — untracking here would leak the process until reboot.
                 logger.warning(
                     "AcpRuntime kill: PID %d survived SIGTERM/SIGKILL escalation; "
-                    "leaving PID tracked for sweep", pid,
+                    "leaving PID tracked for sweep",
+                    pid,
                 )
             else:
                 logger.info("AcpRuntime killed (PID %d)", pid)
@@ -613,6 +643,8 @@ class AcpRuntime:
                 os.remove(self._sandbox_cleanup)
             except OSError:
                 pass
+        await _cleanup_kiro_executable_snapshot(getattr(self, "_kiro_executable_snapshot", None))
+        self._kiro_executable_snapshot = None
 
     # ── Reader Task (single owner of stdout) ──
 
@@ -710,7 +742,8 @@ class AcpRuntime:
                     else:
                         logger.debug(
                             "Dropping frame for unknown session %s (method=%s)",
-                            session_id, msg.method,
+                            session_id,
+                            msg.method,
                         )
                     continue
 
@@ -1023,9 +1056,7 @@ class AcpRuntime:
         # A genuine resume echoes "modes" in the response (same signal AcpClient
         # keys on). Anything else means load did not actually restore state.
         if "modes" not in resp:
-            raise AcpRuntimeError(
-                f"session/load did not resume session {resume_sid}: {resp}"
-            )
+            raise AcpRuntimeError(f"session/load did not resume session {resume_sid}: {resp}")
 
         # Register the queue AFTER _send_and_await returns. During session/load
         # kiro-cli replays the full prior transcript on stdout; without a

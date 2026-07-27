@@ -1,6 +1,7 @@
 # CLI Module
 
-Last Updated: 2026-07-09 (cloud launch resume safety)
+Last Updated: 2026-07-26 (first-run setup, direct-CLI ACP provenance, and
+fail-closed process tracking)
 
 ## Overview
 
@@ -77,6 +78,146 @@ This allows `kirocrew` to find project-level agent config and skills from any di
 4. Offers to set up custom domain `kirocrew.localhost` (macOS/Linux)
 
 The saved project dir enables running `kirocrew` from any directory.
+
+### First-run Kiro CLI prerequisite onboarding
+
+KiroCrew exposes the same two-step readiness contract on every supported
+platform: an executable candidate must answer `kiro-cli --version`, then
+`kiro-cli whoami` must confirm authentication. Candidate discovery includes
+supported fixed locations in addition to inherited `PATH`; unusable candidates
+are reported for repair. Setup probes the same first executable candidate ACP
+will launch, so a stale earlier candidate cannot produce a false-ready result
+from a different later installation.
+
+- Missing CLI: the setup page offers an explicit install action on macOS,
+  Linux, and Windows. macOS/Linux download the fixed
+  `https://cli.kiro.dev/install`; Windows downloads the fixed
+  `https://cli.kiro.dev/install.ps1`. Every redirect and the final response
+  must remain on the exact `cli.kiro.dev:443` endpoint and expected path, with
+  no userinfo, query, or fragment. Redirect destinations are resolved and
+  validated before any request is sent, and the chain is limited to three
+  redirects. Responses are size-bounded and must match a release-pinned
+  SHA-256 digest plus the platform-specific official installer marker. A
+  changed upstream script therefore fails closed until a KiroCrew release
+  updates the pin; the manual official guide remains available. The exact
+  validated bytes stay in memory and run through the fixed system interpreter's
+  standard input. The installer receives a system-only `PATH` plus explicit
+  HTTP(S) proxy variables, never user-writable executable directories or
+  ambient application credentials. The official installer additionally
+  verifies its downloaded package manifest and artifact checksum.
+- Unusable CLI candidates: the same page identifies that Kiro CLI needs repair
+  instead of treating a spawn failure as a signed-out session. If the upstream
+  POSIX installer would require an interactive `/dev/tty` replacement prompt
+  (an existing macOS app bundle or Linux `~/.local/bin/kiro-cli`), automatic
+  repair is disabled and the user is directed to the official guide.
+  A usable but unattested candidate outside those interactive replacement
+  locations can run the validated reinstall path and is attested only after the
+  installer completes.
+- Installed but signed out: the setup page starts
+  `kiro-cli login --use-device-flow`, relays its sign-in URL/code, and requires
+  a successful `kiro-cli whoami` before continuing. Only the official
+  `app.kiro.dev` sign-in host and the Kiro device-flow `/start` path on
+  `view.awsapps.com` become clickable links. Backend parsing rejects URL
+  userinfo, backslashes, and control characters, and the browser independently
+  reparses and applies the same scheme/port/host/path allowlist before rendering
+  a link.
+- Browser dashboard: the authenticated SPA gate operates on the **gateway
+  host**, not the browser host. This covers native Windows source installs,
+  Linux gateways, and browsers connected to another machine.
+- Desktop shell: the shell starts or reuses the gateway first, then displays the
+  same gateway-served setup gate as a browser. Remote gateways are therefore
+  checked on the remote host rather than the desktop host.
+- Offline test harness: the explicit `gateway --test-mode` bundle injects a
+  ready prerequisite state so deterministic fake-ACP smoke and Playwright
+  suites do not depend on a developer machine's Kiro installation, identity, or
+  Linux sandbox capabilities. Ordinary gateway invocations always use the real
+  probe/install/login service.
+
+The setup client cannot supply a command, URL, argument, or output path. The web
+API exposes only fixed install/login mutations to the configured owner (or the
+signed `local-app` / `local-startup` identities before an owner exists).
+Authenticated non-owner dashboard users receive only a redacted readiness bit:
+they enter the dashboard once ready but cannot see host state/output or operate
+setup. App tokens remain denied. Electron has no separate installer/login IPC
+or subprocess implementation. Filesystem discovery runs off the event loop.
+Version probes use a minimal noninteractive environment with no proxy
+credentials or desktop-session IPC. They use the strict OS sandbox and
+additionally hide the configured data home, `~/.kiro/crew`, `~/.kirocrew`, and
+every known Kiro identity store. A candidate is eligible for `whoami` and
+device login only when it has immutable system/operator provenance or matches
+the path and SHA-256 attestation recorded immediately after Kiro Crew runs the
+release-pinned official installer. That attestation is on the
+agent-inaccessible sensitive-path floor. POSIX auth calls execute an owner-only
+snapshot under the protected runtime directory, binding the bytes that passed
+verification to the executable that receives staged credentials.
+When `KIROCREW_KIRO_BIN` is set on POSIX, the gateway prerequisite service and
+every direct agent-bearing CLI command (`chat`, `tui`, `run`, `consolidate`,
+and `eval`) register the override's canonical path and first-observed digest
+before a jail re-exec or provider can start.
+Authentication commands run in the standard sandbox against a temporary home
+populated only with Kiro identity JSON and SQLite files. The temporary state is
+published only after a successful command; failure, timeout, or cancellation
+discards it. SQLite sidecars are checkpointed into one standalone database and
+atomically replaced rather than copied independently. Unrelated AWS, SSH,
+GitHub, Kubernetes, and Kiro Crew state therefore remains unavailable. Any
+allowlisted live identity artifact that is a symlink, non-regular, oversized,
+unreadable, or disappears while being captured aborts before login. The same
+fail-closed rule applies to the locked publication generation scan, so a
+rejected live database can never be treated as absent and replaced by a fresh
+staged database. Every
+probe emits a critical `invoked` SEL event before spawn
+and a best-effort terminal event without argv, candidate paths, output, or
+environment values. Installer and login timeouts cover process exit and
+output-pipe draining. On POSIX, a private supervisor remains the process-group
+leader after the real command exits and keeps the group safely addressable until
+all descendants close or are terminated. Windows cleanup opens an exact
+primary-process handle before yielding after spawn and completes an initial
+descendant snapshot even when the launcher exits immediately. It then retains
+exact child handles and continues discovery from every live child, so late
+helpers remain supervised and identifier reuse cannot target an unrelated
+process. Numeric parent edges are accepted only when exact-handle creation and
+exit times prove that the child was created during the parent's lifetime, and
+the check is repeated across both tree snapshots. The primary root and each
+retained child root receive one final snapshot after becoming inactive, so a
+child spawned immediately before its parent exits is not lost between polls.
+Failure to anchor or validate the primary process, create a Toolhelp snapshot,
+or complete any process enumeration fails the operation closed. Ordinary
+pipe/task errors follow the same terminate, reap, cancel, and cleanup path
+before another action can start.
+
+An auto-created `config.json` alone does not mark first-run setup complete; a
+successful authenticated probe writes the setup marker, while existing
+session/history state preserves established-install migration behavior. Fresh
+installs receive the full-screen flow. Established dashboards remain navigable
+during reauthentication with session-starting controls paused. Readiness is
+latched at the central chat-turn entry point, covering HTTP, task-runner,
+workflow, queue, and automatic continuation paths without running subprocess
+probes on the message hot path. The SPA refreshes ready status every 30 seconds,
+retains cached readiness across transient refetch errors, and invalidates
+prerequisite state after access-cookie refresh.
+POSIX group membership ignores zombie records, which cannot retain pipes or
+perform work, so an unreaping PID 1 cannot hold the supervisor forever.
+The supervisor source is captured eagerly at import for replacement resistance;
+if it is missing or unreadable, gateway import still succeeds and each affected
+POSIX setup operation fails cleanly before spawning a command.
+Sandbox launcher/profile preparation and cleanup are worker-thread operations
+and do not stall the asyncio gateway loop.
+
+Setup and ACP launch share the side-effect-free `kiro_cli` resolver. Status
+requests never publish a discovered path by mutating `KIROCREW_KIRO_BIN`.
+Because Windows has no equivalent OS sandbox for passive probes, setup readiness
+executes only candidates under the fixed Program Files `Kiro-Cli` tree.
+The shared resolver still enumerates inherited `PATH`, the interpreter Scripts
+directory, and an operator override for compatibility, but Windows ACP launch
+rejects any resolved candidate outside that same Program Files tree before
+spawn. A higher-priority untrusted candidate therefore blocks readiness and
+launch rather than silently falling through to a later executable.
+
+When a previously completed setup is no longer ready, the dashboard remains
+navigable but session creation and turn submission are paused. The shared
+frontend readiness context disables the primary composer and session affordance,
+and backend pre-enqueue guards return 503 before creating a slot or appending a
+turn, including regenerate, edit-resend, rewind, and OpenAI-compatible calls.
 
 ### Custom Domain
 

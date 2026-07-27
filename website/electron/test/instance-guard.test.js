@@ -58,11 +58,13 @@ test("unclassifiable own version never evicts", () => {
   assert.equal(decideGatewayAction("", { ok: true, app: "kirocrew", version: "0.1.0" }).action, "reuse");
 });
 
-test("FAMILY_META carries the app names the takeover dialog and quit-by-name need", () => {
+test("FAMILY_META separates display names from quit-by-name targets", () => {
   // Both installs deliberately share one bundle identifier, so the app NAME
   // is the only valid AppleScript targeting handle.
   assert.equal(FAMILY_META.prod.appName, "KiroCrew");
   assert.equal(FAMILY_META.nightly.appName, "KiroCrew Nightly");
+  assert.equal(FAMILY_META.prod.displayName, "Kiro Crew");
+  assert.equal(FAMILY_META.nightly.displayName, "Kiro Crew Nightly");
 });
 
 test("identity probe targets /api/health, never the /api/status liveness URL", () => {

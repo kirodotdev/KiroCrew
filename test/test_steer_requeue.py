@@ -310,7 +310,10 @@ class TestProductionWiring:
     def test_finally_calls_requeue_before_queue_drain(self):
         src = self._runner_source()
         requeue_at = src.index("_requeue_unconsumed_steers(state, slot)")
-        drain_at = src.index("# Process queued messages (FIFO)")
+        drain_at = src.index(
+            "next_turn_started = await _start_next_queued_turn(state, slot)",
+            requeue_at,
+        )
         assert requeue_at < drain_at, (
             "_run_chat's finally must call _requeue_unconsumed_steers BEFORE "
             "the queue drain so a requeued steer is delivered on the very next turn"

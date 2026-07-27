@@ -62,6 +62,7 @@ _LEGACY_LAUNCHER_DIR = "/tmp"
 # Sensitive directories to hide from the agent subprocess tree.
 # "strict" mode hides all; "standard" mode only hides non-workflow dirs.
 _STRICT_DIRS: list[str] = [
+    ".kiro/crew-auth-staging",
     ".aws",
     ".gnupg",
     ".gpg",
@@ -73,6 +74,7 @@ _STRICT_DIRS: list[str] = [
 ]
 
 _STANDARD_DIRS: list[str] = [
+    ".kiro/crew-auth-staging",
     ".gnupg",
     ".gpg",
     ".config/gcloud",
@@ -84,6 +86,7 @@ _STANDARD_DIRS: list[str] = [
 # .aws/config (needed for credential_process → Bedrock auth). All other .aws
 # files (credentials, sso cache, etc.) are filesystem-hidden via bind mount.
 _CC_DIRS: list[str] = [
+    ".kiro/crew-auth-staging",
     ".aws",
     ".gnupg",
     ".gpg",
@@ -112,6 +115,24 @@ _CC_FILES: list[str] = [
     ".kiro/crew/.env",
     ".kirocrew/.env",
 ]
+
+
+def _hidden_path_contains_visible_path(
+    hidden_path: str,
+    visible_paths: tuple[str, ...],
+) -> bool:
+    """Return whether hiding *hidden_path* would also hide a required path."""
+
+    hidden = os.path.abspath(hidden_path)
+    for item in visible_paths:
+        visible = os.path.abspath(item)
+        try:
+            if os.path.commonpath((hidden, visible)) == hidden:
+                return True
+        except ValueError:
+            continue
+    return False
+
 
 # Sensitive env var prefixes to scrub from the child environment.
 # Scrubbed in ALL modes (standard + strict) — credential_process reads
@@ -502,6 +523,8 @@ def _build_launcher_script(
     sandbox_level: str = "strict",
     *,
     strip_python_env: bool = False,
+    extra_hidden_dirs: tuple[str, ...] = (),
+    extra_visible_dirs: tuple[str, ...] = (),
 ) -> str:
     """Build a Python launcher script for the Linux namespace sandbox.
 
@@ -545,7 +568,14 @@ def _build_launcher_script(
         # KiroCrew's PYTHONPATH/PYTHONHOME leak in and shadow their own deps.
         env_prefixes = env_prefixes + list(_PYTHON_ENV_PREFIXES)
     hide_ssh = sandbox_level == "strict"
-    dirs_json = json.dumps([os.path.join(home, d) for d in dirs])
+    hidden_dirs = [os.path.join(home, d) for d in dirs]
+    hidden_dirs.extend(os.path.abspath(path) for path in extra_hidden_dirs)
+    hidden_dirs = [
+        path
+        for path in hidden_dirs
+        if not _hidden_path_contains_visible_path(path, extra_visible_dirs)
+    ]
+    dirs_json = json.dumps(list(dict.fromkeys(hidden_dirs)))
     files_json = json.dumps([os.path.join(home, f) for f in files])
     expose_json = json.dumps([(os.path.join(home, f), f.split("/")[-1]) for f in expose_files])
     env_prefixes_json = json.dumps(env_prefixes)
@@ -984,6 +1014,8 @@ def namespace_argv(
     sandbox_level: str = "strict",
     *,
     strip_python_env: bool = False,
+    extra_hidden_dirs: tuple[str, ...] = (),
+    extra_visible_dirs: tuple[str, ...] = (),
 ) -> list[str]:
     """Wrap *argv* via the Python namespace launcher.
 
@@ -995,7 +1027,12 @@ def namespace_argv(
     if resolved_argv:
         resolved_argv[0] = _resolve_agent_executable(resolved_argv[0])
 
-    script = _build_launcher_script(sandbox_level, strip_python_env=strip_python_env)
+    script = _build_launcher_script(
+        sandbox_level,
+        strip_python_env=strip_python_env,
+        extra_hidden_dirs=extra_hidden_dirs,
+        extra_visible_dirs=extra_visible_dirs,
+    )
     run_dir = _ensure_run_dir()
     fd, path = tempfile.mkstemp(
         suffix=".py", prefix=f"kirocrew_sandbox_{os.getpid()}_", dir=run_dir
@@ -1016,7 +1053,12 @@ _SEATBELT_PROFILE = """\
 """
 
 
-def _build_seatbelt_profile(sandbox_level: str = "strict") -> str:
+def _build_seatbelt_profile(
+    sandbox_level: str = "strict",
+    *,
+    extra_hidden_dirs: tuple[str, ...] = (),
+    extra_visible_dirs: tuple[str, ...] = (),
+) -> str:
     """Build a Seatbelt .sb profile denying reads of sensitive dirs."""
     home = str(Path.home())
     # Source the sensitive-dir lists from the active PlatformContext (Default
@@ -1038,6 +1080,8 @@ def _build_seatbelt_profile(sandbox_level: str = "strict") -> str:
     rules: list[str] = []
     for d in dirs:
         target = os.path.join(home, d)
+        if _hidden_path_contains_visible_path(target, extra_visible_dirs):
+            continue
         escaped = target.replace('"', '\\"')
         # Check if any exposed files live under this dir
         exposed_in_dir = [f for f in expose_abs if f.startswith(target + "/")]
@@ -1063,6 +1107,13 @@ def _build_seatbelt_profile(sandbox_level: str = "strict") -> str:
         rules.append(f'(deny file-read* (literal "{escaped}"))')
         # Also deny hardlinking the protected file (see above).
         rules.append(f'(deny file-link (literal "{escaped}"))')
+    for target in dict.fromkeys(os.path.abspath(path) for path in extra_hidden_dirs):
+        if _hidden_path_contains_visible_path(target, extra_visible_dirs):
+            continue
+        escaped = target.replace('"', '\\"')
+        rules.append(f'(deny file-read* (subpath "{escaped}"))')
+        rules.append(f'(deny file-write* (subpath "{escaped}"))')
+        rules.append(f'(deny file-link (subpath "{escaped}"))')
 
     # .ssh: deny all access except reading known_hosts (strict only)
     if sandbox_level == "strict":
@@ -1230,6 +1281,8 @@ def sandbox_exec_argv(
     sandbox_level: str = "strict",
     *,
     strip_python_env: bool = False,
+    extra_hidden_dirs: tuple[str, ...] = (),
+    extra_visible_dirs: tuple[str, ...] = (),
 ) -> tuple[list[str], str | None]:
     """Wrap *argv* with ``sandbox-exec -f <profile>``.
 
@@ -1243,7 +1296,11 @@ def sandbox_exec_argv(
     if resolved_argv:
         resolved_argv[0] = _resolve_agent_executable(resolved_argv[0])
 
-    profile = _build_seatbelt_profile(sandbox_level)
+    profile = _build_seatbelt_profile(
+        sandbox_level,
+        extra_hidden_dirs=extra_hidden_dirs,
+        extra_visible_dirs=extra_visible_dirs,
+    )
     run_dir = _ensure_run_dir()
     fd, path = tempfile.mkstemp(
         suffix=".sb", prefix=f"kirocrew_sandbox_{os.getpid()}_", dir=run_dir
@@ -1580,6 +1637,9 @@ def wrap_argv(
     mode: str = "auto",
     *,
     strip_python_env: bool = False,
+    extra_hidden_dirs: tuple[str, ...] = (),
+    extra_visible_dirs: tuple[str, ...] = (),
+    is_kiro_cli: bool | None = None,
 ) -> tuple[list[str], str | None]:
     """Wrap a command argv with OS-level sandbox if available.
 
@@ -1588,6 +1648,12 @@ def wrap_argv(
         mode: ``"auto"``/``"standard"`` (expose .aws/.ssh/.kube),
               ``"cc"`` (hide .aws but expose .aws/config for Bedrock auth),
               ``"strict"`` (hide everything), ``"off"`` (no sandbox).
+        extra_hidden_dirs: Additional absolute directory trees to deny.
+        extra_visible_dirs: Trusted paths that must remain visible when an
+            otherwise-hidden parent contains them.
+        is_kiro_cli: Explicit executable classification for descriptor-backed
+            Kiro snapshots whose launch path no longer has a ``kiro-cli``
+            basename. ``None`` retains basename detection for other callers.
 
     Returns:
         (wrapped_argv, cleanup_path_or_None).
@@ -1685,7 +1751,18 @@ def wrap_argv(
     # Checked before backend detection so delegation also applies where our own
     # probe found no backend. macOS only — Linux namespace isolation is
     # unaffected.
-    if sys.platform == "darwin" and _spawns_kiro_cli(argv) and kiro_internal_sandbox_enabled():
+    kiro_spawn = _spawns_kiro_cli(argv) if is_kiro_cli is None else is_kiro_cli
+    if sys.platform == "darwin" and kiro_spawn and kiro_internal_sandbox_enabled():
+        if extra_hidden_dirs or extra_visible_dirs:
+            # A delegated sandbox cannot enforce KiroCrew-specific path hides.
+            # Keep the outer seatbelt for callers that require extra isolation.
+            return sandbox_exec_argv(
+                argv,
+                sandbox_level,
+                strip_python_env=strip_python_env,
+                extra_hidden_dirs=extra_hidden_dirs,
+                extra_visible_dirs=extra_visible_dirs,
+            )
         return _delegate_to_kiro_internal_sandbox(
             argv, sandbox_level, strip_python_env=strip_python_env
         )
@@ -1693,11 +1770,36 @@ def wrap_argv(
     backend = detect_backend(config_mode=mode)
 
     if backend == "namespace":
-        wrapped = namespace_argv(argv, sandbox_level, strip_python_env=strip_python_env)
+        if extra_hidden_dirs or extra_visible_dirs:
+            wrapped = namespace_argv(
+                argv,
+                sandbox_level,
+                strip_python_env=strip_python_env,
+                extra_hidden_dirs=extra_hidden_dirs,
+                extra_visible_dirs=extra_visible_dirs,
+            )
+        else:
+            wrapped = namespace_argv(
+                argv,
+                sandbox_level,
+                strip_python_env=strip_python_env,
+            )
         # The launcher script is argv[1] — caller should clean it up
         return wrapped, wrapped[1]
     if backend == "sandbox-exec":
-        return sandbox_exec_argv(argv, sandbox_level, strip_python_env=strip_python_env)
+        if extra_hidden_dirs or extra_visible_dirs:
+            return sandbox_exec_argv(
+                argv,
+                sandbox_level,
+                strip_python_env=strip_python_env,
+                extra_hidden_dirs=extra_hidden_dirs,
+                extra_visible_dirs=extra_visible_dirs,
+            )
+        return sandbox_exec_argv(
+            argv,
+            sandbox_level,
+            strip_python_env=strip_python_env,
+        )
 
     if backend == "none":
         # FAIL-CLOSED: refuse to execute without sandbox unless explicitly opted in.
@@ -1823,6 +1925,8 @@ def sandboxed_spawn_argv(
     *,
     env: dict[str, str] | None = None,
     strip_python_env: bool = False,
+    extra_hidden_dirs: tuple[str, ...] = (),
+    extra_visible_dirs: tuple[str, ...] = (),
 ) -> tuple[list[str], dict[str, str], str | None]:
     """Single chokepoint for agent-influenced subprocess spawns.
 
@@ -1845,13 +1949,30 @@ def sandboxed_spawn_argv(
             Python child does not inherit KiroCrew's interpreter paths. Applied
             BOTH inside :func:`wrap_argv`'s launcher AND to the returned env, so
             the strip holds even on the fail-open path where no launcher runs.
+        extra_hidden_dirs: Additional absolute directory trees the caller needs
+            hidden in both the macOS Seatbelt and Linux namespace profiles.
+        extra_visible_dirs: Trusted paths that must remain visible when an
+            otherwise-hidden parent contains them.
 
     Returns:
         ``(wrapped_argv, scrubbed_env, cleanup_path_or_None)``. The caller MUST
         pass *scrubbed_env* as the subprocess ``env=`` and unlink *cleanup_path*
         (a temp launcher/profile) after the child exits.
     """
-    wrapped, cleanup = wrap_argv(argv, mode=mode, strip_python_env=strip_python_env)
+    if extra_hidden_dirs or extra_visible_dirs:
+        wrapped, cleanup = wrap_argv(
+            argv,
+            mode=mode,
+            strip_python_env=strip_python_env,
+            extra_hidden_dirs=extra_hidden_dirs,
+            extra_visible_dirs=extra_visible_dirs,
+        )
+    else:
+        wrapped, cleanup = wrap_argv(
+            argv,
+            mode=mode,
+            strip_python_env=strip_python_env,
+        )
     # cgroup v2 scope (OUTERMOST layer): bound the spawned process tree with
     # pids.max + memory.max. Applied here so every sandboxed_spawn_argv caller
     # gets the fork-bomb / memory-DoS ceiling without threading it through each

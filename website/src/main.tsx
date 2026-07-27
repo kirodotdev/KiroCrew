@@ -17,6 +17,7 @@ import { initRum } from './rum'
 import App from './App'
 import { queryClient } from './api/queryClient'
 import ErrorBoundary from './components/ErrorBoundary'
+import DashboardBootstrap from './components/DashboardBootstrap'
 import 'katex/dist/katex.min.css'
 import 'monaco-editor/esm/vs/base/browser/ui/codicons/codicon/codicon.css'
 import './index.css'
@@ -84,7 +85,16 @@ createRoot(document.getElementById('root')!).render(
               <BrowserRouter>
                 <Routes>
                   <Route path="/worlds-popout" element={<BrandingProvider><ProviderProvider><Suspense fallback={null}><WorldsPopout /></Suspense></ProviderProvider></BrandingProvider>} />
-                  <Route path="*" element={<BrandingProvider><ProviderProvider><App /></ProviderProvider></BrandingProvider>} />
+                  <Route
+                    path="*"
+                    element={(
+                      <BrandingProvider>
+                        <ProviderProvider>
+                          <DashboardBootstrap><App /></DashboardBootstrap>
+                        </ProviderProvider>
+                      </BrandingProvider>
+                    )}
+                  />
                 </Routes>
               </BrowserRouter>
             </UIModeProvider>

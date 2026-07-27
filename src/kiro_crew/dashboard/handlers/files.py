@@ -761,7 +761,11 @@ _ALLOWED_DOC_EXT = {
 
 def _write_file_restricted(path: Path, data: bytes) -> None:
     """Write file with owner-only permissions (0o600)."""
-    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    fd = os.open(
+        str(path),
+        os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_BINARY", 0),
+        0o600,
+    )
     try:
         os.write(fd, data)
     finally:

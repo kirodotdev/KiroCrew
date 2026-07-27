@@ -9,6 +9,16 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from kiro_crew.dashboard.openai_compat import _flatten_messages, _make_id, api_completions
+from kiro_crew.kiro_prerequisite import KiroPrerequisiteService
+
+
+class _ReadyKiroPrerequisiteService(KiroPrerequisiteService):
+    async def session_ready(self) -> bool:
+        return True
+
+
+_READY_KIRO_PREREQUISITE = object.__new__(_ReadyKiroPrerequisiteService)
+
 
 # ---------------------------------------------------------------------------
 # Unit: _flatten_messages
@@ -115,7 +125,10 @@ def _make_state(slot):
 def _make_request(body: dict, state, app: str = ""):
     request = MagicMock()
     request.json = AsyncMock(return_value=body)
-    request.app = {"state": state}
+    request.app = {
+        "state": state,
+        "kiro_prerequisite_service": _READY_KIRO_PREREQUISITE,
+    }
     request.get = MagicMock(side_effect=lambda k, d="": app if k == "app" else d)
     request.remote = "127.0.0.1"
     return request
@@ -123,6 +136,30 @@ def _make_request(body: dict, state, app: str = ""):
 
 @pytest.mark.asyncio
 class TestApiCompletionsBlocking:
+    async def test_prerequisite_error_uses_openai_schema(self, tmp_path):
+        slot = _make_slot()
+        state = _make_state(slot)
+        request = _make_request(
+            {"model": "kiro", "messages": [{"role": "user", "content": "hello"}]},
+            state,
+        )
+        service = KiroPrerequisiteService(
+            platform_name="linux",
+            environ={"HOME": str(tmp_path), "PATH": ""},
+            home=tmp_path,
+            audit_writer=AsyncMock(),
+        )
+        service._has_probed = True
+        request.app["kiro_prerequisite_service"] = service
+
+        response = await api_completions(request)
+        body = json.loads(response.text)
+
+        assert response.status == 503
+        assert body["error"]["code"] == "kiro_prerequisite_required"
+        assert body["error"]["type"] == "service_unavailable_error"
+        assert isinstance(body["error"]["message"], str)
+
     async def test_basic_response(self):
         slot = _make_slot()
         state = _make_state(slot)
@@ -161,7 +198,10 @@ class TestApiCompletionsBlocking:
         state = MagicMock()
         request = MagicMock()
         request.json = AsyncMock(side_effect=ValueError("bad json"))
-        request.app = {"state": state}
+        request.app = {
+            "state": state,
+            "kiro_prerequisite_service": _READY_KIRO_PREREQUISITE,
+        }
 
         resp = await api_completions(request)
         assert resp.status == 400
@@ -279,8 +319,9 @@ class TestStreamingResponse:
             slot._pending.append({"cls": "done"})
             slot.event.set()
 
-        with patch("kiro_crew.dashboard.openai_compat._run_chat", side_effect=fake_run_chat), patch(
-            "kiro_crew.dashboard.openai_compat.web.StreamResponse", return_value=mock_resp
+        with (
+            patch("kiro_crew.dashboard.openai_compat._run_chat", side_effect=fake_run_chat),
+            patch("kiro_crew.dashboard.openai_compat.web.StreamResponse", return_value=mock_resp),
         ):
             await api_completions(request)
 
@@ -316,8 +357,9 @@ class TestStreamingResponse:
             slot._pending.append({"cls": "done"})
             slot.event.set()
 
-        with patch("kiro_crew.dashboard.openai_compat._run_chat", side_effect=fake_run_chat), patch(
-            "kiro_crew.dashboard.openai_compat.web.StreamResponse", return_value=mock_resp
+        with (
+            patch("kiro_crew.dashboard.openai_compat._run_chat", side_effect=fake_run_chat),
+            patch("kiro_crew.dashboard.openai_compat.web.StreamResponse", return_value=mock_resp),
         ):
             await api_completions(request)
 
@@ -347,8 +389,9 @@ class TestStreamingResponse:
             slot._pending.append({"cls": "done"})
             slot.event.set()
 
-        with patch("kiro_crew.dashboard.openai_compat._run_chat", side_effect=fake_run_chat), patch(
-            "kiro_crew.dashboard.openai_compat.web.StreamResponse", return_value=mock_resp
+        with (
+            patch("kiro_crew.dashboard.openai_compat._run_chat", side_effect=fake_run_chat),
+            patch("kiro_crew.dashboard.openai_compat.web.StreamResponse", return_value=mock_resp),
         ):
             await api_completions(request)
 
@@ -378,8 +421,9 @@ class TestStreamingResponse:
             slot._pending.append({"cls": "done"})
             slot.event.set()
 
-        with patch("kiro_crew.dashboard.openai_compat._run_chat", side_effect=fake_run_chat), patch(
-            "kiro_crew.dashboard.openai_compat.web.StreamResponse", return_value=mock_resp
+        with (
+            patch("kiro_crew.dashboard.openai_compat._run_chat", side_effect=fake_run_chat),
+            patch("kiro_crew.dashboard.openai_compat.web.StreamResponse", return_value=mock_resp),
         ):
             await api_completions(request)
 
@@ -407,8 +451,9 @@ class TestStreamingResponse:
             slot._pending.append({"role": "assistant", "content": "x" * 300})
             slot.event.set()
 
-        with patch("kiro_crew.dashboard.openai_compat._run_chat", side_effect=fake_run_chat), patch(
-            "kiro_crew.dashboard.openai_compat.web.StreamResponse", return_value=mock_resp
+        with (
+            patch("kiro_crew.dashboard.openai_compat._run_chat", side_effect=fake_run_chat),
+            patch("kiro_crew.dashboard.openai_compat.web.StreamResponse", return_value=mock_resp),
         ):
             await api_completions(request)
 
@@ -534,10 +579,12 @@ class TestRemainingCoverage:
                 slot.event.set()
                 return await original_wait_for(coro, timeout=1)
 
-        with patch("kiro_crew.dashboard.openai_compat._run_chat", side_effect=fake_run_chat), patch(
-            "kiro_crew.dashboard.openai_compat.web.StreamResponse", return_value=mock_resp
-        ), patch(
-            "kiro_crew.dashboard.openai_compat.asyncio.wait_for", side_effect=patched_wait_for
+        with (
+            patch("kiro_crew.dashboard.openai_compat._run_chat", side_effect=fake_run_chat),
+            patch("kiro_crew.dashboard.openai_compat.web.StreamResponse", return_value=mock_resp),
+            patch(
+                "kiro_crew.dashboard.openai_compat.asyncio.wait_for", side_effect=patched_wait_for
+            ),
         ):
             await api_completions(request)
 
@@ -572,8 +619,11 @@ class TestRemainingCoverage:
                 slot.event.set()
                 return await original_wait_for(coro, timeout=1)
 
-        with patch("kiro_crew.dashboard.openai_compat._run_chat", side_effect=fake_run_chat), patch(
-            "kiro_crew.dashboard.openai_compat.asyncio.wait_for", side_effect=patched_wait_for
+        with (
+            patch("kiro_crew.dashboard.openai_compat._run_chat", side_effect=fake_run_chat),
+            patch(
+                "kiro_crew.dashboard.openai_compat.asyncio.wait_for", side_effect=patched_wait_for
+            ),
         ):
             resp = await api_completions(request)
 
@@ -603,8 +653,9 @@ class TestRemainingCoverage:
             slot._pending.append({"role": "assistant", "content": "x" * 300})
             slot.event.set()
 
-        with patch("kiro_crew.dashboard.openai_compat._run_chat", side_effect=fake_run_chat), patch(
-            "kiro_crew.dashboard.openai_compat.web.StreamResponse", return_value=mock_resp
+        with (
+            patch("kiro_crew.dashboard.openai_compat._run_chat", side_effect=fake_run_chat),
+            patch("kiro_crew.dashboard.openai_compat.web.StreamResponse", return_value=mock_resp),
         ):
             await api_completions(request)
 

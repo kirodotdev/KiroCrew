@@ -154,6 +154,8 @@ from kiro_crew.validation import ValidationError, infer_use_case, validate_ask_u
 
 logger = logging.getLogger(__name__)
 
+_KIRO_QUEUE_READINESS_POLL_SECS = 2.0
+
 # The synthetic recovery message constants live in chat_utils (single source
 # of truth shared with the queue/merge predicates — is_system_injection must
 # classify them identically to the turn logic here). Re-exported under their
@@ -246,9 +248,7 @@ def _emit_turn_metric(
     except Exception:
         pass
     try:
-        get_recorder().histogram(
-            "kirocrew.turn.duration", duration_ms, unit="ms", attrs=attrs
-        )
+        get_recorder().histogram("kirocrew.turn.duration", duration_ms, unit="ms", attrs=attrs)
     except Exception:
         logger.debug("turn metric emit failed", exc_info=True)
 
@@ -267,10 +267,7 @@ def _pre_tool_hooks_should_block(pre_hook_results: Any) -> bool:
     """
     if pre_hook_results is None or not isinstance(pre_hook_results, list):
         return True
-    return any(
-        not isinstance(r, str) or r.startswith("BLOCKED:")
-        for r in pre_hook_results
-    )
+    return any(not isinstance(r, str) or r.startswith("BLOCKED:") for r in pre_hook_results)
 
 
 def _is_bedrock_profile_id(model: str) -> bool:
@@ -874,9 +871,7 @@ def _native_subagent_sync(state, slot, subagents, tracker, card_output=None) -> 
         stype = str(status.get("type") or "").lower()
         smsg = str(status.get("message") or "")
         if sid not in tracker:
-            agent, _ = redact_exfiltration_urls(
-                str(sub.get("role") or sub.get("agentName") or "")
-            )
+            agent, _ = redact_exfiltration_urls(str(sub.get("role") or sub.get("agentName") or ""))
             agent, _ = redact_credentials(agent)
             task, _ = redact_exfiltration_urls(
                 str(sub.get("initialQuery") or sub.get("sessionName") or "")[:2000]
@@ -889,12 +884,16 @@ def _native_subagent_sync(state, slot, subagents, tracker, card_output=None) -> 
             # Mark as done immediately so we don't re-process on next update.
             if not task.strip():
                 tracker[sid] = {
-                    "started": now, "done": True, "agent": agent, "task": "",
+                    "started": now,
+                    "done": True,
+                    "agent": agent,
+                    "task": "",
                     "last_activity": now,
                 }
                 logger.debug(
                     "native subagent skipped (empty task): sid=%s slot=%s",
-                    sid, slot.key,
+                    sid,
+                    slot.key,
                 )
                 continue
             tracker[sid] = {
@@ -910,7 +909,9 @@ def _native_subagent_sync(state, slot, subagents, tracker, card_output=None) -> 
             _register_native_card(state, card_id, slot.key, sid)
             logger.debug(
                 "native subagent spawn broadcast: id=%s agent=%s slot=%s",
-                card_id, agent, slot.key,
+                card_id,
+                agent,
+                slot.key,
             )
             state.broadcast_ws(
                 "subagent_spawn",
@@ -1000,7 +1001,8 @@ def _native_subagent_sync(state, slot, subagents, tracker, card_output=None) -> 
             )
             logger.info(
                 "native subagent %s auto-closed: stale for %.0fs",
-                _cid, now - last_act,
+                _cid,
+                now - last_act,
             )
 
 
@@ -1088,10 +1090,7 @@ def _native_crew_should_auto_approve(native_tracker, state, slot) -> bool:
     if not has_active_crew:
         return False
     return bool(
-        (
-            state.context_builder
-            and state.context_builder.hooks.auto_approve_subagent_tools
-        )
+        (state.context_builder and state.context_builder.hooks.auto_approve_subagent_tools)
         or getattr(slot, "_trust", False)
         or state.is_yolo_active()
     )
@@ -1202,20 +1201,16 @@ def _resolve_mirror_target(state: Any, session_key: str) -> Any:
     try:
         from kiro_crew.platform.governance_profiles import governance_permits
 
-        decision = governance_permits(
-            "channels", link.channel_type, session_key=session_key
-        )
+        decision = governance_permits("channels", link.channel_type, session_key=session_key)
         if not getattr(decision, "permitted", True):
             logger.info(
-                "cross-surface: outbound to %s denied by governance policy; "
-                "skipping mirror",
+                "cross-surface: outbound to %s denied by governance policy; " "skipping mirror",
                 link.channel_type,
             )
             return None
     except Exception:
         logger.debug(
-            "cross-surface: governance check failed for %s; skipping mirror "
-            "(fail-closed)",
+            "cross-surface: governance check failed for %s; skipping mirror " "(fail-closed)",
             link.channel_type,
             exc_info=True,
         )
@@ -1236,9 +1231,7 @@ def _resolve_mirror_target(state: Any, session_key: str) -> Any:
     return link, transport
 
 
-async def _deliver_cross_surface_reply(
-    state: Any, session_key: str, assistant_text: str
-) -> None:
+async def _deliver_cross_surface_reply(state: Any, session_key: str, assistant_text: str) -> None:
     """Deliver a completed dashboard reply to a linked NON-Slack channel.
 
     The channel-neutral leg of cross-surface sync: reads the session's outbound
@@ -1265,9 +1258,7 @@ async def _deliver_cross_surface_reply(
     parts = chunk_text(text, transport.capabilities.max_message_chars)
     try:
         for part in parts:
-            await transport.send_message(
-                link.channel_id, part, thread_id=link.thread_id
-            )
+            await transport.send_message(link.channel_id, part, thread_id=link.thread_id)
         logger.info(
             "cross-surface: mirrored reply to %s:%s (%d chars, %d part(s))",
             link.channel_type,
@@ -1309,9 +1300,7 @@ async def _deliver_cross_surface_user_message(
             link.channel_id,
         )
     except Exception:
-        logger.debug(
-            "Failed to mirror user message to %s", link.channel_type, exc_info=True
-        )
+        logger.debug("Failed to mirror user message to %s", link.channel_type, exc_info=True)
 
 
 def _prepare_mirror_msg(raw_user_message: str) -> str:
@@ -1570,13 +1559,12 @@ async def _consume_pending_reset(state: DashboardState, slot: _ChatSlot) -> None
     except Exception:
         logger.warning(
             "Failed to consume pending project-change reset for slot %s",
-            slot.key, exc_info=True,
+            slot.key,
+            exc_info=True,
         )
 
 
-async def _handle_goal_command(
-    state: "DashboardState", slot: "_ChatSlot", message: str
-) -> None:
+async def _handle_goal_command(state: "DashboardState", slot: "_ChatSlot", message: str) -> None:
     """Handle the ``/goal`` slash command (v0 self-verdict loop).
 
     Extracted from ``_run_chat`` so it is unit-testable in isolation. Pure glue
@@ -1597,10 +1585,7 @@ async def _handle_goal_command(
         _loop = _goal_svc.get_by_slot(slot.key)
         if _loop is not None:
             _cap = _loop.max_cycles or "∞"
-            body = (
-                f"🎯 Active goal (budget {_cap} turns). "
-                "Use `/goal clear` to stop it."
-            )
+            body = f"🎯 Active goal (budget {_cap} turns). " "Use `/goal clear` to stop it."
         else:
             body = (
                 "No active goal. Set one with `/goal <objective>` "
@@ -1637,7 +1622,7 @@ async def _handle_goal_command(
                 "summary citing the evidence, and stop; "
                 "(3) else do ONE atomic step (<=5 tool calls) and make the deliverable durable "
                 "(write the file / run the check) before claiming progress.\n"
-                'Guardrails: never git push; never read credential files. Hard blocker -> state it once and '
+                "Guardrails: never git push; never read credential files. Hard blocker -> state it once and "
                 f'autonudge_stop(reason="blocked"). Budget {_max_cycles} cycles (service stops at '
                 "the cap). One short progress line per cycle."
             )
@@ -1687,9 +1672,7 @@ def _settle_consumed_steers(slot: "_ChatSlot", snapshot: str) -> None:
     if not slot._pending_steers:
         return
     if snapshot.strip():
-        consumed_blocks = re.findall(
-            r"<user_message>\n(.*?)\n</user_message>", snapshot, re.DOTALL
-        )
+        consumed_blocks = re.findall(r"<user_message>\n(.*?)\n</user_message>", snapshot, re.DOTALL)
         # The steer RPC wraps message.strip(); pending stores the raw message.
         # Strip for parity so whitespace never causes a false NON-match (the
         # safe direction is a duplicate, but exact settling is better).
@@ -1770,15 +1753,245 @@ def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> No
     )
 
 
+async def _start_next_queued_turn(state: DashboardState, slot: _ChatSlot) -> bool:
+    """Dequeue and start one ready Kiro turn, preserving queue semantics."""
+
+    if not slot._queue:
+        return False
+
+    try:
+        merge = KiroCrewConfig.load().dashboard.merge_queued_messages
+    except Exception:
+        logger.warning(
+            "Failed to load config; falling back to sequential dequeue",
+            exc_info=True,
+        )
+        merge = False
+
+    hold_users = bool(
+        state.subagents is not None and state.subagents.running_agents_for(f"dashboard:{slot.key}")
+    )
+    if hold_users:
+        next_msg, consumed = _dequeue_next_system_message(slot)
+    else:
+        next_msg, consumed = _dequeue_next_message(slot, merge_enabled=merge)
+    if next_msg is None:
+        return False
+
+    if slot._stopping and not is_system_injection(next_msg):
+        slot.append(
+            "error",
+            "⟳ Session reset — processing next message with conversation history",
+            "msg msg-err",
+        )
+        slot._stopping = False
+
+    for item in consumed:
+        content, _ = redact_exfiltration_urls(item["content"])
+        content, _ = redact_credentials(content)
+        state.broadcast_ws(
+            "queue_pop",
+            {
+                "slot": slot.key,
+                "content": _redact_for_display(content),
+                "queue_id": item["id"],
+            },
+        )
+        _remove_queued_by_id(slot.messages, item["id"])
+
+    next_msg, _ = redact_exfiltration_urls(next_msg)
+    next_msg, _ = redact_credentials(next_msg)
+    is_cron = next_msg.startswith(CRON_NOTIFY_PREFIX)
+    is_subagent = next_msg.startswith(SUBAGENT_COMPLETION_PREFIX)
+    is_recovery = (
+        next_msg.startswith(REFUSAL_RECOVERY_PREFIX)
+        or next_msg.startswith(STALE_RECOVERY_PREFIX)
+        or next_msg.startswith(TOOL_STALL_RECOVERY_PREFIX)
+        or any(is_synthetic_recovery_item(item) for item in consumed)
+    )
+    if not (is_cron or is_subagent or is_recovery):
+        slot._pending_synthesis = False
+    match = CRON_NOTIFY_RE.match(next_msg) if is_cron else None
+    cron_label = match.group(1) if match else "cron"
+    cron_label, _ = redact_exfiltration_urls(cron_label)
+    cron_label, _ = redact_credentials(cron_label)
+    slot.append(
+        "subagent" if is_subagent else "inject" if (is_cron or is_recovery) else "user",
+        next_msg,
+        (
+            json.dumps({"cronLabel": cron_label})
+            if is_cron
+            else "msg msg-inject" if is_recovery else "msg msg-u"
+        ),
+    )
+
+    task = asyncio.create_task(
+        asyncio.wait_for(
+            _run_chat(state, slot, next_msg, _readiness_checked=True),
+            timeout=CHAT_TURN_TIMEOUT,
+        )
+    )
+    slot.task = task
+    state._background_tasks.add(task)
+    task.add_done_callback(state._background_tasks.discard)
+    return True
+
+
+async def _run_pending_synthesis(state: DashboardState, slot: _ChatSlot) -> None:
+    """Wait for readiness, then consume and run one armed synthesis turn."""
+
+    from kiro_crew.dashboard.kiro_readiness import kiro_session_ready
+
+    readiness_reported = False
+    try:
+        while slot._pending_synthesis:
+            if await kiro_session_ready(getattr(state, "kiro_prerequisite_service", None)):
+                if slot._queue:
+                    state.push_slots_update()
+                    if await _start_next_queued_turn(state, slot):
+                        return
+                if (
+                    state.subagents is None
+                    or state.subagents.running_agents_for(f"dashboard:{slot.key}")
+                    or slot._subagent_deliveries_inflight != 0
+                ):
+                    _finish_queue_cycle(state, slot)
+                    return
+
+                # Readiness and all delivery guards now hold. Consuming here,
+                # immediately before the turn begins, preserves a retryable arm
+                # while authentication is unavailable.
+                slot._pending_synthesis = False
+                synthesis_task = asyncio.create_task(
+                    asyncio.wait_for(
+                        _run_chat(
+                            state,
+                            slot,
+                            SUBAGENT_SYNTHESIS_PROMPT,
+                            _readiness_checked=True,
+                        ),
+                        timeout=CHAT_TURN_TIMEOUT,
+                    )
+                )
+                await synthesis_task
+                return
+
+            if not readiness_reported:
+                slot.append(
+                    "error",
+                    "Kiro CLI setup or sign-in is required before " "sub-agent synthesis can run.",
+                    "msg msg-err",
+                )
+                state.push_slots_update()
+                readiness_reported = True
+            await asyncio.sleep(_KIRO_QUEUE_READINESS_POLL_SECS)
+
+        _finish_queue_cycle(state, slot)
+    finally:
+        slot._synthesis_inflight = False
+
+
+def _finish_queue_cycle(state: DashboardState, slot: _ChatSlot) -> None:
+    """Start synthesis when eligible, otherwise mark a queue cycle idle."""
+
+    if not slot._queue:
+        slot._stopping = False
+    if (
+        slot._pending_synthesis
+        and not slot._synthesis_inflight
+        and state.subagents is not None
+        and not state.subagents.running_agents_for(f"dashboard:{slot.key}")
+        and slot._subagent_deliveries_inflight == 0
+    ):
+        slot._synthesis_inflight = True
+        task = asyncio.create_task(_run_pending_synthesis(state, slot))
+        slot.task = task
+        state._background_tasks.add(task)
+        task.add_done_callback(state._background_tasks.discard)
+        state.push_slots_update()
+        return
+
+    slot.append("done", "", "done")
+    slot.task = None
+    state.push_slots_update()
+    state.broadcast_ws("chat_done", {"slot": slot.key})
+    state.push_refresh("history")
+    if not slot._titled:
+        title_task = asyncio.create_task(_maybe_auto_title(state, slot))
+        state._background_tasks.add(title_task)
+        title_task.add_done_callback(state._background_tasks.discard)
+
+
+async def _wait_for_queued_kiro_readiness(
+    state: DashboardState,
+    slot: _ChatSlot,
+) -> None:
+    """Own readiness polling outside the completed turn's timeout."""
+
+    from kiro_crew.dashboard.kiro_readiness import kiro_session_ready
+
+    while slot._queue:
+        await asyncio.sleep(_KIRO_QUEUE_READINESS_POLL_SECS)
+        if await kiro_session_ready(getattr(state, "kiro_prerequisite_service", None)):
+            state.push_slots_update()
+            if await _start_next_queued_turn(state, slot):
+                return
+            break
+    _finish_queue_cycle(state, slot)
+
+
 async def _run_chat(
     state: DashboardState,
     slot: _ChatSlot,
     message: str,
     *,
     _prompt_depth: int = 0,
+    _readiness_checked: bool = False,
     regenerate_hint: str = "",
 ) -> None:
     """Stream LLM response into *slot*.  Survives browser disconnect."""
+
+    from kiro_crew.dashboard.kiro_readiness import kiro_session_ready
+
+    session_key = getattr(slot, "linked_session_key", "") or _history_key_for(slot.key)
+    sessions = getattr(state, "sessions", None)
+
+    # Inherit Slack link: if this dashboard session mirrors a Slack thread,
+    # copy the link so every exit path, including prerequisite failure, can
+    # reply on the originating surface.
+    if sessions is not None and session_key.startswith("dashboard:"):
+        link = sessions.get_slack_link(session_key)
+        if not (link and link[0]):
+            raw_key = session_key[len("dashboard:") :]
+            link = sessions.get_slack_link(raw_key)
+            if link and link[0] and link[1]:
+                sessions.set_slack_link(session_key, link[0], link[1])
+
+    if not _readiness_checked and not await kiro_session_ready(
+        getattr(state, "kiro_prerequisite_service", None)
+    ):
+        message = "Kiro CLI setup or sign-in is required before starting a session."
+        slot.append("error", message, "msg msg-err")
+        slack_client = getattr(state, "slack_client", None)
+        if slack_client is not None:
+            thread_ts = getattr(slot, "_slack_thread_ts", "")
+            channel_id = getattr(slot, "_slack_channel", "")
+            if (not thread_ts or not channel_id) and sessions is not None:
+                thread_ts, channel_id = sessions.get_slack_link(session_key)
+            if thread_ts and channel_id:
+                try:
+                    await slack_client.post_message(channel_id, message, thread_ts)
+                except Exception:
+                    logger.debug(
+                        "Failed to deliver Kiro readiness error to linked Slack thread",
+                        exc_info=True,
+                    )
+        slot.append("done", "", "done")
+        slot.task = None
+        state.push_slots_update()
+        state.broadcast_ws("chat_done", {"slot": slot.key})
+        state.push_refresh("history")
+        return
 
     async def _fire(
         event: str,
@@ -1842,18 +2055,6 @@ async def _run_chat(
             logger.warning("Hook fire error: %s", exc)
         return injected
 
-    session_key = slot.linked_session_key or _history_key_for(slot.key)
-
-    # Inherit Slack link: if this dashboard session mirrors a Slack thread,
-    # copy the link so bidirectional sync works.
-    if session_key.startswith("dashboard:"):
-        _link = state.sessions.get_slack_link(session_key)
-        if not (_link and _link[0]):
-            _raw = session_key[len("dashboard:") :]
-            _link = state.sessions.get_slack_link(_raw)
-            if _link and _link[0] and _link[1]:
-                state.sessions.set_slack_link(session_key, _link[0], _link[1])
-
     assistant_text = ""
     last_heartbeat = time.time()
     chunk_seq = 0
@@ -1876,9 +2077,7 @@ async def _run_chat(
             return
         chunk_seq += 1
         slot.append("chunk", wire, "chunk")
-        state.broadcast_ws(
-            "chat_chunk", {"slot": slot.key, "content": wire, "seq": chunk_seq}
-        )
+        state.broadcast_ws("chat_chunk", {"slot": slot.key, "content": wire, "seq": chunk_seq})
 
     # Same rolling-buffer protection for the separate chat_thinking wire stream
     # (thinking is broadcast-only / ephemeral, but still real-time on the WS).
@@ -1890,6 +2089,7 @@ async def _run_chat(
         wire = _thinkred.flush()
         if wire:
             state.broadcast_ws("chat_thinking", {"slot": slot.key, "content": wire})
+
     # Partial-output guard for transient-5xx retry: flipped True once ANY
     # assistant token streams or a tool call fires this turn. A transient
     # backend 5xx is only retried while this is False, so a re-prompt can't
@@ -2522,9 +2722,7 @@ async def _run_chat(
         # proactive channel (e.g. Telegram) so the remote conversation reads
         # coherently (question then reply), matching the Slack echo above.
         if not is_slash and not _is_synthetic:
-            await _deliver_cross_surface_user_message(
-                state, session_key, _user_msg_for_mirror
-            )
+            await _deliver_cross_surface_user_message(state, session_key, _user_msg_for_mirror)
 
         _stop_reason = ""
         # Tool-stall metadata forwarded by the ACP watchdog on its terminal
@@ -2710,9 +2908,7 @@ async def _run_chat(
                     _pending_tools[event.tool_call_id] = _raw
                 # If this tool call belongs to a native sub-agent (mapped via
                 # _kiro.dev/session/update), stream it onto that sub-agent's card.
-                _nat_card = (
-                    _native_tc_card.get(event.tool_call_id) if event.tool_call_id else None
-                )
+                _nat_card = _native_tc_card.get(event.tool_call_id) if event.tool_call_id else None
                 if _nat_card:
                     _ntool, _ = redact_exfiltration_urls(_raw or event.title or "")
                     _ntool, _ = redact_credentials(_ntool)
@@ -2881,7 +3077,11 @@ async def _run_chat(
                 _nat_card_r = (
                     _native_tc_card.get(event.tool_call_id) if event.tool_call_id else None
                 )
-                if _nat_card_r and event.tool_output and event.tool_call_id not in _native_result_seen:
+                if (
+                    _nat_card_r
+                    and event.tool_output
+                    and event.tool_call_id not in _native_result_seen
+                ):
                     _native_result_seen.add(event.tool_call_id)
                     _nout, _ = redact_exfiltration_urls(event.tool_output)
                     _nout, _ = redact_credentials(_nout)
@@ -2997,7 +3197,9 @@ async def _run_chat(
                         continue
                     if tool_result.action == TOOL_AUTO_APPROVE:
                         try:
-                            validated_tool = _validate_tool_name(event.title, is_shell=event.is_shell)
+                            validated_tool = _validate_tool_name(
+                                event.title, is_shell=event.is_shell
+                            )
                         except ValueError as e:
                             await client.reject_tool(event.request_id)
                             slot.append("tool", f"🚫 {event.title} (invalid: {e})", "msg msg-tool")
@@ -3205,7 +3407,9 @@ async def _run_chat(
                     )
                     if matched:
                         try:
-                            validated_tool = _validate_tool_name(event.title, is_shell=event.is_shell)
+                            validated_tool = _validate_tool_name(
+                                event.title, is_shell=event.is_shell
+                            )
                         except ValueError as e:
                             await client.reject_tool(event.request_id)
                             _safe, _ = redact_exfiltration_urls(event.title)
@@ -3265,7 +3469,9 @@ async def _run_chat(
                 if slot._trust_reads and not slot._trust and not yolo_active and cmd:
                     if is_read_only_bash(cmd):
                         try:
-                            validated_tool = _validate_tool_name(event.title, is_shell=event.is_shell)
+                            validated_tool = _validate_tool_name(
+                                event.title, is_shell=event.is_shell
+                            )
                         except ValueError as e:
                             await client.reject_tool(event.request_id)
                             slot.append(
@@ -3442,7 +3648,12 @@ async def _run_chat(
                 # The Slack click resolves THIS future (via state.resolve_approval);
                 # we remain the sole caller of approve_tool/reject_tool below.
                 _slack_approval_ts: str | None = None
-                if slot._slack_linked and slot._slack_channel and slot._slack_thread_ts and state.slack_client:
+                if (
+                    slot._slack_linked
+                    and slot._slack_channel
+                    and slot._slack_thread_ts
+                    and state.slack_client
+                ):
                     try:
                         _slack_approval_ts = await post_linked_approval(
                             state.slack_client,
@@ -3481,9 +3692,7 @@ async def _run_chat(
                         # to the 2h wait_for with an unresolved future — the exact
                         # wedge this fix prevents. Auto-reject so the turn unblocks,
                         # mirroring the _slack_approval_ts is None branch.
-                        logger.warning(
-                            "Error mirroring approval prompt to Slack", exc_info=True
-                        )
+                        logger.warning("Error mirroring approval prompt to Slack", exc_info=True)
                         if not fut.done():
                             fut.set_result("rejected")
                 # Pre-seeded so the `finally` backstop below is total over EVERY
@@ -3725,9 +3934,12 @@ async def _run_chat(
                 # Reconcile one Activity card per sub-agent (spawn/done).
                 logger.debug(
                     "EVENT_SUBAGENT_LIST: %s subagents, slot=%s",
-                    len(event.subagents or []), slot.key,
+                    len(event.subagents or []),
+                    slot.key,
                 )
-                _native_subagent_sync(state, slot, event.subagents, _native_tracker, _native_card_output)
+                _native_subagent_sync(
+                    state, slot, event.subagents, _native_tracker, _native_card_output
+                )
             elif event.kind == EVENT_SUBAGENT_ACTIVITY:
                 # kiro-cli's _kiro.dev/session/update tags a sub-agent's inner
                 # tool call with its sessionId. This ALWAYS arrives before the
@@ -3737,9 +3949,7 @@ async def _run_chat(
                 # right sub-agent card.
                 _sid = event.sub_session_id
                 if _sid in _native_tracker and event.tool_call_id:
-                    _native_tc_card[event.tool_call_id] = (
-                        f"native:{_redact_tool_field(_sid)}"
-                    )
+                    _native_tc_card[event.tool_call_id] = f"native:{_redact_tool_field(_sid)}"
                 # Some kiro-cli builds also stream the sub-agent's own text via
                 # agent_message_chunk on this channel — surface it on the card.
                 if _sid in _native_tracker and event.text:
@@ -3765,9 +3975,7 @@ async def _run_chat(
                 # Prefer the provider-reported duration (claude_code) over the
                 # local wall clock (kiro/acp reports duration_ms=0).
                 try:
-                    _turn_elapsed_ms = int(
-                        _u.duration_ms or (time.monotonic() - _turn_t0) * 1000
-                    )
+                    _turn_elapsed_ms = int(_u.duration_ms or (time.monotonic() - _turn_t0) * 1000)
                     _turn_credits = float(_u.credits or 0.0)
                     _turn_cost_usd = float(_u.cost_usd or 0.0)
                 except (TypeError, ValueError):
@@ -3854,9 +4062,7 @@ async def _run_chat(
 
             if _prompt_depth == 0 and slot._stale_recovery_retries < 3:
                 slot._stale_recovery_retries += 1
-                slot.queue_insert(
-                    0, f"{STALE_RECOVERY_PREFIX}\n{build_stale_recovery_prompt()}"
-                )
+                slot.queue_insert(0, f"{STALE_RECOVERY_PREFIX}\n{build_stale_recovery_prompt()}")
                 _emit_stale("⟳ Recovering a stalled turn…")
             elif slot._stale_recovery_retries >= 3:
                 _emit_stale("Session stuck — please start a new chat.")
@@ -4075,7 +4281,11 @@ async def _run_chat(
             # the same message just re-hits the same gate. The `not _refusal_reasons`
             # guard lets it fall through to the refusal-recovery path below, which
             # hands the model the reason so it can adapt instead of looping.
-            logger.warning("Empty model response for slot %s (attempt %d)", slot.key, slot._empty_response_retries + 1)
+            logger.warning(
+                "Empty model response for slot %s (attempt %d)",
+                slot.key,
+                slot._empty_response_retries + 1,
+            )
             if _prompt_depth == 0 and slot._empty_response_retries < 1:
                 # Seamless self-heal: silently re-queue on the first empty
                 # response. An ephemeral status indicator is not used here — it
@@ -4130,7 +4340,10 @@ async def _run_chat(
             # message so the footer can show them (parity with kiro-cli).
             # Scoped to this turn's messages via _turn_msg_boundary.
             _attach_turn_stats(
-                slot, _turn_elapsed_ms, _turn_credits, _turn_cost_usd,
+                slot,
+                _turn_elapsed_ms,
+                _turn_credits,
+                _turn_cost_usd,
                 turn_boundary=_turn_msg_boundary,
             )
             # Attach accumulated file changes to last assistant message before persist
@@ -4319,7 +4532,8 @@ async def _run_chat(
         if _retry_eligible:
             logger.info(
                 "ACP transient (%s) in slot %s — resetting session",
-                _msg[:80], slot.key,
+                _msg[:80],
+                slot.key,
             )
             # The ACP subprocess is dead (pipe death) or busy — always reset the
             # session and count the failure, regardless of depth (mirrors the
@@ -4349,14 +4563,17 @@ async def _run_chat(
             if _should_suppress_requeue(slot):
                 pass
             elif _exhausted:
-                logger.info("Retry budget exhausted for slot %s — surfacing 'Session stuck'", slot.key)
+                logger.info(
+                    "Retry budget exhausted for slot %s — surfacing 'Session stuck'", slot.key
+                )
                 slot.append("error", "Session stuck — please start a new chat.", "msg msg-err")
             elif _prompt_depth == 0:
                 # Single emit (see AcpProcessDied note): slot.append persists +
                 # broadcasts one chat_message via _on_message; no explicit broadcast_ws.
                 logger.info(
                     "Re-queuing slot %s after transient (pipe_death=%s, attempt %d)",
-                    slot.key, _is_pipe_death,
+                    slot.key,
+                    _is_pipe_death,
                     slot._acp_pipe_death_retries if _is_pipe_death else slot._prompt_busy_retries,
                 )
                 slot.append("error", _status, "msg msg-err")
@@ -4395,8 +4612,11 @@ async def _run_chat(
             logger.info(
                 "Transient backend 5xx in slot %s (attempt %d/%d) — re-prompting "
                 "live session in %.1fs: %s",
-                slot.key, slot._transient_5xx_retries, TRANSIENT_RETRIES,
-                _delay, _msg[:80],
+                slot.key,
+                slot._transient_5xx_retries,
+                TRANSIENT_RETRIES,
+                _delay,
+                _msg[:80],
             )
             # No tokens streamed (guarded above), so no chunk message exists;
             # strip defensively before re-queue all the same.
@@ -4415,11 +4635,7 @@ async def _run_chat(
                 # depth>0 (nested turn): don't re-queue — surface a clean
                 # transient status; the live session stays resumable.
                 slot.append("error", "⟳ Backend hiccup — please retry.", "msg msg-err")
-        elif (
-            _turn_emitted
-            and acp_error_is_transient(exc)
-            and not slot._posttoken_retry_used
-        ):
+        elif _turn_emitted and acp_error_is_transient(exc) and not slot._posttoken_retry_used:
             # Post-token transient 5xx: assistant tokens and/or tool calls
             # already streamed this turn (_turn_emitted). Rather than fail-fast,
             # we RECOVER by re-prompting the SAME live session with a CONTINUE
@@ -4486,7 +4702,9 @@ async def _run_chat(
                 logger.info(
                     "Transient backend 5xx AFTER emit in slot %s — one-shot "
                     "CONTINUE re-prompt of live session in %.1fs: %s",
-                    slot.key, _delay, _msg[:80],
+                    slot.key,
+                    _delay,
+                    _msg[:80],
                 )
                 # Back off, then re-queue the CONTINUE instruction onto the SAME
                 # live session (no reset). The partial + notice are already shown;
@@ -4592,155 +4810,30 @@ async def _run_chat(
         # individually cancellable — a user who meant "discard" clicks ✕;
         # nothing is ever silently lost.
         _requeue_unconsumed_steers(state, slot)
-        # Process queued messages (FIFO) — keep SSE stream alive
-        next_msg = None
-        consumed: list = []
+        next_turn_started = False
+        readiness_waiter_started = False
         if slot._queue:
-            state.push_slots_update()
-            # ── Merge or pop: combine queued messages if configured ──
-            _cfg: "KiroCrewConfig | None" = None
-            try:
-                _cfg = KiroCrewConfig.load()
-                merge = _cfg.dashboard.merge_queued_messages
-            except Exception:
-                logger.warning(
-                    "Failed to load config; falling back to sequential dequeue", exc_info=True
-                )
-                merge = False
-            # Hold tangential USER messages while background sub-agents still
-            # run for this slot, so they do not start a main turn mid-run.
-            # System injections (sub-agent completions, cron) still drain; held
-            # user messages release on a later turn once the last agent finishes
-            # and the hold lifts. Always on: steering is the effective opt-out.
-            _hold_users = bool(
-                state.subagents is not None
-                and state.subagents.running_agents_for(f"dashboard:{slot.key}")
+            ready_for_queue = await kiro_session_ready(
+                getattr(state, "kiro_prerequisite_service", None)
             )
-            if _hold_users:
-                next_msg, consumed = _dequeue_next_system_message(slot)
-            else:
-                next_msg, consumed = _dequeue_next_message(slot, merge_enabled=merge)
-
-        if next_msg is not None:
-            # Show the session-reset notice only when a real user message is
-            # about to be processed. While user messages are held during a
-            # sub-agent run, only system injections (sub-agent completions,
-            # cron) drain — they must NOT consume the notice, so _stopping is
-            # preserved for the held user message released on a later turn.
-            if slot._stopping and not is_system_injection(next_msg):
+            if not ready_for_queue:
                 slot.append(
                     "error",
-                    "⟳ Session reset — processing next message with conversation history",
+                    "Kiro CLI setup or sign-in is required before queued messages can run.",
                     "msg msg-err",
                 )
-                slot._stopping = False
-            # Notify frontend to remove each consumed queued card
-            for item in consumed:
-                _c, _ = redact_exfiltration_urls(item["content"])
-                _c, _ = redact_credentials(_c)
-                _redacted = _redact_for_display(_c)
-                state.broadcast_ws(
-                    "queue_pop", {"slot": slot.key, "content": _redacted, "queue_id": item["id"]}
-                )
-                _remove_queued_by_id(slot.messages, item["id"])
-            # Redact merged message before storing in slot
-            next_msg, _ = redact_exfiltration_urls(next_msg)
-            next_msg, _ = redact_credentials(next_msg)
-            is_cron = next_msg.startswith(CRON_NOTIFY_PREFIX)
-            is_subagent = next_msg.startswith(SUBAGENT_COMPLETION_PREFIX)
-            is_recovery = (
-                next_msg.startswith(REFUSAL_RECOVERY_PREFIX)
-                or next_msg.startswith(STALE_RECOVERY_PREFIX)
-                or next_msg.startswith(TOOL_STALL_RECOVERY_PREFIX)
-                # Runner-injected synthetic recovery instructions (the
-                # post-transient CONTINUE and the empty-response auto-continue
-                # nudge) are orchestration, not user speech: they must drain
-                # with the "inject" transcript role — never persisted as a
-                # user-authored message — and must not cancel a pending
-                # synthesis. Classified STRUCTURALLY from the queue entry's
-                # kind tag (is_system_injection_item breaks merges on the same
-                # tag, so a tagged entry always drains alone and `consumed`
-                # carries exactly it); content equality is deliberately not
-                # used — a user pasting the recovery text verbatim must
-                # classify as a plain user message.
-                or any(is_synthetic_recovery_item(i) for i in consumed)
-            )
-            # User took over: a plain user message draining cancels any armed
-            # post-fan-out synthesis (the user has redirected the conversation).
-            if not (is_cron or is_subagent or is_recovery):
-                slot._pending_synthesis = False
-            _m = CRON_NOTIFY_RE.match(next_msg) if is_cron else None
-            cron_label = _m.group(1) if _m else "cron"
-            cron_label, _ = redact_exfiltration_urls(cron_label)
-            cron_label, _ = redact_credentials(cron_label)
-            slot.append(
-                "subagent"
-                if is_subagent
-                else "inject"
-                if (is_cron or is_recovery)
-                else "user",
-                next_msg,
-                json.dumps({"cronLabel": cron_label})
-                if is_cron
-                else "msg msg-inject"
-                if is_recovery
-                else "msg msg-u",
-            )
-
-            task = asyncio.create_task(
-                asyncio.wait_for(_run_chat(state, slot, next_msg), timeout=CHAT_TURN_TIMEOUT)
-            )
-            slot.task = task
-            state._background_tasks.add(task)
-            task.add_done_callback(state._background_tasks.discard)
-        else:
-            # Clear _stopping only when the queue is genuinely drained; if user
-            # messages are being held during a sub-agent run, keep it so the
-            # reset notice fires on the turn that finally processes them.
-            if not slot._queue:
-                slot._stopping = False
-            # ── Fix 2 (B1): one-shot post-fan-out synthesis turn ──
-            # Every completion for this fan-out has now been processed in its own
-            # turn and the queue is drained. If synthesis was armed (last agent
-            # done) and no agents remain, run ONE dedicated synthesis turn whose
-            # visible reply is the consolidated summary + next steps. Clear the
-            # flag FIRST so it fires exactly once and the synthesis turn itself
-            # can't re-arm it.
-            if (
-                slot._pending_synthesis
-                and state.subagents is not None
-                and not state.subagents.running_agents_for(f"dashboard:{slot.key}")
-                and slot._subagent_deliveries_inflight == 0
-            ):
-                slot._pending_synthesis = False
-                _syn = SUBAGENT_SYNTHESIS_PROMPT
-                # Do NOT echo the internal synthesis prompt into the transcript —
-                # it is an internal continuation, not user-facing text. Only its
-                # assistant reply (the consolidated summary) should be visible.
-                task = asyncio.create_task(
-                    asyncio.wait_for(_run_chat(state, slot, _syn), timeout=CHAT_TURN_TIMEOUT)
-                )
-                slot.task = task
-                state._background_tasks.add(task)
-                task.add_done_callback(state._background_tasks.discard)
                 state.push_slots_update()
+                # The completed agent turn is normally wrapped by
+                # CHAT_TURN_TIMEOUT. Poll in a fresh tracked task so exhausting
+                # that turn's budget cannot orphan the FIFO queue.
+                waiter = asyncio.create_task(_wait_for_queued_kiro_readiness(state, slot))
+                slot.task = waiter
+                state._background_tasks.add(waiter)
+                waiter.add_done_callback(state._background_tasks.discard)
+                readiness_waiter_started = True
             else:
-                # Queue empty and no synthesis to fire (either not armed, or a
-                # newer fan-out is still running — in which case the arm persists
-                # and fires after that batch drains). Go idle.
-                # Send "done" (queue empty, or only held user messages) — keeps SSE reader alive
-                slot.append("done", "", "done")
-                # Clear task reference BEFORE pushing slot update so that
-                # slot.running returns False immediately.  Without this,
-                # push_slots_update() reports running=True because the task
-                # (this coroutine) hasn't finished its finally block yet.
-                slot.task = None
-                # Push updated running state (now idle) + history refresh to SSE clients
                 state.push_slots_update()
-                state.broadcast_ws("chat_done", {"slot": slot.key})
-                state.push_refresh("history")
-                # Auto-title: fire in background so it doesn't block the response
-                if not slot._titled:
-                    t = asyncio.create_task(_maybe_auto_title(state, slot))
-                    state._background_tasks.add(t)
-                    t.add_done_callback(state._background_tasks.discard)
+                next_turn_started = await _start_next_queued_turn(state, slot)
+
+        if not next_turn_started and not readiness_waiter_started:
+            _finish_queue_cycle(state, slot)

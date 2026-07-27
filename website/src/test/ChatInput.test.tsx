@@ -4,6 +4,7 @@ import { screen, fireEvent, waitFor } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import { safeSetItem } from '../utils/safeStorage'
 import ChatInput from '../components/ChatInput'
+import { KiroReadinessProvider } from '../providers/KiroReadinessContext'
 import { SlotProvider } from '../providers/SlotContext'
 import type { PasteBlock } from '../utils/pasteTokens'
 
@@ -18,6 +19,69 @@ const defaultProps = {
   onChange: vi.fn(),
   onSend: vi.fn(),
 }
+
+describe('ChatInput Kiro readiness', () => {
+  it('preserves the draft and blocks Enter while sessions are paused', () => {
+    const onSend = vi.fn()
+    renderWithProviders(
+      <KiroReadinessProvider ready={false}>
+        <ChatInput {...defaultProps} value="keep this draft" onSend={onSend} />
+      </KiroReadinessProvider>,
+    )
+
+    const input = screen.getByLabelText('Message input')
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(onSend).not.toHaveBeenCalled()
+    expect(input).toHaveValue('keep this draft')
+    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled()
+  })
+
+  it('blocks the busy queue button while sessions are paused', () => {
+    const onSend = vi.fn()
+    renderWithProviders(
+      <KiroReadinessProvider ready={false}>
+        <ChatInput
+          {...defaultProps}
+          value="keep queued draft"
+          onSend={onSend}
+          isRunning
+          onStop={vi.fn()}
+        />
+      </KiroReadinessProvider>,
+    )
+
+    const queue = screen.getByRole('button', { name: 'Queue message' })
+    expect(queue).toBeDisabled()
+    fireEvent.click(queue)
+    expect(onSend).not.toHaveBeenCalled()
+  })
+
+  it('shows setup guidance and blocks prompt optimization while paused', () => {
+    const fetchSpy = vi.spyOn(global, 'fetch')
+    renderWithProviders(
+      <KiroReadinessProvider ready={false}>
+        <ChatInput {...defaultProps} value="improve this prompt" />
+      </KiroReadinessProvider>,
+    )
+
+    const input = screen.getByLabelText('Message input')
+    expect(input).toHaveAttribute(
+      'placeholder',
+      'Finish Kiro CLI setup to start chatting',
+    )
+    const optimize = screen.getByRole('button', { name: 'Optimize prompt' })
+    expect(optimize).toBeDisabled()
+    fireEvent.click(optimize)
+    fireEvent.keyDown(input, {
+      key: 'Enter',
+      metaKey: true,
+      shiftKey: true,
+    })
+    expect(fetchSpy.mock.calls.some(
+      call => String(call[0]).includes('/api/optimizer/optimize'),
+    )).toBe(false)
+  })
+})
 
 beforeEach(() => {
   vi.restoreAllMocks()

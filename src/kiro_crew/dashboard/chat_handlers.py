@@ -47,6 +47,7 @@ from kiro_crew.dashboard.chat_utils import (
     _remove_queued_by_id,
     _sync_dashboard_slots,
 )
+from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_not_ready
 from kiro_crew.dashboard.state import (
     _MAX_PENDING_CONTEXT,
     DashboardState,
@@ -110,6 +111,9 @@ def _sweep_stale_permissions(slot: "_ChatSlot") -> None:
 
 async def api_chat(request: web.Request) -> web.StreamResponse:
     """POST /api/chat — send message to a slot, stream response via SSE."""
+    blocked = await reject_if_kiro_not_ready(request)
+    if blocked is not None:
+        return blocked
     state: DashboardState = request.app["state"]
     try:
         body = await request.json()
@@ -654,6 +658,9 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
 
 async def api_chat_slot_create(request: web.Request) -> web.Response:
     """POST /api/chat/slots — create a new chat slot."""
+    blocked = await reject_if_kiro_not_ready(request)
+    if blocked is not None:
+        return blocked
     state: DashboardState = request.app["state"]
     try:
         body = await request.json()
@@ -1935,9 +1942,7 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
         # Restore from history metadata: re-run the same fail-closed normalizer
         # so a tampered/legacy JSONL can't seed a malformed sha that later
         # crashes the compare (GPT HIGH fix).
-        slot.theme_consent_sha = normalize_theme_consent_sha(
-            meta.get("theme_consent_sha")
-        )
+        slot.theme_consent_sha = normalize_theme_consent_sha(meta.get("theme_consent_sha"))
     mm = meta.get("memory_mode", "persistent")
     slot.memory_mode = mm
     if mm != "persistent":

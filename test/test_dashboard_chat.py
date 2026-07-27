@@ -15,6 +15,7 @@ from chat_test_helpers import (
     _make_app,
     _make_app_with_agent_routes,
     _make_folder_app,
+    _make_ready_kiro_prerequisite,
     _make_state,
 )
 
@@ -1049,6 +1050,73 @@ class TestPrepareMessages:
         # Verify the surviving placeholder is the one with qid2
         surviving_cls = json.loads(queued[0].get("cls", "{}"))
         assert surviving_cls.get("queue_id") == qid2
+
+
+class TestKiroReadinessQueueHandoff:
+    @pytest.mark.asyncio
+    async def test_dequeued_turn_reuses_successful_readiness_check(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """A queued item must not be lost to a second readiness probe.
+
+        The outer turn probes once on entry and again before dequeueing.  A
+        third false result would previously make the nested turn return after
+        the queue item had already been removed.
+        """
+        from kiro_crew.dashboard.chat import _run_chat
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+        delivered: list[str] = []
+
+        async def stream(stream_message: str):
+            delivered.append(stream_message)
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text=f"response to {stream_message}")
+            yield LLMEvent(kind=EVENT_COMPLETE)
+
+        readiness_answers = (True, True, False)
+        readiness_calls = 0
+
+        async def session_ready(_service: object) -> bool:
+            nonlocal readiness_calls
+            answer = readiness_answers[readiness_calls]
+            readiness_calls += 1
+            return answer
+
+        client = MagicMock()
+        client.stream = stream
+        client.stream_command = stream
+        client.context_usage_pct = MagicMock(return_value=1.0)
+        state = _make_state(tmp_path)
+        state.kiro_prerequisite_service = object()
+        state.broadcast_ws = MagicMock()
+        state.push_slots_update = MagicMock()
+        state.context_builder = None
+        state.consolidator = None
+        state._hook_store = None
+        state._yolo = False
+        state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+        slot = state.get_or_create_slot("queued-readiness")
+        slot._titled = True
+        queue_id = slot.queue_append("keep this queued")
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.kiro_readiness.kiro_session_ready",
+            session_ready,
+        )
+
+        await _run_chat(state, slot, "first message")
+        assert slot.task is not None
+        await slot.task
+
+        assert readiness_calls == 2
+        assert delivered[0] == "first message"
+        assert delivered[1].endswith("keep this queued")
+        assert slot._queue == []
+        assert any(
+            call.args[0] == "queue_pop" and call.args[1]["queue_id"] == queue_id
+            for call in state.broadcast_ws.call_args_list
+        )
 
 
 # ── History save on close (not per-turn) ──
@@ -8458,7 +8526,7 @@ class TestStopTurnSlotState:
         sessions.stop_turn = AsyncMock(return_value="soft")
         sessions.reset = AsyncMock()
         sessions.get_pid = MagicMock(return_value=None)
-        return DashboardState(
+        state = DashboardState(
             sessions=sessions,
             crons=MagicMock(
                 list_jobs=MagicMock(return_value=[]),
@@ -8468,6 +8536,8 @@ class TestStopTurnSlotState:
             start_time=0.0,
             conversation_log=ConversationLog(base_dir=tmp_path),
         )
+        state.kiro_prerequisite_service = _make_ready_kiro_prerequisite()
+        return state
 
     @pytest.mark.asyncio
     async def test_stop_turn_slot_state_transitions_soft(self, tmp_path, monkeypatch):

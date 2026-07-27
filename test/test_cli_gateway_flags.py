@@ -53,6 +53,7 @@ class TestNoFlags:
             "port_override": None,
             "json_ready": False,
             "approval_mode": None,
+            "test_mode": False,
         }
 
     def test_legacy_flags_pass_through(self):
@@ -64,6 +65,7 @@ class TestNoFlags:
         assert result["port_override"] is None
         assert result["json_ready"] is False
         assert result["approval_mode"] is None
+        assert result["test_mode"] is False
 
 
 class TestTestModeBundle:
@@ -75,6 +77,7 @@ class TestTestModeBundle:
         assert result["json_ready"] is True
         assert result["no_open"] is True
         assert result["approval_mode"] == "reads"
+        assert result["test_mode"] is True
 
     def test_explicit_approval_overrides_bundle(self, tmp_path, monkeypatch):
         # yolo bundle override needs the safety rail to pass; isolate home.

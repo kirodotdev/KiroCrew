@@ -1,6 +1,6 @@
 # Dashboard Token Authentication — Design Document
 
-Last Updated: 2026-07-13 (doc-sync: note `/api/theme/boot` bypass & static cold-start fallback body)
+Last Updated: 2026-07-25 (authenticated Kiro prerequisite setup routes)
 
 ## Overview
 
@@ -9,6 +9,20 @@ Slack-gated token authentication for the KiroCrew dashboard. The owner generates
 Up to `MAX_CONCURRENT_NONCES` (50) link nonces can be valid concurrently (FIFO eviction via `OrderedDict` when the limit is exceeded), allowing multiple browser tabs and CLI sessions without invalidating each other. All in-memory link-session state is managed by a thread-safe `TokenStateManager`. Auth is **not** purely in-memory: the HMAC signing key is the **persistent** `token_signing.key` (mode `0600`) and revoked access-cookie nonces persist to `token_revoked_nonces.json` (mode `0600`), so signed cookies and per-session logouts both survive a gateway restart. Users can revoke a single session via `POST /api/auth/logout` or all sessions via `kirocrew logout`.
 
 The dashboard also issues a paired **refresh cookie** (`mc_refresh_{port}`, HttpOnly, path-restricted to `/api/auth`, up to 30-day TTL) alongside the access cookie on initial token-URL use. The SPA calls `POST /api/auth/refresh` shortly before the access cookie expires to silently rotate both cookies (rotation-on-use), so users only re-run `!dashboard` / `kirocrew token` roughly once per 30 idle days instead of every ~20h. Refresh tokens are HMAC-signed with the same persistent `token_signing.key` and enforce RFC 6819 §5.2.2.3 reuse detection: a consumed `jti` replayed outside a 60s same-IP multi-tab grace window auto-revokes the entire chain.
+
+The refresh scheduler is mounted by `DashboardBootstrap` outside the first-run
+Kiro CLI prerequisite gate. A cold browser with a stale access cookie can
+therefore rotate its refresh cookie even while the main dashboard tree is not
+yet mounted, rather than being trapped behind the setup screen.
+
+The first-run Kiro CLI routes (`GET /api/kiro-prerequisite`,
+`POST /api/kiro-prerequisite/install`, and
+`POST /api/kiro-prerequisite/login`) are deliberately **not** token-bypass or
+internal-secret routes. They inherit normal dashboard-user authentication,
+Host validation, POST CSRF protection, app-token deny-by-default scoping, and
+SEL API auditing. Each handler also rejects every non-empty app claim even if
+the app manifest declares this API prefix. The browser's
+`X-Session-Key: dashboard:ui` is correlation metadata, not authorization.
 
 ### Multi-tab grace window (chain-head-only)
 
@@ -349,7 +363,8 @@ The `--slack-only` gateway starts `start_api_server()` instead of
 internal_paths=_STRICT_INTERNAL_API_PATHS,
 mixed_internal_paths=_MIXED_INTERNAL_API_PATHS, spa_shell_handler=None) →
 sel_audit_middleware`. It generates and persists the same
-`~/.kirocrew/.local_secret`, sets `app["local_secret"]`, and builds
+`~/.kiro/crew/.local_secret` (or the explicit `KIROCREW_HOME`), sets
+`app["local_secret"]`, and builds
 `app["allowed_origins"]`. `spa_shell_handler=None` because there is no UI — a
 request with no token is denied outright. Every in-repo caller (mcp-core, cron)
 already sends `X-Internal-Secret`, so the change is purely additive.
