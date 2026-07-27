@@ -139,7 +139,7 @@ jobs:
           claude_args: |
             --model us.anthropic.claude-opus-5
             --fallback-model us.anthropic.claude-opus-4-8
-            --max-turns 60
+            --max-turns 120
             --allowedTools "Read,Grep,Glob,Bash(gh pr diff:*)"
             --json-schema '{"type":"object","additionalProperties":false,"required":["reviewed","block_merge","summary"],"properties":{"reviewed":{"type":"boolean","description":"true once you have completed the review of this commit"},"block_merge":{"type":"boolean","description":"true IFF at least one finding meets WHAT BLOCKS (a blocking:true AUTOSDE rule violation, or a reachable residual-class defect)"},"summary":{"type":"string","description":"markdown review summary CI will post to the PR"}}}'
           prompt: |
