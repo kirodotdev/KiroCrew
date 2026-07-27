@@ -20,8 +20,8 @@ test.describe('Navigation E2E Tests', () => {
   test('handles navigation back and forth', async ({ page }) => {
     // Navigate to Overview via URL (navigation items are divs, not links)
     await page.goto('/overview', { waitUntil: 'domcontentloaded' })
-    // Check for Memory tab button specifically
-    await expect(page.getByRole('button', { name: 'Memory', exact: true })).toBeVisible({ timeout: 10000 })
+    // Mission-control hero (Overview no longer has sub-tabs)
+    await expect(page.getByText(/All systems running|Connecting…|Reconnecting…/)).toBeVisible({ timeout: 10000 })
 
     // Navigate to Chat
     await page.goto('/chat', { waitUntil: 'domcontentloaded' })
@@ -29,7 +29,7 @@ test.describe('Navigation E2E Tests', () => {
 
     // Go back to Overview
     await page.goto('/overview', { waitUntil: 'domcontentloaded' })
-    await expect(page.getByRole('button', { name: 'Memory', exact: true })).toBeVisible({ timeout: 10000 })
+    await expect(page.getByText(/All systems running|Connecting…|Reconnecting…/)).toBeVisible({ timeout: 10000 })
   })
 
   test('theme toggle works', async ({ page }) => {

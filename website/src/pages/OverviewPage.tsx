@@ -1,27 +1,205 @@
-import { useState, type ReactNode } from 'react'
-import { CheckCircle, Zap } from 'lucide-react'
+import { type ReactNode, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
+import { useQuery } from '@tanstack/react-query'
+import { ArrowLeft, ArrowRight, BarChart3, Brain, CheckCircle, Zap } from 'lucide-react'
 import { useAppSelector } from '../store'
 import { useUptime } from '../hooks/useUptime'
 import { api } from '../api/client'
-import { StatCard } from '../components/ui'
+import { Card, CardTitle, StatCard } from '../components/ui'
 import { TunnelStatus } from '../components/TunnelStatus'
 import ErrorBoundary from '../components/ErrorBoundary'
 import { getOverviewStatCards } from './overviewStatCards'
-import { MemoryTab, AgentCfgTab, KiroCrewCfgTab, UsageTab, PortabilityTab } from './overview'
+import { MemoryTab, UsageTab } from './overview'
+import { useProvider } from '../providers'
+import type { NormalizedUsage } from '../providers'
 
-const tabs = ['memory', 'usage', 'kirocrewcfg', 'agentcfg', 'portability']
+/**
+ * Settings > Overview — mission control.
+ *
+ * One scrollable dashboard, no nested tab bar: a health hero, the stat-tile
+ * grid, and summary cards that drill into the two deep surfaces (memory
+ * browser, usage report) via a URL-backed `?view=` param — the same
+ * list-detail pattern as the Channels tab. The content that used to hide in
+ * sub-tabs now lives at its proper home: KiroCrew/agent config viewers and
+ * the memory graph are on the Developer page; configuration import/export is
+ * on the Import tab.
+ */
+
+const DRILL_VIEWS = ['memory', 'usage'] as const
+type DrillView = (typeof DRILL_VIEWS)[number]
+
+function fmtNum(n: number | undefined | null): string {
+  if (n == null) return '—'
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`
+  return String(n)
+}
+
+/** Back link + drill-in content, mirroring the Channels back affordance. */
+function DrillIn({ title, onBack, children }: { title: string; onBack: () => void; children: ReactNode }) {
+  return (
+    <div>
+      <button
+        onClick={onBack}
+        aria-label="Back to Overview"
+        className="flex items-center gap-1.5 text-[13px] font-medium text-accent bg-transparent border-none cursor-pointer px-0 py-1 mb-2 hover:underline"
+      >
+        <ArrowLeft size={14} />
+        Overview
+      </button>
+      <div className="text-xl font-bold tracking-tight text-text-strong mb-3">{title}</div>
+      {children}
+    </div>
+  )
+}
+
+/** Usage summary card — shares the query cache with the Usage drill-in. */
+function UsageSummaryCard({ onOpen }: { onOpen: () => void }) {
+  const provider = useProvider()
+  const { data } = useQuery<NormalizedUsage>({
+    queryKey: ['provider-usage', provider.id],
+    queryFn: () => provider.fetchUsage(),
+    enabled: provider.capabilities.usageBilling,
+  })
+  const b = data?.billing
+  const today = data?.sessions.today
+  return (
+    <Card>
+      <CardTitle>
+        <BarChart3 className="lucide-inline" /> Usage
+        <button onClick={onOpen} className="ml-auto inline-flex items-center gap-1 text-[12px] font-medium text-accent bg-transparent border-none cursor-pointer hover:underline">
+          View details <ArrowRight size={12} />
+        </button>
+      </CardTitle>
+      {!provider.capabilities.usageBilling ? (
+        <div className="text-[13px] text-muted">Usage tracking is not available for {provider.displayName}.</div>
+      ) : !data ? (
+        <div className="skeleton h-14 rounded" />
+      ) : (
+        <div className="flex flex-col gap-2">
+          <div className="text-[13px] text-muted">
+            Today: {fmtNum(today?.sessions)} sessions · {fmtNum(today?.messages)} messages
+            {data.tokens?.total != null && <> · {fmtNum(data.tokens.total)} tokens</>}
+            {data.costUsd != null && <> · ${data.costUsd.toFixed(2)}</>}
+          </div>
+          {b?.plan && (
+            <div className="flex items-center gap-2 text-[12px] text-muted">
+              <span>{b.plan}</span>
+              {typeof b.percentUsed === 'number' && (
+                <>
+                  <div className="flex-1 h-1.5 rounded-full bg-bg-elevated overflow-hidden max-w-[220px]">
+                    <div className="h-full rounded-full bg-accent" style={{ width: `${Math.min(100, Math.max(0, b.percentUsed))}%` }} />
+                  </div>
+                  <span>{Math.round(b.percentUsed)}%</span>
+                </>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </Card>
+  )
+}
+
+/** Memory summary card — consolidation cadence + retention at a glance. */
+function MemorySummaryCard({ onOpen }: { onOpen: () => void }) {
+  const { data } = useQuery<{ history_idle_hours?: number; history_max_days?: number; migrated?: boolean }>({
+    queryKey: ['memory-settings'],
+    queryFn: () => api.memorySettings(),
+  })
+  return (
+    <Card>
+      <CardTitle>
+        <Brain className="lucide-inline" /> Memory
+        <button onClick={onOpen} className="ml-auto inline-flex items-center gap-1 text-[12px] font-medium text-accent bg-transparent border-none cursor-pointer hover:underline">
+          View details <ArrowRight size={12} />
+        </button>
+      </CardTitle>
+      {!data ? (
+        <div className="skeleton h-14 rounded" />
+      ) : (
+        <div className="flex flex-col gap-1 text-[13px] text-muted">
+          <span>
+            Summarizes chats into memory after {data.history_idle_hours ?? 3}h idle
+            {!data.migrated && <> · keeps {data.history_max_days ?? 90} days of history</>}
+            {data.migrated && <> · semantic memory active</>}
+          </span>
+          <span>Memory graph and store internals live on the Developer page</span>
+        </div>
+      )}
+    </Card>
+  )
+}
 
 export default function OverviewPage() {
   const status = useAppSelector(s => s.dashboard.status)
+  const connected = useAppSelector(s => s.dashboard.connected)
   const refreshTrigger = useAppSelector(s => s.dashboard.refreshTrigger)
   const uptime = useUptime()
-  const [tab, setTab] = useState('memory')
-  const [restarting, setRestarting] = useState(false); const [restartMsg, setRestartMsg] = useState<ReactNode>('')
-  const restart = async () => { setRestarting(true); await api.restartSessions(); setRestartMsg(<><CheckCircle className="lucide-inline" /> Sessions restarted — config applied.</>); setRestarting(false); setTimeout(() => setRestartMsg(''), 5000) }
-  const tabLabel = (t: string) => ({ agentcfg: 'Agent Config', kirocrewcfg: 'KiroCrew Config', usage: 'Usage', portability: 'Import/Export' }[t] || t.charAt(0).toUpperCase() + t.slice(1))
+  const [params, setParams] = useSearchParams()
+  const [restarting, setRestarting] = useState(false)
+  const [restartMsg, setRestartMsg] = useState<ReactNode>('')
 
-  const content = (
+  const rawView = params.get('view')
+  const view: DrillView | null = DRILL_VIEWS.includes(rawView as DrillView) ? (rawView as DrillView) : null
+  const setView = (v: DrillView | null) => setParams(prev => {
+    const next = new URLSearchParams(prev)
+    if (v) next.set('view', v)
+    else next.delete('view')
+    return next
+  }, { replace: true })
+
+  const restart = async () => {
+    setRestarting(true)
+    await api.restartSessions()
+    setRestartMsg(<><CheckCircle className="lucide-inline" /> Sessions restarted.</>)
+    setRestarting(false)
+    setTimeout(() => setRestartMsg(''), 5000)
+  }
+
+  if (view === 'memory') {
+    return <DrillIn title="Memory" onBack={() => setView(null)}><MemoryTab refreshTrigger={refreshTrigger} /></DrillIn>
+  }
+  if (view === 'usage') {
+    return <DrillIn title="Usage" onBack={() => setView(null)}><UsageTab /></DrillIn>
+  }
+
+  return (
     <>
+      {/* Health hero */}
+      <div className="flex items-center justify-between gap-4 mb-5">
+        <div>
+          <div className="text-lg font-bold text-text-strong flex items-center gap-2">
+            <span className={`w-2 h-2 rounded-full shrink-0 ${connected && status ? 'bg-ok' : 'bg-warn'}`} />
+            {connected && status ? 'All systems running' : status ? 'Reconnecting…' : 'Connecting…'}
+          </div>
+          <div className="text-[12.5px] text-muted mt-0.5">
+            Up {uptime}{status?.version ? <> · v{status.version}</> : null}
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          {restartMsg && <span className="text-ok text-[13px] animate-rise">{restartMsg}</span>}
+          <button
+            onClick={restart}
+            disabled={restarting}
+            title="Apply config changes by restarting all sessions"
+            className={`group relative inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-[13px] font-semibold font-body cursor-pointer transition-all duration-300 overflow-hidden border-none ${
+              restarting
+                ? 'bg-accent/60 text-accent-fg/80 cursor-wait'
+                : 'bg-gradient-to-r from-accent to-accent-hover text-accent-fg shadow-[0_2px_8px_var(--accent-glow)] hover:shadow-[0_4px_20px_var(--accent-glow)] hover:-translate-y-0.5 active:translate-y-0'
+            }`}
+          >
+            {restarting && <span className="absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent animate-shimmer" />}
+            <span className={`transition-transform duration-300 ${restarting ? 'animate-spin' : 'group-hover:rotate-12'}`}><Zap className="lucide-inline" /></span>
+            {restarting
+              ? <span className="hidden sm:inline">Restarting…</span>
+              : <><span className="hidden lg:inline">Apply & Restart</span><span className="hidden sm:inline lg:hidden">Restart</span></>
+            }
+          </button>
+        </div>
+      </div>
+
+      {/* Stat tiles */}
       <div className="grid gap-3.5 grid-cols-[repeat(auto-fit,minmax(150px,1fr))] mb-6">
         {([
           { label: 'Uptime', value: uptime, accent: true },
@@ -46,37 +224,12 @@ export default function OverviewPage() {
           )
         })}
       </div>
-        <div className="flex gap-1 mb-4 border-b border-border">
-          {tabs.map(t => (
-            <button key={t} aria-current={tab === t ? 'page' : undefined} className={`px-4 py-2 border-none bg-transparent text-sm font-medium font-body cursor-pointer border-b-2 -mb-px transition-all ${tab === t ? 'text-accent border-b-accent' : 'text-muted border-b-transparent hover:text-text'}`} onClick={() => setTab(t)}>{tabLabel(t)}</button>
-          ))}
-          <div className="ml-auto flex items-center gap-2 pb-1">
-            {restartMsg && <span className="text-ok text-[13px] animate-rise">{restartMsg}</span>}
-            <button
-              onClick={restart}
-              disabled={restarting}
-              className={`group relative inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-[13px] font-semibold font-body cursor-pointer transition-all duration-300 overflow-hidden border-none ${
-                restarting
-                  ? 'bg-accent/60 text-accent-fg/80 cursor-wait'
-                  : 'bg-gradient-to-r from-accent to-accent-hover text-accent-fg shadow-[0_2px_8px_var(--accent-glow)] hover:shadow-[0_4px_20px_var(--accent-glow)] hover:-translate-y-0.5 active:translate-y-0'
-              }`}
-            >
-              {restarting && <span className="absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent animate-shimmer" />}
-              <span className={`transition-transform duration-300 ${restarting ? 'animate-spin' : 'group-hover:rotate-12'}`}><Zap className="lucide-inline" /></span>
-              {restarting
-                ? <><span className="hidden sm:inline">Restarting…</span></>
-                : <><span className="hidden lg:inline">Apply & Restart</span><span className="hidden sm:inline lg:hidden">Restart</span></>
-              }
-            </button>
-          </div>
-        </div>
-        {tab === 'memory' && <MemoryTab refreshTrigger={refreshTrigger} />}
-        {tab === 'usage' && <UsageTab />}
-        {tab === 'kirocrewcfg' && <KiroCrewCfgTab />}
-        {tab === 'agentcfg' && <AgentCfgTab />}
-        {tab === 'portability' && <PortabilityTab />}
+
+      {/* Deep-surface summary cards */}
+      <div className="grid gap-3.5 grid-cols-2 max-[760px]:grid-cols-1">
+        <UsageSummaryCard onOpen={() => setView('usage')} />
+        <MemorySummaryCard onOpen={() => setView('memory')} />
+      </div>
     </>
   )
-
-  return content
 }

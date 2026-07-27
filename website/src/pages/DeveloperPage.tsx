@@ -1,4 +1,4 @@
-import { ScrollText, Monitor, Brain, Archive, Database, Network, Activity } from 'lucide-react'
+import { ScrollText, Monitor, Brain, Archive, Database, Network, Activity, FileCode2 } from 'lucide-react'
 import SidePanelLayout from '../components/SidePanelLayout'
 import { LogViewer } from './LogsPage'
 import SystemPage from './SystemPage'
@@ -7,6 +7,8 @@ import SessionArchive from './SessionArchive'
 import LocalStorageDebug from './LocalStorageDebug'
 import { SharedMcpGatewayToggle } from './settings/SharedMcpGatewayToggle'
 import { McpPoolableServers } from './settings/McpPoolableServers'
+import { KiroCrewCfgTab, AgentCfgTab } from './overview'
+import MemoryGraphTab from './overview/MemoryGraphTab'
 
 const TABS = [
   { key: 'logs', label: 'Logs', icon: <ScrollText size={16} />, description: 'Live log viewer with level filtering and search' },
@@ -14,7 +16,8 @@ const TABS = [
   { key: 'telemetry', label: 'Telemetry', icon: <Activity size={16} />, description: 'Session startup latency (p50/p90) and MCP/skill acceleration metrics' },
   { key: 'storage', label: 'Storage', icon: <Database size={16} />, description: 'localStorage usage, quotas, and garbage collection' },
   { key: 'mcp-pool', label: 'MCP Pool', icon: <Network size={16} />, description: 'Shared MCP gateway and poolable server configuration' },
-  { key: 'memory', label: 'Memory', icon: <Brain size={16} />, description: 'Embedding provider, vector store, and consolidation' },
+  { key: 'memory', label: 'Memory', icon: <Brain size={16} />, description: 'Memory graph, embedding provider, and vector store internals' },
+  { key: 'config', label: 'Config', icon: <FileCode2 size={16} />, description: 'KiroCrew and agent configuration viewers (read-only)' },
   { key: 'archive', label: 'Archive', icon: <Archive size={16} />, description: 'Rotated/compacted session history (7-day retention)' },
 ]
 
@@ -33,9 +36,20 @@ export default function DeveloperPage() {
           </>
         )}
         {tab === 'memory' && (
-          <div className="text-muted text-sm py-12 text-center">
-            Memory internals — coming soon
-          </div>
+          <>
+            {/* The memory GRAPH visualizer moved here from Settings > Overview
+                (mission-control rewrite) — it is an internals view. The
+                user-facing memory browser (settings, preferences, projects,
+                history, lessons + vector store card) stays in Settings >
+                Overview > Memory. */}
+            <MemoryGraphTab />
+          </>
+        )}
+        {tab === 'config' && (
+          <>
+            <KiroCrewCfgTab />
+            <AgentCfgTab />
+          </>
         )}
         {tab === 'archive' && <SessionArchive />}
       </>}

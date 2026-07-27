@@ -111,11 +111,11 @@ describe('MemoryTab Integration Tests', () => {
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
 
     await waitFor(() => {
-      expect(screen.getByText(/test consolidation/i)).toBeInTheDocument()
+      expect(screen.getByText(/summarize now/i)).toBeInTheDocument()
     })
 
-    // Click the Test Consolidation button
-    const consolidateButton = screen.getByRole('button', { name: /test consolidation/i })
+    // Click the Summarize now button (manual consolidation)
+    const consolidateButton = screen.getByRole('button', { name: /summarize now/i })
     await user.click(consolidateButton)
 
     // The consolidation will complete quickly in tests with empty sessions

@@ -23,8 +23,8 @@ const GROUP_PREFERENCES = 'Preferences'
 const GROUP_SYSTEM = 'System'
 
 const TABS = [
-  { key: 'overview', label: 'Overview', icon: <PanelsTopLeft size={16} />, description: 'System status, memory, agent config, and usage metrics' },
-  { key: 'imports', label: 'Import', icon: <Import className="lucide-inline" />, description: 'Bring supported data from another AI agent into KiroCrew' },
+  { key: 'overview', label: 'Overview', icon: <PanelsTopLeft size={16} />, description: 'System health, activity, and usage & memory at a glance' },
+  { key: 'imports', label: 'Import / Export', icon: <Import size={16} />, description: 'Bring data from another AI agent, and back up or restore KiroCrew configuration' },
   { key: 'chat', label: 'Chat', icon: <MessageSquare size={16} />, group: GROUP_PREFERENCES, description: 'Message behavior, history, timestamps, and context' },
   { key: 'display', label: 'Display', icon: <Palette size={16} />, group: GROUP_PREFERENCES, description: 'Zoom, font, and color theme preferences' },
   { key: 'voice', label: 'Voice', icon: <Mic size={16} />, group: GROUP_PREFERENCES, description: 'Text-to-speech and speech-to-text (dictation) settings' },

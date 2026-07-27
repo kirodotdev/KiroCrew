@@ -1,17 +1,15 @@
 import { useState, useEffect, useCallback, useMemo, useRef, type ReactNode } from 'react'
-import { XCircle, AlertTriangle, CheckCircle, ClipboardList, RefreshCw, Hourglass, Check, Network } from 'lucide-react'
+import { XCircle, AlertTriangle, CheckCircle, RefreshCw, Hourglass, Check } from 'lucide-react'
 import { api } from '../../api/client'
 import { Card, CardTitle, Btn, SendBtn, Input, Badge } from '../../components/ui'
 import InfoTip from '../../components/InfoTip'
 import { esc } from '../../api/helpers'
 import VectorMemoryCard from './VectorMemoryCard'
-import MemoryGraphTab from './MemoryGraphTab'
 import type { Lesson, SessionInfo } from '../../types'
 import { useSortableTable } from '../../hooks/useSortableTable'
 import SortableHeader from '../../components/SortableHeader'
 
 export default function MemoryTab({ refreshTrigger }: { refreshTrigger: number }) {
-  const [view, setView] = useState<'table' | 'graph'>('table')
   const [pref, setPref] = useState(''); const [proj, setProj] = useState(''); const [hist, setHist] = useState('')
   const [prefSaved, setPrefSaved] = useState(false); const [projSaved, setProjSaved] = useState(false); const [histSaved, setHistSaved] = useState(false)
   const [lessons, setLessons] = useState<Lesson[]>([]); const [rule, setRule] = useState(''); const [cat, setCat] = useState('knowledge')
@@ -70,11 +68,9 @@ export default function MemoryTab({ refreshTrigger }: { refreshTrigger: number }
     scheduleClear(() => setConsolidateMsg(''), 4000)
   }
   return (<>
-    <div className="inline-flex items-center gap-1 p-1 rounded-md bg-bg-elevated mb-4 w-fit">
-      <button onClick={() => setView('table')} className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-[13px] font-medium cursor-pointer border-none transition-colors ${view === 'table' ? 'bg-bg-hover text-accent' : 'bg-transparent text-muted hover:text-text'}`}><ClipboardList className="lucide-inline" /> Table</button>
-      <button onClick={() => setView('graph')} className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-[13px] font-medium cursor-pointer border-none transition-colors ${view === 'graph' ? 'bg-bg-hover text-accent' : 'bg-transparent text-muted hover:text-text'}`}><Network className="lucide-inline" /> Graph</button>
-    </div>
-    {view === 'graph' ? <MemoryGraphTab /> : <>
+    {/* Graph/vector internals live on the Developer page (Memory tab); this
+        surface is the user-facing browser: settings, preferences, projects,
+        daily history, and lessons. */}
     <Card><CardTitle>Memory Settings <InfoTip text="Controls how conversation history is consolidated into memory." /></CardTitle>
       <div className="flex gap-3 items-end flex-wrap">
         <label htmlFor="memory-idle-hours" className="flex flex-col gap-1 text-[13px] text-muted">
@@ -88,10 +84,10 @@ export default function MemoryTab({ refreshTrigger }: { refreshTrigger: number }
           </label>
         )}
         <Btn onClick={async () => { await api.saveMemorySettings({ history_idle_hours: idleHours, history_max_days: maxDays }); setSettingsSaved(true); scheduleClear(() => setSettingsSaved(false), 2000) }}>{settingsSaved ? <><Check className="lucide-inline" /> Saved</> : 'Save'}</Btn>
-        <Btn onClick={consolidate} disabled={consolidating}>{consolidating ? <><Hourglass className="lucide-inline" /> Running…</> : <><RefreshCw className="lucide-inline" /> Test Consolidation</>}</Btn>
+        <Btn onClick={consolidate} disabled={consolidating}>{consolidating ? <><Hourglass className="lucide-inline" /> Running…</> : <><RefreshCw className="lucide-inline" /> Summarize now</>}</Btn>
         {consolidateMsg && <span className={`text-[13px] ${consolidateOk ? 'text-ok' : 'text-danger'}`}>{consolidateMsg}</span>}
 
-        {migrated && <span className="text-[12px] text-muted ml-2">Vector-only mode — markdown writes disabled</span>}
+        {migrated && <span className="text-[12px] text-muted ml-2">Semantic memory active — text files are read-only</span>}
       </div>
     </Card>
     <VectorMemoryCard onActiveChange={setVectorActive} onMigratedChange={setMigrated} />
@@ -118,5 +114,5 @@ export default function MemoryTab({ refreshTrigger }: { refreshTrigger: number }
             <td className="px-2.5 py-2 border-b border-border text-sm"><Btn danger onClick={async () => { await api.deleteLesson(l.rule); loadLessons() }}>Delete</Btn></td></tr>
         ))}</tbody></table></Card>
     )}
-  </>}</>)
+  </>)
 }
