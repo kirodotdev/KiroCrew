@@ -1,7 +1,7 @@
 import { useState, useEffect, useLayoutEffect, useCallback, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { motion, AnimatePresence } from 'framer-motion'
-import { MessageSquareQuote, Copy, Check } from 'lucide-react'
+import { MessageSquareQuote, MessageCircleQuestion, Copy, Check } from 'lucide-react'
 import { copyToClipboard } from '../utils/clipboard'
 import { isTouchDevice } from '../utils/isTouchDevice'
 
@@ -255,7 +255,10 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
 }
 
 /** Pre-built actions for common use cases */
-export function useSelectionActions(onQuote?: (text: string, rect: DOMRect) => void): SelectionAction[] {
+export function useSelectionActions(
+  onQuote?: (text: string, rect: DOMRect) => void,
+  onAsk?: (text: string, rect: DOMRect) => void,
+): SelectionAction[] {
   const actions: SelectionAction[] = []
 
   if (onQuote) {
@@ -264,6 +267,18 @@ export function useSelectionActions(onQuote?: (text: string, rect: DOMRect) => v
       icon: <MessageSquareQuote size={12} />,
       label: 'Quote',
       onClick: onQuote,
+    })
+  }
+
+  // "Ask" opens the isolated /side conversation seeded with the selection so
+  // the user can ask a scoped follow-up WITHOUT polluting the main chat
+  // context (unlike Quote, which injects into the main composer).
+  if (onAsk) {
+    actions.push({
+      id: 'ask',
+      icon: <MessageCircleQuestion size={12} />,
+      label: 'Ask',
+      onClick: onAsk,
     })
   }
 

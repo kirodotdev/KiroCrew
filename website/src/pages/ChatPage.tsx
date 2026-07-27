@@ -16,7 +16,7 @@ import {
   setSlotRunning, startLocalTurn, syncSlotRunningFromServer, setPendingInput, resolveByApprovalId, clearPendingPermissions, cancelQueuedMessage, editQueuedMessage,
   selectComposerBusy,
   setVoiceAudio,
-  toggleActivity, openActivityPanel,
+  toggleActivity, openActivityPanel, openActivityToTab,
   setActiveSlot, truncateAfterIndex, replaceMessages,
   requestStop, clearQuestionCard, clearFollowupCard, dismissFollowupItem,
 } from '../store/chatSlice'
@@ -2514,6 +2514,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
 
   const [flyingQuote, setFlyingQuote] = useState<{ text: string; from: DOMRect } | null>(null)
   const inputAreaRef = useRef<HTMLDivElement>(null)
+  // Select-to-Ask reuses the same FlyingQuote "pluck" animation as Quote, but
+  // targets the Side panel's input (which only mounts once the panel opens).
+  const [flyingAsk, setFlyingAsk] = useState<{ text: string; from: DOMRect } | null>(null)
+  const askTargetRef = useRef<HTMLElement | null>(null)
 
   const handleQuote = useCallback((text: string, rect: DOMRect) => {
     const quoted = text.split('\n').map(line => `> ${line}`).join('\n')
@@ -2533,6 +2537,34 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
       else ta.focus()
     })
   }, [])
+
+  // "Ask" (Select-to-Ask): open the isolated /side conversation seeded with the
+  // selection, WITHOUT touching the main chat context (unlike handleQuote, which
+  // injects into the main composer). Mirrors the /side slash command's
+  // openActivityToTab('side') bridge, then hands the selection to SideChat via a
+  // `side-seed` CustomEvent (same event-bridge pattern as openActivityToTab /
+  // reveal-slot — no new prop-drilling, no backend change).
+  const handleAsk = useCallback((text: string, rect: DOMRect) => {
+    dispatch(openActivityToTab('side'))
+    // The Side input mounts asynchronously once the panel opens. Poll a few
+    // frames for it, then fire the FlyingQuote "pluck" animation toward it and
+    // seed the selection (mirrors handleQuote's simultaneous seed + animate).
+    // If it never appears (panel blocked), fall back to seeding without the
+    // animation so the feature still works.
+    const trySeed = (attempt = 0) => {
+      const ta = document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Ask a side question"]')
+      if (ta) {
+        askTargetRef.current = ta
+        setFlyingAsk({ text, from: rect })
+        window.dispatchEvent(new CustomEvent('side-seed', { detail: { text } }))
+      } else if (attempt < 20) {
+        requestAnimationFrame(() => trySeed(attempt + 1))
+      } else {
+        window.dispatchEvent(new CustomEvent('side-seed', { detail: { text } }))
+      }
+    }
+    requestAnimationFrame(() => trySeed())
+  }, [dispatch])
 
   const handleEditResend = useCallback((index: number, ts: string, newContent: string) => {
     if (!activeSlot || slotRunning) return
@@ -3083,7 +3115,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
             })()
           ) : (
             <div className="flex flex-col gap-0">
-              <AssistantMessage content={m.content} isStreaming={isStreaming} isRegenerating={regenerating && i === lastTextIdx} onFileOpen={handleFileOpen} onQuote={handleQuote} slotRunning={slotRunning} planTaskId={planTaskId} timestamp={chatConfig.showTimestamps ? msgTime : undefined} messageTs={m.ts} slotKey={activeSlot || undefined} slotTitle={activeSlotTitle} mode={mode} fileChanges={(m.meta as Record<string, unknown> | undefined)?.file_changes as FileChangeEntry[] | undefined} turnStats={chatConfig.showTurnStats ? (m.meta as Record<string, unknown> | undefined)?.turn_stats as TurnStats | undefined : undefined} onOpenDiff={handleOpenDiff} fileChipStyle={chatConfig.fileChipStyle} artifactPaths={artifactPaths} showFooter={(() => {
+              <AssistantMessage content={m.content} isStreaming={isStreaming} isRegenerating={regenerating && i === lastTextIdx} onFileOpen={handleFileOpen} onQuote={handleQuote} onAsk={handleAsk} slotRunning={slotRunning} planTaskId={planTaskId} timestamp={chatConfig.showTimestamps ? msgTime : undefined} messageTs={m.ts} slotKey={activeSlot || undefined} slotTitle={activeSlotTitle} mode={mode} fileChanges={(m.meta as Record<string, unknown> | undefined)?.file_changes as FileChangeEntry[] | undefined} turnStats={chatConfig.showTurnStats ? (m.meta as Record<string, unknown> | undefined)?.turn_stats as TurnStats | undefined : undefined} onOpenDiff={handleOpenDiff} fileChipStyle={chatConfig.fileChipStyle} artifactPaths={artifactPaths} showFooter={(() => {
                 // Show footer on the last assistant message of each completed turn
                 if (isStreaming) return false
                 // Find next message after this one that's assistant, user, or streaming
@@ -3115,7 +3147,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
     // apply-plan handler, so it belongs here for correctness. approve/send/
     // dismissApproval are NOT referenced in this renderer (user/approval rows go
     // through renderUserContentCb), so they are omitted to keep it stable.
-  }, [messages, visibleIndexMap, slotRunning, slotState, lastTextIdx, handleFileOpen, handleFork, handleQuote, chatConfig, activeSlot, regenerating, handleRegenerate, handleEditResend, slotHasMore, renderUserContentCb, highlightTs, activeSlotTitle, mode, dispatch, handleOpenDiff, handlePlanFromHere, navigate, planTaskId, artifactPaths, autoNudgeLoop])
+  }, [messages, visibleIndexMap, slotRunning, slotState, lastTextIdx, handleFileOpen, handleFork, handleQuote, handleAsk, chatConfig, activeSlot, regenerating, handleRegenerate, handleEditResend, slotHasMore, renderUserContentCb, highlightTs, activeSlotTitle, mode, dispatch, handleOpenDiff, handlePlanFromHere, navigate, planTaskId, artifactPaths, autoNudgeLoop])
 
   const [mobileSessions, setMobileSessions] = useState(false)
   // Close mobile sessions panel when a session is selected
@@ -3618,6 +3650,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
               <SubagentDeliveryProgress count={systemDeliveryCount} />
               <QueueStack messages={queuedMessages} onCancel={handleCancelQueued} onInterrupt={handleInterruptQueued} onEdit={handleEditQueued} fuseBelow={followUpOptions.length === 0 && !knowledgeFetch.pendingKnowledge} />
               {flyingQuote && <FlyingQuote text={flyingQuote.text} from={flyingQuote.from} targetRef={inputAreaRef} onComplete={() => setFlyingQuote(null)} />}
+              {flyingAsk && <FlyingQuote text={flyingAsk.text} from={flyingAsk.from} targetRef={askTargetRef} onComplete={() => setFlyingAsk(null)} />}
               <div ref={inputAreaRef} className="relative z-10">
               {showHistorySuggestions && (
                 <div className="absolute left-0 right-0 bottom-full mb-1 mx-auto w-full max-w-[760px] border border-border rounded-lg bg-card overflow-hidden animate-scale-in z-50 shadow-lg flex flex-col max-h-[min(300px,40vh)]">
