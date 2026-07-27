@@ -155,6 +155,12 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # agent back to improvising — which is the failure this whole test exists for.
         "apps/builtins/ops_mission_control/tests/test_config_routes.py"
         "::test_the_auth_recipe_is_runnable_shell",
+        # Diagnostics support-bundle version probe: fixed argv
+        # ``["kiro-cli", "--version"]`` with a 5s timeout, no shell, no cwd, and
+        # no agent-influenced args — it only stamps the collected kiro-cli
+        # version into versions.txt. The binary name is a module constant; a
+        # resource ceiling / sandbox adds nothing to a `--version` call.
+        "diagnostics.py::_kiro_cli_version",
         "apps/backend.py::_proc_start_time",
         "apps/backend.py::_resolve_nvm_path",
         "apps/backend.py::stop_app_backend",

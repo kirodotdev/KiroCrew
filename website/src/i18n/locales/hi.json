@@ -90,7 +90,6 @@
     "star_us": "हमें स्टार करें",
     "report_issue": "समस्या रिपोर्ट करें",
     "star_kirocrew_on_github": "GitHub पर Kiro Crew को स्टार करें",
-    "report_an_issue_on_github": "GitHub पर समस्या रिपोर्ट करें",
     "click_to_collapse_readouts": "आँकड़े समेटने के लिए क्लिक करें",
     "click_to_expand_readouts": "आँकड़े विस्तृत करने के लिए क्लिक करें",
     "gateway_offline_reconnecting": "गेटवे ऑफ़लाइन — फिर से कनेक्ट हो रहा है",
@@ -103,7 +102,8 @@
     "pulling_latest_changes": "नवीनतम बदलाव लाए जा रहे हैं",
     "rebuilding_package": "पैकेज फिर से बिल्ड हो रहा है",
     "restarting_server": "सर्वर पुनः शुरू हो रहा है",
-    "syncing_workspace": "वर्कस्पेस सिंक हो रहा है"
+    "syncing_workspace": "वर्कस्पेस सिंक हो रहा है",
+    "report_a_problem_with_diagnostics": "समस्या रिपोर्ट करें — लॉग और क्रैश रिपोर्ट इकट्ठा करता है, सीक्रेट हटाकर"
   },
   "appSdk": {
     "chatEmbed": {
@@ -4874,6 +4874,25 @@
     },
     "errorNotice": {
       "dismiss": "खारिज करें"
+    },
+    "reportProblemModal": {
+      "report_a_problem": "समस्या रिपोर्ट करें",
+      "what_happened": "क्या हुआ?",
+      "note_placeholder": "उदा. अपडेट के बाद हर मैसेज “process exited (rc=None)” के साथ फेल हो रहा है।",
+      "include_recent_logs": "हाल के लॉग शामिल करें",
+      "include_logs_hint": "Gateway + kiro-cli लॉग। सिर्फ़ क्रैश रिपोर्ट भेजने के लिए इसे बंद करें।",
+      "redaction_notice": "zip बनने से पहले Bearer टोकन, सेशन कुकी और AWS कीज़ अपने आप हटा दी जाती हैं।",
+      "collect_failed": "डायग्नोस्टिक्स इकट्ठा करना विफल रहा",
+      "cancel": "रद्द करें",
+      "create_report": "रिपोर्ट बनाएँ",
+      "collecting": "इकट्ठा कर रहे हैं…",
+      "done": "पूर्ण",
+      "diagnostics_ready": "डायग्नोस्टिक्स तैयार — {{files}} फ़ाइल में {{redactions}} सीक्रेट हटाए गए।",
+      "saved_to": "यहाँ सहेजा गया",
+      "show_in_finder": "Finder में दिखाएँ",
+      "download_zip": "zip डाउनलोड करें",
+      "open_github_issue": "GitHub पर issue खोलें",
+      "prefill_hint": "issue खोलने पर विवरण पहले से भर जाते हैं — फिर zip को उसमें खींचकर डालें।"
     }
   },
   "hooks": {
@@ -8732,6 +8751,11 @@
         "token_description": "उसी सेटिंग पेज पर Bot ID के बग़ल में दिखने वाला Secret।",
         "token_label": "WeCom बॉट सीक्रेट",
         "token_placeholder": "WeCom बॉट सीक्रेट पेस्ट करें"
+      },
+      "reportProblemCard": {
+        "support": "सहायता",
+        "blurb": "कुछ काम नहीं कर रहा? हमें डायग्नोस्टिक रिपोर्ट भेजें — लॉग से सीक्रेट पहले ही हटा दिए जाते हैं।",
+        "report_a_problem": "समस्या रिपोर्ट करें"
       }
     },
     "settingsPage": {

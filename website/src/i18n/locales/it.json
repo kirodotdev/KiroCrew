@@ -90,7 +90,6 @@
     "star_us": "Mettici una stella",
     "report_issue": "Segnala un problema",
     "star_kirocrew_on_github": "Metti una stella a Kiro Crew su GitHub",
-    "report_an_issue_on_github": "Segnala un problema su GitHub",
     "click_to_collapse_readouts": "clicca per comprimere gli indicatori",
     "click_to_expand_readouts": "clicca per espandere gli indicatori",
     "gateway_offline_reconnecting": "Gateway offline — riconnessione in corso",
@@ -103,7 +102,8 @@
     "pulling_latest_changes": "Download delle ultime modifiche",
     "rebuilding_package": "Ricompilazione del pacchetto",
     "restarting_server": "Riavvio del server",
-    "syncing_workspace": "Sincronizzazione del workspace"
+    "syncing_workspace": "Sincronizzazione del workspace",
+    "report_a_problem_with_diagnostics": "Segnala un problema — raccoglie i log e i report di crash, con i segreti rimossi"
   },
   "appSdk": {
     "chatEmbed": {
@@ -4934,6 +4934,25 @@
     },
     "errorNotice": {
       "dismiss": "Ignora"
+    },
+    "reportProblemModal": {
+      "report_a_problem": "Segnala un problema",
+      "what_happened": "Cosa è successo?",
+      "note_placeholder": "es. Dopo l'aggiornamento ogni messaggio va in errore con \"process exited (rc=None)\".",
+      "include_recent_logs": "Includi i log recenti",
+      "include_logs_hint": "Log di Gateway e kiro-cli. Disattiva per inviare solo i report di crash.",
+      "redaction_notice": "I token Bearer, i cookie di sessione e le chiavi AWS vengono rimossi automaticamente prima di creare lo zip.",
+      "collect_failed": "Raccolta della diagnostica non riuscita",
+      "cancel": "Annulla",
+      "create_report": "Crea report",
+      "collecting": "Raccolta in corso…",
+      "done": "Fatto",
+      "diagnostics_ready": "Diagnostica pronta — {{redactions}} segreti oscurati in {{files}} file.",
+      "saved_to": "Salvato in",
+      "show_in_finder": "Mostra nel Finder",
+      "download_zip": "Scarica lo zip",
+      "open_github_issue": "Apri una issue su GitHub",
+      "prefill_hint": "Aprendo la issue i dettagli vengono precompilati — poi trascinaci lo zip."
     }
   },
   "hooks": {
@@ -8819,6 +8838,11 @@
         "token_description": "Il Secret mostrato accanto al Bot ID nella stessa pagina delle impostazioni.",
         "token_label": "Secret del bot WeCom",
         "token_placeholder": "Incolla il secret del bot WeCom"
+      },
+      "reportProblemCard": {
+        "support": "Assistenza",
+        "blurb": "Qualcosa non funziona? Inviaci un report diagnostico — i log vengono prima ripuliti dai segreti.",
+        "report_a_problem": "Segnala un problema"
       }
     },
     "settingsPage": {

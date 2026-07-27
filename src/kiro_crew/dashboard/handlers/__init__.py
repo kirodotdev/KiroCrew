@@ -108,6 +108,12 @@ from kiro_crew.dashboard.handlers.cron import (  # noqa: E402, F401
     api_lessons_delete,
 )
 
+# ── Diagnostics / Report a Problem (handlers/diagnostics.py) ──
+from kiro_crew.dashboard.handlers.diagnostics import (  # noqa: E402, F401
+    api_diagnostics_collect,
+    api_diagnostics_download,
+)
+
 # ── Files & Workspaces (extracted to handlers/files.py) ──
 from kiro_crew.dashboard.handlers.files import (  # noqa: E402, F401
     _validate_dashboard_path,

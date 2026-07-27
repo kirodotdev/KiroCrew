@@ -90,7 +90,6 @@
     "star_us": "Поставить звезду",
     "report_issue": "Сообщить о проблеме",
     "star_kirocrew_on_github": "Поставить Kiro Crew звезду на GitHub",
-    "report_an_issue_on_github": "Сообщить о проблеме на GitHub",
     "click_to_collapse_readouts": "нажми, чтобы свернуть метрики",
     "click_to_expand_readouts": "нажми, чтобы развернуть метрики",
     "gateway_offline_reconnecting": "Шлюз офлайн — переподключение",
@@ -103,7 +102,8 @@
     "pulling_latest_changes": "Загрузка последних изменений",
     "rebuilding_package": "Пересборка пакета",
     "restarting_server": "Перезапуск сервера",
-    "syncing_workspace": "Синхронизация рабочей области"
+    "syncing_workspace": "Синхронизация рабочей области",
+    "report_a_problem_with_diagnostics": "Сообщить о проблеме — соберёт логи и отчёты о сбоях, без секретов"
   },
   "appSdk": {
     "chatEmbed": {
@@ -4994,6 +4994,25 @@
     },
     "errorNotice": {
       "dismiss": "Скрыть"
+    },
+    "reportProblemModal": {
+      "report_a_problem": "Сообщить о проблеме",
+      "what_happened": "Что произошло?",
+      "note_placeholder": "например: После обновления все сообщения падают с «process exited (rc=None)».",
+      "include_recent_logs": "Включить недавние логи",
+      "include_logs_hint": "Логи Gateway и kiro-cli. Отключите, чтобы отправить только отчёты о сбоях.",
+      "redaction_notice": "Токены Bearer, cookie сессии и ключи AWS удаляются автоматически до создания zip.",
+      "collect_failed": "Не удалось собрать диагностику",
+      "cancel": "Отмена",
+      "create_report": "Создать отчёт",
+      "collecting": "Сбор…",
+      "done": "Готово",
+      "diagnostics_ready": "Диагностика готова — скрыто секретов: {{redactions}}, обработано файлов: {{files}}.",
+      "saved_to": "Сохранено в",
+      "show_in_finder": "Показать в Finder",
+      "download_zip": "Скачать zip",
+      "open_github_issue": "Открыть issue на GitHub",
+      "prefill_hint": "При открытии issue детали подставятся автоматически — затем перетащите туда zip."
     }
   },
   "hooks": {
@@ -8906,6 +8925,11 @@
         "token_description": "Secret, показанный рядом с Bot ID на той же странице настроек.",
         "token_label": "Секрет бота WeCom",
         "token_placeholder": "Вставь секрет бота WeCom"
+      },
+      "reportProblemCard": {
+        "support": "Поддержка",
+        "blurb": "Что-то не работает? Отправьте нам диагностический отчёт — секреты удаляются из логов заранее.",
+        "report_a_problem": "Сообщить о проблеме"
       }
     },
     "settingsPage": {

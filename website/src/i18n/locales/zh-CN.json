@@ -90,7 +90,6 @@
     "star_us": "给我们加星",
     "report_issue": "反馈问题",
     "star_kirocrew_on_github": "在 GitHub 上为 Kiro Crew 加星",
-    "report_an_issue_on_github": "在 GitHub 上反馈问题",
     "click_to_collapse_readouts": "点击折叠状态读数",
     "click_to_expand_readouts": "点击展开状态读数",
     "gateway_offline_reconnecting": "网关离线 — 正在重连",
@@ -103,7 +102,8 @@
     "pulling_latest_changes": "正在拉取最新变更",
     "rebuilding_package": "正在重新构建包",
     "restarting_server": "正在重启服务器",
-    "syncing_workspace": "正在同步工作区"
+    "syncing_workspace": "正在同步工作区",
+    "report_a_problem_with_diagnostics": "反馈问题 — 收集日志和崩溃报告，并移除密钥"
   },
   "appSdk": {
     "chatEmbed": {
@@ -4814,6 +4814,25 @@
     },
     "errorNotice": {
       "dismiss": "忽略"
+    },
+    "reportProblemModal": {
+      "report_a_problem": "反馈问题",
+      "what_happened": "发生了什么？",
+      "note_placeholder": "例如：更新后每条消息都失败，报“process exited (rc=None)”。",
+      "include_recent_logs": "包含最近日志",
+      "include_logs_hint": "网关与 kiro-cli 日志。关闭后仅发送崩溃报告。",
+      "redaction_notice": "Bearer 令牌、会话 cookie 和 AWS 密钥会在生成 zip 前自动移除。",
+      "collect_failed": "无法收集诊断信息",
+      "cancel": "取消",
+      "create_report": "生成报告",
+      "collecting": "正在收集……",
+      "done": "完成",
+      "diagnostics_ready": "诊断信息已就绪 — 已在 {{files}} 个文件中脱敏 {{redactions}} 处密钥。",
+      "saved_to": "保存至",
+      "show_in_finder": "在 Finder 中显示",
+      "download_zip": "下载 zip",
+      "open_github_issue": "新建 GitHub issue",
+      "prefill_hint": "打开后会自动填好详情 — 再把 zip 拖进去即可。"
     }
   },
   "hooks": {
@@ -8645,6 +8664,11 @@
         "token_description": "同一设置页面上 Bot ID 旁显示的 Secret。",
         "token_label": "企业微信机器人密钥",
         "token_placeholder": "粘贴企业微信机器人密钥"
+      },
+      "reportProblemCard": {
+        "support": "支持",
+        "blurb": "遇到问题？发送一份诊断报告给我们 — 日志会先移除密钥。",
+        "report_a_problem": "反馈问题"
       }
     },
     "settingsPage": {

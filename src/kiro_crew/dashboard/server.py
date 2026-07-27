@@ -2309,6 +2309,12 @@ async def start_dashboard(
     app.router.add_get("/api/outbox/{filename}", handlers.api_outbox_download)
     app.router.add_post("/api/screenshot", handlers.api_screenshot)
 
+    # Diagnostics / "Report a Problem" (redacted support bundle)
+    app.router.add_post("/api/diagnostics/collect", handlers.api_diagnostics_collect)
+    app.router.add_get(
+        "/api/diagnostics/download/{filename}", handlers.api_diagnostics_download
+    )
+
     # Portability (export/import config+memory as zip)
     app.router.add_get("/api/portability/export", handlers.api_portability_export)
     app.router.add_post("/api/portability/import", handlers.api_portability_import)

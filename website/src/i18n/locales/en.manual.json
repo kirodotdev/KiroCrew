@@ -32,7 +32,6 @@
     "star_us": "Star us",
     "report_issue": "Report issue",
     "star_kirocrew_on_github": "Star Kiro Crew on GitHub",
-    "report_an_issue_on_github": "Report an issue on GitHub",
     "click_to_collapse_readouts": "click to collapse readouts",
     "click_to_expand_readouts": "click to expand readouts",
     "gateway_offline_reconnecting": "Gateway offline — reconnecting",
@@ -43,7 +42,8 @@
     "pulling_latest_changes": "Pulling latest changes",
     "rebuilding_package": "Rebuilding package",
     "restarting_server": "Restarting server",
-    "syncing_workspace": "Syncing workspace"
+    "syncing_workspace": "Syncing workspace",
+    "report_a_problem_with_diagnostics": "Report a problem — collects logs and crash reports, secrets removed"
   },
   "appSdk": {
     "chatEmbed": {
@@ -1351,6 +1351,25 @@
     },
     "errorNotice": {
       "dismiss": "Dismiss"
+    },
+    "reportProblemModal": {
+      "report_a_problem": "Report a Problem",
+      "what_happened": "What happened?",
+      "note_placeholder": "e.g. Every message fails with “process exited (rc=None)” after updating.",
+      "include_recent_logs": "Include recent logs",
+      "include_logs_hint": "Gateway + kiro-cli logs. Turn off to send crash reports only.",
+      "redaction_notice": "Bearer tokens, session cookies, and AWS keys are automatically removed before the zip is created.",
+      "collect_failed": "Failed to collect diagnostics",
+      "cancel": "Cancel",
+      "create_report": "Create report",
+      "collecting": "Collecting…",
+      "done": "Done",
+      "diagnostics_ready": "Diagnostics ready — {{redactions}} secret(s) redacted across {{files}} file(s).",
+      "saved_to": "Saved to",
+      "show_in_finder": "Show in Finder",
+      "download_zip": "Download zip",
+      "open_github_issue": "Open GitHub issue",
+      "prefill_hint": "Opening the issue pre-fills the details — then drag the zip into it."
     }
   },
   "hooks": {
@@ -2865,6 +2884,11 @@
         "preset_custom": "Custom",
         "record_prompt": "Press keys…",
         "custom_hint": "Use at least one modifier key."
+      },
+      "reportProblemCard": {
+        "support": "Support",
+        "blurb": "Something not working? Send us a diagnostics report — logs are scrubbed of secrets first.",
+        "report_a_problem": "Report a Problem"
       }
     },
     "systemPage": {

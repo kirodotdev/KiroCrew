@@ -90,7 +90,6 @@
     "star_us": "Mets une étoile",
     "report_issue": "Signaler un problème",
     "star_kirocrew_on_github": "Mets une étoile à Kiro Crew sur GitHub",
-    "report_an_issue_on_github": "Signaler un problème sur GitHub",
     "click_to_collapse_readouts": "cliquer pour réduire les indicateurs",
     "click_to_expand_readouts": "cliquer pour développer les indicateurs",
     "gateway_offline_reconnecting": "Passerelle hors ligne — reconnexion en cours",
@@ -103,7 +102,8 @@
     "pulling_latest_changes": "Récupération des dernières modifications",
     "rebuilding_package": "Reconstruction du paquet",
     "restarting_server": "Redémarrage du serveur",
-    "syncing_workspace": "Synchronisation de l’espace de travail"
+    "syncing_workspace": "Synchronisation de l’espace de travail",
+    "report_a_problem_with_diagnostics": "Signaler un problème — collecte les journaux et les rapports de plantage, secrets masqués"
   },
   "appSdk": {
     "chatEmbed": {
@@ -4934,6 +4934,25 @@
     },
     "errorNotice": {
       "dismiss": "Ignorer"
+    },
+    "reportProblemModal": {
+      "report_a_problem": "Signaler un problème",
+      "what_happened": "Que s’est-il passé ?",
+      "note_placeholder": "ex. : chaque message échoue avec « process exited (rc=None) » depuis la mise à jour.",
+      "include_recent_logs": "Inclure les journaux récents",
+      "include_logs_hint": "Journaux de la passerelle et de kiro-cli. Désactivez pour n’envoyer que les rapports de plantage.",
+      "redaction_notice": "Les jetons Bearer, les cookies de session et les clés AWS sont automatiquement masqués avant la création du zip.",
+      "collect_failed": "Échec de la collecte des diagnostics",
+      "cancel": "Annuler",
+      "create_report": "Créer le rapport",
+      "collecting": "Collecte…",
+      "done": "Terminé",
+      "diagnostics_ready": "Diagnostics prêts — {{redactions}} secret(s) masqué(s) dans {{files}} fichier(s).",
+      "saved_to": "Enregistré dans",
+      "show_in_finder": "Afficher dans le Finder",
+      "download_zip": "Télécharger le zip",
+      "open_github_issue": "Ouvrir un ticket GitHub",
+      "prefill_hint": "L’ouverture du ticket pré-remplit les détails — glissez-y ensuite le zip."
     }
   },
   "hooks": {
@@ -8819,6 +8838,11 @@
         "token_description": "Le Secret affiché à côté du Bot ID sur la même page de paramètres.",
         "token_label": "Secret du bot WeCom",
         "token_placeholder": "Colle le secret du bot WeCom"
+      },
+      "reportProblemCard": {
+        "support": "Assistance",
+        "blurb": "Quelque chose ne fonctionne pas ? Envoyez-nous un rapport de diagnostic — les secrets sont d’abord masqués dans les journaux.",
+        "report_a_problem": "Signaler un problème"
       }
     },
     "settingsPage": {

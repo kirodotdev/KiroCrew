@@ -1384,6 +1384,17 @@ export const api = {
     if (r.copy) copyToClipboard(r.copy)
     return r
   }),
+  collectDiagnostics: (body: { note: string; include_logs: boolean }) =>
+    post('/api/diagnostics/collect', body).then(j) as Promise<{
+      zip_path: string
+      filename: string
+      included: string[]
+      skipped: string[]
+      redaction_summary: Record<string, number>
+      total_redactions: number
+      github_issue_url: string
+      download_url: string
+    }>,
   refineTaskInput: (input: string) => post('/api/taskrunner/refine', { input }).then(j),
   refineStatus: () => fetch('/api/taskrunner/refine').then(j),
   refineCancel: () => post('/api/taskrunner/refine/cancel').then(j),

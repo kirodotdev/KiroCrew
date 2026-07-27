@@ -90,7 +90,6 @@
     "star_us": "Danos una estrella",
     "report_issue": "Reportar problema",
     "star_kirocrew_on_github": "Dale una estrella a Kiro Crew en GitHub",
-    "report_an_issue_on_github": "Informar de un problema en GitHub",
     "click_to_collapse_readouts": "clic para contraer los indicadores",
     "click_to_expand_readouts": "clic para expandir los indicadores",
     "gateway_offline_reconnecting": "Gateway sin conexión — reconectando",
@@ -103,7 +102,8 @@
     "pulling_latest_changes": "Descargando los últimos cambios",
     "rebuilding_package": "Recompilando el paquete",
     "restarting_server": "Reiniciando el servidor",
-    "syncing_workspace": "Sincronizando el espacio de trabajo"
+    "syncing_workspace": "Sincronizando el espacio de trabajo",
+    "report_a_problem_with_diagnostics": "Reportar un problema — recopila registros e informes de fallos, con los secretos eliminados"
   },
   "appSdk": {
     "chatEmbed": {
@@ -4934,6 +4934,25 @@
     },
     "errorNotice": {
       "dismiss": "Descartar"
+    },
+    "reportProblemModal": {
+      "report_a_problem": "Reportar un problema",
+      "what_happened": "¿Qué ha pasado?",
+      "note_placeholder": "p. ej. Todos los mensajes fallan con \"process exited (rc=None)\" después de actualizar.",
+      "include_recent_logs": "Incluir los registros recientes",
+      "include_logs_hint": "Registros del Gateway y de kiro-cli. Desactívalo para enviar solo los informes de fallos.",
+      "redaction_notice": "Los tokens Bearer, las cookies de sesión y las claves de AWS se eliminan automáticamente antes de crear el zip.",
+      "collect_failed": "No se pudieron recopilar los diagnósticos",
+      "cancel": "Cancelar",
+      "create_report": "Crear informe",
+      "collecting": "Recopilando…",
+      "done": "Listo",
+      "diagnostics_ready": "Diagnósticos listos — {{redactions}} secreto(s) eliminado(s) en {{files}} archivo(s).",
+      "saved_to": "Guardado en",
+      "show_in_finder": "Mostrar en Finder",
+      "download_zip": "Descargar zip",
+      "open_github_issue": "Abrir incidencia en GitHub",
+      "prefill_hint": "Al abrir la incidencia se rellenan los detalles automáticamente — después arrastra el zip dentro."
     }
   },
   "hooks": {
@@ -8819,6 +8838,11 @@
         "token_description": "El Secret que se muestra junto al Bot ID en la misma página de ajustes.",
         "token_label": "Secret del bot de WeCom",
         "token_placeholder": "Pega el secret del bot de WeCom"
+      },
+      "reportProblemCard": {
+        "support": "Soporte",
+        "blurb": "¿Algo no funciona? Envíanos un informe de diagnóstico — antes se eliminan los secretos de los registros.",
+        "report_a_problem": "Reportar un problema"
       }
     },
     "settingsPage": {

@@ -90,7 +90,6 @@
     "star_us": "Stern geben",
     "report_issue": "Problem melden",
     "star_kirocrew_on_github": "Kiro Crew auf GitHub einen Stern geben",
-    "report_an_issue_on_github": "Ein Problem auf GitHub melden",
     "click_to_collapse_readouts": "klicken zum Einklappen der Messwerte",
     "click_to_expand_readouts": "klicken zum Aufklappen der Messwerte",
     "gateway_offline_reconnecting": "Gateway offline — wird neu verbunden",
@@ -103,7 +102,8 @@
     "pulling_latest_changes": "Neueste Änderungen werden abgerufen",
     "rebuilding_package": "Paket wird neu gebaut",
     "restarting_server": "Server wird neu gestartet",
-    "syncing_workspace": "Workspace wird synchronisiert"
+    "syncing_workspace": "Workspace wird synchronisiert",
+    "report_a_problem_with_diagnostics": "Problem melden — erfasst Protokolle und Absturzberichte, Geheimnisse entfernt"
   },
   "appSdk": {
     "chatEmbed": {
@@ -4874,6 +4874,25 @@
     },
     "errorNotice": {
       "dismiss": "Schließen"
+    },
+    "reportProblemModal": {
+      "report_a_problem": "Problem melden",
+      "what_happened": "Was ist passiert?",
+      "note_placeholder": "z. B. Nach dem Update schlägt jede Nachricht mit „process exited (rc=None)“ fehl.",
+      "include_recent_logs": "Aktuelle Protokolle einbeziehen",
+      "include_logs_hint": "Protokolle von Gateway und kiro-cli. Ausschalten, um nur Absturzberichte zu senden.",
+      "redaction_notice": "Bearer-Tokens, Sitzungs-Cookies und AWS-Schlüssel werden automatisch entfernt, bevor die ZIP-Datei erstellt wird.",
+      "collect_failed": "Diagnosedaten konnten nicht erfasst werden",
+      "cancel": "Abbrechen",
+      "create_report": "Bericht erstellen",
+      "collecting": "Wird erfasst…",
+      "done": "Fertig",
+      "diagnostics_ready": "Diagnose bereit — {{redactions}} Geheimnis(se) in {{files}} Datei(en) redigiert.",
+      "saved_to": "Gespeichert unter",
+      "show_in_finder": "Im Finder anzeigen",
+      "download_zip": "ZIP herunterladen",
+      "open_github_issue": "GitHub-Issue öffnen",
+      "prefill_hint": "Beim Öffnen des Issues werden die Details vorbefüllt — ziehen Sie dann die ZIP-Datei hinein."
     }
   },
   "hooks": {
@@ -8732,6 +8751,11 @@
         "token_description": "Das Secret, das neben der Bot ID auf derselben Einstellungsseite angezeigt wird.",
         "token_label": "WeCom-Bot-Secret",
         "token_placeholder": "WeCom-Bot-Secret einfügen"
+      },
+      "reportProblemCard": {
+        "support": "Support",
+        "blurb": "Etwas funktioniert nicht? Senden Sie uns einen Diagnosebericht — Protokolle werden zuvor von Geheimnissen befreit.",
+        "report_a_problem": "Problem melden"
       }
     },
     "settingsPage": {

@@ -90,7 +90,6 @@
     "star_us": "Dê uma estrela",
     "report_issue": "Relatar problema",
     "star_kirocrew_on_github": "Dê uma estrela ao Kiro Crew no GitHub",
-    "report_an_issue_on_github": "Relatar um problema no GitHub",
     "click_to_collapse_readouts": "clique para recolher os indicadores",
     "click_to_expand_readouts": "clique para expandir os indicadores",
     "gateway_offline_reconnecting": "Gateway offline — reconectando",
@@ -103,7 +102,8 @@
     "pulling_latest_changes": "Baixando as últimas alterações",
     "rebuilding_package": "Reconstruindo o pacote",
     "restarting_server": "Reiniciando o servidor",
-    "syncing_workspace": "Sincronizando o workspace"
+    "syncing_workspace": "Sincronizando o workspace",
+    "report_a_problem_with_diagnostics": "Relatar um problema — coleta logs e relatórios de falhas, sem segredos"
   },
   "appSdk": {
     "chatEmbed": {
@@ -4934,6 +4934,25 @@
     },
     "errorNotice": {
       "dismiss": "Dispensar"
+    },
+    "reportProblemModal": {
+      "report_a_problem": "Relatar um problema",
+      "what_happened": "O que aconteceu?",
+      "note_placeholder": "ex.: Todas as mensagens falham com “process exited (rc=None)” depois de atualizar.",
+      "include_recent_logs": "Incluir logs recentes",
+      "include_logs_hint": "Logs do Gateway + kiro-cli. Desative para enviar apenas relatórios de falhas.",
+      "redaction_notice": "Tokens Bearer, cookies de sessão e chaves AWS são removidos automaticamente antes de criar o zip.",
+      "collect_failed": "Falha ao coletar os diagnósticos",
+      "cancel": "Cancelar",
+      "create_report": "Criar relatório",
+      "collecting": "Coletando…",
+      "done": "Concluído",
+      "diagnostics_ready": "Diagnósticos prontos — {{redactions}} segredo(s) removido(s) em {{files}} arquivo(s).",
+      "saved_to": "Salvo em",
+      "show_in_finder": "Mostrar no Finder",
+      "download_zip": "Baixar zip",
+      "open_github_issue": "Abrir issue no GitHub",
+      "prefill_hint": "Ao abrir a issue os detalhes são preenchidos automaticamente — depois arraste o zip para lá."
     }
   },
   "hooks": {
@@ -8819,6 +8838,11 @@
         "token_description": "O Secret exibido ao lado do Bot ID na mesma página de configurações.",
         "token_label": "Secret do bot do WeCom",
         "token_placeholder": "Cole o secret do bot do WeCom"
+      },
+      "reportProblemCard": {
+        "support": "Suporte",
+        "blurb": "Algo não está funcionando? Envie um relatório de diagnóstico — os segredos são removidos dos logs primeiro.",
+        "report_a_problem": "Relatar um problema"
       }
     },
     "settingsPage": {
