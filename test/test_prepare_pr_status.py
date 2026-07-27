@@ -8,7 +8,7 @@ from pathlib import Path
 from types import ModuleType
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = ROOT / "skills" / "kirocrew-dev" / "prepare-pr" / "scripts" / "pr_status.py"
+SCRIPT = ROOT / "src" / "kiro_crew" / "builtin_skills" / "kirocrew-dev" / "prepare-pr" / "scripts" / "pr_status.py"
 
 
 def _load_script() -> ModuleType:

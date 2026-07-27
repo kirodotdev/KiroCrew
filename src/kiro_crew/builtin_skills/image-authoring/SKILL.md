@@ -44,7 +44,7 @@ Check tool availability before relying on it (`python3 -c "import PIL"`,
 
 ### 3. Author — structured for later tuning
 
-- Save under `~/.kirocrew/workspace/images/` as `<subject>-<style>.<ext>`.
+- Save under `~/.kiro/crew/workspace/images/` as `<subject>-<style>.<ext>`.
 - Put the brief at the top of the source: `<!-- BRIEF: ... -->` (SVG/HTML) or
   a docstring (script). Future iterations read intent from the file itself.
 - **Give every major element a stable id** so feedback can target regions:

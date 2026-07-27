@@ -48,8 +48,8 @@ def _is_migration_prose(line: str) -> bool:
 
 
 def _skill_files() -> list[Path]:
-    """Every skill-authored file: top-level skills/ plus app-bundled skills/."""
-    roots = [REPO_ROOT / "skills"]
+    """Every skill-authored file: top-level skills/, packaged builtin_skills/, plus app-bundled skills/."""
+    roots = [REPO_ROOT / "skills", REPO_ROOT / "src" / "kiro_crew" / "builtin_skills"]
     roots += sorted((REPO_ROOT / "src" / "kiro_crew" / "apps" / "builtins").glob("*/skills"))
     files: list[Path] = []
     for root in roots:

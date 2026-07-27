@@ -265,6 +265,14 @@ def _collect_spawn_functions() -> dict[str, str]:
     """
     out: dict[str, str] = {}
     for path in _SRC_ROOT.rglob("*.py"):
+        # ``builtin_skills/**`` are bundled skill helper scripts the AGENT runs
+        # in the USER's repo/shell (e.g. git/gh in prepare-pr's scripts), not
+        # gateway runtime code paths. The gateway never imports or spawns them;
+        # they ship under the package only for packaging. The sandbox spawn
+        # chokepoint governs the gateway's own subprocess usage, so these assets
+        # are out of scope for this audit.
+        if "builtin_skills" in path.relative_to(_SRC_ROOT).parts:
+            continue
         source = path.read_text(encoding="utf-8")
         tree = ast.parse(source, str(path))
         funcs = [

@@ -12,8 +12,8 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github" / "workflows"
-PREPARE_PR_SKILL = ROOT / "skills" / "kirocrew-dev" / "prepare-pr" / "SKILL.md"
-PREPARE_PR_FINDINGS = ROOT / "skills" / "kirocrew-dev" / "prepare-pr" / "scripts" / "pr_findings.py"
+PREPARE_PR_SKILL = ROOT / "src" / "kiro_crew" / "builtin_skills" / "kirocrew-dev" / "prepare-pr" / "SKILL.md"
+PREPARE_PR_FINDINGS = ROOT / "src" / "kiro_crew" / "builtin_skills" / "kirocrew-dev" / "prepare-pr" / "scripts" / "pr_findings.py"
 
 
 def _workflow(name: str) -> str:
