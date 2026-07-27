@@ -1,13 +1,50 @@
-import { describe, it, expect } from 'vitest'
+import { renderHook } from '@testing-library/react'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ChatSlot } from '../../../types'
 import {
   hasPlaceholderTitle,
   isEmptyNewSlot,
   prepareCurrentSlots,
+  sessionStatus,
   shouldShowHistorySession,
+  useRecentsProvider,
   type HistorySession,
 } from './recentsProvider'
+
+type MockState = {
+  dashboard: { slots: ChatSlot[]; unreadSlots: string[] }
+  chat: {
+    slotStatusDetail: Record<string, { kind?: string; text?: string; ts?: number }>
+  }
+}
+
+const mocks = vi.hoisted(() => ({
+  state: {
+    dashboard: { slots: [], unreadSlots: [] },
+    chat: { slotStatusDetail: {} },
+  } as MockState,
+  dispatch: vi.fn(),
+  navigate: vi.fn(),
+  fetchQuery: vi.fn(),
+}))
+
+vi.mock('../../../store', () => ({
+  useAppDispatch: () => mocks.dispatch,
+  useAppSelector: (selector: (state: MockState) => unknown) => selector(mocks.state),
+}))
+
+vi.mock('react-router-dom', () => ({
+  useNavigate: () => mocks.navigate,
+}))
+
+vi.mock('@tanstack/react-query', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@tanstack/react-query')>()
+  return {
+    ...actual,
+    useQueryClient: () => ({ fetchQuery: mocks.fetchQuery }),
+  }
+})
 
 /**
  * Unit tests for the pure slot/history filtering helpers behind the recents
@@ -148,5 +185,60 @@ describe('shouldShowHistorySession — dead "New Session…" rows in Older', () 
 
   it('treats a whitespace-only preview as no preview', () => {
     expect(shouldShowHistorySession(hist({ title: 'New Session…', preview: '  ' }))).toBe(false)
+  })
+})
+
+
+describe('sessionStatus — running detail', () => {
+  it('surfaces the live tool call instead of the generic Thinking label', () => {
+    expect(
+      sessionStatus(slot({ running: true }), [], {
+        text: 'Running: read /workspace/src/app.ts',
+      }),
+    ).toMatchObject({
+      style: 'dot',
+      pulse: true,
+      label: 'Running: read /workspace/src/app.ts',
+    })
+  })
+
+  it('falls back to Thinking when no live status detail has arrived', () => {
+    expect(sessionStatus(slot({ running: true }), [])).toMatchObject({
+      style: 'dot',
+      pulse: true,
+      label: 'Thinking…',
+    })
+  })
+})
+
+describe('useRecentsProvider — live status bridge', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mocks.state.dashboard.slots = []
+    mocks.state.dashboard.unreadSlots = []
+    mocks.state.chat.slotStatusDetail = {}
+    mocks.fetchQuery.mockImplementation(({ queryKey }: { queryKey: unknown[] }) =>
+      Promise.resolve(queryKey[2] === 'history' ? { sessions: [] } : []),
+    )
+  })
+
+  it('maps Redux slot status detail onto the current result row', async () => {
+    mocks.state.dashboard.slots = [slot({ key: 'dashboard_live', running: true })]
+    mocks.state.chat.slotStatusDetail = {
+      dashboard_live: {
+        kind: 'tool',
+        text: 'Running: read /workspace/src/app.ts',
+        ts: 123,
+      },
+    }
+
+    const { result } = renderHook(() => useRecentsProvider())
+    const rows = await result.current.search('')
+
+    expect(rows.find((row) => row.id === 'recents:cur:dashboard_live')).toMatchObject({
+      statusStyle: 'dot',
+      statusPulse: true,
+      statusLabel: 'Running: read /workspace/src/app.ts',
+    })
   })
 })

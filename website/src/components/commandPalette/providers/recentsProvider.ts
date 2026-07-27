@@ -150,9 +150,10 @@ function shortMsg(slot: ChatSlot): string {
  *  - your-turn      → last-message preview + right blue dot
  *  - idle           → last-message preview
  */
-function sessionStatus(
+export function sessionStatus(
   slot: ChatSlot,
   unread: string[],
+  statusDetail?: { text?: string },
 ): {
   style?: 'pill' | 'dot'
   colorVar?: string
@@ -171,7 +172,12 @@ function sessionStatus(
     }
   }
   if (slot.running) {
-    return { style: 'dot', colorVar: '--accent', pulse: true, label: 'Thinking…' }
+    return {
+      style: 'dot',
+      colorVar: '--accent',
+      pulse: true,
+      label: statusDetail?.text || 'Thinking…',
+    }
   }
   if (unread.includes(slot.key) || slot.waiting_for_input) {
     return { rightDot: { colorVar: '--info' }, subtitle: shortMsg(slot) || undefined }
@@ -190,6 +196,7 @@ export function useRecentsProvider(): ResourceProvider {
   const queryClient = useQueryClient()
   const slots = useAppSelector((s) => s.dashboard.slots)
   const unread = useAppSelector((s) => s.dashboard.unreadSlots)
+  const slotStatusDetail = useAppSelector((s) => s.chat.slotStatusDetail ?? {})
 
   return useMemo(() => {
     const { ordered: orderedSlots, hasEmptyNew } = prepareCurrentSlots(slots)
@@ -236,7 +243,7 @@ export function useRecentsProvider(): ResourceProvider {
           // An untitled slot that already has messages is a real conversation
           // and keeps its normal row treatment.
           const isNew = isEmptyNewSlot(s)
-          const st = isNew ? {} : sessionStatus(s, unread)
+          const st = isNew ? {} : sessionStatus(s, unread, slotStatusDetail[s.key])
           return {
             id: `recents:cur:${s.key}`,
             providerId: 'recents',
@@ -336,5 +343,5 @@ export function useRecentsProvider(): ResourceProvider {
         return [...current, ...planned, ...older]
       },
     }
-  }, [dispatch, navigate, queryClient, slots, unread])
+  }, [dispatch, navigate, queryClient, slots, unread, slotStatusDetail])
 }

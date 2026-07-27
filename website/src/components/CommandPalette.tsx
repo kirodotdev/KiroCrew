@@ -340,6 +340,7 @@ export default function CommandPalette({
   // update while the palette is open instead of freezing at open-time.
   const slots = useAppSelector((s) => s.dashboard.slots)
   const unreadSlots = useAppSelector((s) => s.dashboard.unreadSlots)
+  const slotStatusDetail = useAppSelector((s) => s.chat.slotStatusDetail ?? {})
   const liveFingerprint = useMemo(
     () =>
       activeProvider.id === 'recents'
@@ -348,11 +349,13 @@ export default function CommandPalette({
               (s) =>
                 `${s.key}:${s.running ? 1 : 0}${s.pending_approval ? 1 : 0}${
                   s.pinned ? 1 : 0
-                }:${s.last_activity_ts ?? s.last_ts ?? ''}`,
+                }:${s.last_activity_ts ?? s.last_ts ?? ''}:${
+                  slotStatusDetail[s.key]?.kind ?? ''
+                }:${slotStatusDetail[s.key]?.text ?? ''}:${slotStatusDetail[s.key]?.ts ?? ''}`,
             )
             .join('|') + `#${unreadSlots.join(',')}`
         : '',
-    [activeProvider.id, slots, unreadSlots],
+    [activeProvider.id, slots, unreadSlots, slotStatusDetail],
   )
   const { data: results = [], isLoading: loading } = useQuery({
     queryKey: ['palette', 'search', activeProvider.id, debouncedQuery, liveFingerprint],

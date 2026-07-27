@@ -29,6 +29,15 @@ const H = vi.hoisted(() => {
   const enterInsertOrNewSession = vi.fn()
   const newSessionWithToken = vi.fn()
   const navigate = vi.fn()
+  const storeState = {
+    dashboard: { slots: [] as Array<Record<string, unknown>>, unreadSlots: [] as string[] },
+    chat: {
+      slotStatusDetail: {} as Record<
+        string,
+        { kind: string; text: string; ts: number; toolName?: string }
+      >,
+    },
+  }
   const onActivateRecent = vi.fn()
   const allResult = {
     id: 'all:1',
@@ -99,6 +108,7 @@ const H = vi.hoisted(() => {
     onActivateSess,
     onActivateRecent,
     navigate,
+    storeState,
     recentResult,
     enterInsertOrNewSession,
     newSessionWithToken,
@@ -177,8 +187,7 @@ vi.mock('./commandPalette/paletteActions', () => ({
 // recents search query. Mock the typed selector hook with a minimal dashboard
 // slice so the component renders without the real Redux store.
 vi.mock('../store', () => ({
-  useAppSelector: (sel: (s: unknown) => unknown) =>
-    sel({ dashboard: { slots: [], unreadSlots: [] } }),
+  useAppSelector: (sel: (s: unknown) => unknown) => sel(H.storeState),
 }))
 
 import CommandPalette from './CommandPalette'
@@ -190,6 +199,9 @@ afterEach(() => {
   cleanup()
   vi.clearAllMocks()
   H.nav.current = null
+  H.storeState.dashboard.slots = []
+  H.storeState.dashboard.unreadSlots = []
+  H.storeState.chat.slotStatusDetail = {}
   queryClient.clear()
 })
 
@@ -302,6 +314,22 @@ describe('CommandPalette — render', () => {
     // The visible tab strip is gone — scoping is prefix+Tab / sigil driven.
     expect(screen.queryByRole('tab')).toBeNull()
     expect(screen.getByPlaceholderText('Search for anything')).toBeInTheDocument()
+  })
+
+  it('refreshes recents when a running slot starts a real tool call', async () => {
+    H.storeState.dashboard.slots = [
+      { key: 'chat-1', title: 'Live session', running: true, messages: 2 },
+    ]
+    const { rerender } = render(<CommandPalette open onClose={vi.fn()} />, { wrapper })
+    await screen.findByText('Recent Session')
+    expect(H.recentsProvider.search).toHaveBeenCalledTimes(1)
+
+    H.storeState.chat.slotStatusDetail = {
+      'chat-1': { kind: 'tool', text: 'Running: read /workspace/src/app.ts', ts: 1 },
+    }
+    rerender(<CommandPalette open onClose={vi.fn()} />)
+
+    await waitFor(() => expect(H.recentsProvider.search).toHaveBeenCalledTimes(2))
   })
 
   it('typing a query switches from recents to the All aggregator', async () => {
