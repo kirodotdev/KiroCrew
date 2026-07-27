@@ -32,6 +32,7 @@ import { useSessionActions } from '../hooks/useSessionActions'
 import { useChatPopouts } from '../hooks/useChatPopouts'
 import { useImeGuard } from '../hooks/useImeGuard'
 import { useIsMobile } from '../hooks/useIsMobile'
+import { usePointerDrag } from '../hooks/usePointerDrag'
 import { isTouchDevice } from '../utils/isTouchDevice'
 import { safeSetItem } from '../utils/safeStorage'
 import { resolveFolderAgent, resolveFolderProjectDir } from '../utils/folderAgent'
@@ -993,10 +994,13 @@ function ChatSidebar({
     if (!renamingSlot && !editingId && !creatingIn) suppressMenuRestoreRef.current = false
   }, [renamingSlot, editingId, creatingIn])
 
-  // Resize logic
-  const sidebarDragging = useRef(false)
-  const sidebarStartX = useRef(0)
+  // Resize logic — Pointer Events (mouse + touch + pen) via usePointerDrag, so
+  // the handle works on touch devices too, e.g. a tablet at desktop width where
+  // the sidebar is a side-by-side panel (the mouse-only handler ignored touch).
+  // setPointerCapture keeps move/up firing when the pointer leaves the thin
+  // handle, replacing the old window-level mousemove/mouseup listeners.
   const sidebarStartW = useRef(0)
+  const sidebarDraggingRef = useRef(false)
   const sidebarWidthRef = useRef(sidebarWidth)
   sidebarWidthRef.current = sidebarWidth
   const onWidthChangeRef = useRef(onWidthChange)
@@ -1005,34 +1009,44 @@ function ChatSidebar({
   onDragChangeRef.current = onDragChange
   useEffect(() => { onWidthChangeRef.current?.(sidebarWidth) }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  useEffect(() => {
-    const onMove = (e: MouseEvent) => {
-      if (!sidebarDragging.current) return
-      const newW = Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, sidebarStartW.current + e.clientX - sidebarStartX.current))
+  // threshold 0: a dedicated edge affordance resizes immediately on press (no
+  // 10px hysteresis), matching the original mouse resizer's feel.
+  const sidebarResize = usePointerDrag({
+    threshold: 0,
+    onStart: () => {
+      sidebarStartW.current = sidebarWidthRef.current
+      sidebarDraggingRef.current = true
+      document.body.style.cursor = 'col-resize'
+      document.body.style.userSelect = 'none'
+      onDragChangeRef.current?.(true)
+    },
+    onMove: ({ dx }) => {
+      const newW = Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, sidebarStartW.current + dx))
       setSidebarWidth(newW)
       onWidthChangeRef.current?.(newW)
-    }
-    const onUp = () => {
-      if (!sidebarDragging.current) return
-      sidebarDragging.current = false
+    },
+    onEnd: () => {
+      sidebarDraggingRef.current = false
       document.body.style.cursor = ''
       document.body.style.userSelect = ''
       onDragChangeRef.current?.(false)
       const w = sidebarWidthRef.current
       safeSetItem(SIDEBAR_LS_KEY, String(w))
       onWidthChangeRef.current?.(w)
-    }
-    window.addEventListener('mousemove', onMove)
-    window.addEventListener('mouseup', onUp)
-    return () => {
-      window.removeEventListener('mousemove', onMove)
-      window.removeEventListener('mouseup', onUp)
-      if (sidebarDragging.current) {
-        sidebarDragging.current = false
-        document.body.style.cursor = ''
-        document.body.style.userSelect = ''
-        onDragChangeRef.current?.(false)
-      }
+    },
+  })
+
+  // Unmount guard: if the sidebar unmounts mid-drag (collapse / route change),
+  // onEnd never fires — setPointerCapture dies with the element — so the global
+  // body styles and the parent's dragging state would stay stuck. Restore them
+  // on teardown. The old mouse-only handler did this in its listener cleanup;
+  // the pointer migration must preserve it.
+  useEffect(() => () => {
+    if (sidebarDraggingRef.current) {
+      sidebarDraggingRef.current = false
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+      onDragChangeRef.current?.(false)
     }
   }, [])
 
@@ -2161,11 +2175,18 @@ function ChatSidebar({
   return (
     // stable theming hook 'sidebar' — see website/docs/theming-contract.md
     <div className="sidebar sidebar-inner bg-bg-elevated border border-border rounded-xl shadow-sm flex flex-col shrink-0 relative h-full" style={{ width: sidebarWidth }}>
-      {/* Drag handle — mouse-only column resize gesture; no keyboard analogue. */}
-      {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions */}
+      {/* Drag handle — Pointer-Events column resize (mouse + touch + pen).
+          role="separator" gives it correct ARIA; touch-action:none so a touch
+          drag resizes the panel instead of scrolling the page. Pointer capture
+          (in usePointerDrag) continues the drag off the thin handle. No
+          keyboard analogue for a drag splitter. */}
       <div
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize sidebar"
         className="sidebar-resize-handle absolute top-0 -right-[2px] w-[5px] h-full cursor-col-resize z-10 group/drag flex items-center justify-center"
-        onMouseDown={e => { e.preventDefault(); sidebarDragging.current = true; sidebarStartX.current = e.clientX; sidebarStartW.current = sidebarWidth; document.body.style.cursor = 'col-resize'; document.body.style.userSelect = 'none'; onDragChange?.(true) }}
+        style={{ touchAction: 'none' }}
+        {...sidebarResize}
       >
         <div className="w-[2px] h-full bg-transparent group-hover/drag:bg-accent group-active/drag:bg-accent-hover transition-colors duration-200" />
       </div>
