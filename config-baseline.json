@@ -581,6 +581,7 @@
       "enumValues": null,
       "defaultValue": {
         "timeout_secs": 3600,
+        "empty_response_auto_continue": true,
         "autocompact_pct": 90.0,
         "pool_size": 0,
         "pool_agent": "",
@@ -602,6 +603,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 3600
+    },
+    {
+      "path": "session.empty_response_auto_continue",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Auto-Continue on Empty Response",
+      "help": "After the model returns an empty response twice in a row, automatically send one 'continue' nudge on the same session (transcript-visible, bounded to once per user message).",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
     },
     {
       "path": "session.autocompact_pct",
@@ -3054,6 +3069,7 @@
         "merge_queued_messages": false,
         "mcp_probe_timeout_secs": 15,
         "widget_density": "more",
+        "verbosity": "default",
         "tail_fork_enabled": false,
         "auto_open_browser": true,
         "quick_send": false,
@@ -3067,6 +3083,7 @@
         "theme_color": "",
         "recent_tint_count": 0,
         "onboarded": false,
+        "import_onboarded": false,
         "tips_enabled": true,
         "tips_cadence_hours": 6.0,
         "tips_snooze_hours": 48.0,
@@ -3189,6 +3206,23 @@
         "less"
       ],
       "defaultValue": "more"
+    },
+    {
+      "path": "dashboard.verbosity",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Response Verbosity",
+      "help": "Controls how terse the agent's prose is. 'default' is normal; 'concise' injects brevity guidelines (lead with the answer, cut filler, keep code/errors verbatim) while preserving full detail for security warnings, irreversible-action confirmations, and ordered multi-step instructions.",
+      "hasChildren": false,
+      "enumValues": [
+        "default",
+        "concise"
+      ],
+      "defaultValue": "default"
     },
     {
       "path": "dashboard.tail_fork_enabled",
@@ -3347,6 +3381,20 @@
       "tags": [],
       "label": "Onboarded",
       "help": "Whether the user has completed the dashboard onboarding flow. When true, the 'Choose your look' modal is skipped on first load.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "dashboard.import_onboarded",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Import Onboarded",
+      "help": "Whether the user has completed or skipped foreign-agent import onboarding.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false

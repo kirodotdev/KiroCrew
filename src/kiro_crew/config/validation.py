@@ -133,6 +133,45 @@ def _apply_field_default(data: dict, dot_path: str) -> None:
             section.pop(parts[1], None)
 
 
+def _coerce_legacy_numeric_values(data: dict, schema: dict) -> None:
+    """Normalize legacy numeric strings before JSON Schema validation.
+
+    Older config writers persisted some numeric fields as strings. The loader
+    still accepts those values, so validation must not discard them before the
+    field-level compatibility parsers can run. Malformed and non-finite values
+    remain unchanged and are handled by the normal validation/loader fallback.
+    """
+    properties = schema.get("properties", {})
+    if not isinstance(properties, dict):
+        return
+    for key, node in properties.items():
+        if key not in data or not isinstance(node, dict):
+            continue
+        value = data[key]
+        raw_type = node.get("type")
+        types = raw_type if isinstance(raw_type, list) else [raw_type]
+        if "integer" in types:
+            if isinstance(value, str):
+                try:
+                    data[key] = int(value)
+                except (TypeError, ValueError, OverflowError):
+                    pass
+            elif isinstance(value, float) and value.is_integer():
+                data[key] = int(value)
+        elif "number" in types and isinstance(value, str):
+            try:
+                numeric_value = float(value)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if numeric_value == numeric_value and numeric_value not in (
+                float("inf"),
+                float("-inf"),
+            ):
+                data[key] = numeric_value
+        elif isinstance(value, dict):
+            _coerce_legacy_numeric_values(value, node)
+
+
 # ---------------------------------------------------------------------------
 # Validated-data cache
 #
@@ -254,7 +293,10 @@ def validate_config_data(data: dict) -> dict:
     if isinstance(agent, dict) and isinstance(agent.get("log_level"), str):
         agent["log_level"] = agent["log_level"].upper()
 
-    # 4. Run jsonschema validation
+    # 4. Preserve numeric values written by older config writers.
+    _coerce_legacy_numeric_values(data, JSON_SCHEMA)
+
+    # 5. Run jsonschema validation
     try:
         jsonschema.validate(data, JSON_SCHEMA)
     except jsonschema.ValidationError:

@@ -50,4 +50,18 @@ describe('/side slash command interception', () => {
     expect(result.intercepted).toBe(false)
     expect(mockSideOpen).not.toHaveBeenCalled()
   })
+
+  it('starts the import gate before replaying onboarding', async () => {
+    const listener = vi.fn()
+    window.addEventListener('mc-start-import', listener)
+
+    const result = await interceptSlashCommand('/onboarding', null, store.dispatch)
+
+    expect(result.intercepted).toBe(true)
+    expect(listener).toHaveBeenCalledOnce()
+    expect((listener.mock.calls[0][0] as CustomEvent).detail).toEqual({
+      continueOnboarding: true,
+    })
+    window.removeEventListener('mc-start-import', listener)
+  })
 })

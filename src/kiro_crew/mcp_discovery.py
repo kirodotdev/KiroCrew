@@ -80,23 +80,28 @@ _MCP_SOURCES: tuple[tuple[Path, str], ...] = (
 _MCP_JSON_PATHS: tuple[Path, ...] = tuple(p for p, _ in _MCP_SOURCES)
 
 
+def _extra_scopes() -> list[Any]:
+    """Provider MCP config scopes contributed by the edition (CPP seam)."""
+    from kiro_crew.platform.context import current_context, safe_context_call
+
+    return safe_context_call(
+        lambda: list(current_context().mcp_tooling.extra_mcp_scopes()),
+        fallback_factory=list,
+        log_message="extra_mcp_scopes lookup failed; discovery using core scopes only",
+    )
+
+
 def _extra_scope_sources() -> list[tuple[Path, str]]:
-    """Provider MCP config scopes contributed by the edition (CPP seam).
+    """Return edition-contributed provider globals with discovery scope ids.
 
     Each returned :class:`~kiro_crew.platform.interfaces.McpScope` becomes a
     ``(global_json, f"{id}Global")`` pair, so a companion's Claude Code scope
     (``~/.claude.json`` → ``ccGlobal``) is scanned by discovery exactly as the
     apply/uninstall path writes it. The public Default returns ``[]`` so
     discovery is Kiro-only. Deferred context read so this module never imports
-    the platform package at load; fails closed to no extra scopes.
+    the platform package at load; failures degrade to no extra scopes.
     """
-    from kiro_crew.platform.context import current_context, safe_context_call
-
-    scopes: list = safe_context_call(
-        lambda: list(current_context().mcp_tooling.extra_mcp_scopes()),
-        fallback_factory=list,
-        log_message="extra_mcp_scopes lookup failed; discovery using core scopes only",
-    )
+    scopes = _extra_scopes()
     return [(s.global_json, f"{s.id}Global") for s in scopes]
 
 
@@ -222,7 +227,7 @@ class McpServerInfo:
         return d
 
 
-def _load_agent_config() -> dict[str, Any]:
+def _load_agent_config(*, user_home: Path | None = None) -> dict[str, Any]:
     """Load the agent config to read mcpServers.
 
     Merges mcpServers from project-dir (if set), bundled defaults.json,
@@ -237,7 +242,9 @@ def _load_agent_config() -> dict[str, Any]:
         p = Path(proj) / "agents" / "defaults.json"
         if p.is_file():
             try:
-                configs.append(json.loads(p.read_text(encoding="utf-8")))
+                loaded = json.loads(p.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    configs.append(loaded)
             except (json.JSONDecodeError, OSError):
                 pass
 
@@ -246,17 +253,21 @@ def _load_agent_config() -> dict[str, Any]:
         bundled = Path(__file__).resolve().parent / "config" / "defaults.json"
         if bundled.is_file():
             try:
-                configs.append(json.loads(bundled.read_text(encoding="utf-8")))
+                loaded = json.loads(bundled.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    configs.append(loaded)
             except (json.JSONDecodeError, OSError):
                 pass
 
     # Installed agent config (always check for mcpServers)
     from kiro_crew.agent import AGENT_FILENAME  # circular import: agent imports mcp_discovery
 
-    installed = Path.home() / ".kiro" / "agents" / AGENT_FILENAME
+    installed = (user_home or Path.home()) / ".kiro" / "agents" / AGENT_FILENAME
     if installed.is_file():
         try:
-            configs.append(json.loads(installed.read_text(encoding="utf-8")))
+            loaded = json.loads(installed.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                configs.append(loaded)
         except (json.JSONDecodeError, OSError):
             pass
 
@@ -265,13 +276,55 @@ def _load_agent_config() -> dict[str, Any]:
 
     # Merge: use first config as base, merge mcpServers from all sources
     merged = dict(configs[0])
-    mcp: dict[str, Any] = dict(merged.get("mcpServers", {}))
+    first_servers = merged.get("mcpServers")
+    mcp: dict[str, Any] = dict(first_servers) if isinstance(first_servers, dict) else {}
     for cfg in configs[1:]:
-        for name, spec in cfg.get("mcpServers", {}).items():
+        servers = cfg.get("mcpServers")
+        if not isinstance(servers, dict):
+            continue
+        for name, spec in servers.items():
             if name not in mcp:
                 mcp[name] = spec
     merged["mcpServers"] = mcp
     return merged
+
+
+def _mcp_names_from_file(path: Path) -> set[str]:
+    if not path.is_file():
+        return set()
+    try:
+        data = json.loads(safe_read_file(str(path)))
+    except (json.JSONDecodeError, OSError, TypeError):
+        return set()
+    servers = data.get("mcpServers") if isinstance(data, dict) else None
+    if not isinstance(servers, dict):
+        return set()
+    return {name for name in servers if isinstance(name, str)}
+
+
+def configured_mcp_aliases(*, data_home: Path, user_home: Path) -> set[str]:
+    """Return canonical names reserved by every effective KiroCrew MCP source."""
+    names: set[str] = set()
+    agent_servers = _load_agent_config(user_home=user_home).get("mcpServers", {})
+    if isinstance(agent_servers, dict):
+        names.update(name for name in agent_servers if isinstance(name, str))
+
+    names.update(_mcp_names_from_file(data_home / "mcp.json"))
+    names.update(_mcp_names_from_file(user_home / ".kiro" / "settings" / "mcp.json"))
+
+    from kiro_crew.platform.context import current_context, safe_context_call
+
+    extra_servers: dict[str, dict] = safe_context_call(
+        lambda: dict(current_context().mcp_tooling.extra_mcp_servers()),
+        fallback_factory=dict,
+        log_message="extra_mcp_servers lookup failed; collision scan using core sources only",
+    )
+    names.update(name for name in extra_servers if isinstance(name, str))
+    for scope in _extra_scopes():
+        names.update(_mcp_names_from_file(scope.global_json))
+        if scope.agent_mcp_file is not None:
+            names.update(_mcp_names_from_file(scope.agent_mcp_file))
+    return {mcp_server_alias(name) for name in names}
 
 
 def _load_mcp_json_by_source() -> dict[str, dict[str, Any]]:

@@ -1,6 +1,6 @@
 import { useEffect } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Bell, Code, Globe, Info, Keyboard, Link2, MessageSquare, Mic, Palette, PanelsTopLeft, Server, ShieldCheck } from 'lucide-react'
+import { Bell, Code, Globe, Import, Info, Keyboard, Link2, MessageSquare, Mic, Palette, PanelsTopLeft, Server, ShieldCheck } from 'lucide-react'
 import { useAppSelector } from '../store'
 import SidePanelLayout from '../components/SidePanelLayout'
 import { useSettingHighlight } from '../hooks/useSettingHighlight'
@@ -17,12 +17,14 @@ import { OverviewPanel } from './settings/OverviewPanel'
 import { NotificationsPanel } from './settings/NotificationsPanel'
 import { ShortcutsPanel } from './settings/ShortcutsPanel'
 import { AboutPanel } from './settings/AboutPanel'
+import { ImportPanel } from './settings/ImportPanel'
 
 const GROUP_PREFERENCES = 'Preferences'
 const GROUP_SYSTEM = 'System'
 
 const TABS = [
   { key: 'overview', label: 'Overview', icon: <PanelsTopLeft size={16} />, description: 'System status, memory, agent config, and usage metrics' },
+  { key: 'imports', label: 'Import', icon: <Import className="lucide-inline" />, description: 'Bring supported data from another AI agent into KiroCrew' },
   { key: 'chat', label: 'Chat', icon: <MessageSquare size={16} />, group: GROUP_PREFERENCES, description: 'Message behavior, history, timestamps, and context' },
   { key: 'display', label: 'Display', icon: <Palette size={16} />, group: GROUP_PREFERENCES, description: 'Zoom, font, and color theme preferences' },
   { key: 'voice', label: 'Voice', icon: <Mic size={16} />, group: GROUP_PREFERENCES, description: 'Text-to-speech and speech-to-text (dictation) settings' },
@@ -77,6 +79,7 @@ export default function SettingsPage() {
     >
       {tab => <>
         {tab === 'overview' && <OverviewPanel />}
+        {tab === 'imports' && <ImportPanel />}
         {tab === 'chat' && <ChatPanel />}
         {tab === 'display' && <DisplayPanel />}
         {tab === 'voice' && <VoicePanel />}

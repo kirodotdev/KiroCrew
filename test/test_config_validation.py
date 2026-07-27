@@ -164,6 +164,16 @@ class TestValidateConfigData:
         validation.validate_config_data(data)
         assert data["agent"]["log_level"] == "DEBUG"
 
+    @pytest.mark.skipif(not validation._HAS_JSONSCHEMA, reason="jsonschema not installed")
+    def test_legacy_numeric_strings_are_normalized_before_validation(self) -> None:
+        data = {
+            "session": {"pool_size": "5"},
+            "agent": {"subagent_cost_gb": "0.25"},
+        }
+        validation.validate_config_data(data)
+        assert data["session"]["pool_size"] == 5
+        assert data["agent"]["subagent_cost_gb"] == 0.25
+
 
 class TestLoaderBackCompatReexport:
     """The C3 symbols remain importable from ``kiro_crew.config.loader``."""

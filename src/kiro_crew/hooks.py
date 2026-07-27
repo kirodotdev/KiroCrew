@@ -997,8 +997,44 @@ def stat_identity(raw: str) -> tuple[int, int] | None:
 
 
 def _fd_real_path(fd: int) -> str | None:
-    """Real filesystem path of an OPEN descriptor (Linux/macOS), else None."""
+    """Real filesystem path of an OPEN descriptor."""
     import os
+
+    if os.name == "nt":
+        try:
+            import ctypes
+            import msvcrt
+
+            win_dll = getattr(ctypes, "WinDLL", None)
+            get_osfhandle = getattr(msvcrt, "get_osfhandle", None)
+            if not callable(win_dll) or not callable(get_osfhandle):
+                return None
+            kernel32 = win_dll("kernel32", use_last_error=True)
+            get_final_path = kernel32.GetFinalPathNameByHandleW
+            get_final_path.argtypes = [
+                ctypes.c_void_p,
+                ctypes.c_wchar_p,
+                ctypes.c_uint32,
+                ctypes.c_uint32,
+            ]
+            get_final_path.restype = ctypes.c_uint32
+            buffer = ctypes.create_unicode_buffer(32768)
+            length = get_final_path(
+                ctypes.c_void_p(get_osfhandle(fd)),
+                buffer,
+                len(buffer),
+                0,
+            )
+            if length == 0 or length >= len(buffer):
+                return None
+            path = buffer.value
+            if path.startswith("\\\\?\\UNC\\"):
+                return "\\\\" + path[8:]
+            if path.startswith("\\\\?\\"):
+                return path[4:]
+            return path
+        except (AttributeError, ImportError, OSError, ValueError):
+            return None
 
     try:
         return os.readlink(f"/proc/self/fd/{fd}")  # Linux
@@ -1015,7 +1051,12 @@ def _fd_real_path(fd: int) -> str | None:
     return None
 
 
-def safe_read_file_bytes_nolink(raw: str, within_root: str | None = None) -> bytes | None:
+def safe_read_file_bytes_nolink(
+    raw: str,
+    within_root: str | None = None,
+    *,
+    max_bytes: int | None = None,
+) -> bytes | None:
     """Like :func:`safe_read_file_bytes` but also rejects hardlinked inodes.
 
     R30 F1: staging must pin its hardlink check to the SAME inode it reads.
@@ -1040,6 +1081,13 @@ def safe_read_file_bytes_nolink(raw: str, within_root: str | None = None) -> byt
     import os
     import stat as _stat
 
+    # Callers that pass an explicit limit own the higher-level bound (for
+    # example, the importer's trusted 64 MiB SQLite snapshot cap). Keep the
+    # default cap for general reads, but do not silently narrow a documented
+    # caller-specific limit back to 50 MiB.
+    read_limit = MAX_FILE_BYTES if max_bytes is None else max_bytes
+    if read_limit < 0:
+        raise ValueError("max_bytes must be non-negative")
     path = validate_file_path(raw)
     if path is None:
         return None
@@ -1057,15 +1105,19 @@ def safe_read_file_bytes_nolink(raw: str, within_root: str | None = None) -> byt
             if fd_real is None:
                 return None  # cannot verify containment -> fail closed
             root_real = os.path.realpath(within_root)
-            if os.path.commonpath([fd_real, root_real]) != root_real:
+            try:
+                contained = os.path.commonpath([fd_real, root_real]) == root_real
+            except ValueError:
+                contained = False
+            if not contained:
                 return None  # opened inode escapes the approved tree
             if is_sensitive_path(fd_real):
                 return None
         with os.fdopen(fd, "rb") as fh:
-            data = fh.read(MAX_FILE_BYTES + 1)
+            data = fh.read(read_limit + 1)
         fd = -1  # consumed by fdopen
-        if len(data) > MAX_FILE_BYTES:
-            raise FileTooLargeError(f"File exceeds {MAX_FILE_BYTES // (1024 * 1024)} MB safety cap")
+        if len(data) > read_limit:
+            raise FileTooLargeError(f"File exceeds {read_limit // (1024 * 1024)} MB safety cap")
         return data
     except OSError:
         return None

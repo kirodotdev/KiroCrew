@@ -79,6 +79,13 @@ src/kiro_crew/deploy/skills/artifact-deploy/MIGRATION.md:.*meshclaw
 # OLD install being imported (a legitimate user-facing migration source).
 transfer/
 
+# Foreign-agent onboarding names MeshClaw as a public migration source.
+src/kiro_crew/onboarding_import.py:.*[Mm]esh[Cc]law
+src/kiro_crew/dashboard/handlers/onboarding_import.py:.*[Mm]esh[Cc]law
+test/test_onboarding_import.py:.*[Mm]esh[Cc]law
+website/src/components/AgentImportFlow.tsx:.*[Mm]esh[Cc]law
+website/src/components/AgentImportFlow.test.tsx:.*[Mm]esh[Cc]law
+
 # Deploy scan module (detects internal content - the regex IS the feature)
 src/kiro_crew/deploy/scan.py
 

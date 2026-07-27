@@ -117,4 +117,22 @@ describe('useTheme', () => {
     renderThemeHook()
     expect(document.documentElement.dataset.theme).toBe('dark')
   })
+
+  it('treats previously onboarded users as import-onboarded', () => {
+    mockMatchMedia(true)
+    localStorage.setItem('mc-onboarded', '1')
+    const { result } = renderThemeHook()
+    expect(result.current.importOnboarded).toBe(true)
+  })
+
+  it('marks foreign-agent import onboarding complete', () => {
+    mockMatchMedia(true)
+    const { result } = renderThemeHook()
+    expect(result.current.importOnboarded).toBe(false)
+
+    act(() => result.current.markImportOnboarded())
+
+    expect(result.current.importOnboarded).toBe(true)
+    expect(localStorage.getItem('mc-import-onboarded')).toBe('1')
+  })
 })

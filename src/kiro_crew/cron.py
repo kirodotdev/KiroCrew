@@ -139,8 +139,8 @@ class CronLoopSafetyError(RuntimeError):
 
 
 # Jitter bounds (seconds) to spread job execution and avoid traffic spikes
-_JITTER_HOURLY_MAX = 5 * 60    # 0–5 minutes for hourly jobs
-_JITTER_DAILY_MAX = 59 * 60    # 0–59 minutes for daily jobs
+_JITTER_HOURLY_MAX = 5 * 60  # 0–5 minutes for hourly jobs
+_JITTER_DAILY_MAX = 59 * 60  # 0–59 minutes for daily jobs
 
 
 # ── Types ──
@@ -168,7 +168,9 @@ class CronJob:
     thread_ts: str | None = None
     enabled: bool = True
     user_paused: bool = False  # True when explicitly paused by user; never mutated by execution
-    auto_paused: bool = False  # True when paused by execution after repeated failures; cleared on re-enable/success
+    auto_paused: bool = (
+        False  # True when paused by execution after repeated failures; cleared on re-enable/success
+    )
     last_run_ts: float | None = None
     last_status: str | None = None  # "ok" | "error"
     last_error: str | None = None
@@ -192,7 +194,9 @@ class CronJob:
     timezone: str = ""  # IANA timezone for skip evaluation
     persistent_session: bool = True  # False → fresh ephemeral session per run
     minimal_context: bool = False  # True → skip memory/lessons/skills/history
-    hide_in_chat: bool = False  # True → don't create a dashboard chat slot; result still goes to history + Slack/bell
+    hide_in_chat: bool = (
+        False  # True → don't create a dashboard chat slot; result still goes to history + Slack/bell
+    )
     model: str = ""  # per-job model override (canonical key or provider id); "" = inherit
 
     # When agent_sequence is set, it takes precedence over agent_id.
@@ -203,7 +207,9 @@ class CronJob:
     strict_schedule: bool = False  # when True, skip jitter and fire exactly on schedule
     script: str = ""  # Python callable path (module:func or file.py:func); bypasses LLM dispatch
     command: str = ""  # Shell command for direct execution; bypasses LLM dispatch
-    timeout: int = 0  # script/command timeout in seconds (0 = use default: 30s script, 300s command)
+    timeout: int = (
+        0  # script/command timeout in seconds (0 = use default: 30s script, 300s command)
+    )
 
     def _audit_pause_change(self, outcome: str) -> None:
         """Emit a SEL audit event for an auto-pause permission transition.
@@ -710,7 +716,11 @@ class CronService:
             for job_id, started in list(self._job_start_times.items()):
                 elapsed = now - started
                 job = jobs_by_id.get(job_id)
-                deadline = max(min(job.timeout_secs, 86400), _JOB_TIMEOUT_SECS) if job else _JOB_TIMEOUT_SECS
+                deadline = (
+                    max(min(job.timeout_secs, 86400), _JOB_TIMEOUT_SECS)
+                    if job
+                    else _JOB_TIMEOUT_SECS
+                )
                 jitter_allowance = self._job_jitter.get(job_id, 0.0)
                 if elapsed <= deadline + jitter_allowance:
                     continue
@@ -730,7 +740,9 @@ class CronService:
                 except Exception:
                     logger.exception("Reaper: failed to reap cron job %s", job_id)
 
-    async def _force_reap(self, job_id: str, elapsed: float, deadline: int = _JOB_TIMEOUT_SECS) -> None:
+    async def _force_reap(
+        self, job_id: str, elapsed: float, deadline: int = _JOB_TIMEOUT_SECS
+    ) -> None:
         """Kill a cron job's session process and cancel its task."""
         # use the active per-run session key if registered;
         # fall back to the stable key for persistent or legacy callers.
@@ -769,9 +781,7 @@ class CronService:
         # coroutine runs on. See _merge_terminal_state_locked.
         job = next((j for j in self._jobs if j.id == job_id), None)
         if job:
-            last_error = (
-                f"Reaped after {int(elapsed)}s (exceeded {deadline}s deadline)"
-            )
+            last_error = f"Reaped after {int(elapsed)}s (exceeded {deadline}s deadline)"
             last_run_ts = time.time()
             # Reflect into the in-memory snapshot for the history record below
             # and any immediate reader; the authoritative persist is the locked
@@ -866,9 +876,7 @@ class CronService:
             # subprocess_executor so the loop keeps ticking.
             loop = asyncio.get_running_loop()
             raw_children = getattr(client, "_child_pids", None)
-            child_pids: dict = (
-                dict(raw_children) if isinstance(raw_children, dict) else {}
-            )
+            child_pids: dict = dict(raw_children) if isinstance(raw_children, dict) else {}
             fresh = await loop.run_in_executor(subprocess_executor(), _get_child_pids, pid)
             new_pids = [p for p in fresh if p not in child_pids]
             if new_pids:
@@ -890,9 +898,7 @@ class CronService:
             ):
                 logger.warning("Reaper: PID %d recycled for %s, skipping killpg", pid, session_key)
                 stored = dict(raw_children) if isinstance(raw_children, dict) else {}
-                await loop.run_in_executor(
-                    subprocess_executor(), _kill_escaped_children, stored
-                )
+                await loop.run_in_executor(subprocess_executor(), _kill_escaped_children, stored)
                 return
             # Kill the entire process group first
             logger.warning(
@@ -918,9 +924,7 @@ class CronService:
                     await platform_compat.kill_pid_async(pid, platform_compat.SIGKILL)
                 except (ProcessLookupError, OSError):
                     pass
-            await loop.run_in_executor(
-                subprocess_executor(), _kill_escaped_children, child_pids
-            )
+            await loop.run_in_executor(subprocess_executor(), _kill_escaped_children, child_pids)
         except Exception:
             logger.exception("Reaper: SIGKILL failed for %s", session_key)
 
@@ -1117,6 +1121,22 @@ class CronService:
         self._persist_add_locked(job)
         self._arm_timer()
         logger.info("Added cron job '%s' (%s)", name, job.id)
+        return job
+
+    def add_job_if_absent(
+        self,
+        predicate: Callable[[CronJob], bool],
+        **kwargs: Any,
+    ) -> CronJob | None:
+        """Build and persist a job only when no current store entry matches."""
+        job = self._build_job(**kwargs)
+        with self._file_lock():
+            self._sync()
+            if any(predicate(existing) for existing in self._jobs):
+                return None
+            self._jobs.append(job)
+            self._save()
+        self._arm_timer()
         return job
 
     def _build_job(
@@ -1370,9 +1390,7 @@ class CronService:
                 if "skip_dates" in kwargs and kwargs["skip_dates"]:
                     for _d in kwargs["skip_dates"]:
                         if not is_valid_skip_date(_d):
-                            raise ValueError(
-                                f"Invalid skip_date: {_d!r} (expected YYYY-MM-DD)"
-                            )
+                            raise ValueError(f"Invalid skip_date: {_d!r} (expected YYYY-MM-DD)")
                 if "name" in kwargs and kwargs["name"]:
                     job.name = kwargs["name"]
                 if "message" in kwargs and kwargs["message"]:
@@ -1596,17 +1614,12 @@ class CronService:
         removed: list[str] = []
         with self._file_lock():
             self._sync()
-            removed = [
-                j.id for j in self._jobs
-                if getattr(j, "created_by", "") == owner_prefix
-            ]
+            removed = [j.id for j in self._jobs if getattr(j, "created_by", "") == owner_prefix]
             if removed:
                 targets = set(removed)
                 self._jobs = [j for j in self._jobs if j.id not in targets]
                 self._save()
-                logger.info(
-                    "Removed %d cron job(s) owned by %s", len(removed), owner_prefix
-                )
+                logger.info("Removed %d cron job(s) owned by %s", len(removed), owner_prefix)
         return removed
 
     async def remove_jobs_by_owner(self, owner_prefix: str) -> list[str]:
@@ -2022,11 +2035,7 @@ class CronService:
         # create the replacement task below; the finishing tick exits normally.
         # A *different* caller rescheduling while the tick merely waits on
         # shutdown_event still cancels correctly (current is not the timer task).
-        if (
-            self._timer_task
-            and not self._timer_task.done()
-            and self._timer_task is not current
-        ):
+        if self._timer_task and not self._timer_task.done() and self._timer_task is not current:
             self._timer_task.cancel()
         if not self._running:
             return
@@ -2479,9 +2488,7 @@ class CronService:
         try:
             while not platform_compat.try_acquire_lock(fd.fileno(), exclusive=True):
                 if time.monotonic() >= deadline:
-                    raise CronStoreBusy(
-                        f"Could not acquire cron store lock within {timeout:g}s"
-                    )
+                    raise CronStoreBusy(f"Could not acquire cron store lock within {timeout:g}s")
                 time.sleep(poll)
             try:
                 yield

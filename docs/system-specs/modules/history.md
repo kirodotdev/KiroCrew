@@ -1,6 +1,9 @@
 # Conversation History Module
 
-Last Updated: 2026-07-25 (foreign-append matcher hardened to a count-bounded, exact-`(ts,role,content)`-first two-pass with ambiguity-guarded ts-only matching — fixes colliding-timestamp duplication on coarse clocks AND the ts-greedy data-loss regression; on-loop offload discipline enforcement via OnLoopPersistError + CI-enforced strict mode in the e2e gateway job + deferred single-writer-queue alternative; foreign-append timestamp-first bounded dedup with archive of ambiguous drops + creation-time uuid successor identity; agent_usage roster ordering, folder_id in session metadata, _SEARCH_SCAN_WINDOW relevance search; session archive, configurable autocompact)
+Last Updated: 2026-07-26 (foreign-agent session import: visible text only,
+closed generated keys, ConversationLog persistence, and idempotent provenance.
+Prior — 2026-07-25 foreign-append matcher hardening, on-loop offload discipline,
+archive behavior, and creation-time successor identity.)
 
 ## Overview
 
@@ -45,6 +48,69 @@ workspace-scoped by default (fail-closed via `_caller_workspace`/`_ws_bucket`,
   `ConversationLog`). The gateway-side one-liner
   generation uses the shared `llm_helpers.run_bg_oneliner` helper (the same
   acquire→drive→destroy skeleton as title / link-label / folder-icon generation).
+
+### Foreign-agent session import
+
+The first-run importer accepts session history from Codex, Claude Code,
+MeshClaw, OpenClaw, and Hermes. It projects each selected conversation to
+**visible user and assistant text only**. Hidden reasoning, tool calls and tool
+results, system messages, raw instructions, provider session identifiers,
+approval state, and other runtime metadata are not copied.
+Known non-text record/content envelopes are excluded as whole units even when a
+foreign store labels them with a user/assistant role or places visible-looking
+text in their content field.
+
+Claude transcript records marked as metadata, sidechain activity, tool-use
+results, or a non-external user type are excluded as whole records even when
+they contain visible-looking text. Workspace discovery collects every valid
+scalar cwd/project field from a record and every current Codex
+`payload.workspace_roots[]` entry; one record is not reduced to its first path.
+
+OpenClaw JSONL is considered only under `agents/<agentId>/sessions` and only
+when the sibling `sessions.json` has one unambiguous entry resolving to that
+file. The entry must have `createdVia` operator/channel/talk, a human
+`createdActor`, no parent/spawn/runtime/plugin/fork ownership, and a key outside
+the cron, subagent, ACP/bridge, hook, node, heartbeat, and internal-effects
+namespaces. Trajectory/checkpoint artifacts and deleted/reset archives are
+diagnosed and excluded. Canonical `agents/<agentId>/agent/openclaw-agent.sqlite`
+stores are safety-checked and diagnosed as unsupported; their sessions are not
+partially projected.
+
+Hermes SQLite import requires both `sessions` and `messages`, joining
+`messages.session_id` to `sessions.id`. Accepted sessions have a nonempty source
+other than subagent/tool/cron and a null `parent_session_id`; parented/runtime
+lineage is diagnosed, and only accepted sessions contribute workspaces. Message
+projection remains visible user/assistant text only and honors the current
+`active`/compacted marker. A legacy messages-only database has no sufficient
+provenance and is diagnosed rather than guessed.
+
+Imported conversations are persisted through `ConversationLog` under generated,
+closed destination keys. They enter the normal History list but do not create
+live dashboard slots, resume a foreign runtime, or reuse a foreign identifier as
+an executable KiroCrew session key. The normal ConversationLog metadata/message
+schema, rotation, path sanitization, and retention behavior therefore remain
+authoritative.
+
+Import is merge-only and idempotent. A durable provenance ledger binds the
+foreign source and stable source-item identity to the generated destination key;
+re-applying the same item is reported as already imported instead of appending a
+duplicate conversation. The foreign session tree is read-only throughout scan
+and apply and is never rewritten, moved, or deleted.
+The existence check, interrupted-prefix repair, append, and rollback for one
+destination session run under the same `ConversationLog._locked` critical
+section, so concurrent imports cannot interleave transcripts or record a
+partial session as complete.
+
+Bounded JSONL parsing never emits a partial conversation: reaching a file line
+or line-byte limit excludes every conversation projected from that file, and
+reaching a per-session visible-message limit excludes that session while allowing
+other complete sessions in the file. A malformed JSONL record likewise excludes
+the whole file, including workspace paths observed in its otherwise valid prefix.
+Each exclusion is reported by its limit reason. Within one source, mirrored
+identical normalized visible transcripts collapse to one import candidate, but
+the retained candidate keeps its stable source-item identity rather than deriving
+identity from its transcript. A growing source session therefore remains tied to
+the same provenance ledger entry.
 
 ## Dashboard History Persistence — Frozen Prefix + Live Window (`dashboard/chat_persistence.py`)
 

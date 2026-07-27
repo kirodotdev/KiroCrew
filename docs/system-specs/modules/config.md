@@ -2,6 +2,14 @@
 
 Last Updated: 2026-07-25 (Data-home resolution hardened against split-brain: (1) the completion marker `~/.kiro/crew/.data-home-ready` is now AUTHORITATIVE — marker present ⇒ trust the new home and NEVER re-migrate, even when a `~/.kirocrew` reappears alongside it (that dir is resurrection debris under the no-downgrade design, never promoted over the authoritative home; the old "marker + legacy ⇒ legacy always wins" re-migration is removed, closing a data-loss window where debris reverted `sel_hmac.key`/logs/`workspace/` and the recreate/TOCTOU race); (2) when a migration is skipped because a gateway is live, the resolving process JOINS whichever home the live gateway holds (legacy or new) so its `.local_secret` matches for internal IPC — a process pinned to the other home would 403 every internal API call and, writing into legacy, resurrect it. Prior — Data-home migration now overwrites READ-ONLY destination files: the re-migration copy passes a custom `copy_function` (`_copy_overwrite`) that clears a same-path destination's read-only state — adds the owner-write bit — before `copy2`, so a `0o444` git packfile under an app-source checkout no longer makes `shutil.copytree` raise `PermissionError` and abort the whole migration — the bug that trapped an already-populated new home in a permanent split-brain. Prior — Data-home migration simplified to copy-then-verify-then-delete: legacy `~/.kirocrew` is copied DIRECTLY into `~/.kiro/crew` — no staging dir, no quiesce snapshot — legacy files OVERWRITE anything already there (no more no-overwrite merge / byte-identical divergence guard / reconcile-with-backup) — and `~/.kirocrew` is deleted outright once verified, with no `~/.kirocrew.archived` rollback copy, no `~/.kiro/crew.pre-migration` divergent-home backup, no archive secret-expiry sweep. Symlinks are skipped entirely (not preserved, not dereferenced) rather than retargeted, which also removes the regenerable-bulk-dir relocation step (`models`/`cache` are simply never copied, matching a fresh install). `security._CREW_HOME_PREFIXES` dropped `.kirocrew.archived`; the `.kiro/crew.pre-migration` keystone entry is removed. Since an earlier (already-shipped) release could have left one of those now-ungated directories on disk, `config_dir()` added `_sweep_ungated_archive_leftovers` to delete either outright on every default-path resolution — see "Leftover-archive cleanup" below. There is now no downgrade/rollback path — see "No rollback" below; the release gate below is unchanged but now applies unconditionally (no install has an archive fallback). Prior — SessionConfig.empty_response_auto_continue added — default-ON gate for the dashboard chat runner's bounded empty-response auto-continue rung; see session.md "Empty-response recovery ladder". Prior — Divergent-new-home auto-reconcile: a pre-existing/stale `~/.kiro/crew` that diverges from legacy during the no-overwrite merge no longer strands the user on `~/.kirocrew` — reconciliation now completes the switch with legacy authoritative by renaming the divergent home aside to a keystone-gated (`~/.kiro/crew.pre-migration` is on `security._SENSITIVE_HOME_DIRS`), owner-locked `~/.kiro/crew.pre-migration/<ts>` backup, promoting the quiesced legacy snapshot into `~/.kiro/crew` (absolute intra-home symlinks retargeted), and marking complete; live data is unchanged (legacy, as the prior retain behavior), the sidelined home is a recoverable rollback, and a gateway live on the new home is never yanked aside. Prior — Data-home migration hardening: quiesce-before-compare closes the compare→archive TOCTOU (legacy tree atomically renamed to a per-PID `~/.kirocrew.quiescing.<pid>` snapshot before the divergence compare, then that frozen snapshot is compared + archived, so a concurrent legacy-era writer can't make stale state authoritative); regenerable bulk trees (`models`, `cache`) are RELOCATED (moved, not copied) from the snapshot into the new home so the GGUF model survives the upgrade for offline users (archive still carries no duplicate; falls back to strip-and-redownload on EXDEV); pre-copy stderr visibility notice; documented downgrade/rollback procedure; `kirocrew doctor` **Data Home** section surfaces the leftover `~/.kirocrew.archived` size + cleanup command. Prior — 2026-07-23 Data home moved from top-level `~/.kirocrew` to `~/.kiro/crew` — `config_dir()` now resolves to `~/.kiro/crew` by default (still overridable via `KIROCREW_HOME`), and triggers a one-time migration of a pre-move `~/.kirocrew` into the new home on first launch. See "Data Home Location & Migration" below. Prior — 2026-07-15 Removed the SecretaryConfig / TaskKeeperConfig / KeywordHook DTOs and the `secretary`/`taskkeeper` KiroCrewConfig fields — the Secretary/TaskKeeper features were dropped from the public fork (P472753900); config-baseline regenerated. Prior — 2026-07-13 Schema refresh: documented security-bounded load-time clamp — SUBAGENT_AUTO_MAX_CEILING=64 / SUBAGENT_MAX_TURNS_CEILING=200 / POOL_SIZE_MAX=10, `_clamp_security_bounds` + `config_bounds_clamped` SEL event; added clamped AgentConfig fields, SessionConfig.pool_size, MessagingConfig/SkillsConfig/TelemetryConfig/DashboardConfig (theme_mode/theme_color/onboarded) DTOs, `_resolve_named_agent_model`/`kiro_agents_dir`; corrected `_resolve_agent_model` fallback to `config_package_dir()/defaults.json`. 2026-06-22: AgentConfig: added sandbox_allow_no_isolation (SEC-009) field; agent_model_state.json sidecar: model_managed/cc_model moved out of kiro agent specs so kiro-cli deny_unknown_fields no longer drops KiroCrew agents)
 
+Update 2026-07-26: Foreign-agent onboarding adds the independent
+`dashboard.import_onboarded` gate, migration from `dashboard.onboarded`, a
+strict merge-only settings projection. The loader preserves legacy numeric
+strings and integral floats in existing config files while rejecting booleans
+and non-integral, malformed, or non-finite values; imported settings are
+type-validated before they are written, and the CLI converts typed values
+before writing.
+
 ## Overview
 
 The config module (`kiro_crew/config/loader.py`) loads runtime configuration from `~/.kiro/crew/config.json` using stdlib dataclasses with sensible defaults.
@@ -405,7 +413,8 @@ class DashboardConfig:
     verbosity: str = "default"     # "default" | "concise"; "concise" injects a brevity guideline block into the agent prompt ({{VERBOSITY_BLOCK}}). Read/written via GET/PUT /api/dashboard/config (rejects values other than default|concise). Resolved for all transports in ContextBuilder._resolve_prompt_templates.
     theme_mode: str = ""           # "dark" | "light" | "system"; empty = unset (frontend falls back to localStorage or "system")
     theme_color: str = ""          # color-theme slug (e.g. "kiro", "emerald", "monokai"); empty = unset
-    onboarded: bool = False        # whether the "Choose your look" onboarding modal was completed
+    onboarded: bool = False         # whether the "Choose your look" onboarding modal was completed
+    import_onboarded: bool = False  # whether foreign-agent import was completed or skipped
     tips_enabled: bool = True      # feature-discovery tips (GET /api/tips/next); live-read
     tips_cadence_hours: float = 6.0    # min hours between surfaced tips (server-side gate; clamped >= 0)
     tips_snooze_hours: float = 48.0    # hours before a snoozed tip is eligible again (clamped >= 0)
@@ -480,6 +489,33 @@ closing the direct-config-edit DoS gap.
 (shared across ports and devices) rather than browser-local. The frontend reads
 them at boot via `GET /api/theme/boot`; empty `theme_mode`/`theme_color` mean
 unset (the frontend falls back to `localStorage` or the built-in default).
+
+### Foreign-agent import onboarding state
+
+`DashboardConfig.import_onboarded` is a separate workspace-persistent gate from
+`dashboard.onboarded`. The import gate controls the first-run foreign-agent
+review; `onboarded` continues to control the existing theme/feature onboarding.
+The import gate is evaluated first. Completing or skipping import sets only
+`import_onboarded`; it does not silently complete the later onboarding.
+
+For backward compatibility, a config that omits `dashboard.import_onboarded`
+is migrated from `dashboard.onboarded`. An already-onboarded user therefore
+starts with `import_onboarded=true` and retains legacy status past the new first-run
+gate, while a new or not-yet-onboarded workspace sees import before the existing
+onboarding. `GET /api/theme/boot` exposes the resolved `import_onboarded` boolean
+alongside the existing non-secret theme boot fields.
+
+The frontend also recognizes the older browser-only `mc-onboarded` marker when
+no `mc-import-onboarded` marker exists. Before applying false server defaults,
+it persists both onboarding flags through `PUT /api/config/theme`; an explicit
+newer import marker remains a cache only and continues to yield to server state.
+
+Foreign settings are never deep-merged into `config.json`. The importer applies
+only its explicit non-security settings allowlist, preserves every existing
+KiroCrew value on collision, and reports unsupported or secret-bearing source
+settings without copying them. Foreign credentials, security policy,
+approval/sandbox settings, agent/runtime state, hooks, and arbitrary unknown
+config sections cannot enter configuration through this path.
 
 ### `ChannelConfig.from_dict(data: dict) -> ChannelConfig`
 Parses a channel config entry from JSON. Invalid activation values fall back to `"mention"`.

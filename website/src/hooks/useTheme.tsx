@@ -687,7 +687,10 @@ export interface ThemeContextValue {
   customThemeDataMap: Map<string, CustomThemeData>
   themeVersion: number
   onboarded: boolean
+  importOnboarded: boolean
+  themeBootReady: boolean
   markOnboarded: () => void
+  markImportOnboarded: () => void
   addCustomTheme: (data: Omit<CustomThemeData, 'slug'> & { slug?: string }) => Promise<CustomThemeData>
   deleteCustomTheme: (slug: string) => Promise<void>
   loadCustomThemes: () => Promise<void>
@@ -759,6 +762,14 @@ function useThemeState(): ThemeContextValue {
   // Gate self-repair on the first custom-theme load so a persisted custom-<slug>
   // selection isn't reset to the default before the theme list has arrived.
   const [customThemesLoaded, setCustomThemesLoaded] = useState(false)
+  const [importOnboarded, setImportOnboarded] = useState(
+    () => !!localStorage.getItem('mc-import-onboarded') || !!localStorage.getItem('mc-onboarded'),
+  )
+  const legacyOnboardedRef = useRef(
+    !!localStorage.getItem('mc-onboarded') && !localStorage.getItem('mc-import-onboarded'),
+  )
+  const legacyMigrationStartedRef = useRef(false)
+  const [themeBootReady, setThemeBootReady] = useState(false)
 
   const loadCustomThemes = useCallback(async () => {
     try {
@@ -801,9 +812,18 @@ function useThemeState(): ThemeContextValue {
     return () => window.removeEventListener(CUSTOM_THEMES_CHANGED_EVENT, handler)
   }, [loadCustomThemes])
 
+  const { mutate: persistTheme } = useMutation({
+    mutationFn: (body: {
+      mode?: string
+      color?: string
+      onboarded?: boolean
+      import_onboarded?: boolean
+    }) => api.updateThemeConfig(body),
+  })
+
   // Fetch workspace theme config from server on boot.
   // Server is the source of truth; localStorage is a render cache.
-  const { data: bootData } = useQuery({
+  const { data: bootData, isFetched: themeBootFetched } = useQuery({
     queryKey: ['theme-boot'],
     queryFn: () => api.themeBoot(),
     staleTime: Infinity,  // only need it once on mount
@@ -811,22 +831,59 @@ function useThemeState(): ThemeContextValue {
   })
 
   useEffect(() => {
-    if (!bootData) return
-    if (bootData.mode && bootData.mode !== mode) {
-      safeSetItem('mc-theme', bootData.mode)
-      setMode(bootData.mode as ModePreference)
-      setResolved(resolveMode(bootData.mode as ModePreference))
+    if (!themeBootFetched) return
+    if (bootData) {
+      if (bootData.mode && bootData.mode !== mode) {
+        safeSetItem('mc-theme', bootData.mode)
+        setMode(bootData.mode as ModePreference)
+        setResolved(resolveMode(bootData.mode as ModePreference))
+      }
+      if (bootData.color && bootData.color !== colorTheme) {
+        safeSetItem('mc-color-theme', bootData.color)
+        setColorThemeState(bootData.color)
+      }
+      const hasOnboardingState =
+        typeof bootData.onboarded === 'boolean'
+        && typeof bootData.import_onboarded === 'boolean'
+      const needsLegacyMigration =
+        hasOnboardingState
+        && legacyOnboardedRef.current
+        && (!bootData.onboarded || !bootData.import_onboarded)
+      if (needsLegacyMigration && !legacyMigrationStartedRef.current) {
+        legacyMigrationStartedRef.current = true
+        setOnboarded(true)
+        setImportOnboarded(true)
+        persistTheme(
+          { onboarded: true, import_onboarded: true },
+          {
+            onSuccess: () => {
+              safeSetItem('mc-import-onboarded', '1')
+              legacyOnboardedRef.current = false
+            },
+          },
+        )
+      } else if (!legacyMigrationStartedRef.current) {
+        if (typeof bootData.onboarded === 'boolean') {
+          setOnboarded(bootData.onboarded)
+          if (bootData.onboarded) {
+            safeSetItem('mc-onboarded', '1')
+          } else {
+            localStorage.removeItem('mc-onboarded')
+          }
+        }
+        if (typeof bootData.import_onboarded === 'boolean') {
+          setImportOnboarded(bootData.import_onboarded)
+          if (bootData.import_onboarded) {
+            safeSetItem('mc-import-onboarded', '1')
+          } else {
+            localStorage.removeItem('mc-import-onboarded')
+          }
+        }
+      }
     }
-    if (bootData.color && bootData.color !== colorTheme) {
-      safeSetItem('mc-color-theme', bootData.color)
-      setColorThemeState(bootData.color)
-    }
-    if (bootData.onboarded) {
-      safeSetItem('mc-onboarded', '1')
-      setOnboarded(true)
-    }
+    setThemeBootReady(true)
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bootData])  // Only react when boot data arrives
+  }, [bootData, themeBootFetched])
 
   useEffect(() => {
     applyTheme(colorTheme, resolved)
@@ -866,11 +923,6 @@ function useThemeState(): ThemeContextValue {
     mql.addEventListener('change', handler)
     return () => mql.removeEventListener('change', handler)
   }, [mode])
-
-  const { mutate: persistTheme } = useMutation({
-    mutationFn: (body: { mode?: string; color?: string; onboarded?: boolean }) =>
-      api.updateThemeConfig(body),
-  })
 
   const setMode_ = useCallback((pref: ModePreference) => {
     safeSetItem('mc-theme', pref)
@@ -1002,6 +1054,11 @@ function useThemeState(): ThemeContextValue {
     persistTheme({ onboarded: true })
   }, [persistTheme])
 
+  const markImportOnboarded = useCallback(() => {
+    safeSetItem('mc-import-onboarded', '1')
+    setImportOnboarded(true)
+  }, [])
+
   return {
     theme: resolved,
     preference: mode,
@@ -1016,7 +1073,10 @@ function useThemeState(): ThemeContextValue {
     customThemeDataMap,
     themeVersion,
     onboarded,
+    importOnboarded,
+    themeBootReady,
     markOnboarded,
+    markImportOnboarded,
     addCustomTheme,
     deleteCustomTheme,
     loadCustomThemes,

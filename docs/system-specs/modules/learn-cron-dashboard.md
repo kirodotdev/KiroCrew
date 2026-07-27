@@ -1,10 +1,6 @@
 # Self-Learning, Cron & Dashboard Modules
 
-Latest amendment: 2026-07-26 (cross-platform Kiro CLI prerequisite
-status/install/login service, first-run SPA gate, and readiness-resumable
-post-fan-out synthesis).
-
-Last Updated: 2026-07-23 (source payloads gain normalized `mergeable`/`mergeStateStatus` merge-state fields for GitHub and GitLab; PullRequestPanel surfaces a merge-blocker banner for open PRs — conflicts/behind carry an agent chat handoff, branch-protection blocks do not. Prior: left-nav IA restructure: sidebar toggle moved into the rail's menu row; Sessions label; Apps header with accent Explore link; per-frame Apps scrolling; bottom-pinned Agent Capabilities/Settings/Contact Us; Agents + Capabilities merged into the /capabilities panel — /agents redirects there. Prior: independent source-tabs hardening: provider binaries must be canonical root-owned non-writable paths; command-specific output ceilings and task-lifetime retained-byte reservations bound provider memory; only durable messages contribute sources; backend/frontend/panel retain at most 64 first-seen sources per slot. Prior: pull-request source links, source/check/resolve APIs, bounded sidebar CI refresh, SidePanel Changes view; learn_add session-recovery resolver now probes cron JSONL names; artifact companion-chat updates; silent-cron failure-alert suppression; CHAT_TURN_TIMEOUT remains aligned with ACP)
+Last Updated: 2026-07-26 (foreign-agent first-run scan/review/apply flow, authenticated API contract, disabled schedule import, and onboarding order — the import gate runs after the cross-platform Kiro CLI prerequisite gate and before the theme tour. Prior — 2026-07-26 cross-platform Kiro CLI prerequisite status/install/login service, first-run SPA gate, and readiness-resumable post-fan-out synthesis. Prior — 2026-07-23 source payloads gain normalized `mergeable`/`mergeStateStatus` merge-state fields for GitHub and GitLab; PullRequestPanel surfaces a merge-blocker banner for open PRs — conflicts/behind carry an agent chat handoff, branch-protection blocks do not. Prior: left-nav IA restructure: sidebar toggle moved into the rail's menu row; Sessions label; Apps header with accent Explore link; per-frame Apps scrolling; bottom-pinned Agent Capabilities/Settings/Contact Us; Agents + Capabilities merged into the /capabilities panel — /agents redirects there. Prior: independent source-tabs hardening: provider binaries must be canonical root-owned non-writable paths; command-specific output ceilings and task-lifetime retained-byte reservations bound provider memory; only durable messages contribute sources; backend/frontend/panel retain at most 64 first-seen sources per slot. Prior: pull-request source links, source/check/resolve APIs, bounded sidebar CI refresh, SidePanel Changes view; learn_add session-recovery resolver now probes cron JSONL names; artifact companion-chat updates; silent-cron failure-alert suppression; CHAT_TURN_TIMEOUT remains aligned with ACP)
 
 ## Overview
 
@@ -208,6 +204,137 @@ When the Schedule page (`/schedule`, `SchedulePage.tsx`) has **no jobs**, the em
 
 Clicking a card opens the **existing** create panel with those fields pre-filled — it does **not** create a job directly. This is driven by an optional `prefill?: CronPrefill` prop on `JobForm`: in **create mode** (no `job`) the prefill seeds the initial form state (name, message, `schedMode`, interval, `weekDays`, `weekTime`, `cronExpr`); in **edit mode** (a `job` is present) `prefill` is ignored. The user reviews and saves through the normal `createCron` path, so a preset-seeded job is an ordinary cron job with no special lineage. `CronPrefill.weekDays` uses JobForm's grid convention (Mon=1 … Sun=7); a test pins the weekly preset to a Monday (`dow=1`) cron so a future change to that mapping fails loudly. Cards are rendered as accessible `Clickable` elements, hug their content, and equalize to the tallest via CSS-grid stretch. In the empty state only, the scroll container uses an 8px bottom pad (`pb-2`) instead of the default `pb-8` so the card row's bottom lines up with the left-nav panel's `m-2` bottom edge; the list/table view retains the standard `pb-8`.
 
+### Imported schedules
+
+The foreign-agent importer accepts only schedules that can be represented by
+the native cron model, including finite positive interval and one-shot values.
+Every imported job is created disabled (`enabled=False`, user-paused) in its
+initial `add_job` persistence, with its validated timezone included in that
+same call, regardless of the source's enabled state. An import can therefore
+never start unattended work; the user must explicitly review and resume it
+through the normal cron surface. A record-level timezone is validated and
+preserved for string cron schedules as well as object schedules; an object
+schedule's own timezone takes precedence when both are present. A present
+non-string or unknown timezone rejects the schedule rather than silently
+falling back to host-local time.
+
+Schedule deduplication is semantic rather than based on a foreign job id: an
+equivalent existing/imported schedule is reported as deduplicated and is not
+created again, regardless of `created_by`. Re-applying a source is therefore
+idempotent even when its native ids are unstable. A record is rejected whole
+rather than narrowed when it contains command/script/environment execution,
+tool filters, cwd, skills, chaining, delivery/channel, repeat/count,
+provider/model/agent/session, approval, or sandbox semantics. Unsupported
+schedule forms, unknown fields in the record/payload/schedule containers, and
+all scheduler runtime state (last/next run, failures, leases, process/session
+state) are reported but not copied. Interval values must map exactly to an
+integer number of native seconds and remain at least 60 seconds; fractional or
+sub-minute values are rejected rather than rounded. A credential detected in a
+schedule name or prompt rejects the entire schedule rather than importing a
+redacted command.
+
+Hermes `cron/jobs.json` is admitted before generic projection only when it has
+name, prompt, and one native schedule: cron `expr`, interval `minutes`, or once
+`run_at`. Cron and naive one-shot wall clocks require a resolvable timezone.
+Empty/null skill, script, context, toolset, workdir, provider/model/base URL and
+snapshot fields plus `no_agent=false` are inert defaults; nonempty variants are
+active semantics and reject the record. Local delivery, empty origin, and
+canonical repeat state (`times=null, completed=0` for recurring jobs;
+`times=1, completed=0` for one-shots) are the only accepted forms. Display,
+pause, and last/next-run fields are ignored only after this semantic gate.
+
+OpenClaw's canonical `openclaw.sqlite` schedule store is safety-checked and
+diagnosed as unsupported rather than partially interpreted. Likewise, a
+current Codex `sqlite/codex-dev.db` with the `automations` table is opened only
+after the shared SQLite/sidecar check; RRULE automations are diagnosed as
+unsupported schedule semantics and are never approximated into cron.
+
+## Foreign-Agent First-Run Import
+
+The dashboard can scan and selectively merge local setup from exactly five
+foreign agents: **Codex, Claude Code, MeshClaw, OpenClaw, and Hermes**. Quick is
+not a source and must not appear as an import option.
+
+The only selectable categories are:
+
+| Category | Import contract |
+|----------|-----------------|
+| Sessions | Visible user/assistant text only; closed generated keys via `ConversationLog` |
+| Memories | Durable memories/preferences through native writers and limits |
+| Workspaces | Valid, existing, non-sensitive local directories only |
+| MCP servers | Secret-free stdio/HTTP definitions; managed servers protected |
+| Skills | User-authored only; source-namespaced and symlink-safe |
+| Schedules | Compatible native schedules; always imported disabled; semantic dedup |
+| Settings | Explicit non-security allowlist only; existing KiroCrew values win |
+
+### Supported foreign format snapshot
+
+The compatibility snapshot below is current as of 2026-07-26. Import is
+path-and-shape based; there is no third-party format-version negotiation. A
+future release remains compatible only while it preserves these recognized
+paths and record/database shapes. Unknown paths are ignored, while malformed,
+ambiguous, unsafe, or over-limit recognized records are skipped with
+diagnostics rather than guessed.
+
+| Source | Root resolution | Recognized layouts |
+|--------|-----------------|--------------------|
+| Codex | `CODEX_HOME`, else `~/.codex` | `sessions/**/*.jsonl` and `archived_sessions/**/*.jsonl` (sessions/workspaces); `config.toml` (workspaces/MCP/settings); `skills/**/SKILL.md` except `.system` (skills). `sqlite/codex-dev.db` automations and unstable memory stores are diagnostic-only. |
+| Claude Code | `CLAUDE_CONFIG_DIR`, then `CLAUDE_HOME`, else `~/.claude`; `~/.claude.json` is also recognized | `projects/**/*.jsonl` except runtime/subagent/tool-result trees (sessions/workspaces); root and discovered-workspace settings/MCP JSON files (workspaces/MCP/settings); root and `<workspace>/.claude/skills` packages (skills); root/project `memory` or `memories` Markdown (memories). `CLAUDE.md`, rules, tasks, and schedules are not imported. |
+| MeshClaw | `MESHCLAW_HOME`, else `~/.meshclaw` | `sessions/**/*.jsonl` (sessions/workspaces); `config.json` and `mcp.json` (workspaces/MCP/settings); `recent_projects.json`, `workspace_dir`, and `project_dir` (workspaces); resolved workspace `skills` and Markdown memory trees (skills/memories); supported `memory.db` semantic/episodic tables (memories); `crons.json` and `cron/jobs.json` (schedules). |
+| OpenClaw | `OPENCLAW_STATE_DIR`; else `OPENCLAW_HOME/.openclaw[-profile]`; else `~/.openclaw[-profile]`, with existing `~/.clawdbot` fallback for the default profile | Explicit/default JSON5 config (workspaces/MCP/settings); human-owned `agents/<agent>/sessions/*.jsonl` with matching `sessions.json` provenance (sessions/workspaces); explicit, configured, profile, state, and per-agent workspace roots containing `skills`, `memory`, or `MEMORY.md` (skills/memories); `cron/jobs.json` (schedules). Native session/schedule SQLite stores are diagnostic-only. |
+| Hermes Agent | `HERMES_HOME`, then `HERMES_AGENT_HOME`, then `HERMES_CONFIG_DIR`; else existing `%LOCALAPPDATA%/hermes`; else `~/.hermes`. Scan the root plus at most 50 non-link directories from a bounded `profiles/*` enumeration; report overflow without consuming the rest of a large directory. | First supported `state.db`, `hermes.db`, or `sessions.db` session schema (sessions/workspaces); exact `memories/MEMORY.md` and `memories/USER.md` (memories); `config.yaml` or `config.yml` (MCP/settings); active local `skills/**/SKILL.md` packages after managed/cache exclusions (skills); `cron/jobs.json` (schedules). `memory_store.db` is diagnostic-only. |
+
+The import is merge-only, idempotent, and provenance-tracked. It never
+overwrites an existing KiroCrew item; conflicts preserve the KiroCrew version.
+A durable ledger records imported source-item identity so a retry or later
+manual import reports already-imported/deduplicated items rather than copying
+them again. Scan and apply treat every source tree as read-only and leave it
+byte-for-byte untouched.
+
+Traversal is bounded by the importer file and directory-entry ceilings. A
+skill package is rejected when the ceiling prevents observing its complete
+tree, rather than being imported as a partial package. Schedule records must
+contain exactly one representable trigger family (cron, interval, or one-shot);
+mixed triggers are skipped as ambiguous.
+
+Unsupported and secret-bearing items are included only in skipped/reporting
+counts and reasons; they are not copied. The excluded set includes hooks, native
+agents/personas, raw instructions/system prompts, credentials and secret-bearing
+MCP fields, security/governance configuration, and scheduler/provider/runtime
+state.
+
+### Authenticated API contract
+
+All three import endpoints require normal dashboard authentication and the
+existing mutation protections; none belongs to the unauthenticated boot
+allowlist:
+
+| Method | Path | Contract |
+|--------|------|----------|
+| `GET` | `/api/onboarding/import/scan` | Return detected supported sources, selectable category counts, skipped/unsupported reporting, and the merge-only marker; do not expose source content, private paths, or secret values |
+| `POST` | `/api/onboarding/import/apply` | Accept selected source ids and category ids, re-scan/validate at apply time, merge eligible items, and return imported/deduplicated/skipped/error summaries |
+| `PUT` | `/api/onboarding/import/state` | Persist completion or skip of the independent import-onboarding gate |
+
+Apply never treats client-provided counts or paths as authority. Source and
+category ids outside the fixed catalogs are rejected rather than interpreted.
+
+### UI ordering and replay
+
+For a new workspace, the full-screen import gate runs before the existing
+theme/feature onboarding. Completing the merge or explicitly skipping it sets
+`dashboard.import_onboarded`; the existing `dashboard.onboarded` flow then
+continues independently. When `import_onboarded` is missing, it migrates from
+`dashboard.onboarded`, so existing onboarded users retain legacy status and do not
+receive a surprise first-run gate.
+
+An older browser profile may have only the legacy `mc-onboarded` completion
+marker. When no newer `mc-import-onboarded` marker exists, the SPA migrates that
+completion to both workspace flags before it applies false boot defaults. Once
+the newer marker exists, the workspace flags remain authoritative.
+
+After onboarding, Settings → Import can launch the same fresh scan/review/apply
+flow again. Replay remains merge-only and idempotent.
+
 ## Dashboard (`dashboard/`)
 
 Modular aiohttp package at `127.0.0.1:5476` (configurable). Split into:
@@ -320,7 +447,8 @@ A pending tool approval has **two** pieces of state that must stay in lockstep: 
 ### Key Endpoints
 
 **Status/System**: `/api/status`, `/api/system` (live metrics, 1s refresh, static fields cached), `/api/stream` (SSE), `/api/ws` (WebSocket — single multiplexed connection replacing SSE + polling for React SPA)
-**Theme**: GET `/api/theme/boot` (**unauthenticated** — same boundary as `/api/health`; returns `{mode, color, onboarded}` so the SPA can apply the workspace theme before the token flow completes; no secrets), GET/PUT `/api/config/theme` (read/persist workspace theme `{mode?, color?, onboarded?}`; `mode` restricted to `""`/`dark`/`light`/`system`)
+**Theme**: GET `/api/theme/boot` (**unauthenticated** — same boundary as `/api/health`; returns `{mode, color, onboarded, import_onboarded}` so the SPA can apply the workspace theme and resolve onboarding gates before the token flow completes; no secrets), GET/PUT `/api/config/theme` (read/persist workspace theme `{mode?, color?, onboarded?, import_onboarded?}`; `mode` restricted to `""`/`dark`/`light`/`system`)
+**Foreign-agent import**: authenticated GET `/api/onboarding/import/scan`, POST `/api/onboarding/import/apply`, PUT `/api/onboarding/import/state`; see "Foreign-Agent First-Run Import".
 **Memory**: GET/PUT `/api/memory/preferences`, GET/PUT `/api/memory/projects`, GET/PUT `/api/memory/history`, GET/PUT `/api/memory/settings` (consolidation config: `history_idle_hours`, `history_max_days`; writes to config.json, applies immediately to running consolidator)
 **Cron**: GET `/api/crons` (includes `last_run_ts`, `has_result`, `has_slot`, `hide_in_chat`, per-job `timezone`, top-level `server_tz`, `skip_dates`), POST `/api/crons` (create, optional `agent`, `hide_in_chat` fields), DELETE `/api/crons/{id}`, DELETE `/api/crons` (batch delete; body `{"ids": [...]}`, ids de-duplicated, capped at 500, per-id failure isolation, returns `{ok, deleted, failed}` with `ok` true iff anything was deleted; history purged per removed job; single `crons` refresh push; SEL-audited), PATCH `/api/crons/{id}` (partial update: name, message, cron, every, agent (or agent_id), channel, approval_mode, silent, strict_schedule, hide_in_chat, timezone), POST `/api/crons/{id}/enable`, POST `/api/crons/{id}/run` (immediate execution, returns `{name}`, non-blocking via `create_task`), POST `/api/crons/{id}/to-chat` (creates linked chat slot `cron-{id}` with `linked_session_key="cron:{id}"`, hydrates from session history, reuses existing slot)
 **Messaging**: POST `/api/send-message` (send to Slack DM + dashboard notification; body: `{text, title?, blocks?}`; when `blocks` provided, sends Block Kit message via `post_blocks()` with `text` as fallback; used by `send_message` MCP tool in `kirocrew-core`)

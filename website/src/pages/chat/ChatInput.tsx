@@ -12,12 +12,13 @@ export async function interceptSlashCommand(
   dispatch: AppDispatch,
 ): Promise<SlashInterceptResult> {
   const trimmed = raw.trim()
-  // Client-only command: (re)launch the first-run onboarding flow. Handled
-  // entirely in the browser (OnboardingFlow listens for this event) — never
-  // sent to the agent, and needs no active slot. Match exactly so sibling
-  // inputs like `/onboarding-help` or `/onboarding/foo` are NOT intercepted.
+  // Client-only command: replay the import gate, then the feature tour.
+  // The App shell reads continueOnboarding while AgentImportFlow handles the
+  // same event, so Settings can replay only the importer with a plain Event.
   if (trimmed === '/onboarding') {
-    window.dispatchEvent(new Event('mc-start-onboarding'))
+    window.dispatchEvent(
+      new CustomEvent('mc-start-import', { detail: { continueOnboarding: true } }),
+    )
     return { intercepted: true }
   }
   const match = trimmed.match(SIDE_RE)

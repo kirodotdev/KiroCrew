@@ -222,16 +222,30 @@ def workspace_root() -> Path:
 
 
 def _safe_int(value: object, default: int) -> int:
-    """Convert *value* to int, returning *default* on failure.
+    """Convert a legacy numeric config value or return *default* on failure.
 
-    OverflowError: TOML/JSON parse `1e1000` to float("inf"), which int()
-    rejects with OverflowError rather than ValueError — still a malformed
-    config value, still the default.
+    Existing config files may contain numeric strings or integral floats from
+    older writers. Preserve that compatibility while rejecting booleans.
     """
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, float) and not value.is_integer():
+        return default
     try:
         return int(value)  # type: ignore[call-overload]
     except (TypeError, ValueError, OverflowError):
         return default
+
+
+def _safe_nonnegative_int(value: object, default: int) -> int:
+    """Convert a legacy integer value and reject negative results."""
+    result = _safe_int(value, default)
+    return result if result >= 0 else default
+
+
+def _safe_bool(value: object, default: bool) -> bool:
+    """Return *value* only when it is a real bool, else *default*."""
+    return value if isinstance(value, bool) else default
 
 
 def _safe_list(value: object) -> list:
@@ -254,12 +268,16 @@ def _safe_float(
     lo: float | None = None,
     hi: float | None = None,
 ) -> float:
-    """Convert *value* to float, returning *default* on failure, clamped to [lo, hi].
+    """Return a real JSON number or *default*, clamped to [lo, hi].
 
     Non-finite results (NaN/Infinity) are replaced with *default* — NaN compares
     false against any bound so it would silently bypass clamping (e.g. a
     configured ``tips_cadence_hours: NaN`` would permanently suppress tips).
     """
+    # Keep compatibility with config files written by older CLI versions while
+    # excluding booleans, which Python otherwise treats as numeric values.
+    if isinstance(value, bool):
+        return default
     try:
         result = float(value)  # type: ignore[arg-type]
     except (TypeError, ValueError, OverflowError):
@@ -1441,6 +1459,13 @@ class DashboardConfig:
             "Onboarded",
             "Whether the user has completed the dashboard onboarding flow. "
             "When true, the 'Choose your look' modal is skipped on first load.",
+        ),
+    )
+    import_onboarded: bool = field(
+        default=False,
+        metadata=_meta(
+            "Import Onboarded",
+            "Whether the user has completed or skipped foreign-agent import onboarding.",
         ),
     )
     tips_enabled: bool = field(
@@ -3218,9 +3243,13 @@ class KiroCrewConfig:
                 tool_search=bool(agent_data.get("tool_search", True)),
                 session_sharing=bool(agent_data.get("session_sharing", True)),
                 max_subagents=agent_data.get("max_subagents", 0),
-                subagent_mem_buffer_pct=_safe_int(agent_data.get("subagent_mem_buffer_pct", 20), 20),
+                subagent_mem_buffer_pct=_safe_int(
+                    agent_data.get("subagent_mem_buffer_pct", 20), 20
+                ),
                 subagent_cost_gb=_safe_float(agent_data.get("subagent_cost_gb", 0.5), 0.5),
-                subagent_cpu_cost_cores=_safe_float(agent_data.get("subagent_cpu_cost_cores", 1.0), 1.0),
+                subagent_cpu_cost_cores=_safe_float(
+                    agent_data.get("subagent_cpu_cost_cores", 1.0), 1.0
+                ),
                 subagent_auto_max=_safe_int(agent_data.get("subagent_auto_max", 32), 32),
                 subagent_spawn_stagger_secs=_safe_float(
                     agent_data.get("subagent_spawn_stagger_secs", 2.0), 2.0
@@ -3233,13 +3262,15 @@ class KiroCrewConfig:
                 completion_keep=_validated_completion_keep(
                     agent_data.get("completion_keep", "head")
                 ),
-                completion_keep_chars=_safe_int(agent_data.get("completion_keep_chars", 3000), 3000),
-                subagent_result_ttl_secs=_safe_int(agent_data.get("subagent_result_ttl_secs", 3600), 3600),
+                completion_keep_chars=_safe_int(
+                    agent_data.get("completion_keep_chars", 3000), 3000
+                ),
+                subagent_result_ttl_secs=_safe_int(
+                    agent_data.get("subagent_result_ttl_secs", 3600), 3600
+                ),
                 subagent_cwd_allowed_roots=(
                     [r for r in _roots if isinstance(r, str)]
-                    if isinstance(
-                        _roots := agent_data.get("subagent_cwd_allowed_roots"), list
-                    )
+                    if isinstance(_roots := agent_data.get("subagent_cwd_allowed_roots"), list)
                     else ["~/workspace", "~/workspaces", "~/workplace", "~/workplaces"]
                 ),
                 log_level=(
@@ -3278,7 +3309,9 @@ class KiroCrewConfig:
                 cron_max_records_per_job=_safe_int(
                     cron_history_data.get("cron_max_records_per_job", 100), 100
                 ),
-                cron_max_index_records=_safe_int(cron_history_data.get("cron_max_index_records", 2000), 2000),
+                cron_max_index_records=_safe_int(
+                    cron_history_data.get("cron_max_index_records", 2000), 2000
+                ),
             ),
             messaging=MessagingConfig(
                 use_transport=bool(messaging_data.get("use_transport", True)),
@@ -3358,14 +3391,13 @@ class KiroCrewConfig:
                     and mb >= 0
                     else 100.0
                 ),
-                embed_timeout_secs=_safe_float(knowledge_data.get("embed_timeout_secs", 10.0), 10.0),
+                embed_timeout_secs=_safe_float(
+                    knowledge_data.get("embed_timeout_secs", 10.0), 10.0
+                ),
                 embed_content_budget=_safe_int(knowledge_data.get("embed_content_budget", 0), 0),
-                pool_idle_ttl_secs=(
-                    ttl
-                    if isinstance((ttl := knowledge_data.get("pool_idle_ttl_secs", 300)), int)
-                    and not isinstance(ttl, bool)
-                    and ttl >= 0
-                    else 300
+                pool_idle_ttl_secs=_safe_nonnegative_int(
+                    knowledge_data.get("pool_idle_ttl_secs", 300),
+                    300,
                 ),
                 auto_ingest_doc_links=bool(knowledge_data.get("auto_ingest_doc_links", False)),
                 doc_ingest_hosts=[
@@ -3487,6 +3519,10 @@ class KiroCrewConfig:
                 theme_color=dashboard_data.get("theme_color", ""),
                 recent_tint_count=_safe_int(dashboard_data.get("recent_tint_count", 0), 0),
                 onboarded=bool(dashboard_data.get("onboarded", False)),
+                import_onboarded=_safe_bool(
+                    dashboard_data.get("import_onboarded"),
+                    _safe_bool(dashboard_data.get("onboarded"), False),
+                ),
                 tips_enabled=bool(dashboard_data.get("tips_enabled", True)),
                 tips_cadence_hours=_safe_float(
                     dashboard_data.get("tips_cadence_hours", 6.0), 6.0, lo=0.0
@@ -3552,7 +3588,9 @@ class KiroCrewConfig:
                 enabled=bool(mcp_gateway_data.get("enabled", False)),
                 socket_path=str(mcp_gateway_data.get("socket_path", "")),
                 overlay_dir=str(mcp_gateway_data.get("overlay_dir", "")),
-                idle_timeout_secs=max(10, _safe_int(mcp_gateway_data.get("idle_timeout_secs", 300), 300)),
+                idle_timeout_secs=max(
+                    10, _safe_int(mcp_gateway_data.get("idle_timeout_secs", 300), 300)
+                ),
                 max_backends=max(1, _safe_int(mcp_gateway_data.get("max_backends", 64), 64)),
                 poolable_servers=[
                     s for s in mcp_gateway_data.get("poolable_servers", []) if isinstance(s, str)
@@ -3605,7 +3643,9 @@ class KiroCrewConfig:
                 auto_create_from_sessions=bool(skills_data.get("auto_create_from_sessions", False)),
                 auto_refine_on_deviation=bool(skills_data.get("auto_refine_on_deviation", False)),
                 auto_min_tool_calls=_safe_int(skills_data.get("auto_min_tool_calls", 5), 5),
-                auto_similarity_threshold=_safe_float(skills_data.get("auto_similarity_threshold", 0.85), 0.85),
+                auto_similarity_threshold=_safe_float(
+                    skills_data.get("auto_similarity_threshold", 0.85), 0.85
+                ),
                 extra_paths=[
                     p for p in _safe_list(skills_data.get("extra_paths")) if isinstance(p, str)
                 ],

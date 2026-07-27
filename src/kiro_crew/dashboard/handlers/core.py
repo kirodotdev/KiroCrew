@@ -274,7 +274,7 @@ async def api_theme_boot(request: web.Request) -> web.Response:
 
     Unauthenticated (same boundary as /api/health) so the SPA can read the
     workspace theme before the token flow completes. Contains no secrets —
-    only the workspace-level theme preference and onboarded flag.
+    only the workspace-level theme preferences and onboarding flags.
     """
     cfg = KiroCrewConfig.load()
     return web.json_response(
@@ -282,6 +282,7 @@ async def api_theme_boot(request: web.Request) -> web.Response:
             "mode": cfg.dashboard.theme_mode or "",
             "color": cfg.dashboard.theme_color or "",
             "onboarded": cfg.dashboard.onboarded,
+            "import_onboarded": cfg.dashboard.import_onboarded,
         }
     )
 
@@ -289,50 +290,66 @@ async def api_theme_boot(request: web.Request) -> web.Response:
 async def api_theme_config(request: web.Request) -> web.Response:
     """GET/PUT /api/config/theme — read or update workspace theme settings.
 
-    GET returns the current theme config. PUT accepts {mode?, color?, onboarded?}
-    and persists to the workspace config file.
+    GET returns the current theme config. PUT accepts
+    {mode?, color?, onboarded?, import_onboarded?} and persists to the workspace
+    config file.
     """
-    cfg = KiroCrewConfig.load()
     if request.method == "GET":
+        cfg = KiroCrewConfig.load()
         return web.json_response(
             {
                 "mode": cfg.dashboard.theme_mode or "",
                 "color": cfg.dashboard.theme_color or "",
                 "onboarded": cfg.dashboard.onboarded,
+                "import_onboarded": cfg.dashboard.import_onboarded,
             }
         )
 
     # PUT
     body = await request.json()
-    changed = False
-    if "mode" in body:
-        mode = body["mode"]
-        if mode not in ("", "dark", "light", "system"):
-            raise web.HTTPBadRequest(text="mode must be '', 'dark', 'light', or 'system'")
-        if cfg.dashboard.theme_mode != mode:
-            cfg.dashboard.theme_mode = mode
-            changed = True
-    if "color" in body:
-        color = body["color"]
-        if not isinstance(color, str) or len(color) > 64:
-            raise web.HTTPBadRequest(text="color must be a string (max 64 chars)")
-        if cfg.dashboard.theme_color != color:
-            cfg.dashboard.theme_color = color
-            changed = True
-    if "onboarded" in body:
-        onboarded = bool(body["onboarded"])
-        if cfg.dashboard.onboarded != onboarded:
-            cfg.dashboard.onboarded = onboarded
-            changed = True
+    if not isinstance(body, dict):
+        raise web.HTTPBadRequest(text="request body must be an object")
+    from kiro_crew.dashboard.handlers.agents import _get_config_lock
 
-    if changed:
-        cfg.save()
+    async with _get_config_lock():
+        cfg = await asyncio.to_thread(KiroCrewConfig.load)
+        changed = False
+        if "mode" in body:
+            mode = body["mode"]
+            if mode not in ("", "dark", "light", "system"):
+                raise web.HTTPBadRequest(text="mode must be '', 'dark', 'light', or 'system'")
+            if cfg.dashboard.theme_mode != mode:
+                cfg.dashboard.theme_mode = mode
+                changed = True
+        if "color" in body:
+            color = body["color"]
+            if not isinstance(color, str) or len(color) > 64:
+                raise web.HTTPBadRequest(text="color must be a string (max 64 chars)")
+            if cfg.dashboard.theme_color != color:
+                cfg.dashboard.theme_color = color
+                changed = True
+        if "onboarded" in body:
+            onboarded = bool(body["onboarded"])
+            if cfg.dashboard.onboarded != onboarded:
+                cfg.dashboard.onboarded = onboarded
+                changed = True
+        if "import_onboarded" in body:
+            import_onboarded = body["import_onboarded"]
+            if not isinstance(import_onboarded, bool):
+                raise web.HTTPBadRequest(text="import_onboarded must be a boolean")
+            if cfg.dashboard.import_onboarded != import_onboarded:
+                cfg.dashboard.import_onboarded = import_onboarded
+                changed = True
+
+        if changed:
+            await asyncio.to_thread(cfg.save)
 
     return web.json_response(
         {
             "mode": cfg.dashboard.theme_mode or "",
             "color": cfg.dashboard.theme_color or "",
             "onboarded": cfg.dashboard.onboarded,
+            "import_onboarded": cfg.dashboard.import_onboarded,
         }
     )
 
@@ -451,9 +468,7 @@ async def api_stt_config(request: web.Request) -> web.Response:
                 # config handler in this module, which returns 500 on an
                 # unparseable config instead of silently resetting it.
                 logger.warning("STT config PUT: config.json is unparseable", exc_info=True)
-                return web.json_response(
-                    {"error": "failed to read config file"}, status=500
-                )
+                return web.json_response({"error": "failed to read config file"}, status=500)
             stt = data.setdefault("stt", {})
             if "enabled" in body:
                 stt["enabled"] = bool(body["enabled"])

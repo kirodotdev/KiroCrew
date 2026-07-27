@@ -54,7 +54,7 @@ interface Props {
 
 const FRONTEND_COMMANDS: SlashCommand[] = [
   { name: '/kb', description: 'Search knowledge library' },
-  { name: '/onboarding', description: 'Replay the welcome onboarding tour' },
+  { name: '/onboarding', description: 'Replay setup import and the welcome tour' },
 ]
 
 export default function SlashCommandMenu({ input, anchorRef, onSelect, onClose, open = true }: Props) {

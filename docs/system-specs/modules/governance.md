@@ -199,6 +199,37 @@ profile falls back to deny-all (Validation rule 5), **not** the ceiling.
   route through the same `governance_permits` / `governance_floor_ordinal`
   decision source.
 
+## Foreign-agent import interaction
+
+Foreign-agent import is a data-ingest path, not a third governance level and
+not a trusted configuration source. The governing equation remains:
+
+`effective = POLICY ∩ PROFILE`
+
+Import can only narrow its own selectable data projection; it cannot widen what
+either level permits. In particular:
+
+- Foreign security policies, profiles, denied-command state, approval/sandbox
+  settings, credentials, hooks, native personas/agents, raw instructions, and
+  runtime state are never imported.
+- The strict settings allowlist excludes governance and security controls.
+  Preserving an existing KiroCrew value on collision cannot be overridden by
+  foreign precedence.
+- Imported workspace references grant no filesystem permission. Any later tool
+  use is evaluated by the ordinary filesystem scopes and sensitive-path
+  keystone.
+- Imported MCP definitions grant no MCP capability. Managed servers remain
+  protected, and later calls still pass the effective `mcp`/`tools` gates.
+- Imported memory/skills and closed ConversationLog sessions are passive data;
+  provenance records are deduplication evidence, never authorization evidence.
+- Imported schedules are created disabled. A later explicit resume uses the
+  normal cron capability, command, channel, sandbox, and bound-profile
+  chokepoints.
+
+The importer must not write the policy/profile/admission trust-root files or
+construct an alternate evaluator. Unsupported or policy-incompatible items are
+reported/skipped; import success never implies a governance grant.
+
 ### Filesystem + egress at the host gate (tool kind + real args)
 
 `filesystem.read` / `filesystem.write` / `network.egress` are enforced at the

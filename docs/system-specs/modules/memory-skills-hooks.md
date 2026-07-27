@@ -1,6 +1,6 @@
 # Memory, Skills & Hooks Modules
 
-Last Updated: 2026-07-19 (in-process embeddings: always-on with no disable path, non-blocking background model load, download robustness — daemon-thread HTTPS download, Ollama-blob salvage, retry ladder — and the `EmbeddingBackend` swap seam; skills lazy-load usage-ranked top-K + skill_search + SkillUsageLedger, /api/skills discovery_executor offload)
+Last Updated: 2026-07-26 (foreign-agent import boundaries for memories/preferences, MCP servers, user-authored skills, and hooks. Prior — 2026-07-19 in-process embeddings: always-on with no disable path, non-blocking background model load, download robustness — daemon-thread HTTPS download, Ollama-blob salvage, retry ladder — and the `EmbeddingBackend` swap seam; skills lazy-load usage-ranked top-K + skill_search + SkillUsageLedger, /api/skills discovery_executor offload)
 
 ## Overview
 
@@ -227,6 +227,56 @@ macOS (Apple Silicon and Intel), Linux (x86_64, arm64/Graviton), and Windows sup
 
 The model download requires only outbound HTTPS (no git/git-lfs) on all platforms.
 
+### Foreign-agent memory import
+
+The selectable `memories` category covers durable memories and preferences from
+supported foreign agents. It is not a raw file-copy path. Imported values pass
+through the same KiroCrew memory writers, key allowlists, per-entry size/count
+limits, injection screening, conflict resolution, deduplication, audit events,
+and active-entry caps described above. Existing KiroCrew memories/preferences
+win on conflict; re-applying the same foreign item is idempotent through the
+shared import provenance ledger.
+
+Episodic imports use the native writer's preservation mode. A similarity match
+or a full active-entry store rejects the foreign item without tombstoning,
+merging into, or evicting an existing entry. Import therefore cannot delete or
+replace native episodic memory even when a foreign entry is longer, newer, or
+more important. The preservation-mode capacity check and insert run in one
+SQLite immediate transaction, so separate store instances cannot both claim the
+last slot. Exact-text classification goes through the store's lock-safe lookup
+instead of reading its shared connection from the importer.
+
+The importer cannot turn a foreign system prompt, raw instruction, persona,
+tool transcript, credential, or runtime record into memory. Items that cannot
+be represented within the destination writers and limits are reported as
+unsupported or skipped rather than copied around those writers.
+
+Markdown and supported database memory values are injection-screened before they
+become selectable, then screened again by the destination writer. When an
+import operation needs to create its own `VectorMemoryStore`, it wires
+`make_sync_embed_fn()` and its lazy factory exactly as the destination runtime
+does. The callable remains non-blocking: until the embedding model is ready,
+episodic writes persist normally without vectors and continue to use keyword
+retrieval.
+
+Hermes Markdown import is limited to exact `memories/MEMORY.md` and
+`memories/USER.md` files under the main home and each profile; arbitrary memory
+Markdown is not scanned. A present Hermes `memory_store.db` is diagnosed as an
+unsupported store. An unreadable Hermes `profiles` directory is skipped with a
+`profiles/read_failed` diagnostic instead of aborting the source scan. Profile
+discovery consumes at most 51 directory entries, scans at most 50, and emits
+`profiles/profile_count_limit` when overflow is observed instead of materializing
+an unbounded directory. Before any supported foreign SQLite database is opened,
+the main file and present `-wal`/`-shm` sidecars must all be regular non-symlink
+files, must not have multiple hard links, and their aggregate size must not
+exceed 64 MiB. The importer reads a descriptor-pinned private snapshot of the
+database and sidecars, so a source-file replacement after validation cannot
+change the inode being queried. MeshClaw's 10,000-row scan limit applies to the
+aggregate active rows across its supported semantic and episodic tables and is
+checked before either table contributes an item. Episodic text deduplication is
+rechecked under the native store write lock before insertion, preventing a
+concurrent native write from being duplicated.
+
 ## Lessons (`learn.py` → `vector_memory.py`)
 
 User-taught corrections ("always do X", "never do Y"). Single write path through `vector_memory.write_lesson()`:
@@ -291,6 +341,38 @@ exclude). To keep it off the per-message filesystem/config hot path:
 - `delete_skill(name)` — removes entire skill directory
 - Path traversal protection: `_safe_name()` rejects `..` and `\` (allows `/` for nesting)
 
+**Foreign-agent import:** only user-authored skills are eligible. Imported
+skills are isolated under the `imported/<source>/...` namespace so they cannot
+replace built-in, project, existing user, or auto-generated skills. Discovery
+and copy are symlink-safe: symlinked skill roots/files, path traversal, and any
+resolved path outside the declared source skill root are rejected and reported.
+On Windows, reparse points (including directory junctions) are link-like for
+both source traversal and destination ancestry checks and are rejected by the
+same boundary.
+
+Claude includes global skills and `<workspace>/.claude/skills`; MeshClaw uses
+workspaces resolved from both `workspace_dir` and `project_dir` pointer files
+and scans `<workspace>/skills`, while `~/.meshclaw/skills` remains excluded
+because its user-authored provenance is not reliable. Re-import deduplicates
+through provenance instead of overwriting the destination. A package with
+`always: true` or `triggers` frontmatter is rejected so imported content cannot
+gain automatic prompt activation.
+
+OpenClaw scans only documented workspace provenance: explicit
+`OPENCLAW_WORKSPACE_DIR`, `agents.entries.<agentId>.workspace`,
+`agents.defaults.workspace/<agentId>`, the profile workspace under
+`~/.openclaw/workspace-<profile>`, and documented state/agent defaults. From
+those roots only `MEMORY.md`, `memory/*.md`, and `skills` are eligible;
+instruction, identity, and persona files remain excluded. Hermes subtracts
+bundled names from `.bundled_manifest` and hub-installed names/install paths
+from `.hub/lock.json`; `.archive`, `.hub`, dependency, and cache trees are
+pruned before the file budget, leaving only active local packages selectable.
+Accepted packages retain their ordinary assets. Every regular UTF-8 text asset
+in a complete, package-bounded traversal is screened in full for credentials
+and exfiltration URLs; clean assets are copied byte-for-byte, including leading
+and trailing whitespace. No per-asset preview truncation is used for either the
+security decision or the copied content.
+
 **Dashboard endpoints**: GET/POST `/api/skills`, GET/PUT/DELETE `/api/skills/{name:.+}`. POST sanitizes name to lowercase + hyphens + slashes. GET `/api/skills` discovery (kirocrew `list_skills()` os.walk + frontmatter, `list_kiro_skills`, and the skill→agent annotation) is fully offloaded to the dedicated `discovery_executor` pool (`executors.py`) via `collect_skills_blocking`, so it never stalls the event loop past the loop-stall watchdog on large catalogs. The annotation is O(agents) — `annotate_skills_with_agents` parses the agent JSONs and pre-expands each agent's `skill://` globs once, then matches every skill against that in-memory set. The discovery pool is deliberately separate from the reaper-critical `maintenance_executor` so browser-triggered scans can't starve the orphan sweep.
 
 **LLM tool mechanisms:**
@@ -323,6 +405,42 @@ Auto-sync at startup + on-demand discovery from dashboard. Default servers: `kir
 **Dashboard workflow**: ① Probe All → ② Enable/Disable → ③ Apply & Restart Sessions.
 
 **Dashboard endpoints**: GET `/api/mcp` (list with enabled state from installed config), GET `/api/mcp/probe` (cached probe results, non-blocking), POST `/api/mcp/probe` (live probe all, updates cache), POST `/api/mcp/sync` (on-demand discover + add + session reset), POST `/api/mcp/toggle` (enable/disable in installed config).
+
+### Foreign-agent MCP import
+
+Only definitions with exactly one supported transport are selectable: stdio
+`command` with an optional string-list `args`, or a remote HTTP(S) `url` with no
+arguments. Mixed transports, remote arguments, unknown keys, working-directory,
+tool/filter, agent/scope, environment, header, credential, token, and cookie
+fields reject the whole server rather than producing a narrowed definition.
+Remote URLs with any query or fragment are rejected, even when the parameter
+name is not credential-like. Secret values themselves are never returned in
+scan/apply output or written to KiroCrew config. If the destination
+`mcpServers` value already exists but is malformed, import reports a conflict
+and preserves it byte-for-byte. The MCP phase runs outside the dashboard config
+lock because MCP handlers take the MCP file lock before the config lock; this
+keeps concurrent import and enable/disable operations in one lock order.
+
+Source `enabled` and `disabled` fields are runtime state, not portable
+structure. They are ignored without invalidating an otherwise exact safe
+definition, and every accepted destination definition is forced to
+`disabled: true` for explicit review.
+
+The same constraint gate applies to Hermes: its current enabled/disabled state
+may be ignored, but nested `tools.include` or `tools.exclude` is tool scoping and
+rejects the entire server.
+
+MCP import is merge-only. Before writing, collision detection canonicalizes
+server aliases and reserves names from every effective source: the KiroCrew
+data-home file, Kiro global settings, bundled/project/installed agent config,
+managed servers, and edition-contributed server/scope files. An exact or
+alias-equivalent foreign name is rejected, so a disabled import cannot shadow
+an enabled global or installed server. Existing server definitions win on
+collision, and KiroCrew-managed servers (including `kirocrew-core` and
+`kirocrew-cron`) are protected from replacement, deletion, or shadowing by an
+imported definition. Malformed effective-source JSON or non-object
+`mcpServers` values contribute no names and cannot abort an import. Repeated
+imports deduplicate through the provenance ledger.
 
 ## Auto Skill Creation (`skills.py` + `history.py`)
 
@@ -423,6 +541,10 @@ Config-driven from `config.json` → `hooks` section:
 - **context_rules** — trigger keywords → context injected into message
 
 Hook evaluation order: deny overrides approve; auto-reply → transform → context rules.
+
+Foreign-agent hooks are never imported. Hook scripts, hook commands, matchers,
+and hook runtime state are unsupported items: scan/apply may report their
+presence, but must not copy or register them.
 
 ### `safe_read_file(path: str) -> str`
 

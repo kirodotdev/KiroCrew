@@ -55,22 +55,9 @@ _ENUM_FIELDS: list[tuple[str, str, list[str]]] = [
     ("memory", "embedding_provider", ["llama_cpp"]),
 ]
 
-# Top-level keys recognised by the schema
-_KNOWN_TOP_KEYS = {
-    "agent",
-    "session",
-    "memory",
-    "slack",
-    "dashboard",
-    "hooks",
-    "agents",
-    "default_agent",
-    "workspaces",
-    "default_workspace",
-    "memory_stores",
-    "default_memory_store",
-    "auto_update",
-}
+# Top-level keys recognised by the schema. Keep the property strategy aligned
+# with the loader's emitted config sections as new sections are added.
+_KNOWN_TOP_KEYS = set(loader_module._KNOWN_CONFIG_SECTIONS)
 
 # Skip marker for tests that require jsonschema validation
 _requires_jsonschema = pytest.mark.skipif(
@@ -254,22 +241,40 @@ class TestMalformedConfigValuesNeverCrashLoad:
         # historical `list(get(default=[4 roots]))` yielded these 4 roots.
         fallback = ["~/workspace", "~/workspaces", "~/workplace", "~/workplaces"]
         # int would crash list(); a string would char-split silently.
-        assert _load_from_dict({"agent": {"subagent_cwd_allowed_roots": 5}}).agent.subagent_cwd_allowed_roots == fallback
-        assert _load_from_dict({"agent": {"subagent_cwd_allowed_roots": "abc"}}).agent.subagent_cwd_allowed_roots == fallback
+        assert (
+            _load_from_dict(
+                {"agent": {"subagent_cwd_allowed_roots": 5}}
+            ).agent.subagent_cwd_allowed_roots
+            == fallback
+        )
+        assert (
+            _load_from_dict(
+                {"agent": {"subagent_cwd_allowed_roots": "abc"}}
+            ).agent.subagent_cwd_allowed_roots
+            == fallback
+        )
         # a real list still parses (non-str entries dropped)
-        got = _load_from_dict({"agent": {"subagent_cwd_allowed_roots": ["~/x", 9]}}).agent.subagent_cwd_allowed_roots
+        got = _load_from_dict(
+            {"agent": {"subagent_cwd_allowed_roots": ["~/x", 9]}}
+        ).agent.subagent_cwd_allowed_roots
         assert got == ["~/x"]
 
     def test_non_list_trusted_bot_ids_falls_back(self):
         # set() on a non-iterable (int) crashes; on a string it char-splits.
         assert _load_from_dict({"slack": {"trusted_bot_ids": 5}}).slack.trusted_bot_ids == set()
-        assert _load_from_dict({"slack": {"trusted_bot_ids": "B123"}}).slack.trusted_bot_ids == set()
-        assert _load_from_dict({"slack": {"trusted_bot_ids": ["B1", 2]}}).slack.trusted_bot_ids == {"B1"}
+        assert (
+            _load_from_dict({"slack": {"trusted_bot_ids": "B123"}}).slack.trusted_bot_ids == set()
+        )
+        assert _load_from_dict({"slack": {"trusted_bot_ids": ["B1", 2]}}).slack.trusted_bot_ids == {
+            "B1"
+        }
 
     def test_non_dict_reactions_falls_back(self):
         # .items() on a non-dict (list) crashes.
         assert _load_from_dict({"slack": {"reactions": ["x"]}}).slack.reactions == {}
-        assert _load_from_dict({"slack": {"reactions": {"eyes": "👀"}}}).slack.reactions == {"eyes": "👀"}
+        assert _load_from_dict({"slack": {"reactions": {"eyes": "👀"}}}).slack.reactions == {
+            "eyes": "👀"
+        }
 
     def test_non_finite_wechat_thresholds_fall_back(self):
         # JSON/TOML parse 1e1000 to float("inf"); int(inf) raises OverflowError,
@@ -2810,11 +2815,11 @@ class TestConfigWriteProtection:
                 f"tee {marker}",
                 f"mv /tmp/x {marker}",
                 # bypasses an enumerated write-verb allowlist would miss:
-                f'echo done > "{marker}"',            # quoted redirect target
-                f"cp /tmp/x {marker}",                # copy write verb
+                f'echo done > "{marker}"',  # quoted redirect target
+                f"cp /tmp/x {marker}",  # copy write verb
                 f"python -c \"open('{marker}','w')\"",  # script open
-                f"mkdir -p {marker}/x",               # marker-as-dir also exists()
-                f"cat {marker}",                      # read (blocked too — no secret)
+                f"mkdir -p {marker}/x",  # marker-as-dir also exists()
+                f"cat {marker}",  # read (blocked too — no secret)
             ]
             for cmd in blocked:
                 assert is_sensitive_bash_command(cmd) is not None, cmd
@@ -3000,15 +3005,28 @@ class TestKnowledgePoolIdleTtl:
         cfg = _load_from_dict({"knowledge": {"pool_idle_ttl_secs": True}})
         assert cfg.knowledge.pool_idle_ttl_secs == 300
 
-    def test_string_falls_back_to_default(self) -> None:
-        # `kirocrew config set` coerces numeric strings to real JSON numbers via
-        # cli_config._parse_value BEFORE writing, so a numeric field never
-        # legitimately arrives as a string. A string here is malformed input and
-        # falls back to the default (strict-parse contract). Loader-side coercion
-        # is deliberately NOT added: it would only run when the optional
-        # jsonschema dep is installed (undeclared), making the behavior differ
-        # between installs.
+    def test_numeric_string_preserves_legacy_coercion(self) -> None:
         cfg = _load_from_dict({"knowledge": {"pool_idle_ttl_secs": "60"}})
+        assert cfg.knowledge.pool_idle_ttl_secs == 60
+
+    def test_integral_float_preserves_legacy_coercion(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import kiro_crew.config.validation as validation
+
+        monkeypatch.setattr(validation, "_HAS_JSONSCHEMA", False)
+
+        cfg = _load_from_dict({"knowledge": {"pool_idle_ttl_secs": 60.0}})
+        assert cfg.knowledge.pool_idle_ttl_secs == 60
+
+    def test_non_integral_float_falls_back_to_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import kiro_crew.config.validation as validation
+
+        monkeypatch.setattr(validation, "_HAS_JSONSCHEMA", False)
+
+        cfg = _load_from_dict({"knowledge": {"pool_idle_ttl_secs": 0.5}})
         assert cfg.knowledge.pool_idle_ttl_secs == 300
 
 
@@ -3079,11 +3097,55 @@ class TestOrchestratorWatchdogThemeAreParsed:
 
     def test_dashboard_theme_fields_are_parsed(self) -> None:
         cfg = _load_from_dict(
-            {"dashboard": {"theme_mode": "dark", "theme_color": "#ff0000", "onboarded": True}}
+            {
+                "dashboard": {
+                    "theme_mode": "dark",
+                    "theme_color": "#ff0000",
+                    "onboarded": True,
+                    "import_onboarded": False,
+                }
+            }
         )
         assert cfg.dashboard.theme_mode == "dark"
         assert cfg.dashboard.theme_color == "#ff0000"
         assert cfg.dashboard.onboarded is True
+        assert cfg.dashboard.import_onboarded is False
+
+    def test_missing_import_onboarded_inherits_existing_onboarded(self) -> None:
+        cfg = _load_from_dict({"dashboard": {"onboarded": True}})
+        assert cfg.dashboard.import_onboarded is True
+
+    def test_import_onboarded_defaults_false_for_new_config(self) -> None:
+        assert DashboardConfig().import_onboarded is False
+        cfg = _load_from_dict({})
+        assert cfg.dashboard.import_onboarded is False
+
+    def test_import_onboarded_round_trips(self) -> None:
+        cfg = _load_from_dict({"dashboard": {"import_onboarded": True}})
+        assert cfg.dashboard.import_onboarded is True
+        assert cfg.to_dict()["dashboard"]["import_onboarded"] is True
+
+    def test_import_onboarded_string_false_falls_back_without_jsonschema(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import kiro_crew.config.validation as validation
+
+        monkeypatch.setattr(validation, "_HAS_JSONSCHEMA", False)
+
+        cfg = _load_from_dict({"dashboard": {"import_onboarded": "false"}})
+
+        assert cfg.dashboard.import_onboarded is False
+
+    def test_invalid_import_onboarded_inherits_onboarded_without_jsonschema(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import kiro_crew.config.validation as validation
+
+        monkeypatch.setattr(validation, "_HAS_JSONSCHEMA", False)
+
+        cfg = _load_from_dict({"dashboard": {"onboarded": True, "import_onboarded": 0}})
+
+        assert cfg.dashboard.import_onboarded is True
 
     def test_absent_sections_use_defaults(self) -> None:
         cfg = _load_from_dict({})
@@ -3091,10 +3153,14 @@ class TestOrchestratorWatchdogThemeAreParsed:
         assert cfg.watchdog.tool_stall_hard_cap_secs == 10800.0
         assert cfg.dashboard.theme_mode == ""
         assert cfg.dashboard.onboarded is False
+        assert cfg.dashboard.import_onboarded is False
 
     def test_bad_values_fall_back_without_crashing(self) -> None:
         cfg = _load_from_dict(
-            {"watchdog": {"check_after_secs": "junk"}, "orchestrator": {"stage_timeout_seconds": "x"}}
+            {
+                "watchdog": {"check_after_secs": "junk"},
+                "orchestrator": {"stage_timeout_seconds": "x"},
+            }
         )
         assert cfg.watchdog.check_after_secs == 60.0
         assert cfg.orchestrator.stage_timeout_seconds == 1800
@@ -3134,16 +3200,30 @@ class TestMalformedConfigNeverBricksLoad:
         cfg = _load_from_dict({"agent": {"subagent_cost_gb": "lots"}})
         assert cfg.agent.subagent_cost_gb == 0.5
 
-    def test_numeric_string_still_coerces(self) -> None:
-        # A numeric string is a valid coercion — must NOT fall back.
+    def test_numeric_string_preserves_legacy_coercion(self) -> None:
         cfg = _load_from_dict({"session": {"pool_size": "5"}})
+        assert cfg.session.pool_size == 5
+
+    def test_numeric_strings_preserve_legacy_coercion_without_jsonschema(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import kiro_crew.config.validation as validation
+
+        monkeypatch.setattr(validation, "_HAS_JSONSCHEMA", False)
+
+        cfg = _load_from_dict(
+            {
+                "agent": {"subagent_cost_gb": "0.25"},
+                "session": {"pool_size": "5"},
+            }
+        )
+
+        assert cfg.agent.subagent_cost_gb == 0.25
         assert cfg.session.pool_size == 5
 
     def test_well_formed_values_still_parse(self) -> None:
         # The fix must not regress the happy path.
-        cfg = _load_from_dict(
-            {"session": {"pool_size": 7}, "slack": {"observe_max_messages": 50}}
-        )
+        cfg = _load_from_dict({"session": {"pool_size": 7}, "slack": {"observe_max_messages": 50}})
         assert cfg.session.pool_size == 7
         assert cfg.observe_max_messages == 50
 
@@ -3165,30 +3245,16 @@ class TestMalformedConfigNeverBricksLoad:
                 },
             }
         )
-        assert (
-            cfg.agent.subagent_spawn_stagger_secs
-            == defaults.agent.subagent_spawn_stagger_secs
-        )
-        assert (
-            cfg.session.watchdog_rss_max_mb == defaults.session.watchdog_rss_max_mb
-        )
+        assert cfg.agent.subagent_spawn_stagger_secs == defaults.agent.subagent_spawn_stagger_secs
+        assert cfg.session.watchdog_rss_max_mb == defaults.session.watchdog_rss_max_mb
         assert (
             cfg.cron_history.cron_max_records_per_job
             == defaults.cron_history.cron_max_records_per_job
         )
         assert cfg.instances.tunnel_base_port == defaults.instances.tunnel_base_port
-        assert (
-            cfg.instances.max_recovery_attempts
-            == defaults.instances.max_recovery_attempts
-        )
-        assert (
-            cfg.instances.recover_backoff_max_secs
-            == defaults.instances.recover_backoff_max_secs
-        )
-        assert (
-            cfg.instances.probe_failure_threshold
-            == defaults.instances.probe_failure_threshold
-        )
+        assert cfg.instances.max_recovery_attempts == defaults.instances.max_recovery_attempts
+        assert cfg.instances.recover_backoff_max_secs == defaults.instances.recover_backoff_max_secs
+        assert cfg.instances.probe_failure_threshold == defaults.instances.probe_failure_threshold
 
 
 class TestEmptyResponseAutoContinueWiring:

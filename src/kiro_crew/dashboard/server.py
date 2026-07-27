@@ -1378,6 +1378,18 @@ async def start_dashboard(
     app.router.add_patch("/api/config/kirocrew", handlers.api_kirocrew_config_patch)
     app.router.add_get("/api/config/theme", handlers.api_theme_config)
     app.router.add_put("/api/config/theme", handlers.api_theme_config)
+    app.router.add_get(
+        "/api/onboarding/import/scan",
+        handlers.api_onboarding_import_scan,
+    )
+    app.router.add_post(
+        "/api/onboarding/import/apply",
+        handlers.api_onboarding_import_apply,
+    )
+    app.router.add_put(
+        "/api/onboarding/import/state",
+        handlers.api_onboarding_import_state,
+    )
     app.router.add_get("/api/dashboard/config", handlers.api_dashboard_config)
     app.router.add_put("/api/dashboard/config", handlers.api_dashboard_config)
 

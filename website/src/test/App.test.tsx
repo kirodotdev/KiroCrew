@@ -34,6 +34,19 @@ vi.mock('../api/client', () => ({
     chatSlotModel: vi.fn().mockResolvedValue({}),
     chatMode: vi.fn().mockResolvedValue({}),
     listInstances: vi.fn().mockResolvedValue({ instances: [], warm_set_cap: 5 }),
+    themes: vi.fn().mockResolvedValue({ themes: [] }),
+    themeBoot: vi.fn().mockResolvedValue({
+      mode: '',
+      color: '',
+      onboarded: true,
+      import_onboarded: true,
+    }),
+    updateThemeConfig: vi.fn().mockResolvedValue({}),
+    onboardingImportScan: vi.fn().mockResolvedValue({
+      sources: [],
+      skipped: [],
+      merge_only: true,
+    }),
   },
   // Default to "no auth banner showing" so existing App tests render the
   // normal connected/offline pill paths. The dedicated auth-banner
@@ -66,6 +79,74 @@ globalThis.ResizeObserver = class {
 } as typeof ResizeObserver
 
 describe('App routing', () => {
+  it('reopens the foreign-agent import gate when server onboarding is incomplete', async () => {
+    const { api } = await import('../api/client')
+    localStorage.setItem('mc-onboarded', '1')
+    localStorage.setItem('mc-import-onboarded', '1')
+    vi.mocked(api.themeBoot).mockResolvedValueOnce({
+      mode: '',
+      color: '',
+      onboarded: false,
+      import_onboarded: false,
+    } as never)
+
+    renderWithProviders(<App />, { route: '/chat' })
+
+    await waitFor(() => expect(localStorage.getItem('mc-import-onboarded')).toBeNull())
+    expect(await screen.findByRole('dialog', { name: 'Import agent setup' })).toBeInTheDocument()
+  })
+
+  it('migrates legacy browser-only onboarding before applying server defaults', async () => {
+    const { api } = await import('../api/client')
+    localStorage.setItem('mc-onboarded', '1')
+    localStorage.removeItem('mc-import-onboarded')
+    vi.mocked(api.updateThemeConfig).mockClear()
+    vi.mocked(api.themeBoot).mockResolvedValueOnce({
+      mode: '',
+      color: '',
+      onboarded: false,
+      import_onboarded: false,
+    } as never)
+
+    renderWithProviders(<App />, { route: '/chat' })
+
+    await waitFor(() => {
+      expect(api.updateThemeConfig).toHaveBeenCalledWith({
+        onboarded: true,
+        import_onboarded: true,
+      })
+      expect(localStorage.getItem('mc-import-onboarded')).toBe('1')
+    })
+    expect(screen.queryByRole('dialog', { name: 'Import agent setup' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('dialog', { name: 'Welcome to KiroCrew' })).not.toBeInTheDocument()
+  })
+
+  it('waits for theme boot before deciding the foreign-agent import gate', async () => {
+    const { api } = await import('../api/client')
+    let resolveBoot: (value: {
+      mode: string
+      color: string
+      onboarded: boolean
+      import_onboarded: boolean
+    }) => void = () => {}
+    vi.mocked(api.themeBoot).mockReturnValueOnce(new Promise(resolve => {
+      resolveBoot = resolve
+    }) as never)
+    localStorage.removeItem('mc-onboarded')
+    localStorage.removeItem('mc-import-onboarded')
+
+    renderWithProviders(<App />, { route: '/chat' })
+
+    expect(screen.queryByRole('dialog', { name: 'Import agent setup' })).not.toBeInTheDocument()
+    await act(async () => {
+      resolveBoot({ mode: '', color: '', onboarded: true, import_onboarded: true })
+      await Promise.resolve()
+    })
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', { name: 'Import agent setup' })).not.toBeInTheDocument()
+    })
+  })
+
   it('renders chat page at /chat', () => {
     renderWithProviders(<App />, { route: '/chat' })
     expect(screen.getByTestId('chat-page')).toBeInTheDocument()
@@ -434,10 +515,10 @@ describe('App routing', () => {
     expect(screen.getByLabelText('Gateway offline')).toBeInTheDocument()
   })
 
-  it('renders theme toggle', () => {
+  it('keeps theme controls available from Settings', () => {
     renderWithProviders(<App />, { route: '/chat' })
-    // Default preference is 'system', button shows "Auto"
-    expect(screen.getAllByText(/Auto|Light|Dark/).length).toBeGreaterThan(0)
+    // Theme controls live in Settings > Display rather than the shell header.
+    expect(screen.getByText('Settings')).toBeInTheDocument()
   })
 
   it('renders approval mode buttons with tooltips', () => {

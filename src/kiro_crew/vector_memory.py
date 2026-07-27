@@ -359,7 +359,9 @@ class VectorMemoryStore:
         # will lazily rebind self.embed_fn if it is None — handles the case where
         # the embedding model was unavailable at gateway boot but landed later, without
         # requiring a gateway restart. See Mesh-XXXX (embed_fn lazy rebind fix).
-        self.embed_fn_factory: Callable[[], Callable[[str], list[float] | None] | None] | None = None
+        self.embed_fn_factory: Callable[[], Callable[[str], list[float] | None] | None] | None = (
+            None
+        )
         self._embed_fn_rebind_cooldown_secs: float = 30.0
         self._embed_fn_last_rebind_attempt: float = 0.0
         # Serializes the lazy-rebind block in _try_embed() so the cooldown invariant
@@ -371,11 +373,13 @@ class VectorMemoryStore:
     def init(self) -> None:
         """Create DB, apply migrations, set permissions."""
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._db = sqlite3.connect(str(self._db_path), check_same_thread=False, isolation_level=None)
+        self._db = sqlite3.connect(
+            str(self._db_path), check_same_thread=False, isolation_level=None
+        )
         self._db.row_factory = sqlite3.Row
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.execute("PRAGMA busy_timeout=5000")
-        self._db.isolation_level = ''  # Restore implicit transaction handling
+        self._db.isolation_level = ""  # Restore implicit transaction handling
 
         # Apply migrations
         self._db.execute(
@@ -408,7 +412,9 @@ class VectorMemoryStore:
         try:
             self.load_faiss_index()
         except Exception:
-            logger.warning("FAISS index not loaded (faiss-cpu may not be installed yet)", exc_info=True)
+            logger.warning(
+                "FAISS index not loaded (faiss-cpu may not be installed yet)", exc_info=True
+            )
 
     def close(self) -> None:
         if self._db:
@@ -438,8 +444,13 @@ class VectorMemoryStore:
         return any(fnmatch(key, p) for p in self._prefixes)
 
     def validate_semantic(
-        self, key: str, value: object, confidence: float, source: str,
-        *, value_json: str | None = None,
+        self,
+        key: str,
+        value: object,
+        confidence: float,
+        source: str,
+        *,
+        value_json: str | None = None,
     ) -> tuple[SemanticRejectCode, str] | None:
         """Pre-flight check for set_semantic. Returns (code, message) or None."""
         err = self._validate_key(key)
@@ -449,20 +460,34 @@ class VectorMemoryStore:
             prefixes = ", ".join(self._prefixes)
             return SemanticRejectCode.ALLOWLIST, f"Key must match an allowed prefix ({prefixes})"
         if key.startswith("system.") and source != "user_explicit":
-            return SemanticRejectCode.RESERVED_PREFIX, "Reserved key prefix requires user_explicit source"
+            return (
+                SemanticRejectCode.RESERVED_PREFIX,
+                "Reserved key prefix requires user_explicit source",
+            )
         if source != "user_explicit" and confidence < self._confidence_threshold:
-            return SemanticRejectCode.CONFIDENCE, f"Confidence {confidence:.2f} below threshold {self._confidence_threshold}"
+            return (
+                SemanticRejectCode.CONFIDENCE,
+                f"Confidence {confidence:.2f} below threshold {self._confidence_threshold}",
+            )
         vj = value_json if value_json is not None else json.dumps(value)
         vj_bytes = len(vj.encode("utf-8"))
         if vj_bytes > _MAX_VALUE_BYTES:
-            return SemanticRejectCode.VALUE_SIZE, f"Value too large ({vj_bytes} bytes, max {_MAX_VALUE_BYTES})"
+            return (
+                SemanticRejectCode.VALUE_SIZE,
+                f"Value too large ({vj_bytes} bytes, max {_MAX_VALUE_BYTES})",
+            )
         if _contains_injection(vj):
             return SemanticRejectCode.INJECTION, "Value contains blocked content patterns"
         return None
 
     def log_reject_event(
-        self, code: SemanticRejectCode, key: str, value: object, source: str,
-        *, value_json: str | None = None,
+        self,
+        code: SemanticRejectCode,
+        key: str,
+        value: object,
+        source: str,
+        *,
+        value_json: str | None = None,
     ) -> None:
         """Emit an audit event for a validation rejection."""
         if code in _AUDITABLE_REJECT_CODES:
@@ -520,6 +545,42 @@ class VectorMemoryStore:
             return (SemanticRejectCode.CONFLICT, conflict)
         return None
 
+    def set_semantic_if_absent(
+        self,
+        key: str,
+        value: object,
+        confidence: float,
+        source: str,
+    ) -> str:
+        """Insert a semantic value without replacing a concurrent native write."""
+        value_json = json.dumps(value)
+        result = self.validate_semantic(key, value, confidence, source, value_json=value_json)
+        if result is not None:
+            code, reason = result
+            self.log_reject_event(code, key, value, source, value_json=value_json)
+            return "rejected"
+        with self._db_lock:
+            existing = self.db.execute(
+                "SELECT 1 FROM semantic_memory WHERE key = ? AND is_deleted = 0",
+                (key,),
+            ).fetchone()
+            if existing is not None:
+                return "existing"
+            now = _now_iso()
+            try:
+                self.db.execute(
+                    "INSERT INTO semantic_memory "
+                    "(key, value_json, confidence, source, created_at, updated_at, is_deleted) "
+                    "VALUES (?, ?, ?, ?, ?, ?, 0)",
+                    (key, value_json, confidence, source, now, now),
+                )
+                self.db.commit()
+            except sqlite3.IntegrityError:
+                self.db.rollback()
+                return "existing"
+        self._log_event("create", "semantic", key, None, value_json, source)
+        return "imported"
+
     def _write_semantic(
         self,
         key: str,
@@ -568,7 +629,9 @@ class VectorMemoryStore:
                         value_json,
                         source,
                     )
-                    return f"Existing entry has higher confidence ({old_conf:.2f} vs {confidence:.2f})"
+                    return (
+                        f"Existing entry has higher confidence ({old_conf:.2f} vs {confidence:.2f})"
+                    )
                 self._log_event(
                     "update",
                     "semantic",
@@ -586,7 +649,18 @@ class VectorMemoryStore:
                 "INSERT INTO semantic_memory (key, value_json, confidence, source, created_at, updated_at, is_deleted) "
                 "VALUES (?, ?, ?, ?, ?, ?, 0) "
                 "ON CONFLICT(key) DO UPDATE SET value_json=?, confidence=?, source=?, updated_at=?, is_deleted=0",
-                (key, value_json, confidence, source, now, now, value_json, confidence, source, now),
+                (
+                    key,
+                    value_json,
+                    confidence,
+                    source,
+                    now,
+                    now,
+                    value_json,
+                    confidence,
+                    source,
+                    now,
+                ),
             )
             self.db.commit()
 
@@ -705,7 +779,9 @@ class VectorMemoryStore:
             scored_rows: list[tuple[float, dict]] = []
             for r in all_rows:
                 # Keyword score (always available)
-                key_words = _stem_words(set(re.findall(r"\w+", r["key"].replace("_", " ").replace(".", " "))))
+                key_words = _stem_words(
+                    set(re.findall(r"\w+", r["key"].replace("_", " ").replace(".", " ")))
+                )
                 val_words = _stem_words(set(re.findall(r"\w+", r["value_json"].lower())))
                 key_overlap = len(query_words & key_words)
                 val_overlap = len(query_words & val_words)
@@ -832,7 +908,11 @@ class VectorMemoryStore:
             self._faiss_index.add(vec)  # type: ignore[union-attr]
             self._faiss_id_map.append(row["id"])
         if skipped:
-            logger.warning("Skipped %d episodic entries with mismatched embedding dim (expected %d)", skipped, self._embedding_dim)
+            logger.warning(
+                "Skipped %d episodic entries with mismatched embedding dim (expected %d)",
+                skipped,
+                self._embedding_dim,
+            )
         logger.info("Built FAISS index with %d vectors", len(self._faiss_id_map))
         return len(self._faiss_id_map)
 
@@ -892,8 +972,14 @@ class VectorMemoryStore:
         tags: list[str] | None = None,
         importance: float = 0.5,
         source: str = "consolidation",
+        *,
+        preserve_existing: bool = False,
     ) -> bool:
-        """Write an episodic memory with optional embedding and dedup."""
+        """Write an episodic memory with optional embedding and dedup.
+
+        ``preserve_existing`` rejects similarity and capacity conflicts instead
+        of tombstoning an active entry. Import paths use it to remain merge-only.
+        """
         text = text.strip()
         if len(text) < _EPISODIC_TEXT_MIN or len(text) > _EPISODIC_TEXT_MAX:
             logger.debug(
@@ -930,13 +1016,16 @@ class VectorMemoryStore:
         clean_tags = [t.strip().lower()[:50] for t in (tags or [])[:10] if t.strip()]
         importance = max(0.0, min(1.0, importance))
 
-        # Text-hash dedup: reject near-identical text before expensive embedding
+        # Text-hash dedup: reject near-identical text before expensive embedding.
+        # The store shares one SQLite connection across worker threads, so even
+        # this read must use the same lock as the write-side double-check.
         text_prefix = text[:80].lower()
-        existing = self.db.execute(
-            "SELECT id FROM episodic_memories WHERE is_deleted = 0 "
-            "AND LOWER(SUBSTR(text, 1, 80)) = ?",
-            (text_prefix,),
-        ).fetchone()
+        with self._db_lock:
+            existing = self.db.execute(
+                "SELECT id FROM episodic_memories WHERE is_deleted = 0 "
+                "AND LOWER(SUBSTR(text, 1, 80)) = ?",
+                (text_prefix,),
+            ).fetchone()
         if existing:
             logger.debug("Episodic text-hash dedup: prefix matches id=%s", existing["id"])
             return False
@@ -968,6 +1057,21 @@ class VectorMemoryStore:
         # a reader that sees index.ntotal == N+1 while len(id_map) == N would
         # IndexError (or the concurrent add/search would corrupt the C++ index).
         with self._db_lock:
+            # Re-check under the write lock. The fast check above avoids an
+            # unnecessary embed in the common case, but cannot prevent a native
+            # writer from inserting the same text between that check and this
+            # critical section.
+            existing = self.db.execute(
+                "SELECT id FROM episodic_memories WHERE is_deleted = 0 "
+                "AND LOWER(SUBSTR(text, 1, 80)) = ?",
+                (text_prefix,),
+            ).fetchone()
+            if existing is not None:
+                logger.debug(
+                    "Episodic text-hash dedup under lock: prefix matches id=%s",
+                    existing["id"],
+                )
+                return False
             # Dedup via FAISS — only when THIS write has an embedding. The index
             # being non-empty says nothing about the current write: with embeddings
             # disabled (embedding_provider="none") or a transient embed failure,
@@ -998,6 +1102,16 @@ class VectorMemoryStore:
                             # ghost and keep scanning, mirroring search_episodic's
                             # `if not mem or mem["is_deleted"]: continue`.
                             continue
+                        if preserve_existing:
+                            self._log_event(
+                                "conflict_skip",
+                                "episodic",
+                                existing_id,
+                                "",
+                                text[:200],
+                                source,
+                            )
+                            return False
                         if len(text) > len(existing["text"]) * 1.2:
                             self._delete_episodic_row(existing_id)
                             self._log_event(
@@ -1020,25 +1134,56 @@ class VectorMemoryStore:
                             )
                             return False
 
-            # Enforce cap
-            self._enforce_episodic_cap()
-
-            mem_id = str(uuid4())
-            now = _now_iso()
-            self.db.execute(
-                "INSERT INTO episodic_memories (id, conversation_id, text, embedding, tags, "
-                "importance, created_at, is_deleted) VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
-                (
-                    mem_id,
-                    conversation_id,
-                    text,
-                    embedding_blob,
-                    json.dumps(clean_tags),
-                    importance,
-                    now,
-                ),
-            )
-            self.db.commit()
+            if preserve_existing:
+                mem_id = str(uuid4())
+                now = _now_iso()
+                self.db.execute("BEGIN IMMEDIATE")
+                try:
+                    active_count = self.db.execute(
+                        "SELECT COUNT(*) FROM episodic_memories WHERE is_deleted = 0"
+                    ).fetchone()[0]
+                    if active_count >= self._episodic_max:
+                        self.db.commit()
+                        return False
+                    self.db.execute(
+                        "INSERT INTO episodic_memories "
+                        "(id, conversation_id, text, embedding, tags, "
+                        "importance, created_at, is_deleted) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
+                        (
+                            mem_id,
+                            conversation_id,
+                            text,
+                            embedding_blob,
+                            json.dumps(clean_tags),
+                            importance,
+                            now,
+                        ),
+                    )
+                    self.db.commit()
+                except Exception:
+                    self.db.rollback()
+                    raise
+            else:
+                self._enforce_episodic_cap()
+                mem_id = str(uuid4())
+                now = _now_iso()
+                self.db.execute(
+                    "INSERT INTO episodic_memories "
+                    "(id, conversation_id, text, embedding, tags, "
+                    "importance, created_at, is_deleted) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
+                    (
+                        mem_id,
+                        conversation_id,
+                        text,
+                        embedding_blob,
+                        json.dumps(clean_tags),
+                        importance,
+                        now,
+                    ),
+                )
+                self.db.commit()
 
             # Add to FAISS. The C++ index and the Python _faiss_id_map MUST commit
             # together — if index.ntotal ends up ahead of len(_faiss_id_map) a later
@@ -1068,6 +1213,17 @@ class VectorMemoryStore:
             text[:80],
         )
         return True
+
+    def has_episodic_text(self, text: str) -> bool:
+        """Return whether an active episodic memory exactly matches *text*."""
+        with self._db_lock:
+            return (
+                self.db.execute(
+                    "SELECT 1 FROM episodic_memories WHERE is_deleted = 0 AND text = ? LIMIT 1",
+                    (text,),
+                ).fetchone()
+                is not None
+            )
 
     def search_episodic(
         self,
@@ -1123,7 +1279,9 @@ class VectorMemoryStore:
                     cosine_sim = float(dist)
                     created = datetime.fromisoformat(mem["created_at"])
                     days_old = max(0, (now - created).days)
-                    score = cosine_sim * (0.7 + 0.3 * mem["importance"]) * math.exp(-0.03 * days_old)
+                    score = (
+                        cosine_sim * (0.7 + 0.3 * mem["importance"]) * math.exp(-0.03 * days_old)
+                    )
                     candidates.append(
                         {**mem, "score": round(score, 4), "cosine_sim": round(cosine_sim, 4)}
                     )
@@ -1261,7 +1419,10 @@ class VectorMemoryStore:
         return True
 
     def get_episodic_context(
-        self, query_embedding: list[float] | None = None, query_text: str = "", cap: int = 3000,
+        self,
+        query_embedding: list[float] | None = None,
+        query_text: str = "",
+        cap: int = 3000,
     ) -> str:
         """Format episodic search results for prompt injection.
 
@@ -1659,7 +1820,10 @@ class VectorMemoryStore:
                 # Re-check under the lock: another thread may have just bound embed_fn.
                 if self.embed_fn is None:
                     now = time.monotonic()
-                    if now - self._embed_fn_last_rebind_attempt >= self._embed_fn_rebind_cooldown_secs:
+                    if (
+                        now - self._embed_fn_last_rebind_attempt
+                        >= self._embed_fn_rebind_cooldown_secs
+                    ):
                         self._embed_fn_last_rebind_attempt = now
                         try:
                             candidate = self.embed_fn_factory()
