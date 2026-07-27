@@ -57,6 +57,29 @@ export function defaultCaptureDeps(): CaptureDeps {
 }
 
 /**
+ * Capture deps that pre-target the CURRENT tab via Chromium's `preferCurrentTab`,
+ * collapsing the multi-source screen picker into a single "Share this tab?"
+ * confirm. Used by the Web Preview snip, whose target (the preview iframe) always
+ * lives in this tab. Non-Chromium browsers ignore the hint (normal picker), and
+ * the Electron desktop app's `setDisplayMediaRequestHandler` supplies the source
+ * regardless (no prompt at all) — so this only streamlines the browser path.
+ */
+export function currentTabCaptureDeps(): CaptureDeps {
+  return {
+    getDisplayMedia: () => {
+      // `preferCurrentTab` isn't in the standard DisplayMediaStreamOptions lib type yet.
+      const opts: DisplayMediaStreamOptions & { preferCurrentTab?: boolean } = {
+        video: true,
+        preferCurrentTab: true,
+      }
+      return navigator.mediaDevices.getDisplayMedia(opts)
+    },
+    createVideo: () => document.createElement('video'),
+    createCanvas: () => document.createElement('canvas'),
+  }
+}
+
+/**
  * Prompt the screen-share picker, grab a single frame into a canvas, and stop
  * the stream so no "sharing" indicator lingers. Returns null if the user
  * cancels/denies the picker. Deps are injectable for testing.

@@ -180,11 +180,66 @@ recent real browse activity.
 `browser_take_screenshot` tool-invocation audit event on the proxy's behalf,
 keeping proxy-internal tool calls auditable.
 
-**Panel.** `BrowserLiveView` is a resizable, persisted panel and is threaded with
-the resolved session *title* (the raw `session_key` is only a client-side lookup
-key against the dashboard's own slot store).
+**Panel.** The live mirror renders in the floating `BrowserLiveView` window — a
+lifecycle-driven, resizable, persisted overlay that auto-opens in the corner on
+the first frame of a browse session (minimize→chip, close→dismiss-this-session).
+It consumes the frame stream via `useBrowserFrame` and is threaded with the
+resolved session *title* (the raw `session_key` is only a client-side lookup key
+against the dashboard's own slot store). It is read-only — no interactive
+control channel.
 
-**Source:** `src/kiro_crew/browser/screencast.py`, `src/kiro_crew/mcp_playwright_proxy.py`
+> Note: the chat side panel's **"Web Preview"** tab (`WebPreviewPanel`, opened
+> from the + menu) is a SEPARATE feature — a URL-addressable iframe that
+> live-previews a local dev server the user is running (per-session URL), NOT
+> this agent-browse screenshot mirror. It does not consume the `browser_frame`
+> stream. The URL bar has back/forward (a URL-bar history stack — an iframe's
+> own cross-origin page history isn't readable), an inline reload, an
+> open-in-browser link inside the field, and an **expand** toggle: expand
+> broadcasts `PREVIEW_FOCUS_EVENT`, on which App collapses the left nav and
+> ChatPage hides the session list + maximizes the side panel (chat shrinks to its
+> minimum). A **dimension selector** (Monitor icon = responsive desktop;
+> Smartphone icon = a device size — iPhone/Pixel/Galaxy/iPad presets) renders the
+> iframe at that device's pixel size. A **crop** button (shown only where the
+> snip pipeline works — `isScreenSnipSupported()`, non-mobile) dispatches
+> `PREVIEW_SNIP_EVENT`; ChatPage handles it by reusing the shared snip pipeline
+> (`captureScreen` via getDisplayMedia — routed through Electron's
+> `setDisplayMediaRequestHandler` in the desktop app — → `SnipOverlay` drag-crop →
+> `uploadFiles` attaches the PNG to the composer, pinned to the slot that
+> initiated the capture so a mid-capture slot switch can't misfile it).
+>
+> **Liveness.** A cross-origin iframe keeps displaying its last document after
+> its server dies, so while a URL is framed the panel polls it (`fetch` no-cors,
+> tab-active only); two consecutive connection failures ⇒ the iframe is unmounted
+> and a "server not reachable" state shown instead of the stale page, and a later
+> successful probe auto-restores it.
+>
+> **Security.** The iframe is loopback-only (http(s), mixed-content-guarded). Cookies
+> are scoped by host but not port, so `isolatePreviewHost` swaps a preview whose
+> host equals the dashboard's (both loopback) to the other loopback alias
+> (`localhost` ⇄ `127.0.0.1`) — the dashboard's host-scoped auth cookie is never
+> sent to the framed dev server. The dashboard CSP admits loopback `frame-src`
+> unconditionally (`_LOOPBACK_FRAME_SRC` in `server.py`), so previews render in the
+> packaged app, not only in instances mode.
+>
+> It can be **fed from chat** via `detectPreviewUrl` (assistant messages, newest
+> first; within a message a marker beats a bare URL): the agent's hidden
+> It can be **fed from chat** via `detectPreviewUrl` (assistant messages, newest
+> first; within a message a marker beats a bare URL). **Click-to-load:** neither
+> path ever navigates the iframe — both hand the URL to the panel as a **"Load
+> preview" card** (`setSessionPreviewPending`), and the GET fires only on the
+> user's explicit Load click, so agent output can't drive the scripted iframe to
+> an arbitrary host without consent. Chat-fed URLs are additionally
+> **loopback-only** (enforced in `setSessionPreviewPending`): agent output —
+> which browsed/read content can prompt-inject — can only ever offer a local dev
+> server, never an external host; the manual URL bar is not restricted. The
+> agent's hidden
+> `<!-- kirocrew:preview url="…" -->` marker (`web-preview` skill) is treated as
+> explicit intent — ChatPage surfaces the card AND opens the tab, deduped via a
+> PERSISTED `mc-webpreview-applied:<slot>` key (+ in-memory ref) so a route
+> remount won't reopen a dismissed card. A bare localhost URL in prose offers the
+> card WITHOUT opening the tab, and only when no target is set yet.
+
+**Source:** `src/kiro_crew/browser/screencast.py`, `src/kiro_crew/mcp_playwright_proxy.py`, `website/src/hooks/useBrowserFrame.ts`, `website/src/components/BrowserLiveView.tsx`, `website/src/components/WebPreviewPanel.tsx`, `website/src/utils/detectPreviewUrl.ts`, `src/kiro_crew/dashboard/server.py` (`_LOOPBACK_FRAME_SRC`)
 
 **Fallback tools** in kirocrew-core (for manual use if needed):
 

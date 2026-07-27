@@ -113,11 +113,19 @@ class TestApplySecurityHeaders:
         csp = resp.headers["Content-Security-Policy"]
         assert "default-src 'self'" in csp
         assert "object-src 'none'" in csp
-        # No loopback wildcards anywhere by default: frame-src is unextended
-        # (instances disabled) and frame-ancestors is bare 'self' (no operator
-        # parent origin opted in).
-        assert "http://127.0.0.1:*" not in csp
-        assert "http://localhost:*" not in csp
+        # Loopback frame-src is ALWAYS admitted (not instances-gated) so the
+        # Web Preview panel (WebPreviewPanel) can frame a local dev/static
+        # server in the packaged dashboard. The panel isolates the preview host
+        # from the dashboard host so no host-scoped cookie is sent to the frame.
+        assert "http://127.0.0.1:*" in csp
+        assert "http://localhost:*" in csp
+        # …and http+https across the loopback hosts normalizeUrl accepts, so a
+        # preview never renders blank due to a CSP-blocked frame.
+        assert "http://[::1]:*" in csp
+        assert "https://localhost:*" in csp
+        assert "https://127.0.0.1:*" in csp
+        # The *.localhost tunnel wildcard, however, stays instances-only.
+        assert "http://*.localhost:*" not in csp
         assert "frame-ancestors 'self'" in csp
 
     def test_csp_frame_src_allows_cloudfront_previews(self) -> None:

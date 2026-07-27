@@ -30,6 +30,7 @@ import { GithubIcon, DiscordIcon } from './components/BrandIcon'
 import { Toggle } from './components/ui'
 import OnboardingFlow from './components/OnboardingFlow'
 import AgentImportFlow from './components/AgentImportFlow'
+import { PREVIEW_FOCUS_EVENT } from './components/WebPreviewPanel'
 import { motion, AnimatePresence } from 'framer-motion'
 import { usePersistedBool } from './hooks/usePersistedBool'
 import { isMacElectron } from './lib/electron'
@@ -826,6 +827,15 @@ export default function App() {
   useRumPageView()
   useNotificationSound()
   const [navCollapsed, setNavCollapsed] = useState(() => localStorage.getItem('mc-nav') === '1')
+  // Preview focus (expand) mode from the Web Preview tab: force the left nav
+  // collapsed while active (restored automatically when it turns off, since we
+  // OR a transient flag rather than mutating navCollapsed).
+  const [previewFocused, setPreviewFocused] = useState(false)
+  useEffect(() => {
+    const onFocus = (e: Event) => setPreviewFocused(!!(e as CustomEvent<{ focused?: boolean }>).detail?.focused)
+    window.addEventListener(PREVIEW_FOCUS_EVENT, onFocus)
+    return () => window.removeEventListener(PREVIEW_FOCUS_EVENT, onFocus)
+  }, [])
   const isMobile = useIsMobile()
   // Multi-instance: which instance fills the pane below the tab bar. null = Local
   // (the native dashboard); a non-null id means a remote instance's embedded
@@ -1303,7 +1313,7 @@ export default function App() {
   useEffect(() => { if (isMobile) setMobileNavOpen(false) }, [location.pathname]) // eslint-disable-line react-hooks/exhaustive-deps
   // Reset mobile nav state when leaving mobile viewport
   useEffect(() => { if (!isMobile) setMobileNavOpen(false) }, [isMobile])
-  const effectiveCollapsed = navCollapsed && !isMobile
+  const effectiveCollapsed = (navCollapsed || previewFocused) && !isMobile
   const topbarBrandRef = useRef<HTMLDivElement>(null)
   const topbarActionsRef = useRef<HTMLDivElement>(null)
   const [topbarSearchLayout, setTopbarSearchLayout] = useState({ gutter: 360, visible: true })

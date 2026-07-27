@@ -1,5 +1,18 @@
 import { describe, it, expect, vi } from 'vitest'
-import { isScreenSnipSupported, normalizeRect, canvasToFile, captureScreen, cropCanvas } from '../hooks/useScreenSnip'
+import { isScreenSnipSupported, normalizeRect, canvasToFile, captureScreen, cropCanvas, currentTabCaptureDeps } from '../hooks/useScreenSnip'
+
+describe('currentTabCaptureDeps', () => {
+  it('requests getDisplayMedia with preferCurrentTab (streamlined browser prompt)', () => {
+    const getDisplayMedia = vi.fn(() => Promise.resolve({} as MediaStream))
+    vi.stubGlobal('navigator', { mediaDevices: { getDisplayMedia } })
+    try {
+      void currentTabCaptureDeps().getDisplayMedia()
+      expect(getDisplayMedia).toHaveBeenCalledWith(expect.objectContaining({ video: true, preferCurrentTab: true }))
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+})
 
 describe('isScreenSnipSupported', () => {
   it('is true when getDisplayMedia is a function', () => {

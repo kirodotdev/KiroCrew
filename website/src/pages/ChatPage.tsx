@@ -35,7 +35,7 @@ import { EmptyState, Btn, Input } from '../components/ui'
 import { type FileChangeEntry } from '../components/FileChangeChips'
 import PastedChip from '../components/PastedChip'
 import SnipOverlay from '../components/SnipOverlay'
-import { captureScreen, screenSnipSupported } from '../hooks/useScreenSnip'
+import { captureScreen, screenSnipSupported, currentTabCaptureDeps } from '../hooks/useScreenSnip'
 import { useTouchedFiles } from '../hooks/useTouchedFiles'
 import { useTheme } from '../hooks/useTheme'
 import CollapsibleToolGroup from './chat/CollapsibleToolGroup'
@@ -103,6 +103,9 @@ import { useChatNavigation } from '../hooks/useChatNavigation'
 import SubagentProgressBar from './chat/SubagentProgressBar'
 import TaskProgressBar from './chat/TaskProgressBar'
 import SidePanel, { SIDE_PANEL_MIN_W, measureSidePanelReservedW } from './chat/SidePanel'
+import { setSessionPreviewPending, normalizeUrl, PREVIEW_FOCUS_EVENT, PREVIEW_SNIP_EVENT } from '../components/WebPreviewPanel'
+import { detectPreviewUrl, previewFeedDecision } from '../utils/detectPreviewUrl'
+import { fileLandingSlot } from '../utils/uploadRouting'
 import ChatSidebar, { SIDEBAR_MIN, SIDEBAR_MAX } from './ChatSidebar'
 import { toSlug } from '../utils/shareUrl'
 import { DRAFT_SAVE_DEBOUNCE_MS, loadDrafts, saveDrafts as persistDrafts, setDraft } from '../utils/chatDrafts'
@@ -1047,6 +1050,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
   const [uploading, setUploading] = useState(false)
   const [pendingFiles, setPendingFiles] = useState<string[]>([])
   const [snipFrame, setSnipFrame] = useState<HTMLCanvasElement | null>(null)
+  // The slot that INITIATED the current snip. getDisplayMedia + cropping is
+  // async and the user may switch slots meanwhile, so the cropped image must
+  // land in the slot that started the capture — not whatever is active when the
+  // crop completes. Threaded into uploadFiles as an explicit target.
+  const snipSlotRef = useRef<string | null>(null)
   const pendingFilesRef = useRef(pendingFiles)
   useEffect(() => {
     pendingFilesRef.current = pendingFiles
@@ -1477,16 +1485,35 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
 
   /** Screen capture entry: cross-platform snip+crop when supported, else native macOS screenshot. */
   const handleCapture = useCallback(async () => {
+    snipSlotRef.current = activeSlotRef.current
     if (!screenSnipSupported) { takeScreenshot(); return }
     const canvas = await captureScreen()
     if (canvas) setSnipFrame(canvas)
   }, [takeScreenshot])
 
+  // The Web Preview tab's crop button asks for an area screenshot via a window
+  // event. Same crop→attach pipeline as the composer button, but capture pre-
+  // targets THIS tab (preferCurrentTab) so the browser prompt is a single
+  // "Share this tab?" confirm instead of the full source picker. (Desktop app:
+  // no prompt either way via setDisplayMediaRequestHandler.)
+  useEffect(() => {
+    const onSnip = async () => {
+      snipSlotRef.current = activeSlotRef.current
+      if (!screenSnipSupported) { takeScreenshot(); return }
+      const canvas = await captureScreen(currentTabCaptureDeps())
+      if (canvas) setSnipFrame(canvas)
+    }
+    window.addEventListener(PREVIEW_SNIP_EVENT, onSnip)
+    return () => window.removeEventListener(PREVIEW_SNIP_EVENT, onSnip)
+  }, [takeScreenshot])
+
   /** Upload files via browser File API (cross-platform) */
-  const uploadFiles = useCallback(async (files: File[]) => {
+  const uploadFiles = useCallback(async (files: File[], targetSlot?: string | null) => {
     if (!files.length) return
-    // Same slot-capture pattern as takeScreenshot — see note there.
-    const requestSlot = activeSlotRef.current
+    // Same slot-capture pattern as takeScreenshot — see note there. An explicit
+    // targetSlot (e.g. the slot that initiated a snip) overrides the live slot
+    // so an async capture lands where it started, not where the user switched to.
+    const requestSlot = targetSlot !== undefined ? targetSlot : activeSlotRef.current
     setUploadError('')
     if (files.length > 20) { setUploadError('Too many files (max 20)'); return }
     const big = files.find(f => f.size > 50 * 1024 * 1024)
@@ -1497,11 +1524,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
       if (res.error) {
         setUploadError('Upload failed: ' + res.error)
       } else if (res.paths?.length) {
-        if (activeSlotRef.current === requestSlot) {
+        const landing = fileLandingSlot(requestSlot, activeSlotRef.current)
+        if (landing.target === 'pending') {
           setPendingFiles(prev => [...prev, ...res.paths])
-        } else if (requestSlot) {
-          const cur = fileDrafts.current[requestSlot] ?? []
-          setFileDraft(fileDrafts.current, requestSlot, [...cur, ...res.paths])
+        } else if (landing.target === 'draft') {
+          const cur = fileDrafts.current[landing.slot] ?? []
+          setFileDraft(fileDrafts.current, landing.slot, [...cur, ...res.paths])
           saveDrafts()
         }
       }
@@ -2328,6 +2356,49 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
     if (originSlot) dispatch(clearFollowupCard({ slot: originSlot, ts: originTs }))
   }, [currentSlot?.project, followupBranchFor, dispatch, mode, activeSlot])
 
+  // Feed the Web Preview tab from chat, by signal type (previewFeedDecision).
+  // Neither path ever navigates the iframe: both hand the URL to the panel as a
+  // "Load preview" card (setSessionPreviewPending) — the GET fires only on the
+  // user's explicit Load click, so agent output can never drive the scripted
+  // iframe to an arbitrary host without consent.
+  //   • marker (`kirocrew:preview`, explicit agent intent) → also OPEN the tab,
+  //     once per distinct URL. The applied URL is PERSISTED per slot so a route
+  //     remount doesn't reopen a card the user dismissed; an in-memory ref
+  //     backstops a failed localStorage write.
+  //   • heuristic (a localhost URL merely mentioned in prose) → offer the card
+  //     WITHOUT opening the tab, and only when no target is set yet.
+  // Reuses the shared tabsCtlRef so the effect stays mount-stable as the strip churns.
+  const appliedPreviewMemRef = useRef<Record<string, string>>({})
+  useEffect(() => {
+    const slot = activeSlot
+    if (!slot) return
+    let existing = ''
+    try {
+      existing = localStorage.getItem(`mc-webpreview-url:${slot}`)
+        || localStorage.getItem(`mc-webpreview-pending:${slot}`) || ''
+    } catch { /* ignore */ }
+    const feed = previewFeedDecision(detectPreviewUrl(messages), !!existing)
+    if (!feed) return
+    const norm = normalizeUrl(feed.url)
+    if (!norm) return
+    if (feed.open) {
+      // Marker → surface the Load-preview card + open the tab, deduped via a
+      // PERSISTED applied key (survives remounts) plus an in-memory ref
+      // (survives a failed localStorage write) so it never re-opens.
+      let applied = ''
+      try { applied = localStorage.getItem(`mc-webpreview-applied:${slot}`) || '' } catch { /* ignore */ }
+      if (applied === norm || appliedPreviewMemRef.current[slot] === norm) return
+      appliedPreviewMemRef.current[slot] = norm
+      try { localStorage.setItem(`mc-webpreview-applied:${slot}`, norm) } catch { /* ignore */ }
+      // Loopback-only (enforced inside setSessionPreviewPending): a rejected
+      // (non-loopback) marker feeds nothing — and must not open the tab either.
+      if (!setSessionPreviewPending(slot, norm)) return
+      dispatch(openActivityPanel())
+      tabsCtlRef.current.openView('browser')
+    } else {
+      setSessionPreviewPending(slot, norm)      // heuristic offer: card only, no open, no load
+    }
+  }, [messages, activeSlot, dispatch])
   // "Run in terminal" (from chat code blocks): open a FRESH terminal tab in
   // this chat and run the command in it, starting in the chat's working dir.
   // The result is echoed back so the code-block button can show sent/failed.
@@ -3159,7 +3230,17 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
   const closeSidebar = useCallback(() => setMobileSessions(false), [])
   useSwipeEdge(chatContainerRef, { enabled: isMobile && !mobileSessions, edge: 'left', edgeZone: 0.35, onSwipe: openSidebar })
   useSwipeEdge(chatContainerRef, { enabled: isMobile && mobileSessions, edge: 'right', threshold: 50, edgeZone: 9999, onSwipe: closeSidebar })
-  const sidebarOpen = isMobile ? mobileSessions : (sidebarPinned || filteredSlots.length === 0)
+  // Web Preview "focus" (expand) mode — broadcast by the Web Preview tab's
+  // expand toggle. When on, hide the session list (below) and maximize the side
+  // panel (passed to SidePanel), so the preview gets max room and chat shrinks
+  // to its minimum. App collapses the left nav off the same event.
+  const [previewFocused, setPreviewFocused] = useState(false)
+  useEffect(() => {
+    const onFocus = (e: Event) => setPreviewFocused(!!(e as CustomEvent<{ focused?: boolean }>).detail?.focused)
+    window.addEventListener(PREVIEW_FOCUS_EVENT, onFocus)
+    return () => window.removeEventListener(PREVIEW_FOCUS_EVENT, onFocus)
+  }, [])
+  const sidebarOpen = !previewFocused && (isMobile ? mobileSessions : (sidebarPinned || filteredSlots.length === 0))
   useEffect(() => {
     if (filteredSlots.length === 0 && !sidebarPinned) {
       setSidebarPinned(true)
@@ -3278,7 +3359,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
         {snipFrame && (
           <SnipOverlay
             frame={snipFrame}
-            onComplete={f => { uploadFiles([f]); setSnipFrame(null) }}
+            onComplete={f => { uploadFiles([f], snipSlotRef.current); setSnipFrame(null) }}
             onCancel={() => setSnipFrame(null)}
             onError={setUploadError}
           />
@@ -3924,6 +4005,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
               sources={sourceLinks} selectedSourceUrl={selectedSourceUrl} onSelectSource={setSelectedSourceUrl} onAddSourceToChat={addSourceCommentToChat}
               onSubmitComments={submitComments} onFileSave={handleFileSave} onClose={toggleAct}
               inlinePreviewPath={inlinePreviewPath} onInlinePreviewChange={setInlinePreviewPath}
+              expanded={previewFocused}
             />
           </motion.div>
         )}
@@ -3954,6 +4036,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
                 sources={sourceLinks} selectedSourceUrl={selectedSourceUrl} onSelectSource={setSelectedSourceUrl} onAddSourceToChat={addSourceCommentToChat}
                 onSubmitComments={submitComments} onFileSave={handleFileSave} onClose={toggleAct}
                 inlinePreviewPath={inlinePreviewPath} onInlinePreviewChange={setInlinePreviewPath}
+                expanded={previewFocused}
               />
             </motion.div>
           )}

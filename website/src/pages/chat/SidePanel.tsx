@@ -1,12 +1,13 @@
 import { useState, useRef, useEffect, useCallback, useMemo, type ReactNode } from 'react'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { Reorder } from 'framer-motion'
-import { FileText, Bot, Workflow, ScrollText, MessageSquare, TerminalSquare, GitCompare, GitPullRequest, Package, Plus, X, Hash, Pen, Columns2, PanelRightClose, Component, PanelBottom } from 'lucide-react'
+import { FileText, Bot, Workflow, ScrollText, MessageSquare, TerminalSquare, GitCompare, GitPullRequest, Package, Plus, X, Hash, Pen, Columns2, PanelRightClose, Component, PanelBottom, Globe } from 'lucide-react'
 import ActivityViewer from './ActivityViewer'
 import DiffPanel from '../../components/DiffPanel'
 import DetailPanel from '../../components/DetailPanel'
 import MarkdownPanel from '../../components/MarkdownPanel'
 import ArtifactPanel from '../../components/ArtifactPanel'
+import WebPreviewPanel from '../../components/WebPreviewPanel'
 import CliPanel, { disposeTerminalSession, useDeleteTerminalSession } from '../../components/CliPanel'
 import { countLines } from '../../components/FileChangeChips'
 import { useTerminalEnabled, useTerminalTitle } from '../../utils/terminalRegistry'
@@ -23,7 +24,7 @@ import type { PullRequestLink } from '../../utils/pullRequestLinks'
 
 const KIND_ICON: Record<TabKind, ReactNode> = {
   changes: <GitPullRequest size={16} />, files: <FileText size={16} />, artifacts: <Component size={16} />, subagents: <Bot size={16} />, workflows: <Workflow size={16} />,
-  logs: <ScrollText size={16} />, side: <MessageSquare size={16} />, terminal: <TerminalSquare size={16} />,
+  logs: <ScrollText size={16} />, side: <MessageSquare size={16} />, terminal: <TerminalSquare size={16} />, browser: <Globe size={16} />,
   file: <FileText size={16} />, diff: <GitCompare size={16} />, artifact: <Package size={16} />,
 }
 
@@ -36,6 +37,7 @@ const NEW_MENU: { kind: ViewKind | 'terminal'; label: string; icon: ReactNode; d
   { kind: 'workflows', label: 'Workflows', icon: <Workflow size={15} />, desc: 'Runs, phases & restartable steps' },
   { kind: 'logs', label: 'Logs', icon: <ScrollText size={15} />, desc: 'Gateway log stream' },
   { kind: 'side', label: 'Side', icon: <MessageSquare size={15} />, desc: 'Parallel chat, shared context' },
+  { kind: 'browser', label: 'Web Preview', icon: <Globe size={15} />, desc: 'Live preview of a served URL' },
   { kind: 'terminal', label: 'Terminal', icon: <TerminalSquare size={15} />, desc: 'Shell on the gateway host' },
 ]
 
@@ -65,6 +67,9 @@ interface SidePanelProps {
    *  panel collapse and coordinates with document-tab opens). */
   inlinePreviewPath?: string | null
   onInlinePreviewChange?: (path: string | null) => void
+  /** Preview "focus" mode: when true the panel takes its maximum width (chat
+   *  shrinks to its minimum), driven by the Web Preview tab's expand toggle. */
+  expanded?: boolean
 }
 
 /**
@@ -112,7 +117,7 @@ export default function SidePanel({
   tabsCtl, subagents, toolLog, slot, files, onFileOpen, onFileRemove, onFilesClear,
   projectDir, navLinks, navResolving, sources, selectedSourceUrl, onSelectSource,
   onAddSourceToChat, onSubmitComments, onFileSave, onClose,
-  inlinePreviewPath, onInlinePreviewChange,
+  inlinePreviewPath, onInlinePreviewChange, expanded,
 }: SidePanelProps) {
   const { tabs, activeId, openView, openTerminal, setActive, closeTab, patchTab, setOrder, syncPinned } = tabsCtl
   const terminalEnabled = useTerminalEnabled()
@@ -216,7 +221,7 @@ export default function SidePanel({
       .forEach(c => ro.observe(c))
     return () => { window.removeEventListener('resize', recalc); ro.disconnect() }
   }, [])
-  const effectiveWidth = isMobile ? '100%' : Math.max(MIN_W, Math.min(width, maxW))
+  const effectiveWidth = isMobile ? '100%' : (expanded ? Math.max(MIN_W, maxW) : Math.max(MIN_W, Math.min(width, maxW)))
   // While the user drags the resize handle, every mousemove shifts the whole
   // panel's viewport position (the handle is on the LEFT edge; the right edge
   // is pinned to the window). Framer's layout projection on each Reorder.Item
@@ -258,7 +263,7 @@ export default function SidePanel({
           (bg-elevated, 12px radius, 8px padding) floating above the content,
           not a flat bordered bar. side-panel-strip punches the strip out of the
           Electron window-drag region (see index.css) so chips receive events. */}
-      <div className="side-panel-strip flex items-center gap-1.5 shrink-0 p-2 mb-3 rounded-tl-xl bg-bg-elevated">
+      <div className="side-panel-strip flex items-center gap-1.5 shrink-0 p-2 rounded-tl-xl bg-bg-elevated">
         {/* Collapse the panel (far-left), separated from the tabs by a hairline. */}
         <button
           className="flex items-center justify-center w-7 h-7 rounded-md text-muted hover:text-text hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0"
@@ -435,6 +440,7 @@ export default function SidePanel({
             <div key={t.id} className="absolute inset-0" style={{ display: isActive ? 'block' : 'none' }}>
               <TabBody
                 tab={t} active={isActive}
+                slot={slot}
                 onClose={() => handleCloseTab(t.id)}
                 onContentChange={(c) => patchTab(t.id, { content: c })}
                 onDiffModeChange={(diffMode) => patchTab(t.id, { diffMode })}
@@ -460,8 +466,9 @@ export default function SidePanel({
  *  type on every SidePanel render, forcing React to unmount/remount the whole
  *  subtree — which reset editor state and re-fired xterm's focus-on-visible
  *  effect, stealing focus from the chat input on every keystroke. */
-function TabBody({ tab, active, onClose, onContentChange, onDiffModeChange, onFileSave, onFileOpen, onSubmitComments, onTerminalSendToChat, diffLineNumbers, setDiffLineNumbers, diffSideBySide, setDiffSideBySide }: {
-  tab: PanelTab; active: boolean; onClose: () => void
+function TabBody({ tab, active, slot, onClose, onContentChange, onDiffModeChange, onFileSave, onFileOpen, onSubmitComments, onTerminalSendToChat, diffLineNumbers, setDiffLineNumbers, diffSideBySide, setDiffSideBySide }: {
+  tab: PanelTab; active: boolean; slot: string
+  onClose: () => void
   onContentChange: (c: string) => void
   onDiffModeChange: (diffMode: boolean) => void
   onFileSave: (fp: string, c: string) => Promise<void>
@@ -472,6 +479,7 @@ function TabBody({ tab, active, onClose, onContentChange, onDiffModeChange, onFi
   diffSideBySide: boolean; setDiffSideBySide: (fn: (v: boolean) => boolean) => void
 }) {
   if (tab.kind === 'terminal') return <CliPanel sessionId={tab.sessionId ?? ''} cwd={tab.cwd} visible={active} onSendToChat={onTerminalSendToChat} />
+  if (tab.kind === 'browser') return <WebPreviewPanel sessionKey={slot} active={active} />
   if (tab.kind === 'file') {
     return (
       <MarkdownPanel

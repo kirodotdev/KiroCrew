@@ -1,8 +1,8 @@
 import { safeSetItem } from '../utils/safeStorage'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Monitor, Maximize2, Minimize2, Minus, X } from 'lucide-react'
 
-import { useAppSelector } from '../store'
+import { useBrowserFrame } from '../hooks/useBrowserFrame'
 
 /**
  * BrowserLiveView — floating window that mirrors the headless [BROWSE] Chromium.
@@ -36,14 +36,6 @@ import { useAppSelector } from '../store'
  *   New frames update the image but never force a collapsed panel back open.
  * Read-only by design (no debug port; interactive control is out of scope —).
  */
-
-interface FrameDetail {
-  data: string
-  format?: string
-  device_width?: number | null
-  device_height?: number | null
-  session_key?: string
-}
 
 type Mode = 'hidden' | 'chip' | 'open'
 
@@ -158,9 +150,7 @@ const HANDLES: { name: string; edges: Edge; cls: string; cursor: string; corner?
 
 export default function BrowserLiveView() {
   const [mode, setMode] = useState<Mode>('hidden')
-  const [frame, setFrame] = useState<string | null>(null)
-  const [lastTs, setLastTs] = useState<number | null>(null)
-  const [sessionKey, setSessionKey] = useState<string | null>(null)
+  const { frame, lastTs, sessionKey, sessionName } = useBrowserFrame()
   const [rect, setRect] = useState<Rect>(() => cornerRect(loadDims()))
   const dragRef = useRef<{ dx: number; dy: number } | null>(null)
   const resizeRef = useRef<{ px: number; py: number; rect: Rect; edges: Edge } | null>(null)
@@ -168,15 +158,6 @@ export default function BrowserLiveView() {
   // closed so the frame handler won't auto-reopen it under the idle active-pump.
   // `null` = nothing dismissed; `{ key }` = keep hidden while frames carry `key`.
   const dismissedRef = useRef<{ key: string | null } | null>(null)
-
-  // Resolve the mirrored session's display title from the client's own slot
-  // store. Only the opaque session key rides the frame wire; the title (which is
-  // user/agent-set text) never crosses it — it's already in the trusted store.
-  const slots = useAppSelector(s => s.dashboard.slots)
-  const sessionName = useMemo(
-    () => (sessionKey ? slots.find(s => s.key === sessionKey)?.title || null : null),
-    [slots, sessionKey],
-  )
 
   // Persist the chosen window size (not position) so it survives reloads; the
   // panel always re-opens in the corner at this size.
@@ -198,15 +179,16 @@ export default function BrowserLiveView() {
 
   // Frames auto-open the panel the first time, so the user sees activity even if
   // they never opened it. Once it's open or collapsed to the chip, a new frame
-  // only updates the image — it never forces a collapsed panel back open.
+  // only updates the image — it never forces a collapsed panel back open. This
+  // listener drives ONLY the mode transition; the frame/lastTs/sessionKey state
+  // is owned by the useBrowserFrame hook. (The docked right-panel "Web Preview"
+  // tab is a separate URL-iframe feature and does NOT consume this frame stream;
+  // this floating window is currently the hook's only consumer.)
   useEffect(() => {
     const onFrame = (e: Event) => {
-      const d = (e as CustomEvent<FrameDetail>).detail
+      const d = (e as CustomEvent<{ data?: string; session_key?: string }>).detail
       if (!d?.data) return
       const incoming = d.session_key || null
-      setFrame(`data:image/${d.format || 'jpeg'};base64,${d.data}`)
-      setLastTs(Date.now())
-      setSessionKey(incoming)
       setMode(m => {
         if (m !== 'hidden') return m
         // Honor an explicit close: stay hidden while frames keep arriving for the

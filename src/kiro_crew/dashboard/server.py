@@ -340,11 +340,26 @@ _BASE_CSP = (
     # contract only ever produces `<dist-id>.cloudfront.net` URLs; the FE
     # additionally gates on that exact host shape (framablePreviewUrl) so a
     # crafted webapp_metadata URL on any other host is never framed.
+    # http://127.0.0.1:* / http://localhost:*: the Web Preview panel
+    # (WebPreviewPanel) frames a local dev/static server. Always admitted so
+    # the feature works in the packaged dashboard, not only in instances mode.
+    # The panel isolates the preview host from the dashboard host
+    # (isolatePreviewHost) so host-scoped dashboard cookies are never sent to
+    # the framed server. The *.localhost tunnel wildcard stays instances-gated.
     "frame-src 'self' blob: https://*.cloudfront.net{frame_src_extra}; "
     "object-src 'none'; base-uri 'self'; frame-ancestors {frame_ancestors}"
 )
 
-_INSTANCES_FRAME_SRC_EXTRA = " http://127.0.0.1:* http://localhost:* http://*.localhost:*"
+# Loopback preview origins — always framable (see frame-src note above).
+# Aligned with the URLs WebPreviewPanel.normalizeUrl accepts: http+https on
+# every loopback host (127.0.0.1 / localhost / [::1] / 0.0.0.0), so a preview
+# never renders blank due to a CSP-blocked frame.
+_LOOPBACK_FRAME_SRC = (
+    " http://127.0.0.1:* http://localhost:* http://[::1]:* http://0.0.0.0:*"
+    " https://127.0.0.1:* https://localhost:* https://[::1]:* https://0.0.0.0:*"
+)
+# Additional tunnel wildcard, only when the instances feature is enabled.
+_INSTANCES_FRAME_SRC_EXTRA = " http://*.localhost:*"
 
 # Permissions-Policy header. Chrome 143+ changed the default policy so
 # that clipboard-write is DENIED unless explicitly allowlisted, even in
@@ -466,7 +481,11 @@ def _apply_security_headers(
 
     state = app.get("state")
     instances_mgr = getattr(state, "instances_manager", None) if state else None
-    frame_src_extra = _INSTANCES_FRAME_SRC_EXTRA if instances_mgr is not None else ""
+    # Loopback preview origins are always framable (Web Preview panel); the
+    # *.localhost tunnel wildcard is added only when instances mode is active.
+    frame_src_extra = _LOOPBACK_FRAME_SRC + (
+        _INSTANCES_FRAME_SRC_EXTRA if instances_mgr is not None else ""
+    )
     # frame-ancestors: ``'self'`` plus the EXACT parent origin carried in the
     # request token's embed_parent_port claim (see _extra_frame_ancestors) — never
     # a wildcard, never a hardcoded port. Lets the desktop app frame an embedded

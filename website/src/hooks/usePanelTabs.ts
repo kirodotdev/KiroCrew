@@ -4,7 +4,7 @@ import { safeSetItem } from '../utils/safeStorage'
 import { secureRandomId } from '../utils/secureId'
 
 /** Singleton "view" tabs (opened from the + menu, one instance each). */
-export type ViewKind = 'changes' | 'files' | 'artifacts' | 'subagents' | 'workflows' | 'logs' | 'side'
+export type ViewKind = 'changes' | 'files' | 'artifacts' | 'subagents' | 'workflows' | 'logs' | 'side' | 'browser'
 /** All tab kinds: singleton views + on-demand document/terminal tabs. */
 export type TabKind = ViewKind | 'file' | 'diff' | 'artifact' | 'terminal'
 
@@ -39,7 +39,7 @@ export interface PanelTab {
 
 const VIEW_TITLES: Record<ViewKind, string> = {
   changes: 'Changes', files: 'Files', artifacts: 'Artifacts', subagents: 'Subagents', workflows: 'Workflows',
-  logs: 'Logs', side: 'Side',
+  logs: 'Logs', side: 'Side', browser: 'Web Preview',
 }
 
 /** Max concurrent terminal tabs per chat (each is a live PTY). At the cap,

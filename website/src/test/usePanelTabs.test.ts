@@ -46,6 +46,20 @@ describe('usePanelTabs', () => {
     })
   })
 
+  it('opens Web Preview as a singleton, closable view tab', () => {
+    const { result } = renderHook(() => usePanelTabs())
+    act(() => result.current.openView('browser'))
+    act(() => result.current.openView('browser'))
+    expect(result.current.tabs).toHaveLength(1)
+    expect(result.current.activeTab).toMatchObject({
+      id: 'browser', kind: 'browser', title: 'Web Preview',
+    })
+    // Not a pinned view — closes like any dynamic tab.
+    act(() => result.current.closeTab('browser'))
+    expect(result.current.tabs).toHaveLength(0)
+    expect(result.current.activeId).toBeNull()
+  })
+
   it('openFile dedupes on path, titles by basename, and carries the origin slot', () => {
     const { result } = renderHook(() => usePanelTabs())
     act(() => result.current.openFile('/src/pages/ChatPage.tsx', 'body-1', 'slot-a'))

@@ -17,6 +17,9 @@ const SESSION_PREFIXES = [
   'kirocrew:touched-files:',
   'mc-panel-tabs:',
   'mc-activity-open:',
+  'mc-webpreview-url:',
+  'mc-webpreview-pending:',
+  'mc-webpreview-applied:',
 ] as const
 
 /**
