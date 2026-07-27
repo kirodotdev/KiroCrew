@@ -1,5 +1,37 @@
 import { describe, it, expect } from 'vitest'
-import { prepareSendPayload } from '../utils/fileTokens'
+import { prepareSendPayload, buildFileLabels, resolveFileSegment } from '../utils/fileTokens'
+
+describe('buildFileLabels uniqueness', () => {
+  it('disambiguates paths that share a basename', () => {
+    const m = buildFileLabels(['/q3/report.docx', '/q4/report.docx'])
+    expect(m.get('/q3/report.docx')).toBe('q3/report.docx')
+    expect(m.get('/q4/report.docx')).toBe('q4/report.docx')
+  })
+
+  it('widens past two segments when the last two also collide', () => {
+    // Regression: both collapsed to `x/report.docx`, so two distinct
+    // attachments got the same chip label and the same mentionMap key.
+    const m = buildFileLabels(['/a/x/report.docx', '/b/x/report.docx'])
+    expect(new Set([...m.values()]).size, 'labels must be distinct').toBe(2)
+    expect(m.get('/a/x/report.docx')).not.toBe(m.get('/b/x/report.docx'))
+  })
+
+  it('leaves an already-unique basename alone', () => {
+    const m = buildFileLabels(['/repo/notes.txt', '/repo/other.txt'])
+    expect(m.get('/repo/notes.txt')).toBe('notes.txt')
+    expect(m.get('/repo/other.txt')).toBe('other.txt')
+  })
+
+  it('keeps a colliding mention resolvable to its own path', () => {
+    // The label is also the mentionMap key, so a collision made one path
+    // unreachable from its own chip.
+    const content = '[attached_file 1] /a/x/report.docx\n[attached_file 2] /b/x/report.docx'
+    const r = resolveFileSegment(content, ['/a/x/report.docx', '/b/x/report.docx'])
+    const targets = new Set([...r.mentionMap.values(), ...r.cardPaths])
+    expect(targets.has('/a/x/report.docx')).toBe(true)
+    expect(targets.has('/b/x/report.docx')).toBe(true)
+  })
+})
 
 describe('prepareSendPayload', () => {
   it('includes non-image files without @-mention', () => {
