@@ -100,6 +100,74 @@ class TestSubagentSubscribers:
         assert ws_alive in state._ws_clients
 
 
+class TestOwnerScopedBroadcast:
+    """Owner-only typed broadcast + its delivery count (PR #461)."""
+
+    @staticmethod
+    def _ws(closed: bool = False) -> MagicMock:
+        ws = MagicMock()
+        ws.closed = closed
+        ws.send_str = AsyncMock()
+        return ws
+
+    @pytest.mark.asyncio
+    async def test_only_owner_clients_receive_the_message(self, state: DashboardState) -> None:
+        owner, other = self._ws(), self._ws()
+        state.register_ws(owner, owner=True)
+        state.register_ws(other)
+        await state.deliver_ws_owners("followup_card", {"slot": "chat-1"})
+        assert owner.send_str.await_count or owner.send_str.call_count
+        assert not (other.send_str.await_count or other.send_str.call_count)
+
+    def test_count_excludes_non_owner_clients(self, state: DashboardState) -> None:
+        state.register_ws(self._ws())
+        state.register_ws(self._ws())
+        assert state.ws_client_count() == 2
+
+    @pytest.mark.asyncio
+    async def test_awaited_delivery_counts_only_completed_sends(
+        self, state: DashboardState
+    ) -> None:
+        """Round 12 BLOCKING: a socket count is taken BEFORE any send runs, so a
+        peer that drops in that window was reported as delivered. Only a send
+        that completed counts."""
+        good, broken = self._ws(), self._ws()
+        broken.send_str = AsyncMock(side_effect=ConnectionResetError("peer gone"))
+        state.register_ws(good, owner=True)
+        state.register_ws(broken, owner=True)
+        delivered = await state.deliver_ws_owners("followup_card", {"slot": "chat-1"})
+        assert delivered == 1
+        assert broken not in state._owner_ws_clients
+        assert good in state._owner_ws_clients
+
+    @pytest.mark.asyncio
+    async def test_awaited_delivery_excludes_non_owner_and_closed(
+        self, state: DashboardState
+    ) -> None:
+        """A closed socket receives nothing, and an app token in `_ws_clients`
+        must never be counted as reach for owner-scoped content."""
+        state.register_ws(self._ws(), owner=True)
+        state.register_ws(self._ws(closed=True), owner=True)
+        other = self._ws()
+        state.register_ws(other)
+        assert await state.deliver_ws_owners("followup_card", {"slot": "chat-1"}) == 1
+        assert not (other.send_str.await_count or other.send_str.call_count)
+
+    @pytest.mark.asyncio
+    async def test_awaited_delivery_with_no_owner_clients_is_zero(
+        self, state: DashboardState
+    ) -> None:
+        state.register_ws(self._ws())
+        assert await state.deliver_ws_owners("followup_card", {"slot": "chat-1"}) == 0
+
+    @pytest.mark.asyncio
+    async def test_no_owner_clients_is_a_noop(self, state: DashboardState) -> None:
+        other = self._ws()
+        state.register_ws(other)
+        assert await state.deliver_ws_owners("followup_card", {"slot": "chat-1"}) == 0
+        assert not (other.send_str.await_count or other.send_str.call_count)
+
+
 class TestSlotModel:
     def test_model_in_to_dict(self, state: DashboardState) -> None:
         slot = state.get_or_create_slot("test-1", model="claude-opus-4.5")

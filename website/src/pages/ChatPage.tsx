@@ -18,7 +18,7 @@ import {
   setVoiceAudio,
   toggleActivity, openActivityPanel,
   setActiveSlot, truncateAfterIndex, replaceMessages,
-  requestStop, clearQuestionCard,
+  requestStop, clearQuestionCard, clearFollowupCard, dismissFollowupItem,
 } from '../store/chatSlice'
 import { removeNotificationByTs } from '../store/notificationsSlice'
 import { onTerminalReady, sendToTerminalSession } from '../utils/terminalRegistry'
@@ -56,7 +56,7 @@ const SCROLL_AFTER_RENDER_MS = 100
 // Canonical home is utils/navIntent (shared with the popout nav-intent
 // applier); re-exported here for this page's historical importers.
 export { PREFILL_STORAGE_KEY } from '../utils/navIntent'
-import { PREFILL_STORAGE_KEY } from '../utils/navIntent'
+import { PREFILL_STORAGE_KEY, writePrefill } from '../utils/navIntent'
 import WelcomeView from '../components/WelcomeView'
 import { usePanelTabs, clearInlineDraft, getInlineDraft } from '../hooks/usePanelTabs'
 import { useFilteredDropdown } from '../hooks/useFilteredDropdown'
@@ -76,6 +76,12 @@ import SessionGridView from '../components/SessionGridView'
 import { anchorForSlot, loadLayout, sessionSlots } from '../hooks/splitLayoutStore'
 import { modelSupportsEffort } from '../lib/effort'
 import QuestionCard from '../components/QuestionCard'
+import FollowUpCard from '../components/FollowUpCard'
+import type { FollowupItem } from '../store/chatSlice'
+
+// Stable identity for the "no follow-up cards" case: returning a fresh {} from
+// the selector would make it a new reference on every store update.
+const EMPTY_FOLLOWUPS: Record<string, { items: FollowupItem[]; ts: number }> = {}
 import ReasoningEffortDropdown from '../components/ReasoningEffortDropdown'
 import FlyingQuote from '../components/FlyingQuote'
 import { useMessageSearch } from '../hooks/useMessageSearch'
@@ -542,6 +548,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
   const slotStopping = useAppSelector(s => s.chat.slotStopping)
   const slotLoading = useAppSelector(s => s.chat.slotLoading)
   const pendingQuestion = useAppSelector(s => s.chat.pendingQuestion)
+  const pendingFollowup = useAppSelector(s => (s.chat.activeSlot ? s.chat.followups?.[s.chat.activeSlot] : undefined))
+  const followupTsBySlot = useAppSelector(s => s.chat.followups) ?? EMPTY_FOLLOWUPS
   // The ambient tip yields to functional surfaces that own the above-composer band
   const tipSuppressed = useAppSelector(s =>
     s.chat.messages.some(m => m.role === 'queued') ||
@@ -550,6 +558,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
     // another running slot suppresses tips here forever (Codex round-31,
     // same slot-ownership family as the workflowRuns fix in round-16).
     (!!s.chat.pendingQuestion && s.chat.pendingQuestion.slot === s.chat.activeSlot) ||
+    // The follow-up card occupies the same above-composer band. Cards are
+    // slot-keyed, so read only the ACTIVE slot's entry — a card parked in
+    // another session must not suppress tips here.
+    (!!s.chat.activeSlot && !!s.chat.followups?.[s.chat.activeSlot]) ||
     // Active subagents render the progress bar in the same above-composer
     // zone the floating tip occupies — the tip always yields (Raymond's
     // hard constraint: never crowd the queue/subagent surfaces).
@@ -2190,6 +2202,131 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
   const tabsCtlRef = useRef(tabsCtl); tabsCtlRef.current = tabsCtl
   const currentProjectRef = useRef<string | undefined>(undefined)
   currentProjectRef.current = currentSlot?.project || undefined
+
+  // ── Follow-up card actions (suggest_followup MCP tool) ───────────────────
+  // Both routes PRE-FILL a composer and stop; neither sends. `setPendingInput`
+  // is consumed by the effect above, which drops the text into the composer and
+  // flags the prefill hint — the same path the Projects page and command
+  // palette use, so there is one prefill mechanism, not a parallel one.
+  //
+  // Live per-slot card timestamps, read inside async actions without making them
+  // depend on (and re-create on) every card change.
+  const followupTsRef = useRef<Record<string, { items: FollowupItem[]; ts: number }>>({})
+  followupTsRef.current = followupTsBySlot
+  const followupAddToSession = useCallback((item: FollowupItem) => {
+    if (!activeSlot) return
+    // APPEND when the composer already holds unsent text: the pending-input path
+    // replaces the draft and persists it, so a plain set would silently destroy
+    // whatever the user was mid-way through typing (GPT review round 13).
+    // `inputRef` is the live composer value; a blank line separates the two
+    // because a handoff prompt is multi-line prose, not a word to concatenate.
+    const draft = inputRef.current ?? ''
+    dispatch(setPendingInput(draft.trim() ? `${draft.replace(/\s+$/, '')}\n\n${item.prompt}` : item.prompt))
+    // Clear by the RENDERED card's ts, as the worktree action does: a newer card
+    // for this slot can land between render and click, and an unqualified clear
+    // would delete suggestions the user never saw.
+    dispatch(clearFollowupCard({ slot: activeSlot, ts: followupTsRef.current[activeSlot]?.ts }))
+  }, [dispatch, activeSlot])
+
+  // Fallback branch name when the agent did not supply one: slugify the title
+  // under FOLLOWUP_BRANCH_RE's grammar (the server re-validates, so a slug that
+  // degenerates to empty is replaced rather than sent and rejected).
+  const followupBranchFor = useCallback((item: FollowupItem) => {
+    if (item.branch) return item.branch
+    const slug = item.title
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 40)
+    return `followup/${slug || 'suggestion'}`
+  }, [])
+
+  const followupStartInWorktree = useCallback(async (item: FollowupItem) => {
+    const repo = currentSlot?.project
+    if (!repo) throw new Error('This session has no project directory to branch from.')
+    const originSlot = activeSlot
+    // Capture the card's ts up front so completion clears only THIS card. A
+    // newer card can arrive for the same slot while the request is in flight;
+    // without the guard the older action's completion would clobber it.
+    const originTs = originSlot ? followupTsRef.current[originSlot]?.ts : undefined
+    // Create the worktree FIRST: if git refuses (branch exists, not a repo),
+    // we must not have already spawned an empty session the user has to clean
+    // up. The card surfaces the thrown message inline.
+    const res = await api.createWorktree(repo, followupBranchFor(item))
+    const path = res?.path
+    if (!path) throw new Error(res?.error || 'Worktree creation returned no path')
+    let slotKey = ''
+    try {
+      // `activate: false` on purpose: the slot must be SCOPED to the worktree
+      // before the user can type into it. Activating first (the default) leaves a
+      // window where the composer is live but `chatSlotProject` is still pending,
+      // so a turn sent in that window would run in the default directory — agent
+      // tools writing to the wrong checkout. It also means a scoping failure can
+      // render its error on the still-mounted card instead of unmounting it
+      // (GPT review, PR #461 round 9).
+      const slot = await dispatch(createSlot({ mode, project: path, activate: false })).unwrap()
+      slotKey = slot?.key || ''
+    } catch {
+      // The worktree exists but the session does not. Say so, and name the path:
+      // the create endpoint is idempotent for its own destination, so pressing
+      // the button again reuses this worktree instead of 409-ing on it.
+      throw new Error(
+        `Worktree created at ${path}, but its session could not be opened and scoped. ` +
+        'Press the button again to retry — the existing worktree will be reused.',
+      )
+    }
+    // A fulfilled thunk with no key would skip every guard below (scoping,
+    // activation, focus verification) and prefill whatever session is on screen
+    // — the exact fail-open the docs promise not to do. Fail closed instead.
+    if (!slotKey) {
+      throw new Error(
+        `Worktree created at ${path}, but no session was returned. ` +
+        'Press the button again to retry — the existing worktree will be reused.',
+      )
+    }
+    // Scoping is NOT done here: `createSlot({ activate: false })` awaits the
+    // project assignment before it publishes the slot, and deletes the session if
+    // that fails, so the slot is never reachable in an unscoped state. A failure
+    // therefore rejects the thunk and is reported by the catch above.
+    // createSlot's fulfilled reducer deliberately does NOT activate its result
+    // if the user switched sessions while the create was in flight. The
+    // prefill below writes to the *active* composer, so without this the
+    // prompt would land in whatever unrelated session is on screen and the new
+    // worktree session would open empty. The user asked for this worktree by
+    // clicking; take them to it — and if that fails, surface the error and
+    // keep the card rather than prefilling the wrong conversation.
+    // Read the store directly, NOT activeSlotRef: the ref is refreshed by a
+    // render, and `unwrap()` resolves as soon as the reducer ran — so a stale
+    // ref would report a failure (and skip the prefill) on a switch that in
+    // fact succeeded. store.getState() sees the committed value immediately.
+    // Hand the prompt over through PREFILL_STORAGE_KEY *before* the switch — the
+    // same channel the ?sid / popout paths use. `setPendingInput` alone loses the
+    // race: its consuming effect is declared BEFORE the per-slot draft-restore
+    // effect, so when the switch and the prefill land in one React commit the
+    // restore runs last and overwrites the composer with the incoming slot's
+    // (empty) draft, and the prompt vanishes. Seeding the prefill makes the
+    // restore itself apply the prompt, so there is nothing left to race.
+    writePrefill(slotKey, item.prompt)
+    if (store.getState().chat.activeSlot !== slotKey) {
+      try {
+        await dispatch(switchSlot(slotKey)).unwrap()
+      } catch {
+        throw new Error(
+          `Worktree ready at ${path}, but its session could not be opened. ` +
+          'Switch to it in the sidebar, or press the button again.',
+        )
+      }
+    }
+    if (store.getState().chat.activeSlot !== slotKey) {
+      throw new Error(
+        `Worktree ready at ${path}, but its session is not in focus. ` +
+        'Switch to it in the sidebar, or press the button again.',
+      )
+    }
+    dispatch(setPendingInput(item.prompt))
+    if (originSlot) dispatch(clearFollowupCard({ slot: originSlot, ts: originTs }))
+  }, [currentSlot?.project, followupBranchFor, dispatch, mode, activeSlot])
+
   // "Run in terminal" (from chat code blocks): open a FRESH terminal tab in
   // this chat and run the command in it, starting in the chat's working dir.
   // The result is echoed back so the code-block button can show sent/failed.
@@ -3512,6 +3649,17 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
                       }
                       dispatch(clearQuestionCard())
                     }}
+                  />
+                </div>
+              )}
+              {pendingFollowup && activeSlot && (
+                <div className="px-5 pb-2 mx-auto w-full" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
+                  <FollowUpCard
+                    items={pendingFollowup.items}
+                    projectDir={currentSlot?.project || undefined}
+                    onAddToSession={followupAddToSession}
+                    onStartInWorktree={followupStartInWorktree}
+                    onSkip={(index) => dispatch(dismissFollowupItem({ slot: activeSlot, index, ts: pendingFollowup.ts }))}
                   />
                 </div>
               )}

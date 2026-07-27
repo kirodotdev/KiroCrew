@@ -720,6 +720,17 @@ export const api = {
     post('/api/chat/slots/' + encodeURIComponent(slot) + '/workspace', { workspace }).then(j),
   chatSlotProject: (slot: string, project: string) =>
     post('/api/chat/slots/' + encodeURIComponent(slot) + '/project', { project }).then(j),
+  // Follow-up card: create a sibling git worktree of `repo` on a new `branch`.
+  // Resolves with the created path, or rejects with the server's message
+  // (branch/dir already exists, not a git repo, git unavailable).
+  createWorktree: (repo: string, branch: string) =>
+    post('/api/worktree/create', { repo, branch }).then(j) as Promise<{
+      ok?: boolean
+      path?: string
+      branch?: string
+      base?: string
+      error?: string
+    }>,
   recentProjects: () => fetch('/api/recent-projects').then(j) as Promise<{ dirs: string[] }>,
   browseDirs: (path?: string) => fetch('/api/browse-dirs' + (path ? '?path=' + encodeURIComponent(path) : '')).then(j) as Promise<{ path: string; parent: string; dirs: { name: string; path: string }[] }>,
   browseFiles: (path?: string) => fetch('/api/browse-files' + (path ? '?path=' + encodeURIComponent(path) : '')).then(j) as Promise<{ path: string; parent: string; dirs: { name: string; path: string; mtime: number }[]; files: { name: string; path: string; mtime: number }[] }>,

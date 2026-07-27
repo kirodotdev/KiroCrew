@@ -2822,6 +2822,47 @@ class DashboardState:
         msg = json.dumps({"type": msg_type, "data": data})
         self._send_ws_all(msg)
 
+    async def deliver_ws_owners(self, msg_type: str, data: object) -> int:
+        """Send a typed message ONLY to owner clients; return how many sends COMPLETED.
+
+        Use this instead of :meth:`broadcast_ws` for payloads scoped to the
+        dashboard user rather than to every subscriber — an app credential can
+        open ``/api/ws`` and lands in ``_ws_clients``, so an all-clients broadcast
+        of user-scoped content crosses the App Kit boundary.
+
+        The return value is the count of sends that actually completed, for
+        callers whose response reports delivery. A socket count is not a delivery count: the
+        fire-and-forget path returns before any ``send_str`` runs, so a client
+        that disconnects between the count and the send yields a failed send that
+        was already reported as success. For an ephemeral, broadcast-only payload
+        (nothing is stored server-side to re-deliver) that false success is the
+        whole failure mode — the caller is told the user saw a card that was
+        dropped on the floor.
+
+        Sends run concurrently and failures are absorbed per socket: one dead
+        peer must not hide a successful delivery to another window. Sockets that
+        are already ``closed``, and those whose send raised, are removed here —
+        the same cleanup the non-awaiting path performs.
+        """
+        targets = [ws for ws in list(self._owner_ws_clients) if not ws.closed]
+        if not targets:
+            return 0
+        msg = json.dumps({"type": msg_type, "data": data})
+        results = await asyncio.gather(
+            *(ws.send_str(msg) for ws in targets), return_exceptions=True
+        )
+        delivered = 0
+        for ws, result in zip(targets, results):
+            if isinstance(result, BaseException):
+                logger.debug("Owner WS send failed (client likely disconnected): %s", result)
+                self._remove_ws(ws)
+            else:
+                delivered += 1
+        for ws in list(self._owner_ws_clients):
+            if ws.closed:
+                self._remove_ws(ws)
+        return delivered
+
     def ws_client_count(self) -> int:
         """Number of connected dashboard WS clients (live subscribers)."""
         return len(self._ws_clients)

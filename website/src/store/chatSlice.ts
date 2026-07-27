@@ -134,6 +134,25 @@ export interface SideState {
   createdAt: string
 }
 
+/**
+ * One agent-authored follow-up suggestion.
+ *
+ * `prompt` is the expanded, self-contained handoff instruction — it is what
+ * gets pre-filled into a composer; `title`/`description` are display only.
+ * `branch` is an optional git branch name for the worktree route; when absent
+ * the card derives one from the title. Server-side, every string here has
+ * already been length-capped, sanitized, and credential/URL-redacted
+ * (`SUGGEST_FOLLOWUP_SCHEMA` + `_redact_followup_item`), and `branch` is
+ * regex-gated — but it is still LLM-authored text, so render it as text and
+ * never as markup.
+ */
+export interface FollowupItem {
+  title: string
+  description: string
+  prompt: string
+  branch?: string
+}
+
 interface ChatState {
   activeSlot: string | null
   messages: ChatMessage[]
@@ -187,6 +206,20 @@ interface ChatState {
   slotHistory: string[]
   stopPressedAt: Record<string, number | null>
   pendingQuestion: { slot: string; questions: Array<{ question: string; header?: string; options: Array<{ label: string; description?: string }>; multiSelect?: boolean }> } | null
+  // Agent-authored follow-up suggestions (suggest_followup MCP tool), rendered
+  // as a card above the composer. Keyed BY SLOT: a single global card let a
+  // suggestion arriving in session B silently evict session A's unacted-on card,
+  // contradicting the documented per-session behaviour (GPT review, PR #461).
+  //
+  // `ts` is the broadcast timestamp, used to avoid clearing a card that arrived
+  // while a slower action (worktree create) was still in flight.
+  //
+  // Ephemeral: this lives only in frontend state, so a full page reload drops it.
+  // Deliberately NOT cleared by clearSlotState — a suggestion is not tied to an
+  // in-flight turn, so tabbing away and back should still show it. Rendering is
+  // gated on the active slot's own key, so a retained card can never surface
+  // under the wrong session.
+  followups: Record<string, { items: FollowupItem[]; ts: number }>
   // Slot with a locally-started turn awaiting server confirmation. While set,
   // the slots-sync ignores a server running=false for it (the snapshot may
   // predate the send). Cleared on server confirmation or turn end.
@@ -230,6 +263,7 @@ const initialState: ChatState = {
   slotSideClosed: {},
   slotHistory: [],
   pendingQuestion: null,
+  followups: {},
   stopPressedAt: {},
   pendingTurnSlot: null,
 }
@@ -498,8 +532,8 @@ export const warmSlotCache = createAsyncThunk(
 
 export const createSlot = createAsyncThunk<
   ChatSlot,
-  { agent?: string; model?: string; mode?: string; memory_mode?: string; clean_mode?: boolean; folder_id?: string | null; color_index?: number | null; project?: string | null } | string | undefined,
-  { fulfilledMeta: { originActiveSlot: string | null } }
+  { agent?: string; model?: string; mode?: string; memory_mode?: string; clean_mode?: boolean; folder_id?: string | null; color_index?: number | null; project?: string | null; activate?: boolean } | string | undefined,
+  { fulfilledMeta: { originActiveSlot: string | null; activate: boolean } }
 >(
   'chat/createSlot',
   async (opts, { dispatch, getState, fulfillWithValue }) => {
@@ -511,6 +545,11 @@ export const createSlot = createAsyncThunk<
     const folderId = typeof opts === 'string' ? undefined : opts?.folder_id
     const explicitColor = typeof opts === 'string' ? undefined : opts?.color_index
     const project = typeof opts === 'string' ? undefined : opts?.project
+    // `activate: false` creates the session WITHOUT stealing focus, so a caller
+    // that must finish setting the slot up (e.g. scoping it to a worktree) can
+    // do so before the user is able to type into it. Defaults to true — every
+    // existing caller keeps the create-and-focus behaviour.
+    const activate = typeof opts === 'string' ? true : opts?.activate !== false
     // Capture the active slot BEFORE the (potentially slow) create round-trip.
     // The fulfilled reducer compares this against the active slot at resolution
     // time: if the user switched to a different session while the create was
@@ -540,14 +579,29 @@ export const createSlot = createAsyncThunk<
     // create payload instead.)
     if (project) {
       slot.project = project
-      api.chatSlotProject(slot.key, project).catch(() => {})
+      if (activate) {
+        api.chatSlotProject(slot.key, project).catch(() => {})
+      } else {
+        // Background create (activate: false): the caller is setting this slot up
+        // and the user must not be able to reach it half-configured. Publishing it
+        // via addSlotOptimistic makes it selectable from the sidebar immediately,
+        // so a turn sent before scoping landed would run in the DEFAULT checkout.
+        // Await the scope, and if it fails delete the session server-side rather
+        // than publish an unscoped one (GPT review, PR #461 round 10).
+        try {
+          await api.chatSlotProject(slot.key, project)
+        } catch (err) {
+          await api.deleteChatSlot(slot.key).catch(() => {})
+          throw err
+        }
+      }
     }
     dispatch(addSlotOptimistic(slot))
     // Carry the origin slot in the action meta (fulfillWithValue) rather than on
     // the payload, so it can never leak into the persisted slot object. The
     // fulfilled reducer reads action.meta.originActiveSlot to decide whether
     // activating the new slot is safe.
-    return fulfillWithValue(slot, { originActiveSlot })
+    return fulfillWithValue(slot, { originActiveSlot, activate })
   },
 )
 
@@ -731,6 +785,43 @@ const chatSlice = createSlice({
     setPendingInput(state, action: PayloadAction<string | null>) { state.pendingInput = action.payload },
     setQuestionCard(state, action: PayloadAction<ChatState['pendingQuestion']>) { state.pendingQuestion = action.payload },
     clearQuestionCard(state) { state.pendingQuestion = null },
+    setFollowupCard(state, action: PayloadAction<{ slot: string; items: FollowupItem[]; ts?: number }>) {
+      const { slot, items, ts } = action.payload
+      if (!slot || !items?.length) return
+      if (isUnsafeKey(slot)) return  // never index a state map with __proto__/constructor/prototype
+      // Defensive: a partial preloaded slice (tests, older persisted state) can
+      // arrive without this key.
+      if (!state.followups) state.followups = {}
+      state.followups[slot] = { items, ts: ts ?? Date.now() / 1000 }
+    },
+    // `ts` guards the async case: "Start in new worktree" clears the card only
+    // after its request resolves, and a NEWER card may have arrived for the same
+    // slot meanwhile. Passing the ts the action started with means the newer card
+    // survives instead of being clobbered by the older action's completion.
+    clearFollowupCard(state, action: PayloadAction<{ slot: string; ts?: number }>) {
+      const { slot, ts } = action.payload
+      if (isUnsafeKey(slot)) return
+      const card = state.followups?.[slot]
+      if (!card) return
+      if (ts != null && card.ts !== ts) return
+      delete state.followups[slot]
+    },
+    // Skip ONE suggestion without discarding the others. The card disappears
+    // only once its last item is gone, so skipping the first of three does not
+    // silently throw away the other two.
+    dismissFollowupItem(state, action: PayloadAction<{ slot: string; index: number; ts?: number }>) {
+      const { slot, index, ts } = action.payload
+      if (isUnsafeKey(slot)) return
+      const card = state.followups?.[slot]
+      if (!card) return
+      // Same staleness guard as `clearFollowupCard`: a replacement card can land
+      // between render and click, and an unqualified dismiss would delete that
+      // index from a card the user has not seen (GPT review, round 9).
+      if (ts != null && card.ts !== ts) return
+      const items = card.items.filter((_, i) => i !== index)
+      if (items.length) state.followups[slot] = { ...card, items }
+      else delete state.followups[slot]
+    },
     sseContextUsage(state, action: PayloadAction<{ slot: string; pct: number; used_tokens?: number; window_tokens?: number }>) {
       const { slot, pct, used_tokens, window_tokens } = action.payload
       if (isUnsafeKey(slot)) return
@@ -1591,6 +1682,9 @@ const chatSlice = createSlice({
           state.slotMessages, state.slotActivity, state.slotRun, state.slotHydrated,
           state.slotSide, state.slotSideClosed, state.slotStatusDetail,
           state.slotContextPct, state.slotContextTokens, state.stopPressedAt,
+          // Follow-up cards are per slot and can hold multi-KB prompts, so a
+          // deleted session's card must not outlive it (GPT review round 4).
+          state.followups,
         ].filter(Boolean)
         const cached = new Set(maps.flatMap(m => Object.keys(m)))
         for (const key of cached) {
@@ -1821,6 +1915,9 @@ const chatSlice = createSlice({
         // stays put. "First create wins" rather than the prior "last wins". Both
         // slots exist in the sidebar and both land the user on an empty chat, so
         // the outcomes are equivalent, accepted over re-stealing focus.
+        // Caller asked for a background create (see `activate` above): the slot
+        // is registered but focus stays put until the caller switches to it.
+        if (action.meta.activate === false) return
         const origin = action.meta.originActiveSlot ?? null
         if (state.activeSlot !== origin) return
         if (state.activeSlot) {
@@ -1845,6 +1942,7 @@ const chatSlice = createSlice({
         delete state.slotHydrated[action.payload]
         delete state.slotSide[action.payload]
         delete state.slotSideClosed[action.payload]
+        if (state.followups) delete state.followups[action.payload]
         state.slotHistory = state.slotHistory.filter(k => k !== action.payload)
         if (state.activeSlot === action.payload) {
           state.activeSlot = null
@@ -1901,7 +1999,7 @@ const chatSlice = createSlice({
 })
 
 export const {
-  setActiveSlot, clearSlotState, setPendingInput, setQuestionCard, clearQuestionCard, appendMessage, appendSlotMessage, updateStreamingMessage, finalizeAssistant,
+  setActiveSlot, clearSlotState, setPendingInput, setQuestionCard, clearQuestionCard, setFollowupCard, clearFollowupCard, dismissFollowupItem, appendMessage, appendSlotMessage, updateStreamingMessage, finalizeAssistant,
   removeThinking, removeByApprovalId, resolveByApprovalId, clearPendingPermissions, setSlotRunning, setSlotStopping, startLocalTurn, syncSlotRunningFromServer, setSlotState, setSlotStatusDetail, setStopPressedAt, clearMessages, truncateAfterIndex, replaceMessages, hydrateSlotMessages, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage,
   sseContextUsage, setVoicePlaying, setVoiceAudio,
   toggleActivity, openActivityToTab, openActivityPanel, openActivityToTool, clearFocusToolCallId, clearSubagentsForSnapshot, sseSubagentPending, markSubagentApproving, sseSubagentSpawn, sseSubagentChunk, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone,

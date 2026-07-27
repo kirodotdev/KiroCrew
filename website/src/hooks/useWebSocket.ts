@@ -6,7 +6,7 @@ import { sseStatus, sseConnected, sseDisconnected, sseSlots, setChannelTrusted, 
 import { addNotification, ackNotificationByTs, unackNotificationByTs, removeNotificationByTs, fetchNotifications } from '../store/notificationsSlice'
 import { MC_NOTIFICATION_EVENT, TURN_DONE_KIND, shouldChimeOnTurnDone, type McNotificationDetail } from './notificationEvent'
 import { emitThemeSound } from './themeSound'
-import { fetchHistory, missedChunkMarker, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, refreshSlot, warmSlotCache, sseContextUsage, clearMessages, setVoicePlaying, setVoiceAudio, resolveByApprovalId, clearSubagentsForSnapshot, sseSubagentPending, sseSubagentSpawn, sseSubagentChunk, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentSnapshot, sseSubagentBatchUpdate, sseSubagentBatchChunks, sseToolActivity, sseToolResult, sseActivityEvent, sseSideResult, sseWorkflowEvent, setSlotStatusDetail, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, appendSlotMessage, setQuestionCard } from '../store/chatSlice'
+import { fetchHistory, missedChunkMarker, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, refreshSlot, warmSlotCache, sseContextUsage, clearMessages, setVoicePlaying, setVoiceAudio, resolveByApprovalId, clearSubagentsForSnapshot, sseSubagentPending, sseSubagentSpawn, sseSubagentChunk, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentSnapshot, sseSubagentBatchUpdate, sseSubagentBatchChunks, sseToolActivity, sseToolResult, sseActivityEvent, sseSideResult, sseWorkflowEvent, setSlotStatusDetail, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, appendSlotMessage, setQuestionCard, setFollowupCard } from '../store/chatSlice'
 import { api } from '../api/client'
 import { sanitizeLlmOutput } from '../utils/sanitize'
 import { applyStatusDelta, parseStatusDelta } from '../utils/pullRequestStatusDelta'
@@ -463,6 +463,28 @@ export function useWebSocket() {
           case 'question_card':
             dispatch(setQuestionCard(data as Parameters<typeof setQuestionCard>[0]))
             break
+          case 'followup_card': {
+            // Agent-authored follow-up suggestions. The server caps this at 3
+            // items and has already sanitized + redacted every string; the
+            // slice keeps only the fields the card renders.
+            const raw = data as { slot?: string; items?: Array<Record<string, unknown>>; ts?: number }
+            const items = (Array.isArray(raw.items) ? raw.items : [])
+              .filter((it) => it && typeof it.title === 'string' && typeof it.prompt === 'string')
+              .map((it) => ({
+                title: String(it.title),
+                description: typeof it.description === 'string' ? it.description : '',
+                prompt: String(it.prompt),
+                ...(typeof it.branch === 'string' && it.branch ? { branch: it.branch } : {}),
+              }))
+            if (raw.slot && items.length) {
+              dispatch(setFollowupCard({
+                slot: raw.slot,
+                items,
+                ...(typeof raw.ts === 'number' ? { ts: raw.ts } : {}),
+              }))
+            }
+            break
+          }
           case 'activity_event':
             dispatch(sseActivityEvent(data as { slot: string; kind: string; text: string }))
             break

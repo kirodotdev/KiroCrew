@@ -1220,6 +1220,13 @@ def token_auth_middleware(
                         resources=path,
                     )
                     _log_auth(request, "internal", "granted", "")
+                    # Mark the grant so handlers can distinguish "the internal
+                    # loopback caller (kiro-cli / MCP) authenticated" from "no
+                    # auth ran at all". This branch deliberately leaves
+                    # request["app"] unset — there is no app identity — so a
+                    # handler that fails closed on an absent app claim would
+                    # otherwise reject every MCP call.
+                    request["internal_auth"] = True
                     return await handler(request)  # type: ignore[operator]
                 # Wrong secret → deny (don't fall through)
                 _sel = _sel_fn()

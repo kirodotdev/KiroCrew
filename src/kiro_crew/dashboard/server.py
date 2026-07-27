@@ -124,6 +124,7 @@ from kiro_crew.dashboard.handlers.source_providers import (
     unregister_status_delta_sink,
 )
 from kiro_crew.dashboard.handlers.tunnel import api_tunnel_status
+from kiro_crew.dashboard.handlers.worktree import api_worktree_create
 from kiro_crew.dashboard.loop_watchdog import LoopStallWatchdog
 from kiro_crew.dashboard.origin import (
     bind_address_for,
@@ -1489,6 +1490,9 @@ async def start_dashboard(
     )
     app.router.add_post("/api/chat/slots/{slot}/workspace", chat.api_chat_slot_workspace)
     app.router.add_post("/api/chat/slots/{slot}/project", chat.api_chat_slot_project)
+    # Follow-up suggestion card (suggest_followup MCP tool -> card below composer)
+    app.router.add_post("/api/chat/slots/{slot}/followup", chat.api_chat_slot_followup)
+    app.router.add_post("/api/worktree/create", api_worktree_create)
     app.router.add_get("/api/recent-projects", chat.api_recent_projects)
     app.router.add_patch("/api/chat/slots/{slot}/color", chat.api_chat_slot_color)
     # Context injection (App Kit — silent background context)

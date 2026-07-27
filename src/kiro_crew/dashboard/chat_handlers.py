@@ -65,7 +65,10 @@ from kiro_crew.sel import SecurityEvent, sel
 from kiro_crew.validation import (
     _AGENT_NAME_RE,
     ARTIFACT_SLUG_RE,
+    SUGGEST_FOLLOWUP_SCHEMA,
+    ValidationError,
     normalize_theme_consent_sha,
+    validate_tool_args,
 )
 
 logger = logging.getLogger(__name__)
@@ -1771,6 +1774,151 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
         slot._pending_reset_history_key = _history_key_for(name)
     state.push_slots_update()
     return web.json_response({"ok": True, "project": project})
+
+
+# Fields carried per follow-up item on the wire. Kept explicit so a future
+# schema addition has to be added here deliberately rather than leaking
+# whatever the model happened to send into the broadcast payload.
+_FOLLOWUP_TEXT_FIELDS = ("title", "description", "prompt")
+
+
+def _redact_followup_item(item: dict) -> dict:
+    """Return a display-safe copy of one follow-up item.
+
+    Every string is LLM-authored and renders in the dashboard DOM, so it goes
+    through the same credential + exfiltration-URL redaction as chat content
+    (mirrors the AskUserQuestion path in chat_runner). ``branch`` is omitted
+    when absent so the frontend can fall back to deriving one from the title.
+    """
+    out: dict[str, str] = {}
+    for key in _FOLLOWUP_TEXT_FIELDS:
+        text = str(item.get(key) or "")
+        text, _ = redact_exfiltration_urls(text)
+        text, _ = redact_credentials(text)
+        out[key] = text
+    branch = item.get("branch")
+    if isinstance(branch, str) and branch:
+        # `branch` is LLM-authored too, and it travels further than the text
+        # fields: into a git ref, a directory name, SEL records and logs. Run the
+        # same redactors, and if either one CHANGES it, drop the field rather than
+        # ship a mangled ref — the frontend then derives a branch from the title
+        # (GPT review round 4).
+        scrubbed, _ = redact_exfiltration_urls(branch)
+        scrubbed, _ = redact_credentials(scrubbed)
+        if scrubbed == branch:
+            out["branch"] = branch
+    return out
+
+
+def deny_non_dashboard_caller(request: web.Request, operation: str) -> web.Response | None:
+    """403 unless this is the dashboard OWNER's own request, else None.
+
+    Deny-by-default, matching ``api_chat_slots_model``'s reasoning: the auth
+    middleware sets ``request["app"]`` on every authenticated path (``""`` for
+    dashboard users, the app name for app tokens), so an ABSENT key means the
+    middleware did not run and must refuse rather than fall through.
+
+    An app claim of ``""`` is necessary but NOT sufficient. Both surfaces guarded
+    here act on owner-scoped resources — the card renders in the owner's composer
+    and the worktree allow-list is built from every slot's project — so identity
+    is checked with ``is_owner_dashboard_request``, the same predicate the source
+    provider mutations use: the caller must match the configured ``owner_id``, or
+    be a signed local bootstrap subject when no owner is configured (the
+    standalone-local case, where the browser's own token is minted for
+    ``local-app``). A dashboard token issued for a different subject would
+    otherwise mutate repositories it does not own (GPT review round 12).
+
+    ONE exception, and it is the path every MCP call arrives on: a request that
+    presented a valid ``X-Internal-Secret`` from loopback is granted by the
+    middleware WITHOUT an app claim (there is no app identity to set), so it
+    carries ``request["internal_auth"] is True`` instead. Refusing that would
+    403 ``suggest_followup`` outright — the tool could never raise a card (GPT
+    review, PR #461 round 9).
+    """
+    if request.get("internal_auth") is True:
+        return None
+    # Imported here, not at module scope: source_providers imports chat state
+    # helpers, so a top-level import would close a cycle (same pattern as
+    # api_chat_slots' owner-only check-status gate above).
+    from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+
+    if not is_owner_dashboard_request(request):
+        try:
+            sel().log_api_access(
+                caller=str(request.get("user") or "anonymous"),
+                operation=operation,
+                outcome="denied",
+                source="dashboard",
+                error="not the dashboard owner",
+            )
+        except Exception:  # pragma: no cover - audit is best-effort
+            logger.debug("SEL audit failed for %s denial", operation, exc_info=True)
+        return web.json_response({"error": "forbidden"}, status=403)
+    return None
+
+
+async def api_chat_slot_followup(request: web.Request) -> web.Response:
+    """POST /api/chat/slots/{slot}/followup — show an agent-authored follow-up card.
+
+    Backs the ``suggest_followup`` MCP tool. Reachable over loopback HTTP from
+    inside the kiro-cli process group, so the payload is re-validated here
+    against the same schema the MCP layer used: this endpoint is a trust
+    boundary in its own right, not merely a relay.
+
+    The card is ephemeral (broadcast-only, held in frontend state) and one card
+    per slot: a second call replaces an unacted-on card rather than stacking.
+    """
+    state: DashboardState = request.app["state"]
+    denied = deny_non_dashboard_caller(request, "chat_slot_followup")
+    if denied is not None:
+        return denied
+    name = request.match_info["slot"]
+    slot = state._slots.get(name)
+    if not slot:
+        return web.json_response({"error": "not found"}, status=404)
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON"}, status=400)
+    if not isinstance(body, dict):
+        return web.json_response({"error": "invalid JSON"}, status=400)
+    try:
+        cleaned = validate_tool_args(body, SUGGEST_FOLLOWUP_SCHEMA)
+    except ValidationError as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+    items = [_redact_followup_item(item) for item in cleaned.get("items") or []]
+    if not items:
+        return web.json_response({"error": "items must not be empty"}, status=400)
+    # The card is delivered by broadcast only — nothing is stored server-side —
+    # so with no WS client attached the suggestions are dropped on the floor.
+    # Report the number of sends that COMPLETED instead of an unconditional
+    # success, so the MCP tool can tell the model to restate the follow-ups in
+    # its reply text rather than being assured they were shown and steered into
+    # silence (Design review, PR #461).
+    #
+    # This send is AWAITED: a socket count is taken before any send runs, so an
+    # owner window that disconnects in that window produced a failed send already
+    # reported as delivered (GPT review round 12).
+    #
+    # OWNER clients only: an app token can open /api/ws, and an all-clients
+    # broadcast would hand it another user's complete handoff prompts.
+    try:
+        clients = int(
+            await state.deliver_ws_owners(
+                "followup_card",
+                {"slot": slot.key, "items": items, "ts": time.time()},
+            )
+        )
+    except Exception:  # pragma: no cover - defensive: delivery must not 500
+        logger.debug("Follow-up card delivery failed", exc_info=True)
+        clients = 0
+    logger.info(
+        "Slot %s follow-up card broadcast with %d item(s) to %d client(s)",
+        name,
+        len(items),
+        clients,
+    )
+    return web.json_response({"ok": True, "count": len(items), "delivered": clients})
 
 
 _MAX_RECENT_PROJECTS = 100

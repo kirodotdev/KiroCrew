@@ -106,6 +106,7 @@ from kiro_crew.validation import (
     SKILL_SEARCH_SCHEMA,
     SPAWN_RUN_SCHEMA,
     SPAWN_SUB_AGENTS_SCHEMA,
+    SUGGEST_FOLLOWUP_SCHEMA,
     TASK_RUN_SCHEMA,
     WAIT_SCHEMA,
     WORKFLOW_AUTHOR_SCHEMA,
@@ -1559,6 +1560,83 @@ def _list_tools() -> list[dict[str, Any]]:
                     },
                 },
                 "required": ["path"],
+            },
+        },
+        {
+            "name": "suggest_followup",
+            "description": (
+                "Offer the user up to 3 follow-up items as a card below the chat "
+                "composer in the CURRENT dashboard session. Each item shows a title "
+                "and description with three buttons: 'Start in new worktree' (creates "
+                "a git worktree off the project's default branch, opens a new chat "
+                "session scoped to it, and pre-fills the composer with your prompt), "
+                "'Add to this session' (pre-fills this session's composer with your "
+                "prompt), and 'Skip'. Both non-skip buttons PRE-FILL the composer — "
+                "the user still presses send — so nothing runs without their consent."
+                "\n\n"
+                "Call this at the END of a turn when you have finished the requested "
+                "work and see concrete next steps worth doing. Do NOT call it to ask a "
+                "clarifying question you need answered to continue (just ask), and do "
+                "not call it every turn — silence is the correct default when there is "
+                "no substantive follow-up."
+                "\n\n"
+                "The 'prompt' field is the real payload: write a COMPLETE, standalone "
+                "handoff instruction for the next agent, which may have none of this "
+                "session's context. Name the files, paths, constraints, and acceptance "
+                "criteria explicitly. 'title'/'description' are only the human-facing "
+                "label. Prefer 'branch' + the worktree route for work that should not "
+                "share this session's working tree."
+                "\n\n"
+                "Restrictions: dashboard sessions only (Slack, cron, and subagent "
+                "contexts are rejected — they have no card surface). One card at a "
+                "time per slot: a new call replaces any card the user has not yet "
+                "acted on."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "items": {
+                        "type": "array",
+                        "maxItems": 3,
+                        "description": "Follow-up suggestions, most valuable first.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "title": {
+                                    "type": "string",
+                                    "description": (
+                                        "Short imperative label, e.g. "
+                                        "'Add rate limiting to the upload endpoint'."
+                                    ),
+                                },
+                                "description": {
+                                    "type": "string",
+                                    "description": (
+                                        "One or two sentences on what this does and why "
+                                        "it is worth doing. Shown under the title."
+                                    ),
+                                },
+                                "prompt": {
+                                    "type": "string",
+                                    "description": (
+                                        "The expanded, self-contained instruction handed "
+                                        "to the next agent. Assume no shared context."
+                                    ),
+                                },
+                                "branch": {
+                                    "type": "string",
+                                    "description": (
+                                        "Optional git branch name for the worktree route "
+                                        "(e.g. 'feat/upload-rate-limit'). Derived from the "
+                                        "title when omitted."
+                                    ),
+                                },
+                            },
+                            "required": ["title", "description", "prompt"],
+                        },
+                    },
+                },
+                "required": ["items"],
             },
         },
         # --- Dynamic workflows (M6): author + run + monitor from chat ---
@@ -5247,6 +5325,64 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         return (
             f"Project set to {new_project}. The session will cold-start with the new "
             "CWD and project-level .kiro/steering on the next message."
+        )
+
+    if name == "suggest_followup":
+        args = validate_tool_args(args, SUGGEST_FOLLOWUP_SCHEMA)
+        items = args.get("items") or []
+        sk = _resolve_session_key_strict()
+        if not sk.startswith("dashboard:"):
+            sel().log_tool_invocation(
+                session_key=sk or "<unresolved>",
+                source="mcp",
+                tool_name="suggest_followup",
+                outcome="rejected",
+                error="non-dashboard or unresolved session",
+            )
+            return (
+                "Error: suggest_followup only works in dashboard sessions with explicit "
+                "identity. Slack, cron, and subagent contexts have no follow-up card "
+                "surface. Write the follow-ups into your reply text instead."
+            )
+        slot_name = sk[len("dashboard:") :]
+        d = _post(f"/api/chat/slots/{slot_name}/followup", {"items": items})
+        err_val = d.get("error")
+        if err_val:
+            sel().log_tool_invocation(
+                session_key=sk,
+                source="mcp",
+                tool_name="suggest_followup",
+                outcome="error",
+                error=str(err_val),
+            )
+            return f"Error: {err_val}"
+        sel().log_tool_invocation(
+            session_key=sk,
+            source="mcp",
+            tool_name="suggest_followup",
+            outcome="success",
+        )
+        count = int(d.get("count") or len(items))
+        # The card is broadcast-only. With no dashboard client attached it is
+        # dropped, so do NOT tell the model it was shown — the handoff prompts are
+        # the payload of this tool, and steering the model into silence would lose
+        # them (Design review, PR #461).
+        try:
+            delivered = int(d.get("delivered") or 0)
+        except (TypeError, ValueError):
+            delivered = 0
+        if delivered <= 0:
+            return (
+                f"WARNING: the {count} follow-up suggestion(s) were NOT delivered — no "
+                "dashboard client is currently connected, and the card is not stored "
+                "server-side. Restate the follow-ups in your reply text now, including "
+                "the full prompt for each, or they are lost."
+            )
+        return (
+            f"Showed {count} follow-up suggestion(s) in this session. The user can start "
+            "each one in a new worktree, add it to this session, or skip it — both "
+            "non-skip actions pre-fill the composer, so do not assume any of them ran. "
+            "End your turn now instead of acting on the follow-ups yourself."
         )
 
     def _redact_obj(obj: Any) -> Any:

@@ -568,6 +568,131 @@ SET_PROJECT_SCHEMA = ToolSchema(
     custom_validator=_validate_set_project,
 )
 
+# suggest_followup renders an agent-authored follow-up card in the calling
+# dashboard slot. Every string below is LLM-authored and lands in the DOM and
+# (for the worktree action) in a `git worktree add` argv, so the shapes are
+# gated here at the MCP boundary rather than trusted downstream.
+#
+# Git branch grammar, deliberately narrower than git's own check-ref-format:
+# must start alphanumeric, then alphanumerics / dot / underscore / hyphen /
+# single slashes. This rejects the ref-name metacharacters that matter for the
+# worktree action — leading "-" (which git would read as a flag), "..", "@{",
+# "~", "^", ":", "?", "*", "[", "\", and whitespace — before the value ever
+# reaches the endpoint. Anchored with \Z (not $) so a trailing newline cannot
+# slip through. The endpoint re-validates; this is the first of two gates.
+FOLLOWUP_BRANCH_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*\Z")
+
+# The regex above is a character grammar, so four ref shapes still slip through
+# it: ``foo..bar``, a component ending in ``.``, a component ending in ``.lock``,
+# and the reserved name ``HEAD``. git rejects all four, but only AFTER the branch
+# has been claimed and the destination derived — the user then sees a misleading
+# "Branch already exists" (GPT review, PR #461 round 9). Rejected up front
+# instead, per component so ``feat/x.lock`` is caught as well as ``x.lock``.
+_GIT_RESERVED_REFS = frozenset({"HEAD"})
+
+# Windows reserved device names. A branch is a loose ref FILE
+# (`.git/refs/heads/<component>`), and Windows cannot create a file whose stem is
+# a device name — so `feat/CON` claims fine but the checkout fails, surfacing as
+# a false "Branch already exists" (GPT review, PR #461 round 10). Rejected on every
+# platform so the grammar does not depend on where the gateway runs.
+_WINDOWS_DEVICE_STEMS = frozenset(
+    {"con", "prn", "aux", "nul"}
+    | {f"com{n}" for n in range(1, 10)}
+    | {f"lpt{n}" for n in range(1, 10)}
+)
+
+
+def is_valid_followup_branch(branch: str) -> bool:
+    """Whether ``branch`` is a ref name git will actually accept."""
+    if not branch or not FOLLOWUP_BRANCH_RE.match(branch):
+        return False
+    if ".." in branch or branch in _GIT_RESERVED_REFS:
+        return False
+    for part in branch.split("/"):
+        if not part or part.endswith(".") or part.endswith(".lock"):
+            return False
+        # Device names are reserved with OR without an extension (CON, CON.txt).
+        if part.split(".")[0].lower() in _WINDOWS_DEVICE_STEMS:
+            return False
+    return True
+
+
+MAX_FOLLOWUP_ITEMS = 3
+MAX_FOLLOWUP_TITLE = 120
+MAX_FOLLOWUP_DESCRIPTION = 600
+# The handoff prompt is a full agent instruction, so it gets the same 8000-char
+# ceiling as monitor_start's message rather than MAX_MEDIUM_STRING.
+MAX_FOLLOWUP_PROMPT = 8_000
+MAX_FOLLOWUP_BRANCH = 80
+
+
+def _validate_followup_items(args: dict[str, Any]) -> None:
+    """Validate + sanitize each follow-up item dict in place.
+
+    ``validate_field`` only sanitizes *string* list elements, so a list of
+    dicts arrives untouched. This walks each item, rejects unknown keys (same
+    fail-closed posture as ``validate_tool_args``), enforces per-field types
+    and lengths, and writes the sanitized values back into the dict so the
+    caller receives cleaned content.
+    """
+    items = args.get("items")
+    if not isinstance(items, list) or not items:
+        raise ValidationError("items", "required (at least one follow-up item)")
+    allowed_keys = {"title", "description", "prompt", "branch"}
+    required_keys = ("title", "description", "prompt")
+    limits = {
+        "title": MAX_FOLLOWUP_TITLE,
+        "description": MAX_FOLLOWUP_DESCRIPTION,
+        "prompt": MAX_FOLLOWUP_PROMPT,
+        "branch": MAX_FOLLOWUP_BRANCH,
+    }
+    for idx, item in enumerate(items):
+        if not isinstance(item, dict):
+            raise ValidationError("items", f"item[{idx}]: expected object")
+        for key in item:
+            if key not in allowed_keys:
+                raise ValidationError("items", f"item[{idx}]: unknown field {key!r}")
+        for key in required_keys:
+            raw = item.get(key)
+            if not isinstance(raw, str):
+                raise ValidationError("items", f"item[{idx}].{key}: required string")
+            cleaned = sanitize_string(raw)
+            if not cleaned:
+                raise ValidationError("items", f"item[{idx}].{key}: required (empty)")
+            if len(cleaned) > limits[key]:
+                raise ValidationError(
+                    "items",
+                    f"item[{idx}].{key}: exceeds max length {limits[key]} "
+                    f"(got {len(cleaned)}, trim {len(cleaned) - limits[key]} chars)",
+                )
+            item[key] = cleaned
+        branch = item.get("branch")
+        if branch is not None:
+            if not isinstance(branch, str):
+                raise ValidationError("items", f"item[{idx}].branch: expected string")
+            branch = sanitize_string(branch)
+            if not branch:
+                # An explicitly-empty branch is treated as absent rather than
+                # an error: the frontend derives a name from the title.
+                item.pop("branch", None)
+                continue
+            if len(branch) > MAX_FOLLOWUP_BRANCH:
+                raise ValidationError(
+                    "items", f"item[{idx}].branch: exceeds max length {MAX_FOLLOWUP_BRANCH}"
+                )
+            if not is_valid_followup_branch(branch):
+                raise ValidationError("items", f"item[{idx}].branch: invalid git branch name")
+            item["branch"] = branch
+
+
+SUGGEST_FOLLOWUP_SCHEMA = ToolSchema(
+    tool_name="suggest_followup",
+    fields=[
+        FieldSpec("items", list, required=True, max_items=MAX_FOLLOWUP_ITEMS, item_type=dict),
+    ],
+    custom_validator=_validate_followup_items,
+)
+
 # --- Dynamic Workflows (M6) ---
 _WF_RUN_ID_RE = re.compile(r"^[A-Za-z0-9_\-]{1,64}$")
 
@@ -1264,6 +1389,7 @@ MCP_CORE_SCHEMAS: dict[str, ToolSchema] = {
     "get_chat_session": GET_CHAT_SESSION_SCHEMA,
     "list_sessions": LIST_SESSIONS_SCHEMA,
     "set_project": SET_PROJECT_SCHEMA,
+    "suggest_followup": SUGGEST_FOLLOWUP_SCHEMA,
     "artifact_save": ARTIFACT_SAVE_SCHEMA,
     "artifact_get": ARTIFACT_GET_SCHEMA,
     "artifact_update": ARTIFACT_UPDATE_SCHEMA,
