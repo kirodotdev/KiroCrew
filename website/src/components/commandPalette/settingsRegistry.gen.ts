@@ -260,14 +260,6 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
-    "id": "developer.beta-channel-braveheart",
-    "label": "Beta Channel (Braveheart)",
-    "description": "Receive early access updates from the braveheart branch. Coming soon.",
-    "tab": "developer",
-    "type": "toggle",
-    "occurrence": 1
-  },
-  {
     "id": "developer.developer-mode",
     "label": "Developer Mode",
     "description": "Show Developer page in sidebar with Logs, System metrics, and Memory internals",

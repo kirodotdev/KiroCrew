@@ -42,7 +42,7 @@ const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'SecurityPanel.tsx': 'security',
   'NotificationsPanel.tsx': 'notifications',
   'SlackPanel.tsx': { tab: 'channels', params: { channel: 'slack' } },
-  'GeneralPanel.tsx': 'developer',
+  'DeveloperPanel.tsx': 'developer',
   'AboutPanel.tsx': 'about',
   'SttSettings.tsx': 'voice',
 }

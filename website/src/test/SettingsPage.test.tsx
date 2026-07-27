@@ -33,7 +33,7 @@ vi.mock('../pages/settings/DiscordPanel', () => ({ DiscordPanel: () => <div data
 vi.mock('../pages/settings/TelegramPanel', () => ({ TelegramPanel: () => <div data-testid="telegram-panel" /> }))
 vi.mock('../pages/settings/WebexPanel', () => ({ WebexPanel: () => <div data-testid="webex-panel" /> }))
 vi.mock('../pages/settings/WeComPanel', () => ({ WeComPanel: () => <div data-testid="wecom-panel" /> }))
-vi.mock('../pages/settings/GeneralPanel', () => ({ GeneralPanel: () => <div data-testid="general-panel" /> }))
+vi.mock('../pages/settings/DeveloperPanel', () => ({ DeveloperPanel: () => <div data-testid="developer-panel" /> }))
 
 // ChannelsPanel renders real (it owns the remap target) — silence its status
 // queries with deterministic configs so no real fetch fires.

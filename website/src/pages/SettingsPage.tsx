@@ -10,7 +10,7 @@ import { isEmbeddedPane } from '../lib/embedded'
 import { DisplayPanel } from './settings/DisplayPanel'
 import { ChatPanel } from './settings/ChatPanel'
 import { VoicePanel } from './settings/VoicePanel'
-import { GeneralPanel } from './settings/GeneralPanel'
+import { DeveloperPanel } from './settings/DeveloperPanel'
 import { SecurityPanel } from './settings/SecurityPanel'
 import { ChannelsPanel, CHANNEL_KEYS } from './settings/ChannelsPanel'
 import { OverviewPanel } from './settings/OverviewPanel'
@@ -86,7 +86,7 @@ export default function SettingsPage() {
         {tab === 'browser' && <BrowserPanel />}
         {tab === 'instances' && !embedded && <InstancesPanel />}
         {tab === 'security' && <SecurityPanel />}
-        {tab === 'developer' && <GeneralPanel />}
+        {tab === 'developer' && <DeveloperPanel />}
         {tab === 'about' && <AboutPanel />}
       </>}
     </SidePanelLayout>
