@@ -39,9 +39,30 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Semver version to stamp (probe builds: 0.0.0-probe.N)"
+        description: >-
+          Semver version to stamp. Use a REALISTIC channel-shaped stamp
+          (e.g. 0.1.0-nightly.20260727t181500), not 0.0.0-probe.N: Squirrel
+          Int32-parses digit runs in the nupkg filename, and electron-builder
+          concatenates dot-separated identifiers into that filename, so a
+          probe with a single-digit identifier cannot exercise the stamp shape
+          that real nightlies produce. That gap let an Int32 overflow reach a
+          nightly. Note the "t": a DOTTED example like
+          0.1.0-nightly.20260727.181500 concatenates back to 14 digits and
+          reproduces the overflow (proven: run 30293292843).
         required: true
         type: string
+      windows_soft_fail:
+        description: >-
+          Mark the Windows matrix leg continue-on-error (default false: a
+          probe SHOULD fail loudly -- hard failure is the validation signal).
+          Declared here as well as under workflow_call because the
+          continue-on-error expression below reads inputs on BOTH trigger
+          paths; when it was workflow_call-only, the expression evaluated to
+          a non-boolean on dispatch and GitHub rejected the workflow at
+          startup, silently killing the probe trigger entirely.
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -51,8 +72,13 @@ jobs:
     name: Build Desktop (${{ matrix.os }})
     # Windows leg only, and only when the caller opts in (see the
     # windows_soft_fail input): failures still annotate the run but do not
-    # fail the workflow call.
-    continue-on-error: ${{ matrix.os == 'windows-latest' && inputs.windows_soft_fail }}
+    # fail the workflow call. The `== true` is load-bearing, not noise: a bare
+    # `&& inputs.windows_soft_fail` yields the input's raw value, which is
+    # empty on any trigger that does not declare the input -- a non-boolean
+    # continue-on-error makes GitHub reject the workflow at startup with ZERO
+    # jobs, which is how the dispatch probe path died unnoticed. Comparing to
+    # true always produces a boolean.
+    continue-on-error: ${{ matrix.os == 'windows-latest' && inputs.windows_soft_fail == true }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
