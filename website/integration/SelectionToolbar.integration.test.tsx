@@ -3,6 +3,12 @@ import { render, screen, fireEvent, act } from '@testing-library/react'
 import { useRef } from 'react'
 import SelectionToolbar, { useSelectionActions, type SelectionAction } from '../src/components/SelectionToolbar'
 
+// isTouchDevice gates the touch-only `selectionchange` trigger (mobile selection
+// via long-press + drag handles never fires `mouseup`). Default false so the
+// existing mouse/keyboard tests exercise the desktop path; flip per-test.
+const touchEnv = { touch: false }
+vi.mock('../src/utils/isTouchDevice', () => ({ isTouchDevice: () => touchEnv.touch }))
+
 // Mock framer-motion to skip animations (immediate mount/unmount).
 // motion.div forwards its ref so toolbarRef.current resolves to the rendered
 // node — the position-clamp layout effect measures it via offsetWidth, so a
@@ -48,7 +54,7 @@ function Wrapper({ actions, children }: { actions: SelectionAction[]; children: 
 }
 
 describe('SelectionToolbar', () => {
-  beforeEach(() => { vi.useFakeTimers() })
+  beforeEach(() => { vi.useFakeTimers(); touchEnv.touch = false })
   afterEach(() => { vi.useRealTimers(); window.getSelection()?.removeAllRanges() })
 
   it('shows toolbar after mouseup with text selected inside container', async () => {
@@ -330,6 +336,75 @@ describe('SelectionToolbar', () => {
       heightSpy.mockRestore()
       Object.defineProperty(window, 'innerWidth', { configurable: true, value: origInnerWidth })
     }
+  })
+
+  // --- Touch / mobile: selection made via long-press + drag handles fires
+  // `selectionchange`, never `mouseup`. These cover the mobile quote-menu path. ---
+
+  it('shows toolbar on selectionchange for touch devices (no mouseup)', () => {
+    touchEnv.touch = true
+    const actions: SelectionAction[] = [{ id: 'quote', icon: null, label: 'Quote', onClick: vi.fn() }]
+    render(<Wrapper actions={actions}>Hello World</Wrapper>)
+
+    const container = screen.getByTestId('container')
+    mockSelection(container, 'Hello World')
+    act(() => { document.dispatchEvent(new Event('selectionchange')) })
+    // Nothing yet — the trigger is debounced.
+    expect(screen.queryByRole('button', { name: 'Quote' })).not.toBeInTheDocument()
+    act(() => { vi.advanceTimersByTime(400) })
+
+    expect(screen.getByRole('button', { name: 'Quote' })).toBeInTheDocument()
+  })
+
+  it('ignores selectionchange on non-touch devices (desktop uses mouseup)', () => {
+    touchEnv.touch = false
+    const actions: SelectionAction[] = [{ id: 'quote', icon: null, label: 'Quote', onClick: vi.fn() }]
+    render(<Wrapper actions={actions}>Hello World</Wrapper>)
+
+    const container = screen.getByTestId('container')
+    mockSelection(container, 'Hello World')
+    act(() => { document.dispatchEvent(new Event('selectionchange')) })
+    act(() => { vi.advanceTimersByTime(400) })
+
+    expect(screen.queryByRole('button', { name: 'Quote' })).not.toBeInTheDocument()
+  })
+
+  it('debounces rapid selectionchange (handle drag) into a single show', () => {
+    touchEnv.touch = true
+    const actions: SelectionAction[] = [{ id: 'quote', icon: null, label: 'Quote', onClick: vi.fn() }]
+    render(<Wrapper actions={actions}>Hello World</Wrapper>)
+
+    const container = screen.getByTestId('container')
+    mockSelection(container, 'Hello World')
+    // Simulate a handle drag: several changes in quick succession, each within
+    // the debounce window — the toolbar must not appear until the user settles.
+    act(() => { document.dispatchEvent(new Event('selectionchange')) })
+    act(() => { vi.advanceTimersByTime(200) })
+    act(() => { document.dispatchEvent(new Event('selectionchange')) })
+    act(() => { vi.advanceTimersByTime(200) })
+    expect(screen.queryByRole('button', { name: 'Quote' })).not.toBeInTheDocument()
+    act(() => { vi.advanceTimersByTime(350) })
+
+    expect(screen.getByRole('button', { name: 'Quote' })).toBeInTheDocument()
+  })
+
+  it('hides on touch when the selection collapses', () => {
+    touchEnv.touch = true
+    const actions: SelectionAction[] = [{ id: 'quote', icon: null, label: 'Quote', onClick: vi.fn() }]
+    render(<Wrapper actions={actions}>Hello World</Wrapper>)
+
+    const container = screen.getByTestId('container')
+    mockSelection(container, 'Hello World')
+    act(() => { document.dispatchEvent(new Event('selectionchange')) })
+    act(() => { vi.advanceTimersByTime(400) })
+    expect(screen.getByRole('button', { name: 'Quote' })).toBeInTheDocument()
+
+    // Tapping elsewhere clears the selection → selectionchange with no range.
+    window.getSelection()?.removeAllRanges()
+    act(() => { document.dispatchEvent(new Event('selectionchange')) })
+    act(() => { vi.advanceTimersByTime(400) })
+
+    expect(screen.queryByRole('button', { name: 'Quote' })).not.toBeInTheDocument()
   })
 })
 

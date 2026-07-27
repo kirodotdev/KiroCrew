@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import { MessageSquareQuote, Copy, Check } from 'lucide-react'
 import { copyToClipboard } from '../utils/clipboard'
+import { isTouchDevice } from '../utils/isTouchDevice'
 
 export interface SelectionAction {
   id: string
@@ -158,13 +159,34 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
       setVisible(false)
     }
 
+    // Touch devices never fire `mouseup` for text selection — the selection is
+    // made by long-press then adjusted with drag handles, so the mouse-based
+    // triggers above never run and the toolbar never appears. `selectionchange`
+    // is the reliable cross-mobile signal: it fires as the selection grows and
+    // again each time a handle settles. Debounce so the toolbar only appears
+    // once the user stops adjusting (avoids flicker mid-drag), and gate to touch
+    // so desktop drag-select — which already works via `mouseup` and would show
+    // the toolbar prematurely mid-drag under this path — is left unchanged.
+    let selectionChangeTimer: ReturnType<typeof setTimeout> | null = null
+    const onSelectionChange = () => {
+      if (!isTouchDevice()) return
+      if (selectionChangeTimer) clearTimeout(selectionChangeTimer)
+      // No mouse anchor on touch — checkSelection falls back to the selection
+      // rect for positioning when triggeredByMouse is false.
+      triggeredByMouseRef.current = false
+      selectionChangeTimer = setTimeout(checkSelection, 350)
+    }
+
     document.addEventListener('mouseup', onMouseUp)
     document.addEventListener('keyup', onKeyUp)
     document.addEventListener('mousedown', onMouseDown)
+    document.addEventListener('selectionchange', onSelectionChange)
     return () => {
       document.removeEventListener('mouseup', onMouseUp)
       document.removeEventListener('keyup', onKeyUp)
       document.removeEventListener('mousedown', onMouseDown)
+      document.removeEventListener('selectionchange', onSelectionChange)
+      if (selectionChangeTimer) clearTimeout(selectionChangeTimer)
     }
     // `containerRef` is a stable RefObject (its identity never changes across
     // renders), so listing it does not re-run the effect; it satisfies the
