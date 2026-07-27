@@ -83,6 +83,87 @@ def test_prompt_strips_non_image_attachment_before_truncation():
     assert "/uploads/" not in prompt
 
 
+def test_prompt_substitutes_attachment_name_from_metadata():
+    """The NAME survives; the directory path does not.
+
+    Previously the marker and path were replaced by a bare space, so an
+    attachment-only or attachment-dominated message lost its topic entirely and
+    the titling model answered SKIP. The basename is the topic, so it is kept --
+    the full path is still stripped.
+    """
+    path = "/Users/example/uploads/quarterly report final.txt"
+    prompt = _build_title_prompt(
+        [
+            {
+                "role": "user",
+                "content": f"[attached_file 1] {path}\nsummarize the findings",
+                "meta": {"files": [path]},
+            }
+        ]
+    )
+
+    assert prompt is not None
+    assert "summarize the findings" in prompt
+    assert "quarterly report final.txt" in prompt, "the attachment name is the topic"
+    assert "/Users/example/uploads" not in prompt, "the directory path must not leak"
+    assert "attached_file" not in prompt
+
+
+def test_multi_attachment_message_keeps_a_titleable_sentence():
+    """`compare A and B` must not collapse to `compare and`."""
+    prompt = _build_title_prompt(
+        [
+            {
+                "role": "user",
+                "content": "compare [attached_file 1] /a/x.txt and [attached_file 2] /b/y.txt",
+                "meta": {"files": ["/a/x.txt", "/b/y.txt"]},
+            }
+        ]
+    )
+
+    assert prompt is not None
+    assert "x.txt" in prompt and "y.txt" in prompt
+    assert "compare" in prompt
+
+
+def test_colliding_attachment_names_are_disambiguated():
+    """Three `report.pdf` would read as `report.pdf and report.pdf`."""
+    files = ["/q3/report.pdf", "/q4/report.pdf"]
+    prompt = _build_title_prompt(
+        [
+            {
+                "role": "user",
+                "content": "diff [attached_file 1] /q3/report.pdf vs [attached_file 2] /q4/report.pdf",
+                "meta": {"files": files},
+            }
+        ]
+    )
+
+    assert prompt is not None
+    assert "q3/report.pdf" in prompt
+    assert "q4/report.pdf" in prompt
+
+
+def test_attachment_label_budget_is_bounded():
+    """Many deep attachments must not crowd out the user's own words."""
+    files = [f"/very/deep/directory/tree/file-number-{i:02d}.txt" for i in range(20)]
+    markers = " ".join(f"[attached_file {i + 1}] {p}" for i, p in enumerate(files))
+    prompt = _build_title_prompt(
+        [
+            {
+                "role": "user",
+                "content": f"{markers} please summarize everything",
+                "meta": {"files": files},
+            }
+        ]
+    )
+
+    assert prompt is not None
+    assert "please summarize everything" in prompt, "user text must survive the labels"
+    # Budget is 80 chars total; 20 labels of ~22 chars each would be ~440.
+    assert prompt.count("file-number-") <= 4
+
+
 def test_prompt_strips_non_image_attachment_path_with_spaces_from_metadata():
     path = "/Users/example/uploads/quarterly report final.txt"
     prompt = _build_title_prompt(
@@ -97,7 +178,7 @@ def test_prompt_strips_non_image_attachment_path_with_spaces_from_metadata():
 
     assert prompt is not None
     assert "summarize the findings" in prompt
-    assert "quarterly report final.txt" not in prompt
+    assert "/Users/example/uploads" not in prompt
 
 
 def test_title_text_bounds_source_scanning():
@@ -161,7 +242,11 @@ def test_prompt_strips_mixed_attachments_and_keeps_caption():
     assert prompt is not None
     assert "compare these outputs" in prompt
     assert "screenshot.png" not in prompt
-    assert "results.csv" not in prompt
+    # No `meta` on this message, so the label comes from the whitespace-scan
+    # fallback. The name is kept (it is the topic); images stay dropped because
+    # they carry no textual topic.
+    assert "results.csv" in prompt
+    assert "/tmp/results.csv" not in prompt
 
 
 def test_prompt_preserves_escaped_and_code_quoted_markdown_images():

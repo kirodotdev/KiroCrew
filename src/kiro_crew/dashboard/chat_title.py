@@ -28,6 +28,11 @@ _TITLE_MAX_ATTEMPTS = 5
 _TITLE_TEXT_LIMIT = 16_384
 _TITLE_MAX_ATTACHMENT_FILES = 20
 _TITLE_MAX_ATTACHMENT_PATH_LENGTH = 4_096
+# Total budget for ALL substituted attachment labels in one message, and the cap
+# for any single label. Bounded so a message carrying 20 deep paths cannot push
+# the real user text out of the prompt window.
+_TITLE_MAX_ATTACHMENT_LABEL_BUDGET = 80
+_TITLE_MAX_ATTACHMENT_LABEL_LENGTH = _TITLE_MAX_ATTACHMENT_LABEL_BUDGET // 2
 _TITLE_SOURCE_SCAN_LIMIT = _TITLE_TEXT_LIMIT + _TITLE_MAX_ATTACHMENT_FILES * (
     _TITLE_MAX_ATTACHMENT_PATH_LENGTH + 32
 )
@@ -107,18 +112,66 @@ def _strip_markdown_images(content: str, *, drop_trailing_partial: bool = False)
     return "".join(chunks)
 
 
+def _attachment_labels(paths: tuple[str, ...]) -> dict[str, str]:
+    """Map each attachment path to its title label: the trailing path segment.
+
+    Titles keep the name rather than the full path: the path is noise and can
+    leak a directory layout, but the name is usually the whole topic. A label is
+    widened leftwards while it collides, because three files all named
+    ``report.pdf`` would otherwise read as "report.pdf and report.pdf and
+    report.pdf". Mirrors the disambiguation the composer applies to chips.
+    """
+    normalized = {p: p.replace("\\", "/").rstrip("/") for p in paths if p}
+    labels: dict[str, str] = {}
+    for original, norm in normalized.items():
+        segments = [s for s in norm.split("/") if s]
+        if not segments:
+            labels[original] = ""
+            continue
+        depth = 1
+        while depth < len(segments):
+            mine = "/".join(segments[-depth:])
+            clash = any(
+                other != norm
+                and "/".join([s for s in other.split("/") if s][-depth:]) == mine
+                for other in normalized.values()
+            )
+            if not clash:
+                break
+            depth += 1
+        labels[original] = "/".join(segments[-depth:])[:_TITLE_MAX_ATTACHMENT_LABEL_LENGTH]
+    return labels
+
+
 def _strip_attached_file_tokens(
     content: str,
     attached_files: tuple[str, ...] = (),
     *,
     drop_trailing_partial: bool = False,
+    labels: dict[str, str] | None = None,
+    budget: list[int] | None = None,
 ) -> str:
-    """Remove dashboard-generated ``[attached_file N] path`` references.
+    """Replace dashboard-generated ``[attached_file N] path`` references.
+
+    The marker and its full path are replaced by the attachment's disambiguated
+    NAME, not dropped. Dropping them left an attachment-only message with no
+    content at all: "compare [attached_file 1] /a/x.txt and [attached_file 2]
+    /b/y.txt" collapsed to "compare   and", and an attachment-only message
+    collapsed to a single space. The titling model correctly answered SKIP for
+    those, so every such chat fell back to a truncated default name. The name
+    preserves the topic while still keeping the full path out of the title.
+
+    ``labels`` maps path -> replacement name (see ``_attachment_labels``); pass
+    ``None`` to keep the historical drop-to-space behaviour. ``budget`` is a
+    single-element list carrying the remaining label allowance, so a message with
+    many attachments substitutes the first few and collapses the rest rather than
+    crowding out the user's own words.
 
     Current dashboard messages store paths in token-index order, making each
     lookup constant-time. The whitespace-delimited fallback preserves support
     for older messages without metadata.
     """
+    remaining = budget if budget is not None else [_TITLE_MAX_ATTACHMENT_LABEL_BUDGET]
     prefix = "[attached_file "
     chunks: list[str] = []
     cursor = 0
@@ -169,7 +222,25 @@ def _strip_attached_file_tokens(
             continue
 
         chunks.append(content[cursor:token_start])
-        chunks.append(" ")
+        # Substitute the attachment's name, not a bare space. `labels=None`
+        # preserves the historical drop for callers that only want the text.
+        if labels is None:
+            label = ""
+        else:
+            label = labels.get(expected_path, "")
+            if not label:
+                # Older message with no metadata: derive the label from whatever
+                # the whitespace scan captured.
+                scanned = content[path_start:path_end].strip()
+                label = scanned.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+                label = label[:_TITLE_MAX_ATTACHMENT_LABEL_LENGTH]
+            if len(label) > remaining[0]:
+                # Budget spent — collapse the rest so the user's own text keeps
+                # its place in the transcript line.
+                label = ""
+            else:
+                remaining[0] -= len(label)
+        chunks.append(f" {label} " if label else " ")
         cursor = path_end
 
     return "".join(chunks)
@@ -189,12 +260,24 @@ def _message_attachment_paths(message: dict[str, Any]) -> tuple[str, ...]:
     )
 
 
-def _title_text(content: str, attached_files: tuple[str, ...] = ()) -> str:
+def _title_text(
+    content: str,
+    attached_files: tuple[str, ...] = (),
+    *,
+    substitute_labels: bool = False,
+) -> str:
     """Return bounded message text suitable for title generation.
 
     A bounded allowance large enough for every accepted attachment is sanitized
     first, so generated paths cannot crowd later user text out of the retained
     title input. The normalized user text is capped separately.
+
+    ``substitute_labels`` replaces each attachment marker with the attachment's
+    disambiguated NAME instead of dropping it. Only the LLM prompt path sets it:
+    the model needs a topic to title, and dropping the markers left it with
+    "compare   and". The FALLBACK title path deliberately leaves it off -- that
+    path is a raw slice of user text with no model to interpret it, so a bare
+    filename reads worse than the "New session" label it already falls back to.
     """
     source_was_truncated = len(content) > _TITLE_SOURCE_SCAN_LIMIT
     content = content[:_TITLE_SOURCE_SCAN_LIMIT]
@@ -205,6 +288,8 @@ def _title_text(content: str, attached_files: tuple[str, ...] = ()) -> str:
         content,
         attached_files,
         drop_trailing_partial=source_was_truncated,
+        labels=_attachment_labels(attached_files) if substitute_labels else None,
+        budget=[_TITLE_MAX_ATTACHMENT_LABEL_BUDGET],
     )
     return " ".join(content.split())[:_TITLE_TEXT_LIMIT]
 
@@ -214,7 +299,9 @@ def _build_title_prompt(messages: list[dict[str, Any]]) -> str | None:
     lines: list[str] = []
     for m in messages[:10]:
         role = m.get("role", "")
-        content = _title_text(m.get("content", ""), _message_attachment_paths(m))
+        content = _title_text(
+            m.get("content", ""), _message_attachment_paths(m), substitute_labels=True
+        )
         if role in ("user", "assistant") and content:
             lines.append(f"{role}: {content[:200]}")
     if not lines:
