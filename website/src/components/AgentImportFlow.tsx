@@ -31,7 +31,6 @@ import { GhostVar1, GhostVar2 } from '../assets/onboarding/GhostIcons'
 import { Btn, SendBtn } from './ui'
 
 type Stage = 1 | 2 | 3 | 4
-type CompletionIntent = 'complete' | 'skip'
 
 const STAGE_LABELS = ['Sources', 'Categories', 'Review', 'Results']
 const SUPPORTED_SOURCE_IDS = new Set([
@@ -134,8 +133,7 @@ export default function AgentImportFlow({
     mutationFn: () => api.onboardingImportApply(applyPayload),
   })
   const completionMutation = useMutation({
-    mutationFn: (_intent: CompletionIntent) =>
-      api.onboardingImportState({ completed: true }),
+    mutationFn: () => api.onboardingImportState({ completed: true }),
     onSuccess: () => {
       setOpen(false)
       onComplete()
@@ -152,7 +150,7 @@ export default function AgentImportFlow({
       || completionMutation.isSuccess
       || completionMutation.isError
     ) return
-    completionMutation.mutate('skip')
+    completionMutation.mutate()
   }, [
     completionMutation,
     open,
@@ -206,7 +204,7 @@ export default function AgentImportFlow({
 
   const skip = () => {
     if (!completionMutation.isPending && !applyMutation.isPending) {
-      completionMutation.mutate('skip')
+      completionMutation.mutate()
     }
   }
 
@@ -604,7 +602,7 @@ export default function AgentImportFlow({
           <SendBtn
             type="button"
             disabled={completionMutation.isPending}
-            onClick={() => completionMutation.mutate('complete')}
+            onClick={() => completionMutation.mutate()}
           >
             {completionMutation.isPending
               ? <Loader2 className="lucide-inline animate-spin" />

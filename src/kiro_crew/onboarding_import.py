@@ -31,6 +31,7 @@ except ImportError:  # pragma: no cover - Python 3.9/3.10 compatibility
     except ImportError:
         _toml = None  # type: ignore[assignment]
 
+import yaml  # type: ignore[import-untyped]
 from croniter import croniter  # type: ignore[import-untyped]
 
 from kiro_crew import platform_compat
@@ -48,6 +49,29 @@ from kiro_crew.security import (
 from kiro_crew.vector_memory import VectorMemoryStore
 
 logger = logging.getLogger(__name__)
+
+
+class _NoAliasSafeLoader(yaml.SafeLoader):
+    """SafeLoader that refuses YAML anchors/aliases.
+
+    Foreign-agent config files are untrusted. Plain ``yaml.safe_load`` still
+    expands ``*alias`` references into a shared-reference graph, so a tiny
+    "billion-laughs" config would explode when the downstream secret/leaf
+    traversal re-walks it — a DoS the previous line-based parser was immune to
+    (it stored ``&a``/``*a`` as literal strings). Rejecting aliases at compose
+    time keeps the amplification vector closed while preserving full
+    indentation support. A lone anchor with no alias is harmless (nothing to
+    amplify) and is allowed.
+    """
+
+    def compose_node(self, parent: Any, index: Any) -> Any:
+        if self.check_event(yaml.events.AliasEvent):
+            event = self.get_event()
+            raise yaml.composer.ComposerError(
+                None, None, "found alias, which is not allowed", event.start_mark
+            )
+        return super().compose_node(parent, index)
+
 
 SOURCE_IDS = ("codex", "claude_code", "meshclaw", "openclaw", "hermes")
 CATEGORY_IDS = (
@@ -120,6 +144,7 @@ _LEDGER_RELATIVE_PATH = Path("imports") / "foreign-agent-imports.json"
 _MAX_FILES = 500
 _MAX_FILE_BYTES = 8 * 1024 * 1024
 _MAX_SKILL_BYTES = 256 * 1024
+_MAX_YAML_BYTES = 1024 * 1024
 _MAX_TOTAL_BYTES = 64 * 1024 * 1024
 _MAX_JSONL_LINES = 10_000
 _MAX_LINE_BYTES = 256 * 1024
@@ -831,76 +856,25 @@ def _read_toml(path: Path, anchor: Path, scan: _Scan) -> dict[str, Any]:
     return result if isinstance(result, dict) else {}
 
 
-def _yaml_scalar(value: str) -> Any:
-    value = value.strip()
-    if not value:
-        return {}
-    if value.lower() in ("true", "false"):
-        return value.lower() == "true"
-    if value.lower() in ("null", "none", "~"):
-        return None
-    if (value.startswith('"') and value.endswith('"')) or (
-        value.startswith("'") and value.endswith("'")
-    ):
-        return value[1:-1]
-    if value.startswith("[") and value.endswith("]"):
-        try:
-            parsed = json.loads(value.replace("'", '"'))
-            return parsed if isinstance(parsed, list) else value
-        except json.JSONDecodeError:
-            return value
-    return value
-
-
-def _parse_simple_yaml(text: str) -> dict[str, Any]:
-    result: dict[str, Any] = {}
-    section = ""
-    server_name = ""
-    list_key = ""
-    for raw_line in text.splitlines():
-        if not raw_line.strip() or raw_line.lstrip().startswith("#"):
-            continue
-        indent = len(raw_line) - len(raw_line.lstrip(" "))
-        line = raw_line.strip()
-        if ":" not in line:
-            if indent >= 4 and server_name and list_key and line.startswith("- "):
-                server = result.setdefault(section, {}).setdefault(server_name, {})
-                values = server.setdefault(list_key, [])
-                if isinstance(values, list):
-                    values.append(_yaml_scalar(line[2:]))
-            continue
-        key, raw_value = line.split(":", 1)
-        key = key.strip()
-        if indent == 0:
-            server_name = ""
-            list_key = ""
-            if raw_value.strip():
-                result[key] = _yaml_scalar(raw_value)
-                section = ""
-            else:
-                section = key
-                result.setdefault(section, {})
-        elif indent <= 2 and section in ("mcp_servers", "mcpServers"):
-            server_name = key
-            list_key = ""
-            result.setdefault(section, {})[server_name] = {}
-        elif indent >= 4 and server_name:
-            if not raw_value.strip() and key == "args":
-                result.setdefault(section, {}).setdefault(server_name, {})[key] = []
-                list_key = key
-            else:
-                result.setdefault(section, {}).setdefault(server_name, {})[key] = _yaml_scalar(
-                    raw_value
-                )
-                list_key = ""
-    return result
-
-
 def _read_simple_yaml(path: Path, anchor: Path, scan: _Scan) -> dict[str, Any]:
-    text = _read_text(path, anchor, scan, "settings")
+    # PyYAML is a hard dependency; the SafeLoader base blocks arbitrary object
+    # construction and parses full YAML (the previous hand-rolled parser silently
+    # dropped MCP servers on any indentation other than 0/2 spaces).
+    # _NoAliasSafeLoader additionally refuses anchors/aliases so a "billion-laughs"
+    # foreign config cannot amplify into an exponential downstream traversal.
+    # Bound the input with an explicit YAML cap and catch every parser failure
+    # mode — a malformed, alias-bearing, or pathologically nested config must
+    # degrade to a diagnostic, never raise out of the off-loop scan (deeply nested
+    # flow input raises RecursionError, which is neither YAMLError nor ValueError).
+    text = _read_text(path, anchor, scan, "settings", max_bytes=_MAX_YAML_BYTES)
     if text is None:
         return {}
-    return _parse_simple_yaml(text)
+    try:
+        result = yaml.load(text, Loader=_NoAliasSafeLoader)
+    except (yaml.YAMLError, RecursionError, ValueError):
+        scan.diagnostic("settings", "invalid_config")
+        return {}
+    return result if isinstance(result, dict) else {}
 
 
 def _extract_visible_content(value: Any) -> str:
@@ -1973,47 +1947,40 @@ def _scan_codex_automations(scan: _Scan) -> None:
     path = scan.root / "sqlite" / "codex-dev.db"
     if not path.is_file():
         return
-    snapshot = _sqlite_snapshot(path, scan.root, scan, "schedules")
-    if snapshot is None:
-        return
-    try:
-        connection = sqlite3.connect(snapshot.absolute().as_uri() + "?mode=ro", uri=True)
-    except (OSError, sqlite3.Error, ValueError):
-        scan.diagnostic("schedules", "database_open_failed")
-        shutil.rmtree(snapshot.parent, ignore_errors=True)
-        return
-    try:
-        tables = {str(row[0]) for row in connection.execute(_SQLITE_TABLE_NAMES_QUERY).fetchall()}
-        if "automations" not in tables:
+    with _open_snapshot_db(path, scan.root, scan, "schedules") as connection:
+        if connection is None:
             return
-        columns = _sqlite_columns(connection, "automations")
-        if "rrule" not in columns:
+        try:
+            tables = {
+                str(row[0]) for row in connection.execute(_SQLITE_TABLE_NAMES_QUERY).fetchall()
+            }
+            if "automations" not in tables:
+                return
+            columns = _sqlite_columns(connection, "automations")
+            if "rrule" not in columns:
+                scan.diagnostic(
+                    "schedules",
+                    "unsupported_schedule_database",
+                    unsupported=True,
+                )
+                return
+            count = connection.execute(
+                'SELECT COUNT(*) FROM "automations" '
+                'WHERE "rrule" IS NOT NULL AND TRIM("rrule") <> ""'
+            ).fetchone()[0]
+            if isinstance(count, int) and count:
+                scan.diagnostic(
+                    "schedules",
+                    "unsupported_schedule_semantics",
+                    unsupported=True,
+                    count=count,
+                )
+        except sqlite3.Error:
             scan.diagnostic(
                 "schedules",
                 "unsupported_schedule_database",
                 unsupported=True,
             )
-            return
-        count = connection.execute(
-            'SELECT COUNT(*) FROM "automations" '
-            'WHERE "rrule" IS NOT NULL AND TRIM("rrule") <> ""'
-        ).fetchone()[0]
-        if isinstance(count, int) and count:
-            scan.diagnostic(
-                "schedules",
-                "unsupported_schedule_semantics",
-                unsupported=True,
-                count=count,
-            )
-    except sqlite3.Error:
-        scan.diagnostic(
-            "schedules",
-            "unsupported_schedule_database",
-            unsupported=True,
-        )
-    finally:
-        connection.close()
-        shutil.rmtree(snapshot.parent, ignore_errors=True)
 
 
 def _scan_codex(scan: _Scan) -> None:
@@ -2593,6 +2560,41 @@ def _sqlite_snapshot(
         return None
 
 
+@contextmanager
+def _open_snapshot_db(
+    path: Path,
+    anchor: Path,
+    scan: _Scan,
+    category: str,
+) -> Iterator[sqlite3.Connection | None]:
+    """Snapshot a SQLite DB, open the copy read-only, and guarantee cleanup.
+
+    Yields None when the database could not be snapshotted (the snapshot path has
+    already emitted its own diagnostic) or could not be opened (emits
+    ``database_open_failed`` here), so every caller handles both failure modes
+    with a single ``if connection is None`` guard. The private snapshot tree and
+    the connection are always released on exit, even when the caller's body
+    returns early or raises.
+    """
+    snapshot = _sqlite_snapshot(path, anchor, scan, category)
+    if snapshot is None:
+        yield None
+        return
+    connection: sqlite3.Connection | None = None
+    try:
+        try:
+            connection = sqlite3.connect(snapshot.absolute().as_uri() + "?mode=ro", uri=True)
+        except (OSError, sqlite3.Error, ValueError):
+            scan.diagnostic(category, "database_open_failed")
+            yield None
+            return
+        yield connection
+    finally:
+        if connection is not None:
+            connection.close()
+        shutil.rmtree(snapshot.parent, ignore_errors=True)
+
+
 def _sqlite_columns(connection: sqlite3.Connection, table: str) -> set[str]:
     return {str(row[1]) for row in connection.execute(f'PRAGMA table_info("{table}")')}
 
@@ -2601,188 +2603,183 @@ def _scan_meshclaw_memory_db(scan: _Scan) -> bool:
     path = scan.root / "memory.db"
     if not path.is_file():
         return False
-    snapshot = _sqlite_snapshot(path, scan.root, scan, "memories")
-    if snapshot is None:
-        return True
-    try:
-        connection = sqlite3.connect(snapshot.absolute().as_uri() + "?mode=ro", uri=True)
-    except (OSError, sqlite3.Error, ValueError):
-        scan.diagnostic("memories", "database_open_failed")
-        shutil.rmtree(snapshot.parent, ignore_errors=True)
-        return True
-    try:
-        tables = {str(row[0]) for row in connection.execute(_SQLITE_TABLE_NAMES_QUERY).fetchall()}
-        required_columns = {
-            "semantic_memory": {"key", "value_json", "confidence", "is_deleted"},
-            "episodic_memories": {"id", "text", "importance", "is_deleted"},
-        }
-        table_columns = {
-            table: _sqlite_columns(connection, table)
-            for table in required_columns
-            if table in tables
-        }
-        active_rows = 0
-        for table, required in required_columns.items():
-            if required <= table_columns.get(table, set()):
-                remaining = _MAX_DB_ROWS - active_rows
-                rows = connection.execute(
-                    f'SELECT 1 FROM "{table}" WHERE "is_deleted" = 0 LIMIT ?',
-                    (remaining + 1,),
-                ).fetchall()
-                active_rows += len(rows)
-                if active_rows > _MAX_DB_ROWS:
-                    scan.diagnostic("memories", "row_count_limit")
-                    return True
-        supported = False
-        if "semantic_memory" in tables:
-            columns = table_columns["semantic_memory"]
-            if {"key", "value_json", "confidence", "is_deleted"} <= columns:
-                supported = True
-                extra_columns = [name for name in ("workspace_id", "kind") if name in columns]
-                selected_columns = ["key", "value_json", "confidence", *extra_columns]
-                rows = connection.execute(
-                    "SELECT "
-                    + ", ".join(f'"{name}"' for name in selected_columns)
-                    + ' FROM "semantic_memory" WHERE "is_deleted" = 0 LIMIT ?',
-                    (_MAX_DB_ROWS,),
-                ).fetchall()
-                for row in rows:
-                    values = dict(zip(selected_columns, row))
-                    key = values["key"]
-                    value_json = values["value_json"]
-                    confidence = values["confidence"]
-                    if values.get("workspace_id") not in (None, ""):
-                        scan.diagnostic(
-                            "memories",
-                            "scoped_memory_unsupported",
-                            unsupported=True,
+    with _open_snapshot_db(path, scan.root, scan, "memories") as connection:
+        if connection is None:
+            return True
+        try:
+            tables = {
+                str(row[0]) for row in connection.execute(_SQLITE_TABLE_NAMES_QUERY).fetchall()
+            }
+            required_columns = {
+                "semantic_memory": {"key", "value_json", "confidence", "is_deleted"},
+                "episodic_memories": {"id", "text", "importance", "is_deleted"},
+            }
+            table_columns = {
+                table: _sqlite_columns(connection, table)
+                for table in required_columns
+                if table in tables
+            }
+            active_rows = 0
+            for table, required in required_columns.items():
+                if required <= table_columns.get(table, set()):
+                    remaining = _MAX_DB_ROWS - active_rows
+                    rows = connection.execute(
+                        f'SELECT 1 FROM "{table}" WHERE "is_deleted" = 0 LIMIT ?',
+                        (remaining + 1,),
+                    ).fetchall()
+                    active_rows += len(rows)
+                    if active_rows > _MAX_DB_ROWS:
+                        scan.diagnostic("memories", "row_count_limit")
+                        return True
+            supported = False
+            if "semantic_memory" in tables:
+                columns = table_columns["semantic_memory"]
+                if {"key", "value_json", "confidence", "is_deleted"} <= columns:
+                    supported = True
+                    extra_columns = [name for name in ("workspace_id", "kind") if name in columns]
+                    selected_columns = ["key", "value_json", "confidence", *extra_columns]
+                    rows = connection.execute(
+                        "SELECT "
+                        + ", ".join(f'"{name}"' for name in selected_columns)
+                        + ' FROM "semantic_memory" WHERE "is_deleted" = 0 LIMIT ?',
+                        (_MAX_DB_ROWS,),
+                    ).fetchall()
+                    for row in rows:
+                        values = dict(zip(selected_columns, row))
+                        key = values["key"]
+                        value_json = values["value_json"]
+                        confidence = values["confidence"]
+                        if values.get("workspace_id") not in (None, ""):
+                            scan.diagnostic(
+                                "memories",
+                                "scoped_memory_unsupported",
+                                unsupported=True,
+                            )
+                            continue
+                        if str(values.get("kind", "")).casefold() == "directive":
+                            scan.diagnostic(
+                                "memories",
+                                "directive_memory_unsupported",
+                                unsupported=True,
+                            )
+                            continue
+                        if (
+                            not isinstance(key, str)
+                            or len(key) > 100
+                            or not _SEMANTIC_KEY_RE.fullmatch(key)
+                            or not key.startswith(_SEMANTIC_PREFIXES)
+                            or not isinstance(value_json, str)
+                        ):
+                            scan.diagnostic("memories", "unsupported_semantic_memory")
+                            continue
+                        cleaned = _sanitize_text(value_json, scan)
+                        if cleaned != value_json.strip():
+                            scan.diagnostic("memories", "credential_bearing_memory")
+                            continue
+                        if contains_injection(cleaned):
+                            scan.diagnostic("memories", "injection_memory_excluded")
+                            continue
+                        try:
+                            value = json.loads(value_json)
+                        except (json.JSONDecodeError, RecursionError):
+                            scan.diagnostic("memories", "invalid_memory_record")
+                            continue
+                        if _count_secret_fields(value):
+                            scan.diagnostic("memories", "secret_fields_omitted")
+                            continue
+                        numeric_confidence = (
+                            float(confidence)
+                            if isinstance(confidence, (int, float))
+                            and not isinstance(confidence, bool)
+                            else 0.9
                         )
-                        continue
-                    if str(values.get("kind", "")).casefold() == "directive":
-                        scan.diagnostic(
-                            "memories",
-                            "directive_memory_unsupported",
-                            unsupported=True,
-                        )
-                        continue
-                    if (
-                        not isinstance(key, str)
-                        or len(key) > 100
-                        or not _SEMANTIC_KEY_RE.fullmatch(key)
-                        or not key.startswith(_SEMANTIC_PREFIXES)
-                        or not isinstance(value_json, str)
-                    ):
-                        scan.diagnostic("memories", "unsupported_semantic_memory")
-                        continue
-                    cleaned = _sanitize_text(value_json, scan)
-                    if cleaned != value_json.strip():
-                        scan.diagnostic("memories", "credential_bearing_memory")
-                        continue
-                    if contains_injection(cleaned):
-                        scan.diagnostic("memories", "injection_memory_excluded")
-                        continue
-                    try:
-                        value = json.loads(value_json)
-                    except (json.JSONDecodeError, RecursionError):
-                        scan.diagnostic("memories", "invalid_memory_record")
-                        continue
-                    if _count_secret_fields(value):
-                        scan.diagnostic("memories", "secret_fields_omitted")
-                        continue
-                    numeric_confidence = (
-                        float(confidence)
-                        if isinstance(confidence, (int, float)) and not isinstance(confidence, bool)
-                        else 0.9
+                        payload = {
+                            "kind": "semantic",
+                            "key": key,
+                            "value": value,
+                            "confidence": max(0.8, min(1.0, numeric_confidence)),
+                        }
+                        scan.add("memories", f"sqlite\0semantic\0{key}", payload)
+                else:
+                    scan.diagnostic(
+                        "memories",
+                        "unsupported_memory_database_schema",
+                        unsupported=True,
                     )
-                    payload = {
-                        "kind": "semantic",
-                        "key": key,
-                        "value": value,
-                        "confidence": max(0.8, min(1.0, numeric_confidence)),
-                    }
-                    scan.add("memories", f"sqlite\0semantic\0{key}", payload)
-            else:
+            if "episodic_memories" in tables:
+                columns = table_columns["episodic_memories"]
+                if {"id", "text", "importance", "is_deleted"} <= columns:
+                    supported = True
+                    extra_columns = [name for name in ("workspace_id", "kind") if name in columns]
+                    selected_columns = ["id", "text", "importance", *extra_columns]
+                    rows = connection.execute(
+                        "SELECT "
+                        + ", ".join(f'"{name}"' for name in selected_columns)
+                        + ' FROM "episodic_memories" WHERE "is_deleted" = 0 LIMIT ?',
+                        (_MAX_DB_ROWS,),
+                    ).fetchall()
+                    for row in rows:
+                        values = dict(zip(selected_columns, row))
+                        memory_id = values["id"]
+                        text = values["text"]
+                        importance = values["importance"]
+                        if values.get("workspace_id") not in (None, ""):
+                            scan.diagnostic(
+                                "memories",
+                                "scoped_memory_unsupported",
+                                unsupported=True,
+                            )
+                            continue
+                        if str(values.get("kind", "")).casefold() == "directive":
+                            scan.diagnostic(
+                                "memories",
+                                "directive_memory_unsupported",
+                                unsupported=True,
+                            )
+                            continue
+                        if not isinstance(text, str):
+                            scan.diagnostic("memories", "invalid_memory_record")
+                            continue
+                        cleaned = _sanitize_text(text, scan)
+                        if cleaned != text.strip():
+                            scan.diagnostic("memories", "credential_bearing_memory")
+                            continue
+                        if contains_injection(cleaned):
+                            scan.diagnostic("memories", "injection_memory_excluded")
+                            continue
+                        if not 10 <= len(cleaned) <= 2000:
+                            scan.diagnostic("memories", "unsupported_memory_length")
+                            continue
+                        numeric_importance = (
+                            float(importance)
+                            if isinstance(importance, (int, float))
+                            and not isinstance(importance, bool)
+                            else 0.5
+                        )
+                        payload = {
+                            "kind": "episodic",
+                            "text": cleaned,
+                            "importance": max(0.0, min(1.0, numeric_importance)),
+                        }
+                        scan.add("memories", f"sqlite\0episodic\0{memory_id}", payload)
+                else:
+                    scan.diagnostic(
+                        "memories",
+                        "unsupported_memory_database_schema",
+                        unsupported=True,
+                    )
+            if not supported:
                 scan.diagnostic(
                     "memories",
                     "unsupported_memory_database_schema",
                     unsupported=True,
                 )
-        if "episodic_memories" in tables:
-            columns = table_columns["episodic_memories"]
-            if {"id", "text", "importance", "is_deleted"} <= columns:
-                supported = True
-                extra_columns = [name for name in ("workspace_id", "kind") if name in columns]
-                selected_columns = ["id", "text", "importance", *extra_columns]
-                rows = connection.execute(
-                    "SELECT "
-                    + ", ".join(f'"{name}"' for name in selected_columns)
-                    + ' FROM "episodic_memories" WHERE "is_deleted" = 0 LIMIT ?',
-                    (_MAX_DB_ROWS,),
-                ).fetchall()
-                for row in rows:
-                    values = dict(zip(selected_columns, row))
-                    memory_id = values["id"]
-                    text = values["text"]
-                    importance = values["importance"]
-                    if values.get("workspace_id") not in (None, ""):
-                        scan.diagnostic(
-                            "memories",
-                            "scoped_memory_unsupported",
-                            unsupported=True,
-                        )
-                        continue
-                    if str(values.get("kind", "")).casefold() == "directive":
-                        scan.diagnostic(
-                            "memories",
-                            "directive_memory_unsupported",
-                            unsupported=True,
-                        )
-                        continue
-                    if not isinstance(text, str):
-                        scan.diagnostic("memories", "invalid_memory_record")
-                        continue
-                    cleaned = _sanitize_text(text, scan)
-                    if cleaned != text.strip():
-                        scan.diagnostic("memories", "credential_bearing_memory")
-                        continue
-                    if contains_injection(cleaned):
-                        scan.diagnostic("memories", "injection_memory_excluded")
-                        continue
-                    if not 10 <= len(cleaned) <= 2000:
-                        scan.diagnostic("memories", "unsupported_memory_length")
-                        continue
-                    numeric_importance = (
-                        float(importance)
-                        if isinstance(importance, (int, float)) and not isinstance(importance, bool)
-                        else 0.5
-                    )
-                    payload = {
-                        "kind": "episodic",
-                        "text": cleaned,
-                        "importance": max(0.0, min(1.0, numeric_importance)),
-                    }
-                    scan.add("memories", f"sqlite\0episodic\0{memory_id}", payload)
-            else:
-                scan.diagnostic(
-                    "memories",
-                    "unsupported_memory_database_schema",
-                    unsupported=True,
-                )
-        if not supported:
+        except sqlite3.Error:
             scan.diagnostic(
                 "memories",
                 "unsupported_memory_database_schema",
                 unsupported=True,
             )
-    except sqlite3.Error:
-        scan.diagnostic(
-            "memories",
-            "unsupported_memory_database_schema",
-            unsupported=True,
-        )
-    finally:
-        connection.close()
-        shutil.rmtree(snapshot.parent, ignore_errors=True)
     return True
 
 
@@ -2836,147 +2833,136 @@ def _scan_hermes_db(scan: _Scan, root: Path) -> None:
     if not candidates:
         return
     path = candidates[0]
-    snapshot = _sqlite_snapshot(path, root, scan, "sessions")
-    if snapshot is None:
-        return
-    try:
-        uri = snapshot.absolute().as_uri() + "?mode=ro"
-        connection = sqlite3.connect(uri, uri=True)
-    except (OSError, sqlite3.Error, ValueError):
-        scan.diagnostic("sessions", "database_open_failed")
-        shutil.rmtree(snapshot.parent, ignore_errors=True)
-        return
-    try:
-        tables = {str(row[0]) for row in connection.execute(_SQLITE_TABLE_NAMES_QUERY).fetchall()}
-        if "messages" not in tables:
-            scan.diagnostic("sessions", "unsupported_database_schema", unsupported=True)
+    with _open_snapshot_db(path, root, scan, "sessions") as connection:
+        if connection is None:
             return
-        message_columns = _sqlite_columns(connection, "messages")
-        if not {"session_id", "role", "content"} <= message_columns:
-            scan.diagnostic("sessions", "missing_session_provenance", unsupported=True)
-            return
-        if "sessions" not in tables:
-            scan.diagnostic("sessions", "missing_session_provenance", unsupported=True)
-            return
-        session_columns = _sqlite_columns(connection, "sessions")
-        if not {"id", "source", "parent_session_id"} <= session_columns:
-            scan.diagnostic("sessions", "missing_session_provenance", unsupported=True)
-            return
+        try:
+            tables = {
+                str(row[0]) for row in connection.execute(_SQLITE_TABLE_NAMES_QUERY).fetchall()
+            }
+            if "messages" not in tables:
+                scan.diagnostic("sessions", "unsupported_database_schema", unsupported=True)
+                return
+            message_columns = _sqlite_columns(connection, "messages")
+            if not {"session_id", "role", "content"} <= message_columns:
+                scan.diagnostic("sessions", "missing_session_provenance", unsupported=True)
+                return
+            if "sessions" not in tables:
+                scan.diagnostic("sessions", "missing_session_provenance", unsupported=True)
+                return
+            session_columns = _sqlite_columns(connection, "sessions")
+            if not {"id", "source", "parent_session_id"} <= session_columns:
+                scan.diagnostic("sessions", "missing_session_provenance", unsupported=True)
+                return
 
-        workspace_columns = [
-            name
-            for name in ("cwd", "git_repo_root", "project_path", "workdir", "workspace")
-            if name in session_columns
-        ]
-        selected_session_columns = ["id", "source", "parent_session_id", *workspace_columns]
-        connection.execute("BEGIN")
-        session_rows = connection.execute(
-            "SELECT "
-            + ", ".join(f'"{name}"' for name in selected_session_columns)
-            + ' FROM "sessions" ORDER BY "id" LIMIT ?',
-            (_MAX_DB_ROWS + 1,),
-        ).fetchall()
-        if len(session_rows) > _MAX_DB_ROWS:
-            scan.diagnostic("sessions", "row_count_limit")
-            return
-
-        filters = ['"session_id" IS ?']
-        if "active" in message_columns:
-            filters.append('"active" = 1')
-        where = " WHERE " + " AND ".join(filters)
-        ordering = [name for name in ("timestamp", "created_at", "id") if name in message_columns]
-        order_by = " ORDER BY " + ", ".join(f'"{name}"' for name in ordering) if ordering else ""
-        remaining_rows = _MAX_DB_ROWS
-        for row in session_rows:
-            values = dict(zip(selected_session_columns, row))
-            session_id = values["id"]
-            source = values["source"]
-            parent_session_id = values["parent_session_id"]
-            if not isinstance(source, str) or not source.strip():
-                scan.diagnostic("sessions", "runtime_session_excluded")
-                continue
-            if source.strip().casefold() in _HERMES_RUNTIME_SESSION_SOURCES:
-                scan.diagnostic("sessions", "runtime_session_excluded")
-                continue
-            if parent_session_id is not None:
-                scan.diagnostic("sessions", "parented_session_excluded")
-                continue
-
-            for column in workspace_columns:
-                workspace = values.get(column)
-                if isinstance(workspace, str):
-                    _workspace_item(scan, workspace)
-
-            rows = connection.execute(
-                f'SELECT "role", "content" FROM "messages"{where}{order_by} LIMIT ?',
-                (session_id, remaining_rows + 1),
+            workspace_columns = [
+                name
+                for name in ("cwd", "git_repo_root", "project_path", "workdir", "workspace")
+                if name in session_columns
+            ]
+            selected_session_columns = ["id", "source", "parent_session_id", *workspace_columns]
+            connection.execute("BEGIN")
+            session_rows = connection.execute(
+                "SELECT "
+                + ", ".join(f'"{name}"' for name in selected_session_columns)
+                + ' FROM "sessions" ORDER BY "id" LIMIT ?',
+                (_MAX_DB_ROWS + 1,),
             ).fetchall()
-            if len(rows) > remaining_rows:
+            if len(session_rows) > _MAX_DB_ROWS:
                 scan.diagnostic("sessions", "row_count_limit")
-                continue
-            remaining_rows -= len(rows)
-            messages: list[tuple[str, str]] = []
-            capped = False
-            for role, content in rows:
-                if not isinstance(role, str) or role.casefold() not in _VISIBLE_ROLES:
+                return
+
+            filters = ['"session_id" IS ?']
+            if "active" in message_columns:
+                filters.append('"active" = 1')
+            where = " WHERE " + " AND ".join(filters)
+            ordering = [
+                name for name in ("timestamp", "created_at", "id") if name in message_columns
+            ]
+            order_by = (
+                " ORDER BY " + ", ".join(f'"{name}"' for name in ordering) if ordering else ""
+            )
+            remaining_rows = _MAX_DB_ROWS
+            for row in session_rows:
+                values = dict(zip(selected_session_columns, row))
+                session_id = values["id"]
+                source = values["source"]
+                parent_session_id = values["parent_session_id"]
+                if not isinstance(source, str) or not source.strip():
+                    scan.diagnostic("sessions", "runtime_session_excluded")
                     continue
-                if not isinstance(content, str):
+                if source.strip().casefold() in _HERMES_RUNTIME_SESSION_SOURCES:
+                    scan.diagnostic("sessions", "runtime_session_excluded")
                     continue
-                cleaned = _sanitize_text(_sqlite_visible_text(content), scan)
-                if not cleaned:
+                if parent_session_id is not None:
+                    scan.diagnostic("sessions", "parented_session_excluded")
                     continue
-                if len(messages) >= _MAX_MESSAGES_PER_SESSION:
-                    capped = True
+
+                for column in workspace_columns:
+                    workspace = values.get(column)
+                    if isinstance(workspace, str):
+                        _workspace_item(scan, workspace)
+
+                rows = connection.execute(
+                    f'SELECT "role", "content" FROM "messages"{where}{order_by} LIMIT ?',
+                    (session_id, remaining_rows + 1),
+                ).fetchall()
+                if len(rows) > remaining_rows:
+                    scan.diagnostic("sessions", "row_count_limit")
                     continue
-                messages.append((role.casefold(), cleaned))
-            if capped:
-                scan.diagnostic("sessions", "message_count_limit")
-                continue
-            if messages:
-                scan.add("sessions", f"sqlite\0{session_id}", messages)
-    except sqlite3.Error:
-        scan.diagnostic("sessions", "unsupported_database_schema", unsupported=True)
-    finally:
-        connection.close()
-        shutil.rmtree(snapshot.parent, ignore_errors=True)
+                remaining_rows -= len(rows)
+                messages: list[tuple[str, str]] = []
+                capped = False
+                for role, content in rows:
+                    if not isinstance(role, str) or role.casefold() not in _VISIBLE_ROLES:
+                        continue
+                    if not isinstance(content, str):
+                        continue
+                    cleaned = _sanitize_text(_sqlite_visible_text(content), scan)
+                    if not cleaned:
+                        continue
+                    if len(messages) >= _MAX_MESSAGES_PER_SESSION:
+                        capped = True
+                        continue
+                    messages.append((role.casefold(), cleaned))
+                if capped:
+                    scan.diagnostic("sessions", "message_count_limit")
+                    continue
+                if messages:
+                    scan.add("sessions", f"sqlite\0{session_id}", messages)
+        except sqlite3.Error:
+            scan.diagnostic("sessions", "unsupported_database_schema", unsupported=True)
 
 
 def _scan_hermes_projects_db(scan: _Scan, root: Path) -> None:
     path = root / "projects.db"
     if not path.is_file():
         return
-    snapshot = _sqlite_snapshot(path, root, scan, "workspaces")
-    if snapshot is None:
-        return
-    try:
-        connection = sqlite3.connect(snapshot.absolute().as_uri() + "?mode=ro", uri=True)
-    except (OSError, sqlite3.Error, ValueError):
-        scan.diagnostic("workspaces", "database_open_failed")
-        shutil.rmtree(snapshot.parent, ignore_errors=True)
-        return
-    try:
-        tables = {str(row[0]) for row in connection.execute(_SQLITE_TABLE_NAMES_QUERY).fetchall()}
-        if "projects" in tables:
-            _sqlite_workspace_values(
-                connection,
-                "projects",
-                _sqlite_columns(connection, "projects"),
-                ("primary_path", "path", "cwd", "root"),
-                scan,
-            )
-        if "project_folders" in tables:
-            _sqlite_workspace_values(
-                connection,
-                "project_folders",
-                _sqlite_columns(connection, "project_folders"),
-                ("path",),
-                scan,
-            )
-    except sqlite3.Error:
-        scan.diagnostic("workspaces", "unsupported_database_schema", unsupported=True)
-    finally:
-        connection.close()
-        shutil.rmtree(snapshot.parent, ignore_errors=True)
+    with _open_snapshot_db(path, root, scan, "workspaces") as connection:
+        if connection is None:
+            return
+        try:
+            tables = {
+                str(row[0]) for row in connection.execute(_SQLITE_TABLE_NAMES_QUERY).fetchall()
+            }
+            if "projects" in tables:
+                _sqlite_workspace_values(
+                    connection,
+                    "projects",
+                    _sqlite_columns(connection, "projects"),
+                    ("primary_path", "path", "cwd", "root"),
+                    scan,
+                )
+            if "project_folders" in tables:
+                _sqlite_workspace_values(
+                    connection,
+                    "project_folders",
+                    _sqlite_columns(connection, "project_folders"),
+                    ("path",),
+                    scan,
+                )
+        except sqlite3.Error:
+            scan.diagnostic("workspaces", "unsupported_database_schema", unsupported=True)
 
 
 def _hermes_roots(scan: _Scan) -> list[Path]:
@@ -3319,37 +3305,21 @@ def _load_ledger(path: Path) -> dict[str, Any]:
 
 
 def _selected_pairs(plan: dict[str, Any]) -> set[tuple[str, str]]:
+    # The only producers of plan["selection"] (the backend _preview and the API
+    # handler's _select_fresh_plan) always emit the canonical list of
+    # {"source_id", "category_id"} dicts, so that is the sole shape parsed here.
+    # The SOURCE_IDS/CATEGORY_IDS filter is a real guard and is retained.
     selected: set[tuple[str, str]] = set()
     selection = plan.get("selection")
-    if isinstance(selection, list):
-        for item in selection:
-            if isinstance(item, dict):
-                source_id = item.get("source_id", item.get("source"))
-                category = item.get("category_id", item.get("category"))
-                if isinstance(source_id, str) and isinstance(category, str):
-                    selected.add((source_id, category))
-            elif isinstance(item, (list, tuple)) and len(item) == 2:
-                selected.add((str(item[0]), str(item[1])))
-            elif isinstance(item, str) and ":" in item:
-                source_id, category = item.split(":", 1)
-                selected.add((source_id, category))
-        return {pair for pair in selected if pair[0] in SOURCE_IDS and pair[1] in CATEGORY_IDS}
-    sources = plan.get("sources")
-    if not isinstance(sources, list):
-        return set()
-    for source in sources:
-        if not isinstance(source, dict) or not isinstance(source.get("id"), str):
+    if not isinstance(selection, list):
+        return selected
+    for item in selection:
+        if not isinstance(item, dict):
             continue
-        categories = source.get("categories")
-        if not isinstance(categories, list):
-            continue
-        for category in categories:
-            if (
-                isinstance(category, dict)
-                and isinstance(category.get("id"), str)
-                and category.get("selected", True) is True
-            ):
-                selected.add((source["id"], category["id"]))
+        source_id = item.get("source_id")
+        category = item.get("category_id")
+        if isinstance(source_id, str) and isinstance(category, str):
+            selected.add((source_id, category))
     return {pair for pair in selected if pair[0] in SOURCE_IDS and pair[1] in CATEGORY_IDS}
 
 

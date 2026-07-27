@@ -4649,3 +4649,62 @@ class TestConservativeParsingRegressions:
             "repeat": {"times": 1, "completed": 0},
         }
         assert api._hermes_schedule_has_unsupported_semantics(record) is True
+
+    def test_yaml_config_parses_arbitrary_indentation(self, tmp_path: Path) -> None:
+        # safe_load handles any valid indentation; the previous hand-rolled parser
+        # silently dropped MCP servers on anything other than 0/2-space indent.
+        api = _api()
+        anchor = tmp_path / "hermes"
+        anchor.mkdir()
+        config = anchor / "config.yaml"
+        # Four-space top-level indentation under mcpServers (hand parser dropped this).
+        config.write_text(
+            "mcpServers:\n    docs:\n        command: docs-mcp\n",
+            encoding="utf-8",
+        )
+        scan = api._Scan("hermes", tmp_path, tmp_path)
+        data = api._read_simple_yaml(config, anchor, scan)
+        assert data.get("mcpServers", {}).get("docs", {}).get("command") == "docs-mcp"
+
+    def test_yaml_malformed_config_degrades_to_diagnostic(self, tmp_path: Path) -> None:
+        # Malformed / pathologically nested YAML must degrade to a diagnostic, never
+        # raise out of the off-loop scan (deeply nested flow input raises
+        # RecursionError, which is neither YAMLError nor ValueError).
+        api = _api()
+        anchor = tmp_path / "hermes"
+        anchor.mkdir()
+        config = anchor / "config.yaml"
+        config.write_text("a: " + "[" * 4000 + "]" * 4000, encoding="utf-8")
+        scan = api._Scan("hermes", tmp_path, tmp_path)
+        data = api._read_simple_yaml(config, anchor, scan)
+        assert data == {}
+        assert any(item["reason"] == "invalid_config" for item in scan.skipped)
+
+    def test_yaml_alias_bomb_is_rejected_fast(self, tmp_path: Path) -> None:
+        # A "billion-laughs" YAML alias bomb must be rejected at parse time rather
+        # than expanded into a shared-reference graph that the downstream secret
+        # traversal would re-walk exponentially. The parser refuses aliases, so the
+        # config degrades to a diagnostic near-instantly regardless of alias depth.
+        api = _api()
+        anchor = tmp_path / "hermes"
+        anchor.mkdir()
+        config = anchor / "config.yaml"
+        bomb = "a0: &a0 [x, x]\n" + "\n".join(
+            f"a{i}: &a{i} [*a{i - 1}, *a{i - 1}]" for i in range(1, 12)
+        )
+        config.write_text(bomb + "\n", encoding="utf-8")
+        scan = api._Scan("hermes", tmp_path, tmp_path)
+        data = api._read_simple_yaml(config, anchor, scan)
+        assert data == {}
+        assert any(item["reason"] == "invalid_config" for item in scan.skipped)
+
+    def test_yaml_lone_anchor_without_alias_is_allowed(self, tmp_path: Path) -> None:
+        # A lone anchor with no alias cannot amplify, so it is still parsed.
+        api = _api()
+        anchor = tmp_path / "hermes"
+        anchor.mkdir()
+        config = anchor / "config.yaml"
+        config.write_text("mcpServers:\n  docs: &d\n    command: docs-mcp\n", encoding="utf-8")
+        scan = api._Scan("hermes", tmp_path, tmp_path)
+        data = api._read_simple_yaml(config, anchor, scan)
+        assert data.get("mcpServers", {}).get("docs", {}).get("command") == "docs-mcp"
