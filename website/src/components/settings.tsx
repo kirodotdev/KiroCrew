@@ -1,7 +1,7 @@
 import React from 'react'
 import Clickable from './Clickable'
 import InfoTip from './InfoTip'
-import StyledSelect from './StyledSelect'
+import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from './ui/select'
 import { Input, Toggle } from './ui'
 
 /* ── Settings-specific UI primitives ──
@@ -77,22 +77,47 @@ interface SettingsSelectProps {
   disabled?: boolean
 }
 
+/**
+ * Radix Select rejects empty-string item values (it reserves '' for
+ * "no selection"), but some callers legitimately offer '' as an option
+ * (e.g. the microphone picker's "System default"). Map '' to a sentinel
+ * on the way in and back on the way out so the public API is unchanged.
+ */
+const EMPTY_VALUE_SENTINEL = '\u0000settings-select-empty'
+/** Sentinel for the action row: selecting it fires action.onSelect instead of onChange. */
+const ACTION_SENTINEL = '\u0000settings-select-action'
+
 export function SettingsSelect({ label, description, hint, value, options, optionLabels, onChange, action, disabled }: SettingsSelectProps) {
-  const displayValue = optionLabels?.[options.indexOf(value)] ?? value
+  const toRadix = (v: string) => (v === '' ? EMPTY_VALUE_SENTINEL : v)
+  const fromRadix = (v: string) => (v === EMPTY_VALUE_SENTINEL ? '' : v)
   return (
     <SettingsField label={label} description={description} hint={hint}>
-      <div className={disabled ? 'opacity-40 pointer-events-none' : ''}>
-        <StyledSelect
-          options={optionLabels || options}
-          value={displayValue}
-          onChange={v => {
-            if (disabled) return
-            const idx = (optionLabels || options).indexOf(v)
-            onChange(idx >= 0 ? options[idx] : v)
-          }}
-          action={action}
-        />
-      </div>
+      <Select
+        value={options.includes(value) ? toRadix(value) : ''}
+        onValueChange={v => {
+          if (v === ACTION_SENTINEL) { action?.onSelect(); return }
+          onChange(fromRadix(v))
+        }}
+        disabled={disabled}
+      >
+        <SelectTrigger aria-label={label}>
+          {/* Radix's SelectValue renders the selected SelectItem's text; the
+              placeholder covers values not present in options (legacy configs). */}
+          <SelectValue placeholder={optionLabels?.[options.indexOf(value)] ?? (value || '—')} />
+        </SelectTrigger>
+        <SelectContent>
+          {action && (
+            <SelectItem value={ACTION_SENTINEL} className="text-accent data-[state=checked]:bg-transparent">
+              {action.label}
+            </SelectItem>
+          )}
+          {options.map((opt, i) => (
+            <SelectItem key={opt} value={toRadix(opt)}>
+              {optionLabels?.[i] ?? opt}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
     </SettingsField>
   )
 }

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Lock, MonitorCog, Blocks } from 'lucide-react'
 import { SettingsSection, SettingsCard, SettingsToggle, SettingsSelect } from '../../components/settings'
-import StyledSelect from '../../components/StyledSelect'
+import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '../../components/ui/select'
 import { Toggle } from '../../components/ui'
 import { api } from '../../api/client'
 import type { NotificationChannel } from '../../types'
@@ -107,11 +107,19 @@ function ChannelsSection() {
                 ) : (
                   <>
                     <div className="shrink-0 w-48">
-                      <StyledSelect
-                        options={PRIORITY_OPTIONS}
+                      <Select
                         value={override ?? PRIORITY_SENTINEL}
-                        onChange={v => patch(c.channel, { priority: v === PRIORITY_SENTINEL ? null : v })}
-                      />
+                        onValueChange={v => patch(c.channel, { priority: v === PRIORITY_SENTINEL ? null : v })}
+                      >
+                        <SelectTrigger aria-label={`Priority for ${c.channel}`}>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {PRIORITY_OPTIONS.map(opt => (
+                            <SelectItem key={opt} value={opt}>{opt}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
                     </div>
                     <div className="shrink-0">
                       <Toggle
