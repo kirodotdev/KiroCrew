@@ -1,9 +1,11 @@
 # ACP Client Module
 
-Last Updated: 2026-07-27 (ACP trust simplified to "the CLI runs" — install
-source/owner/path/codesign no longer gate launch, so toolbox/Homebrew/winget/
-self-updated installs work; resolve-to-exec integrity snapshots and off-loop
-cleanup retained)
+Last Updated: 2026-07-27 (ACP now launches the user's installed Kiro CLI IN
+PLACE — the private-copy / sealed-memfd "integrity snapshot" is REMOVED. It
+broke Kiro CLI 2.15+, a multi-call binary that exec's a sibling `kiro-cli-chat`
+resolved relative to its own path. Prior: ACP trust simplified to "the CLI
+runs" — install source/owner/path/codesign do not gate launch, so
+toolbox/Homebrew/winget/self-updated installs work)
 
 ## Overview
 
@@ -16,41 +18,49 @@ The ACP layer spans **five** modules: the legacy per-session client (`acp/client
 - `""` (default): `kiro-cli acp --agent <name>` (resolved by `_resolve_kiro_bin`). Per-session kiro settings are layered in via the workspace overlay `<work_dir>/.kiro/settings/cli.json` (written by `AcpProvider`, not the client): reasoning **effort** (`chat.modelDefaults`) and **MCP Tool Search** (`toolSearch.enabled` + zeroed thresholds, gated by `agent.tool_search`, default on) — see providers.md.
 - `"claude"` (`ACP_BACKEND_CLAUDE`): `claude-agent-acp` (resolved by `_resolve_claude_acp_bin` → `list[str] | None`). Resolution order: `CLAUDE_AGENT_ACP_BIN` env var, then the **vendored copy** (`_resolve_vendored_claude_acp` — `<node_modules>/@agentclientprotocol/claude-agent-acp/dist/index.js` found under the package's `_vendor/node_modules` from the distribution bundle, the sibling `KiroCrewWebsite/node_modules` in a source checkout, or `KIROCREW_PROJECT_DIR`; needs no global npm install or network — matters on hosts that have no package-registry token at gateway runtime), then `mise which claude-agent-acp` (respects MISE_DATA_DIR and all mise config), then `~/.local/share/mise/installs/node/*/bin/claude-agent-acp` (direct glob fallback), then augmented PATH (`env.augmented_path` — mise shims, `~/.npm-packages/bin`, `~/.volta/bin`, `/opt/homebrew/bin`, plus globbed nvm/fnm node bins via `_node_version_manager_bins`, so a non-login launchd/systemd gateway also finds globally-installed binaries). The adapter is vendored into the distribution bundle and the pip build by `setup.py` (`_vendor_acp_into_pkg` → `kiro_crew/_vendor/node_modules`), so every install method ships it without asking the user to `npm i -g`. Vendoring copies the adapter **plus its full transitive dependency closure** (`_acp_dependency_closure` walks `dependencies`/`optionalDependencies` from the resolved website `node_modules`, ~96 flat top-level packages) — npm hoists deps like `@agentclientprotocol/sdk` flat, so copying only the adapter package crashes the ESM loader with `ERR_MODULE_NOT_FOUND`. `_resolve_vendored_claude_acp` accepts a root only when the hoisted dependency marker `@agentclientprotocol/sdk` is present alongside the entry, so an incomplete vendored copy is skipped in favour of a complete one instead of being spawned and crashed. For scripts under mise installs, returns `[node_binary, script_path]` to bypass `#!/usr/bin/env node` shebang resolution which fails in non-interactive daemon contexts. For standalone binaries, returns `[binary_path]`. Pre-spawn the client writes `<work_dir>/.claude/settings.local.json` with `defaultMode: default` so the adapter routes every tool decision back to KiroCrew via `session/request_permission`. This makes claude-agent-acp participate in the same approve / trust_reads / trust / yolo protocol as kiro-cli — dashboard, subagents, channel agents, cron, and heartbeat all share the path. KiroCrew still enforces per-tool security via `HooksConfig.auto_deny_tools` (evaluated by `HookManager.on_tool_call` in `hooks.py`) on every `session/request_permission` event. The subprocess env also carries `CLAUDE_CONFIG_DIR=<config_dir>/cc-config` (isolated config root, distinct from the project-scope `<work_dir>/.claude/settings.local.json` which stays) so the adapter's `SettingsManager` and the SDK read KiroCrew's seeded settings (creds/models kept, plugins stripped) instead of the user's global `~/.claude` — see claude-code-provider.md "Config Isolation" (the "Standalone provider — removed" record). Disable via `KIROCREW_CC_ISOLATE=0`. The env also carries `CLAUDE_CODE_EXECUTABLE` (claude backend only, set in `_spawn` when unset): the adapter delegates the model turn to `@anthropic-ai/claude-agent-sdk`, which needs a per-platform native Claude binary (~250 MB each) shipped as npm `optionalDependencies` that the website install omits — so the vendored closure does **not** include it and the SDK fails `session/new` with `Claude native binary not found for <platform>`. The SDK does **not** search PATH for `claude` itself (so the host merely having the external agent CLI installed is not enough), and bundling a quarter-GB binary per platform is not viable; instead `_resolve_claude_code_executable` finds an existing `claude` (`CLAUDE_CODE_EXECUTABLE` override → `mise which claude` → augmented PATH incl. `~/.toolbox/bin`, where a managed distribution may ship the external agent CLI) and the adapter forwards it to the SDK as `pathToClaudeCodeExecutable` (no version check). If none is found the var is left unset (with a warning) so the adapter's native-binary error surfaces rather than a guessed bad path; an explicit operator-set value always wins.
 
-**Kiro executable integrity at spawn.** Trust is "the CLI runs": any resolvable
+**Kiro executable resolution at spawn.** Trust is "the CLI runs": any resolvable
 executable Kiro CLI launches for ACP, regardless of install source, owner, or
 fixed path — KiroCrew is not the authority on where Kiro CLI is installed, and
 Kiro CLI's own self-updater legitimately rewrites its bytes as the user, so an
 install-source/owner/path/codesign gate would strand real installs (toolbox,
 Homebrew, winget, a self-updated `/Applications` bundle) with no recovery path.
-`snapshot_trusted_acp_executable` refuses only a non-runnable candidate.
-The snapshot still pins the resolved bytes so a swap **between resolve and exec**
-cannot reach the running process. Symlink candidates are canonicalized before
-the final no-follow open. On Linux, the resolved bytes are copied into a
-`MFD_ALLOW_SEALING | MFD_EXEC` memfd and `F_SEAL_WRITE|GROW|SHRINK|SEAL` is
-applied through `platform_compat`; both `AcpClient` and `AcpRuntime` pass that
-descriptor through the sandbox/cgroup wrapper chain and execute its
-`/proc/self/fd/<fd>` identity; the gateway closes its copy immediately after
-process creation, while the child retains the inherited descriptor. Kernels that
-predate `MFD_EXEC` reject the flag with `EINVAL`; creation retries once without
-that flag, while every other error remains fail-closed. There is no mutable
-pathname or verify-to-exec replacement window. macOS cannot reliably execute
-Mach-O through `/dev/fd`, so it copies the resolved bytes into the
-agent-protected `<data-home>/run/kiro-cli-snapshots` directory and launches that
-private path, closing the resolve-to-exec replacement window. The spawn passes
-an explicit `is_kiro_cli` classification to `wrap_argv`, so macOS
-internal-sandbox delegation does not depend on the private launch-path basename.
-Windows launches the resolved candidate in place. Digest and snapshot
-preparation runs off the event loop; oversized candidates are rejected before
-hashing. If a caller is cancelled while a worker is still preparing a snapshot,
-startup waits for that worker and reclaims any late descriptor or private path.
-Snapshot ownership is removed from the registry synchronously. Descriptor close
-runs immediately after spawn; a macOS private path remains until the ACP
-handshake proves the sandbox wrapper executed it. Close and unlink use the
-dedicated `subprocess_executor` so teardown cannot block the gateway event loop.
-The ACP clients and dashboard usage/model-list one-shot callers all pass
-inherited Linux descriptors when spawning and release their registered snapshot
-in every success, error, and early-return path. The offline E2E harness launches
-the exact packaged fake ACP backend in place under its explicit test marker.
+`snapshot_trusted_acp_executable` refuses only a non-runnable candidate and
+returns the resolved path; `TrustedAcpExecutableSnapshot` now carries just
+`launch_path`.
+
+**The CLI is always launched IN PLACE — never from a copy.** KiroCrew execs the
+binary at the path it resolved, on every platform. This is a hard requirement,
+not a preference:
+
+- **Kiro CLI 2.15+ is a multi-call binary.** It dispatches subcommands by
+  exec'ing a SIBLING executable (e.g. `kiro-cli-chat`) that it locates relative
+  to its own executable path — on macOS by finding `.app/Contents/MacOS/` in that
+  path. Copying the binary into a flat private directory strands the sibling, so
+  every dispatch fails with `No such file or directory (os error 2)` and ACP dies
+  at the handshake with `process exited (rc=None)`.
+- The same breaks any launcher that resolves adjacent resources: a multiplexer
+  dispatching on `argv[0]` (`~/.toolbox/bin/kiro-cli` → `toolbox-exec`), a
+  wrapper reading a sibling registry, or a self-updating install whose real
+  payload lives beside it. The launch path is therefore the path the caller
+  resolved, **not** its realpath.
+
+**Removed: the resolve-to-exec integrity snapshot.** An earlier design copied the
+resolved bytes into a private location and executed that instead — a sealed
+`MFD_ALLOW_SEALING | MFD_EXEC` memfd on Linux (executed as `/proc/self/fd/<fd>`),
+a verified copy under `<data-home>/run/kiro-cli-snapshots` on macOS (and on Linux
+interpreters lacking `os.memfd_create`) — so a binary swapped between resolve and
+exec could not reach the running process. That is **deliberately gone**, along
+with the descriptor registry, `pass_fds` inheritance, the off-loop
+close/unlink cleanup, and `platform_compat.seal_memfd`.
+
+The rationale: the threat it closed is an attacker who already has write access
+to the user's own machine, which the rest of the product does not defend against
+either — while the cost was breaking every multi-call and multiplexer install
+outright. Do NOT reintroduce a copy-then-exec strategy for the Kiro CLI. The
+spawn still passes an explicit `is_kiro_cli` classification to `wrap_argv`, so
+macOS internal-sandbox delegation never depended on a private launch-path
+basename. Resolution runs off the event loop (`asyncio.to_thread`, shielded so a
+cancelled caller still lets the worker settle).
 
 ## Tool Permission Protocol
 

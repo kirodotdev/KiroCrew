@@ -22,11 +22,7 @@ from aiohttp import web
 # binds via sys.modules and defers attribute access to call time, which also
 # keeps tests' monkeypatching of handlers.redact_* effective (late binding).
 import kiro_crew.dashboard.handlers as _h
-from kiro_crew.acp.client import (
-    _cleanup_kiro_executable_snapshot,
-    _kiro_executable_pass_fds,
-    _resolve_kiro_bin_for_spawn,
-)
+from kiro_crew.acp.client import _resolve_kiro_bin_for_spawn
 from kiro_crew.dashboard.handlers import kiro_usage_api
 from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_not_ready
 from kiro_crew.dashboard.state import DashboardState
@@ -259,7 +255,6 @@ async def _fetch_usage_bg() -> None:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             preexec_fn=resource_limit_preexec(),
-            pass_fds=_kiro_executable_pass_fds(kiro_bin),
         )
         out, err = await asyncio.wait_for(proc.communicate(), timeout=60)
         raw = (out or err or b"").decode(errors="replace")
@@ -311,7 +306,6 @@ async def _fetch_usage_bg() -> None:
                 os.remove(sandbox_cleanup)
             except OSError:
                 pass
-        await _cleanup_kiro_executable_snapshot(kiro_bin)
 
 
 async def api_sessions_usage(request: web.Request) -> web.Response:

@@ -1,8 +1,10 @@
 # CLI Module
 
-Last Updated: 2026-07-27 (Kiro CLI trust simplified to "runs + valid login" —
-install source/owner/path no longer gate setup or ACP launch; resolve-to-exec
-integrity snapshots retained)
+Last Updated: 2026-07-27 (the Kiro CLI is now always launched IN PLACE — the
+resolve-to-exec integrity snapshot is REMOVED; it broke Kiro CLI 2.15+, a
+multi-call binary that exec's a sibling `kiro-cli-chat` resolved relative to its
+own path. Prior: trust simplified to "runs + valid login" — install
+source/owner/path do not gate setup or ACP launch)
 
 ## Overview
 
@@ -169,10 +171,9 @@ every known Kiro identity store. Any candidate that runs `--version` is eligible
 for `whoami` and device login — trust is "it runs, and it has a valid login",
 not install source, owner, or fixed path (KiroCrew is not the authority on where
 Kiro CLI is installed, and its self-updater rewrites its own bytes as the user).
-POSIX auth calls still execute an owner-only snapshot of the exact resolved
-bytes under the protected runtime directory, binding the process that signs in
-to the bytes just resolved (no stored digest pin, so a legitimate self-update
-does not break sign-in).
+Auth calls execute the user's installed binary IN PLACE, never a private copy of
+its bytes — a multi-call Kiro CLI resolves its sibling subcommand executable
+relative to its own path, so a copy strands it (see security.md).
 Sign-in itself is delegated to Kiro CLI: `login --use-device-flow` runs in the
 standard sandbox against the user's real home, with only the Kiro Crew data
 homes hidden, and the CLI writes its own credential store exactly as it does
@@ -228,9 +229,8 @@ Both setup discovery and ACP launch enumerate the same candidates — inherited
 `PATH`, the interpreter Scripts directory, package-manager dirs (incl. the
 Windows Program Files `Kiro-Cli` tree and winget/scoop/user installs on `PATH`),
 and an operator override — and accept a runnable candidate wherever it lives,
-since trust is "the CLI runs". ACP launch runs the resolved candidate in place
-(macOS/Linux snapshot the resolved bytes for resolve-to-exec integrity; Windows
-launches in place). Setup discovery and ACP resolution therefore agree on
+since trust is "the CLI runs". ACP launch runs the resolved candidate in place on
+every platform — never a copy of its bytes. Setup discovery and ACP resolution therefore agree on
 Windows, so a winget/scoop install is never sent to a redundant reinstall.
 
 When a previously completed setup is no longer ready, the dashboard remains

@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import errno
 import hashlib
 import hmac
 import json
@@ -96,11 +95,12 @@ try:
 except OSError:
     _PROCESS_GROUP_SUPERVISOR_CODE = ""
 _AUTH_STAGING_RELATIVE = Path(".kiro") / "crew-auth-staging"
-_ACP_EXECUTABLE_SNAPSHOT_RELATIVE = Path("run") / "kiro-cli-snapshots"
 _BINARY_TRUST_VERSION = 1
-_MFD_EXEC = 0x0010
+# Marker the offline E2E harness sets on the gateway it spawns. It grants NO
+# privilege: the packaged fake ACP backend is launched by the ordinary in-place
+# path like any other runnable executable. It is kept purely as a "this gateway
+# is a test rig" signal for the harness contract (test/test_harness.py).
 FAKE_ACP_TEST_MODE_ENV = "KIROCREW_FAKE_ACP_TEST_MODE"
-_PACKAGED_FAKE_ACP_BACKEND = str(Path(__file__).with_name("testing") / "fake_acp_backend.py")
 _MAX_AUTH_EXECUTABLE_BYTES = 512 * 1024 * 1024
 _MAX_AUTH_STORE_FILE_BYTES = 64 * 1024 * 1024
 _AUTH_STORE_READ_ERROR = "Kiro identity file could not be read safely"
@@ -243,12 +243,14 @@ class _AuthWorkspace:
 
 @dataclass(frozen=True)
 class TrustedAcpExecutableSnapshot:
-    """OS-bound immutable executable handle for one trusted ACP launch."""
+    """The resolved Kiro CLI path for one ACP launch.
+
+    ``launch_path`` is ALWAYS the user's installed binary, launched in place —
+    KiroCrew never copies the CLI and runs the copy, because a multi-call Kiro
+    CLI resolves its sibling subcommand executable relative to its own path.
+    """
 
     launch_path: str
-    fd: int | None = None
-    expected_sha256: str | None = None
-    cleanup_path: str | None = None
 
 
 class PrerequisiteBusyError(RuntimeError):
@@ -363,98 +365,6 @@ def _binary_sha256(path: str) -> str:
     return digest.hexdigest()
 
 
-def _copy_verified_executable_to_fd(
-    source: str,
-    destination_fd: int,
-    expected_sha256: str | None,
-) -> None:
-    """Copy canonical executable bytes into an already-open private descriptor."""
-
-    canonical = _canonical_candidate(source)
-    source_flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_CLOEXEC", 0)
-    source_flags |= getattr(os, "O_NOFOLLOW", 0)
-    source_fd = os.open(canonical, source_flags)
-    digest = hashlib.sha256()
-    try:
-        metadata = os.fstat(source_fd)
-        if (
-            not stat.S_ISREG(metadata.st_mode)
-            or metadata.st_size <= 0
-            or metadata.st_size > _MAX_AUTH_EXECUTABLE_BYTES
-        ):
-            raise ValueError("Kiro CLI is not a bounded regular executable")
-        os.lseek(destination_fd, 0, os.SEEK_SET)
-        os.ftruncate(destination_fd, 0)
-        while True:
-            chunk = os.read(source_fd, 1024 * 1024)
-            if not chunk:
-                break
-            digest.update(chunk)
-            pending = memoryview(chunk)
-            while pending:
-                written = os.write(destination_fd, pending)
-                if written <= 0:
-                    raise OSError("could not snapshot the Kiro CLI executable")
-                pending = pending[written:]
-        os.fsync(destination_fd)
-        if expected_sha256 and not hmac.compare_digest(expected_sha256, digest.hexdigest()):
-            raise ValueError("Kiro CLI provenance changed before credential access")
-        platform_compat.fchmod_safe(destination_fd, 0o500)
-        os.lseek(destination_fd, 0, os.SEEK_SET)
-    finally:
-        os.close(source_fd)
-
-
-def _copy_verified_auth_executable(
-    source: str,
-    destination_dir: Path,
-    expected_sha256: str | None,
-    *,
-    prefix: str = "kiro-cli-auth-",
-) -> str:
-    """Snapshot a verified executable into the agent-protected runtime dir.
-
-    The snapshot keeps the SOURCE BASENAME (e.g. ``kiro-cli``) rather than a
-    random ``mkstemp`` name: a multiplexer launcher such as
-    ``~/.toolbox/bin/kiro-cli`` dispatches on its argv[0] basename, so a copy
-    named ``kiro-cli-auth-XXXX`` would run as the wrong tool and fail with
-    "Command doesn't appear to be associated with any tool". The copy lives in a
-    unique owner-only subdir (``mkdtemp``) so preserving the fixed basename still
-    can't collide across concurrent calls.
-    """
-
-    destination_dir.mkdir(parents=True, exist_ok=True)
-    if platform_compat.IS_POSIX:
-        platform_compat.chmod_safe(str(destination_dir), 0o700)
-    else:
-        platform_compat.restrict_to_owner(str(destination_dir))
-    holder = tempfile.mkdtemp(prefix=prefix, dir=str(destination_dir))
-    if not platform_compat.IS_POSIX:
-        platform_compat.restrict_to_owner(holder)
-    # Preserve the basename the CALLER resolved (e.g. the ``kiro-cli`` symlink
-    # name), NOT the realpath — a multiplexer dispatches on argv[0], and its
-    # realpath (``toolbox-exec``) is exactly the name that fails to dispatch.
-    target = os.path.join(holder, os.path.basename(source) or "kiro-cli")
-    destination_fd = -1
-    try:
-        open_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
-        destination_fd = os.open(target, open_flags, 0o700)
-        _copy_verified_executable_to_fd(source, destination_fd, expected_sha256)
-        os.close(destination_fd)
-        destination_fd = -1
-        if not platform_compat.IS_POSIX:
-            platform_compat.restrict_to_owner(target)
-        return target
-    except Exception:
-        if destination_fd >= 0:
-            os.close(destination_fd)
-        with contextlib.suppress(OSError):
-            os.unlink(target)
-        with contextlib.suppress(OSError):
-            os.rmdir(holder)
-        raise
-
-
 def _register_operator_override_attestation(path: str, digest: str | None) -> None:
     """Remember the first gateway-start digest for one explicit override."""
 
@@ -492,32 +402,32 @@ def _recorded_trust_digest(trust_path: Path, canonical: str) -> str | None:
     return expected
 
 
-def _trusted_acp_binary_digest(
+def _acp_executable_is_runnable(
     executable: str,
     *,
-    data_home: Path,
     platform_name: str,
-    environ: MutableMapping[str, str],
-) -> str | None:
-    """Return the digest ACP may execute for a runnable Kiro CLI, else ``None``.
+) -> bool:
+    """Return whether ACP may launch *executable*.
 
-    Trust is "it runs" — install source, owner, and fixed path do not gate ACP
-    launch, so a toolbox / Homebrew / self-updated CLI is accepted like any
-    other (KiroCrew is not the authority on where Kiro CLI is installed). The
-    returned digest
-    still pins the exact bytes for the exec-time integrity snapshot (sealed
-    memfd on Linux, verified copy on macOS), so a swap between resolve and exec
-    is still caught; ``None`` means the file is not a runnable executable.
+    Trust is "it runs" — install source, owner, and path do not gate ACP launch,
+    so a toolbox / Homebrew / self-updated CLI is accepted like any other
+    (KiroCrew is not the authority on where Kiro CLI is installed).
+
+    A zero-byte candidate is still refused. An interrupted install or
+    self-update can leave a truncated but executable ``kiro-cli``; exec'ing it
+    dies without an ACP frame, surfacing as the same opaque
+    "process exited (rc=None)" this module works to avoid. Rejecting it here
+    turns that into a readable prerequisite error instead. (The retired copy
+    path got this for free from the snapshot's ``fstat`` size guard.)
     """
 
-    del data_home, environ  # provenance no longer gates ACP launch
     canonical = _canonical_candidate(executable)
     if not _is_runnable_executable(canonical, platform_name):
-        return None
+        return False
     try:
-        return _binary_sha256(canonical)
-    except (OSError, ValueError):
-        return None
+        return os.path.getsize(canonical) > 0
+    except OSError:
+        return False
 
 
 def snapshot_trusted_acp_executable(
@@ -527,122 +437,51 @@ def snapshot_trusted_acp_executable(
     platform_name: str | None = None,
     environ: MutableMapping[str, str] | None = None,
 ) -> TrustedAcpExecutableSnapshot:
-    """Return an integrity-checked, OS-bound executable snapshot for ACP.
+    """Return the user's installed Kiro CLI, to be launched IN PLACE.
 
-    Trust is "the CLI runs" — install source, owner, and fixed path do not gate
-    launch, so a toolbox / Homebrew / self-updated Kiro CLI launches like any
-    other. The snapshot still pins the
-    resolved bytes so a swap between resolve and exec is caught: Linux executes
-    a write-sealed ``memfd`` of the exact bytes, falling back to a verified
-    private copy when the interpreter lacks ``os.memfd_create`` (glibc < 2.27
-    portable builds); because Mach-O cannot launch reliably through ``/dev/fd``,
-    macOS executes a verified private copy; Windows launches the resolved path
-    in place.
+    KiroCrew always executes the Kiro CLI the user installed, at the path it was
+    resolved from. It never copies the binary elsewhere and runs the copy.
+
+    Kiro CLI 2.15+ is a **multi-call binary**: it dispatches subcommands by
+    exec'ing a SIBLING executable (e.g. ``kiro-cli-chat``) that it locates
+    relative to its own path — on macOS by finding ``.app/Contents/MacOS/`` in
+    that path. Copying the binary into a flat private directory destroys the
+    sibling layout, so every dispatch fails with ``No such file or directory (os
+    error 2)`` and ACP dies at handshake with ``process exited (rc=None)``. The
+    same breaks any launcher that resolves adjacent resources: a multiplexer
+    dispatching on ``argv[0]``, a wrapper reading a sibling registry, or a
+    self-updating install whose payload lives beside it.
+
+    An earlier design copied the bytes into a private snapshot (sealed memfd on
+    Linux, verified copy on macOS) to close the resolve-to-exec window in which
+    the file could be swapped. That is deliberately **not** done anymore: it
+    defends against an attacker who already has write access to the user's own
+    machine — a threat the rest of the product does not defend against either —
+    and the cost was breaking every multi-call and multiplexer install outright.
+
+    Trust is "the CLI runs": install source, owner, and path do not gate launch,
+    so a toolbox / Homebrew / self-updated Kiro CLI launches like any other.
+    Raises ``ValueError`` when the candidate is not a runnable executable.
     """
 
     platform_name = platform_name or sys.platform
-    active_environ = environ if environ is not None else os.environ
+    del data_home, environ  # neither provenance nor a data home gates ACP launch
     if platform_name == "win32":
         return TrustedAcpExecutableSnapshot(launch_path=_canonical_candidate(executable))
-    active_home = data_home if data_home is not None else config_dir()
-    expected = _trusted_acp_binary_digest(
-        executable,
-        data_home=active_home,
-        platform_name=platform_name,
-        environ=active_environ,
-    )
-    if not expected:
+    if not _acp_executable_is_runnable(executable, platform_name=platform_name):
         raise ValueError("Kiro CLI is not a runnable executable for ACP execution")
 
-    canonical = _canonical_candidate(executable)
-    if platform_name == "darwin":
-        override = active_environ.get("KIROCREW_KIRO_BIN", "")
-        packaged_fake_test_mode = bool(
-            active_environ.get(FAKE_ACP_TEST_MODE_ENV) == "1"
-            and override
-            and os.path.normcase(canonical)
-            == os.path.normcase(_canonical_candidate(_PACKAGED_FAKE_ACP_BACKEND))
-        )
-        if packaged_fake_test_mode:
-            # The offline E2E harness opts into one exact, packaged executable
-            # (a source-tree Python entry point) and launches it in place.
-            return TrustedAcpExecutableSnapshot(
-                launch_path=canonical,
-                expected_sha256=expected,
-            )
-        snapshot_path = _copy_verified_auth_executable(
-            # Pass the UNRESOLVED path so the copy keeps the caller's basename
-            # (e.g. ``kiro-cli``): a multiplexer launcher dispatches on argv[0],
-            # and the copier re-canonicalizes internally to read+pin the exact
-            # resolved bytes, so byte integrity is unaffected. Passing
-            # ``canonical`` here would name the copy ``toolbox-exec`` and break
-            # ACP spawn for a toolbox CLI that just signed in.
-            executable,
-            active_home / _ACP_EXECUTABLE_SNAPSHOT_RELATIVE,
-            expected,
-            prefix="kiro-cli-acp-",
-        )
-        return TrustedAcpExecutableSnapshot(
-            launch_path=snapshot_path,
-            expected_sha256=expected,
-            cleanup_path=snapshot_path,
-        )
-    if not platform_name.startswith("linux"):
-        raise ValueError("ACP executable snapshots are unsupported on this POSIX platform")
-
-    memfd_create = getattr(os, "memfd_create", None)
-    if not callable(memfd_create):
-        # Some Linux CPython builds — notably the portable python-build-standalone
-        # interpreters shipped by mise/pyenv, compiled against a glibc that predates
-        # the memfd_create(3) wrapper (glibc < 2.27) — omit os.memfd_create even
-        # though the running kernel supports the syscall. Rather than fail every
-        # ACP spawn, degrade to the same swap-safe mechanism macOS uses: a
-        # sha256-verified private copy in the agent-protected 0700 snapshot dir,
-        # launched in place. The sealed in-memory fd is lost, but the resolved
-        # bytes are still pinned, so a swap between resolve and exec is caught.
-        snapshot_path = _copy_verified_auth_executable(
-            # Pass the UNRESOLVED path so the copy keeps the caller's basename
-            # (e.g. ``kiro-cli``): a multiplexer launcher dispatches on argv[0],
-            # and the copier re-canonicalizes internally to read+pin the exact
-            # resolved bytes, so byte integrity is unaffected. Passing
-            # ``canonical`` here would name the copy ``toolbox-exec`` and break
-            # ACP spawn for a toolbox CLI that just signed in.
-            executable,
-            active_home / _ACP_EXECUTABLE_SNAPSHOT_RELATIVE,
-            expected,
-            prefix="kiro-cli-acp-",
-        )
-        return TrustedAcpExecutableSnapshot(
-            launch_path=snapshot_path,
-            expected_sha256=expected,
-            cleanup_path=snapshot_path,
-        )
-
-    snapshot_fd = -1
-    try:
-        memfd_flags = (
-            getattr(os, "MFD_CLOEXEC", 0x0001)
-            | getattr(os, "MFD_ALLOW_SEALING", 0x0002)
-            | _MFD_EXEC
-        )
-        try:
-            snapshot_fd = memfd_create("kiro-cli-acp", memfd_flags)
-        except OSError as exc:
-            if exc.errno != errno.EINVAL:
-                raise
-            snapshot_fd = memfd_create("kiro-cli-acp", memfd_flags & ~_MFD_EXEC)
-        _copy_verified_executable_to_fd(canonical, snapshot_fd, expected)
-        platform_compat.seal_memfd(snapshot_fd)
-        launch_path = f"/proc/self/fd/{snapshot_fd}"
-        return TrustedAcpExecutableSnapshot(
-            launch_path=launch_path,
-            fd=snapshot_fd,
-            expected_sha256=expected,
-        )
-    except Exception:
-        if snapshot_fd >= 0:
-            os.close(snapshot_fd)
-        raise
+    # Launch the path the caller resolved, NOT its realpath: a multiplexer
+    # launcher (e.g. ``~/.toolbox/bin/kiro-cli`` → ``toolbox-exec``) dispatches
+    # on its own argv[0] basename, and a multi-call binary resolves its sibling
+    # subcommand relative to the invoked path. Both break under the realpath.
+    #
+    # ``abspath``, NOT ``realpath``: it anchors a relative candidate (an operator
+    # ``KIROCREW_KIRO_BIN=./kiro-cli`` resolves against the GATEWAY's cwd, but ACP
+    # spawns with ``cwd=<session work_dir>``, so a relative launch path would die
+    # with ENOENT there) while leaving symlinks intact, so the multiplexer and
+    # sibling-layout properties above still hold.
+    return TrustedAcpExecutableSnapshot(launch_path=os.path.abspath(executable))
 
 
 def _read_bounded_regular_file(path: Path) -> bytes | None:
@@ -1919,10 +1758,10 @@ class KiroPrerequisiteService:
 
         The CLI is trusted because it runs (its install source, owner, and path
         do not gate sign-in); KiroCrew is not the authority on where Kiro CLI is
-        installed. The POSIX copy still snapshots the exact resolved bytes into
-        the sandbox so the process that runs is the one just resolved, but it
-        pins no stored digest — a Kiro self-update that legitimately rewrites
-        the binary must not break sign-in.
+        installed. The user's installed binary is executed IN PLACE — never a
+        private copy: Kiro CLI 2.15+ is a multi-call binary that exec's a sibling
+        ``kiro-cli-chat`` resolved relative to its own path, so a copy into a
+        flat staging dir fails with ENOENT.
 
         ``isolate_home=False`` runs against the user's real home (like an ACP
         session), so a CLI whose session/registry lives in the real home is
@@ -1947,45 +1786,19 @@ class KiroPrerequisiteService:
             # credential store in its own home; that write is the entire point of
             # delegating sign-in to the CLI, and it targets the same store an ACP
             # session already reads. KiroCrew stages nothing and publishes
-            # nothing. Only Kiro Crew's own secret home is hidden, and the bytes
-            # are copied into a sandbox-visible private snapshot (keeping the
-            # resolved basename so a multiplexer still dispatches) and THAT is
-            # executed — binding resolve-to-exec exactly like the isolated probe
-            # and the ACP snapshot.
-            fallback_executable = executable
-            cleanup_dir: str | None = None
-            extra_visible: tuple[str, ...] = ()
-            try:
-                if platform_compat.IS_POSIX and self._run is _run_process:
-                    snapshot_root = Path(
-                        tempfile.mkdtemp(prefix="probe-", dir=str(self._auth_staging_parent))
-                    )
-                    cleanup_dir = str(snapshot_root)
-                    # Pass the UNRESOLVED path so the copy keeps the caller's
-                    # basename (e.g. the ``kiro-cli`` symlink), which a
-                    # multiplexer launcher dispatches on.
-                    fallback_executable = await asyncio.to_thread(
-                        _copy_verified_auth_executable,
-                        executable,
-                        snapshot_root,
-                        None,
-                        prefix="kiro-cli-probe-",
-                    )
-                    extra_visible = (str(snapshot_root),)
-                return await self._run(
-                    fallback_executable,
-                    args,
-                    env=base_env,
-                    timeout_secs=timeout_secs,
-                    on_output=on_output,
-                    sandboxed=True,
-                    sandbox_mode=_KIRO_AUTH_SANDBOX_MODE,
-                    extra_hidden_dirs=self._crew_hidden_dirs,
-                    extra_visible_dirs=extra_visible,
-                )
-            finally:
-                if cleanup_dir:
-                    await asyncio.to_thread(shutil.rmtree, cleanup_dir, ignore_errors=True)
+            # nothing. Only Kiro Crew's own secret home is hidden, and the user's
+            # binary runs IN PLACE, exactly as ACP runs it, so a multi-call CLI
+            # can still reach its sibling subcommand executable.
+            return await self._run(
+                executable,
+                args,
+                env=base_env,
+                timeout_secs=timeout_secs,
+                on_output=on_output,
+                sandboxed=True,
+                sandbox_mode=_KIRO_AUTH_SANDBOX_MODE,
+                extra_hidden_dirs=self._crew_hidden_dirs,
+            )
 
         workspace = await asyncio.to_thread(
             _prepare_auth_workspace,
@@ -1994,17 +1807,13 @@ class KiroPrerequisiteService:
             self._environ,
             base_env,
         )
-        auth_executable = executable
         try:
-            if platform_compat.IS_POSIX and self._run is _run_process:
-                auth_executable = await asyncio.to_thread(
-                    _copy_verified_auth_executable,
-                    executable,
-                    workspace.root / ".bin",
-                    None,
-                )
+            # The user's binary runs IN PLACE — never a copy staged under the
+            # workspace. Kiro CLI 2.15+ dispatches subcommands by exec'ing a
+            # sibling executable resolved relative to its own path, which a flat
+            # copy destroys (ENOENT). Only the credential workspace is staged.
             return await self._run(
-                auth_executable,
+                executable,
                 args,
                 env=workspace.env,
                 timeout_secs=timeout_secs,

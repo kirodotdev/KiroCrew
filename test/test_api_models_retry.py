@@ -15,15 +15,11 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
-
-import kiro_crew.acp.client as acp_client_module
 from kiro_crew.dashboard.handlers import agents
 from kiro_crew.kiro_prerequisite import KiroPrerequisiteService
 
@@ -67,22 +63,6 @@ async def _raise_timeout(awaitable, timeout):
 
 def _body(resp) -> object:
     return json.loads(resp.body)
-
-
-def _register_snapshot() -> tuple[str, int]:
-    fd = os.open(os.devnull, os.O_RDONLY)
-    path = f"/proc/self/fd/{fd}"
-    acp_client_module._KIRO_EXECUTABLE_SNAPSHOTS[path] = fd
-    return path, fd
-
-
-def _discard_snapshot(path: str) -> None:
-    fd = acp_client_module._KIRO_EXECUTABLE_SNAPSHOTS.pop(path, None)
-    if fd is not None:
-        try:
-            os.close(fd)
-        except OSError:
-            pass
 
 
 class _FakeProc:
@@ -244,30 +224,31 @@ def test_successful_list_returns_200_with_models(tmp_path):
     assert any(m["model_name"] == "claude-opus-4.8" for m in models)
 
 
-def test_successful_list_inherits_and_releases_snapshot(tmp_path):
+def test_successful_list_launches_resolved_binary_in_place(tmp_path):
+    # The resolved binary is exec'd at its own path with no inherited snapshot
+    # descriptor: a copy/memfd would strand a multi-call CLI's sibling
+    # subcommand executable and every spawn would fail with ENOENT.
     payload = json.dumps({"models": [{"model_name": "claude-opus-4.8"}]}).encode()
-    path, fd = _register_snapshot()
+    resolved = "/Applications/Kiro CLI.app/Contents/MacOS/kiro-cli"
     spawn = AsyncMock(return_value=_FakeProc(payload))
-    try:
-        with (
-            patch.object(agents.KiroCrewConfig, "load", return_value=_kiro_cfg()),
-            patch("kiro_crew.acp.client._resolve_kiro_bin_for_spawn", return_value=path),
-            patch("kiro_crew.acp.client._resolve_ssh_auth_sock", lambda env: None),
-            patch("kiro_crew.env.augmented_path", lambda p: p),
-            patch("kiro_crew.sandbox.wrap_argv", lambda argv: (argv, None)),
-            patch("kiro_crew.sandbox.cgroup_scope_argv", lambda argv: argv),
-            patch("kiro_crew.sandbox.resource_limit_preexec", lambda: None),
-            patch.object(agents.asyncio, "create_subprocess_exec", spawn),
-        ):
-            resp = _run(agents.api_models(_kiro_request(tmp_path)))
+    with (
+        patch.object(agents.KiroCrewConfig, "load", return_value=_kiro_cfg()),
+        patch("kiro_crew.acp.client._resolve_kiro_bin_for_spawn", return_value=resolved),
+        patch("kiro_crew.acp.client._resolve_ssh_auth_sock", lambda env: None),
+        patch("kiro_crew.env.augmented_path", lambda p: p),
+        patch("kiro_crew.sandbox.wrap_argv", lambda argv: (argv, None)),
+        patch("kiro_crew.sandbox.cgroup_scope_argv", lambda argv: argv),
+        patch("kiro_crew.sandbox.resource_limit_preexec", lambda: None),
+        patch.object(agents.asyncio, "create_subprocess_exec", spawn),
+    ):
+        resp = _run(agents.api_models(_kiro_request(tmp_path)))
 
-        assert resp.status == 200
-        assert spawn.await_args.kwargs.get("pass_fds") == (fd,)
-        assert path not in acp_client_module._KIRO_EXECUTABLE_SNAPSHOTS
-        with pytest.raises(OSError):
-            os.fstat(fd)
-    finally:
-        _discard_snapshot(path)
+    assert resp.status == 200
+    # Position, not argv[0]: a sandbox/cgroup wrapper may precede the binary.
+    argv = list(spawn.await_args.args)
+    assert resolved in argv, argv
+    assert not any("kiro-cli-snapshots" in str(a) for a in argv), argv
+    assert "pass_fds" not in spawn.await_args.kwargs
 
 
 def test_structured_context_window_seeds_central_authority(tmp_path):

@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import copy
-import errno
 import hashlib
 import os
 import sqlite3
@@ -107,71 +106,6 @@ async def _wait_for_operation(service: KiroPrerequisiteService) -> None:
 
 
 class TestKiroPrerequisiteHelpers:
-    def test_verified_auth_snapshot_is_independent_of_mutable_source(self, tmp_path: Path) -> None:
-        source = tmp_path / "kiro-cli"
-        source.write_bytes(b"verified executable bytes")
-        source.chmod(0o700)
-        expected = hashlib.sha256(source.read_bytes()).hexdigest()
-
-        snapshot = Path(
-            prerequisite_module._copy_verified_auth_executable(
-                str(source),
-                tmp_path / "protected-run",
-                expected,
-            )
-        )
-        source.write_bytes(b"replaced after verification")
-
-        assert snapshot.read_bytes() == b"verified executable bytes"
-        snapshot.unlink()
-
-    def test_verified_snapshot_canonicalizes_symlink_before_nofollow_open(
-        self,
-        tmp_path: Path,
-    ) -> None:
-        target = tmp_path / "kiro-cli-real"
-        target.write_bytes(b"canonical executable bytes")
-        target.chmod(0o700)
-        symlink = tmp_path / "kiro-cli"
-        symlink.symlink_to(target)
-        expected = hashlib.sha256(target.read_bytes()).hexdigest()
-
-        snapshot = Path(
-            prerequisite_module._copy_verified_auth_executable(
-                str(symlink),
-                tmp_path / "protected-run",
-                expected,
-            )
-        )
-
-        assert snapshot.read_bytes() == target.read_bytes()
-        snapshot.unlink()
-
-    def test_verified_snapshot_keeps_source_basename_for_multiplexer(
-        self,
-        tmp_path: Path,
-    ) -> None:
-        # A multiplexer launcher (e.g. ~/.toolbox/bin/kiro-cli -> toolbox-exec)
-        # dispatches on argv[0] basename. The snapshot must keep the caller's
-        # ``kiro-cli`` name — NOT the realpath'd ``toolbox-exec`` — or the copy
-        # runs as the wrong tool. Regression for the toolbox sign-in failure.
-        real = tmp_path / "toolbox-exec"
-        real.write_bytes(b"multiplexer bytes")
-        real.chmod(0o700)
-        symlink = tmp_path / "kiro-cli"
-        symlink.symlink_to(real)
-
-        snapshot = Path(
-            prerequisite_module._copy_verified_auth_executable(
-                str(symlink),
-                tmp_path / "protected-run",
-                None,
-            )
-        )
-
-        assert snapshot.name == "kiro-cli"
-        assert snapshot.read_bytes() == b"multiplexer bytes"
-
     def test_binary_digest_rejects_oversized_candidate(
         self,
         tmp_path: Path,
@@ -221,7 +155,7 @@ class TestKiroPrerequisiteHelpers:
             == hashlib.sha256(content).hexdigest()
         )
 
-    def test_windows_snapshot_accepts_any_runnable_candidate(
+    def test_windows_launches_resolved_candidate_in_place(
         self,
         tmp_path: Path,
     ) -> None:
@@ -238,279 +172,213 @@ class TestKiroPrerequisiteHelpers:
 
         assert snapshot.launch_path == os.path.realpath(str(candidate))
 
-    def test_macos_snapshot_accepts_user_owned_cli_and_pins_bytes(
+    @pytest.mark.parametrize("platform_name", ["darwin", "linux"])
+    def test_launches_the_users_installed_binary_in_place(
         self,
         tmp_path: Path,
+        platform_name: str,
     ) -> None:
-        # A user-owned macOS CLI resolved via a symlink (the toolbox / self-
-        # updated bundle case) is accepted without codesign/official-path gating.
-        # The snapshot is a private verified copy pinned to the resolved bytes,
-        # so a swap after resolution cannot reach the running process.
-        executable = tmp_path / "kiro-cli-real"
-        executable.write_bytes(b"trusted executable bytes")
+        # The user's installed CLI is launched at its own path on every POSIX
+        # platform — never copied into a private snapshot dir and run from there.
+        executable = tmp_path / "kiro-cli"
+        executable.write_bytes(b"installed cli bytes")
         executable.chmod(0o700)
-        symlink = tmp_path / "kiro-cli"
-        symlink.symlink_to(executable)
         data_home = tmp_path / "data"
         data_home.mkdir()
 
         snapshot = prerequisite_module.snapshot_trusted_acp_executable(
-            str(symlink),
+            str(executable),
             data_home=data_home,
-            platform_name="darwin",
+            platform_name=platform_name,
             environ={},
         )
-        snapshot_path = Path(snapshot.launch_path)
-        try:
-            executable.write_bytes(b"replacement after validation")
-            assert snapshot_path != executable
-            assert snapshot_path.read_bytes() == b"trusted executable bytes"
-            assert snapshot.cleanup_path == str(snapshot_path)
-            assert snapshot.fd is None
-        finally:
-            snapshot_path.unlink(missing_ok=True)
 
-    def test_macos_snapshot_launches_packaged_fake_in_explicit_test_mode(
+        assert snapshot.launch_path == str(executable)
+        # No copy anywhere under the data home.
+        assert not list(data_home.rglob("kiro-cli*"))
+
+    @pytest.mark.parametrize("platform_name", ["darwin", "linux"])
+    def test_preserves_sibling_layout_for_multi_call_binary(
         self,
         tmp_path: Path,
+        platform_name: str,
     ) -> None:
-        fake = Path(prerequisite_module._PACKAGED_FAKE_ACP_BACKEND)
-        digest = hashlib.sha256(fake.read_bytes()).hexdigest()
-        environ = {
-            "KIROCREW_KIRO_BIN": str(fake),
-            prerequisite_module.FAKE_ACP_TEST_MODE_ENV: "1",
-        }
-
-        snapshot = prerequisite_module.snapshot_trusted_acp_executable(
-            str(fake),
-            data_home=tmp_path,
-            platform_name="darwin",
-            environ=environ,
-        )
-
-        # The packaged fake launches in place (source-tree Python entry point).
-        assert snapshot.launch_path == str(fake.resolve())
-        assert snapshot.expected_sha256 == digest
-        assert snapshot.fd is None
-
-    def test_linux_snapshot_populates_and_seals_memfd(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        executable = tmp_path / "kiro-cli"
-        executable.write_bytes(b"trusted executable bytes")
+        # Regression: Kiro CLI 2.15+ is a multi-call binary that dispatches by
+        # exec'ing a SIBLING executable (``kiro-cli-chat``) resolved relative to
+        # its own path. Copying into a flat dir stranded the sibling and every
+        # spawn died with "No such file or directory (os error 2)" →
+        # "process exited (rc=None)". The launch path must therefore keep its
+        # real directory, siblings intact.
+        macos_dir = tmp_path / "Kiro CLI.app" / "Contents" / "MacOS"
+        macos_dir.mkdir(parents=True)
+        executable = macos_dir / "kiro-cli"
+        executable.write_bytes(b"multi-call dispatcher")
         executable.chmod(0o700)
-        digest = hashlib.sha256(executable.read_bytes()).hexdigest()
-        environ = {"KIROCREW_KIRO_BIN": str(executable)}
-        prerequisite_module._register_operator_override_attestation(str(executable), digest)
-        backing = tmp_path / "memfd"
-        snapshot_fd = os.open(backing, os.O_CREAT | os.O_RDWR, 0o600)
-        seals: list[int] = []
-        requested_flags: list[int] = []
+        sibling = macos_dir / "kiro-cli-chat"
+        sibling.write_bytes(b"subcommand payload")
+        sibling.chmod(0o700)
 
-        monkeypatch.setattr(
-            prerequisite_module.os,
-            "memfd_create",
-            lambda _name, flags: requested_flags.append(flags) or snapshot_fd,
-            raising=False,
-        )
-        monkeypatch.setattr(platform_compat, "seal_memfd", seals.append)
         snapshot = prerequisite_module.snapshot_trusted_acp_executable(
             str(executable),
             data_home=tmp_path / "data",
-            platform_name="linux",
-            environ=environ,
-        )
-        try:
-            assert snapshot.launch_path == f"/proc/self/fd/{snapshot_fd}"
-            assert snapshot.fd == snapshot_fd
-            assert seals == [snapshot_fd]
-            assert requested_flags[0] & 0x0010
-            os.lseek(snapshot_fd, 0, os.SEEK_SET)
-            assert os.read(snapshot_fd, 1024) == executable.read_bytes()
-        finally:
-            os.close(snapshot_fd)
-
-    def test_linux_snapshot_retries_without_mfd_exec_on_einval(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        executable = tmp_path / "kiro-cli"
-        executable.write_bytes(b"trusted executable bytes")
-        executable.chmod(0o700)
-        digest = hashlib.sha256(executable.read_bytes()).hexdigest()
-        environ = {"KIROCREW_KIRO_BIN": str(executable)}
-        prerequisite_module._register_operator_override_attestation(str(executable), digest)
-        backing = tmp_path / "memfd"
-        snapshot_fd = os.open(backing, os.O_CREAT | os.O_RDWR, 0o600)
-        requested_flags: list[int] = []
-
-        def memfd_create(_name: str, flags: int) -> int:
-            requested_flags.append(flags)
-            if flags & 0x0010:
-                raise OSError(errno.EINVAL, "MFD_EXEC is unsupported")
-            return snapshot_fd
-
-        monkeypatch.setattr(
-            prerequisite_module.os,
-            "memfd_create",
-            memfd_create,
-            raising=False,
-        )
-        monkeypatch.setattr(platform_compat, "seal_memfd", lambda _fd: None)
-        try:
-            snapshot = prerequisite_module.snapshot_trusted_acp_executable(
-                str(executable),
-                data_home=tmp_path / "data",
-                platform_name="linux",
-                environ=environ,
-            )
-            assert snapshot.fd == snapshot_fd
-            assert len(requested_flags) == 2
-            assert requested_flags[0] & 0x0010
-            assert not requested_flags[1] & 0x0010
-        finally:
-            os.close(snapshot_fd)
-
-    def test_linux_snapshot_falls_back_to_verified_copy_without_memfd(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        # Portable python-build-standalone interpreters (glibc < 2.27) omit
-        # os.memfd_create even on kernels that support the syscall. The Linux
-        # snapshot must degrade to the macOS-style verified private copy instead
-        # of failing every ACP spawn.
-        executable = tmp_path / "kiro-cli"
-        executable.write_bytes(b"trusted executable bytes")
-        executable.chmod(0o700)
-        digest = hashlib.sha256(executable.read_bytes()).hexdigest()
-        environ = {"KIROCREW_KIRO_BIN": str(executable)}
-        prerequisite_module._register_operator_override_attestation(str(executable), digest)
-        monkeypatch.delattr(prerequisite_module.os, "memfd_create", raising=False)
-        data_home = tmp_path / "data"
-
-        snapshot = prerequisite_module.snapshot_trusted_acp_executable(
-            str(executable),
-            data_home=data_home,
-            platform_name="linux",
-            environ=environ,
+            platform_name=platform_name,
+            environ={},
         )
 
-        assert snapshot.fd is None
-        assert not snapshot.launch_path.startswith("/proc/self/fd/")
-        assert snapshot.cleanup_path == snapshot.launch_path
-        launch_path = Path(snapshot.launch_path)
-        snapshots_dir = data_home / "run" / "kiro-cli-snapshots"
-        # Copy lives under the agent-protected snapshot dir (inside a per-call
-        # holder subdir), keeps the source basename so a multiplexer's argv[0]
-        # survives, and pins the exact bytes.
-        assert launch_path.parent.parent == snapshots_dir
-        assert launch_path.name == "kiro-cli"
-        assert launch_path.read_bytes() == executable.read_bytes()
-        assert snapshot.expected_sha256 == digest
+        launch = Path(snapshot.launch_path)
+        assert launch == executable
+        # The sibling the CLI exec's is reachable from the launch path.
+        assert (launch.parent / "kiro-cli-chat").exists()
+        assert launch.parent.name == "MacOS"
 
-    def test_acp_snapshot_keeps_symlink_basename_for_multiplexer(
+    @pytest.mark.parametrize("platform_name", ["darwin", "linux"])
+    def test_keeps_multiplexer_symlink_path_not_realpath(
         self,
         tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
+        platform_name: str,
     ) -> None:
-        # The ACP launch snapshot (macOS + Linux memfd-less fallback) must copy
-        # the resolved bytes under the SYMLINK basename (``kiro-cli``), not the
-        # realpath (``toolbox-exec``) — otherwise a toolbox CLI signs in but
-        # fails at agent spawn. Regression for the asymmetric multiplexer fix.
+        # A multiplexer launcher (e.g. ~/.toolbox/bin/kiro-cli -> toolbox-exec)
+        # dispatches on its argv[0] basename, so the launch path must stay the
+        # caller's ``kiro-cli`` symlink rather than the realpath'd
+        # ``toolbox-exec``, which would run as the wrong tool.
         real = tmp_path / "toolbox-exec"
         real.write_bytes(b"multiplexer bytes")
         real.chmod(0o700)
         symlink = tmp_path / "kiro-cli"
         symlink.symlink_to(real)
-        digest = hashlib.sha256(real.read_bytes()).hexdigest()
-        environ = {"KIROCREW_KIRO_BIN": str(symlink)}
-        prerequisite_module._register_operator_override_attestation(str(symlink), digest)
-        monkeypatch.delattr(prerequisite_module.os, "memfd_create", raising=False)
 
         snapshot = prerequisite_module.snapshot_trusted_acp_executable(
             str(symlink),
             data_home=tmp_path / "data",
-            platform_name="linux",
-            environ=environ,
+            platform_name=platform_name,
+            environ={},
         )
 
-        # Named for dispatch, bytes pinned from the realpath.
+        assert snapshot.launch_path == str(symlink)
         assert Path(snapshot.launch_path).name == "kiro-cli"
-        assert Path(snapshot.launch_path).read_bytes() == b"multiplexer bytes"
-        assert snapshot.expected_sha256 == digest
 
-    def test_verified_snapshot_cleans_holder_on_verification_failure(
+    def test_launches_packaged_fake_backend_by_the_ordinary_path(
         self,
         tmp_path: Path,
     ) -> None:
-        # A copy that fails verification (wrong pinned digest) must not leak its
-        # per-call holder dir under the snapshot root.
-        source = tmp_path / "kiro-cli"
-        source.write_bytes(b"real bytes")
-        source.chmod(0o700)
-        dest = tmp_path / "protected-run"
+        # The offline E2E harness's fake ACP backend needs no special-case
+        # bypass any more: it is a runnable packaged entry point, so the
+        # ordinary in-place path launches it. The test-mode marker grants no
+        # launch privilege, so the result must not depend on it.
+        import kiro_crew.testing as kc_testing
 
-        with pytest.raises(ValueError):
-            prerequisite_module._copy_verified_auth_executable(
-                str(source),
-                dest,
-                "0" * 64,  # wrong digest → verification fails mid-copy
-            )
+        fake = Path(kc_testing.__file__).with_name("fake_acp_backend.py")
+        assert fake.is_file(), "packaged fake ACP backend is missing"
 
-        assert list(dest.iterdir()) == []
-
-    @pytest.mark.skipif(sys.platform != "linux", reason="Linux memfd seals")
-    def test_linux_memfd_seals_reject_later_writes(self) -> None:
-        memfd_create = getattr(os, "memfd_create")
-        fd = memfd_create(
-            "kiro-cli-test",
-            getattr(os, "MFD_ALLOW_SEALING", 0x0002),
+        without_marker = prerequisite_module.snapshot_trusted_acp_executable(
+            str(fake),
+            data_home=tmp_path,
+            platform_name="darwin",
+            environ={},
         )
-        try:
-            os.write(fd, b"immutable")
-            platform_compat.seal_memfd(fd)
-            with pytest.raises(OSError):
-                os.write(fd, b"replacement")
-        finally:
-            os.close(fd)
+        with_marker = prerequisite_module.snapshot_trusted_acp_executable(
+            str(fake),
+            data_home=tmp_path,
+            platform_name="darwin",
+            environ={
+                "KIROCREW_KIRO_BIN": str(fake),
+                prerequisite_module.FAKE_ACP_TEST_MODE_ENV: "1",
+            },
+        )
 
-    def test_verified_auth_snapshot_retries_short_writes(
+        assert without_marker.launch_path == str(fake)
+        assert with_marker.launch_path == str(fake)
+
+    @pytest.mark.parametrize("platform_name", ["darwin", "linux"])
+    def test_anchors_relative_candidate_to_an_absolute_path(
         self,
         tmp_path: Path,
+        platform_name: str,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        source = tmp_path / "kiro-cli"
-        content = b"verified executable bytes"
-        source.write_bytes(content)
-        source.chmod(0o700)
-        expected = hashlib.sha256(content).hexdigest()
-        real_write = os.write
-        write_calls = 0
+        # An operator KIROCREW_KIRO_BIN=./kiro-cli resolves against the GATEWAY's
+        # cwd, but ACP spawns with cwd=<session work_dir> — so a relative launch
+        # path dies with ENOENT there. Anchor it, without resolving symlinks.
+        executable = tmp_path / "kiro-cli"
+        executable.write_bytes(b"#!/bin/sh\n")
+        executable.chmod(0o755)
+        monkeypatch.chdir(tmp_path)
 
-        def short_first_write(fd: int, data: bytes | memoryview) -> int:
-            nonlocal write_calls
-            write_calls += 1
-            if write_calls == 1:
-                return real_write(fd, data[:5])
-            return real_write(fd, data)
-
-        monkeypatch.setattr(prerequisite_module.os, "write", short_first_write)
-
-        snapshot = Path(
-            prerequisite_module._copy_verified_auth_executable(
-                str(source),
-                tmp_path / "protected-run",
-                expected,
-            )
+        snapshot = prerequisite_module.snapshot_trusted_acp_executable(
+            "./kiro-cli",
+            data_home=tmp_path / "data",
+            platform_name=platform_name,
+            environ={},
         )
 
-        assert write_calls > 1
-        assert snapshot.read_bytes() == content
-        snapshot.unlink()
+        assert os.path.isabs(snapshot.launch_path)
+        assert Path(snapshot.launch_path) == executable
+
+    @pytest.mark.parametrize("platform_name", ["darwin", "linux"])
+    def test_anchoring_preserves_multiplexer_symlink(
+        self,
+        tmp_path: Path,
+        platform_name: str,
+    ) -> None:
+        # Anchoring must use abspath, NOT realpath: resolving the symlink would
+        # name the launch path ``toolbox-exec`` and break argv[0] dispatch.
+        real = tmp_path / "toolbox-exec"
+        real.write_bytes(b"#!/bin/sh\n")
+        real.chmod(0o755)
+        link_dir = tmp_path / "bin"
+        link_dir.mkdir()
+        symlink = link_dir / "kiro-cli"
+        symlink.symlink_to(real)
+
+        snapshot = prerequisite_module.snapshot_trusted_acp_executable(
+            str(symlink),
+            data_home=tmp_path / "data",
+            platform_name=platform_name,
+            environ={},
+        )
+
+        assert snapshot.launch_path == str(symlink)
+        assert Path(snapshot.launch_path).name == "kiro-cli"
+
+    @pytest.mark.parametrize("platform_name", ["darwin", "linux"])
+    def test_rejects_zero_byte_candidate(
+        self,
+        tmp_path: Path,
+        platform_name: str,
+    ) -> None:
+        # An interrupted install / self-update can leave a truncated but
+        # executable kiro-cli. Exec'ing it dies without an ACP frame, producing
+        # the same opaque "process exited (rc=None)" this module avoids, so it
+        # must fail as a readable prerequisite error instead.
+        truncated = tmp_path / "kiro-cli"
+        truncated.write_bytes(b"")
+        truncated.chmod(0o755)
+
+        with pytest.raises(ValueError, match="not a runnable executable"):
+            prerequisite_module.snapshot_trusted_acp_executable(
+                str(truncated),
+                data_home=tmp_path / "data",
+                platform_name=platform_name,
+                environ={},
+            )
+
+    @pytest.mark.parametrize("platform_name", ["darwin", "linux"])
+    def test_rejects_non_runnable_candidate(
+        self,
+        tmp_path: Path,
+        platform_name: str,
+    ) -> None:
+        not_executable = tmp_path / "kiro-cli"
+        not_executable.write_bytes(b"data")
+        not_executable.chmod(0o600)
+
+        with pytest.raises(ValueError, match="not a runnable executable"):
+            prerequisite_module.snapshot_trusted_acp_executable(
+                str(not_executable),
+                data_home=tmp_path / "data",
+                platform_name=platform_name,
+                environ={},
+            )
 
     def test_extract_secure_login_url_rejects_non_https(self) -> None:
         assert (

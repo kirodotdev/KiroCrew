@@ -4,7 +4,6 @@ import asyncio
 import json
 import os
 import signal
-import threading
 import time
 import types
 from collections import deque
@@ -6857,47 +6856,6 @@ class TestResolveKiroBinEnvOverride:
     """_resolve_kiro_bin honors the KIROCREW_KIRO_BIN override for environments
     (e.g. AgentSpaces/DevSpaces) where the toolbox shim is broken."""
 
-    @pytest.mark.asyncio
-    async def test_cancelled_resolve_reclaims_late_snapshot(self, tmp_path):
-        from kiro_crew.acp import client as client_module
-
-        backing = tmp_path / "sealed-kiro-cli"
-        backing.write_bytes(b"sealed")
-        snapshot_fd = os.open(backing, os.O_RDONLY)
-        launch_path = f"/proc/self/fd/{snapshot_fd}"
-        started = asyncio.Event()
-        release = asyncio.Event()
-        event_loop_thread = threading.get_ident()
-        close_threads: list[int] = []
-        real_close = os.close
-
-        async def delayed_to_thread(_function):
-            started.set()
-            await release.wait()
-            client_module._KIRO_EXECUTABLE_SNAPSHOTS[launch_path] = snapshot_fd
-            return launch_path
-
-        def tracked_close(fd: int) -> None:
-            close_threads.append(threading.get_ident())
-            real_close(fd)
-
-        with (
-            patch.object(asyncio, "to_thread", side_effect=delayed_to_thread),
-            patch.object(client_module.os, "close", side_effect=tracked_close),
-        ):
-            resolve_task = asyncio.create_task(client_module._resolve_kiro_bin_for_spawn())
-            await started.wait()
-            resolve_task.cancel()
-            release.set()
-            with pytest.raises(asyncio.CancelledError):
-                await resolve_task
-
-        assert launch_path not in client_module._KIRO_EXECUTABLE_SNAPSHOTS
-        assert close_threads
-        assert all(thread_id != event_loop_thread for thread_id in close_threads)
-        with pytest.raises(OSError):
-            os.fstat(snapshot_fd)
-
     def test_env_override_used_when_valid(self, tmp_path):
         from kiro_crew.acp.client import _resolve_kiro_bin
         from kiro_crew.kiro_prerequisite import TrustedAcpExecutableSnapshot
@@ -6917,41 +6875,26 @@ class TestResolveKiroBinEnvOverride:
         ):
             assert _resolve_kiro_bin() == "/immutable/kiro-cli"
 
-    @pytest.mark.asyncio
-    async def test_cleanup_unlinks_private_macos_snapshot(self, tmp_path):
+    def test_resolver_returns_installed_path_without_copying(self, tmp_path):
+        # The resolver hands back the user's installed binary path itself. It must
+        # never substitute a private copy: Kiro CLI 2.15+ exec's a sibling
+        # subcommand binary resolved relative to its own path, so a copy into a
+        # flat dir breaks every spawn with ENOENT.
         from kiro_crew.acp import client as client_module
-        from kiro_crew.kiro_prerequisite import TrustedAcpExecutableSnapshot
 
-        source = tmp_path / "kiro-cli"
+        macos_dir = tmp_path / "Kiro CLI.app" / "Contents" / "MacOS"
+        macos_dir.mkdir(parents=True)
+        source = macos_dir / "kiro-cli"
         source.write_bytes(b"source")
         source.chmod(0o700)
-        snapshot = tmp_path / "protected" / "kiro-cli-acp"
-        snapshot.parent.mkdir()
-        snapshot.write_bytes(b"trusted snapshot")
-        with (
-            patch.object(client_module, "resolve_kiro_cli", return_value=str(source)),
-            patch(
-                "kiro_crew.kiro_prerequisite.snapshot_trusted_acp_executable",
-                return_value=TrustedAcpExecutableSnapshot(
-                    str(snapshot),
-                    cleanup_path=str(snapshot),
-                ),
-            ),
-        ):
+        (macos_dir / "kiro-cli-chat").write_bytes(b"sibling")
+
+        with patch.object(client_module, "resolve_kiro_cli", return_value=str(source)):
             launch_path = client_module._resolve_kiro_bin()
 
-        assert launch_path == str(snapshot)
-        assert str(snapshot) in client_module._KIRO_EXECUTABLE_SNAPSHOT_PATHS
-
-        client_module._schedule_kiro_executable_descriptor_cleanup(launch_path)
-
-        assert snapshot.exists()
-        assert str(snapshot) in client_module._KIRO_EXECUTABLE_SNAPSHOT_PATHS
-
-        await client_module._cleanup_kiro_executable_snapshot(launch_path)
-
-        assert not snapshot.exists()
-        assert str(snapshot) not in client_module._KIRO_EXECUTABLE_SNAPSHOT_PATHS
+        assert launch_path == str(source)
+        # The sibling the CLI dispatches to is still beside the launch path.
+        assert (Path(launch_path).parent / "kiro-cli-chat").exists()
 
     def test_windows_resolver_accepts_runnable_candidate_anywhere(self, tmp_path):
         from kiro_crew.acp import client as client_module
@@ -7011,14 +6954,13 @@ class TestResolveKiroBinEnvOverride:
             mock_exec.assert_awaited()
 
     @pytest.mark.asyncio
-    async def test_spawn_passes_fd_snapshot_through_exact_wrappers(self, tmp_path):
+    async def test_spawn_passes_installed_path_through_exact_wrappers(self, tmp_path):
         from kiro_crew.acp import client as client_module
 
-        fake = tmp_path / "sealed-kiro-cli"
-        fake.write_bytes(b"#!/bin/sh\n# sealed\n")
-        snapshot_fd = os.open(fake, os.O_RDONLY)
-        launch_path = f"/proc/self/fd/{snapshot_fd}"
-        client_module._KIRO_EXECUTABLE_SNAPSHOTS[launch_path] = snapshot_fd
+        fake = tmp_path / "kiro-cli"
+        fake.write_bytes(b"#!/bin/sh\n")
+        fake.chmod(0o755)
+        launch_path = str(fake)
         mock_exec = AsyncMock(side_effect=RuntimeError("spawn failed"))
         wrapped: dict[str, object] = {}
 
@@ -7065,47 +7007,9 @@ class TestResolveKiroBinEnvOverride:
             "--agent",
             client._agent,
         )
-        pass_fds = spawn_call.kwargs["pass_fds"]
-        assert isinstance(pass_fds, tuple) and len(pass_fds) == 1
-        assert pass_fds == (snapshot_fd,)
-        with pytest.raises(OSError):
-            os.fstat(pass_fds[0])
-
-    @pytest.mark.asyncio
-    async def test_spawn_cleans_private_snapshot_when_wrapper_fails(self, tmp_path):
-        from kiro_crew.acp import client as client_module
-
-        fake = tmp_path / "sealed-kiro-cli"
-        fake.write_bytes(b"#!/bin/sh\n# sealed\n")
-        snapshot_fd = os.open(fake, os.O_RDONLY)
-        launch_path = f"/proc/self/fd/{snapshot_fd}"
-        client_module._KIRO_EXECUTABLE_SNAPSHOTS[launch_path] = snapshot_fd
-
-        def fail_wrap(argv, mode, **kwargs):
-            del mode, kwargs
-            assert argv[0] == launch_path
-            raise RuntimeError("wrapper failed")
-
-        with (
-            patch.object(
-                client_module,
-                "_resolve_kiro_bin",
-                return_value=launch_path,
-            ),
-            patch.object(
-                client_module,
-                "wrap_argv",
-                side_effect=fail_wrap,
-            ),
-        ):
-            client = AcpClient(work_dir=tmp_path / "workspace")
-
-            with pytest.raises(RuntimeError, match="wrapper failed"):
-                await client._spawn()
-
-        assert launch_path not in client_module._KIRO_EXECUTABLE_SNAPSHOTS
-        with pytest.raises(OSError):
-            os.fstat(snapshot_fd)
+        # No inherited snapshot descriptor: the installed binary is exec'd in
+        # place, so there is nothing to hand down to the wrapper chain.
+        assert "pass_fds" not in spawn_call.kwargs
 
     def test_env_override_ignored_when_missing_file(self, tmp_path):
         # A configured-but-nonexistent path must not be returned; resolution

@@ -23,6 +23,7 @@ import asyncio
 import json
 import os
 import time
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -295,18 +296,19 @@ def test_runtime_uses_clients_augmented_kiro_bin_resolver():
 
 
 @pytest.mark.asyncio
-async def test_runtime_spawn_passes_fd_snapshot_through_exact_wrappers(
+async def test_runtime_spawn_passes_installed_path_through_exact_wrappers(
     tmp_path,
     monkeypatch,
 ):
-    import kiro_crew.acp.client as client_mod
     import kiro_crew.acp.runtime as runtime_mod
 
-    executable = tmp_path / "sealed-kiro-cli"
-    executable.write_bytes(b"#!/bin/sh\n# sealed\n")
-    snapshot_fd = os.open(executable, os.O_RDONLY)
-    launch_path = f"/proc/{os.getpid()}/fd/{snapshot_fd}"
-    client_mod._KIRO_EXECUTABLE_SNAPSHOTS[launch_path] = snapshot_fd
+    macos_dir = tmp_path / "Kiro CLI.app" / "Contents" / "MacOS"
+    macos_dir.mkdir(parents=True)
+    executable = macos_dir / "kiro-cli"
+    executable.write_bytes(b"#!/bin/sh\n")
+    executable.chmod(0o755)
+    (macos_dir / "kiro-cli-chat").write_bytes(b"sibling")
+    launch_path = str(executable)
     wrapped: dict[str, object] = {}
 
     class _StopSpawn(Exception):
@@ -321,13 +323,13 @@ async def test_runtime_spawn_passes_fd_snapshot_through_exact_wrappers(
         wrapped["spawn_kwargs"] = kwargs
         raise _StopSpawn()
 
-    async def resolve_snapshot():
+    async def resolve_installed():
         return launch_path
 
     monkeypatch.setattr(
         runtime_mod,
         "_resolve_kiro_bin_for_spawn",
-        resolve_snapshot,
+        resolve_installed,
     )
     monkeypatch.setattr(runtime_mod, "wrap_argv", capture_wrap)
     monkeypatch.setattr(
@@ -357,10 +359,11 @@ async def test_runtime_spawn_passes_fd_snapshot_through_exact_wrappers(
     )
     spawn_kwargs = wrapped["spawn_kwargs"]
     assert isinstance(spawn_kwargs, dict)
-    assert spawn_kwargs["pass_fds"] == (snapshot_fd,)
-    assert launch_path not in client_mod._KIRO_EXECUTABLE_SNAPSHOTS
-    with pytest.raises(OSError):
-        os.fstat(snapshot_fd)
+    # The installed binary is exec'd in place: no inherited snapshot descriptor,
+    # and the sibling subcommand binary a multi-call CLI dispatches to is still
+    # reachable beside the launch path.
+    assert "pass_fds" not in spawn_kwargs
+    assert (Path(launch_path).parent / "kiro-cli-chat").exists()
 
 
 # ── Process death propagation ──

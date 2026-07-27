@@ -456,9 +456,9 @@ def spawn_feature_gateway(
             **os.environ,
             "PYTHONPATH": str(src) + os.pathsep + os.environ.get("PYTHONPATH", ""),
             "KIROCREW_HOME": str(home),
-            # Allows only the exact packaged fake ACP entry point to bypass the
-            # production macOS Developer ID requirement. Arbitrary overrides
-            # remain subject to normal provenance and signature checks.
+            # Marks this gateway as a test rig. It grants no launch privilege —
+            # the packaged fake backend is exec'd by the ordinary in-place path
+            # like any other runnable executable.
             FAKE_ACP_TEST_MODE_ENV: "1",
             # Force unbuffered Python so we see READY without waiting for the
             # next flush. ``--json-ready`` already calls ``flush=True`` on the

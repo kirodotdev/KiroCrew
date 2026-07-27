@@ -30,12 +30,9 @@ from kiro_crew.acp._dispatch import (
 )
 from kiro_crew.acp.client import (
     _NOT_LOGGED_IN_RE,
-    _cleanup_kiro_executable_snapshot,
     _get_start_time,
-    _kiro_executable_pass_fds,
     _KiroExecutableTrustError,
     _resolve_kiro_bin_for_spawn,
-    _schedule_kiro_executable_descriptor_cleanup,
 )
 from kiro_crew.acp.session_handle import (
     AcpRuntimeDead,
@@ -288,7 +285,6 @@ class AcpRuntime:
         )
         self._mcp_gateway_socket = str(mcp_gateway_socket) if mcp_gateway_socket else None
         self._sandbox_cleanup: str | None = None
-        self._kiro_executable_snapshot: str | None = None
 
         # Recycling thresholds — see _is_stale(). Long-lived multiplexed
         # runtimes (e.g. the kirocrew-lite background runtime) have no
@@ -405,7 +401,6 @@ class AcpRuntime:
             raise AcpRuntimeError(str(exc)) from exc
         if not kiro_bin:
             raise AcpRuntimeError(f"{KIRO_CLI_BIN} not found in PATH")
-        self._kiro_executable_snapshot = kiro_bin
 
         argv: list[str] = [kiro_bin, KIRO_CLI_SUBCMD, "--agent", self._agent]
         if self._model:
@@ -421,22 +416,17 @@ class AcpRuntime:
         # constructor/caller compatibility but do nothing here. strip_python_env
         # IS applied to keep the host PYTHONPATH/PYTHONHOME out of kiro-cli's
         # foreign MCP subprocesses (which bundle their own interpreter + deps).
-        try:
-            argv, self._sandbox_cleanup = wrap_argv(
-                argv,
-                mode=self._sandbox_mode,
-                strip_python_env=True,
-                is_kiro_cli=True,
-            )
-            # cgroup v2 scope (OUTERMOST): bound this agent + all its MCP-server /
-            # tool descendants with pids.max (fork bomb) + memory.max (RSS balloon).
-            # No-op + loud warning where cgroup delegation is unavailable. --scope
-            # execs into the target, so self._pid below is still the real child.
-            argv = cgroup_scope_argv(argv)
-        except BaseException:
-            await _cleanup_kiro_executable_snapshot(self._kiro_executable_snapshot)
-            self._kiro_executable_snapshot = None
-            raise
+        argv, self._sandbox_cleanup = wrap_argv(
+            argv,
+            mode=self._sandbox_mode,
+            strip_python_env=True,
+            is_kiro_cli=True,
+        )
+        # cgroup v2 scope (OUTERMOST): bound this agent + all its MCP-server /
+        # tool descendants with pids.max (fork bomb) + memory.max (RSS balloon).
+        # No-op + loud warning where cgroup delegation is unavailable. --scope
+        # execs into the target, so self._pid below is still the real child.
+        argv = cgroup_scope_argv(argv)
 
         env = {**os.environ}
         if self._extra_env:
@@ -458,34 +448,22 @@ class AcpRuntime:
         # @playwright/mcp`` -> node) are identifiable as ours.
         env[KIROCREW_SPAWNED_ENV] = KIROCREW_SPAWNED_VALUE
 
-        pass_fds = _kiro_executable_pass_fds(self._kiro_executable_snapshot)
-        try:
-            self._process = await asyncio.create_subprocess_exec(
-                *argv,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=str(self._work_dir),
-                limit=_STDOUT_BUFFER_LIMIT,
-                # POSIX: setsid so kill() can killpg the whole tree. Windows:
-                # start_new_session is silently ignored; CREATE_NEW_PROCESS_GROUP
-                # makes the child tree taskkill /T-reapable (see platform_compat
-                # spawn-isolation note).
-                start_new_session=platform_compat.IS_POSIX,
-                creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
-                env=env,
-                preexec_fn=session_host_preexec(),
-                pass_fds=pass_fds,
-            )
-        except BaseException:
-            await _cleanup_kiro_executable_snapshot(self._kiro_executable_snapshot)
-            self._kiro_executable_snapshot = None
-            raise
-        # The child owns the inherited descriptor from this point; its wrapper
-        # chain resolves /proc/self/fd, so close the gateway's duplicate now.
-        # A private macOS path stays registered until the handshake proves the
-        # sandbox wrapper has opened and executed it.
-        _schedule_kiro_executable_descriptor_cleanup(self._kiro_executable_snapshot)
+        self._process = await asyncio.create_subprocess_exec(
+            *argv,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=str(self._work_dir),
+            limit=_STDOUT_BUFFER_LIMIT,
+            # POSIX: setsid so kill() can killpg the whole tree. Windows:
+            # start_new_session is silently ignored; CREATE_NEW_PROCESS_GROUP
+            # makes the child tree taskkill /T-reapable (see platform_compat
+            # spawn-isolation note).
+            start_new_session=platform_compat.IS_POSIX,
+            creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
+            env=env,
+            preexec_fn=session_host_preexec(),
+        )
         self._pid = self._process.pid
         self._start_time = _get_start_time(self._pid)
         self._spawn_monotonic = time.monotonic()
@@ -538,8 +516,6 @@ class AcpRuntime:
                 init_resp.get("agentCapabilities", {}).get("loadSession", False)
             )
             self._initialized = True
-            await _cleanup_kiro_executable_snapshot(self._kiro_executable_snapshot)
-            self._kiro_executable_snapshot = None
             logger.info("AcpRuntime initialized (PID %d)", self._pid)
         except BaseException:
             try:
@@ -643,8 +619,6 @@ class AcpRuntime:
                 os.remove(self._sandbox_cleanup)
             except OSError:
                 pass
-        await _cleanup_kiro_executable_snapshot(getattr(self, "_kiro_executable_snapshot", None))
-        self._kiro_executable_snapshot = None
 
     # ── Reader Task (single owner of stdout) ──
 

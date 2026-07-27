@@ -1040,11 +1040,10 @@ class TestDirectCliOverrideAttestation:
         )
 
         def inspect_before_provider(_command, _no_jail):
-            observed["digest"] = kiro_prerequisite._trusted_acp_binary_digest(
-                str(executable),
-                data_home=data_home,
-                platform_name="linux",
-                environ=cli.os.environ,
+            # Read the PINNED attestation (not a fresh hash) so this asserts the
+            # override was recorded before the gate, not merely hashable at it.
+            observed["digest"] = kiro_prerequisite._OPERATOR_OVERRIDE_ATTESTATIONS.get(
+                os.path.normcase(str(executable))
             )
             raise SystemExit(0)
 

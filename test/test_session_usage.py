@@ -5,12 +5,10 @@ _fetch_usage_bg gating/redaction logic.
 from __future__ import annotations
 
 import asyncio
-import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-import kiro_crew.acp.client as acp_client_module
 import kiro_crew.dashboard.handlers.sessions as sessions_mod
 from kiro_crew.dashboard.handlers.sessions import (
     _normalize_text_usage,
@@ -96,22 +94,6 @@ def _mock_proc(stdout: bytes):
     return proc
 
 
-def _register_snapshot() -> tuple[str, int]:
-    fd = os.open(os.devnull, os.O_RDONLY)
-    path = f"/proc/self/fd/{fd}"
-    acp_client_module._KIRO_EXECUTABLE_SNAPSHOTS[path] = fd
-    return path, fd
-
-
-def _discard_snapshot(path: str) -> None:
-    fd = acp_client_module._KIRO_EXECUTABLE_SNAPSHOTS.pop(path, None)
-    if fd is not None:
-        try:
-            os.close(fd)
-        except OSError:
-            pass
-
-
 class TestFetchUsageBg:
     @pytest.fixture(autouse=True)
     def _reset(self, monkeypatch):
@@ -146,22 +128,26 @@ class TestFetchUsageBg:
         assert sessions_mod._usage_cache.get("plan") == "KIRO POWER"
 
     @pytest.mark.asyncio
-    async def test_text_fallback_inherits_and_releases_snapshot(self):
-        path, fd = _register_snapshot()
+    async def test_text_fallback_launches_resolved_binary_in_place(self):
+        # The resolved binary is exec'd at its own path, with no inherited
+        # snapshot descriptor — a copy/memfd would strand a multi-call CLI's
+        # sibling subcommand executable.
+        resolved = "/Applications/Kiro CLI.app/Contents/MacOS/kiro-cli"
         spawn = AsyncMock(return_value=_mock_proc(SAMPLE_USAGE.encode()))
-        try:
-            with (
-                patch.object(sessions_mod, "_resolve_kiro_bin_for_spawn", return_value=path),
-                patch("asyncio.create_subprocess_exec", spawn),
-            ):
-                await sessions_mod._fetch_usage_bg()
+        with (
+            patch.object(sessions_mod, "_resolve_kiro_bin_for_spawn", return_value=resolved),
+            patch("asyncio.create_subprocess_exec", spawn),
+        ):
+            await sessions_mod._fetch_usage_bg()
 
-            assert spawn.await_args.kwargs.get("pass_fds") == (fd,)
-            assert path not in acp_client_module._KIRO_EXECUTABLE_SNAPSHOTS
-            with pytest.raises(OSError):
-                os.fstat(fd)
-        finally:
-            _discard_snapshot(path)
+        # Assert the binary's POSITION in argv, not argv[0]: on Linux
+        # cgroup_scope_argv prepends a `systemd-run --scope` wrapper, so argv[0]
+        # is the wrapper there and the resolved binary follows it. What matters
+        # is that the binary appears exactly as resolved — not a private copy.
+        argv = list(spawn.await_args.args)
+        assert resolved in argv, argv
+        assert not any("kiro-cli-snapshots" in str(a) for a in argv), argv
+        assert "pass_fds" not in spawn.await_args.kwargs
 
     @pytest.mark.asyncio
     async def test_unparseable_usage_caches_unavailable(self):
@@ -274,34 +260,6 @@ class TestFetchUsageBgApi:
         assert sessions_mod._usage_cache["credits_overage"] == 19527.0
         assert sessions_mod._usage_cache["source"] == "api"
         spawn.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_api_result_releases_unused_snapshot(self):
-        path, fd = _register_snapshot()
-        api_dict = {
-            "credits_used": 1.0,
-            "credits_plan": 10.0,
-            "credits_overage": 0.0,
-            "credits_covered": 1.0,
-            "percentage": 10.0,
-            "source": "api",
-        }
-        try:
-            with (
-                patch.object(sessions_mod, "_resolve_kiro_bin_for_spawn", return_value=path),
-                patch.object(
-                    sessions_mod.kiro_usage_api,
-                    "fetch_usage_limits",
-                    return_value=api_dict,
-                ),
-            ):
-                await sessions_mod._fetch_usage_bg()
-
-            assert path not in acp_client_module._KIRO_EXECUTABLE_SNAPSHOTS
-            with pytest.raises(OSError):
-                os.fstat(fd)
-        finally:
-            _discard_snapshot(path)
 
     @pytest.mark.asyncio
     async def test_api_none_falls_back_to_text_scrape(self):

@@ -1426,7 +1426,29 @@ def cleanup_stale_sandbox_profiles(*, legacy_dir: str | None = None) -> int:
         except OSError:
             pass
 
+    removed += _cleanup_retired_acp_snapshot_dir()
     return removed
+
+
+def _cleanup_retired_acp_snapshot_dir() -> int:
+    """Reclaim `<config_dir>/run/kiro-cli-snapshots` from before the in-place launch.
+
+    KiroCrew used to copy the whole kiro-cli binary here per ACP spawn generation
+    and exec the copy. The CLI is now launched in place, so nothing writes this
+    tree — but an install upgrading past that change keeps every orphaned copy
+    forever (observed: 196 MB in two ~100 MB copies). Nothing else reclaims them:
+    the sweep above only matches `kirocrew_sandbox_*` FILES in this same dir, and
+    the tree sits on `security._SENSITIVE_HOME_DIRS`, so the agent cannot delete
+    it either — on request or otherwise. Best-effort and idempotent; returns 1
+    when a tree was removed so the periodic sweep logs it.
+    """
+
+    retired = config_dir() / "run" / "kiro-cli-snapshots"
+    if not retired.is_dir():
+        return 0
+    shutil.rmtree(retired, ignore_errors=True)
+    # ignore_errors swallows partial failures, so report only a real removal.
+    return 0 if retired.exists() else 1
 
 
 # ── Public API ──

@@ -30,7 +30,7 @@ import subprocess as subprocess_mod
 import sys
 import time
 from collections import deque
-from contextlib import aclosing, suppress
+from contextlib import aclosing
 from pathlib import Path
 from typing import AsyncGenerator, AsyncIterator
 
@@ -196,8 +196,6 @@ _SUPPRESSED_STDERR_MARKERS = ("thinking_tokens",)
 # Minimum seconds between throttled debug summaries of the suppressed-line count,
 # so the suppression itself stays observable without re-introducing a flood.
 _SUPPRESSED_STDERR_SUMMARY_INTERVAL_SECS = 60.0
-_KIRO_EXECUTABLE_SNAPSHOTS: dict[str, int] = {}
-_KIRO_EXECUTABLE_SNAPSHOT_PATHS: dict[str, str] = {}
 
 
 class _KiroExecutableTrustError(RuntimeError):
@@ -233,7 +231,13 @@ def _normalize_exe_casing(path: str | None) -> str | None:
 
 
 def _resolve_kiro_bin() -> str | None:
-    """Resolve Kiro CLI and snapshot attestation-checked bytes for ACP."""
+    """Resolve the user's installed Kiro CLI, to be launched in place.
+
+    Returns the installed binary's own path. KiroCrew never copies the CLI and
+    executes the copy: Kiro CLI 2.15+ dispatches subcommands by exec'ing a
+    sibling executable resolved relative to its own path, which a copy into a
+    private directory destroys.
+    """
 
     executable = resolve_kiro_cli()
     if not executable:
@@ -253,110 +257,25 @@ def _resolve_kiro_bin() -> str | None:
             snapshot = snapshot_trusted_acp_executable(executable)
     except (OSError, ValueError) as exc:
         raise _KiroExecutableTrustError(str(exc)) from exc
-    if snapshot.fd is not None:
-        _KIRO_EXECUTABLE_SNAPSHOTS[snapshot.launch_path] = snapshot.fd
-    if snapshot.cleanup_path is not None:
-        _KIRO_EXECUTABLE_SNAPSHOT_PATHS[snapshot.launch_path] = snapshot.cleanup_path
     return snapshot.launch_path
 
 
-def _pop_kiro_executable_snapshot(
-    executable: str | None,
-) -> tuple[int | None, str | None]:
-    """Remove and return resources owned by *executable*, if any."""
-
-    if not executable:
-        return None, None
-    return (
-        _KIRO_EXECUTABLE_SNAPSHOTS.pop(executable, None),
-        _KIRO_EXECUTABLE_SNAPSHOT_PATHS.pop(executable, None),
-    )
-
-
-def _dispose_kiro_executable_snapshot(
-    snapshot_fd: int | None,
-    snapshot_path: str | None,
-) -> None:
-    """Release one snapshot's descriptor and private path off-loop."""
-
-    if snapshot_fd is not None:
-        with suppress(OSError):
-            os.close(snapshot_fd)
-    if snapshot_path is not None:
-        with suppress(OSError):
-            os.unlink(snapshot_path)
-        # The macOS snapshot keeps the source basename inside a unique holder
-        # subdir (so a multiplexer's argv[0] survives); remove that now-empty
-        # holder too rather than leaking one dir per spawn.
-        with suppress(OSError):
-            os.rmdir(os.path.dirname(snapshot_path))
-
-
-async def _cleanup_kiro_executable_snapshot(executable: str | None) -> None:
-    """Remove a private ACP snapshot and close its descriptor off-loop."""
-
-    snapshot_fd, snapshot_path = _pop_kiro_executable_snapshot(executable)
-    if snapshot_fd is not None or snapshot_path is not None:
-        await asyncio.get_running_loop().run_in_executor(
-            subprocess_executor(),
-            _dispose_kiro_executable_snapshot,
-            snapshot_fd,
-            snapshot_path,
-        )
-
-
-def _schedule_kiro_executable_snapshot_cleanup(executable: str | None) -> None:
-    """Remove a snapshot and enqueue its close without adding an await point."""
-
-    snapshot_fd, snapshot_path = _pop_kiro_executable_snapshot(executable)
-    if snapshot_fd is not None or snapshot_path is not None:
-        subprocess_executor().submit(
-            _dispose_kiro_executable_snapshot,
-            snapshot_fd,
-            snapshot_path,
-        )
-
-
-def _schedule_kiro_executable_descriptor_cleanup(executable: str | None) -> None:
-    """Close an inherited descriptor while retaining any launch path."""
-
-    if not executable:
-        return
-    snapshot_fd = _KIRO_EXECUTABLE_SNAPSHOTS.pop(executable, None)
-    if snapshot_fd is not None:
-        subprocess_executor().submit(
-            _dispose_kiro_executable_snapshot,
-            snapshot_fd,
-            None,
-        )
-
-
-def _kiro_executable_pass_fds(executable: str | None) -> tuple[int, ...]:
-    """Return the immutable snapshot descriptor inherited by POSIX wrappers."""
-
-    if not executable:
-        return ()
-    snapshot = _KIRO_EXECUTABLE_SNAPSHOTS.get(executable)
-    return (snapshot,) if snapshot is not None else ()
-
-
 async def _resolve_kiro_bin_for_spawn() -> str | None:
-    """Resolve off-loop and reclaim a snapshot if the caller is cancelled."""
+    """Resolve the Kiro CLI path off the event loop.
 
-    task = asyncio.create_task(asyncio.to_thread(_resolve_kiro_bin))
-    try:
-        return await asyncio.shield(task)
-    except asyncio.CancelledError:
-        # ``to_thread`` cannot cancel work already running. Await the shielded
-        # result so a newly-created memfd is never orphaned in the process-wide
-        # snapshot registry when its owning spawn disappears.
-        try:
-            executable = await task
-        except BaseException:
-            pass
-        else:
-            await _cleanup_kiro_executable_snapshot(executable)
-        raise
+    Plain ``to_thread`` — deliberately NOT shielded. The shield existed only to
+    reclaim a snapshot descriptor when the caller was cancelled mid-resolve;
+    with the CLI launched in place there is no resource to reclaim. Keeping the
+    shield would actively harm: ``asyncio.shield`` only marks the inner task's
+    result retrieved when the OUTER future is cancelled, but here it is the
+    awaiting task that gets cancelled, so a resolve that raises concurrently
+    (e.g. mid-self-update, when the binary transiently fails the runnable check)
+    leaves an unretrieved exception. That surfaces at GC as "Task exception was
+    never retrieved" and the gateway's asyncio handler writes a full false
+    ASYNCIO UNHANDLED record to crash.log for an ordinary tab close.
+    """
+
+    return await asyncio.to_thread(_resolve_kiro_bin)
 
 
 def _mise_which(tool: str) -> str | None:
@@ -1374,7 +1293,6 @@ class AcpClient:
         )
         self._mcp_gateway_socket = str(mcp_gateway_socket) if mcp_gateway_socket else None
         self._sandbox_cleanup: str | None = None
-        self._kiro_executable_snapshot: str | None = None
         self._process: asyncio.subprocess.Process | None = None
         self._pid: int | None = None
         self._start_time: int | None = None  # process start time for PID recycling detection
@@ -1770,28 +1688,22 @@ class AcpClient:
                 raise AcpError(str(exc)) from exc
             if not kiro_bin:
                 raise AcpError(f"{KIRO_CLI_BIN} not found in PATH")
-            self._kiro_executable_snapshot = kiro_bin
             argv = [kiro_bin, KIRO_CLI_SUBCMD, "--agent", self._agent]
 
         # OS-level sandbox: wrap the command to hide sensitive paths.
         # strip_python_env keeps the host PYTHONPATH/PYTHONHOME out of kiro-cli's
         # foreign MCP subprocesses (which bundle their own interpreter + deps).
-        try:
-            argv, self._sandbox_cleanup = wrap_argv(
-                argv,
-                mode=self._sandbox_mode,
-                strip_python_env=True,
-                is_kiro_cli=not self._is_claude,
-            )
-            # cgroup v2 scope (OUTERMOST): bound this agent + all its MCP-server /
-            # tool descendants with pids.max (fork bomb) + memory.max (RSS balloon).
-            # No-op + loud warning where cgroup delegation is unavailable. --scope
-            # execs into the target, so self._pid below is still the real child.
-            argv = cgroup_scope_argv(argv)
-        except BaseException:
-            await _cleanup_kiro_executable_snapshot(self._kiro_executable_snapshot)
-            self._kiro_executable_snapshot = None
-            raise
+        argv, self._sandbox_cleanup = wrap_argv(
+            argv,
+            mode=self._sandbox_mode,
+            strip_python_env=True,
+            is_kiro_cli=not self._is_claude,
+        )
+        # cgroup v2 scope (OUTERMOST): bound this agent + all its MCP-server /
+        # tool descendants with pids.max (fork bomb) + memory.max (RSS balloon).
+        # No-op + loud warning where cgroup delegation is unavailable. --scope
+        # execs into the target, so self._pid below is still the real child.
+        argv = cgroup_scope_argv(argv)
 
         # Build the child environment (process-group isolation flags are set on
         # the spawn kwargs below, per-platform).
@@ -1853,30 +1765,18 @@ class AcpClient:
         # stops an inherited Ctrl-C propagating into the gateway. The flag comes
         # from platform_compat (getattr) so referencing it doesn't fail mypy's
         # [attr-defined] check on Linux where subprocess.* lacks it.
-        pass_fds = _kiro_executable_pass_fds(self._kiro_executable_snapshot)
-        try:
-            self._process = await asyncio.create_subprocess_exec(
-                *argv,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=str(self._work_dir),
-                limit=_STDOUT_BUFFER_LIMIT,
-                env=env,
-                start_new_session=platform_compat.IS_POSIX,
-                creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
-                preexec_fn=session_host_preexec(),
-                pass_fds=pass_fds,
-            )
-        except BaseException:
-            await _cleanup_kiro_executable_snapshot(self._kiro_executable_snapshot)
-            self._kiro_executable_snapshot = None
-            raise
-        # The child now owns an inherited descriptor; /proc/self/fd resolves in
-        # that wrapper chain, so the gateway must not retain a second handle.
-        # A private macOS path stays registered until the ACP handshake proves
-        # the sandbox wrapper has opened and executed it.
-        _schedule_kiro_executable_descriptor_cleanup(self._kiro_executable_snapshot)
+        self._process = await asyncio.create_subprocess_exec(
+            *argv,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=str(self._work_dir),
+            limit=_STDOUT_BUFFER_LIMIT,
+            env=env,
+            start_new_session=platform_compat.IS_POSIX,
+            creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
+            preexec_fn=session_host_preexec(),
+        )
         self._pid = self._process.pid
         self._start_time = await asyncio.get_running_loop().run_in_executor(
             subprocess_executor(), _get_start_time, self._pid
@@ -2065,8 +1965,6 @@ class AcpClient:
             except OSError:
                 pass
             self._sandbox_cleanup = None
-        _schedule_kiro_executable_snapshot_cleanup(getattr(self, "_kiro_executable_snapshot", None))
-        self._kiro_executable_snapshot = None
         # Remove settings.local.json so bypassPermissions doesn't persist after crash
         if self._is_claude:
             _stale = self._work_dir / ".claude" / "settings.local.json"
@@ -2412,8 +2310,6 @@ class AcpClient:
                         _startup_spawned = True
 
                     await self._initialize_session()
-                    await _cleanup_kiro_executable_snapshot(self._kiro_executable_snapshot)
-                    self._kiro_executable_snapshot = None
                     try:
                         await self._snapshot_process_tree()
                     except Exception:

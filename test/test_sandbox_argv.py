@@ -718,6 +718,31 @@ class TestCleanupStaleSandboxProfiles:
         assert not stale_file.exists()
         assert removed == 1
 
+    def test_reclaims_retired_acp_snapshot_tree(self, tmp_path):
+        """Orphaned pre-in-place-launch kiro-cli copies are reclaimed.
+
+        KiroCrew used to copy the whole ~100 MB kiro-cli binary per ACP spawn
+        generation into run/kiro-cli-snapshots and exec the copy. Nothing writes
+        that tree now, and nothing else can reclaim it (the file sweep only
+        matches kirocrew_sandbox_* files; the tree is on the agent's
+        sensitive-path floor), so an upgraded install would leak it forever.
+        """
+        from kiro_crew.sandbox import cleanup_stale_sandbox_profiles
+
+        home = tmp_path / ".kirocrew"
+        holder = home / "run" / "kiro-cli-snapshots" / "kiro-cli-acp-abc123"
+        holder.mkdir(parents=True)
+        (holder / "kiro-cli").write_bytes(b"orphaned copy")
+
+        with patch("kiro_crew.sandbox.config_dir", return_value=home):
+            removed = cleanup_stale_sandbox_profiles(legacy_dir=str(tmp_path / "nonexistent"))
+
+        assert not (home / "run" / "kiro-cli-snapshots").exists()
+        assert removed == 1
+        # The rest of run/ is untouched, and a second pass is a no-op.
+        with patch("kiro_crew.sandbox.config_dir", return_value=home):
+            assert cleanup_stale_sandbox_profiles(legacy_dir=str(tmp_path / "nonexistent")) == 0
+
     def test_preserves_live_pid_profile(self, tmp_path):
         """Profile file whose PID is alive (current process) is preserved."""
         from kiro_crew.sandbox import cleanup_stale_sandbox_profiles

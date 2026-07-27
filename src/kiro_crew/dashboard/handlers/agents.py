@@ -502,7 +502,6 @@ async def api_models(request: web.Request) -> web.Response:
     kiro_bin: str | None = None
     try:
         from kiro_crew.acp.client import (  # noqa: F811
-            _kiro_executable_pass_fds,
             _resolve_kiro_bin_for_spawn,
             _resolve_ssh_auth_sock,
         )
@@ -538,7 +537,6 @@ async def api_models(request: web.Request) -> web.Response:
                 start_new_session=True,
                 env=env,
                 preexec_fn=resource_limit_preexec(),
-                pass_fds=_kiro_executable_pass_fds(kiro_bin),
             )
             try:
                 stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
@@ -619,11 +617,6 @@ async def api_models(request: web.Request) -> web.Response:
         # 503 so the client retries instead of caching an empty picker.
         logger.warning("api_models failed; returning 503 for client retry", exc_info=True)
         return web.json_response({"error": "model list unavailable"}, status=503)
-    finally:
-        if kiro_bin:
-            from kiro_crew.acp.client import _cleanup_kiro_executable_snapshot
-
-            await _cleanup_kiro_executable_snapshot(kiro_bin)
 
 
 async def api_effort_levels(request: web.Request) -> web.Response:

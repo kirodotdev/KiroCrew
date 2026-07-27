@@ -221,31 +221,6 @@ def release_lock(fd: int) -> None:
         pass
 
 
-def seal_memfd(fd: int) -> None:
-    """Make a populated Linux memfd permanently immutable.
-
-    ``fcntl`` is POSIX-only and remains behind this compatibility seam. The
-    caller creates the memfd with ``MFD_ALLOW_SEALING`` and writes all content
-    before calling this helper. Returning successfully guarantees that no
-    process holding or reopening the descriptor can change its bytes or size.
-    """
-
-    if not IS_LINUX:
-        raise OSError("memfd sealing is only available on Linux")
-    add_seals = getattr(fcntl, "F_ADD_SEALS", 1033)
-    get_seals = getattr(fcntl, "F_GET_SEALS", 1034)
-    required = (
-        getattr(fcntl, "F_SEAL_SEAL", 0x0001)
-        | getattr(fcntl, "F_SEAL_SHRINK", 0x0002)
-        | getattr(fcntl, "F_SEAL_GROW", 0x0004)
-        | getattr(fcntl, "F_SEAL_WRITE", 0x0008)
-    )
-    fcntl.fcntl(fd, add_seals, required)
-    actual = int(fcntl.fcntl(fd, get_seals))
-    if actual & required != required:
-        raise OSError("kernel did not apply all required memfd seals")
-
-
 def try_acquire_lock(fd: int, *, exclusive: bool = False) -> bool:
     """Attempt a non-blocking lock acquire. Returns True iff the lock was taken.
 
