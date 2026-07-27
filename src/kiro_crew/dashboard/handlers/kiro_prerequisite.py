@@ -4,18 +4,41 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import asdict
+from typing import Any
 
 from aiohttp import web
 
 from kiro_crew.kiro_prerequisite import (
     OFFICIAL_INSTALL_DOCS_URL,
     KiroPrerequisiteService,
+    OperationStatus,
     PrerequisiteBusyError,
+    PrerequisiteStatus,
 )
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
 _LOCAL_DASHBOARD_OWNER_SUBJECTS = frozenset({"local-app", "local-startup"})
+
+
+def _not_ready_snapshot() -> dict[str, Any]:
+    """A retryable not-ready snapshot for when a status probe cannot run.
+
+    Shaped exactly like ``KiroPrerequisiteService.snapshot()`` (built from the
+    same dataclasses so it cannot drift), it reports the CLI as installed but
+    not signed in so the dashboard shows a retry path rather than a 500 flash.
+    """
+
+    result: dict[str, Any] = asdict(PrerequisiteStatus(platform="gateway", installed=True))
+    result["operation"] = asdict(
+        OperationStatus(
+            status="failed",
+            message="Could not check Kiro CLI. Retry the gateway check.",
+            error="Kiro CLI status check could not run.",
+        )
+    )
+    return result
 
 
 def _service(request: web.Request) -> KiroPrerequisiteService:
@@ -79,7 +102,23 @@ async def api_kiro_prerequisite_status(request: web.Request) -> web.Response:
         assert denied is not None
         return denied
 
-    snapshot = await _service(request).snapshot()
+    # Resolve the service OUTSIDE the guard: a genuinely unwired service is a
+    # real misconfiguration that must stay a 503, not be masked as a 200
+    # not-ready. Only the probe itself is guarded.
+    service = _service(request)
+    try:
+        snapshot = await service.snapshot()
+    except asyncio.CancelledError:
+        raise
+    except web.HTTPException:
+        raise
+    except Exception:
+        # A transient probe failure must not surface as a 500 that flashes the
+        # full-screen "could not check Kiro CLI" gate. Report a retryable
+        # not-ready snapshot so the dashboard keeps polling. (The probe layer
+        # already degrades most failures; this is the last-resort backstop.)
+        logger.warning("Kiro prerequisite status probe failed", exc_info=True)
+        snapshot = _not_ready_snapshot()
     if _is_dashboard_owner(request):
         return web.json_response({**snapshot, "setup_allowed": True})
 

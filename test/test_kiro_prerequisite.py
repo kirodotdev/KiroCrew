@@ -147,6 +147,31 @@ class TestKiroPrerequisiteHelpers:
         assert snapshot.read_bytes() == target.read_bytes()
         snapshot.unlink()
 
+    def test_verified_snapshot_keeps_source_basename_for_multiplexer(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        # A multiplexer launcher (e.g. ~/.toolbox/bin/kiro-cli -> toolbox-exec)
+        # dispatches on argv[0] basename. The snapshot must keep the caller's
+        # ``kiro-cli`` name — NOT the realpath'd ``toolbox-exec`` — or the copy
+        # runs as the wrong tool. Regression for the toolbox sign-in failure.
+        real = tmp_path / "toolbox-exec"
+        real.write_bytes(b"multiplexer bytes")
+        real.chmod(0o700)
+        symlink = tmp_path / "kiro-cli"
+        symlink.symlink_to(real)
+
+        snapshot = Path(
+            prerequisite_module._copy_verified_auth_executable(
+                str(symlink),
+                tmp_path / "protected-run",
+                None,
+            )
+        )
+
+        assert snapshot.name == "kiro-cli"
+        assert snapshot.read_bytes() == b"multiplexer bytes"
+
     def test_binary_digest_rejects_oversized_candidate(
         self,
         tmp_path: Path,
@@ -378,10 +403,65 @@ class TestKiroPrerequisiteHelpers:
         assert not snapshot.launch_path.startswith("/proc/self/fd/")
         assert snapshot.cleanup_path == snapshot.launch_path
         launch_path = Path(snapshot.launch_path)
-        # Copy lives in the agent-protected snapshot dir and pins the exact bytes.
-        assert launch_path.parent == data_home / "run" / "kiro-cli-snapshots"
+        snapshots_dir = data_home / "run" / "kiro-cli-snapshots"
+        # Copy lives under the agent-protected snapshot dir (inside a per-call
+        # holder subdir), keeps the source basename so a multiplexer's argv[0]
+        # survives, and pins the exact bytes.
+        assert launch_path.parent.parent == snapshots_dir
+        assert launch_path.name == "kiro-cli"
         assert launch_path.read_bytes() == executable.read_bytes()
         assert snapshot.expected_sha256 == digest
+
+    def test_acp_snapshot_keeps_symlink_basename_for_multiplexer(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # The ACP launch snapshot (macOS + Linux memfd-less fallback) must copy
+        # the resolved bytes under the SYMLINK basename (``kiro-cli``), not the
+        # realpath (``toolbox-exec``) — otherwise a toolbox CLI signs in but
+        # fails at agent spawn. Regression for the asymmetric multiplexer fix.
+        real = tmp_path / "toolbox-exec"
+        real.write_bytes(b"multiplexer bytes")
+        real.chmod(0o700)
+        symlink = tmp_path / "kiro-cli"
+        symlink.symlink_to(real)
+        digest = hashlib.sha256(real.read_bytes()).hexdigest()
+        environ = {"KIROCREW_KIRO_BIN": str(symlink)}
+        prerequisite_module._register_operator_override_attestation(str(symlink), digest)
+        monkeypatch.delattr(prerequisite_module.os, "memfd_create", raising=False)
+
+        snapshot = prerequisite_module.snapshot_trusted_acp_executable(
+            str(symlink),
+            data_home=tmp_path / "data",
+            platform_name="linux",
+            environ=environ,
+        )
+
+        # Named for dispatch, bytes pinned from the realpath.
+        assert Path(snapshot.launch_path).name == "kiro-cli"
+        assert Path(snapshot.launch_path).read_bytes() == b"multiplexer bytes"
+        assert snapshot.expected_sha256 == digest
+
+    def test_verified_snapshot_cleans_holder_on_verification_failure(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        # A copy that fails verification (wrong pinned digest) must not leak its
+        # per-call holder dir under the snapshot root.
+        source = tmp_path / "kiro-cli"
+        source.write_bytes(b"real bytes")
+        source.chmod(0o700)
+        dest = tmp_path / "protected-run"
+
+        with pytest.raises(ValueError):
+            prerequisite_module._copy_verified_auth_executable(
+                str(source),
+                dest,
+                "0" * 64,  # wrong digest → verification fails mid-copy
+            )
+
+        assert list(dest.iterdir()) == []
 
     @pytest.mark.skipif(sys.platform != "linux", reason="Linux memfd seals")
     def test_linux_memfd_seals_reject_later_writes(self) -> None:
@@ -752,6 +832,103 @@ class TestKiroPrerequisiteWorkflow:
         assert status["can_login"] is True
         assert status["authenticated"] is False
         assert calls == [["--version"], ["whoami"]]
+
+    @pytest.mark.asyncio
+    async def test_whoami_runs_against_unresolved_multiplexer_path(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        # A multiplexer launcher (toolbox) dispatches on argv[0] basename, so
+        # whoami/login must run against the resolved-but-symlink-named candidate
+        # (``kiro-cli``), NOT its realpath (``toolbox-exec``). Regression for the
+        # toolbox "Command doesn't appear to be associated with any tool" error.
+        real = tmp_path / "toolbox-exec"
+        _make_executable(real)
+        # A fixed home-relative dir the resolver checks first, so the real
+        # host's toolbox install cannot leak in as an earlier candidate.
+        symlink = tmp_path / ".local" / "bin" / "kiro-cli"
+        symlink.parent.mkdir(parents=True)
+        symlink.symlink_to(real)
+        commands: list[str] = []
+
+        async def run(command: str, args: list[str], **_kwargs: Any) -> ProcessResult:
+            commands.append(command)
+            # Only the tmp symlink is viable, so the real host binary (if it
+            # leaks into discovery) is skipped and cannot shadow the assertion.
+            return ProcessResult(ok=command == str(symlink) and args == ["--version"])
+
+        service = KiroPrerequisiteService(
+            platform_name="linux",
+            environ={"HOME": str(tmp_path), "PATH": ""},
+            home=tmp_path,
+            process_runner=run,
+            audit_writer=_no_audit,
+        )
+
+        status = await service.snapshot(force=True)
+
+        assert status["can_login"] is True
+        # whoami runs against the symlink name, never the realpath'd toolbox-exec.
+        assert str(symlink) in commands
+        assert str(real) not in commands
+
+    @pytest.mark.asyncio
+    async def test_status_probe_failure_degrades_to_not_ready(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        # A whoami that cannot even run (e.g. a wedged binary) must degrade to
+        # not-authenticated, never raise — otherwise the status endpoint 500s
+        # and the dashboard flashes the full-screen "could not check" gate.
+        executable = tmp_path / ".local" / "bin" / "kiro-cli"
+        _make_executable(executable)
+
+        async def run(_command: str, args: list[str], **_kwargs: Any) -> ProcessResult:
+            if args == ["--version"]:
+                return ProcessResult(ok=True)
+            raise OSError("whoami could not spawn")
+
+        service = KiroPrerequisiteService(
+            platform_name="linux",
+            environ={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"},
+            home=tmp_path,
+            process_runner=run,
+            audit_writer=_no_audit,
+        )
+
+        status = await service.snapshot(force=True)
+
+        assert status["installed"] is True
+        assert status["can_login"] is True
+        assert status["authenticated"] is False
+        assert status["ready"] is False
+
+    @pytest.mark.asyncio
+    async def test_version_probe_failure_degrades_to_not_installed(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        # A --version probe that cannot even spawn (e.g. sandbox failure) must
+        # degrade to not-installed, never raise — same 500-flash guard as the
+        # whoami branch, on the other probe.
+        executable = tmp_path / ".local" / "bin" / "kiro-cli"
+        _make_executable(executable)
+
+        async def run(_command: str, args: list[str], **_kwargs: Any) -> ProcessResult:
+            raise OSError("--version could not spawn")
+
+        service = KiroPrerequisiteService(
+            platform_name="linux",
+            environ={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"},
+            home=tmp_path,
+            process_runner=run,
+            audit_writer=_no_audit,
+        )
+
+        status = await service.snapshot(force=True)
+
+        assert status["installed"] is False
+        assert status["ready"] is False
 
     @pytest.mark.asyncio
     async def test_trusted_identity_probe_sees_only_staged_kiro_credentials(
@@ -2955,6 +3132,36 @@ class TestKiroPrerequisiteHandlers:
             assert (await client.post("/api/kiro-prerequisite/login")).status == 202
 
         assert calls == [("install", "test-user"), ("login", "test-user")]
+
+    @pytest.mark.asyncio
+    async def test_status_endpoint_returns_not_ready_instead_of_500_on_probe_error(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # A transient probe failure must not surface as an HTTP 500 (which
+        # flashes the full-screen "could not check Kiro CLI" gate on reload).
+        # The handler returns a retryable not-ready snapshot instead.
+        service = KiroPrerequisiteService(
+            platform_name="linux",
+            environ={"HOME": str(tmp_path), "PATH": ""},
+            home=tmp_path,
+            audit_writer=_no_audit,
+        )
+
+        async def boom() -> dict[str, Any]:
+            raise OSError("probe wedged")
+
+        monkeypatch.setattr(service, "snapshot", boom)
+
+        async with TestClient(TestServer(self._app(service, app_claim=""))) as client:
+            resp = await client.get("/api/kiro-prerequisite")
+            assert resp.status == 200
+            body = await resp.json()
+
+        assert body["ready"] is False
+        assert body["operation"]["status"] == "failed"
+        assert body["setup_allowed"] is True
 
     @pytest.mark.asyncio
     async def test_session_create_and_send_are_rejected_before_enqueue_when_not_ready(

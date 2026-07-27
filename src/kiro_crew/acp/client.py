@@ -285,6 +285,11 @@ def _dispose_kiro_executable_snapshot(
     if snapshot_path is not None:
         with suppress(OSError):
             os.unlink(snapshot_path)
+        # The macOS snapshot keeps the source basename inside a unique holder
+        # subdir (so a multiplexer's argv[0] survives); remove that now-empty
+        # holder too rather than leaking one dir per spawn.
+        with suppress(OSError):
+            os.rmdir(os.path.dirname(snapshot_path))
 
 
 async def _cleanup_kiro_executable_snapshot(executable: str | None) -> None:

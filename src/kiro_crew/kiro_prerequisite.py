@@ -373,32 +373,46 @@ def _copy_verified_auth_executable(
     *,
     prefix: str = "kiro-cli-auth-",
 ) -> str:
-    """Snapshot a verified executable into the agent-protected runtime dir."""
+    """Snapshot a verified executable into the agent-protected runtime dir.
+
+    The snapshot keeps the SOURCE BASENAME (e.g. ``kiro-cli``) rather than a
+    random ``mkstemp`` name: a multiplexer launcher such as
+    ``~/.toolbox/bin/kiro-cli`` dispatches on its argv[0] basename, so a copy
+    named ``kiro-cli-auth-XXXX`` would run as the wrong tool and fail with
+    "Command doesn't appear to be associated with any tool". The copy lives in a
+    unique owner-only subdir (``mkdtemp``) so preserving the fixed basename still
+    can't collide across concurrent calls.
+    """
 
     destination_dir.mkdir(parents=True, exist_ok=True)
     if platform_compat.IS_POSIX:
         platform_compat.chmod_safe(str(destination_dir), 0o700)
     else:
         platform_compat.restrict_to_owner(str(destination_dir))
+    holder = tempfile.mkdtemp(prefix=prefix, dir=str(destination_dir))
+    if not platform_compat.IS_POSIX:
+        platform_compat.restrict_to_owner(holder)
+    # Preserve the basename the CALLER resolved (e.g. the ``kiro-cli`` symlink
+    # name), NOT the realpath — a multiplexer dispatches on argv[0], and its
+    # realpath (``toolbox-exec``) is exactly the name that fails to dispatch.
+    target = os.path.join(holder, os.path.basename(source) or "kiro-cli")
     destination_fd = -1
-    temporary = ""
     try:
-        destination_fd, temporary = tempfile.mkstemp(
-            prefix=prefix,
-            dir=str(destination_dir),
-        )
+        open_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
+        destination_fd = os.open(target, open_flags, 0o700)
         _copy_verified_executable_to_fd(source, destination_fd, expected_sha256)
         os.close(destination_fd)
         destination_fd = -1
         if not platform_compat.IS_POSIX:
-            platform_compat.restrict_to_owner(temporary)
-        return temporary
+            platform_compat.restrict_to_owner(target)
+        return target
     except Exception:
         if destination_fd >= 0:
             os.close(destination_fd)
-        if temporary:
-            with contextlib.suppress(OSError):
-                os.unlink(temporary)
+        with contextlib.suppress(OSError):
+            os.unlink(target)
+        with contextlib.suppress(OSError):
+            os.rmdir(holder)
         raise
 
 
@@ -518,7 +532,13 @@ def snapshot_trusted_acp_executable(
                 expected_sha256=expected,
             )
         snapshot_path = _copy_verified_auth_executable(
-            canonical,
+            # Pass the UNRESOLVED path so the copy keeps the caller's basename
+            # (e.g. ``kiro-cli``): a multiplexer launcher dispatches on argv[0],
+            # and the copier re-canonicalizes internally to read+pin the exact
+            # resolved bytes, so byte integrity is unaffected. Passing
+            # ``canonical`` here would name the copy ``toolbox-exec`` and break
+            # ACP spawn for a toolbox CLI that just signed in.
+            executable,
             active_home / _ACP_EXECUTABLE_SNAPSHOT_RELATIVE,
             expected,
             prefix="kiro-cli-acp-",
@@ -542,7 +562,13 @@ def snapshot_trusted_acp_executable(
         # launched in place. The sealed in-memory fd is lost, but the resolved
         # bytes are still pinned, so a swap between resolve and exec is caught.
         snapshot_path = _copy_verified_auth_executable(
-            canonical,
+            # Pass the UNRESOLVED path so the copy keeps the caller's basename
+            # (e.g. ``kiro-cli``): a multiplexer launcher dispatches on argv[0],
+            # and the copier re-canonicalizes internally to read+pin the exact
+            # resolved bytes, so byte integrity is unaffected. Passing
+            # ``canonical`` here would name the copy ``toolbox-exec`` and break
+            # ACP spawn for a toolbox CLI that just signed in.
+            executable,
             active_home / _ACP_EXECUTABLE_SNAPSHOT_RELATIVE,
             expected,
             prefix="kiro-cli-acp-",
@@ -1843,7 +1869,14 @@ class KiroPrerequisiteService:
                     ["--version"],
                 )
                 if result.ok:
-                    self._viable_binary = _canonical_candidate(executable)
+                    # Keep the discovered path AS RESOLVED (not realpath'd): a
+                    # multiplexer launcher like ``~/.toolbox/bin/kiro-cli``
+                    # dispatches on its argv[0] basename, so resolving the
+                    # symlink to ``toolbox-exec`` would make whoami/login fail
+                    # with "Command doesn't appear to be associated with any
+                    # tool". This is the exact path ``--version`` just succeeded
+                    # with and the one ACP launches.
+                    self._viable_binary = executable
                     break
 
             repair_required = not self._viable_binary and repair_hint
@@ -1907,13 +1940,17 @@ class KiroPrerequisiteService:
             await self._set_terminal_audit(action, "failed", "gateway-status", "cancelled")
             raise
         except Exception:
+            # A probe that cannot even run means the candidate is not viable,
+            # not that the gateway is broken. Degrade to a not-ok result so the
+            # status endpoint stays a retryable "not ready" instead of a 500.
+            logger.warning("Kiro %s probe failed to run", action, exc_info=True)
             await self._set_terminal_audit(
                 action,
                 "failed",
                 "gateway-status",
                 "probe execution failed",
             )
-            raise
+            return ProcessResult(ok=False, error="Kiro CLI probe could not run")
         await self._set_terminal_audit(
             action,
             "completed" if result.ok else "failed",
@@ -2018,13 +2055,18 @@ class KiroPrerequisiteService:
             await self._set_terminal_audit(action, "failed", "gateway-status", "cancelled")
             raise
         except Exception:
+            # A whoami that cannot even run means "not signed in", not a broken
+            # gateway. Degrade to a not-ok result so the status endpoint reports
+            # authenticated=False (retryable) instead of surfacing a 500 that
+            # flashes the full-screen "could not check Kiro CLI" error.
+            logger.warning("Kiro identity probe failed to run", exc_info=True)
             await self._set_terminal_audit(
                 action,
                 "failed",
                 "gateway-status",
                 "probe execution failed",
             )
-            raise
+            return ProcessResult(ok=False, error="Kiro identity probe could not run")
         await self._set_terminal_audit(
             action,
             "completed" if result.ok else "failed",
