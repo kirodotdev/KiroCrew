@@ -983,3 +983,530 @@ class TestGatewayLiveProbe:
         (tmp_path / LOCK_FILENAME).write_text("123\n", encoding="utf-8")
         # No process holds the advisory lock, so the probe can take it -> not live.
         assert home_migration._gateway_is_live(tmp_path) is False
+
+
+def _seed_legacy_venv(legacy: Path, name: str = "venv") -> Path:
+    """Add a representative managed venv inside the legacy home.
+
+    Mirrors what ``cli.sh`` produced when it created its venv under the data
+    home: a ``pyvenv.cfg`` plus a console script whose shebang hard-codes the
+    absolute interpreter path (the part that made a copied venv unusable).
+    """
+    venv = legacy / name
+    (venv / "bin").mkdir(parents=True)
+    (venv / "pyvenv.cfg").write_text(f"home = {venv}/bin\n", encoding="utf-8")
+    (venv / "bin" / "kirocrew").write_text(
+        f"#!{venv}/bin/python3.13\nprint('hi')\n", encoding="utf-8"
+    )
+    (venv / "lib" / "python3.13" / "site-packages" / "kiro_crew").mkdir(parents=True)
+    (venv / "lib" / "python3.13" / "site-packages" / "kiro_crew" / "cli.py").write_text(
+        "# entry point\n", encoding="utf-8"
+    )
+    return venv
+
+
+class TestNestedVenvIsPreserved:
+    """The migration must never move or delete a venv nested in the legacy home.
+
+    Regression for the install-destroying bug: ``cli.sh`` used to create its
+    managed venv at ``~/.kirocrew/venv``, so the blanket ``rmtree(legacy)``
+    deleted the running interpreter and its ``site-packages`` mid-migration.
+    The user was left with a dangling ``~/.local/bin/kirocrew`` symlink, a
+    ``ModuleNotFoundError`` from the half-unloaded current process, and a copied
+    venv at the new home whose shebang pointed at the now-deleted interpreter.
+    """
+
+    def test_data_migrates_while_venv_stays_put(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        legacy = _seed_legacy(tmp_path)
+        venv = _seed_legacy_venv(legacy)
+
+        result = paths.config_dir()
+
+        # Data moved as usual.
+        assert (result / ".env").read_text(encoding="utf-8") == "SLACK_BOT_TOKEN=xoxb-secret"
+        assert (result / "sessions" / "a.jsonl").read_text(encoding="utf-8") == "hello"
+        assert (result / paths.MIGRATION_MARKER_NAME).exists()
+
+        # The venv survives IN PLACE, byte-for-byte, and the legacy root with it.
+        assert legacy.is_dir()
+        assert venv.is_dir()
+        assert (venv / "pyvenv.cfg").read_text(encoding="utf-8") == f"home = {venv}/bin\n"
+        assert (venv / "bin" / "kirocrew").read_text(encoding="utf-8").startswith(
+            f"#!{venv}/bin/python3.13"
+        )
+        assert (venv / "lib" / "python3.13" / "site-packages" / "kiro_crew" / "cli.py").exists()
+
+        # Legacy DATA is still removed — only the venv is kept.
+        assert not (legacy / ".env").exists()
+        assert not (legacy / "sessions").exists()
+        assert not (legacy / "config.json").exists()
+        assert sorted(p.name for p in legacy.iterdir()) == ["venv"]
+
+        # The venv is NOT copied to the new home: it is not relocatable, so a
+        # copy there would be a dead-on-arrival interpreter.
+        assert not (result / "venv").exists()
+
+    @pytest.mark.parametrize("name", ["venv", ".venv", "venvs"])
+    def test_every_preserved_name_survives(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, name: str
+    ) -> None:
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        legacy = _seed_legacy(tmp_path)
+        venv = _seed_legacy_venv(legacy, name=name)
+
+        result = paths.config_dir()
+
+        assert venv.is_dir()
+        assert (venv / "pyvenv.cfg").exists()
+        assert not (result / name).exists()
+        assert (result / paths.MIGRATION_MARKER_NAME).exists()
+
+    def test_legacy_root_still_removed_when_no_venv_present(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # Without a venv the behavior is unchanged: the legacy root goes away
+        # entirely, so this fix does not leave empty directories behind.
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        legacy = _seed_legacy(tmp_path)
+
+        paths.config_dir()
+
+        assert not legacy.exists()
+
+    def test_a_file_named_venv_is_treated_as_data(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # Only DIRECTORIES are preserved. A regular file that happens to be
+        # named "venv" is ordinary data and must migrate like anything else.
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        legacy = _seed_legacy(tmp_path)
+        (legacy / "venv").write_text("not a venv", encoding="utf-8")
+
+        result = paths.config_dir()
+
+        assert (result / "venv").read_text(encoding="utf-8") == "not a venv"
+        assert not legacy.exists()
+
+    @pytest.mark.parametrize("name", ["models", "cache", "venv"])
+    def test_file_sharing_an_excluded_dir_name_does_not_stall_migration(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, name: str
+    ) -> None:
+        # The top-level skip list names DIRECTORIES, but ``_verify_copy`` prunes
+        # only ``dirs``. Skipping a same-named regular FILE would therefore make
+        # verification report it missing and abort the migration on EVERY start
+        # — a permanent stall. The copy-ignore gates on is_dir() to prevent that.
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        legacy = _seed_legacy(tmp_path)
+        (legacy / name).write_text("regular file", encoding="utf-8")
+
+        result = paths.config_dir()
+
+        assert (result / name).read_text(encoding="utf-8") == "regular file"
+        assert (result / paths.MIGRATION_MARKER_NAME).exists()
+        assert not legacy.exists()
+
+
+class TestPreservedVenvIsNotReportedAsConflict:
+    """A legacy dir kept only for its venv is expected, not resurrection debris."""
+
+    def test_venv_only_legacy_is_not_a_conflict(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        legacy = _seed_legacy(tmp_path)
+        _seed_legacy_venv(legacy)
+
+        paths.config_dir()
+
+        # Marker present + legacy dir present, but its only content is the
+        # preserved venv -> no conflict, so no scary warning and no instruction
+        # to delete what is actually the user's live interpreter.
+        assert paths.detect_data_home_conflict() is None
+
+    def test_real_writeback_debris_is_still_flagged(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # Guard against over-suppression: a non-venv leftover beside the venv is
+        # genuine resurrection debris and must still surface.
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        legacy = _seed_legacy(tmp_path)
+        _seed_legacy_venv(legacy)
+
+        paths.config_dir()
+        (legacy / "config.json").write_text("{}", encoding="utf-8")
+
+        conflict = paths.detect_data_home_conflict()
+        assert conflict is not None
+        assert str(legacy) in conflict
+
+    def test_preserved_entries_lists_only_directories(self, tmp_path: Path) -> None:
+        (tmp_path / "venv").mkdir()
+        (tmp_path / ".venv").mkdir()
+        (tmp_path / "venvs").write_text("file, not a dir", encoding="utf-8")
+        (tmp_path / "sessions").mkdir()
+
+        assert paths.preserved_entries(tmp_path) == [".venv", "venv"]
+
+    def test_preserved_entries_on_missing_home_is_empty(self, tmp_path: Path) -> None:
+        assert paths.preserved_entries(tmp_path / "nope") == []
+
+
+class TestRunningInterpreterFailSafe:
+    """Never delete the legacy tree when this process runs from inside it."""
+
+    def test_uncovered_interpreter_layout_aborts_migration(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        legacy = _seed_legacy(tmp_path)
+        # An interpreter under the legacy home that _PRESERVED_TOP_LEVEL_DIRS
+        # does NOT cover (hand-rolled layout). Migrating would delete it.
+        odd = legacy / "runtime" / "py"
+        odd.mkdir(parents=True)
+        monkeypatch.setattr(home_migration.sys, "prefix", str(odd))
+
+        result = home_migration.migrate_home(
+            legacy=legacy,
+            new_home=tmp_path / ".kiro" / "crew",
+            marker=tmp_path / ".kiro" / "crew" / paths.MIGRATION_MARKER_NAME,
+        )
+
+        # Declined: stays on legacy, data intact, no marker stamped.
+        assert result == legacy
+        assert (legacy / ".env").exists()
+        assert odd.is_dir()
+        assert not (tmp_path / ".kiro" / "crew" / paths.MIGRATION_MARKER_NAME).exists()
+
+    def test_covered_venv_layout_still_migrates(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # The common case: the interpreter IS the preserved venv. The fail-safe
+        # must not fire, because the venv is already protected from deletion.
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        legacy = _seed_legacy(tmp_path)
+        venv = _seed_legacy_venv(legacy)
+        monkeypatch.setattr(home_migration.sys, "prefix", str(venv))
+
+        result = paths.config_dir()
+
+        assert result == tmp_path / ".kiro" / "crew"
+        assert (result / ".env").exists()
+        assert venv.is_dir()
+        assert (result / paths.MIGRATION_MARKER_NAME).exists()
+
+    def test_interpreter_outside_legacy_is_not_flagged(self, tmp_path: Path) -> None:
+        legacy = tmp_path / ".kirocrew"
+        legacy.mkdir()
+        assert home_migration._running_interpreter_under(legacy) is False
+
+    def test_interpreter_at_legacy_root_is_flagged(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        legacy = tmp_path / ".kirocrew"
+        legacy.mkdir()
+        monkeypatch.setattr(home_migration.sys, "prefix", str(legacy))
+        assert home_migration._running_interpreter_under(legacy) is True
+
+
+class TestFailSafeChecksContainmentNotExistence:
+    """The fail-safe must verify the interpreter IS a preserved venv.
+
+    Regression for a hole in the first cut of this fix: the guard read
+    ``not preserved_entries(legacy)``, so the mere EXISTENCE of any preserved
+    directory disabled it. An unrelated helper venv at ``<legacy>/venv`` would
+    vouch for an interpreter at ``<legacy>/runtime``, and the migration went on
+    to delete ``<legacy>/runtime`` — destroying the running install, which is
+    the precise failure this module exists to prevent.
+    """
+
+    def test_unrelated_preserved_venv_does_not_vouch_for_interpreter(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        legacy = _seed_legacy(tmp_path)
+        # A preserved venv EXISTS, but it is not the interpreter we run from.
+        helper = _seed_legacy_venv(legacy)
+        running = legacy / "runtime" / "py"
+        (running / "lib").mkdir(parents=True)
+        (running / "lib" / "marker.txt").write_text("live interpreter", encoding="utf-8")
+        monkeypatch.setattr(home_migration.sys, "prefix", str(running))
+
+        result = home_migration.migrate_home(
+            legacy=legacy,
+            new_home=tmp_path / ".kiro" / "crew",
+            marker=tmp_path / ".kiro" / "crew" / paths.MIGRATION_MARKER_NAME,
+        )
+
+        # Declined: the running interpreter is untouched and legacy data intact.
+        assert result == legacy
+        assert (running / "lib" / "marker.txt").read_text(encoding="utf-8") == (
+            "live interpreter"
+        )
+        assert (legacy / ".env").exists()
+        assert helper.is_dir()
+        assert not (tmp_path / ".kiro" / "crew" / paths.MIGRATION_MARKER_NAME).exists()
+
+    def test_interpreter_nested_deep_inside_preserved_venv_still_migrates(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # Containment, not equality: a prefix BELOW the preserved dir (as a real
+        # venv layout has) must still count as protected so the move proceeds.
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        legacy = _seed_legacy(tmp_path)
+        venv = _seed_legacy_venv(legacy)
+        nested = venv / "lib" / "python3.13"
+        monkeypatch.setattr(home_migration.sys, "prefix", str(nested))
+
+        result = paths.config_dir()
+
+        assert result == tmp_path / ".kiro" / "crew"
+        assert (result / ".env").exists()
+        assert venv.is_dir()
+
+    def test_interpreter_is_preserved_requires_containment(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        (tmp_path / "venv").mkdir()
+        (tmp_path / "runtime").mkdir()
+
+        monkeypatch.setattr(home_migration.sys, "prefix", str(tmp_path / "venv"))
+        assert home_migration._interpreter_is_preserved(tmp_path) is True
+
+        monkeypatch.setattr(home_migration.sys, "prefix", str(tmp_path / "venv" / "x"))
+        assert home_migration._interpreter_is_preserved(tmp_path) is True
+
+        # Exists-but-unrelated: the hole this test class exists for.
+        monkeypatch.setattr(home_migration.sys, "prefix", str(tmp_path / "runtime"))
+        assert home_migration._interpreter_is_preserved(tmp_path) is False
+
+    def test_interpreter_is_preserved_fails_safe_when_unresolvable(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # An unreadable prefix must report NOT-preserved, so the caller declines
+        # the migration rather than deleting an unverifiable layout.
+        (tmp_path / "venv").mkdir()
+        monkeypatch.setattr(home_migration, "_resolved_prefix", lambda: None)
+        assert home_migration._interpreter_is_preserved(tmp_path) is False
+
+    def test_symlinked_preserved_dir_still_protects_interpreter(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # The comparison resolves both sides, so a preserved entry reached
+        # through a symlink still matches a prefix expressed as the real path.
+        legacy = tmp_path / ".kirocrew"
+        legacy.mkdir()
+        real = tmp_path / "real-venv"
+        real.mkdir()
+        (legacy / "venv").symlink_to(real, target_is_directory=True)
+        monkeypatch.setattr(home_migration.sys, "prefix", str(real))
+
+        assert home_migration._interpreter_is_preserved(legacy) is True
+
+    def test_path_contains_algebra(self, tmp_path: Path) -> None:
+        root = tmp_path / "a"
+        assert home_migration._path_contains(root, root) is True
+        assert home_migration._path_contains(root, root / "b" / "c") is True
+        assert home_migration._path_contains(root, tmp_path / "ab") is False
+        assert home_migration._path_contains(root / "b", root) is False
+
+
+def _seed_app_venv(legacy: Path, app: str = "issue-radar") -> Path:
+    """Add a per-app venv at ``apps/<app>/.venv``, as apps/backend.py creates.
+
+    Includes the ``bin/python`` SYMLINK a real venv carries, because the copy
+    deliberately skips symlinks — that is precisely why a copied app venv ends
+    up without an interpreter.
+    """
+    root = legacy / "apps" / app
+    venv = root / ".venv"
+    (venv / "bin").mkdir(parents=True)
+    (venv / "pyvenv.cfg").write_text(f"home = {venv}/bin\n", encoding="utf-8")
+    (venv / "bin" / "pip").write_text(f"#!{venv}/bin/python\n", encoding="utf-8")
+    (root / "requirements.txt").write_text("requests\n", encoding="utf-8")
+    (root / "app.json").write_text('{"name": "x"}', encoding="utf-8")
+    return venv
+
+
+class TestNestedAppVenvsAreNotRelocated:
+    """A venv below the legacy root must not be copied either.
+
+    ``_PRESERVED_TOP_LEVEL_DIRS`` only matches the root, so an installed app's
+    ``apps/<name>/.venv`` was still being copied. A copied venv is broken (the
+    walk skips symlinks, so ``bin/python`` never arrives, and shebangs point into
+    the deleted legacy tree), and ``apps/backend.py`` only rebuilds when the
+    directory is ABSENT — so the app was left permanently unable to install its
+    dependencies. Excluding it from the copy lets the app recreate a working one.
+    """
+
+    def test_app_venv_is_not_copied_but_app_data_is(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        legacy = _seed_legacy(tmp_path)
+        _seed_app_venv(legacy)
+
+        result = paths.config_dir()
+
+        # The app itself migrated — only its venv was left out.
+        assert (result / "apps" / "issue-radar" / "app.json").exists()
+        assert (result / "apps" / "issue-radar" / "requirements.txt").exists()
+        assert not (result / "apps" / "issue-radar" / ".venv").exists()
+
+        # Absent (not broken) at the new home is what lets the app rebuild it.
+        assert (result / paths.MIGRATION_MARKER_NAME).exists()
+        assert not legacy.exists()
+
+    def test_nested_venv_does_not_stall_verification(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # The copy skips the nested venv, so verification must prune it too —
+        # otherwise its files count as "missing", the copy is judged incomplete,
+        # and the migration aborts and retries on every single start.
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        legacy = _seed_legacy(tmp_path)
+        _seed_app_venv(legacy)
+
+        assert home_migration._verify_copy(legacy, tmp_path / "empty-dest") != []
+
+        result = paths.config_dir()
+
+        # Marker written + legacy gone proves verification passed.
+        assert (result / paths.MIGRATION_MARKER_NAME).exists()
+        assert not legacy.exists()
+
+    def test_venv_detected_by_marker_not_name(self, tmp_path: Path) -> None:
+        oddly_named = tmp_path / "py3-env"
+        oddly_named.mkdir()
+        (oddly_named / "pyvenv.cfg").write_text("home = /usr/bin\n", encoding="utf-8")
+        assert home_migration._is_venv_dir(oddly_named) is True
+
+        # A directory merely NAMED like a venv but without the marker is data.
+        decoy = tmp_path / ".venv"
+        decoy.mkdir()
+        (decoy / "notes.txt").write_text("user data", encoding="utf-8")
+        assert home_migration._is_venv_dir(decoy) is False
+
+    def test_nested_dir_named_venv_without_marker_still_migrates(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # Detection is by pyvenv.cfg, so a nested user directory that happens to
+        # be called .venv but is not one must be carried over as ordinary data.
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        legacy = _seed_legacy(tmp_path)
+        decoy = legacy / "apps" / "notes" / ".venv"
+        decoy.mkdir(parents=True)
+        (decoy / "keep.txt").write_text("real user data", encoding="utf-8")
+
+        result = paths.config_dir()
+
+        assert (result / "apps" / "notes" / ".venv" / "keep.txt").read_text(
+            encoding="utf-8"
+        ) == "real user data"
+
+
+class TestUnmanagedNestedVenvsAreNeverLost:
+    """Only a MANAGED app venv may be dropped from the copy.
+
+    Regression for the trade the previous round got wrong: excluding *every*
+    nested venv from the copy meant a user's own environment (e.g.
+    ``tools/myenv``) was skipped and then removed with the legacy tree —
+    permanent data loss, strictly worse than the broken copy it replaced.
+    Silently discarding is only safe for ``apps/<name>/.venv``, which its owner
+    rebuilds. For anything else the migration declines and says which paths to
+    move.
+    """
+
+    def test_user_nested_venv_defers_migration_instead_of_deleting_it(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        legacy = _seed_legacy(tmp_path)
+        mine = legacy / "tools" / "myenv"
+        (mine / "lib").mkdir(parents=True)
+        (mine / "pyvenv.cfg").write_text("home = /usr/bin\n", encoding="utf-8")
+        (mine / "lib" / "payload.txt").write_text("irreplaceable", encoding="utf-8")
+
+        result = paths.config_dir()
+
+        # Declined: still on legacy, the environment and its contents intact.
+        assert result == legacy
+        assert (mine / "lib" / "payload.txt").read_text(encoding="utf-8") == (
+            "irreplaceable"
+        )
+        assert (legacy / ".env").exists()
+        # No marker, so the move retries once the user relocates it.
+        assert not (tmp_path / ".kiro" / "crew" / paths.MIGRATION_MARKER_NAME).exists()
+
+    def test_managed_app_venv_alone_still_migrates(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # The one environment we own does NOT block the move — it is skipped and
+        # rebuilt, which is the whole point of the previous round's fix.
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        legacy = _seed_legacy(tmp_path)
+        _seed_app_venv(legacy)
+
+        result = paths.config_dir()
+
+        assert result == tmp_path / ".kiro" / "crew"
+        assert (result / "apps" / "issue-radar" / "app.json").exists()
+        assert not (result / "apps" / "issue-radar" / ".venv").exists()
+        assert not legacy.exists()
+
+    def test_managed_app_venv_matched_structurally(self) -> None:
+        assert home_migration._is_managed_app_venv(Path("apps/radar/.venv")) is True
+        # Wrong depth, wrong root, or wrong leaf name are all NOT managed.
+        assert home_migration._is_managed_app_venv(Path("apps/radar/sub/.venv")) is False
+        assert home_migration._is_managed_app_venv(Path("tools/radar/.venv")) is False
+        assert home_migration._is_managed_app_venv(Path("apps/radar/venv")) is False
+        assert home_migration._is_managed_app_venv(Path(".venv")) is False
+
+    def test_scan_reports_only_unmanaged(self, tmp_path: Path) -> None:
+        def mk(rel: str) -> None:
+            d = tmp_path / rel
+            d.mkdir(parents=True)
+            (d / "pyvenv.cfg").write_text("home = /usr/bin\n", encoding="utf-8")
+
+        mk("apps/radar/.venv")  # managed -> not reported
+        mk("tools/myenv")  # unmanaged -> reported
+        mk("scratch/deep/env")  # unmanaged -> reported
+
+        found = home_migration._unmanaged_nested_venvs(tmp_path)
+        assert sorted(found) == ["scratch/deep/env".replace("/", os.sep),
+                                 "tools/myenv".replace("/", os.sep)]
+
+    def test_scan_ignores_root_preserved_and_bulk_dirs(self, tmp_path: Path) -> None:
+        # Root-level venvs are preserved in place (handled separately) and the
+        # regenerable bulk dirs are never copied, so neither should trip the
+        # abort and block every legacy install from ever migrating.
+        for name in ("venv", ".venv", "venvs", "models", "cache"):
+            d = tmp_path / name
+            d.mkdir()
+            (d / "pyvenv.cfg").write_text("home = /usr/bin\n", encoding="utf-8")
+        assert home_migration._unmanaged_nested_venvs(tmp_path) == []
+
+    def test_scan_does_not_descend_into_a_venv(self, tmp_path: Path) -> None:
+        # A venv contains nested environments in some layouts; the outer one is
+        # reported once rather than every environment inside it.
+        outer = tmp_path / "tools" / "outer"
+        inner = outer / "share" / "inner"
+        inner.mkdir(parents=True)
+        (outer / "pyvenv.cfg").write_text("home = /usr/bin\n", encoding="utf-8")
+        (inner / "pyvenv.cfg").write_text("home = /usr/bin\n", encoding="utf-8")
+
+        assert home_migration._unmanaged_nested_venvs(tmp_path) == [
+            str(Path("tools") / "outer")
+        ]
+
+    def test_unmanaged_venv_is_copied_not_skipped(self, tmp_path: Path) -> None:
+        # Belt-and-braces: if the abort were ever bypassed, the copy must still
+        # treat a user venv as ordinary data rather than silently dropping it.
+        legacy = tmp_path / ".kirocrew"
+        mine = legacy / "tools" / "myenv"
+        mine.mkdir(parents=True)
+        (mine / "pyvenv.cfg").write_text("home = /usr/bin\n", encoding="utf-8")
+        ignore = home_migration._make_copy_ignore(legacy)
+        assert ignore(str(legacy / "tools"), ["myenv"]) == set()

@@ -24,6 +24,7 @@ from kiro_crew.config.paths import (
     MIGRATION_MARKER_NAME,
     _valid_override_home,
     detect_data_home_conflict,
+    preserved_entries,
 )
 from kiro_crew.dashboard.crash_dump_store import (
     dump_age_seconds,
@@ -158,11 +159,13 @@ def _doctor_data_home() -> None:
 
     The one-time ``~/.kirocrew`` -> ``~/.kiro/crew`` migration force-copies the
     old home into the new one (overwriting anything already there), writes a
-    completion marker, and then deletes ``~/.kirocrew`` outright — there is no
+    completion marker, and then deletes ``~/.kirocrew``'s DATA — there is no
     rollback copy. A leftover ``~/.kirocrew`` here is rendered as one of several
-    states: a **conflict** (marker present + NON-EMPTY legacy → resurrection
+    states: a **conflict** (marker present + non-preserved leftovers → resurrection
     debris that is never used and needs manual cleanup), **IGNORED** (a valid
-    ``KIROCREW_HOME`` override is active, so migration is disabled), **UNUSED**
+    ``KIROCREW_HOME`` override is active, so migration is disabled), a **retained
+    venv** (marker present + only a preserved virtual environment → expected, and
+    explicitly NOT safe to delete, since it is the live interpreter), **UNUSED**
     (marker present + empty legacy → migration already completed, harmless
     leftover), or a genuine **pending** migration (no marker yet → it retries on
     the next cold start). Purely informational — doctor never deletes it itself.
@@ -198,11 +201,21 @@ def _doctor_data_home() -> None:
                 print(f"  legacy:      ⏹ {legacy} present but IGNORED "
                       f"(KIROCREW_HOME override active — migration disabled until it is unset)")
         elif (home / MIGRATION_MARKER_NAME).exists():
-            # Marker present + an (empty) legacy dir: migration already completed
-            # and is marker-authoritative, so it will NEVER retry or touch this
-            # dir. It is unused leftover, not a pending migration (GPT 5.6 MEDIUM).
-            print(f"  legacy:      ⏹ {legacy} present but UNUSED "
-                  f"(migration already completed; empty leftover, safe to delete)")
+            # Marker present + a legacy dir that detect_data_home_conflict did not
+            # flag. Either it is empty leftover, or it survives ONLY to hold a
+            # preserved virtual environment — which must NOT be described as safe
+            # to delete, since that is the user's live interpreter.
+            preserved = preserved_entries(legacy)
+            if preserved:
+                print(f"  legacy:      ✅ {legacy} retained to hold the KiroCrew "
+                      f"virtual environment ({', '.join(preserved)})")
+                print(f"               Data was migrated to {home}; the venv stays "
+                      f"here because moving it would break the interpreter.")
+                print("               Do NOT delete it while it is your active "
+                      "install (`which kirocrew` resolves through it).")
+            else:
+                print(f"  legacy:      ⏹ {legacy} present but UNUSED "
+                      f"(migration already completed; empty leftover, safe to delete)")
         else:
             print(f"  legacy:      ⏹ {legacy} still present (migration will retry on next cold start)")
 

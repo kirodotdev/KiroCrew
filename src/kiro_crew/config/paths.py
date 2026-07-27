@@ -49,6 +49,49 @@ CONFIG_DIR_NAME = f"{KIRO_BASE_DIR_NAME}/{CONFIG_DIR_LEAF}"  # ".kiro/crew"
 # is deleted outright — no rollback copy is kept.
 LEGACY_CONFIG_DIR_NAME = ".kirocrew"
 
+# Top-level data-home entries that hold a PYTHON VIRTUAL ENVIRONMENT rather than
+# user data. The one-time migration neither copies nor deletes these — they are
+# left exactly where they are, and the legacy root survives to hold them.
+#
+# The wheel installer (``cli.sh``) historically created its managed venv INSIDE
+# the data home (``~/.kirocrew/venv``), so on such an install the legacy tree
+# contains the very interpreter running the migration. Treating it as data was
+# catastrophic in both directions:
+#   * **Copying** it is useless — a venv is not relocatable. ``pyvenv.cfg`` and
+#     every console script embed the absolute interpreter path, so the copy at
+#     the new home is dead on arrival ("bad interpreter: no such file").
+#   * **Deleting** it destroyed the running install: ``rmtree(legacy)`` removed
+#     the live interpreter and its ``site-packages`` mid-process, leaving the
+#     current run to die on a partially-unloaded module (``ModuleNotFoundError``)
+#     and every later run to hit a dangling ``~/.local/bin/kirocrew`` symlink.
+# Preserving them in place makes the migration a data move only, which is all it
+# was ever meant to be. Matched only at the data-home ROOT.
+#
+# This lives HERE, in the leaf, rather than in ``home_migration`` because both
+# the migration and ``detect_data_home_conflict`` below need it: keeping it in
+# the migration module forced a function-local import back into this file to
+# avoid breaking leaf purity (``TestLeafPurity``). One definition in the leaf,
+# imported by the migration, satisfies both constraints.
+PRESERVED_VENV_DIR_NAMES = ("venv", ".venv", "venvs")
+
+
+def preserved_entries(home: Path) -> list[str]:
+    """Return the names of preserved (virtual-environment) entries in *home*.
+
+    Used by the migration to decide what to keep, and by
+    :func:`detect_data_home_conflict` / ``kirocrew doctor`` to tell a legacy home
+    that survives ONLY because it holds a preserved venv apart from genuine
+    post-migration resurrection debris. Best-effort: an unreadable home reports
+    nothing rather than raising into a boot path.
+    """
+    try:
+        return sorted(
+            name for name in PRESERVED_VENV_DIR_NAMES if (home / name).is_dir()
+        )
+    except OSError:  # pragma: no cover - defensive
+        return []
+
+
 # Names an EARLIER release of this migration (since retired) could have left on
 # disk: ``~/.kirocrew.archived`` (a full rollback copy of the pre-move home) and
 # ``~/.kiro/crew.pre-migration/<timestamp>`` (a sidelined divergent-home backup).
@@ -414,6 +457,11 @@ def detect_data_home_conflict() -> str | None:
     ``KIROCREW_HOME`` override (which never migrates; an INVALID system-dir
     override falls back to the default home so the check still runs), yields
     ``None``.
+
+    A legacy dir that holds ONLY a preserved virtual environment is NOT a
+    conflict: the migration deliberately leaves a nested venv in place (moving it
+    would break the interpreter), so the surviving directory is expected, holds no
+    data, and needs no cleanup. ``kirocrew doctor`` reports that state separately.
     """
     if _valid_override_home() is not None:
         return None
@@ -421,7 +469,11 @@ def detect_data_home_conflict() -> str | None:
     legacy = _legacy_home()
     marker = new_home / MIGRATION_MARKER_NAME
     try:
-        if marker.exists() and legacy.is_dir() and any(legacy.iterdir()):
+        if not (marker.exists() and legacy.is_dir()):
+            return None
+        preserved = set(preserved_entries(legacy))
+        leftover = [entry.name for entry in legacy.iterdir() if entry.name not in preserved]
+        if leftover:
             return (
                 f"A legacy data home {legacy} still exists alongside the migrated, "
                 f"authoritative home {new_home}. The legacy dir is NOT used (treated "

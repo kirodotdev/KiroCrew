@@ -14,8 +14,15 @@ Design (deliberately simple):
   is OVERWRITTEN by the legacy copy (legacy always wins), while a new-home
   entry with no legacy counterpart is left untouched. Every regular file is
   then verified present at the destination, and only after that succeeds is
-  ``~/.kirocrew`` removed outright. There is no rollback copy and no backup of
+  ``~/.kirocrew``'s data removed. There is no rollback copy and no backup of
   anything overwritten — once the move completes, that data is gone.
+* **Virtual environments are preserved, never moved** — the wheel installer
+  historically put its managed venv INSIDE the data home
+  (``~/.kirocrew/venv``), so the legacy tree can contain the very interpreter
+  running this migration. A venv is not relocatable and must not be deleted
+  underneath a live process, so ``_PRESERVED_TOP_LEVEL_DIRS`` entries are
+  neither copied nor removed, and the legacy root survives to hold them. This
+  makes the migration a DATA move only.
 * **Idempotent** — guarded by the caller so it runs only when the legacy home
   exists and the new home is not yet marked complete; a second call is a no-op.
 * **Gateway-safe** — if a live gateway holds the legacy (or a pre-existing new)
@@ -50,6 +57,7 @@ from pathlib import Path
 from typing import Callable
 
 from kiro_crew import platform_compat
+from kiro_crew.config.paths import PRESERVED_VENV_DIR_NAMES
 from kiro_crew.gateway_lock import LOCK_FILENAME
 
 logger = logging.getLogger(__name__)
@@ -63,6 +71,178 @@ logger = logging.getLogger(__name__)
 #   * ``cache``  — app-manifest / blob caches, rebuilt on access.
 # Matched only at the legacy ROOT (a same-named nested dir is NOT excluded).
 _EXCLUDED_TOP_LEVEL_DIRS = ("models", "cache")
+
+# Top-level entries holding a virtual environment rather than user data: neither
+# copied nor deleted, with the legacy root surviving to hold them. Defined in the
+# ``config.paths`` LEAF (see its rationale there) because
+# ``detect_data_home_conflict`` needs the same policy, and keeping the definition
+# here forced a function-local import back into that leaf to preserve its
+# import-purity invariant. Imported under the module's existing private name so
+# the rest of this file — and its tests — read unchanged.
+_PRESERVED_TOP_LEVEL_DIRS = PRESERVED_VENV_DIR_NAMES
+
+# Everything the copy step deliberately leaves behind, for whatever reason.
+# ``_verify_copy`` prunes exactly this set so an intentionally-uncopied file is
+# never mistaken for a failed copy.
+_UNCOPIED_TOP_LEVEL_DIRS = _EXCLUDED_TOP_LEVEL_DIRS + _PRESERVED_TOP_LEVEL_DIRS
+
+
+def _is_venv_dir(path: Path) -> bool:
+    """Return True if *path* is a Python virtual-environment root.
+
+    Detected by the ``pyvenv.cfg`` marker the stdlib ``venv`` module always
+    writes at the environment root — a name-independent signal, so this catches
+    a nested environment whatever it is called.
+
+    Needed because ``_PRESERVED_TOP_LEVEL_DIRS`` only matches the legacy ROOT,
+    while venvs also live DEEPER in the data home: an installed app with a
+    ``requirements.txt`` gets one at ``apps/<name>/.venv`` (see
+    ``apps/backend.py``). Those were still being copied, and a copied venv is
+    broken — the copy skips symlinks, so ``bin/python`` (normally a symlink)
+    never arrives, and the console-script shebangs point into the legacy tree
+    that is about to be deleted. The app then fails to start rather than
+    rebuilding, because it only creates the environment ``if not
+    venv_dir.exists()`` and the broken copy does exist.
+
+    Best-effort: an unstatable path reports False and is treated as ordinary
+    data, matching how the rest of the walk degrades.
+    """
+    try:
+        return (path / "pyvenv.cfg").is_file()
+    except OSError:  # pragma: no cover - defensive
+        return False
+
+
+def _is_managed_app_venv(rel: Path) -> bool:
+    """Return True if *rel* is the environment KiroCrew itself manages for an app.
+
+    *rel* is a path RELATIVE to the data-home root. The one managed nested
+    layout is ``apps/<name>/.venv``, created by ``apps/backend.py`` for an app
+    that ships a ``requirements.txt``. Matched structurally (exactly three
+    components) so a deeper or differently-shaped path never qualifies.
+
+    Only a managed environment may be silently left out of the copy, because
+    only for that one do we know the owner rebuilds it on next start. Any OTHER
+    nested venv belongs to the user, and dropping it would be data loss — see
+    :func:`_unmanaged_nested_venvs`.
+    """
+    parts = rel.parts
+    return len(parts) == 3 and parts[0] == "apps" and parts[2] == ".venv"
+
+
+def _unmanaged_nested_venvs(legacy: Path, limit: int = 5) -> list[str]:
+    """Return relative paths of nested venvs that are NOT ours to discard.
+
+    Skipping a venv from the copy is only safe when something recreates it. For
+    a managed ``apps/<name>/.venv`` that holds; for anything else — a user's own
+    ``tools/myenv``, a scratch environment parked in the data home — it does not:
+    the copy would skip it and the legacy delete would then remove the original,
+    losing it permanently. So when any such environment exists the migration
+    DECLINES instead, and the user is told which paths to move.
+
+    Root-level preserved entries and the regenerable bulk dirs are pruned (they
+    are handled separately), venvs are never descended into, and symlinked
+    directories are not followed. Capped at *limit* hits — the caller only needs
+    to know that at least one exists, plus examples for the message.
+    """
+    found: list[str] = []
+    for root, dirs, _files in os.walk(legacy):
+        rel_root = Path(root).relative_to(legacy)
+        if rel_root == Path("."):
+            dirs[:] = [d for d in dirs if d not in _UNCOPIED_TOP_LEVEL_DIRS]
+        keep: list[str] = []
+        for name in dirs:
+            candidate = Path(root) / name
+            rel = rel_root / name if rel_root != Path(".") else Path(name)
+            try:
+                if candidate.is_symlink():
+                    continue  # never follow; not copied either
+                if _is_venv_dir(candidate):
+                    if not _is_managed_app_venv(rel):
+                        found.append(str(rel))
+                    continue  # never descend into a venv
+            except OSError:  # pragma: no cover - defensive
+                continue
+            keep.append(name)
+        dirs[:] = keep
+        if len(found) >= limit:
+            break
+    return found
+
+
+def _resolved_prefix() -> Path | None:
+    """Return the resolved ``sys.prefix``, or ``None`` when it cannot be read."""
+    try:
+        return Path(sys.prefix).resolve()
+    except OSError:  # pragma: no cover - defensive
+        return None
+
+
+def _path_contains(root: Path, target: Path) -> bool:
+    """Return True if *target* IS *root* or lives beneath it.
+
+    Both arguments must already be resolved — this is pure path algebra, so a
+    caller comparing unresolved paths would get the wrong answer for symlinked
+    or ``..``-containing inputs.
+    """
+    return target == root or root in target.parents
+
+
+def _running_interpreter_under(root: Path) -> bool:
+    """Return True if THIS process's interpreter lives under *root*.
+
+    Part of the fail-safe in :func:`_do_migrate`: if the running interpreter
+    sits somewhere under the legacy home, deleting that tree would repeat the
+    exact destruction this module guards against. Pair it with
+    :func:`_interpreter_is_preserved` to decide whether the location is one the
+    preserved set actually protects.
+
+    Checks ``sys.prefix`` (the venv root) rather than ``sys.executable``, since a
+    venv's ``bin/python`` is commonly a symlink to a system interpreter OUTSIDE
+    the home while ``site-packages`` — the part that actually dies — is under
+    ``sys.prefix``. Fails SAFE: an unresolvable path reports True so an
+    unverifiable layout is never deleted.
+    """
+    prefix = _resolved_prefix()
+    if prefix is None:
+        return True
+    try:
+        root_resolved = root.resolve()
+    except OSError:  # pragma: no cover - defensive
+        return True
+    return _path_contains(root_resolved, prefix)
+
+
+def _interpreter_is_preserved(home: Path) -> bool:
+    """Return True if the running interpreter lives INSIDE a preserved entry.
+
+    The fail-safe must ask whether *this* interpreter is one of the venvs the
+    migration protects — not merely whether some preserved directory happens to
+    exist. Those differ, and the difference was a live hole: with the
+    interpreter at ``<legacy>/runtime/py`` and an unrelated helper venv at
+    ``<legacy>/venv``, an existence check saw "a venv is preserved" and let the
+    migration proceed to delete ``<legacy>/runtime`` — destroying the running
+    install, exactly the failure this module exists to prevent.
+
+    Fails SAFE in the opposite direction to :func:`_running_interpreter_under`:
+    an unresolvable prefix or an unstatable candidate reports False, so an
+    unverifiable layout counts as UNPROTECTED and the caller declines the move.
+    Declining costs a deferred migration; guessing wrong costs the install.
+    """
+    prefix = _resolved_prefix()
+    if prefix is None:
+        return False
+    for name in _PRESERVED_TOP_LEVEL_DIRS:
+        candidate = home / name
+        try:
+            if not candidate.is_dir():
+                continue
+            resolved = candidate.resolve()
+        except OSError:  # pragma: no cover - defensive
+            continue
+        if _path_contains(resolved, prefix):
+            return True
+    return False
 
 
 def _gateway_is_live(home: Path) -> bool:
@@ -115,6 +295,16 @@ def _make_copy_ignore(legacy_root: Path) -> Callable[[str, list[str]], set[str]]
     * **Bulk/regenerable top-level dirs** — ``_EXCLUDED_TOP_LEVEL_DIRS`` at the
       legacy ROOT only, so the copy never carries the re-downloadable GGUF
       models or rebuildable caches forward.
+    * **Virtual environments** — ``_PRESERVED_TOP_LEVEL_DIRS`` at the legacy
+      ROOT only. A venv is not relocatable (absolute paths are baked into
+      ``pyvenv.cfg`` and every console script), so copying one yields a
+      dead-on-arrival interpreter at the destination. It is left in place
+      instead — see the constant's rationale.
+    * **Nested virtual environments at ANY depth** — detected by
+      :func:`_is_venv_dir` rather than by name, covering app environments such
+      as ``apps/<name>/.venv``. Same non-relocatability, but these are NOT kept:
+      they are regenerable, and their absence at the new home is what lets the
+      owning app rebuild one on next start.
 
     A closure over *legacy_root* is required because copytree invokes the
     callback for every directory level and only the root's children should be
@@ -126,15 +316,35 @@ def _make_copy_ignore(legacy_root: Path) -> Callable[[str, list[str]], set[str]]
         ignored: set[str] = set()
         at_root = Path(directory) == root
         for name in names:
-            if at_root and name in _EXCLUDED_TOP_LEVEL_DIRS:
-                ignored.add(name)
-                continue
             p = Path(directory) / name
+            # Top-level exclusions name DIRECTORIES. The type check matters:
+            # ``_verify_copy`` prunes these names out of ``dirs`` only, so a
+            # regular FILE that happens to share the name would be skipped by
+            # the copy yet still counted as missing by the verify — aborting the
+            # whole migration on every start. Gate on is_dir() so such a file is
+            # treated as the ordinary data it is.
+            if at_root and name in _UNCOPIED_TOP_LEVEL_DIRS:
+                try:
+                    if p.is_dir() and not p.is_symlink():
+                        ignored.add(name)
+                        continue
+                except OSError:
+                    ignored.add(name)  # unstatable → skip rather than crash
+                    continue
             try:
                 if p.is_symlink():
                     ignored.add(name)
                     continue
                 if p.is_dir():
+                    # A MANAGED app environment (apps/<name>/.venv) is not
+                    # relocatable and is rebuilt by its owner, so skip it and
+                    # let it be absent at the new home. Any OTHER nested venv is
+                    # the user's: it is copied like ordinary data here, and
+                    # `_unmanaged_nested_venvs` has already declined the
+                    # migration before we ever get this far — so we never reach
+                    # the delete step that would lose it.
+                    if _is_venv_dir(p) and _is_managed_app_venv(p.relative_to(root)):
+                        ignored.add(name)
                     continue
                 if not p.is_file():  # socket / fifo / device / char-block special
                     ignored.add(name)
@@ -183,15 +393,31 @@ def _verify_copy(legacy: Path, new_home: Path) -> list[str]:
     passes) and checks each regular file has a counterpart at the same relative
     path under the new home. Symlinks AND non-regular special files (sockets/
     FIFOs/devices) are skipped, matching what the copy-ignore callback
-    deliberately did not copy. The ``_EXCLUDED_TOP_LEVEL_DIRS`` (regenerable
-    bulk trees) are likewise pruned so their intentionally-uncopied files don't
-    count as missing. An empty list means the copy is complete.
+    deliberately did not copy. The ``_UNCOPIED_TOP_LEVEL_DIRS`` (regenerable
+    bulk trees and preserved virtual environments) are likewise pruned so their
+    intentionally-uncopied files don't count as missing, as are nested virtual
+    environments at any depth (:func:`_is_venv_dir`) — without that, an app's
+    ``apps/<name>/.venv`` would be reported missing on every start and abort the
+    migration forever. An empty list means the copy is complete.
     """
     missing: list[str] = []
     for root, dirs, files in os.walk(legacy):
         rel_root = Path(root).relative_to(legacy)
         if rel_root == Path("."):
-            dirs[:] = [d for d in dirs if d not in _EXCLUDED_TOP_LEVEL_DIRS]
+            dirs[:] = [d for d in dirs if d not in _UNCOPIED_TOP_LEVEL_DIRS]
+        # Prune managed app venvs — the copy skipped those on purpose. Other
+        # nested venvs ARE copied (and a migration carrying one is declined
+        # earlier), so they must stay in the walk and be verified normally.
+        dirs[:] = [
+            d
+            for d in dirs
+            if not (
+                _is_venv_dir(Path(root) / d)
+                and _is_managed_app_venv(
+                    (rel_root / d) if rel_root != Path(".") else Path(d)
+                )
+            )
+        ]
         for name in files:
             src = Path(root) / name
             if src.is_symlink():
@@ -205,6 +431,35 @@ def _verify_copy(legacy: Path, new_home: Path) -> list[str]:
             if not dest.exists():
                 missing.append(str(rel_root / name))
     return missing
+
+
+def _remove_legacy_tree(legacy: Path) -> list[str]:
+    """Delete *legacy*'s contents EXCEPT preserved venvs; return the kept names.
+
+    The migration is a DATA move, so it removes the legacy home's data entries
+    one by one rather than ``rmtree``-ing the root wholesale. Any
+    ``_PRESERVED_TOP_LEVEL_DIRS`` entry is skipped, and when at least one is kept
+    the legacy ROOT directory is left in place to hold it — a bare directory with
+    a venv inside and no user data.
+
+    Raises ``OSError`` on a failed delete, matching the previous ``rmtree`` call
+    so the caller's existing "keep it as debris and surface via doctor" handler
+    still applies unchanged.
+    """
+    kept: list[str] = []
+    for entry in sorted(legacy.iterdir()):
+        if entry.name in _PRESERVED_TOP_LEVEL_DIRS and entry.is_dir():
+            kept.append(entry.name)
+            continue
+        if entry.is_dir() and not entry.is_symlink():
+            shutil.rmtree(entry)
+        else:
+            entry.unlink()
+    if not kept:
+        # Nothing to hold the directory open — remove the root too, so the
+        # post-migration filesystem looks exactly as it did before this change.
+        legacy.rmdir()
+    return kept
 
 
 def migrate_home(*, legacy: Path, new_home: Path, marker: Path) -> Path:
@@ -336,6 +591,59 @@ def _do_migrate(*, legacy: Path, new_home: Path, marker: Path) -> Path:
         )
         return new_home
 
+    # ── Fail-safe: never delete the interpreter running this process ──
+    # ``_PRESERVED_TOP_LEVEL_DIRS`` covers the layouts the installers actually
+    # produce, but a hand-rolled install could put the venv elsewhere under the
+    # legacy home (or nest it deeper). If this process is running FROM the legacy
+    # tree and is NOT inside one of the preserved entries, decline the move
+    # entirely rather than delete our own ``site-packages`` mid-run. Staying on
+    # legacy is inconvenient; destroying the install is not recoverable without a
+    # reinstall.
+    #
+    # The second condition is CONTAINMENT, not existence (GPT 5.6 BLOCKING):
+    # asking merely whether any preserved dir exists let an unrelated helper venv
+    # at ``<legacy>/venv`` vouch for an interpreter at ``<legacy>/runtime``,
+    # re-opening the exact deletion this guard is here to stop.
+    if _running_interpreter_under(legacy) and not _interpreter_is_preserved(legacy):
+        logger.warning(
+            "skipping data-home migration: this process is running from an "
+            "interpreter inside %s (sys.prefix=%s) that the preserved-venv set "
+            "does not cover; migrating would delete it. Reinstall KiroCrew "
+            "outside the data home to enable the move.",
+            legacy,
+            sys.prefix,
+        )
+        return legacy
+
+    # ── Fail-safe: never silently destroy a venv we do not own ──
+    # A nested venv cannot be carried over intact (it is not relocatable), and
+    # deleting the legacy tree afterwards would remove the original. That trade
+    # is only acceptable for the ONE environment KiroCrew rebuilds itself,
+    # ``apps/<name>/.venv``. For a user's own nested environment it is data loss,
+    # so decline the move and name the paths to relocate. The migration retries
+    # on the next start, so resolving it is a one-time manual step.
+    unmanaged = _unmanaged_nested_venvs(legacy)
+    if unmanaged:
+        logger.warning(
+            "skipping data-home migration: %s contains virtual environment(s) "
+            "KiroCrew does not manage (%s%s). They cannot be relocated intact, "
+            "and completing the move would delete them. Move or remove them, "
+            "then restart to finish migrating to %s.",
+            legacy,
+            ", ".join(unmanaged[:3]),
+            " …" if len(unmanaged) > 3 else "",
+            new_home,
+        )
+        print(
+            f"KiroCrew: data-home migration deferred — {legacy} holds virtual "
+            f"environment(s) that are not KiroCrew's to move "
+            f"({', '.join(unmanaged[:3])}). Move them elsewhere and restart to "
+            f"complete the one-time move to {new_home}.",
+            file=sys.stderr,
+            flush=True,
+        )
+        return legacy
+
     print(
         f"KiroCrew: migrating data home to {new_home} (one-time; this may take a moment)...",
         file=sys.stderr,
@@ -395,9 +703,19 @@ def _do_migrate(*, legacy: Path, new_home: Path, marker: Path) -> Path:
         )
         return legacy
 
-    # Delete the legacy home outright — no rollback copy is kept.
+    # Delete the legacy home's DATA outright — no rollback copy is kept. Any
+    # preserved venv (see _PRESERVED_TOP_LEVEL_DIRS) stays exactly where it is,
+    # and the legacy root survives to hold it.
     try:
-        shutil.rmtree(legacy)
+        kept = _remove_legacy_tree(legacy)
+        if kept:
+            logger.info(
+                "migrated data home %s -> %s; kept %s in place (virtual "
+                "environment, not data — moving it would break the interpreter)",
+                legacy,
+                new_home,
+                ", ".join(kept),
+            )
     except OSError:
         # The new home is already good. The marker is written below, so a later
         # start is marker-authoritative: it trusts the new home and does NOT
