@@ -276,22 +276,22 @@ class TestMalformedConfigValuesNeverCrashLoad:
             "eyes": "👀"
         }
 
-    def test_non_finite_wechat_thresholds_fall_back(self):
+    def test_non_finite_wecom_thresholds_fall_back(self):
         # JSON/TOML parse 1e1000 to float("inf"); int(inf) raises OverflowError,
         # not ValueError, so the old _safe_int guard still crashed load().
         cfg = _load_from_dict(
-            {"wechat": {"soft_threshold_pct": float("inf"), "hard_threshold_pct": float("nan")}}
+            {"wecom": {"soft_threshold_pct": float("inf"), "hard_threshold_pct": float("nan")}}
         )
-        assert cfg.wechat.soft_threshold_pct == 80
+        assert cfg.wecom.soft_threshold_pct == 80
         # NaN: int(nan) raises ValueError, already caught — pin it anyway.
-        assert cfg.wechat.hard_threshold_pct == 95
+        assert cfg.wecom.hard_threshold_pct == 95
 
-    def test_non_numeric_wechat_thresholds_fall_back(self):
+    def test_non_numeric_wecom_thresholds_fall_back(self):
         cfg = _load_from_dict(
-            {"wechat": {"soft_threshold_pct": "lots", "hard_threshold_pct": None}}
+            {"wecom": {"soft_threshold_pct": "lots", "hard_threshold_pct": None}}
         )
-        assert cfg.wechat.soft_threshold_pct == 80
-        assert cfg.wechat.hard_threshold_pct == 95
+        assert cfg.wecom.soft_threshold_pct == 80
+        assert cfg.wecom.hard_threshold_pct == 95
 
     def test_non_list_skills_extra_paths_falls_back(self):
         assert _load_from_dict({"skills": {"extra_paths": 5}}).skills.extra_paths == []
@@ -3380,3 +3380,24 @@ class TestGitLabHostAllowlist:
     def test_non_list_falls_back_to_empty(self) -> None:
         cfg = _load_from_dict({"dashboard": {"gitlab_hosts": "gitlab.acme.internal"}})
         assert cfg.dashboard.gitlab_hosts == []
+
+
+def test_legacy_wechat_config_key_still_populates_wecom():
+    """A config written before the wechat->wecom rename keeps its WeCom settings.
+
+    Regression for the rename (#542): load() falls back to the legacy
+    "wechat" key so existing installs don't silently lose their allow-list /
+    thresholds / enabled flag on upgrade.
+    """
+    cfg = _load_from_dict(
+        {
+            "wechat": {
+                "enabled": True,
+                "allowed_users": [{"userid": "zhangsan", "name": "Z"}],
+                "hard_threshold_pct": 90,
+            }
+        }
+    )
+    assert cfg.wecom.enabled is True
+    assert cfg.wecom.allowed_users == [{"userid": "zhangsan", "name": "Z"}]
+    assert cfg.wecom.hard_threshold_pct == 90

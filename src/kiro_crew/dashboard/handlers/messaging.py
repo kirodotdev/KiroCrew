@@ -2810,11 +2810,11 @@ async def api_webex_config_save(request: web.Request) -> web.Response:
     )
 
 
-# ── WeCom (WeChat) configuration API ──
+# ── WeCom (企业微信) configuration API ──
 # Mirrors the Telegram config API above with one structural difference: WeCom
 # uses TWO credentials (WECOM_BOT_ID + WECOM_SECRET, both in config_dir/.env,
 # 0600) instead of a single bot token. Non-secret config (enabled,
-# allowed_users, soft_threshold_pct) lives in config.json under the "wechat"
+# allowed_users, soft_threshold_pct) lives in config.json under the "wecom"
 # key. GET returns masked previews + presence booleans; raw values are
 # write-only. The UI maps WECOM_SECRET onto the shared panel's primary secret
 # ("bot_token") and WECOM_BOT_ID onto its second credential field ("bot_id").
@@ -2847,7 +2847,7 @@ async def api_wecom_config_get(request: web.Request) -> web.Response:
     creds = cfg.load_credentials()
     bot_id = creds.get(CRED_WECOM_BOT_ID, "")
     secret = creds.get(CRED_WECOM_SECRET, "")
-    wc = cfg.wechat
+    wc = cfg.wecom
     userids = [
         str(u.get("userid"))
         for u in wc.allowed_users
@@ -2969,7 +2969,7 @@ async def _wecom_config_save_locked(request: web.Request) -> web.Response:
                     return _deny(f"{label} is implausibly long")
                 env_updates[cred_key] = cred_val
 
-    # Config → config.json under "wechat" (staged, applied only after Phase 1).
+    # Config → config.json under "wecom" (staged, applied only after Phase 1).
     # Off-loop read: a large or slow config.json must not stall the gateway
     # event loop. Reading under _get_config_lock() keeps the snapshot current
     # relative to every other config writer.
@@ -2982,9 +2982,14 @@ async def _wecom_config_save_locked(request: web.Request) -> web.Response:
         data = await asyncio.to_thread(_read_config)
     except Exception:
         return _deny("config.json is corrupt", status=500)
-    if not isinstance(data.get("wechat"), dict):
-        data["wechat"] = {}
-    wc_cfg = data["wechat"]
+    if not isinstance(data.get("wecom"), dict):
+        # Back-compat: seed from a COPY of the legacy "wechat" section (the
+        # config key was renamed) so an existing install's allow-list /
+        # thresholds / ws_url survive the first dashboard save instead of
+        # being reset. Copy so the legacy block is never mutated in place.
+        legacy = data.get("wechat")
+        data["wecom"] = dict(legacy) if isinstance(legacy, dict) else {}
+    wc_cfg = data["wecom"]
     staged: dict[str, object] = {}
     applied: list[str] = []
 

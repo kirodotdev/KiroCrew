@@ -57,7 +57,7 @@ _CONSOLIDATION_THRESHOLD = 30  # preferences/projects update threshold (messages
 _SESSION_MAX_BYTES = 2 * 1024 * 1024  # 2MB
 _SESSION_KEEP_LINES = 200
 # Bounded cross-process lock acquisition. The per-session sidecar ``flock`` is
-# acquired on the hot ``append`` path, which some transports (Telegram/WeChat/
+# acquired on the hot ``append`` path, which some transports (Telegram/WeCom/
 # Webex dispatch, workflow/cron injection) may still call synchronously from the
 # gateway event loop. An UNBOUNDED blocking acquire there would let one wedged
 # writer in another process freeze the whole gateway indefinitely, and simply

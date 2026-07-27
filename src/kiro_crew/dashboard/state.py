@@ -1555,7 +1555,7 @@ class DashboardState:
         # Short reason from the most recent Webex connection failure, empty
         # when connected or never attempted. Read by the settings badge.
         self.webex_connect_error: str = ""
-        # True only while the WeCom (WeChat) channel's WebSocket is connected
+        # True only while the WeCom (企业微信) channel's WebSocket is connected
         # + subscribed (kept live by WeComClient.on_status, wired in
         # maybe_start_wecom). Read by the WeCom settings status badge.
         self.wecom_connected: bool = False

@@ -1,6 +1,6 @@
-# WeChat Integration
+# WeCom Integration
 
-Talk to your KiroCrew agent from WeChat — through a WeCom (企业微信) AI bot. Create
+Talk to your KiroCrew agent from WeCom — through a WeCom (企业微信) AI bot. Create
 the bot in your WeCom console, drop in two values, and you're chatting. Replies
 stream back live.
 
@@ -14,7 +14,7 @@ WebSocket to WeCom, so there's no callback URL or open port to manage.
 ## The easy way: just ask KiroCrew
 
 You don't have to edit anything by hand. In any KiroCrew session — the
-dashboard, Slack, or the CLI — say something like *"set up the WeChat channel."*
+dashboard, Slack, or the CLI — say something like *"set up the WeCom channel."*
 KiroCrew tells you where to create the WeCom AI bot, then writes your Bot ID and
 Secret into `~/.kirocrew/.env` and `config.json` and restarts the gateway for
 you. You just paste the two values when it asks.
@@ -37,7 +37,7 @@ WeCom console.
    ```
 4. **Turn it on** in `~/.kirocrew/config.json`:
    ```json
-   "wechat": {
+   "wecom": {
      "enabled": true,
      "allowed_users": [{ "userid": "zhangsan", "name": "Zhang San" }]
    }
@@ -78,7 +78,7 @@ own, and it has no buttons (so `OPTIONS` arrive as plain text).
 
 ## Settings & reference
 
-Everything lives in the `wechat` section of `config.json`:
+Everything lives in the `wecom` section of `config.json`:
 
 | Setting | Default | What it does |
 |---|---|---|

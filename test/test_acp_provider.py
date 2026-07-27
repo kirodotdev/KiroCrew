@@ -156,7 +156,7 @@ class TestCompactRouting:
     async def test_midturn_terminal_status_cached_for_wait(self):
         """kiro-cli may emit the terminal compaction status BEFORE end_turn.
         compact()'s drain must capture it so a subsequent
-        wait_for_compaction() (task_executor, wechat, cli_chat) returns it
+        wait_for_compaction() (task_executor, wecom, cli_chat) returns it
         instead of stalling 120s and resetting a compacted session."""
         provider = _build_provider(backend="")
         status = AcpEvent(kind="compaction_status", text="completed", title="sum")

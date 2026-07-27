@@ -2473,7 +2473,7 @@
         "publish"
       ],
       "label": "Allowed Publish Destinations",
-      "help": "Publish-provider ids the operator permits (e.g. 'artifactory'). Empty list allows all registered destinations (default-open). Cannot widen past the enterprise governance ceiling.",
+      "help": "Publish-provider ids the operator permits (registry keys). Empty list allows all registered destinations (default-open). Cannot widen past the enterprise governance ceiling.",
       "hasChildren": true,
       "enumValues": null,
       "defaultValue": []
@@ -2523,17 +2523,17 @@
       "defaultValue": null
     },
     {
-      "path": "wechat",
+      "path": "wecom",
       "kind": "core",
       "type": "object",
       "required": false,
       "deprecated": false,
       "sensitive": false,
       "tags": [
-        "wechat"
+        "wecom"
       ],
-      "label": "WeChat",
-      "help": "WeChat (WeCom AI-bot) integration settings.",
+      "label": "WeCom",
+      "help": "WeCom (企业微信) AI-bot integration settings.",
       "hasChildren": true,
       "enumValues": null,
       "defaultValue": {
@@ -2546,30 +2546,30 @@
       }
     },
     {
-      "path": "wechat.enabled",
+      "path": "wecom.enabled",
       "kind": "core",
       "type": "boolean",
       "required": false,
       "deprecated": false,
       "sensitive": false,
       "tags": [
-        "wechat"
+        "wecom"
       ],
       "label": "Enabled",
-      "help": "Enable the WeChat channel via WeCom AI-bot. Requires the WECOM_BOT_ID and WECOM_SECRET credentials to be set.",
+      "help": "Enable the WeCom channel via WeCom AI-bot. Requires the WECOM_BOT_ID and WECOM_SECRET credentials to be set.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
     },
     {
-      "path": "wechat.allowed_users",
+      "path": "wecom.allowed_users",
       "kind": "core",
       "type": "array",
       "required": false,
       "deprecated": false,
       "sensitive": false,
       "tags": [
-        "wechat"
+        "wecom"
       ],
       "label": "Allowed Users",
       "help": "WeCom users allowed to DM the bot. Each entry: {userid, name}. The owner is always allowed.",
@@ -2578,7 +2578,7 @@
       "defaultValue": []
     },
     {
-      "path": "wechat.allowed_users.*",
+      "path": "wecom.allowed_users.*",
       "kind": "core",
       "type": "object",
       "required": false,
@@ -2592,14 +2592,14 @@
       "defaultValue": null
     },
     {
-      "path": "wechat.allow_all_users",
+      "path": "wecom.allow_all_users",
       "kind": "core",
       "type": "boolean",
       "required": false,
       "deprecated": false,
       "sensitive": false,
       "tags": [
-        "wechat"
+        "wecom"
       ],
       "label": "Allow All Users",
       "help": "Let every member of the WeCom organization DM the bot, bypassing the allow-list. Safe-ish because a WeCom AI bot is reachable only inside your own org tenant (unlike globally addressable bots), but it grants agent access to the whole company. Default off.",
@@ -2608,14 +2608,14 @@
       "defaultValue": false
     },
     {
-      "path": "wechat.ws_url",
+      "path": "wecom.ws_url",
       "kind": "core",
       "type": "string",
       "required": false,
       "deprecated": false,
       "sensitive": false,
       "tags": [
-        "wechat"
+        "wecom"
       ],
       "label": "WebSocket URL",
       "help": "WeCom AI-bot long-connection endpoint.",
@@ -2624,14 +2624,14 @@
       "defaultValue": "wss://openws.work.weixin.qq.com"
     },
     {
-      "path": "wechat.soft_threshold_pct",
+      "path": "wecom.soft_threshold_pct",
       "kind": "core",
       "type": "integer",
       "required": false,
       "deprecated": false,
       "sensitive": false,
       "tags": [
-        "wechat"
+        "wecom"
       ],
       "label": "Soft Context Threshold %",
       "help": "When a DM's context passes this, prompt the user to /compact or /new instead of auto-compacting.",
@@ -2640,14 +2640,14 @@
       "defaultValue": 80
     },
     {
-      "path": "wechat.hard_threshold_pct",
+      "path": "wecom.hard_threshold_pct",
       "kind": "core",
       "type": "integer",
       "required": false,
       "deprecated": false,
       "sensitive": false,
       "tags": [
-        "wechat"
+        "wecom"
       ],
       "label": "Hard Context Threshold %",
       "help": "Force a compaction when context reaches this, even without a user decision, so the window never overflows.",
@@ -3084,6 +3084,8 @@
         "recent_tint_count": 0,
         "onboarded": false,
         "import_onboarded": false,
+        "user_role": "",
+        "user_technical_level": "",
         "tips_enabled": true,
         "tips_cadence_hours": 6.0,
         "tips_snooze_hours": 48.0,
@@ -3399,6 +3401,34 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
+    },
+    {
+      "path": "dashboard.user_role",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "User Role",
+      "help": "The user's professional background, collected during onboarding (developer, designer, product-manager, data-ml, it-ops, other). Injected into the agent prompt so responses match the user's domain vocabulary. Empty = unspecified.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
+      "path": "dashboard.user_technical_level",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "User Technical Level",
+      "help": "How technical the user is (codes, somewhat-technical, non-technical), collected during onboarding. Injected into the agent prompt to calibrate explanation depth. Empty = unspecified.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
     },
     {
       "path": "dashboard.tips_enabled",

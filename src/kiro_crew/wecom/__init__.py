@@ -1,4 +1,4 @@
-"""WeChat channel for KiroCrew via WeCom (企业微信) AI-bot.
+"""WeCom channel for KiroCrew via WeCom (企业微信) AI-bot.
 
 DM-only, outbound WebSocket long-connection to ``wss://openws.work.weixin.qq.com``.
 Reuses the existing session machinery (SessionManager / provider.stream); this

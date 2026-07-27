@@ -87,5 +87,5 @@ are ignored by design — DM the bot directly.
 
 - [Slack Integration](slack-integration.md)
 - [Telegram Integration](telegram-integration.md)
-- [WeChat Integration](wechat-integration.md)
+- [WeCom Integration](wecom-integration.md)
 - [Getting Started](getting-started.md)

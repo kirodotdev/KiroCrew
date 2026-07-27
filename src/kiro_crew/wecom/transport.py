@@ -1,4 +1,4 @@
-"""Layer 1 -- WeCom (WeChat Work AI-bot) as a concrete ``MessagingTransport``.
+"""Layer 1 -- WeCom (企业微信) as a concrete ``MessagingTransport``.
 
 Wraps the low-level :class:`WeComClient` (WebSocket long-connection + WS
 streaming reply / one-shot ``response_url`` fallback) in the channel-neutral
@@ -6,8 +6,8 @@ transport contract, so the WeCom channel rides the shared ``TurnDriver``
 (credential/exfil redaction + tool-approval ladder + SEL audit) instead of a
 hand-rolled turn loop.
 
-Dependency direction is ``wechat -> messaging`` (allowed); the neutral
-``messaging`` package never imports ``wechat``.
+Dependency direction is ``wecom -> messaging`` (allowed); the neutral
+``messaging`` package never imports ``wecom``.
 
 WeCom differs from Slack/Telegram in three ways, all absorbed INSIDE this
 transport (the neutral layers are untouched):
@@ -23,7 +23,7 @@ transport (the neutral layers are untouched):
 Security: :meth:`authorize` is **deny-by-default** and owner-only. An empty
 allow-list authorizes nobody (fail closed), never everybody. The only path to
 "everybody" is the explicit ``allow_all`` opt-in (config
-``wechat.allow_all_users``), which still denies frames without a userid.
+``wecom.allow_all_users``), which still denies frames without a userid.
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ from kiro_crew.messaging.transport import (
     TransportCapabilities,
 )
 from kiro_crew.sel import sel
-from kiro_crew.wechat.client import _REPLY_MAX_CHARS, WeComClient, WeComInbound
+from kiro_crew.wecom.client import _REPLY_MAX_CHARS, WeComClient, WeComInbound
 
 # A dispatch callback consumes an authorized WeCom inbound (carrying the WS
 # routing keys ``req_id`` / ``response_url`` that the neutral InboundMessage
@@ -79,7 +79,7 @@ class WeComTransport(MessagingTransport):
         # Deny-by-default: freeze the allow-list so it can't mutate under an
         # in-flight decision. owner_id (when set) is always allowed.
         self._allowed: frozenset[str] = frozenset(u for u in allowed_users if u)
-        # Explicit opt-in only (config wechat.allow_all_users): every org
+        # Explicit opt-in only (config wecom.allow_all_users): every org
         # member may DM the bot. This is a deliberate toggle, NEVER inferred
         # from an empty allow-list — an empty list stays fail-closed. A WeCom
         # AI bot is reachable only inside the org tenant, which is what makes
@@ -147,7 +147,7 @@ class WeComTransport(MessagingTransport):
                 caller=uid or "unknown",
                 operation="wecom_transport.authorize",
                 outcome="denied",
-                source="wechat",
+                source="wecom",
             )
         return allowed
 

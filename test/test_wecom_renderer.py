@@ -1,11 +1,11 @@
-"""Tests for kiro_crew.wechat.renderer (WeComRenderer, Layer 2b)."""
+"""Tests for kiro_crew.wecom.renderer (WeComRenderer, Layer 2b)."""
 
 from __future__ import annotations
 
 import pytest
 
-from kiro_crew.wechat.renderer import WeComRenderer, _strip_options
-from kiro_crew.wechat.transport import WECOM_CAPABILITIES
+from kiro_crew.wecom.renderer import WeComRenderer, _strip_options
+from kiro_crew.wecom.transport import WECOM_CAPABILITIES
 
 
 class TestStripOptionsRedos:

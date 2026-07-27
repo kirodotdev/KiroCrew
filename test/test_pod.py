@@ -832,7 +832,7 @@ class TestReviewRound1Fixes:
                 {
                     "tunnel": {"enabled": True},
                     "telegram": {"enabled": True, "bot_token": "tg-live"},
-                    "wechat": {"enabled": True},
+                    "wecom": {"enabled": True},
                 }
             )
         )
@@ -840,7 +840,7 @@ class TestReviewRound1Fixes:
         assert out is not None
         assert out["tunnel"]["enabled"] is False
         assert out["telegram"]["enabled"] is False
-        assert out["wechat"]["enabled"] is False
+        assert out["wecom"]["enabled"] is False
         assert out["telegram"]["bot_token"] == "tg-live"  # preserved, just disabled
 
     def test_build_pod_env_scrubs_wecom_and_telegram(

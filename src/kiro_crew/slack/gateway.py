@@ -167,7 +167,7 @@ if TYPE_CHECKING:
     from kiro_crew.task_models import Task
     from kiro_crew.telegram.client import TelegramClient
     from kiro_crew.webex.client import WebexClient
-    from kiro_crew.wechat.client import WeComClient
+    from kiro_crew.wecom.client import WeComClient
 
 # Chunked wave-digest size: every multi-task wave delivers its completed
 # results to the parent in digest CHUNKS of this many members (queue-style —
@@ -566,7 +566,7 @@ class GatewayOrchestrator:
         self._slack_enabled = bool(self._app_token and self._bot_token)
         self._wecom_bot_id = creds.get(CRED_WECOM_BOT_ID, "")
         self._wecom_secret = creds.get(CRED_WECOM_SECRET, "")
-        self._wecom_enabled = bool(cfg.wechat.enabled and self._wecom_bot_id and self._wecom_secret)
+        self._wecom_enabled = bool(cfg.wecom.enabled and self._wecom_bot_id and self._wecom_secret)
         # Telegram — the TELEGRAM_BOT_TOKEN credential (env/.env) overrides
         # cfg.telegram.bot_token; all other settings come from the typed
         # cfg.telegram dataclass (no ad-hoc config.json re-parse).
@@ -4967,8 +4967,8 @@ class GatewayOrchestrator:
         init_interactions(self)
         init_socket_mode(self, seen)
 
-        # WeChat (WeCom AI-bot) channel — guarded no-op unless enabled + credentialed.
-        from kiro_crew.wechat.gateway import maybe_start_wecom
+        # WeCom (企业微信) channel — guarded no-op unless enabled + credentialed.
+        from kiro_crew.wecom.gateway import maybe_start_wecom
 
         self._wecom_client = await maybe_start_wecom(self)
         # Telegram channel — guarded no-op unless enabled + token present.

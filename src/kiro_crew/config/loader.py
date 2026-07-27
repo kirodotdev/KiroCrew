@@ -104,6 +104,7 @@ _KNOWN_CONFIG_SECTIONS: frozenset = frozenset(
         "telegram",
         "discord",
         "webex",
+        "wecom",
         "dashboard",
         "tunnel",
         "hooks",
@@ -2556,9 +2557,9 @@ class WeComConfig:
         default=False,
         metadata=_meta(
             "Enabled",
-            "Enable the WeChat channel via WeCom AI-bot. Requires the WECOM_BOT_ID "
+            "Enable the WeCom channel via WeCom AI-bot. Requires the WECOM_BOT_ID "
             "and WECOM_SECRET credentials to be set.",
-            tags=["wechat"],
+            tags=["wecom"],
         ),
     )
     allowed_users: list[dict] = field(
@@ -2567,7 +2568,7 @@ class WeComConfig:
             "Allowed Users",
             "WeCom users allowed to DM the bot. Each entry: {userid, name}. "
             "The owner is always allowed.",
-            tags=["wechat"],
+            tags=["wecom"],
         ),
     )
     allow_all_users: bool = field(
@@ -2578,7 +2579,7 @@ class WeComConfig:
             "the allow-list. Safe-ish because a WeCom AI bot is reachable only "
             "inside your own org tenant (unlike globally addressable bots), "
             "but it grants agent access to the whole company. Default off.",
-            tags=["wechat"],
+            tags=["wecom"],
         ),
     )
     ws_url: str = field(
@@ -2586,7 +2587,7 @@ class WeComConfig:
         metadata=_meta(
             "WebSocket URL",
             "WeCom AI-bot long-connection endpoint.",
-            tags=["wechat"],
+            tags=["wecom"],
         ),
     )
     soft_threshold_pct: int = field(
@@ -2595,7 +2596,7 @@ class WeComConfig:
             "Soft Context Threshold %",
             "When a DM's context passes this, prompt the user to /compact or /new "
             "instead of auto-compacting.",
-            tags=["wechat"],
+            tags=["wecom"],
         ),
     )
     hard_threshold_pct: int = field(
@@ -2604,7 +2605,7 @@ class WeComConfig:
             "Hard Context Threshold %",
             "Force a compaction when context reaches this, even without a user "
             "decision, so the window never overflows.",
-            tags=["wechat"],
+            tags=["wecom"],
         ),
     )
 
@@ -2978,9 +2979,9 @@ class KiroCrewConfig:
             "Publish", "Artifact publishing controls (destinations allowlist).", tags=["publish"]
         ),
     )
-    wechat: WeComConfig = field(
+    wecom: WeComConfig = field(
         default_factory=WeComConfig,
-        metadata=_meta("WeChat", "WeChat (WeCom AI-bot) integration settings.", tags=["wechat"]),
+        metadata=_meta("WeCom", "WeCom (企业微信) AI-bot integration settings.", tags=["wecom"]),
     )
     telegram: TelegramConfig = field(
         default_factory=TelegramConfig,
@@ -3227,9 +3228,13 @@ class KiroCrewConfig:
         publish_data = data.get("publish", {})
         if not isinstance(publish_data, dict):
             publish_data = {}
-        wechat_data = data.get("wechat", {})
-        if not isinstance(wechat_data, dict):
-            wechat_data = {}
+        # Back-compat: this channel's config section was renamed
+        # "wechat" -> "wecom". Fall back to the legacy key so existing
+        # installs keep their WeCom settings on upgrade (read-only alias;
+        # no broader migration machinery).
+        wecom_data = data.get("wecom", data.get("wechat", {}))
+        if not isinstance(wecom_data, dict):
+            wecom_data = {}
         dashboard_data = data.get("dashboard", {})
         if not isinstance(dashboard_data, dict):
             dashboard_data = {}
@@ -3582,17 +3587,17 @@ class KiroCrewConfig:
                     if isinstance(r, str) and r.strip()
                 ],
             ),
-            wechat=WeComConfig(
-                enabled=bool(wechat_data.get("enabled", False)),
+            wecom=WeComConfig(
+                enabled=bool(wecom_data.get("enabled", False)),
                 allowed_users=[
                     u
-                    for u in wechat_data.get("allowed_users", [])
+                    for u in wecom_data.get("allowed_users", [])
                     if isinstance(u, dict) and u.get("userid")
                 ],
-                allow_all_users=bool(wechat_data.get("allow_all_users", False)),
-                ws_url=str(wechat_data.get("ws_url", "wss://openws.work.weixin.qq.com")),
-                soft_threshold_pct=_safe_int(wechat_data.get("soft_threshold_pct", 80), 80),
-                hard_threshold_pct=_safe_int(wechat_data.get("hard_threshold_pct", 95), 95),
+                allow_all_users=bool(wecom_data.get("allow_all_users", False)),
+                ws_url=str(wecom_data.get("ws_url", "wss://openws.work.weixin.qq.com")),
+                soft_threshold_pct=_safe_int(wecom_data.get("soft_threshold_pct", 80), 80),
+                hard_threshold_pct=_safe_int(wecom_data.get("hard_threshold_pct", 95), 95),
             ),
             dashboard=DashboardConfig(
                 url=dashboard_data.get("url", ""),
@@ -3832,6 +3837,7 @@ class KiroCrewConfig:
             "telegram": asdict(self.telegram),
             "discord": asdict(self.discord),
             "webex": asdict(self.webex),
+            "wecom": asdict(self.wecom),
             "dashboard": asdict(self.dashboard),
             "tunnel": asdict(self.tunnel),
             "hooks": self.hooks,

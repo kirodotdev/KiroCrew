@@ -37,6 +37,6 @@ TIP_DOC_ALLOWLIST: frozenset[str] = frozenset(
         "discord-integration.md",
         "use-cases.md",
         "webex-integration.md",
-        "wechat-integration.md",
+        "wecom-integration.md",
     }
 )

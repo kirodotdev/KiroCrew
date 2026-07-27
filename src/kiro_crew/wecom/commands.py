@@ -1,4 +1,4 @@
-"""WeChat command parsing.
+"""WeCom command parsing.
 
 Commands:
   /new (or 新对话 / 清空)  — start a fresh session (advances the generation counter)

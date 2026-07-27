@@ -18,7 +18,7 @@ still work) and has no callback handler. The security ``tool_gate`` and the
 ``spawn_run`` auto-approve are wired inline off ``ctx_builder.hooks``
 (channel-neutral) so this module never imports ``kiro_crew.slack``.
 
-Dependency direction is ``wechat -> messaging`` (allowed).
+Dependency direction is ``wecom -> messaging`` (allowed).
 """
 
 from __future__ import annotations
@@ -34,17 +34,17 @@ from kiro_crew.messaging.driver import APPROVAL_INTERACTIVE, TurnDriver
 from kiro_crew.messaging.identity import publish_turn_identity
 from kiro_crew.messaging.link import build_dm_session_key, seed_generation
 from kiro_crew.sel import sel
-from kiro_crew.wechat.client import new_stream_id
-from kiro_crew.wechat.commands import ConversationState, parse_command
-from kiro_crew.wechat.renderer import WeComRenderer
-from kiro_crew.wechat.transport import WECOM_CAPABILITIES
+from kiro_crew.wecom.client import new_stream_id
+from kiro_crew.wecom.commands import ConversationState, parse_command
+from kiro_crew.wecom.renderer import WeComRenderer
+from kiro_crew.wecom.transport import WECOM_CAPABILITIES
 
 if TYPE_CHECKING:
     from kiro_crew.config.loader import KiroCrewConfig
     from kiro_crew.context import ContextBuilder
     from kiro_crew.history import ConversationLog
     from kiro_crew.session import SessionManager
-    from kiro_crew.wechat.client import WeComClient, WeComInbound
+    from kiro_crew.wecom.client import WeComClient, WeComInbound
 
 logger = logging.getLogger(__name__)
 
@@ -204,7 +204,7 @@ class WeComDispatcher:
                 approval_mode=self.approval_mode,
                 decider=None,  # WeCom can't render approve/deny buttons
                 # Preserve the auto_approve_subagent_spawn hook for spawn_run
-                # (replicated inline to avoid a wechat -> slack import).
+                # (replicated inline to avoid a wecom -> slack import).
                 auto_approve_tool=lambda title: bool(
                     self.ctx_builder
                     and self.ctx_builder.hooks
@@ -237,7 +237,7 @@ class WeComDispatcher:
                     caller=f"wecom:{userid}",
                     operation="transport_dispatch.handle",
                     outcome="success",
-                    source="wechat",
+                    source="wecom",
                     resources=f"session={session_key}",
                 )
             except Exception:
@@ -328,7 +328,7 @@ class WeComDispatcher:
         if reply_text:
             self.conv_log.append(session_key, "assistant", reply_text)
         if is_new:
-            title = (user_text or "").strip().replace("\n", " ")[:40] or "WeChat"
+            title = (user_text or "").strip().replace("\n", " ")[:40] or "WeCom"
             self.conv_log.set_title(session_key, title)
 
     async def _notice_bubble(self, req_id: str, text: str) -> None:
@@ -358,7 +358,7 @@ class WeComDispatcher:
         """
         userid = inbound.userid
         pct = self.sessions.check_context_usage(session_key, provider)
-        if pct >= self.cfg.wechat.hard_threshold_pct:
+        if pct >= self.cfg.wecom.hard_threshold_pct:
             self._conv.clear_awaiting(userid)
             try:
                 await provider.compact()
@@ -366,7 +366,7 @@ class WeComDispatcher:
                 await self._notice_bubble(inbound.req_id, "🗜️ 上下文接近上限，已自动压缩。")
             except Exception:
                 logger.debug("WeCom hard-threshold compaction failed", exc_info=True)
-        elif pct >= self.cfg.wechat.soft_threshold_pct and not self._conv.is_awaiting(userid):
+        elif pct >= self.cfg.wecom.soft_threshold_pct and not self._conv.is_awaiting(userid):
             self._conv.set_awaiting(userid)
             await self._notice_bubble(
                 inbound.req_id,

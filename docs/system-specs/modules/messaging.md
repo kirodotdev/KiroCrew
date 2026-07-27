@@ -494,7 +494,7 @@ approvals run decider-less (deny-by-default under INTERACTIVE mode).
   carries that reason, `configured` requires both credentials AND
   enabled AND (a non-empty allow-list OR `allow_all_users`). `allowed_user_ids`
   projects the
-  canonical `wechat.allowed_users` `{userid, name}` entries down to userid
+  canonical `wecom.allowed_users` `{userid, name}` entries down to userid
   strings for the tag editor. `allow_all_users` is the explicit
   allow-everyone opt-in (default false) — it is a deliberate toggle, never
   inferred from an empty allow-list, and the transport still denies frames
@@ -512,7 +512,7 @@ approvals run decider-less (deny-by-default under INTERACTIVE mode).
   entries must match the WeCom userid shape (1-64 chars of
   letters/digits/`.-_@`, fail closed); the save re-attaches stored display
   names to surviving entries and writes the canonical `{userid, name}` list
-  back to `config.json` under `wechat`. `allow_all_users` must be a strict
+  back to `config.json` under `wecom`. `allow_all_users` must be a strict
   boolean. Secrets land in `config_dir/.env`
   (atomic 0600) with `os.environ` synced. Writes are serialized under the
   repo-wide config lock. All fields are boot-read, so `restart_required` is

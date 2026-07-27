@@ -18,7 +18,7 @@ frames:
   back to a one-shot ``response_url`` POST if the WS stream is
   unavailable/expired.
 
-Dependency direction is ``wechat -> messaging`` (allowed).
+Dependency direction is ``wecom -> messaging`` (allowed).
 """
 
 from __future__ import annotations
@@ -30,10 +30,10 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew.constants import OPTIONS_RE_TRAILER
 from kiro_crew.messaging.renderer import Renderer
 from kiro_crew.messaging.transport import TransportCapabilities
-from kiro_crew.wechat.client import new_stream_id
+from kiro_crew.wecom.client import new_stream_id
 
 if TYPE_CHECKING:
-    from kiro_crew.wechat.client import WeComClient
+    from kiro_crew.wecom.client import WeComClient
 
 logger = logging.getLogger(__name__)
 

@@ -84,5 +84,5 @@ gateway.
 ## Related docs
 
 - [Slack Integration](slack-integration.md)
-- [WeChat Integration](wechat-integration.md)
+- [WeCom Integration](wecom-integration.md)
 - [Getting Started](getting-started.md)

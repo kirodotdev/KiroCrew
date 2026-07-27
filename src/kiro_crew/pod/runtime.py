@@ -345,7 +345,7 @@ def sanitized_seed_config(seed_dir: Path) -> dict | None:
     # value too, so the enabled=False guarantee can't be skipped by a falsy value.
     # (Slack has no config-level enable — it is credential-gated, and those creds
     # are scrubbed from the pod env by build_pod_env.)
-    for section in ("tunnel", "telegram", "wechat"):
+    for section in ("tunnel", "telegram", "wecom"):
         if not isinstance(data.get(section), dict):
             data[section] = {}
         data[section]["enabled"] = False

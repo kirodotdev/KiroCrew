@@ -906,7 +906,7 @@ class AcpProvider(LLMProvider):
         #   started/completed, which wait_for_compaction() picks up.
         # Capture a terminal status emitted MID-TURN (before end_turn) while
         # draining — otherwise it would be consumed and lost, stranding a
-        # subsequent wait_for_compaction() (task_executor, wechat, cli_chat)
+        # subsequent wait_for_compaction() (task_executor, wecom, cli_chat)
         # until timeout even though the compact succeeded.
         self._compact_result = None
         async for event in self._client.stream_events(message):

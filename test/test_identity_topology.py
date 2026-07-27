@@ -540,7 +540,7 @@ def test_session_pid_call_sites_are_registered() -> None:
 # surface that runs an agent turn but never publishes the session_pid mapping
 # leaves managed MCP tools (learn_add, cron management, ...) unable to resolve
 # the caller's session identity. Telegram was the reported case; discord,
-# slack, webex and wechat transport dispatch shared the exact same gap. The fix
+# slack, webex and wecom transport dispatch shared the exact same gap. The fix
 # centralizes publication in messaging.identity.publish_turn_identity so every
 # turn-running surface shares one writer. This guard DYNAMICALLY discovers all
 # channel transport-dispatch surfaces (glob, not a hard-coded list) and fails

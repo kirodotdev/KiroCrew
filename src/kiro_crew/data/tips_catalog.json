@@ -128,10 +128,10 @@
       "mtime": 1784265640.0
     },
     {
-      "feature": "WeChat Integration",
-      "title": "WeChat Integration",
-      "summary": "Talk to your KiroCrew agent from WeChat \u2014 through a WeCom (\u4f01\u4e1a\u5fae\u4fe1) AI bot. Create the bot in your WeCom console, drop in two values, and you're chatting. Replies stream back live.",
-      "doc": "wechat-integration.md",
+      "feature": "WeCom Integration",
+      "title": "WeCom Integration",
+      "summary": "Talk to your KiroCrew agent from WeCom \u2014 through a WeCom (\u4f01\u4e1a\u5fae\u4fe1) AI bot. Create the bot in your WeCom console, drop in two values, and you're chatting. Replies stream back live.",
+      "doc": "wecom-integration.md",
       "mtime": 1784265640.0
     }
   ]

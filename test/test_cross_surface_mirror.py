@@ -106,10 +106,10 @@ class TestDeliverCrossSurfaceReply:
     @pytest.mark.asyncio
     async def test_skips_when_not_proactive(self, tmp_path):
         state = _make_state(tmp_path)
-        tp = _fake_transport("wechat", proactive=False)
+        tp = _fake_transport("wecom", proactive=False)
         state.register_channel_transport(tp)
         state.sessions.get_mirror_link = MagicMock(
-            return_value=ChannelLink("wechat", channel_id="u1")
+            return_value=ChannelLink("wecom", channel_id="u1")
         )
         await _deliver_cross_surface_reply(state, "k", "hi")
         tp.send_message.assert_not_awaited()
@@ -223,10 +223,10 @@ class TestDeliverCrossSurfaceUserMessage:
     @pytest.mark.asyncio
     async def test_skips_when_not_proactive(self, tmp_path):
         state = _make_state(tmp_path)
-        tp = _fake_transport("wechat", proactive=False)
+        tp = _fake_transport("wecom", proactive=False)
         state.register_channel_transport(tp)
         state.sessions.get_mirror_link = MagicMock(
-            return_value=ChannelLink("wechat", channel_id="u1")
+            return_value=ChannelLink("wecom", channel_id="u1")
         )
         await _deliver_cross_surface_user_message(state, "k", "hi")
         tp.send_message.assert_not_awaited()

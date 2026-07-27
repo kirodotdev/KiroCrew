@@ -2,7 +2,7 @@ import { WeComLogo } from '../../components/WeComLogo'
 import { api } from '../../api/client'
 import { BotChannelPanel, type BotChannelSpec } from './BotChannelPanel'
 
-const SETUP_GUIDE = 'https://github.com/kirodotdev/KiroCrew/blob/main/src/kiro_crew/docs/wechat-integration.md'
+const SETUP_GUIDE = 'https://github.com/kirodotdev/KiroCrew/blob/main/src/kiro_crew/docs/wecom-integration.md'
 
 // WeCom userids: 1-64 chars of letters, digits, and .-_@ (mirrors the
 // backend's fail-closed check in the save handler).
@@ -13,7 +13,7 @@ const WECOM_SPEC: BotChannelSpec = {
   queryKey: 'wecom-config',
   logo: <WeComLogo size={20} />,
   description:
-    'Talk to your agent from WeChat through a WeCom (企业微信) AI bot. The connection ' +
+    'Talk to your agent from WeCom through a WeCom (企业微信) AI bot. The connection ' +
     'is an outbound WebSocket — no callback URL or open port to manage.',
   host: 'openws.work.weixin.qq.com',
   setupGuide: SETUP_GUIDE,
@@ -60,7 +60,7 @@ const WECOM_SPEC: BotChannelSpec = {
   refetchInterval: 15_000,
 }
 
-/** WeCom (WeChat Work) channel-integration settings. */
+/** WeCom (企业微信) channel-integration settings. */
 export function WeComPanel() {
   return <BotChannelPanel spec={WECOM_SPEC} />
 }

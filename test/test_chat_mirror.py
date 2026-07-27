@@ -93,11 +93,11 @@ class TestMirrorLink:
     @pytest.mark.asyncio
     async def test_non_proactive_channel_rejected(self, tmp_path, monkeypatch):
         state = _prep(tmp_path, monkeypatch)
-        state.register_channel_transport(_fake_transport("wechat", proactive=False))
+        state.register_channel_transport(_fake_transport("wecom", proactive=False))
         async with TestClient(TestServer(_make_mirror_app(state))) as client:
             resp = await client.post(
                 "/api/chat/slots/s1/mirror-link",
-                json={"channel_type": "wechat", "conversation_id": "u1"},
+                json={"channel_type": "wecom", "conversation_id": "u1"},
             )
             assert resp.status == 400
             assert "proactive" in (await resp.json())["error"]

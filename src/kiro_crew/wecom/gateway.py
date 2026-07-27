@@ -1,11 +1,11 @@
-"""WeChat (WeCom AI-bot) channel startup -- wired into the gateway boot.
+"""WeCom (企业微信) channel startup -- wired into the gateway boot.
 
 ``maybe_start_wecom`` is the single guarded entry point. When the channel is
 enabled + credentialed it builds the :class:`WeComDispatcher` +
 :class:`WeComTransport` + the low-level :class:`WeComClient`, wires the client's
 inbound WS frames into ``transport.receive`` (authorize + normalize ->
 dispatcher), then opens the outbound WebSocket via ``transport.connect()``.
-Failures are logged and swallowed so a WeChat problem never takes down the
+Failures are logged and swallowed so a WeCom problem never takes down the
 gateway.
 
 The turn itself runs on the shared ``TurnDriver`` (credential/exfil redaction +
@@ -19,9 +19,9 @@ import os
 from typing import TYPE_CHECKING
 
 from kiro_crew.messaging.driver import APPROVAL_AUTO, APPROVAL_INTERACTIVE
-from kiro_crew.wechat.client import WeComClient
-from kiro_crew.wechat.transport import WeComTransport
-from kiro_crew.wechat.transport_dispatch import WeComDispatcher
+from kiro_crew.wecom.client import WeComClient
+from kiro_crew.wecom.transport import WeComTransport
+from kiro_crew.wecom.transport_dispatch import WeComDispatcher
 
 if TYPE_CHECKING:
     from kiro_crew.slack.gateway import GatewayOrchestrator
@@ -45,7 +45,7 @@ def _resolve_approval_mode(orch: "GatewayOrchestrator") -> str:
 def _allowed_userids(orch: "GatewayOrchestrator") -> list[str]:
     """Extract the configured WeCom allow-list userids (filtered)."""
     out: list[str] = []
-    for u in orch._cfg.wechat.allowed_users:
+    for u in orch._cfg.wecom.allowed_users:
         uid = u.get("userid") if isinstance(u, dict) else None
         if uid:
             out.append(uid)
@@ -53,7 +53,7 @@ def _allowed_userids(orch: "GatewayOrchestrator") -> list[str]:
 
 
 async def maybe_start_wecom(orch: "GatewayOrchestrator") -> "WeComClient | None":
-    """Start the WeChat channel if enabled + credentialed; else no-op.
+    """Start the WeCom channel if enabled + credentialed; else no-op.
 
     Returns the running client (so the gateway can ``close()`` it on shutdown)
     or None. The transport + dispatcher stay alive via the client's handler
@@ -80,13 +80,13 @@ async def maybe_start_wecom(orch: "GatewayOrchestrator") -> "WeComClient | None"
         client = WeComClient(
             bot_id=orch._wecom_bot_id,
             secret=orch._wecom_secret,
-            ws_url=orch._cfg.wechat.ws_url,
+            ws_url=orch._cfg.wecom.ws_url,
             proxy=proxy,
         )
         transport = WeComTransport(
             client,
             allowed_users=_allowed_userids(orch),
-            allow_all=bool(orch._cfg.wechat.allow_all_users),
+            allow_all=bool(orch._cfg.wecom.allow_all_users),
             owner_id=orch._owner_id,
             dispatch=dispatcher.handle_message,
         )
@@ -119,7 +119,7 @@ async def maybe_start_wecom(orch: "GatewayOrchestrator") -> "WeComClient | None"
         await transport.connect()  # opens the outbound WS connect/serve loop
         if orch.dashboard_state is not None:
             orch.dashboard_state.register_channel_transport(transport)
-        logger.info("WeChat (WeCom AI-bot) channel started (transport path).")
+        logger.info("WeCom (企业微信) channel started (transport path).")
         return client
     except Exception as exc:
         if orch.dashboard_state is not None:
@@ -127,5 +127,5 @@ async def maybe_start_wecom(orch: "GatewayOrchestrator") -> "WeComClient | None"
             orch.dashboard_state.wecom_connect_error = (
                 f"{type(exc).__name__}: {exc}"[:120]
             )
-        logger.exception("Failed to start WeChat channel; continuing without it.")
+        logger.exception("Failed to start WeCom channel; continuing without it.")
         return None

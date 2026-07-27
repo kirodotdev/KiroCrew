@@ -94,12 +94,12 @@ def test_save_persists_credentials_and_config(tmp_path: Path, monkeypatch) -> No
     assert os.environ["WECOM_BOT_ID"] == BOT_ID
     assert os.environ["WECOM_SECRET"] == SECRET
     cfg = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
-    assert cfg["wechat"]["enabled"] is True
-    assert cfg["wechat"]["allowed_users"] == [
+    assert cfg["wecom"]["enabled"] is True
+    assert cfg["wecom"]["allowed_users"] == [
         {"userid": "zhangsan", "name": ""},
         {"userid": "li.si-01@corp", "name": ""},
     ]
-    assert cfg["wechat"]["soft_threshold_pct"] == 75
+    assert cfg["wecom"]["soft_threshold_pct"] == 75
 
 
 def test_save_rejects_whitespace_credentials(tmp_path: Path, monkeypatch) -> None:
@@ -149,7 +149,7 @@ def test_allowlist_preserves_display_names(tmp_path: Path, monkeypatch) -> None:
     cfg.write_text(
         json.dumps(
             {
-                "wechat": {
+                "wecom": {
                     "allowed_users": [
                         {"userid": "zhangsan", "name": "Zhang San"},
                         {"userid": "lisi", "name": "Li Si"},
@@ -165,7 +165,7 @@ def test_allowlist_preserves_display_names(tmp_path: Path, monkeypatch) -> None:
     status, _body = status_body
     assert status == 200
     out = json.loads(cfg.read_text(encoding="utf-8"))
-    assert out["wechat"]["allowed_users"] == [
+    assert out["wecom"]["allowed_users"] == [
         {"userid": "zhangsan", "name": "Zhang San"},
         {"userid": "wangwu", "name": ""},
     ]
@@ -225,7 +225,7 @@ def test_allow_all_users_save_and_strict_boolean(tmp_path: Path, monkeypatch) ->
     assert status == 200
     assert body["restart_required"] is True
     cfg = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
-    assert cfg["wechat"]["allow_all_users"] is True
+    assert cfg["wecom"]["allow_all_users"] is True
 
     (status_body, _env) = _client_put(mod, monkeypatch, tmp_path, {"allow_all_users": "yes"})
     status, body = status_body
@@ -241,7 +241,7 @@ def test_get_allow_all_counts_as_configured(tmp_path: Path, monkeypatch) -> None
     env.write_text(f"WECOM_BOT_ID={BOT_ID}\nWECOM_SECRET={SECRET}\n", encoding="utf-8")
     cfg = tmp_path / "config.json"
     cfg.write_text(
-        json.dumps({"wechat": {"enabled": True, "allow_all_users": True}}),
+        json.dumps({"wecom": {"enabled": True, "allow_all_users": True}}),
         encoding="utf-8",
     )
     monkeypatch.setattr(loader, "env_path", lambda: env)
@@ -271,7 +271,7 @@ def test_restart_required_only_on_actual_change(tmp_path: Path, monkeypatch) -> 
     cfg.write_text(
         json.dumps(
             {
-                "wechat": {
+                "wecom": {
                     "enabled": True,
                     "allowed_users": [{"userid": "zhangsan", "name": ""}],
                     "soft_threshold_pct": 80,
@@ -313,7 +313,7 @@ def test_get_masks_secrets_and_reports_state(tmp_path: Path, monkeypatch) -> Non
     cfg.write_text(
         json.dumps(
             {
-                "wechat": {
+                "wecom": {
                     "enabled": True,
                     "allowed_users": [{"userid": "zhangsan", "name": "Zhang San"}],
                 }

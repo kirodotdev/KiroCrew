@@ -1,4 +1,4 @@
-"""Tests for kiro_crew.wechat.transport_dispatch (WeComDispatcher) + commands."""
+"""Tests for kiro_crew.wecom.transport_dispatch (WeComDispatcher) + commands."""
 
 from __future__ import annotations
 
@@ -7,9 +7,9 @@ from types import SimpleNamespace
 import pytest
 
 from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_TEXT_CHUNK, AcpEvent
-from kiro_crew.wechat.client import WeComInbound
-from kiro_crew.wechat.commands import ConversationState, parse_command
-from kiro_crew.wechat.transport_dispatch import WeComDispatcher
+from kiro_crew.wecom.client import WeComInbound
+from kiro_crew.wecom.commands import ConversationState, parse_command
+from kiro_crew.wecom.transport_dispatch import WeComDispatcher
 
 # ------------------------------------------------------------------
 # Fakes
@@ -161,7 +161,7 @@ class FakeConvLog:
 def _cfg(default_agent: str = "", approval_mode: str = "interactive"):
     return SimpleNamespace(
         agent=SimpleNamespace(default_agent=default_agent, approval_mode=approval_mode),
-        wechat=SimpleNamespace(hard_threshold_pct=95.0, soft_threshold_pct=80.0),
+        wecom=SimpleNamespace(hard_threshold_pct=95.0, soft_threshold_pct=80.0),
         messaging=SimpleNamespace(
             dm_scope="per-channel-peer",
             idle_reset_minutes=0,
