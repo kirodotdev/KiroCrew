@@ -16,15 +16,29 @@ export function parseFiles(content: string, meta?: Record<string, unknown>): str
     : (content.match(/\[attached_file \d+\] (\S+)/g) || []).map(s => s.replace(/\[attached_file \d+\] /, ''))
 }
 
-/** Per-path display label: basename, disambiguated to the last-2 path segments
- *  when two paths share a basename (e.g. two `report.docx` in different dirs). */
+/** Per-path display label: the shortest trailing path segments that make the
+ *  label unique across `paths` (e.g. two `report.docx` in different dirs become
+ *  `q3/report.docx` and `q4/report.docx`).
+ *
+ *  Widens until unique rather than stopping at two segments. Two paths that
+ *  share their last TWO segments -- `/a/x/report.docx` and `/b/x/report.docx` --
+ *  both collapsed to `x/report.docx`, so two distinct attachments rendered with
+ *  the same chip label AND the same `mentionMap` key: the second overwrote the
+ *  first, and clicking either chip opened whichever path won. */
 export function buildFileLabels(paths: string[]): Map<string, string> {
-  const basenames = paths.map(p => p.split('/').pop() || p)
-  const dupes = new Set(basenames.filter((n, i) => basenames.indexOf(n) !== i))
   const map = new Map<string, string>()
+  const partsOf = new Map(paths.map(p => [p, p.split('/')]))
+  const labelAt = (p: string, depth: number) => {
+    const parts = partsOf.get(p) ?? [p]
+    return parts.slice(Math.max(0, parts.length - depth)).join('/') || p
+  }
+  const maxDepth = Math.max(1, ...paths.map(p => (partsOf.get(p) ?? []).length))
   for (const p of paths) {
-    const name = p.split('/').pop() || p
-    map.set(p, dupes.has(name) ? p.split('/').slice(-2).join('/') : name)
+    let depth = 1
+    while (depth < maxDepth && paths.some(q => q !== p && labelAt(q, depth) === labelAt(p, depth))) {
+      depth += 1
+    }
+    map.set(p, labelAt(p, depth))
   }
   return map
 }
