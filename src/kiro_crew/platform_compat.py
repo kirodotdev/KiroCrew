@@ -447,22 +447,6 @@ def _windows_process_parent_map() -> dict[int, int]:
         raise OSError("Windows process enumeration failed") from exc
 
 
-def descendant_pids(pid: int) -> list[int]:
-    """Return a retained Windows process-tree snapshot for timeout cleanup.
-
-    Windows loses parent-child linkage after a launcher exits, so callers that
-    need reliable cleanup should sample this while the root is alive and retain
-    the returned PIDs. POSIX callers use process groups and receive an empty
-    list.
-    """
-
-    if type(pid) is not int or pid <= 1:
-        raise ValueError(f"descendant_pids: refusing non-int/reserved pid {pid!r}")
-    if not IS_WINDOWS:
-        return []
-    return _descendants_from_parent_map(pid, _windows_process_parent_map())
-
-
 def _open_process_termination_handle(pid: int) -> int | None:
     """Open an identity-stable Windows handle suitable for later termination."""
 

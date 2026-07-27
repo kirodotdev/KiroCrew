@@ -493,13 +493,13 @@ still refresh while the dashboard body is blocked. On a new gateway it:
 4. polls setup operations every second, surfaces the HTTPS login URL and code
    as React text, and records first-run completion when `ready=true`.
 
-On Linux, an existing unverified default target (`~/.local/bin/kiro-cli`) cannot
-be overwritten automatically because the official installer would require an
-interactive terminal prompt, and reinstalling outside Kiro Crew would not create
-the binary attestation required before credential access. The setup and
-reauthentication surfaces therefore direct the owner to remove that exact target,
-choose **Check again**, and then use the newly enabled dashboard installer. This
-validated dashboard install is what writes the attestation before sign-in.
+Any Kiro CLI that runs is directly usable for sign-in regardless of how it was
+installed (toolbox, Homebrew, winget, the official installer, or a self-updated
+bundle). Trust is "the CLI runs, and it has a valid login" — install source,
+owner, and path do not gate setup or ACP launch — so an installed-but-signed-out
+CLI always offers an enabled **Sign in to Kiro** rather than a button-less
+"repair" dead end. The `.kiro_cli_binary_trust.json` the dashboard installer
+still writes is bookkeeping only and does not gate credential access.
 
 Ready dashboards continue prerequisite polling every 30 seconds so later
 sign-out or CLI damage is detected without a reload. Paused session-start

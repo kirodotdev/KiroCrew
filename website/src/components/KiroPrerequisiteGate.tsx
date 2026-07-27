@@ -136,6 +136,47 @@ function SetupStage() {
   )
 }
 
+// Shared full-screen chrome for every gate state: the ambient-blur backdrop,
+// the centered card, and the branded SetupStage panel. Only the right-hand
+// content differs between states. `scroll` switches the tall two-step setup to
+// vertical overflow (and adds a second blur); `cardLabel` sets the card's
+// aria-label for the loading state.
+function SetupShell({
+  children,
+  scroll = false,
+  cardLabel,
+}: {
+  children: ReactNode
+  scroll?: boolean
+  cardLabel?: string
+}) {
+  return (
+    <main
+      className={`relative flex min-h-screen items-center justify-center ${
+        scroll ? 'overflow-y-auto' : 'overflow-hidden'
+      } bg-bg px-4 py-8 sm:px-8`}
+    >
+      <div
+        aria-hidden="true"
+        className="absolute left-[-12rem] top-[-12rem] h-[32rem] w-[32rem] rounded-full bg-accent/10 blur-[100px]"
+      />
+      {scroll && (
+        <div
+          aria-hidden="true"
+          className="absolute bottom-[-15rem] right-[-10rem] h-[34rem] w-[34rem] rounded-full bg-accent/5 blur-[120px]"
+        />
+      )}
+      <div
+        className="relative grid w-full max-w-5xl overflow-hidden rounded-2xl border border-border bg-card shadow-[0_30px_90px_rgba(0,0,0,.2)] lg:grid-cols-[.82fr_1.18fr]"
+        aria-label={cardLabel}
+      >
+        <SetupStage />
+        {children}
+      </div>
+    </main>
+  )
+}
+
 function StepStatus({
   complete,
   current,
@@ -189,29 +230,6 @@ function OperationProgress({ status }: { status: KiroPrerequisiteStatus }) {
   )
 }
 
-function needsLinuxDashboardRepair(status: KiroPrerequisiteStatus): boolean {
-  return status.platform.toLowerCase() === 'linux'
-    && status.repair_required
-    && !status.can_auto_install
-}
-
-function LinuxDashboardRepairInstructions() {
-  return (
-    <div className="mt-3 rounded-lg border border-warn/20 bg-warn/10 p-3 text-[13px] leading-relaxed text-muted">
-      <p>
-        Remove the existing unverified Kiro CLI from the Linux gateway host:
-      </p>
-      <code className="mt-2 block overflow-x-auto rounded-md bg-bg px-3 py-2 font-mono text-[12px] text-text">
-        rm -- ~/.local/bin/kiro-cli
-      </code>
-      <p className="mt-2">
-        Then choose Check again. When Install Kiro CLI becomes available, use it here so
-        Kiro Crew can verify the new executable before sign-in.
-      </p>
-    </div>
-  )
-}
-
 function ReauthenticationBanner({
   status,
   busy,
@@ -232,7 +250,6 @@ function ReauthenticationBanner({
   const owner = status.setup_allowed !== false
   const loginUrl = trustedLoginUrl(status.operation.url)
   const needsInstall = !status.installed
-  const needsLinuxRepair = needsLinuxDashboardRepair(status)
   return (
     <aside
       className="pointer-events-none fixed inset-x-3 top-3 z-[100] mx-auto max-w-4xl rounded-xl border border-warn/30 bg-card/95 p-4 shadow-[0_18px_55px_rgba(0,0,0,.24)] backdrop-blur-md"
@@ -275,7 +292,6 @@ function ReauthenticationBanner({
                 {status.operation.detail}
               </pre>
             )}
-            {owner && needsLinuxRepair && <LinuxDashboardRepairInstructions />}
             {mutationError && <p className="mt-2 text-[13px] text-danger">{mutationError.message}</p>}
           </div>
         </div>
@@ -288,7 +304,7 @@ function ReauthenticationBanner({
               Install Kiro CLI
             </SendBtn>
           )}
-          {owner && status.installed && status.can_login && (
+          {owner && status.installed && (
             <SendBtn type="button" disabled={busy} onClick={onLogin}>
               {busy
                 ? <Loader2 className="lucide-inline animate-spin" />
@@ -310,16 +326,6 @@ function ReauthenticationBanner({
               Installation guide <ExternalLink className="lucide-inline" />
             </a>
           )}
-          {owner && status.installed && !status.can_login && !needsLinuxRepair && (
-            <a
-              className="text-[13px] font-medium text-accent hover:underline focus-ring"
-              href={status.docs_url}
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              Reinstall from the official guide <ExternalLink className="lucide-inline" />
-            </a>
-          )}
         </div>
       </div>
     </aside>
@@ -334,57 +340,43 @@ function OwnerSetupRequired({
   onRetry: () => void
 }) {
   return (
-    <main className="relative flex min-h-screen items-center justify-center overflow-hidden bg-bg px-4 py-8 sm:px-8">
-      <div
-        aria-hidden="true"
-        className="absolute left-[-12rem] top-[-12rem] h-[32rem] w-[32rem] rounded-full bg-accent/10 blur-[100px]"
-      />
-      <div className="relative grid w-full max-w-5xl overflow-hidden rounded-2xl border border-border bg-card shadow-[0_30px_90px_rgba(0,0,0,.2)] lg:grid-cols-[.82fr_1.18fr]">
-        <SetupStage />
-        <section className="flex flex-col justify-center p-7 sm:p-10 lg:p-12">
-          <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-accent-subtle text-accent">
-            <ShieldCheck className="lucide-inline" />
-          </div>
-          <p className="mt-6 text-[12px] font-bold uppercase tracking-[0.16em] text-accent">
-            Gateway setup required
-          </p>
-          <h1 className="mt-2 text-3xl font-bold tracking-tight text-text-strong">
-            The gateway owner needs to finish setup.
-          </h1>
-          <p className="mt-3 max-w-lg text-sm leading-relaxed text-muted">
-            Ask the Kiro Crew owner to install Kiro CLI and sign in on this gateway. This dashboard
-            will open for you as soon as the gateway is ready.
-          </p>
-          <div className="mt-6">
-            <Btn type="button" disabled={retrying} onClick={onRetry}>
-              <RefreshCw className={`lucide-inline ${retrying ? 'animate-spin' : ''}`} />
-              Check again
-            </Btn>
-          </div>
-        </section>
-      </div>
-    </main>
+    <SetupShell>
+      <section className="flex flex-col justify-center p-7 sm:p-10 lg:p-12">
+        <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-accent-subtle text-accent">
+          <ShieldCheck className="lucide-inline" />
+        </div>
+        <p className="mt-6 text-[12px] font-bold uppercase tracking-[0.16em] text-accent">
+          Gateway setup required
+        </p>
+        <h1 className="mt-2 text-3xl font-bold tracking-tight text-text-strong">
+          The gateway owner needs to finish setup.
+        </h1>
+        <p className="mt-3 max-w-lg text-sm leading-relaxed text-muted">
+          Ask the Kiro Crew owner to install Kiro CLI and sign in on this gateway. This dashboard
+          will open for you as soon as the gateway is ready.
+        </p>
+        <div className="mt-6">
+          <Btn type="button" disabled={retrying} onClick={onRetry}>
+            <RefreshCw className={`lucide-inline ${retrying ? 'animate-spin' : ''}`} />
+            Check again
+          </Btn>
+        </div>
+      </section>
+    </SetupShell>
   )
 }
 
 function LoadingGate() {
   return (
-    <main className="relative flex min-h-screen items-center justify-center overflow-hidden bg-bg px-4 py-8 sm:px-8">
-      <div
-        aria-hidden="true"
-        className="absolute left-[-12rem] top-[-12rem] h-[32rem] w-[32rem] rounded-full bg-accent/10 blur-[100px]"
-      />
-      <div className="relative grid w-full max-w-5xl overflow-hidden rounded-2xl border border-border bg-card shadow-[0_30px_90px_rgba(0,0,0,.2)] lg:grid-cols-[.82fr_1.18fr]" aria-label="Checking Kiro CLI">
-        <SetupStage />
-        <div className="space-y-4 p-7 sm:p-10 lg:p-12">
-          <Skeleton className="h-4 w-28" />
-          <Skeleton className="h-10 w-64 max-w-full" />
-          <Skeleton className="h-5 w-full max-w-lg" />
-          <Skeleton className="mt-8 h-44 w-full" />
-          <Skeleton className="h-44 w-full" />
-        </div>
+    <SetupShell cardLabel="Checking Kiro CLI">
+      <div className="space-y-4 p-7 sm:p-10 lg:p-12">
+        <Skeleton className="h-4 w-28" />
+        <Skeleton className="h-10 w-64 max-w-full" />
+        <Skeleton className="h-5 w-full max-w-lg" />
+        <Skeleton className="mt-8 h-44 w-full" />
+        <Skeleton className="h-44 w-full" />
       </div>
-    </main>
+    </SetupShell>
   )
 }
 
@@ -398,35 +390,28 @@ function SetupStatusError({
   onRetry: () => void
 }) {
   return (
-    <main className="relative flex min-h-screen items-center justify-center overflow-hidden bg-bg px-4 py-8 sm:px-8">
-      <div
-        aria-hidden="true"
-        className="absolute left-[-12rem] top-[-12rem] h-[32rem] w-[32rem] rounded-full bg-accent/10 blur-[100px]"
-      />
-      <div className="relative grid w-full max-w-5xl overflow-hidden rounded-2xl border border-border bg-card shadow-[0_30px_90px_rgba(0,0,0,.2)] lg:grid-cols-[.82fr_1.18fr]">
-        <SetupStage />
-        <section className="flex flex-col justify-center p-7 sm:p-10 lg:p-12">
-          <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-danger/10 text-danger">
-            <AlertTriangle className="lucide-inline" />
-          </div>
-          <p className="mt-6 text-[12px] font-bold uppercase tracking-[0.16em] text-danger">
-            Setup check unavailable
-          </p>
-          <h1 className="mt-2 text-3xl font-bold tracking-tight text-text-strong">
-            We could not check Kiro CLI.
-          </h1>
-          <p className="mt-3 max-w-lg text-sm leading-relaxed text-muted">
-            {message} Retry the gateway check before starting a session.
-          </p>
-          <div className="mt-6">
-            <SendBtn type="button" disabled={retrying} onClick={onRetry}>
-              <RefreshCw className={`lucide-inline ${retrying ? 'animate-spin' : ''}`} />
-              Try again
-            </SendBtn>
-          </div>
-        </section>
-      </div>
-    </main>
+    <SetupShell>
+      <section className="flex flex-col justify-center p-7 sm:p-10 lg:p-12">
+        <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-danger/10 text-danger">
+          <AlertTriangle className="lucide-inline" />
+        </div>
+        <p className="mt-6 text-[12px] font-bold uppercase tracking-[0.16em] text-danger">
+          Setup check unavailable
+        </p>
+        <h1 className="mt-2 text-3xl font-bold tracking-tight text-text-strong">
+          We could not check Kiro CLI.
+        </h1>
+        <p className="mt-3 max-w-lg text-sm leading-relaxed text-muted">
+          {message} Retry the gateway check before starting a session.
+        </p>
+        <div className="mt-6">
+          <SendBtn type="button" disabled={retrying} onClick={onRetry}>
+            <RefreshCw className={`lucide-inline ${retrying ? 'animate-spin' : ''}`} />
+            Try again
+          </SendBtn>
+        </div>
+      </section>
+    </SetupShell>
   )
 }
 
@@ -487,7 +472,6 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
     || loginMutation.isPending
   const mutationError = installMutation.error || loginMutation.error
   const platform = status.platform || 'local'
-  const needsLinuxRepair = needsLinuxDashboardRepair(status)
   if (status.initial_setup_complete) {
     return (
       <>
@@ -509,17 +493,7 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
   }
 
   return (
-    <main className="relative flex min-h-screen items-center justify-center overflow-y-auto bg-bg px-4 py-8 sm:px-8">
-      <div
-        aria-hidden="true"
-        className="absolute left-[-12rem] top-[-12rem] h-[32rem] w-[32rem] rounded-full bg-accent/10 blur-[100px]"
-      />
-      <div
-        aria-hidden="true"
-        className="absolute bottom-[-15rem] right-[-10rem] h-[34rem] w-[34rem] rounded-full bg-accent/5 blur-[120px]"
-      />
-      <div className="relative grid w-full max-w-5xl overflow-hidden rounded-2xl border border-border bg-card shadow-[0_30px_90px_rgba(0,0,0,.2)] lg:grid-cols-[.82fr_1.18fr]">
-        <SetupStage />
+    <SetupShell scroll>
         <section className="p-7 sm:p-10 lg:p-12">
           <div className="mb-7">
             <div className="mb-3 flex items-center gap-2 text-[12px] font-semibold tracking-[0.14em] text-accent">
@@ -554,16 +528,14 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
             <div className="mt-4 flex flex-wrap items-center gap-3">
               <SendBtn
                 type="button"
-                disabled={busy || (status.installed && !status.repair_required) || !status.can_auto_install}
+                disabled={busy || status.installed || !status.can_auto_install}
                 onClick={() => installMutation.mutate()}
               >
                 {busy && status.operation.kind === 'install'
                   ? <><Loader2 className="lucide-inline animate-spin" /> Installing…</>
-                  : status.installed && !status.repair_required
+                  : status.installed
                     ? <><CheckCircle2 className="lucide-inline" /> Installed</>
-                    : status.repair_required
-                      ? <><Package className="lucide-inline" /> Reinstall Kiro CLI</>
-                      : <><Package className="lucide-inline" /> Install Kiro CLI</>}
+                    : <><Package className="lucide-inline" /> Install Kiro CLI</>}
               </SendBtn>
               <a
                 className="inline-flex items-center gap-1.5 text-[13px] font-medium text-accent hover:underline focus-ring"
@@ -574,12 +546,9 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
                 Installation guide <ExternalLink className="lucide-inline" />
               </a>
             </div>
-            {needsLinuxRepair && <LinuxDashboardRepairInstructions />}
-            {!needsLinuxRepair
-              && !status.can_auto_install
-              && (!status.installed || status.repair_required) && (
+            {!status.installed && !status.can_auto_install && (
               <p className="mt-3 text-[13px] leading-relaxed text-muted">
-                Automatic installation cannot safely repair this installation. Follow the official
+                Automatic installation is unavailable here. Install Kiro CLI from the official
                 guide on the gateway host, then choose Check again.
               </p>
             )}
@@ -611,7 +580,6 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
                 disabled={
                   busy
                   || !status.installed
-                  || !status.can_login
                   || status.authenticated
                 }
                 onClick={() => loginMutation.mutate()}
@@ -623,12 +591,6 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
                     : <><LogIn className="lucide-inline" /> Sign in to Kiro</>}
               </SendBtn>
             </div>
-            {status.installed && !status.can_login && !needsLinuxRepair && (
-              <p className="mt-3 text-[13px] leading-relaxed text-muted">
-                Kiro Crew will not give credentials to an unverified executable. Reinstall Kiro
-                CLI from the official guide, then choose Check again.
-              </p>
-            )}
             {status.operation.kind === 'login' && <OperationProgress status={status} />}
           </Card>
 
@@ -658,7 +620,6 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
             </Btn>
           </div>
         </section>
-      </div>
-    </main>
+    </SetupShell>
   )
 }

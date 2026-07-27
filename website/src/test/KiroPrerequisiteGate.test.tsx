@@ -120,49 +120,31 @@ describe('KiroPrerequisiteGate', () => {
     expect(await screen.findByRole('button', { name: 'Sign in to Kiro' })).toBeEnabled()
   })
 
-  it('recovers an unverified Linux install through the dashboard installer', async () => {
-    vi.mocked(api.kiroPrerequisite)
-      .mockResolvedValueOnce(status({
-        installed: true,
-        can_auto_install: false,
-        can_login: false,
-        repair_required: true,
-      }))
-      .mockResolvedValueOnce(status({
-        installed: false,
-        can_auto_install: true,
-        can_login: true,
-        repair_required: false,
-      }))
-    vi.mocked(api.installKiroPrerequisite).mockResolvedValue(status({
+  it('offers sign-in for an already-installed CLI regardless of install source', async () => {
+    // A user-owned / self-updated / toolbox Kiro CLI that runs is installed and
+    // sign-in ready — no "unverified executable" dead end, no repair prompt.
+    // The mock reproduces the exact OLD rejected-provenance status
+    // (can_login:false + repair_required:true): under the pre-change gate this
+    // rendered a button-less "Reinstall" dead end; the new "runs" contract must
+    // ignore both fields and still offer an enabled Sign-in — so this fails on
+    // revert of the can_login/repair_required gate removals.
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({
       installed: true,
-      can_auto_install: true,
-      can_login: true,
-      operation: {
-        kind: 'install',
-        status: 'succeeded',
-        message: 'Kiro CLI is installed.',
-        detail: '',
-        url: '',
-        error: '',
-      },
+      authenticated: false,
+      can_auto_install: false,
+      can_login: false,
+      repair_required: true,
     }))
 
     renderWithProviders(
       <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
     )
 
-    expect(await screen.findByText('rm -- ~/.local/bin/kiro-cli')).toBeInTheDocument()
-    expect(screen.getByText(/When Install Kiro CLI becomes available/)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Reinstall Kiro CLI' })).toBeDisabled()
-
-    fireEvent.click(screen.getByRole('button', { name: 'Check again' }))
-    const installButton = await screen.findByRole('button', { name: 'Install Kiro CLI' })
-    expect(installButton).toBeEnabled()
-    fireEvent.click(installButton)
-
-    await waitFor(() => expect(api.installKiroPrerequisite).toHaveBeenCalledOnce())
+    const loginButton = await screen.findByRole('button', { name: 'Sign in to Kiro' })
+    expect(loginButton).toBeEnabled()
+    expect(screen.queryByText(/unverified executable/)).not.toBeInTheDocument()
     expect(screen.queryByText('rm -- ~/.local/bin/kiro-cli')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Installed' })).toBeDisabled()
   })
 
   it('shows the secure device URL and advances when login becomes ready', async () => {

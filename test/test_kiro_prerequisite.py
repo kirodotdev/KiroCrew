@@ -5,10 +5,8 @@ import contextlib
 import copy
 import errno
 import hashlib
-import json
 import os
 import sqlite3
-import stat
 import sys
 import threading
 from pathlib import Path
@@ -198,79 +196,48 @@ class TestKiroPrerequisiteHelpers:
             == hashlib.sha256(content).hexdigest()
         )
 
-    def test_windows_snapshot_rejects_candidate_outside_program_files(
+    def test_windows_snapshot_accepts_any_runnable_candidate(
         self,
         tmp_path: Path,
     ) -> None:
-        program_files = tmp_path / "Program Files"
-        untrusted = tmp_path / "venv" / "Scripts" / "kiro-cli.exe"
-        _make_executable(untrusted)
+        # Trust is "it runs": a Windows CLI outside Program Files (winget/scoop,
+        # a venv Scripts dir, a user install) launches in place, not rejected.
+        candidate = tmp_path / "venv" / "Scripts" / "kiro-cli.exe"
+        _make_executable(candidate)
 
-        with pytest.raises(ValueError, match="trusted Program Files"):
-            prerequisite_module.snapshot_trusted_acp_executable(
-                str(untrusted),
-                platform_name="win32",
-                environ={"ProgramFiles": str(program_files)},
-            )
+        snapshot = prerequisite_module.snapshot_trusted_acp_executable(
+            str(candidate),
+            platform_name="win32",
+            environ={"ProgramFiles": str(tmp_path / "Program Files")},
+        )
 
-    def test_macos_snapshot_requires_official_attestation_and_codesign(
+        assert snapshot.launch_path == os.path.realpath(str(candidate))
+
+    def test_macos_snapshot_accepts_user_owned_cli_and_pins_bytes(
         self,
         tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        # A user-owned macOS CLI resolved via a symlink (the toolbox / self-
+        # updated bundle case) is accepted without codesign/official-path gating.
+        # The snapshot is a private verified copy pinned to the resolved bytes,
+        # so a swap after resolution cannot reach the running process.
         executable = tmp_path / "kiro-cli-real"
         executable.write_bytes(b"trusted executable bytes")
         executable.chmod(0o700)
         symlink = tmp_path / "kiro-cli"
         symlink.symlink_to(executable)
-        digest = hashlib.sha256(executable.read_bytes()).hexdigest()
-        environ = {"KIROCREW_KIRO_BIN": str(symlink)}
         data_home = tmp_path / "data"
         data_home.mkdir()
-        (data_home / prerequisite_module._BINARY_TRUST_FILENAME).write_text(
-            json.dumps(
-                {
-                    "version": prerequisite_module._BINARY_TRUST_VERSION,
-                    "path": str(executable),
-                    "sha256": digest,
-                }
-            )
-        )
-        prerequisite_module._register_operator_override_attestation(str(symlink), digest)
-        monkeypatch.setattr(
-            prerequisite_module,
-            "_MACOS_OFFICIAL_KIRO_CLI",
-            str(executable),
-        )
 
-        monkeypatch.setattr(
-            prerequisite_module,
-            "_macos_codesign_allows_official_kiro",
-            lambda _path: False,
-        )
-        with pytest.raises(ValueError, match="pinned Developer ID"):
-            prerequisite_module.snapshot_trusted_acp_executable(
-                str(symlink),
-                data_home=data_home,
-                platform_name="darwin",
-                environ=environ,
-            )
-
-        monkeypatch.setattr(
-            prerequisite_module,
-            "_macos_codesign_allows_official_kiro",
-            lambda path: path == str(executable),
-        )
         snapshot = prerequisite_module.snapshot_trusted_acp_executable(
             str(symlink),
             data_home=data_home,
             platform_name="darwin",
-            environ=environ,
+            environ={},
         )
         snapshot_path = Path(snapshot.launch_path)
         try:
             executable.write_bytes(b"replacement after validation")
-
             assert snapshot_path != executable
             assert snapshot_path.read_bytes() == b"trusted executable bytes"
             assert snapshot.cleanup_path == str(snapshot_path)
@@ -278,13 +245,12 @@ class TestKiroPrerequisiteHelpers:
         finally:
             snapshot_path.unlink(missing_ok=True)
 
-    def test_macos_snapshot_allows_only_packaged_fake_in_explicit_test_mode(
+    def test_macos_snapshot_launches_packaged_fake_in_explicit_test_mode(
         self,
         tmp_path: Path,
     ) -> None:
         fake = Path(prerequisite_module._PACKAGED_FAKE_ACP_BACKEND)
         digest = hashlib.sha256(fake.read_bytes()).hexdigest()
-        prerequisite_module._register_operator_override_attestation(str(fake), digest)
         environ = {
             "KIROCREW_KIRO_BIN": str(fake),
             prerequisite_module.FAKE_ACP_TEST_MODE_ENV: "1",
@@ -297,71 +263,10 @@ class TestKiroPrerequisiteHelpers:
             environ=environ,
         )
 
+        # The packaged fake launches in place (source-tree Python entry point).
         assert snapshot.launch_path == str(fake.resolve())
         assert snapshot.expected_sha256 == digest
         assert snapshot.fd is None
-
-        other = tmp_path / "fake_acp_backend.py"
-        other.write_bytes(fake.read_bytes())
-        other.chmod(0o700)
-        other_digest = hashlib.sha256(other.read_bytes()).hexdigest()
-        prerequisite_module._register_operator_override_attestation(
-            str(other),
-            other_digest,
-        )
-        with pytest.raises(ValueError, match="pinned Developer ID"):
-            prerequisite_module.snapshot_trusted_acp_executable(
-                str(other),
-                data_home=tmp_path,
-                platform_name="darwin",
-                environ={
-                    "KIROCREW_KIRO_BIN": str(other),
-                    prerequisite_module.FAKE_ACP_TEST_MODE_ENV: "1",
-                },
-            )
-
-    def test_macos_codesign_requires_pinned_identity_and_hardened_runtime(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        calls: list[tuple[list[str], dict[str, Any]]] = []
-        metadata = (
-            "Executable=/Applications/Kiro CLI.app/Contents/MacOS/kiro-cli\n"
-            "Identifier=kiro-cli\n"
-            "CodeDirectory v=20500 flags=0x10000(runtime) hashes=1+2\n"
-            "TeamIdentifier=94KV3E626L\n"
-        ).encode()
-
-        def run(argv: list[str], **kwargs: Any) -> SimpleNamespace:
-            calls.append((argv, kwargs))
-            stderr = b"" if "--verify" in argv else metadata
-            return SimpleNamespace(returncode=0, stderr=stderr, stdout=b"")
-
-        monkeypatch.setattr(prerequisite_module.subprocess, "run", run)
-        assert prerequisite_module._macos_codesign_allows_official_kiro(
-            prerequisite_module._MACOS_OFFICIAL_KIRO_CLI
-        )
-        assert calls[0][0] == [
-            "/usr/bin/codesign",
-            "--verify",
-            "--strict",
-            "--test-requirement",
-            prerequisite_module._MACOS_KIRO_DESIGNATED_REQUIREMENT,
-            prerequisite_module._MACOS_OFFICIAL_KIRO_CLI,
-        ]
-        for _argv, kwargs in calls:
-            assert kwargs["env"] == {
-                "LANG": "C",
-                "LC_ALL": "C",
-                "PATH": "/usr/bin:/bin",
-            }
-            assert kwargs["timeout"] == 5
-            assert kwargs["capture_output"] is True
-
-        metadata = metadata.replace(b"flags=0x10000(runtime)", b"flags=0x0(none)")
-        assert not prerequisite_module._macos_codesign_allows_official_kiro(
-            prerequisite_module._MACOS_OFFICIAL_KIRO_CLI
-        )
 
     def test_linux_snapshot_populates_and_seals_memfd(
         self,
@@ -492,33 +397,6 @@ class TestKiroPrerequisiteHelpers:
         assert write_calls > 1
         assert snapshot.read_bytes() == content
         snapshot.unlink()
-
-    def test_system_candidate_requires_immutable_parent_chain(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        monkeypatch.setattr(prerequisite_module.platform_compat, "IS_POSIX", True)
-        monkeypatch.setattr(
-            prerequisite_module,
-            "_canonical_candidate",
-            lambda path: path,
-        )
-
-        def immutable_stat(path: Path) -> SimpleNamespace:
-            mode = stat.S_IFREG | 0o755 if path.name == "kiro-cli" else stat.S_IFDIR | 0o755
-            return SimpleNamespace(st_mode=mode, st_uid=0)
-
-        monkeypatch.setattr(Path, "stat", immutable_stat)
-        assert prerequisite_module._root_owned_immutable_candidate("/usr/local/bin/kiro-cli")
-
-        def writable_parent_stat(path: Path) -> SimpleNamespace:
-            metadata = immutable_stat(path)
-            if path == Path("/usr/local"):
-                metadata.st_mode |= stat.S_IWGRP
-            return metadata
-
-        monkeypatch.setattr(Path, "stat", writable_parent_stat)
-        assert not prerequisite_module._root_owned_immutable_candidate("/usr/local/bin/kiro-cli")
 
     def test_extract_secure_login_url_rejects_non_https(self) -> None:
         assert (
@@ -689,40 +567,31 @@ class TestKiroPrerequisiteHelpers:
 
         assert str(executable) in candidates
 
-    def test_windows_launch_candidates_include_inherited_path_but_passive_probe_does_not(
+    def test_windows_candidates_include_inherited_path(
         self,
         tmp_path: Path,
     ) -> None:
-        planted = tmp_path / "agent-writable" / "kiro-cli.exe"
+        # A winget/scoop/user Windows install on PATH (outside Program Files) is
+        # a valid candidate for both ACP launch and setup discovery — trust is
+        # "it runs". The shared resolver picks it up on win32 like every OS.
+        planted = tmp_path / "user-install" / "kiro-cli.exe"
         _make_executable(planted)
+        environ = {
+            "ProgramFiles": str(tmp_path / "Program Files"),
+            "PATH": str(planted.parent),
+        }
 
         launch_candidates = find_kiro_cli_candidates(
             "win32",
             tmp_path / "Users" / "new-user",
-            {
-                "ProgramFiles": str(tmp_path / "Program Files"),
-                "PATH": str(planted.parent),
-            },
-        )
-        passive_candidates = find_kiro_cli_candidates(
-            "win32",
-            tmp_path / "Users" / "new-user",
-            {
-                "ProgramFiles": str(tmp_path / "Program Files"),
-                "PATH": str(planted.parent),
-            },
-            include_inherited_path=False,
+            environ,
         )
 
         assert str(planted) in launch_candidates
-        assert str(planted) not in passive_candidates
         assert resolve_kiro_cli(
             platform_name="win32",
             home=tmp_path / "Users" / "new-user",
-            environ={
-                "ProgramFiles": str(tmp_path / "Program Files"),
-                "PATH": str(planted.parent),
-            },
+            environ=environ,
         ) == str(planted)
 
     def test_process_group_membership_ignores_zombies(self) -> None:
@@ -813,10 +682,13 @@ class TestKiroPrerequisiteWorkflow:
         assert status["initial_setup_complete"] is True
 
     @pytest.mark.asyncio
-    async def test_untrusted_candidate_never_receives_auth_store(
+    async def test_user_owned_path_candidate_probes_version_then_whoami(
         self,
         tmp_path: Path,
     ) -> None:
+        # A user-owned ``~/.local/bin`` CLI (the common non-root install) runs,
+        # so it is eligible for sign-in: the probe first checks ``--version``
+        # then ``whoami``. Trust is "runs + valid login", not root ownership.
         executable = tmp_path / ".local" / "bin" / "kiro-cli"
         _make_executable(executable)
         token = tmp_path / ".aws" / "sso" / "cache" / "kiro-auth-token-cli.json"
@@ -830,7 +702,7 @@ class TestKiroPrerequisiteWorkflow:
             **_kwargs: Any,
         ) -> ProcessResult:
             calls.append(args)
-            return ProcessResult(ok=True)
+            return ProcessResult(ok=args == ["--version"])
 
         service = KiroPrerequisiteService(
             platform_name="linux",
@@ -843,9 +715,9 @@ class TestKiroPrerequisiteWorkflow:
         status = await service.snapshot(force=True)
 
         assert status["installed"] is True
-        assert status["can_login"] is False
+        assert status["can_login"] is True
         assert status["authenticated"] is False
-        assert calls == [["--version"]]
+        assert calls == [["--version"], ["whoami"]]
 
     @pytest.mark.asyncio
     async def test_trusted_identity_probe_sees_only_staged_kiro_credentials(
@@ -902,77 +774,43 @@ class TestKiroPrerequisiteWorkflow:
         assert not Path(observed_home).exists()
 
     @pytest.mark.asyncio
-    async def test_changed_attested_candidate_is_not_given_credentials(
+    async def test_self_updated_candidate_still_signs_in(
         self,
         tmp_path: Path,
     ) -> None:
+        # A Kiro CLI whose bytes changed after startup (its own self-updater ran
+        # as the user) must still sign in — trust is "it runs + valid login",
+        # not a pinned digest that a legitimate update invalidates.
         executable = tmp_path / ".local" / "bin" / "kiro-cli"
         _make_executable(executable)
-        calls: list[list[str]] = []
-
-        async def run(
-            _command: str,
-            args: list[str],
-            **_kwargs: Any,
-        ) -> ProcessResult:
-            calls.append(args)
-            return ProcessResult(ok=True)
+        runtime = _FakeRuntime(executable)
+        runtime.installed = True
+        runtime.authenticated = True
 
         service = KiroPrerequisiteService(
             platform_name="linux",
             environ={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"},
             home=tmp_path,
-            process_runner=run,
+            process_runner=runtime.run,
             audit_writer=_no_audit,
         )
         service._attest_candidate(str(executable))
-        executable.write_text("#!/bin/sh\n# replaced\n", encoding="utf-8")
+        executable.write_text("#!/bin/sh\n# self-updated\n", encoding="utf-8")
         executable.chmod(0o700)
 
         status = await service.snapshot(force=True)
 
-        assert status["can_login"] is False
-        assert calls == [["--version"]]
-
-    @pytest.mark.asyncio
-    async def test_changed_posix_override_is_not_given_credentials(self, tmp_path: Path) -> None:
-        executable = tmp_path / "operator" / "kiro-cli"
-        _make_executable(executable)
-        calls: list[list[str]] = []
-
-        async def run(
-            _command: str,
-            args: list[str],
-            **_kwargs: Any,
-        ) -> ProcessResult:
-            calls.append(args)
-            return ProcessResult(ok=True)
-
-        service = KiroPrerequisiteService(
-            platform_name="linux",
-            environ={
-                "HOME": str(tmp_path),
-                "PATH": "",
-                "KIROCREW_KIRO_BIN": str(executable),
-            },
-            home=tmp_path,
-            process_runner=run,
-            audit_writer=_no_audit,
-        )
-        executable.write_text("#!/bin/sh\n# replaced after startup\n", encoding="utf-8")
-        executable.chmod(0o700)
-
-        status = await service.snapshot(force=True)
-
-        assert status["can_login"] is False
-        assert calls == [["--version"]]
+        assert status["can_login"] is True
+        assert status["ready"] is True
 
     @pytest.mark.parametrize("payload", ("[]", "null"))
-    def test_non_object_binary_trust_payload_fails_closed(
+    def test_non_object_binary_trust_payload_is_ignored(
         self,
         tmp_path: Path,
         payload: str,
     ) -> None:
+        # A malformed trust file must never crash the recorded-digest reader;
+        # it simply yields no pinned digest (trust no longer depends on it).
         executable = tmp_path / ".local" / "bin" / "kiro-cli"
         _make_executable(executable)
         service = KiroPrerequisiteService(
@@ -984,8 +822,86 @@ class TestKiroPrerequisiteWorkflow:
         service._binary_trust_path.parent.mkdir(parents=True, exist_ok=True)
         service._binary_trust_path.write_text(payload, encoding="utf-8")
 
-        assert service._candidate_trusted_for_auth(str(executable)) is False
-        assert service._attested_sha256(str(executable)) is None
+        assert (
+            prerequisite_module._recorded_trust_digest(
+                service._binary_trust_path,
+                str(executable),
+            )
+            is None
+        )
+
+    @pytest.mark.asyncio
+    async def test_runnable_path_cli_can_login_without_attestation(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        # Trust model: a Kiro CLI that RUNS is eligible for sign-in, regardless
+        # of install source (PATH / toolbox / Homebrew), owner, or attestation.
+        # This mirrors a real toolbox/self-updated bundle: user-owned, no
+        # trust-file, not on any official fixed path.
+        executable = tmp_path / "toolbox" / "bin" / "kiro-cli"
+        _make_executable(executable)
+        runtime = _FakeRuntime(executable)
+        runtime.installed = True
+        runtime.authenticated = True
+
+        service = KiroPrerequisiteService(
+            platform_name="linux",
+            environ={"HOME": str(tmp_path), "PATH": str(executable.parent)},
+            home=tmp_path,
+            process_runner=runtime.run,
+            audit_writer=_no_audit,
+        )
+
+        status = await service.snapshot(force=True)
+        assert status["installed"] is True
+        assert status["can_login"] is True
+        assert status["ready"] is True
+        assert status["repair_required"] is False
+
+    @pytest.mark.asyncio
+    async def test_runnable_path_cli_not_signed_in_still_offers_login(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        # Zezhen's exact stuck state: installed + runnable but no valid login.
+        # Must offer sign-in (can_login=True), NOT a button-less dead end.
+        executable = tmp_path / "toolbox" / "bin" / "kiro-cli"
+        _make_executable(executable)
+        runtime = _FakeRuntime(executable)
+        runtime.installed = True
+        runtime.authenticated = False
+
+        service = KiroPrerequisiteService(
+            platform_name="linux",
+            environ={"HOME": str(tmp_path), "PATH": str(executable.parent)},
+            home=tmp_path,
+            process_runner=runtime.run,
+            audit_writer=_no_audit,
+        )
+
+        status = await service.snapshot(force=True)
+        assert status["installed"] is True
+        assert status["can_login"] is True
+        assert status["ready"] is False
+        assert status["repair_required"] is False
+
+    def test_acp_snapshot_accepts_runnable_cli_without_provenance(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        # The ACP launch gate must not refuse a runnable CLI for lack of
+        # provenance, or sessions 503 even after a successful sign-in.
+        if not sys.platform.startswith(("linux", "darwin")):
+            pytest.skip("POSIX snapshot path")
+        real = Path(sys.executable)  # a genuinely executable, user-owned file
+        snapshot = prerequisite_module.snapshot_trusted_acp_executable(
+            str(real),
+            data_home=tmp_path,
+            platform_name="linux" if sys.platform.startswith("linux") else "darwin",
+            environ={},
+        )
+        assert snapshot.launch_path
 
     @pytest.mark.asyncio
     async def test_failed_auth_does_not_publish_staged_credentials(self, tmp_path: Path) -> None:
@@ -1295,11 +1211,16 @@ class TestKiroPrerequisiteWorkflow:
 
         status = await service.snapshot(force=True)
 
+        # A runnable CLI is eligible for sign-in, so the probe pairs a version
+        # check with an identity (whoami) check; here whoami reports not-signed.
         assert [(item["action"], item["outcome"]) for item in events] == [
             ("probe_version", "invoked"),
             ("probe_version", "completed"),
+            ("probe_identity", "invoked"),
+            ("probe_identity", "failed"),
         ]
-        assert status["can_login"] is False
+        assert status["can_login"] is True
+        assert status["ready"] is False
         assert events[0]["critical"] is True
         assert all("secret" not in repr(item) for item in events)
         for index, call in enumerate(runtime.calls):
@@ -1383,7 +1304,6 @@ class TestKiroPrerequisiteWorkflow:
         )
 
         assert await service.session_ready() is False
-        service._attest_candidate(str(executable))
         runtime.authenticated = True
         now[0] += prerequisite_module._SESSION_GUARD_REPROBE_SECS + 0.1
 
@@ -1394,8 +1314,10 @@ class TestKiroPrerequisiteWorkflow:
         await service._session_probe_task
 
         assert await service.session_ready() is True
+        # A runnable CLI is probed for identity every time (trust is "runs +
+        # valid login"), so both probes run version then whoami.
         assert runtime.calls.count((str(executable), ["--version"])) == 2
-        assert runtime.calls.count((str(executable), ["whoami"])) == 1
+        assert runtime.calls.count((str(executable), ["whoami"])) == 2
 
     @pytest.mark.asyncio
     async def test_close_cancels_background_session_probe(
@@ -1727,16 +1649,19 @@ class TestKiroPrerequisiteWorkflow:
         )
 
     @pytest.mark.asyncio
-    async def test_unattested_cargo_install_can_be_reinstalled_and_attested(
+    async def test_cargo_install_is_usable_without_reattestation(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        # A ``~/.cargo/bin`` install that runs is directly usable — no
+        # "repair", no forced reinstall. Clicking Install reports it is already
+        # installed rather than reinstalling to earn a provenance pin.
         cargo_executable = tmp_path / ".cargo" / "bin" / "kiro-cli"
         _make_executable(cargo_executable)
-        installed_executable = tmp_path / ".local" / "bin" / "kiro-cli"
-        runtime = _FakeRuntime(installed_executable)
+        runtime = _FakeRuntime(cargo_executable)
         runtime.installed = True
+        runtime.authenticated = True
         installer = b"#!/bin/bash\n# Kiro CLI Installation Script\n"
         monkeypatch.setitem(
             prerequisite_module._INSTALLER_SHA256,
@@ -1759,8 +1684,8 @@ class TestKiroPrerequisiteWorkflow:
         )
         before = await service.snapshot(force=True)
         assert before["installed"] is True
-        assert before["repair_required"] is True
-        assert before["can_auto_install"] is True
+        assert before["can_login"] is True
+        assert before["repair_required"] is False
 
         service.start_install("test-user")
         await _wait_for_operation(service)
@@ -1768,12 +1693,7 @@ class TestKiroPrerequisiteWorkflow:
 
         assert after["can_login"] is True
         assert after["operation"]["status"] == "succeeded"
-        trust = json.loads(
-            (service._data_home / prerequisite_module._BINARY_TRUST_FILENAME).read_text(
-                encoding="utf-8"
-            )
-        )
-        assert trust["path"] == str(installed_executable)
+        assert "already installed" in after["operation"]["message"]
 
     @pytest.mark.asyncio
     async def test_installer_refuses_shadowing_candidate_instead_of_attesting_it(
@@ -1781,8 +1701,11 @@ class TestKiroPrerequisiteWorkflow:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        cargo_executable = tmp_path / ".cargo" / "bin" / "kiro-cli"
-        _make_executable(cargo_executable)
+        # linux keeps candidate discovery to home-relative dirs (no real system
+        # install can leak in). The installer's official target lands in a dir
+        # that is not searched, while ``.local/bin`` shadows it as the first
+        # resolved candidate — the install-quality guard must refuse rather than
+        # bless the shadow, even though the shadow itself runs.
         installer = b"#!/bin/bash\n# Kiro CLI Installation Script\n"
         monkeypatch.setitem(
             prerequisite_module._INSTALLER_SHA256,
@@ -1804,16 +1727,22 @@ class TestKiroPrerequisiteWorkflow:
             "official_installer_command",
             lambda _platform, _environ: ("bash", ["-s"]),
         )
+        shadow_executable = tmp_path / ".local" / "bin" / "kiro-cli"
         official_executable = tmp_path / "official" / "kiro-cli"
+        installed = {"done": False}
 
         async def run(command: str, args: list[str], **_kwargs: Any) -> ProcessResult:
             if args == ["--version"]:
-                return ProcessResult(ok=Path(command).exists())
+                # Only the tmp-path shadow is viable, and only after install —
+                # so no real system CLI on the host can leak into discovery.
+                return ProcessResult(ok=installed["done"] and command == str(shadow_executable))
+            installed["done"] = True
+            _make_executable(shadow_executable)
             _make_executable(official_executable)
             return ProcessResult(ok=True)
 
         service = KiroPrerequisiteService(
-            platform_name="darwin",
+            platform_name="linux",
             environ={"HOME": str(tmp_path), "PATH": ""},
             home=tmp_path,
             process_runner=run,
@@ -1836,7 +1765,11 @@ class TestKiroPrerequisiteWorkflow:
     ) -> None:
         executable = tmp_path / ".local" / "bin" / "kiro-cli"
         _make_executable(executable)
+        # The target exists but is not runnable yet (so Install is entered, not
+        # short-circuited). The installer "runs" but leaves the exact same bytes
+        # in place; the guard must refuse a no-op install rather than pin it.
         runtime = _FakeRuntime(executable)
+        runtime.installed = False
         installer = b"#!/bin/bash\n# Kiro CLI Installation Script\n"
         monkeypatch.setitem(
             prerequisite_module._INSTALLER_SHA256,
@@ -1895,16 +1828,19 @@ class TestKiroPrerequisiteWorkflow:
         assert status["ready"] is False
 
     @pytest.mark.asyncio
-    async def test_windows_status_never_executes_arbitrary_override(
+    async def test_windows_override_that_runs_is_used_for_setup(
         self,
         tmp_path: Path,
     ) -> None:
-        planted = tmp_path / "user-writable" / "kiro-cli.exe"
+        # Trust is "it runs": a Windows override outside Program Files (a winget/
+        # user install) that answers --version is probed and usable — no
+        # Program-Files restriction. (ACP launches the same override in place.)
+        planted = tmp_path / "user-install" / "kiro-cli.exe"
         _make_executable(planted)
-        calls: list[str] = []
+        calls: list[tuple[str, list[str]]] = []
 
-        async def run(command: str, _args: list[str], **_kwargs: Any) -> ProcessResult:
-            calls.append(command)
+        async def run(command: str, args: list[str], **_kwargs: Any) -> ProcessResult:
+            calls.append((command, args))
             return ProcessResult(ok=True)
 
         service = KiroPrerequisiteService(
@@ -1922,22 +1858,30 @@ class TestKiroPrerequisiteWorkflow:
 
         status = await service.snapshot(force=True)
 
-        assert calls == []
-        assert status["installed"] is False
+        assert status["installed"] is True
+        assert status["can_login"] is True
+        assert status["ready"] is True
+        assert calls == [
+            (str(planted), ["--version"]),
+            (str(planted), ["whoami"]),
+        ]
 
     @pytest.mark.asyncio
-    async def test_windows_override_cannot_be_shadowed_by_ready_program_files_candidate(
+    async def test_windows_override_takes_priority_over_program_files_candidate(
         self,
         tmp_path: Path,
     ) -> None:
-        planted = tmp_path / "user-writable" / "kiro-cli.exe"
+        # The explicit override wins over a Program Files install (ACP resolves
+        # the override first), and being outside Program Files no longer blocks
+        # it — it is probed and usable because it runs.
+        planted = tmp_path / "user-install" / "kiro-cli.exe"
         official = tmp_path / "Program Files" / "Kiro-Cli" / "kiro-cli.exe"
         _make_executable(planted)
         _make_executable(official)
-        calls: list[str] = []
+        calls: list[tuple[str, list[str]]] = []
 
-        async def run(command: str, _args: list[str], **_kwargs: Any) -> ProcessResult:
-            calls.append(command)
+        async def run(command: str, args: list[str], **_kwargs: Any) -> ProcessResult:
+            calls.append((command, args))
             return ProcessResult(ok=True)
 
         service = KiroPrerequisiteService(
@@ -1955,10 +1899,11 @@ class TestKiroPrerequisiteWorkflow:
 
         status = await service.snapshot(force=True)
 
-        assert calls == []
-        assert status["ready"] is False
-        assert status["repair_required"] is True
-        assert status["can_auto_install"] is False
+        assert status["ready"] is True
+        assert calls == [
+            (str(planted), ["--version"]),
+            (str(planted), ["whoami"]),
+        ]
 
     @pytest.mark.asyncio
     async def test_missing_windows_override_does_not_shadow_program_files_candidate(

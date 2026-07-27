@@ -6953,12 +6953,14 @@ class TestResolveKiroBinEnvOverride:
         assert not snapshot.exists()
         assert str(snapshot) not in client_module._KIRO_EXECUTABLE_SNAPSHOT_PATHS
 
-    def test_windows_resolver_rejects_candidate_outside_program_files(self, tmp_path):
+    def test_windows_resolver_accepts_runnable_candidate_anywhere(self, tmp_path):
         from kiro_crew.acp import client as client_module
 
-        untrusted = tmp_path / "venv" / "Scripts" / "kiro-cli.exe"
-        untrusted.parent.mkdir(parents=True)
-        untrusted.write_bytes(b"untrusted")
+        # Trust is "it runs": a Windows CLI outside Program Files (winget/scoop,
+        # a venv Scripts dir) resolves for ACP launch rather than being rejected.
+        candidate = tmp_path / "venv" / "Scripts" / "kiro-cli.exe"
+        candidate.parent.mkdir(parents=True)
+        candidate.write_bytes(b"runnable")
         program_files = tmp_path / "Program Files"
 
         with (
@@ -6966,27 +6968,23 @@ class TestResolveKiroBinEnvOverride:
             patch.object(
                 client_module,
                 "resolve_kiro_cli",
-                return_value=str(untrusted),
+                return_value=str(candidate),
             ),
             patch.dict(
                 "os.environ",
                 {"ProgramFiles": str(program_files)},
                 clear=True,
             ),
-            pytest.raises(
-                client_module._KiroExecutableTrustError,
-                match="trusted Program Files",
-            ),
         ):
-            client_module._resolve_kiro_bin()
+            assert client_module._resolve_kiro_bin() == os.path.realpath(str(candidate))
 
     @pytest.mark.asyncio
-    async def test_spawn_rejects_override_replaced_after_readiness(self, tmp_path):
+    async def test_spawn_launches_self_updated_override(self, tmp_path):
         from kiro_crew.acp import client as client_module
         from kiro_crew.kiro_prerequisite import KiroPrerequisiteService
 
         fake = tmp_path / "kiro-cli"
-        fake.write_bytes(b"#!/bin/sh\n# trusted\n")
+        fake.write_bytes(b"#!/bin/sh\n# original\n")
         fake.chmod(0o755)
         mock_exec = AsyncMock()
         with (
@@ -7001,16 +6999,16 @@ class TestResolveKiroBinEnvOverride:
                 mock_exec,
             ),
         ):
-            # Service construction is the gateway-start trust boundary. A
-            # replacement after that readiness pin must never reach ACP spawn.
+            # A Kiro self-update legitimately rewrites the binary after gateway
+            # start. Trust is "it runs", so the updated bytes still launch — the
+            # snapshot just pins whatever bytes are resolved at spawn time.
             KiroPrerequisiteService(home=tmp_path, data_home=tmp_path / "data")
-            fake.write_bytes(b"#!/bin/sh\n# replacement\n")
+            fake.write_bytes(b"#!/bin/sh\n# self-updated\n")
             fake.chmod(0o755)
 
             client = AcpClient(work_dir=tmp_path / "workspace")
-            with pytest.raises(AcpError, match="provenance is not trusted"):
-                await client._spawn()
-            mock_exec.assert_not_awaited()
+            await client._spawn()
+            mock_exec.assert_awaited()
 
     @pytest.mark.asyncio
     async def test_spawn_passes_fd_snapshot_through_exact_wrappers(self, tmp_path):

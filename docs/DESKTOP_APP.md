@@ -270,21 +270,20 @@ package. The second step runs `kiro-cli login --use-device-flow`, displays the
 secure sign-in URL and code, and opens the Kiro Crew dashboard only after
 `kiro-cli whoami` succeeds.
 An installed candidate that cannot start is shown as needing repair rather than
-as merely signed out. A broken existing macOS app bundle or Linux user-local
+as merely signed out; one that runs is directly usable for sign-in regardless of
+install source (toolbox, Homebrew, winget, the official installer, or a
+self-updated bundle) — trust is "the CLI runs, and it has a valid login", not
+where it was installed. A broken existing macOS app bundle or Linux user-local
 binary is repaired through the official interactive guide when the upstream
 installer requires terminal confirmation before replacing it. Installation and
 sign-in never start silently in the background. Setup subprocesses receive a
 minimal allowlisted environment rather than the desktop shell's credentials;
-unverified version probes use the strict OS sandbox and hide every known Kiro
-identity store. The fixed `whoami` and device-login calls run only after
-Kiro Crew verifies immutable system/operator provenance or a SHA-256
-attestation recorded immediately after the pinned official installer. Those
-installer bytes may attest only the exact platform install target, and only
-when that target is new or changed; a higher-priority shadowing executable is
-reported for repair instead of receiving credential access. Those
-calls use a standard sandbox with a temporary home containing only Kiro
-identity token files; unrelated AWS, SSH, GitHub, Kubernetes, and Kiro Crew
-state remain unavailable. Timed-out commands signal a POSIX process group only
+version probes use the strict OS sandbox and hide every known Kiro identity
+store. `whoami` and device-login run for any runnable candidate; they use a
+standard sandbox with a temporary home containing only Kiro identity token
+files, so unrelated AWS, SSH, GitHub, Kubernetes, and Kiro Crew state remain
+unavailable, and POSIX auth still executes a private snapshot of the exact
+resolved bytes. Timed-out commands signal a POSIX process group only
 while its leader still anchors that identity; on Windows, exact retained process
 handles terminate observed descendants without trusting recycled PIDs. Cleanup
 finishes before the gateway permits a retry.

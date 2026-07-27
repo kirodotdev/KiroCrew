@@ -207,10 +207,6 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "instances/ssh_tunnel_manager.py::start",
         "instances/token_mint.py::mint_remote_token",
         "instances/token_mint.py::run_remote_kirocrew",
-        # macOS Kiro signature verification uses fixed /usr/bin/codesign
-        # argv/requirements against the canonical official app target. No
-        # command, argument, cwd, or environment value is agent-controlled.
-        "kiro_prerequisite.py::_macos_codesign_allows_official_kiro",
         "mcp_caller.py::_parent_pid",
         "mcp_core.py::_get_ppid",
         "mcp_discovery.py::sync_to_agent_config",

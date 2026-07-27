@@ -1,7 +1,8 @@
 # CLI Module
 
-Last Updated: 2026-07-26 (first-run setup, direct-CLI ACP provenance, and
-fail-closed process tracking)
+Last Updated: 2026-07-27 (Kiro CLI trust simplified to "runs + valid login" —
+install source/owner/path no longer gate setup or ACP launch; resolve-to-exec
+integrity snapshots retained)
 
 ## Overview
 
@@ -131,9 +132,9 @@ from a different later installation.
   POSIX installer would require an interactive `/dev/tty` replacement prompt
   (an existing macOS app bundle or Linux `~/.local/bin/kiro-cli`), automatic
   repair is disabled and the user is directed to the official guide.
-  A usable but unattested candidate outside those interactive replacement
-  locations can run the validated reinstall path and is attested only after the
-  installer completes.
+  A candidate that already runs is directly usable for sign-in regardless of
+  install source; the post-installer attestation file is now write-only
+  bookkeeping and does not gate credential access.
 - Installed but signed out: the setup page starts
   `kiro-cli login --use-device-flow`, relays its sign-in URL/code, and requires
   a successful `kiro-cli whoami` before continuing. Only the official
@@ -164,17 +165,14 @@ or subprocess implementation. Filesystem discovery runs off the event loop.
 Version probes use a minimal noninteractive environment with no proxy
 credentials or desktop-session IPC. They use the strict OS sandbox and
 additionally hide the configured data home, `~/.kiro/crew`, `~/.kirocrew`, and
-every known Kiro identity store. A candidate is eligible for `whoami` and
-device login only when it has immutable system/operator provenance or matches
-the path and SHA-256 attestation recorded immediately after Kiro Crew runs the
-release-pinned official installer. That attestation is on the
-agent-inaccessible sensitive-path floor. POSIX auth calls execute an owner-only
-snapshot under the protected runtime directory, binding the bytes that passed
-verification to the executable that receives staged credentials.
-When `KIROCREW_KIRO_BIN` is set on POSIX, the gateway prerequisite service and
-every direct agent-bearing CLI command (`chat`, `tui`, `run`, `consolidate`,
-and `eval`) register the override's canonical path and first-observed digest
-before a jail re-exec or provider can start.
+every known Kiro identity store. Any candidate that runs `--version` is eligible
+for `whoami` and device login — trust is "it runs, and it has a valid login",
+not install source, owner, or fixed path (KiroCrew is not the authority on where
+Kiro CLI is installed, and its self-updater rewrites its own bytes as the user).
+POSIX auth calls still execute an owner-only snapshot of the exact resolved
+bytes under the protected runtime directory, binding the process that receives
+staged credentials to the bytes just resolved (no stored digest pin, so a
+legitimate self-update does not break sign-in).
 Authentication commands run in the standard sandbox against a temporary home
 populated only with Kiro identity JSON and SQLite files. The temporary state is
 published only after a successful command; failure, timeout, or cancellation
@@ -224,15 +222,16 @@ POSIX setup operation fails cleanly before spawning a command.
 Sandbox launcher/profile preparation and cleanup are worker-thread operations
 and do not stall the asyncio gateway loop.
 
-Setup and ACP launch share the side-effect-free `kiro_cli` resolver. Status
-requests never publish a discovered path by mutating `KIROCREW_KIRO_BIN`.
-Because Windows has no equivalent OS sandbox for passive probes, setup readiness
-executes only candidates under the fixed Program Files `Kiro-Cli` tree.
-The shared resolver still enumerates inherited `PATH`, the interpreter Scripts
-directory, and an operator override for compatibility, but Windows ACP launch
-rejects any resolved candidate outside that same Program Files tree before
-spawn. A higher-priority untrusted candidate therefore blocks readiness and
-launch rather than silently falling through to a later executable.
+Setup and ACP launch share the side-effect-free `kiro_cli` resolver on every OS.
+Status requests never publish a discovered path by mutating `KIROCREW_KIRO_BIN`.
+Both setup discovery and ACP launch enumerate the same candidates — inherited
+`PATH`, the interpreter Scripts directory, package-manager dirs (incl. the
+Windows Program Files `Kiro-Cli` tree and winget/scoop/user installs on `PATH`),
+and an operator override — and accept a runnable candidate wherever it lives,
+since trust is "the CLI runs". ACP launch runs the resolved candidate in place
+(macOS/Linux snapshot the resolved bytes for resolve-to-exec integrity; Windows
+launches in place). Setup discovery and ACP resolution therefore agree on
+Windows, so a winget/scoop install is never sent to a redundant reinstall.
 
 When a previously completed setup is no longer ready, the dashboard remains
 navigable but session creation and turn submission are paused. The shared

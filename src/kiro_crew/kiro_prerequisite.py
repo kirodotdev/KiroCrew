@@ -92,17 +92,7 @@ _AUTH_STAGING_RELATIVE = Path(".kiro") / "crew-auth-staging"
 _AUTH_PUBLISH_LOCK_FILENAME = ".publish.lock"
 _ACP_EXECUTABLE_SNAPSHOT_RELATIVE = Path("run") / "kiro-cli-snapshots"
 _BINARY_TRUST_VERSION = 1
-_MACOS_OFFICIAL_KIRO_CLI = "/Applications/Kiro CLI.app/Contents/MacOS/kiro-cli"
-_MACOS_KIRO_IDENTIFIER = "kiro-cli"
-_MACOS_KIRO_TEAM_ID = "94KV3E626L"
-_MACOS_CODESIGN = "/usr/bin/codesign"
-_MACOS_CODESIGN_TIMEOUT_SECS = 5
-_MACOS_HARDENED_RUNTIME_FLAG = 0x10000
 _MFD_EXEC = 0x0010
-_MACOS_KIRO_DESIGNATED_REQUIREMENT = (
-    '=identifier "kiro-cli" and anchor apple generic '
-    'and certificate leaf[subject.OU] = "94KV3E626L"'
-)
 FAKE_ACP_TEST_MODE_ENV = "KIROCREW_FAKE_ACP_TEST_MODE"
 _PACKAGED_FAKE_ACP_BACKEND = str(Path(__file__).with_name("testing") / "fake_acp_backend.py")
 _MAX_AUTH_EXECUTABLE_BYTES = 512 * 1024 * 1024
@@ -287,6 +277,20 @@ def _canonical_candidate(path: str) -> str:
         return path
 
 
+def _is_runnable_executable(path: str, platform_name: str | None = None) -> bool:
+    """True if *path* resolves to an executable regular file on this platform.
+
+    The single trust primitive for the "runs + valid login" model: a Kiro CLI
+    that can be executed is eligible for sign-in and ACP launch, regardless of
+    install source, owner, or fixed path.
+    """
+
+    return platform_compat.is_executable_file(
+        _canonical_candidate(path),
+        platform_name=platform_name,
+    )
+
+
 def _bounded_file_sha256(path: Path) -> str | None:
     """Return a digest for one bounded regular file, or ``None`` when absent."""
 
@@ -398,38 +402,6 @@ def _copy_verified_auth_executable(
         raise
 
 
-def _root_owned_immutable_candidate(path: str) -> bool:
-    """Recognize a POSIX binary whose resolved chain is root-owned and fixed."""
-
-    if not platform_compat.IS_POSIX:
-        return False
-    canonical = Path(_canonical_candidate(path))
-    trusted_roots = tuple(
-        Path(_canonical_candidate(str(root)))
-        for root in (
-            Path("/Applications/Kiro CLI.app/Contents/MacOS"),
-            Path("/usr/bin"),
-            Path("/usr/local/bin"),
-            Path("/opt/homebrew/bin"),
-        )
-    )
-    if not any(canonical.parent == root for root in trusted_roots):
-        return False
-    try:
-        for index, component in enumerate((canonical, *canonical.parents)):
-            metadata = component.stat()
-            expected_type = stat.S_ISREG if index == 0 else stat.S_ISDIR
-            if (
-                not expected_type(metadata.st_mode)
-                or metadata.st_uid != 0
-                or metadata.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
-            ):
-                return False
-        return True
-    except OSError:
-        return False
-
-
 def _register_operator_override_attestation(path: str, digest: str | None) -> None:
     """Remember the first gateway-start digest for one explicit override."""
 
@@ -441,6 +413,32 @@ def _register_operator_override_attestation(path: str, digest: str | None) -> No
     _OPERATOR_OVERRIDE_ATTESTATIONS.setdefault(key, digest)
 
 
+def _recorded_trust_digest(trust_path: Path, canonical: str) -> str | None:
+    """Return the pinned sha256 recorded for *canonical*, or ``None``.
+
+    Single reader for the ``.kiro_cli_binary_trust.json`` attestation: parse the
+    file, require the current schema version and an exact path match, and return
+    the recorded 64-char digest. Callers that must prove the on-disk bytes still
+    match re-hash the candidate and ``hmac.compare_digest`` against this value;
+    callers that only need the recorded pin use it directly.
+    """
+
+    try:
+        payload = json.loads(trust_path.read_text(encoding="utf-8"))
+    except (OSError, TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    expected = str(payload.get("sha256", ""))
+    if (
+        payload.get("version") != _BINARY_TRUST_VERSION
+        or os.path.normcase(str(payload.get("path", ""))) != os.path.normcase(canonical)
+        or len(expected) != 64
+    ):
+        return None
+    return expected
+
+
 def _trusted_acp_binary_digest(
     executable: str,
     *,
@@ -448,106 +446,25 @@ def _trusted_acp_binary_digest(
     platform_name: str,
     environ: MutableMapping[str, str],
 ) -> str | None:
-    """Return the digest ACP may execute, or ``None`` for untrusted bytes."""
+    """Return the digest ACP may execute for a runnable Kiro CLI, else ``None``.
 
+    Trust is "it runs" — install source, owner, and fixed path do not gate ACP
+    launch, so a toolbox / Homebrew / self-updated CLI is accepted like any
+    other (KiroCrew is not the authority on where Kiro CLI is installed). The
+    returned digest
+    still pins the exact bytes for the exec-time integrity snapshot (sealed
+    memfd on Linux, verified copy on macOS), so a swap between resolve and exec
+    is still caught; ``None`` means the file is not a runnable executable.
+    """
+
+    del data_home, environ  # provenance no longer gates ACP launch
     canonical = _canonical_candidate(executable)
+    if not _is_runnable_executable(canonical, platform_name):
+        return None
     try:
-        current = _binary_sha256(canonical)
+        return _binary_sha256(canonical)
     except (OSError, ValueError):
         return None
-
-    override = environ.get("KIROCREW_KIRO_BIN", "")
-    if override and os.path.normcase(_canonical_candidate(override)) == os.path.normcase(canonical):
-        expected = _OPERATOR_OVERRIDE_ATTESTATIONS.get(os.path.normcase(canonical))
-        if expected and hmac.compare_digest(expected, current):
-            return expected
-        return None
-
-    if platform_name != "win32" and _root_owned_immutable_candidate(canonical):
-        return current
-
-    trust_path = data_home / _BINARY_TRUST_FILENAME
-    try:
-        payload = json.loads(trust_path.read_text(encoding="utf-8"))
-        if not isinstance(payload, dict):
-            return None
-        expected = str(payload.get("sha256", ""))
-        if (
-            payload.get("version") != _BINARY_TRUST_VERSION
-            or os.path.normcase(str(payload.get("path", ""))) != os.path.normcase(canonical)
-            or len(expected) != 64
-            or not hmac.compare_digest(expected, current)
-        ):
-            return None
-        return expected
-    except (OSError, TypeError, json.JSONDecodeError):
-        return None
-
-
-def _protected_binary_trust_digest(data_home: Path, canonical: str) -> str | None:
-    """Read the exact installer attestation for *canonical* without fallback."""
-
-    try:
-        payload = json.loads((data_home / _BINARY_TRUST_FILENAME).read_text(encoding="utf-8"))
-        if not isinstance(payload, dict):
-            return None
-        expected = str(payload.get("sha256", ""))
-        if (
-            payload.get("version") != _BINARY_TRUST_VERSION
-            or os.path.normcase(str(payload.get("path", ""))) != os.path.normcase(canonical)
-            or len(expected) != 64
-        ):
-            return None
-        return expected
-    except (OSError, TypeError, json.JSONDecodeError):
-        return None
-
-
-def _macos_codesign_allows_official_kiro(canonical: str) -> bool:
-    """Require Kiro's pinned Developer ID identity and hardened runtime."""
-
-    if os.path.normcase(canonical) != os.path.normcase(_MACOS_OFFICIAL_KIRO_CLI):
-        return False
-    clean_env = {
-        "LANG": "C",
-        "LC_ALL": "C",
-        "PATH": "/usr/bin:/bin",
-    }
-    try:
-        verification = subprocess.run(
-            [
-                _MACOS_CODESIGN,
-                "--verify",
-                "--strict",
-                "--test-requirement",
-                _MACOS_KIRO_DESIGNATED_REQUIREMENT,
-                canonical,
-            ],
-            capture_output=True,
-            env=clean_env,
-            timeout=_MACOS_CODESIGN_TIMEOUT_SECS,
-            check=False,
-        )
-        if verification.returncode != 0:
-            return False
-        details = subprocess.run(
-            [_MACOS_CODESIGN, "-dvvv", canonical],
-            capture_output=True,
-            env=clean_env,
-            timeout=_MACOS_CODESIGN_TIMEOUT_SECS,
-            check=False,
-        )
-        metadata = details.stderr[: 64 * 1024].decode("utf-8", errors="replace")
-        flags_match = re.search(r"(?m)^CodeDirectory .* flags=0x([0-9a-fA-F]+)", metadata)
-        return bool(
-            details.returncode == 0
-            and f"Identifier={_MACOS_KIRO_IDENTIFIER}\n" in metadata
-            and f"TeamIdentifier={_MACOS_KIRO_TEAM_ID}\n" in metadata
-            and flags_match
-            and int(flags_match.group(1), 16) & _MACOS_HARDENED_RUNTIME_FLAG
-        )
-    except (OSError, subprocess.SubprocessError):
-        return False
 
 
 def snapshot_trusted_acp_executable(
@@ -557,22 +474,20 @@ def snapshot_trusted_acp_executable(
     platform_name: str | None = None,
     environ: MutableMapping[str, str] | None = None,
 ) -> TrustedAcpExecutableSnapshot:
-    """Return an attestation-checked, OS-bound executable snapshot for ACP.
+    """Return an integrity-checked, OS-bound executable snapshot for ACP.
 
-    Windows candidates live in the protected Program Files tree and retain
-    their original path. Linux executes a write-sealed memfd. Because Mach-O
-    cannot launch reliably through ``/dev/fd``, macOS executes only the
-    canonical official target after verifying approved provenance, its pinned
-    Developer ID identity, and its hardened-runtime signature.
+    Trust is "the CLI runs" — install source, owner, and fixed path do not gate
+    launch, so a toolbox / Homebrew / self-updated Kiro CLI launches like any
+    other. The snapshot still pins the
+    resolved bytes so a swap between resolve and exec is caught: Linux executes
+    a write-sealed ``memfd`` of the exact bytes; because Mach-O cannot launch
+    reliably through ``/dev/fd``, macOS executes a verified private copy; Windows
+    launches the resolved path in place.
     """
 
     platform_name = platform_name or sys.platform
     active_environ = environ if environ is not None else os.environ
     if platform_name == "win32":
-        if not _trusted_windows_candidate(executable, active_environ):
-            raise ValueError(
-                "Windows Kiro CLI must be inside the trusted Program Files Kiro-Cli tree"
-            )
         return TrustedAcpExecutableSnapshot(launch_path=_canonical_candidate(executable))
     active_home = data_home if data_home is not None else config_dir()
     expected = _trusted_acp_binary_digest(
@@ -582,40 +497,23 @@ def snapshot_trusted_acp_executable(
         environ=active_environ,
     )
     if not expected:
-        raise ValueError("Kiro CLI provenance is not trusted for ACP execution")
+        raise ValueError("Kiro CLI is not a runnable executable for ACP execution")
 
     canonical = _canonical_candidate(executable)
     if platform_name == "darwin":
-        protected_digest = _protected_binary_trust_digest(active_home, canonical)
         override = active_environ.get("KIROCREW_KIRO_BIN", "")
-        override_digest = None
-        if override and os.path.normcase(_canonical_candidate(override)) == os.path.normcase(
-            canonical
-        ):
-            override_digest = _OPERATOR_OVERRIDE_ATTESTATIONS.get(os.path.normcase(canonical))
-        provenance_matches = bool(
-            (protected_digest and hmac.compare_digest(protected_digest, expected))
-            or (override_digest and hmac.compare_digest(override_digest, expected))
-            or _root_owned_immutable_candidate(canonical)
-        )
         packaged_fake_test_mode = bool(
             active_environ.get(FAKE_ACP_TEST_MODE_ENV) == "1"
             and override
             and os.path.normcase(canonical)
             == os.path.normcase(_canonical_candidate(_PACKAGED_FAKE_ACP_BACKEND))
         )
-        if provenance_matches and packaged_fake_test_mode:
-            # The offline E2E harness opts into one exact, packaged executable.
-            # It cannot use the production Developer ID requirement because the
-            # deterministic fake is a source-tree Python entry point.
+        if packaged_fake_test_mode:
+            # The offline E2E harness opts into one exact, packaged executable
+            # (a source-tree Python entry point) and launches it in place.
             return TrustedAcpExecutableSnapshot(
                 launch_path=canonical,
                 expected_sha256=expected,
-            )
-        if not provenance_matches or not _macos_codesign_allows_official_kiro(canonical):
-            raise ValueError(
-                "macOS Kiro CLI must match approved provenance and the pinned "
-                "Developer ID signature"
             )
         snapshot_path = _copy_verified_auth_executable(
             canonical,
@@ -1050,25 +948,6 @@ def register_process_start_override_attestation(
 def _powershell_path(environ: MutableMapping[str, str]) -> str:
     system_root = environ.get("SystemRoot") or environ.get("WINDIR") or r"C:\Windows"
     return str(Path(system_root) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe")
-
-
-def _trusted_windows_candidate(
-    candidate: str,
-    environ: MutableMapping[str, str],
-) -> bool:
-    """Restrict unsandboxed Windows probes to the official Program Files tree."""
-
-    program_files = (
-        environ.get("ProgramFiles") or environ.get("PROGRAMFILES") or r"C:\Program Files"
-    )
-    trusted_root = os.path.realpath(str(Path(program_files) / "Kiro-Cli"))
-    resolved = os.path.realpath(candidate)
-    try:
-        return os.path.normcase(os.path.commonpath((trusted_root, resolved))) == os.path.normcase(
-            trusted_root
-        )
-    except ValueError:
-        return False
 
 
 def official_installer_command(
@@ -1726,13 +1605,18 @@ def _probe_filesystem_state(
     """Collect path/candidate state on a worker thread."""
 
     separator = ";" if platform_name == "win32" else os.pathsep
-    include_inherited_path = platform_name != "win32"
+    # Setup discovery matches ACP resolution on every OS: a runnable Kiro CLI is
+    # recognized wherever it lives (PATH, Scripts, override, package-manager
+    # dir), since trust is "the CLI runs". Windows is no longer restricted to
+    # the Program Files tree — a winget/scoop/user install that ACP would launch
+    # must also be recognized by setup, or the two disagree and the user is sent
+    # to a redundant reinstall.
     search_path = separator.join(
         known_kiro_cli_dirs(
             platform_name,
             home,
             environ,
-            include_inherited_path=include_inherited_path,
+            include_inherited_path=True,
         )
     )
     child_environment = _child_env(environ, search_path)
@@ -1741,31 +1625,8 @@ def _probe_filesystem_state(
         platform_name,
         home,
         environ,
-        include_inherited_path=include_inherited_path,
+        include_inherited_path=True,
     )
-    if platform_name == "win32":
-        override = environ.get("KIROCREW_KIRO_BIN", "")
-        if (
-            override
-            and platform_compat.is_executable_file(override, platform_name=platform_name)
-            and not _trusted_windows_candidate(override, environ)
-        ):
-            # ACP resolution gives the explicit override priority. Windows has
-            # no equivalent of the POSIX probe sandbox, so do not execute an
-            # arbitrary override and do not approve a later Program Files
-            # candidate that ACP would never launch.
-            candidates = []
-            installer_plan = official_installer_command(platform_name, environ)
-            return (
-                child_environment,
-                probe_environment,
-                candidates,
-                installer_plan,
-                True,
-            )
-        candidates = [
-            candidate for candidate in candidates if _trusted_windows_candidate(candidate, environ)
-        ]
     installer_plan = official_installer_command(platform_name, environ)
     repair_hint = _interactive_repair_required(platform_name, candidates, home)
     return child_environment, probe_environment, candidates, installer_plan, repair_hint
@@ -1976,18 +1837,11 @@ class KiroPrerequisiteService:
                 self._has_probed = True
                 return self._status
 
-            can_login = await asyncio.to_thread(
-                self._candidate_trusted_for_auth,
-                self._viable_binary,
-            )
-            whoami = (
-                await self._audited_identity_probe(self._viable_binary)
-                if can_login
-                else ProcessResult(
-                    ok=False,
-                    error="Kiro CLI provenance is not trusted for credential access",
-                )
-            )
+            # A viable binary answered ``--version``, so it can be signed into
+            # (trust is "it runs"); ``whoami`` decides whether it is already
+            # authenticated. No provenance gate: source/owner/path do not block
+            # sign-in, so a runnable CLI never needs an unreachable "repair".
+            whoami = await self._audited_identity_probe(self._viable_binary)
             if whoami.ok:
                 await asyncio.to_thread(self._mark_setup_complete)
             self._status = PrerequisiteStatus(
@@ -1995,10 +1849,9 @@ class KiroPrerequisiteService:
                 installed=True,
                 authenticated=whoami.ok,
                 ready=whoami.ok,
-                can_auto_install=self._installer_plan is not None
-                and not (not can_login and repair_hint),
-                can_login=can_login,
-                repair_required=not can_login,
+                can_auto_install=self._installer_plan is not None,
+                can_login=True,
+                repair_required=False,
                 initial_setup_complete=self._initial_setup_complete,
             )
             self._last_probe_at = self._clock()
@@ -2048,77 +1901,6 @@ class KiroPrerequisiteService:
         )
         return result
 
-    def _candidate_trusted_for_auth(self, executable: str) -> bool:
-        """Require launch-equivalent platform provenance before Kiro auth."""
-
-        canonical = _canonical_candidate(executable)
-        if self._platform == "darwin" and not _macos_codesign_allows_official_kiro(canonical):
-            return False
-        override = self._environ.get("KIROCREW_KIRO_BIN", "")
-        if override and os.path.normcase(_canonical_candidate(override)) == os.path.normcase(
-            canonical
-        ):
-            if self._platform == "win32":
-                return _trusted_windows_candidate(canonical, self._environ)
-            try:
-                return bool(
-                    self._initial_override_sha256
-                    and os.path.normcase(self._initial_override_path) == os.path.normcase(canonical)
-                    and hmac.compare_digest(
-                        self._initial_override_sha256,
-                        _binary_sha256(canonical),
-                    )
-                )
-            except (OSError, ValueError):
-                return False
-        if self._platform == "win32":
-            return _trusted_windows_candidate(canonical, self._environ)
-        if _root_owned_immutable_candidate(canonical):
-            return True
-        try:
-            payload = json.loads(self._binary_trust_path.read_text(encoding="utf-8"))
-            if (
-                not isinstance(payload, dict)
-                or payload.get("version") != _BINARY_TRUST_VERSION
-                or os.path.normcase(str(payload.get("path", ""))) != os.path.normcase(canonical)
-            ):
-                return False
-            expected = str(payload.get("sha256", ""))
-            return len(expected) == 64 and hmac.compare_digest(
-                expected,
-                _binary_sha256(canonical),
-            )
-        except (OSError, ValueError, TypeError, json.JSONDecodeError):
-            return False
-
-    def _attested_sha256(self, executable: str) -> str | None:
-        """Return the protected pinned digest for *executable*, when present."""
-
-        canonical = _canonical_candidate(executable)
-        override = self._environ.get("KIROCREW_KIRO_BIN", "")
-        if (
-            self._platform != "win32"
-            and self._initial_override_sha256
-            and override
-            and os.path.normcase(_canonical_candidate(override)) == os.path.normcase(canonical)
-            and os.path.normcase(self._initial_override_path) == os.path.normcase(canonical)
-        ):
-            return self._initial_override_sha256
-        try:
-            payload = json.loads(self._binary_trust_path.read_text(encoding="utf-8"))
-            if not isinstance(payload, dict):
-                return None
-            expected = str(payload.get("sha256", ""))
-            if (
-                payload.get("version") == _BINARY_TRUST_VERSION
-                and os.path.normcase(str(payload.get("path", ""))) == os.path.normcase(canonical)
-                and len(expected) == 64
-            ):
-                return expected
-        except (OSError, TypeError, json.JSONDecodeError):
-            pass
-        return None
-
     def _attest_candidate(self, executable: str) -> None:
         """Pin the exact binary produced by the validated official installer."""
 
@@ -2146,13 +1928,16 @@ class KiroPrerequisiteService:
         on_output: Callable[[str], None] | None = None,
         commit: bool,
     ) -> ProcessResult:
-        """Run trusted Kiro auth with only Kiro identity files in its HOME."""
+        """Run Kiro auth with only Kiro identity files in its HOME.
 
-        if not await asyncio.to_thread(self._candidate_trusted_for_auth, executable):
-            return ProcessResult(
-                ok=False,
-                error="Kiro CLI provenance changed before credential access",
-            )
+        The CLI is trusted because it runs (its install source, owner, and path
+        do not gate sign-in); KiroCrew is not the authority on where Kiro CLI is
+        installed. The POSIX copy still snapshots the exact resolved bytes into
+        the sandbox so the process that receives the staged credentials is the
+        one just resolved, but it pins no stored digest — a Kiro self-update
+        that legitimately rewrites the binary must not break sign-in.
+        """
+
         workspace = await asyncio.to_thread(
             _prepare_auth_workspace,
             self._platform,
@@ -2163,19 +1948,12 @@ class KiroPrerequisiteService:
         auth_executable = executable
         commit_changes = False
         try:
-            # Revalidate after copying credentials and immediately before spawn.
-            # A changed user-local binary never receives the staged bearer token.
-            if not await asyncio.to_thread(self._candidate_trusted_for_auth, executable):
-                return ProcessResult(
-                    ok=False,
-                    error="Kiro CLI provenance changed before credential access",
-                )
             if platform_compat.IS_POSIX and self._run is _run_process:
                 auth_executable = await asyncio.to_thread(
                     _copy_verified_auth_executable,
                     executable,
                     workspace.root / ".bin",
-                    self._attested_sha256(executable),
+                    None,
                 )
             result = await self._run(
                 auth_executable,
@@ -2435,19 +2213,6 @@ class KiroPrerequisiteService:
                     kind="login",
                     status="failed",
                     message="Kiro sign-in cannot start.",
-                    error=error,
-                )
-                await self._set_terminal_audit("login", "denied", caller, error)
-                return
-            if not current.can_login:
-                error = (
-                    "Reinstall Kiro CLI from the official guide before signing in. "
-                    "Kiro Crew will not expose credentials to an unverified executable."
-                )
-                self._operation = OperationStatus(
-                    kind="login",
-                    status="failed",
-                    message="Kiro sign-in cannot start safely.",
                     error=error,
                 )
                 await self._set_terminal_audit("login", "denied", caller, error)
