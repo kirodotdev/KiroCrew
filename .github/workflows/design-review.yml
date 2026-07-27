@@ -1,6 +1,6 @@
 name: Design Review
 
-# ADVISORY design-level AI review using Claude "Fable 5" via Amazon Bedrock.
+# ADVISORY design-level AI review using the "Fable 5" model via Amazon Bedrock.
 # Complements the two line-level reviewers (claude-review.yml, codex-review.yml)
 # with a Sage-Phase-1-style DESIGN gate: does the change actually solve the PR's
 # stated problem, is the underlying approach/logic sound, and does the solution
@@ -8,8 +8,8 @@ name: Design Review
 # (the other two own that). It is ADVISORY — it upserts a verdict comment and is
 # NON-BLOCKING because it is not a required status check (the check MAY go red
 # if the review errors, but that red is override-able by a human). Same auth path
-# as claude-review.yml: OIDC → Amazon Bedrock; Fable 5 is a Claude model, so it
-# runs through anthropics/claude-code-action with use_bedrock.
+# as claude-review.yml: OIDC → Amazon Bedrock; Fable 5 runs through
+# anthropics/claude-code-action with use_bedrock.
 
 on:
   pull_request:

@@ -238,7 +238,7 @@ class TestPrReadiness:
             "build.yml|Build",
             "code-review.yml|Code Review",
             "dynamic/github-code-scanning/codeql|CodeQL",
-            "claude-review.yml|Claude AI Review",
+            "claude-review.yml|Opus 5 Review",
             "codex-review.yml|GPT 5.6 Review",
             "design-review.yml|Design Review",
         ):

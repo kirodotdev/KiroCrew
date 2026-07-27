@@ -1,6 +1,6 @@
 name: Arbiter
 
-# SECOND-ORDER GATE. The line-level reviewers (Claude / GPT 5.6) surface Medium
+# SECOND-ORDER GATE. The line-level reviewers (Opus 5 / GPT 5.6) surface Medium
 # findings and the design reviewer surfaces CONCERNS — none of which block,
 # correctly, since most are not blockers. This workflow reads those sub-threshold
 # findings and, with a DELIBERATELY NARROW rubric, blocks ONLY the few that are
@@ -45,7 +45,7 @@ name: Arbiter
 
 on:
   workflow_run:
-    workflows: ["Claude AI Review", "GPT 5.6 Review", "Design Review"]
+    workflows: ["Opus 5 Review", "GPT 5.6 Review", "Design Review"]
     types: [completed]
   pull_request:
     types: [labeled, unlabeled]
@@ -181,7 +181,7 @@ jobs:
             # this workflow, so its completion re-fires the arbiter — the design
             # comment converges deterministically like the two code reviewers.
             missing=""
-            present "$claude" || missing="$missing Claude"
+            present "$claude" || missing="$missing Opus-5"
             present "$gpt"    || missing="$missing GPT-5.6"
             present "$design" || missing="$missing Design"
 
@@ -191,7 +191,7 @@ jobs:
             else
               {
                 echo "# Sub-threshold reviewer findings for $SHA"
-                echo; echo "## Claude AI Review (line-level; Medium/Low)"; echo; printf '%s\n' "$claude"
+                echo; echo "## Opus 5 Review (line-level; Medium/Low)"; echo; printf '%s\n' "$claude"
                 echo; echo "## GPT 5.6 Review (line-level; Medium/Low)"; echo; printf '%s\n' "$gpt"
                 echo; echo "## Design Review (design-level; CONCERNS)"; echo; printf '%s\n' "$design"
               } > /tmp/subthreshold.md
@@ -252,7 +252,7 @@ jobs:
 
             INPUTS:
             - /tmp/subthreshold.md — the Medium/Low findings from the two
-              line-level reviewers (Claude, GPT 5.6) and the CONCERNS from the
+              line-level reviewers (Opus 5, GPT 5.6) and the CONCERNS from the
               design reviewer, for this PR and commit.
             - /tmp/pr.diff — the PR diff (may be truncated).
 

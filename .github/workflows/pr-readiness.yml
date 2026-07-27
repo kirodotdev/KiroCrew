@@ -21,13 +21,13 @@ on:
       - CI
       - Build
       - Code Review
-      - Claude AI Review
+      - Opus 5 Review
       - GPT 5.6 Review
       - Design Review
       - CodeQL
     # `completed` publishes the real verdict. `requested`/`in_progress` exist so
     # a monitored workflow flipping BACK to running -- most commonly a re-run of
-    # a reviewer (e.g. Claude re-run after a human override) -- re-triggers this
+    # a reviewer (e.g. Opus 5 re-run after a human override) -- re-triggers this
     # job WHILE it runs, instead of leaving the label frozen at the previous
     # commit's verdict until the re-run completes. On re-evaluation that workflow
     # is queried live as `in_progress`, buckets into `pending`, and the label
@@ -205,7 +205,7 @@ jobs:
             # still determine readiness.
             skipped+=(
               "CodeQL (fork PR)"
-              "Claude AI Review (fork PR)"
+              "Opus 5 Review (fork PR)"
               "GPT 5.6 Review (fork PR)"
               "Design Review (fork PR)"
               "Arbiter — judge from comments (fork PR)"
@@ -213,7 +213,7 @@ jobs:
           else
             workflow_specs+=(
               "dynamic/github-code-scanning/codeql|CodeQL"
-              "claude-review.yml|Claude AI Review"
+              "claude-review.yml|Opus 5 Review"
               "codex-review.yml|GPT 5.6 Review"
               "design-review.yml|Design Review"
             )

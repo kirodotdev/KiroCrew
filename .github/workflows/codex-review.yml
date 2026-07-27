@@ -6,7 +6,7 @@ name: GPT 5.6 Review
 # authenticates to Bedrock with the OIDC role's SigV4 credentials via the AWS
 # SDK credential chain. No proxy, no bearer token, no OpenAI API key.
 #
-# Verdict model is BINARY (BLOCKING / FINDING) and identical to the Claude
+# Verdict model is BINARY (BLOCKING / FINDING) and identical to the Opus 5
 # reviewer's. Two structural changes vs. the original three-pass design:
 #   * pass 2 is a FALSIFICATION pass, not a second discovery pass. The old
 #     "find what pass 1 missed" instruction was a recall ratchet that only ever
@@ -91,20 +91,20 @@ jobs:
       # Skip all review work and let the gate pass (see "Gate on findings").
       # github.actor is set by GitHub and cannot be spoofed by PR content.
       #
-      # Install and configure Codex BEFORE assuming the AWS role, so the npm
+      # Install and configure the review CLI BEFORE assuming the AWS role, so the npm
       # install never runs with the Bedrock credentials in its environment.
-      - name: Install Codex CLI
+      - name: Install review CLI
         if: github.actor != 'dependabot[bot]' && steps.human_override.outputs.active != 'true'
         run: npm install -g @openai/codex
 
       # ubuntu-24.04 runners restrict unprivileged user namespaces via AppArmor,
-      # which makes Codex's bundled bubblewrap sandbox fail at netns setup.
+      # which makes the review CLI's bundled bubblewrap sandbox fail at netns setup.
       # Clearing the gate lets the read-only sandbox initialize.
-      - name: Enable unprivileged user namespaces for Codex sandbox
+      - name: Enable unprivileged user namespaces for the review sandbox
         if: github.actor != 'dependabot[bot]' && steps.human_override.outputs.active != 'true'
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
 
-      - name: Configure Codex for Amazon Bedrock
+      - name: Configure the review CLI for Amazon Bedrock
         if: github.actor != 'dependabot[bot]' && steps.human_override.outputs.active != 'true'
         run: |
           mkdir -p "$HOME/.codex"
@@ -282,7 +282,7 @@ jobs:
           line, with the SHA exactly as written):
           - ALWAYS end your review with this line (proof the review ran for this
             commit; CI fails closed without it):
-              [CODEX-REVIEWED] ${{ github.event.pull_request.head.sha }}
+              [GPT-REVIEWED] ${{ github.event.pull_request.head.sha }}
           - ADDITIONALLY, if and ONLY if at least one finding meets WHAT
             BLOCKS, include this second line:
               [BLOCK-MERGE] ${{ github.event.pull_request.head.sha }}
@@ -291,7 +291,7 @@ jobs:
 
           # Append the PR's author-supplied title + description so the
           # scope-coherence and "stated purpose" / regression rules above are
-          # GROUNDED in what the PR claims to do. The read-only Codex sandbox
+          # GROUNDED in what the PR claims to do. The read-only review sandbox
           # unshares the network and cannot fetch this itself, so we fetch it
           # HERE (this step has network + the GITHUB_TOKEN) and bake it into the
           # prompt. It is UNTRUSTED author-controlled input: wrap it in a
@@ -355,7 +355,7 @@ jobs:
       # Assume the Bedrock role only now, immediately before the step that calls
       # Bedrock, to minimize the window the credentials exist in the job
       # environment. Uses a DEDICATED least-privilege role (GPT/Mantle only,
-      # pull_request-scoped) so a leaked token can't reach Claude's model access.
+      # pull_request-scoped) so a leaked token can't reach the Opus 5 reviewer's model access.
       - uses: aws-actions/configure-aws-credentials@517a711dbcd0e402f90c77e7e2f81e849156e31d # v6.2.2
         if: github.actor != 'dependabot[bot]' && steps.human_override.outputs.active != 'true'
         with:
@@ -461,7 +461,7 @@ jobs:
             perl -i -pe 's/\b(?:AKIA|ASIA)[A-Z2-7]{16}\b/[REDACTED-AWS-KEY-ID]/g; s/(?i)(aws_secret_access_key|aws_session_token|x-amz-security-token)\s*[:=]\s*\S+/$1=[REDACTED]/g' codex-review-output.md
           fi
 
-      # Upsert a SINGLE Codex summary comment per PR, keyed by a hidden marker,
+      # Upsert a SINGLE GPT 5.6 summary comment per PR, keyed by a hidden marker,
       # so re-scanning on every push UPDATEs that one comment instead of
       # stacking near-duplicates.
       - name: Post/update review comment
@@ -485,7 +485,7 @@ jobs:
             source_url="https://github.com/$REPO/pull/$PR#issuecomment-$OVERRIDE_SOURCE"
             sentence="Human judgment by @$OVERRIDE_ACTOR overrides the GPT 5.6 finding for \`$HEAD\`; [the recorded reason]($source_url) is authoritative for this commit."
           elif [ -s codex-review-output.md ] \
-            && grep -Fq "[CODEX-REVIEWED] $HEAD" codex-review-output.md; then
+            && grep -Fq "[GPT-REVIEWED] $HEAD" codex-review-output.md; then
             # Blocked IFF the contract marker is present. There is deliberately
             # no label-scanning fallback here: it used to make any self-assigned
             # HIGH turn the comment red regardless of the blocking contract.
@@ -538,14 +538,14 @@ jobs:
           if [ -n "$existing" ] && [ "$existing" != "null" ]; then
             gh api --method PATCH "repos/$REPO/issues/comments/$existing" \
               --field body="$(cat /tmp/codex-comment.md)" >/dev/null || true
-            echo "Updated existing Codex comment #$existing"
+            echo "Updated existing GPT 5.6 comment #$existing"
           else
             gh pr comment "$PR" --body-file /tmp/codex-comment.md
-            echo "Created new Codex comment"
+            echo "Created new GPT 5.6 comment"
           fi
 
       # Fail-CLOSED gate on two SHA-scoped markers:
-      #   - [CODEX-REVIEWED] <sha> — the review ran and produced a verdict for
+      #   - [GPT-REVIEWED] <sha> — the review ran and produced a verdict for
       #     THIS commit. Absent => fail rather than silently pass.
       #   - [BLOCK-MERGE] <sha>    — it additionally found a CLOSED-BLOCKING-LIST
       #     issue. This is the ONLY thing that blocks the merge.
@@ -575,11 +575,11 @@ jobs:
             echo "::error::GPT 5.6 review produced no output"
             exit 1
           fi
-          reviewed="[CODEX-REVIEWED] $HEAD"
+          reviewed="[GPT-REVIEWED] $HEAD"
           blocked="[BLOCK-MERGE] $HEAD"
           # Positive proof the review ran for THIS commit (fail closed).
           if ! grep -Fq "$reviewed" codex-review-output.md; then
-            echo "::error::GPT 5.6 review did not complete for $HEAD (no [CODEX-REVIEWED] marker). Failing closed — re-run the workflow or inspect the GPT 5.6 review step logs."
+            echo "::error::GPT 5.6 review did not complete for $HEAD (no [GPT-REVIEWED] marker). Failing closed — re-run the workflow or inspect the GPT 5.6 review step logs."
             echo "--- review output ---"
             cat codex-review-output.md
             exit 1

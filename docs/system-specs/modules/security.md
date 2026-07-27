@@ -247,7 +247,7 @@ Making `PR Readiness` a required status remains an explicit branch-protection
 or ruleset setting outside the workflow.
 
 For same-repository PRs, the aggregate covers the latest PR run for CI, Build,
-Code Review, Claude AI Review, GPT 5.6 Review (the reconciled result of its three
+Code Review, Opus 5 Review, GPT 5.6 Review (the reconciled result of its three
 calls), and Design Review, plus the managed dynamic CodeQL workflow conclusion
 and the API-owned `Arbiter — judge from comments` check. Grading the CodeQL
 workflow conclusion, rather than its neutral summary check, preserves failures

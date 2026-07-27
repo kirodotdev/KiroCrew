@@ -27,7 +27,7 @@ jobs:
       # Deterministic replication of the blocking rules from
       # website/AUTOSDE.yaml. These catch the unambiguous cases; the semantic
       # half (aria-label on icon-only buttons, no-emoji, template-literal HTML)
-      # is covered by the auto-running Opus 4.8 review in claude-review.yml.
+      # is covered by the auto-running Opus 5 review in claude-review.yml.
       - name: Check frontend blocking rules
         if: contains(steps.changed.outputs.files, 'website/src/')
         working-directory: website

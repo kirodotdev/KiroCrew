@@ -276,8 +276,8 @@ principal. It reads `pre-signed/*` and writes `signed/*`. CI cannot write
 `signed/*` itself, which means signed artifacts can only originate from the
 signer.
 
-The reviewer roles (`kirocrew-github-actions-bedrock` and its Codex
-counterpart) are deliberately split so the PR-facing Codex role has no
+The reviewer roles (`kirocrew-github-actions-bedrock` and its GPT 5.6
+counterpart) are deliberately split so the PR-facing GPT 5.6 role has no
 access to main/prod subjects. That keeps the blast radius of a compromised
 PR workflow small.
 
