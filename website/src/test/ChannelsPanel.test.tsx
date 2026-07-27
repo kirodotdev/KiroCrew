@@ -30,6 +30,7 @@ vi.mock('../pages/settings/DiscordPanel', () => ({ DiscordPanel: () => <div data
 vi.mock('../pages/settings/TelegramPanel', () => ({ TelegramPanel: () => <div data-testid="telegram-panel" /> }))
 vi.mock('../pages/settings/WebexPanel', () => ({ WebexPanel: () => <div data-testid="webex-panel" /> }))
 vi.mock('../pages/settings/WeComPanel', () => ({ WeComPanel: () => <div data-testid="wecom-panel" /> }))
+vi.mock('../pages/settings/TeamsPanel', () => ({ TeamsPanel: () => <div data-testid="teams-panel" /> }))
 
 const govChannelsMock = vi.fn().mockResolvedValue({
   slack: true, discord: true, telegram: true, webex: true, wecom: true,
@@ -45,6 +46,7 @@ vi.mock('../api/client', () => ({
     // Governance policy map; default all-permitted so the existing (non-governance)
     // tests are unaffected. Governance-specific tests override it per case.
     getGovernanceChannels: (...a: unknown[]) => govChannelsMock(...a),
+    getTeamsConfig: vi.fn().mockResolvedValue({ connected: false, configured: false }),
   },
 }))
 
@@ -127,7 +129,7 @@ describe('ChannelsPanel — wide (two-pane)', () => {
     renderAt()
     expect(await screen.findByText('Connected')).toBeInTheDocument()       // slack
     expect(await screen.findByText('Not connected')).toBeInTheDocument()   // discord
-    expect((await screen.findAllByText('Needs setup')).length).toBe(2)     // telegram, webex
+    expect((await screen.findAllByText('Needs setup')).length).toBe(3)     // telegram, webex, teams
     expect(await screen.findByText('Status unavailable')).toBeInTheDocument() // wecom (fetch error)
   })
 })

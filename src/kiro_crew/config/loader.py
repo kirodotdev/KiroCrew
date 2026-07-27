@@ -105,6 +105,7 @@ _KNOWN_CONFIG_SECTIONS: frozenset = frozenset(
         "discord",
         "webex",
         "wecom",
+        "teams",
         "dashboard",
         "tunnel",
         "hooks",
@@ -142,6 +143,9 @@ CRED_WECOM_SECRET = "WECOM_SECRET"
 CRED_TELEGRAM_BOT_TOKEN = "TELEGRAM_BOT_TOKEN"
 CRED_DISCORD_BOT_TOKEN = "DISCORD_BOT_TOKEN"
 CRED_WEBEX_BOT_TOKEN = "WEBEX_BOT_TOKEN"
+CRED_MICROSOFT_APP_ID = "MICROSOFT_APP_ID"
+CRED_MICROSOFT_APP_PASSWORD = "MICROSOFT_APP_PASSWORD"
+CRED_MICROSOFT_APP_TENANT_ID = "MICROSOFT_APP_TENANT_ID"
 _CREDENTIAL_KEYS = (
     CRED_SLACK_APP_TOKEN,
     CRED_SLACK_BOT_TOKEN,
@@ -151,6 +155,9 @@ _CREDENTIAL_KEYS = (
     CRED_TELEGRAM_BOT_TOKEN,
     CRED_DISCORD_BOT_TOKEN,
     CRED_WEBEX_BOT_TOKEN,
+    CRED_MICROSOFT_APP_ID,
+    CRED_MICROSOFT_APP_PASSWORD,
+    CRED_MICROSOFT_APP_TENANT_ID,
 )
 
 DEFAULT_MODEL = "auto"
@@ -2902,6 +2909,88 @@ class WebexConfig:
 
 
 @dataclass
+class TeamsConfig:
+    enabled: bool = field(
+        default=False,
+        metadata=_meta(
+            "Enabled",
+            "Enable the Microsoft Teams channel (self-hosted inbound HTTPS "
+            "webhook via the Bot Framework). Requires a public HTTPS endpoint "
+            "pointing at /api/messaging/teams plus MICROSOFT_APP_ID and "
+            "MICROSOFT_APP_PASSWORD (env/.env) or teams.app_id/app_password.",
+            tags=["teams"],
+        ),
+    )
+    app_id: str = field(
+        default="",
+        metadata=_meta(
+            "App ID",
+            "Microsoft App (Client) ID of the Azure Bot registration. Prefer "
+            "the MICROSOFT_APP_ID credential (env/.env) over storing it here.",
+            tags=["teams"],
+        ),
+    )
+    app_password: str = field(
+        default="",
+        metadata=_meta(
+            "App Password",
+            "Azure Bot client secret. Set ONLY via the MICROSOFT_APP_PASSWORD "
+            "credential (env/.env); it is deliberately NOT read from config.json "
+            "so the agent-readable config never holds the secret.",
+            tags=["teams"],
+            sensitive=True,
+        ),
+    )
+    tenant_id: str = field(
+        default="",
+        metadata=_meta(
+            "Tenant ID",
+            "Azure AD tenant id for a single-tenant bot. Leave empty for a "
+            "multi-tenant bot (uses the botframework.com token authority).",
+            tags=["teams"],
+        ),
+    )
+    allowed_emails: list[str] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Allowed Emails",
+            "Azure AD UPNs/emails OR AAD object ids permitted to DM the bot. "
+            "Teams activities reliably carry the sender's object id (email is "
+            "often absent), so listing object ids works out of the box; emails "
+            "are matched when Teams supplies them. Empty = deny all (fail "
+            "closed): a Teams bot is reachable by anyone in the org.",
+            tags=["teams"],
+        ),
+    )
+    soft_threshold_pct: int = field(
+        default=80,
+        metadata=_meta(
+            "Soft Context Threshold %",
+            "When a DM's context passes this, prompt the user to /compact or /new "
+            "instead of auto-compacting.",
+            tags=["teams"],
+        ),
+    )
+    hard_threshold_pct: int = field(
+        default=95,
+        metadata=_meta(
+            "Hard Context Threshold %",
+            "Force a compaction when context reaches this, even without a user "
+            "decision, so the window never overflows.",
+            tags=["teams"],
+        ),
+    )
+
+    def __post_init__(self) -> None:
+        # Clamp thresholds to [0, 100] and guarantee soft <= hard so a misconfig
+        # can't make the soft nudge unreachable. Mirrors WebexConfig.
+        self.soft_threshold_pct = max(0, min(100, self.soft_threshold_pct))
+        self.hard_threshold_pct = max(0, min(100, self.hard_threshold_pct))
+        if self.soft_threshold_pct > self.hard_threshold_pct:
+            self.soft_threshold_pct = self.hard_threshold_pct
+
+
+@dataclass
 class KiroCrewConfig:
     agent: AgentConfig = field(
         default_factory=AgentConfig,
@@ -2994,6 +3083,10 @@ class KiroCrewConfig:
     webex: WebexConfig = field(
         default_factory=WebexConfig,
         metadata=_meta("Webex", "Webex Messaging integration settings.", tags=["webex"]),
+    )
+    teams: TeamsConfig = field(
+        default_factory=TeamsConfig,
+        metadata=_meta("Teams", "Microsoft Teams integration settings.", tags=["teams"]),
     )
     dashboard: DashboardConfig = field(
         default_factory=DashboardConfig,
@@ -3222,6 +3315,9 @@ class KiroCrewConfig:
         webex_data = data.get("webex", {})
         if not isinstance(webex_data, dict):
             webex_data = {}
+        teams_data = data.get("teams", {})
+        if not isinstance(teams_data, dict):
+            teams_data = {}
         slack_data = data.get("slack", {})
         if not isinstance(slack_data, dict):
             slack_data = {}
@@ -3542,6 +3638,22 @@ class KiroCrewConfig:
                 soft_threshold_pct=_coerce_int(webex_data.get("soft_threshold_pct"), 80),
                 hard_threshold_pct=_coerce_int(webex_data.get("hard_threshold_pct"), 95),
             ),
+            teams=TeamsConfig(
+                enabled=bool(teams_data.get("enabled", False)),
+                app_id=str(teams_data.get("app_id", "")),
+                # Secret is env-only (MICROSOFT_APP_PASSWORD). Never sourced from
+                # config.json, which the agent can read — keeps the Azure Bot
+                # credential out of any agent-readable file.
+                app_password="",
+                tenant_id=str(teams_data.get("tenant_id", "")),
+                allowed_emails=(
+                    [e for e in teams_data.get("allowed_emails", []) if isinstance(e, str) and e]
+                    if isinstance(teams_data.get("allowed_emails", []), list)
+                    else []
+                ),
+                soft_threshold_pct=_coerce_int(teams_data.get("soft_threshold_pct"), 80),
+                hard_threshold_pct=_coerce_int(teams_data.get("hard_threshold_pct"), 95),
+            ),
             slack=SlackConfig(
                 allowed_users=[
                     u
@@ -3838,6 +3950,7 @@ class KiroCrewConfig:
             "discord": asdict(self.discord),
             "webex": asdict(self.webex),
             "wecom": asdict(self.wecom),
+            "teams": asdict(self.teams),
             "dashboard": asdict(self.dashboard),
             "tunnel": asdict(self.tunnel),
             "hooks": self.hooks,

@@ -2765,6 +2765,210 @@ async def _validate_webex_token(token: str) -> str | None:
             raise RuntimeError(f"webex verify http {resp.status}")
 
 
+async def api_teams_activity(request: web.Request) -> web.Response:
+    """POST /api/messaging/teams — Bot Framework inbound webhook (late-bound).
+
+    The route is registered at app-build time (aiohttp freezes routes at
+    startup), but the handler that validates the JWT + drives the turn is the
+    ``TeamsClient.on_activity`` built by ``maybe_start_teams`` once credentials
+    are present. Until then (channel disabled/uncredentialed) we return 503.
+
+    This route is exempt from the dashboard cookie gate (see token_auth
+    ``_BYPASS_EXACT``); the delegated handler performs Bot Framework JWT
+    validation itself before doing anything with the payload.
+    """
+    state: DashboardState = request.app["state"]
+    handler = getattr(state, "teams_on_activity", None)
+    if handler is None:
+        return web.Response(status=503, text="Teams channel not enabled")
+    return await handler(request)
+
+
+async def api_teams_config_get(request: web.Request) -> web.Response:
+    """GET /api/teams/config — read Teams channel status + config summary."""
+    from kiro_crew.config.loader import (  # noqa: F811
+        CRED_MICROSOFT_APP_ID,
+        CRED_MICROSOFT_APP_PASSWORD,
+        KiroCrewConfig,
+    )
+
+    cfg = KiroCrewConfig.load()
+    creds = cfg.load_credentials()
+    app_id = creds.get(CRED_MICROSOFT_APP_ID, "") or cfg.teams.app_id
+    app_password = creds.get(CRED_MICROSOFT_APP_PASSWORD, "") or cfg.teams.app_password
+    state: DashboardState = request.app["state"]
+    return web.json_response(
+        {
+            # True only once the outbound app credentials validated this
+            # session (kept truthful by TeamsClient.on_state_change).
+            "connected": bool(getattr(state, "teams_connected", False)),
+            "connect_error": str(getattr(state, "teams_connect_error", ""))[:120],
+            "configured": bool(
+                app_id and app_password and cfg.teams.enabled and cfg.teams.allowed_emails
+            ),
+            "read_only": not is_direct_local_request(request),
+            "app_id_set": bool(app_id),
+            "app_password_set": bool(app_password),
+            "enabled": cfg.teams.enabled,
+            "tenant_id": cfg.teams.tenant_id,
+            "allowed_emails": list(cfg.teams.allowed_emails),
+        }
+    )
+
+
+def _is_valid_teams_principal(v: str) -> bool:
+    """Accept an allow-list entry that is either an email/UPN or an AAD object
+    id. Both are non-empty, whitespace-free, and length-bounded; keeping the
+    check shape-only (no regex) mirrors the Webex email helper and lets object
+    ids (GUIDs) through, since Teams activities key on those."""
+    if not v or len(v) > 254:
+        return False
+    return not any(ch.isspace() for ch in v)
+
+
+async def api_teams_config_save(request: web.Request) -> web.Response:
+    """PUT /api/teams/config — persist the Teams secret (.env) + config (json).
+
+    The app password (secret) is written ONLY to config_dir/.env
+    (``MICROSOFT_APP_PASSWORD``, 0600); non-secret config (enabled, app_id,
+    tenant_id, allowed_emails) lives in config.json under the "teams" key.
+    Remote sessions are read-only. The whole channel config is read at gateway
+    startup, so every change returns ``restart_required``.
+    """
+    from kiro_crew.agent import _atomic_json_write  # noqa: F811
+    from kiro_crew.config.loader import (  # noqa: F811
+        CRED_MICROSOFT_APP_PASSWORD,
+        config_path,
+    )
+
+    caller = request.get("user", "dashboard")
+
+    def _deny(msg: str, status: int = 400) -> web.Response:
+        _sel().log_api_access(
+            caller=caller,
+            operation="teams.config.update",
+            outcome="denied",
+            source="dashboard",
+            error=msg,
+        )
+        return web.json_response({"error": msg}, status=status)
+
+    # Remote sessions are read-only: a remote/tunneled session cannot alter
+    # channel access or plant the Azure Bot secret.
+    if not is_direct_local_request(request):
+        return _deny("read-only from remote sessions (local machine only)", status=403)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return _deny("invalid JSON")
+    if not isinstance(body, dict):
+        return _deny("body must be an object")
+
+    # ── Phase 1: validate + stage (no partial writes). The secret goes to .env
+    # only — never config.json — so the agent-readable config never holds it.
+    env_updates: dict[str, str | None] = {}
+    clear_flag = body.get("app_password_clear")
+    if clear_flag is not None and not isinstance(clear_flag, bool):
+        return _deny("app_password_clear must be a boolean")
+    if clear_flag is True:
+        env_updates[CRED_MICROSOFT_APP_PASSWORD] = None
+    else:
+        raw = body.get("app_password")
+        if isinstance(raw, str):
+            secret = raw.strip()
+            if secret.startswith(f"{CRED_MICROSOFT_APP_PASSWORD}="):
+                secret = secret[len(CRED_MICROSOFT_APP_PASSWORD) + 1 :].strip()
+            if secret:
+                if any(ch.isspace() for ch in secret):
+                    return _deny("app_password must not contain whitespace")
+                env_updates[CRED_MICROSOFT_APP_PASSWORD] = secret
+
+    staged: dict[str, object] = {}
+    if "enabled" in body:
+        val = body.get("enabled")
+        if not isinstance(val, bool):
+            return _deny("enabled must be a boolean")
+        staged["enabled"] = val
+    for str_key in ("app_id", "tenant_id"):
+        if str_key in body:
+            val = body.get(str_key)
+            if not isinstance(val, str):
+                return _deny(f"{str_key} must be a string")
+            v = val.strip()
+            if any(ch.isspace() for ch in v):
+                return _deny(f"{str_key} must not contain whitespace")
+            staged[str_key] = v
+    if "allowed_emails" in body:
+        try:
+            new_ids = _clean_id_list(
+                body.get("allowed_emails"), _is_valid_teams_principal, "principal"
+            )
+        except ValueError as exc:
+            return _deny(str(exc))
+        staged["allowed_emails"] = new_ids
+
+    # ── Phase 2: commit under the repo-wide config lock (read fresh, merge only
+    # the teams section, write atomic) so a concurrent save is never clobbered.
+    from kiro_crew.dashboard.handlers.agents import _get_config_lock  # noqa: F811
+
+    applied: list[str] = []
+    async with _get_config_lock():
+        path = config_path()
+        try:
+            data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        except Exception:
+            return _deny("config.json is corrupt", status=500)
+        if not isinstance(data.get("teams"), dict):
+            data["teams"] = {}
+        teams_cfg = data["teams"]
+
+        changes: dict[str, object] = {}
+        if "enabled" in staged and staged["enabled"] != bool(teams_cfg.get("enabled", False)):
+            changes["enabled"] = staged["enabled"]
+        for str_key in ("app_id", "tenant_id"):
+            if str_key in staged and staged[str_key] != teams_cfg.get(str_key, ""):
+                changes[str_key] = staged[str_key]
+        if "allowed_emails" in staged and staged["allowed_emails"] != teams_cfg.get(
+            "allowed_emails", []
+        ):
+            changes["allowed_emails"] = staged["allowed_emails"]
+        applied = list(changes.keys())
+        # The secret is env-only; if a legacy plaintext app_password ever landed
+        # in config.json, purge it so it can't shadow or outlive the .env value.
+        if teams_cfg.get("app_password"):
+            changes["app_password"] = ""
+            applied.append("app_password_purged")
+
+        if changes:
+            teams_cfg.update(changes)
+            _atomic_json_write(path, data)
+        if env_updates:
+            # Off-loop: restrict_to_owner spawns whoami/icacls subprocesses on
+            # Windows, which would stall the gateway loop if run inline.
+            await asyncio.to_thread(_write_env_updates, env_updates)
+            for key, new_val in env_updates.items():
+                if new_val is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = new_val
+
+    _sel().log_api_access(
+        caller=caller,
+        operation="teams.config.update",
+        outcome="ok",
+        source="dashboard",
+        resources=",".join(applied + list(env_updates.keys())),
+    )
+    return web.json_response(
+        {
+            "ok": True,
+            "restart_required": bool(env_updates) or bool(applied),
+            "verify_warning": "",
+        }
+    )
+
+
 async def api_webex_config_get(request: web.Request) -> web.Response:
     """GET /api/webex/config — read Webex config + masked secret status."""
     from kiro_crew.config.loader import (  # noqa: F811

@@ -55,6 +55,9 @@ from kiro_crew.channel_history import ChannelHistory
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.loader import (
     CRED_DISCORD_BOT_TOKEN,
+    CRED_MICROSOFT_APP_ID,
+    CRED_MICROSOFT_APP_PASSWORD,
+    CRED_MICROSOFT_APP_TENANT_ID,
     CRED_OWNER_ID,
     CRED_SLACK_APP_TOKEN,
     CRED_SLACK_BOT_TOKEN,
@@ -165,6 +168,7 @@ from kiro_crew.subagent import (
     resolve_max_subagents,
 )
 from kiro_crew.taskrunner import TaskRunner
+from kiro_crew.teams.gateway import maybe_start_teams
 from kiro_crew.telegram.gateway import maybe_start_telegram
 from kiro_crew.webex.gateway import maybe_start_webex
 from kiro_crew.wecom.gateway import maybe_start_wecom
@@ -175,6 +179,7 @@ if TYPE_CHECKING:
     from kiro_crew.providers.base import LLMProvider
     from kiro_crew.subagent_scale import SubagentEventCoalescer
     from kiro_crew.task_models import Task
+    from kiro_crew.teams.client import TeamsClient
     from kiro_crew.telegram.client import TelegramClient
     from kiro_crew.webex.client import WebexClient
     from kiro_crew.wecom.client import WeComClient
@@ -786,6 +791,19 @@ class GatewayOrchestrator:
         self._webex_enabled = bool(cfg.webex.enabled and self._webex_bot_token)
         self._webex_allowed_emails: list[str] = list(cfg.webex.allowed_emails)
         self._webex_client: "WebexClient | None" = None
+        # Teams — the MICROSOFT_APP_ID / MICROSOFT_APP_PASSWORD / _TENANT_ID
+        # credentials (env/.env) override the typed cfg.teams fields; all other
+        # settings come from the typed cfg.teams dataclass.
+        self._teams_app_id = creds.get(CRED_MICROSOFT_APP_ID, "") or cfg.teams.app_id
+        self._teams_app_password = (
+            creds.get(CRED_MICROSOFT_APP_PASSWORD, "") or cfg.teams.app_password
+        )
+        self._teams_tenant_id = creds.get(CRED_MICROSOFT_APP_TENANT_ID, "") or cfg.teams.tenant_id
+        self._teams_enabled = bool(
+            cfg.teams.enabled and self._teams_app_id and self._teams_app_password
+        )
+        self._teams_allowed_emails: list[str] = list(cfg.teams.allowed_emails)
+        self._teams_client: "TeamsClient | None" = None
         self.slack_command = cfg.slack.command
 
         # Services (initialized in start())
@@ -4726,6 +4744,8 @@ class GatewayOrchestrator:
             cleanup_tasks.append(asyncio.wait_for(self._discord_client.close(), timeout=2.0))
         if self._webex_client:
             cleanup_tasks.append(asyncio.wait_for(self._webex_client.close(), timeout=2.0))
+        if self._teams_client:
+            cleanup_tasks.append(asyncio.wait_for(self._teams_client.close(), timeout=2.0))
         # Cancel background model download if still in flight
         if self._model_download_task is not None and not self._model_download_task.done():
             self._model_download_task.cancel()
@@ -5372,7 +5392,7 @@ class GatewayOrchestrator:
         # profile-file I/O), but ONLY for config-enabled transports — a disabled
         # transport never starts, so skip it to avoid a deny-SEL for a channel
         # that would no-op anyway. Members not evaluated stay not-permitted.
-        members = ("wecom", "telegram", "discord", "webex")
+        members = ("wecom", "telegram", "discord", "webex", "teams")
         enabled = {m: bool(getattr(self, f"_{m}_enabled", False)) for m in members}
         loop = asyncio.get_running_loop()
         permitted = await loop.run_in_executor(
@@ -5393,6 +5413,9 @@ class GatewayOrchestrator:
         # Webex channel — guarded no-op unless enabled + token present.
         if permitted["webex"]:
             self._webex_client = await maybe_start_webex(self)
+        # Teams channel — guarded no-op unless enabled + App ID/password present.
+        if permitted["teams"]:
+            self._teams_client = await maybe_start_teams(self)
 
 
 async def run_gateway(

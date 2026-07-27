@@ -9,12 +9,14 @@ import { DiscordIcon } from '../../components/DiscordIcon'
 import { TelegramLogo } from '../../components/TelegramLogo'
 import { WebexIcon } from '../../components/WebexIcon'
 import { WeComLogo } from '../../components/WeComLogo'
+import { TeamsIcon } from '../../components/TeamsIcon'
 import { SlackPanel } from './SlackPanel'
 import { DiscordPanel } from './DiscordPanel'
 import { TelegramPanel } from './TelegramPanel'
 import { WebexPanel } from './WebexPanel'
 import { WeComPanel } from './WeComPanel'
 import { ChannelDisabledPanel } from './ChannelDisabledPanel'
+import { TeamsPanel } from './TeamsPanel'
 
 /** Minimal status shape every channel config endpoint shares. */
 interface ChannelStatus {
@@ -41,6 +43,7 @@ const CHANNELS: ChannelEntry[] = [
   { key: 'telegram', name: 'Telegram', logo: <TelegramLogo size={20} />, queryKey: 'telegram-config', getConfig: () => api.getTelegramConfig(), Panel: TelegramPanel },
   { key: 'webex', name: 'Webex', logo: <WebexIcon size={20} />, queryKey: 'webex-config', getConfig: () => api.getWebexConfig(), Panel: WebexPanel },
   { key: 'wecom', name: 'WeCom', logo: <WeComLogo size={20} />, queryKey: 'wecom-config', getConfig: () => api.getWeComConfig(), Panel: WeComPanel },
+  { key: 'teams', name: 'Microsoft Teams', logo: <TeamsIcon size={20} />, queryKey: 'teams-config', getConfig: () => api.getTeamsConfig(), Panel: TeamsPanel },
 ]
 
 export const CHANNEL_KEYS = CHANNELS.map(c => c.key)

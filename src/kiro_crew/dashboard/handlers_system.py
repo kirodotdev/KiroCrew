@@ -568,6 +568,7 @@ def _channel_members() -> tuple[str, ...]:
     """
     from kiro_crew.discord.transport import DiscordTransport
     from kiro_crew.slack.transport import SlackTransport
+    from kiro_crew.teams.transport import TeamsTransport
     from kiro_crew.telegram.transport import TelegramTransport
     from kiro_crew.webex.transport import WebexTransport
     from kiro_crew.wecom.transport import WeComTransport
@@ -580,6 +581,7 @@ def _channel_members() -> tuple[str, ...]:
             TelegramTransport,
             WebexTransport,
             WeComTransport,
+            TeamsTransport,
         )
     )
 

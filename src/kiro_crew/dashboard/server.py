@@ -1434,6 +1434,11 @@ async def start_dashboard(
     app.router.add_put("/api/webex/config", handlers.api_webex_config_save)
     app.router.add_get("/api/wecom/config", handlers.api_wecom_config_get)
     app.router.add_put("/api/wecom/config", handlers.api_wecom_config_save)
+    # Microsoft Teams: inbound Bot Framework webhook (self-authenticating via
+    # JWT; exempt from the cookie gate) + read-only status for the settings UI.
+    app.router.add_post("/api/messaging/teams", handlers.api_teams_activity)
+    app.router.add_get("/api/teams/config", handlers.api_teams_config_get)
+    app.router.add_put("/api/teams/config", handlers.api_teams_config_save)
 
     # Script Hooks
     app.router.add_get("/api/hooks", handlers.api_hooks)

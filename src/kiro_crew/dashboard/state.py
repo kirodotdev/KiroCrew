@@ -1564,6 +1564,18 @@ class DashboardState:
         # error, immediate close on bad credentials, or server kick), empty
         # when connected or never attempted. Read by the settings badge.
         self.wecom_connect_error: str = ""
+        # True only while the Teams channel's credentials validated this
+        # session (kept truthful by TeamsClient.on_state_change). Read by the
+        # Teams settings status badge.
+        self.teams_connected: bool = False
+        # Short reason from the most recent Teams credential/connection failure,
+        # empty when connected or never attempted. Read by the settings badge.
+        self.teams_connect_error: str = ""
+        # Late-bound inbound webhook handler for the Teams channel. The route
+        # POST /api/messaging/teams is registered at app-build time (aiohttp
+        # freezes routes at startup); maybe_start_teams sets this to the built
+        # client's on_activity once credentials are present. None => 503.
+        self.teams_on_activity: Any = None
         # Live channel transports (Telegram/WeCom/...) for channel-neutral
         # cross-surface mirror delivery — registered at boot by each channel's
         # gateway via ``register_channel_transport``. Slack keeps its dedicated

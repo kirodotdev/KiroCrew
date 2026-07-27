@@ -201,6 +201,30 @@ export interface WebexConfigSave {
   allowed_emails: string[]
 }
 
+/** Microsoft Teams channel status + config, from GET /api/teams/config. */
+export interface TeamsConfigData {
+  connected: boolean
+  connect_error: string
+  configured: boolean
+  read_only: boolean
+  app_id_set: boolean
+  app_password_set: boolean
+  enabled: boolean
+  tenant_id: string
+  allowed_emails: string[]
+}
+
+/** Writable Teams config fields sent to PUT /api/teams/config. The secret
+ *  (app_password) is write-only and stored in .env, never config.json. */
+export interface TeamsConfigSave {
+  app_id: string
+  app_password: string
+  app_password_clear: boolean
+  tenant_id: string
+  enabled: boolean
+  allowed_emails: string[]
+}
+
 /** A built-in denied-command rule as returned by GET /api/security/denied-commands. */
 export interface DeniedCommandRule {
   id: string
@@ -1409,6 +1433,8 @@ export const api = {
   // channel-tab "Off by admin" greying — the editable panel is replaced by a
   // disabled/unavailable state.
   getGovernanceChannels: () => get('/api/governance/channels').then(j) as Promise<Record<string, boolean | null>>,
+  getTeamsConfig: () => get('/api/teams/config').then(j) as Promise<TeamsConfigData>,
+  saveTeamsConfig: (body: Partial<TeamsConfigSave>) => put('/api/teams/config', body).then(j) as Promise<{ ok: boolean; restart_required: boolean; verify_warning: string }>,
 
   // Auto-research
   researchValidate: (body: object) => post("/api/apps/auto-research/validate", body).then(j),

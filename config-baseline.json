@@ -3049,6 +3049,156 @@
       "defaultValue": 95
     },
     {
+      "path": "teams",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "teams"
+      ],
+      "label": "Teams",
+      "help": "Microsoft Teams integration settings.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {
+        "enabled": false,
+        "app_id": "",
+        "app_password": "",
+        "tenant_id": "",
+        "allowed_emails": [],
+        "soft_threshold_pct": 80,
+        "hard_threshold_pct": 95
+      }
+    },
+    {
+      "path": "teams.enabled",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "teams"
+      ],
+      "label": "Enabled",
+      "help": "Enable the Microsoft Teams channel (self-hosted inbound HTTPS webhook via the Bot Framework). Requires a public HTTPS endpoint pointing at /api/messaging/teams plus MICROSOFT_APP_ID and MICROSOFT_APP_PASSWORD (env/.env) or teams.app_id/app_password.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "teams.app_id",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "teams"
+      ],
+      "label": "App ID",
+      "help": "Microsoft App (Client) ID of the Azure Bot registration. Prefer the MICROSOFT_APP_ID credential (env/.env) over storing it here.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
+      "path": "teams.app_password",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": true,
+      "tags": [
+        "teams"
+      ],
+      "label": "App Password",
+      "help": "Azure Bot client secret. Set ONLY via the MICROSOFT_APP_PASSWORD credential (env/.env); it is deliberately NOT read from config.json so the agent-readable config never holds the secret.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
+      "path": "teams.tenant_id",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "teams"
+      ],
+      "label": "Tenant ID",
+      "help": "Azure AD tenant id for a single-tenant bot. Leave empty for a multi-tenant bot (uses the botframework.com token authority).",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
+      "path": "teams.allowed_emails",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "teams"
+      ],
+      "label": "Allowed Emails",
+      "help": "Azure AD UPNs/emails OR AAD object ids permitted to DM the bot. Teams activities reliably carry the sender's object id (email is often absent), so listing object ids works out of the box; emails are matched when Teams supplies them. Empty = deny all (fail closed): a Teams bot is reachable by anyone in the org.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": []
+    },
+    {
+      "path": "teams.allowed_emails.*",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null
+    },
+    {
+      "path": "teams.soft_threshold_pct",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "teams"
+      ],
+      "label": "Soft Context Threshold %",
+      "help": "When a DM's context passes this, prompt the user to /compact or /new instead of auto-compacting.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 80
+    },
+    {
+      "path": "teams.hard_threshold_pct",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "teams"
+      ],
+      "label": "Hard Context Threshold %",
+      "help": "Force a compaction when context reaches this, even without a user decision, so the window never overflows.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 95
+    },
+    {
       "path": "dashboard",
       "kind": "core",
       "type": "object",

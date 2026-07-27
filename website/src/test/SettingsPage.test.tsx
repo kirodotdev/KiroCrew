@@ -33,6 +33,7 @@ vi.mock('../pages/settings/DiscordPanel', () => ({ DiscordPanel: () => <div data
 vi.mock('../pages/settings/TelegramPanel', () => ({ TelegramPanel: () => <div data-testid="telegram-panel" /> }))
 vi.mock('../pages/settings/WebexPanel', () => ({ WebexPanel: () => <div data-testid="webex-panel" /> }))
 vi.mock('../pages/settings/WeComPanel', () => ({ WeComPanel: () => <div data-testid="wecom-panel" /> }))
+vi.mock('../pages/settings/TeamsPanel', () => ({ TeamsPanel: () => <div data-testid="teams-panel" /> }))
 vi.mock('../pages/settings/DeveloperPanel', () => ({ DeveloperPanel: () => <div data-testid="developer-panel" /> }))
 
 // ChannelsPanel renders real (it owns the remap target) — silence its status
@@ -47,8 +48,9 @@ vi.mock('../api/client', () => ({
     // ChannelsPanel gates each channel on the `channels` governance policy;
     // all-permitted default so the remap tests see the editable panel render.
     getGovernanceChannels: vi.fn().mockResolvedValue({
-      slack: true, discord: true, telegram: true, webex: true, wecom: true,
+      slack: true, discord: true, telegram: true, webex: true, wecom: true, teams: true,
     }),
+    getTeamsConfig: vi.fn().mockResolvedValue({ connected: false, configured: false }),
   },
 }))
 

@@ -369,6 +369,12 @@ _BYPASS_EXACT = {
     "/api/health",
     "/api/live",
     "/api/ready",
+    # Microsoft Teams inbound webhook: Bot Framework (Microsoft's servers, no
+    # dashboard cookie) POSTs activities here. The handler does its OWN auth --
+    # it validates the Bot Framework JWT (issuer + App-ID audience + signature)
+    # before processing -- so it must bypass the dashboard cookie gate. Same
+    # self-authenticating-external-caller class as a chat provider webhook.
+    "/api/messaging/teams",
 }
 
 # Anchored bypass for installed-app static UI bundles only (federated-app
