@@ -74,4 +74,43 @@ describe('applyStatusDelta', () => {
     expect(stripped).toEqual({ url: URL_A })
     expect(applyStatusDelta(batch, stripped!)).toBe(batch)
   })
+
+  // The merge pair rides the same event. A branch that starts conflicting while
+  // the panel is open changes only these fields, so a delta carrying nothing else
+  // still has to land -- otherwise the merge-blocker banner waits for a refresh.
+  it('carries a merge-only change', () => {
+    const delta = parseStatusDelta({ url: URL_A, mergeable: 'conflicting', mergeStateStatus: 'dirty' })
+
+    expect(delta).toEqual({ url: URL_A, mergeable: 'conflicting', mergeStateStatus: 'dirty' })
+    expect(applyStatusDelta(batch, delta!)?.statuses[URL_A])
+      .toEqual({ mergeable: 'conflicting', mergeStateStatus: 'dirty' })
+  })
+
+  it('carries a GitLab detail-only answer, where mergeable never settles', () => {
+    const delta = parseStatusDelta({ url: URL_A, state: 'open', mergeStateStatus: 'need_rebase' })
+
+    expect(delta).toEqual({ url: URL_A, state: 'open', mergeStateStatus: 'need_rebase' })
+  })
+
+  it('rejects merge values that are not the shape of the normalized vocabulary', () => {
+    const delta = parseStatusDelta({
+      url: URL_A,
+      state: 'open',
+      mergeable: '<img src=x>',
+      mergeStateStatus: 'x'.repeat(33),
+    })
+
+    expect(delta).toEqual({ url: URL_A, state: 'open' })
+  })
+
+  it('re-renders when only the merge pair moved', () => {
+    const conflicting = applyStatusDelta(batch, {
+      url: URL_A, state: 'open', ci: 'running', mergeable: 'conflicting',
+    })
+    expect(conflicting).not.toBe(batch)
+    // ...and still skips the re-render when the whole entry is unchanged.
+    expect(applyStatusDelta(conflicting, {
+      url: URL_A, state: 'open', ci: 'running', mergeable: 'conflicting',
+    })).toBe(conflicting)
+  })
 })

@@ -772,6 +772,89 @@ def _github_thread_map(payload: Any) -> dict[str, dict[str, Any]]:
     return result
 
 
+# Both providers compute mergeability lazily: reading a pull request that has
+# not been evaluated recently returns "not known yet" (GitHub ``UNKNOWN``,
+# GitLab ``checking``/``unchecked``) *and* kicks off the computation, so the
+# real answer is only available on a later read. A single read therefore reports
+# a conflicting pull request as having no merge blocker at all — which is why
+# the panel's conflict banner used to appear only once the user hit refresh.
+# These bound a short re-read of the merge fields alone (not the whole fanout),
+# issued concurrently with the secondary provider calls so most of the wait is
+# absorbed by work the request was already doing.
+_MERGE_STATE_REREADS = 2
+_MERGE_STATE_REREAD_DELAY_SECS = 0.8
+# The one normalized value that means "the provider has not answered yet". It is
+# shared by both fields of the merge pair and by both providers.
+_UNSETTLED_MERGE_STATE = "unknown"
+
+
+def _merge_state_real(value: str) -> bool:
+    """Whether one normalized merge field carries a real answer."""
+    return bool(value) and value != _UNSETTLED_MERGE_STATE
+
+
+def _merge_state_settled(mergeable: str, merge_state: str) -> bool:
+    """Whether a normalized merge pair is a real answer, so no re-read is due.
+
+    A pair is settled once **either** field is real. GitLab reports `need_rebase`
+    and its branch-protection gates with ``mergeable == 'unknown'`` — the detail
+    IS the answer there, so keying only on ``mergeable`` would re-read a state
+    the provider had already settled and then discard it. A pair that is empty
+    rather than unknown means the provider did not report the fields at all, so
+    re-reading cannot settle it either.
+    """
+    if mergeable == _UNSETTLED_MERGE_STATE or merge_state == _UNSETTLED_MERGE_STATE:
+        return _merge_state_real(mergeable) or _merge_state_real(merge_state)
+    return True
+
+
+_MERGE_STATE_FIELDS = ("mergeable", "mergeStateStatus")
+# Lifecycle states for which a merge answer is still meaningful. Once a source is
+# merged or closed the providers stop answering the merge pair at all, so a
+# carried-forward value could never be cleared again.
+_MERGE_STATE_LIVE_STATES = frozenset({"open", "draft"})
+
+
+def _keep_known_merge_state(
+    status: dict[str, str], previous: dict[str, str] | None
+) -> dict[str, str]:
+    """Carry a settled merge field forward when a fresh read has no answer yet.
+
+    ``_record_merge_state`` omits a field the provider has not settled, on the
+    principle that "still computing" must never be published as a real answer.
+    That is necessary but not sufficient: every writer replaces the chip entry
+    WHOLESALE, so an omitted field does not read as "no news" downstream — it
+    erases whatever the previous entry had settled.
+
+    That matters because an unsettled read is the COMMON case, not a rare one:
+    both providers compute mergeability lazily, so a poll that arrives after the
+    provider's evaluation lapsed returns ``unknown`` for a source whose conflict
+    is already known. Without this carry-forward, such a poll drops the merge
+    pair, which (a) removes it from the owner-gated sidebar payload that spreads
+    the entry whole, and (b) reads as a CHANGED chip status, dropping the full
+    payload and emitting a delta — whose refetch re-projects the real answer
+    straight back into the cache. That is the repeating chip<->full transition
+    ``_CHECK_FLAP_DAMP_THRESHOLD`` exists to contain, so the banner would survive
+    only until the damper tripped and then go stale.
+
+    Mirrors the same keep-known rule already applied to the ``ci`` glyph. A real
+    answer always wins, including one that CHANGES the value, so this only ever
+    fills a gap and cannot pin a stale verdict. Carry-forward stops once the
+    source leaves an open state, where the pair is both meaningless and
+    permanently unanswered.
+    """
+    if not previous:
+        return status
+    if status.get("state", "open") not in _MERGE_STATE_LIVE_STATES:
+        return status
+    carried = {
+        field: previous[field]
+        for field in _MERGE_STATE_FIELDS
+        if field not in status and field in previous
+    }
+    return {**status, **carried} if carried else status
+
+
 def _github_merge_state(details: dict[str, Any]) -> tuple[str, str]:
     """Normalize GitHub merge fields to (mergeable, mergeStateStatus).
 
@@ -839,6 +922,59 @@ def _gitlab_merge_state(details: dict[str, Any]) -> tuple[str, str]:
     return mergeable, ""
 
 
+async def _github_settled_merge_state(ref: SourceRef, details: dict[str, Any]) -> tuple[str, str]:
+    """Merge state for a GitHub PR, re-reading while it is still being computed.
+
+    Re-reads only ``mergeable``/``mergeStateStatus``, at most
+    ``_MERGE_STATE_REREADS`` times. A failed or still-unsettled re-read keeps the
+    original value rather than raising: an unknown merge state degrades one
+    banner, and must never fail the whole panel.
+    """
+    mergeable, merge_state = _github_merge_state(details)
+    if _merge_state_settled(mergeable, merge_state):
+        return mergeable, merge_state
+    for _ in range(_MERGE_STATE_REREADS):
+        await asyncio.sleep(_MERGE_STATE_REREAD_DELAY_SECS)
+        try:
+            data = await _run_json(
+                "gh", "pr", "view", ref.url, "--json", "mergeable,mergeStateStatus"
+            )
+        except SourceProviderError:
+            break
+        if not isinstance(data, dict):
+            break
+        reread, reread_state = _github_merge_state(data)
+        if _merge_state_settled(reread, reread_state):
+            return reread, reread_state
+    return mergeable, merge_state
+
+
+async def _gitlab_settled_merge_state(
+    ref: SourceRef, mr_api: str, details: dict[str, Any]
+) -> tuple[str, str]:
+    """Merge state for a GitLab MR, re-reading while it is still being computed.
+
+    GitLab exposes ``detailed_merge_status`` only on the merge-request endpoint,
+    so the re-read repeats that request and takes the merge fields from it. Same
+    failure posture as the GitHub path: degrade to the original value.
+    """
+    mergeable, merge_state = _gitlab_merge_state(details)
+    if _merge_state_settled(mergeable, merge_state):
+        return mergeable, merge_state
+    for _ in range(_MERGE_STATE_REREADS):
+        await asyncio.sleep(_MERGE_STATE_REREAD_DELAY_SECS)
+        try:
+            data = await _run_json("glab", "api", mr_api)
+        except SourceProviderError:
+            break
+        if not isinstance(data, dict):
+            break
+        reread, reread_state = _gitlab_merge_state(data)
+        if _merge_state_settled(reread, reread_state):
+            return reread, reread_state
+    return mergeable, merge_state
+
+
 async def _fetch_github(ref: SourceRef) -> dict[str, Any]:
     fields = ",".join(
         [
@@ -876,7 +1012,8 @@ async def _fetch_github(ref: SourceRef) -> dict[str, Any]:
     files_raw: Any
     review_comments_raw: Any
     review_threads_raw: Any
-    files_raw, review_comments_raw, review_threads_raw = await asyncio.gather(
+    merge_state_raw: Any
+    files_raw, review_comments_raw, review_threads_raw, merge_state_raw = await asyncio.gather(
         _run_json(
             "gh",
             "api",
@@ -903,6 +1040,9 @@ async def _fetch_github(ref: SourceRef) -> dict[str, Any]:
             f"number={ref.number}",
             max_output_bytes=_DISCUSSION_OUTPUT_BYTES,
         ),
+        # Runs alongside the secondary calls so its re-read wait overlaps with
+        # fetches this request was making anyway.
+        _github_settled_merge_state(ref, details),
         return_exceptions=True,
     )
     partial_sections: list[str] = []
@@ -970,7 +1110,11 @@ async def _fetch_github(ref: SourceRef) -> dict[str, Any]:
             }
         )
 
-    github_mergeable, github_merge_state = _github_merge_state(details)
+    github_mergeable, github_merge_state = (
+        merge_state_raw
+        if isinstance(merge_state_raw, tuple)
+        else _github_merge_state(details)
+    )
     return {
         "provider": "github",
         "url": details.get("url") or ref.url,
@@ -1027,17 +1171,23 @@ async def _fetch_gitlab(ref: SourceRef) -> dict[str, Any]:
     discussions_raw: Any
     changes_raw: Any
     pipelines_raw: Any
-    commits_raw, discussions_raw, changes_raw, pipelines_raw = await asyncio.gather(
-        _run_json("glab", "api", f"{mr_api}/commits?per_page={_SECONDARY_PAGE_SIZE}"),
-        _run_json(
-            "glab",
-            "api",
-            f"{mr_api}/discussions?per_page={_SECONDARY_PAGE_SIZE}",
-            max_output_bytes=_DISCUSSION_OUTPUT_BYTES,
-        ),
-        _run_json("glab", "api", f"{mr_api}/changes", max_output_bytes=_DIFF_OUTPUT_BYTES),
-        _run_json("glab", "api", f"{mr_api}/pipelines?per_page=20"),
-        return_exceptions=True,
+    merge_state_raw: Any
+    commits_raw, discussions_raw, changes_raw, pipelines_raw, merge_state_raw = (
+        await asyncio.gather(
+            _run_json("glab", "api", f"{mr_api}/commits?per_page={_SECONDARY_PAGE_SIZE}"),
+            _run_json(
+                "glab",
+                "api",
+                f"{mr_api}/discussions?per_page={_SECONDARY_PAGE_SIZE}",
+                max_output_bytes=_DISCUSSION_OUTPUT_BYTES,
+            ),
+            _run_json("glab", "api", f"{mr_api}/changes", max_output_bytes=_DIFF_OUTPUT_BYTES),
+            _run_json("glab", "api", f"{mr_api}/pipelines?per_page=20"),
+            # Runs alongside the secondary calls so its re-read wait overlaps
+            # with fetches this request was making anyway.
+            _gitlab_settled_merge_state(ref, mr_api, details),
+            return_exceptions=True,
+        )
     )
     partial_sections: list[str] = []
     for raw_value, section in (
@@ -1139,7 +1289,11 @@ async def _fetch_gitlab(ref: SourceRef) -> dict[str, Any]:
                 }
             )
 
-    gitlab_mergeable, gitlab_merge_state = _gitlab_merge_state(details)
+    gitlab_mergeable, gitlab_merge_state = (
+        merge_state_raw
+        if isinstance(merge_state_raw, tuple)
+        else _gitlab_merge_state(details)
+    )
     gitlab_checks = [_gitlab_check(item) for item in _as_list(jobs)]
     # The single CI glyph is projected from the pipeline AGGREGATE (authoritative
     # and lossless — GitLab folds allow_failure into it and marks a blocking
@@ -2171,10 +2325,12 @@ def _clear_check_flap(url: str) -> None:
 
 
 def get_cached_check_status(url: str) -> dict[str, str] | None:
-    """Cached status for a PR url: {"ci": running|passed|failed, "state": ...}.
+    """Cached status for a PR url: {"ci": ..., "state": ..., "mergeable": ...}.
 
-    ``ci`` and ``state`` are each present only when known. Returns None until
-    the first background refresh completes.
+    Every key is present only when known. ``mergeable``/``mergeStateStatus`` are
+    omitted while the provider is still computing mergeability, so a client must
+    treat their absence as "no news" rather than "nothing blocks the merge".
+    Returns None until the first background refresh completes.
     """
     entry = _check_cache.get(url)
     return entry[1] if entry else None
@@ -2254,6 +2410,24 @@ def _emit_status_delta(url: str, status: dict[str, str], origin: str) -> None:
             sink(delta)
 
 
+def _record_merge_state(result: dict[str, str], mergeable: str, merge_state: str) -> None:
+    """Add the merge fields to a chip-status entry, each only once it is real.
+
+    An unanswered field is left out entirely rather than written as ``unknown``:
+    the chip cache is a short-TTL hint the client compares against its loaded
+    pull-request payload, and "still computing" must not read as a disagreement
+    with a real answer the payload already has. The two fields are recorded
+    independently because GitLab settles `need_rebase` and its branch-protection
+    gates in the detail field while ``mergeable`` stays ``unknown`` — dropping the
+    detail because its sibling is unknown would leave exactly those banners
+    invisible to the poll.
+    """
+    if _merge_state_real(mergeable):
+        result["mergeable"] = mergeable
+    if _merge_state_real(merge_state):
+        result["mergeStateStatus"] = merge_state
+
+
 def status_from_full_payload(payload: dict[str, Any]) -> dict[str, str] | None:
     """Derive the lightweight chip status from a FULL pull-request payload.
 
@@ -2291,6 +2465,17 @@ def status_from_full_payload(payload: dict[str, Any]) -> dict[str, str] | None:
     state = _project_state(str(payload.get("state") or ""), draft=bool(payload.get("draft")))
     if state is not None:
         result["state"] = state
+    # The merge pair must be projected here too, not just by the chip read. If the
+    # write-through omitted it, every full fetch would rewrite the chip entry
+    # WITHOUT the fields the chip read had recorded, so the next chip refresh
+    # would see a "change" and drop the full payload, which would write-through
+    # and strip them again — the exact repeating chip↔full transition the flap
+    # damper below exists to contain, spun by nothing but a projection gap.
+    _record_merge_state(
+        result,
+        str(payload.get("mergeable") or ""),
+        str(payload.get("mergeStateStatus") or ""),
+    )
     return result or None
 
 
@@ -2321,6 +2506,11 @@ def record_full_payload_status(url: str, payload: dict[str, Any]) -> None:
         and "checks" in (payload.get("partialSections") or [])
     ):
         status = {**status, "ci": previous[1]["ci"]}
+    # Never let a lazily-unsettled merge read erase a settled one. A first full
+    # fetch commonly returns `unknown` (that is the bug this module's re-reads
+    # address), so without this the write-through would strip a conflict the chip
+    # cache already knew.
+    status = _keep_known_merge_state(status, previous[1] if previous else None)
     _check_cache[url] = (time.monotonic(), status)
     _trim_check_cache()
     if previous is None or previous[1] != status:
@@ -2490,6 +2680,12 @@ async def _refresh_check_status(url: str, on_update: _CheckUpdateCallback | None
     latest = _check_cache.get(url)
     if latest is not previous:
         return
+    if status is not None:
+        # Same keep-known rule as the full-payload writer: an unsettled merge read
+        # must not erase a settled one, or this refresh would strip the pair,
+        # judge itself "changed", and drive the invalidation loop the flap damper
+        # below contains.
+        status = _keep_known_merge_state(status, previous[1] if previous else None)
     _check_cache[url] = (time.monotonic(), status)
     _trim_check_cache()
     changed = status is not None and (previous is None or previous[1] != status)
@@ -2527,7 +2723,12 @@ async def _fetch_check_status(url: str) -> dict[str, str] | None:
     result: dict[str, str] = {}
     if ref.provider == "github":
         data = await _run_json(
-            "gh", "pr", "view", ref.url, "--json", "statusCheckRollup,state,isDraft"
+            "gh",
+            "pr",
+            "view",
+            ref.url,
+            "--json",
+            "statusCheckRollup,state,isDraft,mergeable,mergeStateStatus",
         )
         if not isinstance(data, dict):
             return None
@@ -2541,6 +2742,7 @@ async def _fetch_check_status(url: str) -> dict[str, str] | None:
         state = _project_state(raw_state, draft=bool(data.get("isDraft")))
         if state is not None:
             result["state"] = state
+        _record_merge_state(result, *_github_merge_state(data))
         return result or None
     project = quote(ref.project, safe="")
     details = await _run_json("glab", "api", f"projects/{project}/merge_requests/{ref.number}")
@@ -2556,6 +2758,7 @@ async def _fetch_check_status(url: str) -> dict[str, str] | None:
         )
         if state is not None:
             result["state"] = state
+        _record_merge_state(result, *_gitlab_merge_state(details))
     pipelines = await _run_json(
         "glab", "api", f"projects/{project}/merge_requests/{ref.number}/pipelines?per_page=1"
     )

@@ -8,10 +8,25 @@ import type { PullRequestStatus, PullRequestStatusBatch } from '../types'
  * or turn-boundary refresh) or `'detail'` (a full fetch). The client refetches
  * the detail payload for both origins so every owner window converges; the tag
  * is retained for diagnostics and potential requester-aware routing later.
+ *
+ * The merge pair rides the same event, so a branch that starts conflicting while
+ * the panel is open invalidates the pinned detail payload like any other status
+ * change and the merge-blocker banner follows without a manual refresh.
  */
 export interface SourceStatusDelta extends PullRequestStatus {
   url: string
   origin?: 'chip' | 'detail'
+}
+
+/** Normalized merge-state values are compared for equality and switched on by
+ *  the panel (an unrecognized one simply renders no banner), so they are shape-
+ *  checked rather than enumerated — a value this client does not know yet stays
+ *  harmless, and enumerating would silently drop it on version skew. */
+function mergeStateValue(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 && value.length <= 32
+    && /^[a-z_]+$/.test(value)
+    ? value
+    : undefined
 }
 
 /** Narrow an untrusted websocket payload to a usable delta. */
@@ -27,6 +42,10 @@ export function parseStatusDelta(data: unknown): SourceStatusDelta | null {
   }
   const ci = record.ci
   if (ci === 'running' || ci === 'passed' || ci === 'failed') delta.ci = ci
+  const mergeable = mergeStateValue(record.mergeable)
+  if (mergeable) delta.mergeable = mergeable
+  const mergeStateStatus = mergeStateValue(record.mergeStateStatus)
+  if (mergeStateStatus) delta.mergeStateStatus = mergeStateStatus
   const origin = record.origin
   if (origin === 'chip' || origin === 'detail') delta.origin = origin
   return delta
@@ -49,12 +68,20 @@ export function applyStatusDelta(
   // no usable information. Treating it as authoritative would blank a populated
   // {state, ci} entry — worse than the stale glyph it would replace — so ignore
   // it and let the retained poll reconcile once vocabularies realign.
-  if (!delta.state && !delta.ci) return batch
+  if (!delta.state && !delta.ci && !delta.mergeable && !delta.mergeStateStatus) return batch
   const next: PullRequestStatus = {}
   if (delta.state) next.state = delta.state
   if (delta.ci) next.ci = delta.ci
+  if (delta.mergeable) next.mergeable = delta.mergeable
+  if (delta.mergeStateStatus) next.mergeStateStatus = delta.mergeStateStatus
   const current = batch.statuses?.[delta.url]
-  if (current && current.state === next.state && current.ci === next.ci) return batch
+  if (
+    current
+    && current.state === next.state
+    && current.ci === next.ci
+    && current.mergeable === next.mergeable
+    && current.mergeStateStatus === next.mergeStateStatus
+  ) return batch
   return {
     ...batch,
     statuses: { ...batch.statuses, [delta.url]: next },

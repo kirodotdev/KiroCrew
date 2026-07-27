@@ -261,7 +261,7 @@ export interface TodoList {
 }
 
 export interface ChatSlot {
-  key: string; title?: string; messages: number; running: boolean; stopping?: boolean; pending_approval?: boolean; created?: string; last_ts?: string; last_message?: string; agent?: string; model?: string; reasoning_effort?: string; mode?: string; surface?: string; workspace?: string; trust?: boolean; trust_reads?: boolean; folder_id?: string; pinned?: boolean; tags?: string[]; slack_linked?: boolean; slack_channel?: string; slack_thread_ts?: string; color_index?: number | null; memory_mode?: 'persistent' | 'incognito' | 'temporary'; clean_mode?: boolean; project?: string; forked_from?: string | null; source_links?: { provider: 'github' | 'gitlab'; number: number; url: string; ci?: 'running' | 'passed' | 'failed' | null; state?: 'open' | 'draft' | 'merged' | 'closed' }[]; source_links_total?: number
+  key: string; title?: string; messages: number; running: boolean; stopping?: boolean; pending_approval?: boolean; created?: string; last_ts?: string; last_message?: string; agent?: string; model?: string; reasoning_effort?: string; mode?: string; surface?: string; workspace?: string; trust?: boolean; trust_reads?: boolean; folder_id?: string; pinned?: boolean; tags?: string[]; slack_linked?: boolean; slack_channel?: string; slack_thread_ts?: string; color_index?: number | null; memory_mode?: 'persistent' | 'incognito' | 'temporary'; clean_mode?: boolean; project?: string; forked_from?: string | null; source_links?: { provider: 'github' | 'gitlab'; number: number; url: string; ci?: 'running' | 'passed' | 'failed' | null; state?: 'open' | 'draft' | 'merged' | 'closed'; mergeable?: string; mergeStateStatus?: string }[]; source_links_total?: number
   /** Metadata for kind="webapp" artifacts (deploy state, architecture, costs). */
   webapp_metadata?: WebAppMetadata
   // Board fields
@@ -283,12 +283,18 @@ export interface PullRequestCheck {
 }
 
 /** Lightweight per-URL status used by wayfinding chips (sidebar + Changes tab
- *  strip). Both fields are present only when known: the backend serves them
+ *  strip). Every field is present only when known: the backend serves them
  *  from a short-TTL cache and refreshes in the background, so a freshly seen
- *  pull request has no status until a later poll. */
+ *  pull request has no status until a later poll. The merge fields are omitted
+ *  while the provider is still computing mergeability, so their absence means
+ *  "no news" — never "nothing blocks the merge". */
 export interface PullRequestStatus {
   state?: 'open' | 'draft' | 'merged' | 'closed'
   ci?: 'running' | 'passed' | 'failed'
+  /** Normalized merge ability, same vocabulary as `PullRequestSource.mergeable`. */
+  mergeable?: string
+  /** Normalized merge-state detail, same vocabulary as `PullRequestSource.mergeStateStatus`. */
+  mergeStateStatus?: string
 }
 
 /** Response of the batched status endpoint. `refreshing` names the URLs whose

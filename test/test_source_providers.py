@@ -930,6 +930,340 @@ async def test_fetch_gitlab_marks_failed_secondary_endpoints_partial(
     assert data["partialSections"] == [expected_section]
 
 
+MERGE_STATE_REREAD_FIELDS = "mergeable,mergeStateStatus"
+
+
+@pytest.mark.asyncio
+async def test_fetch_github_rereads_merge_state_until_the_provider_settles_it(
+    monkeypatch,
+) -> None:
+    """GitHub computes mergeability lazily: the first read says UNKNOWN.
+
+    Without the re-read the panel reports no merge blocker at all on first open,
+    and the conflict only surfaces once the user hits refresh.
+    """
+    monkeypatch.setattr(source, "_MERGE_STATE_REREAD_DELAY_SECS", 0)
+    rereads: list[str] = []
+
+    async def fake_run(*argv: str, **_kwargs: int):
+        command = " ".join(argv)
+        if MERGE_STATE_REREAD_FIELDS in command:
+            rereads.append(command)
+            if len(rereads) == 1:
+                return {"mergeable": "UNKNOWN", "mergeStateStatus": "UNKNOWN"}
+            return {"mergeable": "CONFLICTING", "mergeStateStatus": "DIRTY"}
+        if "pr view" in command:
+            return {"number": 12, "mergeable": "UNKNOWN", "mergeStateStatus": "UNKNOWN"}
+        return {} if "graphql" in command else []
+
+    monkeypatch.setattr(source, "_run_json", fake_run)
+
+    data = await source._fetch_github(
+        source.parse_source_url("https://github.com/acme/repo/pull/12")
+    )
+
+    assert (data["mergeable"], data["mergeStateStatus"]) == ("conflicting", "dirty")
+    # The re-read asks for the merge fields alone, not another full fanout.
+    assert len(rereads) == 2
+    assert all("statusCheckRollup" not in command for command in rereads)
+
+
+@pytest.mark.asyncio
+async def test_fetch_github_does_not_reread_settled_merge_state(monkeypatch) -> None:
+    monkeypatch.setattr(source, "_MERGE_STATE_REREAD_DELAY_SECS", 0)
+    rereads: list[str] = []
+
+    async def fake_run(*argv: str, **_kwargs: int):
+        command = " ".join(argv)
+        if MERGE_STATE_REREAD_FIELDS in command:
+            rereads.append(command)
+            return {"mergeable": "CONFLICTING", "mergeStateStatus": "DIRTY"}
+        if "pr view" in command:
+            return {"number": 12, "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN"}
+        return {} if "graphql" in command else []
+
+    monkeypatch.setattr(source, "_run_json", fake_run)
+
+    data = await source._fetch_github(
+        source.parse_source_url("https://github.com/acme/repo/pull/12")
+    )
+
+    assert (data["mergeable"], data["mergeStateStatus"]) == ("mergeable", "clean")
+    assert rereads == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["unsettled", "provider_error", "invalid_payload"])
+async def test_fetch_github_degrades_to_unknown_when_reread_cannot_settle(
+    monkeypatch, outcome: str
+) -> None:
+    """A merge state that stays unknown degrades one banner, never the panel."""
+    monkeypatch.setattr(source, "_MERGE_STATE_REREAD_DELAY_SECS", 0)
+    rereads: list[str] = []
+
+    async def fake_run(*argv: str, **_kwargs: int):
+        command = " ".join(argv)
+        if MERGE_STATE_REREAD_FIELDS in command:
+            rereads.append(command)
+            if outcome == "provider_error":
+                raise source.SourceProviderError("merge state read failed")
+            if outcome == "invalid_payload":
+                return []
+            return {"mergeable": "UNKNOWN", "mergeStateStatus": "UNKNOWN"}
+        if "pr view" in command:
+            return {"number": 12, "title": "Still checking", "mergeable": "UNKNOWN"}
+        return {} if "graphql" in command else []
+
+    monkeypatch.setattr(source, "_run_json", fake_run)
+
+    data = await source._fetch_github(
+        source.parse_source_url("https://github.com/acme/repo/pull/12")
+    )
+
+    assert data["mergeable"] == "unknown"
+    assert data["title"] == "Still checking"
+    # A failed or invalid re-read stops immediately; an unsettled one uses the
+    # whole bounded budget and no more.
+    assert len(rereads) == (source._MERGE_STATE_REREADS if outcome == "unsettled" else 1)
+
+
+@pytest.mark.asyncio
+async def test_fetch_github_skips_reread_when_provider_omits_merge_fields(monkeypatch) -> None:
+    """An absent field is not "still computing" — re-reading it would never settle."""
+    monkeypatch.setattr(source, "_MERGE_STATE_REREAD_DELAY_SECS", 0)
+    rereads: list[str] = []
+
+    async def fake_run(*argv: str, **_kwargs: int):
+        command = " ".join(argv)
+        if MERGE_STATE_REREAD_FIELDS in command:
+            rereads.append(command)
+            return {}
+        if "pr view" in command:
+            return {"number": 12}
+        return {} if "graphql" in command else []
+
+    monkeypatch.setattr(source, "_run_json", fake_run)
+
+    data = await source._fetch_github(
+        source.parse_source_url("https://github.com/acme/repo/pull/12")
+    )
+
+    assert data["mergeable"] == ""
+    assert rereads == []
+
+
+@pytest.mark.asyncio
+async def test_fetch_gitlab_rereads_merge_state_until_the_provider_settles_it(
+    monkeypatch,
+) -> None:
+    """GitLab reports ``checking``/``unchecked`` while it evaluates the MR."""
+    monkeypatch.setattr(source, "_MERGE_STATE_REREAD_DELAY_SECS", 0)
+    detail_reads: list[str] = []
+
+    async def fake_run(*argv: str, **_kwargs: int):
+        command = " ".join(argv)
+        if command.endswith("merge_requests/42"):
+            detail_reads.append(command)
+            if len(detail_reads) == 1:
+                return {"iid": 42, "detailed_merge_status": "checking"}
+            return {"iid": 42, "detailed_merge_status": "conflict"}
+        return []
+
+    monkeypatch.setattr(source, "_run_json", fake_run)
+
+    data = await source._fetch_gitlab(
+        source.parse_source_url("https://gitlab.com/acme/repo/-/merge_requests/42")
+    )
+
+    assert (data["mergeable"], data["mergeStateStatus"]) == ("conflicting", "dirty")
+    assert len(detail_reads) == 2
+
+
+@pytest.mark.asyncio
+async def test_fetch_gitlab_degrades_to_unknown_when_reread_cannot_settle(monkeypatch) -> None:
+    monkeypatch.setattr(source, "_MERGE_STATE_REREAD_DELAY_SECS", 0)
+    detail_reads: list[str] = []
+
+    async def fake_run(*argv: str, **_kwargs: int):
+        command = " ".join(argv)
+        if command.endswith("merge_requests/42"):
+            detail_reads.append(command)
+            return {"iid": 42, "title": "Still checking", "detailed_merge_status": "unchecked"}
+        return []
+
+    monkeypatch.setattr(source, "_run_json", fake_run)
+
+    data = await source._fetch_gitlab(
+        source.parse_source_url("https://gitlab.com/acme/repo/-/merge_requests/42")
+    )
+
+    assert data["mergeable"] == "unknown"
+    assert data["title"] == "Still checking"
+    assert len(detail_reads) == 1 + source._MERGE_STATE_REREADS
+
+
+@pytest.mark.asyncio
+async def test_github_check_status_carries_settled_merge_state(monkeypatch) -> None:
+    """The chip cache carries merge state so a conflict that appears while the
+    panel is open lands on a poll instead of waiting for a manual refresh."""
+
+    async def fake_run(*argv: str, **_kwargs: int):
+        assert "mergeable,mergeStateStatus" in " ".join(argv)
+        return {"state": "OPEN", "mergeable": "CONFLICTING", "mergeStateStatus": "DIRTY"}
+
+    monkeypatch.setattr(source, "_run_json", fake_run)
+
+    status = await source._fetch_check_status("https://github.com/acme/repo/pull/12")
+
+    assert status == {"state": "open", "mergeable": "conflicting", "mergeStateStatus": "dirty"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("raw_mergeable", ["UNKNOWN", None])
+async def test_github_check_status_omits_unsettled_merge_state(
+    monkeypatch, raw_mergeable: str | None
+) -> None:
+    """"Still computing" must not overwrite the answer the full payload has."""
+
+    async def fake_run(*_argv: str, **_kwargs: int):
+        return {"state": "OPEN", "mergeable": raw_mergeable, "mergeStateStatus": "UNKNOWN"}
+
+    monkeypatch.setattr(source, "_run_json", fake_run)
+
+    status = await source._fetch_check_status("https://github.com/acme/repo/pull/12")
+
+    assert status == {"state": "open"}
+
+
+@pytest.mark.asyncio
+async def test_gitlab_check_status_carries_settled_merge_state(monkeypatch) -> None:
+    async def fake_run(*argv: str, **_kwargs: int):
+        command = " ".join(argv)
+        if command.endswith("merge_requests/42"):
+            return {"state": "opened", "detailed_merge_status": "conflict"}
+        return []
+
+    monkeypatch.setattr(source, "_run_json", fake_run)
+
+    status = await source._fetch_check_status(
+        "https://gitlab.com/acme/repo/-/merge_requests/42"
+    )
+
+    assert status == {"state": "open", "mergeable": "conflicting", "mergeStateStatus": "dirty"}
+
+
+@pytest.mark.asyncio
+async def test_fetch_gitlab_treats_a_detail_only_answer_as_settled(monkeypatch) -> None:
+    """GitLab settles need_rebase with ``mergeable`` still ``unknown``.
+
+    Keying settledness on ``mergeable`` alone re-read a state the provider had
+    already answered, then threw the answer away.
+    """
+    monkeypatch.setattr(source, "_MERGE_STATE_REREAD_DELAY_SECS", 0)
+    detail_reads: list[str] = []
+
+    async def fake_run(*argv: str, **_kwargs: int):
+        command = " ".join(argv)
+        if command.endswith("merge_requests/42"):
+            detail_reads.append(command)
+            return {"iid": 42, "detailed_merge_status": "need_rebase"}
+        return []
+
+    monkeypatch.setattr(source, "_run_json", fake_run)
+
+    data = await source._fetch_gitlab(
+        source.parse_source_url("https://gitlab.com/acme/repo/-/merge_requests/42")
+    )
+
+    assert (data["mergeable"], data["mergeStateStatus"]) == ("unknown", "need_rebase")
+    assert len(detail_reads) == 1
+
+
+@pytest.mark.parametrize(
+    ("pair", "settled"),
+    [
+        (("conflicting", "dirty"), True),
+        (("mergeable", "clean"), True),
+        # GitLab: the detail is the answer, mergeable never settles.
+        (("unknown", "need_rebase"), True),
+        (("unknown", "blocked"), True),
+        # Nothing answered yet -> a re-read may settle it.
+        (("unknown", "unknown"), False),
+        (("unknown", ""), False),
+        # Provider omitted the fields -> re-reading cannot settle them.
+        (("", ""), True),
+    ],
+)
+def test_merge_state_settled_considers_both_fields(
+    pair: tuple[str, str], settled: bool
+) -> None:
+    assert source._merge_state_settled(*pair) is settled
+
+
+@pytest.mark.asyncio
+async def test_gitlab_check_status_carries_a_detail_only_answer(monkeypatch) -> None:
+    """The rebase/blocked banners are driven by the detail field alone.
+
+    Dropping it because ``mergeable`` is unknown left exactly those banners
+    invisible to the status poll.
+    """
+
+    async def fake_run(*argv: str, **_kwargs: int):
+        command = " ".join(argv)
+        if command.endswith("merge_requests/42"):
+            return {"state": "opened", "detailed_merge_status": "need_rebase"}
+        return []
+
+    monkeypatch.setattr(source, "_run_json", fake_run)
+
+    status = await source._fetch_check_status(
+        "https://gitlab.com/acme/repo/-/merge_requests/42"
+    )
+
+    assert status == {"state": "open", "mergeStateStatus": "need_rebase"}
+
+
+def test_status_from_full_payload_projects_the_merge_pair() -> None:
+    """The write-through must carry the merge pair the chip read records.
+
+    If it dropped the pair, every full fetch would rewrite the chip entry without
+    it, the next chip refresh would judge that a change and drop the full payload,
+    and the write-through would strip it again — the repeating chip↔full
+    transition PR #443's flap damper exists to contain, spun by a projection gap.
+    """
+    projected = source.status_from_full_payload(
+        {
+            "state": "OPEN",
+            "draft": False,
+            "checks": [{"bucket": "passed"}],
+            "mergeable": "conflicting",
+            "mergeStateStatus": "dirty",
+        }
+    )
+
+    assert projected == {
+        "ci": "passed",
+        "state": "open",
+        "mergeable": "conflicting",
+        "mergeStateStatus": "dirty",
+    }
+
+
+def test_full_payload_and_chip_projections_agree_on_the_merge_pair() -> None:
+    """Both surfaces must derive the identical pair, or they flap against each other."""
+    chip: dict[str, str] = {}
+    source._record_merge_state(chip, "unknown", "need_rebase")
+    projected = source.status_from_full_payload(
+        {"state": "opened", "mergeable": "unknown", "mergeStateStatus": "need_rebase"}
+    )
+
+    assert chip == {"mergeStateStatus": "need_rebase"}
+    assert projected is not None
+    assert {
+        key: value for key, value in projected.items() if key.startswith("merge")
+    } == chip
+
+
 @pytest.mark.asyncio
 async def test_refresh_check_status_queues_broadcast_only_when_status_changes(monkeypatch) -> None:
     url = "https://github.com/acme/repo/pull/12"
@@ -3639,6 +3973,127 @@ def test_record_full_payload_preserves_ci_when_checks_partial() -> None:
     finally:
         source.unregister_status_delta_sink(sink)
         source._check_cache.clear()
+
+
+def test_record_full_payload_keeps_settled_merge_state_when_the_read_is_unsettled() -> None:
+    """An unsettled merge read must not erase a settled one.
+
+    Both providers compute mergeability lazily, so a full fetch whose evaluation
+    lapsed returns ``unknown`` for a source whose conflict is already known.
+    Because every writer replaces the chip entry WHOLESALE, an omitted field is
+    destructive rather than neutral: without the keep-known guard this write
+    strips the pair, which reads as a changed status and drives the
+    chip<->full invalidation loop.
+    """
+    url = "https://github.com/acme/repo/pull/36"
+    source._check_cache.clear()
+    source._status_delta_sinks.clear()
+    sink = MagicMock()
+    source.register_status_delta_sink(sink)
+    source._check_cache[url] = (
+        source.time.monotonic(),
+        {"state": "open", "mergeable": "conflicting", "mergeStateStatus": "dirty"},
+    )
+    try:
+        source.record_full_payload_status(
+            url,
+            {"state": "OPEN", "checks": [], "mergeable": "unknown", "mergeStateStatus": "unknown"},
+        )
+
+        assert source.get_cached_check_status(url) == {
+            "state": "open",
+            "mergeable": "conflicting",
+            "mergeStateStatus": "dirty",
+        }
+        # Nothing changed once the known pair is carried over, so the loop that
+        # would otherwise refetch the payload never starts.
+        sink.assert_not_called()
+    finally:
+        source.unregister_status_delta_sink(sink)
+        source._check_cache.clear()
+
+
+def test_record_full_payload_lets_a_real_merge_answer_replace_a_settled_one() -> None:
+    """Carry-forward fills a gap only — it must never pin a stale verdict."""
+    url = "https://github.com/acme/repo/pull/37"
+    source._check_cache.clear()
+    source._check_cache[url] = (
+        source.time.monotonic(),
+        {"state": "open", "mergeable": "conflicting", "mergeStateStatus": "dirty"},
+    )
+    try:
+        source.record_full_payload_status(
+            url,
+            {"state": "OPEN", "checks": [], "mergeable": "mergeable", "mergeStateStatus": "clean"},
+        )
+
+        assert source.get_cached_check_status(url) == {
+            "state": "open",
+            "mergeable": "mergeable",
+            "mergeStateStatus": "clean",
+        }
+    finally:
+        source._check_cache.clear()
+
+
+def test_record_full_payload_stops_carrying_merge_state_once_the_source_closes() -> None:
+    """A merged/closed source stops being asked about mergeability at all.
+
+    Carrying the pair forward there would pin it permanently, because no later
+    read can ever supply a real answer to replace it.
+    """
+    url = "https://github.com/acme/repo/pull/38"
+    source._check_cache.clear()
+    source._check_cache[url] = (
+        source.time.monotonic(),
+        {"state": "open", "mergeable": "conflicting", "mergeStateStatus": "dirty"},
+    )
+    try:
+        source.record_full_payload_status(url, {"state": "MERGED", "checks": []})
+
+        assert source.get_cached_check_status(url) == {"state": "merged"}
+    finally:
+        source._check_cache.clear()
+
+
+@pytest.mark.asyncio
+async def test_chip_refresh_keeps_settled_merge_state_and_starts_no_invalidation_loop(
+    monkeypatch,
+) -> None:
+    """The chip refresh path needs the same keep-known rule as the full writer.
+
+    A settled conflict followed by an unsettled poll is the exact sequence that
+    made the pair vanish from the owner-gated sidebar payload (which spreads the
+    entry whole) and judged itself "changed", spinning the invalidation loop.
+    """
+    url = "https://github.com/acme/repo/pull/39"
+    source._check_cache.clear()
+    source._check_inflight.clear()
+    source._status_delta_sinks.clear()
+    sink = MagicMock()
+    source.register_status_delta_sink(sink)
+    source._check_cache[url] = (
+        source.time.monotonic(),
+        {"state": "open", "mergeable": "conflicting", "mergeStateStatus": "dirty"},
+    )
+    monkeypatch.setattr(
+        source,
+        "_fetch_check_status",
+        AsyncMock(return_value={"state": "open"}),
+    )
+    try:
+        await source._refresh_check_status(url)
+
+        assert source.get_cached_check_status(url) == {
+            "state": "open",
+            "mergeable": "conflicting",
+            "mergeStateStatus": "dirty",
+        }
+        sink.assert_not_called()
+    finally:
+        source.unregister_status_delta_sink(sink)
+        source._check_cache.clear()
+        source._check_inflight.clear()
 
 
 def test_record_full_payload_clears_ci_when_checks_genuinely_empty() -> None:

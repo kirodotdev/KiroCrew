@@ -240,6 +240,10 @@ interface Slot {
     url: string
     ci?: 'running' | 'passed' | 'failed' | null
     state?: 'open' | 'draft' | 'merged' | 'closed'
+    // Owner-gated chips spread the whole cached chip-status entry, which also
+    // carries the settled merge pair. Present only once the provider settled it.
+    mergeable?: string
+    mergeStateStatus?: string
   }>
   source_links_total?: number
 }
