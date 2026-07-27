@@ -309,6 +309,133 @@ class TestDrainPump:
 # ---------------------------------------------------------------------------
 
 
+class TestQueuedDepthEmission:
+    """_queued_depth / _emit_queue_depth: advisory 'waiting to start' count
+    surfaced to the UI as subagent_queued events so the chip can show queued
+    agents, not only running/completed ones."""
+
+    def test_queued_depth_counts_per_parent(self) -> None:
+        import time as _t
+
+        m = _mgr(running=0, max_concurrent=4, last_ts=_t.monotonic())
+        m._queue = [
+            {"task": "a", "parent_session_key": "dashboard:s1"},
+            {"task": "b", "parent_session_key": "dashboard:s1"},
+            {"task": "c", "parent_session_key": "dashboard:s2"},
+        ]
+        assert m._queued_depth("dashboard:s1") == 2
+        assert m._queued_depth("dashboard:s2") == 1
+        assert m._queued_depth("dashboard:absent") == 0
+
+    def test_emit_queue_depth_fires_event_with_count(self) -> None:
+        import asyncio
+        import time as _t
+
+        events: list = []
+
+        async def on_event(etype, info, extra):
+            events.append((etype, info.parent_session_key, dict(extra)))
+
+        async def run() -> None:
+            m = _mgr(running=0, max_concurrent=4, last_ts=_t.monotonic())
+            m._on_event = on_event
+            m._queue = [
+                {"task": "a", "parent_session_key": "dashboard:s1"},
+                {"task": "b", "parent_session_key": "dashboard:s1"},
+            ]
+            m._emit_queue_depth("dashboard:s1")
+            # scheduled via create_task — yield so it runs
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+
+        asyncio.run(run())
+        assert ("subagent_queued", "dashboard:s1", {"queued": 2}) in events
+
+    def test_emit_queue_depth_zero_when_parent_drained(self) -> None:
+        import asyncio
+        import time as _t
+
+        events: list = []
+
+        async def on_event(etype, info, extra):
+            events.append((etype, extra.get("queued")))
+
+        async def run() -> None:
+            m = _mgr(running=0, max_concurrent=4, last_ts=_t.monotonic())
+            m._on_event = on_event
+            # only a *different* parent has items queued — the drained parent
+            # reports 0 so the chip clears its "waiting" count.
+            m._queue = [{"task": "c", "parent_session_key": "dashboard:other"}]
+            m._emit_queue_depth("dashboard:s1")
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+
+        asyncio.run(run())
+        assert ("subagent_queued", 0) in events
+
+
+class TestQueuedDepthWiring:
+    """The two producer call-sites are wired: spawn()'s queue branch and
+    _drain_queue() each emit subagent_queued. Guards against silently
+    reverting the wiring (which would reintroduce the invisible-queue bug
+    while helper-only tests stayed green)."""
+
+    def test_spawn_queue_branch_emits_depth(self, monkeypatch) -> None:
+        import asyncio
+        import time as _t
+
+        import kiro_crew.subagent as sub
+
+        # Bypass governance so we deterministically reach the queue branch.
+        monkeypatch.setattr(sub, "_vet_spawn_governance", lambda *a, **k: None)
+
+        events: list = []
+
+        async def on_event(etype, info, extra):
+            if etype == "subagent_queued":
+                events.append((info.parent_session_key, extra.get("queued")))
+
+        async def run() -> None:
+            # At capacity → the spawn must be queued, not started.
+            m = _mgr(running=2, max_concurrent=2, last_ts=_t.monotonic())
+            m._on_event = on_event
+            info = m.spawn(task="x", parent_session_key="dashboard:s1")
+            assert info is not None and info.id.startswith("q")  # queued sentinel
+            assert len(m._queue) == 1  # actually appended
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+
+        asyncio.run(run())
+        assert ("dashboard:s1", 1) in events
+
+    def test_drain_emits_queued_depth_on_pop(self) -> None:
+        import asyncio
+        import time as _t
+        from unittest.mock import MagicMock
+
+        events: list = []
+
+        async def on_event(etype, info, extra):
+            if etype == "subagent_queued":
+                events.append((info.parent_session_key, extra.get("queued")))
+
+        async def run() -> None:
+            now = _t.monotonic()
+            m = _mgr(running=0, max_concurrent=16, last_ts=now - 5.0, stagger=2.0)
+            m._on_event = on_event
+            m.spawn = MagicMock()  # type: ignore[method-assign]
+            m._queue = [
+                {"task": "a", "parent_session_key": "dashboard:s1"},
+                {"task": "b", "parent_session_key": "dashboard:s1"},
+            ]
+            m._drain_queue()  # pops one → s1's remaining depth is 1
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+
+        asyncio.run(run())
+        assert ("dashboard:s1", 1) in events
+
+
 class TestCpuJiffiesParser:
     """_parse_cpu_jiffies: utime+stime from raw /proc/<pid>/stat bytes."""
 

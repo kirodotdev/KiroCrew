@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useMemo, useCallback, memo } from 'react'
-import { Bot, X, AlertTriangle, Loader2, CheckCircle, AlertCircle, Square, RotateCcw } from 'lucide-react'
+import { Bot, X, AlertTriangle, Loader2, CheckCircle, AlertCircle, Square, RotateCcw, Clock } from 'lucide-react'
 import { useAppSelector, useAppDispatch } from '../../store'
 import { openActivityToTab, selectSubagent, sseSubagentDone } from '../../store/chatSlice'
 import { api } from '../../api/client'
@@ -29,6 +29,9 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
   // (dashboardSlice.subagentRunning only updates on subagent_status which fires at completion)
   const dispatch = useAppDispatch()
   const subagents = useAppSelector(s => slot === s.chat.activeSlot ? s.chat.subagents : s.chat.slotActivity[slot ?? '']?.subagents ?? EMPTY_SUBAGENTS)
+  // Aggregate "waiting to start" count for this slot — agents accepted but
+  // queued behind the concurrency cap / stagger gate (no individual card yet).
+  const queued = useAppSelector(s => s.chat.subagentQueued?.[slot ?? ''] ?? 0)
   const all = useMemo(() => Object.values(subagents), [subagents])
   // Exception-first ordering: retrying/stalled agents need eyes; the healthy
   // majority collapses behind the summary row at scale.
@@ -50,7 +53,12 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
   const failedIds = useMemo(() => all.filter(a => a.status === 'error' && !a.id.startsWith('native:')).map(a => a.id), [all])
   const activeListRef = useRef(activeList)
   activeListRef.current = activeList
-  const hasActive = running > 0
+  // Mount when anything is in flight — running OR queued. Including queued is
+  // what makes the chip (1) appear the instant a wave is accepted, before the
+  // first agent's subagent_spawn arrives, and (2) stay mounted across the
+  // staggered ramp instead of flickering out whenever running momentarily hits
+  // zero between staggered starts.
+  const hasActive = running > 0 || queued > 0
   const visibleList = activeList.slice(0, CHIP_MAX_ROWS)
   const hiddenCount = activeList.length - visibleList.length
   // Only running/tool agents are cancellable via spawnDelete; pending agents
@@ -100,6 +108,7 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
           {/* Histogram header: whole-wave counts so mid-wave failures stay visible */}
           <span className="text-text-strong font-medium flex items-center gap-2 min-w-0" data-testid="subagent-histogram">
             <span className="inline-flex items-center gap-1" data-testid="subagent-running-count"><Loader2 size={12} className="animate-spin text-accent" /> {running}</span>
+            {queued > 0 && <span className="inline-flex items-center gap-1 text-muted" data-testid="subagent-queued-count" title="Waiting to start — queued behind the concurrency limit"><Clock size={12} /> {queued}</span>}
             {counts.done > 0 && <span className="inline-flex items-center gap-1 text-ok"><CheckCircle size={12} /> {counts.done}</span>}
             {counts.failed > 0 && <span className="inline-flex items-center gap-1 text-danger"><AlertCircle size={12} /> {counts.failed}</span>}
             {counts.stopped > 0 && <span className="inline-flex items-center gap-1 text-muted"><Square size={12} /> {counts.stopped}</span>}

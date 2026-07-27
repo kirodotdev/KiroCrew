@@ -180,6 +180,11 @@ interface ChatState {
   voicePlaying: boolean
   voiceAudio: string | null  // base64 stitched MP3 for replay
   subagents: Record<string, SubagentActivity>
+  /** Aggregate "waiting to start" count per slot — agents accepted but queued
+   *  behind the concurrency cap / stagger gate (no individual card yet). Keyed
+   *  by slot name so it survives active-slot switches without the subagents
+   *  map's active/non-active split. Populated by `subagent_queued` WS events. */
+  subagentQueued: Record<string, number>
   /** Agent id the user picked from the chip — the Activity Subagents tab
    *  scrolls to, expands, and auto-loads this card (1-click transcript). */
   selectedSubagentId: string | null
@@ -248,6 +253,7 @@ const initialState: ChatState = {
   voicePlaying: false,
   voiceAudio: null,
   subagents: {},
+  subagentQueued: {},
   selectedSubagentId: null,
   toolLog: [],
   workflowRuns: {},
@@ -1016,6 +1022,20 @@ const chatSlice = createSlice({
       }
       state.subagents = keepPending(state.subagents)
       for (const activity of Object.values(state.slotActivity)) activity.subagents = keepPending(activity.subagents)
+      // Queued counts are advisory and re-emitted on the next drain — reset to
+      // avoid showing a stale "waiting" count for a wave that finished during
+      // the disconnect (under-count self-heals on the next drain frame).
+      state.subagentQueued = {}
+    },
+    /** Aggregate "waiting to start" count for a slot. Agents queued behind the
+     *  concurrency cap / stagger gate have no individual card; this count lets
+     *  the chip appear immediately on spawn and show how many are pending
+     *  start (issues: late chip, flicker, invisible queue). */
+    sseSubagentQueued(state, action: PayloadAction<{ slot: string; queued: number }>) {
+      if (isUnsafeKey(action.payload.slot)) return
+      const n = Math.max(0, Math.floor(Number(action.payload.queued) || 0))
+      if (n === 0) delete state.subagentQueued[safeKey(action.payload.slot)]
+      else state.subagentQueued[safeKey(action.payload.slot)] = n
     },
     sseSubagentPending(state, action: PayloadAction<{ slot: string; id: string; task: string; approval_id: string }>) {
       if (isUnsafeKey(action.payload.slot) || isUnsafeKey(action.payload.id)) return
@@ -2002,7 +2022,7 @@ export const {
   setActiveSlot, clearSlotState, setPendingInput, setQuestionCard, clearQuestionCard, setFollowupCard, clearFollowupCard, dismissFollowupItem, appendMessage, appendSlotMessage, updateStreamingMessage, finalizeAssistant,
   removeThinking, removeByApprovalId, resolveByApprovalId, clearPendingPermissions, setSlotRunning, setSlotStopping, startLocalTurn, syncSlotRunningFromServer, setSlotState, setSlotStatusDetail, setStopPressedAt, clearMessages, truncateAfterIndex, replaceMessages, hydrateSlotMessages, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage,
   sseContextUsage, setVoicePlaying, setVoiceAudio,
-  toggleActivity, openActivityToTab, openActivityPanel, openActivityToTool, clearFocusToolCallId, clearSubagentsForSnapshot, sseSubagentPending, markSubagentApproving, sseSubagentSpawn, sseSubagentChunk, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone,
+  toggleActivity, openActivityToTab, openActivityPanel, openActivityToTool, clearFocusToolCallId, clearSubagentsForSnapshot, sseSubagentPending, markSubagentApproving, sseSubagentSpawn, sseSubagentChunk, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentQueued,
   sseSubagentBatchUpdate, sseSubagentBatchChunks, selectSubagent, clearTerminalSubagents,
   sseSubagentSnapshot, sseToolActivity, sseToolResult, sseActivityEvent,
   sseWorkflowEvent, clearWorkflowRun,

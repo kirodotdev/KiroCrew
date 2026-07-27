@@ -2477,6 +2477,10 @@ class SubagentManager:
                 len(self._queue),
                 slot_free,
             )
+            # Advisory UI signal: tell the chip how many agents are now waiting
+            # to start for this parent so it can appear immediately and show a
+            # "waiting" count instead of only running/completed ones.
+            self._emit_queue_depth(parent_session_key, batch_id)
             # If a slot is free, no running agent will trigger the drain on
             # completion — schedule the staggered pump at the interval boundary
             # so the queued spawn still launches.
@@ -2694,6 +2698,13 @@ class SubagentManager:
         params = self._queue.pop(0)
         logger.info(
             "Draining queue: spawning '%s' (%d left)", str(params.get("task", ""))[:40], len(self._queue)
+        )
+        # The popped item's parent just lost one waiting agent — re-emit its
+        # queued depth (0 when this was its last) so the chip's "waiting" count
+        # tracks the drain. Done before spawn() so an immediate re-queue there
+        # (still too soon since last start) re-bumps it correctly afterwards.
+        self._emit_queue_depth(
+            str(params.get("parent_session_key", "")), str(params.get("batch_id", ""))
         )
         # spawn() re-checks the gate; since elapsed >= stagger and a slot is
         # free, it starts immediately and updates _last_spawn_ts. Forward the FULL
@@ -3329,6 +3340,40 @@ class SubagentManager:
                 await self._on_event(etype, info, extra or {})
             except Exception:
                 logger.warning("on_event failed for %s/%s", etype, info.id, exc_info=True)
+
+    def _queued_depth(self, parent_session_key: str) -> int:
+        """Number of spawns currently queued for *parent_session_key* (waiting
+        behind the concurrency cap / stagger gate, not yet started)."""
+        return sum(
+            1 for q in self._queue
+            if q.get("parent_session_key", "") == parent_session_key
+        )
+
+    def _emit_queue_depth(self, parent_session_key: str, batch_id: str = "") -> None:
+        """Emit the current queued depth for *parent_session_key* as a
+        ``subagent_queued`` lifecycle event.
+
+        The chip is otherwise driven only by agents that have actually started
+        (``subagent_spawn``), so agents sitting behind the concurrency cap /
+        stagger gate are invisible and the chip can appear late or flicker.
+        This advisory count lets the UI show "N waiting to start" the moment a
+        wave is accepted, and stay mounted across the staggered ramp.
+
+        Fire-and-forget: scheduled on the running loop; a no-op in sync/test
+        contexts without a loop (the count is advisory UI signal, not state).
+        """
+        depth = self._queued_depth(parent_session_key)
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return  # no running loop (sync/test context) — advisory event skipped
+        info = SubagentInfo(
+            id="_queue",
+            task="",
+            parent_session_key=parent_session_key,
+            batch_id=batch_id,
+        )
+        loop.create_task(self._fire_event("subagent_queued", info, {"queued": depth}))
 
     @staticmethod
     def _write_tombstone(info: SubagentInfo, cause: str) -> None:
