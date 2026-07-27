@@ -104,6 +104,16 @@ _MAX_BODY_BYTES = MAX_CONTENT_BYTES + 8 * 1024 * 1024  # 25 MiB content + 8 MiB 
 # HTTP boundary that accepts a provider name.
 _ARTIFACT_PROVIDER_RE = re.compile(r"^[a-z0-9-]{1,32}$")
 
+# Upper bound (seconds) on any single awaited remote-publish-provider network
+# call. Without it a slow/hung provider would block the awaiting request (and
+# its event-loop slot) indefinitely (CWE-400: uncontrolled resource
+# consumption). Every ``await provider.*`` on a publish provider is wrapped in
+# ``asyncio.wait_for(..., timeout=_REMOTE_PROVIDER_TIMEOUT_S)``. On timeout the
+# primary-read path (remote_artifact_fetch) maps to a 504; the best-effort
+# comment-sync paths degrade the same way any other provider failure does
+# (local write still succeeds, sync_state=push_failed).
+_REMOTE_PROVIDER_TIMEOUT_S = 15.0
+
 
 def _json_response(data: Any, status: int = 200) -> web.Response:
     return web.json_response(data, status=status)
@@ -2889,7 +2899,10 @@ async def api_artifact_comments(request: web.Request) -> web.Response:
         try:
             provider = get_provider(art.publication.provider)
             if Capability.COMMENTS_READ in provider.capabilities():
-                remote = await provider.fetch_comments(external_id=art.publication.artifact_id)
+                remote = await asyncio.wait_for(
+                    provider.fetch_comments(external_id=art.publication.artifact_id),
+                    timeout=_REMOTE_PROVIDER_TIMEOUT_S,
+                )
                 if remote:
                     mapped = [
                         ArtifactComment(
@@ -2927,6 +2940,16 @@ async def api_artifact_comments(request: web.Request) -> web.Response:
                     await _run_off_loop(
                         lambda: store.merge_remote_comments(slug, art.publication.provider, mapped)
                     )
+        except asyncio.TimeoutError:
+            # str(TimeoutError()) is empty, so the generic branch below would
+            # surface an EMPTY remote_sync_error. Set a non-empty, human-readable
+            # reason (CWE-400 bounded await) while still degrading to a 200 render.
+            logger.warning(
+                "fetch-on-view comments timed out for %s after %gs",
+                slug,
+                _REMOTE_PROVIDER_TIMEOUT_S,
+            )
+            remote_sync_error = f"remote provider timed out after {_REMOTE_PROVIDER_TIMEOUT_S:g}s"
         except Exception as exc:  # noqa: BLE001 — fetch-on-view is best-effort
             logger.warning("fetch-on-view comments failed for %s: %s", slug, exc)
             remote_sync_error = _redact_text(str(exc))
@@ -3103,10 +3126,13 @@ async def api_artifact_post_comment(request: web.Request) -> web.Response:
                         end_offset=anchor_end,
                         version_number=anchor_ver,
                     )
-                rc = await provider.post_comment(
-                    external_id=comment.target_external_id,
-                    body=text,
-                    anchor=anchor_obj,
+                rc = await asyncio.wait_for(
+                    provider.post_comment(
+                        external_id=comment.target_external_id,
+                        body=text,
+                        anchor=anchor_obj,
+                    ),
+                    timeout=_REMOTE_PROVIDER_TIMEOUT_S,
                 )
                 comment.origin = f"{comment.target_provider}:{rc.remote_id}"
                 comment.sync_state = "synced"
@@ -3227,10 +3253,13 @@ async def api_artifact_reply_comment(request: web.Request) -> web.Response:
                 remote_parent_id = (
                     parent.origin.split(":", 1)[-1] if ":" in parent.origin else parent.id
                 )
-                rc = await provider.reply_comment(
-                    external_id=reply.target_external_id,
-                    parent_remote_id=remote_parent_id,
-                    body=text,
+                rc = await asyncio.wait_for(
+                    provider.reply_comment(
+                        external_id=reply.target_external_id,
+                        parent_remote_id=remote_parent_id,
+                        body=text,
+                    ),
+                    timeout=_REMOTE_PROVIDER_TIMEOUT_S,
                 )
                 reply.origin = f"{reply.target_provider}:{rc.remote_id}"
                 reply.sync_state = "synced"
@@ -3289,8 +3318,11 @@ async def api_artifact_mark_review(request: web.Request) -> web.Response:
             provider = get_provider(target.target_provider or "artifactory")
             if Capability.COMMENTS_WRITE in provider.capabilities():
                 remote_id = target.origin.split(":", 1)[-1]
-                await provider.mark_review(
-                    external_id=target.target_external_id, remote_id=remote_id
+                await asyncio.wait_for(
+                    provider.mark_review(
+                        external_id=target.target_external_id, remote_id=remote_id
+                    ),
+                    timeout=_REMOTE_PROVIDER_TIMEOUT_S,
                 )
         except Exception as exc:
             logger.warning("mark_review on provider failed: %s", exc)
@@ -3501,8 +3533,11 @@ async def api_artifact_delete_comment(request: web.Request) -> web.Response:
             provider = get_provider(target.target_provider or "artifactory")
             if Capability.COMMENTS_WRITE in provider.capabilities():
                 remote_id = target.origin.split(":", 1)[-1]
-                await provider.delete_comment(
-                    external_id=target.target_external_id, remote_id=remote_id
+                await asyncio.wait_for(
+                    provider.delete_comment(
+                        external_id=target.target_external_id, remote_id=remote_id
+                    ),
+                    timeout=_REMOTE_PROVIDER_TIMEOUT_S,
                 )
         except Exception as exc:
             logger.warning("delete_comment on provider failed: %s", exc)
@@ -3611,10 +3646,13 @@ async def api_artifact_edit_comment(request: web.Request) -> web.Response:
             provider = get_provider(target.target_provider or "artifactory")
             if Capability.COMMENTS_EDIT in provider.capabilities():
                 remote_id = target.origin.split(":", 1)[-1]
-                await provider.edit_comment(
-                    external_id=target.target_external_id,
-                    remote_id=remote_id,
-                    body=text,
+                await asyncio.wait_for(
+                    provider.edit_comment(
+                        external_id=target.target_external_id,
+                        remote_id=remote_id,
+                        body=text,
+                    ),
+                    timeout=_REMOTE_PROVIDER_TIMEOUT_S,
                 )
                 remote_synced = True
         except Exception as exc:
@@ -3781,18 +3819,41 @@ async def api_remote_artifacts_browse(request: web.Request) -> web.Response:
         return _err(_redact_text(str(exc)), status=502)
     try:
         if query:
-            result = await provider.search_remote(query=query, page_token=page_token)
+            result = await asyncio.wait_for(
+                provider.search_remote(query=query, page_token=page_token),
+                timeout=_REMOTE_PROVIDER_TIMEOUT_S,
+            )
         else:
-            result = await provider.list_remote(scope=scope, page_token=page_token)
+            result = await asyncio.wait_for(
+                provider.list_remote(scope=scope, page_token=page_token),
+                timeout=_REMOTE_PROVIDER_TIMEOUT_S,
+            )
+    except asyncio.TimeoutError:
+        # Bounded provider read (CWE-400): a hung list/search maps to a Gateway
+        # Timeout rather than blocking indefinitely. Distinct outcome so the SEL
+        # feed separates timeouts from other provider errors (mirrors
+        # api_remote_artifact_get's timeout branch).
+        _audit(
+            tool="artifact_browse_remote",
+            request=request,
+            outcome="timeout",
+            error=f"provider read exceeded {_REMOTE_PROVIDER_TIMEOUT_S:g}s",
+            extra={"provider": provider_name},
+        )
+        return _err("remote provider timed out", status=504)
     except Exception as exc:
+        # Non-timeout provider failure — surface a neutral, non-empty reason
+        # (str(exc) can be empty) so the SEL feed and the client both see a real
+        # message without mislabeling it as a timeout.
+        reason = _redact_text(str(exc)) or "remote provider error"
         _audit(
             tool="artifact_browse_remote",
             request=request,
             outcome="error",
-            error=str(exc),
+            error=reason,
             extra={"provider": provider_name},
         )
-        return _err(_redact_text(str(exc)), status=502)
+        return _err(reason, status=502)
     if result is None:
         verb = "full-text search" if query else f"{scope} listing"
         return _err(f"{provider_name} does not support {verb}", status=400)
@@ -3989,7 +4050,22 @@ async def api_remote_artifact_get(request: web.Request) -> web.Response:
         if Capability.CONTENT_PULL not in provider.capabilities():
             _audit_remote_denied("remote_artifact_fetch", request, "provider lacks CONTENT_PULL")
             return _err(f"{provider_name} does not support fetching content", status=400)
-        result = await provider.fetch_content(external_id=external_id)
+        result = await asyncio.wait_for(
+            provider.fetch_content(external_id=external_id),
+            timeout=_REMOTE_PROVIDER_TIMEOUT_S,
+        )
+    except asyncio.TimeoutError:
+        # Bounded provider read (CWE-400): a hung provider maps to a Gateway
+        # Timeout rather than blocking the request indefinitely. Distinct
+        # outcome so the SEL feed separates timeouts from other provider errors.
+        _audit(
+            tool="remote_artifact_fetch",
+            request=request,
+            outcome="timeout",
+            error=f"provider read exceeded {_REMOTE_PROVIDER_TIMEOUT_S:g}s",
+            extra={"provider": provider_name, "external_id": external_id},
+        )
+        return _err("remote provider timed out", status=504)
     except Exception as exc:  # noqa: BLE001 — provider failure must not 500 the view
         _audit(
             tool="remote_artifact_fetch",
@@ -4130,11 +4206,27 @@ async def api_remote_artifact_comments(request: web.Request) -> web.Response:
             )
             remote_sync_error = f"{provider_name} does not support comments"
         else:
-            remote = await provider.fetch_comments(external_id=external_id)
+            remote = await asyncio.wait_for(
+                provider.fetch_comments(external_id=external_id),
+                timeout=_REMOTE_PROVIDER_TIMEOUT_S,
+            )
             comments = [
                 _serialize_remote_comment(rc, provider_name) for rc in remote if not rc.deleted
             ]
             _remote_cache_put(cache_key, (time.monotonic(), comments))
+    except asyncio.TimeoutError:
+        # Bounded provider read (CWE-400). This view degrades rather than 500s
+        # (docstring contract), so a hung provider becomes a non-empty
+        # remote_sync_error the detail view can show — str(TimeoutError()) is
+        # empty. Still audited as a distinct ``timeout`` outcome.
+        _audit(
+            tool="remote_artifact_comments",
+            request=request,
+            outcome="timeout",
+            error=f"provider comment fetch exceeded {_REMOTE_PROVIDER_TIMEOUT_S:g}s",
+            extra={"provider": provider_name, "external_id": external_id},
+        )
+        remote_sync_error = "remote provider timed out"
     except Exception as exc:  # noqa: BLE001 — provider failure must not 500 the view
         logger.warning("remote comments fetch failed for %s: %s", cache_key, exc)
         remote_sync_error = _redact_text(str(exc))
@@ -4202,7 +4294,19 @@ async def api_remote_artifact_post_comment(request: web.Request) -> web.Response
                 end_offset=anchor_data.get("end_offset"),
                 version_number=anchor_data.get("version_number"),
             )
-        rc = await provider.post_comment(external_id=external_id, body=text, anchor=anchor_obj)
+        rc = await asyncio.wait_for(
+            provider.post_comment(external_id=external_id, body=text, anchor=anchor_obj),
+            timeout=_REMOTE_PROVIDER_TIMEOUT_S,
+        )
+    except asyncio.TimeoutError:
+        _audit(
+            tool="remote_artifact_post_comment",
+            request=request,
+            outcome="timeout",
+            error=f"provider comment write exceeded {_REMOTE_PROVIDER_TIMEOUT_S:g}s",
+            extra={"provider": provider_name, "external_id": external_id},
+        )
+        return _err("remote provider timed out", status=504)
     except Exception as exc:  # noqa: BLE001
         _audit(
             tool="remote_artifact_post_comment",
@@ -4268,9 +4372,21 @@ async def api_remote_artifact_reply_comment(request: web.Request) -> web.Respons
                 "remote_artifact_reply_comment", request, "provider lacks COMMENTS_WRITE"
             )
             return _err(f"{provider_name} does not support comments", status=400)
-        rc = await provider.reply_comment(
-            external_id=external_id, parent_remote_id=parent_id, body=text
+        rc = await asyncio.wait_for(
+            provider.reply_comment(
+                external_id=external_id, parent_remote_id=parent_id, body=text
+            ),
+            timeout=_REMOTE_PROVIDER_TIMEOUT_S,
         )
+    except asyncio.TimeoutError:
+        _audit(
+            tool="remote_artifact_reply_comment",
+            request=request,
+            outcome="timeout",
+            error=f"provider comment reply exceeded {_REMOTE_PROVIDER_TIMEOUT_S:g}s",
+            extra={"provider": provider_name, "external_id": external_id},
+        )
+        return _err("remote provider timed out", status=504)
     except Exception as exc:  # noqa: BLE001
         _audit(
             tool="remote_artifact_reply_comment",
@@ -4330,7 +4446,19 @@ async def api_remote_artifact_mark_review(request: web.Request) -> web.Response:
                 "remote_artifact_mark_review", request, "provider lacks COMMENTS_WRITE"
             )
             return _err(f"{provider_name} does not support comments", status=400)
-        await provider.mark_review(external_id=external_id, remote_id=comment_id)
+        await asyncio.wait_for(
+            provider.mark_review(external_id=external_id, remote_id=comment_id),
+            timeout=_REMOTE_PROVIDER_TIMEOUT_S,
+        )
+    except asyncio.TimeoutError:
+        _audit(
+            tool="remote_artifact_mark_review",
+            request=request,
+            outcome="timeout",
+            error=f"provider mark-review exceeded {_REMOTE_PROVIDER_TIMEOUT_S:g}s",
+            extra={"provider": provider_name, "external_id": external_id},
+        )
+        return _err("remote provider timed out", status=504)
     except Exception as exc:  # noqa: BLE001
         _audit(
             tool="remote_artifact_mark_review",
@@ -4389,7 +4517,19 @@ async def api_remote_artifact_delete_comment(request: web.Request) -> web.Respon
                 "remote_artifact_delete_comment", request, "provider lacks COMMENTS_WRITE"
             )
             return _err(f"{provider_name} does not support comments", status=400)
-        await provider.delete_comment(external_id=external_id, remote_id=comment_id)
+        await asyncio.wait_for(
+            provider.delete_comment(external_id=external_id, remote_id=comment_id),
+            timeout=_REMOTE_PROVIDER_TIMEOUT_S,
+        )
+    except asyncio.TimeoutError:
+        _audit(
+            tool="remote_artifact_delete_comment",
+            request=request,
+            outcome="timeout",
+            error=f"provider comment delete exceeded {_REMOTE_PROVIDER_TIMEOUT_S:g}s",
+            extra={"provider": provider_name, "external_id": external_id},
+        )
+        return _err("remote provider timed out", status=504)
     except Exception as exc:  # noqa: BLE001
         _audit(
             tool="remote_artifact_delete_comment",

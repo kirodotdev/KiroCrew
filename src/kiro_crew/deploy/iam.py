@@ -430,7 +430,12 @@ def policy_document(*, include_custom_domain: bool = False, tier: str = "static"
                 "Condition": {
                     "StringEquals": {
                         "iam:PassedToService": "lambda.amazonaws.com"
-                    }
+                    },
+                    "ArnLike": {
+                        "iam:AssociatedResourceArn": (
+                            "arn:aws:lambda:*:*:function:kirocrew-deploy-app-*"
+                        )
+                    },
                 },
             },
             {
@@ -498,7 +503,12 @@ def policy_document(*, include_custom_domain: bool = False, tier: str = "static"
                 "Condition": {
                     "StringEquals": {
                         "iam:PassedToService": "lambda.amazonaws.com"
-                    }
+                    },
+                    "ArnLike": {
+                        "iam:AssociatedResourceArn": (
+                            "arn:aws:lambda:*:*:function:kirocrew-deploy-reaper*"
+                        )
+                    },
                 },
             },
             {

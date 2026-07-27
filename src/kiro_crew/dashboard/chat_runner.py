@@ -1096,6 +1096,15 @@ def _native_crew_should_auto_approve(native_tracker, state, slot) -> bool:
     )
 
 
+def _safe_native_crew_debug_title(title: str) -> str:
+    """Redact credentials/exfiltration URLs from an LLM-controlled native-crew
+    tool title before it is logged. Control chars are escaped at the log call
+    via %r."""
+    safe, _ = redact_exfiltration_urls(title or "")
+    safe, _ = redact_credentials(safe)
+    return safe
+
+
 def _matches_trusted_pattern(tool_title: str, patterns: set[str]) -> str | None:
     """Return the matched pattern if tool_title matches any trusted pattern.
 
@@ -3354,8 +3363,8 @@ async def _run_chat(
                 # through to the normal interactive/trust gate below.
                 if _native_crew_should_auto_approve(_native_tracker, state, slot):
                     logger.debug(
-                        "Native crew auto-approve: %s (request_id=%s)",
-                        event.title,
+                        "Native crew auto-approve: %r (request_id=%s)",
+                        _safe_native_crew_debug_title(event.title),
                         event.request_id,
                     )
                     await client.approve_tool(event.request_id)

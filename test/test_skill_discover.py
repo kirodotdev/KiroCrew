@@ -320,3 +320,93 @@ class TestDiscoverSearch:
             assert seen["limit"] == 50
         finally:
             await client.close()
+
+
+@pytest.mark.asyncio
+class TestDiscoverInstallLogSanitization:
+    """Regression for CWE-117 log forging in the install handler's error logs.
+
+    Both the timeout path and the failure path log a provider-influenced
+    ``skill_id`` (and, on failure, the scrubbed exception text). These must be
+    logged with ``%r`` so an embedded CR/LF cannot forge a new log line, and
+    the exception text must be credential-scrubbed. Driven end-to-end through
+    the real handler with a provider that raises.
+    """
+
+    _LOGGER = "kiro_crew.dashboard.handlers.discover"
+
+    async def _client(self, fake_home, provider):
+        state, skills_dir = _state_with_skills_loader(fake_home)
+        app = _make_app(state, provider)
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        return client, skills_dir
+
+    async def test_timeout_path_escapes_skill_id(
+        self, fake_home, reset_registry, caplog
+    ):
+        import asyncio
+        import logging
+
+        class TimeoutProvider(FakeProvider):
+            async def fetch_skill_bundle(self, skill_id):
+                raise asyncio.TimeoutError()
+
+            async def fetch_skill_content(self, skill_id):
+                raise asyncio.TimeoutError()
+
+        client, _ = await self._client(fake_home, TimeoutProvider())
+        forged_id = "innocent\nERROR forged-admin-line"
+        try:
+            with caplog.at_level(logging.WARNING, logger=self._LOGGER):
+                resp = await client.post(
+                    "/api/skills/-/discover/install",
+                    json={"provider": "fakeprov", "skill_id": forged_id},
+                )
+            assert resp.status == 504
+            rec = next(
+                r for r in caplog.records if "Timeout fetching skill" in r.getMessage()
+            )
+            rendered = rec.getMessage()
+            # repr keeps the record to a single logical line.
+            assert "\n" not in rendered
+            assert "\\n" in rendered
+            assert "\nERROR forged-admin-line" not in rendered
+        finally:
+            await client.close()
+
+    async def test_failure_path_escapes_and_scrubs(
+        self, fake_home, reset_registry, caplog
+    ):
+        import logging
+
+        secret = "ghp_" + "a" * 36
+
+        class BoomProvider(FakeProvider):
+            async def fetch_skill_bundle(self, skill_id):
+                raise RuntimeError(f"boom\nFORGED leaked={secret}")
+
+            async def fetch_skill_content(self, skill_id):
+                raise RuntimeError(f"boom\nFORGED leaked={secret}")
+
+        client, _ = await self._client(fake_home, BoomProvider())
+        forged_id = "sk\nill-id"
+        try:
+            with caplog.at_level(logging.WARNING, logger=self._LOGGER):
+                resp = await client.post(
+                    "/api/skills/-/discover/install",
+                    json={"provider": "fakeprov", "skill_id": forged_id},
+                )
+            assert resp.status == 502
+            rec = next(
+                r for r in caplog.records if "Failed to fetch skill" in r.getMessage()
+            )
+            rendered = rec.getMessage()
+            # Single logical line: both skill_id and exception text escaped.
+            assert "\n" not in rendered
+            assert "\\n" in rendered
+            # Credential in the exception text is redacted before logging.
+            assert secret not in rendered
+            assert "REDACTED" in rendered
+        finally:
+            await client.close()

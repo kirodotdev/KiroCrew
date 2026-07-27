@@ -215,6 +215,12 @@ def test_policy_fullstack_passrole_scoped_to_lambda():
     assert pass_stmt is not None, "IAMPassRoleLambdaOnly statement missing"
     cond = pass_stmt.get("Condition", {})
     assert cond.get("StringEquals", {}).get("iam:PassedToService") == "lambda.amazonaws.com"
+    # Confused-deputy defense (CWE-441): the pass must also be bound to WHICH
+    # Lambda resource the role may be associated with, not just the service.
+    assert (
+        cond.get("ArnLike", {}).get("iam:AssociatedResourceArn")
+        == "arn:aws:lambda:*:*:function:kirocrew-deploy-app-*"
+    )
 
 
 def test_policy_reaper_passrole_scoped_to_lambda():
@@ -229,6 +235,11 @@ def test_policy_reaper_passrole_scoped_to_lambda():
     assert "kirocrew-deploy-reaper" in pass_stmt["Resource"]
     cond = pass_stmt.get("Condition", {})
     assert cond.get("StringEquals", {}).get("iam:PassedToService") == "lambda.amazonaws.com"
+    # Confused-deputy defense (CWE-441): bound to WHICH reaper Lambda too.
+    assert (
+        cond.get("ArnLike", {}).get("iam:AssociatedResourceArn")
+        == "arn:aws:lambda:*:*:function:kirocrew-deploy-reaper*"
+    )
     # PassRole must no longer be bundled in the general ReaperIAMRole statement.
     reaper_iam = next(s for s in doc["Statement"] if s["Sid"] == "ReaperIAMRole")
     assert "iam:PassRole" not in reaper_iam["Action"]

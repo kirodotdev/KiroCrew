@@ -364,6 +364,11 @@ untouched — while keeping provider comments merely absent from one fetch (a
 transient/paginated empty is not a delete). The fetch is network IO and the merge
 is blocking filesystem IO, so both run off the event loop; any failure is
 best-effort and surfaces as `remote_sync_error` rather than failing the list.
+Every awaited remote publish-provider network call is bounded by
+`_REMOTE_PROVIDER_TIMEOUT_S` (15s) via `asyncio.wait_for` (CWE-400): a timeout on
+the primary read path (`remote_artifact_fetch`) maps to a **504**, while the
+best-effort comment-sync paths degrade like any other provider failure
+(`remote_sync_error`, local write still succeeds).
 With no provider registered (the public default) `get_provider` raises and the
 endpoint degrades to local-only comments. Comment `body`, `author`, **and** the
 anchor `quote`/`prefix`/`suffix` are run through `_redact_text` (credential +

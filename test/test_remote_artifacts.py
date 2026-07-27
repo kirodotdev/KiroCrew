@@ -13,6 +13,7 @@ registered into the (normally empty) public registry.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -1252,3 +1253,85 @@ class TestRemoteDenialAudit:
             publish_provider._FACTORIES.clear()
             publish_provider._FACTORIES.update(saved)
             publish_provider.reset_providers()
+
+
+# ── Bounded provider awaits: timeout → 504 (CWE-400) ────────────────────────
+
+
+class TestRemoteProviderTimeout:
+    """A hung publish provider must not block the request (and its event-loop
+    slot) indefinitely. Every remote provider await is wrapped in
+    ``asyncio.wait_for(..., timeout=_REMOTE_PROVIDER_TIMEOUT_S)``; on timeout the
+    primary read + write endpoints map to a 504 with a NON-EMPTY error body
+    (``str(TimeoutError())`` is empty) and a distinct ``timeout`` SEL outcome.
+
+    The provider methods NEVER complete (``await asyncio.sleep(3600)``) and the
+    module timeout constant is monkeypatched to a tiny value, so ``wait_for``
+    itself must fire the timeout. This proves the wrapper is doing the work:
+    remove the ``asyncio.wait_for`` and these tests hang/fail instead of passing.
+    """
+
+    class _TimeoutProvider(BrowseFakeProvider):
+        """CONTENT_PULL + comment-write capable so the handlers reach the awaited
+        provider call rather than short-circuiting on a missing capability. The
+        awaited calls never return, so only ``wait_for`` can end them."""
+
+        def capabilities(self):
+            return {
+                Capability.CONTENT_PULL,
+                Capability.COMMENTS_READ,
+                Capability.COMMENTS_WRITE,
+            }
+
+        async def fetch_content(self, *, external_id):
+            await asyncio.sleep(3600)
+
+        async def post_comment(self, *, external_id, body, anchor=None):
+            await asyncio.sleep(3600)
+
+    @pytest.fixture
+    def timeout_provider(self):
+        prov = self._TimeoutProvider()
+        saved = dict(publish_provider._FACTORIES)
+        publish_provider.reset_providers()
+        publish_provider.register_provider(prov.name, lambda: prov)
+        publish_provider._INSTANCES[prov.name] = prov
+        yield prov
+        publish_provider._FACTORIES.clear()
+        publish_provider._FACTORIES.update(saved)
+        publish_provider.reset_providers()
+
+    @pytest.fixture
+    def fast_timeout(self, monkeypatch):
+        # Patch the module constant so ``asyncio.wait_for`` fires almost
+        # immediately — the never-completing provider await is bounded by this,
+        # keeping the test fast. Patching the constant (not raising in the
+        # provider) is what forces the wrapper to be exercised end-to-end.
+        monkeypatch.setattr(art_handlers, "_REMOTE_PROVIDER_TIMEOUT_S", 0.01)
+
+    @pytest.fixture
+    def capture_audit(self, monkeypatch):
+        events: list[dict] = []
+        monkeypatch.setattr(art_handlers, "_audit", lambda **kw: events.append(kw))
+        return events
+
+    @pytest.mark.asyncio
+    async def test_get_maps_provider_timeout_to_504(
+        self, patch_restricted, timeout_provider, fast_timeout, capture_audit
+    ):
+        req = _request(match={"provider": "fakeprov", "external_id": "ext-1"})
+        resp = await api_remote_artifact_get(req)
+        assert resp.status == 504
+        # Non-empty error body — str(asyncio.TimeoutError()) would be "".
+        assert _json_body(resp)["error"]
+        assert any(e.get("outcome") == "timeout" for e in capture_audit)
+
+    @pytest.mark.asyncio
+    async def test_post_comment_maps_provider_timeout_to_504(
+        self, patch_restricted, timeout_provider, fast_timeout, gate_open, capture_audit
+    ):
+        req = _request(body={"text": "hi"}, match=_MATCH)
+        resp = await api_remote_artifact_post_comment(req)
+        assert resp.status == 504
+        assert _json_body(resp)["error"]
+        assert any(e.get("outcome") == "timeout" for e in capture_audit)

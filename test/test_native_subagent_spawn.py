@@ -1043,3 +1043,44 @@ class TestNativeCrewAutoApproveGate:
         state = self._state(hook=False, yolo=True)
         slot = self._slot(trust=False)
         assert _native_crew_should_auto_approve(tracker, state, slot) is True
+
+
+class TestNativeAutoApproveLogSanitization:
+    """Regression for CWE-117 log forging in the native-crew auto-approve
+    debug line.
+
+    Driving the full ``_native_crew_should_auto_approve`` -> ``logger.debug``
+    path requires the whole chat_runner ACP event loop with a live client and
+    request stream, which is impractical to stand up in a unit test. Instead
+    this exercises the PRODUCTION helper ``_safe_native_crew_debug_title`` that
+    the handler applies to the tool title before logging, plus the ``%r``
+    formatting at the log call site. Reverting the redaction in chat_runner.py
+    therefore breaks these assertions.
+    """
+
+    def test_newline_is_escaped_not_forged(self) -> None:
+        from kiro_crew.dashboard.chat_runner import _safe_native_crew_debug_title
+
+        forged = "innocent\nERROR: forged admin line"
+        safe = _safe_native_crew_debug_title(forged)
+        # The log call site renders the (already-redacted) title with %r; the
+        # raw newline must survive to the helper output (redaction does not
+        # strip it) but be escaped by repr into the literal two-char \n.
+        rendered = "%r" % safe
+        assert "\n" not in rendered
+        assert "\\n" in rendered
+        # The forged content cannot appear at the start of its own line.
+        assert "\nERROR: forged admin line" not in rendered
+
+    def test_credential_redacted_before_logging(self) -> None:
+        from kiro_crew.dashboard.chat_runner import _safe_native_crew_debug_title
+
+        cred = "ghp_" + "a" * 36
+        safe = _safe_native_crew_debug_title("call " + cred + "\ntrailer")
+        # Credential is replaced with the redaction marker.
+        assert cred not in safe
+        assert "REDACTED" in safe
+        # And the embedded newline is still escaped, not raw, once formatted.
+        rendered = "%r" % safe
+        assert "\n" not in rendered
+        assert "\\n" in rendered

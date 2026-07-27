@@ -588,6 +588,140 @@ class TestRouteMessageFallbackRecovery:
         finally:
             set_context(None)
 
+    @pytest.mark.asyncio
+    async def test_interceptor_raising_gate_fails_closed_to_dropped(self):
+        """A composed gate whose intercept_message RAISES must fail CLOSED
+        (CWE-1188 / deny-by-default): safe_context_call degrades the decision to
+        InterceptDecision.DROPPED, _route_message short-circuits before the
+        inline handler runs, and the drop reaches the SEL audit."""
+        import dataclasses
+        from unittest.mock import MagicMock
+
+        from kiro_crew.platform import build_default_context
+        from kiro_crew.platform.context import set_context
+        from kiro_crew.slack.events import SeenCache, _route_message
+
+        class _RaisingGate:
+            def validate_enterprise(self, *a, **k):
+                return True
+
+            def check_message_origin(self, *a, **k):
+                return True
+
+            def heartbeat_safe_tools(self):
+                return frozenset()
+
+            def intercept_message(self, orch, **kw):
+                raise RuntimeError("gate boom")
+
+        ctx = dataclasses.replace(build_default_context(None), slack_gate=_RaisingGate())
+        set_context(ctx)
+        try:
+            event = {
+                "user": "U123",
+                "channel": "C456",
+                "text": "hello",
+                "ts": "8888.0001",
+                "team": "T789",
+            }
+            mock_orch = AsyncMock()
+            ch_cfg = MagicMock()
+            ch_cfg.activation = "mention"
+            mock_cfg = MagicMock()
+            mock_cfg.channel_config.return_value = ch_cfg
+            mock_orch._cfg = mock_cfg
+            mock_orch.channel_history = None
+            mock_orch.sessions = None
+            mock_orch.conv_log = None
+            mock_orch.slack = None
+
+            seen = SeenCache()
+            with patch("kiro_crew.slack.enterprise.check_message_origin", return_value=True), \
+                 patch("kiro_crew.slack.events.sel") as mock_sel, \
+                 patch("kiro_crew.slack.events.is_allowed_user", return_value=True), \
+                 patch("kiro_crew.slack.events.is_owner", return_value=True), \
+                 patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock) as mock_handle:
+                audits = []
+                mock_sel.return_value.log_api_access = lambda **kw: audits.append(kw)
+
+                await _route_message(mock_orch, event, seen, is_mention=True)
+                # Fail-closed: the raising gate degraded to DROPPED, so the inline
+                # handler never ran.
+                mock_handle.assert_not_called()
+                intercepts = [
+                    a for a in audits if a.get("operation") == "slack.message.intercept"
+                ]
+                assert intercepts, "intercept decision was not audited"
+                assert "dropped" in (intercepts[0].get("error") or "")
+        finally:
+            set_context(None)
+
+    @pytest.mark.asyncio
+    async def test_interceptor_dropped_decision_short_circuits(self):
+        """A gate returning InterceptDecision.DROPPED directly must
+        short-circuit _route_message (the inline handler never runs) and audit
+        the drop (CWE-1188 / deny-by-default)."""
+        import dataclasses
+        from unittest.mock import MagicMock
+
+        from kiro_crew.platform import build_default_context
+        from kiro_crew.platform.context import set_context
+        from kiro_crew.platform.interfaces import InterceptDecision
+        from kiro_crew.slack.events import SeenCache, _route_message
+
+        class _DropGate:
+            def validate_enterprise(self, *a, **k):
+                return True
+
+            def check_message_origin(self, *a, **k):
+                return True
+
+            def heartbeat_safe_tools(self):
+                return frozenset()
+
+            def intercept_message(self, orch, **kw):
+                return InterceptDecision.DROPPED
+
+        ctx = dataclasses.replace(build_default_context(None), slack_gate=_DropGate())
+        set_context(ctx)
+        try:
+            event = {
+                "user": "U123",
+                "channel": "C456",
+                "text": "hello",
+                "ts": "7777.0001",
+                "team": "T789",
+            }
+            mock_orch = AsyncMock()
+            ch_cfg = MagicMock()
+            ch_cfg.activation = "mention"
+            mock_cfg = MagicMock()
+            mock_cfg.channel_config.return_value = ch_cfg
+            mock_orch._cfg = mock_cfg
+            mock_orch.channel_history = None
+            mock_orch.sessions = None
+            mock_orch.conv_log = None
+            mock_orch.slack = None
+
+            seen = SeenCache()
+            with patch("kiro_crew.slack.enterprise.check_message_origin", return_value=True), \
+                 patch("kiro_crew.slack.events.sel") as mock_sel, \
+                 patch("kiro_crew.slack.events.is_allowed_user", return_value=True), \
+                 patch("kiro_crew.slack.events.is_owner", return_value=True), \
+                 patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock) as mock_handle:
+                audits = []
+                mock_sel.return_value.log_api_access = lambda **kw: audits.append(kw)
+
+                await _route_message(mock_orch, event, seen, is_mention=True)
+                mock_handle.assert_not_called()
+                intercepts = [
+                    a for a in audits if a.get("operation") == "slack.message.intercept"
+                ]
+                assert intercepts, "intercept decision was not audited"
+                assert "dropped" in (intercepts[0].get("error") or "")
+        finally:
+            set_context(None)
+
     def test_blocks_extraction_recovers_all_element_types(self):
         """Verify _extract_blocks_text handles mixed element types correctly."""
         event_blocks = [

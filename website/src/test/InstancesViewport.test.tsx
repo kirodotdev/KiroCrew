@@ -398,6 +398,53 @@ describe('InstancesViewport', () => {
     expect(screen.getByText(/Loading pane/i)).toBeInTheDocument()
   })
 
+  it('ignores mc-switch-instance to an unknown target id even from a trusted origin', async () => {
+    // The inbound switcher validates the TARGET (known instance OR warm) after
+    // resolving the SENDER origin. A trusted pane must NOT be able to flip the
+    // active tab to an id the parent does not know (spoofed/unknown target).
+    mockConnectedCd1()
+    const store = createTestStore({
+      instances: { warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: null, mru: ['cd-1'], unread: {}, ready: {} },
+    })
+    renderWithProviders(<InstancesViewport />, { store })
+    // Wait until the warm→port map is live so the origin resolves as trusted.
+    await waitFor(() => expect(document.querySelector('iframe')).not.toBeNull())
+
+    act(() => {
+      window.dispatchEvent(
+        new MessageEvent('message', {
+          data: { type: 'mc-switch-instance', id: 'ghost-instance' },
+          origin: 'http://127.0.0.1:7778', // resolves to the warm cd-1 tunnel (trusted)
+        }),
+      )
+    })
+    // Unknown target -> no switch; activeId stays on Local (null).
+    expect(store.getState().instances.activeId).toBeNull()
+  })
+
+  it('ignores mc-switch-instance to a valid target from an untrusted origin', async () => {
+    // A valid target id delivered from an origin that does NOT resolve to any
+    // warm tunnel must be dropped at the origin gate (resolveTunnelOrigin ->
+    // null), before the target is ever inspected.
+    mockConnectedCd1()
+    const store = createTestStore({
+      instances: { warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: null, mru: ['cd-1'], unread: {}, ready: {} },
+    })
+    renderWithProviders(<InstancesViewport />, { store })
+    await waitFor(() => expect(document.querySelector('iframe')).not.toBeNull())
+
+    act(() => {
+      window.dispatchEvent(
+        new MessageEvent('message', {
+          data: { type: 'mc-switch-instance', id: 'cd-1' }, // a real, known target
+          origin: 'https://evil.example.com', // but an untrusted origin
+        }),
+      )
+    })
+    // Untrusted origin -> handler bails; activeId unchanged (still Local).
+    expect(store.getState().instances.activeId).toBeNull()
+  })
+
   it('surfaces the error panel with Retry when the pane never becomes ready (load watchdog)', async () => {
     mockConnectedCd1()
     vi.useFakeTimers()

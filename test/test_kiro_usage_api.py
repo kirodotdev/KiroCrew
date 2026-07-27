@@ -554,6 +554,41 @@ class TestSafeReadFileInternalSymlink:
         # O_NOFOLLOW makes the open fail on the symlink -> None, never the target.
         assert hooks.safe_read_file_internal("test.symlink") is None
 
+    def test_rejects_read_id_not_in_allowlist(self, monkeypatch):
+        """An unregistered read_id fails closed (CWE-1188): PermissionError with
+        'not in allowlist' AND a 'not_allowlisted' SEL audit, never a read."""
+        from kiro_crew import hooks
+        audited = []
+        monkeypatch.setattr(
+            hooks,
+            "_emit_internal_read_audit",
+            lambda read_id, outcome: audited.append((read_id, outcome)) or True,
+        )
+        with pytest.raises(PermissionError, match="not in allowlist"):
+            hooks.safe_read_file_internal("rogue.unregistered.id")
+        assert ("rogue.unregistered.id", "not_allowlisted") in audited
+
+    def test_rejects_allowlisted_but_non_sensitive_path(self, tmp_path, monkeypatch):
+        """A registered read_id whose resolved path is NOT sensitive fails closed
+        (CWE-1188): the carve-out is only valid for a sensitive path, so drift is
+        refused with 'non-sensitive path' + a 'not_sensitive' SEL audit. Mirrors
+        the happy-path registration (setitem on _INTERNAL_READ_ALLOWLIST) but
+        stubs is_sensitive_path to False so the defense-in-depth check trips."""
+        from kiro_crew import hooks
+        f = tmp_path / "tok.json"
+        f.write_bytes(b'{"accessToken":"x"}')
+        monkeypatch.setitem(hooks._INTERNAL_READ_ALLOWLIST, "test.nonsensitive", str(f))
+        monkeypatch.setattr(hooks, "is_sensitive_path", lambda p: False)
+        audited = []
+        monkeypatch.setattr(
+            hooks,
+            "_emit_internal_read_audit",
+            lambda read_id, outcome: audited.append((read_id, outcome)) or True,
+        )
+        with pytest.raises(PermissionError, match="non-sensitive path"):
+            hooks.safe_read_file_internal("test.nonsensitive")
+        assert ("test.nonsensitive", "not_sensitive") in audited
+
 
 class TestTokenStoreSensitivePath:
     """The kiro-cli/amazon-q SQLite token stores are classified sensitive so

@@ -264,6 +264,10 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
 
     # Fetch full bundle from the provider (with timeout).
     # Bundle = all files (SKILL.md + rules/ + scripts/ etc.); falls back to single-file.
+    # skill_id is request-controlled and may embed a credential/URL: %r escapes
+    # control chars but does NOT redact secrets, so scrub before any log.
+    _safe_skill_id, _ = redact_exfiltration_urls(skill_id)
+    _safe_skill_id, _ = redact_credentials(_safe_skill_id)
     bundle: list[tuple[str, str]] | None = None
     content: str | None = None
     try:
@@ -276,7 +280,7 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
                 provider.fetch_skill_content(skill_id), timeout=15.0
             )
     except asyncio.TimeoutError:
-        logger.warning("Timeout fetching skill %s from %s", skill_id, provider_name)
+        logger.warning("Timeout fetching skill %r from %s", _safe_skill_id, provider_name)
         _sel().log_tool_invocation(
             session_key=request.get("session_key", "dashboard"),
             tool_name="install_skill_from_provider",
@@ -289,7 +293,7 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
     except Exception as exc:
         scrubbed, _ = redact_credentials(str(exc))
         scrubbed, _ = redact_exfiltration_urls(scrubbed)
-        logger.warning("Failed to fetch skill %s from %s: %s", skill_id, provider_name, scrubbed)
+        logger.warning("Failed to fetch skill %r from %s: %r", _safe_skill_id, provider_name, scrubbed)
         _sel().log_tool_invocation(
             session_key=request.get("session_key", "dashboard"),
             tool_name="install_skill_from_provider",

@@ -495,6 +495,8 @@ def _macos_vm_reclaimable_pages() -> Optional[int]:  # pragma: no cover
 
     try:
         libc.mach_host_self.restype = ctypes.c_uint
+        libc.mach_task_self.restype = ctypes.c_uint
+        libc.mach_port_deallocate.argtypes = [ctypes.c_uint, ctypes.c_uint]
         libc.host_statistics64.restype = ctypes.c_int
         libc.host_statistics64.argtypes = [
             ctypes.c_uint,
@@ -502,14 +504,24 @@ def _macos_vm_reclaimable_pages() -> Optional[int]:  # pragma: no cover
             ctypes.POINTER(_VMStatistics64),
             ctypes.POINTER(ctypes.c_uint),
         ]
-        stats = _VMStatistics64()
-        count = ctypes.c_uint(ctypes.sizeof(_VMStatistics64) // ctypes.sizeof(ctypes.c_int))
-        kern_return = libc.host_statistics64(
-            libc.mach_host_self(),
-            HOST_VM_INFO64,
-            ctypes.byref(stats),
-            ctypes.byref(count),
-        )
+        host_port = libc.mach_host_self()
+        try:
+            stats = _VMStatistics64()
+            count = ctypes.c_uint(ctypes.sizeof(_VMStatistics64) // ctypes.sizeof(ctypes.c_int))
+            kern_return = libc.host_statistics64(
+                host_port,
+                HOST_VM_INFO64,
+                ctypes.byref(stats),
+                ctypes.byref(count),
+            )
+        finally:
+            # Release the send right returned by mach_host_self so the port
+            # reference isn't leaked on every probe. Guard the deallocate so a
+            # missing symbol here still returns None cleanly below.
+            try:
+                libc.mach_port_deallocate(libc.mach_task_self(), host_port)
+            except (AttributeError, OSError, ValueError):
+                pass
     except (AttributeError, OSError, ValueError):
         return None
     if kern_return != 0:  # non-zero kern_return_t → failure

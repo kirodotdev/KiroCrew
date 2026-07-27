@@ -313,3 +313,27 @@ class TestOutbound:
 
         monkeypatch.setattr(c, "_api", fake_api)
         assert await c.edit_message("MSG1", "ROOM", "text") is False
+
+
+class TestLifecycle:
+    @pytest.mark.asyncio
+    async def test_close_drains_handlers_and_blocks_new_session(self) -> None:
+        c = _client()
+        await c.close()
+        # Handler tasks drained.
+        assert c._handler_tasks == set()
+        # A subsequent session acquisition must fail closed.
+        with pytest.raises(RuntimeError, match="WebexClient is closed"):
+            await c._ensure_session()
+
+    @pytest.mark.asyncio
+    async def test_close_cancels_in_flight_handler(self) -> None:
+        c = _client()
+        # Inject a never-completing handler task, mirroring how _handle_frame
+        # tracks live turn tasks.
+        task: asyncio.Task[Any] = asyncio.ensure_future(asyncio.sleep(100))
+        c._handler_tasks.add(task)
+        await c.close()
+        assert task.done()
+        assert task.cancelled()
+        assert c._handler_tasks == set()

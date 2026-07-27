@@ -187,6 +187,11 @@ class WebexClient:
             except asyncio.CancelledError:
                 pass
             self._task = None
+        if self._handler_tasks:
+            for t in list(self._handler_tasks):
+                t.cancel()
+            await asyncio.gather(*self._handler_tasks, return_exceptions=True)
+            self._handler_tasks.clear()
         if self._session and not self._session.closed:
             await self._session.close()
             self._session = None
@@ -440,8 +445,12 @@ class WebexClient:
         serve loop plus per-turn handler tasks -- can't each build a session
         and leak one unclosed. Mirrors TelegramClient.
         """
+        if self._closed:
+            raise RuntimeError("WebexClient is closed")
         if self._session is None or self._session.closed:
             async with self._session_lock:
+                if self._closed:
+                    raise RuntimeError("WebexClient is closed")
                 if self._session is None or self._session.closed:
                     self._session = aiohttp.ClientSession()
         return self._session

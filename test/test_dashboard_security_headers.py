@@ -242,6 +242,37 @@ class TestApplySecurityHeaders:
         assert "localhost:3000" not in csp
         assert resp.headers["X-Frame-Options"] == "SAMEORIGIN"
 
+    def test_frame_ancestors_ignores_forged_unsigned_cookie(self) -> None:
+        """A forged/unsigned ``mc_token_<port>`` cookie must NOT get its parent
+        origin into frame-ancestors. Unlike the positive tests above, this test
+        does NOT monkeypatch the signed-claim reader: the real verifier
+        (``token_embed_parent_port``) rejects the unsigned JWT and returns None,
+        so ``_extra_frame_ancestors`` adds nothing and the posture stays the
+        default bare frame-ancestors 'self' + X-Frame-Options: SAMEORIGIN. A
+        local page that plants an attacker cookie can therefore never inject an
+        ancestor origin (clickjacking, CSE SEC-016 / CWE-778)."""
+        from kiro_crew.dashboard.state import _DEFAULT_PORT
+
+        # Real reader (no monkeypatch): the cookie value reaches it and is
+        # rejected because it carries no valid signature.
+        request = make_mocked_request(
+            "GET",
+            "/",
+            headers={"Cookie": f"mc_token_{_DEFAULT_PORT}=forged.unsigned.jwt"},
+        )
+        resp = _make_response()
+        _apply_security_headers(resp, _make_app(with_instances=True), request=request)
+        csp = resp.headers["Content-Security-Policy"]
+        frame_anc = next(
+            d for d in csp.split(";") if d.strip().startswith("frame-ancestors")
+        )
+        assert "frame-ancestors 'self'" in csp
+        # The forged cookie's parent origin was never appended.
+        assert "http://localhost:" not in frame_anc
+        assert "http://127.0.0.1:" not in frame_anc
+        # The legacy clickjacking backstop stays in place in the default posture.
+        assert resp.headers["X-Frame-Options"] == "SAMEORIGIN"
+
     def test_csp_extends_frame_src_when_instances_enabled(self) -> None:
         resp = _make_response()
         _apply_security_headers(resp, _make_app(with_instances=True))
