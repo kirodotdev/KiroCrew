@@ -403,6 +403,12 @@ log "Packaging desktop app (electron-builder, version: $KC_VERSION)…"
       "-c.mac.icon=icon-nightly.png"
       "-c.linux.icon=icon-nightly.png"
       "-c.win.icon=icon-nightly.png"
+      # Menu-bar/Dock title (CFBundleName) mirrors the spaced display name. The
+      # static package.json extendInfo hard-codes "Kiro Crew"; nightly must
+      # re-override it or its menu bar would drop the "Nightly" suffix. The
+      # space-free .app FILENAME still comes from productName above, so CDN
+      # keys / DMG volume / notarization slugs are unaffected.
+      "-c.mac.extendInfo.CFBundleName=Kiro Crew Nightly"
       # Squirrel.Windows keys the INSTALL identity off squirrelWindows.name
       # (install dir %LocalAppData%\<name>, shortcuts, and the RELEASES/
       # .nupkg feed identity). On mac, a distinct productName alone gives
