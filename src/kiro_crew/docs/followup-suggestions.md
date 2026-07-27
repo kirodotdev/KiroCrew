@@ -32,7 +32,12 @@ derives a `followup/<slug>` name from the title when it is absent.
 
 Calling the tool is the agent's own judgement call; there is no turn-boundary
 hook that forces a suggestion every turn. Silence is the intended default when
-there is no substantive follow-up.
+there is no substantive follow-up. A situational reminder is injected into the
+per-turn context for **dashboard sessions only** (where the tool works),
+pointing the agent at the tool when it has finished substantive work and sees
+concrete next steps — deliberately framed as optional and turn-end, not
+per-turn, so it raises awareness (MCP Tool Search means the tool's own spec is
+not always in context) without turning into noise on every reply.
 
 ### Actions
 

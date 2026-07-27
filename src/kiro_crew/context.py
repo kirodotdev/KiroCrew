@@ -1816,6 +1816,28 @@ class ContextBuilder:
                 "as the very last line — exactly once, nothing after it. "
                 "Users can select multiple options before submitting.)"
             )
+            # Dashboard-only, situational nudge for the suggest_followup tool.
+            # Gated to dashboard sessions because the tool rejects Slack/cron/
+            # subagent contexts (they have no card surface). Deliberately framed
+            # as OPTIONAL and turn-END, not per-turn: the tool's own description
+            # carries the full contract, and with MCP Tool Search on the model
+            # otherwise may never surface it. This is awareness, not a mandate —
+            # it must not become noise on every reply. Distinct from [OPTIONS:]
+            # above: those are inline choices for THIS conversation; a follow-up
+            # card is a concrete NEXT task handed off (optionally to a worktree).
+            if session_key and (
+                session_key.startswith("dashboard:")
+                or session_key.startswith("dashboard_")
+            ):
+                parts.append(
+                    "\n\n(When you have FINISHED a substantive piece of work and see "
+                    "concrete, worth-doing next steps, you MAY offer them with the "
+                    "suggest_followup tool — up to 3 items, each carrying a complete, "
+                    "standalone handoff prompt. This is situational, NOT per-turn: prefer "
+                    "silence when there is no real next step, do not repeat a card the user "
+                    "already acted on, and never use it to ask a clarifying question you "
+                    "need answered to continue — just ask that inline.)"
+                )
 
         # Widget instructions live in the bundled `widgets` skill.
 

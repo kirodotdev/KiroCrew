@@ -132,6 +132,39 @@ class TestContextBuilder:
         assert "[OPTIONS:" in msg, "CC interactive reminder must use the [OPTIONS:] tag"
         assert "AskUserQuestion" not in msg, "CC must not be steered to AskUserQuestion for options"
 
+    def test_followup_nudge_only_in_dashboard_sessions(self, tmp_path):
+        """The suggest_followup nudge must appear for dashboard sessions (where the
+        tool works) and be absent everywhere else — Slack/cron/subagent contexts
+        reject the tool, so prompting them for it is pure noise."""
+        builder = ContextBuilder(
+            memory=MemoryStore(workspace=tmp_path / "ws"),
+            skills=SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False),
+            lessons=LessonStore(base_dir=tmp_path),
+        )
+        dash, _ = builder.build_message(
+            "done", is_new_session=False, interactive=True, session_key="dashboard:chat-1"
+        )
+        assert "suggest_followup" in dash, "dashboard session must get the follow-up nudge"
+
+        for sk in (None, "cron:job-1", "subagent:abc", "slack:C123"):
+            other, _ = builder.build_message(
+                "done", is_new_session=False, interactive=True, session_key=sk
+            )
+            assert "suggest_followup" not in other, f"{sk!r} must NOT get the follow-up nudge"
+
+    def test_followup_nudge_requires_interactive(self, tmp_path):
+        """A non-interactive turn (e.g. a cron/automation run) gets neither the
+        OPTIONS reminder nor the follow-up nudge."""
+        builder = ContextBuilder(
+            memory=MemoryStore(workspace=tmp_path / "ws"),
+            skills=SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False),
+            lessons=LessonStore(base_dir=tmp_path),
+        )
+        msg, _ = builder.build_message(
+            "done", is_new_session=False, interactive=False, session_key="dashboard:chat-1"
+        )
+        assert "suggest_followup" not in msg
+
     def test_memory_injected(self, tmp_path):
         ws = tmp_path / "ws"
         store = MemoryStore(workspace=ws)
