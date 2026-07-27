@@ -205,6 +205,51 @@ jobs:
         # Same deselects as backend-test (Linux-namespace sandbox tests and
         # the Amazon-internal `aim` CLI are unavailable here too).
 
+  # Runs the tests the sharded matrix deselects. They need unprivileged user
+  # namespaces (unshare NEWNS), which ubuntu-24.04 restricts via AppArmor --
+  # the same restriction codex-review.yml clears for its bwrap sandbox. Without
+  # this job the ~/.kiro/crew sensitive-path keystone has no CI coverage at all,
+  # even though branch protection treats breaking it as a blocking offence.
+  #
+  # test_run_aim_path stays deselected everywhere: it needs the `aim` CLI, an
+  # Amazon-internal binary that does not exist in this fork. Consider deleting
+  # it from the public tree rather than carrying a permanently-skipped test.
+  backend-test-sandbox:
+    name: Backend Tests (namespace sandbox)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            setup.cfg
+
+      - name: Install dependencies
+        run: uv pip install --system -e ".[voice,desktop]" --group dev
+
+      - name: Enable unprivileged user namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Verify the namespace sandbox is actually available
+        # Fail LOUDLY if the runner image ever stops allowing this, rather than
+        # letting the suite silently skip and the gate go green having asserted
+        # nothing -- the same failure mode the deselects created.
+        run: unshare --mount --map-root-user true
+
+      - name: Run sandbox-dependent tests
+        run: |
+          pytest -q --timeout=180 --no-cov \
+            test/test_script_hooks.py \
+            test/test_cron_script.py
+
   coverage-combine:
     name: Coverage Combine
     needs: backend-test
@@ -388,14 +433,16 @@ jobs:
     name: CloudFormation Lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
 
       - name: Install cfn-lint
-        run: pip install cfn-lint
+        # Pinned: an unpinned lint tool silently changes the gate's behaviour on
+        # every upstream release. Bump deliberately.
+        run: pip install "cfn-lint==1.22.3"
 
       - name: Lint deploy templates
         run: cfn-lint src/kiro_crew/deploy/skills/artifact-deploy/templates/*.yaml
@@ -439,7 +486,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
           cache: pip

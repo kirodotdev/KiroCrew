@@ -25,7 +25,18 @@ on:
       - GPT 5.6 Review
       - Design Review
       - CodeQL
-    types: [completed]
+    # `completed` publishes the real verdict. `requested`/`in_progress` exist so
+    # a monitored workflow flipping BACK to running -- most commonly a re-run of
+    # a reviewer (e.g. Claude re-run after a human override) -- re-triggers this
+    # job WHILE it runs, instead of leaving the label frozen at the previous
+    # commit's verdict until the re-run completes. On re-evaluation that workflow
+    # is queried live as `in_progress`, buckets into `pending`, and the label
+    # drops from a stale `action required` (red) back to `checking` (yellow) --
+    # an honest "recomputing" signal. Cheap: the in_progress path has pending>0,
+    # so it skips the ~5-min Arbiter settle loop (only the all-clear path waits),
+    # and the pr+sha concurrency group (cancel-in-progress) collapses the burst
+    # of near-simultaneous requested/in_progress fires into one live evaluation.
+    types: [requested, in_progress, completed]
   workflow_dispatch:
     inputs:
       pr:
