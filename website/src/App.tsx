@@ -15,6 +15,7 @@ import { fetchNotifications, ackNotification } from './store/notificationsSlice'
 import { useWebSocket } from './hooks/useWebSocket'
 import { useDashboardHealthProbe } from './hooks/useDashboardHealthProbe'
 import { useTheme } from './hooks/useTheme'
+import { useOnboardingGate } from './hooks/useOnboardingGate'
 import { useBranding } from './hooks/useBranding'
 import { useRumPageView } from './hooks/useRumPageView'
 import { useIsMobile } from './hooks/useIsMobile'
@@ -752,41 +753,12 @@ export default function App() {
   const {
     colorTheme,
     theme: resolvedMode,
-    onboarded,
-    importOnboarded,
-    themeBootReady,
-    markOnboarded,
-    markImportOnboarded,
   } = useTheme()
-  // The E2E Playwright suite depends on this onboarding gate: playwright/auth.setup.ts
-  // seeds localStorage['mc-onboarded']='1' so the first-run "Choose your look" modal
-  // never overlays the shell and intercepts every spec's interactions. If this flag is
-  // renamed or the modal moves off localStorage, update auth.setup.ts to match.
-  const locallyImportOnboarded =
-    !!localStorage.getItem('mc-import-onboarded') || !!localStorage.getItem('mc-onboarded')
-  const [showAgentImport, setShowAgentImport] = useState(false)
-  const [showOnboarding, setShowOnboarding] = useState(
-    () => locallyImportOnboarded && !localStorage.getItem('mc-onboarded'),
-  )
-  const continueTourAfterImport = useRef(false)
-  // Dismiss onboarding when server reports user is already onboarded
-  // (handles the race: boot fetch completes after useState initializer ran).
-  useEffect(() => { if (onboarded) setShowOnboarding(false) }, [onboarded])
-  useEffect(() => {
-    if (!themeBootReady) return
-    setShowAgentImport(!importOnboarded)
-    setShowOnboarding(importOnboarded && !onboarded)
-  }, [importOnboarded, themeBootReady])
-  useEffect(() => {
-    const replay = (event: Event) => {
-      continueTourAfterImport.current =
-        !!(event as CustomEvent<{ continueOnboarding?: boolean }>).detail?.continueOnboarding
-      setShowOnboarding(false)
-      setShowAgentImport(true)
-    }
-    window.addEventListener('mc-start-import', replay)
-    return () => window.removeEventListener('mc-start-import', replay)
-  }, [])
+  // First-run onboarding gate: import flow → theme/feature tour. See
+  // useOnboardingGate for the visibility state, the boot seeding, and the
+  // Option-A hand-off (first-run import always continues into the tour).
+  const { showAgentImport, showOnboarding, onImportComplete, onOnboardingComplete } =
+    useOnboardingGate()
   // Capture Electron update lifecycle events app-wide so UpdateModal fires on
   // any page, not just after the user has opened Settings > About.
   useUpdateSubscription()
@@ -1670,14 +1642,7 @@ export default function App() {
           marker, while new users reach the feature tour only after this flow. */}
       <AgentImportFlow
         initialOpen={showAgentImport}
-        onComplete={() => {
-          markImportOnboarded()
-          setShowAgentImport(false)
-          if (!onboarded || continueTourAfterImport.current) {
-            setShowOnboarding(true)
-          }
-          continueTourAfterImport.current = false
-        }}
+        onComplete={onImportComplete}
       />
 
       {/* First-run onboarding: 4-step flow (theme → Schedule → Apps → Sessions).
@@ -1685,7 +1650,7 @@ export default function App() {
           it anytime; internal visibility is seeded by `initialOpen`. */}
       <OnboardingFlow
         initialOpen={showOnboarding}
-        onComplete={() => { markOnboarded(); setShowOnboarding(false) }}
+        onComplete={onOnboardingComplete}
       />
 
       {/* Mobile backdrop */}
