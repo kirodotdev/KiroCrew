@@ -257,6 +257,18 @@ When KiroCrew runs on a compatible platform (e.g. macOS local), the install proc
 - Recommended: 1200px wide, 16:9 or similar aspect ratio
 - Location: commit to your repo (e.g. `assets/screenshots/`)
 - Max 5 screenshots per app
+
+### Hero Images
+
+Hero art is the main way an app looks like a product rather than a list entry. Ship one — every store surface uses it.
+
+| Field | Rendered where | Recommended size |
+|-------|----------------|------------------|
+| `heroImage` | Discover list rows (16:9 capsule), featured spotlight, feature cards, detail-page banner | 1200x675 (16:9) |
+| `heroImageDark` | Same surfaces when the user's theme is dark | 1200x675 (16:9) |
+| `heroImageDetail` / `heroImageDetailDark` | Detail-page banner only, preferred over `heroImage` there | 1200x288 (25:6) |
+
+Resolution order on every surface: the current theme's art, then the opposite theme's, then the first screenshot. When an app ships none — or the image fails to load — the store falls back to a deterministic gradient with the app icon, so a missing hero degrades cleanly instead of leaving a blank panel.
 - First screenshot is the hero image on the detail page
 
 ## 3. Registry Entry
@@ -290,6 +302,7 @@ That's it. All display information (description, screenshots, highlights, tags, 
 | `resources` | `"gateway"` | `"gateway"` = KiroCrew manages agent/skill/cron registration via symlinks. `"app"` = app handles its own resource registration. |
 | `lifecycle` | `"gateway"` | `"gateway"` = KiroCrew handles updates and uninstall. `"app"` = app handles its own updates. |
 | `detectInstalled` | `""` | Shell command that exits 0 if the app is already installed (e.g. `test -d ~/Applications/MyApp.app`). |
+| `featured` | unset | Curator flag for the Discover editorial layer. `true` marks the app featured; a number both marks it and orders the slots (lower first — `1` takes the spotlight, `2`/`3` the secondary cards). Lives on the registry entry (curator-controlled), not in `app.json`. Honored only for core-registry entries — a `featured` flag from an external registry is ignored, so adding a registry cannot seize the Discover spotlight. When no entries are flagged, the store falls back to a deterministic pick (hero art, then verified publishers). |
 
 ### How It Works
 

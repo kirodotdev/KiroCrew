@@ -2,7 +2,7 @@
  * RegistryManager — Manage federated external app registries.
  *
  * Allows users to add, edit, and remove org-owned app registries
- * directly from the App Store UI instead of editing config.json.
+ * directly from the Apps UI instead of editing config.json.
  */
 import type React from 'react'
 import { useState } from 'react'
@@ -54,7 +54,12 @@ function repoWebUrl(repo: string): string {
   return `https://github.com/kirodotdev-labs/${repo}`
 }
 
-export default function RegistryManager() {
+/**
+ * When ``bare`` is set the Card chrome is neutralized so the manager embeds
+ * flat inside another surface (the Apps page Sources popover) — same
+ * behavior, no double border/padding.
+ */
+export default function RegistryManager({ bare = false }: { bare?: boolean } = {}) {
   const queryClient = useQueryClient()
   const [adding, setAdding] = useState(false)
   const [editName, setEditName] = useState('')
@@ -141,8 +146,11 @@ export default function RegistryManager() {
     recordEvent('registry_remove', { repo })
   }
 
+  // In bare mode swap the Card for a plain div so no card chrome
+  // (border, padding, glow) leaks into the embedding surface.
+  const Wrapper = bare ? 'div' : Card
   return (
-    <Card>
+    <Wrapper>
       <CardTitle>
         External Registries
         <InfoTip text="Org-owned app catalogs hosted in Git repositories. Apps from these repos appear alongside core registry apps in the Browse tab." />
@@ -289,6 +297,6 @@ export default function RegistryManager() {
           )}
         </div>
       )}
-    </Card>
+    </Wrapper>
   )
 }

@@ -6,7 +6,7 @@
  * Shows full description, features, screenshots, tags, and action buttons.
  */
 import { useEffect, useState, useCallback, useRef } from 'react'
-import { useParams, useNavigate, useSearchParams } from 'react-router-dom'
+import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import {
   ArrowLeft, Download, Check, Loader2, Power, PowerOff,
   Trash2, RefreshCw, Bot, Zap, ArrowUp,
@@ -178,7 +178,7 @@ function ScreenshotGallery({ screenshots }: { screenshots: string[] }) {
 export default function AppDetailPage() {
   const { name } = useParams<{ name: string }>()
   const navigate = useNavigate()
-  const [searchParams, setSearchParams] = useSearchParams()
+  const location = useLocation()
   const { theme: resolvedMode } = useTheme()
   const [app, setApp] = useState<AppInfo | null>(null)
   const [loading, setLoading] = useState(true)
@@ -281,16 +281,26 @@ export default function AppDetailPage() {
 
   useEffect(() => { load() }, [load])
 
-  // Auto-trigger update when navigated with ?action=update
-  const autoUpdateTriggered = useRef(false)
+  // Auto-trigger install/update after an IN-APP action navigated here.
+  //
+  // The trigger is router state (``location.state.autoAction``) and ONLY that:
+  // a query param is attacker-reachable — a cross-site page can navigate an
+  // authenticated browser to a detail URL and the Lax session cookie rides
+  // along, so any URL-driven trigger (install OR update, since update installs
+  // an absent app) would run third-party setup code with gateway privileges
+  // without user intent. Router state can only be produced by an in-app
+  // navigate() call, so it cannot be forged from outside the app.
+  const autoActionTriggered = useRef(false)
   useEffect(() => {
-    if (searchParams.get('action') === 'update' && app && !autoUpdateTriggered.current) {
-      autoUpdateTriggered.current = true
-      searchParams.delete('action')
-      setSearchParams(searchParams, { replace: true })
-      handleInstall()
-    }
-  }, [app, searchParams]) // eslint-disable-line react-hooks/exhaustive-deps
+    if (!app || autoActionTriggered.current) return
+    const stateAction = (location.state as { autoAction?: string } | null)?.autoAction
+    if (stateAction !== 'install' && stateAction !== 'update') return
+    if (stateAction === 'install' && app.installed) return
+    autoActionTriggered.current = true
+    // Clear the state so a refresh or Back/Forward doesn't re-fire it.
+    navigate(`${location.pathname}${location.search}`, { replace: true, state: null })
+    handleInstall()
+  }, [app, location]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleInstall = async () => {
     if (!app) return

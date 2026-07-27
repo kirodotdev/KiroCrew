@@ -1,71 +1,38 @@
 /**
- * AppsPage — App Store with Browse and Installed tabs.
+ * AppsPage — the Apps page, per the locked hybrid design (editorial front,
+ * marketplace engine).
  *
- * Browse: shows available apps from registry with search/filter.
- * Installed: manage installed apps (enable, disable, uninstall).
- * Install: install from local path via input field.
+ * Discover (landing tab): featured spotlight + two secondary feature cards
+ * (editorial layer, curator-driven via the registry-index ``featured`` flag
+ * with a deterministic fallback), then an "All apps" section with a category
+ * rail (canonical categories + registry sources with counts) and a sortable
+ * dense list. The editorial layer shows only for the unfiltered All view.
+ *
+ * Library: installed-app management — pending-updates banner with Update All,
+ * plus the existing management cards (InstalledAppCard).
+ *
+ * Supply-side controls (external registries, Install from Path) live behind
+ * the Sources gear in the header (SourcesPopover).
  */
-import { useEffect, useState, useRef } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import {
-  Package, Power, PowerOff, Trash2, RefreshCw, FolderOpen,
-  Download, Bot, Tag, Users, Zap, ChevronRight,
-  ExternalLink, Clock, ShoppingBag, Lock, X, ArrowUp,
+  Package, Bot, Zap, Clock, ShoppingBag, Lock, Trash2, X, ArrowUp, Boxes,
 } from 'lucide-react'
 import { api } from '../api/client'
-import {
-  PageHeader, Card, CardTitle, Badge, Btn, StatCard,
-  SearchInput, EmptyState, Input,
-} from '../components/ui'
-import InfoTip from '../components/InfoTip'
+import { Btn, EmptyState, PageHeader, SearchInput, Select } from '../components/ui'
 import { recordEvent } from '../rum'
 import SegmentedControl from '../components/SegmentedControl'
-import AppIcon from '../components/AppIcon'
-import RegistryManager from '../components/RegistryManager'
-import { useTheme } from '../hooks/useTheme'
-
-type InstalledApp = {
-  name: string
-  version: string
-  displayName: string
-  enabled: boolean
-  installedAt: string
-  source?: string
-  // Three-axis classification (replaces old managed field)
-  origin?: string     // "builtin" | "registry" | "local" | "external"
-  resources?: string  // "gateway" | "app"
-  lifecycle?: string  // "gateway" | "app" | "locked"
-  // Migration fields
-  migratedTo?: string  // "registry:{name}" or "standalone:{name}"
-  orphaned?: boolean
-  updateAvailable?: boolean
-  manifest: {
-    name: string
-    version: string
-    displayName: string
-    description: string
-    author: string
-    agents?: string[]
-    skills?: string[]
-    sops?: string[]
-    crons?: { name: string }[]
-    tags?: string[]
-    jobFamilies?: string[]
-    ui?: { entry?: string; pages?: { route: string; label: string; icon: string }[] }
-    permissions?: { api?: string[]; events?: string[]; mcpTools?: string[]; storage?: boolean; cron?: boolean; network?: boolean }
-    setup?: { onInstall?: string; onUpdate?: string; onUninstall?: string; onEnable?: string; onDisable?: string }
-    minKiroCrewVersion?: string
-    iconPath?: string
-    repo?: string
-    // Store-listing metadata (also present on RegistryApp; optional here)
-    screenshots?: string[]
-    heroImage?: string
-    heroImageDark?: string
-    iconUrl?: string
-    openCommand?: string
-  }
-}
+import FeaturedSpotlight from '../components/appstore/FeaturedSpotlight'
+import FeatureCard from '../components/appstore/FeatureCard'
+import CategoryRail, { type SourceRow } from '../components/appstore/CategoryRail'
+import AppListRow from '../components/appstore/AppListRow'
+import InstalledAppCard from '../components/appstore/InstalledAppCard'
+import SourcesPopover from '../components/appstore/SourcesPopover'
+import { categoryFor, categoryCounts, type Category } from '../components/appstore/categories'
+import { hasHeroArt } from '../components/appstore/useHeroArt'
+import { isVerified, normalizeRegistryApp, type InstalledApp, type RegistryApp } from '../components/appstore/types'
 
 /** Uninstall preview payload (mirrors ``api.uninstallPreview`` return shape). */
 type UninstallPreview = Awaited<ReturnType<typeof api.uninstallPreview>>
@@ -73,97 +40,229 @@ type RemovableDep = UninstallPreview['dependencies']['removable'][number]
 type SharedDep = UninstallPreview['dependencies']['shared'][number]
 type UserInstalledDep = UninstallPreview['dependencies']['userInstalled'][number]
 
+type Tab = 'discover' | 'library'
+
+/** Read the persisted tab, migrating pre-revamp values (installed/browse). */
+function initialTab(): Tab {
+  const stored = sessionStorage.getItem('appstore-tab')
+  if (stored === 'library' || stored === 'installed') return 'library'
+  return 'discover'
+}
+
 /**
- * Registry app entry — mirrors backend ``app-registry.json`` schema
- * enriched with install status by ``registry.py:_enrich_with_install_status()``.
+ * Pick up to three featured apps for the editorial layer.
+ *
+ * Curator flags win, but only from TRUSTED sources — a ``featured`` flag on an
+ * external registry entry is ignored. The spotlight is the store's most
+ * persuasive install surface and its Get button runs third-party setup code
+ * with gateway privileges, so letting any added registry flag itself into that
+ * slot would reintroduce the self-promotion hole that ``isVerified`` closes.
+ * Numbers order the slots (lower first); remaining slots fill
+ * deterministically — apps shipping hero art first, then verified publishers,
+ * then name.
  */
-type RegistryApp = {
-  name: string
-  displayName: string
-  description: string
-  version: string
-  author: string
-  icon?: string
-  iconUrl?: string
-  tags?: string[]
-  highlights?: string[]
-  screenshots?: string[]
-  heroImage?: string
-  heroImageDark?: string
-  repo?: string
-  branch?: string
-  installed: boolean
-  installedVersion?: string
-  enabled?: boolean
-  updateAvailable?: boolean
-  origin?: string     // "builtin" | "registry" | "local" | "external"
-  resources?: string  // "gateway" | "app"
-  lifecycle?: string  // "gateway" | "app" | "locked"
-  platform?: { os?: string[]; installMode?: string; clientInstall?: { shell?: string; postInstall?: string } }
+export function pickFeatured(apps: RegistryApp[]): RegistryApp[] {
+  const rank = (f: RegistryApp['featured']) => (typeof f === 'number' ? f : 1e9)
+  const flagged = apps
+    .filter(a => !a._registry && a.featured !== undefined && a.featured !== false)
+    .sort((a, b) => rank(a.featured) - rank(b.featured) || a.displayName.localeCompare(b.displayName))
+  const rest = apps
+    .filter(a => !flagged.includes(a))
+    .sort((a, b) =>
+      (Number(hasHeroArt(b)) - Number(hasHeroArt(a)))
+      || (Number(isVerified(b)) - Number(isVerified(a)))
+      || a.displayName.localeCompare(b.displayName))
+  return [...flagged, ...rest].slice(0, 3)
 }
 
 export default function AppsPage() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
-  const [filter, setFilter] = useState('')
-  const [error, setError] = useState('')
-  const [actionLoading, setActionLoading] = useState<string | null>(null)
-  const [tab, setTab] = useState<'installed' | 'browse'>((sessionStorage.getItem('appstore-tab') as 'installed' | 'browse') || 'installed')
+  const [tab, setTab] = useState<Tab>(initialTab)
   useEffect(() => { sessionStorage.setItem('appstore-tab', tab) }, [tab])
-  const tabInitializedRef = useRef(false)
-  const { theme: resolvedMode } = useTheme()
-  const [installPath, setInstallPath] = useState('')
-  const [showInstall, setShowInstall] = useState(false)
+  const [query, setQuery] = useState('')
+  const [category, setCategory] = useState<Category | 'All'>('All')
+  const [sort, setSort] = useState<'name' | 'category'>('name')
+  const [sourcesOpen, setSourcesOpen] = useState(false)
+  const [error, setError] = useState('')
   const [successMsg, setSuccessMsg] = useState('')
+  const [actionLoading, setActionLoading] = useState<string | null>(null)
+  const [updatingAll, setUpdatingAll] = useState<{ done: number; total: number } | null>(null)
   const [dismissedQueryError, setDismissedQueryError] = useState(false)
-  const [dismissedRegistryError, setDismissedRegistryError] = useState(false)
 
-  // Registry state
-  const [registryFilter, setRegistryFilter] = useState('')
-
-  // Uninstall confirmation state
+  // Uninstall confirmation state (Library)
   const [uninstallTarget, setUninstallTarget] = useState<InstalledApp | null>(null)
   const [keepData, setKeepData] = useState(false)
   const [uninstallPreview, setUninstallPreview] = useState<UninstallPreview | null>(null)
   const [keepSpecific, setKeepSpecific] = useState<Set<string>>(new Set())
 
-  // React Query: fetch installed apps
-  const { data: apps = [], isLoading: loading, error: appsError } = useQuery<InstalledApp[]>({
+  const { data: apps = [], isLoading: appsLoading, error: appsError } = useQuery<InstalledApp[]>({
     queryKey: ['apps'],
     queryFn: () => api.listApps(),
   })
 
-  // Auto-switch to browse tab when no visible installed apps on first load
-  useEffect(() => {
-    if (!tabInitializedRef.current && !loading) {
-      const visibleInstalled = apps.filter((a) => !(a.origin === 'builtin' && !a.enabled))
-      if (visibleInstalled.length === 0) { setTab('browse') }
-      tabInitializedRef.current = true
-    }
-  }, [apps, loading])
-
-  // React Query: fetch registry (cached so the Installed tab can show update availability)
   const { data: registryData, isLoading: registryLoading, error: registryError } = useQuery<{ apps: RegistryApp[] }>({
     queryKey: ['registry'],
     // api.listRegistry() types `apps` as unknown[]; the backend payload matches
     // RegistryApp, so narrow it here at the single fetch boundary.
     queryFn: async () => {
       const res = await api.listRegistry()
-      return { apps: res.apps as RegistryApp[] }
+      // Normalize at the single fetch boundary: registry.py yields minimal
+      // rows when an app.json fetch fails, and external registries are
+      // user-supplied JSON, so display fields may be missing or mistyped.
+      return { apps: (res.apps as RegistryApp[]).map(normalizeRegistryApp) }
     },
     staleTime: 5 * 60_000, // cache for 5min to avoid re-fetching on tab switch
   })
-  const registry: RegistryApp[] = registryData?.apps || []
+  const registry: RegistryApp[] = useMemo(() => registryData?.apps || [], [registryData])
 
-  // Build a map of updateAvailable from registry for installed apps
-  const updateMap = new Map(registry.filter(r => r.updateAvailable).map(r => [r.name, r.version]))
+  // Configured external registries (shared cache key with RegistryManager)
+  const { data: registriesData } = useQuery({
+    queryKey: ['registries'],
+    queryFn: () => api.listRegistries(),
+  })
 
-  // Display error: action errors take priority, then query errors
-  useEffect(() => { if (appsError) setDismissedQueryError(false) }, [appsError])
-  useEffect(() => { if (registryError) setDismissedRegistryError(false) }, [registryError])
+  useEffect(() => { if (appsError || registryError) setDismissedQueryError(false) }, [appsError, registryError])
   const displayError = error
     || (!dismissedQueryError && appsError ? (appsError as Error)?.message || 'Failed to load apps' : '')
-    || (tab === 'browse' && !dismissedRegistryError && registryError ? (registryError as Error)?.message || 'Failed to load registry' : '')
+    || (!dismissedQueryError && registryError ? (registryError as Error)?.message || 'Failed to load registry' : '')
+
+  // ---- Discover data -------------------------------------------------------
+
+  // Browse catalog: disabled (non-hidden) builtins merged with registry
+  // entries; installed apps enrich matching registry entries with local
+  // hero/screenshot metadata.
+  const browseApps: RegistryApp[] = useMemo(() => {
+    const disabledBuiltins: RegistryApp[] = apps
+      .filter(a => a.origin === 'builtin' && !a.enabled && !a.manifest?.hidden)
+      .map(a => ({
+        name: a.name,
+        displayName: a.displayName || a.name,
+        description: a.manifest?.description || '',
+        version: a.version,
+        author: a.manifest?.author || 'kirocrew',
+        tags: a.manifest?.tags,
+        screenshots: a.manifest?.screenshots,
+        heroImage: a.manifest?.heroImage,
+        heroImageDark: a.manifest?.heroImageDark,
+        icon: a.manifest?.ui?.pages?.[0]?.icon || '',
+        iconUrl: a.manifest?.iconUrl || '',
+        installed: true,
+        enabled: false,
+        origin: 'builtin',
+        lifecycle: 'locked',
+      }))
+    const builtinNames = new Set(disabledBuiltins.map(a => a.name))
+    const enriched = registry.filter(r => !builtinNames.has(r.name)).map(r => {
+      const installed = apps.find(a => a.name === r.name)
+      return installed
+        ? { ...r, heroImage: r.heroImage || installed.manifest?.heroImage, heroImageDark: r.heroImageDark || installed.manifest?.heroImageDark, screenshots: r.screenshots || installed.manifest?.screenshots }
+        : r
+    })
+    return [...disabledBuiltins, ...enriched]
+  }, [apps, registry])
+
+  const featured = useMemo(() => pickFeatured(browseApps), [browseApps])
+  const [spotlight, ...secondary] = featured
+
+  const categories = useMemo(() => categoryCounts(browseApps), [browseApps])
+
+  const sources: SourceRow[] = useMemo(() => {
+    // Count built-ins from browseApps so the SOURCES totals describe the same
+    // population as the "All apps" count (enabled built-ins are not browsable).
+    const builtinCount = browseApps.filter(a => a.origin === 'builtin').length
+    const counts = new Map<string, number>()
+    let coreCount = 0
+    for (const a of browseApps) {
+      if (a.origin === 'builtin') continue
+      if (a._registry) counts.set(a._registry, (counts.get(a._registry) || 0) + 1)
+      else coreCount++
+    }
+    const rows: SourceRow[] = []
+    if (builtinCount > 0) rows.push({ name: '__builtin__', label: 'Built-in · kirocrew', count: builtinCount, builtin: true })
+    for (const reg of registriesData?.registries || []) {
+      rows.push({ name: reg.repo, label: reg.name || reg.repo, count: counts.get(reg.name || reg.repo) || 0, builtin: false })
+      counts.delete(reg.name || reg.repo)
+    }
+    // Registries present in entries but no longer configured (stale cache)
+    for (const [name, count] of counts) rows.push({ name, label: name, count, builtin: false })
+    if (coreCount > 0) rows.push({ name: '__core__', label: 'KiroCrew registry', count: coreCount, builtin: true })
+    return rows
+  }, [browseApps, registriesData])
+
+  const filteredBrowse = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    const list = browseApps.filter(a => {
+      if (category !== 'All' && categoryFor(a.tags) !== category) return false
+      if (!q) return true
+      return a.displayName.toLowerCase().includes(q)
+        || a.description.toLowerCase().includes(q)
+        || (a.tags || []).some(t => t.toLowerCase().includes(q))
+    })
+    return list.sort((a, b) => sort === 'category'
+      ? categoryFor(a.tags).localeCompare(categoryFor(b.tags)) || a.displayName.localeCompare(b.displayName)
+      : a.displayName.localeCompare(b.displayName))
+  }, [browseApps, category, query, sort])
+
+  const showEditorial = category === 'All' && !query.trim() && featured.length > 0
+
+  // ---- Library data --------------------------------------------------------
+
+  const updateMap = useMemo(
+    () => new Map(registry.filter(r => r.updateAvailable).map(r => [r.name, r.version])),
+    [registry],
+  )
+  const installedApps = useMemo(
+    () => apps.filter(a => !(a.origin === 'builtin' && !a.enabled)),
+    [apps],
+  )
+  const filteredInstalled = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    if (!q) return installedApps
+    return installedApps.filter(a =>
+      a.name.toLowerCase().includes(q)
+      || (a.displayName || '').toLowerCase().includes(q)
+      || (a.manifest?.description || '').toLowerCase().includes(q)
+      || (a.manifest?.tags || []).some(t => t.toLowerCase().includes(q)))
+  }, [installedApps, query])
+
+  const updatables = useMemo(
+    () => installedApps.filter(a => updateMap.has(a.name) && a.lifecycle === 'gateway'),
+    [installedApps, updateMap],
+  )
+
+  // ---- Actions --------------------------------------------------------------
+
+  const invalidate = () => {
+    queryClient.invalidateQueries({ queryKey: ['apps'] })
+    queryClient.invalidateQueries({ queryKey: ['registry'] })
+    window.dispatchEvent(new Event('mc:apps-changed'))
+  }
+
+  // Cmd/Ctrl-click opens the detail page in a new tab (preserved from the
+  // pre-revamp Browse card behavior).
+  const openDetail = (name: string, e?: React.MouseEvent | React.KeyboardEvent) => {
+    if (e && (e.metaKey || e.ctrlKey)) { window.open(`/apps/detail/${name}`, '_blank', 'noopener,noreferrer'); return }
+    navigate(`/apps/detail/${name}`)
+  }
+  // autoAction travels as router STATE, never a query param — a URL-reachable
+  // trigger would let a cross-site navigation start a privileged install.
+  const getApp = (name: string) => navigate(`/apps/detail/${name}`, { state: { autoAction: 'install' } })
+  const updateApp = (name: string) => navigate(`/apps/detail/${name}`, { state: { autoAction: 'update' } })
+
+  const enableApp = async (name: string) => {
+    setActionLoading(`${name}:enable`)
+    setError('')
+    try {
+      await api.enableApp(name)
+      recordEvent('app_enable', { app: name })
+      invalidate()
+    } catch (e) {
+      setError((e as Error)?.message || `Failed to enable ${name}`)
+    } finally {
+      setActionLoading(null)
+    }
+  }
 
   const handleAction = async (name: string, action: 'enable' | 'disable' | 'uninstall' | 'update') => {
     // Intercept uninstall to show confirmation modal with preview
@@ -175,17 +274,18 @@ export default function AppsPage() {
         setKeepSpecific(new Set())
         // Fetch uninstall preview (best-effort — dialog works without it)
         try {
-          const preview = await api.uninstallPreview(name)
-          setUninstallPreview(preview)
+          setUninstallPreview(await api.uninstallPreview(name))
         } catch {
           setUninstallPreview(null)
         }
       }
       return
     }
-    // Update navigates to detail page (streaming install UI)
+    // Update navigates to detail page (streaming install UI). Blocked while
+    // Update All is running so the same update can't run twice concurrently.
     if (action === 'update') {
-      navigate(`/apps/detail/${name}?action=update`)
+      if (updatingAll) return
+      updateApp(name)
       return
     }
     setActionLoading(`${name}:${action}`)
@@ -193,13 +293,12 @@ export default function AppsPage() {
     try {
       if (action === 'enable') await api.enableApp(name)
       else if (action === 'disable') await api.disableApp(name)
-      queryClient.invalidateQueries({ queryKey: ['apps'] })
-      window.dispatchEvent(new Event('mc:apps-changed'))
+      invalidate()
       // Show toast when hiding a builtin app
       if (action === 'disable') {
         const app = apps.find(a => a.name === name)
         if (app?.origin === 'builtin') {
-          setSuccessMsg('Hidden. You can re-enable it from the Browse tab.')
+          setSuccessMsg('Hidden. You can re-enable it from the Discover tab.')
           setTimeout(() => setSuccessMsg(''), 4000)
         }
       }
@@ -218,8 +317,7 @@ export default function AppsPage() {
     try {
       await api.uninstallApp(name, keepData, false, Array.from(keepSpecific))
       recordEvent('app_uninstall', { app: name, version: uninstallTarget.version })
-      queryClient.invalidateQueries({ queryKey: ['apps'] })
-      window.dispatchEvent(new Event('mc:apps-changed'))
+      invalidate()
     } catch (e) {
       setError((e as Error)?.message || `Failed to uninstall ${name}`)
     } finally {
@@ -229,65 +327,67 @@ export default function AppsPage() {
     }
   }
 
-  const handleInstall = async () => {
-    if (!installPath.trim()) return
-    setActionLoading('install')
+  const updateAll = async () => {
+    if (updatingAll) return
+    const targets = updatables.map(a => a.name)
+    setUpdatingAll({ done: 0, total: targets.length })
     setError('')
-    try {
-      const result = await api.installApp(installPath.trim())
-      recordEvent('app_install', { app: result.name || installPath.trim(), source: 'local' })
-      setInstallPath('')
-      setShowInstall(false)
-      queryClient.invalidateQueries({ queryKey: ['apps'] })
-      window.dispatchEvent(new Event('mc:apps-changed'))
-    } catch (e) {
-      setError((e as Error)?.message || 'Install failed')
-    } finally {
-      setActionLoading(null)
+    const failed: string[] = []
+    for (let i = 0; i < targets.length; i++) {
+      try {
+        await api.updateApp(targets[i])
+      } catch {
+        failed.push(targets[i])
+      }
+      setUpdatingAll({ done: i + 1, total: targets.length })
+    }
+    setUpdatingAll(null)
+    invalidate()
+    if (failed.length) setError(`Failed to update: ${failed.join(', ')}`)
+    else {
+      setSuccessMsg(`Updated ${targets.length} app${targets.length === 1 ? '' : 's'}.`)
+      setTimeout(() => setSuccessMsg(''), 4000)
     }
   }
 
-  // Exclude disabled builtins from Installed tab — they only appear in Browse tab
-  const installedApps = apps.filter(a => !(a.origin === 'builtin' && !a.enabled))
-
-  const filtered = installedApps.filter(a => {
-    if (!filter) return true
-    const q = filter.toLowerCase()
-    return (
-      a.name.toLowerCase().includes(q) ||
-      (a.displayName || '').toLowerCase().includes(q) ||
-      (a.manifest?.description || '').toLowerCase().includes(q) ||
-      (a.manifest?.tags || []).some(t => t.toLowerCase().includes(q))
-    )
-  })
-
-  const enabledCount = apps.filter(a => a.enabled).length
-  const totalAgents = installedApps.reduce((n, a) => n + (a.manifest?.agents?.length || 0), 0)
-  const totalSkills = installedApps.reduce((n, a) => n + (a.manifest?.skills?.length || 0), 0)
-  const totalCrons = installedApps.reduce((n, a) => n + (a.manifest?.crons?.length || 0), 0)
+  const loading = appsLoading || registryLoading
 
   return (
     <>
-      <PageHeader title="Apps" subtitle="Discover, install, and manage agentic apps" />
+      {/* Standard page header with a right-side actions slot: tabs, search,
+          and the Sources gear (page-layout-pattern). */}
+      <PageHeader
+        title="Apps"
+        subtitle="Discover, install, and manage agentic apps"
+        actions={<>
+          <SegmentedControl
+            segments={[
+              { key: 'discover' as const, label: 'Discover', icon: <Boxes size={13} /> },
+              { key: 'library' as const, label: 'Library', icon: <Package size={13} />, count: installedApps.length },
+            ]}
+            value={tab}
+            onChange={setTab}
+            layoutId="app-store-tabs"
+          />
+          <SearchInput
+            placeholder={tab === 'discover' ? 'Search apps' : 'Search library'}
+            value={query}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setQuery(e.target.value)}
+            className="w-[220px]"
+            aria-label="Search apps"
+          />
+          <SourcesPopover open={sourcesOpen} onOpenChange={setSourcesOpen} onError={setError} />
+        </>}
+      />
+
       <div className="px-6 pb-8 overflow-y-auto flex-1 min-h-0">
-
-        {/* Stats */}
-        <div className="grid gap-3.5 grid-cols-[repeat(auto-fit,minmax(130px,1fr))] mb-6">
-          <StatCard label="Installed" value={installedApps.length} accent />
-          <StatCard label="Enabled" value={enabledCount} />
-          <StatCard label="Agents" value={totalAgents} />
-          <StatCard label="Skills" value={totalSkills} />
-          <StatCard label="Cron Jobs" value={totalCrons} />
-        </div>
-
         {/* Notifications */}
         {displayError && (
           <div className="mb-4 bg-danger/10 border border-danger/20 rounded-lg p-3 flex items-center gap-3 animate-rise">
             <span className="text-danger text-sm flex-1">{displayError}</span>
-            <button aria-label="Dismiss error" className="text-danger/60 hover:text-danger text-sm" onClick={() => { setError(''); setDismissedQueryError(true); setDismissedRegistryError(true) }}><X className="lucide-inline" /></button>
+            <button aria-label="Dismiss error" className="text-danger/60 hover:text-danger text-sm" onClick={() => { setError(''); setDismissedQueryError(true) }}><X className="lucide-inline" /></button>
           </div>
         )}
-
         {successMsg && (
           <div className="mb-4 bg-bg-elevated border rounded-lg p-3 flex items-center gap-3 animate-rise" style={{ borderColor: 'color-mix(in srgb, var(--ok) 45%, transparent)' }}>
             <span className="text-text text-sm flex-1">{successMsg}</span>
@@ -427,443 +527,142 @@ export default function AppsPage() {
           </div>
         )}
 
-        {/* Tabs + Actions */}
-        <div className="flex items-center justify-between mb-4">
-          <SegmentedControl
-            segments={[
-              { key: 'installed' as const, label: 'Installed', icon: <Package size={13} />, count: installedApps.length },
-              { key: 'browse' as const, label: 'Browse', icon: <ShoppingBag size={13} /> },
-            ]}
-            value={tab}
-            onChange={setTab}
-            layoutId="app-store-tabs"
-          />
-          <div className="flex items-center gap-2">
-            <Btn onClick={() => setShowInstall(!showInstall)}>
-              <Download size={14} /> Install from Path
-            </Btn>
-            <Btn aria-label="Refresh apps" onClick={() => queryClient.invalidateQueries({ queryKey: ['apps'] })}><RefreshCw size={14} /> Refresh</Btn>
-          </div>
-        </div>
+        {/* ---- Discover tab ---- */}
+        {tab === 'discover' && (
+          loading ? (
+            <div className="text-center py-12 text-muted text-sm">Loading apps…</div>
+          ) : browseApps.length === 0 ? (
+            <EmptyState
+              icon={<ShoppingBag size={36} />}
+              title="No apps available"
+              subtitle="Add an app source (gear icon above) or install from a local path."
+            />
+          ) : (
+            <>
+              {showEditorial && spotlight && (
+                <>
+                  <FeaturedSpotlight
+                    app={spotlight}
+                    busy={actionLoading === `${spotlight.name}:enable`}
+                    onOpen={e => openDetail(spotlight.name, e)}
+                    onGet={() => getApp(spotlight.name)}
+                    onEnable={() => enableApp(spotlight.name)}
+                  />
+                  {secondary.length > 0 && (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5 mb-6">
+                      {secondary.map(app => (
+                        <FeatureCard
+                          key={app.name}
+                          app={app}
+                          busy={actionLoading === `${app.name}:enable`}
+                          onOpen={e => openDetail(app.name, e)}
+                          onGet={() => getApp(app.name)}
+                          onEnable={() => enableApp(app.name)}
+                        />
+                      ))}
+                    </div>
+                  )}
+                </>
+              )}
 
-        {/* Install from path */}
-        {showInstall && (
-          <Card>
-            <div className="flex items-center gap-3">
-              <FolderOpen size={16} className="text-muted shrink-0" />
-              <Input
-                placeholder="Local path to app directory (e.g. /path/to/oncall-watchtower)"
-                value={installPath}
-                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setInstallPath(e.target.value)}
-                onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => e.key === 'Enter' && handleInstall()}
-                className="flex-1"
-              />
-              <Btn
-                onClick={handleInstall}
-                disabled={actionLoading === 'install' || !installPath.trim()}
-              >
-                {actionLoading === 'install' ? 'Installing…' : 'Install'}
-              </Btn>
-            </div>
-          </Card>
+              <div className="flex items-baseline justify-between mt-2 mb-3">
+                <h3 className="text-[17px] font-semibold text-text-strong">
+                  {category === 'All' ? 'All apps' : category}
+                </h3>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-[224px_minmax(0,1fr)] gap-6 items-start">
+                <div className="md:sticky md:top-2">
+                  <CategoryRail
+                    categories={categories}
+                    total={browseApps.length}
+                    selected={category}
+                    onSelect={setCategory}
+                    sources={sources}
+                    onAddSource={() => setSourcesOpen(true)}
+                  />
+                </div>
+                <div className="min-w-0">
+                  <div className="flex items-center justify-between mb-3 text-[12.5px] text-muted">
+                    <span>{filteredBrowse.length} app{filteredBrowse.length === 1 ? '' : 's'}</span>
+                    <label className="flex items-center gap-1.5">
+                      <span>Sort:</span>
+                      <Select
+                        value={sort}
+                        onChange={e => setSort(e.target.value as 'name' | 'category')}
+                        aria-label="Sort apps"
+                        className="text-[12.5px] py-1"
+                      >
+                        <option value="name">Name</option>
+                        <option value="category">Category</option>
+                      </Select>
+                    </label>
+                  </div>
+                  {filteredBrowse.length === 0 ? (
+                    <EmptyState icon={<ShoppingBag size={32} />} title="No matching apps" subtitle="Try a different search or category." />
+                  ) : (
+                    filteredBrowse.map(app => (
+                      <AppListRow
+                        key={app.name}
+                        app={app}
+                        busy={actionLoading === `${app.name}:enable` || !!updatingAll}
+                        onOpen={e => openDetail(app.name, e)}
+                        onGet={() => getApp(app.name)}
+                        onUpdate={() => updateApp(app.name)}
+                        onEnable={() => enableApp(app.name)}
+                      />
+                    ))
+                  )}
+                </div>
+              </div>
+            </>
+          )
         )}
 
-        {/* Installed Tab */}
-        {tab === 'installed' && (
-          <Card>
-            <CardTitle>
-              Installed Apps
-              <InfoTip text="Apps contribute agents, skills, and cron jobs to KiroCrew. Enable an app to activate its resources." />
-            </CardTitle>
-            <SearchInput placeholder="Filter apps…" value={filter} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFilter(e.target.value)} />
-
-            {loading ? (
-              <div className="text-center py-12 text-muted text-sm">Loading apps…</div>
-            ) : filtered.length === 0 ? (
-              <EmptyState
-                icon={<Package size={36} />}
-                title={installedApps.length === 0 ? 'No apps installed yet' : 'No matching apps'}
-                subtitle={installedApps.length === 0
-                  ? 'Install your first app with the "Install from Path" button above, or run: kirocrew app install <path>'
-                  : 'Try a different search term'}
-              />
-            ) : (
-              <div className="space-y-3 mt-4">
-                {filtered.map(app => (
-                  <AppCard
+        {/* ---- Library tab ---- */}
+        {tab === 'library' && (
+          appsLoading ? (
+            <div className="text-center py-12 text-muted text-sm">Loading apps…</div>
+          ) : filteredInstalled.length === 0 ? (
+            <EmptyState
+              icon={<Package size={36} />}
+              title={installedApps.length === 0 ? 'No apps installed yet' : 'No matching apps'}
+              subtitle={installedApps.length === 0
+                ? 'Find apps in the Discover tab, or install from a local path via the sources gear above.'
+                : 'Try a different search term'}
+            />
+          ) : (
+            <>
+              {updatables.length > 0 && (
+                <div className="mb-4 border border-[color-mix(in_srgb,var(--info)_45%,transparent)] bg-bg-elevated rounded-lg p-3 flex items-center gap-3 animate-rise">
+                  <ArrowUp size={15} className="text-[var(--info)] shrink-0" />
+                  <span className="text-text text-sm flex-1">
+                    {updatables.length} update{updatables.length === 1 ? '' : 's'} available
+                  </span>
+                  <Btn
+                    className="!bg-[var(--info)] !text-white hover:!opacity-80"
+                    onClick={updateAll}
+                    disabled={!!updatingAll}
+                  >
+                    {updatingAll ? `Updating ${updatingAll.done}/${updatingAll.total}…` : 'Update All'}
+                  </Btn>
+                </div>
+              )}
+              <div className="space-y-3">
+                {filteredInstalled.map(app => (
+                  <InstalledAppCard
                     key={app.name}
-                    app={{...app, updateAvailable: updateMap.has(app.name), _newVersion: updateMap.get(app.name)}}
-                    actionLoading={actionLoading}
+                    app={{ ...app, updateAvailable: updateMap.has(app.name), _newVersion: updateMap.get(app.name) }}
+                    actionLoading={updatingAll ? `${app.name}:update` : actionLoading}
                     onAction={handleAction}
                     onOpen={() => navigate(app.manifest?.ui?.pages?.[0]?.route || `/apps/${app.name}`)}
-                    onDetail={() => navigate(`/apps/detail/${app.name}`)}
+                    onDetail={() => openDetail(app.name)}
                   />
                 ))}
               </div>
-            )}
-          </Card>
+            </>
+          )
         )}
-
-        {/* Browse Tab */}
-        {tab === 'browse' && (<>
-          <Card>
-            <CardTitle>
-              Browse Apps
-              <InfoTip text="Discover and install apps from the KiroCrew registry." />
-            </CardTitle>
-            <SearchInput placeholder="Search apps…" value={registryFilter} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setRegistryFilter(e.target.value)} />
-
-            {registryLoading ? (
-              <div className="text-center py-12 text-muted text-sm">Loading registry…</div>
-            ) : (() => {
-              // Merge disabled builtins into browse list for discovery
-              // (hidden builtins are excluded — opt-in via `kirocrew app enable <name>`)
-              const disabledBuiltins: RegistryApp[] = apps
-                .filter(a => a.origin === 'builtin' && !a.enabled && !(a.manifest as any)?.hidden)
-                .map(a => ({
-                  name: a.name,
-                  displayName: a.displayName || a.name,
-                  description: a.manifest?.description || '',
-                  version: a.version,
-                  author: a.manifest?.author || 'kirocrew',
-                  tags: a.manifest?.tags,
-                  screenshots: a.manifest?.screenshots,
-                  heroImage: a.manifest?.heroImage,
-                  heroImageDark: a.manifest?.heroImageDark,
-                  icon: a.manifest?.ui?.pages?.[0]?.icon || '',
-                  iconUrl: a.manifest?.iconUrl || '',
-                  installed: true,
-                  enabled: false,
-                  origin: 'builtin',
-                  lifecycle: 'locked',
-                }))
-              const disabledBuiltinNames = new Set(disabledBuiltins.map(a => a.name))
-              // Enrich registry entries with heroImage from locally installed app manifests
-              const enrichedRegistry = registry.filter(r => !disabledBuiltinNames.has(r.name)).map(r => {
-                const installed = apps.find(a => a.name === r.name)
-                if (installed) {
-                  return { ...r, heroImage: r.heroImage || installed.manifest?.heroImage, heroImageDark: r.heroImageDark || installed.manifest?.heroImageDark, screenshots: r.screenshots || installed.manifest?.screenshots }
-                }
-                return r
-              })
-              const browseApps = [...disabledBuiltins, ...enrichedRegistry]
-
-              return browseApps.length === 0 ? (
-                <EmptyState icon={<ShoppingBag size={36} />} title="No apps available" subtitle="Check back later or install from a local path." />
-              ) : (
-              <div className="grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-4 mt-4">
-                {browseApps
-                  .filter(a => {
-                    if (!registryFilter) return true
-                    const q = registryFilter.toLowerCase()
-                    return a.displayName.toLowerCase().includes(q)
-                      || a.description.toLowerCase().includes(q)
-                      || (a.tags || []).some(t => t.toLowerCase().includes(q))
-                  })
-                  .map(app => (
-                    <div
-                      key={app.name}
-                      role="button"
-                      tabIndex={0}
-                      aria-label={`View details for ${app.displayName}`}
-                      className="border border-border rounded-xl overflow-hidden hover:border-accent/40 hover:shadow-md transition-all cursor-pointer group"
-                      onClick={(e) => {
-                        if (e.metaKey || e.ctrlKey) {
-                          window.open(`/apps/detail/${app.name}`, '_blank')
-                        } else {
-                          navigate(`/apps/detail/${app.name}`)
-                        }
-                      }}
-                      onKeyDown={(e) => {
-                        if (e.target !== e.currentTarget) return
-                        if (e.key !== 'Enter' && e.key !== ' ') return
-                        e.preventDefault()
-                        if (e.metaKey || e.ctrlKey) {
-                          window.open(`/apps/detail/${app.name}`, '_blank')
-                        } else {
-                          navigate(`/apps/detail/${app.name}`)
-                        }
-                      }}
-                    >
-                      {/* Hero image */}
-                      {(() => {
-                        const hero = resolvedMode === 'dark'
-                          ? (app.heroImageDark || app.heroImage || app.screenshots?.[0])
-                          : (app.heroImage || app.heroImageDark || app.screenshots?.[0])
-                        return (
-                          <div className="w-full aspect-video bg-[var(--card)] overflow-hidden relative">
-                            {hero ? (
-                              <img
-                                src={hero}
-                                alt=""
-                                className="w-full h-full object-cover group-hover:scale-[1.02] transition-transform duration-300"
-                                onError={(e) => { const img = e.currentTarget; img.style.display = 'none'; img.parentElement!.querySelector('.hero-fallback')?.classList.remove('hidden') }}
-                              />
-                            ) : null}
-                            <div className={`absolute inset-0 flex items-center justify-center bg-[var(--bg-elevated)] ${hero ? 'hidden' : ''} hero-fallback`}>
-                              <span className="text-2xl font-bold text-[var(--text)] opacity-10 tracking-widest">KIRO CREW</span>
-                            </div>
-                          </div>
-                        )
-                      })()}
-                      <div className="p-4">
-                        <div className="flex items-center gap-3 mb-3">
-                          <div className="w-10 h-10 rounded-xl bg-accent/10 flex items-center justify-center group-hover:bg-accent/20 transition-colors overflow-hidden shrink-0">
-                            <AppIcon icon={app.icon} iconUrl={app.iconUrl} size={28} />
-                          </div>
-                          <div className="flex-1 min-w-0">
-                            <div className="font-bold text-text text-[14px] truncate">{app.displayName}</div>
-                            <div className="text-[11px] text-muted">{app.author}</div>
-                          </div>
-                        </div>
-                        <p className="text-[12px] text-muted line-clamp-2 mb-3 leading-relaxed">{app.description}</p>
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center gap-1.5">
-                            <span className="text-[11px] text-muted">v{app.installedVersion || app.version}</span>
-                            {app.origin === 'builtin' && (
-                              <span className="text-[11px] text-aim bg-aim/10 border border-aim/20 px-1.5 py-0.5 rounded">Built-in</span>
-                            )}
-                            {app.platform?.os?.length === 1 && app.platform.os[0] === 'macos' && (
-                              <span className="text-[11px] text-muted bg-bg-elevated border border-border px-1.5 py-0.5 rounded">macOS</span>
-                            )}
-                            {app.platform?.os?.length === 1 && app.platform.os[0] === 'linux' && (
-                              <span className="text-[11px] text-muted bg-bg-elevated border border-border px-1.5 py-0.5 rounded">Linux</span>
-                            )}
-                          </div>
-                          {app.origin === 'builtin' && !app.enabled ? (
-                            <Btn onClick={(e: React.MouseEvent) => { e.stopPropagation(); handleAction(app.name, 'enable') }}>
-                              <Power size={14} /> Enable
-                            </Btn>
-                          ) : app.installed ? (
-                            <Badge variant="ok">Installed</Badge>
-                          ) : (
-                            <span className="text-[13px] text-accent font-medium">Get</span>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-              </div>
-              )
-            })()}
-          </Card>
-
-          {/* External Registries Management */}
-          <div className="mt-6">
-            <RegistryManager />
-          </div>
-        </>)}
       </div>
     </>
-  )
-}
-
-function AppCard({
-  app,
-  actionLoading,
-  onAction,
-  onOpen,
-  onDetail,
-}: {
-  app: InstalledApp & { _newVersion?: string }
-  actionLoading: string | null
-  onAction: (name: string, action: 'enable' | 'disable' | 'uninstall' | 'update') => void
-  onOpen: () => void
-  onDetail: () => void
-}) {
-  const [expanded, setExpanded] = useState(false)
-  const [remoteCmd, setRemoteCmd] = useState('')
-  const m = app.manifest
-  const agentCount = m?.agents?.length || 0
-  const skillCount = m?.skills?.length || 0
-  const cronCount = m?.crons?.length || 0
-  const sopCount = m?.sops?.length || 0
-  const hasUI = !!(m?.ui?.entry) || (m?.ui?.pages?.length || 0) > 0
-  const pageIcon = m?.ui?.pages?.[0]?.icon || ''
-  const isSelfManaged = app.resources === 'app'
-  const isBuiltin = app.origin === 'builtin'
-  const canUpdate = app.lifecycle === 'gateway'
-  const canUninstall = app.lifecycle !== 'locked'
-  const hasOpenCommand = !!m?.openCommand
-  // Derive icon URL: prefer manifest iconUrl (builtins), fallback to blob proxy (registry)
-  const iconUrl = m?.iconUrl || (m?.iconPath && m?.repo
-    ? `/api/apps/blob?repo=${encodeURIComponent(m.repo)}&path=${encodeURIComponent(m.iconPath)}`
-    : undefined)
-
-  return (
-    <div className="border border-border rounded-lg hover:border-accent/30 transition-colors overflow-hidden">
-      {remoteCmd && (
-        <div className="px-4 pt-3 pb-2">
-          <div className="bg-accent/10 border border-accent/20 rounded-lg p-3 text-[13px]">
-            <div className="flex items-start justify-between gap-2">
-              <div>
-                <span className="text-text font-medium">Remote environment detected</span>
-                <p className="text-muted mt-1">Run this on your local machine:</p>
-                <code className="block mt-1.5 bg-bg-elevated px-2 py-1 rounded text-[12px] font-mono select-all">{remoteCmd}</code>
-              </div>
-              <button aria-label="Dismiss" className="text-muted hover:text-text text-sm shrink-0" onClick={() => setRemoteCmd('')}><X className="lucide-inline" /></button>
-            </div>
-          </div>
-        </div>
-      )}
-      <div className="p-4">
-        <div className="flex items-start justify-between gap-4">
-          <div className="flex items-start gap-3 flex-1 min-w-0">
-            <div className="w-12 h-12 rounded-xl bg-accent/10 flex items-center justify-center shrink-0 mt-0.5 overflow-hidden">
-              <AppIcon icon={pageIcon} iconUrl={iconUrl} size={36} />
-            </div>
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-2 mb-1 flex-wrap">
-                <button type="button" className="font-medium text-text cursor-pointer hover:text-accent transition-colors bg-transparent border-0 p-0 text-left" onClick={onDetail}>{app.displayName || app.name}</button>
-                <span className="text-[11px] text-muted bg-bg-elevated px-1.5 py-0.5 rounded">v{app.version}{app.updateAvailable && ` (v${app._newVersion} available)`}</span>
-                {isBuiltin ? (
-                  <Badge variant="aim">Built-in</Badge>
-                ) : isSelfManaged ? (
-                  <Badge variant="ok">Self-managed</Badge>
-                ) : (
-                  <Badge variant={app.enabled ? 'ok' : 'warn'}>
-                    {app.enabled ? 'Enabled' : 'Disabled'}
-                  </Badge>
-                )}
-                {app.migratedTo && (
-                  <Badge variant="warn">Migrating</Badge>
-                )}
-                {!isBuiltin && app.origin === 'registry' && (
-                  <Badge variant="aim">Registry</Badge>
-                )}
-                {app.origin === 'local' && (
-                  <Badge variant="warn">Local</Badge>
-                )}
-                {app.origin === 'external' && !isSelfManaged && (
-                  <Badge variant="ok">External</Badge>
-                )}
-              </div>
-              <p className="text-sm text-muted mb-2 line-clamp-2">{m?.description}</p>
-              <div className="flex items-center gap-3 text-[12px] text-muted flex-wrap">
-                {m?.author && <span className="flex items-center gap-1"><Users size={11} /> {m.author}</span>}
-                {agentCount > 0 && <span className="flex items-center gap-1"><Bot size={11} /> {agentCount} agent{agentCount > 1 ? 's' : ''}</span>}
-                {skillCount > 0 && <span className="flex items-center gap-1"><Zap size={11} /> {skillCount} skill{skillCount > 1 ? 's' : ''}</span>}
-                {cronCount > 0 && <span className="flex items-center gap-1"><Clock size={11} /> {cronCount} cron{cronCount > 1 ? 's' : ''}</span>}
-                {hasUI && <span className="flex items-center gap-1"><Package size={11} /> {m.ui!.pages!.length} page{m.ui!.pages!.length > 1 ? 's' : ''}</span>}
-              </div>
-            </div>
-          </div>
-          <div className="flex items-center gap-2 shrink-0">
-            {/* Open button — all app types */}
-            {hasOpenCommand && (
-              <Btn primary onClick={() => api.openApp(app.name).then((res: { remote?: boolean; command?: string; message?: string } | null) => {
-                if (res?.remote) setRemoteCmd(res.command || res.message || 'App cannot be opened — KiroCrew is running in a headless environment.')
-              }).catch(() => {})}>
-                <ExternalLink size={14} /> Open
-              </Btn>
-            )}
-            {app.enabled && hasUI && !hasOpenCommand && (
-              <Btn primary onClick={onOpen}>
-                <ExternalLink size={14} /> Open
-              </Btn>
-            )}
-
-            {/* Enable/Disable */}
-            {app.enabled ? (
-              <Btn
-                onClick={() => onAction(app.name, 'disable')}
-                disabled={actionLoading === `${app.name}:disable`}
-              >
-                <PowerOff size={14} /> {isBuiltin ? 'Hide' : 'Disable'}
-              </Btn>
-            ) : (
-              <Btn
-                onClick={() => onAction(app.name, 'enable')}
-                disabled={actionLoading === `${app.name}:enable`}
-              >
-                <Power size={14} /> {isBuiltin ? 'Show' : 'Enable'}
-              </Btn>
-            )}
-
-            {/* Update — show accent button when new version available (any installed app) */}
-            {app.updateAvailable && (
-              <Btn
-                onClick={() => onAction(app.name, 'update')}
-                disabled={actionLoading === `${app.name}:update`}
-                title={`Update to v${app.version}`}
-                className="!bg-[var(--info)] !text-white hover:!opacity-80"
-              >
-                <ArrowUp size={14} /> Update
-              </Btn>
-            )}
-            {/* Sync — always available for gateway apps */}
-            {canUpdate && !app.updateAvailable && (
-              <Btn
-                onClick={() => onAction(app.name, 'update')}
-                disabled={actionLoading === `${app.name}:update`}
-                title="Sync app from its source directory"
-              >
-                <RefreshCw size={14} /> Sync
-              </Btn>
-            )}
-
-            {/* Uninstall — only for lifecycle != locked */}
-            {canUninstall && (
-              <Btn
-                danger
-                onClick={() => onAction(app.name, 'uninstall')}
-                disabled={actionLoading === `${app.name}:uninstall`}
-              >
-                <Trash2 size={14} /> Uninstall
-              </Btn>
-            )}
-
-            <button
-              className="text-muted hover:text-text transition-colors p-1"
-              onClick={() => setExpanded(!expanded)}
-            >
-              <ChevronRight size={16} className={`transition-transform ${expanded ? 'rotate-90' : ''}`} />
-            </button>
-          </div>
-        </div>
-      </div>
-
-      {/* Expanded details */}
-      {expanded && (
-        <div className="border-t border-border bg-bg-elevated/50 p-4 space-y-3 text-[13px]">
-          {(m?.tags || []).length > 0 && (
-            <div className="flex items-center gap-2 flex-wrap">
-              <Tag size={12} className="text-muted" />
-              {m!.tags!.map(t => (
-                <span key={t} className="bg-bg-elevated border border-border px-2 py-0.5 rounded text-[11px] text-muted">{t}</span>
-              ))}
-            </div>
-          )}
-          {(m?.permissions?.mcpTools || []).length > 0 && (
-            <div>
-              <span className="text-muted">MCP Tools: </span>
-              <span className="text-text">{m!.permissions!.mcpTools!.join(', ')}</span>
-            </div>
-          )}
-          {hasUI && m?.ui?.pages && (
-            <div>
-              <span className="text-muted">UI Pages: </span>
-              {m.ui.pages.map(p => (
-                <span key={p.route} className="text-text mr-3">{p.label} ({p.route})</span>
-              ))}
-            </div>
-          )}
-          {sopCount > 0 && (
-            <div>
-              <span className="text-muted">SOPs: </span>
-              <span className="text-text">{sopCount} standard operating procedure{sopCount > 1 ? 's' : ''}</span>
-            </div>
-          )}
-          <div className="text-[11px] text-muted">
-            Installed: {new Date(app.installedAt).toLocaleDateString()}
-            {m?.minKiroCrewVersion && <span className="ml-3">Min version: {m.minKiroCrewVersion}</span>}
-            {isSelfManaged && <div className="mt-1">Management: App handles its own agent/skill/MCP registration</div>}
-            {isBuiltin && <div className="mt-1">Built-in: This feature is part of the KiroCrew dashboard</div>}
-            {app.source && !isBuiltin && <div className="mt-1 truncate" title={app.source}>Source: {app.source}</div>}
-            {app.origin && <div className="mt-1">Origin: {app.origin} | Resources: {app.resources || 'gateway'} | Lifecycle: {app.lifecycle || 'gateway'}</div>}
-          </div>
-        </div>
-      )}
-    </div>
   )
 }

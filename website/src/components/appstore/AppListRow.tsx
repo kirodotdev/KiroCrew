@@ -1,0 +1,86 @@
+/**
+ * AppListRow — dense marketplace row in Discover's "All apps" list.
+ *
+ * Per the locked hybrid design with hero-thumb rows: a 16:9 hero capsule
+ * (developer-supplied ``heroImage``, theme-aware, gradient + icon fallback),
+ * then name with verified mark, publisher / category / source provenance, and
+ * a one-line description. The right side carries state — Install (routes to
+ * the detail page and starts the install there), Update, Enable (for hidden
+ * built-ins), or an Installed check. The row opens the detail page, honoring
+ * Cmd/Ctrl-click for a new tab.
+ */
+import { ArrowUp, BadgeCheck, Check, Package, Power } from 'lucide-react'
+import { Btn } from '../ui'
+import Clickable from '../Clickable'
+import AppIcon from '../AppIcon'
+import { gradientFor } from './gradient'
+import { categoryFor } from './categories'
+import { useHeroArt } from './useHeroArt'
+import { sourceLabel, isVerified, type RegistryApp } from './types'
+
+export default function AppListRow({ app, busy, onOpen, onGet, onUpdate, onEnable }: {
+  app: RegistryApp
+  busy?: boolean
+  onOpen: (e?: React.MouseEvent | React.KeyboardEvent) => void
+  onGet: () => void
+  onUpdate: () => void
+  onEnable: () => void
+}) {
+  const hiddenBuiltin = app.origin === 'builtin' && app.installed && !app.enabled
+  const hasIcon = !!(app.iconUrl || app.icon)
+  const hero = useHeroArt(app)
+
+  return (
+    <Clickable
+      aria-label={`View details for ${app.displayName}`}
+      className="flex items-center gap-3.5 px-3.5 py-3 border border-border rounded-xl bg-card mb-2 cursor-pointer hover:border-border-strong transition-colors focus-ring"
+      onClick={onOpen}
+    >
+      {/* Hero capsule — 16:9 crop of the app's own art, gradient when absent */}
+      <div
+        className="w-24 h-[54px] rounded-lg shrink-0 overflow-hidden grid place-items-center text-white relative"
+        style={hero.src ? { background: 'var(--bg-elevated)' } : { background: gradientFor(app.name) }}
+      >
+        {hero.src ? (
+          <img src={hero.src} alt="" className="absolute inset-0 w-full h-full object-cover" onError={hero.onError} />
+        ) : hasIcon ? (
+          <AppIcon icon={app.icon} iconUrl={app.iconUrl} size={28} />
+        ) : (
+          <Package size={22} />
+        )}
+      </div>
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-1.5 text-[14px] font-semibold text-text-strong">
+          <span className="truncate">{app.displayName}</span>
+          {isVerified(app) && (
+            <BadgeCheck size={14} className="text-accent shrink-0" aria-label="Verified publisher">
+              <title>Verified publisher (first-party)</title>
+            </BadgeCheck>
+          )}
+        </div>
+        <div className="text-[12px] text-muted truncate">{app.author} · {categoryFor(app.tags)} · {sourceLabel(app)}</div>
+        <div className="text-[12.5px] text-muted truncate">{app.description}</div>
+      </div>
+      {/* Actions: stop propagation so nested controls keep their own
+          click/keyboard activation instead of triggering the row. */}
+      <div
+        className="flex flex-col items-end gap-1.5 shrink-0"
+        onClick={e => e.stopPropagation()}
+        onKeyDown={e => e.stopPropagation()}
+        role="presentation"
+      >
+        {hiddenBuiltin ? (
+          <Btn disabled={busy} onClick={onEnable}><Power size={14} /> Enable</Btn>
+        ) : app.installed && app.updateAvailable ? (
+          <Btn disabled={busy} className="border-[var(--info)] text-[var(--info)] hover:text-[var(--info)] hover:border-[var(--info)]" onClick={onUpdate}>
+            <ArrowUp size={14} /> Update
+          </Btn>
+        ) : app.installed ? (
+          <span className="inline-flex items-center gap-1 text-[12px] text-muted"><Check size={12} /> Installed</span>
+        ) : (
+          <Btn primary className="rounded-full px-3.5 text-[12px] font-semibold" disabled={busy} onClick={onGet}>Install</Btn>
+        )}
+      </div>
+    </Clickable>
+  )
+}
