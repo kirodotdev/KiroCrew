@@ -155,6 +155,23 @@ class TestProcessCommandLine:
         assert pc.process_command_line(2_000_000_000) == ""
 
 
+class TestProcessOwnerUid:
+    """`process_owner_uid` backs the ownership half of the CLI's port-trust gate,
+    so 'cannot determine' must be distinguishable from 'owned by me'."""
+
+    @pytest.mark.skipif(not hasattr(os, "getuid"), reason="POSIX only")
+    def test_self_pid_is_owned_by_current_user(self):
+        assert pc.process_owner_uid(os.getpid()) == os.getuid()
+
+    def test_dead_pid_returns_none(self):
+        # None means "unknown" — callers fail closed on it rather than assuming.
+        assert pc.process_owner_uid(2_000_000_000) is None
+
+    @pytest.mark.skipif(hasattr(os, "getuid"), reason="Windows-only behaviour")
+    def test_windows_reports_unknown(self):
+        assert pc.process_owner_uid(os.getpid()) is None
+
+
 class TestStrftime:
     def test_translates_dash_directives_on_windows(self):
         # The core Windows fix: %-I / %-d (glibc no-pad) → %#I / %#d (MSVCRT).

@@ -222,6 +222,11 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "platform_compat.py::kill_pid",
         "platform_compat.py::kill_process_tree",
         "platform_compat.py::process_command_line",
+        # Same class as process_command_line: a read-only process-attribute query
+        # (``ps -o uid=`` / ``/proc/<pid>`` stat) in the platform leaf module,
+        # with a fixed argv containing only an int-coerced pid. It cannot route
+        # through the sandbox helper because sandbox imports platform_compat.
+        "platform_compat.py::process_owner_uid",
         "platform_compat.py::process_matches",
         "platform_compat.py::restrict_to_owner",
         "pod/cli.py::_logs",

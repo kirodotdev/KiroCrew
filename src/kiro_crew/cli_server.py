@@ -13,6 +13,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -39,6 +40,7 @@ from kiro_crew.env import activate_mise
 from kiro_crew.frontend import build_frontend_sync, ensure_dev_dist_symlink
 from kiro_crew.history import ConversationLog, HistoryConsolidator
 from kiro_crew.hooks import HookManager, hooks_config_from_config_dict
+from kiro_crew.instances import run_marker
 from kiro_crew.learn import LessonStore
 from kiro_crew.memory import MemoryStore
 from kiro_crew.preflight import run_preflight_checks
@@ -53,6 +55,159 @@ from kiro_crew.slack.gateway import run_gateway
 from kiro_crew.taskrunner import TaskRunner
 from kiro_crew.vector_memory import VectorMemoryStore
 
+# Loopback address used for the CLI's OWN requests to the gateway. Deliberately
+# the literal IPv4 address, never the name ``localhost``: on a dual-stack host
+# ``localhost`` may resolve to ``::1`` first, so a different local user who binds
+# ``[::1]:<port>`` beside the real IPv4 gateway would receive requests carrying
+# ``X-Local-Secret`` — and the listener verification in _gateway_owns_port is
+# address-agnostic (``lsof -ti TCP:<port>`` cannot tell the two sockets apart),
+# so it would still see the genuine gateway and pass. Pinning the address binds
+# the request to the endpoint we actually verified.
+#
+# This is ONLY for CLI->gateway requests. The URL *printed* for the browser
+# stays ``resolve_dashboard_host()`` (``localhost``), which must not change: the
+# SPA's per-origin localStorage is keyed on that host, so emitting a different
+# origin would make every dashboard setting appear reset.
+_CLI_LOOPBACK = "127.0.0.1"
+
+
+def _config_url_port() -> int | None:
+    """Port explicitly named by ``dashboard.url``, or ``None``.
+
+    Distinct from :func:`parse_dashboard_url`, which substitutes
+    ``_DEFAULT_PORT`` for a portless URL (``http://my.host``). That substitution
+    is right for the *server* (it must bind something) but wrong for a client:
+    it would report "config says 5476" and short-circuit the run-marker
+    fallback below, even though the user never named a port. So detect the
+    explicit case and let a portless URL fall through.
+    """
+    try:
+        cfg = KiroCrewConfig.load()
+        url = cfg.dashboard.url or ""
+    except Exception:
+        # Config load failures must not break client commands.
+        return None
+    if not isinstance(url, str):
+        # ``dashboard.url`` is user-editable JSON and core installs may lack
+        # jsonschema, so the value can be any type (``"url": 123``). urlparse
+        # raises TypeError on a non-str, which is NOT a ValueError — without
+        # this guard a bad config type would crash every client command.
+        logging.getLogger(__name__).warning(
+            "Ignoring non-string dashboard.url of type %s", type(url).__name__
+        )
+        return None
+    if not url:
+        return None
+    try:
+        _, port = parse_dashboard_url(url)
+        # parse_dashboard_url already normalises the scheme, tolerates malformed
+        # URLs and applies the KIROCREW_PORT override; re-split only to learn
+        # whether the port was written down or defaulted in.
+        explicit = urllib.parse.urlsplit(url if "://" in url else f"http://{url}").port
+    except (TypeError, ValueError):
+        return None
+    return port if explicit is not None else None
+
+
+def _gateway_owns_port(port: int) -> bool:
+    """True only when *this user's* gateway process is listening on *port*.
+
+    Reachability is not enough to trust a discovered port. Client commands hand
+    the local secret to whatever answers (``_token`` and ``_logout`` send
+    ``X-Local-Secret``), and ``clear_marker`` runs only on graceful shutdown —
+    so a crashed gateway leaves a marker naming a port some unrelated process
+    may since have bound. A bare TCP connect would walk the secret straight into
+    that process, which could then mint owner tokens against the real gateway.
+
+    A command-line check is not enough either: argv is attacker-chosen, so a
+    listener launched as ``/tmp/kirocrew gateway`` would pass it. The proof used
+    here is an identity the attacker cannot forge, in three parts:
+
+    1. **Recorded pid** — ``run_marker.read_pid(port)`` reads the sidecar the
+       gateway wrote at ``0600`` inside the ``0700`` ``run/`` dir. Another local
+       user cannot write it, so they cannot nominate a process of theirs.
+    2. **Holds the port** — that pid must be among
+       ``platform_compat.find_listening_pids(port)``. This is what makes a stale
+       recorded pid harmless: it has to actually hold the port we are about to
+       send the secret to.
+    3. **Owned by us, and ours** — the pid's uid must equal the caller's
+       (``process_owner_uid``), and its argv must look like a gateway. The uid
+       check is what closes pid *recycling* into a foreign user's process; argv
+       remains only as defense in depth, never as the sole proof.
+
+    A same-user attacker is out of scope by construction: they can already read
+    ``.local_secret`` (mode ``0600``, their own uid), so nothing here can be an
+    escalation for them. The boundary this closes is a *different* local user.
+
+    **Fails closed** at every step: no sidecar, no recorded pid, a pid that does
+    not hold the port, an unresolvable uid, a missing lookup tool
+    (``find_listening_pids`` folds that into an empty list) or a throwing one —
+    all deny, and discovery is skipped in favour of the documented default.
+    ``--port`` and ``KIROCREW_PORT`` remain available on such hosts.
+
+    **Non-POSIX denies outright.** ``process_owner_uid`` cannot report an owner
+    on Windows, and a home that is writable by another user (a shared or
+    misconfigured ``KIROCREW_HOME``) would let them replace both the marker and
+    the sidecar with a forged listener — the file-permission argument that
+    carries step 1 is exactly what stops holding there. Rather than trust
+    steps 1-2 alone, discovery is skipped: Windows users keep ``--port`` /
+    ``KIROCREW_PORT``, which is precisely where they were before this fallback
+    existed, so nothing regresses. This is the one place the feature is
+    deliberately unavailable rather than approximated.
+    """
+    if not platform_compat.IS_POSIX:
+        return False
+    recorded = run_marker.read_pid(port)
+    if recorded is None:
+        return False
+    try:
+        pids = platform_compat.find_listening_pids(port)
+    except Exception:
+        return False
+    if recorded not in pids:
+        return False
+    owner = platform_compat.process_owner_uid(recorded)
+    if owner is None or owner != os.getuid():
+        return False
+    return _is_kirocrew_process(recorded)
+
+
+def _marker_port() -> int | None:
+    """Port of the sole gateway-owned run-marker, or ``None``.
+
+    Zero-configuration discovery for the common single-gateway box: the gateway
+    already advertises itself by writing ``<data-home>/run/gateway-<port>.bin``
+    (see :mod:`kiro_crew.instances.run_marker`), so a client with no ``--port``,
+    no ``KIROCREW_PORT`` and no port in ``dashboard.url`` can read that instead
+    of assuming 5476 and connecting to a dead port.
+
+    Two guards keep this from being a guess:
+
+    * **Ownership.** Only ports where a verified KiroCrew gateway process is
+      listening count (:func:`_gateway_owns_port`); a stale marker, or one whose
+      port has been taken over by an unrelated process, is discarded.
+    * **Ambiguity.** With several gateways up there is no basis to pick one, so
+      this refuses (returns ``None``, landing on the documented default) and
+      tells the user on stderr which ports it saw and how to name one.
+    """
+    try:
+        candidates = run_marker.marker_ports()
+    except Exception:
+        return None
+    if not candidates:
+        return None
+    owned = [p for p in candidates if _gateway_owns_port(p)]
+    if len(owned) == 1:
+        return owned[0]
+    if len(owned) > 1:
+        print(
+            f"⚠️  Multiple gateways are running (ports {', '.join(str(p) for p in owned)}); "
+            f"not guessing which one you meant — using {_DEFAULT_PORT}. "
+            "Pass --port or set KIROCREW_PORT to target a specific gateway.",
+            file=sys.stderr,
+        )
+    return None
+
 
 def resolve_client_port(cli_port: int | None) -> int:
     """Return the dashboard port a *client* CLI command (token/status/logout/stop)
@@ -62,15 +217,22 @@ def resolve_client_port(cli_port: int | None) -> int:
 
     1. Explicit ``--port`` CLI flag if the user passed one (``cli_port`` is not ``None``).
     2. ``KIROCREW_PORT`` env var if set to a valid integer.
-    3. Port parsed from ``dashboard.url`` in the config file (``~/.kirocrew/config.json``)
-       if present and parseable.
-    4. ``_DEFAULT_PORT`` (5476) as the final fallback.
+    3. Port explicitly named by ``dashboard.url`` in the config file
+       (``<data-home>/config.json``), when it parses.
+    4. The sole gateway-owned run-marker (``<data-home>/run/gateway-<port>.bin``)
+       — see :func:`_marker_port`. Skipped when no marker's port is held by a
+       verified gateway process, and refused (with a stderr hint) when several
+       are.
+    5. ``_DEFAULT_PORT`` (5476) as the final fallback.
 
-    This matches the server-side ``parse_dashboard_url()`` logic so that
+    Steps 1-3 match the server-side ``parse_dashboard_url()`` logic so that
     ``kirocrew token`` / ``status`` / ``logout`` / ``stop`` all hit the same
     port the gateway is actually bound to when the user has configured a
     non-default ``dashboard.url`` (for example a dev instance on 6777 or an
-    alternative prod port like 7778).
+    alternative prod port like 7778). Step 4 covers the case where nothing was
+    configured at all but a gateway is up on a non-default port (e.g. started
+    with ``kirocrew gateway --port 6776``): the running gateway's own marker is
+    better evidence than the 5476 default.
     """
     if cli_port is not None:
         return cli_port
@@ -79,19 +241,16 @@ def resolve_client_port(cli_port: int | None) -> int:
         try:
             return int(env_port)
         except ValueError:
-            # Fall through to config/default — main() validates this early,
-            # but guard here too in case the helper is reached via another path.
+            # Fall through to config/marker/default — main() validates this
+            # early, but guard here too in case the helper is reached via
+            # another path.
             pass
-    try:
-        cfg = KiroCrewConfig.load()
-        url = cfg.dashboard.url or ""
-        if url:
-            _, port = parse_dashboard_url(url)
-            if port:
-                return port
-    except Exception:
-        # Config load failures must not break client commands — fall through.
-        pass
+    cfg_port = _config_url_port()
+    if cfg_port:
+        return cfg_port
+    discovered = _marker_port()
+    if discovered:
+        return discovered
     return _DEFAULT_PORT
 
 
@@ -105,7 +264,7 @@ def _probe_dashboard_health(port: int) -> None:
     dashboard. Network errors are silently ignored.
     """
     try:
-        req = urllib.request.Request(f"http://localhost:{port}/", method="GET")
+        req = urllib.request.Request(f"http://{_CLI_LOOPBACK}:{port}/", method="GET")
         with urllib.request.urlopen(req, timeout=2) as resp:  # nosemgrep
             body = resp.read(8192).decode("utf-8", errors="replace")
             if DASHBOARD_HTML_NOT_FOUND_MARKER.lower() in body.lower():
@@ -148,7 +307,7 @@ def _token(args: argparse.Namespace) -> None:
         print("❌ Gateway not running — start it with: kirocrew gateway", file=sys.stderr)
         sys.exit(1)
 
-    url = f"http://localhost:{port}/api/token/local?ttl={args.ttl}"
+    url = f"http://{_CLI_LOOPBACK}:{port}/api/token/local?ttl={args.ttl}"
     epp = getattr(args, "embed_parent_port", None)
     if epp:
         url += f"&embed_parent_port={int(epp)}"
@@ -190,7 +349,7 @@ def _logout(port: int) -> None:
         print("❌ Gateway not running — start it with: kirocrew gateway")
         sys.exit(1)
 
-    url = f"http://localhost:{port}/api/logout"
+    url = f"http://{_CLI_LOOPBACK}:{port}/api/logout"
     req = urllib.request.Request(
         url,
         method="POST",
@@ -496,7 +655,7 @@ def _pid_exited(pid: int) -> bool:
     return not platform_compat.pid_exists(pid)
 
 
-def _spawn_detached_gateway() -> int:
+def _spawn_detached_gateway(port: int | None = None) -> int:
     """Spawn a detached ``kirocrew gateway`` so the calling shell returns.
 
     Used by :func:`_restart` when no platform service is active. The
@@ -513,6 +672,16 @@ def _spawn_detached_gateway() -> int:
       installs also work without a global ``kirocrew`` symlink.
     - Closes all inherited file descriptors so it does not pin sockets
       or pipes from the parent CLI process.
+    - Binds *port* when given (``--port N``).
+
+    Passing *port* is what keeps a restart coherent. The caller has already
+    resolved a port, stopped the gateway on it, and will poll *that* port for
+    readiness — but the child re-resolves independently, and its resolution
+    order has no access to the parent's. Once ``resolve_client_port`` can
+    discover a port from a run-marker (or once the marker is cleared by the
+    stop we just performed), parent and child can disagree: the replacement
+    would bind 5476 while the parent polls 6776 and prints a 6776 URL. Naming
+    the port explicitly removes the disagreement by construction.
 
     Returns the new PID.
     """
@@ -530,6 +699,8 @@ def _spawn_detached_gateway() -> int:
         # This also covers the case where the wrapper script is not on PATH
         # (e.g. running from an unactivated checkout).
         argv = [sys.executable, "-m", "kiro_crew", "gateway"]
+    if port is not None:
+        argv += ["--port", str(int(port))]
 
     # Detach so closing the calling terminal doesn't take the gateway with it.
     # Pass both flags explicitly (NOT **dict unpack — that breaks mypy's Popen
@@ -564,7 +735,7 @@ def _print_token_url(port: int) -> None:
     while time.monotonic() < deadline:
         try:
             secret = secret_path.read_text().strip()
-            url = f"http://localhost:{port}/api/token/local?ttl={_RESTART_TOKEN_TTL}"
+            url = f"http://{_CLI_LOOPBACK}:{port}/api/token/local?ttl={_RESTART_TOKEN_TTL}"
             req = urllib.request.Request(url, headers={"X-Local-Secret": secret})
             with urllib.request.urlopen(req, timeout=3) as resp:
                 data = json.loads(resp.read())
@@ -643,7 +814,7 @@ def _restart(cli_port: int | None = None) -> None:
         except SystemExit:
             pass
 
-    pid = _spawn_detached_gateway()
+    pid = _spawn_detached_gateway(port)
     sel().log_api_access(
         caller="cli",
         operation="gateway_restart",

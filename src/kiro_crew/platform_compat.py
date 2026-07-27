@@ -998,6 +998,34 @@ def process_command_line(pid: int) -> str:
     return ""
 
 
+def process_owner_uid(pid: int) -> int | None:
+    """Return the uid owning *pid*, or ``None`` when it cannot be determined.
+
+    Linux: ``os.stat("/proc/<pid>").st_uid``.
+    macOS: ``ps -o uid= -p <pid>``.
+    Windows: ``None`` — there is no uid concept, and a WMI ``GetOwner`` round
+    trip costs a PowerShell spawn per call; callers that need an ownership gate
+    must decide what to do with ``None`` explicitly rather than assume a match.
+
+    Used to confirm that a pid a client is about to trust belongs to the calling
+    user (see ``cli_server._gateway_owns_port``), which is what makes pid
+    recycling into a *foreign* user's process non-exploitable.
+    """
+    try:
+        if sys.platform == "linux":
+            return os.stat(f"/proc/{int(pid)}").st_uid
+        if sys.platform == "darwin":
+            out = subprocess.check_output(
+                ["ps", "-o", "uid=", "-p", str(int(pid))],
+                text=True, stderr=subprocess.DEVNULL, timeout=2,
+            )
+            raw = out.strip()
+            return int(raw) if raw.isdigit() else None
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    return None
+
+
 # Tri-state liveness results for pid_liveness().
 PID_DEAD = "dead"  # confirmed not running -> safe to prune
 PID_ALIVE = "alive"  # confirmed running

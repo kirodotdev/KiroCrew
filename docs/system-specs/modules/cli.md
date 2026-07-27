@@ -406,6 +406,100 @@ Each step checks if the tool is already installed and skips if present.
 2. Rebuilds frontend via `build-frontend.sh` (non-fatal on failure)
 3. Reinstalls backend via `pip install -e .`
 
+## Client Port Resolution
+
+`kirocrew token` / `status` / `logout` / `stop` / `restart` must find the port
+the gateway is actually bound to. `cli_server.resolve_client_port()` resolves it
+in this order, first hit wins:
+
+1. An explicit `--port N` flag (`0` counts — the check is `is not None`).
+2. `KIROCREW_PORT`, when it parses as an int.
+3. A port **explicitly written** in `dashboard.url`. A portless URL
+   (`http://my.host`) is *not* a port choice: `parse_dashboard_url()`
+   substitutes `5476` for the server's benefit, so the client re-splits the URL
+   and only accepts the port when it was actually named.
+4. The sole **gateway-owned run-marker**. A running gateway records
+   `<data-home>/run/gateway-<port>.bin` (see
+   `kiro_crew.instances.run_marker`, written for the SSH token-mint), so its
+   filename already advertises the port. A client with nothing configured reads
+   the marker names — never the file contents — and uses that port. Two guards
+   keep it from being a guess:
+   - **Ownership, not reachability** — `clear_marker()` only runs on graceful
+     shutdown, so a crash leaves a stale marker behind and an unrelated process
+     may since have bound that port. Because `_token` / `_logout` send
+     `X-Local-Secret` to whatever answers, a bare "is something listening" probe
+     would walk the local secret into that process. A command-line check is not
+     enough either — argv is attacker-chosen, so a listener started as
+     `/tmp/kirocrew gateway` would pass it. `_gateway_owns_port()` therefore
+     requires three things, none sufficient alone:
+     1. the pid recorded in `run/gateway-<port>.pid` (written `0600` inside the
+        `0700` `run/` dir, which is on the `is_sensitive_path` floor, so neither
+        another local user nor an agent file tool can write it);
+     2. that pid must be among the pids listening on the port
+        (`platform_compat.find_listening_pids`), which is what makes a stale
+        recorded pid harmless;
+     3. that pid must be owned by the calling uid
+        (`platform_compat.process_owner_uid`) and look like a KiroCrew process.
+        The uid check is what closes pid *recycling* into a foreign user's
+        process; argv is retained only as defense in depth.
+
+     It **fails closed** at every step: no sidecar, an unparseable pid, a pid
+     that does not hold the port, an unresolvable uid, a missing `lsof` /
+     `netstat`, or a throwing lookup all deny, and discovery is skipped. A
+     same-user attacker is out of scope by construction — they can already read
+     `.local_secret` under their own uid.
+
+     **On non-POSIX platforms the step denies outright.** `process_owner_uid`
+     cannot report an owner on Windows, and a `KIROCREW_HOME` writable by another
+     user would let them replace both the marker and the sidecar with a forged
+     listener — the file-permission argument that carries requirement 1 stops
+     holding there. So discovery is skipped rather than approximated: Windows
+     users keep `--port` / `KIROCREW_PORT`, exactly where they were before this
+     fallback existed, so nothing regresses.
+   - **Ambiguity** — with several gateways up there is no basis to pick one, so
+     the step refuses, prints the candidate ports and the `--port` /
+     `KIROCREW_PORT` hint to stderr, and falls through.
+5. `_DEFAULT_PORT` (`5476`).
+
+Step 4 is what makes a single gateway started on a non-default port
+(`kirocrew gateway --port 6776`) reachable from a bare `kirocrew token` with
+zero configuration; before it existed, the client hit a dead 5476 while the
+marker naming the live gateway sat unread. Config-load, URL-parse (including a
+non-string `dashboard.url`, which raises `TypeError` rather than `ValueError`),
+and discovery failures all degrade to the next step — a client command never
+dies on a bad config or an unreadable data home.
+
+Because `restart` resolves a port and then polls it for readiness, it passes the
+resolved port to the detached replacement (`_spawn_detached_gateway(port)`). The
+child re-resolves independently, so without that the replacement could bind 5476
+while the parent waited on the discovered port.
+
+The marker is written for **every** dashboard-serving gateway, including a
+source-tree `python -m kiro_crew` launch with no console script beside
+`sys.executable`: in that case the `.bin` file is written empty, which is inert
+for the token mint (its shell clause requires a non-empty executable path) but
+still advertises the port for discovery. The pid always goes to the separate
+`.pid` sidecar — never into the marker, whose contents mint `cat`s and execs. A
+`--slack-only` gateway serves no dashboard, so it writes no marker — there is no
+client port to discover.
+
+Writing a marker also **prunes** markers naming other ports. A gateway is a
+singleton per data home (`gateway.lock`), so any other port's marker is residue
+from a run that crashed before `clear_marker()` could fire. Unpruned, they
+accumulate one per port ever used and each costs every client command an extra
+listener lookup, making discovery slower the longer a dev box churns ports. The
+live gateway is the only writer and knows which port is current, so it is the
+right place to reap them; pruning is best-effort, and the ownership check still
+rejects anything it misses.
+
+CLI→gateway requests are built against the literal `127.0.0.1`, never the name
+`localhost`. On a dual-stack host `localhost` can resolve to `::1` first, and the
+listener verification is address-agnostic (`lsof -ti TCP:<port>` cannot tell an
+IPv6 squatter from the real IPv4 gateway), so a name-based URL could deliver
+`X-Local-Secret` to a socket other than the one that was verified. The URL
+*printed* for the browser still uses `resolve_dashboard_host()` (`localhost`) —
+that must not change, because the SPA's per-origin `localStorage` is keyed on it.
+
 ## Stop Command
 
 `kirocrew stop [--port PORT]` stops a running gateway:

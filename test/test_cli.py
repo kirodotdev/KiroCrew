@@ -4,6 +4,7 @@ import argparse
 import contextlib
 import hashlib
 import json
+import os
 import subprocess
 import sys
 import urllib.error
@@ -1913,6 +1914,50 @@ class TestRestart:
         mock_spawn.assert_called_once()
         assert "9999" in capsys.readouterr().out
 
+    def test_spawn_detached_gateway_binds_requested_port(self, tmp_path, monkeypatch):
+        """The child must bind the port the parent resolved.
+
+        The parent stops a gateway on the resolved port and then polls that same
+        port for readiness, but the child re-resolves independently. With
+        run-marker discovery in the chain (and the marker cleared by the stop we
+        just did), an unparameterised spawn lets the replacement bind 5476 while
+        the parent waits on 6776 and prints a 6776 URL.
+        """
+        from kiro_crew.cli_server import _spawn_detached_gateway
+
+        monkeypatch.setattr("kiro_crew.cli_server.config_dir", lambda: tmp_path)
+        proc = MagicMock(pid=4321)
+        with (
+            patch("shutil.which", return_value="/usr/local/bin/kirocrew"),
+            patch("kiro_crew.cli_server.subprocess.Popen", return_value=proc) as mock_popen,
+        ):
+            _spawn_detached_gateway(6776)
+        assert mock_popen.call_args.args[0] == [
+            "/usr/local/bin/kirocrew",
+            "gateway",
+            "--port",
+            "6776",
+        ]
+
+    def test_restart_passes_resolved_port_to_spawn(self, tmp_path, monkeypatch):
+        """`restart` with no --port must hand its resolved port to the child."""
+        from kiro_crew import cli_server
+
+        monkeypatch.setattr("kiro_crew.cli_server.config_dir", lambda: tmp_path)
+        with (
+            patch("kiro_crew.cli_server.resolve_client_port", return_value=6776),
+            patch("kiro_crew.cli_server.service_controller.restart_service", return_value=False),
+            patch("kiro_crew.cli_server.platform_compat.find_listening_pids", return_value=[]),
+            patch(
+                "kiro_crew.cli_server.platform_compat.listening_pid_tool_available",
+                return_value=True,
+            ),
+            patch("kiro_crew.cli_server._spawn_detached_gateway", return_value=1234) as mock_spawn,
+            patch("kiro_crew.cli_server._print_token_url"),
+        ):
+            cli_server._restart(None)
+        assert mock_spawn.call_args.args[0] == 6776
+
     def test_spawn_detached_gateway_uses_kirocrew_bin(self, tmp_path, monkeypatch):
         # When ``kirocrew`` is on PATH, the detached child must invoke it
         # directly (not via ``python -m``). This exercises the production
@@ -1995,8 +2040,9 @@ class TestResolveClientPort:
     Resolution order (see cli.resolve_client_port):
       1. explicit --port CLI arg (cli_port != None)
       2. KIROCREW_PORT env var
-      3. port parsed from dashboard.url in config
-      4. default 5476
+      3. port explicitly named in dashboard.url in config
+      4. the sole live gateway run-marker (see TestResolveClientPortRunMarker)
+      5. default 5476
     """
 
     def test_cli_flag_wins(self, monkeypatch, tmp_path):
@@ -2046,9 +2092,13 @@ class TestResolveClientPort:
         monkeypatch.delenv("KIROCREW_PORT", raising=False)
         mock_cfg = MagicMock()
         mock_cfg.dashboard.url = "http://my.host.example"
-        with patch("kiro_crew.cli_server.KiroCrewConfig.load", return_value=mock_cfg):
-            # parse_dashboard_url returns _DEFAULT_PORT when no port in URL,
-            # which is the same as the final fallback — either way we land on 5476.
+        with (
+            patch("kiro_crew.cli_server.KiroCrewConfig.load", return_value=mock_cfg),
+            # No gateway advertising itself — isolate from the dev box's markers.
+            patch("kiro_crew.cli_server.run_marker.marker_ports", return_value=[]),
+        ):
+            # A portless URL is not a port choice, so we continue past it; with no
+            # live run-marker either, we land on the documented default.
             assert resolve_client_port(None) == 5476
 
     def test_empty_config_falls_through_to_default(self, monkeypatch):
@@ -2076,6 +2126,313 @@ class TestResolveClientPort:
         monkeypatch.setenv("KIROCREW_PORT", "9999")
         # cli_port=0 is explicit; the helper uses 'is not None' not truthiness.
         assert resolve_client_port(0) == 0
+
+
+class TestResolveClientPortRunMarker:
+    """The run-marker fallback in `resolve_client_port` (step 4).
+
+    A gateway on a non-default port advertises itself by writing
+    `<data-home>/run/gateway-<port>.bin`. With nothing configured, a client must
+    read that marker instead of assuming 5476 — but only when a verified
+    KiroCrew gateway process holds the port, and only when exactly one does.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _no_env(self, monkeypatch):
+        monkeypatch.delenv("KIROCREW_PORT", raising=False)
+
+    def _cfg(self, url):
+        mock_cfg = MagicMock()
+        mock_cfg.dashboard.url = url
+        return patch("kiro_crew.cli_server.KiroCrewConfig.load", return_value=mock_cfg)
+
+    def _markers(self, ports):
+        return patch("kiro_crew.cli_server.run_marker.marker_ports", return_value=ports)
+
+    def _owned(self, ports):
+        """Pretend a verified KiroCrew gateway listens on each of *ports*."""
+        return patch(
+            "kiro_crew.cli_server._gateway_owns_port", side_effect=lambda p: p in set(ports)
+        )
+
+    def test_sole_owned_marker_used_when_nothing_configured(self):
+        """The bug: one gateway on 6776, no config → must not return 5476."""
+        from kiro_crew.cli_server import resolve_client_port
+
+        with self._cfg(""), self._markers([6776]), self._owned([6776]):
+            assert resolve_client_port(None) == 6776
+
+    def test_portless_config_url_falls_through_to_marker(self):
+        """`dashboard.url` without a port is not a port choice — the marker wins.
+
+        parse_dashboard_url() substitutes 5476 for a portless URL, which would
+        otherwise short-circuit discovery with a value the user never wrote down.
+        """
+        from kiro_crew.cli_server import resolve_client_port
+
+        with self._cfg("http://my.host.example"), self._markers([6776]), self._owned([6776]):
+            assert resolve_client_port(None) == 6776
+
+    def test_explicit_config_port_beats_marker(self):
+        """An explicitly configured port is a user decision; discovery yields."""
+        from kiro_crew.cli_server import resolve_client_port
+
+        with self._cfg("http://localhost:7778"), self._markers([6776]), self._owned([6776]):
+            assert resolve_client_port(None) == 7778
+
+    def test_env_var_beats_marker(self, monkeypatch):
+        from kiro_crew.cli_server import resolve_client_port
+
+        monkeypatch.setenv("KIROCREW_PORT", "6777")
+        with self._cfg(""), self._markers([6776]), self._owned([6776]):
+            assert resolve_client_port(None) == 6777
+
+    def test_cli_flag_beats_marker(self):
+        from kiro_crew.cli_server import resolve_client_port
+
+        with self._markers([6776]) as markers:
+            assert resolve_client_port(12345) == 12345
+            markers.assert_not_called()  # no lookup cost when the port is explicit
+
+    def test_non_string_config_url_does_not_crash(self):
+        """`dashboard.url: 123` must degrade, not raise.
+
+        Core installs may lack jsonschema, so the field can hold any JSON type.
+        urlparse raises TypeError (NOT ValueError) on a non-str, which would
+        otherwise escape and kill every client command.
+        """
+        from kiro_crew.cli_server import resolve_client_port
+
+        for bad in (123, ["http://localhost:7778"], {"url": 1}, True):
+            with self._cfg(bad), self._markers([6776]), self._owned([6776]):
+                assert resolve_client_port(None) == 6776
+        # ...and with no marker to fall back on, still the documented default.
+        with self._cfg(123), self._markers([]):
+            assert resolve_client_port(None) == 5476
+
+    def test_no_marker_falls_through_to_default(self):
+        from kiro_crew.cli_server import resolve_client_port
+
+        with self._cfg(""), self._markers([]):
+            assert resolve_client_port(None) == 5476
+
+    def test_stale_marker_not_owned_by_gateway_is_ignored(self):
+        """A crashed gateway leaves its marker behind, and an unrelated process
+        may since have bound that port. Trusting it would hand the local secret
+        to that process, so the port must be discarded."""
+        from kiro_crew.cli_server import resolve_client_port
+
+        with self._cfg(""), self._markers([6776]), self._owned([]):
+            assert resolve_client_port(None) == 5476
+
+    def test_multiple_owned_markers_refuses_to_guess(self, capsys):
+        """Two gateways up → no basis to pick; fall back to the documented
+        default and tell the user how to disambiguate."""
+        from kiro_crew.cli_server import resolve_client_port
+
+        with self._cfg(""), self._markers([6776, 6777]), self._owned([6776, 6777]):
+            assert resolve_client_port(None) == 5476
+        err = capsys.readouterr().err
+        assert "6776" in err and "6777" in err
+        assert "--port" in err
+
+    def test_discovery_failure_falls_through_to_default(self):
+        """A broken data home must not break client commands."""
+        from kiro_crew.cli_server import resolve_client_port
+
+        with (
+            self._cfg(""),
+            patch(
+                "kiro_crew.cli_server.run_marker.marker_ports",
+                side_effect=OSError("boom"),
+            ),
+        ):
+            assert resolve_client_port(None) == 5476
+
+    def test_malformed_config_url_still_reaches_marker(self):
+        """A typo'd `dashboard.url` must not swallow the discovery step."""
+        from kiro_crew.cli_server import resolve_client_port
+
+        with self._cfg("http://[::1"), self._markers([6776]), self._owned([6776]):
+            assert resolve_client_port(None) == 6776
+
+
+class TestGatewayOwnsPort:
+    """`_gateway_owns_port` — the identity gate protecting the local secret.
+
+    Three parts, none sufficient alone: the pid recorded in the owner-only
+    sidecar, that pid holding the port, and that pid being owned by the calling
+    user. An argv-only check would be spoofable by launching a listener as
+    `/tmp/kirocrew gateway`.
+    """
+
+    def _sidecar(self, pid):
+        return patch("kiro_crew.cli_server.run_marker.read_pid", return_value=pid)
+
+    def _listeners(self, pids):
+        return patch(
+            "kiro_crew.cli_server.platform_compat.find_listening_pids", return_value=pids
+        )
+
+    def _owner(self, uid):
+        return patch(
+            "kiro_crew.cli_server.platform_compat.process_owner_uid", return_value=uid
+        )
+
+    def _me(self):
+        return os.getuid() if hasattr(os, "getuid") else 0
+
+    def _posix(self, value=True):
+        return patch("kiro_crew.cli_server.platform_compat.IS_POSIX", value)
+
+    def test_true_when_recorded_pid_holds_the_port_and_is_ours(self):
+        from kiro_crew.cli_server import _gateway_owns_port
+
+        with (
+            self._posix(),
+            self._sidecar(4242),
+            self._listeners([4242]),
+            self._owner(self._me()),
+            patch("kiro_crew.cli_server._is_kirocrew_process", return_value=True),
+            patch("kiro_crew.cli_server.os.getuid", return_value=self._me(), create=True),
+        ):
+            assert _gateway_owns_port(6776) is True
+
+    def test_denies_on_non_posix(self):
+        """Windows cannot report a process owner, and a home writable by another
+        user would let them forge both the marker and the sidecar — so the step
+        is skipped rather than trusted on partial evidence. Windows keeps --port
+        / KIROCREW_PORT, which is where it was before this fallback existed.
+        """
+        from kiro_crew.cli_server import _gateway_owns_port
+
+        # Every OTHER precondition is satisfied, so the non-POSIX guard is the
+        # only thing that can deny — otherwise this test would pass for the
+        # wrong reason (e.g. an unresolvable owner for a fabricated pid).
+        with (
+            self._posix(False),
+            self._sidecar(4242),
+            self._listeners([4242]),
+            self._owner(self._me()),
+            patch("kiro_crew.cli_server._is_kirocrew_process", return_value=True),
+            patch("kiro_crew.cli_server.os.getuid", return_value=self._me(), create=True),
+        ):
+            assert _gateway_owns_port(6776) is False
+
+    def test_false_when_listener_is_not_the_recorded_pid(self):
+        """The spoofing case: an unrelated process holds the port and can name
+        itself anything, but it is not the pid our own sidecar records."""
+        from kiro_crew.cli_server import _gateway_owns_port
+
+        with (
+            self._sidecar(4242),
+            self._listeners([9999]),
+            self._owner(self._me()),
+            # Even if its argv is a perfect forgery of a gateway command line.
+            patch("kiro_crew.cli_server._is_kirocrew_process", return_value=True),
+        ):
+            assert _gateway_owns_port(6776) is False
+
+    @pytest.mark.skipif(not hasattr(os, "getuid"), reason="POSIX uid gate only")
+    def test_false_when_pid_is_owned_by_another_user(self):
+        """Pid recycling into a *foreign* user's process must not be trusted,
+        even though that pid does hold the port."""
+        from kiro_crew.cli_server import _gateway_owns_port
+
+        with (
+            self._sidecar(4242),
+            self._listeners([4242]),
+            self._owner(os.getuid() + 1),
+            patch("kiro_crew.cli_server._is_kirocrew_process", return_value=True),
+        ):
+            assert _gateway_owns_port(6776) is False
+
+    @pytest.mark.skipif(not hasattr(os, "getuid"), reason="POSIX uid gate only")
+    def test_false_when_owner_uid_is_unknown_on_posix(self):
+        """Cannot determine ownership → deny (fail closed), do not assume ours."""
+        from kiro_crew.cli_server import _gateway_owns_port
+
+        with (
+            self._sidecar(4242),
+            self._listeners([4242]),
+            self._owner(None),
+            patch("kiro_crew.cli_server._is_kirocrew_process", return_value=True),
+        ):
+            assert _gateway_owns_port(6776) is False
+
+    def test_false_when_no_pid_recorded(self):
+        """No sidecar / unparseable pid → nothing to prove identity with."""
+        from kiro_crew.cli_server import _gateway_owns_port
+
+        with self._sidecar(None), self._listeners([4242]):
+            assert _gateway_owns_port(6776) is False
+
+    def test_false_when_pid_is_not_a_kirocrew_process(self):
+        """Defense in depth kept as the last step, never as the only one."""
+        from kiro_crew.cli_server import _gateway_owns_port
+
+        with (
+            self._sidecar(4242),
+            self._listeners([4242]),
+            self._owner(self._me()),
+            patch("kiro_crew.cli_server._is_kirocrew_process", return_value=False),
+        ):
+            assert _gateway_owns_port(6776) is False
+
+    def test_fails_closed_when_no_listener_or_lookup_tool(self):
+        """find_listening_pids folds a missing lsof/netstat into an empty list,
+        so both 'nothing there' and 'cannot tell' must deny."""
+        from kiro_crew.cli_server import _gateway_owns_port
+
+        with self._sidecar(4242), self._listeners([]):
+            assert _gateway_owns_port(6776) is False
+
+    def test_fails_closed_when_lookup_raises(self):
+        from kiro_crew.cli_server import _gateway_owns_port
+
+        with (
+            self._sidecar(4242),
+            patch(
+                "kiro_crew.cli_server.platform_compat.find_listening_pids",
+                side_effect=OSError("lsof exploded"),
+            ),
+        ):
+            assert _gateway_owns_port(6776) is False
+
+
+class TestCliLoopbackAddress:
+    """Secret-bearing CLI requests must be pinned to the verified endpoint.
+
+    `localhost` can resolve to `::1` first on a dual-stack host, and the listener
+    verification cannot distinguish an IPv6 squatter from the real IPv4 gateway,
+    so a name-based URL could deliver `X-Local-Secret` to another local user's
+    socket.
+    """
+
+    def test_cli_requests_use_the_ipv4_literal(self):
+        import inspect
+
+        from kiro_crew import cli_server
+
+        assert cli_server._CLI_LOOPBACK == "127.0.0.1"
+        src = inspect.getsource(cli_server)
+        # No CLI->gateway request may be built from the hostname.
+        assert 'http://localhost:{port}' not in src
+        for fn in (cli_server._token, cli_server._logout, cli_server._print_token_url):
+            body = inspect.getsource(fn)
+            if "http://" in body:
+                assert "_CLI_LOOPBACK" in body, fn.__name__
+
+    def test_printed_browser_url_still_uses_the_canonical_host(self):
+        """The URL handed to the browser must NOT be switched to 127.0.0.1 —
+        the SPA's per-origin localStorage is keyed on `localhost`."""
+        import inspect
+
+        from kiro_crew import cli_server
+
+        body = inspect.getsource(cli_server._token)
+        assert "resolve_dashboard_host(local_only=True)" in body
+        assert 'print(f"http://{host}:{port}?token={token}")' in body
 
 
 class TestEnsurePrerequisites:

@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import socket
 from pathlib import Path
 
@@ -578,12 +579,22 @@ class TestRunMarker:
         run_marker.write_marker(7879)
         marker = run_marker.marker_path(7879)
         assert marker.read_text(encoding="utf-8").strip() == str(launcher)
+        # The pid sidecar rides alongside and names THIS process.
+        assert run_marker.read_pid(7879) == os.getpid()
 
         run_marker.clear_marker(7879)
         assert not marker.exists()
+        assert not run_marker.pid_path(7879).exists()  # sidecar cleared too
+        assert run_marker.read_pid(7879) is None
         run_marker.clear_marker(7879)  # clearing a missing marker is a no-op
 
-    def test_no_marker_when_launcher_absent(self, tmp_path, monkeypatch):
+    def test_port_only_marker_when_launcher_absent(self, tmp_path, monkeypatch):
+        """No console script → still write the marker, but empty.
+
+        Discovery needs only the filename, so skipping the write would deny
+        discovery to source-tree launches. Mint stays unaffected because its
+        shell clause requires a non-empty executable path.
+        """
         import sys
 
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
@@ -595,7 +606,143 @@ class TestRunMarker:
 
         assert run_marker.gateway_launcher_path() is None
         run_marker.write_marker(7000)
-        assert not run_marker.marker_path(7000).exists()
+        marker = run_marker.marker_path(7000)
+        assert marker.exists()
+        assert marker.read_text(encoding="utf-8") == ""
+        # Discoverable by port...
+        assert run_marker.marker_ports() == [7000]
+
+    def test_mint_clause_ignores_an_empty_marker(self):
+        """...and inert for mint: the exec is guarded on a non-empty -x path."""
+        from kiro_crew.instances.token_mint import build_candidate_command
+
+        cmd = build_candidate_command("status", marker_port=7000)
+        assert '[ -n "$__kb" ] && [ -x "$__kb" ]' in cmd
+
+
+# ── run-marker port discovery (clients find a gateway on a non-default port) ──
+
+
+class TestRunMarkerDiscovery:
+    """``marker_ports`` — filename-only discovery.
+
+    This backs ``cli_server.resolve_client_port``'s zero-config fallback, so the
+    contract under test is: filename-only parsing and no directory creation.
+    Deciding whether a discovered port is *trustworthy* is deliberately NOT this
+    module's job (a listener is not proof of identity) — see
+    ``TestResolveClientPortRunMarker`` for the ownership gate.
+    """
+
+    def _marker(self, home, name: str) -> None:
+        d = home / "run"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / name).write_text("/some/venv/bin/kirocrew\n", encoding="utf-8")
+
+    def test_no_run_dir_yields_no_ports_and_creates_nothing(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        from kiro_crew.instances import run_marker
+
+        assert run_marker.marker_ports() == []
+        # Discovery is read-only: a client merely looking for a gateway must not
+        # materialise run/ (marker_path() would, via _run_dir()).
+        assert not (tmp_path / "run").exists()
+
+    def test_lists_sorted_ports_and_ignores_non_markers(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        from kiro_crew.instances import run_marker
+
+        self._marker(tmp_path, "gateway-6776.bin")
+        self._marker(tmp_path, "gateway-5476.bin")
+        # Non-markers / malformed ports must be ignored rather than crash:
+        for junk in (
+            "gateway-.bin",
+            "gateway-abc.bin",
+            "gateway-6776.bin.old",
+            "gateway--1.bin",
+            "gateway-0.bin",  # not a usable TCP port
+            "gateway-70000.bin",  # out of range
+            "gateway-67 76.bin",
+            "sandbox-6776.bin",
+        ):
+            self._marker(tmp_path, junk)
+        # A directory that merely looks like a marker is not a marker.
+        (tmp_path / "run" / "gateway-9999.bin").mkdir()
+
+        assert run_marker.marker_ports() == [5476, 6776]
+
+    def test_no_bare_liveness_helper_is_exposed(self, tmp_path, monkeypatch):
+        """Reachability must not be offered as a stand-in for identity.
+
+        A client command sends the local secret to whatever answers on the
+        discovered port, so "something is listening" is not a safe basis for
+        trusting a marker. Keeping any such helper out of this module stops a
+        future caller from reaching for the unsafe check.
+        """
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        from kiro_crew.instances import run_marker
+
+        assert not hasattr(run_marker, "port_is_live")
+        assert not hasattr(run_marker, "live_marker_ports")
+
+    def test_read_pid_rejects_junk_and_missing(self, tmp_path, monkeypatch):
+        """The sidecar is an identity claim, so parse it strictly."""
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        from kiro_crew.instances import run_marker
+
+        assert run_marker.read_pid(6776) is None  # absent
+        d = tmp_path / "run"
+        d.mkdir(parents=True, exist_ok=True)
+        for junk in ("", "  ", "abc", "-1", "0", "12 34", "12.5", "1e3"):
+            (d / "gateway-6776.pid").write_text(junk, encoding="utf-8")
+            assert run_marker.read_pid(6776) is None, junk
+        (d / "gateway-6776.pid").write_text(" 4242 \n", encoding="utf-8")
+        assert run_marker.read_pid(6776) == 4242
+
+    def test_write_prunes_markers_from_earlier_runs(self, tmp_path, monkeypatch):
+        """A gateway is a singleton per home, so markers naming other ports are
+        crash residue. Left alone they cost every client command an extra
+        listener lookup, so the live gateway reaps them when it writes its own.
+        """
+        import sys
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        from kiro_crew.instances import run_marker
+
+        bindir = tmp_path / "venv" / "bin"
+        bindir.mkdir(parents=True)
+        launcher = bindir / "kirocrew"
+        launcher.write_text("#!/bin/sh\n")
+        launcher.chmod(0o755)
+        monkeypatch.setattr(sys, "executable", str(bindir / "python"))
+
+        # Residue from three earlier runs on other ports.
+        self._marker(tmp_path, "gateway-5476.bin")
+        (tmp_path / "run" / "gateway-5476.pid").write_text("111\n", encoding="utf-8")
+        self._marker(tmp_path, "gateway-6777.bin")
+        self._marker(tmp_path, "gateway-9001.bin")
+
+        run_marker.write_marker(6776)
+
+        assert run_marker.marker_ports() == [6776]
+        assert not (tmp_path / "run" / "gateway-5476.pid").exists()
+        assert run_marker.read_pid(6776) == os.getpid()
+
+    def test_prune_keeps_unrelated_files(self, tmp_path, monkeypatch):
+        """Pruning targets only this module's own marker/pid pairs."""
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        from kiro_crew.instances import run_marker
+
+        d = tmp_path / "run"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "sandbox-6776.bin").write_text("keep me", encoding="utf-8")
+        (d / "gateway-abc.bin").write_text("keep me", encoding="utf-8")
+        self._marker(tmp_path, "gateway-6777.bin")
+
+        run_marker.prune_markers(keep_port=6776)
+
+        assert not (d / "gateway-6777.bin").exists()
+        assert (d / "sandbox-6776.bin").exists()
+        assert (d / "gateway-abc.bin").exists()
 
 
 # ── injection-safe validation ────────────────────────────────────────────────
