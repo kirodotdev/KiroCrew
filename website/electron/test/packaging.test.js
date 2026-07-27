@@ -22,3 +22,31 @@ describe("electron-builder files list", () => {
     assert.deepStrictEqual(stale, [], `Stale entries in build.files: ${stale.join(", ")}`);
   });
 });
+
+
+describe("macOS bundle naming", () => {
+  const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"));
+  const extendInfo = pkg.build.mac.extendInfo || {};
+  const buildScript = fs.readFileSync(
+    path.resolve(ROOT, "..", "..", "packaging", "build-desktop.sh"),
+    "utf8"
+  );
+
+  it("keeps CFBundleName aligned with productName for Electron helpers", () => {
+    assert.equal(pkg.build.productName, "KiroCrew");
+    assert.equal(
+      Object.hasOwn(extendInfo, "CFBundleName"),
+      false,
+      "CFBundleName overrides break Electron helper-app discovery"
+    );
+  });
+
+  it("uses CFBundleDisplayName for spaced stable and nightly names", () => {
+    assert.equal(extendInfo.CFBundleDisplayName, "Kiro Crew");
+    assert.match(
+      buildScript,
+      /-c\.mac\.extendInfo\.CFBundleDisplayName=Kiro Crew Nightly/
+    );
+    assert.doesNotMatch(buildScript, /-c\.mac\.extendInfo\.CFBundleName=/);
+  });
+});

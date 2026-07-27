@@ -30,6 +30,9 @@ The electron-builder configuration lives in
 
 - **appId:** `dev.kirocrew.desktop`
 - **productName:** `KiroCrew`
+- macOS display name: `Kiro Crew` via `CFBundleDisplayName`; `CFBundleName`
+  remains aligned with `productName` because Electron uses it to locate the
+  `KiroCrew Helper` app bundles during startup
 - mac target: `dmg` (category `public.app-category.developer-tools`)
 - linux target: `AppImage` (category `Development`)
 

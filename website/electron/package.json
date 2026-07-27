@@ -35,7 +35,7 @@
       "notarize": false,
       "x64ArchFiles": "{**/backend-dist/**,**/backend-dist/**/.*/**}",
       "extendInfo": {
-        "CFBundleName": "Kiro Crew"
+        "CFBundleDisplayName": "Kiro Crew"
       }
     },
     "afterSign": "scripts/notarize.js",
