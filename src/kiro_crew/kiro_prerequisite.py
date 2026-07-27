@@ -43,11 +43,16 @@ import aiohttp
 from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir
+from kiro_crew.env import augmented_path, resolve_krb5_ccname
 from kiro_crew.kiro_cli import (
     find_kiro_cli_candidates,
     known_kiro_cli_dirs,
 )
-from kiro_crew.sandbox import resource_limit_preexec, sandboxed_spawn_argv
+from kiro_crew.sandbox import (
+    resource_limit_preexec,
+    sandboxed_spawn_argv,
+    scrub_agent_denied_env,
+)
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 logger = logging.getLogger(__name__)
@@ -1993,6 +1998,29 @@ class KiroPrerequisiteService:
         )
         platform_compat.restrict_to_owner(str(self._binary_trust_path))
 
+    def _real_home_probe_env(self) -> dict[str, str]:
+        """Build the real-home readiness ``whoami`` env like an ACP session.
+
+        The readiness login check runs against the real home, so it must see the
+        same session environment a real ``kiro-cli acp`` session gets — the
+        D-Bus session bus / secret-service keyring, XDG runtime dir, Kerberos
+        ccache, proxy, SSH agent, locale, etc. A curated allowlist drops
+        whatever a given host's keyring backend needs (e.g. AL2023 validates the
+        login via the D-Bus secret service, which needs
+        ``DBUS_SESSION_BUS_ADDRESS``), so mirror ``acp/runtime.py`` exactly: the
+        full real environment minus gateway-owned channel credentials, with PATH
+        augmented and the Kerberos ccache repaired. The OS sandbox still scrubs
+        sensitive env and Kiro Crew's own home stays hidden.
+        """
+
+        env = {str(key): str(value) for key, value in self._environ.items()}
+        env = scrub_agent_denied_env(env)
+        env["PATH"] = augmented_path(env.get("PATH", ""))
+        resolve_krb5_ccname(env)
+        env["NO_COLOR"] = "1"
+        env["TERM"] = "dumb"
+        return env
+
     async def _run_auth_command(
         self,
         executable: str,
@@ -2061,7 +2089,7 @@ class KiroPrerequisiteService:
                 return await self._run(
                     fallback_executable,
                     args,
-                    env=base_env,
+                    env=self._real_home_probe_env(),
                     timeout_secs=timeout_secs,
                     on_output=on_output,
                     sandboxed=True,

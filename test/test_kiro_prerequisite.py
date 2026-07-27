@@ -1017,6 +1017,48 @@ class TestKiroPrerequisiteWorkflow:
         assert whoami_calls == [str(tmp_path)]
 
     @pytest.mark.asyncio
+    async def test_real_home_whoami_carries_full_session_env_like_acp(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        # The real-home whoami mirrors an ACP session's environment, so session
+        # vars the CLI's keyring needs reach it — e.g. DBUS_SESSION_BUS_ADDRESS /
+        # XDG_RUNTIME_DIR for the secret-service keyring (AL2023). A curated
+        # allowlist would drop them and break login detection.
+        executable = tmp_path / ".local" / "bin" / "kiro-cli"
+        _make_executable(executable)
+        seen_env: dict[str, str] = {}
+
+        async def run(
+            _command: str,
+            args: list[str],
+            **kwargs: Any,
+        ) -> ProcessResult:
+            if args == ["--version"]:
+                return ProcessResult(ok=True)
+            seen_env.update(kwargs["env"])
+            return ProcessResult(ok=False)
+
+        service = KiroPrerequisiteService(
+            platform_name="linux",
+            environ={
+                "HOME": str(tmp_path),
+                "PATH": "/usr/bin:/bin",
+                "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/4242/bus",
+                "XDG_RUNTIME_DIR": "/run/user/4242",
+            },
+            home=tmp_path,
+            process_runner=run,
+            audit_writer=_no_audit,
+        )
+
+        await service.snapshot(force=True)
+
+        # Session env reached the whoami (unlike the minimal probe allowlist).
+        assert seen_env.get("DBUS_SESSION_BUS_ADDRESS") == "unix:path=/run/user/4242/bus"
+        assert seen_env.get("XDG_RUNTIME_DIR") == "/run/user/4242"
+
+    @pytest.mark.asyncio
     async def test_self_updated_candidate_still_signs_in(
         self,
         tmp_path: Path,
@@ -1820,10 +1862,19 @@ class TestKiroPrerequisiteWorkflow:
         assert runtime.kwargs[login_index]["sandbox_mode"] == "standard"
         assert runtime.kwargs[login_index]["env"]["https_proxy"] == ("http://proxy.example:8443")
         assert runtime.kwargs[login_index]["env"]["HOME"] != str(tmp_path)
+        # The strict --version probe keeps the minimal env (no proxy / desktop
+        # IPC). The real-home whoami mirrors an ACP session and carries the full
+        # env, so proxy/session vars are present there by design.
         for index, call in enumerate(runtime.calls):
-            if call[1] in (["--version"], ["whoami"]):
+            if call[1] == ["--version"]:
                 assert "https_proxy" not in runtime.kwargs[index]["env"]
                 assert "DISPLAY" not in runtime.kwargs[index]["env"]
+        whoami_env = next(
+            runtime.kwargs[i]["env"]
+            for i, call in enumerate(runtime.calls)
+            if call[1] == ["whoami"]
+        )
+        assert whoami_env.get("https_proxy") == "http://proxy.example:8443"
 
     @pytest.mark.asyncio
     async def test_windows_clean_install_uses_powershell_script(
