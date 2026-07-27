@@ -32,6 +32,16 @@ jobs:
     # branch-protection change.
     name: Claude AI Review
     runs-on: ubuntu-latest
+    # Same-repo PRs only (not forks). Fork PRs get NO OIDC/secrets access from
+    # GitHub, so the Bedrock role assumption below can never succeed — without
+    # this guard the review step is skipped and the fail-closed gate turns the
+    # required check RED on every external contribution. Skipping the whole job
+    # instead reports the required "Claude AI Review" check as "skipped", which
+    # branch protection treats as satisfied. Mirrors the fork guard in
+    # codex-review.yml and design-review.yml. Dependabot PRs are same-repo
+    # (branch lives in this repo) so they still enter the job and are handled by
+    # the step-level dependabot skip + gate pass below.
+    if: github.event.pull_request.head.repo.full_name == github.repository
     # Hard runtime ceiling: if the agentic review ever runs away, the job is
     # cancelled at 30 min and the gate fails closed (a no-output review can't
     # look clean). Lowered from 40 alongside --max-turns: the review is now a

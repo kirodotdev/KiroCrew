@@ -257,6 +257,38 @@ npm run test:playwright      # E2E (requires a running backend)
 6. A maintainer will review. Address feedback by pushing additional commits to
    your branch.
 
+### CI checks on your PR (forks vs. direct branches)
+
+GitHub deliberately withholds repository secrets and OIDC credentials from
+workflows triggered by **pull requests opened from a fork**. Three of our
+checks need those credentials to reach Amazon Bedrock, so their behaviour
+depends on *where your branch lives*:
+
+| Check | Fork PR | Branch pushed to `kirodotdev/KiroCrew` |
+| --- | --- | --- |
+| **Claude AI Review** | Skipped (neutral — not a failure) | Runs |
+| **GPT 5.6 Review** | Skipped | Runs |
+| **Design Review** | Skipped | Runs |
+| Tests, lint, typecheck, CodeQL, coverage, build | Run normally | Run normally |
+
+- **Opening from a fork (the default for most contributors):** the three AI
+  reviews are **skipped, not failed** — and this is identical for *everyone*,
+  regardless of permission level. A maintainer who opens a PR from their own
+  personal fork gets exactly the same skip; write access does not change it.
+  A skipped review does **not** block your PR and there is nothing for you to
+  fix: just make sure the credential-free checks (tests, lint, typecheck,
+  CodeQL, coverage, build) are green. A maintainer runs the AI review on their
+  side (or re-pushes your branch to the upstream repo) and reviews manually.
+- **Getting the AI reviews to run** depends only on *where the branch lives*,
+  never on who you are: the branch has to be on `kirodotdev/KiroCrew` itself,
+  not on a fork. Pushing a branch directly to the upstream repo requires write
+  access — so if you have it, push there and open the PR from that branch to
+  get the full suite. Without write access, the fork path above is the correct
+  and only route, by design.
+
+If your only red checks are the AI reviews on a fork PR, there is nothing for
+you to fix — flag it to a maintainer.
+
 ## Commit Messages
 
 [Conventional Commits](https://www.conventionalcommits.org/):
