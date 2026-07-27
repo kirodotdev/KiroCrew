@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useQuery, useQueryClient, useMutation, useQueries } from '@tanstack/react-query'
+import { usePointerDrag } from '../../hooks/usePointerDrag'
 import { AlertTriangle, MessageSquare, Eye, CornerDownRight, Copy, ArrowUpFromLine } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { useAppDispatch } from '../../store'
@@ -289,21 +290,17 @@ export default function FileExplorerPage() {
   }, [toggleSearch, newFolderTabAction, closeFolderTab, closeFileTab, activeFile, activeFolder])
 
   // ── Resizer ──
-  const dragRef = useRef({ active: false, startX: 0, startW: 0 })
-  const onResizeStart = (e: React.MouseEvent) => {
-    dragRef.current = { active: true, startX: e.clientX, startW: leftWidth }
-    document.body.style.cursor = 'col-resize'
-  }
-  useEffect(() => {
-    const onMove = (e: MouseEvent) => {
-      if (!dragRef.current.active) return
-      setLeftWidth(Math.max(180, Math.min(640, dragRef.current.startW + (e.clientX - dragRef.current.startX))))
-    }
-    const onUp = () => { if (dragRef.current.active) { dragRef.current.active = false; document.body.style.cursor = '' } }
-    window.addEventListener('mousemove', onMove)
-    window.addEventListener('mouseup', onUp)
-    return () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp) }
-  }, [])
+  const startWRef = useRef(0)
+  const leftDraggingRef = useRef(false)
+  const leftResize = usePointerDrag({
+    threshold: 0,
+    onStart: () => { startWRef.current = leftWidth; leftDraggingRef.current = true; document.body.style.cursor = 'col-resize' },
+    onMove: ({ dx }) => { setLeftWidth(Math.max(180, Math.min(640, startWRef.current + dx))) },
+    onEnd: () => { leftDraggingRef.current = false; document.body.style.cursor = '' },
+  })
+  // Unmount guard: onEnd can't fire if the pane unmounts mid-drag, so clear the
+  // global resize cursor here to avoid leaving it stuck.
+  useEffect(() => () => { if (leftDraggingRef.current) document.body.style.cursor = '' }, [])
 
   // ── Derived state (must be above early returns for Rules of Hooks) ──
   const rootGitInfo = useMemo(() => {
@@ -399,7 +396,7 @@ export default function FileExplorerPage() {
         {/* Pane splitter: mouse-drag-only resize affordance; role=separator is
             correct for a window splitter but is non-interactive per jsx-a11y. */}
         {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions */}
-        <div className="mc-fe-resizer" aria-label="Resize panel" onMouseDown={onResizeStart} role="separator" tabIndex={-1} />
+        <div className="mc-fe-resizer" aria-label="Resize panel" aria-orientation="vertical" role="separator" tabIndex={-1} style={{ touchAction: 'none' }} {...leftResize} />
         <div className="mc-fe-right">
           {showSearch ? (
             <SearchPanel

@@ -362,14 +362,26 @@ describe('ChatInput', () => {
   })
 
   describe('drag-to-resize handle', () => {
-    it('initiates drag on mousedown on handle', () => {
+    it('initiates drag on pointerdown on handle', () => {
       renderWithProviders(<ChatInput {...defaultProps} value="test" />)
       const handle = screen.getByTitle(/Drag to resize/)
-      fireEvent.mouseDown(handle, { clientX: 100, clientY: 200 })
+      fireEvent.pointerDown(handle, { clientX: 100, clientY: 200 })
       expect(document.body.style.cursor).toBe('row-resize')
       expect(document.body.style.userSelect).toBe('none')
       // Clean up
-      fireEvent.mouseUp(window)
+      fireEvent.pointerUp(handle)
+    })
+
+    it('restores body styles if unmounted mid-drag', () => {
+      const { unmount } = renderWithProviders(<ChatInput {...defaultProps} value="test" />)
+      const handle = screen.getByTitle(/Drag to resize/)
+      fireEvent.pointerDown(handle, { clientX: 100, clientY: 200 })
+      expect(document.body.style.cursor).toBe('row-resize')
+      // Unmount mid-drag with no pointerup — the teardown guard must restore the
+      // global body styles (onEnd can't fire once the element is gone).
+      unmount()
+      expect(document.body.style.cursor).toBe('')
+      expect(document.body.style.userSelect).toBe('')
     })
 
     it('resets height on double-click', () => {

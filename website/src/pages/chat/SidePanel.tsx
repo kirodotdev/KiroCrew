@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback, useMemo, type ReactNode } from 'react'
 import { useIsMobile } from '../../hooks/useIsMobile'
+import { usePointerDrag } from '../../hooks/usePointerDrag'
 import { Reorder } from 'framer-motion'
 import { FileText, Bot, Workflow, ScrollText, MessageSquare, TerminalSquare, GitCompare, GitPullRequest, Package, Plus, X, Hash, Pen, Columns2, PanelRightClose, Component, PanelBottom, Globe } from 'lucide-react'
 import ActivityViewer from './ActivityViewer'
@@ -229,21 +230,17 @@ export default function SidePanel({
   // the new spot each frame — so tabs visibly lag the resize and "catch up"
   // when it stops. During a resize we make the layout transition instant.
   const [resizing, setResizing] = useState(false)
-  const onDragStart = useCallback((e: React.MouseEvent) => {
-    e.preventDefault()
-    const startX = e.clientX; const startW = widthRef.current
-    const max = () => Math.min(Math.round(window.innerWidth * 0.7), window.innerWidth - measureSidePanelReservedW())
-    setResizing(true)
-    const onMove = (ev: MouseEvent) => setWidth(Math.max(MIN_W, Math.min(startW + (startX - ev.clientX), max())))
-    const onUp = () => {
-      document.removeEventListener('mousemove', onMove)
-      document.removeEventListener('mouseup', onUp)
-      setResizing(false)
-      safeSetItem(WIDTH_KEY, String(widthRef.current))
-    }
-    document.addEventListener('mousemove', onMove)
-    document.addEventListener('mouseup', onUp)
-  }, [])
+  const startWRef = useRef(0)
+  const panelResize = usePointerDrag({
+    threshold: 0,
+    onStart: () => { startWRef.current = widthRef.current; setResizing(true) },
+    onMove: ({ dx }) => {
+      // Left-edge handle with the right edge pinned: dragging left (dx < 0) widens.
+      const max = Math.min(Math.round(window.innerWidth * 0.7), window.innerWidth - measureSidePanelReservedW())
+      setWidth(Math.max(MIN_W, Math.min(startWRef.current - dx, max)))
+    },
+    onEnd: () => { setResizing(false); safeSetItem(WIDTH_KEY, String(widthRef.current)) },
+  })
 
   useEffect(() => {
     if (!menuOpen) return
@@ -255,7 +252,7 @@ export default function SidePanel({
   return (
     <div className="shrink-0 min-h-0 my-2 flex flex-col bg-bg overflow-hidden relative border-l border-t border-b border-border rounded-l-xl" style={{ width: effectiveWidth, maxWidth: '100vw' }}>
       {/* Left-edge resize handle */}
-      <div className="absolute left-0 top-0 bottom-0 w-[6px] cursor-col-resize z-30 group/drag" onMouseDown={onDragStart}>
+      <div role="separator" aria-orientation="vertical" aria-label="Resize panel" className="absolute left-0 top-0 bottom-0 w-[6px] cursor-col-resize z-30 group/drag" style={{ touchAction: 'none' }} {...panelResize}>
         <div className="absolute left-0 top-0 bottom-0 w-[2px] transition-colors duration-200 bg-transparent group-hover/drag:bg-accent resize-accent" />
       </div>
       {/* Tab strip — drag chips horizontally to reorder (framer Reorder).

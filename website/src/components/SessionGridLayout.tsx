@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useRef, type ReactNode } from 'react'
+import { usePointerDrag } from '../hooks/usePointerDrag'
 import type { GridNode, GridLeaf, GridSplit } from '../hooks/useSessionGrid'
 
 const DIVIDER = 6 // px — draggable separator thickness between sibling panes
@@ -40,44 +41,41 @@ function SplitContainer({
   const ref = useRef<HTMLDivElement>(null)
   // Teardown for an in-progress divider drag, invoked on unmount so closing a
   // pane mid-drag still removes the overlay + window listeners (no leak).
-  const dragCleanupRef = useRef<(() => void) | null>(null)
-  useEffect(() => () => dragCleanupRef.current?.(), [])
+  useEffect(() => () => { document.body.style.cursor = '' }, [])
 
   const horizontal = node.dir === 'col' // children flow left→right
 
-  const startDrag = (index: number, e: React.MouseEvent) => {
-    e.preventDefault()
-    e.stopPropagation()
-    const el = ref.current
-    if (!el) return
-    const rect = el.getBoundingClientRect()
-    const extent = horizontal ? rect.width : rect.height
-    if (extent <= 0) return
-    let last = horizontal ? e.clientX : e.clientY
-    const cursor = horizontal ? 'col-resize' : 'row-resize'
-    const overlay = document.createElement('div')
-    overlay.style.cssText = `position:fixed;inset:0;z-index:9999;cursor:${cursor};`
-    document.body.appendChild(overlay)
-    const onMove = (ev: MouseEvent) => {
-      const pos = horizontal ? ev.clientX : ev.clientY
-      const d = (pos - last) / extent
-      if (d !== 0) {
-        onResize(node.id, index, d)
-        last = pos
-      }
-    }
-    const onUp = () => {
-      overlay.remove()
+  // Per-divider resize via Pointer Events (mouse + touch + pen). One hook
+  // instance serves every divider in this split: pointerdown records which
+  // divider (data-divider-index) plus the split's extent and start position;
+  // onMove applies the fractional delta to that divider. setPointerCapture keeps
+  // the drag glued to the handle even over iframe/canvas children, so the old
+  // full-screen overlay is no longer needed.
+  const dragState = useRef<{ index: number; extent: number; last: number } | null>(null)
+  const gridResize = usePointerDrag({
+    threshold: 0,
+    onStart: (e) => {
+      const el = ref.current
+      if (!el) { dragState.current = null; return }
+      const rect = el.getBoundingClientRect()
+      const extent = horizontal ? rect.width : rect.height
+      if (extent <= 0) { dragState.current = null; return }
+      const index = Number((e.currentTarget as HTMLElement).dataset.dividerIndex)
+      dragState.current = { index, extent, last: horizontal ? e.clientX : e.clientY }
+      document.body.style.cursor = horizontal ? 'col-resize' : 'row-resize'
+    },
+    onMove: ({ x, y }) => {
+      const st = dragState.current
+      if (!st) return
+      const pos = horizontal ? x : y
+      const d = (pos - st.last) / st.extent
+      if (d !== 0) { onResize(node.id, st.index, d); st.last = pos }
+    },
+    onEnd: () => {
+      dragState.current = null
       document.body.style.cursor = ''
-      window.removeEventListener('mousemove', onMove)
-      window.removeEventListener('mouseup', onUp)
-      dragCleanupRef.current = null
-    }
-    document.body.style.cursor = cursor
-    window.addEventListener('mousemove', onMove)
-    window.addEventListener('mouseup', onUp)
-    dragCleanupRef.current = onUp
-  }
+    },
+  })
 
   return (
     <div
@@ -95,9 +93,11 @@ function SplitContainer({
           </div>
           {i < node.children.length - 1 && (
             <div
-              onMouseDown={(e) => startDrag(i, e)}
+              {...gridResize}
+              data-divider-index={i}
+              onPointerDown={(e) => { e.stopPropagation(); gridResize.onPointerDown(e) }}
               className={`shrink-0 flex items-center justify-center group/div ${horizontal ? 'cursor-col-resize' : 'cursor-row-resize'}`}
-              style={horizontal ? { width: DIVIDER } : { height: DIVIDER }}
+              style={{ ...(horizontal ? { width: DIVIDER } : { height: DIVIDER }), touchAction: 'none' }}
               role="separator"
               aria-orientation={horizontal ? 'vertical' : 'horizontal'}
             >

@@ -32,6 +32,7 @@ import { useSessionActions } from '../hooks/useSessionActions'
 import { useChatPopouts } from '../hooks/useChatPopouts'
 import { useImeGuard } from '../hooks/useImeGuard'
 import { useIsMobile } from '../hooks/useIsMobile'
+import { usePointerDrag } from '../hooks/usePointerDrag'
 import { isTouchDevice } from '../utils/isTouchDevice'
 import { safeSetItem } from '../utils/safeStorage'
 import { resolveFolderAgent, resolveFolderProjectDir } from '../utils/folderAgent'
@@ -822,28 +823,38 @@ function ChatSidebar({
   })
   useEffect(() => { safeSetItem(HISTORY_HEIGHT_LS_KEY, String(historyHeight)) }, [historyHeight])
   const [historyDragging, setHistoryDragging] = useState(false)
-  const onHistoryDragStart = useCallback((e: React.MouseEvent) => {
-    e.preventDefault()
-    const startY = e.clientY
-    const startH = historyHeight
-    setHistoryDragging(true)
-    const onMove = (ev: MouseEvent) => {
-      // Drag handle is ABOVE the pane, so dragging UP grows the pane.
-      const next = Math.max(HISTORY_MIN_HEIGHT, Math.min(HISTORY_MAX_HEIGHT, startH - (ev.clientY - startY)))
-      setHistoryHeight(next)
-    }
-    const onUp = () => {
+  const historyStartHRef = useRef(0)
+  const historyDraggingRef = useRef(false)
+  const historyResize = usePointerDrag({
+    threshold: 0,
+    onStart: () => {
+      historyStartHRef.current = historyHeight
+      historyDraggingRef.current = true
+      setHistoryDragging(true)
+      document.body.style.cursor = 'ns-resize'
+      document.body.style.userSelect = 'none'
+    },
+    onMove: ({ dy }) => {
+      // Drag handle is ABOVE the pane, so dragging UP (dy < 0) grows the pane.
+      setHistoryHeight(Math.max(HISTORY_MIN_HEIGHT, Math.min(HISTORY_MAX_HEIGHT, historyStartHRef.current - dy)))
+    },
+    onEnd: () => {
+      historyDraggingRef.current = false
       setHistoryDragging(false)
-      window.removeEventListener('mousemove', onMove)
-      window.removeEventListener('mouseup', onUp)
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+    },
+  })
+  // Unmount guard: onEnd can't fire if the sidebar unmounts mid-drag
+  // (setPointerCapture dies with the element), so restore the global body styles
+  // here to avoid leaving the resize cursor / text-selection lock stuck.
+  useEffect(() => () => {
+    if (historyDraggingRef.current) {
+      historyDraggingRef.current = false
       document.body.style.cursor = ''
       document.body.style.userSelect = ''
     }
-    window.addEventListener('mousemove', onMove)
-    window.addEventListener('mouseup', onUp)
-    document.body.style.cursor = 'ns-resize'
-    document.body.style.userSelect = 'none'
-  }, [historyHeight])
+  }, [])
   const [cleanupOpen, setCleanupOpen] = useState(false)
   const [manageTagsOpen, setManageTagsOpen] = useState(false)  // header ⋮ → "Manage tags…" panel (list-view tag CRUD)
   const [filterSortOpen, setFilterSortOpen] = useState(false)
@@ -2911,16 +2922,16 @@ function ChatSidebar({
       {/* When expanded: doubles as the resize handle (accent on hover, drag to resize, dbl-click to collapse).
           When collapsed: just a static 1px divider between sessions and the Older Sessions footer. */}
       {historyOpen ? (
-        // Separator that doubles as a mouse-only resize handle (drag) / collapse
-        // (double-click); no keyboard analogue, so scope-disable the rule.
-        // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions
+        // Separator that doubles as a Pointer-Events resize handle (drag,
+        // mouse/touch/pen) / collapse (double-click); no keyboard analogue.
         <div
           role="separator"
           aria-orientation="horizontal"
           aria-label="Resize history pane"
-          onMouseDown={onHistoryDragStart}
+          {...historyResize}
           onDoubleClick={() => setHistoryOpen(false)}
           className="relative h-[6px] cursor-ns-resize z-10 group/drag flex items-center justify-center select-none"
+          style={{ touchAction: 'none' }}
         >
           <div className={`w-full transition-all duration-200 ${historyDragging ? 'h-[2px] bg-accent-hover' : 'h-px bg-border group-hover/drag:h-[2px] group-hover/drag:bg-accent'}`} />
         </div>

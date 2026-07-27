@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useLayoutEffect, useCallback, memo } from 'react'
 import { ArrowUpFromLine, ArrowUp, Loader2, Plus, Crop, Bot, Mic, Square, BookOpen, X, ClipboardList, CheckCircle, Ban, Sparkles, Target, Lock, Globe, FolderOpen, FileText, ChevronDown, Check } from 'lucide-react'
 import { Toggle } from './ui'
+import { usePointerDrag } from '../hooks/usePointerDrag'
 import VoiceStatusBar from './VoiceStatusBar'
 import { createPortal } from 'react-dom'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
@@ -842,18 +843,34 @@ function ChatInput({
     return () => document.removeEventListener('keydown', onSlashFocus)
   }, [])
 
-  useEffect(() => {
-    const onMove = (e: MouseEvent) => {
+  const inputResize = usePointerDrag({
+    threshold: 0,
+    onStart: (e) => {
+      if (!wrapperRef.current) return
+      const h = wrapperRef.current.offsetHeight
+      dragging.current = true
+      dragStartY.current = e.clientY
+      dragStartH.current = h
+      // Use current natural height as floor so drag never snaps up
+      dragMinHRef.current = Math.min(dragMinHRef.current, h)
+      // Lock in current height so auto-resize stops interfering
+      setManualHeight(h)
+      document.body.style.cursor = 'row-resize'
+      document.body.style.userSelect = 'none'
+      // Isolate reflow to this subtree during drag
+      wrapperRef.current.style.contain = 'strict'
+    },
+    onMove: ({ y }) => {
       if (!dragging.current || !wrapperRef.current) return
       // Account for CSS zoom/scale on #root
       const scale = parseInt(localStorage.getItem('mc-zoom') || '100', 10) / 100
       const maxH = effectiveVh() * INPUT_DRAG_MAX_RATIO
-      const delta = (dragStartY.current - e.clientY) / scale
+      const delta = (dragStartY.current - y) / scale
       const h = Math.min(maxH, Math.max(dragMinHRef.current, dragStartH.current + delta))
       // Direct DOM write on wrapper — no React state, no textarea auto-size
       wrapperRef.current.style.height = h + 'px'
-    }
-    const onUp = () => {
+    },
+    onEnd: () => {
       if (!dragging.current || !wrapperRef.current) return
       dragging.current = false
       document.body.style.cursor = ''
@@ -863,31 +880,20 @@ function ChatInput({
       const finalH = wrapperRef.current.offsetHeight
       setManualHeight(finalH)
       safeSetItem(INPUT_HEIGHT_LS_KEY, String(Math.round(finalH)))
-    }
-    window.addEventListener('mousemove', onMove)
-    window.addEventListener('mouseup', onUp)
-    return () => {
-      window.removeEventListener('mousemove', onMove)
-      window.removeEventListener('mouseup', onUp)
+    },
+  })
+  // Unmount guard: onEnd can't fire if the composer unmounts mid-drag
+  // (setPointerCapture dies with the element), so restore the global body styles
+  // here to avoid leaving the resize cursor / text-selection lock stuck.
+  useEffect(() => () => {
+    if (dragging.current) {
+      dragging.current = false
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
     }
   }, [])
 
-  const handleDragStart = useCallback((e: React.MouseEvent) => {
-    e.preventDefault()
-    if (!wrapperRef.current) return
-    const h = wrapperRef.current.offsetHeight
-    dragging.current = true
-    dragStartY.current = e.clientY
-    dragStartH.current = h
-    // Use current natural height as floor so drag never snaps up
-    dragMinHRef.current = Math.min(dragMinHRef.current, h)
-    // Lock in current height so auto-resize stops interfering
-    setManualHeight(h)
-    document.body.style.cursor = 'row-resize'
-    document.body.style.userSelect = 'none'
-    // Isolate reflow to this subtree during drag
-    wrapperRef.current.style.contain = 'strict'
-  }, [])
+
 
   const resetHeight = useCallback(() => {
     setManualHeight(null)
@@ -1690,7 +1696,8 @@ function ChatInput({
       {!showGhost && <div
         aria-hidden="true"
         className="flex items-center justify-center h-[6px] cursor-row-resize group/drag"
-        onMouseDown={handleDragStart}
+        style={{ touchAction: 'none' }}
+        {...inputResize}
         onDoubleClick={resetHeight}
         title="Drag to resize (double-click to reset)"
       >

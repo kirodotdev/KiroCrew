@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { motion, AnimatePresence, Reorder } from 'framer-motion'
+import { usePointerDrag } from '../hooks/usePointerDrag'
 import { useLocation } from 'react-router-dom'
 import { TerminalSquare, Plus, X, ChevronDown, PanelRight } from 'lucide-react'
 import CliPanel, { disposeTerminalSession, useDeleteTerminalSession } from './CliPanel'
@@ -115,29 +116,26 @@ export default function BottomTerminalPanel() {
   }, [canTransferToChat, chatTabs, dispatch])
 
   /* ── Top grip resize (drag up → taller) ── */
-  const startRef = useRef<{ y: number; h: number } | null>(null)
-  const onGripDown = useCallback((e: React.MouseEvent) => {
-    e.preventDefault()
-    startRef.current = { y: e.clientY, h: height }
-    setDragging(true)
-    const onMove = (ev: MouseEvent) => {
-      if (!startRef.current) return
+  const startHRef = useRef(0)
+  const gripResize = usePointerDrag({
+    threshold: 0,
+    onStart: () => {
+      startHRef.current = height
+      setDragging(true)
+      document.body.style.userSelect = 'none'
+      document.body.style.cursor = 'row-resize'
+    },
+    onMove: ({ dy }) => {
+      // Grip is at the panel TOP, so dragging UP (dy < 0) grows the panel.
       const maxH = Math.round(window.innerHeight * MAX_VH)
-      setBottomTerminalHeight(Math.min(maxH, startRef.current.h + (startRef.current.y - ev.clientY)))
-    }
-    const onUp = () => {
-      startRef.current = null
+      setBottomTerminalHeight(Math.min(maxH, startHRef.current - dy))
+    },
+    onEnd: () => {
       setDragging(false)
-      window.removeEventListener('mousemove', onMove)
-      window.removeEventListener('mouseup', onUp)
       document.body.style.userSelect = ''
       document.body.style.cursor = ''
-    }
-    window.addEventListener('mousemove', onMove)
-    window.addEventListener('mouseup', onUp)
-    document.body.style.userSelect = 'none'
-    document.body.style.cursor = 'row-resize'
-  }, [height])
+    },
+  })
 
   // Safety: restore body styles if unmounted mid-drag.
   useEffect(() => () => {
@@ -161,8 +159,9 @@ export default function BottomTerminalPanel() {
         >
           <div className="flex flex-col" style={{ height }}>
           <div
-            onMouseDown={onGripDown}
+            {...gripResize}
             className="relative shrink-0 h-[6px] cursor-row-resize group/drag"
+            style={{ touchAction: 'none' }}
             role="separator"
             aria-orientation="horizontal"
             aria-label="Resize terminal panel"

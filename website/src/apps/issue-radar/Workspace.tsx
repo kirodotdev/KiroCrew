@@ -12,7 +12,7 @@
 // registry. 'settings' shows the Settings page in the same area. The rail stays
 // visible in every mode. All shared state comes from useIssueRadar(); this file
 // owns only presentational layout (column resize).
-import { useState } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { CircleDot, GitPullRequest } from 'lucide-react'
 import { useIssueRadar } from './context'
 import {
@@ -25,32 +25,43 @@ import PrList from './components/PrList'
 import PrDetail from './components/PrDetail'
 import SettingsView from './views/SettingsView'
 import { dashboardComponent } from './views/registry'
+import { usePointerDrag } from '../../hooks/usePointerDrag'
 
 export default function Workspace() {
   const { mainView, dashboardTab, activeIssue, activePull } = useIssueRadar()
   const [listWidth, setListWidth] = useState<number>(loadListWidth)
 
-  const startResize = (e: React.MouseEvent) => {
-    e.preventDefault()
-    const startX = e.clientX
-    const startW = listWidth
-    let latest = startW
-    const onMove = (ev: MouseEvent) => {
-      latest = Math.min(MAX_LIST_WIDTH, Math.max(MIN_LIST_WIDTH, startW + ev.clientX - startX))
-      setListWidth(latest)
-    }
-    const onUp = () => {
-      localStorage.setItem(LIST_WIDTH_KEY, String(latest))
-      window.removeEventListener('mousemove', onMove)
-      window.removeEventListener('mouseup', onUp)
+  const startWRef = useRef(0)
+  const listDraggingRef = useRef(false)
+  const listResize = usePointerDrag({
+    threshold: 0,
+    onStart: () => {
+      startWRef.current = listWidth
+      listDraggingRef.current = true
+      document.body.style.cursor = 'col-resize'
+      document.body.style.userSelect = 'none'
+    },
+    onMove: ({ dx }) => {
+      setListWidth(Math.min(MAX_LIST_WIDTH, Math.max(MIN_LIST_WIDTH, startWRef.current + dx)))
+    },
+    onEnd: ({ dx }) => {
+      listDraggingRef.current = false
+      const finalW = Math.min(MAX_LIST_WIDTH, Math.max(MIN_LIST_WIDTH, startWRef.current + dx))
+      localStorage.setItem(LIST_WIDTH_KEY, String(finalW))
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+    },
+  })
+  // Unmount guard: onEnd can't fire if the component unmounts mid-drag
+  // (setPointerCapture dies with the element), so restore the global body styles
+  // here to avoid leaving the resize cursor / text-selection lock stuck.
+  useEffect(() => () => {
+    if (listDraggingRef.current) {
+      listDraggingRef.current = false
       document.body.style.cursor = ''
       document.body.style.userSelect = ''
     }
-    document.body.style.cursor = 'col-resize'
-    document.body.style.userSelect = 'none'
-    window.addEventListener('mousemove', onMove)
-    window.addEventListener('mouseup', onUp)
-  }
+  }, [])
 
   const DashboardView = dashboardComponent(dashboardTab)
 
@@ -66,9 +77,13 @@ export default function Workspace() {
 
           {/* Drag handle — resize the issue-list column. */}
           <div
-            onMouseDown={startResize}
+            {...listResize}
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize list"
             title="Drag to resize"
             className="w-1.5 flex-shrink-0 cursor-col-resize hover:bg-accent/30 transition-colors"
+            style={{ touchAction: 'none' }}
           />
 
           <main className="flex-1 min-w-0 min-h-0">
@@ -94,9 +109,13 @@ export default function Workspace() {
 
           {/* Drag handle — resize the PR-list column. */}
           <div
-            onMouseDown={startResize}
+            {...listResize}
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize list"
             title="Drag to resize"
             className="w-1.5 flex-shrink-0 cursor-col-resize hover:bg-accent/30 transition-colors"
+            style={{ touchAction: 'none' }}
           />
 
           <main className="flex-1 min-w-0 min-h-0">

@@ -1,5 +1,6 @@
 import { safeSetItem } from '../utils/safeStorage'
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
+import { usePointerDrag } from '../hooks/usePointerDrag'
 import Clickable from '../components/Clickable'
 import { AnimatePresence, motion } from 'framer-motion'
 import { List, CalendarDays, CalendarClock, Plus, ClipboardList, ChevronRight, Globe, Check, History, Trash2 } from 'lucide-react'
@@ -493,23 +494,15 @@ function JobDetailPanel({ job, prefill, agents, defaultAgent, onClose, onSaved }
   useEffect(() => { setDetailTab('details') }, [job?.id])
   const panelRef = useRef<HTMLDivElement>(null)
   const submitRef = useRef<(() => void) | null>(null)
-  const moveRef = useRef<((ev: MouseEvent) => void) | null>(null)
-  const upRef = useRef<(() => void) | null>(null)
   const widthRef = useRef(width)
   widthRef.current = width
+  const startWRef = useRef(0)
 
-  useEffect(() => {
-    return () => {
-      if (moveRef.current) document.removeEventListener('mousemove', moveRef.current)
-      if (upRef.current) document.removeEventListener('mouseup', upRef.current)
-    }
-  }, [])
-
-  const onDragStart = useCallback((e: React.MouseEvent) => {
-    e.preventDefault()
-    setDragging(true)
-    const startX = e.clientX; const startW = widthRef.current
-    const onMove = (ev: MouseEvent) => {
+  const scheduleResize = usePointerDrag({
+    threshold: 0,
+    onStart: () => { startWRef.current = widthRef.current; setDragging(true) },
+    onMove: ({ dx }) => {
+      // Left-edge handle, right edge pinned: dragging left (dx < 0) widens.
       // Cap to the panel's room in its flex row (row width minus the job-list
       // minimum), not a fraction of the whole window: the panel is `shrink-0`
       // in an `overflow-hidden` row, so a window-based cap lets it overflow the
@@ -517,29 +510,17 @@ function JobDetailPanel({ job, prefill, agents, defaultAgent, onClose, onSaved }
       // -> wrapping motion.div -> the flex row; if that nesting changes the
       // optional chain silently falls back to the viewport (restoring the old
       // over-cap), so keep the two levels in sync with the render tree below.
-      // Unlike DetailPanel this only re-caps during drag (width is ephemeral,
-      // not persisted, and there's no mount/resize re-clamp here) — a
-      // pre-existing gap left as-is to keep this fix scoped.
       const rowW = panelRef.current?.parentElement?.parentElement?.getBoundingClientRect().width ?? window.innerWidth
       const cap = Math.min(rowW - JOB_LIST_MIN, Math.round(window.innerWidth * 0.6))
-      setWidth(Math.max(300, Math.min(startW + (startX - ev.clientX), cap)))
-    }
-    const onUp = () => {
-      setDragging(false)
-      document.removeEventListener('mousemove', onMove)
-      document.removeEventListener('mouseup', onUp)
-      moveRef.current = null; upRef.current = null
-    }
-    moveRef.current = onMove; upRef.current = onUp
-    document.addEventListener('mousemove', onMove)
-    document.addEventListener('mouseup', onUp)
-  }, [])
+      setWidth(Math.max(300, Math.min(startWRef.current - dx, cap)))
+    },
+    onEnd: () => { setDragging(false) },
+  })
 
   return (
     <div ref={panelRef} className="shrink-0 border-l border-border bg-bg flex flex-col h-full overflow-hidden relative" style={{ width, minWidth: 300 }}>
-      {/* Resize splitter: role=separator is the correct semantic, but jsx-a11y treats it as non-interactive; the mousedown drag is intrinsic to a resize handle. */}
-      {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions */}
-      <div role="separator" aria-orientation="vertical" aria-label="Resize panel" className="absolute left-[-2px] top-0 bottom-0 w-[5px] cursor-col-resize z-20 group/drag flex items-center justify-center" onMouseDown={onDragStart}>
+      {/* Resize splitter — Pointer Events (mouse + touch + pen) via usePointerDrag. */}
+      <div role="separator" aria-orientation="vertical" aria-label="Resize panel" className="absolute left-[-2px] top-0 bottom-0 w-[5px] cursor-col-resize z-20 group/drag flex items-center justify-center" style={{ touchAction: 'none' }} {...scheduleResize}>
         <div className="w-[2px] h-full bg-transparent group-hover/drag:bg-accent group-active/drag:bg-accent-hover transition-colors duration-200" />
       </div>
       <div className="flex items-center justify-between px-5 py-4 border-b border-border">
