@@ -22,6 +22,27 @@ from kiro_crew.subagent import SubagentManager
 # ``_isolate_subagents_dir`` fixture in ``conftest.py`` — no per-file fixture needed.
 
 
+async def _wait_until_done(info, *, timeout: float = 5.0) -> None:
+    """Wait for a spawned subagent to finish, deterministically.
+
+    ``manager.spawn`` runs the subagent as a background asyncio task that flips
+    ``info.done`` once ``_run`` completes. Sleeping a fixed amount races that
+    task under load — the source of the intermittent
+    ``test_shared_session_cleanup_destroys_handle`` failure (``info.done`` still
+    ``False`` when the assertion ran). Polling ``info.done`` against a deadline
+    is race-free: it returns as soon as the task settles and only fails if the
+    task genuinely never completes.
+    """
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + timeout
+    while not info.done:
+        if loop.time() >= deadline:
+            raise AssertionError(
+                f"subagent {info.id} did not complete within {timeout}s"
+            )
+        await asyncio.sleep(0.01)
+
+
 def _mock_sessions(*, sharing_eligible: bool = True) -> MagicMock:
     """Create a mock SessionManager with session-sharing support."""
     sessions = MagicMock()
@@ -205,7 +226,7 @@ class TestSessionSharingSpawn:
             info = manager.spawn("test task", parent_session_key="dashboard:slot1")
             assert info is not None
             # Wait for the subagent to complete
-            await asyncio.sleep(0.5)
+            await _wait_until_done(info)
 
         # Verify runtime.create_session was called (not get_or_create)
         sessions.get_subagent_runtime.assert_awaited_once_with("dashboard:slot1")
@@ -228,7 +249,7 @@ class TestSessionSharingSpawn:
              patch("kiro_crew.subagent.Stats"), \
              patch("kiro_crew.subagent.sel"):
             info = manager.spawn("test task", parent_session_key="dashboard:slot1")
-            await asyncio.sleep(0.5)
+            await _wait_until_done(info)
 
         assert info._session_sharing is True
         assert info._shared_provider is not None
@@ -248,7 +269,7 @@ class TestSessionSharingSpawn:
              patch("kiro_crew.subagent.Stats"), \
              patch("kiro_crew.subagent.sel"):
             info = manager.spawn("test task", parent_session_key="dashboard:slot1")
-            await asyncio.sleep(0.5)
+            await _wait_until_done(info)
 
         assert info.done  # completed
         # reset should NOT have been called (shared path skips it)
@@ -274,7 +295,7 @@ class TestSessionSharingSpawn:
              patch("kiro_crew.subagent.Stats"), \
              patch("kiro_crew.subagent.sel"):
             info = manager.spawn("test task", parent_session_key="dashboard:slot1")
-            await asyncio.sleep(0.5)
+            await _wait_until_done(info)
 
         # Legacy path: get_or_create called, runtime NOT called
         sessions.get_or_create.assert_awaited()
@@ -304,7 +325,7 @@ class TestSessionSharingFallback:
              patch("kiro_crew.subagent.Stats"), \
              patch("kiro_crew.subagent.sel"):
             info = manager.spawn("test task", parent_session_key="dashboard:slot1")
-            await asyncio.sleep(0.5)
+            await _wait_until_done(info)
 
         # Should have fallen back to get_or_create
         sessions.get_or_create.assert_awaited()
@@ -335,7 +356,7 @@ class TestSessionSharingFallback:
              patch("kiro_crew.subagent.Stats"), \
              patch("kiro_crew.subagent.sel"):
             info = manager.spawn("test task", parent_session_key="dashboard:slot1")
-            await asyncio.sleep(0.5)
+            await _wait_until_done(info)
 
         # Should have fallen back to get_or_create
         sessions.get_or_create.assert_awaited()
@@ -479,7 +500,7 @@ class TestSessionSharingMultiAgent:
              patch("kiro_crew.subagent.Stats"), \
              patch("kiro_crew.subagent.sel"):
             info = manager.spawn("test task", parent_session_key="dashboard:slot1")
-            await asyncio.sleep(0.5)
+            await _wait_until_done(info)
 
         # The provider wraps the handle which has the session_id
         assert info._shared_provider is not None
