@@ -284,6 +284,29 @@ describe('KiroPrerequisiteGate', () => {
     expect(await screen.findByText(/ABCD-EFGH/)).toBeInTheDocument()
   })
 
+  it('offers a copyable terminal sign-in command in the re-auth banner', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    // happy-dom's navigator.clipboard is getter-only; defineProperty replaces it.
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({
+      installed: true,
+      authenticated: false,
+      ready: false,
+      initial_setup_complete: true,
+    }))
+
+    renderWithProviders(
+      <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
+    )
+
+    expect(await screen.findByText('kiro-cli login')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /copy sign-in command/i }))
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('kiro-cli login'))
+    // The retry control reads as a post-sign-in re-check, not a failed-probe retry.
+    expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled()
+    expect(screen.queryByRole('button', { name: 'Check again' })).not.toBeInTheDocument()
+  })
+
   it('keeps an established non-owner dashboard open while the owner reconnects', async () => {
     vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({
       platform: 'gateway',

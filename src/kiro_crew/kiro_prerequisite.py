@@ -26,7 +26,6 @@ import ntpath
 import os
 import re
 import shutil
-import sqlite3
 import stat
 import subprocess
 import sys
@@ -43,16 +42,11 @@ import aiohttp
 from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir
-from kiro_crew.env import augmented_path, resolve_krb5_ccname
 from kiro_crew.kiro_cli import (
     find_kiro_cli_candidates,
     known_kiro_cli_dirs,
 )
-from kiro_crew.sandbox import (
-    resource_limit_preexec,
-    sandboxed_spawn_argv,
-    scrub_agent_denied_env,
-)
+from kiro_crew.sandbox import resource_limit_preexec, sandboxed_spawn_argv
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 logger = logging.getLogger(__name__)
@@ -76,6 +70,14 @@ _TERMINATION_GRACE_SECS = 2.0
 _WINDOWS_DESCENDANT_POLL_SECS = 0.05
 _HTTPS_URL_RE = re.compile(r"https://[^\s<>\"']+")
 _UNSAFE_LOGIN_URL_RE = re.compile(r"[\\\x00-\x1f\x7f]")
+# kiro-cli renders an animated TTY progress bar ("▰▰▱▱ Logging in… | Press ^C to
+# cancel") whose repaints arrive as hundreds of carriage-return-separated frames.
+# It is noise in a dashboard <pre>: stored verbatim, the sign-in card fills with a
+# wall of block glyphs. Strip ANSI control sequences, turn each progress-glyph run
+# into a line break (a frame boundary — some builds repaint without a CR), treat
+# CR as a line break too, and collapse consecutive identical lines.
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]")
+_PROGRESS_GLYPH_RE = re.compile(r"[▰▱]+")
 _TRUSTED_LOGIN_HOSTS = frozenset({"app.kiro.dev", "view.awsapps.com"})
 _TRUSTED_INSTALLER_HOSTS = frozenset({"cli.kiro.dev"})
 _INSTALLER_SHA256 = {
@@ -94,7 +96,6 @@ try:
 except OSError:
     _PROCESS_GROUP_SUPERVISOR_CODE = ""
 _AUTH_STAGING_RELATIVE = Path(".kiro") / "crew-auth-staging"
-_AUTH_PUBLISH_LOCK_FILENAME = ".publish.lock"
 _ACP_EXECUTABLE_SNAPSHOT_RELATIVE = Path("run") / "kiro-cli-snapshots"
 _BINARY_TRUST_VERSION = 1
 _MFD_EXEC = 0x0010
@@ -238,8 +239,6 @@ class _AuthWorkspace:
 
     root: Path
     env: dict[str, str]
-    mappings: tuple[_AuthStoreMapping, ...]
-    source_digests: dict[str, str]
 
 
 @dataclass(frozen=True)
@@ -284,6 +283,39 @@ def _sanitize_detail(text: str) -> str:
     return safe[-_MAX_VISIBLE_DETAIL:]
 
 
+def _strip_progress_noise(text: str) -> str:
+    """Drop ANSI control sequences and animated progress glyphs."""
+
+    cleaned = _ANSI_ESCAPE_RE.sub("", str(text or ""))
+    # Each progress-glyph run starts a repaint, so it doubles as a frame
+    # boundary; a repaint is also usually delimited by a carriage return. Treat
+    # both as line breaks so consecutive identical repaints collapse below --
+    # and do it BEFORE _append_capped, which strips carriage returns and would
+    # otherwise fuse every frame into one unsplittable line.
+    cleaned = _PROGRESS_GLYPH_RE.sub("\n", cleaned)
+    return cleaned.replace("\r", "\n")
+
+
+def _dedupe_repeated_lines(text: str) -> str:
+    """Collapse consecutive identical lines to one occurrence."""
+
+    output: list[str] = []
+    for line in str(text or "").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if output and output[-1] == stripped:
+            continue
+        output.append(stripped)
+    result = "\n".join(output)
+    # ``splitlines`` drops the final terminator, but this runs over the whole
+    # accumulated detail on every stream read -- without it the next chunk fuses
+    # onto the last stored line (device code, installer progress, URL fallback).
+    if result and str(text or "").endswith(("\n", "\r")):
+        result += "\n"
+    return result
+
+
 def _canonical_candidate(path: str) -> str:
     try:
         return os.path.realpath(path)
@@ -303,13 +335,6 @@ def _is_runnable_executable(path: str, platform_name: str | None = None) -> bool
         _canonical_candidate(path),
         platform_name=platform_name,
     )
-
-
-def _bounded_file_sha256(path: Path) -> str | None:
-    """Return a digest for one bounded regular file, or ``None`` when absent."""
-
-    content = _read_bounded_regular_file(path)
-    return hashlib.sha256(content).hexdigest() if content is not None else None
 
 
 def _binary_sha256(path: str) -> str:
@@ -647,7 +672,7 @@ def _read_bounded_regular_file(path: Path) -> bytes | None:
 
 
 def _atomic_write_secret_bytes(path: Path, content: bytes) -> None:
-    """Atomically restore one bounded Kiro identity file with owner-only mode."""
+    """Atomically stage one bounded Kiro identity file with owner-only mode."""
 
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
@@ -663,55 +688,6 @@ def _atomic_write_secret_bytes(path: Path, content: bytes) -> None:
     except Exception:
         if fd >= 0:
             os.close(fd)
-        with contextlib.suppress(OSError):
-            os.unlink(temporary)
-        raise
-
-
-def _atomic_restore_sqlite(source: Path, destination: Path) -> None:
-    """Checkpoint a staged SQLite store into one atomic destination file.
-
-    The staged CLI may leave WAL/SHM/journal sidecars behind. Copying those
-    files one at a time can publish a mixed generation after a failed or
-    interrupted login. SQLite's backup API reads the complete staged
-    generation (including its WAL) into one standalone database, which is
-    then published with a single ``os.replace``.
-    """
-
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    fd, temporary = tempfile.mkstemp(dir=str(destination.parent), suffix=".sqlite.tmp")
-    os.close(fd)
-    try:
-        source_uri = f"{source.resolve().as_uri()}?mode=ro"
-        with contextlib.closing(sqlite3.connect(source_uri, uri=True)) as source_db:
-            with contextlib.closing(sqlite3.connect(temporary)) as destination_db:
-                source_db.backup(destination_db)
-                # Publish a self-contained rollback-journal database. Carrying
-                # WAL mode into the live path would immediately recreate a
-                # sidecar and defeat the single-file atomic publication.
-                destination_db.execute("PRAGMA journal_mode=DELETE")
-                destination_db.commit()
-        platform_compat.chmod_safe(temporary, 0o600)
-        if destination.exists():
-            # First checkpoint the live generation and move it out of WAL
-            # mode. If publication stops here, the previous credentials remain
-            # complete and readable; stale WAL bytes can no longer be replayed
-            # over the replacement database.
-            with contextlib.closing(sqlite3.connect(destination)) as live_db:
-                live_db.execute("PRAGMA wal_checkpoint(FULL)")
-                journal_mode = live_db.execute("PRAGMA journal_mode=DELETE").fetchone()
-                if not journal_mode or str(journal_mode[0]).lower() != "delete":
-                    raise sqlite3.OperationalError(
-                        "could not prepare the live Kiro identity database for replacement"
-                    )
-                live_db.commit()
-        for suffix in ("-wal", "-shm", "-journal"):
-            sidecar = Path(f"{destination}{suffix}")
-            if sidecar.exists():
-                sidecar.unlink()
-        os.replace(temporary, destination)
-        platform_compat.restrict_to_owner(str(destination))
-    except Exception:
         with contextlib.suppress(OSError):
             os.unlink(temporary)
         raise
@@ -793,15 +769,12 @@ def _prepare_auth_workspace(
             platform_compat.chmod_safe(str(root), 0o700)
         else:
             platform_compat.restrict_to_owner(str(root))
-        mappings = _auth_store_mappings(platform_name, home, environ)
-        source_digests: dict[str, str] = {}
-        for mapping in mappings:
+        for mapping in _auth_store_mappings(platform_name, home, environ):
             for pattern in mapping.filenames:
                 for source in mapping.source.glob(pattern):
                     content = _read_bounded_regular_file(source)
                     if content is None:
                         raise OSError(_AUTH_STORE_READ_ERROR)
-                    source_digests[str(source)] = hashlib.sha256(content).hexdigest()
                     _atomic_write_secret_bytes(
                         root / mapping.staged_relative / source.name,
                         content,
@@ -819,86 +792,10 @@ def _prepare_auth_workspace(
                 "LOCALAPPDATA": str(root / "AppData" / "Local"),
             }
         )
-        return _AuthWorkspace(
-            root=root,
-            env=env,
-            mappings=mappings,
-            source_digests=source_digests,
-        )
+        return _AuthWorkspace(root=root, env=env)
     except Exception:
         shutil.rmtree(root, ignore_errors=True)
         raise
-
-
-def _current_auth_source_digests(
-    mappings: tuple[_AuthStoreMapping, ...],
-) -> dict[str, str]:
-    """Snapshot all allowlisted live identity files for conflict detection."""
-
-    result: dict[str, str] = {}
-    for mapping in mappings:
-        for pattern in mapping.filenames:
-            for source in mapping.source.glob(pattern):
-                digest = _bounded_file_sha256(source)
-                if digest is None:
-                    raise OSError(_AUTH_STORE_READ_ERROR)
-                result[str(source)] = digest
-    return result
-
-
-def _finish_auth_workspace(workspace: _AuthWorkspace, *, commit: bool) -> None:
-    """Restore only allowlisted Kiro identity files, then delete the temp home."""
-
-    try:
-        if not commit:
-            return
-        lock_path = workspace.root.parent / _AUTH_PUBLISH_LOCK_FILENAME
-        lock_fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o600)
-        try:
-            if os.fstat(lock_fd).st_size == 0:
-                os.write(lock_fd, b"\0")
-                os.fsync(lock_fd)
-            platform_compat.restrict_to_owner(str(lock_path))
-            # The generation check and every publication form one
-            # cross-gateway critical section. Without this lock, two gateway
-            # processes can both validate the same starting generation and
-            # then overwrite one another's successful device login.
-            with platform_compat.file_lock(lock_fd, exclusive=True, required=True):
-                if _current_auth_source_digests(workspace.mappings) != workspace.source_digests:
-                    raise RuntimeError(
-                        "Kiro identity changed during sign-in; retry to preserve "
-                        "the newer credentials"
-                    )
-                for mapping in workspace.mappings:
-                    staged_dir = workspace.root / mapping.staged_relative
-                    for pattern in mapping.filenames:
-                        for staged in staged_dir.glob(pattern):
-                            if staged.name != "data.sqlite3" and staged.name.startswith(
-                                "data.sqlite3"
-                            ):
-                                # Sidecars are consumed by _atomic_restore_sqlite;
-                                # they are never published independently.
-                                continue
-                            if staged.name == "data.sqlite3":
-                                _atomic_restore_sqlite(staged, mapping.source / staged.name)
-                                continue
-                            content = _read_bounded_regular_file(staged)
-                            if content is None:
-                                continue
-                            if (
-                                staged.name.startswith("kiro-auth-token")
-                                and staged.suffix == ".json"
-                            ):
-                                try:
-                                    if not isinstance(json.loads(content), dict):
-                                        continue
-                                except (UnicodeDecodeError, json.JSONDecodeError):
-                                    continue
-                            _atomic_write_secret_bytes(mapping.source / staged.name, content)
-        finally:
-            os.close(lock_fd)
-    finally:
-        shutil.rmtree(workspace.root, ignore_errors=True)
 
 
 def extract_secure_login_url(text: str) -> str:
@@ -1759,9 +1656,10 @@ class KiroPrerequisiteService:
         ]
         # Kiro Crew's own secret home is always hidden from a probed CLI. The
         # credential-minimal probe additionally hides the identity stores; the
-        # real-home fallback probe must leave those visible so a CLI whose valid
-        # session lives outside the staged files (an external auth helper
-        # resolved from the real home) can read its own credentials.
+        # real-home callers must leave those visible — the readiness probe so a
+        # CLI whose valid session lives outside the staged files (an external
+        # auth helper resolved from the real home) can read its own credentials,
+        # and device login so kiro-cli can WRITE its own credential store there.
         self._crew_hidden_dirs = tuple(
             dict.fromkeys(
                 str(path)
@@ -2007,29 +1905,6 @@ class KiroPrerequisiteService:
         )
         platform_compat.restrict_to_owner(str(self._binary_trust_path))
 
-    def _real_home_probe_env(self) -> dict[str, str]:
-        """Build the real-home readiness ``whoami`` env like an ACP session.
-
-        The readiness login check runs against the real home, so it must see the
-        same session environment a real ``kiro-cli acp`` session gets — the
-        D-Bus session bus / secret-service keyring, XDG runtime dir, Kerberos
-        ccache, proxy, SSH agent, locale, etc. A curated allowlist drops
-        whatever a given host's keyring backend needs (e.g. AL2023 validates the
-        login via the D-Bus secret service, which needs
-        ``DBUS_SESSION_BUS_ADDRESS``), so mirror ``acp/runtime.py`` exactly: the
-        full real environment minus gateway-owned channel credentials, with PATH
-        augmented and the Kerberos ccache repaired. The OS sandbox still scrubs
-        sensitive env and Kiro Crew's own home stays hidden.
-        """
-
-        env = {str(key): str(value) for key, value in self._environ.items()}
-        env = scrub_agent_denied_env(env)
-        env["PATH"] = augmented_path(env.get("PATH", ""))
-        resolve_krb5_ccname(env)
-        env["NO_COLOR"] = "1"
-        env["TERM"] = "dumb"
-        return env
-
     async def _run_auth_command(
         self,
         executable: str,
@@ -2038,43 +1913,45 @@ class KiroPrerequisiteService:
         base_env: dict[str, str],
         timeout_secs: float,
         on_output: Callable[[str], None] | None = None,
-        commit: bool,
         isolate_home: bool = True,
     ) -> ProcessResult:
-        """Run Kiro auth with only Kiro identity files in its HOME.
+        """Run one Kiro auth command against a sandboxed, trusted executable.
 
         The CLI is trusted because it runs (its install source, owner, and path
         do not gate sign-in); KiroCrew is not the authority on where Kiro CLI is
         installed. The POSIX copy still snapshots the exact resolved bytes into
-        the sandbox so the process that receives the staged credentials is the
-        one just resolved, but it pins no stored digest — a Kiro self-update
-        that legitimately rewrites the binary must not break sign-in.
+        the sandbox so the process that runs is the one just resolved, but it
+        pins no stored digest — a Kiro self-update that legitimately rewrites
+        the binary must not break sign-in.
 
-        ``isolate_home=False`` runs the read-only readiness login check against
-        the user's real home (like an ACP session) instead of the
-        credential-minimal one, so a CLI whose session/registry lives in the
-        real home is detected. ``commit`` (device login) always isolates.
+        ``isolate_home=False`` runs against the user's real home (like an ACP
+        session), so a CLI whose session/registry lives in the real home is
+        detected and device login writes its own credential store where the CLI
+        normally keeps it. ``isolate_home=True`` keeps a credential-minimal
+        temporary HOME holding only Kiro identity files, for read-only probes
+        that must never see the real ``~/.aws`` / ``~/.ssh``.
         """
 
         if not isolate_home:
-            # Read-only readiness login check, run the way a real ACP session
-            # runs the CLI (acp/runtime.py): against the real environment/home
-            # under the standard OS sandbox. A rewritten HOME breaks CLIs whose
-            # session or tool registry lives in the real home (e.g. a toolbox
-            # multiplexer that resolves itself via its real-home registry), so
-            # this is what actually detects them.
+            # Run the way a real ACP session runs the CLI (acp/runtime.py):
+            # against the real environment/home under the standard OS sandbox. A
+            # rewritten HOME breaks CLIs whose session or tool registry lives in
+            # the real home (e.g. a toolbox multiplexer that resolves itself via
+            # its real-home registry), so this is what actually detects them, and
+            # it is where the CLI's own credential store belongs.
             #
             # SECURITY: this matches the accepted ACP launch posture, not a new
             # surface — ACP already runs the resolved kiro-cli with the full real
             # environment on every session (the standard sandbox intentionally
-            # exposes AWS/SSH to it). This path is a read-only subset: `commit`
-            # is rejected so it never stages or publishes, only Kiro Crew's own
-            # secret home is hidden, and the bytes are copied into a
-            # sandbox-visible private snapshot (keeping the resolved basename so a
-            # multiplexer still dispatches) and THAT is executed — binding
-            # resolve-to-exec exactly like the isolated probe and the ACP snapshot.
-            if commit:
-                raise ValueError("real-home auth commands cannot commit credentials")
+            # exposes AWS/SSH to it). Device sign-in writes kiro-cli's OWN
+            # credential store in its own home; that write is the entire point of
+            # delegating sign-in to the CLI, and it targets the same store an ACP
+            # session already reads. KiroCrew stages nothing and publishes
+            # nothing. Only Kiro Crew's own secret home is hidden, and the bytes
+            # are copied into a sandbox-visible private snapshot (keeping the
+            # resolved basename so a multiplexer still dispatches) and THAT is
+            # executed — binding resolve-to-exec exactly like the isolated probe
+            # and the ACP snapshot.
             fallback_executable = executable
             cleanup_dir: str | None = None
             extra_visible: tuple[str, ...] = ()
@@ -2098,7 +1975,7 @@ class KiroPrerequisiteService:
                 return await self._run(
                     fallback_executable,
                     args,
-                    env=self._real_home_probe_env(),
+                    env=base_env,
                     timeout_secs=timeout_secs,
                     on_output=on_output,
                     sandboxed=True,
@@ -2118,7 +1995,6 @@ class KiroPrerequisiteService:
             base_env,
         )
         auth_executable = executable
-        commit_changes = False
         try:
             if platform_compat.IS_POSIX and self._run is _run_process:
                 auth_executable = await asyncio.to_thread(
@@ -2127,7 +2003,7 @@ class KiroPrerequisiteService:
                     workspace.root / ".bin",
                     None,
                 )
-            result = await self._run(
+            return await self._run(
                 auth_executable,
                 args,
                 env=workspace.env,
@@ -2138,14 +2014,9 @@ class KiroPrerequisiteService:
                 extra_hidden_dirs=self._hidden_probe_dirs,
                 extra_visible_dirs=(str(workspace.root),),
             )
-            commit_changes = commit and result.ok
-            return result
         finally:
-            await asyncio.to_thread(
-                _finish_auth_workspace,
-                workspace,
-                commit=commit_changes,
-            )
+            # Read-only probe home: nothing to publish, just remove it.
+            await asyncio.to_thread(shutil.rmtree, str(workspace.root), ignore_errors=True)
 
     async def _audited_identity_probe(
         self, executable: str, *, isolate_home: bool = True
@@ -2171,7 +2042,6 @@ class KiroPrerequisiteService:
                 ["whoami"],
                 base_env=self._probe_environment,
                 timeout_secs=_PROBE_TIMEOUT_SECS,
-                commit=False,
                 isolate_home=isolate_home,
             )
         except asyncio.CancelledError:
@@ -2374,11 +2244,22 @@ class KiroPrerequisiteService:
             await self._set_terminal_audit("install", "failed", caller, safe_error)
 
     def _capture_operation_output(self, chunk: str) -> None:
-        detail = _append_capped(self._operation.detail, chunk)
+        # Read the login URL out of the RAW chunk first: the detector is strict
+        # about host and path, and noise filtering must never be able to hide a
+        # legitimate sign-in URL from the user.
+        url = extract_secure_login_url(chunk)
+        detail = _dedupe_repeated_lines(
+            _append_capped(self._operation.detail, _strip_progress_noise(chunk))
+        )
         self._operation.detail = _sanitize_detail(detail)
-        if self._operation.kind == "login" and (url := extract_secure_login_url(detail)):
-            self._operation.url = url
-            self._operation.message = "Open the sign-in page and enter the code shown below."
+        if self._operation.kind == "login":
+            # One stream read can split a URL across two chunks, so keep the
+            # accumulated-text fallback: the filter only inserts line breaks at
+            # frame boundaries, which a sign-in URL never contains.
+            url = url or extract_secure_login_url(detail)
+            if url:
+                self._operation.url = url
+                self._operation.message = "Open the sign-in page and enter the code shown below."
 
     async def _login(self, caller: str) -> None:
         try:
@@ -2412,14 +2293,17 @@ class KiroPrerequisiteService:
                 await self._set_terminal_audit("login", "completed", caller)
                 return
 
-            self._operation.message = "Starting secure browser sign-in…"
+            self._operation.message = "Starting Kiro sign-in…"
+            # kiro-cli owns the whole device flow: it runs against the real home
+            # and writes its own credential store, exactly as it does from a
+            # terminal. KiroCrew stages no credentials and copies none back.
             result = await self._run_auth_command(
                 self._viable_binary,
                 ["login", "--use-device-flow"],
                 base_env=self._child_environment,
                 timeout_secs=_LOGIN_TIMEOUT_SECS,
                 on_output=self._capture_operation_output,
-                commit=True,
+                isolate_home=False,
             )
             next_status = await self._probe(force=True)
             if next_status.authenticated:

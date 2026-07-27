@@ -1,16 +1,18 @@
-import type { ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { motion, useReducedMotion } from 'framer-motion'
 import {
   AlertTriangle,
   ArrowRight,
   CheckCircle2,
+  Copy,
   ExternalLink,
   Loader2,
   LogIn,
   Package,
   RefreshCw,
   ShieldCheck,
+  Terminal,
 } from 'lucide-react'
 import {
   ApiError,
@@ -230,6 +232,38 @@ function OperationProgress({ status }: { status: KiroPrerequisiteStatus }) {
   )
 }
 
+const TERMINAL_LOGIN_COMMAND = 'kiro-cli login'
+
+// kiro-cli owns the whole sign-in flow. The in-app button starts it on the
+// gateway host, but a terminal is always available and is the only path when the
+// gateway runs headless or over SSH — so surface the exact command too.
+function TerminalLoginCommand() {
+  const [copied, setCopied] = useState(false)
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(TERMINAL_LOGIN_COMMAND)
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 2_000)
+    } catch {
+      setCopied(false)
+    }
+  }
+  return (
+    <div className="pointer-events-auto mt-2 flex flex-wrap items-center gap-2">
+      <span className="text-[12px] text-muted">
+        <Terminal className="lucide-inline" /> or run in terminal:
+      </span>
+      <code className="rounded-md bg-bg px-2 py-1 font-mono text-[12px] text-text">
+        {TERMINAL_LOGIN_COMMAND}
+      </code>
+      <Btn type="button" onClick={copy} aria-label="Copy sign-in command">
+        <Copy className="lucide-inline" />
+        {copied ? 'Copied' : 'Copy'}
+      </Btn>
+    </div>
+  )
+}
+
 function ReauthenticationBanner({
   status,
   busy,
@@ -287,6 +321,7 @@ function ReauthenticationBanner({
                 Open Kiro sign-in page <ExternalLink className="lucide-inline" />
               </a>
             )}
+            {!needsInstall && owner && <TerminalLoginCommand />}
             {status.operation.detail && (
               <pre className="mt-2 max-h-24 overflow-auto whitespace-pre-wrap break-words rounded-md bg-bg p-2 font-mono text-[12px] text-muted">
                 {status.operation.detail}
@@ -314,7 +349,7 @@ function ReauthenticationBanner({
           )}
           <Btn type="button" disabled={busy || retrying} onClick={onRetry}>
             <RefreshCw className={`lucide-inline ${retrying ? 'animate-spin' : ''}`} />
-            Check again
+            Refresh
           </Btn>
           {owner && needsInstall && !status.can_auto_install && (
             <a

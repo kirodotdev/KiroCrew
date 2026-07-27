@@ -16,17 +16,38 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 import kiro_crew.acp.client as acp_client_module
 from kiro_crew.dashboard.handlers import agents
+from kiro_crew.kiro_prerequisite import KiroPrerequisiteService
 
 
-def _kiro_request() -> MagicMock:
-    return MagicMock()
+async def _no_audit(**kwargs: Any) -> None:
+    del kwargs
+
+
+def _kiro_request(tmp_path: Path) -> MagicMock:
+    # api_models is readiness-gated (a signed-out gateway must not spawn a
+    # browser-opening kiro-cli), so every degraded-branch test has to get past
+    # the fail-closed gate first. `assume_ready=True` is the documented test
+    # bypass (see kiro_readiness.reject_if_kiro_not_ready); without it these
+    # tests would assert the gate's 503 instead of the branch under test.
+    service = KiroPrerequisiteService(
+        platform_name="linux",
+        environ={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"},
+        home=tmp_path,
+        audit_writer=_no_audit,
+        assume_ready=True,
+    )
+    request = MagicMock()
+    request.app = {"kiro_prerequisite_service": service}
+    return request
 
 
 def _kiro_cfg() -> SimpleNamespace:
@@ -79,16 +100,16 @@ class _FakeProc:
         return self._stdout, self._stderr
 
 
-def test_kiro_binary_unresolved_returns_503():
+def test_kiro_binary_unresolved_returns_503(tmp_path):
     with patch.object(agents.KiroCrewConfig, "load", return_value=_kiro_cfg()), patch(
         "kiro_crew.acp.client._resolve_kiro_bin_for_spawn", return_value=""
     ):
-        resp = _run(agents.api_models(_kiro_request()))
+        resp = _run(agents.api_models(_kiro_request(tmp_path)))
     assert resp.status == 503
     assert "error" in _body(resp)
 
 
-def test_list_models_timeout_returns_503():
+def test_list_models_timeout_returns_503(tmp_path):
     with patch.object(agents.KiroCrewConfig, "load", return_value=_kiro_cfg()), patch(
         "kiro_crew.acp.client._resolve_kiro_bin_for_spawn", return_value="/usr/bin/kiro-cli"
     ), patch("kiro_crew.acp.client._resolve_ssh_auth_sock", lambda env: None), patch(
@@ -104,12 +125,12 @@ def test_list_models_timeout_returns_503():
     ), patch.object(
         agents.asyncio, "wait_for", new=_raise_timeout
     ):
-        resp = _run(agents.api_models(_kiro_request()))
+        resp = _run(agents.api_models(_kiro_request(tmp_path)))
     assert resp.status == 503
     assert "error" in _body(resp)
 
 
-def test_list_models_nonzero_exit_returns_503():
+def test_list_models_nonzero_exit_returns_503(tmp_path):
     proc = _FakeProc(stderr=b"sandbox initialization failed", returncode=71)
     with patch.object(agents.KiroCrewConfig, "load", return_value=_kiro_cfg()), patch(
         "kiro_crew.acp.client._resolve_kiro_bin_for_spawn", return_value="/usr/bin/kiro-cli"
@@ -126,12 +147,12 @@ def test_list_models_nonzero_exit_returns_503():
     ), patch.object(
         agents.asyncio, "create_subprocess_exec", return_value=proc
     ):
-        resp = _run(agents.api_models(_kiro_request()))
+        resp = _run(agents.api_models(_kiro_request(tmp_path)))
     assert resp.status == 503
     assert _body(resp) == {"error": "model list command failed"}
 
 
-def test_list_models_empty_stdout_returns_503():
+def test_list_models_empty_stdout_returns_503(tmp_path):
     proc = _FakeProc(returncode=0)
     with patch.object(agents.KiroCrewConfig, "load", return_value=_kiro_cfg()), patch(
         "kiro_crew.acp.client._resolve_kiro_bin_for_spawn", return_value="/usr/bin/kiro-cli"
@@ -146,12 +167,12 @@ def test_list_models_empty_stdout_returns_503():
     ), patch.object(
         agents.asyncio, "create_subprocess_exec", return_value=proc
     ):
-        resp = _run(agents.api_models(_kiro_request()))
+        resp = _run(agents.api_models(_kiro_request(tmp_path)))
     assert resp.status == 503
     assert _body(resp) == {"error": "model list returned empty output"}
 
 
-def test_list_models_invalid_json_returns_503():
+def test_list_models_invalid_json_returns_503(tmp_path):
     proc = _FakeProc(stdout=b"not-json", returncode=0)
     with patch.object(agents.KiroCrewConfig, "load", return_value=_kiro_cfg()), patch(
         "kiro_crew.acp.client._resolve_kiro_bin_for_spawn", return_value="/usr/bin/kiro-cli"
@@ -166,12 +187,12 @@ def test_list_models_invalid_json_returns_503():
     ), patch.object(
         agents.asyncio, "create_subprocess_exec", return_value=proc
     ):
-        resp = _run(agents.api_models(_kiro_request()))
+        resp = _run(agents.api_models(_kiro_request(tmp_path)))
     assert resp.status == 503
     assert _body(resp) == {"error": "model list returned invalid JSON"}
 
 
-def test_list_models_invalid_payload_returns_503():
+def test_list_models_invalid_payload_returns_503(tmp_path):
     payload = json.dumps({"models": {"unexpected": "mapping"}}).encode()
     proc = _FakeProc(stdout=payload, returncode=0)
     with patch.object(agents.KiroCrewConfig, "load", return_value=_kiro_cfg()), patch(
@@ -187,22 +208,22 @@ def test_list_models_invalid_payload_returns_503():
     ), patch.object(
         agents.asyncio, "create_subprocess_exec", return_value=proc
     ):
-        resp = _run(agents.api_models(_kiro_request()))
+        resp = _run(agents.api_models(_kiro_request(tmp_path)))
     assert resp.status == 503
     assert _body(resp) == {"error": "model list returned an invalid payload"}
 
 
-def test_unexpected_exception_returns_503():
+def test_unexpected_exception_returns_503(tmp_path):
     # A failure inside the try (here: kiro-bin resolution raising) must be
     # caught and surfaced as 503, not a cached empty 200.
     with patch.object(agents.KiroCrewConfig, "load", return_value=_kiro_cfg()), patch(
         "kiro_crew.acp.client._resolve_kiro_bin_for_spawn", side_effect=RuntimeError("boom")
     ):
-        resp = _run(agents.api_models(_kiro_request()))
+        resp = _run(agents.api_models(_kiro_request(tmp_path)))
     assert resp.status == 503
 
 
-def test_successful_list_returns_200_with_models():
+def test_successful_list_returns_200_with_models(tmp_path):
     payload = json.dumps({"models": [{"model_name": "claude-opus-4.8", "description": "x"}]}).encode()
     with patch.object(agents.KiroCrewConfig, "load", return_value=_kiro_cfg()), patch(
         "kiro_crew.acp.client._resolve_kiro_bin_for_spawn", return_value="/usr/bin/kiro-cli"
@@ -217,13 +238,13 @@ def test_successful_list_returns_200_with_models():
     ), patch.object(
         agents.asyncio, "create_subprocess_exec", return_value=_FakeProc(payload)
     ):
-        resp = _run(agents.api_models(_kiro_request()))
+        resp = _run(agents.api_models(_kiro_request(tmp_path)))
     assert resp.status == 200
     models = _body(resp)
     assert any(m["model_name"] == "claude-opus-4.8" for m in models)
 
 
-def test_successful_list_inherits_and_releases_snapshot():
+def test_successful_list_inherits_and_releases_snapshot(tmp_path):
     payload = json.dumps({"models": [{"model_name": "claude-opus-4.8"}]}).encode()
     path, fd = _register_snapshot()
     spawn = AsyncMock(return_value=_FakeProc(payload))
@@ -238,7 +259,7 @@ def test_successful_list_inherits_and_releases_snapshot():
             patch("kiro_crew.sandbox.resource_limit_preexec", lambda: None),
             patch.object(agents.asyncio, "create_subprocess_exec", spawn),
         ):
-            resp = _run(agents.api_models(_kiro_request()))
+            resp = _run(agents.api_models(_kiro_request(tmp_path)))
 
         assert resp.status == 200
         assert spawn.await_args.kwargs.get("pass_fds") == (fd,)
@@ -249,7 +270,7 @@ def test_successful_list_inherits_and_releases_snapshot():
         _discard_snapshot(path)
 
 
-def test_structured_context_window_seeds_central_authority():
+def test_structured_context_window_seeds_central_authority(tmp_path):
     # kiro-cli's --list-models --format json returns a STRUCTURED
     # context_window_tokens per model. api_models seeds the central window
     # authority (refresh_kiro_windows) from it, so the ACP backfill / context
@@ -292,7 +313,7 @@ def test_structured_context_window_seeds_central_authority():
     ), patch.object(
         agents.asyncio, "wait_for", return_value=(payload, b"")
     ):
-        resp = _run(agents.api_models(_kiro_request()))
+        resp = _run(agents.api_models(_kiro_request(tmp_path)))
     assert resp.status == 200
     # The non-registry GPT window is now resolvable through the central authority.
     assert mr.model_window("gpt-5.6-terra") == 272000

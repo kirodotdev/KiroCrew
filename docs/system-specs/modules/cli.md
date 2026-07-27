@@ -170,20 +170,20 @@ for `whoami` and device login — trust is "it runs, and it has a valid login",
 not install source, owner, or fixed path (KiroCrew is not the authority on where
 Kiro CLI is installed, and its self-updater rewrites its own bytes as the user).
 POSIX auth calls still execute an owner-only snapshot of the exact resolved
-bytes under the protected runtime directory, binding the process that receives
-staged credentials to the bytes just resolved (no stored digest pin, so a
-legitimate self-update does not break sign-in).
-Authentication commands run in the standard sandbox against a temporary home
-populated only with Kiro identity JSON and SQLite files. The temporary state is
-published only after a successful command; failure, timeout, or cancellation
-discards it. SQLite sidecars are checkpointed into one standalone database and
-atomically replaced rather than copied independently. Unrelated AWS, SSH,
-GitHub, Kubernetes, and Kiro Crew state therefore remains unavailable. Any
-allowlisted live identity artifact that is a symlink, non-regular, oversized,
-unreadable, or disappears while being captured aborts before login. The same
-fail-closed rule applies to the locked publication generation scan, so a
-rejected live database can never be treated as absent and replaced by a fresh
-staged database. Every
+bytes under the protected runtime directory, binding the process that signs in
+to the bytes just resolved (no stored digest pin, so a legitimate self-update
+does not break sign-in).
+Sign-in itself is delegated to Kiro CLI: `login --use-device-flow` runs in the
+standard sandbox against the user's real home, with only the Kiro Crew data
+homes hidden, and the CLI writes its own credential store exactly as it does
+from a terminal. KiroCrew stages nothing and publishes nothing, so no staged
+state has to be reconciled after a failure, timeout, or cancellation. The
+credential-minimal temporary home populated only with Kiro identity JSON and
+SQLite files survives as an opt-in read-only mode — one that also hides
+unrelated AWS, SSH, GitHub, and Kubernetes state — and its temporary directory
+is removed on every exit path. Any allowlisted live identity artifact that is a
+symlink, non-regular, oversized, unreadable, or disappears while being captured
+aborts that mode before the command runs. Every
 probe emits a critical `invoked` SEL event before spawn
 and a best-effort terminal event without argv, candidate paths, output, or
 environment values. Installer and login timeouts cover process exit and

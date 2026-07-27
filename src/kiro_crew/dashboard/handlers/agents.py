@@ -30,6 +30,7 @@ from kiro_crew.dashboard.chat_utils import (
     is_deprecated_model,
 )
 from kiro_crew.dashboard.handlers._shared import _capability_manager
+from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_not_ready
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.executors import discovery_executor, maintenance_executor
 
@@ -487,6 +488,17 @@ def _cc_models(request: web.Request, configured_default: str = "") -> list[dict]
 
 async def api_models(request: web.Request) -> web.Response:
     """GET /api/models — list available models from the live kiro-cli ACP session."""
+    # Signed-out gateways must never reach the spawn below. kiro-cli auto-opens
+    # an interactive browser login for ANY subcommand run unauthenticated
+    # (--no-interactive does not suppress it, and there is no opt-out env var),
+    # and the frontend polls this endpoint every 8s while the model list is
+    # degraded — which is exactly the signed-out state. Ungated, that pairing
+    # opened a browser window every 8s indefinitely. The 503 is the same
+    # degraded response the timeout/unresolved branches already return, so the
+    # client contract is unchanged; only the subprocess is skipped.
+    blocked = await reject_if_kiro_not_ready(request)
+    if blocked is not None:
+        return blocked
     kiro_bin: str | None = None
     try:
         from kiro_crew.acp.client import (  # noqa: F811

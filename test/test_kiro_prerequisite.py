@@ -749,6 +749,124 @@ class TestKiroPrerequisiteHelpers:
         assert service._operation.url == ""
         assert service._operation.message == ""
 
+    def test_capture_operation_output_drops_progress_spinner(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        service = KiroPrerequisiteService(
+            platform_name="linux",
+            environ={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"},
+            home=tmp_path,
+            audit_writer=_no_audit,
+        )
+        service._operation = OperationStatus(kind="login", status="running")
+
+        # Real kiro-cli separates repaints with carriage returns; the frames here
+        # deliberately mix a CR-delimited pair with a CR-less pair so neither
+        # delimiter alone can carry the dedupe.
+        service._capture_operation_output(
+            "\x1b[?25l▰▱▱▱▱▱▱ Logging in... | Press (^) + C to cancel\r"
+            "▰▰▱▱▱▱▱ Logging in... | Press (^) + C to cancel"
+            "▰▰▰▱▱▱▱ Logging in... | Press (^) + C to cancel"
+        )
+
+        assert "▰" not in service._operation.detail
+        assert "▱" not in service._operation.detail
+        assert "\x1b" not in service._operation.detail
+        # A repeated one-line spinner must not accumulate.
+        assert service._operation.detail.count("Logging in") <= 1
+
+    def test_capture_operation_output_keeps_device_code_line(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        service = KiroPrerequisiteService(
+            platform_name="linux",
+            environ={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"},
+            home=tmp_path,
+            audit_writer=_no_audit,
+        )
+        service._operation = OperationStatus(kind="login", status="running")
+
+        service._capture_operation_output(
+            "Confirm the code: ABCD-1234\nhttps://view.awsapps.com/start/#/device\n"
+        )
+
+        assert "ABCD-1234" in service._operation.detail
+        assert service._operation.url == "https://view.awsapps.com/start/#/device"
+
+    def test_capture_operation_output_keeps_chunks_on_separate_lines(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        # Each stream read is re-deduped over the WHOLE accumulated detail, so a
+        # newline-terminated chunk must keep its terminator -- otherwise the next
+        # chunk fuses onto the device-code line and the URL fallback can capture
+        # trailing text.
+        service = KiroPrerequisiteService(
+            platform_name="linux",
+            environ={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"},
+            home=tmp_path,
+            audit_writer=_no_audit,
+        )
+        service._operation = OperationStatus(kind="login", status="running")
+
+        service._capture_operation_output("Confirm the code: ABCD-1234\n")
+        service._capture_operation_output("https://view.awsapps.com/start/#/device\n")
+        service._capture_operation_output("Waiting for the browser confirmation...\n")
+
+        lines = service._operation.detail.splitlines()
+        assert lines == [
+            "Confirm the code: ABCD-1234",
+            "https://view.awsapps.com/start/#/device",
+            "Waiting for the browser confirmation...",
+        ]
+        assert "ABCD-1234\nhttps://" in service._operation.detail
+        assert service._operation.url == "https://view.awsapps.com/start/#/device"
+
+    def test_capture_operation_output_keeps_install_progress_lines_separate(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        # The installer emits plain multi-line progress with no spinner glyphs at
+        # all; consecutive reads must not fuse into one unreadable line.
+        service = KiroPrerequisiteService(
+            platform_name="linux",
+            environ={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"},
+            home=tmp_path,
+            audit_writer=_no_audit,
+        )
+        service._operation = OperationStatus(kind="install", status="running")
+
+        service._capture_operation_output("Downloading Kiro CLI...\nVerifying signature...\n")
+        service._capture_operation_output("Installing to /usr/local/bin...\nDone.\n")
+
+        assert service._operation.detail.splitlines() == [
+            "Downloading Kiro CLI...",
+            "Verifying signature...",
+            "Installing to /usr/local/bin...",
+            "Done.",
+        ]
+
+    def test_capture_operation_output_reassembles_url_split_across_chunks(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        # One stream read can split the URL, so the accumulated-text fallback has
+        # to keep working: a chunk with NO trailing newline must not gain one.
+        service = KiroPrerequisiteService(
+            platform_name="linux",
+            environ={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"},
+            home=tmp_path,
+            audit_writer=_no_audit,
+        )
+        service._operation = OperationStatus(kind="login", status="running")
+
+        service._capture_operation_output("Open https://view.awsapps.com/start")
+        service._capture_operation_output("/#/device\n")
+
+        assert service._operation.url == "https://view.awsapps.com/start/#/device"
+
 
 class TestKiroPrerequisiteWorkflow:
     @pytest.mark.asyncio
@@ -1231,48 +1349,77 @@ class TestKiroPrerequisiteWorkflow:
         assert snapshot.launch_path
 
     @pytest.mark.asyncio
-    async def test_failed_auth_does_not_publish_staged_credentials(self, tmp_path: Path) -> None:
+    async def test_login_runs_against_real_home_without_staging(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Login delegates fully to kiro-cli: no staged home, no copy-back."""
         executable = tmp_path / ".local" / "bin" / "kiro-cli"
         _make_executable(executable)
-        token = tmp_path / ".aws" / "sso" / "cache" / "kiro-auth-token-cli.json"
-        token.parent.mkdir(parents=True)
-        token.write_text('{"accessToken":"original"}', encoding="utf-8")
+        seen: dict[str, object] = {}
 
-        async def fail_after_write(
-            _command: str,
-            _args: list[str],
-            **kwargs: Any,
-        ) -> ProcessResult:
-            staged = Path(kwargs["env"]["HOME"]) / ".aws" / "sso" / "cache" / token.name
-            staged.write_text('{"accessToken":"partial"}', encoding="utf-8")
-            return ProcessResult(ok=False, timed_out=True)
+        async def runner(command, args, **kwargs):
+            if args == ["--version"]:
+                return ProcessResult(ok=True, output="kiro-cli 1.0")
+            if args == ["whoami"]:
+                # Signed out before login, signed in after it runs.
+                return ProcessResult(ok=bool(seen.get("login")))
+            if args[:1] == ["login"]:
+                seen["login"] = True
+                seen["env_home"] = kwargs["env"].get("HOME")
+                return ProcessResult(ok=True)
+            return ProcessResult(ok=False)
 
+        service = KiroPrerequisiteService(
+            platform_name="linux",
+            environ={"HOME": str(tmp_path), "PATH": str(executable.parent)},
+            home=tmp_path,
+            process_runner=runner,
+            audit_writer=_no_audit,
+        )
+
+        await service._login("tester")
+
+        assert seen["login"] is True
+        # The login child saw the user's REAL home, not a staging dir.
+        assert seen["env_home"] == str(tmp_path)
+        # No staging dir was left behind under the auth-staging parent.
+        staging = tmp_path / ".kiro" / "crew-auth-staging"
+        assert list(staging.glob("auth-*")) == []
+        assert service._operation.status == "succeeded"
+
+    @pytest.mark.asyncio
+    async def test_run_auth_command_no_longer_accepts_commit(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """The credential copy-back parameter is gone — kiro-cli owns its store."""
+        executable = tmp_path / ".local" / "bin" / "kiro-cli"
+        _make_executable(executable)
         service = KiroPrerequisiteService(
             platform_name="linux",
             environ={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"},
             home=tmp_path,
-            process_runner=fail_after_write,
+            process_runner=AsyncMock(return_value=ProcessResult(ok=True)),
             audit_writer=_no_audit,
         )
-        service._attest_candidate(str(executable))
 
-        result = await service._run_auth_command(
-            str(executable),
-            ["login", "--use-device-flow"],
-            base_env={},
-            timeout_secs=1,
-            commit=True,
-        )
-
-        assert result.timed_out is True
-        assert token.read_text(encoding="utf-8") == '{"accessToken":"original"}'
+        with pytest.raises(TypeError, match="commit"):
+            await service._run_auth_command(
+                str(executable),
+                ["login"],
+                base_env={},
+                timeout_secs=1,
+                commit=True,
+            )
 
     @pytest.mark.asyncio
-    async def test_rejected_live_sqlite_aborts_before_login_without_replacement(
+    async def test_unreadable_identity_store_aborts_isolated_probe(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        """A store that cannot be read safely is never staged, and nothing runs."""
         executable = tmp_path / ".local" / "bin" / "kiro-cli"
         _make_executable(executable)
         live = tmp_path / ".local" / "share" / "kiro-cli" / "data.sqlite3"
@@ -1283,13 +1430,13 @@ class TestKiroPrerequisiteWorkflow:
             db.commit()
         original = live.read_bytes()
         monkeypatch.setattr(prerequisite_module, "_MAX_AUTH_STORE_FILE_BYTES", 1)
-        login = AsyncMock(return_value=ProcessResult(ok=True))
+        probe = AsyncMock(return_value=ProcessResult(ok=True))
 
         service = KiroPrerequisiteService(
             platform_name="linux",
             environ={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"},
             home=tmp_path,
-            process_runner=login,
+            process_runner=probe,
             audit_writer=_no_audit,
         )
         service._attest_candidate(str(executable))
@@ -1297,163 +1444,19 @@ class TestKiroPrerequisiteWorkflow:
         with pytest.raises(OSError, match="could not be read safely"):
             await service._run_auth_command(
                 str(executable),
-                ["login", "--use-device-flow"],
+                ["whoami"],
                 base_env={},
                 timeout_secs=1,
-                commit=True,
             )
 
-        login.assert_not_awaited()
+        probe.assert_not_awaited()
         assert live.read_bytes() == original
+        staging = tmp_path / ".kiro" / "crew-auth-staging"
+        assert list(staging.glob("auth-*")) == []
 
     @pytest.mark.asyncio
-    async def test_auth_commit_refuses_to_clobber_concurrent_identity_update(
-        self,
-        tmp_path: Path,
-    ) -> None:
-        executable = tmp_path / ".local" / "bin" / "kiro-cli"
-        _make_executable(executable)
-        token = tmp_path / ".aws" / "sso" / "cache" / "kiro-auth-token-cli.json"
-        token.parent.mkdir(parents=True)
-        token.write_text('{"accessToken":"original"}', encoding="utf-8")
-
-        async def concurrent_update(
-            _command: str,
-            _args: list[str],
-            **kwargs: Any,
-        ) -> ProcessResult:
-            staged = Path(kwargs["env"]["HOME"]) / ".aws" / "sso" / "cache" / token.name
-            staged.write_text('{"accessToken":"device-flow"}', encoding="utf-8")
-            token.write_text('{"accessToken":"newer-user-login"}', encoding="utf-8")
-            return ProcessResult(ok=True)
-
-        service = KiroPrerequisiteService(
-            platform_name="linux",
-            environ={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"},
-            home=tmp_path,
-            process_runner=concurrent_update,
-            audit_writer=_no_audit,
-        )
-        service._attest_candidate(str(executable))
-
-        with pytest.raises(RuntimeError, match="identity changed during sign-in"):
-            await service._run_auth_command(
-                str(executable),
-                ["login", "--use-device-flow"],
-                base_env={},
-                timeout_secs=1,
-                commit=True,
-            )
-        assert token.read_text(encoding="utf-8") == '{"accessToken":"newer-user-login"}'
-
-    @pytest.mark.asyncio
-    async def test_auth_commit_rejects_new_unreadable_identity_file(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        executable = tmp_path / ".local" / "bin" / "kiro-cli"
-        _make_executable(executable)
-        token = tmp_path / ".aws" / "sso" / "cache" / "kiro-auth-token-cli.json"
-        oversized = b"x" * 128
-        monkeypatch.setattr(prerequisite_module, "_MAX_AUTH_STORE_FILE_BYTES", 64)
-
-        async def concurrent_unreadable_file(
-            _command: str,
-            _args: list[str],
-            **kwargs: Any,
-        ) -> ProcessResult:
-            staged = Path(kwargs["env"]["HOME"]) / ".aws" / "sso" / "cache" / token.name
-            staged.parent.mkdir(parents=True)
-            staged.write_text('{"ok":1}', encoding="utf-8")
-            token.parent.mkdir(parents=True)
-            token.write_bytes(oversized)
-            return ProcessResult(ok=True)
-
-        service = KiroPrerequisiteService(
-            platform_name="linux",
-            environ={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"},
-            home=tmp_path,
-            process_runner=concurrent_unreadable_file,
-            audit_writer=_no_audit,
-        )
-        service._attest_candidate(str(executable))
-
-        with pytest.raises(OSError, match="could not be read safely"):
-            await service._run_auth_command(
-                str(executable),
-                ["login", "--use-device-flow"],
-                base_env={},
-                timeout_secs=1,
-                commit=True,
-            )
-
-        assert token.read_bytes() == oversized
-
-    def test_auth_generation_check_and_publish_share_cross_process_lock(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        token = tmp_path / ".aws" / "sso" / "cache" / "kiro-auth-token-cli.json"
-        token.parent.mkdir(parents=True)
-        token.write_text('{"accessToken":"original"}', encoding="utf-8")
-        workspace = prerequisite_module._prepare_auth_workspace(
-            "linux",
-            tmp_path,
-            {"HOME": str(tmp_path)},
-            {},
-        )
-        staged = workspace.root / ".aws" / "sso" / "cache" / token.name
-        staged.write_text('{"accessToken":"device-flow"}', encoding="utf-8")
-
-        lock_held = False
-        original_digests = prerequisite_module._current_auth_source_digests
-        original_write = prerequisite_module._atomic_write_secret_bytes
-
-        @contextlib.contextmanager
-        def observed_lock(
-            _fd: int,
-            *,
-            exclusive: bool = True,
-            required: bool = False,
-        ):
-            nonlocal lock_held
-            assert exclusive is True
-            assert required is True
-            lock_held = True
-            try:
-                yield
-            finally:
-                lock_held = False
-
-        def observed_digests(mappings):
-            assert lock_held
-            return original_digests(mappings)
-
-        def observed_write(path: Path, content: bytes) -> None:
-            assert lock_held
-            original_write(path, content)
-
-        monkeypatch.setattr(platform_compat, "file_lock", observed_lock)
-        monkeypatch.setattr(
-            prerequisite_module,
-            "_current_auth_source_digests",
-            observed_digests,
-        )
-        monkeypatch.setattr(
-            prerequisite_module,
-            "_atomic_write_secret_bytes",
-            observed_write,
-        )
-
-        prerequisite_module._finish_auth_workspace(workspace, commit=True)
-
-        assert token.read_text(encoding="utf-8") == '{"accessToken":"device-flow"}'
-        assert lock_held is False
-
-    @pytest.mark.asyncio
-    async def test_cancelled_auth_does_not_publish_staged_credentials(self, tmp_path: Path) -> None:
+    async def test_cancelled_isolated_probe_removes_staging_home(self, tmp_path: Path) -> None:
+        """The staged probe home is a scratch dir: always removed, never published."""
         executable = tmp_path / ".local" / "bin" / "kiro-cli"
         _make_executable(executable)
         token = tmp_path / ".aws" / "sso" / "cache" / "kiro-auth-token-cli.json"
@@ -1481,33 +1484,13 @@ class TestKiroPrerequisiteWorkflow:
         with pytest.raises(asyncio.CancelledError):
             await service._run_auth_command(
                 str(executable),
-                ["login", "--use-device-flow"],
+                ["whoami"],
                 base_env={},
                 timeout_secs=1,
-                commit=True,
             )
         assert token.read_text(encoding="utf-8") == '{"accessToken":"original"}'
-
-    def test_sqlite_auth_commit_consolidates_wal_before_publish(self, tmp_path: Path) -> None:
-        live = tmp_path / "live" / "data.sqlite3"
-        staged = tmp_path / "staged" / "data.sqlite3"
-        live.parent.mkdir()
-        staged.parent.mkdir()
-        with contextlib.closing(sqlite3.connect(live)) as db:
-            db.execute("create table identity(value text)")
-            db.execute("insert into identity values ('old')")
-            db.commit()
-        with contextlib.closing(sqlite3.connect(staged)) as db:
-            db.execute("pragma journal_mode=wal")
-            db.execute("create table identity(value text)")
-            db.execute("insert into identity values ('new')")
-            db.commit()
-        prerequisite_module._atomic_restore_sqlite(staged, live)
-
-        with sqlite3.connect(live) as db:
-            assert db.execute("select value from identity").fetchone() == ("new",)
-        assert not Path(f"{live}-wal").exists()
-        assert not Path(f"{live}-shm").exists()
+        staging = tmp_path / ".kiro" / "crew-auth-staging"
+        assert list(staging.glob("auth-*")) == []
 
     @pytest.mark.asyncio
     async def test_probe_has_paired_audit_events_and_hides_crew_homes(
@@ -1909,20 +1892,18 @@ class TestKiroPrerequisiteWorkflow:
         assert runtime.sandboxed[login_index] is True
         assert runtime.kwargs[login_index]["sandbox_mode"] == "standard"
         assert runtime.kwargs[login_index]["env"]["https_proxy"] == ("http://proxy.example:8443")
-        assert runtime.kwargs[login_index]["env"]["HOME"] != str(tmp_path)
-        # The strict --version probe keeps the minimal env (no proxy / desktop
-        # IPC). The real-home whoami mirrors an ACP session and carries the full
-        # env, so proxy/session vars are present there by design.
+        # Sign-in is fully delegated: kiro-cli runs against the REAL home and
+        # writes its own credential store there, as it does from a terminal.
+        assert runtime.kwargs[login_index]["env"]["HOME"] == str(tmp_path)
+        assert runtime.kwargs[login_index]["extra_hidden_dirs"] == (
+            str(tmp_path / ".kiro" / "crew"),
+            str(tmp_path / ".kirocrew"),
+        )
+        assert list((tmp_path / ".kiro" / "crew-auth-staging").glob("auth-*")) == []
         for index, call in enumerate(runtime.calls):
-            if call[1] == ["--version"]:
+            if call[1] in (["--version"], ["whoami"]):
                 assert "https_proxy" not in runtime.kwargs[index]["env"]
                 assert "DISPLAY" not in runtime.kwargs[index]["env"]
-        whoami_env = next(
-            runtime.kwargs[i]["env"]
-            for i, call in enumerate(runtime.calls)
-            if call[1] == ["whoami"]
-        )
-        assert whoami_env.get("https_proxy") == "http://proxy.example:8443"
 
     @pytest.mark.asyncio
     async def test_windows_clean_install_uses_powershell_script(
