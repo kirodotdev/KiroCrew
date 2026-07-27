@@ -62,8 +62,7 @@ tag/ARN-scoped, no IAM writes), and, for operators who want to wall the agent
 off from cloud creds entirely, running the agent under the **`strict`/`cc`
 sandbox** (which bind-mounts an empty dir over `~/.aws`). The env-keyed guards
 deterministically stop honest/accidental misuse and cost nothing, but are not a
-claim that a hostile in-process agent is fully contained. See
-`docs/setup/AS_BUILT.md` for the as-built record and the live-validation fixes.
+claim that a hostile in-process agent is fully contained.
 
 ## Module map
 
@@ -213,7 +212,7 @@ exits non-zero.
     latter would deny CreateRole under the generated policy; verified with the
     IAM policy simulator). `PutRolePolicy` is a separate role-ARN-scoped statement
     — a boundary set at CreateRole can't be removed by it.
-  - **Residual (first-write race), tracked in AS_BUILT:** the very first
+  - **Residual (first-write race), tracked in as-built:** the very first
     `CreatePolicy` could be run by an attacker holding the launcher policy BEFORE
     the legitimate first launch, seeding a permissive boundary at that name. That
     is materially smaller than the old "author an arbitrary boundary at any time"

@@ -58,7 +58,7 @@ Configure your provider credentials (e.g. an Anthropic API key) in
 ## Install KiroCrew
 
 Install the Python backend (`pip`) and build the React dashboard (`npm`),
-exactly as on a local machine — see the [README](../README.md#quick-start)
+exactly as on a local machine — see the [Getting Started guide](getting-started.md)
 for the full walkthrough:
 
 ```bash

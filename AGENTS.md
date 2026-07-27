@@ -112,7 +112,7 @@ macOS, Linux (x86_64 and ARM/Graviton), **and Windows** (native). Route every
 POSIX-only process/signal/metrics/file-lock call through
 `kiro_crew.platform_compat` — never raw `os.getuid`/`os.killpg`/`os.getpgid`/
 `signal.SIG*`/`fcntl`/`os.kill(pid, 0)` (the last *terminates* the target on
-Windows). See `docs/WINDOWS_INSTALL.md` and the "Platform Support" shim table
+Windows). See `docs/windows-install.md` and the "Platform Support" shim table
 below. Verify process/signal/file-lock/metrics changes on macOS + Linux.
 
 ## Specification Management
@@ -445,7 +445,7 @@ React + TypeScript SPA in the `website/` directory. Built assets are bundled int
 KiroCrew runs on macOS, Linux (x86_64 and ARM/Graviton), and **Windows** (native).
 macOS/Linux install via the `bin/kirocrew` launcher; **Windows runs natively from a Python
 source install** — CPython 3.12 + a venv + `pip install -e .`, launched as `python -m
-kiro_crew gateway`. See `docs/WINDOWS_INSTALL.md`.
+kiro_crew gateway`. See `docs/windows-install.md`.
 
 **All code changes MUST be verified for macOS + Linux + Windows compatibility:**
 - **Backend**: macOS, Linux, Windows — route POSIX-only calls through `platform_compat`

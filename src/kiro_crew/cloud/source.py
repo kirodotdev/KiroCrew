@@ -472,7 +472,8 @@ def ensure_instance_boundary(profile: str = "", region: str = "") -> str:
     ``EntityAlreadyExists`` race is re-verified the same way. All calls go through
     the :func:`aws.run_aws` chokepoint.
 
-    Residual (documented in ``docs/setup/AS_BUILT.md``): the first ``create-policy``
+    Residual (see security model in ``docs/system-specs/modules/cloud.md``):
+    the first ``create-policy``
     is still a first-write race for *availability* — an attacker could seed a
     boundary that then fails our content check, blocking launches (a DoS, not an
     escalation: a mismatched boundary is refused, never used to under-cap a role).

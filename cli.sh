@@ -71,7 +71,7 @@ FEED_BASE="${FEED_BASE%/}"
 ARTIFACT_BASE="${ARTIFACT_BASE%/}"
 
 # Users say "insider"; the release pipeline publishes that channel under the
-# `beta` prefix (see docs/RELEASE_AUTOMATION.md channel naming). Map the
+# `beta` prefix (see docs/release-automation.md channel naming). Map the
 # user-facing name to the storage prefix; keep the user-facing name for the
 # recorded channel file.
 case "$CHANNEL" in

@@ -1,7 +1,7 @@
 """Instance size tiers for the cloud launcher (constants — no magic numbers).
 
 KiroCrew itself uses ~10 GB RAM with spikes beyond that (see
-``docs/REMOTE_DESKTOP_SETUP.md``), so the default tier is **≥16 GB RAM**. We
+``docs/remote-desktop-setup.md``), so the default tier is **≥16 GB RAM**. We
 default to **arm64 / Graviton** (cheaper per GB; both KiroCrew and ``kiro-cli``
 ship aarch64 Linux builds), with an x86_64 lane for users who need it.
 

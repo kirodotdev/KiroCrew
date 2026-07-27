@@ -9,7 +9,7 @@
 | Out of scope | Signing/notarization operations (separate doc, TBD); bootstrap installers; app-store app updates |
 
 > Statuses in this doc are as of 2026-07-23, cross-checked against the
-> merged PR record of this repo. `docs/RELEASE_AUTOMATION.md` is the
+> merged PR record of this repo. `docs/release-automation.md` is the
 > operational companion (workflow details, feed structure, CLI/EC2
 > distribution); this doc records the design and its rationale.
 
@@ -129,7 +129,7 @@ builds carry the tag's version; there is no auto-bump.
 ## 4. CI build pipeline
 
 We release for more than macOS. One pipeline builds every lane. (The
-authoritative operational reference is `docs/RELEASE_AUTOMATION.md` in the
+authoritative operational reference is `docs/release-automation.md` in the
 repo; it carries the as-built workflow details, feed structure, and the
 CLI/EC2 distribution design, while this section covers the design shape.)
 
@@ -147,7 +147,7 @@ and `ubuntu-22.04` builds `linux-x64` (AppImage). The wheel is
 `py3-none-any`; KiroCrew is pure Python, so the same wheel serves every OS.
 Linux arm64 and Windows x64 are declared TODO in the matrix header
 (`nightly.yml:8-13`), and Windows is currently a source install only
-(`docs/WINDOWS_INSTALL.md`).
+(`docs/windows-install.md`).
 
 Desktop packaging runs through `make desktop`, which calls
 `packaging/build-desktop.sh`. It embeds a python-build-standalone
@@ -447,7 +447,7 @@ Pre-migration era (commit hashes from the KiroClaw history):
 |---|---|---|
 | 2026-06-30 | `68cc8f72` | First GitHub Actions workflows: CI, build, release, code review |
 | 2026-07-08 | `21259fcf` | Desktop build reworked: PyInstaller replaced with python-build-standalone + uv |
-| 2026-07-08 | `9503f1b4` | Nightly pipeline + the original `RELEASE_AUTOMATION.md` design doc |
+| 2026-07-08 | `9503f1b4` | Nightly pipeline + the original `release-automation.md` design doc |
 | 2026-07-09 | `c1c7db05` | Feed writes moved into CI, strictly after signing verification (supersedes the Feed-Lambda model) |
 
 Infrastructure (internal CDK package): `875849c` CI granted `feed/*` +
@@ -478,8 +478,8 @@ Public repo era (kirodotdev/KiroCrew, all merged):
 
 ## Appendix: related docs
 
-- `docs/RELEASE_AUTOMATION.md`: authoritative as-built operational doc
+- `docs/release-automation.md`: authoritative as-built operational doc
   (workflows, feed structure, CLI/EC2 distribution)
 - Signing/notarization process doc: separate, TBD
-- `docs/DESKTOP_APP.md`: desktop packaging details
-- `docs/WINDOWS_INSTALL.md`: current Windows source-install path
+- `docs/desktop-app.md`: desktop packaging details
+- `docs/windows-install.md`: current Windows source-install path

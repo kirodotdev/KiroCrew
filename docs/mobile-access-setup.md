@@ -24,7 +24,7 @@ your phone can open.
 ## Prerequisites
 
 - KiroCrew running on a host (local machine or a remote host — see
-  [REMOTE_DESKTOP_SETUP.md](REMOTE_DESKTOP_SETUP.md))
+  [remote-desktop-setup.md](remote-desktop-setup.md))
 - A tunneling tool installed on that host. This guide uses
   [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/)
   as the example, but any tool that produces a stable HTTPS URL works.
@@ -115,7 +115,7 @@ When the token expires, generate a new link with `/kirocrew dashboard`.
 
 ## References
 
-- [REMOTE_DESKTOP_SETUP.md](REMOTE_DESKTOP_SETUP.md) — remote host setup guide
+- [remote-desktop-setup.md](remote-desktop-setup.md) — remote host setup guide
 - [cloudflared tunnels](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) — install, usage, architecture
 - [ngrok](https://ngrok.com/docs) — alternative tunneling tool
 - [Tailscale Funnel](https://tailscale.com/kb/1223/funnel) — expose a local service over your tailnet

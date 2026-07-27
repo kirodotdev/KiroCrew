@@ -11,7 +11,7 @@ tooling.
 > (`pip install -e . tzdata`, launched via `python -m kiro_crew gateway`). All
 > POSIX-only process/signal/file-lock/metrics calls are routed through
 > `kiro_crew.platform_compat`. See
-> [WINDOWS_INSTALL.md](WINDOWS_INSTALL.md) for the Windows setup steps.
+> [windows-install.md](windows-install.md) for the Windows setup steps.
 
 ## Prerequisites
 
@@ -116,7 +116,7 @@ make desktop              # → website/electron/dist/KiroCrew-*.dmg (macOS)
                           #   or website/electron/dist/KiroCrew-*.AppImage (Linux)
 ```
 
-See [DESKTOP_APP.md](DESKTOP_APP.md) for the full build pipeline (frontend →
+See [desktop-app.md](desktop-app.md) for the full build pipeline (frontend →
 python-build-standalone → pip install → electron-builder) and how the app
 locates and launches the bundled backend.
 

@@ -5,7 +5,7 @@
 #   docker compose exec kirocrew kirocrew token --ttl 2h # mint a dashboard link
 #
 # Then open the printed link at http://localhost:5476/?token=...
-# Full guide: docs/DOCKER.md
+# Full guide: docs/docker.md
 
 services:
   kirocrew:
@@ -19,7 +19,7 @@ services:
       # request still requires a dashboard token, AND the browser's Origin/
       # Host must be allowed — set dashboard.url in config.json (or
       # KIROCREW_CORS_ORIGINS) to the address you browse from, ideally a
-      # TLS reverse proxy. See docs/DOCKER.md "Networking and security".
+      # TLS reverse proxy. See docs/docker.md "Networking and security".
       - "127.0.0.1:5476:5476"
     volumes:
       # One named volume persists everything: gateway state (~/.kiro/crew),

@@ -84,7 +84,7 @@ rm -f ~/Library/LaunchAgents/dev.kirocrew.gateway.plist
 ## Remote Tunnel Mode (Headless CDE)
 
 If the gateway runs on a remote dev desktop (the recommended setup per
-`docs/REMOTE_DESKTOP_SETUP.md`), the app can fetch tokens automatically
+`docs/remote-desktop-setup.md`), the app can fetch tokens automatically
 via SSH instead of reading the local `.local_secret`.
 
 ### Prerequisites

@@ -487,7 +487,8 @@ def policy_document() -> dict[str, Any]:
             # is immutable against a leaked launcher credential, not just against
             # the on-box agent.
             #
-            # Residual (documented in docs/setup/AS_BUILT.md): the first CreatePolicy
+            # Residual (see security model in docs/system-specs/modules/cloud.md):
+            # the first CreatePolicy
             # is a first-write race, but now for AVAILABILITY only — the launcher
             # verifies the existing boundary's content and FAILS CLOSED on a
             # mismatch, so a permissive boundary seeded at this name is refused

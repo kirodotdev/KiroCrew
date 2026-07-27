@@ -427,9 +427,9 @@ The desktop app can also connect to a gateway running on a **remote** host (e.g.
 an always-on server) over an SSH tunnel, fetching a fresh token via
 `ssh <host> kirocrew token` on each launch instead of starting a local backend.
 See [`website/electron/README.md`](../website/electron/README.md) and
-[REMOTE_DESKTOP_SETUP.md](REMOTE_DESKTOP_SETUP.md) for setup.
+[remote-desktop-setup.md](remote-desktop-setup.md) for setup.
 
 ## See also
 
-- [INSTALL.md](INSTALL.md) — all three build/run methods and the Makefile targets
+- [install.md](install.md) — all three build/run methods and the Makefile targets
 - [README](../README.md) — project overview and Quick Start

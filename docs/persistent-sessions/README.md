@@ -1,6 +1,6 @@
 # KiroCrew Persistent Sessions
 
-> **Prerequisite**: Complete [REMOTE_DESKTOP_SETUP.md](../REMOTE_DESKTOP_SETUP.md) first.
+> **Prerequisite**: Complete [remote-desktop-setup.md](../remote-desktop-setup.md) first.
 
 Upgrades the tmux-based setup to a fully persistent configuration:
 - Gateway auto-restarts on crash and auto-starts on boot (systemd)

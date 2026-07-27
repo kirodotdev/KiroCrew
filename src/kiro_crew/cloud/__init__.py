@@ -1,6 +1,6 @@
 """KiroCrew cloud launcher — provision + run KiroCrew on the user's own EC2.
 
-The design is documented in ``docs/setup/implementation-plan.md``. The short
+The design is documented in ``docs/system-specs/modules/cloud.md``. The short
 version:
 
 - **Bring-your-own-AWS, store nothing.** Every AWS call shells to the ``aws``

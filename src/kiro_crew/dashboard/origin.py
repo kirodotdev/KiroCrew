@@ -446,7 +446,7 @@ def format_dashboard_urls(
         lines.append(f"👻 Proxy:     {proxy}{_qs}")
 
     if _is_remote:
-        lines.append("👻 Run 24/7:  see docs/REMOTE_DESKTOP_SETUP.md for systemd service setup")
+        lines.append("👻 Run 24/7:  see docs/remote-desktop-setup.md for systemd service setup")
 
     return lines
 

@@ -228,7 +228,7 @@ Adam Doussan, Akim Akimov, Albert Achtenberg, Alec Douglas, Alexander Blom, Ange
 
 ### Documentation
 
-- README rewritten 770 → 158 lines, feature lists moved to docs/FEATURES.md (Bolin Chen)
+- README rewritten 770 → 158 lines, feature lists moved to docs/features.md (Bolin Chen)
 - AGENTS.md updated for both packages (Bolin Chen)
 - Deprecate !dashboard in favor of /kirocrew dashboard (Sam Oldak)
 - Persistent SSH tunnel setup for macOS LaunchAgent (Sai Chaitanya Manchikatla)
@@ -567,7 +567,7 @@ Frontend split into dedicated KiroCrewWebsite package.
 - Packaging publishing guide with cross-platform architecture and manual osx workflow (Joe Guo)
 - Mobile dashboard access setup guide (enterprise tunnels) (Pedro Barrios)
 - Snapshot and restore user documentation (Patrick Gao)
-- REMOTE_DESKTOP_SETUP expanded with enterprise SSO and packaging bootstrap from scratch (Bolin Chen)
+- remote-desktop-setup expanded with enterprise SSO and packaging bootstrap from scratch (Bolin Chen)
 - Install docs updated for cross-platform bundles and migration PATH cleanup (Bolin Chen)
 
 ### Contributors (91)

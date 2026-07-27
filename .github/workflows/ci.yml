@@ -155,7 +155,7 @@ jobs:
           if-no-files-found: error
 
   # Windows regression line: the backend supports Windows natively via
-  # kiro_crew.platform_compat (see docs/WINDOWS_INSTALL.md for the
+  # kiro_crew.platform_compat (see docs/windows-install.md for the
   # per-feature status), but until this job existed nothing in CI held
   # that line -- a POSIX-only regression would land silently. Single
   # Python (3.12: the preferred Windows runtime; numpy 1.x ships no 3.13

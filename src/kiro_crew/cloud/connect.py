@@ -10,7 +10,7 @@ The instance's gateway is bound to loopback (never public). To reach it we:
 We also (optionally) register the instance in the existing **Instances** registry
 using an SSM ``ProxyCommand`` ssh alias, so the dashboard's ``/instances`` page
 can auto-tunnel + token-refresh + self-heal it with no new code
-(``docs/INSTANCES.md`` §9). Removing the box (``cloud destroy``) also removes
+(``docs/instances.md`` §9). Removing the box (``cloud destroy``) also removes
 that registration.
 """
 
@@ -235,7 +235,7 @@ def ssm_proxy_ssh_host(instance_id: str, region: str) -> str:
 
     We register the instance id itself as ``ssh_host``; the user's
     ``~/.ssh/config`` carries the SSM ``ProxyCommand`` (documented in
-    INSTANCES.md §9). Kept simple and charset-safe for the registry validator.
+    instances.md §9). Kept simple and charset-safe for the registry validator.
     """
     return instance_id
 
