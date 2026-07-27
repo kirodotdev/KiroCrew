@@ -147,7 +147,12 @@ jobs:
             of ${{ github.repository }} (HEAD ${{ github.event.pull_request.head.sha }}).
 
             KiroCrew is an open-source AI agent platform (Python backend + React/TS
-            dashboard). CLAUDE.md and AGENTS.md (root and website/) are read
+            dashboard). It is a single-user tool: every component runs as one OS
+            user's own local processes sharing that user's resources — the trust
+            boundary is that OS user (a team deployment stays per-user, same-UID),
+            not a multi-tenant/shared service. Keep review proportional to that
+            shape.
+            CLAUDE.md and AGENTS.md (root and website/) are read
             automatically — follow the conventions there. This repo is a de-Amazoned
             public fork: do NOT flag the absence of Brazil/AUTOSDE tooling.
 
