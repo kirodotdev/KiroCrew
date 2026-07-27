@@ -221,11 +221,6 @@ jobs:
           passed=()
           pending=()
           failed=()
-          case "$TRIGGER_EVENT:$TRIGGER_ACTION" in
-            pull_request_target:opened|pull_request_target:synchronize|pull_request_target:reopened|pull_request_target:edited)
-              pending+=("validation runs are starting")
-              ;;
-          esac
 
           for spec in "${workflow_specs[@]}"; do
             file="${spec%%|*}"
@@ -276,6 +271,28 @@ jobs:
               fi
             fi
           done
+
+          # A pull_request_target open/synchronize/reopen/edit run is meant to
+          # surface a transient "checking" signal while validation spins up.
+          # But such a run can be runner-queue-delayed by many minutes and
+          # execute AFTER the workflow_run:completed runs have already published
+          # the terminal verdict for this same SHA. Seeding this sentinel
+          # unconditionally would then clobber that decided verdict back to
+          # "checking" with no further event left to recompute it on the
+          # unchanged commit -- freezing the status at pending indefinitely.
+          # Only add it when the live evaluation above still found at least one
+          # monitored workflow genuinely incomplete; in that case the verdict is
+          # already pending and the sentinel is merely a human-readable note.
+          # (A legitimate reviewer re-run arrives via workflow_run and shows up
+          # as an in_progress workflow above, so it keeps producing "checking"
+          # through this same real-pending path.)
+          case "$TRIGGER_EVENT:$TRIGGER_ACTION" in
+            pull_request_target:opened|pull_request_target:synchronize|pull_request_target:reopened|pull_request_target:edited)
+              if [ "${#pending[@]}" -gt 0 ]; then
+                pending+=("validation runs are starting")
+              fi
+              ;;
+          esac
 
           # Arbiter is an API-owned check rather than an ordinary pull_request
           # workflow run. Once the normal workflows finish, briefly wait for it
