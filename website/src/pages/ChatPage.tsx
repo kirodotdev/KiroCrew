@@ -95,6 +95,7 @@ import MessageErrorBoundary from '../components/MessageErrorBoundary'
 import TypewriterText from '../components/TypewriterText'
 import { useChatNavigation } from '../hooks/useChatNavigation'
 import SubagentProgressBar from './chat/SubagentProgressBar'
+import TaskProgressBar from './chat/TaskProgressBar'
 import SidePanel, { SIDE_PANEL_MIN_W, measureSidePanelReservedW } from './chat/SidePanel'
 import ChatSidebar, { SIDEBAR_MIN, SIDEBAR_MAX } from './ChatSidebar'
 import { toSlug } from '../utils/shareUrl'
@@ -3455,6 +3456,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
                   ><ArrowDown size={14} strokeWidth={2.5} /></button>
                 </div>
               )}
+              {/* Not gated on activityOpen (unlike the two bars below): the
+                  activity sidebar has no TODO view, so hiding it there would
+                  lose the information rather than de-duplicate it. */}
+              <TaskProgressBar slot={activeSlot} />
               {!activityOpen && <SubagentProgressBar slot={activeSlot} />}
               {!activityOpen && <WorkflowProgressBar slot={activeSlot} />}
               <SubagentDeliveryProgress count={systemDeliveryCount} />

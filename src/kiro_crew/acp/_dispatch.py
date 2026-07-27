@@ -25,9 +25,11 @@ from kiro_crew.acp.types import (
     EVENT_PERMISSION_REQUEST,
     EVENT_TEXT_CHUNK,
     EVENT_THINKING_CHUNK,
+    EVENT_TODO_UPDATE,
     EVENT_TOOL_CALL,
     EVENT_TOOL_CALL_UPDATE,
     EVENT_TOOL_RESULT,
+    KIRO_TOOL_TODO_LIST,
     METHOD_AGENT_SWITCHED,
     METHOD_CLEAR_STATUS,
     METHOD_COMPACTION_STATUS,
@@ -43,6 +45,8 @@ from kiro_crew.acp.types import (
     METHOD_SUBAGENT_LIST_UPDATE,
     OPTION_ALLOW_ALWAYS,
     OPTION_ALLOW_ONCE,
+    TODO_TASKS_MAX,
+    TODO_TEXT_MAX,
     UPDATE_AGENT_MESSAGE_CHUNK,
     UPDATE_AGENT_THOUGHT_CHUNK,
     UPDATE_TOOL_CALL,
@@ -561,6 +565,98 @@ def _build_tool_result_event(update: dict[str, Any]) -> AcpEvent | None:
     )
 
 
+def _kiro_tool_name(update: dict[str, Any]) -> str:
+    """The real tool name from ``_meta.kiro.toolName``, or "" when absent.
+
+    The user-visible ``title`` is LLM-authored prose ("Creating task list: …"),
+    so it cannot be used to identify a tool. Only this ``_meta`` channel is
+    stable.
+    """
+    meta = update.get("_meta")
+    if not isinstance(meta, dict):
+        return ""
+    kiro = meta.get("kiro")
+    if not isinstance(kiro, dict):
+        return ""
+    name = kiro.get("toolName")
+    return name if isinstance(name, str) else ""
+
+
+def _todo_payload(raw_output: Any) -> dict[str, Any] | None:
+    """Dig the todo dict out of ``rawOutput``, tolerating shape drift.
+
+    kiro-cli wraps it as ``{"items": [{"Json": {...}}]}``, but the wrapper is an
+    internal detail we do not control, so a bare dict and a bare list of
+    candidates are both accepted. Returns the first mapping that actually
+    carries a ``tasks`` list — never a partially-matched shell.
+    """
+    candidates: list[Any] = []
+    if isinstance(raw_output, dict):
+        items = raw_output.get("items")
+        if isinstance(items, list):
+            for item in items:
+                if isinstance(item, dict):
+                    # {"Json": {...}} wrapper, else the item itself.
+                    candidates.extend(v for v in item.values() if isinstance(v, dict))
+                    candidates.append(item)
+        candidates.append(raw_output)
+    elif isinstance(raw_output, list):
+        candidates.extend(raw_output)
+    for cand in candidates:
+        if isinstance(cand, dict) and isinstance(cand.get("tasks"), list):
+            return cand
+    return None
+
+
+def parse_todo_snapshot(update: dict[str, Any]) -> dict[str, Any] | None:
+    """Normalise a ``todo_list`` tool result into a UI-ready snapshot.
+
+    Returns ``{description, tasks: [{id, text, completed}]}`` or None when this
+    update is not a todo_list result. EVERY todo_list command (create / complete
+    / list) echoes the entire list, so the return value is always a full
+    snapshot — callers replace their stored copy rather than merging.
+
+    An empty ``tasks`` list is a MEANINGFUL result (the agent cleared its list),
+    so it returns a snapshot with zero tasks rather than None. Only a genuine
+    non-match or unparseable payload yields None.
+    """
+    if not isinstance(update, dict):
+        return None
+    if _kiro_tool_name(update) != KIRO_TOOL_TODO_LIST:
+        return None
+    payload = _todo_payload(update.get("rawOutput"))
+    if payload is None:
+        return None
+    tasks: list[dict[str, Any]] = []
+    for idx, raw in enumerate(payload.get("tasks") or []):
+        if not isinstance(raw, dict):
+            continue
+        text = raw.get("task_description") or raw.get("description") or raw.get("text") or ""
+        if not isinstance(text, str):
+            text = str(text)
+        text = _redact(text)[:TODO_TEXT_MAX]
+        task_id = raw.get("id")
+        tasks.append(
+            {
+                "id": str(task_id) if task_id is not None else str(idx + 1),
+                "text": text,
+                # `completed` is a plain bool in kiro-cli 2.14.0 — there is no
+                # in-progress state. bool() keeps a stray truthy string from
+                # reaching the UI as a non-boolean.
+                "completed": bool(raw.get("completed")),
+            }
+        )
+        if len(tasks) >= TODO_TASKS_MAX:
+            break
+    description = payload.get("description") or ""
+    if not isinstance(description, str):
+        description = str(description)
+    return {
+        "description": _redact(description)[:TODO_TEXT_MAX],
+        "tasks": tasks,
+    }
+
+
 def _build_tool_refinement_event(
     update: dict[str, Any],
     tool_input_cache: dict[str, str] | None,
@@ -670,6 +766,12 @@ def parse_session_update(
         refine = _build_tool_refinement_event(update, tool_input_cache, shell_cache)
         if refine is not None:
             events.append(refine)
+        # A todo_list result carries the agent's whole task list. Emit it as an
+        # ADDITIONAL event rather than swallowing the update — the tool call
+        # itself must still render in the transcript like any other.
+        todo = parse_todo_snapshot(update)
+        if todo is not None:
+            events.append(AcpEvent(kind=EVENT_TODO_UPDATE, todo=todo))
         return events
     return events
 

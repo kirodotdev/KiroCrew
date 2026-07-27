@@ -2,7 +2,7 @@ import { safeSetItem } from '../utils/safeStorage'
 import { createSlice, createAsyncThunk, createSelector, type PayloadAction } from '@reduxjs/toolkit'
 import { api } from '../api/client'
 import { sanitizeLlmOutput, isUnsafeKey } from '../utils/sanitize'
-import type { StatusData, ChatSlot } from '../types'
+import type { StatusData, ChatSlot, TodoList } from '../types'
 import type { SessionColorMode, PaletteName, DefaultColorSetting, IntensityName } from '../utils/sessionColors'
 
 export interface SubagentDetail {
@@ -103,6 +103,14 @@ const dashboardSlice = createSlice({
     sseConnected(state) { state.connected = true; state.slotsLoaded = false; state.subagentRunning = {}; state.subagentDetails = {}; state.subagentText = {} },
     sseDisconnected(state) { state.connected = false },
     sseSlots(state, action: PayloadAction<ChatSlot[]>) { state.slots = action.payload; state.slotsLoaded = true },
+    // Live TODO-list delta. Patched into the SAME slots array that sseSlots
+    // populates rather than a parallel map, so the mid-turn push and the
+    // reconnect snapshot can never disagree about a slot's list. A delta for an
+    // unknown slot is dropped — the next sseSlots push carries it anyway.
+    sseTodoUpdate(state, action: PayloadAction<{ slot: string; todo: TodoList | null }>) {
+      const slot = (state.slots ?? []).find(s => s.key === action.payload.slot)
+      if (slot) slot.todo = action.payload.todo
+    },
     // Bump a slot's recency timestamp (last_ts) on live message activity so the sidebar
     // recency tint re-ranks immediately off the finer-grained chat_message stream (vs
     // waiting for the next full sseSlots push). last_ts is the last message of any role,
@@ -245,7 +253,7 @@ const dashboardSlice = createSlice({
   },
 })
 
-export const { sseStatus, sseConnected, sseDisconnected, sseSlots, touchSlotActivity, setChannelTrusted, sseSlotTitle, addSlotOptimistic, removeSlotOptimistic, updateSlot, updateSlotFolder, updateSlotPin, triggerRefresh, markSlotUnread, markSlotRead, setUpdateProgress,
+export const { sseStatus, sseConnected, sseDisconnected, sseSlots, sseTodoUpdate, touchSlotActivity, setChannelTrusted, sseSlotTitle, addSlotOptimistic, removeSlotOptimistic, updateSlot, updateSlotFolder, updateSlotPin, triggerRefresh, markSlotUnread, markSlotRead, setUpdateProgress,
   setDesktopUpdateAvailable, sseSubagentStatus, sseSubagentText, sseSlotColor, setSessionDefaultColor, setSessionColorsMode, setSessionColorsPalette, setSessionColorsIntensity, setEnabledAppIds, patchSlotSourceLinks } = dashboardSlice.actions
 
 /**

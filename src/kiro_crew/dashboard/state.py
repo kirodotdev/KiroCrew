@@ -705,6 +705,7 @@ class _ChatSlot:
         "_title_retry_pending",
         "_artifact",
         "_resumed_count",
+        "_todo",
         "_on_message",
         "_has_reader",
         "_stop_state",
@@ -818,6 +819,12 @@ class _ChatSlot:
         # gateway restarts.
         self._artifact: str = ""
         self._resumed_count: int = 0  # messages loaded from history on resume
+        # Agent-authored TODO list, replaced wholesale from each todo_list tool
+        # result (every command echoes the full list, so there is nothing to
+        # merge). Shape: {description: str, tasks: [{id, text, completed}]}.
+        # None = the agent has never used its todo tool in this slot, which the
+        # UI renders as "no pill" rather than "an empty list".
+        self._todo: dict[str, Any] | None = None
         # Callback for broadcasting messages via global SSE
         self._on_message: object | None = None  # Callable[[str, dict], None] | None
         self._has_reader: bool = False  # True when HTTP SSE stream is draining
@@ -978,6 +985,47 @@ class _ChatSlot:
     @_stopping.setter
     def _stopping(self, value: bool) -> None:
         self._stop_state = "soft_pending" if value else "idle"
+
+    def set_todo(self, todo: dict[str, Any] | None) -> bool:
+        """Replace the slot's TODO snapshot. Returns True when it changed.
+
+        The return value gates the live websocket push so an unchanged list —
+        common, because a single turn can echo the same snapshot on several
+        tool results — does not fan a redundant broadcast out to every socket.
+        """
+        normalised: dict[str, Any] | None = None
+        if isinstance(todo, dict):
+            tasks = todo.get("tasks")
+            normalised = {
+                "description": str(todo.get("description") or ""),
+                "tasks": list(tasks) if isinstance(tasks, list) else [],
+            }
+        if normalised == self._todo:
+            return False
+        self._todo = normalised
+        return True
+
+    def todo_payload(self) -> dict[str, Any] | None:
+        """The serialized TODO snapshot with server-derived progress counts.
+
+        ``completed``/``total`` are computed here rather than in the browser so
+        the pill's "N of M" cannot drift from the list it labels. ``current`` is
+        the first not-completed task's text — kiro-cli's todo model is a plain
+        ``completed`` boolean with NO in-progress state, so "current task" is
+        this derivation, not something the agent reports.
+        """
+        if self._todo is None:
+            return None
+        tasks = [t for t in self._todo.get("tasks", []) if isinstance(t, dict)]
+        completed = sum(1 for t in tasks if t.get("completed"))
+        current = next((str(t.get("text") or "") for t in tasks if not t.get("completed")), "")
+        return {
+            "description": self._todo.get("description", ""),
+            "tasks": tasks,
+            "completed": completed,
+            "total": len(tasks),
+            "current": current,
+        }
 
     def append(
         self,
@@ -1389,6 +1437,12 @@ class _ChatSlot:
                 for link in source_links[:_SERIALIZED_SOURCE_LINKS_PER_SLOT]
             ],
             "source_links_total": len(source_links),
+            # Agent TODO list. Absent-vs-empty is load-bearing: None means the
+            # agent never used its todo tool (no pill), [] means it cleared the
+            # list. Serialized here — the single dict feeding BOTH
+            # /api/chat/slots (cold load) and the WS `slots` snapshot — so the
+            # pill survives reconnect without a separate rehydration path.
+            "todo": self.todo_payload(),
             "has_options": has_options,
             "options": [_redact(o) for o in options],
             "prompt_preview": prompt_preview,

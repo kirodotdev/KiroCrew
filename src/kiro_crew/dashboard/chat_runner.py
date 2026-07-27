@@ -135,6 +135,7 @@ from kiro_crew.providers.base import (
     EVENT_SUBAGENT_LIST,
     EVENT_TEXT_CHUNK,
     EVENT_THINKING_CHUNK,
+    EVENT_TODO_UPDATE,
     EVENT_TOOL_CALL,
     EVENT_TOOL_CALL_UPDATE,
     EVENT_TOOL_RESULT,
@@ -3943,6 +3944,16 @@ async def _run_chat(
                 _mark_mcp_oauth_completed(
                     state, slot, event.server_name, success=False, error=event.text or ""
                 )
+            elif event.kind == EVENT_TODO_UPDATE:
+                # Agent's own TODO list. Store on the slot (so /api/chat/slots
+                # and the WS `slots` snapshot rehydrate it after a reconnect),
+                # then push a lightweight delta so the pill updates mid-turn
+                # instead of waiting for the next full slots snapshot.
+                if slot.set_todo(event.todo):
+                    state.broadcast_ws(
+                        "todo_update",
+                        {"slot": slot.key, "todo": slot.todo_payload()},
+                    )
             elif event.kind == EVENT_SUBAGENT_LIST:
                 # kiro-cli per-subagent state (native use_subagent crews).
                 # Reconcile one Activity card per sub-agent (spawn/done).

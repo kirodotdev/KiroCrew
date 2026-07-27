@@ -19,6 +19,9 @@ EVENT_COMPACTION_STATUS = "compaction_status"
 EVENT_CLEAR_STATUS = "clear_status"
 EVENT_AGENT_SWITCHED = "agent_switched"
 EVENT_MCP_OAUTH_REQUEST = "mcp_oauth_request"
+# Agent's own task/TODO list snapshot, recovered from the `todo_list` tool's
+# rawOutput. Not an ACP-native update kind — see KIRO_TOOL_TODO_LIST.
+EVENT_TODO_UPDATE = "todo_update"
 EVENT_MCP_SERVER_INITIALIZED = "mcp_server_initialized"
 EVENT_MCP_SERVER_INIT_FAILURE = "mcp_server_init_failure"
 EVENT_SUBAGENT_LIST = "subagent_list"
@@ -55,6 +58,19 @@ METHOD_MCP_SERVER_INIT_FAILURE = "_kiro.dev/mcp/server_init_failure"
 METHOD_SUBAGENT_LIST_UPDATE = "_kiro.dev/subagent/list_update"
 METHOD_KIRO_SESSION_UPDATE = "_kiro.dev/session/update"
 METHOD_SET_CONFIG_OPTION = "session/set_config_option"
+
+# kiro-cli exposes its task/TODO list as an ordinary tool call whose real name
+# arrives in `_meta.kiro.toolName` (the visible `title` is a prose sentence like
+# "Creating task list: …", so it is NOT a reliable discriminator). Note this is
+# NOT the ACP `plan` session update: kiro-cli 2.14.0 never emits `plan`, so
+# UPDATE_PLAN below stays inert and the TODO list is recovered from this tool's
+# rawOutput instead.
+KIRO_TOOL_TODO_LIST = "todo_list"
+# Hard cap on tasks retained per slot. The list is agent-authored and reaches
+# the browser on every reconnect, so it is bounded server-side.
+TODO_TASKS_MAX = 200
+# Per-task text cap — keeps one pathological entry from bloating every payload.
+TODO_TEXT_MAX = 500
 
 # Capabilities we advertise during `initialize`. Previously omitted entirely,
 # which made the agent assume the all-false default.
@@ -253,6 +269,10 @@ class AcpEvent:
     # Owning sub-agent session id (EVENT_SUBAGENT_ACTIVITY) — ties a tool call
     # to a specific native sub-agent card.
     sub_session_id: str = ""
+    # Agent TODO-list snapshot (EVENT_TODO_UPDATE) — normalised
+    # {description, tasks:[{id,text,completed}]}. Every todo_list command
+    # returns the WHOLE list, so this is a full snapshot, never a delta.
+    todo: dict[str, Any] | None = None
     # Provider-set canonical signal: True when this tool call is a shell/exec
     # command. Each provider maps its own vocabulary (ACP kind=="execute", CC
     # tool name "Bash") onto this one flag, so the dashboard validation layer

@@ -235,6 +235,31 @@ export interface McpGlobalScope {
   label: string
 }
 
+export interface TodoTask {
+  id: string
+  text: string
+  /** kiro-cli's todo model is a plain boolean — there is no in-progress state. */
+  completed: boolean
+}
+
+/**
+ * The agent's own TODO list for a slot, mirrored from the `todo_list` tool.
+ *
+ * `completed`/`total`/`current` are computed server-side so the pill's "N of M"
+ * label can never drift from the list it summarises. `current` is the first
+ * not-completed task and is a DERIVATION — the agent does not report a current
+ * task. Absent (`null`/`undefined`) means the agent never used its todo tool,
+ * which renders as no pill; a present list with zero tasks means it cleared the
+ * list, which is a different thing.
+ */
+export interface TodoList {
+  description: string
+  tasks: TodoTask[]
+  completed: number
+  total: number
+  current: string
+}
+
 export interface ChatSlot {
   key: string; title?: string; messages: number; running: boolean; stopping?: boolean; pending_approval?: boolean; created?: string; last_ts?: string; last_message?: string; agent?: string; model?: string; reasoning_effort?: string; mode?: string; surface?: string; workspace?: string; trust?: boolean; trust_reads?: boolean; folder_id?: string; pinned?: boolean; tags?: string[]; slack_linked?: boolean; slack_channel?: string; slack_thread_ts?: string; color_index?: number | null; memory_mode?: 'persistent' | 'incognito' | 'temporary'; clean_mode?: boolean; project?: string; forked_from?: string | null; source_links?: { provider: 'github' | 'gitlab'; number: number; url: string; ci?: 'running' | 'passed' | 'failed' | null; state?: 'open' | 'draft' | 'merged' | 'closed' }[]; source_links_total?: number
   /** Metadata for kind="webapp" artifacts (deploy state, architecture, costs). */
@@ -243,6 +268,8 @@ export interface ChatSlot {
   has_options?: boolean; options?: string[]; pending_approval_info?: PendingApproval | null; last_activity_ts?: string; waiting_for_input?: boolean; prompt_preview?: string; subagents_running?: boolean
   // Soft-stop state machine
   stop_state?: 'idle' | 'soft_pending' | 'killing'
+  /** Agent TODO list. Null/absent = the todo tool was never used in this slot. */
+  todo?: TodoList | null
 }
 
 export interface PullRequestCommit {
