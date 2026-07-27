@@ -1059,6 +1059,48 @@ class TestKiroPrerequisiteWorkflow:
         assert seen_env.get("XDG_RUNTIME_DIR") == "/run/user/4242"
 
     @pytest.mark.asyncio
+    async def test_version_probe_forwards_session_bus_vars(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        # Some Kiro CLI builds connect to the D-Bus secret-service keyring at
+        # startup even for `--version`, so the version probe must forward the
+        # session-bus vars when the host sets them (AL2023) — otherwise
+        # `--version` exits "Failed to connect to bus" and installed-detection
+        # fails before the whoami check is ever reached. No-op where unset.
+        executable = tmp_path / ".local" / "bin" / "kiro-cli"
+        _make_executable(executable)
+        version_env: dict[str, str] = {}
+
+        async def run(
+            _command: str,
+            args: list[str],
+            **kwargs: Any,
+        ) -> ProcessResult:
+            if args == ["--version"]:
+                version_env.update(kwargs["env"])
+            return ProcessResult(ok=True)
+
+        service = KiroPrerequisiteService(
+            platform_name="linux",
+            environ={
+                "HOME": str(tmp_path),
+                "PATH": "/usr/bin:/bin",
+                "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/9/bus",
+                "XDG_RUNTIME_DIR": "/run/user/9",
+            },
+            home=tmp_path,
+            process_runner=run,
+            audit_writer=_no_audit,
+        )
+
+        status = await service.snapshot(force=True)
+
+        assert status["installed"] is True
+        assert version_env.get("DBUS_SESSION_BUS_ADDRESS") == "unix:path=/run/user/9/bus"
+        assert version_env.get("XDG_RUNTIME_DIR") == "/run/user/9"
+
+    @pytest.mark.asyncio
     async def test_self_updated_candidate_still_signs_in(
         self,
         tmp_path: Path,
@@ -1520,7 +1562,13 @@ class TestKiroPrerequisiteWorkflow:
                 )
                 assert "HTTPS_PROXY" not in runtime.kwargs[index]["env"]
                 assert "DISPLAY" not in runtime.kwargs[index]["env"]
-                assert "DBUS_SESSION_BUS_ADDRESS" not in runtime.kwargs[index]["env"]
+                # The session bus IS forwarded now — some CLI builds connect to
+                # the D-Bus secret-service keyring even at --version (AL2023).
+                # Other desktop IPC / proxy vars stay excluded.
+                assert (
+                    runtime.kwargs[index]["env"].get("DBUS_SESSION_BUS_ADDRESS")
+                    == "unix:path=/tmp/bus"
+                )
 
     @pytest.mark.asyncio
     async def test_probe_does_not_spawn_when_invoked_audit_fails(

@@ -144,6 +144,7 @@ _SAFE_ENV_KEYS = frozenset(
         "XDG_CACHE_HOME",
         "XDG_CONFIG_HOME",
         "XDG_DATA_HOME",
+        "XDG_RUNTIME_DIR",
         "http_proxy",
         "https_proxy",
         "no_proxy",
@@ -152,6 +153,13 @@ _SAFE_ENV_KEYS = frozenset(
 _PROBE_ENV_KEYS = frozenset(
     {
         "APPDATA",
+        # Session bus + runtime dir: some Kiro CLI builds connect to the D-Bus
+        # secret-service keyring at startup — even for ``--version`` — so the
+        # probe must pass these through when the host sets them (e.g. AL2023,
+        # where without them the CLI exits "Failed to connect to bus"). They are
+        # only forwarded when present; hosts without a session bus (macOS, AL2,
+        # headless) simply don't set them, so this is a no-op there.
+        "DBUS_SESSION_BUS_ADDRESS",
         "HOME",
         "LANG",
         "LC_ALL",
@@ -172,6 +180,7 @@ _PROBE_ENV_KEYS = frozenset(
         "XDG_CACHE_HOME",
         "XDG_CONFIG_HOME",
         "XDG_DATA_HOME",
+        "XDG_RUNTIME_DIR",
     }
 )
 
