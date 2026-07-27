@@ -120,7 +120,16 @@ def _probe_dashboard_health(port: int) -> None:
 
 
 def _token(args: argparse.Namespace) -> None:
-    """Print a dashboard URL with a fresh auth token."""
+    """Print a dashboard URL with a fresh auth token.
+
+    Diagnostics discipline: **stdout carries only the URL(s)**; every failure
+    reason goes to **stderr**. stdout here is a parsed machine interface — the
+    remote-mint path (:func:`kiro_crew.instances.token_mint.mint_remote_token`)
+    runs this over SSH and regex-extracts the JWT from stdout, so mixing error
+    prose into stdout both violates the Unix convention and hides the reason
+    from any caller that only captures stderr (which is how a failed remote
+    mint used to surface as a useless ``<no stderr>``).
+    """
     # Seam-supplied pre-launch checks (CPP IdentityProvider seam) — e.g. a
     # companion SSO-session freshness prompt before minting a token. Public
     # default = no checks; see kiro_crew.preflight.
@@ -128,7 +137,7 @@ def _token(args: argparse.Namespace) -> None:
 
     ttl = parse_duration(args.ttl)
     if ttl is None:
-        print(f"❌ Invalid TTL: {args.ttl} (use e.g. 1h, 30m)")
+        print(f"❌ Invalid TTL: {args.ttl} (use e.g. 1h, 30m)", file=sys.stderr)
         sys.exit(1)
 
     port = resolve_client_port(args.port)
@@ -136,7 +145,7 @@ def _token(args: argparse.Namespace) -> None:
     try:
         secret = secret_path.read_text().strip()
     except FileNotFoundError:
-        print("❌ Gateway not running — start it with: kirocrew gateway")
+        print("❌ Gateway not running — start it with: kirocrew gateway", file=sys.stderr)
         sys.exit(1)
 
     url = f"http://localhost:{port}/api/token/local?ttl={args.ttl}"
@@ -149,11 +158,11 @@ def _token(args: argparse.Namespace) -> None:
             data = json.loads(resp.read())
             token = data.get("token", "")
     except Exception as exc:
-        print(f"❌ Could not reach gateway on port {port}: {exc}")
+        print(f"❌ Could not reach gateway on port {port}: {exc}", file=sys.stderr)
         sys.exit(1)
 
     if not token:
-        print("❌ Gateway returned empty token")
+        print("❌ Gateway returned empty token", file=sys.stderr)
         sys.exit(1)
     _probe_dashboard_health(port)
 

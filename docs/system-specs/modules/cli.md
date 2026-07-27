@@ -67,6 +67,27 @@ This allows `kirocrew` to find project-level agent config and skills from any di
 | `kirocrew mcp-core` | MCP server for spawn, learn, task tools (spawned by kiro-cli) |
 | `kirocrew --version` | Print version |
 
+## Token Command Output Streams
+
+`kirocrew token` has a **machine-readable stdout contract**: stdout carries only
+the dashboard URL(s), and every failure reason (invalid TTL, gateway not running,
+gateway unreachable, empty token) goes to **stderr**.
+
+The contract exists because stdout is parsed, not just read by a human. The
+remote-mint path (`kiro_crew.instances.token_mint.mint_remote_token`) runs
+`kirocrew token` on a remote host over SSH and regex-extracts the JWT from its
+stdout. Error prose on stdout would both break the Unix convention and hide the
+reason from a caller that captures stderr.
+
+**Legacy remote handling.** Older remotes predate this split and still print
+their failure reasons to stdout, which made a stderr-only error message degrade
+to a bare `<no stderr>`. `mint_remote_token` therefore also carries a bounded,
+redacted **stdout tail** in `TokenMintError` — appended only when stdout was
+non-empty, so a current remote keeps the single-stream message shape. Because
+stdout is the one stream that legitimately carries a token, the tail is
+token-scrubbed (URL-borne and bare forms) before the generic credential and
+exfiltration redactors run.
+
 ## Setup Command
 
 `kirocrew setup` performs:

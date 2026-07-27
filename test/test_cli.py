@@ -3395,3 +3395,92 @@ class TestTokenCommand:
         assert custom_line in out
         # The two URLs must be separated by a blank line.
         assert f"{loopback_line}\n\n{custom_line}" in out
+
+    # ── stdout is a machine interface: failures go to stderr ─────────────────
+    #
+    # `_token`'s stdout is regex-parsed by the remote-mint path
+    # (kiro_crew.instances.token_mint.mint_remote_token) over SSH. Error prose on
+    # stdout both breaks the Unix convention and hides the reason from a caller
+    # that captures stderr — which is how a failed remote mint used to surface as
+    # a bare "<no stderr>".
+
+    def _stub_token_env(self, tmp_path, monkeypatch, *, secret: bool = True) -> None:
+        if secret:
+            (tmp_path / ".local_secret").write_text("test-secret")
+        monkeypatch.setattr("kiro_crew.cli_server.config_dir", lambda: tmp_path)
+        monkeypatch.setattr(
+            "kiro_crew.cli_server.KiroCrewConfig.load",
+            lambda: MagicMock(dashboard=MagicMock(url="")),
+        )
+        monkeypatch.setattr("kiro_crew.cli_server.dashboard_origin", lambda u: "")
+        monkeypatch.setattr(
+            "kiro_crew.cli_server.resolve_dashboard_host",
+            lambda local_only=True: "canonical-host.invalid",
+        )
+
+    def test_invalid_ttl_error_goes_to_stderr(self, tmp_path, capsys, monkeypatch):
+        from kiro_crew.cli_server import _token
+
+        self._stub_token_env(tmp_path, monkeypatch)
+        with pytest.raises(SystemExit) as excinfo:
+            _token(argparse.Namespace(ttl="banana", port=7777))
+        assert excinfo.value.code == 1
+        captured = capsys.readouterr()
+        assert "Invalid TTL" in captured.err
+        assert captured.out == ""
+
+    def test_missing_secret_error_goes_to_stderr(self, tmp_path, capsys, monkeypatch):
+        from kiro_crew.cli_server import _token
+
+        self._stub_token_env(tmp_path, monkeypatch, secret=False)
+        with pytest.raises(SystemExit) as excinfo:
+            _token(argparse.Namespace(ttl="1h", port=7777))
+        assert excinfo.value.code == 1
+        captured = capsys.readouterr()
+        assert "Gateway not running" in captured.err
+        assert captured.out == ""
+
+    def test_unreachable_gateway_error_goes_to_stderr(self, tmp_path, capsys, monkeypatch):
+        from kiro_crew.cli_server import _token
+
+        self._stub_token_env(tmp_path, monkeypatch)
+        with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("refused")):
+            with pytest.raises(SystemExit) as excinfo:
+                _token(argparse.Namespace(ttl="1h", port=7777))
+        assert excinfo.value.code == 1
+        captured = capsys.readouterr()
+        assert "Could not reach gateway on port 7777" in captured.err
+        assert captured.out == ""
+
+    def test_empty_token_error_goes_to_stderr(self, tmp_path, capsys, monkeypatch):
+        from kiro_crew.cli_server import _token
+
+        self._stub_token_env(tmp_path, monkeypatch)
+        with patch("urllib.request.urlopen", return_value=self._mock_token_response("")):
+            with pytest.raises(SystemExit) as excinfo:
+                _token(argparse.Namespace(ttl="1h", port=7777))
+        assert excinfo.value.code == 1
+        captured = capsys.readouterr()
+        assert "empty token" in captured.err
+        assert captured.out == ""
+
+    def test_success_stdout_carries_only_urls(self, tmp_path, capsys, monkeypatch):
+        """Every stdout line on the success path must be a parseable URL.
+
+        The docstring's "stdout carries only the URL(s)" is a contract the remote
+        mint depends on, and prose is not enforcement: any future preflight that
+        writes to stdout — a warning, or an `input()` prompt, whose prompt goes to
+        stdout — would silently corrupt the stream that mint_remote_token regexes
+        over SSH. This pins the contract to an assertion instead.
+        """
+        from kiro_crew.cli_server import _token
+
+        self._stub_token_env(tmp_path, monkeypatch)
+        with patch("urllib.request.urlopen", return_value=self._mock_token_response("eyJa.b")):
+            _token(argparse.Namespace(ttl="1h", port=7777))
+        captured = capsys.readouterr()
+        lines = [ln for ln in captured.out.splitlines() if ln.strip()]
+        assert lines, "success path printed nothing to stdout"
+        for line in lines:
+            assert line.lstrip().startswith("http"), f"non-URL text on stdout: {line!r}"
+        assert "token=eyJa.b" in captured.out

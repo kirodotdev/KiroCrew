@@ -48,6 +48,49 @@ _TTL_RE = re.compile(r"^[1-9][0-9]{0,3}[hm]$")
 # (also matches https://.../?token=...&foo=bar).
 _TOKEN_RE = re.compile(r"[?&]token=([^\s&]+)")
 
+# Bare KiroCrew-token / JWT shape, used to scrub a token that reached stdout
+# outside a URL before a stdout tail is put into an exception message.
+#
+# The segment count is `{1,4}` REPEATED, not a fixed `head.payload.sig` triple:
+# `generate_token` (dashboard/token_auth.py) mints `payload.signature` — only
+# TWO segments — so a three-segment pattern would never match the shape this app
+# actually produces, leaving the scrub layer inert against its own tokens. The
+# upper bound covers a compact JWE (five segments) so a partial match cannot
+# leave a trailing `.ciphertext.tag` behind. Matching is greedy, so all segments
+# present are consumed.
+_JWT_RE = re.compile(r"eyJ[A-Za-z0-9_-]{4,}(?:\.[A-Za-z0-9_-]+){1,4}")
+
+# How much of a failing remote's stdout to carry in the error (tail, not head —
+# the failure reason is the last thing printed).
+_OUTPUT_TAIL_CHARS = 300
+
+# How much stdout the scrubbers are allowed to SCAN. The remote's stdout is
+# unbounded (whatever the far side printed) and `re` does not release the GIL,
+# so scrubbing it whole blocks the gateway's event loop in proportion to its
+# size — measured ~1s per MB, i.e. ~13s on a 13MB payload. Bounding the scan
+# window keeps the cost flat (~10ms) regardless of what the remote emits. The
+# window is 8x the carried tail so a clipped left edge normally falls in noise
+# the tail would have dropped anyway. An executor hop is NOT a substitute: with
+# the GIL held by `re`, the same 13MB payload still stalled the loop for ~1.1s
+# in a thread.
+_OUTPUT_SCAN_CHARS = _OUTPUT_TAIL_CHARS * 8
+
+# Stand-in for the run touching the scan window's left edge: the slice may have
+# cut it out of the middle of a secret, leaving a suffix the token patterns can
+# no longer recognise.
+#
+# The floor is deliberately LOW rather than set to the window-minus-tail
+# "reachability" distance. A clipped fragment 2000+ chars from the end looks
+# unreachable only if the text keeps its length — but the scrubbers SHRINK it
+# (each matched blob collapses to `<redacted>`), so a stdout full of redactable
+# material pulls the leading fragment into the carried tail. Measured: with a
+# 2100-char floor, a stdout of dense JWT-shaped blobs surfaced a raw clipped
+# fragment in the error. Scrubbing the clipped run unconditionally costs nothing
+# the tail truncation would have kept anyway.
+_CLIPPED_RUN_MIN = 16
+_CLIPPED_RUN_RE = re.compile(r"^[A-Za-z0-9_\-.=+/%%:?&]{%d,}" % _CLIPPED_RUN_MIN)
+_CLIPPED_MARKER = "<clipped>"
+
 # How long to wait for the remote `kirocrew token` to return before giving up.
 _DEFAULT_MINT_TIMEOUT_SECS = 30.0
 
@@ -298,6 +341,54 @@ def _build_ssh_argv(ssh_host: str, remote_command: str) -> list[str]:
     ]
 
 
+def _redacted_output_tail(stdout: str, limit: int = _OUTPUT_TAIL_CHARS) -> str:
+    """Return a token-stripped, credential-redacted tail of *stdout*.
+
+    Why this exists: ``kirocrew token`` on a remote that predates the
+    stdout->stderr split prints its failure reasons (``❌ Could not reach gateway
+    on port 5476: ...``) to **stdout**, so an error built only from stderr came
+    back as ``<no stderr>`` and the operator had to SSH in to learn why. Carrying
+    a stdout tail makes the real reason travel with the exception.
+
+    Why stripping is mandatory: unlike stderr, stdout is the one stream that
+    *does* carry the minted JWT on success. This tail is only ever built on a
+    failure path, but a partially-successful remote (URL printed, then a
+    non-zero exit) could still put a live credential in it — so the token is
+    substituted out FIRST, before the generic credential/exfil redactors run,
+    and the result is truncated to the last *limit* chars (the tail, because the
+    reason is the last thing printed).
+
+    Why the scan is bounded: the scrubbers cost ~1s per MB of stdout and `re`
+    holds the GIL, so scanning an unbounded remote payload stalls the gateway's
+    event loop (13s measured on 13MB). Only the last ``_OUTPUT_SCAN_CHARS`` are
+    scanned. That slice can land mid-run, which would show the regexes a
+    *fragment* of a secret and let its suffix survive into the tail — so the run
+    touching the window's left edge is dropped when it is long enough to have
+    been clipped out of one. A reason printed inside such an over-long unbroken
+    run is sacrificed with it; a reason on its own line (what remotes actually
+    print) is unaffected.
+    """
+    if not stdout:
+        return ""
+    window = stdout
+    if len(window) > _OUTPUT_SCAN_CHARS:
+        window = _CLIPPED_RUN_RE.sub(_CLIPPED_MARKER, window[-_OUTPUT_SCAN_CHARS:], count=1)
+    stripped = _TOKEN_RE.sub(lambda m: m.group(0)[0] + "token=<redacted>", window)
+    stripped = _JWT_RE.sub("<redacted>", stripped)
+    safe = redact_exfiltration_urls(redact_credentials(stripped)[0])[0]
+    return safe.strip()[-limit:]
+
+
+def _with_stdout_tail(primary: str, safe_stdout: str) -> str:
+    """Append the redacted stdout tail to *primary* when there is one.
+
+    Keeps the original single-stream message shape for modern remotes (which
+    print their reasons to stderr) and only widens the message when stdout
+    actually carried something — i.e. on an older remote.
+    """
+    return f"{primary} | stdout tail: {safe_stdout}" if safe_stdout else primary
+
+
 async def mint_remote_token(
     ssh_host: str,
     *,
@@ -356,17 +447,23 @@ async def mint_remote_token(
     if proc.returncode != 0:
         # stderr may carry the "binary not found" diagnostic — safe to log; it
         # never contains the token (token only ever appears on stdout).
+        # Belt-and-suspenders for older remotes: pre-fix `kirocrew token` printed
+        # its failure reasons to STDOUT, so a stderr-only error message degraded
+        # to a useless "<no stderr>". The tail is built HERE, inside the failure
+        # branch, so the "only ever built on a failure path" invariant that
+        # _redacted_output_tail documents is enforced by control flow rather than
+        # merely asserted — the success path never touches stdout holding a token.
         raise TokenMintError(
             f"remote token mint on {ssh_host} exited {proc.returncode}: "
-            f"{safe_stderr or '<no stderr>'}"
+            f"{_with_stdout_tail(safe_stderr or '<no stderr>', _redacted_output_tail(stdout))}"
         )
 
     token = parse_token_from_stdout(stdout)
     if not token:
-        raise TokenMintError(
-            f"could not parse a token from {ssh_host} output "
-            f"(stderr: {safe_stderr or '<none>'})"
+        detail = _with_stdout_tail(
+            f"stderr: {safe_stderr or '<none>'}", _redacted_output_tail(stdout)
         )
+        raise TokenMintError(f"could not parse a token from {ssh_host} output ({detail})")
     return token
 
 
