@@ -332,8 +332,72 @@ class TestTokenMint:
         with pytest.raises(tm.TokenMintError):
             asyncio.run(tm.mint_remote_token("cd-1", ttl="20h"))
 
+    def test_mint_nonzero_exit_surfaces_stdout_reason(self, monkeypatch):
+        """A `kirocrew token` failure prints its reason to stdout (exit 1).
 
-# ── gateway run-marker (mint prefers the running gateway's install) ───────────
+        The error message must carry that reason, not the old opaque
+        "<no stderr>" — stderr is empty in this case.
+        """
+        from kiro_crew.instances import token_mint as tm
+
+        class FakeProc:
+            returncode = 1
+
+            async def communicate(self):
+                return (
+                    b"\xe2\x9d\x8c Could not reach gateway on port 5477: "
+                    b"Connection refused\n",
+                    b"",
+                )
+
+        async def fake_exec(*a, **k):
+            return FakeProc()
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+        with pytest.raises(tm.TokenMintError) as exc:
+            asyncio.run(tm.mint_remote_token("cd-1", ttl="20h"))
+        msg = str(exc.value)
+        assert "Could not reach gateway on port 5477" in msg
+        assert "Connection refused" in msg
+        assert "<no stderr>" not in msg
+
+    def test_mint_nonzero_exit_scrubs_token_from_stdout(self, monkeypatch):
+        """Defensive: even if a token URL rides along on a non-zero exit, the
+        raw JWT is never surfaced in the exception (only a scrubbed marker)."""
+        from kiro_crew.instances import token_mint as tm
+
+        class FakeProc:
+            returncode = 1
+
+            async def communicate(self):
+                return b"http://localhost:5477?token=SECRETJWT\n", b""
+
+        async def fake_exec(*a, **k):
+            return FakeProc()
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+        with pytest.raises(tm.TokenMintError) as exc:
+            asyncio.run(tm.mint_remote_token("cd-1", ttl="20h"))
+        assert "SECRETJWT" not in str(exc.value)
+
+    def test_mint_parse_failure_surfaces_stdout(self, monkeypatch):
+        """Exit 0 but no parseable token → the diagnostic includes the stdout
+        tail so the operator can see what the remote actually printed."""
+        from kiro_crew.instances import token_mint as tm
+
+        class FakeProc:
+            returncode = 0
+
+            async def communicate(self):
+                return b"unexpected banner, no url here\n", b""
+
+        async def fake_exec(*a, **k):
+            return FakeProc()
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+        with pytest.raises(tm.TokenMintError) as exc:
+            asyncio.run(tm.mint_remote_token("cd-1", ttl="20h"))
+        assert "unexpected banner" in str(exc.value)
 
 
 class TestRunMarker:

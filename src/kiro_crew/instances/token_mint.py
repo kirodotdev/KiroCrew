@@ -298,6 +298,51 @@ def _build_ssh_argv(ssh_host: str, remote_command: str) -> list[str]:
     ]
 
 
+# Cap the length of a remote-output tail surfaced in an exception, so a chatty
+# remote (banner + traceback) can't bloat the error / logs. Diagnostics from
+# `kirocrew token` are short single lines, so the tail is what matters.
+_MAX_DIAG_CHARS = 500
+
+
+def _redact_output(text: str) -> str:
+    """Redact secrets from a remote command's output before it enters an error.
+
+    Applied to BOTH the stdout and stderr tails surfaced in a
+    :class:`TokenMintError`. ``kirocrew token`` writes its *failure* diagnostics
+    (e.g. "Gateway not running", "could not reach gateway on port N") to
+    **stdout**, so surfacing a stdout tail is what makes a remote-mint failure
+    diagnosable instead of an opaque ``<no stderr>``. But stdout is also where a
+    *successful* mint prints the ``?token=<jwt>`` URL, so any ``token=`` value is
+    scrubbed first (defensively — a non-zero exit should not carry one) before
+    the standard credential / exfiltration-URL redaction runs. The result is
+    stripped and tail-truncated to :data:`_MAX_DIAG_CHARS`.
+    """
+    if not text:
+        return ""
+    scrubbed = re.sub(r"([?&]token=)[^\s&]+", r"\1<redacted>", text)
+    scrubbed = redact_exfiltration_urls(redact_credentials(scrubbed)[0])[0].strip()
+    if len(scrubbed) > _MAX_DIAG_CHARS:
+        scrubbed = "…" + scrubbed[-_MAX_DIAG_CHARS:]
+    return scrubbed
+
+
+def _format_remote_diag(safe_stdout: str, safe_stderr: str) -> str:
+    """Combine redacted stdout/stderr tails into one diagnostic string.
+
+    Both are included (labelled) when present because they carry different
+    signals: ``kirocrew token`` prints its reason to stdout, while the candidate
+    search's "binary not found" note and any SSH/WSSH banner land on stderr.
+    Preferring only one would let a benign stderr banner mask the real stdout
+    reason (or vice-versa).
+    """
+    parts = []
+    if safe_stdout:
+        parts.append(f"stdout: {safe_stdout}")
+    if safe_stderr:
+        parts.append(f"stderr: {safe_stderr}")
+    return " | ".join(parts) if parts else "<no output>"
+
+
 async def mint_remote_token(
     ssh_host: str,
     *,
@@ -348,24 +393,29 @@ async def mint_remote_token(
 
     stdout = stdout_b.decode("utf-8", "replace")
     stderr = stderr_b.decode("utf-8", "replace").strip()
-    # stderr is proxy-controlled (WSSH banner etc.); redact credentials/exfil URLs
-    # before surfacing it in an exception that may reach logs/status. The token
-    # only ever appears on stdout, never stderr.
-    safe_stderr = redact_exfiltration_urls(redact_credentials(stderr)[0])[0] if stderr else ""
+    # Both streams are surfaced (redacted) in failure exceptions. `kirocrew token`
+    # writes its failure reason ("Gateway not running", "could not reach gateway
+    # on port N") to STDOUT and exits non-zero; the candidate-search "binary not
+    # found" note and any proxy (WSSH) banner land on STDERR. Redaction scrubs any
+    # token value first — the token only ever appears on stdout, on the success
+    # path — so neither tail can leak the credential.
+    safe_stdout = _redact_output(stdout)
+    safe_stderr = _redact_output(stderr)
 
     if proc.returncode != 0:
-        # stderr may carry the "binary not found" diagnostic — safe to log; it
-        # never contains the token (token only ever appears on stdout).
+        # Include the stdout tail: for a `kirocrew token` failure (exit 1) the
+        # actionable reason is ONLY on stdout, so without it this error was an
+        # opaque "exited 1: <no stderr>".
         raise TokenMintError(
             f"remote token mint on {ssh_host} exited {proc.returncode}: "
-            f"{safe_stderr or '<no stderr>'}"
+            f"{_format_remote_diag(safe_stdout, safe_stderr)}"
         )
 
     token = parse_token_from_stdout(stdout)
     if not token:
         raise TokenMintError(
             f"could not parse a token from {ssh_host} output "
-            f"(stderr: {safe_stderr or '<none>'})"
+            f"({_format_remote_diag(safe_stdout, safe_stderr)})"
         )
     return token
 
