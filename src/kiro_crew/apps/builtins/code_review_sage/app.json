@@ -2,13 +2,20 @@
   "name": "code-review-sage",
   "version": "0.9.3",
   "displayName": "Code Review Sage",
-  "description": "Self-evolving deep code reviewer for GitHub PRs with a prioritized focus report. Findings post as a PENDING (draft) review you submit.",
+  "description": "Deep-reviews GitHub pull requests and tells you which changes actually deserve your attention. Every changed file is reviewed in its own isolated agent session, weighted by how much blast radius it carries, and rolled up into a prioritized Focus Report. Findings are staged as a draft GitHub review that stays unpublished until you submit it, and the reviewer keeps learning your repository's real standards from shipped fixes and past review comments.",
   "author": "kirocrew",
   "tags": [
     "code-review",
     "learning",
     "developer-tools",
     "github"
+  ],
+  "highlights": [
+    "Focus Report ranks changes by blast radius so the risky files get read first",
+    "One isolated agent session per change, so findings never bleed between files",
+    "Posts as a PENDING (draft) GitHub review — you remain the one who submits it",
+    "Learns per-repository from shipped fixes, review comments, and design discussions",
+    "Reviews GitHub pull requests; needs an authenticated `gh` CLI on the gateway host"
   ],
   "defaultEnabled": false,
   "skills": [

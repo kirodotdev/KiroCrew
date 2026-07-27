@@ -1174,9 +1174,22 @@ _BUILTIN_APPS: list[dict[str, Any]] = [
         "name": "agent-worlds",
         "version": "1.0.0",
         "displayName": "Agent Worlds",
-        "description": "Visualize your agents in interactive pixel-art scenes",
+        "description": (
+            "Turns your running agents into characters in an animated pixel-art scene, so a "
+            "glance tells you how busy KiroCrew is. Each active agent appears as a sprite that "
+            "reacts as work starts and finishes, across themed scenes from a classic office to "
+            "a wizard tower or an underwater lab. Pop it out into its own window to keep it on "
+            "a second screen while you work."
+        ),
         "author": "kirocrew",
         "tags": ["visualization", "agents"],
+        "highlights": [
+            "Live view of which agents are running, as characters rather than a list",
+            "Themed scenes including Office, Panda Den, Neural Net, Wizard Tower, and Deep Lab",
+            "Pop out into a separate window for a second monitor; scene choice stays in sync",
+            "Remembers your chosen scene between visits",
+            "Purely a visualization — it never changes what your agents do",
+        ],
         "defaultEnabled": False,
         "iconUrl": "/app-assets/worlds/icon.svg",
         "heroImage": "/app-assets/worlds/hero-light.svg",
@@ -1191,9 +1204,23 @@ _BUILTIN_APPS: list[dict[str, Any]] = [
         "name": "channels",
         "version": "1.0.0",
         "displayName": "Channels",
-        "description": "Multi-agent collaboration channels with persistent context",
+        "description": (
+            "A shared room where several agents work a problem together instead of one agent "
+            "working alone. You assign each agent a role, and they post progress into the "
+            "channel and answer each other's @mentions in the open — there is no private "
+            "agent-to-agent messaging, so the whole exchange stays readable, and you remain "
+            "the approver for anything that changes state. Agents stay alive in the channel "
+            "until dismissed or timed out."
+        ),
         "author": "kirocrew",
         "tags": ["collaboration", "agents"],
+        "highlights": [
+            "Several role-assigned agents collaborate in one shared, readable transcript",
+            "No private agent-to-agent messaging — every exchange happens in the channel",
+            "You stay the final approver for any operation that mutates state",
+            "Agents persist in the channel until dismissed or timed out",
+            "Hidden from the App Store grid; enable with `kirocrew app enable channels`",
+        ],
         "defaultEnabled": False,
         # Hidden from the App Store Browse grid (opt-in via `kirocrew app enable channels`).
         # Code and routes remain fully intact; this only gates store visibility.
@@ -1210,9 +1237,22 @@ _BUILTIN_APPS: list[dict[str, Any]] = [
         "name": "projects",
         "version": "1.0.0",
         "displayName": "Task Runner",
-        "description": "Autonomous multi-step task execution — compose ideas, generate plans, and run them to completion",
+        "description": (
+            "Hand over a multi-step job and let it run to completion unattended. Describe the "
+            "work in plain language, paste a written spec, or upload a YAML file, then either "
+            "generate a plan first to review the steps or start it straight away. Each run gets "
+            "its own page showing step-by-step progress, and you can pause, resume, retry, or "
+            "stop it at any point."
+        ),
         "author": "kirocrew",
         "tags": ["tasks", "autonomy", "execution"],
+        "highlights": [
+            "Three ways in: describe the work in plain language, paste a spec, or upload YAML",
+            "Generate a plan and review the steps before committing to a run",
+            "Runs execute unattended, with step-by-step progress on the run's own page",
+            "Pause, resume, retry, or stop a run at any point",
+            "Keeps a history of past runs and their outcomes",
+        ],
         "defaultEnabled": True,
         "iconUrl": "/app-assets/projects/icon.svg",
         "heroImage": "/app-assets/projects/hero-light.svg",
