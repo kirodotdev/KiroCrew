@@ -16,7 +16,7 @@ vi.mock('../api/client', () => ({
   },
 }))
 
-import { useTheme, ThemeProvider } from '../hooks/useTheme'
+import { useTheme, ThemeProvider, registerTheme } from '../hooks/useTheme'
 
 const wrapper = ({ children }: { children: ReactNode }) => {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -67,5 +67,21 @@ describe('useTheme — self-repair (decision 6)', () => {
     localStorage.setItem('mc-color-theme', 'lumon')
     const { result } = renderHook(() => useTheme(), { wrapper })
     await waitFor(() => expect(result.current.colorTheme).toBe('kiro'))
+  })
+
+  it('keeps a downstream-registered (edition) theme selection', async () => {
+    // Regression: edition themes added via registerTheme() live in
+    // REGISTERED_THEMES, not the core THEMES array. Self-repair must treat them
+    // as valid built-ins — otherwise selecting LCARS/Lumon/Miami/etc bounced
+    // straight back to the default 'kiro'.
+    registerTheme([{ value: 'lcars', label: '🖖 LCARS' }])
+    themesFn.mockResolvedValue({ themes: [] })
+    localStorage.setItem('mc-color-theme', 'lcars')
+    const { result } = renderHook(() => useTheme(), { wrapper })
+    // Wait until the custom-theme load has run (which flips customThemesLoaded
+    // and re-fires the self-repair effect) — if the bug were present the value
+    // would have been reset by now.
+    await waitFor(() => expect(themesFn).toHaveBeenCalled())
+    expect(result.current.colorTheme).toBe('lcars')
   })
 })

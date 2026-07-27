@@ -951,12 +951,17 @@ function useThemeState(): ThemeContextValue {
   // any theme-list refresh). Two dangling cases:
   //   1. An unknown *built-in* value (e.g. a theme removed in a newer build,
   //      like the retired 'lumon') — can never become valid, so repair at once.
+  //      A downstream-registered theme (registerTheme → REGISTERED_THEMES) is a
+  //      valid built-in picker entry too, so it must count as known here — else
+  //      selecting an edition theme (LCARS, Lumon, …) would bounce to the
+  //      default, since it isn't in the core THEMES array.
   //   2. A dangling custom-<slug> whose pack is uninstalled — repair once the
   //      theme list has loaded (gated so a valid install isn't reset early).
   useEffect(() => {
     if (
       !colorTheme.startsWith('custom-') &&
-      !THEMES.some(t => t.value === colorTheme)
+      !THEMES.some(t => t.value === colorTheme) &&
+      !REGISTERED_THEMES.some(t => t.value === colorTheme)
     ) {
       setColorTheme(DEFAULT_COLOR_THEME)
       return
