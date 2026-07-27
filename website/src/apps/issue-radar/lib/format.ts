@@ -1,6 +1,7 @@
 // Pure, side-effect-free helpers + localStorage accessors + constants for
 // Issue Radar. No React, no component imports — safe to pull into any module.
-import { Clock, Hash, Sparkles, type LucideIcon } from 'lucide-react'
+import { Clock, Hash, type LucideIcon } from 'lucide-react'
+import { DASHBOARD_TABS, SORT_KEYS } from './types'
 import type { ActiveRepo, DashboardTab, MainView, PrSortKey, PrStateFilter, SettingsTarget, SortDir, SortKey, StateFilter } from './types'
 
 export const ACTIVE_KEY = 'kc:issue-radar:active-repo'
@@ -44,6 +45,21 @@ export const CLOSED_DETAIL_POLL_MS = 300_000
 export function detailPollMs(open: boolean): number {
   return open ? DETAIL_POLL_MS : CLOSED_DETAIL_POLL_MS
 }
+
+/** Poll interval for the issue / pull-request LISTS.
+ *
+ * Deliberately 6x the detail interval. A list poll is not one item's worth of
+ * traffic: the open-issue fetch is fully paginated, so its cost scales with the
+ * repo (a 2,600-issue repo is 27 `gh api` pages plus a multi-MB cache rewrite
+ * per poll). At 60s that stays comfortably inside GitHub's 5,000/hr
+ * authenticated budget on a large repo; at 10s the same repo would need ~9,700
+ * requests an hour and blow through it.
+ *
+ * 60s also matches the backend new-issue watcher (``watch.POLL_INTERVAL_SEC``),
+ * so a "new issue" bell notification and the list row it refers to land in the
+ * same window instead of the notification arriving a refresh ahead of the list.
+ */
+export const LIST_POLL_MS = 60_000
 
 /** Compact "just now / 5m ago / 3h ago / 2d ago" from an epoch-ms timestamp.
  * Used for the issue-list "Updated …" footer; returns '' for a falsy input
@@ -138,16 +154,13 @@ export function hexToRgba(hex: string, alpha: number): string {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`
 }
 
-/** Sort options rendered in the Filters section. 'ranking' is AI-ordered and
- * not implemented yet (flagged `soon`). */
-export const SORT_FIELDS: { key: SortKey; label: string; icon: LucideIcon; soon?: boolean }[] = [
-  { key: 'ranking', label: 'Ranking', icon: Sparkles, soon: true },
+/** Sort options rendered in the Filters section. */
+export const SORT_FIELDS: { key: SortKey; label: string; icon: LucideIcon }[] = [
   { key: 'number', label: 'Number', icon: Hash },
   { key: 'updated', label: 'Last update', icon: Clock },
 ]
 
-/** Sort options for the pull-request list — same fields as issues minus the
- * AI ``ranking`` (an issue-only concept). */
+/** Sort options for the pull-request list — same fields as the issue list. */
 export const PR_SORT_FIELDS: { key: PrSortKey; label: string; icon: LucideIcon }[] = [
   { key: 'number', label: 'Number', icon: Hash },
   { key: 'updated', label: 'Last update', icon: Clock },
@@ -199,6 +212,20 @@ export function loadUiState(): Partial<PersistedUiState> {
   } catch {
     return {}
   }
+}
+
+/** Coerce a persisted sort key back into a currently-supported one. A key that
+ * was removed from the app since it was written (e.g. the retired AI 'ranking'
+ * order) must not survive a reload, or the list would render unsorted with no
+ * matching option highlighted in the rail. */
+export function coerceSortKey(value: unknown): SortKey {
+  return (SORT_KEYS as readonly string[]).includes(value as string) ? (value as SortKey) : 'number'
+}
+
+/** Same idea for the dashboard tab: a tab whose view no longer exists falls
+ * back to Overview instead of rendering an empty main area. */
+export function coerceDashboardTab(value: unknown): DashboardTab {
+  return (DASHBOARD_TABS as readonly string[]).includes(value as string) ? (value as DashboardTab) : 'overview'
 }
 
 export function saveUiState(state: PersistedUiState) {

@@ -556,7 +556,6 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
   const closedAt = detail?.closed_at ?? null
   const closedBy = detail?.closed_by ?? null
   const updatedAt = detail?.updated_at ?? issue.updated_at
-  const commentCount = detail?.comments ?? issue.comments
   const locked = detail?.locked ?? false
 
   const activityLoading = detailQuery.isLoading
@@ -683,7 +682,6 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
                 {author ? <span className="text-text font-medium">{author}</span> : 'someone'} opened{' '}
                 {createdAt ? <RelTime iso={createdAt} /> : ''}
               </span>
-              <span className="inline-flex items-center gap-1"><MessageSquare size={12} /> {commentCount}</span>
               {locked && <span className="inline-flex items-center gap-1 text-warn"><Lock size={12} /> locked</span>}
             </div>
           </div>
@@ -772,13 +770,13 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
             })}
 
             {activityLoading && (
-              <div className="pl-[90px] py-2 text-[12px] text-muted">Loading activity…</div>
+              <div className="py-2 text-[12px] text-muted">Loading activity…</div>
             )}
             {activityError && (
-              <div className="pl-[90px] py-2 text-[12px] text-danger">Couldn't load activity: {activityError.message}</div>
+              <div className="py-2 text-[12px] text-danger">Couldn't load activity: {activityError.message}</div>
             )}
             {!activityLoading && !activityError && activityDesc.length === 0 && (
-              <div className="pl-[90px] py-2 text-[12px] text-muted">No activity yet.</div>
+              <div className="py-2 text-[12px] text-muted">No activity yet.</div>
             )}
           </main>
 
@@ -851,12 +849,6 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
                 <span className="text-muted">No milestone</span>
               )}
             </Section>
-
-            {reactions && (
-              <Section title="Reactions">
-                <ReactionStrip reactions={reactions} />
-              </Section>
-            )}
 
             <Section title="Dates" icon={<CalendarDays size={12} />}>
               <dl className="space-y-1">

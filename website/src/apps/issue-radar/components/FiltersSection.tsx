@@ -26,27 +26,20 @@ export default function FiltersSection() {
         </div>
         <div className="flex flex-col gap-0.5">
           {SORT_FIELDS.map((f) => {
-            const isActive = f.key === sortKey && !f.soon
+            const isActive = f.key === sortKey
             const DirIcon = sortDir === 'asc' ? ArrowUp : ArrowDown
             return (
               <button
                 key={f.key}
-                disabled={f.soon}
-                title={f.soon ? 'AI-ranked order — coming soon' : undefined}
-                onClick={() => { if (!f.soon) cycleSort(f.key) }}
-                className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-[13px] text-left transition-colors ${
-                  f.soon
-                    ? 'text-muted opacity-60 cursor-default'
-                    : isActive
-                      ? 'bg-accent-subtle text-text font-medium cursor-pointer'
-                      : 'text-muted hover:bg-bg-hover cursor-pointer'
+                onClick={() => cycleSort(f.key)}
+                className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-[13px] text-left transition-colors cursor-pointer ${
+                  isActive
+                    ? 'bg-accent-subtle text-text font-medium'
+                    : 'text-muted hover:bg-bg-hover'
                 }`}
               >
                 <f.icon size={14} className="flex-shrink-0" />
                 <span className="flex-1">{f.label}</span>
-                {f.soon && (
-                  <span className="text-[10px] uppercase tracking-wide rounded px-1 py-0.5 bg-bg-hover text-muted whitespace-nowrap">coming soon</span>
-                )}
                 {isActive && <DirIcon size={14} className="text-accent" />}
               </button>
             )

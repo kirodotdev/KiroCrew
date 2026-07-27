@@ -8,7 +8,7 @@
 //   └────────────┴─────────────┴──────────────────────────┘
 //
 // In 'dashboard' main view the list+detail split is replaced by a full-width
-// dashboard page (Overview / Ranking / Insights / Duplicates), chosen from the
+// dashboard page (Overview / Tagging), chosen from the
 // registry. 'settings' shows the Settings page in the same area. The rail stays
 // visible in every mode. All shared state comes from useIssueRadar(); this file
 // owns only presentational layout (column resize).

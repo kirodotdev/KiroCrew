@@ -18,7 +18,9 @@ import {
 import type {
   ActiveRepo, DashboardTab, ExpandedSection, MainView, PrSortKey, PrStateFilter, SettingsTarget, SortDir, SortKey, StateFilter,
 } from './lib/types'
-import { asArray, consumeAutoSelectFirstIssue, loadUiState, saveUiState } from './lib/format'
+import {
+  asArray, coerceDashboardTab, coerceSortKey, consumeAutoSelectFirstIssue, LIST_POLL_MS, loadUiState, saveUiState,
+} from './lib/format'
 
 /** GitHub author_association values that mark a repo member (maintainer). Kept
  * in sync with the backend's ``_MEMBER_ASSOC_RANK`` and the detail badge's
@@ -213,11 +215,11 @@ export function IssueRadarProvider({
   const [createdByMember, setCreatedByMember] = useState(restored.createdByMember ?? false)
   const [selectedIssue, setSelectedIssue] = useState<number | null>(restored.selectedIssue ?? null)
   const [stateFilter, setStateFilter] = useState<StateFilter>(restored.stateFilter ?? 'open')
-  const [sortKey, setSortKey] = useState<SortKey>(restored.sortKey ?? 'number')
+  const [sortKey, setSortKey] = useState<SortKey>(() => coerceSortKey(restored.sortKey))
   const [sortDir, setSortDir] = useState<SortDir>(restored.sortDir ?? 'desc')
 
   const [mainView, setMainView] = useState<MainView>(restored.mainView ?? 'dashboard')
-  const [dashboardTab, setDashboardTab] = useState<DashboardTab>(restored.dashboardTab ?? 'overview')
+  const [dashboardTab, setDashboardTab] = useState<DashboardTab>(() => coerceDashboardTab(restored.dashboardTab))
   const [settingsTarget, setSettingsTarget] = useState<SettingsTarget>(restored.settingsTarget ?? { kind: 'general', anchor: 'account' })
   const [expanded, setExpanded] = useState<ExpandedSection>('dashboards')
 
@@ -273,9 +275,32 @@ export function IssueRadarProvider({
   const meQuery = useQuery({ queryKey: ['issue-radar', 'me'], queryFn: () => issueRadarApi.me() })
   const me = meQuery.data?.login ?? null
 
+  // A LIST query polls on ``LIST_POLL_MS``, but its route is cache-first with no
+  // server-side TTL: a plain refetch would be answered from that cache and
+  // observe nothing new forever. A refetch therefore sends ``poll=1``, which
+  // tells the backend "I want current data" and lets IT decide the cost — it
+  // answers with one cheap probe call and only pays the paginated fetch when the
+  // probe moved. The client deliberately does NOT send ``refresh=1`` here: that
+  // is the unconditional cache-bust the manual Refresh button uses, and putting
+  // it on a timer is what would make GitHub cost scale with open tabs.
+  //
+  // The FIRST fetch for a key sends neither, so it is served from cache at any
+  // age and the app paints without waiting on `gh`. "Already have data for this
+  // key" is exactly that distinction, so it drives the flag. Changing the state
+  // filter mints a new key, which correctly reads as a first fetch.
+  const isRefetch = useCallback(
+    (key: readonly unknown[]) => queryClient.getQueryData(key) !== undefined,
+    [queryClient],
+  )
+
+  const issuesKey = ['issue-radar', 'issues', owner, repo, stateFilter] as const
   const issuesQuery = useQuery({
-    queryKey: ['issue-radar', 'issues', owner, repo, stateFilter],
-    queryFn: () => issueRadarApi.issues(owner, repo, { state: stateFilter }),
+    queryKey: issuesKey,
+    queryFn: () => issueRadarApi.issues(owner, repo, { state: stateFilter, poll: isRefetch(issuesKey) }),
+    // react-query pauses this while the window is unfocused
+    // (refetchIntervalInBackground defaults to false), so a backgrounded tab
+    // costs nothing.
+    refetchInterval: LIST_POLL_MS,
   })
   const labelsQuery = useQuery({
     queryKey: ['issue-radar', 'labels', owner, repo],
@@ -306,10 +331,29 @@ export function IssueRadarProvider({
   // never look at. The rail's Pull requests section counts as "in use" (opening
   // it sets mainView), so the list is already loading by the time it is shown.
   const prSurfaceActive = mainView === 'pulls' || expanded === 'pulls'
+  // Per-person filters are answered SERVER-side by GitHub search rather than by
+  // filtering the bounded list: the closed list is capped at one page, so a
+  // client-side "authored by me" would silently miss your older PRs on a busy
+  // repo (a PR merged days ago can already rank outside the window). When any
+  // person filter is on we swap the data source to the search query, which
+  // covers the whole repo; the list view keeps its bound.
+  //
+  // Two flags, deliberately: the search query needs the RESOLVED login, but the
+  // base list must stand down as soon as a filter is REQUESTED — gating it on
+  // `me` too would fire one whole-repo fetch (fully paginated) in the window
+  // before /me lands, every time a persisted person filter is restored.
+  const prPersonFilterRequested = prAuthoredByMe || prAssignedToMe || prReviewRequestedByMe
+  const prPersonFilterActive = !!me && prPersonFilterRequested
+  const pullsKey = ['issue-radar', 'pulls', owner, repo, prFetchState] as const
   const pullsQuery = useQuery({
-    queryKey: ['issue-radar', 'pulls', owner, repo, prFetchState],
-    queryFn: () => issueRadarApi.pulls(owner, repo, { state: prFetchState }),
-    enabled: prSurfaceActive,
+    queryKey: pullsKey,
+    queryFn: () => issueRadarApi.pulls(owner, repo, { state: prFetchState, poll: isRefetch(pullsKey) }),
+    // The two PR sources are MUTUALLY EXCLUSIVE, and only one of them is ever
+    // read (see `pulls` below). Enabling both while a person filter is on would
+    // poll GitHub twice a minute to fill a cache nothing renders.
+    enabled: prSurfaceActive && !prPersonFilterRequested,
+    // Same cache-busting refetch as the issue list.
+    refetchInterval: LIST_POLL_MS,
   })
   const refreshPullsMutation = useMutation({
     mutationFn: () => issueRadarApi.pulls(owner, repo, { refresh: true, state: prFetchState }),
@@ -318,13 +362,6 @@ export function IssueRadarProvider({
     },
   })
 
-  // Per-person filters are answered SERVER-side by GitHub search rather than by
-  // filtering the bounded list: the closed list is capped at one page, so a
-  // client-side "authored by me" would silently miss your older PRs on a busy
-  // repo (a PR merged days ago can already rank outside the window). When any
-  // person filter is on we swap the data source to the search query, which
-  // covers the whole repo; the list view keeps its bound.
-  const prPersonFilterActive = !!me && (prAuthoredByMe || prAssignedToMe || prReviewRequestedByMe)
   const prSearchArgs = {
     state: prStateFilter,
     author: prAuthoredByMe && me ? me : undefined,
@@ -337,7 +374,12 @@ export function IssueRadarProvider({
       prSearchArgs.author ?? '', prSearchArgs.assignee ?? '', prSearchArgs.reviewRequested ?? '',
     ],
     queryFn: () => issueRadarApi.searchPulls(owner, repo, prSearchArgs),
-    enabled: prPersonFilterActive,
+    enabled: prSurfaceActive && prPersonFilterActive,
+    // The search route is uncached server-side, so a plain refetch already goes
+    // to GitHub — no refresh flag needed here. Gated on the surface as well as
+    // the filter: a person filter left on while the user works elsewhere in the
+    // app must not keep polling GitHub search in the background.
+    refetchInterval: LIST_POLL_MS,
   })
 
   const refreshMutation = useMutation({
@@ -478,7 +520,6 @@ export function IssueRadarProvider({
       let d = 0
       if (sortKey === 'number') d = a.number - b.number
       else if (sortKey === 'updated') d = new Date(a.updated_at).getTime() - new Date(b.updated_at).getTime()
-      else d = 0 // 'ranking' — AI-generated order, not implemented yet
       return sortDir === 'asc' ? d : -d
     })
     return arr
@@ -648,7 +689,16 @@ export function IssueRadarProvider({
     sortKey, sortDir, cycleSort,
     selectedIssue, setSelectedIssue,
     pulls,
-    pullsLoading: prPersonFilterActive ? pullsSearchQuery.isLoading : pullsQuery.isLoading,
+    // Covers the window between a person filter being REQUESTED and `me`
+    // resolving: the base list is already disabled while the search query is not
+    // enabled yet, and react-query reports isLoading=false for a disabled query —
+    // so reading either one alone renders "no pull requests" instead of a
+    // skeleton every time a persisted person filter is restored. Keyed on
+    // meQuery.isLoading rather than `me` being falsy so a FAILED /me falls
+    // through to the empty state instead of spinning forever.
+    pullsLoading: prPersonFilterRequested
+      ? (prSurfaceActive && (meQuery.isLoading || pullsSearchQuery.isLoading))
+      : pullsQuery.isLoading,
     // A manual refresh goes through refreshPullsMutation, so its failure has to be
     // reported here too — otherwise the spinner just stops and the stale rows stay
     // on screen as if the refresh had worked.

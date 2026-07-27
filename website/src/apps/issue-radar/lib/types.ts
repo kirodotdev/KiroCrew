@@ -6,17 +6,23 @@ export interface ActiveRepo {
   repo: string
 }
 
-export type SortKey = 'number' | 'updated' | 'ranking'
+/** Sort fields the issue list supports. Exported as a list so persisted state
+ * can be validated at runtime (a key removed since it was persisted must not
+ * survive a reload). */
+export const SORT_KEYS = ['number', 'updated'] as const
+export type SortKey = (typeof SORT_KEYS)[number]
 export type SortDir = 'asc' | 'desc'
 
-/** Sort fields the pull-request list supports (no AI ranking — that is an
- * issue-only concept). A subset of ``SortKey``. */
+/** Sort fields the pull-request list supports. Same shape as ``SortKey``. */
 export type PrSortKey = 'number' | 'updated'
 
-/** Which full-page dashboard is showing in the main area. Extend this union
+/** Which full-page dashboard is showing in the main area. Extend this list
  * (plus the registry in views/registry.tsx) to add a new dashboard — no other
- * shared file needs to change, so views can be built by separate agents. */
-export type DashboardTab = 'overview' | 'tagging' | 'ranking' | 'insights' | 'duplicates'
+ * shared file needs to change, so views can be built by separate agents. The
+ * list is exported so persisted state can be validated at runtime (a tab that
+ * was removed since it was persisted must not survive a reload). */
+export const DASHBOARD_TABS = ['overview', 'tagging'] as const
+export type DashboardTab = (typeof DASHBOARD_TABS)[number]
 
 /** Main-area mode: a dashboard page, the issue list + detail split, the pull-
  * request list + detail split, or the settings page. Each corresponds to one

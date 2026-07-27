@@ -1,8 +1,8 @@
 import { useIssueRadar } from '../context'
 import { DASHBOARDS } from '../views/registry'
 
-/** Body of the "Dashboards" accordion section: a nav list (Overview, Ranking,
- * Insights, Duplicates…) driven entirely by the registry. Selecting one opens
+/** Body of the "Dashboards" accordion section: a nav list (Overview, Tagging…)
+ * driven entirely by the registry. Selecting one opens
  * that dashboard in the main area. */
 export default function DashboardsSection() {
   const { mainView, dashboardTab, openDashboard } = useIssueRadar()
@@ -22,9 +22,6 @@ export default function DashboardsSection() {
             >
               <d.icon size={14} className={`flex-shrink-0 ${isActive ? 'text-accent' : ''}`} />
               <span className="flex-1">{d.label}</span>
-              {d.soon && (
-                <span className="text-[10px] uppercase tracking-wide rounded px-1 py-0.5 bg-bg-hover text-muted whitespace-nowrap">coming soon</span>
-              )}
             </button>
           )
         })}

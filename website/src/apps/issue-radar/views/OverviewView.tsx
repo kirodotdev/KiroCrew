@@ -6,8 +6,7 @@ import type { Issue } from '../api'
 
 // Overview — the triage command center. A full-width bento of "what's true
 // right now": headline KPIs, the issues most in need of action, label mix,
-// backlog age, recent activity, and discussion hotspots. Time-series trends
-// live in Insights; the AI priority order lives in Ranking — Overview stays a
+// backlog age, recent activity, and discussion hotspots. Overview stays a
 // snapshot. Every number/row is a shortcut into the (filtered) issue list.
 //
 // All signals are derived client-side from data the backend already fetches

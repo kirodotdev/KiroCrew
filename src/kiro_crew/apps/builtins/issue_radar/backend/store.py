@@ -147,27 +147,33 @@ def issue_write_lock(owner: str, repo: str, number: int, root: Path | None = Non
 
 
 def write_issues_cache(
-    owner: str, repo: str, issues: list[dict], *, root: Path | None = None, state: str = "open"
+    owner: str, repo: str, issues: list[dict], *, root: Path | None = None, state: str = "open",
+    probe: dict | None = None,
 ) -> None:
     with issues_cache_lock(owner, repo, root, state):
-        _write_issues_cache_unlocked(owner, repo, issues, root=root, state=state)
+        _write_issues_cache_unlocked(owner, repo, issues, root=root, state=state, probe=probe)
 
 
 def _write_issues_cache_unlocked(
-    owner: str, repo: str, issues: list[dict], *, root: Path | None = None, state: str = "open"
+    owner: str, repo: str, issues: list[dict], *, root: Path | None = None, state: str = "open",
+    probe: dict | None = None,
 ) -> None:
-    atomic_write(
-        issues_cache_path(owner, repo, root, state),
-        json.dumps(
-            {"schema": ISSUES_CACHE_SCHEMA, "owner": owner, "repo": repo, "state": state, "issues": issues},
-            indent=2,
-        ),
-    )
+    payload: dict = {
+        "schema": ISSUES_CACHE_SCHEMA, "owner": owner, "repo": repo,
+        "state": state, "issues": issues,
+        # See _read_list_snapshot: the age that bounds a poll's staleness has to
+        # live INSIDE the payload, because partial write-through patches rewrite
+        # the file and would otherwise reset its mtime.
+        "fetched_at": time.time(),
+    }
+    if probe is not None:
+        payload["probe"] = probe
+    atomic_write(issues_cache_path(owner, repo, root, state), json.dumps(payload, indent=2))
 
 
 def refresh_issues_cache(
     owner: str, repo: str, fetch: Callable[[], list[dict]], *,
-    root: Path | None = None, state: str = "open",
+    root: Path | None = None, state: str = "open", probe: dict | None = None,
 ) -> list[dict]:
     """Fetch a fresh issue list and store it, holding the cache lock ACROSS BOTH.
 
@@ -180,11 +186,74 @@ def refresh_issues_cache(
     The cost is that a concurrent patch waits for the network call. That is the
     right trade: a refresh is a deliberate user action on one repo, and the
     alternative is losing writes. ``fetch`` is called at most once.
+
+    ``probe`` is the poll fingerprint read BEFORE the fetch (see
+    ``_poll_can_serve_cache``); it is persisted in the same write so a poll can
+    never pair fresh rows with a missing fingerprint.
     """
     with issues_cache_lock(owner, repo, root, state):
         issues = fetch()
-        _write_issues_cache_unlocked(owner, repo, issues, root=root, state=state)
+        _write_issues_cache_unlocked(owner, repo, issues, root=root, state=state, probe=probe)
         return issues
+
+
+def read_issues_snapshot(
+    owner: str, repo: str, root: Path | None = None, state: str = "open"
+) -> dict | None:
+    """One read of the issues cache returning ``{"rows", "probe", "age_sec"}``.
+
+    Rows and probe come from the SAME read on purpose. Reading them separately
+    let a concurrent refresh land in between, pairing the old rows with the new
+    probe — which the poll path would then treat as "verified unchanged" and
+    serve as fresh. Returns None on a miss or a stale schema, exactly like
+    :func:`read_issues_cache`.
+    """
+    return _read_list_snapshot(
+        issues_cache_path(owner, repo, root, state), ISSUES_CACHE_SCHEMA, "issues"
+    )
+
+
+def _read_list_snapshot(path: Path, schema: object, rows_key: str) -> dict | None:
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict) or data.get("schema") != schema:
+        return None  # stale schema → treat as a miss so the route refetches
+    rows = data.get(rows_key)
+    if not isinstance(rows, list):
+        return None
+    probe = data.get("probe")
+    return {
+        "rows": rows,
+        "probe": probe if isinstance(probe, dict) else None,
+        "age_sec": _list_cache_age_sec(data, mtime),
+    }
+
+
+def _list_cache_age_sec(data: dict, mtime: float) -> float:
+    """How long ago the cached ROWS were fetched from GitHub.
+
+    Read from the payload's ``fetched_at``, NOT from the file's mtime: the
+    write-through patches (``apply_pr_checks_to_list_cache``,
+    ``apply_label_change_to_caches``) rewrite this file in place without
+    refetching anything. With mtime, opening a single PR — whose detail poll
+    patches its check tally back every 30s — kept resetting the age, so the
+    poll staleness ceiling never fired for the open-PR list precisely while a
+    PR pane was open, i.e. it was unreachable in the degenerate-probe case it
+    exists to bound.
+
+    Falls back to mtime for a cache written before this field existed, which is
+    at worst the old (too-young) reading for one refresh cycle.
+    """
+    fetched_at = data.get("fetched_at")
+    if isinstance(fetched_at, (int, float)) and not isinstance(fetched_at, bool):
+        return max(0.0, time.time() - float(fetched_at))
+    return max(0.0, time.time() - mtime)
 
 
 def read_issues_cache(
@@ -1197,17 +1266,29 @@ def _pulls_cache_lock(owner: str, repo: str, root: Path | None, state: str):
 
 
 def write_pulls_cache(
-    owner: str, repo: str, pulls: list[dict], *, root: Path | None = None, state: str = "open"
+    owner: str, repo: str, pulls: list[dict], *, root: Path | None = None, state: str = "open",
+    probe: dict | None = None,
 ) -> None:
     with _pulls_cache_lock(owner, repo, root, state):
-        atomic_write(
-            pulls_cache_path(owner, repo, root, state),
-            json.dumps(
-                {"schema": PULLS_CACHE_SCHEMA, "owner": owner, "repo": repo,
-                 "state": state, "pulls": pulls},
-                indent=2,
-            ),
-        )
+        payload: dict = {
+            "schema": PULLS_CACHE_SCHEMA, "owner": owner, "repo": repo,
+            "state": state, "pulls": pulls,
+            # Inside the payload on purpose — see write_issues_cache.
+            "fetched_at": time.time(),
+        }
+        if probe is not None:
+            payload["probe"] = probe
+        atomic_write(pulls_cache_path(owner, repo, root, state), json.dumps(payload, indent=2))
+
+
+def read_pulls_snapshot(
+    owner: str, repo: str, root: Path | None = None, state: str = "open"
+) -> dict | None:
+    """``{"rows", "probe", "age_sec"}`` for the cached PRs in one read.
+    Mirrors :func:`read_issues_snapshot`, including why it is a single read."""
+    return _read_list_snapshot(
+        pulls_cache_path(owner, repo, root, state), PULLS_CACHE_SCHEMA, "pulls"
+    )
 
 
 def read_pulls_cache(
@@ -1261,13 +1342,21 @@ def apply_pr_checks_to_list_cache(
             changed = False
             for row in data.get("pulls") or []:
                 if isinstance(row, dict) and row.get("number") == int(number):
-                    row["checks_counts"] = summary.get("checks_counts")
-                    row["checks_state"] = summary.get("checks_state")
                     # Also clear a stale truncation flag: this tally comes from the
                     # fully-paginated detail read, so it is complete even if the
                     # GraphQL enrichment had to give up on a >1-page PR.
-                    row["checks_truncated"] = bool(summary.get("checks_truncated"))
-                    changed = True
+                    patch = {
+                        "checks_counts": summary.get("checks_counts"),
+                        "checks_state": summary.get("checks_state"),
+                        "checks_truncated": bool(summary.get("checks_truncated")),
+                    }
+                    # Only a real difference is worth a write. The detail poll
+                    # calls this every 30s while a PR pane is open, and this file
+                    # is multi-MB on a busy repo — rewriting an identical payload
+                    # sixty times an hour is pure churn.
+                    if any(row.get(k) != v for k, v in patch.items()):
+                        row.update(patch)
+                        changed = True
             if changed:
                 atomic_write(path, json.dumps(data, indent=2))
 

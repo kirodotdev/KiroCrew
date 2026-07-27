@@ -622,10 +622,11 @@ export const issueRadarApi = {
     return r.json()
   },
 
-  issues: async (owner: string, repo: string, opts?: { refresh?: boolean; state?: 'open' | 'closed' }): Promise<IssuesResponse> => {
+  issues: async (owner: string, repo: string, opts?: { refresh?: boolean; poll?: boolean; state?: 'open' | 'closed' }): Promise<IssuesResponse> => {
     const q = new URLSearchParams({ owner, repo })
     if (opts?.state) q.set('state', opts.state)
     if (opts?.refresh) q.set('refresh', '1')
+    if (opts?.poll) q.set('poll', '1')
     const r = await fetch(`${API}/issues?${q.toString()}`, { credentials: 'same-origin' })
     if (!r.ok) throw new Error(await parseErrorBody(r))
     return r.json()
@@ -641,10 +642,11 @@ export const issueRadarApi = {
 
   /** List pull requests for a repo. `state` is 'open' (default) or 'closed'
    * (closed is bounded to the 100 most-recently-updated, merged + unmerged). */
-  pulls: async (owner: string, repo: string, opts?: { refresh?: boolean; state?: 'open' | 'closed' }): Promise<PullsResponse> => {
+  pulls: async (owner: string, repo: string, opts?: { refresh?: boolean; poll?: boolean; state?: 'open' | 'closed' }): Promise<PullsResponse> => {
     const q = new URLSearchParams({ owner, repo })
     if (opts?.state) q.set('state', opts.state)
     if (opts?.refresh) q.set('refresh', '1')
+    if (opts?.poll) q.set('poll', '1')
     const r = await fetch(`${API}/pulls?${q.toString()}`, { credentials: 'same-origin' })
     if (!r.ok) throw new Error(await parseErrorBody(r))
     return r.json()

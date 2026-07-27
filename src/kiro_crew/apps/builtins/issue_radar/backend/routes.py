@@ -60,7 +60,8 @@ import asyncio
 import hashlib
 import logging
 import re
-from functools import wraps
+import time
+from functools import partial, wraps
 
 from aiohttp import web
 
@@ -171,11 +172,126 @@ async def _handle_connect(request: web.Request) -> web.Response:
     })
 
 
-async def _handle_issues(request: web.Request) -> web.Response:
-    """GET /issues?owner=<o>&repo=<r>[&refresh=1] — list open issues.
+# Hard ceiling on how long a poll may keep answering from the cache without a
+# real fetch, however confident the probe is. This bounds every way the probe can
+# be WRONG rather than merely unavailable — a reading that is consistently wrong
+# matches its own prior recording forever, so error handling alone cannot catch
+# it. Two live examples:
+#   * GitHub is retiring PR results from `search/issues` (the `advanced_search`
+#     transition). When that lands the `is:pr` probe degenerates to a stable
+#     {0, None}, which compares equal to itself — the PR list would freeze while
+#     looking healthy.
+#   * A PR's check run turning red changes NEITHER `updated_at` nor the open
+#     count, so no probe of the issue/PR metadata can see CI move. (The PR you
+#     actually have open stays current regardless: its detail poll writes fresh
+#     check state back into the list cache — see apply_pr_checks_to_list_cache.)
+# 10 minutes = every 10th poll at LIST_POLL_MS, so the worst case is ~6 full
+# fetches an hour instead of 60 — still an order of magnitude below the unprobed
+# cost this replaced.
+LIST_POLL_MAX_STALENESS_SEC = 600.0
 
-    Serves the local cache by default; pass refresh=1 to force a fresh `gh`
-    fetch (still one-shot per product decision — no pagination/search yet).
+# How long one probe reading may be reused across CALLERS. Without this, every
+# visible tab probes on its own 60s cadence and the search quota (30/min, shared
+# with the user's own searches) scales with the number of open tabs. The lock
+# makes concurrent polls join one in-flight probe instead of each issuing their
+# own.
+_PROBE_COALESCE_SEC = 15.0
+_probe_memo: dict[tuple[str, str, str], tuple[float, dict]] = {}
+_probe_inflight: dict[tuple[str, str, str], "asyncio.Future[dict]"] = {}
+# Guards the two maps ONLY. It is deliberately never held across the probe call
+# itself: a global lock around a 20s-timeout `gh` invocation would make one slow
+# repo's probe stall every other repo's and kind's poll response.
+_probe_lock = asyncio.Lock()
+
+
+def _remember_probe(key: tuple[str, str, str], task: "asyncio.Future[dict]") -> None:
+    """Done-callback: publish a finished probe and retire its in-flight entry.
+
+    Runs on the event loop with no awaits, so it cannot interleave with the
+    critical section in :func:`_coalesced_probe` (which also has no awaits).
+    Recording here rather than in the awaiting caller means a request that is
+    cancelled mid-probe (a closed tab) still contributes its reading to the
+    window instead of wasting the call.
+    """
+    if _probe_inflight.get(key) is task:
+        del _probe_inflight[key]
+    if not task.cancelled() and task.exception() is None:
+        _probe_memo[key] = (time.time(), task.result())
+
+
+async def _coalesced_probe(owner: str, repo: str, kind: str) -> dict:
+    """``github_client.probe_open_list`` with a short shared-result window.
+
+    Concurrent callers for the SAME key join one in-flight probe; callers for
+    different keys never wait on each other.
+
+    Raises :class:`github_client.GhCliError` like the underlying call.
+    """
+    key = (owner.lower(), repo.lower(), kind)
+    async with _probe_lock:
+        now = time.time()
+        for stale_key, (taken_at, _) in list(_probe_memo.items()):
+            if now - taken_at > _PROBE_COALESCE_SEC:
+                del _probe_memo[stale_key]
+        hit = _probe_memo.get(key)
+        if hit is not None:
+            return hit[1]
+        task = _probe_inflight.get(key)
+        if task is None:
+            task = asyncio.ensure_future(
+                asyncio.to_thread(github_client.probe_open_list, owner, repo, kind)
+            )
+            _probe_inflight[key] = task
+            task.add_done_callback(partial(_remember_probe, key))
+    # Shielded so one cancelled request does not cancel the probe that the other
+    # joined callers are still waiting on.
+    return await asyncio.shield(task)
+
+
+async def _poll_can_serve_cache(
+    owner: str, repo: str, kind: str, state: str, snapshot: dict
+) -> tuple[bool, dict | None]:
+    """Decide whether a ``poll=1`` request can be answered from the cache.
+
+    Returns ``(serve_cache, probe_to_record)``. ``probe_to_record`` is the probe
+    value taken BEFORE any refetch, and is what the caller stores alongside the
+    freshly fetched rows — deliberately the earlier reading, so a change that
+    lands *during* the fetch leaves the recorded probe behind the real state and
+    the next poll refetches. Recording a probe taken after the fetch would hide
+    that change until something else moved.
+
+    Only the OPEN lists are probed. The closed lists are bounded to a single
+    ``per_page=100`` page, so refetching one is already one request — a probe
+    would just add a second.
+    """
+    if state != "open":
+        return False, None
+    if snapshot["age_sec"] > LIST_POLL_MAX_STALENESS_SEC:
+        # Past the ceiling: refetch WITHOUT probing. Probing here would only add
+        # a request to a decision that is already made.
+        return False, None
+    try:
+        probe = await _coalesced_probe(owner, repo, kind)
+    except github_client.GhCliError:
+        # Probe unavailable → keep serving the cache. Refetching on every failed
+        # probe would turn a sustained probe outage (an exhausted search quota,
+        # say) into exactly the paginated-fetch-per-minute drain this path exists
+        # to avoid. Staleness is already bounded by the ceiling above, which is
+        # the honest backstop; freshness here is not worth that cost.
+        return True, None
+    if snapshot["probe"] is not None and snapshot["probe"] == probe:
+        return True, probe
+    return False, probe
+
+
+async def _handle_issues(request: web.Request) -> web.Response:
+    """GET /issues?owner=<o>&repo=<r>[&refresh=1][&poll=1] — list open issues.
+
+    Serves the local cache by default; ``refresh=1`` forces a fresh `gh` fetch.
+    ``poll=1`` is the CLIENT-POLL intent: it wants current data but delegates the
+    cost policy to this handler, which answers with one cheap probe call and only
+    pays the paginated fetch when the probe says something moved (see
+    ``_poll_can_serve_cache``).
     """
     owner = (request.query.get("owner") or "").strip()
     repo = (request.query.get("repo") or "").strip()
@@ -192,17 +308,30 @@ async def _handle_issues(request: web.Request) -> web.Response:
         )
 
     force_refresh = request.query.get("refresh") == "1"
-    cached = None if force_refresh else await asyncio.to_thread(store.read_issues_cache, owner, repo, state=state)
-    if cached is not None:
-        return web.json_response({"owner": owner, "repo": repo, "state": state, "issues": cached, "from_cache": True})
+    is_poll = request.query.get("poll") == "1"
+    snapshot = None if force_refresh else await asyncio.to_thread(
+        store.read_issues_snapshot, owner, repo, state=state
+    )
+    probe: dict | None = None
+    if snapshot is not None and is_poll:
+        serve_cache, probe = await _poll_can_serve_cache(owner, repo, "issue", state, snapshot)
+        if not serve_cache:
+            snapshot = None
+    if snapshot is not None:
+        return web.json_response({
+            "owner": owner, "repo": repo, "state": state,
+            "issues": snapshot["rows"], "from_cache": True,
+        })
 
     fetch = github_client.list_open_issues if state == "open" else github_client.list_closed_issues
     try:
         # Fetch and store under ONE lock: a label applied between the two would
         # otherwise be overwritten by this pre-fetch snapshot, so a change the user
         # just made would vanish from the list (see store.refresh_issues_cache).
+        # The poll fingerprint rides along so rows and probe land in one write.
         issues = await asyncio.to_thread(
-            store.refresh_issues_cache, owner, repo, lambda: fetch(owner, repo), state=state
+            store.refresh_issues_cache, owner, repo, lambda: fetch(owner, repo), state=state,
+            probe=probe,
         )
     except github_client.GhCliError as exc:
         return web.json_response({"error": str(exc)}, status=502)
@@ -531,12 +660,12 @@ async def _handle_issue_detail(request: web.Request) -> web.Response:
 
 
 async def _handle_pulls(request: web.Request) -> web.Response:
-    """GET /pulls?owner=<o>&repo=<r>[&state=open|closed][&refresh=1] — list PRs.
+    """GET /pulls?owner=<o>&repo=<r>[&state=open|closed][&refresh=1][&poll=1] — list PRs.
 
     Cache-first (mirrors /issues). ``state`` defaults to open; closed is bounded
     to the 100 most-recently-updated (includes both merged and closed-unmerged —
     the frontend splits them on ``merged_at``). Pass refresh=1 to force a fresh
-    ``gh`` fetch.
+    ``gh`` fetch, or poll=1 for the probe-gated client-poll path.
     """
     owner = (request.query.get("owner") or "").strip()
     repo = (request.query.get("repo") or "").strip()
@@ -553,9 +682,20 @@ async def _handle_pulls(request: web.Request) -> web.Response:
         )
 
     force_refresh = request.query.get("refresh") == "1"
-    cached = None if force_refresh else await asyncio.to_thread(store.read_pulls_cache, owner, repo, state=state)
-    if cached is not None:
-        return web.json_response({"owner": owner, "repo": repo, "state": state, "pulls": cached, "from_cache": True})
+    is_poll = request.query.get("poll") == "1"
+    snapshot = None if force_refresh else await asyncio.to_thread(
+        store.read_pulls_snapshot, owner, repo, state=state
+    )
+    probe: dict | None = None
+    if snapshot is not None and is_poll:
+        serve_cache, probe = await _poll_can_serve_cache(owner, repo, "pr", state, snapshot)
+        if not serve_cache:
+            snapshot = None
+    if snapshot is not None:
+        return web.json_response({
+            "owner": owner, "repo": repo, "state": state,
+            "pulls": snapshot["rows"], "from_cache": True,
+        })
 
     fetch = github_client.list_open_pulls if state == "open" else github_client.list_closed_pulls
     try:
@@ -576,7 +716,7 @@ async def _handle_pulls(request: web.Request) -> web.Response:
     # dropped too. The response itself still goes out: the list is useful without
     # the card decoration.
     if github_client.enrichment_complete(pulls):
-        await asyncio.to_thread(store.write_pulls_cache, owner, repo, pulls, state=state)
+        await asyncio.to_thread(store.write_pulls_cache, owner, repo, pulls, state=state, probe=probe)
     else:
         await asyncio.to_thread(store.drop_pulls_cache, owner, repo, state)
     return web.json_response({"owner": owner, "repo": repo, "state": state, "pulls": pulls, "from_cache": False})

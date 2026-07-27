@@ -371,6 +371,58 @@ def list_closed_issues(owner: str, repo: str, *, timeout: float = GH_TIMEOUT_SEC
     return _list_issues(owner, repo, "closed", timeout=timeout, paginate=False)
 
 
+# ── Cheap change probe for the OPEN lists ────────────────────────────────────
+# One search call that answers "could this repo's open issue/PR list have changed
+# since I last fetched it?" without walking the list. The open lists are FULLY
+# paginated (`list_open_issues` / `list_open_pulls`), so on a large repo a
+# speculative refetch costs tens of REST requests plus a multi-MB cache rewrite;
+# this reduces the common "nothing changed" case to a single request.
+#
+# Two fields, because either alone has a blind spot:
+#   * ``top_updated_at`` — the newest `updated_at` in the open set. Catches a new
+#     item, an edit, a comment, a label/assignee change, a reopen.
+#   * ``total_count`` — catches a CLOSE, which removes an item from the open set
+#     without bumping any remaining item's timestamp.
+#
+# The search API is used rather than `repos/.../issues` because it reports
+# `total_count` in the same response, `is:issue` / `is:pr` separates the two
+# (the REST issues endpoint mixes PRs in, so a one-item peek could return a PR),
+# and search has its OWN rate limit (30/min authenticated) — so the probe does
+# not consume the core 5,000/hr budget the user's own `gh` work draws on.
+_LIST_PROBE_JQ = "{total_count: .total_count, top_updated_at: (.items[0].updated_at // null)}"
+
+_PROBE_KINDS = ("issue", "pr")
+
+
+def probe_open_list(
+    owner: str, repo: str, kind: str, *, timeout: float = GH_TIMEOUT_SEC
+) -> dict:
+    """Return ``{"total_count": int, "top_updated_at": str | None}`` for a repo's
+    OPEN issues (``kind="issue"``) or OPEN PRs (``kind="pr"``).
+
+    Raises :class:`GhCliError` on a failed or unparseable call. Callers treat a
+    probe failure as "assume it changed" and fall through to the full fetch, so a
+    broken probe degrades to the previous behaviour instead of serving stale data.
+
+    Probe values are only ever compared against ANOTHER probe (recorded when the
+    list was last fetched), never against the cached rows — so a systematic
+    difference between what search counts and what the REST list returns cancels
+    out instead of silently reporting "changed" on every poll.
+    """
+    if kind not in _PROBE_KINDS:
+        raise GhCliError(f"unsupported probe kind: {kind!r}")
+    q = f"repo:{owner}/{repo} is:{kind} state:open"
+    path = f"search/issues?q={quote(q, safe='')}&sort=updated&order=desc&per_page=1"
+    rows = _run_gh_api(path, _LIST_PROBE_JQ, timeout=timeout, paginate=False)
+    if not rows:
+        raise GhCliError(f"probe for {owner}/{repo} {kind} returned no envelope")
+    total = rows[0].get("total_count")
+    if not isinstance(total, int):
+        raise GhCliError(f"probe for {owner}/{repo} {kind} returned no total_count")
+    top = rows[0].get("top_updated_at")
+    return {"total_count": total, "top_updated_at": top if isinstance(top, str) else None}
+
+
 # Cheapest possible new-issue poll: a single page of the most-recently-CREATED
 # open issues (NOT the full paginated backlog). The background watcher
 # (backend/watch.py) calls this every minute and only needs enough fields to

@@ -757,16 +757,16 @@ export default function PrDetail({ pull }: { pull: PullRequest }) {
               )
             })}
 
-            {activityLoading && <div className="pl-[90px] py-2 text-[12px] text-muted">Loading activity…</div>}
+            {activityLoading && <div className="py-2 text-[12px] text-muted">Loading activity…</div>}
             {activityError && (
-              <div className={`pl-[90px] py-2 text-[12px] ${activityStale ? 'text-warn' : 'text-danger'}`}>
+              <div className={`py-2 text-[12px] ${activityStale ? 'text-warn' : 'text-danger'}`}>
                 {activityStale
                   ? `Showing the last successful read — refresh failed: ${activityError.message}`
                   : `Couldn't load activity: ${activityError.message}`}
               </div>
             )}
             {!activityLoading && !activityError && activityDesc.length === 0 && (
-              <div className="pl-[90px] py-2 text-[12px] text-muted">No activity yet.</div>
+              <div className="py-2 text-[12px] text-muted">No activity yet.</div>
             )}
           </main>
 
