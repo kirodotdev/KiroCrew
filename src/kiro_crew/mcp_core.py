@@ -22,6 +22,7 @@ import mimetypes
 import os
 import platform
 import re as _re
+import socket
 import subprocess
 import tempfile
 import threading
@@ -2142,8 +2143,18 @@ def _post(path: str, body: dict | None = None, *, timeout: float = 30) -> dict:
         # Surface it so callers can act on the backend's actual error (e.g.
         # the learn_add "unknown session" mapping) instead of an opaque code.
         return _http_error_body(e)
+    except urllib.error.URLError as e:
+        if isinstance(e.reason, (ConnectionRefusedError, socket.gaierror)):
+            return {"error": str(e)}
+        # ``transport_error`` is consumed only by spawn_run's batch reconcile:
+        # it means acceptance is unknown, so that member must not be declared
+        # lost. Other _post callers should treat the payload as a normal error.
+        return {"error": str(e), "transport_error": True}
     except Exception as e:
-        return {"error": str(e)}
+        # The request may have reached the gateway before the response failed
+        # (for example, a read timeout after spawn acceptance). Callers must
+        # not present this as a definite rejection or retry automatically.
+        return {"error": str(e), "transport_error": True}
 
 
 def _http_error_body(exc: urllib.error.HTTPError) -> dict:
@@ -2744,7 +2755,9 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
 
         agent_ids: list[str] = []
         agent_names: list[str] = []
+        agent_tasks: list[str] = []
         errors: list[str] = []
+        transport_errors: list[str] = []
         # Forward this session's own approval_mode (set as an env var at
         # process spawn -- see gateway.py cron dispatch, mirroring
         # KIROCREW_SESSION_KEY/KIROCREW_CHANNEL_ID) so a cron running with
@@ -2776,16 +2789,24 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                 body["approval_mode"] = approval_mode
             d = _post("/api/spawn", body)
             if d.get("error"):
-                errors.append(f"{t[:60]}: {d['error']}")
+                error_line = f"{t[:60]}: {d['error']}"
+                if d.get("transport_error"):
+                    # The gateway may have accepted the spawn before the
+                    # response failed. Treat it as unknown, not rejected, and
+                    # do not reconcile it as lost (which could close a batch
+                    # early while the accepted member is still running).
+                    transport_errors.append(error_line)
+                    continue
+                errors.append(error_line)
                 # Wave-liveness reconcile (Opus MEDIUM + Design Review
                 # CONCERN 1): every sibling's batch_total counts THIS member,
-                # but its submission never reached mgr.spawn (transport
-                # error / timeout / pre-spawn HTTP rejection) unless the
-                # response says "counted". Un-reconciled, the wave's
-                # submitted < expected forever — the digest never closes and
-                # held sibling results strand until restart. Best-effort: if
-                # this POST also fails, the gateway reaper's stuck-wave
-                # sweep is the backstop.
+                # but an explicit pre-spawn rejection never reached mgr.spawn
+                # unless the response says "counted". Un-reconciled, the
+                # wave's submitted < expected forever — the digest never
+                # closes and held sibling results strand until restart.
+                # Transport failures are deliberately excluded because their
+                # acceptance status is unknown; the stuck-wave reaper is the
+                # safe backstop when such a submission was truly lost.
                 if batch_id and not d.get("counted"):
                     try:
                         _post("/api/spawn/lost", {
@@ -2799,6 +2820,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                 continue
             agent_ids.append(d.get("id", "?"))
             agent_names.append(a)
+            agent_tasks.append(t)
 
         spawn_lines: list[str] = []
         if not parent_session and agent_ids:
@@ -2826,13 +2848,46 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                 spawn_lines.append(
                     f"Spawned {len(agent_ids)} subagent(s). Monitor results via polling:"
                 )
-            for aid, a, t in zip(agent_ids, agent_names, task_list):
+            for aid, a, t in zip(agent_ids, agent_names, agent_tasks):
                 label = f"{aid} ({a})" if a else aid
                 spawn_lines.append(f"  {label}: {t[:80]}")
         if errors:
-            spawn_lines.append(f"\n{len(errors)} task(s) queued (at capacity):")
+            if agent_ids:
+                spawn_lines.append(f"\n❌ {len(errors)} task(s) failed to start:")
+            elif transport_errors:
+                # No confirmed starts: retain the Error prefix used by SEL and
+                # callers even though other submissions remain uncertain.
+                spawn_lines.append(f"Error: {len(errors)} task(s) failed to start:")
+            else:
+                spawn_lines.append(
+                    f"Error: {len(errors)} task(s) failed to start; "
+                    "none of the requested subagents were started:"
+                )
             for e in errors:
                 spawn_lines.append(f"  - {e}")
+        if transport_errors:
+            if agent_ids or errors:
+                spawn_lines.append(
+                    f"\n⚠ {len(transport_errors)} task(s) have unknown acceptance status:"
+                )
+            else:
+                spawn_lines.append(
+                    f"Error: acceptance status is unknown for "
+                    f"{len(transport_errors)} task(s):"
+                )
+            for e in transport_errors:
+                spawn_lines.append(f"  - {e}")
+            guidance = (
+                "The gateway may have accepted these tasks before the response failed. "
+                "Do not retry automatically. Check spawn_list"
+            )
+            if parent_session:
+                guidance += " and wait for completion events"
+            guidance += (
+                ". An empty spawn_list result is inconclusive for queued work; "
+                "wait and recheck before retrying to avoid duplicate work."
+            )
+            spawn_lines.append(guidance)
         if agent_ids:
             if parent_session:
                 spawn_lines.append(
@@ -2844,15 +2899,10 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                     "\nDo NOT wait for completion events — poll spawn_list and read "
                     "result.txt files instead."
                 )
-        else:
-            if parent_session:
-                spawn_lines.append("All tasks queued — results will arrive as completion events.")
-            else:
-                spawn_lines.append(
-                    "All tasks queued — parent_session UNRESOLVED, so completion "
-                    "events will NOT arrive: poll spawn_list and read "
-                    "~/.kiro/crew/subagents/<id>/result.txt instead."
-                )
+        elif not errors and not transport_errors:
+            # Defensive fallback: every non-empty task list should produce an
+            # id or an error, but never imply work was accepted if neither did.
+            spawn_lines.append("Error: no subagents were started.")
         return "\n".join(spawn_lines)
 
     if name == "spawn_sub_agents":

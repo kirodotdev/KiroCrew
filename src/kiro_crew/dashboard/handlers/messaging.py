@@ -57,7 +57,13 @@ def _sel():
 
 
 async def api_spawn(request: web.Request) -> web.Response:
-    """POST /api/spawn — spawn a subagent."""
+    """POST /api/spawn — spawn a subagent.
+
+    Invariant: every error returned after ``state.subagents.spawn`` is called
+    must include ``counted: true``. The manager counts submissions on entry;
+    omitting the flag would make ``spawn_run`` reconcile the member again and
+    could close a batch wave early.
+    """
     state: DashboardState = request.app["state"]
     if not state.subagents:
         return web.json_response({"error": "subagents not available"}, status=503)
@@ -143,14 +149,17 @@ async def api_spawn(request: web.Request) -> web.Response:
 async def api_spawn_lost(request: web.Request) -> web.Response:
     """POST /api/spawn/lost — reconcile a batch member whose spawn POST failed.
 
-    Called by ``spawn_run`` (mcp_core) when a member's ``POST /api/spawn``
-    died before reaching the handler (transport error, timeout) or was
-    rejected BEFORE ``mgr.spawn`` ran (validation 400 / 503) — i.e. the
-    response carried no ``counted`` flag. Every sibling's ``batch_total``
-    already counts the lost member, so without this reconcile the wave's
-    ``submitted < expected`` forever and held digest results strand until
-    restart (Opus MEDIUM + Design Review CONCERN 1). The reaper's stuck-wave
-    sweep is the backstop when even this call cannot be delivered.
+    Called by ``spawn_run`` (mcp_core) when a member was explicitly rejected
+    BEFORE ``mgr.spawn`` ran (validation 400 / 503), so the response carried
+    no ``counted`` flag. Every sibling's ``batch_total`` already counts the
+    lost member, so without this reconcile the wave's ``submitted < expected``
+    forever and held digest results strand until restart (Opus MEDIUM + Design
+    Review CONCERN 1).
+
+    Transport failures are excluded because the gateway may have accepted the
+    member before its response failed; reconciling that member as lost could
+    close the wave early. The stuck-wave sweep safely handles truly lost
+    transport submissions after its grace period.
     """
     state: DashboardState = request.app["state"]
     if not state.subagents:

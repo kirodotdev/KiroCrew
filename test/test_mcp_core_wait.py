@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import os
+import urllib.error
 from unittest.mock import patch
 
-from kiro_crew.mcp_core import _call_tool
+from kiro_crew.mcp_core import _call_tool, _post
 
 
 def test_spawn_run_single_task():
@@ -35,13 +36,96 @@ def test_spawn_run_batch_tasks():
 
 
 def test_spawn_run_error():
-    """Test spawn_run handles spawn API errors."""
-    with patch("kiro_crew.mcp_core._post") as mock_post:
-        mock_post.return_value = {"error": "capacity reached"}
+    """A rejected spawn is reported as failed, never queued or running."""
+    with patch("kiro_crew.mcp_core._post") as mock_post, \
+         patch("kiro_crew.mcp_core._resolve_session_key", return_value="dashboard:chat-1"):
+        mock_post.return_value = {"error": "Forbidden"}
 
         result = _call_tool("spawn_run", {"task": "failing task"})
 
-        assert "queued" in result or "Error" in result
+        assert "Error: 1 task(s) failed to start" in result
+        assert "failing task: Forbidden" in result
+        assert "none of the requested subagents were started" in result
+        assert "queued" not in result
+
+
+def test_post_marks_transport_errors_as_uncertain():
+    """A failed response does not prove that the gateway rejected the spawn."""
+    with patch("kiro_crew.mcp_core._resolve_session_key", return_value=""), \
+         patch("kiro_crew.mcp_core._internal_secret", return_value="secret"), \
+         patch("kiro_crew.mcp_core.urllib.request.urlopen", side_effect=TimeoutError("timed out")):
+        result = _post("/api/spawn", {"task": "maybe accepted"})
+
+    assert result == {"error": "timed out", "transport_error": True}
+
+
+def test_post_marks_connection_refusal_as_definite_failure():
+    """A refused connection proves the gateway did not accept the spawn."""
+    refused = urllib.error.URLError(ConnectionRefusedError("connection refused"))
+    with patch("kiro_crew.mcp_core._resolve_session_key", return_value=""), \
+         patch("kiro_crew.mcp_core._internal_secret", return_value="secret"), \
+         patch("kiro_crew.mcp_core.urllib.request.urlopen", side_effect=refused):
+        result = _post("/api/spawn", {"task": "not accepted"})
+
+    assert "connection refused" in result["error"]
+    assert "transport_error" not in result
+
+
+def test_spawn_run_connection_refusal_reconciles_lost_batch_member():
+    """A definite uncounted rejection is immediately reconciled as lost."""
+    with patch("kiro_crew.mcp_core._post") as mock_post, \
+         patch("kiro_crew.mcp_core._resolve_session_key", return_value="dashboard:chat-1"):
+        mock_post.side_effect = [
+            {"error": "connection refused"},
+            {"ok": True},
+            {"id": "ok2"},
+        ]
+        result = _call_tool("spawn_run", {"tasks": ["task1", "task2"]})
+
+    assert "ok2: task2" in result
+    assert "task1: connection refused" in result
+    assert [call.args[0] for call in mock_post.call_args_list] == [
+        "/api/spawn", "/api/spawn/lost", "/api/spawn",
+    ]
+
+
+def test_spawn_run_transport_failure_reports_unknown_acceptance():
+    """Transport uncertainty is not a rejection and is never auto-reconciled."""
+    with patch("kiro_crew.mcp_core._post") as mock_post, \
+         patch("kiro_crew.mcp_core._resolve_session_key", return_value="dashboard:chat-1"):
+        mock_post.side_effect = [
+            {"error": "timed out", "transport_error": True},
+            {"id": "ok2"},
+        ]
+        result = _call_tool("spawn_run", {"tasks": ["task1", "task2"]})
+
+    assert "ok2: task2" in result
+    assert "unknown acceptance status" in result
+    assert "task1: timed out" in result
+    assert "may have accepted" in result
+    assert "Do not retry automatically" in result
+    assert "empty spawn_list result is inconclusive" in result
+    assert "wait and recheck" in result
+    assert "none of the requested subagents were started" not in result
+    assert "task(s) failed to start" not in result
+    assert [call.args[0] for call in mock_post.call_args_list] == [
+        "/api/spawn", "/api/spawn",
+    ]
+
+
+def test_spawn_run_zero_confirmed_starts_retains_error_prefix():
+    """Rejected plus uncertain submissions still report an overall error."""
+    with patch("kiro_crew.mcp_core._post") as mock_post, \
+         patch("kiro_crew.mcp_core._resolve_session_key", return_value="dashboard:chat-1"):
+        mock_post.side_effect = [
+            {"error": "Forbidden", "counted": True},
+            {"error": "timed out", "transport_error": True},
+        ]
+        result = _call_tool("spawn_run", {"tasks": ["task1", "task2"]})
+
+    assert result.startswith("Error:")
+    assert "1 task(s) failed to start" in result
+    assert "1 task(s) have unknown acceptance status" in result
 
 
 def test_spawn_run_no_args():
@@ -65,17 +149,15 @@ def test_spawn_run_orphan_warning_when_parent_unresolved():
 
 
 def test_spawn_run_no_orphan_warning_when_all_spawns_fail():
-    """Empty parent_session but ZERO spawned agents -> no misleading ⚠ orphan
-    warning about spawned subagents that do not exist (review-bot).
-    The queued-tasks message may still mention the unresolved parent (that
-    part is accurate — queued tasks inherit it), but the spawned-subagents
-    warning block must be absent."""
+    """A total rejection has no orphan warning or monitoring guidance."""
     with patch("kiro_crew.mcp_core._post") as mock_post, \
          patch("kiro_crew.mcp_core._resolve_session_key", return_value=""):
-        mock_post.return_value = {"error": "capacity reached"}
+        mock_post.return_value = {"error": "Forbidden"}
         result = _call_tool("spawn_run", {"task": "failing task"})
     assert "these subagents are orphaned" not in result
     assert "⚠ parent_session UNRESOLVED —" not in result
+    assert "none of the requested subagents were started" in result
+    assert "queued" not in result
 
 
 class TestSpawnRunApprovalModeForwarding:
@@ -124,27 +206,29 @@ def test_spawn_run_no_orphan_warning_when_parent_resolved():
     assert "parent_session UNRESOLVED" not in result
 
 
-def test_spawn_run_queued_only_orphan_no_completion_promise():
-    """All spawns queued (capacity) + empty parent_session -> the queued
-    message must NOT promise completion events either (review-bot
-    round 3): queued tasks inherit the same empty parent_session."""
+def test_spawn_run_failed_only_orphan_no_completion_promise():
+    """Failed submissions never promise completion events or polling."""
     with patch("kiro_crew.mcp_core._post") as mock_post, \
          patch("kiro_crew.mcp_core._resolve_session_key", return_value=""):
         mock_post.return_value = {"error": "capacity reached"}
-        result = _call_tool("spawn_run", {"task": "queued task"})
-    assert "All tasks queued" in result
+        result = _call_tool("spawn_run", {"task": "failed task"})
+    assert "failed to start" in result
+    assert "none of the requested subagents were started" in result
+    assert "queued" not in result
     assert "results will arrive as completion events" not in result
-    assert "spawn_list" in result
+    assert "spawn_list" not in result
 
 
-def test_spawn_run_queued_only_with_parent_promises_events():
-    """All spawns queued + resolved parent_session -> completion-event promise
-    is correct and preserved."""
+def test_spawn_run_failed_only_with_parent_promises_nothing():
+    """A resolved parent does not turn a rejected submission into queued work."""
     with patch("kiro_crew.mcp_core._post") as mock_post, \
          patch("kiro_crew.mcp_core._resolve_session_key", return_value="dashboard:chat-1"):
         mock_post.return_value = {"error": "capacity reached"}
-        result = _call_tool("spawn_run", {"task": "queued task"})
-    assert "All tasks queued — results will arrive as completion events." in result
+        result = _call_tool("spawn_run", {"task": "failed task"})
+    assert "failed to start" in result
+    assert "none of the requested subagents were started" in result
+    assert "queued" not in result
+    assert "completion events" not in result
 
 
 def test_spawn_run_empty_tasks():
@@ -173,10 +257,18 @@ def test_spawn_run_passes_parent_session():
 
 
 def test_spawn_run_batch_partial_failure():
-    """Test spawn_run stops on first spawn error in batch."""
+    """Partial batches keep successful ids paired with their actual tasks."""
     with patch("kiro_crew.mcp_core._post") as mock_post:
-        mock_post.side_effect = [{"id": "ok1"}, {"error": "capacity reached"}]
+        mock_post.side_effect = [
+            {"error": "Forbidden", "counted": True},
+            {"id": "ok2"},
+        ]
 
         result = _call_tool("spawn_run", {"tasks": ["task1", "task2"]})
 
-        assert "Spawned" in result or "queued" in result
+        assert "Spawned 1 subagent" in result
+        assert "ok2: task2" in result
+        assert "1 task(s) failed to start" in result
+        assert "task1: Forbidden" in result
+        assert "ok2: task1" not in result
+        assert "queued" not in result
