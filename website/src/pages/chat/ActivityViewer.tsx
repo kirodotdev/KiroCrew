@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback, useMemo, type ReactNode } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useNavigate } from 'react-router-dom'
 import { Bot, ScrollText, FileText, X, Lock, CheckCircle, AlertCircle, Loader as LoaderIcon, Ban, Handshake, Wrench, MessageSquare, Workflow, Star, Component, GitPullRequest, ArrowLeft, Square, RotateCcw } from 'lucide-react'
 import { api } from '../../api/client'
 import MarkdownPanel, { type MarkdownPanelHandle } from '../../components/MarkdownPanel'
@@ -7,7 +8,7 @@ import { fileReadUrl } from '../../utils/fileReadUrl'
 import { LogViewer } from '../LogsPage'
 import TrustDropdown from '../../components/TrustDropdown'
 import Clickable from '../../components/Clickable'
-import type { SubagentActivity, ToolActivity, SessionDoc } from '../../types'
+import type { SubagentActivity, ToolActivity, SessionDoc, Artifact } from '../../types'
 import type { TouchedFile } from '../../hooks/useTouchedFiles'
 import { getInlineDraft, setInlineDraft, clearInlineDraft } from '../../hooks/usePanelTabs'
 import type { ExtractedLink } from '../../utils/extractChatLinks'
@@ -480,57 +481,133 @@ function FileTile({ f, onFileOpen, onFileRemove }: { f: TouchedFile; onFileOpen?
   )
 }
 
-/* ── SessionArtifactsTab: in-session document artifacts with save/unsave. ── */
+/* ── SessionArtifactsTab ─────────────────────────────────────────────────────
+ *
+ * Everything this session produced, from TWO inputs:
+ *
+ *  1. Real artifacts scoped by `?session=` — including every `<mcwidget>` the
+ *     agent emitted, which the backend auto-registers unpinned
+ *     (kiro_crew/widget_artifacts.py). These have no filesystem path: a widget's
+ *     HTML lives inline in the message, which is exactly why the file-backed
+ *     scan below can never see them.
+ *  2. Virtual session documents — non-code files recorded in chat
+ *     `file_changes`, not persisted until starred (materialized).
+ *
+ * Both render as one list; the star means "keep in library" for either. An
+ * artifact row opens the artifact, a document row opens the file.
+ */
+type SessionArtifactRow =
+  | { kind: 'artifact'; key: string; name: string; sub: string; slug: string; starred: boolean }
+  | { kind: 'doc'; key: string; name: string; sub: string; path: string; slug: string; starred: boolean }
+
 function SessionArtifactsTab({ slot, onFileOpen }: { slot: string; onFileOpen?: (path: string) => void }) {
   const qc = useQueryClient()
+  // Artifact rows have no filesystem path, so `onFileOpen` can't serve them.
+  // Route to the standalone artifact page, matching the command palette's
+  // Artifacts provider.
+  const navigate = useNavigate()
   const { data, isFetching } = useQuery<{ docs: SessionDoc[] }>({
     queryKey: ['session-artifacts', slot],
     queryFn: () => api.artifactSessionDocs(slot),
     enabled: !!slot,
   })
-  const docs = data?.docs || []
+  const { data: artifactData, isFetching: artifactsFetching } = useQuery<{ artifacts: Artifact[] }>({
+    queryKey: ['session-artifact-records', slot],
+    queryFn: () => api.artifacts({ session: slot }),
+    enabled: !!slot,
+  })
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ['session-artifacts', slot] })
+    qc.invalidateQueries({ queryKey: ['session-artifact-records', slot] })
     qc.invalidateQueries({ queryKey: ['artifacts'] })
     qc.invalidateQueries({ queryKey: ['artifact-session-docs'] })
   }
   const saveMut = useMutation({ mutationFn: (path: string) => api.materializeArtifact(path, slot), onSuccess: invalidate })
-  const unsaveMut = useMutation({ mutationFn: (slug: string) => api.setArtifactPinned(slug, false), onSuccess: invalidate })
+  const pinMut = useMutation({
+    mutationFn: ({ slug, pinned }: { slug: string; pinned: boolean }) => api.setArtifactPinned(slug, pinned),
+    onSuccess: invalidate,
+  })
   const busyPath = saveMut.isPending ? (saveMut.variables as string) : null
-  const busySlug = unsaveMut.isPending ? (unsaveMut.variables as string) : null
+  const busySlug = pinMut.isPending ? (pinMut.variables as { slug: string }).slug : null
+
+  const rows = useMemo<SessionArtifactRow[]>(() => {
+    const artifacts = artifactData?.artifacts || []
+    // A materialized document is BOTH a session doc and a real artifact; keep the
+    // path-aware doc row (only it can open the file) and drop the artifact twin.
+    //
+    // Matching on slug alone is not enough: the session-docs backend builds its
+    // path→slug map from PINNED artifacts only, so a doc that was materialized
+    // and then UN-starred reports `slug: ''` and its artifact would slip through
+    // as a second row with its own star. Excluding `source_path` artifacts covers
+    // both states — every materialized artifact is file-backed by construction
+    // (materialize requires a recorded `file_changes` entry), and an inline
+    // widget never has a source_path.
+    const docSlugs = new Set((data?.docs || []).map(d => d.slug).filter(Boolean))
+    const out: SessionArtifactRow[] = artifacts
+      .filter(a => !docSlugs.has(a.slug) && !a.source_path)
+      .map(a => ({
+        kind: 'artifact' as const,
+        key: `artifact:${a.slug}`,
+        name: a.name || a.slug,
+        sub: a.kind,
+        slug: a.slug,
+        starred: !!a.pinned,
+      }))
+    for (const d of data?.docs || []) {
+      out.push({
+        kind: 'doc' as const,
+        key: `doc:${d.path}`,
+        name: d.name,
+        sub: d.path,
+        path: d.path,
+        slug: d.slug,
+        starred: d.saved,
+      })
+    }
+    return out
+  }, [artifactData, data])
+
+  const loading = isFetching || artifactsFetching
 
   return (
     <div className="flex-1 overflow-y-auto py-2">
-      {docs.length === 0 ? (
-        <div className="flex-1 flex items-center justify-center text-muted text-[13px] py-8">{isFetching ? 'Loading…' : 'No documents in this session'}</div>
+      {rows.length === 0 ? (
+        <div className="flex-1 flex items-center justify-center text-muted text-[13px] py-8">{loading ? 'Loading…' : 'Nothing produced in this session yet'}</div>
       ) : (
         <div className="px-3 flex flex-col gap-0.5">
-          {docs.map(d => {
-            const busy = busyPath === d.path || (!!d.slug && busySlug === d.slug)
+          {rows.map(r => {
+            const busy = (r.kind === 'doc' && busyPath === r.path) || (!!r.slug && busySlug === r.slug)
             return (
-              <div key={d.path} className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-bg-hover transition-colors">
+              <div key={r.key} className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-bg-hover transition-colors">
                 <button
                   type="button"
-                  onClick={() => onFileOpen?.(d.path)}
+                  onClick={() => { if (r.kind === 'doc') onFileOpen?.(r.path); else navigate(`/artifacts/${r.slug}`) }}
                   className="flex items-center gap-2 min-w-0 flex-1 text-left bg-transparent border-none cursor-pointer p-0"
-                  title="Open in side panel"
+                  title={r.kind === 'doc' ? 'Open in side panel' : 'Open artifact'}
                 >
-                  <FileText size={14} className="text-emerald-400 shrink-0" />
+                  {r.kind === 'doc'
+                    ? <FileText size={14} className="text-emerald-400 shrink-0" />
+                    : <Component size={14} className="text-accent shrink-0" />}
                   <span className="min-w-0 flex-1">
-                    <span className="block text-[13px] text-text truncate">{d.name}</span>
-                    <span className="block text-[11px] text-muted truncate">{d.path}</span>
+                    <span className="block text-[13px] text-text truncate">{r.name}</span>
+                    <span className="block text-[11px] text-muted truncate">{r.sub}</span>
                   </span>
                 </button>
                 <button
                   type="button"
                   disabled={busy}
-                  onClick={() => { if (d.saved && d.slug) unsaveMut.mutate(d.slug); else saveMut.mutate(d.path) }}
-                  className={`shrink-0 p-1 rounded transition-colors bg-transparent border-none cursor-pointer disabled:cursor-default ${d.saved ? 'text-accent' : 'text-muted/50 hover:text-accent'}`}
-                  title={d.saved ? 'Remove star' : 'Star'}
-                  aria-label={d.saved ? 'Unstar document' : 'Star document'}
-                  aria-pressed={d.saved}
+                  onClick={() => {
+                    // A doc with no slug isn't persisted yet — starring it
+                    // materializes it. Everything else is a metadata pin flip.
+                    if (r.kind === 'doc' && !r.slug) saveMut.mutate(r.path)
+                    else if (r.slug) pinMut.mutate({ slug: r.slug, pinned: !r.starred })
+                  }}
+                  className={`shrink-0 p-1 rounded transition-colors bg-transparent border-none cursor-pointer disabled:cursor-default ${r.starred ? 'text-accent' : 'text-muted/50 hover:text-accent'}`}
+                  title={r.starred ? 'Remove star' : 'Star'}
+                  aria-label={r.starred ? `Unstar ${r.name}` : `Star ${r.name}`}
+                  aria-pressed={r.starred}
                 >
-                  {busy ? <LoaderIcon size={13} className="animate-spin" /> : <Star size={13} className={d.saved ? 'fill-current' : ''} />}
+                  {busy ? <LoaderIcon size={13} className="animate-spin" /> : <Star size={13} className={r.starred ? 'fill-current' : ''} />}
                 </button>
               </div>
             )

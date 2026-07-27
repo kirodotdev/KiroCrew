@@ -152,6 +152,7 @@ from kiro_crew.sel import sel
 from kiro_crew.slack.handler import post_linked_approval, resolve_linked_approval
 from kiro_crew.stats import Stats
 from kiro_crew.validation import ValidationError, infer_use_case, validate_ask_user_question
+from kiro_crew.widget_artifacts import register_widgets_off_loop
 
 logger = logging.getLogger(__name__)
 
@@ -1404,6 +1405,63 @@ def _flush_segment(
                 "chat_variant_switch",
                 {"slot": slot.key, "index": last_msg.get("variant_idx", 0), "content": redacted},
             )
+    # Auto-register any <mcwidget> in this segment as an (unpinned) artifact so
+    # it appears in the session's Artifacts tab and the star becomes a pure
+    # metadata flip. Registered from the REDACTED text — the artifact is a
+    # dashboard-surfaced copy of the widget, so it must not persist a credential
+    # the segment redaction just stripped out of chat.
+    _schedule_widget_registration(state, slot, redacted, str(last_msg.get("ts", "")))
+
+
+def _schedule_widget_registration(
+    state: DashboardState,
+    slot: _ChatSlot,
+    text: str,
+    message_ts: str,
+) -> None:
+    """Fire-and-forget widget auto-registration for a finalized segment.
+
+    Detached deliberately: registration touches the artifact store (blocking
+    filesystem work, offloaded to an executor inside
+    ``register_widgets_off_loop``), and a widget artifact appearing a beat after
+    the message renders is invisible to the user, whereas awaiting it would add
+    store latency to every segment flush of every turn. Failures are logged by
+    the callee and never surface into the turn.
+
+    Spawned via ``asyncio.create_task`` (not ``loop.create_task``) to match every
+    other detached task in this module — tests that neutralize background work
+    patch ``chat_runner.asyncio.create_task``, and a task spawned off the loop
+    handle directly would slip past that and run real store I/O mid-test.
+
+    The no-running-loop case is guarded: with no loop, registration is skipped
+    rather than raising into a segment flush (some callers in this module's
+    history are sync, and a CLI/test path has no artifact-store expectations).
+
+    **Restricted sessions never register.** Incognito / temporary slots
+    (``slot.is_restricted``) are denied every artifact write at the HTTP gate
+    (``_is_restricted_session``), so registering here would be a back door around
+    that ceiling: widget HTML from a session the user expected to leave no trace
+    would persist to ``artifacts/<slug>/`` and show up in the library. The gate
+    keys off the SAME ``slot.is_restricted`` signal, so the two agree by
+    construction.
+    """
+    if not text or "<mcwidget" not in text:
+        return
+    if getattr(slot, "is_restricted", False):
+        return
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    # Store the BARE slot key, not "dashboard:<key>". The in-session Artifacts
+    # tab queries ?session=<activeSlot>, which is the bare key, and
+    # ``ArtifactStore.list`` compares ``session_key`` exactly (no prefix folding,
+    # unlike ``_collect_session_docs``). WidgetFrame's fallback create also sends
+    # the bare key, so this keeps auto-registered and star-created artifacts in
+    # the same bucket — the one the tab can actually see.
+    task = asyncio.create_task(register_widgets_off_loop(text, message_ts, slot.key))
+    state._background_tasks.add(task)
+    task.add_done_callback(state._background_tasks.discard)
 
 
 def _expand_prompt_mention(

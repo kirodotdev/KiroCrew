@@ -67,7 +67,14 @@ def _request(
     # Attach the restricted-session flag via a stub on the request app.
     # Provide a non-None state so handlers don't short-circuit on the
     # state-is-None deny-by-default guard.
-    req.app = {"state": MagicMock(), "_restricted_session": restricted}
+    state = MagicMock()
+    # ``get_slot`` must return None (session gone) rather than a bare MagicMock:
+    # for any artifact carrying a ``session_key``, the list/detail handlers
+    # resolve a title through it and then redact the result, and a MagicMock
+    # title blows up inside the redaction regex. None yields the real
+    # "(deleted session)" string, which is a valid state for a test store.
+    state.get_slot.return_value = None
+    req.app = {"state": state, "_restricted_session": restricted}
     return req
 
 
@@ -212,6 +219,71 @@ class TestList:
         resp = await api_artifacts_list(_request(query={"q": "queue"}))
         body = _json_body(resp)
         assert {a["slug"] for a in body["artifacts"]} == {"cr-queue"}
+
+    # ── ?session= (in-session Artifacts tab) ────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_filter_by_session(self, isolated_store, patch_restricted) -> None:
+        isolated_store.create(name="mine", content="x", session_key="dashboard:chat-1")
+        isolated_store.create(name="theirs", content="x", session_key="dashboard:chat-2")
+        resp = await api_artifacts_list(_request(query={"session": "dashboard:chat-1"}))
+        assert {a["slug"] for a in _json_body(resp)["artifacts"]} == {"mine"}
+
+    @pytest.mark.asyncio
+    async def test_absent_session_does_not_scope(self, isolated_store, patch_restricted) -> None:
+        isolated_store.create(name="mine", content="x", session_key="dashboard:chat-1")
+        isolated_store.create(name="orphan", content="x")
+        resp = await api_artifacts_list(_request())
+        assert len(_json_body(resp)["artifacts"]) == 2
+
+    @pytest.mark.asyncio
+    async def test_empty_session_matches_only_unattributed(
+        self, isolated_store, patch_restricted
+    ) -> None:
+        """``?session=`` is the no-origin bucket, distinct from "don't scope"."""
+        isolated_store.create(name="mine", content="x", session_key="dashboard:chat-1")
+        isolated_store.create(name="orphan", content="x")
+        resp = await api_artifacts_list(_request(query={"session": ""}))
+        assert {a["slug"] for a in _json_body(resp)["artifacts"]} == {"orphan"}
+
+    @pytest.mark.asyncio
+    async def test_malformed_session_does_not_widen_to_all(
+        self, isolated_store, patch_restricted
+    ) -> None:
+        """A hostile/invalid key must collapse to "", never leak every artifact."""
+        isolated_store.create(name="mine", content="x", session_key="dashboard:chat-1")
+        isolated_store.create(name="other", content="x", session_key="dashboard:chat-2")
+        resp = await api_artifacts_list(_request(query={"session": "../../etc/passwd"}))
+        assert _json_body(resp)["artifacts"] == []
+
+    # ── ?pinned= ────────────────────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_filter_pinned_true(self, isolated_store, patch_restricted) -> None:
+        isolated_store.create(name="starred", content="x")
+        isolated_store.create(name="plain", content="x")
+        isolated_store.set_pinned("starred", True)
+        resp = await api_artifacts_list(_request(query={"pinned": "1"}))
+        assert {a["slug"] for a in _json_body(resp)["artifacts"]} == {"starred"}
+
+    @pytest.mark.asyncio
+    async def test_filter_pinned_false(self, isolated_store, patch_restricted) -> None:
+        isolated_store.create(name="starred", content="x")
+        isolated_store.create(name="plain", content="x")
+        isolated_store.set_pinned("starred", True)
+        resp = await api_artifacts_list(_request(query={"pinned": "0"}))
+        assert {a["slug"] for a in _json_body(resp)["artifacts"]} == {"plain"}
+
+    @pytest.mark.asyncio
+    async def test_unrecognized_pinned_value_does_not_scope(
+        self, isolated_store, patch_restricted
+    ) -> None:
+        """``?pinned=yep`` must not be read as False and silently hide starred items."""
+        isolated_store.create(name="starred", content="x")
+        isolated_store.create(name="plain", content="x")
+        isolated_store.set_pinned("starred", True)
+        resp = await api_artifacts_list(_request(query={"pinned": "yep"}))
+        assert len(_json_body(resp)["artifacts"]) == 2
 
 
 # ── Create ──────────────────────────────────────────────────────────────────

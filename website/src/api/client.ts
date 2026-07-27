@@ -1213,7 +1213,9 @@ export const api = {
   registerApp: (body: object) => post('/api/apps/register', body).then(j),
 
   // Artifacts
-  artifacts: (filters?: { tag?: string; kind?: string; q?: string; source_path?: string; snippet?: boolean; contentMatch?: boolean }) => {
+  /** List artifacts. `session` scopes to one chat session's output (the
+   *  in-session Artifacts tab); `pinned` filters on the star. */
+  artifacts: (filters?: { tag?: string; kind?: string; q?: string; source_path?: string; snippet?: boolean; contentMatch?: boolean; session?: string; pinned?: boolean }) => {
     const params = new URLSearchParams()
     if (filters?.tag) params.set('tag', filters.tag)
     if (filters?.kind) params.set('kind', filters.kind)
@@ -1221,6 +1223,8 @@ export const api = {
     if (filters?.source_path) params.set('source_path', filters.source_path)
     if (filters?.snippet) params.set('snippet', '1')
     if (filters?.contentMatch) params.set('content', '1')
+    if (filters?.session) params.set('session', filters.session)
+    if (filters?.pinned !== undefined) params.set('pinned', filters.pinned ? '1' : '0')
     const s = params.toString()
     return get(`/api/artifacts${s ? `?${s}` : ''}`).then(j)
   },

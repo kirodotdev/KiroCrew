@@ -272,6 +272,35 @@ class TestList:
         # name_contains is case-insensitive
         assert {a.slug for a in results} == {"cr-queue", "ticket-queue"}
 
+    def test_filter_by_session_key(self, store: ArtifactStore) -> None:
+        store.create(name="a", content="a", session_key="dashboard:chat-1")
+        store.create(name="b", content="a", session_key="dashboard:chat-2")
+        store.create(name="c", content="a")
+        assert {x.slug for x in store.list(session_key="dashboard:chat-1")} == {"a"}
+
+    def test_session_key_empty_string_scopes_to_unattributed(self, store: ArtifactStore) -> None:
+        """``""`` is the no-origin bucket; ``None`` means don't scope at all."""
+        store.create(name="a", content="a", session_key="dashboard:chat-1")
+        store.create(name="c", content="a")
+        assert {x.slug for x in store.list(session_key="")} == {"c"}
+        assert len(store.list(session_key=None)) == 2
+
+    def test_filter_by_pinned(self, store: ArtifactStore) -> None:
+        store.create(name="a", content="a")
+        store.create(name="b", content="a")
+        store.set_pinned("a", True)
+        assert {x.slug for x in store.list(pinned=True)} == {"a"}
+        assert {x.slug for x in store.list(pinned=False)} == {"b"}
+        assert len(store.list(pinned=None)) == 2
+
+    def test_session_and_pinned_filters_compose(self, store: ArtifactStore) -> None:
+        store.create(name="a", content="a", session_key="s1")
+        store.create(name="b", content="a", session_key="s1")
+        store.create(name="c", content="a", session_key="s2")
+        store.set_pinned("a", True)
+        store.set_pinned("c", True)
+        assert {x.slug for x in store.list(session_key="s1", pinned=True)} == {"a"}
+
     def test_list_skips_unreadable(self, store: ArtifactStore) -> None:
         store.create(name="ok", content="a")
         # corrupt one meta.json

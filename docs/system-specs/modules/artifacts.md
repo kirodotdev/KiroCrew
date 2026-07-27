@@ -43,6 +43,7 @@ The dashboard provides a `/artifacts` library page for browse/search and a
 | `kind` | enum | `widget`, `html`, `markdown`, `svg`, `json`, `text`, `webapp` — inferred on save when the caller omits it (see [Kind inference](#kind-inference)) |
 | `source` | enum | `chat` (default), `cron`, `subagent`, `manual`, `import` |
 | `pinned` | bool | "Starred" — user-curated keep flag (default `false`). Drives the Artifacts page **Starred** view. Metadata-only; toggling does NOT bump `version`. |
+| `auto_registered` | bool | `true` when the store created this record automatically from a chat-emitted `<mcwidget>` (see [Widget auto-registration](#widget-auto-registration)) rather than from an explicit save. Sweepable by the retention pass while unpinned; tolerant-loaded (pre-existing artifacts default `false`, so they are never swept). |
 | `description` | string | Optional, ≤ 2,000 chars |
 | `tags` | string[] | ≤ 16 tags, alphanumeric / `_`, `:`, `.`, `-` |
 | `version` | int | Latest version number; bumps on every content change |
@@ -137,7 +138,7 @@ The CLI proxies through the gateway HTTP API (matches `kirocrew learn`).
 
 | Method | Path | Notes |
 |---|---|---|
-| `GET` | `/api/artifacts` | `?tag&kind&q` filters + `?folder=` scoping (absent = all; empty = unfiled/root; id = that folder); returns `{artifacts: […]}` |
+| `GET` | `/api/artifacts` | `?tag&kind&q` filters + `?folder=` scoping (absent = all; empty = unfiled/root; id = that folder) + `?session=` scoping (same absent/empty distinction; validated like `origin_session_key`) + `?pinned=` (tri-state — unrecognized values don't scope); returns `{artifacts: […]}` |
 | `POST` | `/api/artifacts` | JSON body — creates, returns full artifact + content; optional `folder` key (id or human path, mkdir -p) |
 | `GET` | `/api/artifacts/{slug}` | Returns full artifact + content |
 | `PATCH` | `/api/artifacts/{slug}` | Partial update; `content` bumps version; optional `folder` key (metadata-only) |
@@ -244,8 +245,100 @@ provider's first page are reachable rather than silently truncated.
   sandboxed iframe (same security model as inline `<mcwidget>`), with a
   version dropdown
 
-A small "Save as artifact" button is overlaid on every rendered `<mcwidget>`
-in chat. Clicking prompts for a name and POSTs to `/api/artifacts`.
+## Widget auto-registration
+
+**Every `<mcwidget>` the agent emits becomes an artifact automatically** — no
+user gesture required. Registration happens on the backend when the assistant
+segment is finalized (`chat_runner._flush_segment` →
+`widget_artifacts.register_widgets_off_loop`), and the record is created
+**unpinned**: it is a *record*, not a library entry. The star on a rendered
+widget is therefore a pure `pinned` flip, not a create.
+
+Why the backend and not `WidgetFrame` on mount: the chat list virtualizes, so a
+message never scrolled into view never mounts its widgets. Frontend registration
+would make an artifact's existence depend on whether a human happened to look at
+it. Finalize-time registration covers every emitted widget exactly once and gets
+the originating `session_key` for free — which is what lets the in-session
+Artifacts tab list widgets at all (a widget's HTML is inline in the message and
+never written to disk, so the file-backed session-docs scan cannot see it).
+
+**Identity — a two-language contract.** The slug is derived from
+`(message_ts, widget_index)`:
+
+- `src/kiro_crew/widget_slug.py` → `derive_widget_slug`
+- `website/src/lib/widgetSlug.ts` → `deriveWidgetSlug`
+
+Both MUST produce identical output (two FNV-1a passes, 32-bit prime, 16 hex
+chars); the frontend uses it to find the artifact the backend wrote, with no id
+exchanged. Likewise `widget_parse.parse_widgets` mirrors the frontend's
+`parseBlocks` widget detection, because a disagreement about *which* spans are
+widgets shifts `widget_index` and mis-keys every subsequent artifact. Parity is
+pinned by shared vectors/fixtures in `test/test_widget_slug.py`,
+`test/test_widget_parse.py`, and `website/src/test/widgetSlug.test.ts` — a change
+to one side fails all three.
+
+Registration is **idempotent and non-destructive**: an existing slug is left
+untouched (a replayed or rehydrated message never duplicates or clobbers content
+the user has since iterated on), and a widget carrying an explicit `slug=`
+attribute is skipped entirely, since re-emission names an existing artifact
+rather than authoring a new one. Failures are logged, never raised — a lost
+registration must not break the chat turn that produced the widget.
+
+**Restricted sessions never register.** Incognito and temporary slots
+(`slot.is_restricted`, i.e. `memory_mode != "persistent"`) are denied every
+artifact write at the HTTP gate (`_is_restricted_session`), so
+`_schedule_widget_registration` returns early for them. Without that check the
+chat path would be a back door around the ceiling: widget HTML from a session the
+user expected to leave no trace would persist under `artifacts/<slug>/` and appear
+in the library. Both paths key off the same `slot.is_restricted` signal, so they
+cannot drift apart.
+
+**Retention.** Unclaimed auto-registered artifacts are pruned oldest-first past
+`MAX_AUTO_WIDGET_ARTIFACTS` (200) by `ArtifactStore.prune_auto_widgets`, which
+runs after each registration. Without it, a chat-heavy user accumulates one
+three-file artifact directory per throwaway widget forever and every library
+listing is an O(N) scan over them.
+
+Because the sweep **deletes user-visible data**, eligibility
+(`_is_sweepable_auto_widget`) is deliberately conservative: any sign of human or
+agent investment exempts the record permanently. A record is swept only if it is
+`auto_registered` **and** all of the following hold — not `pinned`, no
+`folder_id` (never filed), no `publication` (never shared — a live URL points at
+it), no `fork_metadata`, no `description`/`tags`, `updated_at == created_at`
+(never edited), and no `comments.json` sidecar (never commented on). Explicit
+saves are never swept at all. Merely *rendering* a widget is not a claim; touching
+it in any of those ways is.
+
+The comments check is a separate file stat because `add_comment` writes only the
+sidecar — it never touches `meta.json`, so a commented artifact still looks
+pristine to every metadata signal above, and the sweep would otherwise delete the
+user's comments along with it.
+
+The edit test is `updated_at == created_at`, **not** `version == 1`: `update()`
+bumps `version` only when `snapshot=True`, so a plain content save — the common
+agent-iteration path — leaves the version at 1 while rewriting the body. Keying on
+the version would let the sweep delete freshly-iterated widgets. Conversely
+`set_pinned` / `set_folder` deliberately don't touch `updated_at`, which is why
+they are separate signals.
+
+Ordering is newest-first, re-sorted on `(updated_at, slug)` inside the sweep:
+`list()`'s `updated_at`-only sort is not a total order, so widgets registered in
+the same microsecond would otherwise tie-break by directory scan order and make
+*which* one gets deleted nondeterministic. The candidate snapshot is taken
+unlocked, so eligibility is **re-checked and the directory removed in a single
+lock acquisition** — otherwise a star landing mid-sweep would lose to a stale
+verdict and silently delete an artifact the user had just claimed. Note the sweep
+deliberately does NOT delegate to `delete()`: re-checking under the lock and then
+calling a method that re-acquires it reopens the same window between the two
+acquisitions, so the removal is inlined.
+
+**Star semantics in `WidgetFrame`.** `exists` and `pinned` are separate states:
+`{exists: true, pinned: false}` is the normal steady state, so the star renders
+hollow (offering to save) while the title still links to `/artifacts/<slug>`.
+Starring pins; if the artifact is absent (a pre-feature widget, a failed
+registration, or one reclaimed by the sweep) it falls back to create + pin, and
+tolerates 409 as "already there". Un-starring unpins only — the record and its
+version history survive.
 
 ## Starred & Session Documents
 
@@ -272,6 +365,38 @@ recorded chat `file_changes` (never an arbitrary client path), and the read is
 routed through the `hooks.safe_read_file_bytes` keystone. `source` is recorded
 as `chat` for materialized documents.
 
+### In-session Artifacts tab
+
+The chat side panel's **Artifacts** tab (`SessionArtifactsTab`) shows everything
+one session produced, merging the same two inputs scoped to that session:
+
+1. **Real artifacts** via `GET /api/artifacts?session=<slot>` — including every
+   auto-registered widget. Rows open `/artifacts/<slug>`.
+2. **Session documents** via `GET /api/artifacts/session-docs?session=<slot>` —
+   file-backed, and the only input with a path, so those rows open the file.
+
+A materialized document is both, so artifact rows whose slug already appears in
+the document list are dropped in favor of the path-aware row. The star means
+"keep in library" for either: a document with no slug materializes, everything
+else is a `pinned` flip.
+
+`?session=` is validated through the same grammar as a save's
+`origin_session_key`; a malformed value collapses to `""` (the no-origin bucket)
+rather than widening to every artifact. Like `?folder=`, absent means "don't
+scope" while present-but-empty means "only unattributed" — the handler reads the
+raw key to keep the two distinct. `?pinned=` is tri-state for the same reason: an
+unrecognized value does not scope rather than being read as `false`.
+
+**The session key is the BARE slot key** (`chat-<N>-<ts>`), never a decorated
+`dashboard:<key>` form. `ArtifactStore.list` compares `session_key` exactly — it
+does no prefix folding, unlike `_collect_session_docs`, which accepts either form.
+All three writers must therefore agree on the bare key: widget auto-registration
+(`_schedule_widget_registration`), `WidgetFrame`'s fallback create
+(`origin_session_key: slotKey`), and materialization. A decorated key on any one
+of them silently partitions artifacts into a bucket the tab never queries, with
+every write-side unit test still green — so test the round-trip
+(`list(session_key=slot.key)` finds it), not the stored string.
+
 ## Validation & Limits
 
 | Field | Limit |
@@ -284,6 +409,7 @@ as `chat` for materialized documents.
 | `kind` | one of `widget` / `html` / `markdown` / `svg` / `json` / `text` / `webapp` |
 | `source` | one of `chat` / `cron` / `subagent` / `manual` / `import` |
 | `MAX_VERSIONS` | 50 (oldest pruned beyond cap) |
+| `MAX_AUTO_WIDGET_ARTIFACTS` | 200 (oldest **unpinned auto-registered** widgets pruned beyond cap) |
 
 ## Security
 
@@ -520,6 +646,8 @@ In scope for the foundation:
 
 - ✅ data layer + CLI + MCP tools + HTTP + library page + standalone page
 - ✅ "Save as artifact" affordance on rendered widgets
+- ✅ widgets are artifacts **by default** — auto-registered unpinned on emission,
+  listed in the in-session Artifacts tab, retention-swept while unstarred
 - ✅ system prompt context note documenting the iterate flow
 
 Out of scope (separate tasks):

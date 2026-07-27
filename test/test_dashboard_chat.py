@@ -2311,6 +2311,155 @@ class TestFlushSegment:
         # chat_segment should be broadcast
         state.broadcast_ws.assert_called_once_with("chat_segment", {"slot": "s1"})
 
+    def test_flush_segment_schedules_widget_registration(self, tmp_path, monkeypatch):
+        """A segment containing an <mcwidget> auto-registers it as an artifact.
+
+        This is the integration seam for widget-as-artifact-by-default: without
+        it nothing registers emitted widgets, and the in-session Artifacts tab
+        can never list them.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        slot = state.get_or_create_slot("s1")
+
+        calls: list = []
+
+        async def _fake_register(text, message_ts, session_key):
+            calls.append((text, message_ts, session_key))
+            return []
+
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_runner.register_widgets_off_loop", _fake_register
+        )
+
+        from kiro_crew.dashboard.chat import _flush_segment
+
+        async def _run():
+            _flush_segment(state, slot, '<mcwidget title="W">body</mcwidget>')
+            # The task is detached — let it run before asserting.
+            await asyncio.sleep(0)
+            for t in list(state._background_tasks):
+                await t
+
+        asyncio.run(_run())
+
+        assert len(calls) == 1
+        text, message_ts, session_key = calls[0]
+        assert "<mcwidget" in text
+        # Keyed to the finalized assistant message.
+        assert message_ts
+        # Attributed with the BARE slot key. Asserting the literal string here
+        # would happily pin a prefix the reader never queries, so assert the
+        # value the in-session tab actually sends (?session=<activeSlot>, i.e.
+        # slot.key) — ArtifactStore.list compares session_key exactly.
+        assert session_key == slot.key
+
+    def test_flush_segment_skips_registration_without_a_widget(self, tmp_path, monkeypatch):
+        """The common case (no widget) must not touch the artifact store at all."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        slot = state.get_or_create_slot("s1")
+
+        called = False
+
+        async def _fake_register(text, message_ts, session_key):
+            nonlocal called
+            called = True
+            return []
+
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_runner.register_widgets_off_loop", _fake_register
+        )
+
+        from kiro_crew.dashboard.chat import _flush_segment
+
+        async def _run():
+            _flush_segment(state, slot, "just prose, no widget here")
+            await asyncio.sleep(0)
+
+        asyncio.run(_run())
+        assert called is False
+
+    def test_flush_segment_registers_redacted_text(self, tmp_path, monkeypatch):
+        """A credential stripped from chat must not survive into the artifact.
+
+        Registration runs on the POST-redaction text; passing the raw accumulated
+        text would persist to disk (and re-surface on the artifact page) exactly
+        what the segment redaction just removed.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        slot = state.get_or_create_slot("s1")
+
+        captured: list = []
+
+        async def _fake_register(text, message_ts, session_key):
+            captured.append(text)
+            return []
+
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_runner.register_widgets_off_loop", _fake_register
+        )
+
+        from kiro_crew.dashboard.chat import _flush_segment
+
+        secret = "AKIAIOSFODNN7EXAMPLE"
+
+        async def _run():
+            _flush_segment(state, slot, f'<mcwidget title="W">key={secret}</mcwidget>')
+            await asyncio.sleep(0)
+            for t in list(state._background_tasks):
+                await t
+
+        asyncio.run(_run())
+
+        assert captured, "registration should have been scheduled"
+        assert secret not in captured[0]
+
+    @pytest.mark.parametrize("mode", ["incognito", "temporary"])
+    def test_flush_segment_skips_registration_in_restricted_sessions(
+        self, tmp_path, monkeypatch, mode
+    ):
+        """Incognito / temporary sessions must not persist widget artifacts.
+
+        Every artifact write is denied for these sessions at the HTTP gate
+        (`_is_restricted_session`), so registering from the chat path would be a
+        back door around that ceiling: widget HTML from a session the user
+        expected to leave no trace would land in `artifacts/<slug>/` and show up
+        in the library.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        slot = state.get_or_create_slot("s1")
+        slot.memory_mode = mode
+        assert slot.is_restricted
+
+        called = False
+
+        async def _fake_register(text, message_ts, session_key):
+            nonlocal called
+            called = True
+            return []
+
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_runner.register_widgets_off_loop", _fake_register
+        )
+
+        from kiro_crew.dashboard.chat import _flush_segment
+
+        async def _run():
+            _flush_segment(state, slot, '<mcwidget title="W">secret body</mcwidget>')
+            await asyncio.sleep(0)
+            for t in list(state._background_tasks):
+                await t
+
+        asyncio.run(_run())
+        assert called is False, f"{mode} session must not register widget artifacts"
+
 
 class TestRunChatSegmentFlush:
     """Tests for segment flush behavior in _run_chat()."""

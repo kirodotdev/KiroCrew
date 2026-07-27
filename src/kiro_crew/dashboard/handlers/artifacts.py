@@ -192,6 +192,24 @@ def _clean_origin_session_key(raw: Any) -> str:
     return ""
 
 
+def _clean_pinned_filter(raw: Any) -> bool | None:
+    """Parse a ``?pinned=`` query value into a tri-state filter.
+
+    ``None`` (absent or unrecognized) = don't scope. Recognized truthy/falsy
+    spellings map to ``True`` / ``False``. An unrecognized value must NOT be
+    read as ``False`` — that would silently return only unpinned artifacts for
+    e.g. ``?pinned=yep``, which reads as a filter failure rather than a typo.
+    """
+    if not isinstance(raw, str):
+        return None
+    val = raw.strip().lower()
+    if val in ("1", "true", "yes"):
+        return True
+    if val in ("0", "false", "no"):
+        return False
+    return None
+
+
 #: Shown in the Source column when an artifact's originating session no longer
 #: exists (the artifact itself is kept — sessions and artifacts have independent
 #: lifecycles).
@@ -973,6 +991,15 @@ async def api_artifacts_list(request: web.Request) -> web.Response:
     # (unscoped); present-but-empty ("?folder=") = the unfiled/root bucket. We
     # must distinguish the two, so read the raw key rather than ``or None``.
     folder = request.query["folder"] if "folder" in request.query else None
+    # ``session`` scopes to the artifacts one chat session produced (the
+    # in-session Artifacts tab). Validated through the same grammar as a save's
+    # ``origin_session_key`` so a hostile value can't reach the store as a
+    # filter; an invalid value collapses to "" (the no-origin bucket) rather
+    # than silently widening to every artifact.
+    session = (
+        _clean_origin_session_key(request.query["session"]) if "session" in request.query else None
+    )
+    pinned = _clean_pinned_filter(request.query.get("pinned"))
     try:
         store = get_default_store()
         items = store.list(
@@ -984,6 +1011,8 @@ async def api_artifacts_list(request: web.Request) -> web.Response:
             source=source,
             source_path=source_path,
             folder=folder,
+            session_key=session,
+            pinned=pinned,
         )
     except (ArtifactError, OSError) as exc:
         logger.warning("artifact list failed: %s", exc)

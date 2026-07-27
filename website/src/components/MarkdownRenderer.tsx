@@ -917,7 +917,7 @@ function extractPathHintFromText(text: string | undefined): string | undefined {
   return undefined
 }
 
-function BlockRenderer({ block, prevBlock, onFileOpen, sourcePos, messageTs, widgetIndex, glow, smooth, softBreaks }: { block: ContentBlock; prevBlock?: ContentBlock; onFileOpen?: (path: string) => void; sourcePos?: boolean; messageTs?: string; widgetIndex?: number; glow?: boolean; smooth?: boolean; softBreaks?: boolean }) {
+function BlockRenderer({ block, prevBlock, onFileOpen, sourcePos, messageTs, widgetIndex, slotKey, glow, smooth, softBreaks }: { block: ContentBlock; prevBlock?: ContentBlock; onFileOpen?: (path: string) => void; sourcePos?: boolean; messageTs?: string; widgetIndex?: number; slotKey?: string; glow?: boolean; smooth?: boolean; softBreaks?: boolean }) {
   switch (block.type) {
     case 'diff': {
       const pathHint = prevBlock?.type === 'markdown'
@@ -941,14 +941,14 @@ function BlockRenderer({ block, prevBlock, onFileOpen, sourcePos, messageTs, wid
     }
     case 'widget':
       return block.complete
-        ? <WidgetFrame html={block.content} title={block.language} slug={block.slug} messageTs={messageTs} widgetIndex={widgetIndex} />
+        ? <WidgetFrame html={block.content} title={block.language} slug={block.slug} messageTs={messageTs} widgetIndex={widgetIndex} slotKey={slotKey} />
         : <WidgetPlaceholder title={block.language} />
     case 'markdown':
       return <MarkdownBlock content={block.content} sourcePos={sourcePos} startLine={block.startLine} glow={glow} smooth={smooth} softBreaks={softBreaks} />
   }
 }
 
-export default memo(function MarkdownRenderer({ content, streaming = false, onFileOpen, onArtifactOpen, rawMode = false, sourcePos = false, messageTs, glow = false, smooth, softBreaks = false }: { content: string; streaming?: boolean; onFileOpen?: (path: string) => void; onArtifactOpen?: (slug: string) => void; rawMode?: boolean; sourcePos?: boolean; messageTs?: string; glow?: boolean; smooth?: boolean; softBreaks?: boolean }) {
+export default memo(function MarkdownRenderer({ content, streaming = false, onFileOpen, onArtifactOpen, rawMode = false, sourcePos = false, messageTs, slotKey, glow = false, smooth, softBreaks = false }: { content: string; streaming?: boolean; onFileOpen?: (path: string) => void; onArtifactOpen?: (slug: string) => void; rawMode?: boolean; sourcePos?: boolean; messageTs?: string; slotKey?: string; glow?: boolean; smooth?: boolean; softBreaks?: boolean }) {
   const blocks = useBlockAssembler(content, streaming)
 
   const handleClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
@@ -1031,6 +1031,7 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
           block={block} prevBlock={blocks[i - 1]} onFileOpen={onFileOpen} sourcePos={sourcePos}
           messageTs={messageTs}
           widgetIndex={widgetIndices[i] >= 0 ? widgetIndices[i] : undefined}
+          slotKey={slotKey}
           glow={glow && i === lastMarkdownIdx}
           smooth={smooth}
           softBreaks={softBreaks}

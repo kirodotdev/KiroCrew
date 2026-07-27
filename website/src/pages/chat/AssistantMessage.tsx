@@ -204,7 +204,7 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
     {/* 'message-bubble' is a stable theming hook — see website/docs/theming-contract.md */}
     <div ref={contentRef} className="message-bubble msg-content group/bubble relative text-sm leading-relaxed text-text overflow-hidden" style={{ overflowWrap: 'anywhere', wordBreak: 'break-word' }}>
       <MessageErrorBoundary rawContent={smoothedText}>
-        <MarkdownRenderer content={smoothedText} streaming={isStreaming} onFileOpen={onFileOpen} rawMode={rawMode} messageTs={messageTs} glow={isStreaming} smooth={smooth} />
+        <MarkdownRenderer content={smoothedText} streaming={isStreaming} onFileOpen={onFileOpen} rawMode={rawMode} messageTs={messageTs} slotKey={slotKey} glow={isStreaming} smooth={smooth} />
       </MessageErrorBoundary>
       {/* Render the steer ack the moment kiro-cli emits the [STEERING …] marker
           — including mid-stream — so the user sees the agent acknowledge the

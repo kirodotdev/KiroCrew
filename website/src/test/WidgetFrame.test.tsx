@@ -675,7 +675,7 @@ describe('WidgetFrame saved-state probe (useQuery cache)', () => {
 
     // Cache should still be updated (global QueryClient, not gated by mountedRef)
     const slug = effectiveWidgetSlug({ messageTs: '1779995123.456789', widgetIndex: 0 })
-    expect(queryClient.getQueryData(['artifact-saved', slug])).toBe(true)
+    expect(queryClient.getQueryData(['artifact-saved', slug])).toEqual({ exists: true, pinned: true })
   })
 
   // A transient 5xx must not cache as the 404 `false` sentinel, or a saved
@@ -733,5 +733,194 @@ describe('WidgetFrame saved-state probe (useQuery cache)', () => {
       focusManager.setFocused(undefined)
       vi.useRealTimers()
     }
+  })
+})
+
+// ── exists vs pinned (auto-registered widgets) ─────────────────────────────
+//
+// The backend auto-registers every emitted <mcwidget> as an UNPINNED artifact
+// (src/kiro_crew/widget_artifacts.py), so `{exists: true, pinned: false}` is the
+// normal steady state. These tests pin the two states apart: collapsing them
+// (the pre-auto-registration behavior) would light up every widget's star as
+// though the user had already saved it, and would make the star click a no-op.
+describe('WidgetFrame exists-vs-pinned states', () => {
+  const TS = '1779995123.456789'
+
+  it('an auto-registered (existing, unpinned) widget shows a HOLLOW star', async () => {
+    vi.spyOn(api, 'artifact').mockResolvedValue({ slug: 'x', name: 'T', pinned: false } as never)
+
+    const { container } = wrap(
+      <WidgetFrame html="<p>hi</p>" title="T" messageTs={TS} widgetIndex={0} />,
+    )
+
+    await waitFor(() => {
+      // Star offers to save — it is NOT already in the library.
+      expect(container.querySelector('[aria-label="Star as artifact"]')).not.toBeNull()
+    })
+    expect(container.querySelector('[aria-label^="Remove artifact"]')).toBeNull()
+  })
+
+  it('an existing artifact links its title even when unpinned', async () => {
+    vi.spyOn(api, 'artifact').mockResolvedValue({ slug: 'x', name: 'T', pinned: false } as never)
+
+    const { container } = wrap(
+      <WidgetFrame html="<p>hi</p>" title="T" messageTs={TS} widgetIndex={0} />,
+    )
+
+    const slug = effectiveWidgetSlug({ messageTs: TS, widgetIndex: 0 })
+    await waitFor(() => {
+      const link = container.querySelector(`a[href="/artifacts/${slug}"]`)
+      expect(link).not.toBeNull()
+    })
+  })
+
+  it('a pinned artifact shows a FILLED star', async () => {
+    vi.spyOn(api, 'artifact').mockResolvedValue({ slug: 'x', name: 'T', pinned: true } as never)
+
+    const { container } = wrap(
+      <WidgetFrame html="<p>hi</p>" title="T" messageTs={TS} widgetIndex={0} />,
+    )
+
+    await waitFor(() => {
+      expect(container.querySelector('[aria-label^="Remove artifact"]')).not.toBeNull()
+    })
+    expect(container.querySelector('[aria-label="Star as artifact"]')).toBeNull()
+  })
+
+  it('a non-existent artifact links nothing', async () => {
+    vi.spyOn(api, 'artifact').mockRejectedValue(
+      Object.assign(new ApiError('Not found', 404), { status: 404 }),
+    )
+
+    const { container } = wrap(
+      <WidgetFrame html="<p>hi</p>" title="T" messageTs={TS} widgetIndex={0} />,
+    )
+
+    await waitFor(() => {
+      expect(container.querySelector('[aria-label="Star as artifact"]')).not.toBeNull()
+    })
+    expect(container.querySelector('a[href^="/artifacts/"]')).toBeNull()
+  })
+
+  it('starring an already-registered widget PINS without re-creating it', async () => {
+    // The create call is the fallback for unregistered widgets only. Once the
+    // probe has confirmed the artifact exists, starring must be a pure pin —
+    // re-creating would 409 every time and risks clobbering content the user
+    // iterated on.
+    const artifactSpy = vi
+      .spyOn(api, 'artifact')
+      .mockResolvedValue({ slug: 'x', name: 'T', pinned: false } as never)
+    const createSpy = vi.spyOn(api, 'createArtifact').mockResolvedValue({} as never)
+    const pinSpy = vi.spyOn(api, 'setArtifactPinned').mockResolvedValue({} as never)
+
+    const slug = effectiveWidgetSlug({ messageTs: TS, widgetIndex: 0 })
+    const { container } = wrap(
+      <WidgetFrame html="<p>hi</p>" title="T" messageTs={TS} widgetIndex={0} />,
+    )
+    // The probe must have RESOLVED before clicking: a click while it is still in
+    // flight legitimately falls back to create (the 409-tolerant path), which is
+    // not what this test is about.
+    await waitFor(() => { expect(artifactSpy).toHaveBeenCalled() })
+    await waitFor(() => {
+      expect(queryClient.getQueryData(['artifact-saved', slug])).toEqual({ exists: true, pinned: false })
+    })
+    const btn = container.querySelector('[aria-label="Star as artifact"]') as HTMLButtonElement
+    await act(async () => { btn.click() })
+
+    expect(createSpy).not.toHaveBeenCalled()
+    expect(pinSpy).toHaveBeenCalledWith(slug, true)
+  })
+
+  it('starring an UNregistered widget falls back to create + pin', async () => {
+    // Covers pre-feature widgets, a failed registration, and one reclaimed by
+    // the retention sweep.
+    vi.spyOn(api, 'artifact').mockRejectedValue(
+      Object.assign(new ApiError('Not found', 404), { status: 404 }),
+    )
+    const createSpy = vi.spyOn(api, 'createArtifact').mockResolvedValue({} as never)
+    const pinSpy = vi.spyOn(api, 'setArtifactPinned').mockResolvedValue({} as never)
+
+    const slug = effectiveWidgetSlug({ messageTs: TS, widgetIndex: 0 })
+    const { container } = wrap(
+      <WidgetFrame html="<p>hi</p>" title="T" messageTs={TS} widgetIndex={0} slotKey="chat-1" />,
+    )
+    await waitFor(() => {
+      expect(queryClient.getQueryData(['artifact-saved', slug])).toEqual({ exists: false, pinned: false })
+    })
+    const btn = container.querySelector('[aria-label="Star as artifact"]') as HTMLButtonElement
+    await act(async () => { btn.click() })
+
+    expect(createSpy).toHaveBeenCalledWith(expect.objectContaining({
+      slug: effectiveWidgetSlug({ messageTs: TS, widgetIndex: 0 }),
+      kind: 'widget',
+      // Attributed to the session so the in-session tab's ?session= query finds it.
+      origin_session_key: 'chat-1',
+    }))
+    expect(pinSpy).toHaveBeenCalled()
+  })
+
+  it('starring invalidates the session-artifact-records query the tab reads', async () => {
+    // The in-session Artifacts tab is a pinned side panel, so it is usually open
+    // while the user clicks a widget's star. Its widget rows come from
+    // ['session-artifact-records', slot] — a key React Query prefix-matching does
+    // NOT reach from ['artifacts'] — so omitting it leaves the tab showing the
+    // opposite star from chat for a full staleTime.
+    vi.spyOn(api, 'artifact').mockResolvedValue({ slug: 'x', name: 'T', pinned: false } as never)
+    vi.spyOn(api, 'setArtifactPinned').mockResolvedValue({} as never)
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+
+    const slug = effectiveWidgetSlug({ messageTs: TS, widgetIndex: 0 })
+    const { container } = wrap(
+      <WidgetFrame html="<p>hi</p>" title="T" messageTs={TS} widgetIndex={0} slotKey="chat-1" />,
+    )
+    await waitFor(() => {
+      expect(queryClient.getQueryData(['artifact-saved', slug])).toEqual({ exists: true, pinned: false })
+    })
+    const btn = container.querySelector('[aria-label="Star as artifact"]') as HTMLButtonElement
+    await act(async () => { btn.click() })
+
+    const keys = invalidateSpy.mock.calls.map(c => JSON.stringify((c[0] as { queryKey: unknown }).queryKey))
+    expect(keys).toContain(JSON.stringify(['session-artifact-records', 'chat-1']))
+    expect(keys).toContain(JSON.stringify(['session-artifacts', 'chat-1']))
+  })
+
+  it('unstarring keeps the record (exists) and only clears pinned', async () => {
+    // Unpin is metadata-only: the artifact and its history survive, so the
+    // session tab still lists it and the title stays linked.
+    vi.spyOn(api, 'artifact').mockResolvedValue({ slug: 'x', name: 'T', pinned: true } as never)
+    vi.spyOn(api, 'setArtifactPinned').mockResolvedValue({} as never)
+
+    const { container } = wrap(
+      <WidgetFrame html="<p>hi</p>" title="T" messageTs={TS} widgetIndex={0} />,
+    )
+    await waitFor(() => {
+      expect(container.querySelector('[aria-label^="Remove artifact"]')).not.toBeNull()
+    })
+    const btn = container.querySelector('[aria-label^="Remove artifact"]') as HTMLButtonElement
+    await act(async () => { btn.click() })
+
+    const slug = effectiveWidgetSlug({ messageTs: TS, widgetIndex: 0 })
+    expect(queryClient.getQueryData(['artifact-saved', slug])).toEqual({ exists: true, pinned: false })
+  })
+
+  it('a 404 on unstar reconciles to not-exists', async () => {
+    // The artifact was deleted outright (e.g. from the library in another tab),
+    // so the row should stop claiming it exists rather than showing a dead link.
+    vi.spyOn(api, 'artifact').mockResolvedValue({ slug: 'x', name: 'T', pinned: true } as never)
+    vi.spyOn(api, 'setArtifactPinned').mockRejectedValue(
+      Object.assign(new ApiError('Not found', 404), { status: 404 }),
+    )
+
+    const { container } = wrap(
+      <WidgetFrame html="<p>hi</p>" title="T" messageTs={TS} widgetIndex={0} />,
+    )
+    await waitFor(() => {
+      expect(container.querySelector('[aria-label^="Remove artifact"]')).not.toBeNull()
+    })
+    const btn = container.querySelector('[aria-label^="Remove artifact"]') as HTMLButtonElement
+    await act(async () => { btn.click() })
+
+    const slug = effectiveWidgetSlug({ messageTs: TS, widgetIndex: 0 })
+    expect(queryClient.getQueryData(['artifact-saved', slug])).toEqual({ exists: false, pinned: false })
   })
 })

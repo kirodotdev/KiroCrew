@@ -1,5 +1,6 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { MemoryRouter } from 'react-router-dom'
 
 // jsdom polyfill: SegmentedControl uses ResizeObserver
 if (typeof globalThis.ResizeObserver === 'undefined') {
@@ -22,6 +23,11 @@ vi.mock('../api/client', () => ({
     browseFiles: vi.fn().mockResolvedValue({ path: '/projects/foo', parent: '/', dirs: [], files: [] }),
     pullRequestSource: vi.fn().mockImplementation(() => new Promise(() => {})),
     fileDiff: vi.fn().mockResolvedValue({ diff: '' }),
+    // Artifacts tab: real session-scoped artifacts + the virtual file-backed docs.
+    artifacts: vi.fn().mockResolvedValue({ artifacts: [] }),
+    artifactSessionDocs: vi.fn().mockResolvedValue({ docs: [] }),
+    materializeArtifact: vi.fn().mockResolvedValue({}),
+    setArtifactPinned: vi.fn().mockResolvedValue({}),
   },
 }))
 
@@ -49,6 +55,7 @@ vi.mock('../components/MarkdownPanel', async () => {
 })
 
 import ActivityViewer from '../pages/chat/ActivityViewer'
+import { api } from '../api/client'
 import { __resetPanelTabs } from '../hooks/usePanelTabs'
 
 function wrapper({ children }: { children: React.ReactNode }) {
@@ -394,3 +401,137 @@ describe('ActivityViewer', () => {
     }
   })
 })
+
+// ── Artifacts tab: the widget-as-artifact merge ─────────────────────────────
+//
+// SessionArtifactsTab merges TWO inputs: real session-scoped artifacts (which is
+// how auto-registered widgets surface — their HTML is inline in the message and
+// never hits disk, so the file-backed scan below cannot see them) and the
+// virtual session documents. These tests pin the merge, the dedup, and the star
+// routing. SessionArtifactsTab uses useNavigate, so it needs a Router.
+describe('ActivityViewer — Artifacts tab', () => {
+  const artifactProps = {
+    subagents: {},
+    toolLog: [],
+    open: true,
+    onToggle: vi.fn(),
+    slot: 'test-slot',
+    view: 'artifacts' as const,
+  }
+
+  function routerWrapper({ children }: { children: React.ReactNode }) {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const store = configureStore({
+      reducer: { chat: chatReducer, dashboard: dashboardReducer, notifications: notificationsReducer },
+    })
+    return (
+      <Provider store={store}>
+        <QueryClientProvider client={qc}>
+          <MemoryRouter>{children}</MemoryRouter>
+        </QueryClientProvider>
+      </Provider>
+    )
+  }
+
+  beforeEach(() => {
+    vi.mocked(api.artifacts).mockResolvedValue({ artifacts: [] })
+    vi.mocked(api.artifactSessionDocs).mockResolvedValue({ docs: [] })
+  })
+
+  it('scopes the artifact query to this session', async () => {
+    render(<ActivityViewer {...artifactProps} />, { wrapper: routerWrapper })
+    await waitFor(() => {
+      expect(api.artifacts).toHaveBeenCalledWith({ session: 'test-slot' })
+    })
+  })
+
+  it('lists an auto-registered widget artifact (no filesystem path)', async () => {
+    vi.mocked(api.artifacts).mockResolvedValue({
+      artifacts: [{ slug: 'abc123', name: 'Sales Chart', kind: 'widget', pinned: false }],
+    } as never)
+    render(<ActivityViewer {...artifactProps} />, { wrapper: routerWrapper })
+    expect(await screen.findByText('Sales Chart')).toBeInTheDocument()
+    // Offers to star (hollow), since auto-registration leaves it unpinned.
+    expect(screen.getByLabelText('Star Sales Chart')).toBeInTheDocument()
+  })
+
+  it('shows a pinned artifact as starred', async () => {
+    vi.mocked(api.artifacts).mockResolvedValue({
+      artifacts: [{ slug: 'abc123', name: 'Kept', kind: 'widget', pinned: true }],
+    } as never)
+    render(<ActivityViewer {...artifactProps} />, { wrapper: routerWrapper })
+    expect(await screen.findByLabelText('Unstar Kept')).toBeInTheDocument()
+  })
+
+  it('merges artifacts and session documents into one list', async () => {
+    vi.mocked(api.artifacts).mockResolvedValue({
+      artifacts: [{ slug: 'w1', name: 'Widget One', kind: 'widget', pinned: false }],
+    } as never)
+    vi.mocked(api.artifactSessionDocs).mockResolvedValue({
+      docs: [{ path: '/p/notes.md', name: 'notes.md', slug: '', saved: false, session_key: 'test-slot', session_title: '', updated_at: '', message_ts: '' }],
+    } as never)
+    render(<ActivityViewer {...artifactProps} />, { wrapper: routerWrapper })
+    expect(await screen.findByText('Widget One')).toBeInTheDocument()
+    expect(screen.getByText('notes.md')).toBeInTheDocument()
+  })
+
+  it('does not double-list a materialized doc that is also an artifact', async () => {
+    // A materialized document is BOTH inputs. The path-aware doc row wins, so
+    // clicking it can still open the file.
+    vi.mocked(api.artifacts).mockResolvedValue({
+      artifacts: [{ slug: 'notes-md', name: 'notes.md', kind: 'markdown', pinned: true }],
+    } as never)
+    vi.mocked(api.artifactSessionDocs).mockResolvedValue({
+      docs: [{ path: '/p/notes.md', name: 'notes.md', slug: 'notes-md', saved: true, session_key: 'test-slot', session_title: '', updated_at: '', message_ts: '' }],
+    } as never)
+    render(<ActivityViewer {...artifactProps} />, { wrapper: routerWrapper })
+    await waitFor(() => { expect(screen.getAllByText('notes.md')).toHaveLength(1) })
+    // The surviving row is the doc row — it shows the path as its subtitle.
+    expect(screen.getByText('/p/notes.md')).toBeInTheDocument()
+  })
+
+  it('starring an artifact row pins it (no materialize call)', async () => {
+    vi.mocked(api.artifacts).mockResolvedValue({
+      artifacts: [{ slug: 'w1', name: 'Widget One', kind: 'widget', pinned: false }],
+    } as never)
+    render(<ActivityViewer {...artifactProps} />, { wrapper: routerWrapper })
+    fireEvent.click(await screen.findByLabelText('Star Widget One'))
+    await waitFor(() => {
+      expect(api.setArtifactPinned).toHaveBeenCalledWith('w1', true)
+    })
+    expect(api.materializeArtifact).not.toHaveBeenCalled()
+  })
+
+  it('starring an unsaved document materializes it instead of pinning', async () => {
+    vi.mocked(api.artifactSessionDocs).mockResolvedValue({
+      docs: [{ path: '/p/notes.md', name: 'notes.md', slug: '', saved: false, session_key: 'test-slot', session_title: '', updated_at: '', message_ts: '' }],
+    } as never)
+    render(<ActivityViewer {...artifactProps} />, { wrapper: routerWrapper })
+    fireEvent.click(await screen.findByLabelText('Star notes.md'))
+    await waitFor(() => {
+      expect(api.materializeArtifact).toHaveBeenCalledWith('/p/notes.md', 'test-slot')
+    })
+  })
+
+  it('does not double-list a materialized doc that was later UNSTARRED', async () => {
+    // The session-docs backend maps path->slug from PINNED artifacts only, so an
+    // unstarred materialized doc reports slug:'' — matching on slug alone would
+    // let its artifact twin through as a second row with its own star.
+    vi.mocked(api.artifacts).mockResolvedValue({
+      artifacts: [{ slug: 'notes-md', name: 'notes.md', kind: 'markdown', pinned: false, source_path: '/p/notes.md' }],
+    } as never)
+    vi.mocked(api.artifactSessionDocs).mockResolvedValue({
+      docs: [{ path: '/p/notes.md', name: 'notes.md', slug: '', saved: false, session_key: 'test-slot', session_title: '', updated_at: '', message_ts: '' }],
+    } as never)
+    render(<ActivityViewer {...artifactProps} />, { wrapper: routerWrapper })
+    await waitFor(() => { expect(screen.getAllByText('notes.md')).toHaveLength(1) })
+    // The surviving row is the path-aware doc row.
+    expect(screen.getByText('/p/notes.md')).toBeInTheDocument()
+  })
+
+  it('shows the empty state when the session produced nothing', async () => {
+    render(<ActivityViewer {...artifactProps} />, { wrapper: routerWrapper })
+    expect(await screen.findByText('Nothing produced in this session yet')).toBeInTheDocument()
+  })
+})
+

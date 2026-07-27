@@ -83,6 +83,16 @@ MAX_CONTENT_BYTES = 26_214_400  # 25 MiB
 MAX_NAME_LEN = 200
 MAX_DESCRIPTION_LEN = 2_000
 
+#: Retention cap for auto-registered widget artifacts (see
+#: :mod:`kiro_crew.widget_artifacts`). Every chat-emitted ``<mcwidget>`` becomes
+#: an artifact automatically, so without a cap a chat-heavy user accumulates one
+#: three-file directory per throwaway widget forever and every library listing
+#: is an O(N) scan over them. Past this many, the oldest STILL-UNPINNED
+#: auto-registered widgets are deleted; pinning one exempts it permanently. Sized
+#: so a long working session's widgets all remain addressable for later
+#: iteration while the tail is reclaimed.
+MAX_AUTO_WIDGET_ARTIFACTS = 200
+
 #: Allowed kinds (extensible — agents pass plain strings, but a soft allow-list
 #: keeps the dashboard's filter UI tractable).
 ALLOWED_KINDS = frozenset(
@@ -336,6 +346,14 @@ class Artifact:
     #: "(deleted session)" when the session no longer exists). Empty for
     #: non-session origins (bulk import, older artifacts).
     session_key: str = ""
+    #: True when the store created this record automatically from a chat-emitted
+    #: ``<mcwidget>`` rather than from an explicit user/agent save. Marks it as
+    #: sweepable by :meth:`ArtifactStore.prune_auto_widgets` while it stays
+    #: unpinned; starring clears nothing but takes it out of the sweep (the
+    #: sweep only considers unpinned records). Tolerant-loaded — every artifact
+    #: that predates auto-registration defaults to ``False`` and is therefore
+    #: never swept.
+    auto_registered: bool = False
     #: Publication state. ``None`` until the artifact
     #: is published; carries the stable provider id/URL, visibility,
     #: shared-with aliases, and version-sync bookkeeping once published.
@@ -657,6 +675,7 @@ class ArtifactStore:
         folder_id: str = "",
         session_key: str = "",
         webapp_metadata: "WebAppMetadata | None" = None,
+        auto_registered: bool = False,
     ) -> Artifact:
         """Persist a new artifact and return it.
 
@@ -669,6 +688,11 @@ class ArtifactStore:
         viewer). It's stored as metadata only — the artifact's authoritative
         content lives in ``current.html`` from then on; we never write back
         to ``source_path``.
+
+        ``auto_registered=True`` marks the record as machine-created from a
+        chat-emitted widget, making it sweepable by
+        :meth:`prune_auto_widgets` while it remains unpinned. Only
+        :mod:`kiro_crew.widget_artifacts` should set it.
         """
         name = _validate_name(name)
         content = _validate_content(content)
@@ -703,6 +727,7 @@ class ArtifactStore:
                 source_path=source_path[:512] if source_path else "",
                 folder_id=folder_id or "",
                 session_key=session_key[:256] if session_key else "",
+                auto_registered=bool(auto_registered),
                 version_kinds={"1": kind},
                 webapp_metadata=webapp_metadata,
             )
@@ -1124,6 +1149,118 @@ class ArtifactStore:
         self._fire_change("upsert", slug)
         return art
 
+    def _is_sweepable_auto_widget(self, art: Artifact) -> bool:
+        """True when ``art`` is a machine-created widget record nobody has claimed.
+
+        This predicate is the ONLY thing standing between the auto-registration
+        firehose and deleting data a user cares about, so it is deliberately
+        conservative: ANY signal of human or agent investment exempts the record
+        permanently. Sweeping is for untouched throwaway widgets only.
+
+        Exempt when the artifact:
+
+        * was not auto-registered (an explicit save is never swept);
+        * is ``pinned`` — the star is the explicit "keep this" signal;
+        * has been filed into a folder (``folder_id``) — filing is curation;
+        * has been published/shared (``publication``) — a live URL points at it,
+          so deleting it breaks someone else's link;
+        * is a fork (``fork_metadata``) — it carries upstream provenance;
+        * has been edited at all — the user or the agent iterated on it, which is
+          investment even without a star;
+        * carries a description or tags — only a deliberate call sets those;
+        * has any comment — commenting is unambiguous investment, and comments
+          live in a ``comments.json`` sidecar that ``add_comment`` writes WITHOUT
+          touching ``meta.json``, so the ``updated_at`` test below cannot see it.
+
+        The edit test is ``updated_at != created_at``, NOT ``version > 1``:
+        :meth:`update` only bumps ``version`` when ``snapshot=True``, so a plain
+        content save (the common agent-iteration path) leaves the version at 1
+        while rewriting the body. Keying on the version would have let the sweep
+        delete freshly-iterated widgets. Metadata-only flips (``set_pinned`` /
+        ``set_folder``) deliberately do NOT touch ``updated_at``, which is why
+        they are checked as separate signals above.
+
+        A widget that is merely *rendered* is not claimed; a widget that was
+        touched in any of the above ways is.
+        """
+        if not art.auto_registered or art.pinned:
+            return False
+        if art.folder_id or art.publication is not None or art.fork_metadata is not None:
+            return False
+        if art.description or art.tags:
+            return False
+        # Any content/metadata edit stamps updated_at (see docstring).
+        if art.created_at and art.updated_at and art.updated_at != art.created_at:
+            return False
+        # Comments live in a sidecar that add_comment writes without touching
+        # meta.json, so they are invisible to every check above. A stat is enough
+        # — the file only exists once something was written to it.
+        if (self._artifact_dir(art.slug) / "comments.json").exists():
+            return False
+        return True
+
+    def prune_auto_widgets(self, *, keep: int = MAX_AUTO_WIDGET_ARTIFACTS) -> int:
+        """Delete the oldest unclaimed auto-registered widgets past ``keep``.
+
+        Every chat-emitted ``<mcwidget>`` is registered automatically (see
+        :mod:`kiro_crew.widget_artifacts`), so this sweep is what keeps that from
+        growing without bound. Eligibility is decided by
+        :meth:`_is_sweepable_auto_widget`, which exempts every record showing a
+        sign of investment (starred, filed, published, forked, edited, described,
+        tagged) — read that docstring before widening this.
+
+        Ordering is newest-first, so the oldest untouched widgets go first (every
+        candidate is by definition unedited, so this is effectively creation
+        order). Returns the number deleted. Best-effort per artifact: a delete
+        that fails (already gone, permissions) is logged and skipped rather than
+        aborting the sweep.
+
+        Race note: the candidate snapshot is taken unlocked, so eligibility is
+        re-checked **and the directory removed in a single lock acquisition**. A
+        re-check that released the lock before calling :meth:`delete` would leave
+        the same window it was meant to close — a star landing between the two
+        acquisitions would be overwritten by a delete acting on a stale verdict.
+        """
+        keep = max(0, int(keep))
+        candidates = [art for art in self.list() if self._is_sweepable_auto_widget(art)]
+        if len(candidates) <= keep:
+            return 0
+        # ``list()`` sorts by ``updated_at`` alone, which is not a total order:
+        # two widgets registered in the same microsecond tie-break by directory
+        # scan order, making WHICH of them gets deleted nondeterministic. Re-sort
+        # on ``(updated_at, slug)`` so the kept/dropped boundary is stable and
+        # testable. Kept local to the sweep — ``list()``'s ordering is shared with
+        # the library UI and is not this change's to redefine.
+        candidates.sort(key=lambda a: (a.updated_at, a.slug), reverse=True)
+        # Newest-first, so everything past `keep` is the oldest tail.
+        deleted = 0
+        for art in candidates[keep:]:
+            try:
+                # Re-check eligibility and remove the directory in ONE lock
+                # acquisition. The snapshot above is unlocked, so the user may
+                # have starred this widget (or the agent edited it) in the
+                # interim — but re-checking under the lock and then calling
+                # ``delete()`` (which takes the lock again) would reopen the same
+                # window between the two acquisitions: a pin landing there would
+                # be overwritten by a delete acting on an already-stale verdict.
+                # So the removal is inlined here rather than delegating.
+                with self._lock:
+                    fresh = self._load_meta(art.slug)
+                    if not self._is_sweepable_auto_widget(fresh):
+                        continue
+                    adir = self._artifact_dir(art.slug)
+                    if not adir.exists():
+                        continue
+                    self._rmtree(adir)
+                    logger.info("auto-widget pruned: slug=%s", art.slug)
+            except (ArtifactNotFoundError, ArtifactError, OSError) as exc:
+                logger.warning("auto-widget prune skipped %s: %s", art.slug, exc)
+                continue
+            # Fired outside the lock, matching ``delete()``.
+            self._fire_change("delete", art.slug)
+            deleted += 1
+        return deleted
+
     def delete(self, slug: str) -> None:
         """Permanently delete an artifact and all of its versions."""
         slug = _validate_slug(slug)
@@ -1211,6 +1348,8 @@ class ArtifactStore:
         source: str | None = None,
         source_path: str | None = None,
         folder: str | None = None,
+        session_key: str | None = None,
+        pinned: bool | None = None,
     ) -> _List[Artifact]:
         """List all artifacts matching the given filters (sorted newest first).
 
@@ -1220,6 +1359,11 @@ class ArtifactStore:
         an O(N) filesystem scan. Atomic meta.json writes (tmp + rename) make
         unlocked reads safe — the worst case is a stale-but-valid snapshot
         for an artifact that was just renamed.
+
+        ``session_key`` scopes to one originating chat session (the in-session
+        artifact panel's query). Like ``folder``, it distinguishes absent from
+        empty: ``None`` doesn't scope, while ``""`` matches only artifacts with
+        no originating session. ``pinned`` filters on the star flag.
         """
         with self._lock:
             meta_paths = list(self._iter_meta_paths())
@@ -1257,6 +1401,12 @@ class ArtifactStore:
             # value — including ``""`` — scopes to that folder id, where ``""``
             # is the unfiled/root bucket.
             if folder is not None and art.folder_id != folder:
+                continue
+            # Same present-vs-empty distinction as ``folder``: ``None`` = don't
+            # scope; ``""`` = only artifacts with NO originating session.
+            if session_key is not None and art.session_key != session_key:
+                continue
+            if pinned is not None and bool(art.pinned) is not pinned:
                 continue
             results.append(art)
         results.sort(key=lambda a: a.updated_at, reverse=True)
@@ -2174,6 +2324,7 @@ class ArtifactStore:
             folder_id=str(raw.get("folder_id") or ""),
             pinned=bool(raw.get("pinned", False)),
             session_key=str(raw.get("session_key", "")),
+            auto_registered=bool(raw.get("auto_registered", False)),
             publication=publication,
             fork_metadata=fork_metadata,
             version_kinds=version_kinds,
