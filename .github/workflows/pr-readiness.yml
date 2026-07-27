@@ -57,17 +57,33 @@ permissions:
   statuses: write
 
 concurrency:
+  # pull_request_target runs are the only readiness runs that surface as a
+  # CheckRun in the PR's status rollup. If they share a cancelling group -- with
+  # the workflow_run burst OR with each other -- a superseded PT run is marked
+  # "cancelled" by GitHub, and that cancelled check then shows on the PR even
+  # though the authoritative "PR Readiness" commit status is fine (this is the
+  # "canceled at the end of CI" symptom: a workflow_run:completed fires as CI
+  # finishes and collapses an in-flight PT run). GitHub always marks a
+  # superseded run cancelled -- cancel-in-progress:true kills the in-flight one,
+  # and false still cancels the pending one -- so the only way a PT run never
+  # shows cancelled is to keep it out of any group that can cancel it. Each PT
+  # run therefore gets its own isolated group and always resolves to a real
+  # conclusion (success / failure / skipped), never cancelled. The evaluate and
+  # publish steps are idempotent and stale-SHA guarded, so un-collapsed PT runs
+  # on superseded revisions simply no-op green. workflow_run / workflow_dispatch
+  # runs do NOT appear in the rollup, so they keep the cheap per-(pr, sha)
+  # burst collapse via cancel-in-progress.
   group: >-
-    pr-readiness-${{
-      inputs.pr
-      || github.event.pull_request.number
-      || github.event.workflow_run.pull_requests[0].number
-      || github.run_id
-    }}-${{
-      inputs.sha
-      || github.event.pull_request.head.sha
-      || github.event.workflow_run.head_sha
-      || github.run_id
+    ${{
+      github.event_name == 'pull_request_target'
+      && format('pr-readiness-pt-{0}', github.run_id)
+      || format('pr-readiness-wr-{0}-{1}',
+           inputs.pr
+             || github.event.workflow_run.pull_requests[0].number
+             || github.run_id,
+           inputs.sha
+             || github.event.workflow_run.head_sha
+             || github.run_id)
     }}
   cancel-in-progress: true
 
