@@ -349,6 +349,40 @@ class TestKiroPrerequisiteHelpers:
         finally:
             os.close(snapshot_fd)
 
+    def test_linux_snapshot_falls_back_to_verified_copy_without_memfd(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Portable python-build-standalone interpreters (glibc < 2.27) omit
+        # os.memfd_create even on kernels that support the syscall. The Linux
+        # snapshot must degrade to the macOS-style verified private copy instead
+        # of failing every ACP spawn.
+        executable = tmp_path / "kiro-cli"
+        executable.write_bytes(b"trusted executable bytes")
+        executable.chmod(0o700)
+        digest = hashlib.sha256(executable.read_bytes()).hexdigest()
+        environ = {"KIROCREW_KIRO_BIN": str(executable)}
+        prerequisite_module._register_operator_override_attestation(str(executable), digest)
+        monkeypatch.delattr(prerequisite_module.os, "memfd_create", raising=False)
+        data_home = tmp_path / "data"
+
+        snapshot = prerequisite_module.snapshot_trusted_acp_executable(
+            str(executable),
+            data_home=data_home,
+            platform_name="linux",
+            environ=environ,
+        )
+
+        assert snapshot.fd is None
+        assert not snapshot.launch_path.startswith("/proc/self/fd/")
+        assert snapshot.cleanup_path == snapshot.launch_path
+        launch_path = Path(snapshot.launch_path)
+        # Copy lives in the agent-protected snapshot dir and pins the exact bytes.
+        assert launch_path.parent == data_home / "run" / "kiro-cli-snapshots"
+        assert launch_path.read_bytes() == executable.read_bytes()
+        assert snapshot.expected_sha256 == digest
+
     @pytest.mark.skipif(sys.platform != "linux", reason="Linux memfd seals")
     def test_linux_memfd_seals_reject_later_writes(self) -> None:
         memfd_create = getattr(os, "memfd_create")

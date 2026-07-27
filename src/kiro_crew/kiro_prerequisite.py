@@ -480,9 +480,11 @@ def snapshot_trusted_acp_executable(
     launch, so a toolbox / Homebrew / self-updated Kiro CLI launches like any
     other. The snapshot still pins the
     resolved bytes so a swap between resolve and exec is caught: Linux executes
-    a write-sealed ``memfd`` of the exact bytes; because Mach-O cannot launch
-    reliably through ``/dev/fd``, macOS executes a verified private copy; Windows
-    launches the resolved path in place.
+    a write-sealed ``memfd`` of the exact bytes, falling back to a verified
+    private copy when the interpreter lacks ``os.memfd_create`` (glibc < 2.27
+    portable builds); because Mach-O cannot launch reliably through ``/dev/fd``,
+    macOS executes a verified private copy; Windows launches the resolved path
+    in place.
     """
 
     platform_name = platform_name or sys.platform
@@ -529,11 +531,30 @@ def snapshot_trusted_acp_executable(
     if not platform_name.startswith("linux"):
         raise ValueError("ACP executable snapshots are unsupported on this POSIX platform")
 
+    memfd_create = getattr(os, "memfd_create", None)
+    if not callable(memfd_create):
+        # Some Linux CPython builds — notably the portable python-build-standalone
+        # interpreters shipped by mise/pyenv, compiled against a glibc that predates
+        # the memfd_create(3) wrapper (glibc < 2.27) — omit os.memfd_create even
+        # though the running kernel supports the syscall. Rather than fail every
+        # ACP spawn, degrade to the same swap-safe mechanism macOS uses: a
+        # sha256-verified private copy in the agent-protected 0700 snapshot dir,
+        # launched in place. The sealed in-memory fd is lost, but the resolved
+        # bytes are still pinned, so a swap between resolve and exec is caught.
+        snapshot_path = _copy_verified_auth_executable(
+            canonical,
+            active_home / _ACP_EXECUTABLE_SNAPSHOT_RELATIVE,
+            expected,
+            prefix="kiro-cli-acp-",
+        )
+        return TrustedAcpExecutableSnapshot(
+            launch_path=snapshot_path,
+            expected_sha256=expected,
+            cleanup_path=snapshot_path,
+        )
+
     snapshot_fd = -1
     try:
-        memfd_create = getattr(os, "memfd_create", None)
-        if not callable(memfd_create):
-            raise OSError("Linux memfd executable snapshots are unavailable")
         memfd_flags = (
             getattr(os, "MFD_CLOEXEC", 0x0001)
             | getattr(os, "MFD_ALLOW_SEALING", 0x0002)
