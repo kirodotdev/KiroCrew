@@ -17,8 +17,8 @@ parallel watcher):
 
 * **Event-driven, no polling.** The gateway is the only process that writes the
   artifact store (the agent's MCP tools, the CLI, the dashboard, and bookmarks
-  all HTTP-proxy to the gateway's ``/api/artifacts`` routes; Artifactory
-  pull/clone also funnel through the store). So a single in-process
+  all HTTP-proxy to the gateway's ``/api/artifacts`` routes; the publishing
+  provider pull/clone also funnel through the store). So a single in-process
   change-listener registered on :class:`~kiro_crew.artifacts.ArtifactStore`
   observes every write path. ``upsert`` -> ingest/replace the artifact's item
   group; ``delete`` -> remove it.

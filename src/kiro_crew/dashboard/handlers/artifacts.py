@@ -60,6 +60,7 @@ from kiro_crew.dashboard.handlers._shared import _is_restricted_session
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_with_identity, stat_identity
 from kiro_crew.publish_provider import (
+    DEFAULT_PROVIDER,
     Capability,
     CommentAnchor,
     KindSupport,
@@ -328,7 +329,7 @@ def _serialize(art: Any, *, include_content: bool = False, state: Any = None) ->
         title = _resolve_session_title(state, out.get("session_key") or "")
         if title:
             out["session_title"] = _redact_text(title)
-    # Publication block (Artifactory) is structural — view_url is an internal
+    # Publication block is structural — view_url is an internal
     # CloudFront URL and aliases are user input — but ``last_error`` can echo
     # an arbitrary upstream error string, so redact it like other surfaced
     # text per the security-controls rule.
@@ -1417,7 +1418,7 @@ async def api_artifact_delete(request: web.Request) -> web.Response:
     slug = request.match_info.get("slug", "")
     # Capture the pre-delete version so the deleted-variant WS event carries the
     # last-known version. The upstream cleanup block that fetched
-    # this was tied to the removed Artifactory path, so fetch it here directly.
+    # this was tied to the removed publishing path, so fetch it here directly.
     try:
         _existing = get_default_store().get(slug)
     except ArtifactError:
@@ -1622,7 +1623,7 @@ async def api_artifact_record_event(request: web.Request) -> web.Response:
     return _json_response({"slug": art.slug, "event": latest})
 
 
-# ── Publishing / sharing (Artifactory) ───────────────────────────────────────
+# ── Publishing / sharing ─────────────────────────────────────────────────────
 
 _VALID_VISIBILITY = ("PRIVATE", "SHARED", "PUBLIC")
 
@@ -1648,7 +1649,7 @@ def _validate_sharing_body(body: dict[str, Any]) -> tuple[str, list[str]]:
 def _sync_error_response(
     tool: str, request: web.Request, slug: str, exc: Exception
 ) -> web.Response:
-    """Map an Artifactory sync exception to an audited HTTP error response."""
+    """Map a publishing-provider sync exception to an audited HTTP error response."""
     if isinstance(exc, ArtifactNotFoundError):
         status, outcome = 404, "error"
     elif isinstance(exc, ArtifactValidationError):
@@ -1663,7 +1664,7 @@ def _sync_error_response(
         status, outcome = 502, "error"
     else:
         status, outcome = 500, "error"
-    # The exception text can originate from untrusted Artifactory MCP responses
+    # The exception text can originate from untrusted publishing-provider MCP responses
     # — redact credentials / exfiltration URLs before it reaches the dashboard
     # AND the SEL audit log (security-controls).
     safe_msg = _redact_text(str(exc))
@@ -1784,14 +1785,14 @@ async def api_artifact_publish(request: web.Request) -> web.Response:
     # Provider is validated generically (any registered provider); the share
     # picker only offers providers whose kind_support() != UNSUPPORTED.
     requested_provider = body.get("provider") if isinstance(body, dict) else None
-    provider_name = requested_provider or "artifactory"
+    provider_name = requested_provider or DEFAULT_PROVIDER
     if not isinstance(provider_name, str) or not _ARTIFACT_PROVIDER_RE.match(provider_name):
         return _err("provider must match ^[a-z0-9-]{1,32}$")
     # Resolve the EFFECTIVE destination BEFORE the governance gate. For an
     # already-published artifact, publish_sync.publish() ignores provider_name
     # and re-pushes to publication.provider — so the gate must evaluate THAT
     # provider, not the (default) requested one, or a re-publish with no explicit
-    # provider would gate on "artifactory" and permit bytes to a DENIED existing
+    # provider would gate on the default provider and permit bytes to a DENIED existing
     # destination. Mirrors api_artifact_update_sharing (which gates on the
     # existing publication's provider).
     try:
@@ -1886,7 +1887,7 @@ async def api_artifact_update_sharing(request: web.Request) -> web.Response:
     except ArtifactNotFoundError:
         existing_pub = None
     share_provider = (
-        existing_pub.provider if existing_pub and existing_pub.provider else "artifactory"
+        existing_pub.provider if existing_pub and existing_pub.provider else DEFAULT_PROVIDER
     )
     gov_denial = _publish_governance_denied(request, share_provider)
     if gov_denial is not None:
@@ -1913,9 +1914,9 @@ async def api_artifact_update_sharing(request: web.Request) -> web.Response:
 
 
 async def api_artifact_unpublish(request: web.Request) -> web.Response:
-    """DELETE /api/artifacts/{slug}/publish — remove from Artifactory.
+    """DELETE /api/artifacts/{slug}/publish — remove from the publishing provider.
 
-    Deletes the Artifactory artifact (best-effort) and clears the local
+    Deletes the published artifact (best-effort) and clears the local
     publication block. Returns the serialized artifact (now with
     ``publication: null``).
     """
@@ -1949,7 +1950,7 @@ async def api_artifact_refresh_sharing(request: web.Request) -> web.Response:
     state with the live destination.
 
     Pulls the destination's current visibility / shared-with (e.g. after the
-    user changed them directly in the Artifactory UI) and updates the stored
+    user changed them directly in the provider's UI) and updates the stored
     publication so the dashboard reflects truth. Gated like other mutations
     since it can update meta.json.
     """
@@ -2159,7 +2160,7 @@ async def api_artifact_overwrite_remote(request: web.Request) -> web.Response:
     overwrite_provider = (
         existing.publication.provider
         if existing.publication is not None and existing.publication.provider
-        else "artifactory"
+        else DEFAULT_PROVIDER
     )
     gov_denial = _publish_governance_denied(request, overwrite_provider)
     if gov_denial is not None:
@@ -3107,14 +3108,14 @@ async def api_artifact_post_comment(request: web.Request) -> web.Response:
     # must be denied too. Denial keeps the comment LOCAL (local_only) rather than
     # 403-ing — the local comment store is unaffected.
     gov_denied = (
-        _publish_governance_denied(request, comment.target_provider or "artifactory")
+        _publish_governance_denied(request, comment.target_provider or DEFAULT_PROVIDER)
         if scope == "shared" and comment.target_external_id
         else "not shared"
     )
     if scope == "shared" and comment.target_external_id and gov_denied is None:
         try:
 
-            provider = get_provider(comment.target_provider or "artifactory")
+            provider = get_provider(comment.target_provider or DEFAULT_PROVIDER)
             if Capability.COMMENTS_WRITE in provider.capabilities():
                 anchor_obj = None
                 if anchor_quote:
@@ -3243,11 +3244,11 @@ async def api_artifact_reply_comment(request: web.Request) -> web.Response:
         parent.origin
         and parent.origin != "local"
         and reply.target_external_id
-        and _publish_governance_denied(request, reply.target_provider or "artifactory") is None
+        and _publish_governance_denied(request, reply.target_provider or DEFAULT_PROVIDER) is None
     ):
         try:
 
-            provider = get_provider(reply.target_provider or "artifactory")
+            provider = get_provider(reply.target_provider or DEFAULT_PROVIDER)
             if Capability.COMMENTS_WRITE in provider.capabilities():
                 # Extract remote parent id from origin
                 remote_parent_id = (
@@ -3311,11 +3312,11 @@ async def api_artifact_mark_review(request: web.Request) -> web.Response:
         target.origin
         and target.origin != "local"
         and target.target_external_id
-        and _publish_governance_denied(request, target.target_provider or "artifactory") is None
+        and _publish_governance_denied(request, target.target_provider or DEFAULT_PROVIDER) is None
     ):
         try:
 
-            provider = get_provider(target.target_provider or "artifactory")
+            provider = get_provider(target.target_provider or DEFAULT_PROVIDER)
             if Capability.COMMENTS_WRITE in provider.capabilities():
                 remote_id = target.origin.split(":", 1)[-1]
                 await asyncio.wait_for(
@@ -3526,11 +3527,11 @@ async def api_artifact_delete_comment(request: web.Request) -> web.Response:
         target
         and is_provider_origin
         and target.target_external_id
-        and _publish_governance_denied(request, target.target_provider or "artifactory") is None
+        and _publish_governance_denied(request, target.target_provider or DEFAULT_PROVIDER) is None
     ):
         try:
 
-            provider = get_provider(target.target_provider or "artifactory")
+            provider = get_provider(target.target_provider or DEFAULT_PROVIDER)
             if Capability.COMMENTS_WRITE in provider.capabilities():
                 remote_id = target.origin.split(":", 1)[-1]
                 await asyncio.wait_for(
@@ -3580,9 +3581,9 @@ async def api_artifact_edit_comment(request: web.Request) -> web.Response:
 
     Local comments always edit in place (the store mutator patches ``body`` and
     bumps ``updated_at``). For a provider-origin comment whose provider supports
-    in-place edit (``Capability.COMMENTS_EDIT`` — Chorus), the new body is also
+    in-place edit (``Capability.COMMENTS_EDIT`` — a live CRDT provider), the new body is also
     pushed to the provider, preserving the remote id / thread / replies.
-    Providers without that capability (Artifactory / MarkBin / Pippin) edit
+    Providers without that capability (mirror providers) edit
     locally only; the response's ``remote_synced`` flag is False so the UI can
     surface that the change stayed local rather than silently diverging.
 
@@ -3632,7 +3633,7 @@ async def api_artifact_edit_comment(request: web.Request) -> web.Response:
     # dashboard renders a lucide Bot icon from is_agent per AGENTS.md).
 
     # Push the edit to the provider in place when its origin provider supports
-    # it (Chorus). Others edit locally only. Gated by the same capabilities.publish
+    # it (a live CRDT provider). Others edit locally only. Gated by the same capabilities.publish
     # chokepoint as artifact publish — the edited body is outbound egress, so a
     # denied policy keeps the edit LOCAL (remote_synced stays False).
     remote_synced = False
@@ -3640,10 +3641,10 @@ async def api_artifact_edit_comment(request: web.Request) -> web.Response:
         target.origin
         and target.origin != "local"
         and target.target_external_id
-        and _publish_governance_denied(request, target.target_provider or "artifactory") is None
+        and _publish_governance_denied(request, target.target_provider or DEFAULT_PROVIDER) is None
     ):
         try:
-            provider = get_provider(target.target_provider or "artifactory")
+            provider = get_provider(target.target_provider or DEFAULT_PROVIDER)
             if Capability.COMMENTS_EDIT in provider.capabilities():
                 remote_id = target.origin.split(":", 1)[-1]
                 await asyncio.wait_for(
@@ -3756,7 +3757,6 @@ def _annotate_local_slugs(out: dict[str, Any], index: dict[str, str], provider: 
     rows: a high-entropy ``external_id`` can be rewritten to
     ``[REDACTED: credential]`` by the credential heuristic, which would miss the
     local match and wrongly offer Clone instead of Open."""
-    from kiro_crew.publish_provider import DEFAULT_PROVIDER
 
     items = out.get("artifacts")
     if not isinstance(items, list):

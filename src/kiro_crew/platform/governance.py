@@ -1045,7 +1045,7 @@ _KEY_OPEN_NAMESPACES = frozenset({"capabilities"})
 # (require_isolation, env_scrub_prefixes) kept raw under a reserved scope.
 _SANDBOX_FLAGS_SCOPE = "sandbox._flags"
 
-# Scope aliases: the Pippin doc names the profile's path scopes ``folders.read``/
+# Scope aliases: the provider doc names the profile's path scopes ``folders.read``/
 # ``folders.write`` but the policy names them ``filesystem.read``/``.write`` (App.
 # A.3 note + the worked example). They are the SAME path ceiling — both resolve
 # through the ``path`` matcher and the gate queries ``filesystem.*`` — so a

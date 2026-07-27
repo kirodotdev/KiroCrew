@@ -42,7 +42,11 @@ from typing import Callable
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_PROVIDER = "artifactory"
+# Neutral registry key used as the default provider name. The public edition
+# ships an EMPTY registry, so ``get_provider`` always raises
+# ``PublishUnavailableError`` regardless of this value; a companion edition
+# registers its concrete provider(s) and may key its default off this name.
+DEFAULT_PROVIDER = "default"
 
 
 # ── Capability negotiation ───────────────────────────────────────────────────

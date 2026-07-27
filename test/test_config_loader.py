@@ -209,14 +209,14 @@ def test_publish_relocate_roots_parsed_and_round_trips():
     loaded = _load_from_dict(
         {
             "publish": {
-                "allowed_destinations": ["artifactory"],
+                "allowed_destinations": ["provider-a"],
                 "relocate_roots": ["/srv/shared", "  "],
             }
         }
     )
     # Parsed (blank entries filtered), not ignored.
     assert loaded.publish.relocate_roots == ["/srv/shared"]
-    assert loaded.publish.allowed_destinations == ["artifactory"]
+    assert loaded.publish.allowed_destinations == ["provider-a"]
     # Survives a to_dict() -> load() round-trip.
     reloaded = _load_from_dict(loaded.to_dict())
     assert reloaded.publish.relocate_roots == ["/srv/shared"]

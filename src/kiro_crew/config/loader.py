@@ -1274,7 +1274,7 @@ class PublishConfig:
         default_factory=list,
         metadata=_meta(
             "Allowed Publish Destinations",
-            "Publish-provider ids the operator permits (e.g. 'artifactory'). "
+            "Publish-provider ids the operator permits (registry keys). "
             "Empty list allows all registered destinations (default-open). "
             "Cannot widen past the enterprise governance ceiling.",
             tags=["publish"],

@@ -12,7 +12,7 @@ import pytest
 
 from kiro_crew.artifacts import ArtifactComment, ArtifactStore
 
-_PROVIDER = "artifactory"
+_PROVIDER = "prov-a"
 
 
 @pytest.fixture

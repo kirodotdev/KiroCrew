@@ -700,7 +700,7 @@ def _register_mcp_routes(app: web.Application) -> None:
     # providers via the CPP publish seam.
     app.router.add_get("/api/remote-artifacts/{provider}/browse", api_remote_artifacts_browse)
     # external_id travels in the JSON body, NOT a path segment: provider-native
-    # ids can contain "/" (e.g. Artifactory repo paths), which a single
+    # ids can contain "/" (e.g. nested provider repo paths), which a single
     # {external_id} segment cannot carry — the router decodes a percent-encoded
     # slash before matching and 404s. Body transport is slash-safe.
     app.router.add_post("/api/remote-artifacts/{provider}/clone", api_remote_artifacts_clone)

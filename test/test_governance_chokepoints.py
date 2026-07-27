@@ -816,7 +816,7 @@ class TestFilesystemEgressAtGate:
 class TestFoldersAliasesFilesystem:
     """A profile's folders.read/folders.write must narrow the policy's
     filesystem.read/filesystem.write ceiling (same path scope, different name —
-    Pippin App. A.3). They are normalized to filesystem.* at parse time."""
+    provider profile App. A.3). They are normalized to filesystem.* at parse time."""
 
     def test_profile_folders_write_narrows_filesystem_write(self):
         from kiro_crew.platform.governance import parse_profile, resolve
@@ -1229,7 +1229,7 @@ class TestPublishGovernanceGate:
         from kiro_crew.dashboard.handlers.artifacts import _publish_governance_denied
 
         _install(None)
-        assert _publish_governance_denied(self._req(), "artifactory") is None
+        assert _publish_governance_denied(self._req(), "provider-a") is None
 
     def test_capability_disabled_blocks(self):
         from kiro_crew.dashboard.handlers.artifacts import _publish_governance_denied
@@ -1241,7 +1241,7 @@ class TestPublishGovernanceGate:
                 "capabilities": {"publish": {"enabled": False}},
             }
         )
-        reason = _publish_governance_denied(self._req(), "artifactory")
+        reason = _publish_governance_denied(self._req(), "provider-a")
         assert reason is not None
 
     def test_destination_not_in_ruleset_blocks(self):
@@ -1254,13 +1254,13 @@ class TestPublishGovernanceGate:
                 "capabilities": {
                     "publish": {
                         "enabled": True,
-                        "scopes": {"destinations": {"mode": "allow", "allow": ["artifactory"]}},
+                        "scopes": {"destinations": {"mode": "allow", "allow": ["provider-a"]}},
                     }
                 },
             }
         )
-        assert _publish_governance_denied(self._req(), "artifactory") is None
-        assert _publish_governance_denied(self._req(), "chorus") is not None
+        assert _publish_governance_denied(self._req(), "provider-a") is None
+        assert _publish_governance_denied(self._req(), "provider-b") is not None
 
     def test_config_allowlist_narrows(self, monkeypatch):
         # Default-open ceiling, but the operator's config allowlist restricts to
@@ -1270,10 +1270,10 @@ class TestPublishGovernanceGate:
 
         _install(None)
         cfg = KiroCrewConfig.load()
-        cfg.publish = PublishConfig(allowed_destinations=["artifactory"])
+        cfg.publish = PublishConfig(allowed_destinations=["provider-a"])
         monkeypatch.setattr(KiroCrewConfig, "load", staticmethod(lambda: cfg))
-        assert art._publish_governance_denied(self._req(), "artifactory") is None
-        assert art._publish_governance_denied(self._req(), "chorus") is not None
+        assert art._publish_governance_denied(self._req(), "provider-a") is None
+        assert art._publish_governance_denied(self._req(), "provider-b") is not None
 
     def test_composition_error_propagates(self, monkeypatch):
         from kiro_crew.dashboard.handlers import artifacts as art
@@ -1284,7 +1284,7 @@ class TestPublishGovernanceGate:
 
         monkeypatch.setattr(gp, "governance_permits", _compose_fail)
         with pytest.raises(PlatformCompositionError):
-            art._publish_governance_denied(self._req(), "artifactory")
+            art._publish_governance_denied(self._req(), "provider-a")
 
     def test_generic_governance_error_fails_closed(self, monkeypatch):
         # Unlike messaging/cron (fail-open on a transient error), the publish
@@ -1297,7 +1297,7 @@ class TestPublishGovernanceGate:
 
         monkeypatch.setattr(gp, "governance_permits", _boom)
         _install(None)
-        reason = art._publish_governance_denied(self._req(), "artifactory")
+        reason = art._publish_governance_denied(self._req(), "provider-a")
         assert reason is not None and "governance could not be evaluated" in reason
 
     def test_internal_resolve_error_fails_closed(self, monkeypatch):
@@ -1319,7 +1319,7 @@ class TestPublishGovernanceGate:
         from kiro_crew.platform import governance as gov_mod
 
         monkeypatch.setattr(gov_mod, "resolve", _resolve_boom)
-        reason = art._publish_governance_denied(self._req(), "artifactory")
+        reason = art._publish_governance_denied(self._req(), "provider-a")
         assert reason is not None
 
     def test_governance_permits_fail_closed_flag(self, monkeypatch):
@@ -1333,11 +1333,11 @@ class TestPublishGovernanceGate:
         _install({"version": 1, "boot": {"fail_closed": True}})
         monkeypatch.setattr(gov_mod, "resolve", _resolve_boom)
 
-        permit_default = gp.governance_permits("capabilities.publish", "destinations:artifactory")
+        permit_default = gp.governance_permits("capabilities.publish", "destinations:provider-a")
         assert getattr(permit_default, "permitted", None) is True  # degrade-to-permit
 
         deny = gp.governance_permits(
-            "capabilities.publish", "destinations:artifactory", fail_closed=True
+            "capabilities.publish", "destinations:provider-a", fail_closed=True
         )
         assert getattr(deny, "permitted", None) is False  # fail-closed DENY
 
@@ -1353,7 +1353,7 @@ class TestPublishGovernanceGate:
         for sk in ("dashboard:ui", "", "slack:U1", "chat:main"):
             d = gp.governance_permits(
                 "capabilities.publish",
-                "destinations:artifactory",
+                "destinations:provider-a",
                 session_key=sk,
                 fail_closed=True,
             )
@@ -1362,7 +1362,7 @@ class TestPublishGovernanceGate:
         # dashboard user even with the fail_closed call site.
         from kiro_crew.dashboard.handlers import artifacts as art
 
-        assert art._publish_governance_denied(self._req(), "artifactory") is None
+        assert art._publish_governance_denied(self._req(), "provider-a") is None
 
     def test_config_load_failure_fails_closed(self, monkeypatch):
         from kiro_crew.config.loader import KiroCrewConfig
@@ -1374,17 +1374,17 @@ class TestPublishGovernanceGate:
             raise RuntimeError("config unreadable")
 
         monkeypatch.setattr(KiroCrewConfig, "load", staticmethod(_boom))
-        reason = art._publish_governance_denied(self._req(), "artifactory")
+        reason = art._publish_governance_denied(self._req(), "provider-a")
         assert reason is not None and "config could not be loaded" in reason
 
     @pytest.mark.asyncio
     async def test_republish_gates_on_existing_provider(self, tmp_path, monkeypatch):
         # Regression (PR #14 nrb): a re-publish with NO explicit provider in the
         # body must gate on the EXISTING publication's provider, not the default
-        # "artifactory". publish_sync.publish() dispatches to the existing
-        # provider, so gating on "artifactory" while the artifact is published to
-        # "chorus" would push bytes to a DENIED destination. Policy: allow
-        # artifactory, deny everything else.
+        # "provider-a". publish_sync.publish() dispatches to the existing
+        # provider, so gating on "provider-a" while the artifact is published to
+        # "provider-b" would push bytes to a DENIED destination. Policy: allow
+        # provider-a, deny everything else.
         import json
         from unittest.mock import AsyncMock, MagicMock
 
@@ -1396,7 +1396,7 @@ class TestPublishGovernanceGate:
         store.create(name="Doc", content="hi", slug="doc", kind="markdown")
         store.set_publication(
             "doc",
-            ArtifactPublication(artifact_id="ext-1", view_url="http://x", provider="chorus"),
+            ArtifactPublication(artifact_id="ext-1", view_url="http://x", provider="provider-b"),
         )
         monkeypatch.setattr(art_mod, "_default_store", store)
         monkeypatch.setattr(art, "_is_restricted_session", lambda state, request: False)
@@ -1411,7 +1411,7 @@ class TestPublishGovernanceGate:
                 "capabilities": {
                     "publish": {
                         "enabled": True,
-                        "scopes": {"destinations": {"mode": "allow", "allow": ["artifactory"]}},
+                        "scopes": {"destinations": {"mode": "allow", "allow": ["provider-a"]}},
                     }
                 },
             }
@@ -1421,8 +1421,8 @@ class TestPublishGovernanceGate:
         req.headers = {"X-Session-Key": "dashboard:ui"}
         req.match_info = {"slug": "doc"}
         req.query = {}
-        # Body omits "provider" — the pre-fix code would default to "artifactory"
-        # (allowed) and permit the push to the chorus-published artifact.
+        # Body omits "provider" — the pre-fix code would default to "provider-a"
+        # (allowed) and permit the push to the provider-b-published artifact.
         req.read = AsyncMock(return_value=json.dumps({"visibility": "PRIVATE"}).encode())
         resp = await art.api_artifact_publish(req)
         assert resp.status == 403

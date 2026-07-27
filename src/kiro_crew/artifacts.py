@@ -57,6 +57,7 @@ from kiro_crew.deploy.webapp_types import (  # noqa: F401 — re-export for API 
     WebAppTeardown,
     webapp_metadata_from_dict,
 )
+from kiro_crew.publish_provider import DEFAULT_PROVIDER
 from kiro_crew.security import is_sensitive_path
 
 logger = logging.getLogger(__name__)
@@ -177,10 +178,10 @@ class ArtifactValidationError(ArtifactError):
 
 @dataclass
 class ForkMetadata:
-    """Provenance tracking for an artifact forked from Artifactory.
+    """Provenance tracking for an artifact forked from the remote store.
 
     Present (non-``None`` on :class:`Artifact`) once an artifact has been
-    forked from a remote Artifactory artifact. Records the upstream identity
+    forked from a remote artifact. Records the upstream identity
     so pull-latest and upstream linking work.
     """
 
@@ -197,46 +198,46 @@ class ForkMetadata:
 
 @dataclass
 class ArtifactPublication:
-    """Artifactory publication state for an artifact.
+    """Publication state for an artifact.
 
     Present (non-``None`` on :class:`Artifact`) once an artifact has been
-    published to Harmony Artifactory. The ``artifact_id`` and ``view_url`` are
+    published to the remote store. The ``artifact_id`` and ``view_url`` are
     *stable* across every version — pushing a new version reuses the same id
-    and URL. This block holds only data; all networking lives in
-    ``artifactory_sync`` / ``artifactory_client`` (mirrors the module-purity
+    and URL. This block holds only data; all networking lives in the
+    publish-sync / publish-client layer (mirrors the module-purity
     rule documented at the top of this file).
 
-    ``last_pushed_sha256`` is the optimistic-concurrency guard required by the
-    Artifactory ``upload_artifact_version`` contract: it is the sha of the
-    artifact's current latest Artifactory version. On a version push we pass it
-    as ``expectedCurrentSha256``; a mismatch means the Artifactory artifact was
+    ``last_pushed_sha256`` is the optimistic-concurrency guard required by
+    the provider's ``upload_artifact_version`` contract: it is the sha of the
+    artifact's current latest remote version. On a version push we pass it
+    as ``expectedCurrentSha256``; a mismatch means the remote artifact was
     changed out-of-band, which we surface via ``last_error`` rather than
     force-pushing over.
     """
 
-    artifact_id: str  # Artifactory UUID — STABLE across versions
+    artifact_id: str  # provider UUID — STABLE across versions
     view_url: str  # https://.../artifact/<uuid> — STABLE across versions
-    provider: str = "artifactory"  # publish destination (PublishProvider name)
+    provider: str = DEFAULT_PROVIDER  # publish destination (PublishProvider name)
     visibility: str = "PRIVATE"  # PRIVATE | SHARED | PUBLIC
     shared_with: _List[str] = field(default_factory=list)  # aliases (role EDITOR)
-    auto_sync: bool = True  # push a new Artifactory version on every KiroCrew bump
+    auto_sync: bool = True  # push a new remote version on every KiroCrew bump
     #: Sync authority for the bound provider: ``"mirror"`` (KiroCrew is the sole
-    #: writer; remote is a guarded/blind mirror — Artifactory/Wiki/Pippin) or
+    #: writer; remote is a guarded/blind mirror — a mirror provider) or
     #: ``"live"`` (the remote owns a live CRDT; KiroCrew is a participant —
-    #: Chorus). Derived from ``provider.sync_model().collab_mode`` at publish /
+    #: a live CRDT provider). Derived from ``provider.sync_model().collab_mode`` at publish /
     #: clone time. Gates the push path (CRDT edit vs guarded blob replace) and
     #: the conflict/Force-push UI. Tolerant-loaded; legacy meta.json defaults to
     #: ``"mirror"``.
     collab_mode: str = "mirror"
     last_pushed_sha256: str = ""  # concurrency guard for the next version push
     last_synced_kirocrew_version: int = 0
-    # Maps str(kirocrew_version) -> artifactory_version_number.
+    # Maps str(kirocrew_version) -> remote_version_number.
     version_map: dict[str, int] = field(default_factory=dict)
     published_at: str = ""
-    published_by: str = ""  # gateway owner alias (ownerAlias from Artifactory)
+    published_by: str = ""  # gateway owner alias (ownerAlias from the remote store)
     last_error: str = ""  # conflict / sync-failure surfaced to the UI
     #: sha256 of the LIVE (CRDT) remote body as of the last sync (publish / push
-    #: / pull / clone / overwrite). Chorus canonicalizes markdown on write, so
+    #: / pull / clone / overwrite). A live CRDT provider canonicalizes markdown on write, so
     #: drift is detected remote-vs-remote against this hash — snapshot_seq bumps
     #: on mere viewing and is unreliable. Empty for mirror providers / legacy.
     last_synced_remote_hash: str = ""
@@ -247,13 +248,13 @@ class ArtifactComment:
     """A durable comment on an artifact (the canonical store).
 
     Comments can be local-only (never leaves KiroCrew) or synced to/from a
-    provider (Artifactory). The ``origin`` + ``scope`` fields determine sync
+    provider (the publishing provider). The ``origin`` + ``scope`` fields determine sync
     behavior.
     """
 
     id: str  # local uuid
-    origin: str = "local"  # "local" | "artifactory:<remote_id>"
-    provider: str | None = None  # "artifactory" | None (for local)
+    origin: str = "local"  # "local" | "<provider>:<remote_id>"
+    provider: str | None = None  # "<provider>" | None (for local)
     scope: str = "private"  # "private" | "shared"
     author: str = ""  # Amazon alias
     is_agent: bool = False  # authored by an AI agent
@@ -335,14 +336,14 @@ class Artifact:
     #: "(deleted session)" when the session no longer exists). Empty for
     #: non-session origins (bulk import, older artifacts).
     session_key: str = ""
-    #: Artifactory publication state. ``None`` until the artifact
-    #: is published; carries the stable Artifactory id/URL, visibility,
+    #: Publication state. ``None`` until the artifact
+    #: is published; carries the stable provider id/URL, visibility,
     #: shared-with aliases, and version-sync bookkeeping once published.
     #: Persisted in meta.json (nested object); tolerant-loaded so older
     #: meta.json files without the field default to ``None``.
     publication: "ArtifactPublication | None" = None
     #: Fork provenance. ``None`` until the artifact is forked
-    #: from a remote Artifactory artifact. Records the upstream identity so
+    #: from a remote artifact. Records the upstream identity so
     #: pull-latest and upstream linking work. Persisted in meta.json.
     fork_metadata: "ForkMetadata | None" = None
     #: Per-version render kind, mapping ``str(version) -> kind`` at the moment
@@ -600,7 +601,7 @@ class ArtifactStore:
         # Optional change-listener fired after a content-affecting mutation
         # (create / content-update / delete). Lets the gateway observe every
         # write path — agent (MCP-proxied), dashboard, bookmark, CLI, and the
-        # Artifactory pull/clone paths all funnel through this store in the
+        # remote pull/clone paths all funnel through this store in the
         # gateway process, so one listener here catches them all without the
         # store importing (or knowing about) the knowledge package.
         self._change_listener: Callable[[str, str], None] | None = None
@@ -1506,12 +1507,12 @@ class ArtifactStore:
                         stored.append(int(m.group(1)))
             return sorted(set(stored))
 
-    # ── publication (Artifactory) — data only, no networking ──────────────
+    # ── publication (remote store) — data only, no networking ──────────────
 
     def set_publication(self, slug: str, pub: "ArtifactPublication") -> Artifact:
-        """Attach (or replace) an artifact's Artifactory publication block.
+        """Attach (or replace) an artifact's publication block.
 
-        Data-only: callers in ``artifactory_sync`` perform the actual upload
+        Data-only: callers in the publish-sync layer perform the actual upload
         and then persist the resulting state here. Returns the updated
         Artifact (without content loaded).
         """
@@ -2144,7 +2145,7 @@ class ArtifactStore:
             for ev in raw_events:
                 if isinstance(ev, dict):
                     events.append(dict(ev))
-        # Publication: Artifactory state. Tolerate older meta.json without the
+        # Publication: provider state. Tolerate older meta.json without the
         # field (defaults to None) and a malformed/partial block (a missing
         # artifact_id means the artifact isn't really published — treat as
         # unpublished rather than raising).
@@ -2217,7 +2218,7 @@ class ArtifactStore:
         return ArtifactPublication(
             artifact_id=str(artifact_id),
             view_url=str(raw_pub.get("view_url") or ""),
-            provider=str(raw_pub.get("provider") or "artifactory"),
+            provider=str(raw_pub.get("provider") or DEFAULT_PROVIDER),
             visibility=str(raw_pub.get("visibility") or "PRIVATE"),
             shared_with=shared_with,
             auto_sync=bool(raw_pub.get("auto_sync", True)),

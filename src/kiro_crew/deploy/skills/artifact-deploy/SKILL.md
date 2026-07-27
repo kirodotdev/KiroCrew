@@ -44,8 +44,6 @@ read, no credential access).
 Deploy a **pre-built** static site (and later, an app with a backend) into the
 **user's own AWS account**, served globally over HTTPS via CloudFront.
 
-Design doc: Pippin project `9iRV03PF7Ptb` (artifact `6h53wQNsm6gb`).
-
 ## Where this fits — app artifacts come first
 
 An **app-style artifact** (`kind="webapp"`) is generated **first**, as the primary

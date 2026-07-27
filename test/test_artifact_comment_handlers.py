@@ -292,22 +292,22 @@ class TestEditComment:
         assert resp.status == 403
 
     @pytest.mark.asyncio
-    async def test_edit_pushes_in_place_for_chorus_origin(self, store, monkeypatch):
+    async def test_edit_pushes_in_place_for_liveprov_origin(self, store, monkeypatch):
         from kiro_crew.artifacts import ArtifactComment
         from kiro_crew.publish_provider import Capability
 
-        # A comment that was shared to Chorus — origin carries the remote id.
+        # A comment that was shared to a live provider — origin carries the remote id.
         store.add_comment(
             "doc",
             ArtifactComment(
                 id="cx",
-                origin="chorus:5",
-                provider="chorus",
+                origin="liveprov:5",
+                provider="liveprov",
                 scope="shared",
                 author="nrb",
                 body="orig",
                 thread_id="cx",
-                target_provider="chorus",
+                target_provider="liveprov",
                 target_external_id="D1",
             ),
         )
@@ -333,18 +333,18 @@ class TestEditComment:
     async def test_edit_stays_local_when_provider_lacks_edit_capability(self, store, monkeypatch):
         from kiro_crew.artifacts import ArtifactComment
 
-        # Artifactory-origin comment: provider has no COMMENTS_EDIT → local-only.
+        # A mirror provider-origin comment: provider has no COMMENTS_EDIT → local-only.
         store.add_comment(
             "doc",
             ArtifactComment(
                 id="ca",
-                origin="artifactory:9",
-                provider="artifactory",
+                origin="mirrorprov:9",
+                provider="mirrorprov",
                 scope="shared",
                 author="nrb",
                 body="orig",
                 thread_id="ca",
-                target_provider="artifactory",
+                target_provider="mirrorprov",
                 target_external_id="X9",
             ),
         )
@@ -381,13 +381,13 @@ class TestEditComment:
             "doc",
             ArtifactComment(
                 id="cg",
-                origin="chorus:5",
-                provider="chorus",
+                origin="liveprov:5",
+                provider="liveprov",
                 scope="shared",
                 author="nrb",
                 body="orig",
                 thread_id="cg",
-                target_provider="chorus",
+                target_provider="liveprov",
                 target_external_id="D1",
             ),
         )
@@ -397,7 +397,7 @@ class TestEditComment:
         monkeypatch.setattr(
             "kiro_crew.dashboard.handlers.artifacts.get_provider", lambda name: prov
         )
-        # Ceiling: publish enabled, but destinations allow only "artifactory".
+        # Ceiling: publish enabled, but destinations allow only "mirrorprov".
         from kiro_crew.config.loader import KiroCrewConfig
 
         base = build_default_context(KiroCrewConfig.load())
@@ -408,7 +408,7 @@ class TestEditComment:
                 "capabilities": {
                     "publish": {
                         "enabled": True,
-                        "scopes": {"destinations": {"mode": "allow", "allow": ["artifactory"]}},
+                        "scopes": {"destinations": {"mode": "allow", "allow": ["mirrorprov"]}},
                     }
                 },
             }
@@ -478,13 +478,13 @@ class TestAgentDeleteComment:
             "doc",
             ArtifactComment(
                 id="pr1",
-                origin="artifactory:7",
-                provider="artifactory",
+                origin="mirrorprov:7",
+                provider="mirrorprov",
                 scope="shared",
                 author="alice",
                 body="provider comment",
                 thread_id="pr1",
-                target_provider="artifactory",
+                target_provider="mirrorprov",
                 target_external_id="X7",
             ),
         )

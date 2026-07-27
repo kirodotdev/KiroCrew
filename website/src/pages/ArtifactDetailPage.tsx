@@ -1,9 +1,9 @@
 import { safeSetItem } from '../utils/safeStorage'
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import WebAppArtifactCard from '../components/WebAppArtifactCard'
-import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
+import { useNavigate, useParams } from 'react-router-dom'
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
-import { ArrowLeft, AlertTriangle, ArrowUp, Camera, ExternalLink, Download, GitFork, Pencil, RefreshCw, X, AlertCircle, RotateCcw, Plus, Sparkles, Link2, MessageSquare, Monitor, Undo2, Upload, Folder as FolderIcon } from 'lucide-react'
+import { ArrowLeft, AlertTriangle, ArrowUp, Camera, ExternalLink, Download, GitFork, Pencil, RefreshCw, X, AlertCircle, RotateCcw, Plus, Sparkles, MessageSquare, Monitor, Undo2, Upload, Folder as FolderIcon } from 'lucide-react'
 import { useTheme } from '../hooks/useTheme'
 import { type IframeSelection } from '../hooks/useCommentBridge'
 import { useAppDispatch } from '../store'
@@ -14,7 +14,6 @@ import { THEME_VAR_NAMES, buildSrcdoc } from '../lib/widgetSrcdoc'
 import { api } from '../api/client'
 import { PageHeader, Card, Badge, Btn } from '../components/ui'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '../components/ui/dropdown-menu'
-import { ArtifactSharePanel } from '../components/ArtifactSharePanel'
 import ReadingWidthToggle from '../components/ReadingWidthToggle'
 import { useReadingWidth } from '../hooks/useReadingWidth'
 import { useArtifactFolders, useMoveArtifactToFolder } from '../hooks/useArtifactFolders'
@@ -282,13 +281,6 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
   // inline. Adding a tag posts metadata-only (no version bump). Removing a
   // tag works the same way.
   const [addingTag, setAddingTag] = useState(false)
-  const [searchParams] = useSearchParams()
-  const [showShare, setShowShare] = useState(() => searchParams.get('share') === '1')
-  // Tracks the publication error the user explicitly dismissed, so the
-  // auto-opened error panel can be closed (per code review) yet re-opens when a *new*
-  // (different) error appears. Comparing the value — not a bool — gives the
-  // reset-on-new-error behaviour without a TDZ-prone effect over `artifact`.
-  const [dismissedError, setDismissedError] = useState<string | null>(null)
   const [newTag, setNewTag] = useState('')
   // ── Inline-comment state (durable via /api/artifacts/:slug/comments) ──
   const commentsQuery = useQuery<{ comments: ArtifactComment[]; remote_sync_error?: string | null }>({
@@ -390,23 +382,6 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
   const artifact = isCurrent ? detailQuery.data : versionQuery.data
   const editable = !!artifact && isEditableKind(artifact.kind) && isCurrent
   const dirty = editing && !!artifact && editedContent !== (artifact.content ?? '')
-
-  // Reconcile sharing/version drift made directly at the publishing provider
-  // when the detail page opens (#4): external visibility changes and pointer
-  // rollbacks surface here. Fires once per slug; the invalidate-driven refetch
-  // keeps the stable artifact_id so this effect won't re-trigger into a loop.
-  const refreshedSlugRef = useRef<string | null>(null)
-  const refreshSharingMut = useMutation({
-    mutationFn: () => api.refreshArtifactSharing(slug),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['artifact', slug] }),
-  })
-  const triggerRefresh = refreshSharingMut.mutate
-  useEffect(() => {
-    const pubId = artifact?.publication?.artifact_id
-    if (!pubId || refreshedSlugRef.current === slug) return
-    refreshedSlugRef.current = slug
-    triggerRefresh()
-  }, [artifact?.publication?.artifact_id, slug, triggerRefresh])
 
   // ── Tag editing handlers (round 4) ────────────────────────────
   const updateTagsMut = useCallback(async (newTags: string[]) => {
@@ -1115,30 +1090,30 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
                 )}
               </span>
             </button>
-            <button
-              type="button"
-              onClick={() => setShowShare((s) => !s)}
-              className={`p-1.5 rounded-md border cursor-pointer transition-all ${artifact.publication ? 'border-ok/40 text-ok hover:border-ok' : 'border-border text-muted hover:text-text hover:border-border-strong'}`}
-              title={artifact.publication ? 'Published — manage sharing' : 'Publish or share this artifact'}
-              aria-label="Publish"
-            >
-              <Link2 size={13} />
-            </button>
             {/* Pop out — opens the artifact in its own live browser window
                 (was a throwaway blob: tab). Swaps to Focus + Bring-back once
                 out. Not shown inside the popout window itself (the frame's
                 Return button handles closing). */}
             {!popout && <ArtifactPopoutControl slug={slug} name={artifact.name} />}
-            {/* Publish action — shown for non-webapp publishable kinds */}
+            {/* Publish — the single publish surface. Web deploy (Publish to
+                public web on the user's own AWS) and any future publish
+                providers register into PublishHub, so this is the one and only
+                publish action. Labeled (not icon-only) since it is now primary.
+                Shown for non-webapp kinds; webapp artifacts use their own
+                deploy card. NOTE: the internal share/publish-provider surface
+                (Link2 + ArtifactSharePanel) was intentionally removed here — a
+                deliberate public-edition divergence, so an upstream sync must
+                NOT re-add it. */}
             {artifact.kind !== 'webapp' && (
               <Btn
                 type="button"
                 onClick={() => setShowPublish(v => !v)}
-                className="p-1.5 rounded"
-                title="Publish"
+                title="Publish this artifact"
                 aria-label="Publish"
+                aria-pressed={showPublish}
+                className={showPublish ? 'border-accent text-accent bg-accent-subtle hover:bg-accent-subtle hover:text-accent' : ''}
               >
-                <Upload size={13} />
+                <Upload size={13} /> Publish
               </Btn>
             )}
             <Btn
@@ -1179,19 +1154,20 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
           </div>
         )}
 
-        {(showShare ||
-          (!!artifact.publication?.last_error &&
-            dismissedError !== artifact.publication?.last_error)) && (
-          <ArtifactSharePanel
-            artifact={artifact}
-            onClose={() => {
-              setShowShare(false)
-              setDismissedError(artifact.publication?.last_error ?? null)
-            }}
-          />
+        {/* Read-only publication sync-error surface. The interactive share
+            panel that used to auto-open on a publication error was removed with
+            the internal publish UI; this keeps a persisted sync error visible
+            (no controls) if a publishing provider is ever registered. Inert in
+            the public edition, where the registry is empty and
+            `artifact.publication` is always null. */}
+        {artifact.publication?.last_error && (
+          <div className="mb-3 flex items-start gap-2 px-3 py-2 rounded-md border border-danger/40 bg-danger-subtle text-[13px] text-danger">
+            <AlertCircle size={14} className="lucide-inline shrink-0 mt-0.5" />
+            <span><strong>Publication sync issue:</strong> {artifact.publication.last_error}</span>
+          </div>
         )}
 
-        {/* Publish panel — toggled by the Upload toolbar button */}
+        {/* Publish panel — toggled by the Publish toolbar button */}
         {showPublish && artifact.kind !== 'webapp' && (
           <div className="mb-3">
             <PublishHub artifact={artifact} onClose={() => setShowPublish(false)} />

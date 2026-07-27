@@ -156,19 +156,17 @@ export function CommentRow({
     SYNC_WARN[comment.sync_state],
     comment.anchor_orphaned ? ORPHAN_WARN : undefined,
   ].filter(Boolean).join(' · ') || undefined
-  // Comments mirrored in from a provider (Artifactory) can't be resolved or
-  // deleted from KiroCrew — those are human-only actions on the provider. Hide
-  // Resolve/Reopen/Delete per-comment (Reply + Review still work). This is
+  // Comments mirrored in from an external publishing provider can't be resolved
+  // or deleted from KiroCrew — those are human-only actions on the provider.
+  // Hide Resolve/Reopen/Delete per-comment (Reply + Review still work). This is
   // origin-driven so a mixed thread (local + provider) hides correctly.
   const isProvider = !!comment.origin && comment.origin !== 'local'
   const hideResolveEff = hideResolve || isProvider
   const hideDeleteEff = hideDelete || isProvider
-  // Edit is offered for LOCAL comments (any author, including the agent's own)
-  // and for Chorus-origin comments, which support in-place remote edit.
-  // Artifactory/MarkBin/Pippin origins have no in-place edit path, so Edit is
-  // hidden there. Gated further on onEdit being wired by the parent.
-  const isChorusOrigin = (comment.origin || '').startsWith('chorus:') || comment.provider === 'chorus'
-  const canEdit = !isProvider || isChorusOrigin
+  // Edit is offered for LOCAL comments (any author, including the agent's own).
+  // Provider-origin comments have no in-place remote-edit path in this edition,
+  // so Edit is hidden there. Gated further on onEdit being wired by the parent.
+  const canEdit = !isProvider
   const isEditing = !!editing && !!onEditSubmit
   return (
     <div className={`${isReply ? 'ml-3.5 pl-2 border-l-2 border-border' : ''} group${comment.anchor_orphaned ? ' opacity-60' : ''}`}>
@@ -200,7 +198,7 @@ export function CommentRow({
           <span className="text-[12px] font-semibold text-text-strong truncate">{authorName(comment)}</span>
           <span className="text-[10px] text-muted shrink-0">{fmtTs(comment.created_at)}</span>
           {comment.is_agent && <Bot size={11} className="text-accent shrink-0" aria-label="AI agent" />}
-          {comment.scope === 'shared' && <Link2 size={11} className="text-muted shrink-0" aria-label="Shared to Artifactory" />}
+          {comment.scope === 'shared' && <Link2 size={11} className="text-muted shrink-0" aria-label="Shared comment" />}
           {syncWarn && <AlertTriangle size={11} className="text-warn shrink-0" aria-label={syncWarn} />}
         </div>
         {/* body (or inline editor when editing) */}
@@ -291,7 +289,7 @@ export interface CommentsSidebarProps {
    *  propagate to the provider, but RESOLVED status has no provider write
    *  path, so we don't offer it). */
   hideResolve?: boolean
-  /** Hide the Delete action too (Artifactory-sourced comments we can't delete
+  /** Hide the Delete action too (provider-sourced comments we can't delete
    *  via the provider). */
   hideDelete?: boolean
   /** Clicking a comment scrolls its in-iframe anchor highlight into view
@@ -299,8 +297,8 @@ export interface CommentsSidebarProps {
   onCommentClick?: (id: string) => void
   /** Reopen a resolved thread (sets status back to open) — feedback #1. */
   onReopen?: (id: string) => void
-  /** Edit a comment's body in place. Local comments always; Chorus-origin
-   *  comments push the edit remotely. Omit to disable the Edit affordance. */
+  /** Edit a comment's body in place. Local comments always; provider-origin
+   *  comments push the edit remotely when the provider supports it. Omit to disable the Edit affordance. */
   onEditComment?: (id: string, text: string) => void
   /** Persistently-highlighted active comment (feedback #4): the matching row
    *  gets a selected style and is scrolled into view. Unlike flashCommentId

@@ -43,7 +43,7 @@ class DummyPublishProvider(PublishProvider):
     ``publish_sync`` can be tested with no real provider registered.
     """
 
-    name = "artifactory"  # the default provider name publish_sync resolves
+    name = publish_provider.DEFAULT_PROVIDER  # the default provider name publish_sync resolves
     display_name = "Test Provider"
     install_hint = "the test provider is unavailable"
 

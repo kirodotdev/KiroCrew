@@ -108,7 +108,7 @@ async def _start_artifact_ingest_async(app: web.Application) -> None:
 
     Registers an in-process change-listener on the artifact store: every
     create / content-update / delete (from the agent's MCP tools, the CLI, the
-    dashboard, bookmarks, and Artifactory pull/clone -- all of which funnel
+    dashboard, bookmarks, and provider pull/clone -- all of which funnel
     through the store in the gateway process) ingests or removes that
     artifact's item group in the aggregate "Artifacts" Knowledge source. On the
     first run that creates the source row, a one-time backfill ingests

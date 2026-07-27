@@ -2,7 +2,7 @@
 
 Combines the pure data layer (``artifacts.ArtifactStore`` — reads/writes the
 ``publication`` block) with a pluggable :class:`PublishProvider` (resolved via
-``publication.provider``, default ``artifactory``). This is the only module
+``publication.provider``, the registry default provider). This is the only module
 that touches both the store and a provider.
 
 Responsibilities that live here (provider-agnostic):
@@ -52,7 +52,7 @@ from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 logger = logging.getLogger(__name__)
 
 # kind -> (file extension, content-type). ``json`` uploads as .txt because
-# .json is not an Artifactory surface (design §6); other providers can accept
+# .json is not a publishing-provider surface (design §6); other providers can accept
 # the same neutral mapping.
 _KIND_MAP: dict[str, tuple[str, str]] = {
     "widget": (".html", "text/html"),
@@ -127,7 +127,7 @@ def _resolve_provider(name: str) -> PublishProvider:
 
 def _collab_mode_for(provider: PublishProvider) -> str:
     """Coarse sync authority for a provider's publications: ``"live"`` for a
-    remote-authority CRDT backend (Chorus), else ``"mirror"``. Read from the
+    remote-authority CRDT backend, else ``"mirror"``. Read from the
     provider's ``sync_model()`` so the value is declared, not special-cased."""
     try:
         return provider.sync_model().collab_mode
@@ -136,10 +136,10 @@ def _collab_mode_for(provider: PublishProvider) -> str:
 
 
 async def _live_remote_hash(provider: PublishProvider, external_id: str) -> str:
-    """sha256 of a LIVE provider's CURRENT remote body (Chorus canonicalizes
+    """sha256 of a LIVE provider's CURRENT remote body (a live CRDT provider canonicalizes
     markdown on write, so we hash the read-back form). Used as the drift
     baseline for a ``collab_mode="live"`` publication — compared remote-vs-remote
-    so neither Chorus's reformatting nor its view-triggered ``snapshot_seq``
+    so neither the provider's reformatting nor its view-triggered ``snapshot_seq``
     bumps register as false drift. Empty string on any failure; an empty
     baseline means ``upstream_status`` stays quiet rather than asserting drift.
     """
@@ -159,7 +159,7 @@ async def _live_remote_hash(provider: PublishProvider, external_id: str) -> str:
 #: Sentinel comments delimiting a widget's inner fragment inside the wrapped
 #: standalone document, so ``unwrap_widget_html`` can recover the exact inner
 #: HTML after a publish -> pull round-trip. Provider-side body injection (e.g.
-#: Artifactory's anchor interceptor) that lands outside these markers is
+#: the publishing provider's anchor interceptor) that lands outside these markers is
 #: excluded, keeping the recovered fragment clean across repeated round-trips.
 _WIDGET_BODY_START = "<!--mc:widget-body-->"
 _WIDGET_BODY_END = "<!--/mc:widget-body-->"
@@ -169,7 +169,7 @@ def wrap_widget_html(inner_html: str) -> str:
     """Wrap a widget's inner HTML in a self-contained standalone document.
 
     Mirrors the frontend ``buildSrcdoc`` (widgetSrcdoc.ts) for a fixed
-    light-theme render. The Artifactory MCP auto-injects ``<base
+    light-theme render. The publishing provider auto-injects ``<base
     target="_blank">`` and a same-page anchor interceptor on upload, so we do
     NOT add those here (design §6.1). No height reporter — that's only for the
     dashboard iframe.
@@ -350,7 +350,7 @@ async def publish(
         refreshed = await asyncio.to_thread(store.get, slug)
         push_error = refreshed.publication.last_error if refreshed.publication else ""
         # Skip the sharing reconcile for providers whose sharing is not
-        # programmable via the API (e.g. Chorus — web-UI-only). Re-publish is
+        # programmable via the API (e.g. a live CRDT provider — web-UI-only). Re-publish is
         # then just a content push; the existing publication summary is returned.
         if Capability.SHARING in provider.capabilities():
             result = await update_sharing(slug, visibility=visibility, shared_with=shared_with)
@@ -399,7 +399,7 @@ async def publish(
         last_error="",
     )
     if pub.collab_mode == "live":
-        # Establish the drift baseline from the read-back remote body (Chorus
+        # Establish the drift baseline from the read-back remote body (a live CRDT provider
         # canonicalizes what we just sent), so upstream_status compares
         # remote-vs-remote from the first poll.
         pub.last_synced_remote_hash = await _live_remote_hash(provider, res.external_id)
@@ -451,7 +451,7 @@ async def push_version(art: Artifact, *, force: bool = False) -> None:
     # Push exactly once per KiroCrew version. If this version was already synced
     # (and not force-republishing), there's nothing to do. We deliberately do
     # NOT dedupe on content — the 1:1 mapping is intentional, and a provider's
-    # stored bytes (e.g. Artifactory's HTML auto-injection) won't match a
+    # stored bytes (e.g. the provider's HTML auto-injection) won't match a
     # locally-computed hash anyway.
     if not force and fresh.version == pub.last_synced_kirocrew_version:
         return
@@ -497,7 +497,7 @@ async def push_version(art: Artifact, *, force: bool = False) -> None:
     version_map[str(fresh.version)] = res.version_number
     extra_pub: dict[str, object] = {}
     if pub.collab_mode == "live":
-        # Re-baseline drift to the remote body we just wrote (Chorus reformats
+        # Re-baseline drift to the remote body we just wrote (a live CRDT provider reformats
         # it), so the next upstream_status doesn't read our own push as drift.
         extra_pub["last_synced_remote_hash"] = await _live_remote_hash(provider, pub.artifact_id)
     await asyncio.to_thread(
@@ -618,7 +618,7 @@ async def refresh_publication(slug: str) -> Artifact:
         normalized = [str(a) for a in shared]
         if normalized != list(pub.shared_with):
             fields["shared_with"] = normalized
-    # Out-of-band content/version drift: someone rolled Artifactory's live
+    # Out-of-band content/version drift: someone rolled the provider's live
     # pointer back to an older version, or edited the bytes directly. We do NOT
     # mirror it into KiroCrew's append-only history; instead surface a re-sync
     # prompt (the conflict banner's "Force re-sync" re-asserts KiroCrew's
@@ -641,7 +641,7 @@ async def refresh_publication(slug: str) -> Artifact:
             and cur_sha != pub.last_pushed_sha256
         )
     )
-    # A CRDT doc (Chorus) has no version/sha drift to reconcile — the remote
+    # A live CRDT doc has no version/sha drift to reconcile — the remote
     # owns the doc. Never surface a Force-resync banner for a LIVE publication.
     if pub.collab_mode == "live":
         drifted = False
@@ -825,7 +825,7 @@ async def upstream_status(slug: str) -> dict[str, object]:
     # LIVE (CRDT): snapshot_seq bumps on mere viewing (presence/reveal), so a
     # seq-based "upstream_ahead" produces phantom pull banners. Detect drift by
     # hashing the remote body and comparing to the baseline recorded at last
-    # sync — remote-vs-remote, immune to both Chorus's markdown canonicalization
+    # sync — remote-vs-remote, immune to both the provider's markdown canonicalization
     # and its view-triggered seq bumps. A CRDT never conflicts (edits merge).
     if is_pub and art.publication is not None and art.publication.collab_mode == "live":
         pub = art.publication
@@ -936,7 +936,7 @@ async def pull_upstream(
         return {"pulled": False, "reason": "fetch_content unavailable", "source": source}
     # Content-type allowlist: pulled bytes are read as UTF-8 text, so a binary
     # upstream would arrive as mojibake. Refuse non-text up front (open it in
-    # Artifactory instead) rather than writing garbage into a new local version.
+    # the publishing provider instead) rather than writing garbage into a new local version.
     if not _is_pullable_content_type(str(pulled.get("content_type") or "")):
         return {
             "pulled": False,
@@ -1117,7 +1117,7 @@ async def fork_from_remote(external_id: str, *, provider_name: str = DEFAULT_PRO
     """Fork a remote artifact into the local store as an INDEPENDENT copy with
     pull-only lineage (``fork_metadata``).
 
-    Provider-agnostic generalization of the Artifactory-specific fork handler.
+    Provider-agnostic generalization of the original provider-specific fork handler.
     Unlike :func:`clone_from_remote`, a fork is NOT bound to the upstream for
     push — it is your own divergent artifact (``collab_mode`` stays the local
     default ``"mirror"``); ``pull_latest(source="origin")`` re-fetches the

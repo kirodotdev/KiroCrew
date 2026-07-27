@@ -613,7 +613,7 @@ class TestOverwriteRemote:
         assert resp.status == 200
         data = _json_body(resp)
         assert data["overwrite_result"]["overwritten"] is False
-        assert gate_open == ["artifactory"]
+        assert gate_open == [publish_provider.DEFAULT_PROVIDER]
 
     @pytest.mark.asyncio
     async def test_overwrite_unknown_slug_404(self, isolated_store, patch_restricted, gate_open):
@@ -757,7 +757,7 @@ class TestIndexByArtifactId:
         # default provider — never an arbitrary provider B (which would let B's
         # clone bind an unrelated legacy artifact that happens to share the id).
         # ForkMetadata keeps an empty provider on load (unlike ArtifactPublication
-        # which defaults to "artifactory"), so it is the faithful legacy case.
+        # which defaults to the registry default provider), so it is the faithful legacy case.
         from kiro_crew.publish_provider import DEFAULT_PROVIDER
 
         legacy = isolated_store.create(name="L", content="z", kind="text")
@@ -1017,7 +1017,7 @@ class TestUpstreamStatusBestEffort:
         isolated_store.set_publication(
             art.slug,
             art_mod.ArtifactPublication(
-                artifact_id="ext-9", view_url="https://r/ext-9", provider="artifactory"
+                artifact_id="ext-9", view_url="https://r/ext-9", provider=publish_provider.DEFAULT_PROVIDER
             ),
         )
         req = _request(match={"slug": art.slug})

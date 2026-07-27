@@ -30,6 +30,7 @@ from kiro_crew.dashboard.handlers.artifacts import (
     api_artifact_unpublish,
     api_artifact_update_sharing,
 )
+from kiro_crew.publish_provider import DEFAULT_PROVIDER
 
 # ── Fixtures (mirrors test_remote_artifacts.py) ───────────────────────────────
 
@@ -128,7 +129,7 @@ class TestUpdateSharingGovernance:
         assert _json_body(resp)["error"] == "publishing not permitted by policy"
         # The gate ran (recorded the effective provider) but the outbound
         # mutation was never dispatched — bytes never left the box.
-        assert gate_denied == ["artifactory"]
+        assert gate_denied == [DEFAULT_PROVIDER]
         dispatched.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -149,7 +150,7 @@ class TestUpdateSharingGovernance:
 
         assert resp.status == 200
         assert _json_body(resp)["slug"] == art.slug
-        assert gate_open == ["artifactory"]
+        assert gate_open == [DEFAULT_PROVIDER]
         dispatched.assert_awaited_once()
         _, kwargs = dispatched.await_args
         assert kwargs["visibility"] == "SHARED"

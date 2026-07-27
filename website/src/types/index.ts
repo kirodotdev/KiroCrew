@@ -485,9 +485,9 @@ export interface ArtifactPublication {
   artifact_id: string
   /** Stable view URL: https://.../artifact/<id>. */
   view_url: string
-  /** Publishing provider name ("artifactory" | "chorus" | …). */
+  /** Publishing provider name (registry key of the destination). */
   provider?: string
-  /** Sync authority: 'mirror' (KiroCrew-authoritative) | 'live' (remote CRDT, e.g. Chorus). */
+  /** Sync authority: 'mirror' (KiroCrew-authoritative) | 'live' (remote CRDT). */
   collab_mode?: 'mirror' | 'live'
   visibility: 'PRIVATE' | 'SHARED' | 'PUBLIC'
   shared_with: string[]
