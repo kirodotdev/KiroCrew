@@ -931,25 +931,16 @@ class TestKiroPrerequisiteWorkflow:
         assert status["ready"] is False
 
     @pytest.mark.asyncio
-    async def test_trusted_identity_probe_sees_only_staged_kiro_credentials(
+    async def test_identity_probe_runs_against_real_home_like_acp(
         self,
         tmp_path: Path,
     ) -> None:
+        # The readiness whoami runs against the REAL home (like an ACP session),
+        # not a credential-minimal rewritten home — so a CLI whose session or
+        # tool registry lives in the real home is detected. Only Kiro Crew's own
+        # secret home is hidden.
         executable = tmp_path / ".local" / "bin" / "kiro-cli"
         _make_executable(executable)
-        cache = tmp_path / ".aws" / "sso" / "cache"
-        cache.mkdir(parents=True)
-        (cache / "kiro-auth-token-cli.json").write_text(
-            '{"accessToken":"kiro-secret"}',
-            encoding="utf-8",
-        )
-        (cache / "unrelated-aws-sso.json").write_text(
-            '{"accessToken":"aws-secret"}',
-            encoding="utf-8",
-        )
-        sqlite_store = tmp_path / ".local" / "share" / "kiro-cli" / "data.sqlite3"
-        sqlite_store.parent.mkdir(parents=True)
-        sqlite_store.write_bytes(b"kiro-sqlite")
         whoami_homes: list[str] = []
 
         async def run(
@@ -961,14 +952,11 @@ class TestKiroPrerequisiteWorkflow:
                 return ProcessResult(ok=True)
             home = kwargs["env"]["HOME"]
             whoami_homes.append(home)
-            staged = Path(home)
-            # No operator override is pinned, so only the isolated probe runs:
-            # only Kiro identity files are staged, unrelated real-home
-            # credentials stay hidden, and no real-home fallback is attempted.
-            assert (staged / ".aws" / "sso" / "cache" / "kiro-auth-token-cli.json").is_file()
-            assert not (staged / ".aws" / "sso" / "cache" / "unrelated-aws-sso.json").exists()
-            assert (staged / ".local" / "share" / "kiro-cli" / "data.sqlite3").is_file()
-            assert kwargs["env"]["XDG_CONFIG_HOME"].startswith(home)
+            assert home == str(tmp_path)
+            assert kwargs["extra_hidden_dirs"] == (
+                str(tmp_path / ".kiro" / "crew"),
+                str(tmp_path / ".kirocrew"),
+            )
             return ProcessResult(ok=False)
 
         service = KiroPrerequisiteService(
@@ -978,30 +966,24 @@ class TestKiroPrerequisiteWorkflow:
             process_runner=run,
             audit_writer=_no_audit,
         )
-        service._attest_candidate(str(executable))
 
         status = await service.snapshot(force=True)
 
+        assert status["installed"] is True
         assert status["can_login"] is True
-        # No override pinned, so exactly one isolated probe ran against a
-        # staged home that was cleaned up afterward.
-        assert len(whoami_homes) == 1
-        assert whoami_homes[0] != str(tmp_path)
-        assert Path(whoami_homes[0]).parent == tmp_path / ".kiro" / "crew-auth-staging"
-        assert not Path(whoami_homes[0]).exists()
+        assert status["authenticated"] is False
+        # A single whoami, run against the real home (no isolated staging).
+        assert whoami_homes == [str(tmp_path)]
 
     @pytest.mark.asyncio
-    async def test_real_home_fallback_detects_out_of_band_session(
+    async def test_real_home_probe_detects_out_of_band_session(
         self,
         tmp_path: Path,
     ) -> None:
-        # A CLI whose valid session is not in the staged identity files (it is
-        # resolved from the real home by an external auth helper) reports
-        # signed-out under the credential-minimal probe. When the operator has
-        # pinned that exact binary via KIROCREW_KIRO_BIN, the read-only real-home
-        # fallback detects the live session, so readiness is true and the
-        # setup/reauth gate clears — matching a real ACP session, which also
-        # runs against the real home.
+        # A CLI whose session/tool registry lives in the real home (e.g. a
+        # toolbox multiplexer) reports signed-out under a rewritten HOME but is
+        # logged in against the real home. The readiness whoami runs real-home
+        # (like ACP), so it detects the live session and readiness is true.
         executable = tmp_path / ".local" / "bin" / "kiro-cli"
         _make_executable(executable)
         whoami_calls: list[str] = []
@@ -1015,57 +997,7 @@ class TestKiroPrerequisiteWorkflow:
                 return ProcessResult(ok=True)
             home = kwargs["env"]["HOME"]
             whoami_calls.append(home)
-            # Signed-out in the staged home, signed-in against the real home.
-            return ProcessResult(ok=home == str(tmp_path))
-
-        service = KiroPrerequisiteService(
-            platform_name="linux",
-            environ={
-                "HOME": str(tmp_path),
-                "PATH": "/usr/bin:/bin",
-                "KIROCREW_KIRO_BIN": str(executable),
-            },
-            home=tmp_path,
-            process_runner=run,
-            audit_writer=_no_audit,
-        )
-
-        status = await service.snapshot(force=True)
-
-        assert status["installed"] is True
-        assert status["authenticated"] is True
-        assert status["ready"] is True
-        # The isolated probe ran first (staged home); the fallback against the
-        # real home then succeeded. No third probe once readiness is true.
-        assert len(whoami_calls) == 2
-        assert whoami_calls[0] != str(tmp_path)
-        assert whoami_calls[1] == str(tmp_path)
-
-    @pytest.mark.asyncio
-    async def test_real_home_fallback_skipped_for_unpinned_candidate(
-        self,
-        tmp_path: Path,
-    ) -> None:
-        # SECURITY: without a pinned KIROCREW_KIRO_BIN override, an arbitrary or
-        # planted PATH candidate must NEVER get a real-home probe, even when a
-        # real session exists that a real-home whoami would accept. Otherwise a
-        # planted kiro-cli could force the isolated probe to fail and gain an
-        # automatic, unattended read of ~/.aws, ~/.ssh, and ~/.kube.
-        executable = tmp_path / ".local" / "bin" / "kiro-cli"
-        _make_executable(executable)
-        whoami_homes: list[str] = []
-
-        async def run(
-            _command: str,
-            args: list[str],
-            **kwargs: Any,
-        ) -> ProcessResult:
-            if args == ["--version"]:
-                return ProcessResult(ok=True)
-            home = kwargs["env"]["HOME"]
-            whoami_homes.append(home)
-            # A real session exists (a real-home whoami would succeed), but the
-            # planted binary reports signed-out in the isolated staged home.
+            # Signed-out under a rewritten HOME, signed-in against the real home.
             return ProcessResult(ok=home == str(tmp_path))
 
         service = KiroPrerequisiteService(
@@ -1078,60 +1010,11 @@ class TestKiroPrerequisiteWorkflow:
 
         status = await service.snapshot(force=True)
 
-        # No override pinned -> no real-home fallback -> stays signed-out, and
-        # the single whoami never ran against the real home.
-        assert status["authenticated"] is False
-        assert status["ready"] is False
-        assert len(whoami_homes) == 1
-        assert whoami_homes[0] != str(tmp_path)
-
-    @pytest.mark.asyncio
-    async def test_real_home_fallback_skipped_when_pinned_binary_swapped(
-        self,
-        tmp_path: Path,
-    ) -> None:
-        # SECURITY: the pinned override is digest-recorded at process start. If a
-        # same-UID actor replaces the writable pinned binary after startup, the
-        # real-home fallback must NOT run it — the current bytes no longer match
-        # the process-start pin. Otherwise a swapped binary would gain an
-        # automatic, unattended real-home run.
-        executable = tmp_path / ".local" / "bin" / "kiro-cli"
-        _make_executable(executable)
-        whoami_homes: list[str] = []
-
-        async def run(
-            _command: str,
-            args: list[str],
-            **kwargs: Any,
-        ) -> ProcessResult:
-            if args == ["--version"]:
-                return ProcessResult(ok=True)
-            home = kwargs["env"]["HOME"]
-            whoami_homes.append(home)
-            return ProcessResult(ok=home == str(tmp_path))
-
-        service = KiroPrerequisiteService(
-            platform_name="linux",
-            environ={
-                "HOME": str(tmp_path),
-                "PATH": "/usr/bin:/bin",
-                "KIROCREW_KIRO_BIN": str(executable),
-            },
-            home=tmp_path,
-            process_runner=run,
-            audit_writer=_no_audit,
-        )
-        # Replace the pinned binary AFTER the process-start digest was recorded.
-        executable.write_text("#!/bin/sh\n# swapped\n", encoding="utf-8")
-
-        status = await service.snapshot(force=True)
-
-        # Digest mismatch -> fallback refused -> stays signed-out, no real-home
-        # whoami despite a live real session.
-        assert status["authenticated"] is False
-        assert status["ready"] is False
-        assert len(whoami_homes) == 1
-        assert whoami_homes[0] != str(tmp_path)
+        assert status["installed"] is True
+        assert status["authenticated"] is True
+        assert status["ready"] is True
+        # A single whoami, run against the real home.
+        assert whoami_calls == [str(tmp_path)]
 
     @pytest.mark.asyncio
     async def test_self_updated_candidate_still_signs_in(
@@ -1901,28 +1784,19 @@ class TestKiroPrerequisiteWorkflow:
             index for index, call in enumerate(runtime.calls) if call[1] == ["whoami"]
         ]
         assert whoami_indexes
+        # The readiness whoami now runs against the real home (like ACP): the
+        # standard sandbox, HOME left as the real home, and only Kiro Crew's own
+        # secret home hidden (not the identity stores).
         assert all(runtime.kwargs[index]["sandbox_mode"] == "standard" for index in whoami_indexes)
+        assert all(
+            runtime.kwargs[index]["env"]["HOME"] == str(tmp_path) for index in whoami_indexes
+        )
         assert all(
             runtime.kwargs[index]["extra_hidden_dirs"]
             == (
                 str(tmp_path / ".kiro" / "crew"),
                 str(tmp_path / ".kirocrew"),
-                str(tmp_path / ".aws" / "sso" / "cache"),
-                str(tmp_path / ".local" / "share" / "kiro-cli"),
-                str(tmp_path / ".local" / "share" / "amazon-q"),
             )
-            for index in whoami_indexes
-        )
-        assert all(
-            runtime.kwargs[index]["env"]["HOME"] != str(tmp_path) for index in whoami_indexes
-        )
-        assert all(
-            runtime.kwargs[index]["extra_visible_dirs"] == (runtime.kwargs[index]["env"]["HOME"],)
-            for index in whoami_indexes
-        )
-        assert all(
-            Path(runtime.kwargs[index]["env"]["HOME"]).parent
-            == tmp_path / ".kiro" / "crew-auth-staging"
             for index in whoami_indexes
         )
         installer_index = next(

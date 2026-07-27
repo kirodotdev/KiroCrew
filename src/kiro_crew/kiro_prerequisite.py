@@ -1902,24 +1902,17 @@ class KiroPrerequisiteService:
             # (trust is "it runs"); ``whoami`` decides whether it is already
             # authenticated. No provenance gate: source/owner/path do not block
             # sign-in, so a runnable CLI never needs an unreachable "repair".
-            whoami = await self._audited_identity_probe(self._viable_binary)
-            if not whoami.ok and await asyncio.to_thread(
-                self._viable_binary_is_pinned_override
-            ):
-                # Real-home fallback, gated to the operator-pinned
-                # ``KIROCREW_KIRO_BIN`` override ONLY, and only while its bytes
-                # still match the digest pinned at process start. Some CLI builds
-                # keep their valid session outside the staged identity files
-                # (validated from the real home), so the credential-minimal probe
-                # reports them signed-out. Retry once read-only against the real
-                # home — but only for the exact executable the operator pinned,
-                # never an arbitrary/planted PATH candidate and never a post-start
-                # replacement of that binary. This keeps the automatic,
-                # unattended probe from ever executing an untrusted binary against
-                # the real home (~/.aws, ~/.ssh, ~/.kube).
-                whoami = await self._audited_identity_probe(
-                    self._viable_binary, isolate_home=False
-                )
+            # ``whoami`` decides whether the CLI is already signed in. Run it the
+            # same way a real ACP session runs the CLI (see acp/runtime.py):
+            # against the real environment/home, NOT a credential-minimal
+            # rewritten HOME. A rewritten HOME breaks any CLI whose session or
+            # tool registry lives in the real home — e.g. a multiplexer launcher
+            # cannot even resolve itself without its real-home registry — so the
+            # isolated probe reported such CLIs signed-out even though a real
+            # session authenticates fine.
+            whoami = await self._audited_identity_probe(
+                self._viable_binary, isolate_home=False
+            )
             if whoami.ok:
                 await asyncio.to_thread(self._mark_setup_complete)
             self._status = PrerequisiteStatus(
@@ -1935,35 +1928,6 @@ class KiroPrerequisiteService:
             self._last_probe_at = self._clock()
             self._has_probed = True
             return self._status
-
-    def _viable_binary_is_pinned_override(self) -> bool:
-        """Whether the viable binary is the operator-pinned ``KIROCREW_KIRO_BIN``
-        override AND still matches the digest recorded at process start.
-
-        The real-home fallback runs the candidate against the user's real home,
-        so it is gated to the exact executable the operator explicitly pinned.
-        Beyond matching the pinned path, the current bytes are re-hashed and
-        compared (constant-time) against the process-start pin, so a same-UID
-        replacement of a writable pinned binary after startup does NOT gain a
-        real-home run — the swap fails the digest check. An arbitrary or planted
-        ``PATH`` candidate is never the pinned override. Off on Windows and when
-        no override is set, so the fallback is off by default.
-
-        Performs bounded file IO (hashing the pinned binary); call it off the
-        event loop.
-        """
-
-        if not (
-            self._initial_override_path
-            and self._initial_override_sha256 is not None
-            and os.path.normcase(self._viable_binary)
-            == os.path.normcase(self._initial_override_path)
-        ):
-            return False
-        current = _existing_binary_digest(self._initial_override_path)
-        return current is not None and hmac.compare_digest(
-            current, self._initial_override_sha256
-        )
 
     async def _audited_probe(
         self,
@@ -2049,44 +2013,29 @@ class KiroPrerequisiteService:
         one just resolved, but it pins no stored digest — a Kiro self-update
         that legitimately rewrites the binary must not break sign-in.
 
-        ``isolate_home=False`` is the read-only readiness fallback: it runs the
-        CLI against the user's real home instead of the credential-minimal one,
-        for builds whose valid session lives outside the staged identity files.
+        ``isolate_home=False`` runs the read-only readiness login check against
+        the user's real home (like an ACP session) instead of the
+        credential-minimal one, so a CLI whose session/registry lives in the
+        real home is detected. ``commit`` (device login) always isolates.
         """
 
         if not isolate_home:
-            # Read-only real-home fallback for the readiness probe only, gated by
-            # the caller to the operator-pinned override.
+            # Read-only readiness login check, run the way a real ACP session
+            # runs the CLI (acp/runtime.py): against the real environment/home
+            # under the standard OS sandbox. A rewritten HOME breaks CLIs whose
+            # session or tool registry lives in the real home (e.g. a toolbox
+            # multiplexer that resolves itself via its real-home registry), so
+            # this is what actually detects them.
             #
-            # WHY THIS EXISTS: the isolated probe above rewrites HOME to a
-            # credential-minimal staging dir that contains only the known Kiro
-            # identity files. Some Kiro CLI builds do not keep their session in
-            # those files — they validate it through an external auth helper
-            # resolved from the user's REAL home — so the isolated `whoami`
-            # reports signed-out even though the CLI is genuinely logged in (and
-            # a real `kiro-cli acp` session, which runs with the real
-            # environment, authenticates fine). This retry runs the same
-            # login-status check against the real home so that case is detected.
-            # (No Amazon-internal helper is named here on purpose: the public
-            # repo stays free of internal references; "external auth helper" is
-            # the generic description of that class of build.)
-            #
-            # SECURITY — this is why it is safe despite touching the real home:
-            #   1. Gated to the operator-pinned KIROCREW_KIRO_BIN override only
-            #      (see `_viable_binary_is_pinned_override`), never an arbitrary
-            #      or planted PATH candidate; off by default and on Windows.
-            #   2. The executed bytes are bound to the process-start digest pin:
-            #      the pinned bytes are copied into a private snapshot verified
-            #      against `_initial_override_sha256`, and THAT snapshot is
-            #      executed — so a binary swapped after startup fails the copy
-            #      and the fallback is refused (fail closed), with no
-            #      check-to-exec window.
-            #   3. The snapshot lives in a private dir UNDER the non-hidden
-            #      auth-staging parent (not under the hidden crew home) and is
-            #      marked sandbox-visible, mirroring the isolated probe — so it
-            #      can actually execute while the crew home stays hidden.
-            #   4. Read-only: `commit` is rejected, so it never stages or
-            #      publishes credentials.
+            # SECURITY: this matches the accepted ACP launch posture, not a new
+            # surface — ACP already runs the resolved kiro-cli with the full real
+            # environment on every session (the standard sandbox intentionally
+            # exposes AWS/SSH to it). This path is a read-only subset: `commit`
+            # is rejected so it never stages or publishes, only Kiro Crew's own
+            # secret home is hidden, and the bytes are copied into a
+            # sandbox-visible private snapshot (keeping the resolved basename so a
+            # multiplexer still dispatches) and THAT is executed — binding
+            # resolve-to-exec exactly like the isolated probe and the ACP snapshot.
             if commit:
                 raise ValueError("real-home auth commands cannot commit credentials")
             fallback_executable = executable
@@ -2098,23 +2047,17 @@ class KiroPrerequisiteService:
                         tempfile.mkdtemp(prefix="probe-", dir=str(self._auth_staging_parent))
                     )
                     cleanup_dir = str(snapshot_root)
-                    try:
-                        fallback_executable = await asyncio.to_thread(
-                            _copy_verified_auth_executable,
-                            _canonical_candidate(executable),
-                            snapshot_root,
-                            self._initial_override_sha256,
-                            prefix="kiro-cli-probe-",
-                        )
-                        extra_visible = (str(snapshot_root),)
-                    except (OSError, ValueError):
-                        # Bytes no longer match the process-start pin (or are
-                        # unreadable): fail closed rather than execute an
-                        # unverified binary against the real home.
-                        return ProcessResult(
-                            ok=False,
-                            error="pinned Kiro CLI changed since startup",
-                        )
+                    # Pass the UNRESOLVED path so the copy keeps the caller's
+                    # basename (e.g. the ``kiro-cli`` symlink), which a
+                    # multiplexer launcher dispatches on.
+                    fallback_executable = await asyncio.to_thread(
+                        _copy_verified_auth_executable,
+                        executable,
+                        snapshot_root,
+                        None,
+                        prefix="kiro-cli-probe-",
+                    )
+                    extra_visible = (str(snapshot_root),)
                 return await self._run(
                     fallback_executable,
                     args,
@@ -2172,10 +2115,10 @@ class KiroPrerequisiteService:
     ) -> ProcessResult:
         """Run an identity probe with paired SEL events.
 
-        With ``isolate_home`` (default) the probe runs against a
-        credential-minimal temporary home. ``isolate_home=False`` is the
-        read-only real-home fallback used only after the isolated probe fails,
-        for CLIs whose valid session lives outside the staged identity files.
+        The readiness check calls this with ``isolate_home=False`` so ``whoami``
+        runs against the real home (like an ACP session) and detects CLIs whose
+        session or tool registry lives there. ``isolate_home=True`` keeps the
+        credential-minimal temporary home for callers that need it.
         """
 
         action = "probe_identity"
