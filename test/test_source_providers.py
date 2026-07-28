@@ -45,54 +45,104 @@ def test_safe_error_redacts_credentials_and_exfiltration_urls() -> None:
     assert "[REDACTED" in error
 
 
-def test_provider_executable_ignores_workspace_path(monkeypatch, tmp_path) -> None:
-    malicious = tmp_path / "gh"
-    malicious.write_text("#!/bin/sh\nexit 99\n")
-    malicious.chmod(0o700)
-    monkeypatch.setenv("PATH", str(tmp_path))
-    monkeypatch.delenv("KIROCREW_GH_BIN", raising=False)
-    trusted = "/usr/bin/gh"
-    seen: list[str] = []
+def test_provider_executable_rejects_agent_writable_tree(monkeypatch, tmp_path) -> None:
+    """A gh shim planted inside the project checkout is refused even though it
+    is user-owned like every other accepted install — the agent can write there."""
+    project = tmp_path / "project"
+    (project / "bin").mkdir(parents=True)
+    shim = project / "bin" / "gh"
+    shim.write_text("#!/bin/sh\nexit 99\n")
+    shim.chmod(0o755)
+    monkeypatch.delenv("KIROCREW_PROVIDER_BIN_STRICT", raising=False)
+    monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(project))
+    monkeypatch.setenv("KIROCREW_GH_BIN", str(shim))
 
-    def validate(candidate: str) -> str:
-        seen.append(candidate)
-        return candidate
+    with pytest.raises(source.SourceProviderError, match="inside the agent-writable tree"):
+        source._resolve_provider_executable("gh")
 
+
+def test_provider_executable_candidates_append_path_hits(monkeypatch, tmp_path) -> None:
+    """Well-known dirs are tried first, then whatever PATH resolves — so an
+    install the user already runs from their terminal is found."""
+    user_bin = tmp_path / "user-bin"
+    user_bin.mkdir()
+    found = user_bin / "gh"
+    found.write_text("#!/bin/sh\nexit 0\n")
+    found.chmod(0o755)
+    monkeypatch.delenv("KIROCREW_PROVIDER_BIN_STRICT", raising=False)
+    monkeypatch.setenv("PATH", f"{user_bin}:/usr/bin")
     monkeypatch.setattr(
         source,
         "_PROVIDER_EXECUTABLE_CANDIDATES",
-        {"gh": (trusted,), "glab": ("/usr/bin/glab",)},
+        {"gh": ("/usr/local/libexec/kirocrew/gh",), "glab": ("/usr/bin/glab",)},
     )
-    monkeypatch.setattr(source, "_validate_provider_executable", validate)
 
-    assert source._resolve_provider_executable("gh") == trusted
-    assert seen == [trusted]
-    assert str(malicious) not in seen
+    candidates = source.provider_executable_candidates("gh")
+
+    assert candidates[0] == "/usr/local/libexec/kirocrew/gh"
+    assert str(found) in candidates
 
 
-def test_provider_executable_not_found_gives_setup_guidance(monkeypatch) -> None:
+def test_provider_executable_candidates_ignore_path_in_strict_mode(monkeypatch, tmp_path) -> None:
+    user_bin = tmp_path / "user-bin"
+    user_bin.mkdir()
+    planted = user_bin / "gh"
+    planted.write_text("#!/bin/sh\nexit 0\n")
+    planted.chmod(0o755)
+    monkeypatch.setenv("KIROCREW_PROVIDER_BIN_STRICT", "1")
+    monkeypatch.setenv("PATH", str(user_bin))
+
+    assert (
+        source.provider_executable_candidates("gh")
+        == source._PROVIDER_EXECUTABLE_CANDIDATES["gh"]
+    )
+
+
+def test_provider_executable_not_found_gives_install_guidance(monkeypatch) -> None:
     monkeypatch.delenv("KIROCREW_GH_BIN", raising=False)
+    monkeypatch.delenv("KIROCREW_PROVIDER_BIN_STRICT", raising=False)
+    monkeypatch.setenv("PATH", "")
     monkeypatch.setattr(
         source,
         "_PROVIDER_EXECUTABLE_CANDIDATES",
-        {"gh": ("/usr/local/libexec/kirocrew/gh",), "glab": ("/usr/local/libexec/kirocrew/glab",)},
+        {"gh": ("/nonexistent-kirocrew/gh",), "glab": ("/nonexistent-kirocrew/glab",)},
     )
-
-    def reject(_candidate: str) -> str:
-        raise ValueError("path does not exist")
-
-    monkeypatch.setattr(source, "_validate_provider_executable", reject)
 
     with pytest.raises(source.SourceProviderError) as excinfo:
         source._resolve_provider_executable("gh")
 
     message = str(excinfo.value)
-    # Names the managed target dir and gives copy/paste sudo setup steps.
-    assert "/usr/local/libexec/kirocrew" in message
-    assert 'sudo cp "$(command -v gh)" /usr/local/libexec/kirocrew/gh' in message
-    assert "sudo chown -R root /usr/local/libexec/kirocrew" in message
-    # Points at the override and reassures auth carries over.
+    # Install-and-sign-in guidance, NOT the old root-owned sudo copy ritual.
+    assert "brew install gh" in message
+    assert "gh auth login" in message
+    assert "sudo cp" not in message
     assert "KIROCREW_GH_BIN" in message
+    assert "{executable}" not in message
+
+
+def test_provider_executable_strict_mode_asks_for_a_root_owned_copy(monkeypatch) -> None:
+    monkeypatch.delenv("KIROCREW_GH_BIN", raising=False)
+    monkeypatch.setenv("KIROCREW_PROVIDER_BIN_STRICT", "1")
+    monkeypatch.setattr(
+        source,
+        "_PROVIDER_EXECUTABLE_CANDIDATES",
+        {
+            "gh": ("/usr/local/libexec/kirocrew/gh",),
+            "glab": ("/usr/local/libexec/kirocrew/glab",),
+        },
+    )
+    monkeypatch.setattr(
+        source,
+        "_validate_provider_executable",
+        MagicMock(side_effect=ValueError("executable is not root-owned")),
+    )
+
+    with pytest.raises(source.SourceProviderError) as excinfo:
+        source._resolve_provider_executable("gh")
+
+    message = str(excinfo.value)
+    assert "KIROCREW_PROVIDER_BIN_STRICT" in message
+    assert 'sudo cp "$(command -v gh)" /usr/local/libexec/kirocrew/gh' in message
     assert "gh auth login" in message
 
 
@@ -103,142 +153,168 @@ def test_provider_executable_rejects_relative_override(monkeypatch) -> None:
         source._resolve_provider_executable("gh")
 
 
-def test_provider_executable_rejects_current_user_owned_override(monkeypatch, tmp_path) -> None:
+def test_provider_executable_accepts_user_owned_install(monkeypatch, tmp_path) -> None:
+    """The default policy accepts the user's own gh — the Homebrew case that
+    previously forced a `sudo cp` into a root-owned directory."""
+    executable = tmp_path / "gh"
+    executable.write_text("#!/bin/sh\nexit 0\n")
+    executable.chmod(0o755)
+    monkeypatch.delenv("KIROCREW_PROVIDER_BIN_STRICT", raising=False)
+    monkeypatch.setattr(source, "_agent_writable_roots", lambda: ())
+    monkeypatch.setenv("KIROCREW_GH_BIN", str(executable))
+
+    assert source._resolve_provider_executable("gh") == str(executable.resolve())
+
+
+def test_provider_executable_accepts_symlinked_install(monkeypatch, tmp_path) -> None:
+    """Homebrew's layout (bin/gh -> ../Cellar/gh/<v>/bin/gh) resolves through the
+    symlink instead of being refused for not being canonical."""
+    cellar = tmp_path / "Cellar" / "gh" / "2.0.0" / "bin"
+    cellar.mkdir(parents=True)
+    target = cellar / "gh"
+    target.write_text("#!/bin/sh\nexit 0\n")
+    target.chmod(0o555)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    link = bin_dir / "gh"
+    link.symlink_to(target)
+    monkeypatch.delenv("KIROCREW_PROVIDER_BIN_STRICT", raising=False)
+    monkeypatch.setattr(source, "_agent_writable_roots", lambda: ())
+    monkeypatch.setenv("KIROCREW_GH_BIN", str(link))
+
+    assert source._resolve_provider_executable("gh") == str(target.resolve())
+
+
+def test_provider_executable_strict_mode_rejects_user_owned_install(
+    monkeypatch, tmp_path
+) -> None:
     executable = tmp_path / "gh"
     executable.write_text("#!/bin/sh\nexit 0\n")
     executable.chmod(0o500)
+    monkeypatch.setenv("KIROCREW_PROVIDER_BIN_STRICT", "1")
     monkeypatch.setenv("KIROCREW_GH_BIN", str(executable))
 
     with pytest.raises(source.SourceProviderError, match="executable is not root-owned"):
         source._resolve_provider_executable("gh")
 
 
-def test_provider_executable_rejects_symlink(monkeypatch, tmp_path) -> None:
+def test_provider_executable_strict_mode_rejects_symlink(monkeypatch, tmp_path) -> None:
     target = tmp_path / "real-gh"
     target.write_text("#!/bin/sh\nexit 0\n")
     target.chmod(0o500)
     link = tmp_path / "gh"
     link.symlink_to(target)
+    monkeypatch.setenv("KIROCREW_PROVIDER_BIN_STRICT", "1")
     monkeypatch.setenv("KIROCREW_GH_BIN", str(link))
 
     with pytest.raises(source.SourceProviderError, match="canonical.*no symlinks"):
         source._resolve_provider_executable("gh")
 
 
-def test_provider_executable_accepts_root_owned_nonwritable_canonical_path(
+def test_provider_executable_refuses_a_root_gateway(monkeypatch, tmp_path) -> None:
+    """A root gateway is refused in BOTH modes: every process it spawns (the
+    agent's own shell included) is root too, which makes the ownership and
+    agent-tree checks vacuous."""
+    executable = tmp_path / "gh"
+    executable.write_text("#!/bin/sh\nexit 0\n")
+    executable.chmod(0o755)
+    monkeypatch.delenv("KIROCREW_PROVIDER_BIN_STRICT", raising=False)
+    monkeypatch.setattr(source, "_agent_writable_roots", lambda: ())
+    monkeypatch.setattr(source.os, "geteuid", lambda: 0)
+
+    with pytest.raises(ValueError, match="disabled for a root gateway"):
+        source._validate_provider_executable(str(executable))
+
+
+def test_provider_executable_rejects_binary_owned_by_another_user(
     monkeypatch, tmp_path
 ) -> None:
     executable = tmp_path / "gh"
     executable.write_text("#!/bin/sh\nexit 0\n")
-    executable.chmod(0o500)
+    executable.chmod(0o755)
     real_stat = executable.stat()
-    root_stat = source.os.stat_result([*list(real_stat)[:4], 0, *list(real_stat)[5:]])
+    foreign_stat = source.os.stat_result([*list(real_stat)[:4], 4242, *list(real_stat)[5:]])
+    monkeypatch.delenv("KIROCREW_PROVIDER_BIN_STRICT", raising=False)
+    monkeypatch.setattr(source, "_agent_writable_roots", lambda: ())
     monkeypatch.setattr(source, "_path_parents", lambda _path: [])
-    monkeypatch.setattr(source.Path, "stat", lambda _path: root_stat)
-    monkeypatch.setattr(
-        source.os,
-        "access",
-        lambda _path, mode: mode == source.os.X_OK,
-    )
+    monkeypatch.setattr(source.Path, "stat", lambda _path: foreign_stat)
 
-    assert source._validate_provider_executable(str(executable)) == str(executable)
-
-
-def test_provider_executable_rejects_user_managed_homebrew_location(monkeypatch) -> None:
-    candidate = "/opt/homebrew/bin/gh"
-    validate = MagicMock(side_effect=ValueError("path contains a symlink"))
-    monkeypatch.delenv("KIROCREW_GH_BIN", raising=False)
-    monkeypatch.setattr(
-        source,
-        "_PROVIDER_EXECUTABLE_CANDIDATES",
-        {"gh": (candidate,), "glab": ("/usr/bin/glab",)},
-    )
-    monkeypatch.setattr(source, "_validate_provider_executable", validate)
-
-    with pytest.raises(source.SourceProviderError) as exc_info:
-        source._resolve_provider_executable("gh")
-
-    message = str(exc_info.value)
-    assert "GitHub CLI (gh)" in message
-    assert "user-owned copy is intentionally refused" in message
-    assert "sudo mkdir -p /opt/homebrew/bin" in message
-    assert 'sudo cp "$(command -v gh)" /opt/homebrew/bin/gh' in message
-    assert "sudo chown -R root /opt/homebrew/bin" in message
-    assert "`gh auth login` credentials are reused automatically" in message
-    assert "KIROCREW_GH_BIN" in message
-    assert "{executable}" not in message
-    validate.assert_called_once_with(candidate)
-
-
-def test_provider_executable_rejects_effectively_writable_root_path(monkeypatch, tmp_path) -> None:
-    executable = tmp_path / "glab"
-    executable.write_text("#!/bin/sh\nexit 0\n")
-    executable.chmod(0o500)
-    real_stat = executable.stat()
-    root_stat = source.os.stat_result([*list(real_stat)[:4], 0, *list(real_stat)[5:]])
-    monkeypatch.setattr(source, "_path_parents", lambda _path: [])
-    monkeypatch.setattr(source.Path, "stat", lambda _path: root_stat)
-    monkeypatch.setattr(source.os, "access", lambda _path, _mode: True)
-
-    with pytest.raises(ValueError, match="writable by the gateway user"):
+    with pytest.raises(ValueError, match="owned by another user"):
         source._validate_provider_executable(str(executable))
 
 
-@pytest.mark.parametrize(
-    ("parent_uid", "parent_mode", "parent_writable", "reason"),
-    [
-        (501, 0o755, False, "executable parent is not root-owned"),
-        (0, 0o775, False, "executable parent is writable by the gateway user"),
-        (0, 0o755, True, "executable parent is writable by the gateway user"),
-    ],
-)
-def test_provider_executable_rejects_untrusted_ancestor(
-    monkeypatch,
-    tmp_path,
-    parent_uid,
-    parent_mode,
-    parent_writable,
-    reason,
+def test_provider_executable_rejects_world_writable_binary(monkeypatch, tmp_path) -> None:
+    executable = tmp_path / "gh"
+    executable.write_text("#!/bin/sh\nexit 0\n")
+    executable.chmod(0o777)
+    monkeypatch.delenv("KIROCREW_PROVIDER_BIN_STRICT", raising=False)
+    monkeypatch.setattr(source, "_agent_writable_roots", lambda: ())
+
+    with pytest.raises(ValueError, match="executable is world-writable"):
+        source._validate_provider_executable(str(executable))
+
+
+def test_provider_executable_rejects_world_writable_parent(monkeypatch, tmp_path) -> None:
+    parent = tmp_path / "provider-bin"
+    parent.mkdir()
+    executable = parent / "gh"
+    executable.write_text("#!/bin/sh\nexit 0\n")
+    executable.chmod(0o755)
+    parent.chmod(0o777)
+    monkeypatch.delenv("KIROCREW_PROVIDER_BIN_STRICT", raising=False)
+    monkeypatch.setattr(source, "_agent_writable_roots", lambda: ())
+    monkeypatch.setattr(source, "_path_parents", lambda _path: [parent])
+
+    with pytest.raises(ValueError, match="executable parent is world-writable"):
+        source._validate_provider_executable(str(executable))
+
+
+def test_provider_executable_tolerates_a_sticky_world_writable_parent(
+    monkeypatch, tmp_path
 ) -> None:
+    """`/tmp`-style 1777 dirs are fine: only the owner can replace an entry, so
+    the "owned by another user" check still decides. Linux CI runners put every
+    pytest tmp dir under /tmp, so rejecting sticky dirs outright would also make
+    the accept-path untestable there."""
+    parent = tmp_path / "sticky-bin"
+    parent.mkdir()
+    executable = parent / "gh"
+    executable.write_text("#!/bin/sh\nexit 0\n")
+    executable.chmod(0o755)
+    parent.chmod(0o1777)
+    monkeypatch.delenv("KIROCREW_PROVIDER_BIN_STRICT", raising=False)
+    monkeypatch.setattr(source, "_agent_writable_roots", lambda: ())
+    monkeypatch.setattr(source, "_path_parents", lambda _path: [parent])
+
+    assert source._validate_provider_executable(str(executable)) == str(executable.resolve())
+
+
+def test_provider_executable_strict_mode_rejects_untrusted_ancestor(
+    monkeypatch, tmp_path
+) -> None:
+    """Strict mode keeps the historical root-owned, unwritable-ancestor rule."""
     parent = tmp_path / "provider-bin"
     parent.mkdir()
     executable = parent / "gh"
     executable.write_text("#!/bin/sh\nexit 0\n")
     executable.chmod(0o500)
     executable_stat = executable.stat()
-    parent_stat = parent.stat()
     root_executable_stat = source.os.stat_result(
         [*list(executable_stat)[:4], 0, *list(executable_stat)[5:]]
-    )
-    tested_parent_stat = source.os.stat_result(
-        [
-            parent_stat.st_mode & ~0o777 | parent_mode,
-            *list(parent_stat)[1:4],
-            parent_uid,
-            *list(parent_stat)[5:],
-        ]
     )
     real_stat = source.Path.stat
 
     def fake_stat(path):
         if path == executable:
             return root_executable_stat
-        if path == parent:
-            return tested_parent_stat
         return real_stat(path)
 
-    def fake_access(path, mode):
-        if mode == source.os.X_OK:
-            return path == executable
-        if mode == source.os.W_OK:
-            return path == parent and parent_writable
-        return False
-
+    monkeypatch.setenv("KIROCREW_PROVIDER_BIN_STRICT", "1")
     monkeypatch.setattr(source, "_path_parents", lambda _path: [parent])
     monkeypatch.setattr(source.Path, "stat", fake_stat)
-    monkeypatch.setattr(source.os, "access", fake_access)
+    monkeypatch.setattr(source.os, "access", lambda _path, mode: mode == source.os.X_OK)
 
-    with pytest.raises(ValueError, match=reason):
+    with pytest.raises(ValueError, match="executable parent is not root-owned"):
         source._validate_provider_executable(str(executable))
 
 

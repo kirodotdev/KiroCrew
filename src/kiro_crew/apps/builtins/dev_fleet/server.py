@@ -494,19 +494,29 @@ if platform_compat.IS_WINDOWS:  # pragma: no cover - exercised on Windows hosts
         for sub in (r"Git\cmd", r"Git\bin", "GitHub CLI", "nodejs")
     ) + (str(Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32"),)
 else:
-    _TRUSTED_BIN_DIRS = ("/usr/local/bin", "/usr/bin", "/bin")
+    # Homebrew/Linuxbrew prefixes are included: they are where a `gh` (and often
+    # `git`) the user installed themselves actually lives, and the resolved-target
+    # checks below still reject anything writable by us or under $HOME. Without
+    # them a stock `brew install gh` was invisible to Dev Fleet.
+    _TRUSTED_BIN_DIRS = (
+        "/usr/local/bin",
+        "/usr/bin",
+        "/bin",
+        "/opt/homebrew/bin",
+        "/home/linuxbrew/.linuxbrew/bin",
+    )
 _TRUSTED_PATH = os.pathsep.join(_TRUSTED_BIN_DIRS)
 _TRUSTED_BIN_CACHE: dict[str, str | None] = {}
 
 
 def _trusted_bin(name: str) -> str | None:
-    """Resolve *name* to a canonical executable in a root-owned system dir.
+    """Resolve *name* to a canonical executable in a system or Homebrew bin dir.
 
     The service PATH starts with agent-writable directories (worktree venv,
     ~/.local/bin) — resolving through it would let a planted `git`/`gh`
-    shim run inside the credential-bearing standard tier. Only non-symlink
-    executables physically inside the trusted dirs qualify; fail closed
-    otherwise.
+    shim run inside the credential-bearing standard tier. Only executables
+    physically inside the trusted dirs whose resolved target is unwritable by
+    us and outside $HOME qualify; fail closed otherwise.
     """
     if name in _TRUSTED_BIN_CACHE:
         return _TRUSTED_BIN_CACHE[name]
@@ -543,7 +553,12 @@ def _trusted_bin(name: str) -> str | None:
                     os.access(real, os.W_OK) or st.st_mode & 0o022
                 ):
                     continue
-                resolved = str(cand)
+                # Pin the RESOLVED target, not the entry we searched: a bin-dir
+                # entry can itself be a user-writable symlink (Homebrew's
+                # `bin/gh -> ../Cellar/...`), so caching the link path would let
+                # it be repointed between validation and execution. The real
+                # path we just vetted is what gets spawned.
+                resolved = str(real)
                 break
             except OSError:
                 continue

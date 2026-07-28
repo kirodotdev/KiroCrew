@@ -89,9 +89,17 @@ permission is denied, not allowed). Read-only repos degrade to suggest-only.
 ## Security Controls
 
 - **Spawn hardening**: All `gh` calls funnel through `_gh_run`, which resolves a
-  canonical `gh` only from trusted system directories and validates it (and every
-  parent) via `_validate_provider_executable` (root-owned, non-user-writable,
-  canonical, non-symlinked). A minimal env is passed (no unrelated gateway
+  canonical `gh` via the shared provider resolver
+  (`source_providers.provider_executable_candidates` — well-known install dirs,
+  then the ambient `PATH`) and validates it (and every parent) with
+  `_validate_provider_executable`. The default policy accepts the user's OWN
+  install (Homebrew/asdf/`~/.local/bin`) and refuses only provenance the user did
+  not choose: a binary owned by another unprivileged account, a world-writable
+  one (a world-writable *directory* is tolerated only when sticky, where the
+  owner check still decides), or one inside the agent-writable project/workspace
+  tree. A gateway running as root is refused outright in both modes.
+  `KIROCREW_PROVIDER_BIN_STRICT=1` restores the historical root-owned,
+  symlink-free requirement. A minimal env is passed (no unrelated gateway
   secrets). Benign-allowlisted in the spawn audit (1 entry).
 - **SEL audit**: Every `_gh_run` invocation emits an SEL tool-invocation event
   (success/failure/timeout). Write handlers additionally emit denied/ok/failure
@@ -211,4 +219,8 @@ requests" until the login lands.
 
 - POSIX only (macOS/Linux). Windows raises `GhCliError` immediately.
 - `gh` CLI authenticated on the host.
-- Homebrew paths (`/opt/homebrew/bin`, `/usr/local/bin`) included in trusted dirs.
+- Any `gh` the user can run from their terminal is accepted: the well-known dirs
+  (`/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin`, `/home/linuxbrew/…`, the
+  managed `libexec/kirocrew` dirs) are searched first, then `PATH`. No `sudo`
+  copy is required. Override with `KIROCREW_ISSUE_RADAR_GH`; harden with
+  `KIROCREW_PROVIDER_BIN_STRICT=1`.

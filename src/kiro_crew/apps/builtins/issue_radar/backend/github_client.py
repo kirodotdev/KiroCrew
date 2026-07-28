@@ -124,24 +124,25 @@ _GH_ENV_PASSTHROUGH = (
 
 _gh_bin_cache: str | None = None
 
-# gh resolution reuses the SAME trusted directory list as the Sidebar PR panel
-# (source_providers._PROVIDER_EXECUTABLE_DIRS) so both panels accept exactly the
-# same gh locations — dropping a single root-owned copy in any trusted dir fixes
-# both at once. That list is imported lazily inside _gh_bin() (its owning module
-# pulls in dashboard state, so a top-level import here would be circular).
+# gh resolution reuses the SAME policy and search order as the Sidebar PR panel
+# (source_providers.provider_executable_candidates) so both panels accept exactly
+# the same gh installs and never drift. Imported lazily inside _gh_bin() (its
+# owning module pulls in dashboard state, so a top-level import here would be
+# circular).
 
 
 def _gh_bin() -> str:
-    """Absolute path to a trusted ``gh``, resolved once and cached.
+    """Absolute path to an acceptable ``gh``, resolved once and cached.
 
-    Resolves from the same trusted directories as the Sidebar PR panel
-    (``source_providers._PROVIDER_EXECUTABLE_DIRS``) and validates the candidate
-    (and every parent) is canonical, root-owned, and non-writable by the gateway
-    user — preventing a planted shim from receiving forwarded GitHub credentials.
-    Uses the platform's ``_validate_provider_executable`` check (the same gate
-    that protects git/glab provider paths). Set ``KIROCREW_ISSUE_RADAR_GH`` to
-    an absolute path to override (must still pass validation).
-    Raises :class:`GhCliError` if no valid executable is found."""
+    Resolution and validation are shared with the Sidebar PR panel
+    (``source_providers.provider_executable_candidates`` +
+    ``_validate_provider_executable``): the well-known install dirs first, then
+    the ambient ``PATH``, accepting the user's own install (Homebrew included)
+    while refusing a binary owned by another user, a world-writable one, or one
+    inside the agent-writable project/workspace tree. Set
+    ``KIROCREW_ISSUE_RADAR_GH`` to an absolute path to override (still
+    validated), or ``KIROCREW_PROVIDER_BIN_STRICT=1`` to require a root-owned
+    ``gh``. Raises :class:`GhSetupError` if no acceptable executable is found."""
     global _gh_bin_cache
     if _gh_bin_cache:
         return _gh_bin_cache
@@ -152,9 +153,8 @@ def _gh_bin() -> str:
         )
 
     from kiro_crew.dashboard.handlers.source_providers import (
-        _PROVIDER_EXECUTABLE_CANDIDATES,
-        _PROVIDER_EXECUTABLE_DIRS,
         _validate_provider_executable,
+        provider_executable_candidates,
     )
 
     # Operator override — still validated.
@@ -165,30 +165,33 @@ def _gh_bin() -> str:
             _gh_bin_cache = validated
             return validated
         except (ValueError, OSError) as exc:
-            # A host-setup problem the user must fix (wrong path, symlinked or
-            # user-owned binary), not a transient API failure — surface it as a
+            # A host-setup problem the user must fix (wrong path, a binary owned
+            # by another user), not a transient API failure — surface it as a
             # GhSetupError so the connect dialog offers instructions.
             raise GhSetupError(
                 f"KIROCREW_ISSUE_RADAR_GH={override!r} failed validation: {exc}",
                 reason="not_installed",
             ) from exc
 
-    # Resolve from the shared trusted dirs — validate each candidate.
-    for cand in _PROVIDER_EXECUTABLE_CANDIDATES["gh"]:
+    # Well-known install dirs first, then the ambient PATH.
+    last_error = ""
+    for cand in provider_executable_candidates("gh"):
         if not os.path.isfile(cand):
             continue
         try:
             validated = _validate_provider_executable(cand)
             _gh_bin_cache = validated
             return validated
-        except (ValueError, OSError):
-            continue  # not root-owned or user-writable — skip
+        except (ValueError, OSError) as exc:
+            last_error = str(exc)
+            continue  # untrusted provenance — skip
 
+    detail = f" (last check: {last_error})" if last_error else ""
     raise GhSetupError(
-        "the `gh` CLI was not found in any trusted directory "
-        f"({', '.join(_PROVIDER_EXECUTABLE_DIRS)}), or all candidates failed "
-        "ownership validation; set KIROCREW_ISSUE_RADAR_GH to a root-owned gh "
-        "executable",
+        "the `gh` CLI was not found on this host"
+        f"{detail} — install it (`brew install gh` or your distro's package "
+        "manager) and run `gh auth login`, or set KIROCREW_ISSUE_RADAR_GH to an "
+        "absolute gh path",
         reason="not_installed",
     )
 

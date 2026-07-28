@@ -60,8 +60,13 @@ _PROVIDER_EXECUTABLE_OVERRIDES = {
     "gh": "KIROCREW_GH_BIN",
     "glab": "KIROCREW_GLAB_BIN",
 }
-# Trusted directories searched (in order) for a provider CLI. Shared with
-# Issue Radar's gh resolver (issue_radar/backend/github_client.py) so both
+# Opt-in hardening for shared/multi-tenant hosts: restore the historical rule
+# that a provider CLI must be root-owned and unwritable by the gateway user.
+# Off by default — see _validate_provider_executable for the current policy.
+_STRICT_PROVIDER_BIN_ENV = "KIROCREW_PROVIDER_BIN_STRICT"
+_TRUTHY_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
+# Well-known install dirs searched (in order) before the ambient PATH. Shared
+# with Issue Radar's gh resolver (issue_radar/backend/github_client.py) so both
 # panels accept exactly the same set of gh locations and never drift.
 _PROVIDER_EXECUTABLE_DIRS = (
     "/usr/local/libexec/kirocrew",
@@ -178,14 +183,91 @@ def _path_parents(path: Path) -> list[Path]:
         current = current.parent
 
 
-def _validate_provider_executable(candidate: str) -> str:
-    """Return an agent-unwritable canonical executable path or raise.
+def _strict_provider_bins() -> bool:
+    """True when the operator opted into the root-owned-only provider policy."""
+    return os.environ.get(_STRICT_PROVIDER_BIN_ENV, "").strip().lower() in _TRUTHY_ENV_VALUES
 
-    Provider children receive provider authentication, so ordinary same-user
-    Homebrew/Linuxbrew paths are not a trust boundary. Requiring a canonical,
-    root-owned, non-writable hierarchy makes the validated path stable through
-    ``execve`` against the non-root agent threat model and closes the prior
-    validation-to-execution replacement race.
+
+def _agent_writable_roots() -> tuple[Path, ...]:
+    """Trees the agent itself writes: the active project checkout and the LLM
+    workspace root (worktrees, venvs, scratch files, downloaded repos).
+
+    A provider CLI resolved inside one of these is refused — a repo-planted
+    ``gh`` shim is the substitution vector the model itself controls, and it is
+    the same check codex applies to its own sandbox helper (reject a binary
+    found inside the workspace, accept anything else).
+    """
+    raw_roots = [os.environ.get("KIROCREW_PROJECT_DIR")]
+    try:
+        from kiro_crew.config.loader import workspace_root
+
+        raw_roots.append(str(workspace_root()))
+    except Exception:  # pragma: no cover - config unavailable in isolation
+        logger.debug("workspace root unavailable for provider CLI validation", exc_info=True)
+    roots: list[Path] = []
+    for raw in raw_roots:
+        if not raw:
+            continue
+        try:
+            roots.append(Path(raw).resolve())
+        except OSError:
+            continue
+    return tuple(roots)
+
+
+def _check_provider_path_component(path: Path, *, label: str, uid: int, strict: bool) -> None:
+    """Apply the ownership/permission policy to one path component."""
+    try:
+        path_stat = path.stat()
+    except OSError as exc:
+        raise ValueError("executable hierarchy is not accessible") from exc
+    if strict:
+        if path_stat.st_uid != 0:
+            raise ValueError(f"{label} is not root-owned")
+        if path_stat.st_mode & (stat.S_IWGRP | stat.S_IWOTH) or os.access(path, os.W_OK):
+            raise ValueError(f"{label} is writable by the gateway user")
+        return
+    # Relaxed policy: the gateway user's own installs are fine; a binary owned
+    # by a third account or writable by the whole host is not.
+    if path_stat.st_uid not in (0, uid):
+        raise ValueError(f"{label} is owned by another user (uid {path_stat.st_uid})")
+    if path_stat.st_mode & stat.S_IWOTH:
+        # A world-writable DIRECTORY is tolerated when it is sticky (`/tmp`,
+        # 1777): only the owner may replace an entry, so the uid check above
+        # still decides. Without the sticky bit any local account can swap the
+        # entry out, and a world-writable FILE can be rewritten in place.
+        if not (stat.S_ISDIR(path_stat.st_mode) and path_stat.st_mode & stat.S_ISVTX):
+            raise ValueError(f"{label} is world-writable")
+
+
+def _validate_provider_executable(candidate: str) -> str:
+    """Return the canonical path of a provider CLI we will run, or raise.
+
+    Default policy — *if `gh` works in your terminal, it works here*. Any
+    executable the gateway user could run interactively is accepted, including
+    the ordinary user-owned Homebrew/Linuxbrew/asdf installs: requiring a
+    root-owned copy made every stock ``brew install gh`` fail and pushed users
+    into a ``sudo cp`` ritual for a CLI they had already installed and
+    authenticated. What stays refused is provenance the user did not choose:
+
+    * a binary (or parent dir) owned by another unprivileged account,
+    * anything world-writable, e.g. a ``/tmp`` shim (a world-writable *directory*
+      is tolerated only when sticky, where the owner check still decides),
+    * anything inside the agent's project checkout or workspace root, the one
+      substitution vector the model itself controls (``_agent_writable_roots``).
+
+    Provider children still receive only the minimal, provider-scoped env built
+    by ``_provider_env`` (no AWS/Slack/gateway secrets, no inherited PATH), and
+    every spawn is SEL-audited — containment and audit carry the trust boundary
+    instead of binary provenance.
+
+    A gateway running as **root** is refused outright, in both modes: every
+    process it spawns (including the agent's own shell) would be root too, which
+    makes the ownership and agent-tree checks vacuous.
+
+    Set ``KIROCREW_PROVIDER_BIN_STRICT=1`` on shared or multi-tenant hosts to
+    restore the previous rule: canonical, symlink-free, root-owned and
+    unwritable by the gateway user through every parent.
     """
     if not os.path.isabs(candidate):
         raise ValueError("path must be absolute")
@@ -195,39 +277,110 @@ def _validate_provider_executable(candidate: str) -> str:
         raise ValueError("filesystem ownership checks are unavailable")
     if geteuid() == 0:
         raise ValueError("provider execution is disabled for a root gateway")
+    strict = _strict_provider_bins()
 
     original = Path(candidate)
     try:
         resolved = original.resolve(strict=True)
     except OSError as exc:
         raise ValueError("path does not exist") from exc
-    if original != resolved:
+    if strict and original != resolved:
         raise ValueError("path must be canonical and contain no symlinks")
 
-    checked = [resolved, *_path_parents(resolved)]
-    for index, path in enumerate(checked):
+    try:
+        if not stat.S_ISREG(resolved.stat().st_mode):
+            raise ValueError("path is not a regular file")
+    except OSError as exc:
+        raise ValueError("executable hierarchy is not accessible") from exc
+    if not os.access(resolved, os.X_OK):
+        raise ValueError("file is not executable")
+
+    if not strict:
+        for root in _agent_writable_roots():
+            if resolved == root or root in resolved.parents:
+                raise ValueError(f"executable is inside the agent-writable tree {root}")
+
+    uid = geteuid()
+    _check_provider_path_component(resolved, label="executable", uid=uid, strict=strict)
+    # A symlink's own directory chain is part of the provenance too (relaxed
+    # mode allows symlinks, so /opt/homebrew/bin gets checked as well).
+    parents = list(_path_parents(resolved))
+    if not strict and original != resolved:
+        parents += [p for p in _path_parents(original) if p not in parents]
+    for parent in parents:
         try:
-            path_stat = path.stat()
+            if not stat.S_ISDIR(parent.stat().st_mode):
+                raise ValueError("executable parent is not a directory")
         except OSError as exc:
             raise ValueError("executable hierarchy is not accessible") from exc
-        if index == 0:
-            if not stat.S_ISREG(path_stat.st_mode):
-                raise ValueError("path is not a regular file")
-            if not os.access(path, os.X_OK):
-                raise ValueError("file is not executable")
-        elif not stat.S_ISDIR(path_stat.st_mode):
-            raise ValueError("executable parent is not a directory")
-        if path_stat.st_uid != 0:
-            label = "executable" if index == 0 else "executable parent"
-            raise ValueError(f"{label} is not root-owned")
-        if path_stat.st_mode & (stat.S_IWGRP | stat.S_IWOTH) or os.access(path, os.W_OK):
-            label = "executable" if index == 0 else "executable parent"
-            raise ValueError(f"{label} is writable by the gateway user")
+        _check_provider_path_component(parent, label="executable parent", uid=uid, strict=strict)
     return str(resolved)
 
 
+def provider_executable_candidates(executable: str) -> tuple[str, ...]:
+    """Absolute paths to try for *executable*, in resolution order.
+
+    The well-known install dirs come first (a managed root-owned copy still
+    wins when one exists), then every ``PATH`` hit — so the install the user
+    already runs from their terminal is found even when it lives somewhere this
+    module has never heard of (asdf, mise, ``~/.local/bin``). ``PATH`` is not
+    consulted in strict mode, which by definition only trusts system dirs.
+    """
+    ordered: dict[str, None] = dict.fromkeys(_PROVIDER_EXECUTABLE_CANDIDATES.get(executable, ()))
+    if not _strict_provider_bins():
+        for entry in (os.environ.get("PATH") or "").split(os.pathsep):
+            if not entry:
+                continue
+            found = os.path.join(entry, executable)
+            if os.path.isfile(found) and os.access(found, os.X_OK):
+                ordered.setdefault(os.path.abspath(found), None)
+    return tuple(ordered)
+
+
+def _provider_setup_message(executable: str, override_name: str, last_error: str) -> str:
+    """User-facing guidance when no acceptable provider CLI was found."""
+    provider = "GitHub" if executable == "gh" else "GitLab"
+    detail = f"\nLast check reported: {last_error}.\n" if last_error else ""
+    if _strict_provider_bins():
+        managed_dir = os.path.dirname(_PROVIDER_EXECUTABLE_CANDIDATES[executable][0])
+        return (
+            f"Can't load pull requests: {_STRICT_PROVIDER_BIN_ENV} is set, so this "
+            f"host only accepts a root-owned {executable}.\n"
+            "\n"
+            f"  sudo mkdir -p {managed_dir}\n"
+            f'  sudo cp "$(command -v {executable})" {managed_dir}/{executable}\n'
+            f"  sudo chown -R root {managed_dir}\n"
+            f"  sudo chmod 755 {managed_dir}/{executable}\n"
+            f"{detail}"
+            "\n"
+            f"You won't have to sign in again -- your existing "
+            f"`{executable} auth login` credentials are reused automatically.\n"
+            "\n"
+            f"Alternative: point {override_name} at an already-trusted, absolute "
+            f"{executable} path, or unset {_STRICT_PROVIDER_BIN_ENV}."
+        )
+    return (
+        f"Can't load pull requests: the {provider} CLI ({executable}) isn't "
+        "available to the KiroCrew gateway.\n"
+        "\n"
+        "Install it and sign in, then click Retry:\n"
+        "\n"
+        f"  brew install {executable}      # or your distro's package manager\n"
+        f"  {executable} auth login\n"
+        f"{detail}"
+        "\n"
+        f"Already installed? The gateway searches the standard install dirs plus "
+        f"its own PATH and accepts your own {executable} -- Homebrew included. It "
+        "still refuses one owned by another user, one that is world-writable, and "
+        "one inside your project or workspace tree, since the agent can write "
+        "there.\n"
+        "\n"
+        f"Alternative: point {override_name} at an absolute {executable} path."
+    )
+
+
 def _resolve_provider_executable(executable: str) -> str:
-    """Resolve gh/glab without consulting the mutable process PATH."""
+    """Resolve gh/glab: explicit override, well-known install dirs, then PATH."""
     if executable not in _PROVIDER_EXECUTABLE_CANDIDATES:
         raise SourceProviderError("unsupported provider command")
     override_name = _PROVIDER_EXECUTABLE_OVERRIDES[executable]
@@ -240,37 +393,18 @@ def _resolve_provider_executable(executable: str) -> str:
                 f"{override_name} is not a trusted executable: {exc}"
             ) from exc
 
-    for candidate in _PROVIDER_EXECUTABLE_CANDIDATES[executable]:
+    last_error = ""
+    for candidate in provider_executable_candidates(executable):
         try:
             return _validate_provider_executable(candidate)
-        except ValueError:
+        except ValueError as exc:
+            message = str(exc)
+            # "does not exist" is noise on a host that simply lacks that dir;
+            # keep the most informative rejection for the setup message.
+            if message != "path does not exist":
+                last_error = message
             continue
-    provider = "GitHub" if executable == "gh" else "GitLab"
-    managed_dir = os.path.dirname(_PROVIDER_EXECUTABLE_CANDIDATES[executable][0])
-    raise SourceProviderError(
-        f"Can't load pull requests: the {provider} CLI ({executable}) isn't "
-        f"installed in a location this panel trusts.\n"
-        "\n"
-        f"To fix this, copy your existing {executable} into a trusted location "
-        "(needs sudo), then click Retry:\n"
-        "\n"
-        f"  sudo mkdir -p {managed_dir}\n"
-        f'  sudo cp "$(command -v {executable})" {managed_dir}/{executable}\n'
-        f"  sudo chown -R root {managed_dir}\n"
-        f"  sudo chmod 755 {managed_dir}/{executable}\n"
-        "\n"
-        f"You won't have to sign in again -- your existing "
-        f"`{executable} auth login` credentials are reused automatically.\n"
-        "\n"
-        f"Why sudo? This panel runs {executable} unattended with your "
-        f"{provider} credentials, so -- unlike chat or your terminal -- it only "
-        f"accepts a root-owned {executable} your user cannot write. A Homebrew "
-        "or otherwise user-owned copy is intentionally refused here, even "
-        "though it works elsewhere.\n"
-        "\n"
-        f"Alternative: point {override_name} at an already-trusted, absolute "
-        f"{executable} path."
-    )
+    raise SourceProviderError(_provider_setup_message(executable, override_name, last_error))
 
 
 @dataclass(frozen=True)

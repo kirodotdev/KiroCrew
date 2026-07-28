@@ -2491,17 +2491,47 @@ async def test_fetch_pr_head_oid_refuses_non_merged(monkeypatch):
 
 
 def test_trusted_bin_rejects_agent_writable_path(monkeypatch, tmp_path):
-    """Bare command names resolve only inside root-owned system dirs; a
-    planted shim in an agent-writable PATH entry is never selected."""
+    """Bare command names resolve only inside the trusted bin dirs; a planted
+    shim in an agent-writable PATH entry is never selected."""
     mod._TRUSTED_BIN_CACHE.clear()
     fake = tmp_path / "git"
     fake.write_text("#!/bin/sh\necho pwned\n")
     fake.chmod(0o755)
     monkeypatch.setenv("PATH", f"{tmp_path}:/usr/bin:/bin")
     resolved = mod._trusted_bin("git")
-    assert resolved is not None and resolved.startswith(("/usr/", "/bin"))
+    assert resolved is not None and resolved.startswith(("/usr/", "/bin", "/opt/homebrew/"))
     mod._TRUSTED_BIN_CACHE.clear()
     assert mod._trusted_bin("definitely-not-a-real-tool-xyz") is None
+    mod._TRUSTED_BIN_CACHE.clear()
+
+
+@pytest.mark.skipif(mod.platform_compat.IS_WINDOWS, reason="POSIX bin dirs")
+def test_trusted_bin_dirs_cover_homebrew_prefixes():
+    """A `gh`/`git` the user installed with Homebrew must be reachable: without
+    the brew prefixes Dev Fleet could not find gh at all on a stock macOS host
+    (only Xcode's /usr/bin/git), and its PATH pin excluded them too."""
+    assert "/opt/homebrew/bin" in mod._TRUSTED_BIN_DIRS
+    assert "/home/linuxbrew/.linuxbrew/bin" in mod._TRUSTED_BIN_DIRS
+    assert "/opt/homebrew/bin" in mod._TRUSTED_PATH.split(os.pathsep)
+
+
+@pytest.mark.skipif(mod.platform_compat.IS_WINDOWS, reason="POSIX symlink layout")
+def test_trusted_bin_pins_the_resolved_target_not_the_symlink(monkeypatch, tmp_path):
+    """Homebrew's `bin/gh` is a user-writable symlink into `Cellar/`. Caching the
+    LINK would let it be repointed between validation and execution, so the
+    vetted real path is what gets cached and spawned."""
+    mod._TRUSTED_BIN_CACHE.clear()
+    cellar = tmp_path / "Cellar" / "gh" / "1.0" / "bin"
+    cellar.mkdir(parents=True)
+    target = cellar / "gh"
+    target.write_text("#!/bin/sh\nexit 0\n")
+    target.chmod(0o555)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "gh").symlink_to(target)
+    monkeypatch.setattr(mod, "_TRUSTED_BIN_DIRS", (str(bin_dir),))
+
+    assert mod._trusted_bin("gh") == str(target.resolve())
     mod._TRUSTED_BIN_CACHE.clear()
 
 
