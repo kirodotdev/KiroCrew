@@ -1,0 +1,70 @@
+# Dependency License Gate — configuration
+# Consumed by .github/workflows/dependency-review.yml (actions/dependency-review-action).
+#
+# MODEL: default-deny. Only the SPDX licenses in `allow-licenses` below are
+# permitted on any dependency ADDED or CHANGED by a PR. Everything else fails
+# the "Dependency License Gate" check. This keeps the Apache-2.0 distribution
+# clean: a new dependency under a copyleft or non-commercial license cannot
+# slip in unnoticed.
+#
+# We intentionally use ONLY `allow-licenses` (not `deny-licenses`) — the action
+# rejects setting both, and an allowlist is the safer clean-room posture.
+#
+# ── OVERRIDES (two layers, for unknown / mis-detected / manually-vetted deps) ──
+# GitHub's license detection is heuristic: some packages report no license
+# (surfaced as "unknown" — the action lists them but does NOT auto-fail), and
+# some are mis-classified (e.g. a genuinely-MIT package tagged otherwise).
+#
+#   1. Durable, per-package (audited in git): add the package to
+#      `allow-dependencies-licenses` below with a comment stating the real
+#      license and the evidence (link to the package's LICENSE file). This is
+#      the right home for a permanent, reviewed exception.
+#
+#   2. One-off, per-commit (maintainer judgement): apply the `license-override`
+#      label. Only triage/write users can label, so it is a maintainer-gated
+#      escape hatch. The bypass is honored only for the commit that was present
+#      when the label was applied — any new push re-runs the gate, so re-apply
+#      the label to approve a later commit. The bypass is recorded in the job
+#      summary. Use this for a time-boxed decision you don't want in the config.
+
+# SPDX identifiers are case-sensitive and must match exactly.
+# Dual-licensed deps (e.g. "MIT OR Apache-2.0") pass if ANY term is allowed.
+allow-licenses:
+  # Public-domain-equivalent / ultra-permissive
+  - 0BSD
+  - CC0-1.0
+  - Unlicense
+  - WTFPL
+  # Permissive (Apache-2.0-compatible, no copyleft)
+  - Apache-2.0
+  - BSD-2-Clause
+  - BSD-3-Clause
+  - BSD-3-Clause-Clear
+  - BlueOak-1.0.0
+  - ISC
+  - MIT
+  - MIT-0
+  - PostgreSQL
+  - Python-2.0
+  - Zlib
+  # Weak / file-level copyleft — safe to CONSUME as a dependency without
+  # infecting first-party Apache-2.0 code (per-file obligation only).
+  - MPL-2.0
+  - Artistic-2.0
+
+# Per-package exceptions (override layer 1). Format: Package-URL (purl).
+#   pip:   pkg:pypi/<name>
+#   npm:   pkg:npm/<name>              scoped: pkg:npm/%40scope/name
+# Add a comment with the real license + evidence for every entry.
+allow-dependencies-licenses: []
+  # Example — package ships MIT but GitHub reports "unknown":
+  # - pkg:pypi/example-lib            # MIT — see https://github.com/org/example-lib/blob/main/LICENSE
+
+# License gate only — vulnerability scanning is covered separately by the
+# Dependency Audit / Semgrep / CodeQL jobs, so we don't duplicate it here.
+license-check: true
+vulnerability-check: false
+
+# Post a summary comment on the PR only when the gate fails (best-effort;
+# skipped automatically on fork PRs whose token is read-only).
+comment-summary-in-pr: on-failure
