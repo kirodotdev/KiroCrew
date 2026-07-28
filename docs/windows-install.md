@@ -90,11 +90,12 @@ that dir is appended to the MCP spawn `PATH` automatically
 | MCP tool probing / `Discover & Sync` inventory | first-party (`kirocrew-cron`, `kirocrew-core`) works; third-party servers cannot be probed (they need the POSIX OS-level sandbox and fail closed). The tools themselves still run — kiro-cli spawns them, and registration never gated on probe status |
 | Pull-request source drawer provider fetch/check/resolve | not yet — provider CLIs require the POSIX OS-level sandbox and fail closed with a clear unsupported response |
 | Browser automation (Playwright MCP) | works (installed via `npm`/`npx @playwright/mcp`) |
-| Vector memory / embeddings | via a **remote embedding endpoint or Docker**; local Ollama auto-install is not yet supported |
+| Vector memory / embeddings | works natively — the vendored llama-cpp-python (`_vendor/llama_cpp_libs/win_amd64`) loads the Qwen3 GGUF in-process; no Ollama, remote endpoint, or Docker needed |
 | STT (whisper / optional cloud transcription) | works |
 | Voice reply (Piper TTS) | not yet — upstream rhasspy/piper ships no Windows binary; Polly (optional) works if the `aws` CLI is present |
 | SSH tunnel (`kirocrew cloud` remote dashboard) | not yet — needs the OpenSSH client on `PATH` and a signal-handling audit |
 | MCP gateway (opt-in, OFF by default) | not yet — the AF_UNIX socket + `SO_PEERCRED` peer check are POSIX-only |
+| App backends / App Store install | not yet — app spawn needs the POSIX OS-level sandbox; stale-orphan reaping additionally needs `ps` and fails safe (orphans leak, nothing mis-killed) |
 
 The not-yet items are tracked as Windows feature-parity follow-ups.
 
@@ -154,6 +155,39 @@ has always applied to `kiro-cli` on Windows:
 A native Windows confinement backend (AppContainer / restricted token / job
 object) is not implemented.
 
+## Process signalling: `os.kill(pid, 0)` is destructive on Windows
+
+CPython maps `os.kill(pid, sig)` onto `TerminateProcess(handle, sig)` for most
+signals — but **signal 0 is `CTRL_C_EVENT` on Windows**, so `os.kill(pid, 0)`
+takes the other branch and calls `GenerateConsoleCtrlEvent(CTRL_C_EVENT, pid)`,
+delivering a real Ctrl+C to the console process group identified by `pid`.
+Either way the idiomatic POSIX liveness probe is **not** a probe here: it
+signals instead of asking, tells you nothing reliable about whether the pid
+exists, and fails outright when `pid` is not a console group id. The signal
+lands on whatever currently owns that pid, so a stale or recycled pid can take
+an unrelated process group down.
+
+Always route liveness through the shim: `platform_compat.pid_exists(pid)`
+(`OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` on Windows), or
+`pid_liveness(pid)` when you must distinguish EPERM/unsignalable from dead. Both
+preserve the POSIX semantics callers depend on, including "EPERM means the
+process exists but is not signallable by us — alive, not gone".
+
+`test/test_windows_kill_probe_audit.py` is an AST tripwire that fails on any new
+raw signal-0 probe under `src/kiro_crew`. Sites that genuinely cannot execute on
+Windows go in its `GATED_PROBES` allowlist with a justification, and a second
+test rejects stale allowlist entries so an exemption cannot outlive the code it
+covered.
+
+Related gap found by that audit: **app-backend stale-orphan reaping never runs on
+Windows.** Its PID-reuse guard calls `apps/backend.py:_proc_start_time`, which
+reads `/proc/<pid>/stat` on Linux and otherwise shells `ps` — absent on Windows —
+so it returns `None` and the reap loop always declines to act. This **fails safe**
+(an orphaned app backend leaks rather than the wrong process being signalled).
+Giving `_proc_start_time` a Windows implementation is the fix; it must land
+together with a shim-routed liveness probe, because that `None` was the only
+thing keeping the raw probe below it unreachable.
+
 ## Secret-at-rest posture on Windows
 
 Files under `%USERPROFILE%\.kiro\crew` that hold auth material — the token
@@ -178,11 +212,13 @@ under NTFS.
 - **"Python was not found" (Microsoft Store)** — a bare `python`/`python3` was
   resolving the Store alias stub; install a real CPython and ensure it precedes
   the stub on `PATH`.
-- **`kirocrew stop` reports "No KiroCrew gateway currently running" on a
-  non-English Windows** — `find_listening_pids` matches the `netstat` state
-  against the wildcard foreign address and the literal English `LISTENING`;
-  some localized Windows editions emit translated state names. Workaround:
-  `netstat -ano | findstr :5476` to find the PID and `taskkill /F /PID <pid>`.
+- **`kirocrew stop` reports "No KiroCrew gateway currently running"** — fixed for
+  localized Windows. `find_listening_pids` no longer matches the literal English
+  `LISTENING` state (which some localized editions translate, e.g. `ABHÖREN` on
+  German Windows); it identifies a listener by its **wildcard foreign address**
+  (`0.0.0.0:0` / `[::]:0`), which is locale-independent, and keeps the English
+  literal only as a defensive second signal. If stop still finds nothing:
+  `netstat -ano | findstr :5476` to find the PID, then `taskkill /F /PID <pid>`.
 - **Model picker shows only "Auto"** — fixed. `GET /api/models` shells `kiro-cli
   chat --list-models` and used to wrap it at `wrap_argv`'s hardcoded `"auto"`
   tier, which demands an OS-level sandbox backend; Windows has none, so the wrap
