@@ -526,6 +526,29 @@ def _stop(cli_port: int | None = None) -> None:
 _KIROCREW_SERVER_SUBCOMMANDS = frozenset({"gateway", "dashboard", "start"})
 
 
+def _basename_stem(tok: str) -> str:
+    """Basename of *tok* without a Windows ``.exe`` suffix.
+
+    Lets the venv launchers ``python.exe`` / ``kirocrew.exe`` match the same
+    checks as their POSIX ``python`` / ``kirocrew`` counterparts. ``shlex.split``
+    with ``posix=False`` leaves quotes on some tokens, so strip them too.
+
+    Split on BOTH separators explicitly rather than via ``os.path.basename``:
+    that is host-dependent (``posixpath`` on Linux does NOT split backslashes),
+    so a Windows cmdline classified on the Linux CI fleet would keep its full
+    ``D:\\...\\kirocrew.exe`` path and never match. This is host-independent — a
+    basename is whatever follows the last ``/`` or ``\\``.
+
+    Module scope rather than nested in :func:`_args_look_like_kirocrew` so
+    :func:`_own_console_script` shares the one definition.
+    """
+    cleaned = tok.strip('"')
+    base = cleaned.replace("\\", "/").rsplit("/", 1)[-1]
+    if base.lower().endswith(".exe"):
+        base = base[:-4]
+    return base
+
+
 def _args_look_like_kirocrew(args: str) -> bool:
     """Return ``True`` if a process command-line *args* string is a KiroCrew server.
 
@@ -570,23 +593,6 @@ def _args_look_like_kirocrew(args: str) -> bool:
         tokens = shlex.split(args, posix=not platform_compat.IS_WINDOWS)
     except ValueError:
         tokens = args.split()
-
-    def _basename_stem(tok: str) -> str:
-        # Basename without a Windows ``.exe`` suffix, so the venv launchers
-        # ``python.exe`` / ``kirocrew.exe`` match the same checks as their POSIX
-        # ``python`` / ``kirocrew`` counterparts. posix=False leaves quotes on
-        # some tokens, so strip them too.
-        #
-        # Split on BOTH separators explicitly rather than os.path.basename:
-        # os.path.basename is host-dependent (posixpath on Linux does NOT split
-        # backslashes), so a Windows cmdline classified on the Linux CI fleet
-        # would keep its full ``D:\...\kirocrew.exe`` path and never match. This
-        # is host-independent — a basename is whatever follows the last / or \.
-        cleaned = tok.strip('"')
-        base = cleaned.replace("\\", "/").rsplit("/", 1)[-1]
-        if base.lower().endswith(".exe"):
-            base = base[:-4]
-        return base
 
     for index, token in enumerate(tokens):
         # --- Module form: "<python> -m kiro_crew <subcmd>" / "-m kiro_crew.<subcmd>"
@@ -655,6 +661,52 @@ def _pid_exited(pid: int) -> bool:
     return not platform_compat.pid_exists(pid)
 
 
+def _own_console_script() -> str | None:
+    """Absolute path of the console script *this* CLI process was invoked as.
+
+    Returns ``None`` unless ``sys.argv[0]`` is an existing executable file
+    basenamed ``kirocrew``.
+
+    :func:`_spawn_detached_gateway` prefers this over ``shutil.which("kirocrew")``
+    so a restart replaces the gateway with the *same* entry point that asked for
+    the restart. ``which`` returns whatever ``kirocrew`` sits earliest on
+    ``PATH``, which is not necessarily this one: a downstream edition composes
+    this core behind its own ``[project.scripts]`` entry point of the same name,
+    so an editable install of the stock core in another interpreter (mise, a
+    stray venv) shadows it. Respawning that one starts a gateway with different
+    composed providers than the one just stopped — a silent edition downgrade,
+    from a command whose only job was to restart what was already running.
+
+    ``which`` remains the fallback for invocations whose argv[0] is not a script
+    path (``python -m kiro_crew restart``, a frozen bundle, a launcher that
+    rewrites argv).
+    """
+    argv0 = sys.argv[0] if sys.argv else ""
+    if not argv0 or _basename_stem(argv0) != "kirocrew":
+        return None
+    path = Path(argv0)
+    if not path.is_absolute():
+        # argv[0] may be a bare name found on PATH ("kirocrew") or a relative
+        # path; resolve it the way the shell did.
+        resolved = shutil.which(argv0)
+        if not resolved:
+            return None
+        # MUST be absolutized. ``shutil.which`` returns an argument that already
+        # has a directory component *unchanged*, so ``.venv/bin/kirocrew``
+        # (a `cd ~/checkout && .venv/bin/kirocrew restart` invocation) comes back
+        # still relative. :func:`_spawn_detached_gateway` passes ``cwd=$HOME`` to
+        # ``Popen``, which chdirs the child BEFORE exec, so a relative program
+        # path would resolve under ``$HOME`` and raise ``FileNotFoundError`` —
+        # after ``_stop()`` has already SIGTERMed the gateway, leaving nothing
+        # running. ``absolute()`` and not ``resolve()``: prepending the cwd is the
+        # whole fix, while following symlinks could exec under a different
+        # basename than the one the user invoked.
+        path = Path(resolved).absolute()
+    if not path.is_file() or not os.access(path, os.X_OK):
+        return None
+    return str(path)
+
+
 def _spawn_detached_gateway(port: int | None = None) -> int:
     """Spawn a detached ``kirocrew gateway`` so the calling shell returns.
 
@@ -667,9 +719,12 @@ def _spawn_detached_gateway(port: int | None = None) -> int:
       ``~/.kirocrew/gateway.log`` (same file the existing ``logs``
       command tails for foreground gateways), so the user has one
       place to look regardless of how the gateway was started.
-    - Resolves ``kirocrew`` via ``shutil.which`` first, falling back
-      to ``sys.executable -m kiro_crew`` so editable/source-tree dev
-      installs also work without a global ``kirocrew`` symlink.
+    - Resolves the console script this CLI was invoked as
+      (:func:`_own_console_script`) first, so a restart respawns the
+      *same* ``kirocrew`` rather than whichever one happens to sit
+      earliest on ``PATH``; then ``shutil.which("kirocrew")``, falling
+      back to ``sys.executable -m kiro_crew`` so editable/source-tree
+      dev installs also work without a global ``kirocrew`` symlink.
     - Closes all inherited file descriptors so it does not pin sockets
       or pipes from the parent CLI process.
     - Binds *port* when given (``--port N``).
@@ -691,7 +746,7 @@ def _spawn_detached_gateway(port: int | None = None) -> int:
     # one log file. The fd is owned by the child after Popen returns.
     log_fh = open(log_path, "a", encoding="utf-8")  # noqa: SIM115
 
-    bin_path = shutil.which("kirocrew")
+    bin_path = _own_console_script() or shutil.which("kirocrew")
     if bin_path:
         argv: list[str] = [bin_path, "gateway"]
     else:

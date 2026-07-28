@@ -1988,6 +1988,98 @@ class TestRestart:
         # a detached terminal would block the new gateway.
         assert kw["stdin"] == subprocess.DEVNULL
 
+    def test_spawn_detached_gateway_prefers_own_console_script(self, tmp_path, monkeypatch):
+        # Two `kirocrew` scripts can exist at once — an edition composes this
+        # core behind an entry point of the same name, and a stock editable
+        # install in another interpreter puts a second one on PATH. A restart
+        # must respawn the one that was invoked, not whichever which() finds
+        # first, or the replacement gateway composes different providers than
+        # the one just stopped.
+        from kiro_crew.cli_server import _spawn_detached_gateway
+
+        monkeypatch.setattr("kiro_crew.cli_server.config_dir", lambda: tmp_path)
+        own = tmp_path / "kirocrew"
+        own.write_text("#!/bin/sh\n")
+        own.chmod(0o755)
+        monkeypatch.setattr(sys, "argv", [str(own), "restart"])
+        proc = MagicMock(pid=7777)
+        with (
+            patch("shutil.which", return_value="/usr/local/bin/kirocrew"),
+            patch("kiro_crew.cli_server.subprocess.Popen", return_value=proc) as mock_popen,
+        ):
+            _spawn_detached_gateway()
+        assert mock_popen.call_args.args[0] == [str(own), "gateway"]
+
+    def test_spawn_detached_gateway_ignores_non_kirocrew_argv0(self, tmp_path, monkeypatch):
+        # argv[0] is only trusted when it names the kirocrew console script.
+        # Anything else (a test runner, a wrapper, `python -m kiro_crew restart`)
+        # must fall through to the documented which()/module resolution.
+        from kiro_crew.cli_server import _spawn_detached_gateway
+
+        monkeypatch.setattr("kiro_crew.cli_server.config_dir", lambda: tmp_path)
+        other = tmp_path / "pytest"
+        other.write_text("#!/bin/sh\n")
+        other.chmod(0o755)
+        monkeypatch.setattr(sys, "argv", [str(other), "restart"])
+        proc = MagicMock(pid=6666)
+        with (
+            patch("shutil.which", return_value="/usr/local/bin/kirocrew"),
+            patch("kiro_crew.cli_server.subprocess.Popen", return_value=proc) as mock_popen,
+        ):
+            _spawn_detached_gateway()
+        assert mock_popen.call_args.args[0] == ["/usr/local/bin/kirocrew", "gateway"]
+
+    def test_spawn_detached_gateway_ignores_missing_argv0_path(self, tmp_path, monkeypatch):
+        # Fails closed on a correctly-named but non-existent argv[0] (frozen
+        # bundles and some launchers rewrite it), rather than handing Popen a
+        # path that cannot be executed.
+        from kiro_crew.cli_server import _spawn_detached_gateway
+
+        monkeypatch.setattr("kiro_crew.cli_server.config_dir", lambda: tmp_path)
+        monkeypatch.setattr(sys, "argv", [str(tmp_path / "ghost" / "kirocrew"), "restart"])
+        proc = MagicMock(pid=5555)
+        with (
+            patch("shutil.which", return_value="/usr/local/bin/kirocrew"),
+            patch("kiro_crew.cli_server.subprocess.Popen", return_value=proc) as mock_popen,
+        ):
+            _spawn_detached_gateway()
+        assert mock_popen.call_args.args[0] == ["/usr/local/bin/kirocrew", "gateway"]
+
+    def test_spawn_detached_gateway_absolutizes_relative_argv0(self, tmp_path, monkeypatch):
+        # Regression: `cd ~/checkout && .venv/bin/kirocrew restart`. shutil.which()
+        # returns an argument that already has a directory component *unchanged*,
+        # so it stays relative — and Popen gets cwd=$HOME, which chdirs the child
+        # before exec, so a relative program path resolves under $HOME and raises
+        # FileNotFoundError with no gateway running (_stop() already killed it).
+        # Deliberately exercises the real which() rather than patching it.
+        from kiro_crew.cli_server import _spawn_detached_gateway
+
+        monkeypatch.setattr("kiro_crew.cli_server.config_dir", lambda: tmp_path)
+        # Use the real per-platform venv console-script layout: `bin/kirocrew` on
+        # POSIX, `Scripts\kirocrew.exe` on Windows. shutil.which() only accepts a
+        # directory-qualified argument on Windows with a PATHEXT extension
+        # attached, so an extensionless name there would miss and fall through to
+        # the which()/module chain instead of exercising this path.
+        if sys.platform == "win32":
+            venv_bin = tmp_path / ".venv" / "Scripts"
+            script_name = "kirocrew.exe"
+        else:
+            venv_bin = tmp_path / ".venv" / "bin"
+            script_name = "kirocrew"
+        venv_bin.mkdir(parents=True)
+        own = venv_bin / script_name
+        own.write_text("#!/bin/sh\n")
+        own.chmod(0o755)
+        monkeypatch.chdir(tmp_path)
+        rel = os.path.join(".venv", venv_bin.name, script_name)
+        monkeypatch.setattr(sys, "argv", [rel, "restart"])
+        proc = MagicMock(pid=4444)
+        with patch("kiro_crew.cli_server.subprocess.Popen", return_value=proc) as mock_popen:
+            _spawn_detached_gateway()
+        spawned = Path(mock_popen.call_args.args[0][0])
+        assert spawned.is_absolute()
+        assert spawned.resolve() == own.resolve()
+
     def test_spawn_detached_gateway_falls_back_to_python_m(self, tmp_path, monkeypatch):
         # Dev/Brazil-workspace installs may not have ``kirocrew`` on
         # PATH globally. Fall back to ``python -m kiro_crew`` so the
