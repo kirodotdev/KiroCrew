@@ -93,7 +93,46 @@ Compose a clean title and markdown body from the conversation. Structure:
 
 Show the draft to the user for confirmation before submitting.
 
-### 5. Submit — Offer Three Options
+### 5. Pick Labels From the Repo's Live List
+
+**Never hard-code the label vocabulary here.** Read it from the repository at
+submit time, so labels added later are picked up without editing this skill:
+
+```bash
+gh label list --repo kirodotdev/KiroCrew --limit 100
+```
+
+Choose from what that command returns:
+
+- **Exactly one type label** — the defect label for bug reports, the feature
+  label for requests. These are mutually exclusive; never apply both.
+- **At most one label per prefixed grouping dimension** (e.g. a component
+  dimension, an OS dimension) when one clearly matches. Apply an OS label only
+  when the issue is genuinely specific to that OS — cross-platform issues get
+  none.
+- If no value in a dimension fits, **leave that dimension off**. An unlabeled
+  dimension is better than a wrong one, and some issues legitimately belong to
+  no component.
+
+Rules:
+
+- **Never create a new label.** If the right value does not exist, mention the
+  gap to the user and submit without it — extending the taxonomy is a maintainer
+  decision, not a side effect of filing an issue.
+- **Do not apply automation-owned or triage-owned labels** — review/readiness
+  process markers, severity or release-blocking markers, and follow-up or
+  blocked markers. A freshly filed request has no way to know those apply, and
+  the workflows that own them will set them.
+
+Collect the chosen names for the submit step below.
+
+If `gh` is unavailable or unauthenticated, `gh label list` fails and you cannot
+read the taxonomy. Still apply a type label in that case — bug for defects,
+enhancement for feature requests, the two that have always existed — and skip
+the grouping dimensions, which are the part that grows. Do not guess a grouping
+value you could not read.
+
+### 6. Submit — Offer Three Options
 
 Present all three and let the user choose:
 
@@ -102,10 +141,14 @@ Present all three and let the user choose:
 Build a GitHub new-issue URL with query params:
 
 ```
-https://github.com/kirodotdev/KiroCrew/issues/new?title=URL_ENCODED_TITLE&body=URL_ENCODED_BODY&labels=enhancement
+https://github.com/kirodotdev/KiroCrew/issues/new?title=URL_ENCODED_TITLE&body=URL_ENCODED_BODY&labels=URL_ENCODED_LABELS
 ```
 
-Use `enhancement` label for features, `bug` label for bugs.
+`labels=` takes the comma-separated names chosen in step 5. **Percent-encode each
+label name in full**, not just its spaces: an unencoded `&` starts a new query
+param and an unencoded `#` pushes the remainder into the URL fragment, either of
+which silently drops the drafted body from the pre-filled issue. Encode the
+separating comma as `%2C`.
 
 Note: URL-encode the title and body. If the total URL exceeds ~4000 chars,
 warn the user it may be truncated and recommend Option 2.
@@ -134,16 +177,23 @@ TITLE="$(cat "$TITLE_FILE")"
 gh issue create --repo kirodotdev/KiroCrew \
   --title "$TITLE" \
   --body-file "$BODY_FILE" \
-  --label enhancement
+  --label '<type label>' \
+  --label '<grouping label, if one was chosen>'
 ```
+
+Pass one `--label` flag per name chosen in step 5, each **single**-quoted. Label
+names can contain spaces, and single quotes also keep a `$` or backtick in a name
+literal — double quotes would let the shell expand it. Omit the extra flags when
+no grouping label applies.
 
 This requires `gh auth` on the user's machine. If it fails with auth errors,
 fall back to Option 2.
 
 ## Labels
 
-- `enhancement` — feature requests
-- `bug` — bug reports
+Do not maintain a label list in this file — it drifts from the repository. Read
+the live list with `gh label list` (step 5) and follow the selection rules
+there.
 
 ## Guidelines
 
