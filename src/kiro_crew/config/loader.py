@@ -1168,6 +1168,30 @@ class KnowledgeConfig:
             "endpoint or arbitrary host from being fetched.",
         ),
     )
+    auto_discover_folder: bool = field(
+        default=False,
+        metadata=_meta(
+            "Auto-Discover Documents Folder",
+            "Watch for a documents folder inside the active workspace and "
+            "register it as a Knowledge source automatically, so files dropped "
+            "there become searchable without adding the source by hand. The "
+            "folder is never created for you: its absence means you have not "
+            "opted in, and it is picked up within one watcher sweep of being "
+            "created -- no restart needed. Off by default because ingestion "
+            "spends LLM extraction on every supported file in the folder.",
+        ),
+    )
+    auto_discover_dirname: str = field(
+        default="knowledge-docs",
+        metadata=_meta(
+            "Documents Folder Name",
+            "Name of the folder inside the workspace that auto-discovery looks "
+            "for. A single path segment -- separators and traversal are rejected "
+            "so the source cannot be redirected outside the workspace. Avoid "
+            "'knowledge': that is where the Library's own SQLite store lives and "
+            "it always exists, which would defeat discovery.",
+        ),
+    )
 
 
 @dataclass
@@ -3726,6 +3750,10 @@ class KiroCrewConfig:
                     for h in knowledge_data.get("doc_ingest_hosts", [])
                     if isinstance(h, str) and h.strip()
                 ],
+                auto_discover_folder=bool(knowledge_data.get("auto_discover_folder", False)),
+                auto_discover_dirname=str(
+                    knowledge_data.get("auto_discover_dirname", "knowledge-docs")
+                ).strip()[:128],
             ),
             telegram=TelegramConfig(
                 enabled=bool(telegram_data.get("enabled", False)),

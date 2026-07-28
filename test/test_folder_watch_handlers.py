@@ -12,6 +12,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from kiro_crew.dashboard.handlers.knowledge import (
     add_source,
     confirm_source,
+    delete_source,
     list_source_files,
     pause_source,
     rename_source,
@@ -51,6 +52,7 @@ def _make_app(store, watcher=None):
     app.router.add_post("/api/knowledge/sources/{id}/files/retry", retry_file)
     app.router.add_post("/api/knowledge/sources/{id}/files/skip", skip_file)
     app.router.add_patch("/api/knowledge/sources/{id}", rename_source)
+    app.router.add_delete("/api/knowledge/sources/{id}", delete_source)
     return app
 
 
@@ -134,6 +136,47 @@ class TestPauseSource:
         props = json.loads(row["properties"])
         assert props["scan_paused"] is True
         assert row["sync_status"] == "paused"
+
+    @pytest.mark.asyncio
+    async def test_pause_syncs_sync_status_into_properties(self, store, tmp_path):
+        """The watcher's pre-scan skip reads properties["sync_status"], not the
+        column, so a paused folder was still walked every sweep when the JSON
+        copy stayed "active"."""
+        sid = store.add_source(
+            "test", "local_folder", str(tmp_path), properties={"sync_status": "active"},
+        )
+        async with TestClient(TestServer(_make_app(store))) as client:
+            resp = await client.post(f"/api/knowledge/sources/{sid}/pause")
+            assert resp.status == 200
+        row = store.db.execute("SELECT properties FROM sources WHERE id = ?", (sid,)).fetchone()
+        props = json.loads(row["properties"])
+        assert props["sync_status"] == "paused"
+
+
+class TestDeleteSourceDismissal:
+    """Deleting an auto-discovered source must not let it come straight back."""
+
+    @pytest.mark.asyncio
+    async def test_delete_records_dismissal_for_auto_added(self, store, tmp_path):
+        sid = store.add_source(
+            "Workspace Documents", "local_folder", str(tmp_path),
+            properties={"sync_status": "active", "auto_added": True},
+        )
+        async with TestClient(TestServer(_make_app(store))) as client:
+            resp = await client.delete(f"/api/knowledge/sources/{sid}")
+            assert resp.status == 200
+        assert store.is_auto_source_dismissed(str(tmp_path)) is True
+
+    @pytest.mark.asyncio
+    async def test_delete_does_not_dismiss_hand_added(self, store, tmp_path):
+        """A user-registered folder has no discovery loop to resurrect it."""
+        sid = store.add_source(
+            "My Docs", "local_folder", str(tmp_path), properties={"sync_status": "active"},
+        )
+        async with TestClient(TestServer(_make_app(store))) as client:
+            resp = await client.delete(f"/api/knowledge/sources/{sid}")
+            assert resp.status == 200
+        assert store.is_auto_source_dismissed(str(tmp_path)) is False
 
 
 class TestResumeSource:

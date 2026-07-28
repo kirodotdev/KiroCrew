@@ -21,6 +21,7 @@ from kiro_crew.dashboard.handlers.files import _ZIP_CONTAINER_EXTS, _content_mat
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.knowledge.agent_fetch import fetch_url_content
 from kiro_crew.knowledge.artifact_ingest import ArtifactKnowledgeSync
+from kiro_crew.knowledge.autosource import AUTO_ADDED_PROP
 from kiro_crew.knowledge.chunker import HeadingAwareChunker
 from kiro_crew.knowledge.connectors.base import BaseConnector
 from kiro_crew.knowledge.connectors.local_folder import LocalFolderConnector
@@ -884,11 +885,31 @@ async def delete_source(request: web.Request) -> web.Response:
     row = store.db.execute("SELECT * FROM sources WHERE id = ?", (source_id,)).fetchone()
     if not row:
         return web.json_response({"error": "not found"}, status=404)
+    # An auto-discovered source must not come back on the next watcher sweep just
+    # because its folder still exists -- tombstone the URI. This is passed INTO
+    # the cascade so the tombstone and the delete share one transaction: written
+    # afterwards, a sweep landing in between would see neither a source row nor a
+    # tombstone and re-create what was just deleted. Only auto-added rows get a
+    # tombstone; a hand-added source has no discovery loop to resurrect it.
+    dismiss_uri = None
     try:
-        store.delete_source_cascade(source_id)
+        props = json.loads(row["properties"]) if isinstance(row["properties"], str) else (row["properties"] or {})
+        if isinstance(props, dict) and props.get(AUTO_ADDED_PROP):
+            dismiss_uri = row["uri"]
+    except Exception:
+        logger.warning("Could not read source properties for dismissal", exc_info=True)
+    try:
+        # BEGIN IMMEDIATE takes the write lock eagerly and the connection's
+        # busy_timeout is 10s, so a concurrent ingestion writer could park this
+        # call for that long -- never on the event loop.
+        await asyncio.to_thread(
+            store.delete_source_cascade, source_id, dismiss_uri=dismiss_uri
+        )
     except Exception:
         logger.exception("delete_source failed: source_id=%s", source_id)
         return web.json_response({"error": "internal server error"}, status=500)
+    if dismiss_uri:
+        _sel_log("source.auto_dismiss", source_id=source_id, uri=dismiss_uri)
     _sel_log("source.delete", source_id=source_id)
     return web.json_response({"status": "deleted"})
 
@@ -963,6 +984,12 @@ async def pause_source(request: web.Request) -> web.Response:
         return web.json_response({"error": "not found"}, status=404)
     props = json.loads(row["properties"]) if isinstance(row["properties"], str) else (row["properties"] or {})
     props["scan_paused"] = True
+    # Keep the JSON copy in sync with the column: the watcher's pre-scan skip
+    # reads properties["sync_status"] (it selects `properties`, not the column),
+    # so leaving this stale meant a paused folder was still fully walked and
+    # delete-reconciled every sweep -- only the deeper scan_paused gate in
+    # folder_watcher stopped the ingestion. confirm/resume already do this.
+    props["sync_status"] = "paused"
     store.update_source(source_id, properties=props, sync_status="paused")
     _sel_log("source.pause", source_id=source_id)
     return web.json_response({"status": "paused"})

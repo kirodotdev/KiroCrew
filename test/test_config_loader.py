@@ -2979,6 +2979,56 @@ def test_heartbeat_default_deliver_invalid_falls_back_to_slack():
     assert cfg.heartbeat.default_deliver == "slack"
 
 
+class TestKnowledgeAutoDiscover:
+    """``knowledge.auto_discover_folder`` / ``auto_discover_dirname`` parsing."""
+
+    def test_discovery_defaults_off(self) -> None:
+        cfg = _load_from_dict({})
+        assert cfg.knowledge.auto_discover_folder is False
+
+    def test_discovery_reads_value(self) -> None:
+        cfg = _load_from_dict({"knowledge": {"auto_discover_folder": True}})
+        assert cfg.knowledge.auto_discover_folder is True
+
+    def test_dirname_default(self) -> None:
+        cfg = _load_from_dict({})
+        assert cfg.knowledge.auto_discover_dirname == "knowledge-docs"
+
+    def test_dirname_reads_value(self) -> None:
+        cfg = _load_from_dict({"knowledge": {"auto_discover_dirname": "docs"}})
+        assert cfg.knowledge.auto_discover_dirname == "docs"
+
+    def test_dirname_is_stripped(self) -> None:
+        cfg = _load_from_dict({"knowledge": {"auto_discover_dirname": "  docs \n"}})
+        assert cfg.knowledge.auto_discover_dirname == "docs"
+
+    def test_dirname_is_clamped_to_128(self) -> None:
+        cfg = _load_from_dict({"knowledge": {"auto_discover_dirname": "x" * 500}})
+        assert len(cfg.knowledge.auto_discover_dirname) == 128
+
+    def test_dirname_non_string_is_coerced(self) -> None:
+        # str() coercion, not a crash -- the value is validated at use time by
+        # resolve_drop_folder (which rejects anything with a separator).
+        cfg = _load_from_dict({"knowledge": {"auto_discover_dirname": 42}})
+        assert cfg.knowledge.auto_discover_dirname == "42"
+
+    def test_traversal_dirname_is_kept_but_inert(self) -> None:
+        # Validation is deliberately runtime-only: the config retains what the
+        # user typed, and resolve_drop_folder refuses to act on it.
+        cfg = _load_from_dict({"knowledge": {"auto_discover_dirname": "../../etc"}})
+        assert cfg.knowledge.auto_discover_dirname == "../../etc"
+
+    def test_both_keys_round_trip(self) -> None:
+        from dataclasses import asdict
+
+        original = _load_from_dict(
+            {"knowledge": {"auto_discover_folder": True, "auto_discover_dirname": "docs"}}
+        )
+        reloaded = _load_from_dict({"knowledge": asdict(original.knowledge)})
+        assert reloaded.knowledge.auto_discover_folder is True
+        assert reloaded.knowledge.auto_discover_dirname == "docs"
+
+
 class TestKnowledgePoolIdleTtl:
     """``knowledge.pool_idle_ttl_secs`` parsing: default, override, explicit 0,
     and rejection of negative / bool / typed-wrong values back to the default."""

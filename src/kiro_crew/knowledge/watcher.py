@@ -8,9 +8,16 @@ import os
 from datetime import datetime
 from pathlib import Path
 
+from kiro_crew.config.loader import KiroCrewConfig, default_project_dir
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.sel import sel
 
+from .autosource import (
+    AUTO_ADDED_PROP,
+    DEFAULT_DROP_DIRNAME,
+    auto_source_still_contained,
+    discover_and_register,
+)
 from .embedder import embedder_signature
 from .folder_watcher import FolderWatcher
 from .ingestion import (
@@ -43,6 +50,8 @@ class KnowledgeWatcher:
         self._stop_event = asyncio.Event()
         self._folder_watcher = FolderWatcher(store, pipeline)
         self._reembed_task: asyncio.Task | None = None
+        # Last discovery error signature, for log dedup across sweeps.
+        self._discover_error_sig: str | None = None
 
     async def start(self):
         logger.info("Source watcher started: interval=%ds", self.interval)
@@ -60,8 +69,54 @@ class KnowledgeWatcher:
         self._stop_event.set()
         logger.info("Source watcher stopped")
 
+    async def _discover_drop_folder(self) -> None:
+        """Register the workspace drop folder if it has appeared.
+
+        Runs every sweep so a folder created after startup is picked up without
+        a restart (within one ``interval``). Gated on
+        ``knowledge.auto_discover_folder``; re-reads config each sweep so
+        toggling the flag takes effect without a restart, matching KiroCrew's
+        live-config behaviour. Never raises into the sweep: a discovery failure
+        must not stop registered sources from being scanned.
+        """
+        try:
+            cfg = KiroCrewConfig.load()
+            if not cfg.knowledge.auto_discover_folder:
+                return
+            dirname = cfg.knowledge.auto_discover_dirname or DEFAULT_DROP_DIRNAME
+            base = await asyncio.to_thread(default_project_dir)
+            if not base:
+                return
+            source_id = await asyncio.to_thread(
+                discover_and_register, self.store, base, dirname
+            )
+            self._discover_error_sig = None
+            if source_id:
+                # Registering a source that will spend LLM extraction on the
+                # user's files is an auditable mutation -- the manual POST path
+                # SEL-logs it, so the automatic path must too.
+                sel().log_tool_invocation(
+                    session_key="gateway", agent="knowledge-watcher",
+                    tool_name="knowledge.source.auto_add", outcome="completed",
+                    resources=f"source_id={source_id} dirname={dirname}",
+                )
+        except Exception as exc:
+            # Contained so a discovery failure cannot stop the sweep from
+            # scanning already-registered sources. Repeats are deduped: this runs
+            # every interval, and an unanticipated persistent error would
+            # otherwise emit a full traceback forever.
+            sig = f"{type(exc).__name__}:{exc}"
+            if sig != getattr(self, "_discover_error_sig", None):
+                self._discover_error_sig = sig
+                logger.warning("Knowledge drop-folder discovery failed", exc_info=True)
+            else:
+                logger.debug("Knowledge drop-folder discovery still failing: %s", sig)
+
     async def _scan(self):
         """Check all watched sources for changes."""
+        # Pick up a newly-created workspace drop folder before scanning, so a
+        # folder made since the last sweep is ingested in this same pass.
+        await self._discover_drop_folder()
         # Folder sources (local_folder, obsidian_vault)
         folder_rows = self.store.db.execute(
             "SELECT id, uri, source_type, properties FROM sources WHERE source_type IN ({})".format(
@@ -69,12 +124,34 @@ class KnowledgeWatcher:
             ),
             tuple(FOLDER_SOURCE_TYPES),
         ).fetchall()
+        ws_base: str | None = None
         for row in folder_rows:
             try:
                 source = dict(row)
                 props = self._parse_props(source.get("properties"))
                 if props.get("sync_status") in ("paused", "pending_confirmation"):
                     continue
+                if props.get(AUTO_ADDED_PROP):
+                    # Re-validate containment on EVERY sweep, not just at
+                    # registration: the stored URI is a path that can be swapped
+                    # for a symlink to an external tree after the fact, and
+                    # os.walk would then follow it out of the workspace.
+                    if ws_base is None:
+                        ws_base = await asyncio.to_thread(default_project_dir)
+                    if not await asyncio.to_thread(
+                        auto_source_still_contained, source["uri"], ws_base or ""
+                    ):
+                        logger.warning(
+                            "Skipping auto-added source %s: %s no longer resolves inside "
+                            "the workspace", source["id"], source["uri"],
+                        )
+                        sel().log_tool_invocation(
+                            session_key="gateway", agent="knowledge-watcher",
+                            tool_name="knowledge.source.auto_scan_denied",
+                            outcome="denied",
+                            resources=f"source_id={source['id']} reason=not_contained",
+                        )
+                        continue
                 stats = await self._folder_watcher.scan_source(source)
                 if stats.get("error"):
                     logger.warning("Folder scan error for %s: %s", source["uri"], stats["error"])

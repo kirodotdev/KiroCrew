@@ -280,6 +280,17 @@ class KnowledgeStore:
                 PRIMARY KEY (source_id, slug)
             );
 
+            -- Tombstones for auto-discovered sources the user deleted. Keyed by
+            -- URI (not source_id) and deliberately NOT touched by
+            -- delete_source_cascade: auto-discovery's only idempotency marker is
+            -- the source row, so without a tombstone that survives deletion a
+            -- deleted auto-source would be re-created (and re-ingested) on the
+            -- next watcher sweep while the folder still exists on disk.
+            CREATE TABLE IF NOT EXISTS dismissed_auto_sources (
+                uri TEXT PRIMARY KEY,
+                dismissed_at TEXT NOT NULL
+            );
+
         """)
         self.db.commit()
 
@@ -359,9 +370,22 @@ class KnowledgeStore:
             if "name" not in ais_cols:
                 self.db.execute("ALTER TABLE artifact_item_state ADD COLUMN name TEXT")
         # Clean orphan sources (no items), entities (no mentions/relations), and stale relations
+        #
+        # Folder sources are EXCLUDED: a watched folder with zero discovered
+        # files is legitimately empty, not orphaned. Deleting it here loses
+        # user-set state -- notably a paused empty folder would be dropped on
+        # restart and then re-created as active by auto-discovery, silently
+        # un-pausing it. The row is user-registered configuration, not derived
+        # data, so only its items are reclaimable.
         self.db.execute("BEGIN")
         try:
-            orphan_sources_q = "SELECT id FROM sources WHERE id NOT IN (SELECT DISTINCT source_id FROM items WHERE source_id IS NOT NULL) AND id NOT IN (SELECT source_id FROM ingestion_jobs WHERE status IN ('pending', 'processing')) AND id NOT IN (SELECT DISTINCT source_id FROM folder_file_state) AND id NOT IN (SELECT DISTINCT source_id FROM artifact_item_state)"
+            orphan_sources_q = (
+                "SELECT id FROM sources WHERE id NOT IN (SELECT DISTINCT source_id FROM items WHERE source_id IS NOT NULL) "
+                "AND source_type NOT IN ('local_folder', 'obsidian_vault') "
+                "AND id NOT IN (SELECT source_id FROM ingestion_jobs WHERE status IN ('pending', 'processing')) "
+                "AND id NOT IN (SELECT DISTINCT source_id FROM folder_file_state) "
+                "AND id NOT IN (SELECT DISTINCT source_id FROM artifact_item_state)"
+            )
             self.db.execute(f"DELETE FROM source_locations WHERE source_id IN ({orphan_sources_q})")
             self.db.execute(f"DELETE FROM ingestion_jobs WHERE source_id IN ({orphan_sources_q})")
             self.db.execute(f"DELETE FROM sources WHERE id IN ({orphan_sources_q})")
@@ -500,10 +524,91 @@ class KnowledgeStore:
             raise
         self._load_graph()
 
-    def delete_source_cascade(self, source_id):
-        """Delete a source and all its items in a single transaction (batch SQL)."""
-        self.db.execute("BEGIN")
+    def dismiss_auto_source(self, uri: str) -> None:
+        """Record that the user deleted an auto-discovered source at ``uri``.
+
+        Survives ``delete_source_cascade`` on purpose -- see the table comment.
+        Idempotent: re-dismissing keeps the original timestamp semantics simple
+        by overwriting, which is fine since only presence is consulted.
+        """
+        self.db.execute(
+            "INSERT OR REPLACE INTO dismissed_auto_sources (uri, dismissed_at) VALUES (?, ?)",
+            (uri, datetime.now().isoformat()),
+        )
+        self.db.commit()
+
+    def is_auto_source_dismissed(self, uri: str) -> bool:
+        """True when ``uri`` was previously dismissed via ``dismiss_auto_source``."""
+        row = self.db.execute(
+            "SELECT 1 FROM dismissed_auto_sources WHERE uri = ?", (uri,)
+        ).fetchone()
+        return row is not None
+
+    def undismiss_auto_source(self, uri: str) -> None:
+        """Clear a dismissal so auto-discovery may register ``uri`` again."""
+        self.db.execute("DELETE FROM dismissed_auto_sources WHERE uri = ?", (uri,))
+        self.db.commit()
+
+    def create_auto_source_unless_dismissed(
+        self, name: str, source_type: str, uri: str, properties: dict,
+    ) -> tuple[str | None, bool]:
+        """Atomically: reuse, refuse-if-dismissed, or insert an auto source.
+
+        Returns ``(source_id, created)``, or ``(None, False)`` when ``uri`` is
+        tombstoned. The tombstone check, the existing-row check and the INSERT
+        all happen inside ONE ``BEGIN IMMEDIATE`` transaction so a concurrent
+        ``delete_source_cascade(..., dismiss_uri=uri)`` cannot interleave: either
+        the delete's tombstone is visible here and nothing is created, or this
+        insert lands first and the delete then removes it and tombstones the URI.
+        Doing the check and the insert as two transactions would leave exactly
+        the window that lets a deleted auto source come back.
+        """
+        self.db.execute("BEGIN IMMEDIATE")
         try:
+            dismissed = self.db.execute(
+                "SELECT 1 FROM dismissed_auto_sources WHERE uri = ?", (uri,)
+            ).fetchone()
+            if dismissed:
+                self.db.execute("COMMIT")
+                return None, False
+            existing = self.db.execute(
+                "SELECT id FROM sources WHERE uri = ?", (uri,)
+            ).fetchone()
+            if existing:
+                sid = existing["id"]
+                self.db.execute("COMMIT")
+                return sid, False
+            sid = str(uuid4())
+            now = datetime.now().isoformat()
+            self.db.execute(
+                "INSERT INTO sources (id, name, source_type, uri, properties, "
+                "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (sid, name, source_type, uri, json.dumps(properties), now, now),
+            )
+            self.db.execute("COMMIT")
+            return sid, True
+        except Exception:
+            self.db.execute("ROLLBACK")
+            raise
+
+    def delete_source_cascade(self, source_id, dismiss_uri: str | None = None):
+        """Delete a source and all its items in a single transaction (batch SQL).
+
+        ``dismiss_uri`` writes an auto-discovery tombstone for that URI inside
+        the SAME transaction as the delete. That atomicity is required, not a
+        convenience: auto-discovery runs on a recurring watcher sweep, so a
+        tombstone written in a separate transaction after the cascade leaves a
+        window where a sweep observes neither a source row nor a tombstone and
+        re-creates (and re-ingests) the source the user just deleted.
+        """
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            if dismiss_uri:
+                self.db.execute(
+                    "INSERT OR REPLACE INTO dismissed_auto_sources (uri, dismissed_at) "
+                    "VALUES (?, ?)",
+                    (dismiss_uri, datetime.now().isoformat()),
+                )
             # Batch FTS cleanup
             rows = self.db.execute(
                 "SELECT rowid, title, content, tags FROM items WHERE source_id = ?", (source_id,)

@@ -134,6 +134,8 @@ Set via `kirocrew config set sandbox.mode auto`.
 | `skills.max_triggered` | Maximum skills loaded per message (≥1) | `3` |
 | `knowledge.auto_ingest_artifacts` | Auto-ingest content-bearing local artifacts into the Knowledge Library (searchable "Artifacts" source); kept in sync and removed when the artifact is deleted (see [Knowledge Library](knowledge-library-how-it-works.md)) | `true` |
 | `knowledge.auto_ingest_artifact_kinds` | Artifact kinds eligible for auto-ingest (`widget` excluded as UI/dashboards; `svg` excluded — no reader support) | `["markdown", "text", "html", "json"]` |
+| `knowledge.auto_discover_folder` | Watch for a documents folder inside the active workspace and register it as a Knowledge source automatically, so files dropped there become searchable without adding the source by hand. The folder is never created for you — its absence means you have not opted in — and it is picked up within one watcher sweep (default 300s) of being created, with no restart. Deleting the auto-added source records a dismissal, so it stays gone instead of reappearing on the next sweep; pausing it also persists. Off by default because ingestion spends LLM extraction on every supported file | `false` |
+| `knowledge.auto_discover_dirname` | Folder name inside the workspace that auto-discovery looks for. A single path segment; separators and traversal are rejected so the source cannot be redirected outside the workspace. Avoid `knowledge` — that is where the Library's own SQLite store lives and it always exists, which would defeat discovery | `"knowledge-docs"` |
 
 ## Environment Variables
 

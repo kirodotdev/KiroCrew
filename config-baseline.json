@@ -1186,7 +1186,9 @@
         "embed_content_budget": 0,
         "pool_idle_ttl_secs": 300,
         "auto_ingest_doc_links": false,
-        "doc_ingest_hosts": []
+        "doc_ingest_hosts": [],
+        "auto_discover_folder": false,
+        "auto_discover_dirname": "knowledge-docs"
       }
     },
     {
@@ -1333,6 +1335,34 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": null
+    },
+    {
+      "path": "knowledge.auto_discover_folder",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Auto-Discover Documents Folder",
+      "help": "Watch for a documents folder inside the active workspace and register it as a Knowledge source automatically, so files dropped there become searchable without adding the source by hand. The folder is never created for you: its absence means you have not opted in, and it is picked up within one watcher sweep of being created -- no restart needed. Off by default because ingestion spends LLM extraction on every supported file in the folder.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "knowledge.auto_discover_dirname",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Documents Folder Name",
+      "help": "Name of the folder inside the workspace that auto-discovery looks for. A single path segment -- separators and traversal are rejected so the source cannot be redirected outside the workspace. Avoid 'knowledge': that is where the Library's own SQLite store lives and it always exists, which would defeat discovery.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": "knowledge-docs"
     },
     {
       "path": "skills",
@@ -2823,6 +2853,173 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": null
+    },
+    {
+      "path": "weixin",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "weixin"
+      ],
+      "label": "WeChat",
+      "help": "Weixin (iLink personal WeChat) integration settings.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {
+        "enabled": false,
+        "token": "",
+        "account_id": "",
+        "base_url": "https://ilinkai.weixin.qq.com",
+        "dm_policy": "allowlist",
+        "allowed_user_ids": [],
+        "soft_threshold_pct": 80,
+        "hard_threshold_pct": 95
+      }
+    },
+    {
+      "path": "weixin.enabled",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "weixin"
+      ],
+      "label": "Enabled",
+      "help": "Enable the Weixin (iLink personal WeChat) channel (long-polling). Requires a bot token + account id from the Settings QR flow.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "weixin.token",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": true,
+      "tags": [
+        "weixin"
+      ],
+      "label": "Bot Token",
+      "help": "iLink bot token (from QR login). Prefer the WEIXIN_TOKEN credential (env/.env / cred store) over storing it here.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
+      "path": "weixin.account_id",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "weixin"
+      ],
+      "label": "Account ID",
+      "help": "iLink bot account id captured during QR login.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
+      "path": "weixin.base_url",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "weixin"
+      ],
+      "label": "iLink Base URL",
+      "help": "iLink API base URL (per-account, returned by QR login).",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": "https://ilinkai.weixin.qq.com"
+    },
+    {
+      "path": "weixin.dm_policy",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "weixin"
+      ],
+      "label": "DM Policy",
+      "help": "Who may DM the bot: 'allowlist' (only allowed_user_ids, the default), 'open' (any sender), or 'disabled'. Defaults to allowlist with an empty list, so a freshly connected bot authorizes NOBODY until you add an id.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": "allowlist"
+    },
+    {
+      "path": "weixin.allowed_user_ids",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "weixin"
+      ],
+      "label": "Allowed User IDs",
+      "help": "Weixin user ids permitted to DM the bot when dm_policy='allowlist'. Empty = deny all (fail closed).",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": []
+    },
+    {
+      "path": "weixin.allowed_user_ids.*",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null
+    },
+    {
+      "path": "weixin.soft_threshold_pct",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "weixin"
+      ],
+      "label": "Soft Context Threshold %",
+      "help": "Prompt the user to /compact or /new when context passes this percentage.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 80
+    },
+    {
+      "path": "weixin.hard_threshold_pct",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "weixin"
+      ],
+      "label": "Hard Context Threshold %",
+      "help": "Force a compaction when context passes this percentage.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 95
     },
     {
       "path": "discord",
