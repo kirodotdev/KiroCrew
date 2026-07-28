@@ -1,12 +1,12 @@
 ---
 name: web-preview
-description: Emit a hidden preview marker so KiroCrew's right-panel "Web Preview" tab auto-opens at the URL when you start a local web server for the user to preview. Use whenever you start a dev server or static server so the user can see a site/app you're working on (Vite, Next, `npm run dev`, `python -m http.server`, etc.).
+description: Emit a hidden preview marker so KiroCrew's right-panel "Browser" tab auto-opens at the URL when you start a local web server for the user to preview. Use whenever you start a dev server or static server so the user can see a site/app you're working on (Vite, Next, `npm run dev`, `python -m http.server`, etc.).
 triggers: preview, live preview, dev server, serve, http.server, npm run dev, run the site, run the app, view in browser, see the site, localhost
 ---
 
 # Web Preview marker
 
-KiroCrew's chat right-side panel has a **Web Preview** tab (+ menu → Web Preview)
+KiroCrew's chat right-side panel has a **Browser** tab (+ menu → Browser)
 that embeds a URL in a live iframe. When you start a local web server so the user
 can preview a site/app, tell the dashboard which URL to load by emitting a single
 hidden marker in your reply.
@@ -20,7 +20,7 @@ Emit exactly this, on its own line, once the server is confirmed listening:
 ```
 
 - It's an **HTML comment**, so the user never sees it in the rendered message —
-  the dashboard parses it and auto-opens the Web Preview tab at that URL,
+  the dashboard parses it and auto-opens the Browser tab at that URL,
   contextual to the current session.
 - Use the **actual URL the server binds to**, including the real port
   (`http://localhost:5173`, `http://127.0.0.1:8080`, …). Prefer `127.0.0.1` /
@@ -50,4 +50,4 @@ After starting a static server:
 
 > Preview is live and serving HTTP 200.
 > <!-- kirocrew:preview url="http://127.0.0.1:8080" -->
-> Open the **Web Preview** tab in the right panel to view it.
+> Open the **Browser** tab in the right panel to view it.

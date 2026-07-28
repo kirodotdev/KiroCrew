@@ -31,7 +31,8 @@ export interface BrowserFrameState {
  * WS `browser_frame` message in useWebSocket) — each is a screenshot the agent
  * (or the proxy's idle active-pump) captured, forwarded by the Playwright MCP
  * proxy. This hook is presentation-agnostic: it owns only the frame state and
- * the session-title lookup — used by the floating `BrowserLiveView` window.
+ * the session-title lookup — used by the Browser panel's live mirror
+ * (WebPreviewPanel).
  */
 export function useBrowserFrame(): BrowserFrameState {
   const [frame, setFrame] = useState<string | null>(null)

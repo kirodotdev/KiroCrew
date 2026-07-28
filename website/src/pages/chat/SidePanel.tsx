@@ -38,7 +38,7 @@ const NEW_MENU: { kind: ViewKind | 'terminal'; label: string; icon: ReactNode; d
   { kind: 'workflows', label: 'Workflows', icon: <Workflow size={15} />, desc: 'Runs, phases & restartable steps' },
   { kind: 'logs', label: 'Logs', icon: <ScrollText size={15} />, desc: 'Gateway log stream' },
   { kind: 'side', label: 'Side', icon: <MessageSquare size={15} />, desc: 'Parallel chat, shared context' },
-  { kind: 'browser', label: 'Web Preview', icon: <Globe size={15} />, desc: 'Live preview of a served URL' },
+  { kind: 'browser', label: 'Browser', icon: <Globe size={15} />, desc: 'View a web page or a local dev server' },
   { kind: 'terminal', label: 'Terminal', icon: <TerminalSquare size={15} />, desc: 'Shell on the gateway host' },
 ]
 

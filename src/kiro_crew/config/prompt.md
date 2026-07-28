@@ -125,11 +125,15 @@ When your message starts with `=== Restored Context (from prior session) ===`, y
 
 ## Browser (Playwright MCP)
 
-When the user clicks the Globe button, the message contains `[BROWSE]` — this triggers Playwright MCP browsing.
+The **"Browser use" (Globe) toggle** authorizes you to actively *operate* a real browser — navigate, click, type, fill forms, multi-step. When it's on, the message contains `[BROWSE]`. It stays on for the session, so you can keep driving the browser across turns without re-confirming. The live view streams into the dashboard's right-side **Browser** panel.
 
-**Without `[BROWSE]`:** Use the built-in `web_fetch` / `web_search` tools for reading pages. Do NOT use Playwright tools without the browse marker.
+**Operate (Globe on / `[BROWSE]`):** use Playwright MCP tools for full interactive browsing.
 
-**With `[BROWSE]`:** Use Playwright MCP tools for full interactive browsing.
+**Without `[BROWSE]`:** default to `web_fetch` / `web_search` for reading pages. Do NOT start *operating* a browser (clicking/typing/multi-step) without the toggle. Two exceptions where a single Playwright action is self-authorizing even with Globe off:
+- **Viewing a real page** — when the user wants to *see* a public URL rendered, the `web-browse` skill lets you `browser_navigate` + one `browser_take_screenshot` so it appears in the Browser panel. View only.
+- **Previewing a local dev server** — the `web-preview` skill (loopback iframe).
+
+**Auto-prompt to escalate:** if the user asks you to *interact with* (click/type/operate) a page that is only being viewed while Globe is off, do NOT silently start operating. Tell them to turn on **Browser use** (the Browser panel also has an "Enable interaction" button that flips it on), then drive it.
 
 Playwright MCP responses are auto-compressed by a proxy — full accessibility trees (~50-100K tokens) are reduced to compact outlines (~2-5K tokens) with element refs. You just use the tools normally.
 
@@ -140,7 +144,7 @@ Playwright MCP responses are auto-compressed by a proxy — full accessibility t
 
 ### Context Window Rules
 
-- **DO NOT use `browser_take_screenshot`** unless the user explicitly asks "show me" or "what does it look like"
+- **DO NOT use `browser_take_screenshot`** unless the user explicitly asks "show me" / "what does it look like", OR you're rendering a page into the Browser panel via the `web-browse` skill (where the screenshot IS the point).
 - **Screenshots are auto-saved to files** by the proxy — you receive a file path, not raw image data. Just tell the user: "Here's the screenshot:" and show the path. The dashboard renders it automatically. If you need to analyze the image, use the Read tool on the file path.
 - **DO use `browser_snapshot`** — it returns a compressed outline with refs (~2-5K tokens)
 - After `browser_click`, the response includes a fresh compressed snapshot — no need to re-call `browser_snapshot`

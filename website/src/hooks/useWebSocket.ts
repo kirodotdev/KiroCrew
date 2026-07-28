@@ -768,8 +768,8 @@ export function useWebSocket() {
           }
           case 'browser_frame':
             // Live mirror frame (a screenshot the agent took, forwarded by the
-            // MCP proxy). Routed via a window event so BrowserLiveView can render
-            // without a Redux slice.
+            // MCP proxy). Routed via a window event so the Browser panel
+            // (WebPreviewPanel via useBrowserFrame) can render without a Redux slice.
             window.dispatchEvent(new CustomEvent('kirocrew-browser-frame', { detail: data }))
             break
         }

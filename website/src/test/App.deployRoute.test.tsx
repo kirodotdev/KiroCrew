@@ -38,7 +38,6 @@ vi.mock('../hooks/useAgents', () => ({ useAgents: vi.fn(() => ({ agents: [{ name
 vi.mock('../hooks/useDashboardHealthProbe', () => ({ useDashboardHealthProbe: () => {} }))
 vi.mock('../providers/context', () => ({ useProvider: () => ({ id: 'acp' }) }))
 vi.mock('../components/MarkdownRenderer', () => ({ default: ({ content }: { content: string }) => <span>{content}</span>, Lightbox: () => null }))
-vi.mock('../components/BrowserLiveView', () => ({ default: () => null }))
 vi.mock('../api/client', () => ({
   api: {
     chatSlots: vi.fn().mockResolvedValue([]),

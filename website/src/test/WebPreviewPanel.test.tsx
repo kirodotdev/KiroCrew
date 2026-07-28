@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, screen, fireEvent, act } from '@testing-library/react'
+import { screen, fireEvent, act } from '@testing-library/react'
 
-import WebPreviewPanel, { normalizeUrl, setSessionPreviewUrl, setSessionPreviewPending, isolatePreviewHost } from '../components/WebPreviewPanel'
+import { renderWithProviders } from './helpers'
+import WebPreviewPanel, { normalizeUrl, setSessionPreviewUrl, setSessionPreviewPending, isolatePreviewHost, PREVIEW_ENABLE_BROWSE_EVENT, BROWSE_MODE_EVENT } from '../components/WebPreviewPanel'
 
 // The crop button is gated on snip support (getDisplayMedia). Force it on so
 // the button renders under happy-dom (which has no mediaDevices.getDisplayMedia).
@@ -62,7 +63,7 @@ describe('WebPreviewPanel', () => {
   afterEach(() => { vi.unstubAllGlobals() })
 
   it('shows the empty state with quick-pick ports before a URL is set', () => {
-    render(<WebPreviewPanel sessionKey="sess-1" />)
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
     expect(screen.getByText('Preview a local web server')).toBeInTheDocument()
     expect(screen.getByText(':5173')).toBeInTheDocument()
     expect(screen.queryByTitle('Web preview')).toBeNull()
@@ -72,7 +73,7 @@ describe('WebPreviewPanel', () => {
   })
 
   it('loads a typed URL into the iframe (normalizing scheme + isolating host) on submit', () => {
-    render(<WebPreviewPanel sessionKey="sess-1" />)
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
     const input = screen.getByLabelText('Preview URL')
     fireEvent.change(input, { target: { value: 'localhost:8080' } })
     fireEvent.submit(input.closest('form') as HTMLFormElement)
@@ -81,7 +82,7 @@ describe('WebPreviewPanel', () => {
   })
 
   it('enables back only after navigating to a second URL, and steps back', () => {
-    render(<WebPreviewPanel sessionKey="sess-1" />)
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
     expect(screen.getByLabelText('Back')).toBeDisabled()
     fireEvent.click(screen.getByText(':3000'))
     expect(screen.getByLabelText('Back')).toBeDisabled()
@@ -97,7 +98,7 @@ describe('WebPreviewPanel', () => {
   })
 
   it('loads a quick-pick port (isolated host)', () => {
-    render(<WebPreviewPanel sessionKey="sess-1" />)
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
     fireEvent.click(screen.getByText(':3000'))
     const frame = screen.getByTitle('Web preview') as HTMLIFrameElement
     expect(frame.src).toBe(`http://${iso('localhost')}:3000/`)
@@ -105,15 +106,15 @@ describe('WebPreviewPanel', () => {
 
   it('persists the URL per session and restores it on mount', () => {
     localStorage.setItem('mc-webpreview-url:sess-1', 'http://localhost:4321/')
-    render(<WebPreviewPanel sessionKey="sess-1" />)
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
     const frame = screen.getByTitle('Web preview') as HTMLIFrameElement
     expect(frame.src).toBe(`http://${iso('localhost')}:4321/`)
-    render(<WebPreviewPanel sessionKey="sess-2" />)
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-2" />)
     expect(screen.getByText('Preview a local web server')).toBeInTheDocument()
   })
 
   it('loads a URL fed externally via setSessionPreviewUrl (matching slot, isolated)', () => {
-    render(<WebPreviewPanel sessionKey="sess-1" />)
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
     expect(screen.getByText('Preview a local web server')).toBeInTheDocument()
     act(() => { setSessionPreviewUrl('sess-1', 'localhost:8080') })
     const frame = screen.getByTitle('Web preview') as HTMLIFrameElement
@@ -121,7 +122,7 @@ describe('WebPreviewPanel', () => {
   })
 
   it('does not live-load an external feed when open=false (offer only)', () => {
-    render(<WebPreviewPanel sessionKey="sess-1" />)
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
     act(() => { setSessionPreviewUrl('sess-1', 'localhost:8080', false) })
     // No dispatch → the already-mounted panel stays on the empty state.
     expect(screen.getByText('Preview a local web server')).toBeInTheDocument()
@@ -129,14 +130,14 @@ describe('WebPreviewPanel', () => {
   })
 
   it('ignores an external feed aimed at a different slot', () => {
-    render(<WebPreviewPanel sessionKey="sess-1" />)
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
     act(() => { setSessionPreviewUrl('sess-2', 'localhost:8080') })
     expect(screen.getByText('Preview a local web server')).toBeInTheDocument()
     expect(screen.queryByTitle('Web preview')).toBeNull()
   })
 
   it('shows a Load-preview card for a pending feed and navigates only on the explicit click', () => {
-    render(<WebPreviewPanel sessionKey="sess-1" />)
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
     act(() => { setSessionPreviewPending('sess-1', 'localhost:8080') })
     // Pending → a card is shown and the iframe is NOT loaded (no auto-GET).
     expect(screen.getByText('Preview ready')).toBeInTheDocument()
@@ -148,7 +149,7 @@ describe('WebPreviewPanel', () => {
   })
 
   it('rejects a NON-loopback chat-fed URL (loopback-only channel)', () => {
-    render(<WebPreviewPanel sessionKey="sess-1" />)
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
     // Agent output is injectable, so the chat-feed channel refuses external
     // hosts outright — no card, no navigation, and a null return.
     let ret: string | null = 'sentinel'
@@ -164,7 +165,7 @@ describe('WebPreviewPanel', () => {
   })
 
   it('dismisses a pending feed without navigating', () => {
-    render(<WebPreviewPanel sessionKey="sess-1" />)
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
     act(() => { setSessionPreviewPending('sess-1', 'localhost:8080') })
     fireEvent.click(screen.getByText('Dismiss'))
     expect(screen.queryByText('Preview ready')).toBeNull()
@@ -177,7 +178,7 @@ describe('WebPreviewPanel', () => {
     const fetchMock = vi.fn().mockRejectedValue(new Error('refused'))
     vi.stubGlobal('fetch', fetchMock)
     try {
-      render(<WebPreviewPanel sessionKey="sess-1" />)
+      renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
       fireEvent.click(screen.getByText(':3000'))
       expect(screen.getByTitle('Web preview')).toBeInTheDocument()   // loaded initially
       // Two consecutive failed probes (immediate + interval) → unreachable; the
@@ -196,7 +197,7 @@ describe('WebPreviewPanel', () => {
   })
 
   it('constrains the iframe to a device size when a mobile preset is picked', () => {
-    render(<WebPreviewPanel sessionKey="sess-1" />)
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
     fireEvent.click(screen.getByText(':3000'))
     let frame = screen.getByTitle('Web preview') as HTMLIFrameElement
     expect(frame.style.width).toBe('')
@@ -208,7 +209,7 @@ describe('WebPreviewPanel', () => {
   })
 
   it('device preset buttons are type=button so they never submit the URL form', () => {
-    render(<WebPreviewPanel sessionKey="sess-1" />)
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
     fireEvent.click(screen.getByLabelText('Preview size'))
     const preset = screen.getByText('iPhone SE').closest('button') as HTMLButtonElement
     expect(preset.getAttribute('type')).toBe('button')
@@ -219,7 +220,7 @@ describe('WebPreviewPanel', () => {
     const handler = () => { fired = true }
     window.addEventListener('kirocrew-web-preview-snip', handler)
     try {
-      render(<WebPreviewPanel sessionKey="sess-1" />)
+      renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
       fireEvent.click(screen.getByLabelText('Screenshot an area into the chat'))
       expect(fired).toBe(true)
     } finally {
@@ -232,7 +233,7 @@ describe('WebPreviewPanel', () => {
     const handler = (e: Event) => seen.push(!!(e as CustomEvent<{ focused?: boolean }>).detail?.focused)
     window.addEventListener('kirocrew-preview-focus', handler)
     try {
-      render(<WebPreviewPanel sessionKey="sess-1" />)
+      renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
       fireEvent.click(screen.getByLabelText('Expand preview'))
       expect(seen).toContain(true)
       fireEvent.click(screen.getByLabelText('Exit expanded preview'))
@@ -240,5 +241,61 @@ describe('WebPreviewPanel', () => {
     } finally {
       window.removeEventListener('kirocrew-preview-focus', handler)
     }
+  })
+})
+
+describe('WebPreviewPanel — live agent-browse mirror', () => {
+  const emitFrame = (session_key = 'sess-1') =>
+    act(() => {
+      window.dispatchEvent(new CustomEvent('kirocrew-browser-frame', {
+        detail: { data: 'Zm9vYmFy', format: 'jpeg', session_key },
+      }))
+    })
+
+  it('overlays the read-only live mirror when a browse frame arrives (preview stays mounted)', () => {
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+    expect(screen.queryByText('Browser — live')).toBeNull()
+    emitFrame('sess-1')
+    expect(screen.getByText('Browser — live')).toBeInTheDocument()
+    expect(screen.getByAltText('Live browser session')).toBeInTheDocument()
+    // Preview subtree stays MOUNTED (hidden) under the overlay so iframe/form
+    // state survives — its empty-state node is still in the DOM, just hidden.
+    expect(screen.getByText('Preview a local web server')).toBeInTheDocument()
+  })
+
+  it('offers "Enable interaction" while Browser use is off and requests it for THIS session on click', () => {
+    const seen: (string | undefined)[] = []
+    const handler = (e: Event) => seen.push((e as CustomEvent<{ slot?: string }>).detail?.slot)
+    window.addEventListener(PREVIEW_ENABLE_BROWSE_EVENT, handler)
+    try {
+      renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+      emitFrame('sess-1')
+      fireEvent.click(screen.getByText('Enable interaction'))
+      // Grant must be attributed to the panel's own (browsing) session, not a
+      // global/active-slot fallback.
+      expect(seen).toEqual(['sess-1'])
+    } finally {
+      window.removeEventListener(PREVIEW_ENABLE_BROWSE_EVENT, handler)
+    }
+  })
+
+  it('does NOT show the live mirror for a frame from a DIFFERENT session (no cross-session leak)', () => {
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+    emitFrame('sess-2') // a background session's browse frame
+    // This panel is scoped to sess-1, so a sess-2 frame must not flip it live —
+    // otherwise "Enable interaction" would authorize the wrong session.
+    expect(screen.queryByText('Browser — live')).toBeNull()
+    expect(screen.getByText('Preview a local web server')).toBeInTheDocument()
+  })
+
+  it('reflects Browser use ON: shows "Interactive", hides the enable button', () => {
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+    emitFrame('sess-1')
+    expect(screen.getByText('Enable interaction')).toBeInTheDocument()
+    act(() => {
+      window.dispatchEvent(new CustomEvent(BROWSE_MODE_EVENT, { detail: { on: true } }))
+    })
+    expect(screen.getByText('Interactive')).toBeInTheDocument()
+    expect(screen.queryByText('Enable interaction')).toBeNull()
   })
 })

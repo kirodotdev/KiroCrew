@@ -39,7 +39,7 @@ export interface PanelTab {
 
 const VIEW_TITLES: Record<ViewKind, string> = {
   changes: 'Changes', files: 'Files', artifacts: 'Artifacts', subagents: 'Subagents', workflows: 'Workflows',
-  logs: 'Logs', side: 'Side', browser: 'Web Preview',
+  logs: 'Logs', side: 'Side', browser: 'Browser',
 }
 
 /** Max concurrent terminal tabs per chat (each is a live PTY). At the cap,

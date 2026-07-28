@@ -103,7 +103,7 @@ import { useChatNavigation } from '../hooks/useChatNavigation'
 import SubagentProgressBar from './chat/SubagentProgressBar'
 import TaskProgressBar from './chat/TaskProgressBar'
 import SidePanel, { SIDE_PANEL_MIN_W, measureSidePanelReservedW } from './chat/SidePanel'
-import { setSessionPreviewPending, normalizeUrl, PREVIEW_FOCUS_EVENT, PREVIEW_SNIP_EVENT } from '../components/WebPreviewPanel'
+import { setSessionPreviewPending, normalizeUrl, PREVIEW_FOCUS_EVENT, PREVIEW_SNIP_EVENT, PREVIEW_ENABLE_BROWSE_EVENT, BROWSE_MODE_EVENT } from '../components/WebPreviewPanel'
 import { detectPreviewUrl, previewFeedDecision } from '../utils/detectPreviewUrl'
 import { fileLandingSlot } from '../utils/uploadRouting'
 import ChatSidebar, { SIDEBAR_MIN, SIDEBAR_MAX } from './ChatSidebar'
@@ -698,6 +698,27 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
     if (!slot) return
     setBrowseModeBySlot(prev => ({ ...prev, [slot]: !(prev[slot] ?? false) }))
   }
+  // Broadcast the active slot's browse-mode ("Browser use") so the Browser
+  // panel's live mirror can show "Enable interaction" only while it's OFF.
+  // (browseModeRef, kept in sync with browseMode below, is reused by the
+  // browse-frame effect to replay state to a late-mounting panel.)
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent(BROWSE_MODE_EVENT, { detail: { on: browseMode } }))
+  }, [browseMode])
+  // The Browser panel's "Enable interaction" button requests turning Browser use
+  // ON for the active slot (idempotent — never toggles it back off).
+  useEffect(() => {
+    const onEnable = (e: Event) => {
+      // Prefer the slot carried by the panel (the browsing session whose page is
+      // shown); fall back to the active slot only if none was supplied. This
+      // keeps the [BROWSE] grant attributed to the correct session.
+      const slot = (e as CustomEvent<{ slot?: string }>).detail?.slot || activeSlotRef.current
+      if (!slot) return
+      setBrowseModeBySlot(prev => (prev[slot] ? prev : { ...prev, [slot]: true }))
+    }
+    window.addEventListener(PREVIEW_ENABLE_BROWSE_EVENT, onEnable)
+    return () => window.removeEventListener(PREVIEW_ENABLE_BROWSE_EVENT, onEnable)
+  }, [])
   const pendingInput = useAppSelector(s => s.chat.pendingInput)
 
   const [chatConfig, setChatConfig] = useState<ChatConfig>(loadChatConfig)
@@ -2490,6 +2511,34 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
       setSessionPreviewPending(slot, norm)      // heuristic offer: card only, no open, no load
     }
   }, [messages, activeSlot, dispatch])
+  // Auto-open the Browser panel when the agent starts browsing — the live
+  // Playwright mirror streams as `kirocrew-browser-frame` events. Open/focus the
+  // tab only at the START of a stream (new session_key, or after a >90s gap),
+  // NOT on every frame, so it can't steal focus from a tab the user switched to
+  // mid-browse. This replaces the old floating BrowserLiveView window.
+  const browseFrameOpenedRef = useRef<{ key: string | null; ts: number }>({ key: null, ts: 0 })
+  useEffect(() => {
+    const onFrame = (e: Event) => {
+      const key = (e as CustomEvent<{ session_key?: string }>).detail?.session_key ?? null
+      const now = Date.now()
+      // Only auto-open the Browser tab when the browsing session IS the one on
+      // screen (the active slot). A background session's frames must not open —
+      // or, with the panel's own session gate, display in — another session's
+      // panel; that would misattribute the "Enable interaction" grant.
+      if (!key || key !== activeSlotRef.current) return
+      const prev = browseFrameOpenedRef.current
+      if (prev.key !== key || now - prev.ts > 90_000) {
+        dispatch(openActivityPanel())
+        tabsCtlRef.current.openView('browser')
+        // A freshly-mounted panel starts with browseOn=false; replay the current
+        // browse-mode so the live mirror shows the right interaction state.
+        window.dispatchEvent(new CustomEvent(BROWSE_MODE_EVENT, { detail: { on: browseModeRef.current } }))
+      }
+      browseFrameOpenedRef.current = { key, ts: now }
+    }
+    window.addEventListener('kirocrew-browser-frame', onFrame)
+    return () => window.removeEventListener('kirocrew-browser-frame', onFrame)
+  }, [dispatch])
   // "Run in terminal" (from chat code blocks): open a FRESH terminal tab in
   // this chat and run the command in it, starting in the chat's working dir.
   // The result is echoed back so the code-block button can show sent/failed.

@@ -1,18 +1,22 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Globe, RotateCw, ExternalLink, ArrowLeft, ArrowRight, Maximize2, Minimize2, Smartphone, Monitor, Check, Crop } from 'lucide-react'
+import { Globe, RotateCw, ExternalLink, ArrowLeft, ArrowRight, Maximize2, Minimize2, Smartphone, Monitor, Check, Crop, MousePointerClick } from 'lucide-react'
 
 import { safeSetItem } from '../utils/safeStorage'
 import { isScreenSnipSupported } from '../hooks/useScreenSnip'
 import { useIsMobile } from '../hooks/useIsMobile'
+import { useBrowserFrame } from '../hooks/useBrowserFrame'
 
 /**
  * WebPreviewPanel — a docked, session-scoped **live web preview** of a URL the
  * user is serving locally (a dev server / static server for the project they're
  * working on).
  *
- * Opened from the side panel's + menu ("Web Preview"), it loads the URL in a
- * sandboxed iframe. Unlike the agent-browse mirror (a read-only screenshot
- * stream), this is a real embedded browser view: the dev server's own HMR
+ * Opened from the side panel's + menu ("Browser"), it loads the URL in a
+ * sandboxed iframe. It ALSO hosts the read-only agent-browse mirror: when live
+ * Playwright screenshot frames are arriving, they take precedence over the
+ * iframe (see `isLive`), so the one Browser tab shows either the local preview
+ * or the live browse session. Unlike the agent-browse mirror, the iframe is a
+ * real embedded browser view: the dev server's own HMR
  * live-reloads it as the user edits, and Reload covers static servers.
  *
  * Session-scoped: the chosen URL is remembered PER chat slot (`sessionKey`), so
@@ -46,6 +50,24 @@ export const PREVIEW_FOCUS_EVENT = 'kirocrew-preview-focus'
  * crop button just asks for it via this event rather than duplicating capture.
  */
 export const PREVIEW_SNIP_EVENT = 'kirocrew-web-preview-snip'
+/**
+ * Window event: the panel requests enabling "Browser use" (operate mode) so the
+ * agent may actively drive the browser. ChatPage listens and turns browse mode
+ * on for the active slot. Fired by the live mirror's "Enable interaction" button.
+ */
+export const PREVIEW_ENABLE_BROWSE_EVENT = 'kirocrew-enable-browse'
+/**
+ * Window event: ChatPage broadcasts the current per-slot browse-mode state so
+ * the panel can reflect it — the "Enable interaction" button shows only while
+ * browse mode is OFF.
+ */
+export const BROWSE_MODE_EVENT = 'kirocrew-browse-mode'
+/**
+ * How long after the last agent-browse frame we keep the live mirror on screen
+ * before falling back to the preview body. Frames arrive only when the agent
+ * screenshots, so a generous window keeps the view up between captures.
+ */
+const LIVE_FRAME_TTL_MS = 90_000
 /** Common local dev-server ports offered as one-click starting points. */
 const COMMON_PORTS = [3000, 5173, 8080, 4321, 8000]
 /** iframe sandbox — permissive enough for real apps + HMR, but still a sandbox. */
@@ -244,6 +266,51 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
   // non-macOS remote gateway (whose native /api/screenshot fallback wouldn't work).
   const canSnip = isScreenSnipSupported() && !isMobile
 
+  // ── Live agent-browse mirror ──────────────────────────────────────────────
+  // The same Browser panel also shows the read-only Playwright screenshot stream
+  // (the `web-browse` skill / [BROWSE] mode). No manual mode toggle: when browse
+  // frames are arriving, the live mirror takes precedence over the iframe; when
+  // they go stale (LIVE_FRAME_TTL_MS) we fall back to the preview body.
+  const { frame, lastTs, sessionKey: frameSessionKey, sessionName } = useBrowserFrame()
+  const [nowTick, setNowTick] = useState(() => Date.now())
+  // Whether "Browser use" (operate) is currently on — broadcast by ChatPage so
+  // the mirror can show "Enable interaction" only while it's off.
+  const [browseOn, setBrowseOn] = useState(false)
+  useEffect(() => {
+    const onMode = (e: Event) => setBrowseOn(!!(e as CustomEvent<{ on?: boolean }>).detail?.on)
+    window.addEventListener(BROWSE_MODE_EVENT, onMode)
+    return () => window.removeEventListener(BROWSE_MODE_EVENT, onMode)
+  }, [])
+  // While frames are live, re-evaluate staleness on an interval so the mirror
+  // auto-retires after the agent stops browsing (frames only push on capture).
+  useEffect(() => {
+    if (!frame || !lastTs) return
+    setNowTick(Date.now())
+    const id = setInterval(() => {
+      const now = Date.now()
+      setNowTick(now)
+      // Stop ticking once the mirror has gone stale — a new frame (lastTs
+      // change) re-runs this effect and re-arms the interval. Prevents a
+      // perpetual 5s re-render for the panel's lifetime after the first frame.
+      if (now - lastTs >= LIVE_FRAME_TTL_MS) clearInterval(id)
+    }, 5000)
+    return () => clearInterval(id)
+  }, [frame, lastTs])
+  // Session-scoped: only surface the mirror when the streaming frame belongs to
+  // THIS panel's session. useBrowserFrame is global (latest frame from ANY
+  // session); without this check a background session's browse would render in —
+  // and, via "Enable interaction" below, authorize [BROWSE] on — the wrong
+  // session's panel. `sessionKey` must be present and equal the frame's key.
+  const isLive = !!frame && !!lastTs && !!sessionKey && frameSessionKey === sessionKey
+    && nowTick - lastTs < LIVE_FRAME_TTL_MS
+  const requestInteraction = useCallback(() => {
+    // Target the session whose page is on screen — which is THIS panel's
+    // session, since isLive required a session_key match — never a global or
+    // active-slot fallback. Carrying the slot keeps the grant attributed to the
+    // browsing session even if the active slot differs.
+    window.dispatchEvent(new CustomEvent(PREVIEW_ENABLE_BROWSE_EVENT, { detail: { slot: sessionKey } }))
+  }, [sessionKey])
+
   const persist = useCallback((u: string) => {
     if (storageKey && u) safeSetItem(storageKey, u)
   }, [storageKey])
@@ -416,8 +483,59 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
     + 'hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0 '
     + 'disabled:opacity-40 disabled:cursor-default disabled:hover:bg-transparent disabled:hover:text-muted'
 
+  // Live agent-browse mirror takes precedence over the iframe preview while
+  // Live agent-browse mirror — rendered as an OVERLAY (not an early return) so
+  // the preview subtree below stays mounted; its iframe document + any unsaved
+  // form/SPA state survive a browse frame arriving mid-preview.
+  const liveMirror = (
+    <div className="absolute inset-0 z-10 flex flex-col h-full min-h-0 bg-bg">
+        <div className="flex items-center gap-2 px-3 py-1.5 border-b border-border shrink-0" style={{ backgroundColor: 'var(--bg-elevated)' }}>
+          <Monitor size={14} className="shrink-0 text-muted" />
+          <span className="shrink-0 text-[13px] font-medium text-text">Browser — live</span>
+          <span className="inline-block w-1.5 h-1.5 rounded-full animate-pulse" style={{ backgroundColor: 'var(--ok)' }} aria-hidden />
+          {sessionName ? (
+            <span className="flex-1 min-w-0 truncate text-[12px] text-muted" title={sessionName}>· {sessionName}</span>
+          ) : (
+            <div className="flex-1" />
+          )}
+          {browseOn ? (
+            <span className="shrink-0 inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full bg-accent/12 text-accent font-medium" title="Browser use is on — the agent can operate this page">
+              <MousePointerClick size={12} /> Interactive
+            </span>
+          ) : (
+            <button
+              type="button"
+              onClick={requestInteraction}
+              className="shrink-0 inline-flex items-center gap-1 text-[12px] px-2.5 py-1 rounded-md border border-border text-text hover:bg-bg-hover transition-colors cursor-pointer bg-transparent"
+              title="Turn on Browser use so the agent can click, type, and navigate this page"
+            >
+              <MousePointerClick size={13} /> Enable interaction
+            </button>
+          )}
+        </div>
+        <div className="relative bg-black flex-1 min-h-0 flex items-center justify-center">
+          {frame ? (
+            <img src={frame} alt="Live browser session" className="max-w-full max-h-full object-contain" />
+          ) : (
+            <div className="flex flex-col items-center gap-2 py-8 text-muted">
+              <Monitor size={18} />
+              <span className="text-[11px]">Waiting for the browser to take a screenshot…</span>
+            </div>
+          )}
+        </div>
+        <div className="px-3 py-1.5 border-t border-border text-[11px] text-muted flex items-center justify-between gap-2">
+          <span className="truncate">Read-only mirror of the browse session</span>
+          {lastTs && <span className="shrink-0">updated {new Date(lastTs).toLocaleTimeString()}</span>}
+        </div>
+      </div>
+  )
+
   return (
-    <div className="flex flex-col h-full min-h-0 bg-bg">
+    <div className="relative flex flex-col h-full min-h-0 bg-bg">
+      {/* Preview subtree stays MOUNTED even while the live mirror overlays it,
+          so the iframe document + unsaved form/SPA state survive an isLive
+          toggle — visually hidden, never unmounted. */}
+      <div className={`flex flex-col h-full min-h-0 ${isLive ? 'invisible pointer-events-none' : ''}`} aria-hidden={isLive || undefined}>
       {/* URL bar: [back][forward]  ( [reload] input )  [open][expand] | [device] */}
       <form
         className="flex items-center gap-1 px-2 py-1.5 border-b border-border shrink-0"
@@ -641,6 +759,8 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
           />
         )}
       </div>
+      </div>
+      {isLive && liveMirror}
     </div>
   )
 }
