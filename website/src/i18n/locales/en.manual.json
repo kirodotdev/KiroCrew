@@ -1,0 +1,85 @@
+{
+  "nav": {
+    "agent_capabilities": "Agent Capabilities",
+    "artifacts": "Artifacts",
+    "explore": "Explore",
+    "knowledge": "Knowledge",
+    "notifications": "Notifications",
+    "schedule": "Schedule",
+    "sessions": "Sessions",
+    "settings": "Settings",
+    "task_runner": "Task Runner"
+  },
+  "settings": {
+    "display": {
+      "language": {
+        "auto": "Auto (follow browser)",
+        "description": "Language for the dashboard interface.",
+        "label": "Language",
+        "sync_failed": "Couldn't save this to your KiroCrew config — the language applies in this browser only and may reset on reload."
+      }
+    },
+    "groups": {
+      "preferences": "Preferences",
+      "system": "System"
+    },
+    "tabs": {
+      "about": {
+        "description": "Version, update channel, check for updates, and license",
+        "label": "About"
+      },
+      "browser": {
+        "description": "Playwright browser mode, extension token, and auth configuration",
+        "label": "Browser"
+      },
+      "channels": {
+        "description": "Chat platforms the agent can send and receive on — Slack, Discord, Telegram, Webex, WeCom, Microsoft Teams, WeChat",
+        "label": "Channels"
+      },
+      "chat": {
+        "description": "Message behavior, history, timestamps, and context",
+        "label": "Chat"
+      },
+      "developer": {
+        "description": "Developer mode, logs, system metrics, and diagnostics",
+        "label": "Developer"
+      },
+      "display": {
+        "description": "Zoom, font, and color theme preferences",
+        "label": "Display"
+      },
+      "imports": {
+        "description": "Bring data from another AI agent, and back up or restore KiroCrew configuration",
+        "label": "Import / Export"
+      },
+      "instances": {
+        "description": "Manage remote KiroCrew instances over SSH tunnels; switch between them from the top header",
+        "label": "Instances"
+      },
+      "notifications": {
+        "description": "Sound effects and per-source alert preferences",
+        "label": "Notifications"
+      },
+      "overview": {
+        "description": "System health, activity, and usage & memory at a glance",
+        "label": "Overview"
+      },
+      "security": {
+        "description": "Security posture, defense layers, certifications, and data classification",
+        "label": "Security"
+      },
+      "shortcuts": {
+        "description": "Keyboard shortcuts reference and preferences",
+        "label": "Shortcuts"
+      },
+      "skills": {
+        "description": "Automatic skill generation from sessions and the approval gate",
+        "label": "Skills"
+      },
+      "voice": {
+        "description": "Text-to-speech and speech-to-text (dictation) settings",
+        "label": "Voice"
+      }
+    }
+  }
+}

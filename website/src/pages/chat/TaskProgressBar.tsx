@@ -4,6 +4,7 @@ import { useAppSelector } from '../../store'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
 import type { TodoList } from '../../types'
 
+import { i18nT } from '../../i18n/t'
 /** Rows rendered before the list scrolls internally — bounds DOM on long plans. */
 const MAX_VISIBLE_ROWS = 12
 
@@ -68,7 +69,7 @@ const TaskProgressBar = memo(function TaskProgressBar({ slot }: { slot: string |
             className={`shrink-0 tabular-nums font-medium ${allDone ? 'text-ok' : 'text-text-strong'}`}
             data-testid="todo-count"
           >
-            {done} of {total}
+            {done} {i18nT('pages.chat.taskProgressBar.of')} {total}
           </span>
           <span
             className={`truncate text-left text-muted ${expanded ? 'min-w-0 flex-1' : 'min-w-0 max-w-[42ch]'}`}
@@ -83,7 +84,7 @@ const TaskProgressBar = memo(function TaskProgressBar({ slot }: { slot: string |
             aria-valuenow={done}
             aria-valuemin={0}
             aria-valuemax={total}
-            aria-label="Task completion"
+            aria-label={i18nT('pages.chat.taskProgressBar.task_completion')}
           >
             <span
               className={`block h-full rounded-full transition-all ${allDone ? 'bg-ok' : 'bg-accent'}`}
@@ -117,7 +118,7 @@ const TaskProgressBar = memo(function TaskProgressBar({ slot }: { slot: string |
             ))}
             {tasks.length > MAX_VISIBLE_ROWS && (
               <li className="text-[11px] text-muted/60 font-mono pl-[18px]">
-                + {tasks.length - MAX_VISIBLE_ROWS} more…
+                + {tasks.length - MAX_VISIBLE_ROWS} {i18nT('pages.chat.taskProgressBar.more')}
               </li>
             )}
           </ul>

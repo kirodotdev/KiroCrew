@@ -5,6 +5,7 @@ import { api } from '../api/client'
 import { useSessionPalette } from '../hooks/useSessionPalette'
 import { colorName } from '../utils/sessionColors'
 
+import { i18nT } from '../i18n/t'
 /**
  * The inline session-colour swatch row used as the `colorSlot` of
  * SessionActionsMenu — shared by the session-header dropdown and the sidebar row
@@ -54,7 +55,7 @@ export default function SessionColorSwatches({ slotKey, colorIndex, onPicked }: 
 
   return (
     <div className="flex items-center gap-1.5 px-3 py-1.5" onKeyDown={e => e.stopPropagation()}>
-      <button type="button" aria-label="No color" className={`w-4 h-4 rounded-full border-[1.5px] cursor-pointer transition-transform hover:scale-125 ${colorIndex == null ? 'border-text-strong scale-110' : 'border-transparent'}`} style={{ background: 'var(--bg-accent)', backgroundImage: 'linear-gradient(135deg, transparent 45%, var(--danger) 45%, var(--danger) 55%, transparent 55%)' }} onClick={() => pick(null)} title="No color" />
+      <button type="button" aria-label={i18nT('components.sessionColorSwatches.no_color')} className={`w-4 h-4 rounded-full border-[1.5px] cursor-pointer transition-transform hover:scale-125 ${colorIndex == null ? 'border-text-strong scale-110' : 'border-transparent'}`} style={{ background: 'var(--bg-accent)', backgroundImage: 'linear-gradient(135deg, transparent 45%, var(--danger) 45%, var(--danger) 55%, transparent 55%)' }} onClick={() => pick(null)} title={i18nT('components.sessionColorSwatches.no_color')} />
       {paletteColors.map((c, i) => (
         <button type="button" key={i} aria-label={colorName(c)} className={`w-4 h-4 rounded-full border-[1.5px] cursor-pointer transition-transform hover:scale-125 ${colorIndex === i ? 'border-text-strong scale-110' : 'border-transparent'}`} style={{ background: c }} onClick={() => pick(i)} title={colorName(c)} />
       ))}

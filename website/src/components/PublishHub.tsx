@@ -17,6 +17,7 @@ import StyledSelect from './StyledSelect'
 import type { Artifact } from '../types'
 import { safeHttpUrl } from '../lib/safeUrl'
 
+import { i18nT } from '../i18n/t'
 interface UnifiedProvider {
   id: string
   label: string
@@ -170,10 +171,10 @@ export function PublishHub({
     return (
       <Card>
         <div className="flex items-center justify-between mb-2">
-          <span className="text-sm font-semibold text-text-strong">Publish</span>
-          {onClose && <Btn onClick={onClose} aria-label="Close publish panel"><X size={12} /></Btn>}
+          <span className="text-sm font-semibold text-text-strong">{i18nT('components.publishHub.publish')}</span>
+          {onClose && <Btn onClick={onClose} aria-label={i18nT('components.publishHub.close_publish_panel')}><X size={12} /></Btn>}
         </div>
-        <p className="text-sm text-muted">No publish providers available for this artifact kind.</p>
+        <p className="text-sm text-muted">{i18nT('components.publishHub.no_publish_providers_available_for_this_artifact')}</p>
       </Card>
     )
   }
@@ -181,8 +182,8 @@ export function PublishHub({
   return (
     <Card>
       <div className="flex items-center justify-between mb-3">
-        <span className="text-sm font-semibold text-text-strong">Publish</span>
-        {onClose && <Btn onClick={onClose} aria-label="Close publish panel"><X size={12} /></Btn>}
+        <span className="text-sm font-semibold text-text-strong">{i18nT('components.publishHub.publish')}</span>
+        {onClose && <Btn onClick={onClose} aria-label={i18nT('components.publishHub.close_publish_panel')}><X size={12} /></Btn>}
       </div>
 
       {/* Provider list */}
@@ -208,7 +209,7 @@ export function PublishHub({
                   <div className="text-sm font-medium text-text">{p.label}</div>
                   {!p.configured && (
                     <div className="text-[11px] text-warn flex items-center gap-1">
-                      <Settings size={10} /> Setup required
+                      <Settings size={10} /> {i18nT('components.publishHub.setup_required')}
                     </div>
                   )}
                 </div>
@@ -222,19 +223,19 @@ export function PublishHub({
       {selected && preview && !result && !scanBlocked && (
         <div className="space-y-3">
           <div className="text-sm text-muted">
-            Publishing <span className="font-mono font-semibold text-text">{artifact.slug}</span> via{' '}
+            {i18nT('components.publishHub.publishing')} <span className="font-mono font-semibold text-text">{artifact.slug}</span> {i18nT('components.publishHub.via')}{' '}
             <span className="font-semibold text-text">{selected.label}</span>
           </div>
           <div className="text-[12px] text-muted space-y-1">
             {typeof preview.message === 'string' && <p>{preview.message}</p>}
-            {typeof preview.bytes === 'number' && <p>Size: {(preview.bytes / 1024).toFixed(1)} KB</p>}
-            {typeof preview.scan === 'string' && <p>Scan: {preview.scan}</p>}
+            {typeof preview.bytes === 'number' && <p>{i18nT('components.publishHub.size')} {(preview.bytes / 1024).toFixed(1)} {i18nT('components.publishHub.kb')}</p>}
+            {typeof preview.scan === 'string' && <p>{i18nT('components.publishHub.scan')} {preview.scan}</p>}
           </div>
           <div className="flex gap-2">
             <Btn primary onClick={() => confirmPublish()} disabled={busy}>
-              {busy ? 'Publishing…' : <><Upload size={12} /> Confirm &amp; Publish</>}
+              {busy ? 'Publishing…' : <><Upload size={12} /> {i18nT('components.publishHub.confirm_publish')}</>}
             </Btn>
-            <Btn onClick={() => { setPreview(null); setSelectedId('') }}>Back</Btn>
+            <Btn onClick={() => { setPreview(null); setSelectedId('') }}>{i18nT('components.publishHub.back')}</Btn>
           </div>
         </div>
       )}
@@ -243,7 +244,7 @@ export function PublishHub({
       {selected && scanBlocked && !result && (
         <div className="space-y-3">
           <div className="flex items-center gap-2 text-sm text-warn">
-            <AlertCircle size={14} /> Scan blocked ({scanBlocked.count} finding{scanBlocked.count === 1 ? '' : 's'})
+            <AlertCircle size={14} /> {i18nT('components.publishHub.scan_blocked')}{scanBlocked.count} {i18nT('components.publishHub.finding')}{scanBlocked.count === 1 ? '' : 's'})
           </div>
           <div className="text-[12px] text-muted p-2 rounded border border-warn/30 bg-warn-subtle">
             {scanBlocked.findings}
@@ -251,24 +252,22 @@ export function PublishHub({
           {scanBlocked.credential ? (
             <>
               <p className="text-[12px] text-warn font-medium">
-                Credential/security findings cannot be overridden. Remove the detected secrets from
-                your artifact before publishing.
+                {i18nT('components.publishHub.credential_security_findings_cannot_be_overridde')}
               </p>
               <div className="flex gap-2">
-                <Btn onClick={() => { setScanBlocked(null); setSelectedId('') }}>Cancel</Btn>
+                <Btn onClick={() => { setScanBlocked(null); setSelectedId('') }}>{i18nT('components.publishHub.cancel')}</Btn>
               </div>
             </>
           ) : (
             <>
               <p className="text-[12px] text-muted">
-                Publishing is blocked until scan findings are resolved. Override only if you have verified
-                the findings are acceptable.
+                {i18nT('components.publishHub.publishing_is_blocked_until_scan_findings_are_re')}
               </p>
               <div className="flex gap-2">
                 <Btn danger onClick={() => { setScanBlocked(null); confirmPublish(true) }} disabled={busy}>
                   {busy ? 'Publishing…' : 'Override & Publish Anyway'}
                 </Btn>
-                <Btn onClick={() => { setScanBlocked(null); setSelectedId('') }}>Cancel</Btn>
+                <Btn onClick={() => { setScanBlocked(null); setSelectedId('') }}>{i18nT('components.publishHub.cancel')}</Btn>
               </div>
             </>
           )}
@@ -279,11 +278,11 @@ export function PublishHub({
       {selected && !preview && !result && !scanBlocked && (
         <div className="space-y-3">
           <div className="text-sm text-muted">
-            Publish <span className="font-mono font-semibold text-text">{artifact.slug}</span> via{' '}
+            {i18nT('components.publishHub.publish')} <span className="font-mono font-semibold text-text">{artifact.slug}</span> {i18nT('components.publishHub.via')}{' '}
             <span className="font-semibold text-text">{selected.label}</span>?
           </div>
           <div>
-            <label className="text-[11px] text-muted block mb-1">TTL (time to live)</label>
+            <label className="text-[11px] text-muted block mb-1">{i18nT('components.publishHub.ttl_time_to_live')}</label>
             <StyledSelect
               options={['Persistent (no expiry)', '72 hours (requires reaper)']}
               value={ttlHours}
@@ -292,9 +291,9 @@ export function PublishHub({
           </div>
           <div className="flex gap-2">
             <Btn primary onClick={requestPreview} disabled={busy}>
-              {busy ? 'Checking…' : <><Upload size={12} /> Publish</>}
+              {busy ? 'Checking…' : <><Upload size={12} /> {i18nT('components.publishHub.publish')}</>}
             </Btn>
-            <Btn onClick={() => setSelectedId('')}>Back</Btn>
+            <Btn onClick={() => setSelectedId('')}>{i18nT('components.publishHub.back')}</Btn>
           </div>
         </div>
       )}
@@ -304,7 +303,7 @@ export function PublishHub({
         <div className="space-y-2">
           {result.url ? (
             <div className="flex items-center gap-2 text-sm text-ok">
-              <Check size={14} /> Published!
+              <Check size={14} /> {i18nT('components.publishHub.published')}
               {safeHttpUrl(result.url) && (
                 <a href={safeHttpUrl(result.url)!} target="_blank" rel="noreferrer" className="text-accent hover:underline inline-flex items-center gap-1">
                   <ExternalLink size={12} /> {result.url}
@@ -316,7 +315,7 @@ export function PublishHub({
               <AlertCircle size={14} /> {result.error}
             </div>
           )}
-          <Btn onClick={() => { setResult(null); setPreview(null); setScanBlocked(null); setSelectedId(''); onClose?.() }}>Done</Btn>
+          <Btn onClick={() => { setResult(null); setPreview(null); setScanBlocked(null); setSelectedId(''); onClose?.() }}>{i18nT('components.publishHub.done')}</Btn>
         </div>
       )}
     </Card>

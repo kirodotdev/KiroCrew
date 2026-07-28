@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { Download, X } from 'lucide-react'
 
+import { i18nT } from '../i18n/t'
 /**
  * In-app "update ready" modal for the packaged desktop app.
  *
@@ -75,7 +76,7 @@ export default function UpdateModal() {
       className="fixed inset-0 z-50 bg-bg/80 backdrop-blur-sm flex items-center justify-center animate-rise"
       role="button"
       tabIndex={-1}
-      aria-label="Dismiss update dialog"
+      aria-label={i18nT('components.updateModal.dismiss_update_dialog')}
       // Only dismiss when the click lands on the backdrop itself, not when it
       // bubbles up from the dialog — avoids needing a stopPropagation handler
       // (and its a11y warning) on the non-interactive dialog element.
@@ -86,31 +87,31 @@ export default function UpdateModal() {
         className="bg-card border border-border rounded-xl shadow-xl w-[460px] max-w-[90vw] flex flex-col overflow-hidden"
         role="dialog"
         aria-modal="true"
-        aria-label="Update ready"
+        aria-label={i18nT('components.updateModal.update_ready')}
       >
         <div className="flex items-center justify-between px-4 py-2.5 border-b border-border bg-bg-elevated">
           <div className="flex items-center gap-2">
             <Download className="lucide-inline text-accent" size={16} />
-            <span className="text-sm font-semibold text-text">Update ready</span>
+            <span className="text-sm font-semibold text-text">{i18nT('components.updateModal.update_ready')}</span>
           </div>
           <button
             type="button"
             className="text-muted hover:text-text cursor-pointer bg-transparent border-none disabled:opacity-50"
             onClick={dismiss}
             disabled={installing}
-            aria-label="Dismiss"
+            aria-label={i18nT('components.updateModal.dismiss')}
           >
             <X size={16} />
           </button>
         </div>
 
         <div className="px-4 py-3 text-sm text-text">
-          <p>KiroCrew {version && <span className="font-semibold">{version}</span>} is downloaded and ready to install.</p>
+          <p>{i18nT('components.updateModal.kirocrew')} {version && <span className="font-semibold">{version}</span>} {i18nT('components.updateModal.is_downloaded_and_ready_to_install')}</p>
           {notes && (
             <p className="mt-2 text-[13px] text-muted whitespace-pre-wrap max-h-40 overflow-auto">{notes}</p>
           )}
           <p className="mt-2 text-[12px] text-muted">
-            The app will stop the local gateway, install the update, and relaunch.
+            {i18nT('components.updateModal.the_app_will_stop_the_local_gateway_install_the')}
           </p>
         </div>
 
@@ -121,7 +122,7 @@ export default function UpdateModal() {
             onClick={dismiss}
             disabled={installing}
           >
-            Later
+            {i18nT('components.updateModal.later')}
           </button>
           <button
             type="button"

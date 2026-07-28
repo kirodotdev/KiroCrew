@@ -9,6 +9,7 @@ import type { Lesson, SessionInfo } from '../../types'
 import { useSortableTable } from '../../hooks/useSortableTable'
 import SortableHeader from '../../components/SortableHeader'
 
+import { i18nT } from '../../i18n/t'
 export default function MemoryTab({ refreshTrigger }: { refreshTrigger: number }) {
   const [pref, setPref] = useState(''); const [proj, setProj] = useState(''); const [hist, setHist] = useState('')
   const [prefSaved, setPrefSaved] = useState(false); const [projSaved, setProjSaved] = useState(false); const [histSaved, setHistSaved] = useState(false)
@@ -58,12 +59,12 @@ export default function MemoryTab({ refreshTrigger }: { refreshTrigger: number }
     setConsolidating(true); setConsolidateMsg(''); setConsolidateOk(false)
     const sessions = await api.sessions(200).catch(() => ({ sessions: [] }))
     const keys = sessions?.sessions?.map((s: SessionInfo) => s.key).filter(Boolean) || []
-    if (keys.length === 0) { setConsolidateMsg(<><XCircle className="lucide-inline" /> No sessions to consolidate — start a chat first</>); setConsolidating(false); return }
+    if (keys.length === 0) { setConsolidateMsg(<><XCircle className="lucide-inline" /> {i18nT('pages.overview.memoryTab.no_sessions_to_consolidate_start_a_chat_first')}</>); setConsolidating(false); return }
     const results = await Promise.allSettled(keys.map((k: string) => api.consolidateMemory(k, true)))
     const succeeded = results.filter(r => r.status === 'fulfilled').length
     const failed = results.filter(r => r.status === 'rejected').length
-    if (failed > 0) setConsolidateMsg(<><AlertTriangle className="lucide-inline" /> Consolidated {succeeded}/{keys.length} sessions ({failed} failed)</>)
-    else { setConsolidateMsg(<><CheckCircle className="lucide-inline" /> Consolidated {succeeded} session{succeeded === 1 ? '' : 's'}</>); setConsolidateOk(true) }
+    if (failed > 0) setConsolidateMsg(<><AlertTriangle className="lucide-inline" /> {i18nT('pages.overview.memoryTab.consolidated')} {succeeded}/{keys.length} {i18nT('pages.overview.memoryTab.sessions')}{failed} {i18nT('pages.overview.memoryTab.failed')}</>)
+    else { setConsolidateMsg(<><CheckCircle className="lucide-inline" /> {i18nT('pages.overview.memoryTab.consolidated')} {succeeded} {i18nT('pages.overview.memoryTab.session')}{succeeded === 1 ? '' : 's'}</>); setConsolidateOk(true) }
     setConsolidating(false)
     scheduleClear(() => setConsolidateMsg(''), 4000)
   }
@@ -71,47 +72,47 @@ export default function MemoryTab({ refreshTrigger }: { refreshTrigger: number }
     {/* Graph/vector internals live on the Developer page (Memory tab); this
         surface is the user-facing browser: settings, preferences, projects,
         daily history, and lessons. */}
-    <Card><CardTitle>Memory Settings <InfoTip text="Controls how conversation history is consolidated into memory." /></CardTitle>
+    <Card><CardTitle>{i18nT('pages.overview.memoryTab.memory_settings')} <InfoTip text="Controls how conversation history is consolidated into memory." /></CardTitle>
       <div className="flex gap-3 items-end flex-wrap">
         <label htmlFor="memory-idle-hours" className="flex flex-col gap-1 text-[13px] text-muted">
-          <span>Consolidation idle (hours)</span>
-          <input id="memory-idle-hours" aria-label="Consolidation idle (hours)" type="number" min={0.5} max={24} step={0.5} className="w-24 bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm font-body outline-none transition-colors focus-ring" value={idleHours} onChange={e => setIdleHours(Number(e.target.value))} />
+          <span>{i18nT('pages.overview.memoryTab.consolidation_idle_hours')}</span>
+          <input id="memory-idle-hours" aria-label={i18nT('pages.overview.memoryTab.consolidation_idle_hours')} type="number" min={0.5} max={24} step={0.5} className="w-24 bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm font-body outline-none transition-colors focus-ring" value={idleHours} onChange={e => setIdleHours(Number(e.target.value))} />
         </label>
         {!migrated && (
           <label htmlFor="memory-max-days" className="flex flex-col gap-1 text-[13px] text-muted">
-            <span>History retention (days)</span>
-            <input id="memory-max-days" aria-label="History retention (days)" type="number" min={7} max={365} step={1} className="w-24 bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm font-body outline-none transition-colors focus-ring" value={maxDays} onChange={e => setMaxDays(Number(e.target.value))} />
+            <span>{i18nT('pages.overview.memoryTab.history_retention_days')}</span>
+            <input id="memory-max-days" aria-label={i18nT('pages.overview.memoryTab.history_retention_days')} type="number" min={7} max={365} step={1} className="w-24 bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm font-body outline-none transition-colors focus-ring" value={maxDays} onChange={e => setMaxDays(Number(e.target.value))} />
           </label>
         )}
-        <Btn onClick={async () => { await api.saveMemorySettings({ history_idle_hours: idleHours, history_max_days: maxDays }); setSettingsSaved(true); scheduleClear(() => setSettingsSaved(false), 2000) }}>{settingsSaved ? <><Check className="lucide-inline" /> Saved</> : 'Save'}</Btn>
-        <Btn onClick={consolidate} disabled={consolidating}>{consolidating ? <><Hourglass className="lucide-inline" /> Running…</> : <><RefreshCw className="lucide-inline" /> Summarize now</>}</Btn>
+        <Btn onClick={async () => { await api.saveMemorySettings({ history_idle_hours: idleHours, history_max_days: maxDays }); setSettingsSaved(true); scheduleClear(() => setSettingsSaved(false), 2000) }}>{settingsSaved ? <><Check className="lucide-inline" /> {i18nT('pages.overview.memoryTab.saved')}</> : 'Save'}</Btn>
+        <Btn onClick={consolidate} disabled={consolidating}>{consolidating ? <><Hourglass className="lucide-inline" /> {i18nT('pages.overview.memoryTab.running')}</> : <><RefreshCw className="lucide-inline" /> {i18nT('pages.overview.memoryTab.summarize_now')}</>}</Btn>
         {consolidateMsg && <span className={`text-[13px] ${consolidateOk ? 'text-ok' : 'text-danger'}`}>{consolidateMsg}</span>}
 
-        {migrated && <span className="text-[12px] text-muted ml-2">Semantic memory active — text files are read-only</span>}
+        {migrated && <span className="text-[12px] text-muted ml-2">{i18nT('pages.overview.memoryTab.semantic_memory_active_text_files_are_read_only')}</span>}
       </div>
     </Card>
     <VectorMemoryCard onActiveChange={setVectorActive} onMigratedChange={setMigrated} />
     {!vectorActive && (<>
-      <Card><CardTitle>Preferences <InfoTip text="Learned user preferences (coding style, tools, workflows). Auto-updated by memory consolidation." /> <Btn onClick={async () => { await api.saveMemoryPreferences(pref); setPrefSaved(true); scheduleClear(() => setPrefSaved(false), 2000) }}>{prefSaved ? <><Check className="lucide-inline" /> Saved</> : 'Save'}</Btn></CardTitle>
-        <textarea aria-label="Preferences" className="w-full bg-bg-elevated border border-border rounded-md p-3 text-text text-sm font-body outline-none resize-y leading-relaxed transition-colors focus-ring" rows={8} value={pref} onChange={e => setPref(e.target.value)} placeholder="Loading…" /></Card>
-      <Card><CardTitle>Projects <Btn onClick={async () => { await api.saveMemoryProjects(proj); setProjSaved(true); scheduleClear(() => setProjSaved(false), 2000) }}>{projSaved ? <><Check className="lucide-inline" /> Saved</> : 'Save'}</Btn></CardTitle>
-        <textarea aria-label="Projects" className="w-full bg-bg-elevated border border-border rounded-md p-3 text-text text-sm font-body outline-none resize-y leading-relaxed transition-colors focus-ring" rows={8} value={proj} onChange={e => setProj(e.target.value)} placeholder="Loading…" /></Card>
-      <Card><CardTitle>Daily History <Btn onClick={async () => { await api.saveMemoryHistory(hist); setHistSaved(true); scheduleClear(() => setHistSaved(false), 2000) }}>{histSaved ? <><Check className="lucide-inline" /> Saved</> : 'Save'}</Btn></CardTitle>
-        <textarea aria-label="Daily History" className="w-full bg-bg-elevated border border-border rounded-md p-3 text-text text-sm font-mono outline-none resize-y leading-relaxed transition-colors focus-ring" rows={10} value={hist} onChange={e => setHist(e.target.value)} placeholder="No history yet" /></Card>
+      <Card><CardTitle>{i18nT('pages.overview.memoryTab.preferences')} <InfoTip text="Learned user preferences (coding style, tools, workflows). Auto-updated by memory consolidation." /> <Btn onClick={async () => { await api.saveMemoryPreferences(pref); setPrefSaved(true); scheduleClear(() => setPrefSaved(false), 2000) }}>{prefSaved ? <><Check className="lucide-inline" /> {i18nT('pages.overview.memoryTab.saved')}</> : 'Save'}</Btn></CardTitle>
+        <textarea aria-label={i18nT('pages.overview.memoryTab.preferences')} className="w-full bg-bg-elevated border border-border rounded-md p-3 text-text text-sm font-body outline-none resize-y leading-relaxed transition-colors focus-ring" rows={8} value={pref} onChange={e => setPref(e.target.value)} placeholder={i18nT('pages.overview.memoryTab.loading')} /></Card>
+      <Card><CardTitle>{i18nT('pages.overview.memoryTab.projects')} <Btn onClick={async () => { await api.saveMemoryProjects(proj); setProjSaved(true); scheduleClear(() => setProjSaved(false), 2000) }}>{projSaved ? <><Check className="lucide-inline" /> {i18nT('pages.overview.memoryTab.saved')}</> : 'Save'}</Btn></CardTitle>
+        <textarea aria-label={i18nT('pages.overview.memoryTab.projects')} className="w-full bg-bg-elevated border border-border rounded-md p-3 text-text text-sm font-body outline-none resize-y leading-relaxed transition-colors focus-ring" rows={8} value={proj} onChange={e => setProj(e.target.value)} placeholder={i18nT('pages.overview.memoryTab.loading')} /></Card>
+      <Card><CardTitle>{i18nT('pages.overview.memoryTab.daily_history')} <Btn onClick={async () => { await api.saveMemoryHistory(hist); setHistSaved(true); scheduleClear(() => setHistSaved(false), 2000) }}>{histSaved ? <><Check className="lucide-inline" /> {i18nT('pages.overview.memoryTab.saved')}</> : 'Save'}</Btn></CardTitle>
+        <textarea aria-label={i18nT('pages.overview.memoryTab.daily_history')} className="w-full bg-bg-elevated border border-border rounded-md p-3 text-text text-sm font-mono outline-none resize-y leading-relaxed transition-colors focus-ring" rows={10} value={hist} onChange={e => setHist(e.target.value)} placeholder={i18nT('pages.overview.memoryTab.no_history_yet')} /></Card>
     </>)}
     {!vectorActive && (
-      <Card><CardTitle>Lessons <InfoTip text="Persistent lessons injected into every session. Auto-extracted from task runner failures. Add manually via 'kirocrew learn add'. When vector memory is active, lessons are managed in the Semantic tab as lesson.* entries." /></CardTitle>
+      <Card><CardTitle>{i18nT('pages.overview.memoryTab.lessons')} <InfoTip text="Persistent lessons injected into every session. Auto-extracted from task runner failures. Add manually via 'kirocrew learn add'. When vector memory is active, lessons are managed in the Semantic tab as lesson.* entries." /></CardTitle>
       <div className="flex gap-2 items-center flex-wrap mb-3">
-        <Input placeholder="Rule (e.g. always use tabs, not spaces)" style={{ flex: 2 }} value={rule} onChange={e => setRule(e.target.value)} />
+        <Input placeholder={i18nT('pages.overview.memoryTab.rule_e_g_always_use_tabs_not_spaces')} style={{ flex: 2 }} value={rule} onChange={e => setRule(e.target.value)} />
         <select className="bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm font-body outline-none cursor-pointer appearance-none transition-colors focus-ring" style={{ flex: '0 0 140px' }} value={cat} onChange={e => setCat(e.target.value)}>
-          <option value="knowledge">knowledge</option><option value="tool">tool</option><option value="preference">preference</option>
+          <option value="knowledge">{i18nT('pages.overview.memoryTab.knowledge')}</option><option value="tool">{i18nT('pages.overview.memoryTab.tool')}</option><option value="preference">{i18nT('pages.overview.memoryTab.preference')}</option>
         </select>
-        <SendBtn onClick={async () => { if (!rule) return; await api.createLesson(rule, cat); setRule(''); loadLessons() }}>Add</SendBtn>
+        <SendBtn onClick={async () => { if (!rule) return; await api.createLesson(rule, cat); setRule(''); loadLessons() }}>{i18nT('pages.overview.memoryTab.add')}</SendBtn>
       </div>
-      <table className="w-full border-collapse table-striped"><thead><tr><SortableHeader label="Rule" sortKey="rule" sort={lessonSort} onToggle={toggleLessonSort} /><SortableHeader label="Category" sortKey="category" sort={lessonSort} onToggle={toggleLessonSort} /><SortableHeader label="When" sortKey="ts" sort={lessonSort} onToggle={toggleLessonSort} /><th aria-label="Actions" className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium"></th></tr></thead>
-        <tbody>{lessons.length === 0 ? <tr><td colSpan={4} className="text-muted italic px-2.5 py-3.5 text-sm">No lessons</td></tr> : sortedLessons.map((l) => (
+      <table className="w-full border-collapse table-striped"><thead><tr><SortableHeader label={i18nT('pages.overview.memoryTab.rule')} sortKey="rule" sort={lessonSort} onToggle={toggleLessonSort} /><SortableHeader label={i18nT('pages.overview.memoryTab.category')} sortKey="category" sort={lessonSort} onToggle={toggleLessonSort} /><SortableHeader label={i18nT('pages.overview.memoryTab.when')} sortKey="ts" sort={lessonSort} onToggle={toggleLessonSort} /><th aria-label={i18nT('pages.overview.memoryTab.actions')} className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium"></th></tr></thead>
+        <tbody>{lessons.length === 0 ? <tr><td colSpan={4} className="text-muted italic px-2.5 py-3.5 text-sm">{i18nT('pages.overview.memoryTab.no_lessons')}</td></tr> : sortedLessons.map((l) => (
           <tr key={`${l.rule}-${l.ts}`} className="hover:bg-bg-hover transition-colors"><td className="px-2.5 py-2 border-b border-border text-sm">{esc(l.rule)}</td><td className="px-2.5 py-2 border-b border-border text-sm"><Badge variant="ok">{l.category}</Badge></td><td className="px-2.5 py-2 border-b border-border text-sm">{new Date(l.ts).toLocaleString()}</td>
-            <td className="px-2.5 py-2 border-b border-border text-sm"><Btn danger onClick={async () => { await api.deleteLesson(l.rule); loadLessons() }}>Delete</Btn></td></tr>
+            <td className="px-2.5 py-2 border-b border-border text-sm"><Btn danger onClick={async () => { await api.deleteLesson(l.rule); loadLessons() }}>{i18nT('pages.overview.memoryTab.delete')}</Btn></td></tr>
         ))}</tbody></table></Card>
     )}
   </>)

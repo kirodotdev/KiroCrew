@@ -18,6 +18,23 @@ import * as fs from 'fs'
 
 const settingsDir = path.resolve(${JSON.stringify(ROOT)}, 'src/pages/settings')
 const { entries, skipped } = extractAll(settingsDir)
+
+// Minimum-count floor. The extractor matches JSX by regex, so a change to how labels
+// are written (e.g. the i18n conversion swapping \`label="X"\` for
+// \`label={i18nT('k')}\`) can silently stop matching and emit an EMPTY registry —
+// which takes ALL of settings search down with no error anywhere. That happened
+// once; this makes it loud instead. Raise the floor only alongside a real
+// increase in settings count.
+const FLOOR = 40
+if (entries.length < FLOOR) {
+  console.error(
+    \`Refusing to write registry: extracted only \${entries.length} entries \` +
+    \`(floor \${FLOOR}, \${skipped} skipped). The extractor's JSX patterns have \` +
+    \`likely stopped matching — see extractStringProp in scripts/settingsExtract.ts.\`
+  )
+  process.exit(1)
+}
+
 const outPath = path.resolve(${JSON.stringify(ROOT)}, 'src/components/commandPalette/settingsRegistry.gen.ts')
 const source = generateRegistrySource(entries)
 fs.writeFileSync(outPath, source)

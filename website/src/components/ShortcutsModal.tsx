@@ -5,6 +5,7 @@ import { DEFAULT_SHORTCUTS, formatShortcut, SHORTCUTS_ENABLED_KEY, SHORTCUTS_ENA
 import { isElectron } from '../lib/electron'
 import { Toggle } from './ui'
 
+import { i18nT } from '../i18n/t'
 /** Shortcut group headings, in display order. Shared with Settings → Shortcuts. */
 export const SHORTCUT_GROUPS = ['Chat Navigation', 'Panel Navigation', 'Actions', 'Instances'] as const
 
@@ -72,14 +73,14 @@ export function ShortcutRow({ label, keys }: { label: string; keys: string[] }) 
 export function SearchEverywhereRow() {
   return (
     <div className="flex items-center justify-between py-1.5 px-2 rounded-md hover:bg-bg-hover transition-colors">
-      <span className="text-[13px] text-text">Search Everywhere</span>
+      <span className="text-[13px] text-text">{i18nT('components.shortcutsModal.search_everywhere')}</span>
       <span className="flex items-center gap-1">
         <Kbd>{IS_MAC ? '⇧' : 'Shift'}</Kbd>
         <Kbd>{IS_MAC ? '⇧' : 'Shift'}</Kbd>
-        <span className="text-muted text-[11px] mx-1">or</span>
+        <span className="text-muted text-[11px] mx-1">{i18nT('components.shortcutsModal.or')}</span>
         <Kbd>{IS_MAC ? '⌘' : 'Ctrl'}</Kbd>
         <span className="text-muted text-[11px]">+</span>
-        <Kbd>K</Kbd>
+        <Kbd>{i18nT('components.shortcutsModal.k')}</Kbd>
       </span>
     </div>
   )
@@ -99,14 +100,14 @@ export default function ShortcutsModal({ onClose }: { onClose: () => void }) {
     // users close via Escape, already wired through the document keydown
     // listener above, so the dialog role stays keyboard-accessible.
     // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/60 backdrop-blur-sm animate-rise" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts" onClick={onClose}>
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/60 backdrop-blur-sm animate-rise" role="dialog" aria-modal="true" aria-label={i18nT('components.shortcutsModal.keyboard_shortcuts')} onClick={onClose}>
       {/* onClick only stops propagation so inner clicks don't hit the backdrop
           dismiss handler; it is event plumbing, not an interactive control. */}
       {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions */}
       <div className="bg-card border border-border rounded-xl p-6 max-w-lg w-full mx-4 shadow-xl max-h-[80vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
         <div className="flex justify-between items-center mb-5">
-          <div className="flex items-center gap-2 text-sm font-bold text-text-strong"><Keyboard size={16} /> Keyboard Shortcuts</div>
-          <button className="text-muted cursor-pointer hover:text-text bg-transparent border-none" onClick={onClose} aria-label="Close"><X size={16} /></button>
+          <div className="flex items-center gap-2 text-sm font-bold text-text-strong"><Keyboard size={16} /> {i18nT('components.shortcutsModal.keyboard_shortcuts_2')}</div>
+          <button className="text-muted cursor-pointer hover:text-text bg-transparent border-none" onClick={onClose} aria-label={i18nT('components.shortcutsModal.close')}><X size={16} /></button>
         </div>
         {SHORTCUT_GROUPS.map(group => {
           const entries = groupShortcuts(group, macCtrl)
@@ -123,25 +124,25 @@ export default function ShortcutsModal({ onClose }: { onClose: () => void }) {
           )
         })}
         <div className="mb-5 last:mb-0">
-          <div className="text-[12px] font-medium text-muted uppercase tracking-wider mb-2">Search</div>
+          <div className="text-[12px] font-medium text-muted uppercase tracking-wider mb-2">{i18nT('components.shortcutsModal.search')}</div>
           <div className="grid gap-1">
             <SearchEverywhereRow />
           </div>
         </div>
         <div className="mt-4 pt-3 border-t border-border flex items-center justify-between">
           <span className="flex items-center gap-2 text-[12px] text-muted cursor-pointer">
-            <Toggle checked={enabled} onChange={toggle} label="Enable shortcuts" />
-            <span>Enable shortcuts</span>
+            <Toggle checked={enabled} onChange={toggle} label={i18nT('components.shortcutsModal.enable_shortcuts')} />
+            <span>{i18nT('components.shortcutsModal.enable_shortcuts')}</span>
           </span>
           <span className="text-[12px] text-muted">
-            <Kbd>{IS_MAC ? '⌥' : 'Alt'}</Kbd> <span className="text-[11px]">+</span> <Kbd>K</Kbd> always works
+            <Kbd>{IS_MAC ? '⌥' : 'Alt'}</Kbd> <span className="text-[11px]">+</span> <Kbd>{i18nT('components.shortcutsModal.k')}</Kbd> {i18nT('components.shortcutsModal.always_works')}
           </span>
         </div>
         {IS_MAC && (
           <div className="mt-2 flex items-center">
             <span className="flex items-center gap-2 text-[12px] text-muted cursor-pointer">
-              <Toggle checked={macCtrl} onChange={toggleMacCtrl} label="Use Ctrl (not Option) for chat 1 to 9" />
-              <span>Use ⌃ Ctrl (not ⌥ Option) for chat 1–9</span>
+              <Toggle checked={macCtrl} onChange={toggleMacCtrl} label={i18nT('components.shortcutsModal.use_ctrl_not_option_for_chat_1_to_9')} />
+              <span>{i18nT('components.shortcutsModal.use_ctrl_not_option_for_chat_1_9')}</span>
             </span>
           </div>
         )}

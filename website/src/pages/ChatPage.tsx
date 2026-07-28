@@ -150,6 +150,7 @@ import { tryQuickSend } from '../lib/quickSend'
 import { rewindWithRollback } from '../lib/rewindCall'
 
 
+import { i18nT } from '../i18n/t'
 /**
  * Human-readable reason from a rejected thunk. `unwrap()` rejects with RTK's
  * SERIALIZED error — a plain object, never an `Error` instance — so an
@@ -190,7 +191,7 @@ export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, mode }: 
   return (
     <DropdownMenu open={open} onOpenChange={setOpen}>
       <DropdownMenuTrigger asChild>
-        <button className="px-0.5 py-1 rounded-md text-muted hover:text-text cursor-pointer bg-transparent border-none transition-all" aria-label="Session options">
+        <button className="px-0.5 py-1 rounded-md text-muted hover:text-text cursor-pointer bg-transparent border-none transition-all" aria-label={i18nT('pages.chatPage.session_options')}>
           <ChevronDown size={14} />
         </button>
       </DropdownMenuTrigger>
@@ -206,12 +207,12 @@ export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, mode }: 
             <DropdownMenuSub key="mcp" onOpenChange={setMcpOpen}>
               <DropdownMenuSubTrigger>
                 <Plug size={13} className="shrink-0 text-muted" />
-                <span className="flex-1">MCP servers</span>
+                <span className="flex-1">{i18nT('pages.chatPage.mcp_servers')}</span>
                 <ChevronRight size={12} className="text-muted" />
               </DropdownMenuSubTrigger>
               <DropdownMenuSubContent className="min-w-[220px] max-w-[280px] max-h-[300px] overflow-y-auto px-3 py-2">
-                <div className="text-[11px] uppercase tracking-wider text-muted font-semibold mb-1.5">MCP Servers {servers.length > 0 && `(${servers.filter((s: {enabled?: boolean}) => s.enabled !== false).length}/${servers.length})`}</div>
-                {servers.length === 0 ? <div className="text-muted text-[12px] italic">Loading…</div> : servers.map((s: {name: string; enabled?: boolean}) => (
+                <div className="text-[11px] uppercase tracking-wider text-muted font-semibold mb-1.5">{i18nT('pages.chatPage.mcp_servers_2')} {servers.length > 0 && `(${servers.filter((s: {enabled?: boolean}) => s.enabled !== false).length}/${servers.length})`}</div>
+                {servers.length === 0 ? <div className="text-muted text-[12px] italic">{i18nT('pages.chatPage.loading')}</div> : servers.map((s: {name: string; enabled?: boolean}) => (
                   <div key={s.name} className={`flex items-center gap-2 py-0.5 text-[12px] ${s.enabled === false ? 'opacity-40' : ''}`}>
                     <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${s.enabled === false ? 'bg-muted' : 'bg-ok'}`} />
                     <code className="text-text">{s.name}</code>
@@ -276,7 +277,7 @@ function KnowledgeBubbleChip({ knowledge }: { knowledge: { items: number; tokens
         aria-expanded={expanded}
         aria-label={`${expanded ? 'Collapse' : 'Expand'} knowledge context`}
       >
-        <BookOpen size={12} className="shrink-0" /> {knowledge.items} knowledge {knowledge.items === 1 ? 'item' : 'items'} · {knowledge.tokens.toLocaleString()} tokens
+        <BookOpen size={12} className="shrink-0" /> {knowledge.items} {i18nT('pages.chatPage.knowledge')} {knowledge.items === 1 ? 'item' : 'items'} · {knowledge.tokens.toLocaleString()} {i18nT('pages.chatPage.tokens')}
       </button>
       {expanded && knowledge.content && (
         <div className="mt-1 max-h-[300px] overflow-auto rounded border border-border bg-bg-elevated p-2 text-[11px]">
@@ -3536,7 +3537,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
                   const r = await api.planFromChat(steps, planTaskId)
                   if (r.ok) { navigate('/projects?applied=' + (r.task_id || planTaskId)); return true }
                 } catch { /* API error */ }
-                alert('Failed to apply plan')
+                alert(i18nT('pages.chatPage.failed_to_apply_plan'))
                 return false
               }} />
             </div>
@@ -3747,18 +3748,18 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
         {uploadError && (
           <div className="mx-4 mt-2 mb-0 bg-bg-elevated border rounded-lg p-3 flex items-center gap-3 animate-rise" style={{ borderColor: 'color-mix(in srgb, var(--danger) 45%, transparent)' }}>
             <span className="text-sm text-text flex-1">{uploadError}</span>
-            <button onClick={() => setUploadError('')} aria-label="Dismiss upload error" className="text-muted hover:text-text text-lg leading-none">&times;</button>
+            <button onClick={() => setUploadError('')} aria-label={i18nT('pages.chatPage.dismiss_upload_error')} className="text-muted hover:text-text text-lg leading-none">&times;</button>
           </div>
         )}
         {sidError && (
           <div className="mx-4 mt-2 mb-0 bg-bg-elevated border rounded-lg p-3 flex items-center gap-3 animate-rise" style={{ borderColor: 'color-mix(in srgb, var(--warn) 45%, transparent)' }}>
             <span className="text-sm text-text flex-1">{sidError}</span>
-            <button onClick={() => setSidError('')} aria-label="Dismiss error" className="text-muted hover:text-text text-lg leading-none">&times;</button>
+            <button onClick={() => setSidError('')} aria-label={i18nT('pages.chatPage.dismiss_error')} className="text-muted hover:text-text text-lg leading-none">&times;</button>
           </div>
         )}
         {isMobile && !sidebarOpen && !(activeSlot && (messages.length > 0 || slotRunning)) && (
           <div className="fixed top-[42px] left-2 z-10">
-            <button className="p-2 rounded-lg text-muted hover:text-text bg-bg-elevated border border-border shadow-sm cursor-pointer" onClick={() => setMobileSessions(true)} aria-label="Toggle sessions">
+            <button className="p-2 rounded-lg text-muted hover:text-text bg-bg-elevated border border-border shadow-sm cursor-pointer" onClick={() => setMobileSessions(true)} aria-label={i18nT('pages.chatPage.toggle_sessions')}>
               {effectiveMode === 'orchestrator' ? <MessageSquareDot size={18} /> : <MessageSquare size={18} />}
             </button>
           </div>
@@ -3771,8 +3772,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
           />
         ) : !activeSlot ? (
           <div className="flex-1 flex flex-col items-center justify-center gap-4 px-8">
-            <EmptyState icon={<MessageSquare className="lucide-inline" />} title="What can I do for you?" subtitle="Start a new chat to begin" />
-            <Btn primary onClick={() => dispatch(createSlot({ agent: pendingAgent || defaultAgent || undefined, model: pendingModel || undefined, mode }))}>Start a new chat</Btn>
+            <EmptyState icon={<MessageSquare className="lucide-inline" />} title={i18nT('pages.chatPage.what_can_i_do_for_you')} subtitle={i18nT('pages.chatPage.start_a_new_chat_to_begin')} />
+            <Btn primary onClick={() => dispatch(createSlot({ agent: pendingAgent || defaultAgent || undefined, model: pendingModel || undefined, mode }))}>{i18nT('pages.chatPage.start_a_new_chat')}</Btn>
           </div>
         ) : (
           <SearchHighlightContext.Provider value={searchCtxValue}>
@@ -3784,7 +3785,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
             <div className="absolute top-0 left-0 right-1.5 z-10 pointer-events-none" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
               <div className={`pr-5 pt-3 pb-2 flex items-center gap-2 bg-bg pointer-events-none ${!sidebarOpen && !isMobile ? 'pl-14' : 'pl-5'}`}>
                 {embedMode !== 'chat' && isMobile && (
-                  <button className="p-1 rounded-md text-muted hover:text-text cursor-pointer bg-transparent border-none pointer-events-auto" onClick={() => setMobileSessions(p => !p)} aria-label="Toggle sessions">
+                  <button className="p-1 rounded-md text-muted hover:text-text cursor-pointer bg-transparent border-none pointer-events-auto" onClick={() => setMobileSessions(p => !p)} aria-label={i18nT('pages.chatPage.toggle_sessions')}>
                     {effectiveMode === 'orchestrator' ? <MessageSquareDot size={16} /> : <MessageSquare size={16} />}
                   </button>
                 )}
@@ -3800,19 +3801,19 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
                 </div>
               {editingTitle ? (
                 <div className="flex w-fit items-center gap-1 px-1.5 py-0.5 rounded-l-[2px] rounded-r-md bg-bg-hover">
-                  {currentSlot?.memory_mode === 'incognito' && <span title="Incognito — memory writes disabled"><EyeOff size={13} className="shrink-0 text-warn" /></span>}
-                  {currentSlot?.memory_mode === 'temporary' && <span title="Temporary — no memory reads or writes"><VenetianMask size={13} className="shrink-0 text-aim" /></span>}
+                  {currentSlot?.memory_mode === 'incognito' && <span title={i18nT('pages.chatPage.incognito_memory_writes_disabled')}><EyeOff size={13} className="shrink-0 text-warn" /></span>}
+                  {currentSlot?.memory_mode === 'temporary' && <span title={i18nT('pages.chatPage.temporary_no_memory_reads_or_writes')}><VenetianMask size={13} className="shrink-0 text-aim" /></span>}
                   <Input className="session-header-title text-sm font-semibold text-muted font-body bg-transparent border-0 rounded-none p-0 m-0 flex-none outline-none max-w-[50vw] focus:!shadow-none" size={Math.min(Math.max(titleDraft.length + 2, 6), 80)} autoFocus value={titleDraft} onChange={e => setTitleDraft(e.target.value)} onBlur={() => { if (!cancelTitleRef.current && titleDraft.trim() && activeSlot && titleDraft !== title) { dispatch(sseSlotTitle({ key: activeSlot, title: titleDraft.trim() })); api.renameSlot(activeSlot, titleDraft.trim()).catch(() => {}) } cancelTitleRef.current = false; setEditingTitle(false) }} onCompositionStart={() => { composingRef.current = true }} onCompositionEnd={() => { composingRef.current = true; setTimeout(() => { composingRef.current = false }, 50) }} onKeyDown={e => { if (e.key === 'Enter' && !e.nativeEvent.isComposing && !composingRef.current) (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') { cancelTitleRef.current = true; setEditingTitle(false) } }} />
                 </div>
               ) : (
                 <div className="cursor-text flex items-center gap-1 px-1.5 py-0.5 rounded-l-[2px] rounded-r-md group-hover/header:bg-bg-hover transition-colors">
                   <Clickable className="flex items-center gap-1" onClick={() => { if (activeSlot && generatingTitleSlots.has(activeSlot)) return; setEditingTitle(true); setTitleDraft(title) }}>
-                    {currentSlot?.memory_mode === 'incognito' && <span title="Incognito — memory writes disabled"><EyeOff size={13} className="shrink-0 text-warn" /></span>}
-                    {currentSlot?.memory_mode === 'temporary' && <span title="Temporary — no memory reads or writes"><VenetianMask size={13} className="shrink-0 text-aim" /></span>}
+                    {currentSlot?.memory_mode === 'incognito' && <span title={i18nT('pages.chatPage.incognito_memory_writes_disabled')}><EyeOff size={13} className="shrink-0 text-warn" /></span>}
+                    {currentSlot?.memory_mode === 'temporary' && <span title={i18nT('pages.chatPage.temporary_no_memory_reads_or_writes')}><VenetianMask size={13} className="shrink-0 text-aim" /></span>}
                     <TypewriterText text={title} className="session-header-title text-sm font-semibold text-muted font-body truncate max-w-[50vw]" />
                     <Pen size={13} className="shrink-0 text-muted opacity-0 group-hover/header:opacity-60 transition-opacity" />
                   </Clickable>
-                  {activeSlot && (generatingTitleSlots.has(activeSlot) ? <Loader size={16} className="shrink-0 text-accent animate-spin" /> : <Btn aria-label="Regenerate title with LLM" className="shrink-0 text-muted opacity-0 group-hover/header:opacity-40 hover:!opacity-100 hover:text-accent transition-all cursor-pointer bg-transparent border-none p-0" title="Regenerate title with LLM" onClick={e => { e.stopPropagation(); if (!activeSlot || generatingTitleSlots.has(activeSlot)) return; const slot = activeSlot; setGeneratingTitleSlots(prev => new Set(prev).add(slot)); api.generateTitle(slot).then(r => { /* title is redacted server-side via redact_exfiltration_urls + redact_credentials */ if (r.title) dispatch(sseSlotTitle({ key: slot, title: r.title })) }).catch(e => {
+                  {activeSlot && (generatingTitleSlots.has(activeSlot) ? <Loader size={16} className="shrink-0 text-accent animate-spin" /> : <Btn aria-label={i18nT('pages.chatPage.regenerate_title_with_llm')} className="shrink-0 text-muted opacity-0 group-hover/header:opacity-40 hover:!opacity-100 hover:text-accent transition-all cursor-pointer bg-transparent border-none p-0" title={i18nT('pages.chatPage.regenerate_title_with_llm')} onClick={e => { e.stopPropagation(); if (!activeSlot || generatingTitleSlots.has(activeSlot)) return; const slot = activeSlot; setGeneratingTitleSlots(prev => new Set(prev).add(slot)); api.generateTitle(slot).then(r => { /* title is redacted server-side via redact_exfiltration_urls + redact_credentials */ if (r.title) dispatch(sseSlotTitle({ key: slot, title: r.title })) }).catch(e => {
                     // eslint-disable-next-line no-console -- surface title-generation failures for debugging
                     console.warn('Failed to generate title:', e)
                   }).finally(() => setGeneratingTitleSlots(prev => { const next = new Set(prev); next.delete(slot); return next })) }}><Sparkles size={16} /></Btn>)}
@@ -3829,15 +3830,15 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
                   dimmed icon to act, an accent chip when the state is active.
                   Inside the popout window itself the same spot carries Return. */}
               {popout ? (
-                <Clickable className="flex items-center gap-1 text-muted hover:text-text transition-colors cursor-pointer pointer-events-auto text-[11px] font-medium px-1.5 py-0.5 rounded hover:bg-bg-hover" onClick={returnSelfToMain} title="Return this session to the main window" aria-label="Return to main window">
-                  <Undo2 size={13} /> Return
+                <Clickable className="flex items-center gap-1 text-muted hover:text-text transition-colors cursor-pointer pointer-events-auto text-[11px] font-medium px-1.5 py-0.5 rounded hover:bg-bg-hover" onClick={returnSelfToMain} title={i18nT('pages.chatPage.return_this_session_to_the_main_window')} aria-label={i18nT('pages.chatPage.return_to_main_window')}>
+                  <Undo2 size={13} /> {i18nT('pages.chatPage.return')}
                 </Clickable>
               ) : !embedMode && activeSlot && (activePoppedOut ? (
-                <Clickable className="flex items-center gap-1 text-accent bg-accent/10 hover:bg-accent/20 transition-colors cursor-pointer pointer-events-auto text-[11px] font-medium px-1.5 py-0.5 rounded" onClick={() => focusActivePopout(activeSlot)} title="This session is open in its own window — focus it" aria-label="Focus popped-out window">
-                  <ExternalLink size={13} /> Popped out
+                <Clickable className="flex items-center gap-1 text-accent bg-accent/10 hover:bg-accent/20 transition-colors cursor-pointer pointer-events-auto text-[11px] font-medium px-1.5 py-0.5 rounded" onClick={() => focusActivePopout(activeSlot)} title={i18nT('pages.chatPage.this_session_is_open_in_its_own_window_focus_it')} aria-label={i18nT('pages.chatPage.focus_popped_out_window')}>
+                  <ExternalLink size={13} /> {i18nT('pages.chatPage.popped_out')}
                 </Clickable>
               ) : (
-                <Clickable className="flex items-center justify-center w-7 h-7 rounded-md hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0 text-muted hover:text-text pointer-events-auto" onClick={() => openActivePopout(activeSlot, currentSlot?.title)} title="Pop out to window" aria-label="Pop out session to its own window">
+                <Clickable className="flex items-center justify-center w-7 h-7 rounded-md hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0 text-muted hover:text-text pointer-events-auto" onClick={() => openActivePopout(activeSlot, currentSlot?.title)} title={i18nT('pages.chatPage.pop_out_to_window')} aria-label={i18nT('pages.chatPage.pop_out_session_to_its_own_window')}>
                   <ExternalLink size={15} />
                 </Clickable>
               ))}
@@ -3860,11 +3861,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
                 </Clickable>
               )}
               {!embedMode && splitFeatureEnabled && (splitAnchorForActive && !activeIsSplitAnchor ? (
-                <Clickable className="flex items-center gap-1 text-accent bg-accent/10 hover:bg-accent/20 transition-colors cursor-pointer pointer-events-auto text-[11px] font-medium px-1.5 py-0.5 rounded" onClick={() => enterSplit(splitAnchorForActive)} title="This session is open in a split — return to it" aria-label="Return to split view">
-                <Columns2 size={13} /> In split
+                <Clickable className="flex items-center gap-1 text-accent bg-accent/10 hover:bg-accent/20 transition-colors cursor-pointer pointer-events-auto text-[11px] font-medium px-1.5 py-0.5 rounded" onClick={() => enterSplit(splitAnchorForActive)} title={i18nT('pages.chatPage.this_session_is_open_in_a_split_return_to_it')} aria-label={i18nT('pages.chatPage.return_to_split_view')}>
+                <Columns2 size={13} /> {i18nT('pages.chatPage.in_split')}
               </Clickable>
               ) : (
-                <Clickable className="opacity-40 hover:opacity-100 transition-opacity cursor-pointer pointer-events-auto" onClick={() => enterSplit(activeSlot)} title="Split view (⌘D)" aria-label="Enter split view">
+                <Clickable className="opacity-40 hover:opacity-100 transition-opacity cursor-pointer pointer-events-auto" onClick={() => enterSplit(activeSlot)} title={i18nT('pages.chatPage.split_view_d')} aria-label={i18nT('pages.chatPage.enter_split_view')}>
                 <Columns2 size={14} />
               </Clickable>
               ))}
@@ -3878,8 +3879,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
                   type="button"
                   className="w-8 h-8 rounded-full flex items-center justify-center cursor-pointer pointer-events-auto transition-all duration-200 bg-bg-elevated border border-border-strong text-text hover:bg-bg-hover hover:border-accent hover:scale-[1.06] active:scale-95 active:duration-75 shadow-md"
                   onClick={scrollToPrevUserMessage}
-                  aria-label="Scroll to previous user message"
-                  title="Scroll to previous user message"
+                  aria-label={i18nT('pages.chatPage.scroll_to_previous_user_message')}
+                  title={i18nT('pages.chatPage.scroll_to_previous_user_message')}
                 ><ArrowUp size={14} strokeWidth={2.5} /></button>
               </div>
             )}
@@ -3961,7 +3962,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
                 // it works at the DOM-element granularity.
                 overflowAnchor: 'auto',
               } as React.CSSProperties}
-              aria-label="Chat messages"
+              aria-label={i18nT('pages.chatPage.chat_messages')}
               aria-live="polite"
               onScroll={onScrollTopmost}
             >
@@ -4050,7 +4051,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
                   <button
                     className="w-8 h-8 rounded-full flex items-center justify-center cursor-pointer pointer-events-auto transition-all duration-200 bg-bg-elevated border border-border-strong text-text hover:bg-bg-hover hover:border-accent hover:scale-[1.06] active:scale-95 active:duration-75 shadow-md"
                     onClick={() => { isAtBottomRef.current = true; scrollBottom(true) }}
-                    aria-label="Scroll to bottom"
+                    aria-label={i18nT('pages.chatPage.scroll_to_bottom')}
                   ><ArrowDown size={14} strokeWidth={2.5} /></button>
                 </div>
               )}
@@ -4067,9 +4068,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
               {showHistorySuggestions && (
                 <div className="absolute left-0 right-0 bottom-full mb-1 mx-auto w-full max-w-[760px] border border-border rounded-lg bg-card overflow-hidden animate-scale-in z-50 shadow-lg flex flex-col max-h-[min(300px,40vh)]">
                   <div className="px-3.5 py-2.5 border-b border-border shrink-0">
-                    <span className="text-[12px] font-semibold text-muted tracking-[.02em]">Continue a previous chat?</span>
+                    <span className="text-[12px] font-semibold text-muted tracking-[.02em]">{i18nT('pages.chatPage.continue_a_previous_chat')}</span>
                   </div>
-                  <div className="overflow-y-auto flex-1 min-h-0" role="listbox" aria-label="Previous chats">
+                  <div className="overflow-y-auto flex-1 min-h-0" role="listbox" aria-label={i18nT('pages.chatPage.previous_chats')}>
                     {historySuggestions.map((s) => (
                       <div
                         key={s.key}
@@ -4089,7 +4090,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
                     ))}
                   </div>
                   <div className="px-3.5 py-2 border-t border-border flex justify-end shrink-0">
-                    <span className="text-[11px] text-muted-strong">Esc to dismiss</span>
+                    <span className="text-[11px] text-muted-strong">{i18nT('pages.chatPage.esc_to_dismiss')}</span>
                   </div>
                 </div>
               )}
@@ -4275,7 +4276,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
               }}
               pasteBlocks={pasteBlocks}
               onPasteBlocksChange={setPasteBlocks}
-              knowledgeChip={knowledgeFetch.pendingKnowledge ? <div className="flex items-start gap-1"><KnowledgeBubbleChip knowledge={{ items: knowledgeFetch.pendingKnowledge.items.length, tokens: knowledgeFetch.pendingKnowledge.totalTokens, titles: knowledgeFetch.pendingKnowledge.items.map(i => i.title), content: knowledgeFetch.pendingKnowledge.items.map(i => ({ title: i.title, text: i.content.slice(0, 2000) })) }} /><button type="button" onClick={() => knowledgeFetch.clearPending()} className="shrink-0 mt-0.5 p-0.5 text-muted hover:text-danger bg-transparent border-none cursor-pointer rounded hover:bg-danger/10 transition-colors" aria-label="Remove knowledge context" title="Remove knowledge context">&times;</button></div> : undefined}
+              knowledgeChip={knowledgeFetch.pendingKnowledge ? <div className="flex items-start gap-1"><KnowledgeBubbleChip knowledge={{ items: knowledgeFetch.pendingKnowledge.items.length, tokens: knowledgeFetch.pendingKnowledge.totalTokens, titles: knowledgeFetch.pendingKnowledge.items.map(i => i.title), content: knowledgeFetch.pendingKnowledge.items.map(i => ({ title: i.title, text: i.content.slice(0, 2000) })) }} /><button type="button" onClick={() => knowledgeFetch.clearPending()} className="shrink-0 mt-0.5 p-0.5 text-muted hover:text-danger bg-transparent border-none cursor-pointer rounded hover:bg-danger/10 transition-colors" aria-label={i18nT('pages.chatPage.remove_knowledge_context')} title={i18nT('pages.chatPage.remove_knowledge_context')}>&times;</button></div> : undefined}
               connected={connected}
             />
             </div>
@@ -4293,11 +4294,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
               // role="listbox"; the dialog is a focus container (tabIndex={-1}),
               // not an interactive widget itself, so this delegation is intentional.
               // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions
-              <div ref={agentDropdownRef} role="dialog" aria-label="Agent selector" tabIndex={-1} onKeyDown={onAgentListKeyDown} className="fixed z-[9999] bg-bg-elevated border border-border rounded-xl shadow-xl min-w-[260px] max-w-[340px] flex flex-col p-1 gap-0.5 animate-slide-up" style={(() => { const left = Math.max(8, Math.min(agentBtnRect.left, window.innerWidth - 348)); return { bottom: window.innerHeight - agentBtnRect.top + 4, left } })()}>
+              <div ref={agentDropdownRef} role="dialog" aria-label={i18nT('pages.chatPage.agent_selector')} tabIndex={-1} onKeyDown={onAgentListKeyDown} className="fixed z-[9999] bg-bg-elevated border border-border rounded-xl shadow-xl min-w-[260px] max-w-[340px] flex flex-col p-1 gap-0.5 animate-slide-up" style={(() => { const left = Math.max(8, Math.min(agentBtnRect.left, window.innerWidth - 348)); return { bottom: window.innerHeight - agentBtnRect.top + 4, left } })()}>
                 <div className="px-1.5 pt-1.5 pb-1">
-                  <Input ref={agentInputRef} type="text" aria-label="Filter agents" placeholder="Type to filter…" value={agentFilter} onChange={e => setAgentFilter(e.target.value)} className="w-full px-2 py-1 text-[13px] font-mono" />
+                  <Input ref={agentInputRef} type="text" aria-label={i18nT('pages.chatPage.filter_agents')} placeholder={i18nT('pages.chatPage.type_to_filter')} value={agentFilter} onChange={e => setAgentFilter(e.target.value)} className="w-full px-2 py-1 text-[13px] font-mono" />
                 </div>
-                <div role="listbox" aria-label="Agent list" className="overflow-y-auto max-h-[280px]">
+                <div role="listbox" aria-label={i18nT('pages.chatPage.agent_list')} className="overflow-y-auto max-h-[280px]">
                 <AgentDropdownList agents={filteredAgents} activeAgent={currentSlot?.agent || 'default'} defaultAgent={defaultAgent} onSelect={(name) => { switchAgent(name); setAgentDropdown(false) }} filter={agentFilter} />
                 </div>
               </div>,

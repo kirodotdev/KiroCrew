@@ -14,6 +14,7 @@ import ChatMessageList from './ChatMessageList'
 import { useAppApi } from './index'
 import type { ChatMessage } from '../types'
 
+import { i18nT } from '../i18n/t'
 export interface ChatEmbedProps {
   slotKey: string
   agent?: string
@@ -78,12 +79,12 @@ function ChatEmbed({ slotKey, agent, placeholder }: ChatEmbedProps) {
         <span className={`w-2 h-2 rounded-full shrink-0 ${running ? 'bg-ok animate-pulse' : 'bg-accent'}`} />
         <span className="text-[13px] font-semibold text-text-strong truncate flex-1">{title || slotKey}</span>
         {agent && <span className="text-[10px] font-mono text-muted">{agent}</span>}
-        {running && <span className="text-[10px] text-ok font-mono">streaming</span>}
+        {running && <span className="text-[10px] text-ok font-mono">{i18nT('appSdk.chatEmbed.streaming')}</span>}
       </div>
 
       <div className="flex-1 overflow-y-auto py-4 min-h-0">
         {messages.length === 0 && !running && (
-          <div className="text-center text-muted text-[13px] py-10">Session ready. Type a message to start.</div>
+          <div className="text-center text-muted text-[13px] py-10">{i18nT('appSdk.chatEmbed.session_ready_type_a_message_to_start')}</div>
         )}
         <ChatMessageList messages={messages} running={running} />
         <div ref={endRef} />
@@ -92,7 +93,7 @@ function ChatEmbed({ slotKey, agent, placeholder }: ChatEmbedProps) {
       <div className="flex items-center gap-2 px-3 py-2 border-t border-border bg-bg-subtle shrink-0">
         <input
           type="text"
-          aria-label="Chat message"
+          aria-label={i18nT('appSdk.chatEmbed.chat_message')}
           className="flex-1 px-3 py-2 text-sm bg-bg-elevated border border-border rounded-md text-text outline-none focus:border-accent transition-colors"
           value={input}
           onChange={e => setInput(e.target.value)}
@@ -104,8 +105,8 @@ function ChatEmbed({ slotKey, agent, placeholder }: ChatEmbedProps) {
           className="p-2 rounded-md bg-accent text-accent-fg disabled:opacity-40 disabled:cursor-not-allowed hover:opacity-80 transition-opacity"
           onClick={send}
           disabled={sendMutation.isPending || !input.trim()}
-          title="Send"
-          aria-label="Send message"
+          title={i18nT('appSdk.chatEmbed.send')}
+          aria-label={i18nT('appSdk.chatEmbed.send_message')}
         >
           {sendMutation.isPending ? <Loader2 size={16} className="animate-spin" /> : <ArrowUp size={16} />}
         </button>

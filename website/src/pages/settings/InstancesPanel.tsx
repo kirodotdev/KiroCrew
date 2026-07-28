@@ -29,6 +29,7 @@ import { Card, Btn } from '../../components/ui'
 import { useAppDispatch } from '../../store'
 import { removeWarm } from '../../store/instancesSlice'
 
+import { i18nT } from '../../i18n/t'
 const STATE_DOT: Record<InstanceTunnelStatus['state'], string> = {
   connected: 'bg-success',
   connecting: 'bg-warning',
@@ -98,52 +99,47 @@ function AddInstanceForm({ onAdded, usedPorts }: { onAdded: () => void; usedPort
   return (
     <Card>
       <div className="flex items-center gap-2 mb-3 text-text font-medium">
-        <Plus className="lucide-inline" /> Add instance
+        <Plus className="lucide-inline" /> {i18nT('pages.settings.instancesPanel.add_instance')}
       </div>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <label htmlFor="add-instance-name" className="flex flex-col gap-1 text-[13px] text-muted">
-          Name
-          <input id="add-instance-name" aria-label="Name" className={inputCls} value={name} onChange={e => setName(e.target.value)} placeholder="Remote Host 1" />
+          {i18nT('pages.settings.instancesPanel.name')}
+          <input id="add-instance-name" aria-label={i18nT('pages.settings.instancesPanel.name')} className={inputCls} value={name} onChange={e => setName(e.target.value)} placeholder={i18nT('pages.settings.instancesPanel.remote_host_1')} />
         </label>
         <label htmlFor="add-instance-ssh-host" className="flex flex-col gap-1 text-[13px] text-muted">
-          SSH host / alias
-          <input id="add-instance-ssh-host" aria-label="SSH host / alias" className={inputCls} value={sshHost} onChange={e => setSshHost(e.target.value)} placeholder="host-1-alias" />
+          {i18nT('pages.settings.instancesPanel.ssh_host_alias')}
+          <input id="add-instance-ssh-host" aria-label={i18nT('pages.settings.instancesPanel.ssh_host_alias')} className={inputCls} value={sshHost} onChange={e => setSshHost(e.target.value)} placeholder={i18nT('pages.settings.instancesPanel.host_1_alias')} />
         </label>
         <label htmlFor="add-instance-remote-port" className="flex flex-col gap-1 text-[13px] text-muted">
-          Remote port
-          <input id="add-instance-remote-port" aria-label="Remote port" className={inputCls} value={remotePort} onChange={e => setRemotePort(e.target.value)} placeholder="7777" inputMode="numeric" />
+          {i18nT('pages.settings.instancesPanel.remote_port')}
+          <input id="add-instance-remote-port" aria-label={i18nT('pages.settings.instancesPanel.remote_port')} className={inputCls} value={remotePort} onChange={e => setRemotePort(e.target.value)} placeholder="7777" inputMode="numeric" />
           <span className="text-[12px] text-muted leading-snug">
-            Must match the port the remote gateway serves on (its{' '}
-            <code className="text-text">dashboard.url</code>). Each connected instance
-            needs a <strong>distinct</strong> port — the local forward mirrors it.
+            {i18nT('pages.settings.instancesPanel.must_match_the_port_the_remote_gateway_serves_on')}{' '}
+            <code className="text-text">{i18nT('pages.settings.instancesPanel.dashboard_url')}</code>{i18nT('pages.settings.instancesPanel.each_connected_instance_needs_a')} <strong>{i18nT('pages.settings.instancesPanel.distinct')}</strong> {i18nT('pages.settings.instancesPanel.port_the_local_forward_mirrors_it')}
           </span>
           {dupPort ? (
             <span className="text-[12px] text-danger leading-snug">
-              Port {portNum} is already used by another instance — choose a different one
-              (and configure that port on the remote host).
+              {i18nT('pages.settings.instancesPanel.port')} {portNum} {i18nT('pages.settings.instancesPanel.is_already_used_by_another_instance_choose_a_dif')}
             </span>
           ) : null}
         </label>
         <label htmlFor="add-instance-ttl" className="flex flex-col gap-1 text-[13px] text-muted">
-          Token TTL
-          <input id="add-instance-ttl" aria-label="Token TTL" className={inputCls} value={ttl} onChange={e => setTtl(e.target.value)} placeholder="20h" />
+          {i18nT('pages.settings.instancesPanel.token_ttl')}
+          <input id="add-instance-ttl" aria-label={i18nT('pages.settings.instancesPanel.token_ttl')} className={inputCls} value={ttl} onChange={e => setTtl(e.target.value)} placeholder={i18nT('pages.settings.instancesPanel.20h')} />
         </label>
         <label htmlFor="add-instance-remote-bin" className="flex flex-col gap-1 text-[13px] text-muted sm:col-span-2">
-          Remote kirocrew path <span className="text-muted-strong">(optional)</span>
+          {i18nT('pages.settings.instancesPanel.remote_kirocrew_path')} <span className="text-muted-strong">{i18nT('pages.settings.instancesPanel.optional')}</span>
           <input
             id="add-instance-remote-bin"
-            aria-label="Remote kirocrew path"
+            aria-label={i18nT('pages.settings.instancesPanel.remote_kirocrew_path')}
             className={inputCls}
             value={remoteBin}
             onChange={e => setRemoteBin(e.target.value)}
-            placeholder="/home/you/.local/bin/kirocrew  —  leave blank for standard installs"
+            placeholder={i18nT('pages.settings.instancesPanel.home_you_local_bin_kirocrew_leave_blank_for_stan')}
           />
           <span className="text-[12px] text-muted leading-snug">
-            Only needed if <code className="text-text">kirocrew</code> is installed somewhere
-            non-standard on the remote. Leave blank for a normal pip install on PATH. To find
-            it, run on the remote host: <code className="text-text">command -v kirocrew</code>{' '}
-            (commonly <code className="text-text">~/.local/bin/kirocrew</code>).
-            Use an absolute path (no <code className="text-text">~</code>).
+            {i18nT('pages.settings.instancesPanel.only_needed_if')} <code className="text-text">{i18nT('pages.settings.instancesPanel.kirocrew')}</code> {i18nT('pages.settings.instancesPanel.is_installed_somewhere_non_standard_on_the_remot')} <code className="text-text">{i18nT('pages.settings.instancesPanel.command_v_kirocrew')}</code>{' '}
+            {i18nT('pages.settings.instancesPanel.commonly')} <code className="text-text">{i18nT('pages.settings.instancesPanel.local_bin_kirocrew')}</code>{i18nT('pages.settings.instancesPanel.use_an_absolute_path_no')} <code className="text-text">~</code>).
           </span>
         </label>
       </div>
@@ -158,9 +154,7 @@ function AddInstanceForm({ onAdded, usedPorts }: { onAdded: () => void; usedPort
         </Btn>
       </div>
       <p className="mt-2 text-[12px] text-muted">
-        The gateway opens an SSH tunnel and mints a short-lived token on connect.
-        The local forward port mirrors the remote port, so each connected instance
-        must use a distinct remote port.
+        {i18nT('pages.settings.instancesPanel.the_gateway_opens_an_ssh_tunnel_and_mints_a_shor')}
       </p>
     </Card>
   )
@@ -189,7 +183,7 @@ function InstanceRow({
       <div className="min-w-0">
         <div className="text-text text-sm font-medium truncate">{inst.name}</div>
         <div className="text-[12px] text-muted truncate">
-          {inst.ssh_host} · port {inst.remote_port} · ttl {inst.ttl}
+          {inst.ssh_host} {i18nT('pages.settings.instancesPanel.port_2')} {inst.remote_port} {i18nT('pages.settings.instancesPanel.ttl')} {inst.ttl}
           {typeof ttl === 'number' ? ` · token ${humanizeSecs(ttl)} left` : ''}
         </div>
         <div className="mt-1"><StatusBadge status={inst.status} /></div>
@@ -203,7 +197,7 @@ function InstanceRow({
         </Btn>
         {connected ? (
           <Btn onClick={() => onDisconnect(inst.id)} disabled={!!busy}>
-            <Unplug className="lucide-inline" /> Disconnect
+            <Unplug className="lucide-inline" /> {i18nT('pages.settings.instancesPanel.disconnect')}
           </Btn>
         ) : (
           <Btn primary onClick={() => onConnect(inst.id)} disabled={!!busy}>
@@ -339,18 +333,17 @@ export function InstancesPanel() {
     return (
       <Card>
         <div className="flex items-center gap-2 text-text font-medium mb-1">
-          <Server className="lucide-inline" /> Multi-instance management is off
+          <Server className="lucide-inline" /> {i18nT('pages.settings.instancesPanel.multi_instance_management_is_off')}
         </div>
         <p className="text-[13px] text-muted mb-3">
-          Enable it to let this gateway open SSH tunnels to your remote KiroCrews and switch
-          between them from the top tab bar.
+          {i18nT('pages.settings.instancesPanel.enable_it_to_let_this_gateway_open_ssh_tunnels_t')}
         </p>
         {restartPending && (
           <div role="status" className="flex items-start gap-2 px-3 py-2 mb-3 text-[13px] rounded-md bg-warning/10 text-warning border border-warning/30">
             <AlertTriangle size={14} className="lucide-inline mt-0.5 shrink-0" />
             <span>
-              Disabled in config. Restart the gateway (<code className="text-text">kirocrew restart</code>){' '}
-              to fully tear down any tunnels still running from before.
+              {i18nT('pages.settings.instancesPanel.disabled_in_config_restart_the_gateway')}<code className="text-text">{i18nT('pages.settings.instancesPanel.kirocrew_restart')}</code>){' '}
+              {i18nT('pages.settings.instancesPanel.to_fully_tear_down_any_tunnels_still_running_fro')}
             </span>
           </div>
         )}
@@ -359,8 +352,8 @@ export function InstancesPanel() {
         </Btn>
         {actionErr && <div className="mt-2 text-[13px] text-danger">{actionErr}</div>}
         <p className="mt-2 text-[12px] text-muted">
-          Equivalent CLI: <code className="text-text">kirocrew config set instances.enabled true</code> then{' '}
-          <code className="text-text">kirocrew restart</code>.
+          {i18nT('pages.settings.instancesPanel.equivalent_cli')} <code className="text-text">{i18nT('pages.settings.instancesPanel.kirocrew_config_set_instances_enabled_true')}</code> {i18nT('pages.settings.instancesPanel.then')}{' '}
+          <code className="text-text">{i18nT('pages.settings.instancesPanel.kirocrew_restart')}</code>.
         </p>
       </Card>
     )
@@ -374,11 +367,11 @@ export function InstancesPanel() {
         <div className="flex items-center gap-2 text-[13px]">
           <span className={`inline-block w-2 h-2 rounded-full ${active ? 'bg-success' : 'bg-warning'}`} aria-hidden />
           <span className="text-muted">
-            Multi-instance management is <span className="text-text font-medium">enabled</span>
+            {i18nT('pages.settings.instancesPanel.multi_instance_management_is')} <span className="text-text font-medium">{i18nT('pages.settings.instancesPanel.enabled')}</span>
             {active ? '' : ' — not active until restart'}
           </span>
         </div>
-        <Btn onClick={() => setEnabledMutation.mutate(false)} disabled={setEnabledMutation.isPending} aria-label="Disable multi-instance management">
+        <Btn onClick={() => setEnabledMutation.mutate(false)} disabled={setEnabledMutation.isPending} aria-label={i18nT('pages.settings.instancesPanel.disable_multi_instance_management')}>
           <Power className="lucide-inline" /> {setEnabledMutation.isPending ? 'Disabling…' : 'Disable'}
         </Btn>
       </div>
@@ -386,8 +379,8 @@ export function InstancesPanel() {
         <div role="status" className="flex items-start gap-2 px-3 py-2 text-[13px] rounded-md bg-warning/10 text-warning border border-warning/30">
           <AlertTriangle size={14} className="lucide-inline mt-0.5 shrink-0" />
           <span>
-            Enabled, but not active yet. Restart the gateway (<code className="text-text">kirocrew restart</code>){' '}
-            to start the SSH tunnel manager and activate instance switching.
+            {i18nT('pages.settings.instancesPanel.enabled_but_not_active_yet_restart_the_gateway')}<code className="text-text">{i18nT('pages.settings.instancesPanel.kirocrew_restart')}</code>){' '}
+            {i18nT('pages.settings.instancesPanel.to_start_the_ssh_tunnel_manager_and_activate_ins')}
           </span>
         </div>
       )}
@@ -395,14 +388,14 @@ export function InstancesPanel() {
         <div role="status" className="flex items-start gap-2 px-3 py-2 text-[13px] rounded-md bg-success/10 text-success border border-success/30">
           <Plug size={14} className="lucide-inline mt-0.5 shrink-0" />
           <span className="flex-1 break-words">{connectedNote}</span>
-          <button type="button" aria-label="Dismiss" className="shrink-0 opacity-70 hover:opacity-100" onClick={() => setConnectedNote(null)}><X size={12} /></button>
+          <button type="button" aria-label={i18nT('pages.settings.instancesPanel.dismiss')} className="shrink-0 opacity-70 hover:opacity-100" onClick={() => setConnectedNote(null)}><X size={12} /></button>
         </div>
       )}
       {actionErr && (
         <div role="alert" className="flex items-start gap-2 px-3 py-2 text-[13px] rounded-md bg-danger/10 text-danger border border-danger/30">
           <AlertTriangle size={14} className="lucide-inline mt-0.5 shrink-0" />
           <span className="flex-1 break-words">{actionErr}</span>
-          <button type="button" aria-label="Dismiss error" className="shrink-0 opacity-70 hover:opacity-100" onClick={() => setActionErr(null)}><X size={12} /></button>
+          <button type="button" aria-label={i18nT('pages.settings.instancesPanel.dismiss_error')} className="shrink-0 opacity-70 hover:opacity-100" onClick={() => setActionErr(null)}><X size={12} /></button>
         </div>
       )}
       {diagNote && (
@@ -419,14 +412,14 @@ export function InstancesPanel() {
         >
           <Stethoscope size={14} className="lucide-inline mt-0.5 shrink-0" />
           <span className="flex-1 break-words">{diagNote.text}</span>
-          <button type="button" aria-label="Dismiss diagnosis" className="shrink-0 opacity-70 hover:opacity-100" onClick={() => setDiagNote(null)}><X size={12} /></button>
+          <button type="button" aria-label={i18nT('pages.settings.instancesPanel.dismiss_diagnosis')} className="shrink-0 opacity-70 hover:opacity-100" onClick={() => setDiagNote(null)}><X size={12} /></button>
         </div>
       )}
 
       {loading ? (
         <Card>
           <div className="flex items-center gap-2 text-muted text-sm">
-            <RefreshCw className="lucide-inline animate-spin" /> Loading…
+            <RefreshCw className="lucide-inline animate-spin" /> {i18nT('pages.settings.instancesPanel.loading')}
           </div>
         </Card>
       ) : error ? (
@@ -434,7 +427,7 @@ export function InstancesPanel() {
           <div className="text-danger text-sm">{error}</div>
           <div className="mt-2">
             <Btn onClick={() => reload()}>
-              <RefreshCw className="lucide-inline" /> Retry
+              <RefreshCw className="lucide-inline" /> {i18nT('pages.settings.instancesPanel.retry')}
             </Btn>
           </div>
         </Card>
@@ -444,9 +437,9 @@ export function InstancesPanel() {
             <Card>
               <div className="flex items-center justify-between mb-1">
                 <div className="flex items-center gap-2 text-text font-medium">
-                  <Server className="lucide-inline" /> Configured instances
+                  <Server className="lucide-inline" /> {i18nT('pages.settings.instancesPanel.configured_instances')}
                 </div>
-                <Btn onClick={() => reload()} aria-label="Refresh">
+                <Btn onClick={() => reload()} aria-label={i18nT('pages.settings.instancesPanel.refresh')}>
                   <RefreshCw className="lucide-inline" />
                 </Btn>
               </div>
@@ -464,15 +457,14 @@ export function InstancesPanel() {
                 ))}
               </div>
               <p className="mt-2 text-[12px] text-muted">
-                Up to {warmCap} instances stay warm (live tunnel) at once; the rest reconnect on
-                demand. Tune with{' '}
-                <code className="text-text">kirocrew config set instances.warm_set_cap N</code>.
+                {i18nT('pages.settings.instancesPanel.up_to')} {warmCap} {i18nT('pages.settings.instancesPanel.instances_stay_warm_live_tunnel_at_once_the_rest')}{' '}
+                <code className="text-text">{i18nT('pages.settings.instancesPanel.kirocrew_config_set_instances_warm_set_cap_n')}</code>.
               </p>
             </Card>
           ) : (
             <Card>
               <div className="text-[13px] text-muted">
-                No instances configured yet. Add one below to manage a remote KiroCrew.
+                {i18nT('pages.settings.instancesPanel.no_instances_configured_yet_add_one_below_to_man')}
               </div>
             </Card>
           )}

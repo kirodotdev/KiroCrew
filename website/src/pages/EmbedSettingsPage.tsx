@@ -6,6 +6,7 @@ import { DisplayPanel } from './settings/DisplayPanel'
 import { ChatPanel } from './settings/ChatPanel'
 import { NotificationsPanel } from './settings/NotificationsPanel'
 
+import { i18nT } from '../i18n/t'
 const TABS = [
   { key: 'display', label: 'Display', icon: <Palette size={14} /> },
   { key: 'chat', label: 'Chat', icon: <MessageSquare size={14} /> },
@@ -32,11 +33,11 @@ export default function EmbedSettingsPage() {
         <button
           onClick={goBack}
           className="p-1 rounded hover:bg-bg-hover text-muted hover:text-text transition-colors"
-          aria-label="Back"
+          aria-label={i18nT('pages.embedSettingsPage.back')}
         >
           <ArrowLeft size={16} />
         </button>
-        <span className="text-sm font-medium">Settings</span>
+        <span className="text-sm font-medium">{i18nT('pages.embedSettingsPage.settings')}</span>
       </div>
 
       {/* Tab bar */}

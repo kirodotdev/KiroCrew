@@ -32,6 +32,7 @@ import { announceCommentsChanged, onCommentsChanged } from '../utils/artifactCom
 import { PublishHub } from '../components/PublishHub'
 import type { Artifact, ArtifactEvent, ArtifactComment, CommentAnchor } from '../types'
 
+import { i18nT } from '../i18n/t'
 // Artifact "Iterate" affordances are hidden pending an artifact redesign.
 // This gates every user-facing entry point into the
 // iterate flow — the header Sparkles button, the anchored-comment creation
@@ -121,7 +122,7 @@ const ActivityTimeline = memo(function ActivityTimeline({
 }) {
   if (!events.length) {
     return (
-      <div className="text-[12px] text-muted">No lifecycle events yet.</div>
+      <div className="text-[12px] text-muted">{i18nT('pages.artifactDetailPage.no_lifecycle_events_yet')}</div>
     )
   }
   // Render newest first so the most recent activity is at the top.
@@ -170,11 +171,11 @@ const ActivityTimeline = memo(function ActivityTimeline({
           <div className="flex-1 min-w-0">
             <div className="flex flex-wrap items-baseline gap-x-2">
               <span className="font-medium text-text">{verb(ev.type, ev.metadata)}</span>
-              {ev.by && <span className="text-muted">by {ev.by}</span>}
+              {ev.by && <span className="text-muted">{i18nT('pages.artifactDetailPage.by')} {ev.by}</span>}
               {ev.type === 'comment' ? null : ev.type === 'reverted' && ev.from_version != null ? (
-                <span className="text-muted">v{ev.from_version} → v{ev.version}</span>
+                <span className="text-muted">{i18nT('pages.artifactDetailPage.v')}{ev.from_version} {i18nT('pages.artifactDetailPage.v_2')}{ev.version}</span>
               ) : (
-                ev.version != null && <span className="text-muted">→ v{ev.version}</span>
+                ev.version != null && <span className="text-muted">{i18nT('pages.artifactDetailPage.v_2')}{ev.version}</span>
               )}
               <span className="text-muted ml-auto">{formatEventTs(ev.ts)}</span>
             </div>
@@ -197,14 +198,14 @@ const ActivityTimeline = memo(function ActivityTimeline({
                 className="text-[11px] text-accent hover:underline cursor-pointer bg-transparent border-none p-0 mt-0.5"
                 title={`Open session ${ev.session_id}`}
               >
-                from session {ev.session_id}
+                {i18nT('pages.artifactDetailPage.from_session')} {ev.session_id}
               </button>
             ) : ev.type === 'reverted' && ev.from_version != null ? (
               <span className="text-[11px] text-muted mt-0.5">
-                content copied from v{ev.from_version}
+                {i18nT('pages.artifactDetailPage.content_copied_from_v')}{ev.from_version}
               </span>
             ) : ev.session_id === 'dashboard:ui' ? (
-              <span className="text-[11px] text-muted mt-0.5">via dashboard</span>
+              <span className="text-[11px] text-muted mt-0.5">{i18nT('pages.artifactDetailPage.via_dashboard')}</span>
             ) : null}
           </div>
         </li>
@@ -229,8 +230,8 @@ function ArtifactPopoutControl({ slug, name }: { slug: string; name: string }) {
           type="button"
           onClick={() => focus(slug)}
           className="p-1.5 rounded-md border border-accent text-accent bg-accent-subtle cursor-pointer transition-all"
-          title="Focus the popped-out window"
-          aria-label="Focus popped-out window"
+          title={i18nT('pages.artifactDetailPage.focus_the_popped_out_window')}
+          aria-label={i18nT('pages.artifactDetailPage.focus_popped_out_window')}
         >
           <Monitor size={13} />
         </button>
@@ -238,8 +239,8 @@ function ArtifactPopoutControl({ slug, name }: { slug: string; name: string }) {
           type="button"
           onClick={() => bringBack(slug)}
           className="p-1.5 rounded-md border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all"
-          title="Bring the artifact back into this window"
-          aria-label="Bring artifact back to this window"
+          title={i18nT('pages.artifactDetailPage.bring_the_artifact_back_into_this_window')}
+          aria-label={i18nT('pages.artifactDetailPage.bring_artifact_back_to_this_window')}
         >
           <Undo2 size={13} />
         </button>
@@ -251,8 +252,8 @@ function ArtifactPopoutControl({ slug, name }: { slug: string; name: string }) {
       type="button"
       onClick={() => open(slug, name)}
       className="p-1.5 rounded-md border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all"
-      title="Pop out into its own window"
-      aria-label="Pop out to window"
+      title={i18nT('pages.artifactDetailPage.pop_out_into_its_own_window')}
+      aria-label={i18nT('pages.artifactDetailPage.pop_out_to_window')}
     >
       <ExternalLink size={13} />
     </button>
@@ -424,7 +425,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
   }, [artifact, editable])
 
   const cancelEditing = useCallback(() => {
-    if (dirty && !window.confirm('Discard unsaved changes?')) return
+    if (dirty && !window.confirm(i18nT('pages.artifactDetailPage.discard_unsaved_changes'))) return
     setEditing(false)
     setEditedContent('')
     setSaveError(null)
@@ -840,18 +841,18 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
   }
 
   if (detailQuery.isLoading || (!isCurrent && versionQuery.isLoading))
-    return <div className="p-6 text-muted">Loading…</div>
+    return <div className="p-6 text-muted">{i18nT('pages.artifactDetailPage.loading')}</div>
   if (detailQuery.error) {
     const msg = detailQuery.error instanceof Error ? detailQuery.error.message : String(detailQuery.error)
     return (
       <>
-        <PageHeader title="Artifact" subtitle={slug} />
+        <PageHeader title={i18nT('pages.artifactDetailPage.artifact')} subtitle={slug} />
         <div className="px-6 pb-8 overflow-y-auto flex-1 min-h-0">
           <Card>
             <div className="flex items-start gap-3">
               <AlertTriangle className="lucide-inline text-danger" />
               <div>
-                <div className="text-sm text-danger font-medium">Failed to load artifact</div>
+                <div className="text-sm text-danger font-medium">{i18nT('pages.artifactDetailPage.failed_to_load_artifact')}</div>
                 <div className="text-[13px] text-muted mt-1">{msg}</div>
               </div>
             </div>
@@ -859,14 +860,14 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
               {/* In a popout this forwards to the main window (the popout must
                   never become the library page); in the main app it's a plain
                   local navigation. */}
-              <Btn onClick={() => sendNav({ path: '/artifacts' })}>← Back to library</Btn>
+              <Btn onClick={() => sendNav({ path: '/artifacts' })}>{i18nT('pages.artifactDetailPage.back_to_library')}</Btn>
             </div>
           </Card>
         </div>
       </>
     )
   }
-  if (!artifact) return <div className="p-6 text-muted">Not found.</div>
+  if (!artifact) return <div className="p-6 text-muted">{i18nT('pages.artifactDetailPage.not_found')}</div>
 
   const sel =
     'bg-bg-elevated border border-border rounded-md px-2 py-1 text-text text-[12px] font-body outline-none cursor-pointer transition-colors focus-ring'
@@ -883,10 +884,10 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
         <div className="flex flex-wrap items-center gap-2 mb-4">
           {!popout && (
             <Btn onClick={() => {
-              if (dirty && !window.confirm('Discard unsaved changes?')) return
+              if (dirty && !window.confirm(i18nT('pages.artifactDetailPage.discard_unsaved_changes'))) return
               navigate('/artifacts')
             }} className="flex items-center gap-1">
-              <ArrowLeft size={13} /> Back
+              <ArrowLeft size={13} /> {i18nT('pages.artifactDetailPage.back')}
             </Btn>
           )}
           <Badge variant="aim">{artifact.kind}</Badge>
@@ -923,30 +924,30 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
                 else setAddingTag(false)
               }}
               autoFocus
-              placeholder="tag…"
+              placeholder={i18nT('pages.artifactDetailPage.tag')}
               className="text-[11px] px-1.5 py-0.5 rounded bg-bg-elevated border border-accent text-text outline-none"
               style={{ width: '90px' }}
-              aria-label="Add a tag"
+              aria-label={i18nT('pages.artifactDetailPage.add_a_tag')}
             />
           ) : (
             <button
               type="button"
               onClick={() => setAddingTag(true)}
               className="inline-flex items-center gap-0.5 text-[11px] px-1.5 py-0.5 rounded border border-dashed border-border text-muted hover:text-text hover:border-border-strong cursor-pointer bg-transparent transition-colors"
-              title="Add a tag (comma-separated tags supported)"
-              aria-label="Add a tag"
+              title={i18nT('pages.artifactDetailPage.add_a_tag_comma_separated_tags_supported')}
+              aria-label={i18nT('pages.artifactDetailPage.add_a_tag')}
             >
-              <Plus size={10} /> tag
+              <Plus size={10} /> {i18nT('pages.artifactDetailPage.tag_2')}
             </button>
           )}
           <span className="mc-art-toolbar ml-auto flex items-center gap-2 text-[13px] text-muted">
-            <span>Version</span>
+            <span>{i18nT('pages.artifactDetailPage.version')}</span>
             <select
               className={sel}
               disabled={saving}
               value={selectedVersion === null ? 'live' : String(selectedVersion)}
               onChange={(e) => {
-                if (dirty && !window.confirm('Discard unsaved changes?')) return
+                if (dirty && !window.confirm(i18nT('pages.artifactDetailPage.discard_unsaved_changes'))) return
                 setEditing(false)
                 setEditedContent('')
                 const raw = e.target.value
@@ -961,10 +962,10 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
                   snapshot because in the explicit-snapshot model saves
                   update Live without bumping versions, so Live can be
                   ahead of the latest numbered snapshot. */}
-              <option value="live">Live</option>
+              <option value="live">{i18nT('pages.artifactDetailPage.live')}</option>
               {versions.slice().reverse().map((v) => (
                 <option key={v} value={v}>
-                  v{v}
+                  {i18nT('pages.artifactDetailPage.v')}{v}
                 </option>
               ))}
             </select>
@@ -979,7 +980,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
                 title={`Revert to v${selectedVersion}`}
                 aria-label={`Revert to v${selectedVersion}`}
               >
-                <span className="inline-flex items-center gap-1"><RotateCcw size={13} /> Revert</span>
+                <span className="inline-flex items-center gap-1"><RotateCcw size={13} /> {i18nT('pages.artifactDetailPage.revert')}</span>
               </button>
             )}
 
@@ -993,7 +994,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
                   onClick={() => handleSave(false)}
                   disabled={!dirty || saving}
                   className={`px-2 py-1 rounded-md text-[12px] font-medium border transition-all disabled:opacity-40 ${dirty ? 'border-accent text-accent-fg bg-accent cursor-pointer hover:bg-accent-hover' : 'border-border text-muted cursor-default'}`}
-                  title="Save to Live (Cmd+S) — updates the live state without versioning"
+                  title={i18nT('pages.artifactDetailPage.save_to_live_cmd_s_updates_the_live_state_withou')}
                 >
                   {saving ? 'Saving…' : 'Save'}
                 </button>
@@ -1002,18 +1003,18 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
                   onClick={() => handleSave(true)}
                   disabled={!dirty || saving}
                   className="px-2 py-1 rounded-md text-[12px] font-medium border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all disabled:opacity-40"
-                  title="Snapshot (Cmd+Shift+S) — save and create a new version"
+                  title={i18nT('pages.artifactDetailPage.snapshot_cmd_shift_s_save_and_create_a_new_versi')}
                 >
-                  <span className="inline-flex items-center gap-1"><Camera size={13} /> Snapshot</span>
+                  <span className="inline-flex items-center gap-1"><Camera size={13} /> {i18nT('pages.artifactDetailPage.snapshot')}</span>
                 </button>
                 <button
                   type="button"
                   onClick={cancelEditing}
                   disabled={saving}
                   className="px-2 py-1 rounded-md text-[12px] font-medium border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all disabled:opacity-40"
-                  title="Cancel (Esc)"
+                  title={i18nT('pages.artifactDetailPage.cancel_esc')}
                 >
-                  <span className="inline-flex items-center gap-1"><X size={13} /> Cancel</span>
+                  <span className="inline-flex items-center gap-1"><X size={13} /> {i18nT('pages.artifactDetailPage.cancel')}</span>
                 </button>
                 <button
                   type="button"
@@ -1033,9 +1034,9 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
                     onClick={handleSnapshotLive}
                     disabled={saving}
                     className="px-2 py-1 rounded-md text-[12px] font-medium border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all disabled:opacity-40"
-                    title="Snapshot — capture the current state as a new version"
+                    title={i18nT('pages.artifactDetailPage.snapshot_capture_the_current_state_as_a_new_vers')}
                   >
-                    <span className="inline-flex items-center gap-1"><Camera size={13} /> Snapshot</span>
+                    <span className="inline-flex items-center gap-1"><Camera size={13} /> {i18nT('pages.artifactDetailPage.snapshot')}</span>
                   </button>
                 )}
                 {editable && (
@@ -1043,8 +1044,8 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
                     type="button"
                     onClick={startEditing}
                     className="px-2 py-1 rounded-md text-[12px] font-medium border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all"
-                    title="Edit content"
-                    aria-label="Edit content"
+                    title={i18nT('pages.artifactDetailPage.edit_content')}
+                    aria-label={i18nT('pages.artifactDetailPage.edit_content')}
                   >
                     <Pencil size={13} />
                   </button>
@@ -1061,8 +1062,8 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
                     type="button"
                     onClick={() => iterateWithAgent()}
                     className="px-2 py-1 rounded-md text-[12px] font-medium border border-accent text-accent-fg bg-accent cursor-pointer hover:bg-accent-hover hover:shadow-[0_0_12px_var(--accent-glow)] transition-all"
-                    title="Iterate — discuss this artifact with the agent"
-                    aria-label="Iterate"
+                    title={i18nT('pages.artifactDetailPage.iterate_discuss_this_artifact_with_the_agent')}
+                    aria-label={i18nT('pages.artifactDetailPage.iterate')}
                   >
                     <Sparkles size={13} />
                   </button>
@@ -1080,7 +1081,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
               onClick={toggleSidebar}
               className={`p-1.5 rounded-md border cursor-pointer transition-all ${sidebarOpen ? 'border-accent text-accent bg-accent-subtle' : 'border-border text-muted hover:text-text hover:border-border-strong'}`}
               title={sidebarOpen ? 'Hide comments' : 'Show comments'}
-              aria-label="Toggle comments"
+              aria-label={i18nT('pages.artifactDetailPage.toggle_comments')}
               aria-pressed={sidebarOpen}
             >
               <span className="inline-flex items-center gap-1">
@@ -1108,20 +1109,20 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
               <Btn
                 type="button"
                 onClick={() => setShowPublish(v => !v)}
-                title="Publish this artifact"
-                aria-label="Publish"
+                title={i18nT('pages.artifactDetailPage.publish_this_artifact')}
+                aria-label={i18nT('pages.artifactDetailPage.publish')}
                 aria-pressed={showPublish}
                 className={showPublish ? 'border-accent text-accent bg-accent-subtle hover:bg-accent-subtle hover:text-accent' : ''}
               >
-                <Upload size={13} /> Publish
+                <Upload size={13} /> {i18nT('pages.artifactDetailPage.publish')}
               </Btn>
             )}
             <Btn
               type="button"
               onClick={downloadAsHtml}
               className="p-1.5 rounded-md border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all"
-              title="Download"
-              aria-label="Download"
+              title={i18nT('pages.artifactDetailPage.download')}
+              aria-label={i18nT('pages.artifactDetailPage.download')}
             >
               <Download size={13} />
             </Btn>
@@ -1143,14 +1144,14 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
           <div className="mb-3 flex items-start gap-2 px-3 py-2 rounded-md border border-warn/40 bg-warn-subtle text-[13px] text-warn">
             <AlertCircle size={14} className="lucide-inline shrink-0 mt-0.5" />
             <span>
-              <strong>Heads up:</strong> this artifact is regenerated by a cron job. Your edits will be preserved in version history, but the next cron run will create a newer version that overrides what you save here.
+              <strong>{i18nT('pages.artifactDetailPage.heads_up')}</strong> {i18nT('pages.artifactDetailPage.this_artifact_is_regenerated_by_a_cron_job_your')}
             </span>
           </div>
         )}
 
         {saveError && (
           <div className="mb-3 px-3 py-2 rounded-md border border-danger/40 bg-danger-subtle text-[13px] text-danger">
-            <strong>Save failed:</strong> {saveError}
+            <strong>{i18nT('pages.artifactDetailPage.save_failed')}</strong> {saveError}
           </div>
         )}
 
@@ -1163,7 +1164,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
         {artifact.publication?.last_error && (
           <div className="mb-3 flex items-start gap-2 px-3 py-2 rounded-md border border-danger/40 bg-danger-subtle text-[13px] text-danger">
             <AlertCircle size={14} className="lucide-inline shrink-0 mt-0.5" />
-            <span><strong>Publication sync issue:</strong> {artifact.publication.last_error}</span>
+            <span><strong>{i18nT('pages.artifactDetailPage.publication_sync_issue')}</strong> {artifact.publication.last_error}</span>
           </div>
         )}
 
@@ -1260,23 +1261,23 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
         )}
 
         <div className="mt-3 text-[12px] text-muted">
-          Created {artifact.created_at} &middot; Updated {artifact.updated_at} &middot;{' '}
+          {i18nT('pages.artifactDetailPage.created')} {artifact.created_at} {i18nT('pages.artifactDetailPage.updated')} {artifact.updated_at} {"\u00b7"}{' '}
           {/* "Live" reflects the always-current state. Numbered versions
               are historical snapshots — when one is selected, isCurrent is
               false (because the dropdown is non-Live). */}
           {selectedVersion === null
             ? `Showing Live (v${detailQuery.data?.version ?? '?'})`
             : `Showing v${effectiveVersion} (historical)`}
-          {dirty && <span className="ml-2 text-warn">• unsaved changes</span>}
+          {dirty && <span className="ml-2 text-warn">{i18nT('pages.artifactDetailPage.unsaved_changes')}</span>}
           {/* `commentable` already implies SHOW_ARTIFACT_ITERATE (see its definition). */}
           {commentable && commentCount === 0 && (
-            <span className="ml-2 text-muted/80">Tip: select text to anchor a comment, or use the <strong>Comments</strong> panel to add one.</span>
+            <span className="ml-2 text-muted/80">{i18nT('pages.artifactDetailPage.tip_select_text_to_anchor_a_comment_or_use_the')} <strong>{i18nT('pages.artifactDetailPage.comments')}</strong> {i18nT('pages.artifactDetailPage.panel_to_add_one')}</span>
           )}
           {/* The Comments panel is always available; the Iterate mention is gated. */}
           {!commentable && !editing && isCurrent && (
             <span className="ml-2 text-muted/80">
-              Tip: use the <strong>Comments</strong> panel to comment
-              {SHOW_ARTIFACT_ITERATE ? <>, or <strong>Iterate</strong> to chat with the agent</> : null}.
+              {i18nT('pages.artifactDetailPage.tip_use_the')} <strong>{i18nT('pages.artifactDetailPage.comments')}</strong> {i18nT('pages.artifactDetailPage.panel_to_comment')}
+              {SHOW_ARTIFACT_ITERATE ? <>{i18nT('pages.artifactDetailPage.or')} <strong>{i18nT('pages.artifactDetailPage.iterate')}</strong> {i18nT('pages.artifactDetailPage.to_chat_with_the_agent')}</> : null}.
             </span>
           )}
         </div>
@@ -1298,7 +1299,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
 
         {/* Phase 5: lifecycle event log + activity timeline. */}
         <div className="mt-6">
-          <h3 className="text-[13px] font-semibold text-text-strong mb-2">Activity</h3>
+          <h3 className="text-[13px] font-semibold text-text-strong mb-2">{i18nT('pages.artifactDetailPage.activity')}</h3>
           <ActivityTimeline
             events={eventsQuery.data?.events ?? []}
             navigateToSlot={(slotKey) => sendNav({ path: '/chat', slotKey })}
@@ -1431,14 +1432,14 @@ function UpstreamSyncBanner({ artifact, onPulled, onBeforeMutate }: { artifact: 
     return (
       <div className="mb-3 flex items-center gap-2 px-3 py-2 rounded-md border text-[13px] border-warn/40 bg-warn-subtle text-warn">
         <Camera size={14} className="lucide-inline shrink-0" />
-        <span className="flex-1">Local changes not yet published to {provLabel}.</span>
+        <span className="flex-1">{i18nT('pages.artifactDetailPage.local_changes_not_yet_published_to')} {provLabel}.</span>
         {error && <span className="text-danger">{error}</span>}
         <Btn
           type="button"
           onClick={handleSnapshot}
           disabled={snapshotting}
           className="gap-1 px-2 py-0.5 text-[12px] font-medium border-warn/50 hover:bg-warn/10"
-          title="Snapshot the current content as a new version and publish it"
+          title={i18nT('pages.artifactDetailPage.snapshot_the_current_content_as_a_new_version_an')}
         >
           <Camera size={12} />
           {snapshotting ? 'Publishing…' : 'Snapshot to publish'}
@@ -1465,25 +1466,25 @@ function UpstreamSyncBanner({ artifact, onPulled, onBeforeMutate }: { artifact: 
       <span className="flex-1">
         {fm ? (
           <>
-            Forked from <strong>{fm.upstream_owner || 'someone'}</strong>&apos;s artifact
+            {i18nT('pages.artifactDetailPage.forked_from')} <strong>{fm.upstream_owner || 'someone'}</strong>{i18nT('pages.artifactDetailPage.s_artifact')}
             {fm.forked_at ? ` on ${fm.forked_at.slice(0, 10)}` : ''}
           </>
         ) : (
-          <>Published artifact</>
+          <>{i18nT('pages.artifactDetailPage.published_artifact')}</>
         )}
         {upstreamUrl && (
           <>
             {' · '}
             <a href={upstreamUrl} target="_blank" rel="noopener noreferrer" className="underline hover:no-underline">
-              View remote
+              {i18nT('pages.artifactDetailPage.view_remote')}
             </a>
           </>
         )}
         {upstreamAhead && (
-          <> · a newer version is available in the remote copy{cloudV ? ` (v${cloudV})` : ''}{pub ? ' — pull it down, or overwrite to keep yours' : ''}.</>
+          <> {i18nT('pages.artifactDetailPage.a_newer_version_is_available_in_the_remote_copy')}{cloudV ? ` (v${cloudV})` : ''}{pub ? ' — pull it down, or overwrite to keep yours' : ''}.</>
         )}
         {upstreamAhead && hasLocalEdits && (
-          <> Your current edits are saved as a version first, so nothing is lost.</>
+          <> {i18nT('pages.artifactDetailPage.your_current_edits_are_saved_as_a_version_first')}</>
         )}
       </span>
       {(upstreamAhead || !!fm) && (
@@ -1492,10 +1493,10 @@ function UpstreamSyncBanner({ artifact, onPulled, onBeforeMutate }: { artifact: 
           onClick={handlePull}
           disabled={pulling || overwriting}
           className={`gap-1 px-2 py-0.5 text-[12px] font-medium ${tone.btn}`}
-          title="Pull the latest remote content as a new local version (your edits are preserved)"
+          title={i18nT('pages.artifactDetailPage.pull_the_latest_remote_content_as_a_new_local_ve')}
         >
           <RefreshCw size={12} className={pulling ? 'animate-spin' : undefined} />
-          Pull latest
+          {i18nT('pages.artifactDetailPage.pull_latest')}
         </Btn>
       )}
       {upstreamAhead && !!pub && (
@@ -1504,10 +1505,10 @@ function UpstreamSyncBanner({ artifact, onPulled, onBeforeMutate }: { artifact: 
           onClick={handleOverwrite}
           disabled={overwriting || pulling}
           className={`gap-1 px-2 py-0.5 text-[12px] font-medium ${tone.btn}`}
-          title="Push your local version up as the remote's new version WITHOUT pulling the remote's content first. The remote's newer version stays in its history but is superseded."
+          title={i18nT('pages.artifactDetailPage.push_your_local_version_up_as_the_remote_s_new_v')}
         >
           <ArrowUp size={12} className={overwriting ? 'animate-pulse' : undefined} />
-          Overwrite remote
+          {i18nT('pages.artifactDetailPage.overwrite_remote')}
         </Btn>
       )}
       {error && <span className="text-danger text-[11px]">{error}</span>}

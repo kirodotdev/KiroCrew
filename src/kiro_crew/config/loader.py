@@ -1488,6 +1488,16 @@ class DashboardConfig:
             "Empty = unset (frontend falls back to localStorage or 'kiro').",
         ),
     )
+    language: str = field(
+        default="",
+        metadata=_meta(
+            "Language",
+            "Dashboard UI language as a BCP-47 tag (e.g. 'en', 'zh-CN'). "
+            "Empty = auto-detect from the browser's preferred languages, "
+            "falling back to English. Persisted here (not only in the browser) "
+            "so the choice follows the user across browsers and the desktop app.",
+        ),
+    )
     recent_tint_count: int = field(
         default=0,
         metadata=_meta(
@@ -3975,6 +3985,7 @@ class KiroCrewConfig:
                 theme_mode=dashboard_data.get("theme_mode", ""),
                 sso_login_flags=str(dashboard_data.get("sso_login_flags", "")),
                 theme_color=dashboard_data.get("theme_color", ""),
+                language=str(dashboard_data.get("language", "")),
                 recent_tint_count=_safe_int(dashboard_data.get("recent_tint_count", 0), 0),
                 onboarded=bool(dashboard_data.get("onboarded", False)),
                 import_onboarded=_safe_bool(

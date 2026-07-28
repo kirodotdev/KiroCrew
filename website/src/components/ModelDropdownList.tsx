@@ -1,6 +1,7 @@
 import { useRef, useEffect } from 'react'
 import { Check } from 'lucide-react'
 
+import { i18nT } from '../i18n/t'
 interface ModelItem { name: string; description?: string }
 
 /** Shared model list used in dropdown portals across AgentsPage and ChatPage */
@@ -25,7 +26,7 @@ export default function ModelDropdownList({ models, activeModel, onSelect }: {
           </button>
         )
       })}
-      {models.length === 0 && <div className="px-3 py-2 text-[13px] text-muted italic">No matches</div>}
+      {models.length === 0 && <div className="px-3 py-2 text-[13px] text-muted italic">{i18nT('components.modelDropdownList.no_matches')}</div>}
     </div>
   )
 }

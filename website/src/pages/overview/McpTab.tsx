@@ -12,6 +12,7 @@ import type { McpServer, McpApplyChange, McpScopePresence, McpGlobalScope } from
 import { useSortableTable } from '../../hooks/useSortableTable'
 import SortableHeader from '../../components/SortableHeader'
 
+import { i18nT } from '../../i18n/t'
 async function fetchServers(): Promise<McpServer[]> {
   return await api.mcpServers()
 }
@@ -279,11 +280,11 @@ export default function McpTab() {
 
   return (<>
     <h4 className="text-sm font-semibold text-text-strong mt-4 mb-2 flex items-center gap-2">
-      MCP Servers ({servers.length})
+      {i18nT('pages.overview.mcpTab.mcp_servers')}{servers.length})
       <InfoTip text={`MCP servers across KiroCrew and your interactive ${provider.displayName}/Kiro globals. The KiroCrew badge shows if it'll load in KiroCrew sessions; the Globals badge shows if it's shared to your interactive Kiro global. Click to toggle, then Apply.`} />
       <span className="ml-auto flex items-center gap-2">
-        <Btn onClick={() => setCustomOpen(true)}><Braces size={14} /> Add Custom</Btn>
-        <Btn primary onClick={() => setBrowserOpen(true)}><Download size={14} /> Add Server</Btn>
+        <Btn onClick={() => setCustomOpen(true)}><Braces size={14} /> {i18nT('pages.overview.mcpTab.add_custom')}</Btn>
+        <Btn primary onClick={() => setBrowserOpen(true)}><Download size={14} /> {i18nT('pages.overview.mcpTab.add_server')}</Btn>
       </span>
     </h4>
     <Card>
@@ -294,25 +295,25 @@ export default function McpTab() {
       {pendingCount > 0 && (
         <div className="mb-3 p-3 rounded border border-[var(--warn)] bg-[var(--warn)]/20 flex items-center justify-between">
           <div className="text-[13px] text-[var(--warn)]">
-            <AlertTriangle className="lucide-inline" /> {pendingCount} pending change{pendingCount === 1 ? '' : 's'}
-            <span className="ml-2 text-muted">— Apply commits to ~/.kirocrew/mcp.json + provider globals as opted-in.</span>
+            <AlertTriangle className="lucide-inline" /> {pendingCount} {i18nT('pages.overview.mcpTab.pending_change')}{pendingCount === 1 ? '' : 's'}
+            <span className="ml-2 text-muted">{i18nT('pages.overview.mcpTab.apply_commits_to_kirocrew_mcp_json_provider_glob')}</span>
           </div>
           <div className="flex gap-2">
             <Btn onClick={() => apply.mutate()} disabled={apply.isPending}>
-              {apply.isPending ? <><Zap className="lucide-inline animate-pulse" /> Applying…</> : <><Zap className="lucide-inline" /> Apply</>}
+              {apply.isPending ? <><Zap className="lucide-inline animate-pulse" /> {i18nT('pages.overview.mcpTab.applying')}</> : <><Zap className="lucide-inline" /> {i18nT('pages.overview.mcpTab.apply')}</>}
             </Btn>
-            <Btn onClick={discard} disabled={apply.isPending}><X className="lucide-inline" /> Discard</Btn>
+            <Btn onClick={discard} disabled={apply.isPending}><X className="lucide-inline" /> {i18nT('pages.overview.mcpTab.discard')}</Btn>
           </div>
         </div>
       )}
 
       <div className="flex items-center gap-2 mb-3">
         <div className="relative max-w-[480px] flex-1">
-          <SearchInput placeholder="Filter servers or tools…" value={mcpFilter} onChange={e => setMcpFilter(e.target.value)} />
-          {mcpFilter && <button className="absolute right-2 top-1/2 -translate-y-1/2 text-muted hover:text-text transition-colors cursor-pointer" onClick={() => setMcpFilter('')} aria-label="Clear search">&times;</button>}
+          <SearchInput placeholder={i18nT('pages.overview.mcpTab.filter_servers_or_tools')} value={mcpFilter} onChange={e => setMcpFilter(e.target.value)} />
+          {mcpFilter && <button className="absolute right-2 top-1/2 -translate-y-1/2 text-muted hover:text-text transition-colors cursor-pointer" onClick={() => setMcpFilter('')} aria-label={i18nT('pages.overview.mcpTab.clear_search')}>{"\u00d7"}</button>}
         </div>
         <div className="ml-auto flex items-center gap-2">
-          <Btn onClick={() => probe.mutate()} disabled={probe.isPending} aria-label="Probe MCP servers"><RefreshCw size={14} className={probe.isPending ? 'animate-spin' : ''} /></Btn>
+          <Btn onClick={() => probe.mutate()} disabled={probe.isPending} aria-label={i18nT('pages.overview.mcpTab.probe_mcp_servers')}><RefreshCw size={14} className={probe.isPending ? 'animate-spin' : ''} /></Btn>
         </div>
       </div>
       <div className="flex gap-2 flex-wrap mb-3">
@@ -321,14 +322,14 @@ export default function McpTab() {
       {isLoading ? <ContentSkeleton rows={6} /> : (
         <div className="overflow-x-auto">
         <table className="w-full border-collapse table-striped"><thead><tr>
-          <SortableHeader label="Name" sortKey="name" sort={mcpSort} onToggle={toggleMcpSort} />
-          <th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium">KiroCrew</th>
-          <th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium">Globals</th>
-          <SortableHeader label="Status" sortKey="status" sort={mcpSort} onToggle={toggleMcpSort} />
-          <SortableHeader label="Tools" sortKey="tools" sort={mcpSort} onToggle={toggleMcpSort} />
-          <th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium">Actions</th>
+          <SortableHeader label={i18nT('pages.overview.mcpTab.name')} sortKey="name" sort={mcpSort} onToggle={toggleMcpSort} />
+          <th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium">{i18nT('pages.overview.mcpTab.kirocrew')}</th>
+          <th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium">{i18nT('pages.overview.mcpTab.globals')}</th>
+          <SortableHeader label={i18nT('pages.overview.mcpTab.status')} sortKey="status" sort={mcpSort} onToggle={toggleMcpSort} />
+          <SortableHeader label={i18nT('pages.overview.mcpTab.tools')} sortKey="tools" sort={mcpSort} onToggle={toggleMcpSort} />
+          <th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium">{i18nT('pages.overview.mcpTab.actions')}</th>
         </tr></thead>
-          <tbody>{servers.length === 0 ? <tr><td colSpan={6} className="text-muted italic px-2.5 py-3.5 text-sm">No MCP servers configured</td></tr> : sortedServers.length === 0 ? <tr><td colSpan={6} className="text-muted italic px-2.5 py-3.5 text-sm">No matching servers</td></tr> : sortedServers.map(s => {
+          <tbody>{servers.length === 0 ? <tr><td colSpan={6} className="text-muted italic px-2.5 py-3.5 text-sm">{i18nT('pages.overview.mcpTab.no_mcp_servers_configured')}</td></tr> : sortedServers.length === 0 ? <tr><td colSpan={6} className="text-muted italic px-2.5 py-3.5 text-sm">{i18nT('pages.overview.mcpTab.no_matching_servers')}</td></tr> : sortedServers.map(s => {
             const p = pending[s.name]
             const pendingUninstall = p?.uninstall === true
             const eff = effectivePresence(s, p)
@@ -347,7 +348,7 @@ export default function McpTab() {
                 </td>
                 <td className="px-2.5 py-2 border-b border-border text-sm whitespace-nowrap">
                   <ScopeBadge
-                    label="KiroCrew"
+                    label={i18nT('pages.overview.mcpTab.kirocrew')}
                     scope="kirocrew"
                     active={eff.kirocrew}
                     pendingChange={!pendingUninstall && !!p?.scopes && 'kirocrew' in p.scopes}
@@ -358,7 +359,7 @@ export default function McpTab() {
                 <td className="px-2.5 py-2 border-b border-border text-sm whitespace-nowrap">
                   <div className="flex gap-1">
                     <ScopeBadge
-                      label="Kiro"
+                      label={i18nT('pages.overview.mcpTab.kiro')}
                       scope="kiroGlobal"
                       active={eff.kiroGlobal}
                       pendingChange={!pendingUninstall && !!p?.scopes && 'kiroGlobal' in p.scopes}
@@ -385,7 +386,7 @@ export default function McpTab() {
                 </td>
                 <td className="px-2.5 py-2 border-b border-border text-[13px] w-full">
                   {s.status === 'error' && s.error ? <span className="text-danger text-[12px]"><AlertTriangle className="lucide-inline" /> {s.error}</span> : s.tools?.length ? (<div>
-                    <button className="flex items-center gap-1 text-[12px] text-accent hover:text-accent-hover cursor-pointer transition-colors mb-1" onClick={() => setExpandedTools(prev => { const next = new Set(prev); if (next.has(s.name)) next.delete(s.name); else next.add(s.name); return next })}>{s.tools.length} tools{!expandedTools.has(s.name) && (s.disabledTools?.length || 0) > 0 && <span className="text-muted ml-1">({s.disabledTools!.length} off)</span>}<ChevronRight size={14} className={`transition-transform duration-200 ${expandedTools.has(s.name) ? 'rotate-90' : ''}`} /></button>
+                    <button className="flex items-center gap-1 text-[12px] text-accent hover:text-accent-hover cursor-pointer transition-colors mb-1" onClick={() => setExpandedTools(prev => { const next = new Set(prev); if (next.has(s.name)) next.delete(s.name); else next.add(s.name); return next })}>{s.tools.length} {i18nT('pages.overview.mcpTab.tools_2')}{!expandedTools.has(s.name) && (s.disabledTools?.length || 0) > 0 && <span className="text-muted ml-1">({s.disabledTools!.length} {i18nT('pages.overview.mcpTab.off')}</span>}<ChevronRight size={14} className={`transition-transform duration-200 ${expandedTools.has(s.name) ? 'rotate-90' : ''}`} /></button>
                     <AnimatePresence>{expandedTools.has(s.name) && <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.2 }} className="overflow-hidden"><div className="space-y-0.5">{s.tools.map(t => {
                       const currentlyDisabled = (s.disabledTools || []).includes(t)
                       const toolOverride = pendingTools[s.name]?.[t]
@@ -406,13 +407,13 @@ export default function McpTab() {
                 </td>
                 <td className="px-2.5 py-2 border-b border-border text-sm text-right whitespace-nowrap">
                   {pendingUninstall ? (
-                    <Btn onClick={() => revertRow(s.name)}>Undo</Btn>
+                    <Btn onClick={() => revertRow(s.name)}>{i18nT('pages.overview.mcpTab.undo')}</Btn>
                   ) : (
                     <div className="flex gap-1 justify-end">
                       {s.kirocrewManaged && (
-                        <Btn onClick={() => setEditTarget(s.name)} aria-label={`Edit JSON for ${s.name}`} title="Edit the server's JSON spec"><Braces size={13} /></Btn>
+                        <Btn onClick={() => setEditTarget(s.name)} aria-label={`Edit JSON for ${s.name}`} title={i18nT('pages.overview.mcpTab.edit_the_server_s_json_spec')}><Braces size={13} /></Btn>
                       )}
-                      <Btn danger onClick={() => stageUninstall(s.name)}>Uninstall</Btn>
+                      <Btn danger onClick={() => stageUninstall(s.name)}>{i18nT('pages.overview.mcpTab.uninstall')}</Btn>
                     </div>
                   )}
                 </td>

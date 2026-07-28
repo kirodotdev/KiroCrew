@@ -14,6 +14,7 @@ import { copyToClipboard } from '../utils/clipboard'
 import { api } from '../api/client'
 import type { Artifact } from '../types'
 
+import { i18nT } from '../i18n/t'
 // Artifact "Iterate" affordances are hidden pending an artifact redesign.
 // Here that gates the "Submit comments to chat" bar — the
 // side-panel analog of the full-page Iterate flow — while leaving the durable
@@ -68,25 +69,25 @@ function SubmitBar({ count, submitting, onSubmit, bleed = false }: {
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2 min-w-0">
           <span className="text-[13px] text-text truncate">
-            {count} comment{count === 1 ? '' : 's'} to send to this chat
+            {count} {i18nT('components.artifactPanel.comment')}{count === 1 ? '' : 's'} {i18nT('components.artifactPanel.to_send_to_this_chat')}
           </span>
           <button
             type="button"
-            aria-label="Toggle additional instruction"
+            aria-label={i18nT('components.artifactPanel.toggle_additional_instruction')}
             aria-pressed={showExtraPrompt}
             onClick={() => setShowExtraPrompt(v => !v)}
             className={`flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[11px] font-medium border cursor-pointer transition-all shrink-0 ${showExtraPrompt ? 'border-accent text-accent bg-accent-subtle' : 'border-border text-muted hover:text-text hover:border-border-strong'}`}
-          ><MessageSquarePlus className="lucide-inline" /> Add instruction</button>
+          ><MessageSquarePlus className="lucide-inline" /> {i18nT('components.artifactPanel.add_instruction')}</button>
         </div>
         <SendBtn onClick={submit} disabled={submitting}>
-          Submit <Send className="lucide-inline" />
+          {i18nT('components.artifactPanel.submit')} <Send className="lucide-inline" />
         </SendBtn>
       </div>
       {showExtraPrompt && (
         <textarea
           ref={extraPromptRef}
-          aria-label="Additional instruction"
-          placeholder="Optional: overall feedback or an extra instruction to send with these comments…"
+          aria-label={i18nT('components.artifactPanel.additional_instruction')}
+          placeholder={i18nT('components.artifactPanel.optional_overall_feedback_or_an_extra_instructio')}
           value={extraPrompt}
           onChange={e => setExtraPrompt(e.target.value)}
           rows={2}
@@ -220,11 +221,11 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, onSub
       {isHydrating ? (
         <div className="h-full flex flex-col items-center justify-center gap-3 text-muted" aria-busy="true">
           <Loader2 size={20} className="animate-spin" />
-          <span className="text-[13px]">Loading artifact…</span>
+          <span className="text-[13px]">{i18nT('components.artifactPanel.loading_artifact')}</span>
         </div>
       ) : loadFailed ? (
         <div className="h-full flex items-center justify-center px-6 text-center text-[13px] text-danger">
-          Couldn’t load this artifact. It may have been deleted, or the network request failed.
+          {i18nT('components.artifactPanel.couldn_t_load_this_artifact_it_may_have_been_del')}
         </div>
       ) : usesIframe && artifact ? (
         <ArtifactBodyIframe
@@ -296,24 +297,24 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, onSub
           <button
             className="p-1.5 rounded-md border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all"
             onClick={() => setFullscreen(true)}
-            title="Full screen"
-            aria-label="Full screen"
+            title={i18nT('components.artifactPanel.full_screen')}
+            aria-label={i18nT('components.artifactPanel.full_screen')}
           ><Maximize2 size={14} /></button>
           <button
             className="p-1.5 rounded-md border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all"
             onClick={() => navigate(`/artifacts/${encodeURIComponent(slug)}`)}
-            title="Open full artifact page"
-            aria-label="Open full artifact page"
+            title={i18nT('components.artifactPanel.open_full_artifact_page')}
+            aria-label={i18nT('components.artifactPanel.open_full_artifact_page')}
           ><ExternalLink size={14} /></button>
         </>
       }
       footer={
         <Clickable
           className="flex items-center gap-2 text-[11px] text-muted font-mono truncate cursor-pointer hover:text-text transition-colors"
-          title="Click to copy slug"
+          title={i18nT('components.artifactPanel.click_to_copy_slug')}
           onClick={() => copyToClipboard(slug)}
         >
-          /artifacts/{slug}
+          {i18nT('components.artifactPanel.artifacts')}{slug}
         </Clickable>
       }
     >
@@ -333,7 +334,7 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, onSub
       {!fullscreen && fa.popovers}
     </DetailPanel>
     {fullscreen && createPortal(
-      <div className="fixed inset-0 z-[9999] bg-bg flex flex-col" role="dialog" aria-modal="true" aria-label="Full screen artifact preview"
+      <div className="fixed inset-0 z-[9999] bg-bg flex flex-col" role="dialog" aria-modal="true" aria-label={i18nT('components.artifactPanel.full_screen_artifact_preview')}
         ref={el => { if (el && !el.dataset.focused) { el.dataset.focused = '1'; const first = el.querySelector<HTMLElement>('button:not([disabled]),textarea,input,a[href],select,[tabindex]:not([tabindex="-1"])'); first?.focus() } }}
         onKeyDown={e => { if (e.key === 'Tab') { const focusable = e.currentTarget.querySelectorAll<HTMLElement>('button:not([disabled]),textarea,input,a[href],select,[tabindex]:not([tabindex="-1"])'); if (focusable.length === 0) return; const first = focusable[0], last = focusable[focusable.length - 1]; if (e.shiftKey) { if (document.activeElement === first) { e.preventDefault(); last.focus() } } else { if (document.activeElement === last) { e.preventDefault(); first.focus() } } } }}>
         {/* Header — pl-20 clears macOS traffic-light buttons */}
@@ -347,10 +348,10 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, onSub
             <button
               className="p-1.5 rounded-md border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all"
               onClick={() => navigate(`/artifacts/${encodeURIComponent(slug)}`)}
-              title="Open full artifact page"
-              aria-label="Open full artifact page"
+              title={i18nT('components.artifactPanel.open_full_artifact_page')}
+              aria-label={i18nT('components.artifactPanel.open_full_artifact_page')}
             ><ExternalLink size={14} /></button>
-            <button className="p-1.5 rounded-md border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all" onClick={() => setFullscreen(false)} title="Exit full screen (Esc)" aria-label="Exit full screen"><Minimize2 size={14} /></button>
+            <button className="p-1.5 rounded-md border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all" onClick={() => setFullscreen(false)} title={i18nT('components.artifactPanel.exit_full_screen_esc')} aria-label={i18nT('components.artifactPanel.exit_full_screen')}><Minimize2 size={14} /></button>
           </div>
         </div>
         <div className="relative flex-1 overflow-hidden min-h-0 px-16 py-4">
@@ -368,7 +369,7 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, onSub
             <SubmitBar count={humanComments.length} submitting={submitting} onSubmit={submitToChat} />
           </div>
         )}
-        <Clickable className="shrink-0 flex items-center px-16 h-6 text-[11px] text-muted font-mono truncate cursor-pointer hover:text-text transition-colors" title="Click to copy slug" onClick={() => copyToClipboard(slug)}>/artifacts/{slug}</Clickable>
+        <Clickable className="shrink-0 flex items-center px-16 h-6 text-[11px] text-muted font-mono truncate cursor-pointer hover:text-text transition-colors" title={i18nT('components.artifactPanel.click_to_copy_slug')} onClick={() => copyToClipboard(slug)}>{i18nT('components.artifactPanel.artifacts')}{slug}</Clickable>
       </div>,
       document.body
     )}

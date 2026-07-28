@@ -200,7 +200,7 @@ const MD_COMPONENTS: Components = {
 
     if (!className) {
       if (PATH_RE.test(codeStr)) {
-        return <code className="bg-bg-elevated px-1.5 py-0.5 rounded text-accent text-sm font-mono cursor-pointer hover:underline" title="Click to open / Shift+click to reveal in Finder" {...props}>{children}</code>
+        return <code className="bg-bg-elevated px-1.5 py-0.5 rounded text-accent text-sm font-mono cursor-pointer hover:underline" title={i18nT('components.markdownRenderer.click_to_open_shift_click_to_reveal_in_finder')} {...props}>{children}</code>
       }
       return <code className="bg-bg-elevated px-1.5 py-0.5 rounded text-accent text-sm font-mono" {...props}>{children}</code>
     }
@@ -976,6 +976,7 @@ const MarkdownBlock = memo(function MarkdownBlock({ content, sourcePos, startLin
 import WidgetFrame from './WidgetFrame'
 import WidgetPlaceholder from './WidgetPlaceholder'
 
+import { i18nT } from '../i18n/t'
 /** Try to extract a file path from chat text immediately preceding a diff
  * block. Tools sometimes emit "Created /path/to/file:" or "Modified ..."
  * before a bare diff with no +++/--- headers; this hint lets DiffBlock's
@@ -1019,7 +1020,7 @@ function BlockRenderer({ block, prevBlock, onFileOpen, sourcePos, messageTs, wid
     }
     case 'mermaid':
       return block.complete ? <MermaidBlock code={block.content} /> : (
-        <div className="my-2 p-3 bg-bg-elevated border border-border rounded-md text-muted text-[12px] italic animate-pulse">generating diagram…</div>
+        <div className="my-2 p-3 bg-bg-elevated border border-border rounded-md text-muted text-[12px] italic animate-pulse">{i18nT('components.markdownRenderer.generating_diagram')}</div>
       )
     case 'code': {
       const node = <MonacoCodeBlock code={block.content} lang={block.language} complete={block.complete} />
@@ -1259,15 +1260,15 @@ export function Lightbox() {
       <img src={img.src} alt={img.alt} className="max-w-[90vw] max-h-[90vh] object-contain rounded-lg shadow-2xl" onClick={e => e.stopPropagation()} />
       <div className="absolute top-4 right-4 flex items-center gap-1">
         <button
-          aria-label="Download image"
-          title="Download (d)"
+          aria-label={i18nT('components.markdownRenderer.download_image')}
+          title={i18nT('components.markdownRenderer.download_d')}
           className="text-white/80 hover:text-white p-1.5 rounded-md hover:bg-white/10 transition-colors"
           onClick={(e) => { e.stopPropagation(); void downloadLightboxImage(img) }}
         >
           <Download className="lucide-inline" aria-hidden="true" />
         </button>
         <button
-          aria-label="Close"
+          aria-label={i18nT('components.markdownRenderer.close')}
           className="text-white/80 hover:text-white p-1.5 rounded-md hover:bg-white/10 transition-colors"
           onClick={() => setState(null)}
         >

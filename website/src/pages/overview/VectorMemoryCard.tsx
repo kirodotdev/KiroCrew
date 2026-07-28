@@ -5,6 +5,7 @@ import { Card, CardTitle, Btn, SendBtn, Input, Badge } from '../../components/ui
 import InfoTip from '../../components/InfoTip'
 import { esc } from '../../api/helpers'
 
+import { i18nT } from '../../i18n/t'
 const extractError = (err: unknown): string => {
   if (err != null && typeof err === 'object' && !(err instanceof Error)) {
     const obj = err as Record<string, unknown>;
@@ -217,7 +218,7 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange }: {
 
   useEffect(() => { onActiveChange?.(!!active) }, [active, onActiveChange])
 
-  if (stats === null) return <Card><CardTitle><Brain className="lucide-inline" /> Vector Memory</CardTitle><p className="text-muted text-sm">Loading…</p></Card>
+  if (stats === null) return <Card><CardTitle><Brain className="lucide-inline" /> {i18nT('pages.overview.vectorMemoryCard.vector_memory')}</CardTitle><p className="text-muted text-sm">{i18nT('pages.overview.vectorMemoryCard.loading')}</p></Card>
 
   const startEmbeddings = async () => {
     setEnabling(true)
@@ -257,19 +258,19 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange }: {
 
   return (<>
     <Card>
-      <CardTitle><Brain className="lucide-inline" /> Vector Memory <InfoTip text="Structured semantic (key-value) + episodic (conversation fragments) memory with vector search. Embeddings are always-on — the model downloads automatically in the background." /></CardTitle>
+      <CardTitle><Brain className="lucide-inline" /> {i18nT('pages.overview.vectorMemoryCard.vector_memory')} <InfoTip text="Structured semantic (key-value) + episodic (conversation fragments) memory with vector search. Embeddings are always-on — the model downloads automatically in the background." /></CardTitle>
       {!active && !enabling && (
         <div className="flex flex-col gap-3 items-start">
           {embStatus?.setup_error
             ? (
               <div className="flex items-center gap-2">
                 <p className="text-sm text-danger"><XCircle className="lucide-inline" /> {embStatus.setup_error}</p>
-                <Btn onClick={startEmbeddings}><RefreshCw className="lucide-inline" /> Retry</Btn>
+                <Btn onClick={startEmbeddings}><RefreshCw className="lucide-inline" /> {i18nT('pages.overview.vectorMemoryCard.retry')}</Btn>
               </div>
             )
             : embStatus?.model_available
-              ? <p className="text-sm text-muted">Model loaded. Embedding engine is starting up.</p>
-              : <p className="text-sm text-muted">Vector memory is initializing. The embedding model (~610MB) downloads automatically in the background, and legacy memory migrates on its own — no action needed.</p>
+              ? <p className="text-sm text-muted">{i18nT('pages.overview.vectorMemoryCard.model_loaded_embedding_engine_is_starting_up')}</p>
+              : <p className="text-sm text-muted">{i18nT('pages.overview.vectorMemoryCard.vector_memory_is_initializing_the_embedding_mode')}</p>
           }
         </div>
       )}
@@ -290,7 +291,7 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange }: {
                 <div className="text-sm font-medium text-text-strong mb-1">
                   {step === 'checking' && 'Checking system status…'}
                   {step === 'downloading' && downloadStepLabel(step, embStatus)}
-                  {step === 'done' && <><CheckCircle className="lucide-inline" /> Ready!</>}
+                  {step === 'done' && <><CheckCircle className="lucide-inline" /> {i18nT('pages.overview.vectorMemoryCard.ready')}</>}
                   {step === 'error' && <><XCircle className="lucide-inline" /> {embStatus?.setup_error || 'Setup failed'}</>}
                 </div>
                 <div className="w-full bg-bg-elevated rounded-full h-2 border border-border overflow-hidden">
@@ -320,14 +321,14 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange }: {
               </div>
             ))}
             <div className="stat-accent relative overflow-hidden bg-bg-elevated rounded-md px-3 py-2 border border-border">
-              <div className="text-muted text-[11px] uppercase tracking-wider">Embeddings</div>
+              <div className="text-muted text-[11px] uppercase tracking-wider">{i18nT('pages.overview.vectorMemoryCard.embeddings')}</div>
               <div className="text-lg font-bold">
                 {embStatus?.setup_step && embStatus.setup_step !== 'idle' && embStatus.setup_step !== 'done'
                   ? <Badge variant="warn"><Hourglass className="lucide-inline" /> {embStatus.setup_step}</Badge>
                   : (() => {
                       const modelOk = embStatus?.model_available ?? embStatus?.server_healthy;
-                      if (!modelOk) return <Badge variant="warn"><AlertTriangle className="lucide-inline" /> model loading</Badge>;
-                      return <Badge variant="ok"><Check className="lucide-inline" /> active</Badge>;
+                      if (!modelOk) return <Badge variant="warn"><AlertTriangle className="lucide-inline" /> {i18nT('pages.overview.vectorMemoryCard.model_loading')}</Badge>;
+                      return <Badge variant="ok"><Check className="lucide-inline" /> {i18nT('pages.overview.vectorMemoryCard.active')}</Badge>;
                     })()
                 }
               </div>
@@ -338,7 +339,7 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange }: {
             {(['semantic','episodic','audit','inspector'] as const).map(v => (
               <button key={v} onClick={() => { setView(v); if (v === 'episodic') loadEpisodic(); if (v === 'audit') loadEvents(); if (v === 'inspector') loadPreview() }}
                 className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-[13px] font-medium cursor-pointer border-none transition-colors ${view === v ? 'bg-bg-hover text-accent' : 'bg-transparent text-muted hover:text-text'}`}>{
-                  v === 'inspector' ? <><Search className="lucide-inline" /> Inspector</> : v[0].toUpperCase() + v.slice(1)
+                  v === 'inspector' ? <><Search className="lucide-inline" /> {i18nT('pages.overview.vectorMemoryCard.inspector')}</> : v[0].toUpperCase() + v.slice(1)
                 }</button>
             ))}
             </div>
@@ -349,21 +350,21 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange }: {
 
     {active && view === 'semantic' && (
       <Card>
-        <CardTitle>Semantic Memory <InfoTip text="Structured key-value facts about you. Confidence: how certain the system is (1.0 = you set it, 0.85 = extracted from chat). Source: who wrote it (user_explicit = you, consolidation = auto-extracted)." /></CardTitle>
+        <CardTitle>{i18nT('pages.overview.vectorMemoryCard.semantic_memory')} <InfoTip text="Structured key-value facts about you. Confidence: how certain the system is (1.0 = you set it, 0.85 = extracted from chat). Source: who wrote it (user_explicit = you, consolidation = auto-extracted)." /></CardTitle>
         <div className="flex gap-2 items-center mb-3 relative">
           <div className="relative" style={{ flex: 1 }}>
-            <Input placeholder="Key (e.g. pref.backend.framework)" value={newKey} onChange={e => { setNewKey(e.target.value); setWriteError('') }}
+            <Input placeholder={i18nT('pages.overview.vectorMemoryCard.key_e_g_pref_backend_framework')} value={newKey} onChange={e => { setNewKey(e.target.value); setWriteError('') }}
               list="key-suggestions" className="w-full" />
             <datalist id="key-suggestions">{filteredKeys.map(k => <option key={k} value={k}>{k}</option>)}</datalist>
           </div>
-          <Input placeholder="Value" style={{ flex: 2 }} value={newVal} onChange={e => { setNewVal(e.target.value); setWriteError('') }}
+          <Input placeholder={i18nT('pages.overview.vectorMemoryCard.value')} style={{ flex: 2 }} value={newVal} onChange={e => { setNewVal(e.target.value); setWriteError('') }}
             onKeyDown={async e => { if (e.key === 'Enter' && newKey && newVal) { try { await api.vectorSemanticWrite(newKey, newVal); setNewKey(''); setNewVal(''); setWriteError(''); load() } catch (err: unknown) { setWriteError(extractError(err)) } } }} />
-          <SendBtn onClick={async () => { if (!newKey || !newVal) return; try { await api.vectorSemanticWrite(newKey, newVal); setNewKey(''); setNewVal(''); setWriteError(''); load() } catch (e: unknown) { setWriteError(extractError(e)) } }}>Set</SendBtn>
+          <SendBtn onClick={async () => { if (!newKey || !newVal) return; try { await api.vectorSemanticWrite(newKey, newVal); setNewKey(''); setNewVal(''); setWriteError(''); load() } catch (e: unknown) { setWriteError(extractError(e)) } }}>{i18nT('pages.overview.vectorMemoryCard.set')}</SendBtn>
         </div>
         {writeError && <p className="text-danger text-[13px] mb-2"><AlertTriangle className="lucide-inline" /> {writeError}</p>}
         <div className="flex gap-2 items-center mb-3">
-          <Input placeholder="Filter by key or value…" style={{ flex: 1 }} value={semFilter} onChange={e => { setSemFilter(e.target.value); setEditKey(null) }} />
-          {semFilter && <Btn onClick={() => { setSemFilter(''); setEditKey(null) }}>Clear</Btn>}
+          <Input placeholder={i18nT('pages.overview.vectorMemoryCard.filter_by_key_or_value')} style={{ flex: 1 }} value={semFilter} onChange={e => { setSemFilter(e.target.value); setEditKey(null) }} />
+          {semFilter && <Btn onClick={() => { setSemFilter(''); setEditKey(null) }}>{i18nT('pages.overview.vectorMemoryCard.clear')}</Btn>}
         </div>
         <div className="max-h-[500px] overflow-y-auto">
         <table className="w-full border-collapse table-striped"><thead><tr>
@@ -393,7 +394,7 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange }: {
                 </td>
                 <td className="px-2.5 py-2 border-b border-border text-sm">{confidenceBadge(e.confidence)}</td>
                 <td className="px-2.5 py-2 border-b border-border text-sm"><Badge variant={e.source === 'user_explicit' ? 'aim' : 'ok'}>{e.source}</Badge></td>
-                <td className="px-2.5 py-2 border-b border-border text-sm"><Btn danger onClick={async () => { try { await api.vectorSemanticDelete(e.key); setWriteError(''); load() } catch (err: unknown) { setWriteError(extractError(err)) } }}>Delete</Btn></td>
+                <td className="px-2.5 py-2 border-b border-border text-sm"><Btn danger onClick={async () => { try { await api.vectorSemanticDelete(e.key); setWriteError(''); load() } catch (err: unknown) { setWriteError(extractError(err)) } }}>{i18nT('pages.overview.vectorMemoryCard.delete')}</Btn></td>
               </tr>
             )
           })}
@@ -401,7 +402,7 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange }: {
         </div>
         {filteredSemantic.length > 0 && (
           <p className="text-muted text-[12px] mt-2">
-            Showing {visibleSemantic.length} of {filteredSemantic.length}{filteredSemantic.length !== semantic.length ? ` (filtered from ${semantic.length})` : ''}{filteredSemantic.length > visibleSemantic.length ? ' — refine your filter to narrow further' : ''}
+            {i18nT('pages.overview.vectorMemoryCard.showing')} {visibleSemantic.length} {i18nT('pages.overview.vectorMemoryCard.of')} {filteredSemantic.length}{filteredSemantic.length !== semantic.length ? ` (filtered from ${semantic.length})` : ''}{filteredSemantic.length > visibleSemantic.length ? ' — refine your filter to narrow further' : ''}
           </p>
         )}
       </Card>
@@ -409,19 +410,19 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange }: {
 
     {active && view === 'episodic' && (
       <Card>
-        <CardTitle>Episodic Memory <InfoTip text="Conversation fragments with vector search. Importance: how significant (0-1, higher = more important). Score: cosine similarity to your search query (closer to 1.0 = more relevant)." /></CardTitle>
+        <CardTitle>{i18nT('pages.overview.vectorMemoryCard.episodic_memory')} <InfoTip text="Conversation fragments with vector search. Importance: how significant (0-1, higher = more important). Score: cosine similarity to your search query (closer to 1.0 = more relevant)." /></CardTitle>
         <div className="flex gap-2 items-center mb-3">
-          <Input placeholder="Search episodic memories…" style={{ flex: 1 }} value={epQuery} onChange={e => setEpQuery(e.target.value)}
+          <Input placeholder={i18nT('pages.overview.vectorMemoryCard.search_episodic_memories')} style={{ flex: 1 }} value={epQuery} onChange={e => setEpQuery(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter') loadEpisodic() }} />
-          <SendBtn onClick={() => loadEpisodic()}>Search</SendBtn>
-          {epQuery && <Btn onClick={() => { setEpQuery(''); setEpTagFilter(null); loadEpisodic('', false, null) }}>Clear</Btn>}
-          {!epQuery && epTagFilter && <Btn onClick={() => { setEpTagFilter(null); loadEpisodic('', false, null) }}>Clear</Btn>}
+          <SendBtn onClick={() => loadEpisodic()}>{i18nT('pages.overview.vectorMemoryCard.search')}</SendBtn>
+          {epQuery && <Btn onClick={() => { setEpQuery(''); setEpTagFilter(null); loadEpisodic('', false, null) }}>{i18nT('pages.overview.vectorMemoryCard.clear')}</Btn>}
+          {!epQuery && epTagFilter && <Btn onClick={() => { setEpTagFilter(null); loadEpisodic('', false, null) }}>{i18nT('pages.overview.vectorMemoryCard.clear')}</Btn>}
         </div>
         {episodic.length > 0 && (() => {
           const allTags = [...new Set(episodic.flatMap(e => parseTags(e.tags)))]
           return allTags.length > 0 ? (
             <div className="flex gap-1.5 flex-wrap mb-3">
-              <span className="text-muted text-[12px] self-center mr-1">Filter by tag:</span>
+              <span className="text-muted text-[12px] self-center mr-1">{i18nT('pages.overview.vectorMemoryCard.filter_by_tag')}</span>
               {allTags.map((tag: string) => (
                 <button key={tag} onClick={() => { const t = epTagFilter === tag ? null : tag; setEpTagFilter(t); setEpQuery(''); loadEpisodic('', false, t) }}
                   className={`px-2 py-0.5 rounded-full text-[12px] border transition-colors cursor-pointer ${epTagFilter === tag ? 'bg-warn/30 text-warn border-warn/40' : 'bg-ok-subtle text-ok border-ok/20 hover:bg-ok/20'}`}>{tag}</button>
@@ -433,7 +434,7 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange }: {
         <table className="w-full border-collapse table-striped"><thead><tr>
           {['Text','Tags','Imp.',...(epQuery ? ['Score'] : []),'When',''].map(h => <th key={h} className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium sticky top-0 bg-card z-10">{h}</th>)}
         </tr></thead><tbody>
-          {episodic.length === 0 ? <tr><td colSpan={epQuery ? 6 : 5} className="text-muted italic px-2.5 py-3.5 text-sm">No episodic entries</td></tr> : episodic.map(e => {
+          {episodic.length === 0 ? <tr><td colSpan={epQuery ? 6 : 5} className="text-muted italic px-2.5 py-3.5 text-sm">{i18nT('pages.overview.vectorMemoryCard.no_episodic_entries')}</td></tr> : episodic.map(e => {
             const tags = parseTags(e.tags);
             return (
               <tr key={e.id} className="hover:bg-bg-hover transition-colors">
@@ -442,22 +443,22 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange }: {
                 <td className="px-2.5 py-2 border-b border-border text-sm">{confidenceBadge(e.importance)}</td>
                 {epQuery && <td className="px-2.5 py-2 border-b border-border text-sm font-mono text-[12px]">{e.score != null ? e.score.toFixed(3) : '—'}</td>}
                 <td className="px-2.5 py-2 border-b border-border text-sm text-muted whitespace-nowrap">{(() => { const m = e.text?.match(/^\[(\d{4}-\d{2}-\d{2})/); if (m) return m[1]; const raw = e.created_at || e.ts || ''; const d = new Date(raw.replace(' ', 'T') + (raw.includes('+') || raw.includes('Z') ? '' : 'Z')); return isNaN(d.getTime()) ? '—' : d.toLocaleDateString() })()}</td>
-                <td className="px-2.5 py-2 border-b border-border text-sm"><Btn danger onClick={async () => { await api.vectorEpisodicDelete(e.id); setEpisodic(prev => prev.filter(x => x.id !== e.id)) }}>Delete</Btn></td>
+                <td className="px-2.5 py-2 border-b border-border text-sm"><Btn danger onClick={async () => { await api.vectorEpisodicDelete(e.id); setEpisodic(prev => prev.filter(x => x.id !== e.id)) }}>{i18nT('pages.overview.vectorMemoryCard.delete')}</Btn></td>
               </tr>
             )
           })}
         </tbody></table>
         </div>
-        {epHasMore && <div className="flex justify-center mt-3"><Btn onClick={() => loadEpisodic(undefined, true)}>Load more…</Btn></div>}
-        {episodic.length > 0 && <p className="text-muted text-[12px] mt-2">Showing {episodic.length} entries</p>}
+        {epHasMore && <div className="flex justify-center mt-3"><Btn onClick={() => loadEpisodic(undefined, true)}>{i18nT('pages.overview.vectorMemoryCard.load_more')}</Btn></div>}
+        {episodic.length > 0 && <p className="text-muted text-[12px] mt-2">{i18nT('pages.overview.vectorMemoryCard.showing')} {episodic.length} {i18nT('pages.overview.vectorMemoryCard.entries')}</p>}
       </Card>
     )}
 
     {active && view === 'audit' && (
       <Card>
-        <CardTitle>Audit Trail <InfoTip text="Every memory create, update, delete, conflict, and injection block is logged here." /></CardTitle>
+        <CardTitle>{i18nT('pages.overview.vectorMemoryCard.audit_trail')} <InfoTip text="Every memory create, update, delete, conflict, and injection block is logged here." /></CardTitle>
         <div className="flex gap-1.5 flex-wrap mb-3">
-          <Btn onClick={() => setEventFilter('all')} className={eventFilter === 'all' ? '!border-accent !text-accent' : ''}>All</Btn>
+          <Btn onClick={() => setEventFilter('all')} className={eventFilter === 'all' ? '!border-accent !text-accent' : ''}>{i18nT('pages.overview.vectorMemoryCard.all')}</Btn>
           {eventTypes.map((t: string) => (
             <Btn key={t} onClick={() => setEventFilter(t)} className={eventFilter === t ? '!border-accent !text-accent' : ''}>{t}</Btn>
           ))}
@@ -466,7 +467,7 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange }: {
         <table className="w-full border-collapse table-striped"><thead><tr>
           {['Event','Key/Type','Details','When'].map(h => <th key={h} className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium sticky top-0 bg-card z-10">{h}</th>)}
         </tr></thead><tbody>
-          {filteredEvents.length === 0 ? <tr><td colSpan={4} className="text-muted italic px-2.5 py-3.5 text-sm">No events</td></tr> : filteredEvents.map((e, i: number) => (
+          {filteredEvents.length === 0 ? <tr><td colSpan={4} className="text-muted italic px-2.5 py-3.5 text-sm">{i18nT('pages.overview.vectorMemoryCard.no_events')}</td></tr> : filteredEvents.map((e, i: number) => (
             <tr key={i} className="hover:bg-bg-hover transition-colors">
               <td className="px-2.5 py-2 border-b border-border text-sm">
                 <Badge variant={e.event_type.includes('block') || e.event_type.includes('reject') ? 'err' : e.event_type.includes('skip') ? 'warn' : 'ok'}>{e.event_type}</Badge>
@@ -478,39 +479,39 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange }: {
           ))}
         </tbody></table>
         </div>
-        {evHasMore && <div className="flex justify-center mt-3"><Btn onClick={() => loadEvents(true)}>Load more…</Btn></div>}
-        {events.length > 0 && <p className="text-muted text-[12px] mt-2">Showing {filteredEvents.length} events{eventFilter !== 'all' ? ` (${events.length} total)` : ''}</p>}
+        {evHasMore && <div className="flex justify-center mt-3"><Btn onClick={() => loadEvents(true)}>{i18nT('pages.overview.vectorMemoryCard.load_more')}</Btn></div>}
+        {events.length > 0 && <p className="text-muted text-[12px] mt-2">{i18nT('pages.overview.vectorMemoryCard.showing')} {filteredEvents.length} {i18nT('pages.overview.vectorMemoryCard.events')}{eventFilter !== 'all' ? ` (${events.length} total)` : ''}</p>}
       </Card>
     )}
 
     {active && view === 'inspector' && (
       <Card>
-        <CardTitle><Search className="lucide-inline" /> Memory Inspector <InfoTip text="Preview what gets injected into prompts. Enter a query to see episodic retrieval results." /></CardTitle>
+        <CardTitle><Search className="lucide-inline" /> {i18nT('pages.overview.vectorMemoryCard.memory_inspector')} <InfoTip text="Preview what gets injected into prompts. Enter a query to see episodic retrieval results." /></CardTitle>
         <div className="flex gap-2 items-center mb-3">
-          <Input placeholder="Test query (e.g. 'what database should I use?')" style={{ flex: 1 }} value={inspectorQuery} onChange={e => setInspectorQuery(e.target.value)}
+          <Input placeholder={i18nT('pages.overview.vectorMemoryCard.test_query_e_g_what_database_should_i_use')} style={{ flex: 1 }} value={inspectorQuery} onChange={e => setInspectorQuery(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter') loadPreview(inspectorQuery) }} />
-          <SendBtn onClick={() => loadPreview(inspectorQuery)}>Preview</SendBtn>
+          <SendBtn onClick={() => loadPreview(inspectorQuery)}>{i18nT('pages.overview.vectorMemoryCard.preview')}</SendBtn>
         </div>
         {preview && (
           <div className="flex flex-col gap-3">
             {preview.semantic_context && (
               <div>
-                <div className="text-muted text-[12px] uppercase tracking-wider mb-1.5">Semantic Context (injected at session start)</div>
+                <div className="text-muted text-[12px] uppercase tracking-wider mb-1.5">{i18nT('pages.overview.vectorMemoryCard.semantic_context_injected_at_session_start')}</div>
                 <pre className="bg-bg-elevated border border-border rounded-md p-3 text-sm font-mono text-text overflow-x-auto whitespace-pre-wrap max-h-[200px] overflow-y-auto">{preview.semantic_context || '(empty)'}</pre>
               </div>
             )}
             {preview.episodic_context && (
               <div>
-                <div className="text-muted text-[12px] uppercase tracking-wider mb-1.5">Episodic Context (injected per-message)</div>
+                <div className="text-muted text-[12px] uppercase tracking-wider mb-1.5">{i18nT('pages.overview.vectorMemoryCard.episodic_context_injected_per_message')}</div>
                 <pre className="bg-bg-elevated border border-border rounded-md p-3 text-sm font-mono text-text overflow-x-auto whitespace-pre-wrap max-h-[300px] overflow-y-auto">{preview.episodic_context || '(no matches)'}</pre>
               </div>
             )}
             {!preview.semantic_context && !preview.episodic_context && (
-              <p className="text-muted text-sm italic">No context to inject. Add some memories first.</p>
+              <p className="text-muted text-sm italic">{i18nT('pages.overview.vectorMemoryCard.no_context_to_inject_add_some_memories_first')}</p>
             )}
           </div>
         )}
-        {!preview && <p className="text-muted text-sm italic">Click Preview to see what gets injected into prompts.</p>}
+        {!preview && <p className="text-muted text-sm italic">{i18nT('pages.overview.vectorMemoryCard.click_preview_to_see_what_gets_injected_into_pro')}</p>}
       </Card>
     )}
   </>)

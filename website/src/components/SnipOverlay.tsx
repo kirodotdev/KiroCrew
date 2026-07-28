@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { normalizeRect, cropCanvas, canvasToFile, type SnipRect } from '../hooks/useScreenSnip'
 
+import { i18nT } from '../i18n/t'
 interface Props {
   /** Captured full-screen frame to crop. */
   frame: HTMLCanvasElement
@@ -107,7 +108,7 @@ export default function SnipOverlay({ frame, onComplete, onCancel, onError }: Pr
     <div
       role="dialog"
       aria-modal="true"
-      aria-label="Crop screen capture"
+      aria-label={i18nT('components.snipOverlay.crop_screen_capture')}
       className="fixed inset-0 z-[200] bg-black/50 flex flex-col items-center justify-center gap-4"
     >
       {/* Freeform pointer-drag crop region (like macOS Cmd+Shift+4). There is no
@@ -119,14 +120,14 @@ export default function SnipOverlay({ frame, onComplete, onCancel, onError }: Pr
       <div
         ref={surfaceRef}
         data-testid="snip-surface"
-        aria-label="Drag to select the screen region to capture"
+        aria-label={i18nT('components.snipOverlay.drag_to_select_the_screen_region_to_capture')}
         className="relative max-w-[90vw] max-h-[80vh] cursor-crosshair select-none"
         onMouseDown={onDown}
         onMouseMove={onMove}
       >
         <img
           src={dataUrl}
-          alt="Screen capture — drag the area you want; it attaches automatically on release"
+          alt={i18nT('components.snipOverlay.screen_capture_drag_the_area_you_want_it_attache')}
           draggable={false}
           className="block max-w-[90vw] max-h-[80vh] pointer-events-none"
         />
@@ -138,13 +139,13 @@ export default function SnipOverlay({ frame, onComplete, onCancel, onError }: Pr
         )}
       </div>
       <div className="flex items-center gap-3">
-        <span className="text-[12px] text-muted">Drag to capture an area · release to attach · Esc to cancel</span>
+        <span className="text-[12px] text-muted">{i18nT('components.snipOverlay.drag_to_capture_an_area_release_to_attach_esc_to')}</span>
         <button
           onClick={onCancel}
-          aria-label="Cancel screen snip"
+          aria-label={i18nT('components.snipOverlay.cancel_screen_snip')}
           className="h-8 px-3 rounded-lg text-[13px] text-muted hover:text-text hover:bg-bg-hover bg-transparent border border-border cursor-pointer transition-all"
         >
-          Cancel
+          {i18nT('components.snipOverlay.cancel')}
         </button>
       </div>
     </div>

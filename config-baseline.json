@@ -3555,6 +3555,7 @@
         "theme_mode": "",
         "sso_login_flags": "",
         "theme_color": "",
+        "language": "",
         "recent_tint_count": 0,
         "onboarded": false,
         "import_onboarded": false,
@@ -3830,6 +3831,20 @@
       "tags": [],
       "label": "Theme Color",
       "help": "Dashboard color theme slug (e.g. 'kiro', 'emerald', 'monokai'). Empty = unset (frontend falls back to localStorage or 'kiro').",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
+      "path": "dashboard.language",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Language",
+      "help": "Dashboard UI language as a BCP-47 tag (e.g. 'en', 'zh-CN'). Empty = auto-detect from the browser's preferred languages, falling back to English. Persisted here (not only in the browser) so the choice follows the user across browsers and the desktop app.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""

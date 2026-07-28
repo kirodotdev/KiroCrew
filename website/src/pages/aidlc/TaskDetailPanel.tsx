@@ -4,6 +4,7 @@ import { SendBtn, Badge } from '../../components/ui';
 import DetailPanel from '../../components/DetailPanel';
 import type { TaskDetail } from '../../types';
 
+import { i18nT } from '../../i18n/t'
 interface Props {
   task: TaskDetail;
   allTasks?: TaskDetail[];
@@ -87,8 +88,8 @@ export default function TaskDetailPanel({ task, allTasks = [], onClose, onRetry,
     <>
       <div>{saveError && <span className="text-[12px] text-danger">{saveError}</span>}</div>
       <div className="flex gap-2">
-        {editable && dirty && <SendBtn onClick={handleSave} disabled={saving}><Save className="lucide-inline" /> Save</SendBtn>}
-        {task.status === 'failed' && onRetry && <SendBtn onClick={() => onRetry(task.index)}>↻ Retry Task</SendBtn>}
+        {editable && dirty && <SendBtn onClick={handleSave} disabled={saving}><Save className="lucide-inline" /> {i18nT('pages.aidlc.taskDetailPanel.save')}</SendBtn>}
+        {task.status === 'failed' && onRetry && <SendBtn onClick={() => onRetry(task.index)}>{i18nT('pages.aidlc.taskDetailPanel.retry_task')}</SendBtn>}
       </div>
     </>
   ) : undefined;
@@ -96,9 +97,9 @@ export default function TaskDetailPanel({ task, allTasks = [], onClose, onRetry,
   return (
     <DetailPanel
       title={editable
-        ? <>{typeIcon} Task {task.index}: <input aria-label="Task title" value={editTitle} disabled={saving} onChange={e => { setEditTitle(e.target.value); reportEdit(e.target.value, editDesc, editDeps) }}
+        ? <>{typeIcon} {i18nT('pages.aidlc.taskDetailPanel.task')} {task.index}: <input aria-label={i18nT('pages.aidlc.taskDetailPanel.task_title')} value={editTitle} disabled={saving} onChange={e => { setEditTitle(e.target.value); reportEdit(e.target.value, editDesc, editDeps) }}
             className="bg-transparent border-b border-accent text-text text-[14px] outline-none w-[200px]" /></>
-        : <>{typeIcon} Task {task.index}: {task.title}</>}
+        : <>{typeIcon} {i18nT('pages.aidlc.taskDetailPanel.task')} {task.index}: {task.title}</>}
       onClose={onClose}
       initialWidth={420}
       footer={footer}
@@ -108,32 +109,32 @@ export default function TaskDetailPanel({ task, allTasks = [], onClose, onRetry,
           <Badge variant={task.status === 'passed' || task.status === 'done' ? 'ok' : task.status === 'failed' ? 'err' : task.status === 'in_progress' ? 'aim' : 'warn'}>
             {task.status.replace('_', ' ')}
           </Badge>
-          <span className="text-[12px] text-muted">Attempts: {task.attempts}/3</span>
+          <span className="text-[12px] text-muted">{i18nT('pages.aidlc.taskDetailPanel.attempts')} {task.attempts}/3</span>
         </div>
 
         {/* Timestamps */}
         <div className="grid grid-cols-2 gap-2 text-[12px] text-muted">
           <div>
-            <div className="font-semibold mb-0.5">Created</div>
+            <div className="font-semibold mb-0.5">{i18nT('pages.aidlc.taskDetailPanel.created')}</div>
             <div>{fmtTime(task.created_at || task.started_at)}</div>
           </div>
           <div>
-            <div className="font-semibold mb-0.5">Duration</div>
+            <div className="font-semibold mb-0.5">{i18nT('pages.aidlc.taskDetailPanel.duration')}</div>
             <div>{fmtDuration(task.started_at, task.finished_at)}</div>
           </div>
           {task.started_at && <div>
-            <div className="font-semibold mb-0.5">Started</div>
+            <div className="font-semibold mb-0.5">{i18nT('pages.aidlc.taskDetailPanel.started')}</div>
             <div>{fmtTime(task.started_at)}</div>
           </div>}
           {task.finished_at && <div>
-            <div className="font-semibold mb-0.5">Finished</div>
+            <div className="font-semibold mb-0.5">{i18nT('pages.aidlc.taskDetailPanel.finished')}</div>
             <div>{fmtTime(task.finished_at)}</div>
           </div>}
         </div>
 
         {/* Description */}
         {editable ? (
-          <textarea aria-label="Task description" value={editDesc} disabled={saving} onChange={e => { setEditDesc(e.target.value); reportEdit(editTitle, e.target.value, editDeps) }}
+          <textarea aria-label={i18nT('pages.aidlc.taskDetailPanel.task_description')} value={editDesc} disabled={saving} onChange={e => { setEditDesc(e.target.value); reportEdit(editTitle, e.target.value, editDeps) }}
             className="w-full text-[13px] leading-relaxed bg-bg-elevated border border-border rounded-md p-2 text-text outline-none resize-y min-h-[80px]" />
         ) : (
           <div className="text-[13px] leading-relaxed whitespace-pre-wrap">{task.description}</div>
@@ -149,12 +150,12 @@ export default function TaskDetailPanel({ task, allTasks = [], onClose, onRetry,
         {/* Dependencies */}
         {editable ? (
           <div>
-            <div className="text-[12px] font-semibold text-muted mb-1">Depends on</div>
+            <div className="text-[12px] font-semibold text-muted mb-1">{i18nT('pages.aidlc.taskDetailPanel.depends_on')}</div>
             <div className="flex flex-col gap-1">
               {allTasks.filter(at => at.index < task.index).map(at => (
                 <label key={at.index} htmlFor={`dep-${at.index}`} className="flex items-center gap-2 text-[12px] text-text cursor-pointer">
                   <input id={`dep-${at.index}`} type="checkbox" aria-label={`Depend on Task ${at.index}: ${at.title}`} checked={editDeps.includes(at.index)} disabled={saving} onChange={() => toggleDep(at.index)} />
-                  Task {at.index}: {at.title}
+                  {i18nT('pages.aidlc.taskDetailPanel.task')} {at.index}: {at.title}
                 </label>
               ))}
             </div>
@@ -165,16 +166,16 @@ export default function TaskDetailPanel({ task, allTasks = [], onClose, onRetry,
           const isBlocked = task.status === 'pending' && blocking.length > 0
           return isBlocked ? (
             <div className="p-2.5 bg-bg-elevated border rounded-md text-[12px] text-text" style={{ borderColor: 'color-mix(in srgb, var(--warn) 45%, transparent)' }}>
-              Blocked — waiting on {blocking.length} task{blocking.length > 1 ? 's' : ''}:
+              {i18nT('pages.aidlc.taskDetailPanel.blocked_waiting_on')} {blocking.length} {i18nT('pages.aidlc.taskDetailPanel.task_2')}{blocking.length > 1 ? 's' : ''}:
               {blocking.map(d => (
                 <div key={d.index} className="mt-1 pl-4">
-                  Task {d.index}: {d.title} — <span className={d.status === 'failed' ? 'text-danger' : d.status === 'in_progress' ? 'text-accent' : 'text-muted'}>{d.status.replace('_', ' ')}</span>
+                  {i18nT('pages.aidlc.taskDetailPanel.task')} {d.index}: {d.title} — <span className={d.status === 'failed' ? 'text-danger' : d.status === 'in_progress' ? 'text-accent' : 'text-muted'}>{d.status.replace('_', ' ')}</span>
                 </div>
               ))}
             </div>
           ) : (
             <div className="text-[12px] text-muted">
-              Depends on: {deps.map(d => `Task ${d.index} (${d.title})`).join(', ')}
+              {i18nT('pages.aidlc.taskDetailPanel.depends_on_2')} {deps.map(d => `Task ${d.index} (${d.title})`).join(', ')}
             </div>
           )
         })()}
@@ -187,14 +188,14 @@ export default function TaskDetailPanel({ task, allTasks = [], onClose, onRetry,
           <div className="p-2.5 bg-bg-elevated border rounded-md text-[12px]" style={{ borderColor: 'color-mix(in srgb, var(--warn) 45%, transparent)' }}>
             <div className="text-text mb-2">{task.force_approval ? 'This gate blocks. force_approval=true.' : 'Requires approval before execution.'}</div>
             <div className="flex gap-2">
-              <button className="px-3 py-1.5 rounded-md bg-ok text-white text-[12px] font-semibold cursor-pointer border-none hover:opacity-80 transition-all" onClick={() => onApprove('approve')}><Check className="lucide-inline" /> Approve</button>
-              <button className="px-3 py-1.5 rounded-md bg-danger text-white text-[12px] font-semibold cursor-pointer border-none hover:opacity-80 transition-all" onClick={() => onApprove('reject')}><XIcon className="lucide-inline" /> Deny</button>
+              <button className="px-3 py-1.5 rounded-md bg-ok text-white text-[12px] font-semibold cursor-pointer border-none hover:opacity-80 transition-all" onClick={() => onApprove('approve')}><Check className="lucide-inline" /> {i18nT('pages.aidlc.taskDetailPanel.approve')}</button>
+              <button className="px-3 py-1.5 rounded-md bg-danger text-white text-[12px] font-semibold cursor-pointer border-none hover:opacity-80 transition-all" onClick={() => onApprove('reject')}><XIcon className="lucide-inline" /> {i18nT('pages.aidlc.taskDetailPanel.deny')}</button>
             </div>
           </div>
         )}
         {(task.force_approval || task.requires_approval) && task.status === 'pending' && (
           <div className="p-2.5 bg-bg-elevated border rounded-md text-[12px] text-text" style={{ borderColor: 'color-mix(in srgb, var(--warn) 45%, transparent)' }}>
-            Requires approval before execution
+            {i18nT('pages.aidlc.taskDetailPanel.requires_approval_before_execution')}
           </div>
         )}
       </DetailPanel>
@@ -208,13 +209,13 @@ function ApprovalToggles({ task, onToggleApproval }: { task: TaskDetail; onToggl
   return (
     <div className="flex flex-col gap-1.5">
       <label htmlFor="requires-approval" className="flex items-center gap-2 text-[12px] text-text cursor-pointer">
-        <input id="requires-approval" type="checkbox" aria-label="Requires approval" checked={ra} onChange={async e => { const v = e.target.checked; const prevRA = ra; const prevFA = fa; setRA(v); if (!v && fa) setFA(false); const ok = await onToggleApproval(task.index, 'requires_approval', v); if (!ok) { setRA(prevRA); setFA(prevFA); } }} />
-        Requires approval
+        <input id="requires-approval" type="checkbox" aria-label={i18nT('pages.aidlc.taskDetailPanel.requires_approval')} checked={ra} onChange={async e => { const v = e.target.checked; const prevRA = ra; const prevFA = fa; setRA(v); if (!v && fa) setFA(false); const ok = await onToggleApproval(task.index, 'requires_approval', v); if (!ok) { setRA(prevRA); setFA(prevFA); } }} />
+        {i18nT('pages.aidlc.taskDetailPanel.requires_approval')}
       </label>
       {(ra || fa) && (
         <label htmlFor="force-approval" className="flex items-center gap-2 text-[12px] text-text cursor-pointer pl-4">
-          <input id="force-approval" type="checkbox" aria-label="Block in YOLO mode" checked={fa} onChange={async e => { const v = e.target.checked; const prev = fa; setFA(v); const ok = await onToggleApproval(task.index, 'force_approval', v); if (!ok) setFA(prev); }} />
-          Block in YOLO mode
+          <input id="force-approval" type="checkbox" aria-label={i18nT('pages.aidlc.taskDetailPanel.block_in_yolo_mode')} checked={fa} onChange={async e => { const v = e.target.checked; const prev = fa; setFA(v); const ok = await onToggleApproval(task.index, 'force_approval', v); if (!ok) setFA(prev); }} />
+          {i18nT('pages.aidlc.taskDetailPanel.block_in_yolo_mode')}
         </label>
       )}
     </div>

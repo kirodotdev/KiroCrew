@@ -6,6 +6,7 @@ import { api } from '../api/client'
 import { DropdownMenuItem } from './ui/dropdown-menu'
 import { ContextMenuItem } from './ui/context-menu'
 
+import { i18nT } from '../i18n/t'
 /**
  * Connected Slack link/unlink section for SessionActionsMenu — shared by the
  * header dropdown and BOTH sidebar row menus (dropdown + right-click). Keyed on
@@ -61,10 +62,10 @@ export default function SlackLinkSection({ slotKey, variant }: {
     return (
       <>
         <Item className="text-ok focus:text-ok" onSelect={() => link()}>
-          <MessageSquareShare size={13} className="shrink-0" /> Post reminder in Slack
+          <MessageSquareShare size={13} className="shrink-0" /> {i18nT('components.slackLinkSection.post_reminder_in_slack')}
         </Item>
         <Item className="text-danger focus:text-danger" onSelect={unlink}>
-          <Link2Off size={13} className="shrink-0" /> Unlink from Slack
+          <Link2Off size={13} className="shrink-0" /> {i18nT('components.slackLinkSection.unlink_from_slack')}
         </Item>
       </>
     )
@@ -74,7 +75,7 @@ export default function SlackLinkSection({ slotKey, variant }: {
   return (
     <>
       <Item onSelect={() => link()}>
-        <MessageSquareShare size={13} className="shrink-0 text-muted" /> Send to Slack
+        <MessageSquareShare size={13} className="shrink-0 text-muted" /> {i18nT('components.slackLinkSection.send_to_slack')}
       </Item>
       {channels.filter(c => c.id !== 'dm').map(ch => (
         <Item key={ch.id} onSelect={() => link(ch.id)}># {ch.name}</Item>

@@ -8,6 +8,7 @@ import InfoTip from './InfoTip'
 import { useFilteredDropdown } from '../hooks/useFilteredDropdown'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 
+import { i18nT } from '../i18n/t'
 /** A row from `GET /api/skills` — only the fields this editor needs. */
 export interface CatalogSkill {
   key: string
@@ -106,7 +107,7 @@ export default function AgentSkillsEditor({ agentName, skills, unmanaged = [], o
   return (
     <div className="mb-3">
       <div className="flex items-center gap-2 mb-1.5">
-        <span className="text-[12px] text-muted font-medium uppercase tracking-wider">Skills</span>
+        <span className="text-[12px] text-muted font-medium uppercase tracking-wider">{i18nT('components.agentSkillsEditor.skills')}</span>
         <InfoTip text="Skills this agent template loads. Written as skill:// resources in the agent config, so kiro-cli loads them natively when the agent starts. An agent with no skills mapped falls back to the default behavior: the kirocrew agent sees the whole catalog, other agents see none." />
       </div>
       <div className="flex flex-wrap items-center gap-1.5">
@@ -149,7 +150,7 @@ export default function AgentSkillsEditor({ agentName, skills, unmanaged = [], o
             disabled={save.isPending || candidates.length === 0}
             onClick={() => setOpen(!open)}
           >
-            <Plus className="lucide-inline" /> Add skill
+            <Plus className="lucide-inline" /> {i18nT('components.agentSkillsEditor.add_skill')}
             <span className="text-muted text-[10px]"><ChevronDown className="lucide-inline" /></span>
           </Btn>
           {open && btnRef.current && createPortal(
@@ -175,16 +176,16 @@ export default function AgentSkillsEditor({ agentName, skills, unmanaged = [], o
                 <Input
                   ref={inputRef}
                   type="text"
-                  aria-label="Filter skills"
-                  placeholder="Type to filter…"
+                  aria-label={i18nT('components.agentSkillsEditor.filter_skills')}
+                  placeholder={i18nT('components.agentSkillsEditor.type_to_filter')}
                   value={filter}
                   onChange={e => setFilter(e.target.value)}
                   className="w-full px-2 py-1 text-[13px] font-mono"
                 />
               </div>
-              <div role="listbox" aria-label="Available skills" className="overflow-y-auto flex-1 min-h-0 p-1">
+              <div role="listbox" aria-label={i18nT('components.agentSkillsEditor.available_skills')} className="overflow-y-auto flex-1 min-h-0 p-1">
                 {filtered.length === 0 ? (
-                  <div className="px-2 py-3 text-[12px] text-muted text-center">No matching skills</div>
+                  <div className="px-2 py-3 text-[12px] text-muted text-center">{i18nT('components.agentSkillsEditor.no_matching_skills')}</div>
                 ) : filtered.map(s => (
                   <button
                     key={s.key}
@@ -208,7 +209,7 @@ export default function AgentSkillsEditor({ agentName, skills, unmanaged = [], o
       </div>
       {skills.length === 0 && unmanaged.length === 0 && (
         <div className="text-[11px] text-muted mt-1.5">
-          No skills mapped — this agent uses the default behavior.
+          {i18nT('components.agentSkillsEditor.no_skills_mapped_this_agent_uses_the_default_beh')}
         </div>
       )}
       {error && <div className="text-[12px] text-danger mt-1.5">{error}</div>}

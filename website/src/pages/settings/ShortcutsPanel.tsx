@@ -2,6 +2,7 @@ import { formatShortcut, IS_MAC } from '../../hooks/useKeyboardShortcuts'
 import { SHORTCUT_GROUPS, ShortcutRow, SearchEverywhereRow, groupShortcuts, useShortcutPrefs } from '../../components/ShortcutsModal'
 import { SettingsSection, SettingsCard, SettingsToggle } from '../../components/settings'
 
+import { i18nT } from '../../i18n/t'
 /**
  * Settings → Shortcuts. Same data + preference state as the Alt+K
  * `ShortcutsModal` (shared primitives from ShortcutsModal.tsx), presented in
@@ -15,18 +16,18 @@ export function ShortcutsPanel() {
 
   return (
     <div className="max-w-2xl">
-      <SettingsSection title="Preferences" />
+      <SettingsSection title={i18nT('pages.settings.shortcutsPanel.preferences')} />
       <SettingsCard>
         <SettingsToggle
-          label="Enable shortcuts"
+          label={i18nT('pages.settings.shortcutsPanel.enable_shortcuts')}
           description={`Turn keyboard shortcuts on or off globally — ${IS_MAC ? '⌥' : 'Alt'} + K (this reference) always works`}
           checked={enabled}
           onChange={toggle}
         />
         {IS_MAC && (
           <SettingsToggle
-            label="Use ⌃ Ctrl (not ⌥ Option) for chat 1–9"
-            description="Bind chat-tab switching to Ctrl+digit instead of Option+digit"
+            label={i18nT('pages.settings.shortcutsPanel.use_ctrl_not_option_for_chat_1_9')}
+            description={i18nT('pages.settings.shortcutsPanel.bind_chat_tab_switching_to_ctrl_digit_instead_of')}
             checked={macCtrl}
             onChange={toggleMacCtrl}
           />
@@ -46,7 +47,7 @@ export function ShortcutsPanel() {
           </div>
         )
       })}
-      <SettingsSection title="Search" />
+      <SettingsSection title={i18nT('pages.settings.shortcutsPanel.search')} />
       <SettingsCard>
         <SearchEverywhereRow />
       </SettingsCard>

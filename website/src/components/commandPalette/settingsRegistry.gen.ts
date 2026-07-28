@@ -340,6 +340,14 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "display.language",
+    "label": "Language",
+    "description": "Language for the dashboard interface.",
+    "tab": "display",
+    "type": "select",
+    "occurrence": 1
+  },
+  {
     "id": "display.mode",
     "label": "Mode",
     "description": "Light or dark appearance for the dashboard",
@@ -374,6 +382,22 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "notifications.play-sound-on-new-notifications",
     "label": "Play sound on new notifications",
     "tab": "notifications",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
+    "id": "skills.auto-generate-skills-from-sessions",
+    "label": "Auto-generate skills from sessions",
+    "description": "Analyze each completed session and draft a reusable SKILL.md when a non-trivial multi-step procedure is detected. Off by default. Drafts are staged to the pending queue on the Skills tab for review — nothing goes live without your approval (see below).",
+    "tab": "skills",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
+    "id": "skills.require-approval-before-generated-skills-go-live",
+    "label": "Require approval before generated skills go live",
+    "description": "Keep every auto-generated candidate in the pending queue until you approve it. Turning this off lets prose-only skills publish automatically; skills that bundle scripts always require approval regardless.",
+    "tab": "skills",
     "type": "toggle",
     "occurrence": 1
   },

@@ -8,6 +8,7 @@ import { MessageSquarePlus, Copy, Check } from 'lucide-react'
 import { ensureTerminalConnection, disposeTerminalConnection, getTerminalCwd } from '../utils/terminalRegistry'
 import TerminalCompletion from './TerminalCompletion'
 
+import { i18nT } from '../i18n/t'
 /* ── Per-session xterm instance cache ──
  * Keyed by PTY session id. Instances persist across tab switches / chat
  * switches (so scrollback + cursor survive), and are only torn down when the
@@ -391,7 +392,7 @@ function TerminalView({ sessionId, cwd, visible, onSendToChat }: { sessionId: st
             type="button"
             onClick={handleCopy}
             className="flex items-center gap-1.5 rounded-md px-2 py-1 text-[12px] text-text hover:bg-bg-hover transition-colors"
-            title="Copy selection"
+            title={i18nT('components.cliPanel.copy_selection')}
           >
             {copied === 'done' ? <Check className="h-3.5 w-3.5 text-green-500" /> : <Copy className={`h-3.5 w-3.5 ${copied === 'failed' ? 'text-red-500' : ''}`} />}
             {copied === 'done' ? 'Copied' : copied === 'failed' ? 'Copy failed' : 'Copy'}

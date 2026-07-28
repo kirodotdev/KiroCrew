@@ -3,6 +3,7 @@ import { Search, Tag, X } from 'lucide-react'
 import type { RepoLabel } from '../api'
 import LabelRow from './LabelRow'
 
+import { i18nT } from '../../../i18n/t'
 /** The "Labels" block of a rail filter section: a header with a toggleable
  * search box and the label palette itself. Shared by the issue FiltersSection
  * and the pull-request PrFiltersSection — the two differ only in WHICH counts and
@@ -47,14 +48,14 @@ export default function LabelPalette({
     <div className="px-3 pt-5">
       <div className="pb-2 flex items-center">
         <span className="inline-flex items-center gap-1.5 text-[12px] font-semibold text-muted uppercase tracking-[.05em]">
-          <Tag size={12} /> Labels
+          <Tag size={12} /> {i18nT('apps.issueRadar.components.labelPalette.labels')}
         </span>
         {labels.length > 0 && (
           <button
             onClick={toggleSearch}
             aria-label={searchOpen ? 'Close label search' : 'Search labels'}
             aria-expanded={searchOpen}
-            title="Search labels"
+            title={i18nT('apps.issueRadar.components.labelPalette.search_labels')}
             className={`ml-auto p-0.5 rounded cursor-pointer bg-transparent transition-colors ${
               searchOpen ? 'text-accent' : 'text-muted hover:text-text hover:bg-bg-hover'
             }`}
@@ -63,10 +64,10 @@ export default function LabelPalette({
           </button>
         )}
       </div>
-      {loading && <div className="text-[12px] text-muted">Loading labels…</div>}
+      {loading && <div className="text-[12px] text-muted">{i18nT('apps.issueRadar.components.labelPalette.loading_labels')}</div>}
       {error && <div className="text-[12px] text-danger">{error.message}</div>}
       {labels.length === 0 && !loading && (
-        <div className="text-[12px] text-muted">No labels on this repo.</div>
+        <div className="text-[12px] text-muted">{i18nT('apps.issueRadar.components.labelPalette.no_labels_on_this_repo')}</div>
       )}
       {labels.length > 0 && searchOpen && (
         <div className="relative mb-2">
@@ -74,13 +75,13 @@ export default function LabelPalette({
             value={labelQuery}
             onChange={(e) => setLabelQuery(e.target.value)}
             autoFocus
-            aria-label="Search labels"
-            placeholder="Search labels…"
+            aria-label={i18nT('apps.issueRadar.components.labelPalette.search_labels')}
+            placeholder={i18nT('apps.issueRadar.components.labelPalette.search_labels_2')}
             className="w-full box-border text-[13px] pl-3 pr-7 py-1.5 rounded-md bg-bg text-text border border-border placeholder:text-muted"
           />
           <button
             onClick={() => { setLabelQuery(''); setSearchOpen(false) }}
-            aria-label="Close label search"
+            aria-label={i18nT('apps.issueRadar.components.labelPalette.close_label_search')}
             className="absolute right-1.5 top-1/2 -translate-y-1/2 p-0.5 rounded text-muted hover:text-text hover:bg-bg-hover cursor-pointer bg-transparent"
           >
             <X size={13} />
@@ -115,7 +116,7 @@ export default function LabelPalette({
         })}
       </div>
       {searchOpen && matchedNames.size === 0 && (
-        <div className="text-[12px] text-muted">No labels match “{labelQuery}”.</div>
+        <div className="text-[12px] text-muted">{i18nT('apps.issueRadar.components.labelPalette.no_labels_match')}{labelQuery}”.</div>
       )}
     </div>
   )

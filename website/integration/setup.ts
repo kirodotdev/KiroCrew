@@ -1,5 +1,30 @@
+import { afterEach } from 'vitest'
 import '@testing-library/jest-dom'
 import { server } from './mocks/server'
+import { initI18n, i18next } from '../src/i18n'
+
+// Initialize i18n for EVERY test file, pinned to English.
+//
+// Load-bearing: ~4000 existing assertions match visible English text
+// (`getByText('Settings')`). Because `en.json` values are byte-identical to the
+// literals they replaced (asserted by `englishIdentity.test.ts`), pinning 'en'
+// here keeps every one of those assertions valid with no per-test setup — so a
+// test that DOES go red signals a real extraction bug, not churn.
+//
+// Pinned explicitly rather than auto-detected: happy-dom reports the host's
+// locale, which would make the suite pass or fail depending on the developer's
+// machine language.
+initI18n('en')
+
+// Reset the language after every test. i18next is a module-level SINGLETON and
+// `initI18n` is a no-op once initialized, so a test that switches language (or
+// mounts a LanguageProvider with a non-English stored choice) leaves i18next on
+// that language for every LATER test in the same file — turning ~4000 English
+// text assertions into order-dependent failures. Caught exactly that way: an
+// English-expecting test rendered Chinese because a preceding test had switched.
+afterEach(() => {
+  if (i18next.language !== 'en') void i18next.changeLanguage('en')
+})
 
 // happy-dom (unlike jsdom) performs REAL network I/O for DOM-driven loads: a
 // widget's `<script src=".../tailwindcss-browser.js">` and a live `<iframe>`'s

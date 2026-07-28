@@ -4,6 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { SettingsSection, SettingsCard, SettingsToggle, SettingsInput } from '../../components/settings'
 import { api } from '../../api/client'
 
+import { i18nT } from '../../i18n/t'
 type BrowserConfig = { extension_mode: boolean; token: boolean }
 
 export function BrowserPanel() {
@@ -65,53 +66,53 @@ export function BrowserPanel() {
     }
   }, [extensionMode, token, saveMut])
 
-  if (isLoading) return <p style={{ fontSize: 13, color: 'var(--muted)', padding: 16 }}>Loading browser config...</p>
-  if (isError) return <p style={{ fontSize: 13, color: 'var(--error)', padding: 16 }}>Cannot load browser config. Is the gateway running?</p>
+  if (isLoading) return <p style={{ fontSize: 13, color: 'var(--muted)', padding: 16 }}>{i18nT('pages.settings.browserPanel.loading_browser_config')}</p>
+  if (isError) return <p style={{ fontSize: 13, color: 'var(--error)', padding: 16 }}>{i18nT('pages.settings.browserPanel.cannot_load_browser_config_is_the_gateway_runnin')}</p>
 
   return (
     <>
-      <SettingsSection title="Browser Mode">
+      <SettingsSection title={i18nT('pages.settings.browserPanel.browser_mode')}>
         <SettingsCard>
           <SettingsToggle
-            label="Chrome Extension Mode"
-            description="Attach to your running Chrome with all existing logins and sessions. Recommended for macOS."
+            label={i18nT('pages.settings.browserPanel.chrome_extension_mode')}
+            description={i18nT('pages.settings.browserPanel.attach_to_your_running_chrome_with_all_existing')}
             checked={extensionMode}
             onChange={handleToggle}
           />
           {!extensionMode && (
             <p style={{ fontSize: 12, color: 'var(--muted)', marginTop: 8 }}>
-              Headless mode active — browser uses cookie injection via storage state.
+              {i18nT('pages.settings.browserPanel.headless_mode_active_browser_uses_cookie_injecti')}
             </p>
           )}
         </SettingsCard>
       </SettingsSection>
 
       {extensionMode && (
-        <SettingsSection title="Extension Token">
+        <SettingsSection title={i18nT('pages.settings.browserPanel.extension_token')}>
           <SettingsCard>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
               <p style={{ fontSize: 13, color: 'var(--text)', margin: 0 }}>
-                1. Install the{' '}
+                {i18nT('pages.settings.browserPanel.1_install_the')}{' '}
                 <a
                   href="https://chromewebstore.google.com/detail/mmlmfjhmonkocbjadbfplnigmagldckm"
                   target="_blank"
                   rel="noopener noreferrer"
                   style={{ color: 'var(--accent)' }}
                 >
-                  Playwright Chrome Extension <ExternalLink size={12} style={{ display: 'inline' }} />
+                  {i18nT('pages.settings.browserPanel.playwright_chrome_extension')} <ExternalLink size={12} style={{ display: 'inline' }} />
                 </a>
               </p>
               <p style={{ fontSize: 13, color: 'var(--text)', margin: 0 }}>
-                2. Click the extension icon in Chrome and copy the token
+                {i18nT('pages.settings.browserPanel.2_click_the_extension_icon_in_chrome_and_copy_th')}
               </p>
               <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
                 <div style={{ flex: 1 }}>
                   <SettingsInput
-                    label="Connection Token"
-                    description="Paste PLAYWRIGHT_MCP_EXTENSION_TOKEN value from the extension popup"
+                    label={i18nT('pages.settings.browserPanel.connection_token')}
+                    description={i18nT('pages.settings.browserPanel.paste_playwright_mcp_extension_token_value_from')}
                     value={displayToken}
                     onChange={setToken}
-                    placeholder="Paste token here..."
+                    placeholder={i18nT('pages.settings.browserPanel.paste_token_here')}
                   />
                 </div>
                 <button
@@ -139,7 +140,7 @@ export function BrowserPanel() {
           <SettingsCard>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', justifyContent: 'space-between' }}>
               <p style={{ fontSize: 12, color: 'var(--muted)', margin: 0 }}>
-                Switch to headless mode? This will remove the saved extension token.
+                {i18nT('pages.settings.browserPanel.switch_to_headless_mode_this_will_remove_the_sav')}
               </p>
               <button
                 onClick={handleSave}
@@ -157,7 +158,7 @@ export function BrowserPanel() {
       {saved && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--success)', padding: 16 }}>
           <Check size={14} />
-          <span style={{ fontSize: 12 }}>Saved and applied. Sessions restarted.</span>
+          <span style={{ fontSize: 12 }}>{i18nT('pages.settings.browserPanel.saved_and_applied_sessions_restarted')}</span>
         </div>
       )}
     </>

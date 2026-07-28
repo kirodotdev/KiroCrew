@@ -7,6 +7,7 @@
 // a search that matched nothing vs. filters that exclude everything.
 import { SearchX, FilterX } from 'lucide-react'
 
+import { i18nT } from '../../../i18n/t'
 export default function ListEmptyState({
   searching, label,
 }: {
@@ -27,7 +28,7 @@ export default function ListEmptyState({
       </div>
       {!searching && (
         <div className="text-[11.5px] text-muted opacity-70">
-          Try clearing a filter in the sidebar.
+          {i18nT('apps.issueRadar.components.listEmptyState.try_clearing_a_filter_in_the_sidebar')}
         </div>
       )}
     </div>

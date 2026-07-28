@@ -9,6 +9,7 @@ import {
 } from '../utils/terminalCompletion'
 import { sendRawToTerminalSession } from '../utils/terminalRegistry'
 
+import { i18nT } from '../i18n/t'
 /** Debounce between the last keystroke and the completion request. Short enough
  *  to feel instant, long enough that holding a key down issues one request. */
 const DEBOUNCE_MS = 70
@@ -527,7 +528,7 @@ export default function TerminalCompletion({ term, sessionId, active }: {
       ref={menuRef}
       data-testid="terminal-completion"
       role="listbox"
-      aria-label="Path completions"
+      aria-label={i18nT('components.terminalCompletion.path_completions')}
       className="absolute z-30 flex flex-col overflow-hidden rounded-md border border-border bg-bg-elevated shadow-lg"
       style={{
         left: pos?.left ?? 0,

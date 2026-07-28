@@ -7,6 +7,7 @@ import { basename, parentChain } from './utils'
 import { useDebouncedValue } from './hooks'
 import type { GitInfo, TreeEntry } from './types'
 
+import { i18nT } from '../../i18n/t'
 interface PathBarProps {
   rootPath: string
   gitInfo: GitInfo | null
@@ -79,12 +80,12 @@ export default function PathBar({ rootPath, gitInfo, onChangeRoot, onNavigate }:
               ref={inputRef}
               className="mc-fe-pathbar-input"
               type="text"
-              aria-label="Folder path"
+              aria-label={i18nT('apps.fileExplorer.pathBar.folder_path')}
               value={draft}
               onChange={(e) => { setDraft(e.target.value); setOpen(true) }}
               onFocus={() => setOpen(true)}
               onKeyDown={onKeyDown}
-              placeholder="/path/to/folder"
+              placeholder={i18nT('apps.fileExplorer.pathBar.path_to_folder')}
               spellCheck={false}
               autoComplete="off"
             />
@@ -109,7 +110,7 @@ export default function PathBar({ rootPath, gitInfo, onChangeRoot, onNavigate }:
             )}
           </div>
         ) : (
-          <Clickable className="mc-fe-breadcrumbs" onClick={() => { setDraft(rootPath); setEditing(true) }} title="Click to edit path">
+          <Clickable className="mc-fe-breadcrumbs" onClick={() => { setDraft(rootPath); setEditing(true) }} title={i18nT('apps.fileExplorer.pathBar.click_to_edit_path')}>
             {segs.map((s, i) => (
               <span key={`seg${i}`}>
                 {i > 0 && <span className="mc-fe-bc-sep">/</span>}

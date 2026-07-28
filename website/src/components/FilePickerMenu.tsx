@@ -6,6 +6,7 @@ import { api } from '../api/client'
 import { useListKeyboardNav } from '../hooks/useListKeyboardNav'
 import { menuGeometry, bottomUpOrder } from '../lib/pickerMenu'
 
+import { i18nT } from '../i18n/t'
 interface FileResult {
   path: string
   name: string
@@ -142,10 +143,10 @@ export default function FilePickerMenu({ query, anchorRef, open, onSelect, onClo
   const { top, left, width, maxHeight } = menuGeometry(anchorRef.current, results.length, 48)
 
   const empty = query.length < 2
-    ? <div className="px-3 py-3 text-[12px] text-muted">Type 2+ chars to search files…</div>
+    ? <div className="px-3 py-3 text-[12px] text-muted">{i18nT('components.filePickerMenu.type_2_chars_to_search_files')}</div>
     : isFetching
-    ? <div className="px-3 py-3 text-[12px] text-muted">Searching…</div>
-    : <div className="px-3 py-3 text-[12px] text-muted">No matches</div>
+    ? <div className="px-3 py-3 text-[12px] text-muted">{i18nT('components.filePickerMenu.searching')}</div>
+    : <div className="px-3 py-3 text-[12px] text-muted">{i18nT('components.filePickerMenu.no_matches')}</div>
 
   return createPortal(
     <div
@@ -174,10 +175,10 @@ export default function FilePickerMenu({ query, anchorRef, open, onSelect, onClo
           {onFileOpen && (
             <button
               type="button"
-              aria-label="Open in viewer"
+              aria-label={i18nT('components.filePickerMenu.open_in_viewer')}
               tabIndex={-1}
               className="shrink-0 p-1 rounded hover:bg-bg-hover text-muted hover:text-text cursor-pointer bg-transparent border-none"
-              title="Open in viewer"
+              title={i18nT('components.filePickerMenu.open_in_viewer')}
               onMouseDown={e => { e.preventDefault(); e.stopPropagation(); onFileOpen(f.path); onClose() }}
             >
               <Eye size={16} />

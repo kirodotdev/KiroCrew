@@ -10,6 +10,7 @@ import SegmentedControl from '../../components/SegmentedControl'
 import { api, ApiError } from '../../api/client'
 import { sanitize } from '../../api/helpers'
 
+import { i18nT } from '../../i18n/t'
 type UpdateState = {
   state: 'checking' | 'found' | 'available' | 'downloading' | 'downloaded' | 'not-available' | 'error'
   version?: string
@@ -120,11 +121,11 @@ export function AboutPanel() {
   // found/downloading/downloaded lifecycle renders as the update card below).
   let status: React.ReactNode = null
   if (checking) {
-    status = <span className="text-muted flex items-center gap-1.5"><RefreshCw size={13} className="lucide-inline animate-spin" /> Checking for updates...</span>
+    status = <span className="text-muted flex items-center gap-1.5"><RefreshCw size={13} className="lucide-inline animate-spin" /> {i18nT('pages.settings.aboutPanel.checking_for_updates')}</span>
   } else if (updateState?.state === 'not-available') {
-    status = <span className="text-ok flex items-center gap-1.5"><CheckCircle2 size={13} className="lucide-inline" /> You are on the latest version.</span>
+    status = <span className="text-ok flex items-center gap-1.5"><CheckCircle2 size={13} className="lucide-inline" /> {i18nT('pages.settings.aboutPanel.you_are_on_the_latest_version')}</span>
   } else if (updateState?.state === 'error') {
-    status = <span className="text-danger flex items-center gap-1.5"><AlertCircle size={13} className="lucide-inline" /> Couldn't check for updates{updateState.message ? `: ${updateState.message}` : ''}.</span>
+    status = <span className="text-danger flex items-center gap-1.5"><AlertCircle size={13} className="lucide-inline" /> {i18nT('pages.settings.aboutPanel.couldn_t_check_for_updates')}{updateState.message ? `: ${updateState.message}` : ''}.</span>
   }
 
   // Update card: shown whenever an update is found / downloading / ready.
@@ -149,19 +150,19 @@ export function AboutPanel() {
         <div className="shrink-0">
           {cardReady ? (
             <Btn primary onClick={() => installMutation.mutate()} disabled={installMutation.isPending}>
-              <RefreshCw size={13} className={`lucide-inline ${installMutation.isPending ? 'animate-spin' : ''}`} /> Restart & Update
+              <RefreshCw size={13} className={`lucide-inline ${installMutation.isPending ? 'animate-spin' : ''}`} /> {i18nT('pages.settings.aboutPanel.restart_update')}
             </Btn>
           ) : (
             <Btn primary onClick={() => downloadMutation.mutate()} disabled={cardBusy || downloadMutation.isPending}>
               {cardBusy || downloadMutation.isPending
-                ? (<><RefreshCw size={13} className="lucide-inline animate-spin" /> Downloading...</>)
-                : (<><ArrowUp size={13} className="lucide-inline" /> Download & Install</>)}
+                ? (<><RefreshCw size={13} className="lucide-inline animate-spin" /> {i18nT('pages.settings.aboutPanel.downloading')}</>)
+                : (<><ArrowUp size={13} className="lucide-inline" /> {i18nT('pages.settings.aboutPanel.download_install')}</>)}
             </Btn>
           )}
         </div>
       </div>
       {cardReady && (
-        <span className="text-[12px] text-muted">Downloaded and verified. The app restarts to finish installing; you can also quit later and it installs on exit.</span>
+        <span className="text-[12px] text-muted">{i18nT('pages.settings.aboutPanel.downloaded_and_verified_the_app_restarts_to_fini')}</span>
       )}
       {updateState?.notes ? (
         <div className="p-2.5 bg-card rounded-md border border-border max-h-40 overflow-y-auto text-[12px] text-text whitespace-pre-wrap">{updateState.notes}</div>
@@ -260,17 +261,17 @@ export function AboutPanel() {
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2.5 flex-wrap">
               <span className="text-[19px] font-extrabold tracking-tight text-text-strong">{botName || 'Kiro Crew'}</span>
-              <span className="text-[12px] font-mono font-semibold text-accent rounded-full px-2.5 py-0.5 border" style={ACCENT_TINT}>v{version}</span>
+              <span className="text-[12px] font-mono font-semibold text-accent rounded-full px-2.5 py-0.5 border" style={ACCENT_TINT}>{i18nT('pages.settings.aboutPanel.v')}{version}</span>
               {!isDesktop && (updateAvailable
                 ? <span className="inline-flex items-center gap-1.5 text-[11.5px] font-semibold rounded-full px-2 py-0.5"
                     style={{ color: 'var(--warn)', background: 'color-mix(in oklab, var(--warn) 14%, transparent)' }}>
-                    <ArrowUp size={11} className="lucide-inline" /> Update available</span>
+                    <ArrowUp size={11} className="lucide-inline" /> {i18nT('pages.settings.aboutPanel.update_available')}</span>
                 : <span className="inline-flex items-center gap-1.5 text-[11.5px] font-semibold rounded-full px-2 py-0.5"
                     style={{ color: 'var(--ok)', background: 'color-mix(in oklab, var(--ok) 14%, transparent)' }}>
-                    <span className="w-1.5 h-1.5 rounded-full inline-block" style={{ background: 'var(--ok)' }} /> Up to date</span>
+                    <span className="w-1.5 h-1.5 rounded-full inline-block" style={{ background: 'var(--ok)' }} /> {i18nT('pages.settings.aboutPanel.up_to_date')}</span>
               )}
             </div>
-            <div className="text-[12.5px] text-muted mt-1">Autonomous agent management · runs locally · open source</div>
+            <div className="text-[12.5px] text-muted mt-1">{i18nT('pages.settings.aboutPanel.autonomous_agent_management_runs_locally_open_so')}</div>
           </div>
         </div>
 
@@ -278,21 +279,21 @@ export function AboutPanel() {
         <div className="mt-4 flex flex-wrap gap-2">
           {buildBranch && (
             <a href={codeBrowserBranchUrl(buildBranch)} target="_blank" rel="noopener noreferrer"
-               title="Browse this branch on GitHub"
+               title={i18nT('pages.settings.aboutPanel.browse_this_branch_on_github')}
                className="inline-flex items-center gap-1.5 text-[12px] font-mono text-accent border rounded-lg px-2.5 py-1 no-underline hover:underline" style={ACCENT_TINT}>
               <GitBranch size={12} className="shrink-0" /> <span className="truncate max-w-[220px]">{buildBranch}</span> <ExternalLink size={10} className="opacity-60 shrink-0" />
             </a>
           )}
           {buildCommit && (
             <a href={codeBrowserCommitUrl(buildCommit)} target="_blank" rel="noopener noreferrer"
-               title="View this commit on GitHub"
+               title={i18nT('pages.settings.aboutPanel.view_this_commit_on_github')}
                className="inline-flex items-center gap-1.5 text-[12px] font-mono text-accent border rounded-lg px-2.5 py-1 no-underline hover:underline" style={ACCENT_TINT}>
               <GitCommitHorizontal size={12} className="shrink-0" /> {buildCommit} <ExternalLink size={10} className="opacity-60 shrink-0" />
             </a>
           )}
           <span className="inline-flex items-center gap-1.5 text-[12px] text-muted border border-border rounded-lg px-2.5 py-1 bg-bg"
-                title="Open source under the Apache 2.0 license">
-            <Scale size={12} className="shrink-0" /> Apache 2.0
+                title={i18nT('pages.settings.aboutPanel.open_source_under_the_apache_2_0_license')}>
+            <Scale size={12} className="shrink-0" /> {i18nT('pages.settings.aboutPanel.apache_2_0')}
           </span>
         </div>
 
@@ -300,9 +301,9 @@ export function AboutPanel() {
           info?.channelSwitchable && desktopApi?.setChannel ? (
             <div className="flex items-center justify-between py-1.5 text-sm gap-3" data-testid="channel-switcher">
               <div className="flex flex-col min-w-0">
-                <span className="text-muted">Update channel</span>
+                <span className="text-muted">{i18nT('pages.settings.aboutPanel.update_channel')}</span>
                 <span className="text-[11.5px] text-muted opacity-80">
-                  Insider gets prerelease builds early. Switching offers the other channel&apos;s current build as a normal update.
+                  {i18nT('pages.settings.aboutPanel.insider_gets_prerelease_builds_early_switching_o')}
                 </span>
               </div>
               <div className="shrink-0 flex items-center gap-2">
@@ -316,28 +317,28 @@ export function AboutPanel() {
               </div>
             </div>
           ) : (
-            <Row label="Update channel">{channel}</Row>
+            <Row label={i18nT('pages.settings.aboutPanel.update_channel')}>{channel}</Row>
           )
         )}
-        {isDesktop && info?.platform && <Row label="Platform">{info.platform}</Row>}
+        {isDesktop && info?.platform && <Row label={i18nT('pages.settings.aboutPanel.platform')}>{info.platform}</Row>}
       </Card>
 
       <Card>
-        <CardTitle><RefreshCw size={15} className="lucide-inline" /> Updates</CardTitle>
+        <CardTitle><RefreshCw size={15} className="lucide-inline" /> {i18nT('pages.settings.aboutPanel.updates')}</CardTitle>
         {isDesktop ? (
           updatesDisabled ? (
             <p className="text-sm text-muted">
-              Automatic updates are unavailable in this build
+              {i18nT('pages.settings.aboutPanel.automatic_updates_are_unavailable_in_this_build')}
               {updatesDisabled === 'dev' ? ' (development build).' : ' on this platform.'}
             </p>
           ) : (
             <div className="flex flex-col gap-2.5">
               <p className="text-sm text-muted">
-                {botName || 'Kiro Crew'} checks for updates automatically. You can also check now.
+                {botName || 'Kiro Crew'} {i18nT('pages.settings.aboutPanel.checks_for_updates_automatically_you_can_also_ch')}
               </p>
               <div>
                 <Btn primary onClick={() => checkMutation.mutate()} disabled={checking}>
-                  <RefreshCw size={13} className={`lucide-inline ${checking ? 'animate-spin' : ''}`} /> Check for updates
+                  <RefreshCw size={13} className={`lucide-inline ${checking ? 'animate-spin' : ''}`} /> {i18nT('pages.settings.aboutPanel.check_for_updates')}
                 </Btn>
               </div>
               {status && <div className="text-[13px]">{status}</div>}
@@ -349,36 +350,36 @@ export function AboutPanel() {
             {showUpdate ? (
               <>
                 <p className="text-sm text-muted flex items-center gap-1.5">
-                  <ArrowUp size={13} className="lucide-inline text-accent" /> A new version{gwTarget ? ` (v${gwTarget})` : ''} is available.
+                  <ArrowUp size={13} className="lucide-inline text-accent" /> {i18nT('pages.settings.aboutPanel.a_new_version')}{gwTarget ? ` (v${gwTarget})` : ''} {i18nT('pages.settings.aboutPanel.is_available')}
                 </p>
                 <div>
                   <Btn primary onClick={() => { if (!gwChanges) gwCheck.mutate(); setApplyError(''); setRestarting(false); setShowConfirm(true) }}>
-                    <ArrowUp size={13} className="lucide-inline" /> Update{gwTarget ? ` to v${gwTarget}` : ' now'}
+                    <ArrowUp size={13} className="lucide-inline" /> {i18nT('pages.settings.aboutPanel.update')}{gwTarget ? ` to v${gwTarget}` : ' now'}
                   </Btn>
                 </div>
               </>
             ) : (
               <>
                 <p className="text-sm text-muted">
-                  {botName || 'Kiro Crew'} checks for updates automatically. You can also check now.
+                  {botName || 'Kiro Crew'} {i18nT('pages.settings.aboutPanel.checks_for_updates_automatically_you_can_also_ch')}
                 </p>
                 <div>
                   <Btn onClick={() => gwCheck.mutate()} disabled={gwCheck.isPending}>
-                    <RefreshCw size={13} className={`lucide-inline ${gwCheck.isPending ? 'animate-spin' : ''}`} /> Check for updates
+                    <RefreshCw size={13} className={`lucide-inline ${gwCheck.isPending ? 'animate-spin' : ''}`} /> {i18nT('pages.settings.aboutPanel.check_for_updates')}
                   </Btn>
                 </div>
                 {gwCheck.isSuccess && !showUpdate && (
-                  <span className="text-ok text-[13px] flex items-center gap-1.5"><CheckCircle2 size={13} className="lucide-inline" /> You're on the latest version.</span>
+                  <span className="text-ok text-[13px] flex items-center gap-1.5"><CheckCircle2 size={13} className="lucide-inline" /> {i18nT('pages.settings.aboutPanel.you_re_on_the_latest_version')}</span>
                 )}
                 {gwCheck.isError && (
-                  <span className="text-danger text-[13px] flex items-center gap-1.5"><AlertCircle size={13} className="lucide-inline" /> Couldn't check for updates.</span>
+                  <span className="text-danger text-[13px] flex items-center gap-1.5"><AlertCircle size={13} className="lucide-inline" /> {i18nT('pages.settings.aboutPanel.couldn_t_check_for_updates_2')}</span>
                 )}
               </>
             )}
             <div className="flex items-center justify-between pt-2.5 border-t border-border"
-              title="Automatically pull and apply updates when the gateway restarts">
-              <span className="text-sm text-text">Auto-update on restart</span>
-              <Toggle checked={autoUpdate} label="Auto-update on restart"
+              title={i18nT('pages.settings.aboutPanel.automatically_pull_and_apply_updates_when_the_ga')}>
+              <span className="text-sm text-text">{i18nT('pages.settings.aboutPanel.auto_update_on_restart')}</span>
+              <Toggle checked={autoUpdate} label={i18nT('pages.settings.aboutPanel.auto_update_on_restart')}
                 onChange={async next => { setAutoUpdate(next); try { await api.setAutoUpdate(next) } catch { setAutoUpdate(!next) } }} />
             </div>
           </div>
@@ -398,16 +399,16 @@ export function AboutPanel() {
           {showFull && (
             <div className="mt-2 p-3 bg-bg rounded-lg border border-border max-h-[360px] overflow-y-auto text-[13px] text-text">
               {changelogLoading ? (
-                <span className="text-muted flex items-center gap-1.5"><RefreshCw size={13} className="lucide-inline animate-spin" /> Loading changelog…</span>
+                <span className="text-muted flex items-center gap-1.5"><RefreshCw size={13} className="lucide-inline animate-spin" /> {i18nT('pages.settings.aboutPanel.loading_changelog')}</span>
               ) : fullChangelogError ? (
-                <span className="text-danger flex items-center gap-1.5"><AlertCircle size={13} className="lucide-inline" /> Couldn't load the changelog.</span>
+                <span className="text-danger flex items-center gap-1.5"><AlertCircle size={13} className="lucide-inline" /> {i18nT('pages.settings.aboutPanel.couldn_t_load_the_changelog')}</span>
               ) : fullChangelog ? (
                 // DOMPurify-sanitize the fetched changelog source before rendering:
                 // MarkdownRenderer uses rehype-raw (raw HTML passes through), so strip
                 // any HTML/script the /api/changelog response could carry (defense-in-depth).
                 <MarkdownRenderer content={safeChangelog} />
               ) : (
-                <span className="text-muted">No changelog available.</span>
+                <span className="text-muted">{i18nT('pages.settings.aboutPanel.no_changelog_available')}</span>
               )}
             </div>
           )}
@@ -417,32 +418,32 @@ export function AboutPanel() {
       {/* Web update confirm — shows the changelog, then applies (which restarts the gateway). */}
       {showConfirm && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/60 backdrop-blur-sm animate-rise"
-             role="dialog" aria-modal="true" aria-label="Update"
+             role="dialog" aria-modal="true" aria-label={i18nT('pages.settings.aboutPanel.update')}
              onClick={() => { if (!gwApply.isPending && !restarting) setShowConfirm(false) }}>
           <div role="document" className="bg-card border border-border rounded-xl p-6 max-w-md w-full mx-4 shadow-xl" onClick={e => e.stopPropagation()}>
             <div className="flex justify-between items-center mb-3">
-              <div className="text-sm font-bold text-text-strong flex items-center gap-1.5"><Package size={15} className="lucide-inline" /> Update{gwTarget ? ` to v${gwTarget}` : ''}</div>
-              <button aria-label="Close" className="text-muted hover:text-text cursor-pointer bg-transparent border-none disabled:opacity-40 disabled:cursor-default" disabled={gwApply.isPending || restarting} onClick={() => { if (!gwApply.isPending && !restarting) setShowConfirm(false) }}><X size={15} /></button>
+              <div className="text-sm font-bold text-text-strong flex items-center gap-1.5"><Package size={15} className="lucide-inline" /> {i18nT('pages.settings.aboutPanel.update')}{gwTarget ? ` to v${gwTarget}` : ''}</div>
+              <button aria-label={i18nT('pages.settings.aboutPanel.close')} className="text-muted hover:text-text cursor-pointer bg-transparent border-none disabled:opacity-40 disabled:cursor-default" disabled={gwApply.isPending || restarting} onClick={() => { if (!gwApply.isPending && !restarting) setShowConfirm(false) }}><X size={15} /></button>
             </div>
             {gwCheck.isPending ? (
-              <div className="text-[13px] text-muted flex items-center gap-1.5 mb-4"><RefreshCw size={13} className="lucide-inline animate-spin" /> Loading changelog…</div>
+              <div className="text-[13px] text-muted flex items-center gap-1.5 mb-4"><RefreshCw size={13} className="lucide-inline animate-spin" /> {i18nT('pages.settings.aboutPanel.loading_changelog')}</div>
             ) : gwChanges ? (
               <>
-                <div className="text-[12px] font-medium text-muted uppercase tracking-wider mb-2">What's new</div>
+                <div className="text-[12px] font-medium text-muted uppercase tracking-wider mb-2">{i18nT('pages.settings.aboutPanel.what_s_new')}</div>
                 <div className="p-3 bg-bg rounded-lg border border-border max-h-56 overflow-y-auto mb-4 text-[13px] text-text"><MarkdownRenderer content={gwChanges} /></div>
               </>
             ) : (
-              <p className="text-[13px] text-muted mb-4">A newer version is available.</p>
+              <p className="text-[13px] text-muted mb-4">{i18nT('pages.settings.aboutPanel.a_newer_version_is_available')}</p>
             )}
-            <p className="text-[12px] text-muted mb-3">Updating restarts the gateway — active sessions will briefly disconnect.</p>
+            <p className="text-[12px] text-muted mb-3">{i18nT('pages.settings.aboutPanel.updating_restarts_the_gateway_active_sessions_wi')}</p>
             {applyError && <div className="text-[13px] text-danger mb-3 flex items-center gap-1.5"><AlertCircle size={13} className="lucide-inline" /> {applyError}</div>}
             {restarting ? (
               <div className="text-[13px] text-accent flex items-center justify-center gap-1.5 py-2" role="status">
-                <RefreshCw size={13} className="lucide-inline animate-spin" /> Updating — gateway restarting…
+                <RefreshCw size={13} className="lucide-inline animate-spin" /> {i18nT('pages.settings.aboutPanel.updating_gateway_restarting')}
               </div>
             ) : (
               <Btn primary className="w-full justify-center" disabled={gwApply.isPending} onClick={() => gwApply.mutate()}>
-                {gwApply.isPending ? <><RefreshCw size={13} className="lucide-inline animate-spin" /> Updating…</> : 'Update now'}
+                {gwApply.isPending ? <><RefreshCw size={13} className="lucide-inline animate-spin" /> {i18nT('pages.settings.aboutPanel.updating')}</> : 'Update now'}
               </Btn>
             )}
           </div>

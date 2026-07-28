@@ -2,6 +2,7 @@ import { useState, memo } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { ChevronRight } from 'lucide-react'
 
+import { i18nT } from '../../i18n/t'
 /**
  * Collapsible reasoning trace shown above an assistant answer.
  *
@@ -29,7 +30,7 @@ function ThinkingBlock({ content }: { content: string }) {
         aria-label={`${expanded ? 'Collapse' : 'Expand'} model reasoning`}
         title={expanded ? 'Hide reasoning' : 'Show reasoning'}
       >
-        <span>Thinking</span>
+        <span>{i18nT('pages.chat.thinkingBlock.thinking')}</span>
         <ChevronRight
           size={13}
           className="shrink-0 transition-transform duration-200"

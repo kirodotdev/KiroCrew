@@ -9,6 +9,7 @@ import NotificationFeed from '../components/notifications/NotificationFeed'
 import NotificationDetailPanel from '../components/notifications/NotificationDetailPanel'
 import type { Notification } from '../types'
 
+import { i18nT } from '../i18n/t'
 /**
  * Full Notifications page (route /notifications). Page chrome + master/detail
  * layout only; the feed (filter/list) and detail view are the same shared
@@ -35,14 +36,14 @@ export default function NotificationsPage() {
 
   return (
     <>
-      <PageHeader title="Notifications" subtitle="All agent activity, cron results, webhooks, and approvals" />
+      <PageHeader title={i18nT('pages.notificationsPage.notifications')} subtitle={i18nT('pages.notificationsPage.all_agent_activity_cron_results_webhooks_and_app')} />
       <div className="px-6 pb-8 flex-1 min-h-0 flex flex-col overflow-hidden">
         <div className="grid gap-3.5 grid-cols-[repeat(auto-fit,minmax(120px,1fr))] mb-4 shrink-0">
-          <StatCard label="Total" value={items.length} accent />
-          <StatCard label="Unread" value={unread} />
-          <StatCard label="Cron" value={byCat('cron')} />
-          <StatCard label="Hooks" value={byCat('hook')} />
-          <StatCard label="Heartbeat" value={byCat('heartbeat')} />
+          <StatCard label={i18nT('pages.notificationsPage.total')} value={items.length} accent />
+          <StatCard label={i18nT('pages.notificationsPage.unread')} value={unread} />
+          <StatCard label={i18nT('pages.notificationsPage.cron')} value={byCat('cron')} />
+          <StatCard label={i18nT('pages.notificationsPage.hooks')} value={byCat('hook')} />
+          <StatCard label={i18nT('pages.notificationsPage.heartbeat')} value={byCat('heartbeat')} />
         </div>
 
         {/* Split layout: feed + detail */}
@@ -50,7 +51,7 @@ export default function NotificationsPage() {
           {/* Left: feed */}
           <div className={`flex flex-col shrink-0 ${isMobile ? 'w-full' : 'min-w-[320px] max-w-[420px] w-[40%]'} ${isMobile && selected ? 'hidden' : ''}`}>
             <Card className="flex flex-col flex-1 min-h-0">
-              <CardTitle>Activity Feed <InfoTip text="Click a notification to view details. Jump to the source chat or job from the detail panel." /></CardTitle>
+              <CardTitle>{i18nT('pages.notificationsPage.activity_feed')} <InfoTip text="Click a notification to view details. Jump to the source chat or job from the detail panel." /></CardTitle>
               <NotificationFeed selectedTs={selectedTs} onSelect={handleSelect} />
             </Card>
           </div>
@@ -60,7 +61,7 @@ export default function NotificationsPage() {
             <div className="flex-1 min-w-0">
               <Card className="flex flex-col h-full min-h-0">
                 <button className="flex items-center gap-1 px-2 py-1.5 text-[13px] text-muted hover:text-text cursor-pointer bg-transparent border-none mb-1" onClick={() => setSelectedTs(null)}>
-                  <ArrowLeft size={14} /> Back
+                  <ArrowLeft size={14} /> {i18nT('pages.notificationsPage.back')}
                 </button>
                 <NotificationDetailPanel key={selected.ts} n={selected} onClose={() => setSelectedTs(null)} />
               </Card>
@@ -72,7 +73,7 @@ export default function NotificationsPage() {
               </Card>
             ) : (
               <Card className="flex items-center justify-center h-full">
-                <EmptyState icon={<ArrowLeft className="lucide-inline" />} title="Select a notification" subtitle="Click any item to view details and navigate to its source" />
+                <EmptyState icon={<ArrowLeft className="lucide-inline" />} title={i18nT('pages.notificationsPage.select_a_notification')} subtitle={i18nT('pages.notificationsPage.click_any_item_to_view_details_and_navigate_to_i')} />
               </Card>
             )}
           </div>}

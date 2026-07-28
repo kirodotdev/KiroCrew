@@ -20,6 +20,7 @@ import { ImageViewer, CsvViewer, JsonViewer, JsonlViewer, HtmlViewer, PdfViewer,
 import { monacoLang, useIsDark } from './MonacoCodeBlock'
 import { kirocrewDark, kirocrewLight } from './monacoTheme'
 
+import { i18nT } from '../i18n/t'
 // Route through ensureMonacoLocal() so Monaco loads from the locally-bundled
 // package instead of the default cdn.jsdelivr.net loader (blocked by CSP
 // connect-src). Mirrors DiffPanel/MarkdownPanel/MonacoCodeBlock.
@@ -75,7 +76,7 @@ export function CodeEditor({
   )
   return (
     <div className={`w-full h-full overflow-hidden ${flush ? '' : 'border border-border rounded-md'}`}>
-      <Suspense fallback={<div className="p-3 text-muted text-[12px] animate-pulse">Loading editor…</div>}>
+      <Suspense fallback={<div className="p-3 text-muted text-[12px] animate-pulse">{i18nT('components.contentRenderer.loading_editor')}</div>}>
         <MonacoEditor
           height="100%"
           language={monacoLang(lang)}

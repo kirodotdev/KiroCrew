@@ -13,6 +13,7 @@ import ListSkeleton from './ListSkeleton'
 import ListEmptyState from './ListEmptyState'
 import { providerTerms } from '../lib/links'
 
+import { i18nT } from '../../../i18n/t'
 /** Above this many rendered rows we skip the per-card enter/layout animation
  * (same rationale as IssueList — Framer's layout pass janks on large lists). */
 const ANIM_CAP = 200
@@ -215,8 +216,8 @@ export default function PrList({ resizing = false }: { resizing?: boolean }) {
           {prQuery && (
             <button
               onClick={() => setPrQuery('')}
-              title="Clear search"
-              aria-label="Clear search"
+              title={i18nT('apps.issueRadar.components.prList.clear_search')}
+              aria-label={i18nT('apps.issueRadar.components.prList.clear_search')}
               className="flex-shrink-0 cursor-pointer bg-transparent leading-none text-muted hover:text-text"
             >
               <X size={13} />
@@ -281,13 +282,13 @@ export default function PrList({ resizing = false }: { resizing?: boolean }) {
               ? 'Closed/merged PRs are capped at the 100 most recently updated — turn on a "me" filter for a complete, repo-wide search'
               : undefined
         }>
-          {filteredPulls.length} PR{filteredPulls.length === 1 ? '' : 's'}
+          {filteredPulls.length} {i18nT('apps.issueRadar.components.prList.pr')}{filteredPulls.length === 1 ? '' : 's'}
           {prSearchTruncatedAt ? '+' : ''}
         </span>
         <span className="ml-auto flex items-center gap-2">
           {lastUpdated && (
-            <span className="tabular-nums" title="Time since the PR list was last fetched from GitHub">
-              Updated {lastUpdated}
+            <span className="tabular-nums" title={i18nT('apps.issueRadar.components.prList.time_since_the_pr_list_was_last_fetched_from_git')}>
+              {i18nT('apps.issueRadar.components.prList.updated')} {lastUpdated}
             </span>
           )}
           <button

@@ -8,6 +8,7 @@ import { Btn } from '../../components/ui'
 import { TagListEditor } from './SlackPanel'
 import { api, type TeamsConfigData, type TeamsConfigSave } from '../../api/client'
 
+import { i18nT } from '../../i18n/t'
 const AZURE_BOT_URL = 'https://portal.azure.com/#create/Microsoft.AzureBot'
 const SETUP_GUIDE =
   'https://github.com/kirodotdev/KiroCrew/blob/main/src/kiro_crew/docs/teams-integration.md'
@@ -131,9 +132,9 @@ export function TeamsPanel() {
     saveMut.mutate(payload)
   }, [draft, appPassword, pwClear, saveMut])
 
-  if (isLoading) return <p className="text-[13px] text-muted p-4">Loading Teams config…</p>
+  if (isLoading) return <p className="text-[13px] text-muted p-4">{i18nT('pages.settings.teamsPanel.loading_teams_config')}</p>
   if (isError || !data || !draft)
-    return <p className="text-[13px] text-danger p-4">Cannot load Teams config. Is the gateway running?</p>
+    return <p className="text-[13px] text-danger p-4">{i18nT('pages.settings.teamsPanel.cannot_load_teams_config_is_the_gateway_running')}</p>
 
   const upd = (patch: Partial<Draft>) => setDraft(d => (d ? { ...d, ...patch } : d))
   const ro = data.read_only
@@ -150,13 +151,11 @@ export function TeamsPanel() {
         </div>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-3 flex-wrap">
-            <h3 className="text-[15px] font-semibold text-text-strong">Microsoft Teams</h3>
+            <h3 className="text-[15px] font-semibold text-text-strong">{i18nT('pages.settings.teamsPanel.microsoft_teams')}</h3>
             <StatusBadge config={data} />
           </div>
           <p className="text-[12px] text-muted mt-1">
-            Talk to your agents from a Teams 1:1 chat. Self-hosted via the Bot Framework:
-            Teams posts to your gateway's HTTPS webhook, so it needs a public endpoint
-            (reverse proxy, App Service, or a dev tunnel).
+            {i18nT('pages.settings.teamsPanel.talk_to_your_agents_from_a_teams_1_1_chat_self_h')}
           </p>
           {connectionHint(data) && (
             <p className="text-[12px] text-warn mt-1 flex items-center gap-1.5">
@@ -172,19 +171,16 @@ export function TeamsPanel() {
         <div className="flex items-center gap-2 rounded-md border border-border bg-bg-elevated px-3 py-2 mb-3">
           <Lock size={13} className="text-muted flex-none" />
           <span className="text-[12px] text-muted">
-            Teams settings are managed on the machine running KiroCrew and are read-only from remote sessions.
+            {i18nT('pages.settings.teamsPanel.teams_settings_are_managed_on_the_machine_runnin')}
           </span>
         </div>
       )}
 
       {/* ── Credentials guide ── */}
-      <SettingsSection title="Get your credentials">
+      <SettingsSection title={i18nT('pages.settings.teamsPanel.get_your_credentials')}>
         <SettingsCard>
           <p className="text-[13px] text-text m-0">
-            Register an Azure Bot, add the <strong>Microsoft Teams</strong> channel, and set
-            its messaging endpoint to your public URL + <code>{WEBHOOK_PATH}</code>. Copy the
-            App (Client) ID, create a client secret, and note the tenant id for a
-            single-tenant bot.
+            {i18nT('pages.settings.teamsPanel.register_an_azure_bot_add_the')} <strong>{i18nT('pages.settings.teamsPanel.microsoft_teams')}</strong> {i18nT('pages.settings.teamsPanel.channel_and_set_its_messaging_endpoint_to_your_p')} <code>{WEBHOOK_PATH}</code>{i18nT('pages.settings.teamsPanel.copy_the_app_client_id_create_a_client_secret_an')}
           </p>
           <div className="flex items-center gap-2 mt-2 flex-wrap">
             <a
@@ -192,77 +188,69 @@ export function TeamsPanel() {
               target="_blank" rel="noopener noreferrer"
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[13px] font-medium border transition-all bg-accent text-accent-fg border-accent hover:bg-accent-hover"
             >
-              Create Azure Bot <ExternalLink size={13} />
+              {i18nT('pages.settings.teamsPanel.create_azure_bot')} <ExternalLink size={13} />
             </a>
             <a href={SETUP_GUIDE} target="_blank" rel="noopener noreferrer"
               className="inline-flex items-center gap-1.5 text-[13px] font-medium text-accent hover:underline">
-              Setup guide <ExternalLink size={13} />
+              {i18nT('pages.settings.teamsPanel.setup_guide')} <ExternalLink size={13} />
             </a>
           </div>
           <p className="text-[12px] text-muted mt-2 mb-0">
-            Messaging endpoint: <code>https://&lt;your-host&gt;{WEBHOOK_PATH}</code>
+            {i18nT('pages.settings.teamsPanel.messaging_endpoint')} <code>{i18nT('pages.settings.teamsPanel.https_your_host')}{WEBHOOK_PATH}</code>
           </p>
           <div className="flex items-start gap-2 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 mt-3">
             <AlertTriangle size={13} className="lucide-inline text-warning flex-none mt-0.5" />
             <span className="text-[12px] text-text">
-              <strong>Requires a public HTTPS URL.</strong> Teams delivers messages by
-              calling this endpoint from the internet, so a <code>localhost</code> or
-              SSH-tunneled address won&apos;t work. Expose the gateway with a tunnel
-              (ngrok / cloudflared) or a reverse proxy, then use that public host as
-              <code>&lt;your-host&gt;</code> above. Unlike Slack, the Bot Framework has no
-              outbound-only mode.
+              <strong>{i18nT('pages.settings.teamsPanel.requires_a_public_https_url')}</strong> {i18nT('pages.settings.teamsPanel.teams_delivers_messages_by_calling_this_endpoint')} <code>{i18nT('pages.settings.teamsPanel.localhost')}</code> {i18nT('pages.settings.teamsPanel.or_ssh_tunneled_address_won_t_work_expose_the_ga')}
+              <code>{i18nT('pages.settings.teamsPanel.your_host')}</code> {i18nT('pages.settings.teamsPanel.above_unlike_slack_the_bot_framework_has_no_outb')}
             </span>
           </div>
         </SettingsCard>
       </SettingsSection>
 
       {/* ── Bot setup steps ── */}
-      <SettingsSection title="Connect the Azure Bot">
+      <SettingsSection title={i18nT('pages.settings.teamsPanel.connect_the_azure_bot')}>
         <SettingsCard>
           <ol className="text-[13px] text-text m-0 pl-5 space-y-1.5 list-decimal">
             <li>
-              Expose this gateway over <strong>public HTTPS</strong> (tunnel or reverse
-              proxy) — see the note above. Note the resulting host.
+              {i18nT('pages.settings.teamsPanel.expose_this_gateway_over')} <strong>{i18nT('pages.settings.teamsPanel.public_https')}</strong> {i18nT('pages.settings.teamsPanel.tunnel_or_reverse_proxy_see_the_note_above_note')}
             </li>
             <li>
-              <strong>Create an Azure Bot</strong> (button above) as{' '}
-              <strong>Multi-tenant</strong>, or single-tenant if you&apos;ll pin a tenant id.
+              <strong>{i18nT('pages.settings.teamsPanel.create_an_azure_bot')}</strong> {i18nT('pages.settings.teamsPanel.button_above_as')}{' '}
+              <strong>{i18nT('pages.settings.teamsPanel.multi_tenant')}</strong>{i18nT('pages.settings.teamsPanel.or_single_tenant_if_you_ll_pin_a_tenant_id')}
             </li>
             <li>
-              In the bot&apos;s <strong>Configuration</strong>, set the{' '}
-              <strong>Messaging endpoint</strong> to{' '}
-              <code>https://&lt;your-host&gt;{WEBHOOK_PATH}</code>.
+              {i18nT('pages.settings.teamsPanel.in_the_bot_s')} <strong>{i18nT('pages.settings.teamsPanel.configuration')}</strong>{i18nT('pages.settings.teamsPanel.set_the')}{' '}
+              <strong>{i18nT('pages.settings.teamsPanel.messaging_endpoint_2')}</strong> {i18nT('pages.settings.teamsPanel.to')}{' '}
+              <code>{i18nT('pages.settings.teamsPanel.https_your_host')}{WEBHOOK_PATH}</code>.
             </li>
             <li>
-              Under <strong>Certificates &amp; secrets</strong>, create a client secret and
-              paste it as the <strong>App password</strong> below. Copy the{' '}
-              <strong>App (Client) ID</strong> from the bot&apos;s overview (and the{' '}
-              <strong>Tenant ID</strong> if single-tenant).
+              {i18nT('pages.settings.teamsPanel.under')} <strong>{i18nT('pages.settings.teamsPanel.certificates_secrets')}</strong>{i18nT('pages.settings.teamsPanel.create_a_client_secret_and_paste_it_as_the')} <strong>{i18nT('pages.settings.teamsPanel.app_password')}</strong> {i18nT('pages.settings.teamsPanel.below_copy_the')}{' '}
+              <strong>{i18nT('pages.settings.teamsPanel.app_client_id')}</strong> {i18nT('pages.settings.teamsPanel.from_the_bot_s_overview_and_the')}{' '}
+              <strong>{i18nT('pages.settings.teamsPanel.tenant_id')}</strong> {i18nT('pages.settings.teamsPanel.if_single_tenant')}
             </li>
             <li>
-              Under <strong>Channels</strong>, add the <strong>Microsoft Teams</strong>{' '}
-              channel.
+              {i18nT('pages.settings.teamsPanel.under')} <strong>{i18nT('pages.settings.teamsPanel.channels')}</strong>{i18nT('pages.settings.teamsPanel.add_the')} <strong>{i18nT('pages.settings.teamsPanel.microsoft_teams')}</strong>{' '}
+              {i18nT('pages.settings.teamsPanel.channel')}
             </li>
             <li>
-              Fill in the credentials below, add yourself to the allow-list (email or AAD
-              object id), toggle <strong>Enable</strong>, and Save.
+              {i18nT('pages.settings.teamsPanel.fill_in_the_credentials_below_add_yourself_to_th')} <strong>{i18nT('pages.settings.teamsPanel.enable')}</strong>{i18nT('pages.settings.teamsPanel.and_save')}
             </li>
             <li>
-              Side-load a Teams app whose <code>botId</code> is your App ID, then DM the
-              bot — full manifest steps in the setup guide above.
+              {i18nT('pages.settings.teamsPanel.side_load_a_teams_app_whose')} <code>{i18nT('pages.settings.teamsPanel.botid')}</code> {i18nT('pages.settings.teamsPanel.is_your_app_id_then_dm_the_bot_full_manifest_ste')}
             </li>
           </ol>
         </SettingsCard>
       </SettingsSection>
 
       {/* ── Required credentials ── */}
-      <SettingsSection title="Required">
+      <SettingsSection title={i18nT('pages.settings.teamsPanel.required')}>
         <SettingsCard>
           <label htmlFor="teams-app-id" className="flex flex-col gap-1.5 py-1.5 text-[13px] font-semibold text-text">
-            App (Client) ID
+            {i18nT('pages.settings.teamsPanel.app_client_id')}
             <input
               id="teams-app-id"
-              aria-label="App (Client) ID"
+              aria-label={i18nT('pages.settings.teamsPanel.app_client_id')}
               className={inputCls}
               type="text"
               placeholder={data.app_id_set ? '•••••• (set — paste to replace)' : 'Microsoft App ID'}
@@ -273,9 +261,9 @@ export function TeamsPanel() {
           </label>
           <SecretField
             key={`pw-${formKey}`}
-            label="App password (client secret)"
-            description="Azure Bot client secret. Stored only in .env (never config.json)."
-            placeholder="Paste Azure Bot client secret"
+            label={i18nT('pages.settings.teamsPanel.app_password_client_secret')}
+            description={i18nT('pages.settings.teamsPanel.azure_bot_client_secret_stored_only_in_env_never')}
+            placeholder={i18nT('pages.settings.teamsPanel.paste_azure_bot_client_secret')}
             isSet={data.app_password_set}
             preview=""
             readOnly={ro}
@@ -286,14 +274,14 @@ export function TeamsPanel() {
             setupLink={{ href: SETUP_GUIDE, label: 'Where to find the client secret' }}
           />
           <label htmlFor="teams-tenant-id" className="flex flex-col gap-1.5 py-1.5 text-[13px] font-semibold text-text">
-            Tenant ID
-            <span className="text-[12px] font-normal text-muted -mt-0.5">Optional — only for single-tenant bots.</span>
+            {i18nT('pages.settings.teamsPanel.tenant_id')}
+            <span className="text-[12px] font-normal text-muted -mt-0.5">{i18nT('pages.settings.teamsPanel.optional_only_for_single_tenant_bots')}</span>
             <input
               id="teams-tenant-id"
-              aria-label="Tenant ID"
+              aria-label={i18nT('pages.settings.teamsPanel.tenant_id')}
               className={inputCls}
               type="text"
-              placeholder="Leave empty for a multi-tenant bot"
+              placeholder={i18nT('pages.settings.teamsPanel.leave_empty_for_a_multi_tenant_bot')}
               value={draft.tenant_id}
               disabled={ro}
               onChange={e => upd({ tenant_id: e.target.value })}
@@ -303,20 +291,20 @@ export function TeamsPanel() {
       </SettingsSection>
 
       {/* ── Access ── */}
-      <SettingsSection title="Access">
+      <SettingsSection title={i18nT('pages.settings.teamsPanel.access')}>
         <SettingsCard>
           <SettingsToggle
-            label="Enable Teams channel"
-            description="Start the channel at gateway boot when the App ID + password are set."
+            label={i18nT('pages.settings.teamsPanel.enable_teams_channel')}
+            description={i18nT('pages.settings.teamsPanel.start_the_channel_at_gateway_boot_when_the_app_i')}
             checked={draft.enabled}
             onChange={v => upd({ enabled: v })}
             disabled={ro}
           />
           <TagListEditor
-            label="Allowed users (email or AAD object id)"
-            description="Azure AD UPNs/emails OR object ids permitted to DM the bot. Teams activities reliably carry the object id (email is often absent), so object ids work out of the box. Empty = nobody (fail closed)."
+            label={i18nT('pages.settings.teamsPanel.allowed_users_email_or_aad_object_id')}
+            description={i18nT('pages.settings.teamsPanel.azure_ad_upns_emails_or_object_ids_permitted_to')}
             values={draft.allowed_emails}
-            placeholder="you@example.com or 00000000-0000-0000-0000-000000000000"
+            placeholder={i18nT('pages.settings.teamsPanel.you_example_com_or_00000000_0000_0000_0000_00000')}
             onChange={v => upd({ allowed_emails: v })}
             validate={isValidPrincipal}
             readOnly={ro}

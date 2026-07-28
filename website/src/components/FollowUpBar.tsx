@@ -1,6 +1,7 @@
 import { memo, useRef, useState, useEffect, useCallback } from 'react'
 import { ChevronLeft, ChevronRight, ArrowUp } from 'lucide-react'
 
+import { i18nT } from '../i18n/t'
 export type FollowUpLayout = 'multiline' | 'scroll'
 
 interface FollowUpBarProps {
@@ -131,7 +132,7 @@ function Chip({ option, isPicked, picked, quickSend, onSelect, onSend, className
       <button
         type="button"
         aria-label={`Send now: ${option}`}
-        title="Send now"
+        title={i18nT('components.followUpBar.send_now')}
         onMouseDown={(e) => e.preventDefault()}
         onClick={(e) => { e.stopPropagation(); if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null }; onSend?.(isPicked ? undefined : option) }}
         className={sendSegmentClassName(isPicked)}
@@ -197,8 +198,8 @@ function ScrollLayout({ options, picked, onSelect, onSend, quickSend }: Omit<Fol
       {canScrollL && (
         <button
           type="button"
-          aria-label="Scroll suggestions left"
-          title="Scroll left"
+          aria-label={i18nT('components.followUpBar.scroll_suggestions_left')}
+          title={i18nT('components.followUpBar.scroll_left')}
           onMouseDown={(e) => e.preventDefault()}
           onClick={() => scrollByDir(-1)}
           className={`${arrowClass} left-0.5`}
@@ -209,8 +210,8 @@ function ScrollLayout({ options, picked, onSelect, onSend, quickSend }: Omit<Fol
       {canScrollR && (
         <button
           type="button"
-          aria-label="Scroll suggestions right"
-          title="Scroll right"
+          aria-label={i18nT('components.followUpBar.scroll_suggestions_right')}
+          title={i18nT('components.followUpBar.scroll_right')}
           onMouseDown={(e) => e.preventDefault()}
           onClick={() => scrollByDir(1)}
           className={`${arrowClass} right-0.5`}

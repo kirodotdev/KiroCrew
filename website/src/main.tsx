@@ -14,6 +14,10 @@ import { ThemeProvider } from './hooks/useTheme'
 import { UIModeProvider } from './hooks/useUIMode'
 import ThemeExperienceLayer from './components/ThemeExperienceLayer'
 import { initRum } from './rum'
+// i18n must initialize before the first render — a component rendering ahead of
+// init would emit its bare translation key instead of text.
+import { initI18n } from './i18n'
+import { LanguageProvider } from './i18n/LanguageProvider'
 import App from './App'
 import { queryClient } from './api/queryClient'
 import ErrorBoundary from './components/ErrorBoundary'
@@ -27,6 +31,11 @@ import './app-sdk/shared-modules'
 
 // Initialize RUM as early as possible
 initRum(__APP_VERSION__)
+
+// Seeded from localStorage (written by the inline bootstrap in index.html) so
+// the very first paint is already in the right language; LanguageProvider then
+// reconciles against the server-authoritative config value.
+initI18n()
 
 // Auto-recover from stale lazy-chunk errors after a frontend rebuild.
 // Vite fires `vite:preloadError` on window when a dynamic import() of a
@@ -79,26 +88,28 @@ createRoot(document.getElementById('root')!).render(
     <ErrorBoundary root scope="app-shell">
       <QueryClientProvider client={queryClient}>
         <Provider store={store}>
-          <ThemeProvider>
-            <UIModeProvider>
-              <ThemeExperienceLayer />
-              <BrowserRouter>
-                <Routes>
-                  <Route path="/worlds-popout" element={<BrandingProvider><ProviderProvider><Suspense fallback={null}><WorldsPopout /></Suspense></ProviderProvider></BrandingProvider>} />
-                  <Route
-                    path="*"
-                    element={(
-                      <BrandingProvider>
-                        <ProviderProvider>
-                          <DashboardBootstrap><App /></DashboardBootstrap>
-                        </ProviderProvider>
-                      </BrandingProvider>
-                    )}
-                  />
-                </Routes>
-              </BrowserRouter>
-            </UIModeProvider>
-          </ThemeProvider>
+          <LanguageProvider>
+            <ThemeProvider>
+              <UIModeProvider>
+                <ThemeExperienceLayer />
+                <BrowserRouter>
+                  <Routes>
+                    <Route path="/worlds-popout" element={<BrandingProvider><ProviderProvider><Suspense fallback={null}><WorldsPopout /></Suspense></ProviderProvider></BrandingProvider>} />
+                    <Route
+                      path="*"
+                      element={(
+                        <BrandingProvider>
+                          <ProviderProvider>
+                            <DashboardBootstrap><App /></DashboardBootstrap>
+                          </ProviderProvider>
+                        </BrandingProvider>
+                      )}
+                    />
+                  </Routes>
+                </BrowserRouter>
+              </UIModeProvider>
+            </ThemeProvider>
+          </LanguageProvider>
         </Provider>
       </QueryClientProvider>
     </ErrorBoundary>

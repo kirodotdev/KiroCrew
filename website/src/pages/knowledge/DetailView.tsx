@@ -8,6 +8,7 @@ import { knowledgeApi } from './api'
 import { typeBadgeVariant, formatDate, useCopy } from './helpers'
 import type { KnowledgeItem, Entity } from './types'
 
+import { i18nT } from '../../i18n/t'
 function highlightEntities(text: string, entities: Entity[], onEntityClick?: (name: string) => void) {
   if (!entities?.length) return text
   const names = [...entities].sort((a, b) => b.name.length - a.name.length).map(e => e.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
@@ -30,13 +31,13 @@ function RelatedItems({ itemId, entities }: { itemId: string; entities: Entity[]
 
   return (
     <Card className="!mb-3">
-      <div className="text-[13px] font-semibold text-text-strong mb-2">Related Items ({related.length})</div>
+      <div className="text-[13px] font-semibold text-text-strong mb-2">{i18nT('pages.knowledge.detailView.related_items')}{related.length})</div>
       <div className="space-y-1">
         {related.map(r => (
           <div key={r.id} className="text-[12px] text-text flex items-center gap-2">
             <Link2 size={10} className="text-accent shrink-0" />
             <span className="truncate flex-1">{r.title}</span>
-            {r.shared_entities && <span className="text-[10px] text-muted">{r.shared_entities} shared</span>}
+            {r.shared_entities && <span className="text-[10px] text-muted">{r.shared_entities} {i18nT('pages.knowledge.detailView.shared')}</span>}
             <Badge variant={typeBadgeVariant(r.item_type)}>{r.item_type.replace(/_/g, ' ')}</Badge>
           </div>
         ))}
@@ -70,8 +71,8 @@ function TagEditor({ itemId, currentTags }: { itemId: string; currentTags: strin
               <span key={i} className="px-1.5 py-0.5 bg-bg-elevated border border-border rounded text-[11px] text-text">{t.trim()}</span>
             ))}
           </div>
-        ) : <span className="text-muted">No tags</span>}
-        <button onClick={() => { setValue(currentTags); setEditing(true) }} className="text-accent text-[11px] bg-transparent border-none cursor-pointer hover:underline">edit</button>
+        ) : <span className="text-muted">{i18nT('pages.knowledge.detailView.no_tags')}</span>}
+        <button onClick={() => { setValue(currentTags); setEditing(true) }} className="text-accent text-[11px] bg-transparent border-none cursor-pointer hover:underline">{i18nT('pages.knowledge.detailView.edit')}</button>
       </div>
     )
   }
@@ -79,13 +80,13 @@ function TagEditor({ itemId, currentTags }: { itemId: string; currentTags: strin
   return (
     <div className="flex items-center gap-2">
       <Tag size={11} className="text-muted shrink-0" />
-      <input aria-label="Comma-separated tags" value={value} onChange={e => setValue(e.target.value)} placeholder="tag1, tag2, tag3"
+      <input aria-label={i18nT('pages.knowledge.detailView.comma_separated_tags')} value={value} onChange={e => setValue(e.target.value)} placeholder={i18nT('pages.knowledge.detailView.tag1_tag2_tag3')}
         className="flex-1 px-2 py-1 text-[12px] bg-bg-elevated border border-border rounded outline-none"
         onKeyDown={e => { if (e.key === 'Enter') saveMutation.mutate(value); if (e.key === 'Escape') setEditing(false) }}
         autoFocus />
       <button onClick={() => saveMutation.mutate(value)} disabled={saveMutation.isPending}
-        className="text-[11px] text-accent bg-transparent border-none cursor-pointer">save</button>
-      <button onClick={() => setEditing(false)} className="text-[11px] text-muted bg-transparent border-none cursor-pointer">cancel</button>
+        className="text-[11px] text-accent bg-transparent border-none cursor-pointer">{i18nT('pages.knowledge.detailView.save')}</button>
+      <button onClick={() => setEditing(false)} className="text-[11px] text-muted bg-transparent border-none cursor-pointer">{i18nT('pages.knowledge.detailView.cancel')}</button>
     </div>
   )
 }
@@ -151,11 +152,11 @@ export default function DetailView({ itemId, onBack, onEntityClick }: { itemId: 
   }
 
   if (loading) return <ContentSkeleton />
-  if (!item) return <div className="text-muted text-sm">Item not found</div>
+  if (!item) return <div className="text-muted text-sm">{i18nT('pages.knowledge.detailView.item_not_found')}</div>
 
   return (
     <div className="animate-rise">
-      <button onClick={onBack} className="flex items-center gap-1 text-muted hover:text-text text-[13px] mb-3 bg-transparent border-none cursor-pointer"><ChevronLeft size={14} /> Back to list</button>
+      <button onClick={onBack} className="flex items-center gap-1 text-muted hover:text-text text-[13px] mb-3 bg-transparent border-none cursor-pointer"><ChevronLeft size={14} /> {i18nT('pages.knowledge.detailView.back_to_list')}</button>
       <h2 className="text-lg font-bold text-text-strong mb-1">{item.title}</h2>
       <div className="flex items-center gap-2 mb-2">
         <Badge variant={typeBadgeVariant(item.item_type)}>{item.item_type.replace(/_/g, ' ')}</Badge>
@@ -170,7 +171,7 @@ export default function DetailView({ itemId, onBack, onEntityClick }: { itemId: 
 
       {item.summary && (
         <Card className="!mb-3">
-          <div className="text-[13px] font-semibold text-text-strong mb-1">Summary</div>
+          <div className="text-[13px] font-semibold text-text-strong mb-1">{i18nT('pages.knowledge.detailView.summary')}</div>
           <div className="text-sm text-text whitespace-pre-wrap">{item.summary}</div>
           {item.source_locations?.map((loc, i) => (
             <div key={i} className="text-[11px] text-accent mt-1 flex items-center gap-0.5">
@@ -182,7 +183,7 @@ export default function DetailView({ itemId, onBack, onEntityClick }: { itemId: 
 
       {!!item.entities?.length && (
         <Card className="!mb-3">
-          <div className="text-[13px] font-semibold text-text-strong mb-2">Entities ({item.entities.length})</div>
+          <div className="text-[13px] font-semibold text-text-strong mb-2">{i18nT('pages.knowledge.detailView.entities')}{item.entities.length})</div>
           <div className="flex flex-wrap gap-1.5">
             {item.entities.map(e => (
               <Clickable key={e.id} onClick={() => onEntityClick?.(e.name)}
@@ -196,7 +197,7 @@ export default function DetailView({ itemId, onBack, onEntityClick }: { itemId: 
 
       {!!item.relations?.length && (
         <Card className="!mb-3">
-          <div className="text-[13px] font-semibold text-text-strong mb-2">Relations ({item.relations.length})</div>
+          <div className="text-[13px] font-semibold text-text-strong mb-2">{i18nT('pages.knowledge.detailView.relations')}{item.relations.length})</div>
           <div className="space-y-1">
             {item.relations.map(r => (
               <div key={r.id} className="text-[12px] text-muted flex items-center gap-1">
@@ -213,7 +214,7 @@ export default function DetailView({ itemId, onBack, onEntityClick }: { itemId: 
       <RelatedItems itemId={item.id} entities={item.entities || []} />
 
       <Card className="!mb-3">
-        <div className="text-[13px] font-semibold text-text-strong mb-1">Content</div>
+        <div className="text-[13px] font-semibold text-text-strong mb-1">{i18nT('pages.knowledge.detailView.content')}</div>
         {isMarkdownContent(item) ? (
           <div className="text-[12px] text-text max-h-96 overflow-y-auto bg-bg-elevated rounded p-3 prose-sm">
             {/* MarkdownRenderer sanitizes rendered HTML output via rehypeSanitize plugin
@@ -226,7 +227,7 @@ export default function DetailView({ itemId, onBack, onEntityClick }: { itemId: 
         )}
         {isMarkdownContent(item) && !!item.entities?.length && (
           <div className="mt-2 flex flex-wrap gap-1 border-t border-border pt-2">
-            <span className="text-[11px] text-muted mr-1">Entities in this chunk:</span>
+            <span className="text-[11px] text-muted mr-1">{i18nT('pages.knowledge.detailView.entities_in_this_chunk')}</span>
             {item.entities.map(e => (
               <Clickable key={e.id} onClick={() => onEntityClick?.(e.name)}
                 className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-accent/10 text-accent text-[11px] cursor-pointer hover:bg-accent/20">
@@ -239,17 +240,17 @@ export default function DetailView({ itemId, onBack, onEntityClick }: { itemId: 
 
       {item._score !== undefined && (
         <div className="text-[11px] text-muted mb-3">
-          Match: {item._match_type} (score: {item._score.toFixed(3)})
+          {i18nT('pages.knowledge.detailView.match')} {item._match_type} {i18nT('pages.knowledge.detailView.score')} {item._score.toFixed(3)})
         </div>
       )}
 
       <div className="flex gap-2 flex-wrap">
         <Btn onClick={copyContent}><Copy size={12} /> {copied ? 'Copied!' : 'Copy Content'}</Btn>
-        <Btn onClick={() => { const a = document.createElement('a'); a.href = `/api/knowledge/items/${item.id}/export`; a.download = `${item.title}.knowledge`; a.click() }}><Download size={12} /> Export</Btn>
+        <Btn onClick={() => { const a = document.createElement('a'); a.href = `/api/knowledge/items/${item.id}/export`; a.download = `${item.title}.knowledge`; a.click() }}><Download size={12} /> {i18nT('pages.knowledge.detailView.export')}</Btn>
         {item.status === 'archived'
-          ? <Btn disabled={archiveMutation.isPending} onClick={() => archiveMutation.mutate({ id: item.id, status: 'active' })}><RefreshCw size={12} /> Unarchive</Btn>
-          : <Btn disabled={archiveMutation.isPending} onClick={() => archiveMutation.mutate({ id: item.id, status: 'archived' })}><Archive size={12} /> Archive</Btn>}
-        <Btn disabled={deleteMutation.isPending} onClick={() => { if (confirm('Permanently delete this item?')) deleteMutation.mutate(item.id) }}><X size={12} /> Delete</Btn>
+          ? <Btn disabled={archiveMutation.isPending} onClick={() => archiveMutation.mutate({ id: item.id, status: 'active' })}><RefreshCw size={12} /> {i18nT('pages.knowledge.detailView.unarchive')}</Btn>
+          : <Btn disabled={archiveMutation.isPending} onClick={() => archiveMutation.mutate({ id: item.id, status: 'archived' })}><Archive size={12} /> {i18nT('pages.knowledge.detailView.archive')}</Btn>}
+        <Btn disabled={deleteMutation.isPending} onClick={() => { if (confirm(i18nT('pages.knowledge.detailView.permanently_delete_this_item'))) deleteMutation.mutate(item.id) }}><X size={12} /> {i18nT('pages.knowledge.detailView.delete')}</Btn>
       </div>
       {(archiveMutation.isError || deleteMutation.isError) && (
         <div className="mt-2 text-[12px] text-danger flex items-center gap-1">

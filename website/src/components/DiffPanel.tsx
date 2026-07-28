@@ -4,6 +4,7 @@ import { kirocrewDark, kirocrewLight } from './monacoTheme'
 import Clickable from './Clickable'
 import { copyToClipboard } from '../utils/clipboard'
 
+import { i18nT } from '../i18n/t'
 const MonacoDiffEditor = lazy(async () => {
   const { ensureMonacoLocal } = await import('../utils/monacoLocal')
   await ensureMonacoLocal()
@@ -33,7 +34,7 @@ export default memo(function DiffPanel({ filePath, original, modified, sideBySid
   return (
     <div className="relative w-full h-full flex flex-col">
       <div className="flex-1 overflow-hidden">
-        <Suspense fallback={<div className="flex items-center justify-center h-full text-muted text-sm">Loading diff…</div>}>
+        <Suspense fallback={<div className="flex items-center justify-center h-full text-muted text-sm">{i18nT('components.diffPanel.loading_diff')}</div>}>
           <MonacoDiffEditor
             original={original}
             modified={modified}
@@ -71,7 +72,7 @@ export default memo(function DiffPanel({ filePath, original, modified, sideBySid
       </div>
       <Clickable
         className="shrink-0 flex items-center px-5 py-3 border-t border-border text-[11px] font-mono truncate text-muted cursor-pointer hover:text-text transition-colors"
-        title="Click to copy path"
+        title={i18nT('components.diffPanel.click_to_copy_path')}
         onClick={() => copyToClipboard(filePath)}
       >
         {filePath}

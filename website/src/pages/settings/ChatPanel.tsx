@@ -8,6 +8,7 @@ import { modelListRefetchInterval } from '../../providers/modelListHealth'
 import { EFFORT_LEVELS, effortLabel, modelSupportsEffort } from '../../lib/effort'
 import { isMac } from '../../utils/platform'
 
+import { i18nT } from '../../i18n/t'
 const RESTORE_OPTIONS = ['15', '30', '60', '120', '360', '720', '1440', '0']
 const RESTORE_LABELS = ['15m', '30m', '1h', '2h', '6h', '12h', '24h', 'No limit']
 const COMPACT_OPTIONS = ['20', '40', '60', '80', '90']
@@ -224,28 +225,28 @@ export function ChatPanel() {
       {saveError && (
         <div className="mb-4 bg-danger/10 border border-danger/20 rounded-lg p-3 flex items-center justify-between animate-rise">
           <span className="text-[13px] text-danger">{saveError}</span>
-          <button className="text-[13px] text-danger hover:text-text cursor-pointer bg-transparent border-none" onClick={() => setSaveError('')}>Dismiss</button>
+          <button className="text-[13px] text-danger hover:text-text cursor-pointer bg-transparent border-none" onClick={() => setSaveError('')}>{i18nT('pages.settings.chatPanel.dismiss')}</button>
         </div>
       )}
       {dashQ.isError && (
         <div className="mb-4 text-[13px] text-danger">
-          Failed to load dashboard config.{' '}
-          <button className="underline cursor-pointer bg-transparent border-none text-danger" onClick={() => dashQ.refetch()}>Retry</button>
+          {i18nT('pages.settings.chatPanel.failed_to_load_dashboard_config')}{' '}
+          <button className="underline cursor-pointer bg-transparent border-none text-danger" onClick={() => dashQ.refetch()}>{i18nT('pages.settings.chatPanel.retry')}</button>
         </div>
       )}
       {mcQ.isError && (
         <div className="mb-4 text-[13px] text-danger">
-          Failed to load config.{' '}
-          <button className="underline cursor-pointer bg-transparent border-none text-danger" onClick={() => mcQ.refetch()}>Retry</button>
+          {i18nT('pages.settings.chatPanel.failed_to_load_config')}{' '}
+          <button className="underline cursor-pointer bg-transparent border-none text-danger" onClick={() => mcQ.refetch()}>{i18nT('pages.settings.chatPanel.retry')}</button>
         </div>
       )}
 
-      <SettingsSection title="Model">
+      <SettingsSection title={i18nT('pages.settings.chatPanel.model')}>
         <SettingsCard>
           <SettingsSelect
-            label="Default Model"
-            description="Which model new sessions start with. Pick a model inside a session to override it there."
-            hint="'Default' defers to your agent config, and then to Kiro's own default. Changing this does not affect sessions that are already open."
+            label={i18nT('pages.settings.chatPanel.default_model')}
+            description={i18nT('pages.settings.chatPanel.which_model_new_sessions_start_with_pick_a_model')}
+            hint={i18nT('pages.settings.chatPanel.default_defers_to_your_agent_config_and_then_to')}
             value={defaultModel}
             options={modelOptions}
             optionLabels={modelOptions.map(m => (m === 'auto' ? 'Default (auto)' : m))}
@@ -253,8 +254,8 @@ export function ChatPanel() {
             disabled={!mcQ.isSuccess}
           />
           <SettingsSelect
-            label="Default Reasoning Effort"
-            description="How long models think before answering by default. Higher is slower and costs more. Only available on reasoning-capable models (Opus, Sonnet, Fable, GPT-5.x)."
+            label={i18nT('pages.settings.chatPanel.default_reasoning_effort')}
+            description={i18nT('pages.settings.chatPanel.how_long_models_think_before_answering_by_defaul')}
             hint={
               effortSupported
                 ? "'Model default' applies no override — the model picks its own effort."
@@ -269,19 +270,19 @@ export function ChatPanel() {
         </SettingsCard>
       </SettingsSection>
 
-      <SettingsSection title="About You">
+      <SettingsSection title={i18nT('pages.settings.chatPanel.about_you')}>
         <SettingsCard>
           <SettingsSelect
-            label="Your Role"
-            description="Kiro matches vocabulary and examples to your professional background"
+            label={i18nT('pages.settings.chatPanel.your_role')}
+            description={i18nT('pages.settings.chatPanel.kiro_matches_vocabulary_and_examples_to_your_pro')}
             value={userRole}
             options={ROLE_OPTIONS}
             optionLabels={ROLE_LABELS}
             onChange={v => profileMut.mutate({ path: 'dashboard.user_role', value: v })}
           />
           <SettingsSelect
-            label="Technical Comfort"
-            description="Sets how deep explanations go — plain language vs. full technical detail"
+            label={i18nT('pages.settings.chatPanel.technical_comfort')}
+            description={i18nT('pages.settings.chatPanel.sets_how_deep_explanations_go_plain_language_vs')}
             value={userTechLevel}
             options={TECH_OPTIONS}
             optionLabels={TECH_LABELS}
@@ -290,23 +291,23 @@ export function ChatPanel() {
         </SettingsCard>
       </SettingsSection>
 
-      <SettingsSection title="Composer">
+      <SettingsSection title={i18nT('pages.settings.chatPanel.composer')}>
         <SettingsCard>
           <SettingsSelect
-            label="Send shortcut"
+            label={i18nT('pages.settings.chatPanel.send_shortcut')}
             description={chatCfg.sendOnEnter === 'enter' ? 'Shift+Enter for newline' : chatCfg.sendOnEnter === 'ctrl-enter' ? 'Enter for newline' : `${isMac ? '⌘' : 'Ctrl'}+Enter for newline`}
             value={chatCfg.sendOnEnter}
             options={['enter', 'ctrl-enter', 'enter-ctrl-newline']}
             optionLabels={['Enter sends', `${isMac ? '⌘' : 'Ctrl'}+Enter sends`, `Enter sends, ${isMac ? '⌘' : 'Ctrl'}+Enter newline`]}
             onChange={v => setChat('sendOnEnter', v as SendMode)}
           />
-          <SettingsToggle label="Quick Send" description={`Click a suggested reply to send it instantly. ${isMac ? '⇧' : 'Shift'}+Click to select multiple.`} checked={dashCfg.quick_send} onChange={v => setDash({ quick_send: v })} disabled={dashDisabled} />
-          <SettingsToggle label="Merge Queued Messages" description="Combine follow-up messages into a single labeled prompt while the agent is busy" checked={dashCfg.merge_queued_messages} onChange={v => setDash({ merge_queued_messages: v })} disabled={dashDisabled} />
-          <SettingsButtonGroup label="Follow-Up Bar Layout" description="Multiline wraps suggestions onto multiple rows. Single line keeps them on one horizontally-scrollable row." value={chatCfg.followUpLayout} options={[{ value: "multiline", label: "Multiline" }, { value: "scroll", label: "Single line" }]} onChange={v => setChat('followUpLayout', v as ChatConfig['followUpLayout'])} />
+          <SettingsToggle label={i18nT('pages.settings.chatPanel.quick_send')} description={`Click a suggested reply to send it instantly. ${isMac ? '⇧' : 'Shift'}+Click to select multiple.`} checked={dashCfg.quick_send} onChange={v => setDash({ quick_send: v })} disabled={dashDisabled} />
+          <SettingsToggle label={i18nT('pages.settings.chatPanel.merge_queued_messages')} description={i18nT('pages.settings.chatPanel.combine_follow_up_messages_into_a_single_labeled')} checked={dashCfg.merge_queued_messages} onChange={v => setDash({ merge_queued_messages: v })} disabled={dashDisabled} />
+          <SettingsButtonGroup label={i18nT('pages.settings.chatPanel.follow_up_bar_layout')} description={i18nT('pages.settings.chatPanel.multiline_wraps_suggestions_onto_multiple_rows_s')} value={chatCfg.followUpLayout} options={[{ value: "multiline", label: "Multiline" }, { value: "scroll", label: "Single line" }]} onChange={v => setChat('followUpLayout', v as ChatConfig['followUpLayout'])} />
           <SettingsInput
-            label="Soft-stop budget (seconds)"
-            aria-label="Soft-stop budget (seconds)"
-            hint="How long to wait for the agent to honor a Stop press before forcefully killing the session. Longer budgets preserve session state more often but make stops feel laggy when agents are stuck in long tool calls."
+            label={i18nT('pages.settings.chatPanel.soft_stop_budget_seconds')}
+            aria-label={i18nT('pages.settings.chatPanel.soft_stop_budget_seconds')}
+            hint={i18nT('pages.settings.chatPanel.how_long_to_wait_for_the_agent_to_honor_a_stop_p')}
             type="number"
             value={localBudget}
             min={SOFT_STOP_MIN}
@@ -326,46 +327,46 @@ export function ChatPanel() {
         </SettingsCard>
       </SettingsSection>
 
-      <SettingsSection title="Messages">
+      <SettingsSection title={i18nT('pages.settings.chatPanel.messages')}>
         <SettingsCard>
           <SettingsButtonGroup
-            label="Text Streaming Style"
-            description="Immediate mode shows raw chunks as they arrive. Smooth mode buffers and fades text in at a steady pace."
+            label={i18nT('pages.settings.chatPanel.text_streaming_style')}
+            description={i18nT('pages.settings.chatPanel.immediate_mode_shows_raw_chunks_as_they_arrive_s')}
             value={chatCfg.streamMode}
             options={[{ value: 'immediate', label: 'Immediate' }, { value: 'smooth', label: 'Smooth' }]}
             onChange={v => setChat('streamMode', v as ChatConfig['streamMode'])}
           />
-          <SettingsToggle label="Show Timestamps" description="Display time on each message" checked={chatCfg.showTimestamps} onChange={v => setChat('showTimestamps', v)} />
-          <SettingsButtonGroup label="Content Width" description="Compact is the original view. Comfortable and Full use more screen space." value={chatCfg.contentWidth} options={[{ value: "compact", label: "Compact" }, { value: "comfortable", label: "Comfortable" }, { value: "full", label: "Full" }]} onChange={v => setChat('contentWidth', v as ContentWidth)} />
-          <SettingsToggle label="Show Thinking Inline" description="Show intermediate reasoning text between tool calls instead of collapsing everything" checked={!chatCfg.collapseAllSteps} onChange={v => setChat('collapseAllSteps', !v)} />
-          <SettingsToggle label="Simplified Tool Call Names" description="When enabled, inline tool pills show simplified tool use purpose instead of the exact command being run" checked={chatCfg.simplifiedToolNames} onChange={v => setChat('simplifiedToolNames', v)} />
-          <SettingsSelect label="File Change Chips" description="How file diff chips appear below assistant messages" value={chatCfg.fileChipStyle} options={['expanded', 'minimal']} optionLabels={['Expanded (icon + name + stats)', 'Minimal (stats only, name on hover)']} onChange={v => setChat('fileChipStyle', v as ChatConfig['fileChipStyle'])} />
-          <SettingsSelect label="Widget Density" description="How aggressively the agent uses inline widgets for visual content" value={dashCfg.widget_density ?? 'more'} options={['more', 'less']} optionLabels={['More (encourage widgets)', 'Less (only when needed)']} onChange={v => setDash({ widget_density: v as 'more' | 'less' })} disabled={dashDisabled} />
-          <SettingsToggle label="Concise Responses" description="Trim filler and over-narration: lead with the answer, keep progress notes high-level. Code, commands, and error strings stay verbatim; security warnings and multi-step instructions keep full detail." checked={dashCfg.verbosity === 'concise'} onChange={v => setDash({ verbosity: v ? 'concise' : 'default' })} disabled={dashDisabled} />
-          <SettingsToggle label="Show Context Percentage" description="Display usage percentage next to the context progress bar" checked={chatCfg.showContextPct} onChange={v => setChat('showContextPct', v)} />
-          <SettingsToggle label="Feature Tips" description={tipsConfigOff ? 'Disabled by instance config (tips_enabled: false)' : 'Show occasional feature discovery tips above the composer while the agent is working'} checked={!!tipsQ.data && tipsQ.data.enabled_config && !tipsQ.data.opted_out} onChange={v => tipsMut.mutate(v)} disabled={tipsConfigOff || tipsQ.isLoading || tipsQ.isError} />
+          <SettingsToggle label={i18nT('pages.settings.chatPanel.show_timestamps')} description={i18nT('pages.settings.chatPanel.display_time_on_each_message')} checked={chatCfg.showTimestamps} onChange={v => setChat('showTimestamps', v)} />
+          <SettingsButtonGroup label={i18nT('pages.settings.chatPanel.content_width')} description={i18nT('pages.settings.chatPanel.compact_is_the_original_view_comfortable_and_ful')} value={chatCfg.contentWidth} options={[{ value: "compact", label: "Compact" }, { value: "comfortable", label: "Comfortable" }, { value: "full", label: "Full" }]} onChange={v => setChat('contentWidth', v as ContentWidth)} />
+          <SettingsToggle label={i18nT('pages.settings.chatPanel.show_thinking_inline')} description={i18nT('pages.settings.chatPanel.show_intermediate_reasoning_text_between_tool_ca')} checked={!chatCfg.collapseAllSteps} onChange={v => setChat('collapseAllSteps', !v)} />
+          <SettingsToggle label={i18nT('pages.settings.chatPanel.simplified_tool_call_names')} description={i18nT('pages.settings.chatPanel.when_enabled_inline_tool_pills_show_simplified_t')} checked={chatCfg.simplifiedToolNames} onChange={v => setChat('simplifiedToolNames', v)} />
+          <SettingsSelect label={i18nT('pages.settings.chatPanel.file_change_chips')} description={i18nT('pages.settings.chatPanel.how_file_diff_chips_appear_below_assistant_messa')} value={chatCfg.fileChipStyle} options={['expanded', 'minimal']} optionLabels={['Expanded (icon + name + stats)', 'Minimal (stats only, name on hover)']} onChange={v => setChat('fileChipStyle', v as ChatConfig['fileChipStyle'])} />
+          <SettingsSelect label={i18nT('pages.settings.chatPanel.widget_density')} description={i18nT('pages.settings.chatPanel.how_aggressively_the_agent_uses_inline_widgets_f')} value={dashCfg.widget_density ?? 'more'} options={['more', 'less']} optionLabels={['More (encourage widgets)', 'Less (only when needed)']} onChange={v => setDash({ widget_density: v as 'more' | 'less' })} disabled={dashDisabled} />
+          <SettingsToggle label={i18nT('pages.settings.chatPanel.concise_responses')} description={i18nT('pages.settings.chatPanel.trim_filler_and_over_narration_lead_with_the_ans')} checked={dashCfg.verbosity === 'concise'} onChange={v => setDash({ verbosity: v ? 'concise' : 'default' })} disabled={dashDisabled} />
+          <SettingsToggle label={i18nT('pages.settings.chatPanel.show_context_percentage')} description={i18nT('pages.settings.chatPanel.display_usage_percentage_next_to_the_context_pro')} checked={chatCfg.showContextPct} onChange={v => setChat('showContextPct', v)} />
+          <SettingsToggle label={i18nT('pages.settings.chatPanel.feature_tips')} description={tipsConfigOff ? 'Disabled by instance config (tips_enabled: false)' : 'Show occasional feature discovery tips above the composer while the agent is working'} checked={!!tipsQ.data && tipsQ.data.enabled_config && !tipsQ.data.opted_out} onChange={v => tipsMut.mutate(v)} disabled={tipsConfigOff || tipsQ.isLoading || tipsQ.isError} />
         </SettingsCard>
       </SettingsSection>
 
-      <SettingsSection title="Sessions">
+      <SettingsSection title={i18nT('pages.settings.chatPanel.sessions')}>
         <SettingsCard>
-          <SettingsToggle label="Split View (Session Grid)" description={`Opt-in: split the chat into resizable session panes (${isMac ? '⌘' : 'Ctrl'}+D). Experimental.`} checked={dashCfg.session_grid} onChange={v => setDash({ session_grid: v })} disabled={dashDisabled} />
-          <SettingsToggle label="History Expanded" description="Expand history sidebar by default" checked={chatCfg.historyExpanded} onChange={v => setChat('historyExpanded', v)} />
-          <SettingsToggle label="Confirm Before Closing Session" description="Show a confirmation dialog when closing a session" checked={chatCfg.confirmCloseSession} onChange={v => setChat('confirmCloseSession', v)} />
-          <SettingsToggle label="Default to Autopilot Mode" description="New sessions start in autopilot mode (plan → approve → execute). You can still toggle individual sessions." checked={chatCfg.defaultAutopilot} onChange={v => setChat('defaultAutopilot', v)} />
-          <SettingsToggle label="Tail-only Fork" description="Fork keeps only the messages after the chosen point instead of those up to it." checked={dashCfg.tail_fork_enabled} onChange={v => setDash({ tail_fork_enabled: v })} disabled={dashDisabled} />
-          <SettingsToggle label="Restore Sessions" description="Re-open recently active sessions on startup" checked={dashCfg.restore_sessions} onChange={v => setDash({ restore_sessions: v })} disabled={dashDisabled} />
+          <SettingsToggle label={i18nT('pages.settings.chatPanel.split_view_session_grid')} description={`Opt-in: split the chat into resizable session panes (${isMac ? '⌘' : 'Ctrl'}+D). Experimental.`} checked={dashCfg.session_grid} onChange={v => setDash({ session_grid: v })} disabled={dashDisabled} />
+          <SettingsToggle label={i18nT('pages.settings.chatPanel.history_expanded')} description={i18nT('pages.settings.chatPanel.expand_history_sidebar_by_default')} checked={chatCfg.historyExpanded} onChange={v => setChat('historyExpanded', v)} />
+          <SettingsToggle label={i18nT('pages.settings.chatPanel.confirm_before_closing_session')} description={i18nT('pages.settings.chatPanel.show_a_confirmation_dialog_when_closing_a_sessio')} checked={chatCfg.confirmCloseSession} onChange={v => setChat('confirmCloseSession', v)} />
+          <SettingsToggle label={i18nT('pages.settings.chatPanel.default_to_autopilot_mode')} description={i18nT('pages.settings.chatPanel.new_sessions_start_in_autopilot_mode_plan_approv')} checked={chatCfg.defaultAutopilot} onChange={v => setChat('defaultAutopilot', v)} />
+          <SettingsToggle label={i18nT('pages.settings.chatPanel.tail_only_fork')} description={i18nT('pages.settings.chatPanel.fork_keeps_only_the_messages_after_the_chosen_po')} checked={dashCfg.tail_fork_enabled} onChange={v => setDash({ tail_fork_enabled: v })} disabled={dashDisabled} />
+          <SettingsToggle label={i18nT('pages.settings.chatPanel.restore_sessions')} description={i18nT('pages.settings.chatPanel.re_open_recently_active_sessions_on_startup')} checked={dashCfg.restore_sessions} onChange={v => setDash({ restore_sessions: v })} disabled={dashDisabled} />
           {dashCfg.restore_sessions && (
-            <SettingsSelect label="Restore Window" description="Time window for session restoration" value={String(dashCfg.restore_window_minutes)} options={RESTORE_OPTIONS} optionLabels={RESTORE_LABELS} onChange={v => setDash({ restore_window_minutes: Number(v) })} disabled={dashDisabled} />
+            <SettingsSelect label={i18nT('pages.settings.chatPanel.restore_window')} description={i18nT('pages.settings.chatPanel.time_window_for_session_restoration')} value={String(dashCfg.restore_window_minutes)} options={RESTORE_OPTIONS} optionLabels={RESTORE_LABELS} onChange={v => setDash({ restore_window_minutes: Number(v) })} disabled={dashDisabled} />
           )}
         </SettingsCard>
       </SettingsSection>
 
-      <SettingsSection title="Context">
+      <SettingsSection title={i18nT('pages.settings.chatPanel.context')}>
         <SettingsCard>
           <SettingsSelect
-            label="Auto-Compact Threshold"
-            description="Context usage % at which auto-compaction triggers. Lower = more frequent compaction, longer sessions"
+            label={i18nT('pages.settings.chatPanel.auto_compact_threshold')}
+            description={i18nT('pages.settings.chatPanel.context_usage_at_which_auto_compaction_triggers')}
             value={String(mcCfg?.session?.autocompact_pct ?? 90)}
             options={COMPACT_OPTIONS}
             optionLabels={COMPACT_LABELS}
@@ -379,11 +380,11 @@ export function ChatPanel() {
         </SettingsCard>
       </SettingsSection>
 
-      <SettingsSection title="Subagents">
+      <SettingsSection title={i18nT('pages.settings.chatPanel.subagents')}>
         <SettingsCard>
           <SettingsSelect
-            label="Completion Event Truncation"
-            description="Which part of a subagent's stream to keep when injecting its completion event into the parent session. Head preserves the start (default, matches legacy behavior). Tail preserves the final summary. Both keeps a slice from each end with a marker between them."
+            label={i18nT('pages.settings.chatPanel.completion_event_truncation')}
+            description={i18nT('pages.settings.chatPanel.which_part_of_a_subagent_s_stream_to_keep_when_i')}
             value={mcCfg?.agent?.completion_keep ?? 'head'}
             options={COMPLETION_KEEP_OPTIONS}
             optionLabels={COMPLETION_KEEP_LABELS}
@@ -391,8 +392,8 @@ export function ChatPanel() {
             disabled={!mcQ.isSuccess}
           />
           <SettingsInput
-            label="Completion Event Characters"
-            aria-label="Completion event characters"
+            label={i18nT('pages.settings.chatPanel.completion_event_characters')}
+            aria-label={i18nT('pages.settings.chatPanel.completion_event_characters_2')}
             hint={`Maximum characters retained in the completion event after applying the truncation mode. 0 disables truncation entirely. Default ${COMPLETION_KEEP_CHARS_DEFAULT}.`}
             type="number"
             value={localKeepChars}

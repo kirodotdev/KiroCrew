@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom'
 import { ExternalLink } from 'lucide-react'
 import { SettingsSection, SettingsCard, SettingsToggle } from '../../components/settings'
 
+import { i18nT } from '../../i18n/t'
 const DEV_MODE_KEY = 'mc-dev-mode'
 const DEV_MODE_EVENT = 'mc-dev-mode-changed'
 
@@ -30,11 +31,11 @@ export function DeveloperPanel() {
   }
 
   return (
-    <SettingsSection title="Developer Tools">
+    <SettingsSection title={i18nT('pages.settings.developerPanel.developer_tools')}>
       <SettingsCard>
         <SettingsToggle
-          label="Developer Mode"
-          description="Show Developer page in sidebar with Logs, System metrics, and Memory internals"
+          label={i18nT('pages.settings.developerPanel.developer_mode')}
+          description={i18nT('pages.settings.developerPanel.show_developer_page_in_sidebar_with_logs_system')}
           checked={devMode}
           onChange={toggleDevMode}
         />
@@ -45,7 +46,7 @@ export function DeveloperPanel() {
               onClick={() => navigate('/developer')}
               className="inline-flex items-center gap-1.5 text-[13px] font-medium text-accent bg-transparent border-none cursor-pointer px-0 py-1 hover:underline"
             >
-              Open Developer page
+              {i18nT('pages.settings.developerPanel.open_developer_page')}
               <ExternalLink size={13} className="lucide-inline" />
             </button>
           </div>

@@ -21,6 +21,7 @@ import { sanitizeLlmOutput } from '../../utils/sanitize'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
 import type { ChatMessage } from '../../types'
 
+import { i18nT } from '../../i18n/t'
 const WF_COMPLETION_PREFIX = '[Workflow completion event]'
 // Name is backtick-delimited; allow any char except a backtick (including
 // newlines) so an unusual name doesn't make the header fail to parse. If it
@@ -105,12 +106,12 @@ const WorkflowCompletionCard = memo(function WorkflowCompletionCard({
             <button
               type="button"
               onClick={() => dispatch(openActivityToTab('workflows'))}
-              title="Open in the Workflows panel"
-              aria-label="Open in the Workflows panel"
+              title={i18nT('pages.chat.workflowCompletionCard.open_in_the_workflows_panel')}
+              aria-label={i18nT('pages.chat.workflowCompletionCard.open_in_the_workflows_panel')}
               className="flex items-center gap-1 text-[11px] text-accent hover:text-accent-hover bg-transparent border-none cursor-pointer px-1.5 py-1 rounded hover:bg-accent/10 transition-colors"
             >
               <PanelRight size={13} />
-              <span className="hidden sm:inline">Panel</span>
+              <span className="hidden sm:inline">{i18nT('pages.chat.workflowCompletionCard.panel')}</span>
             </button>
             {body && (
               <button

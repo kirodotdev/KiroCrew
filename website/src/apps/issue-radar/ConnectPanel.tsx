@@ -34,6 +34,7 @@ import type { ActiveRepo } from './lib/types'
 import GithubLogo from '../../components/icons/GithubLogo'
 import GitlabLogo from '../../components/icons/GitlabLogo'
 
+import { i18nT } from '../../i18n/t'
 export type ProviderId = 'github' | 'gitlab' | 'jira' | 'linear'
 
 /** Tailwind classes for the host card in each state — exported so the carousel
@@ -417,9 +418,9 @@ export default function ConnectPanel({ flow }: { flow: ConnectFlow }) {
   return (
     <div className="flex flex-col gap-4 w-full flex-1 min-h-0 text-left">
       <div className="text-center flex-shrink-0">
-        <div className="text-[20px] font-bold text-text tracking-[-0.2px]">Let's Connect a Provider</div>
+        <div className="text-[20px] font-bold text-text tracking-[-0.2px]">{i18nT('apps.issueRadar.connectPanel.let_s_connect_a_provider')}</div>
         <div className="text-[13.5px] text-muted leading-[1.7] mt-1.5">
-          Connect a provider. Nothing runs without your say.
+          {i18nT('apps.issueRadar.connectPanel.connect_a_provider_nothing_runs_without_your_say')}
         </div>
       </div>
 
@@ -479,16 +480,16 @@ export default function ConnectPanel({ flow }: { flow: ConnectFlow }) {
             {!setupRequired && (
               <div className="flex flex-col gap-2 border-t border-border pt-3 flex-shrink-0">
                 <span className="text-[11px] font-semibold text-muted uppercase tracking-[.08em] opacity-70">
-                  Or paste a URL
+                  {i18nT('apps.issueRadar.connectPanel.or_paste_a_url')}
                 </span>
                 <input
                   id="ir-repo-url"
-                  aria-label="Repository URL"
+                  aria-label={i18nT('apps.issueRadar.connectPanel.repository_url')}
                   value={flow.url}
                   onChange={(e) => flow.setUrl(e.target.value)}
                   onKeyDown={(e) => { if (e.key === 'Enter') flow.submit() }}
                   disabled={flow.pending}
-                  placeholder="https://github.com/<owner>/<repo> or https://gitlab.com/<group>/<project>"
+                  placeholder={i18nT('apps.issueRadar.connectPanel.https_github_com_owner_repo_or_https_gitlab_com')}
                   className="w-full box-border text-[12.5px] px-3 py-2 rounded-md bg-bg text-text border border-border font-mono disabled:opacity-50"
                 />
               </div>
@@ -529,7 +530,7 @@ function ProviderRow({ provider, selected, onSelect }: {
         {provider.label}
       </span>
       {disabled
-        ? <span className="flex-shrink-0 text-[10px] font-semibold text-muted uppercase tracking-[.08em] px-1.5 py-0.5 rounded border border-border">Soon</span>
+        ? <span className="flex-shrink-0 text-[10px] font-semibold text-muted uppercase tracking-[.08em] px-1.5 py-0.5 rounded border border-border">{i18nT('apps.issueRadar.connectPanel.soon')}</span>
         : selected
           ? <Check size={14} className="flex-shrink-0 text-accent" />
           : null}
@@ -582,7 +583,7 @@ function RecentRepoPicker({
         {!setupRequired && (
           <>
             <span className="text-[11px] font-semibold text-muted uppercase tracking-[.08em] opacity-70">
-              You contributed to
+              {i18nT('apps.issueRadar.connectPanel.you_contributed_to')}
             </span>
             <span className="text-[11px] text-muted">{countLabel}</span>
           </>
@@ -596,7 +597,7 @@ function RecentRepoPicker({
       <div className="flex-1 min-h-0 overflow-y-auto flex flex-col gap-1 pr-0.5">
         {isLoading && (
           <div className="flex items-center gap-2 text-muted text-xs h-full justify-center">
-            <RefreshCw size={12} className="animate-spin" /> Loading your repos…
+            <RefreshCw size={12} className="animate-spin" /> {i18nT('apps.issueRadar.connectPanel.loading_your_repos')}
           </div>
         )}
         {error && !setupRequired && (
@@ -654,23 +655,22 @@ function ProviderSetupNotice({ detail, onRetry, provider }: {
     <div className="flex flex-col items-start gap-2 text-left pr-2">
       <AlertCircle size={18} className="text-danger flex-shrink-0" />
       <p className="text-[13px] font-semibold text-text">
-        Please set up the {terms.providerName} CLI
+        {i18nT('apps.issueRadar.connectPanel.please_set_up_the')} {terms.providerName} {i18nT('apps.issueRadar.connectPanel.cli')}
       </p>
       <p className="text-[11.5px] text-muted leading-[1.6]">
-        Issue Radar reads {terms.providerName} through your own <code>{terms.cli}</code> session.
-        Install and sign in to{' '}
-        <code>{terms.cli}</code>, then{' '}
+        {i18nT('apps.issueRadar.connectPanel.issue_radar_reads')} {terms.providerName} {i18nT('apps.issueRadar.connectPanel.through_your_own')} <code>{terms.cli}</code> {i18nT('apps.issueRadar.connectPanel.session_install_and_sign_in_to')}{' '}
+        <code>{terms.cli}</code>{i18nT('apps.issueRadar.connectPanel.then')}{' '}
         <button
           onClick={onRetry}
           className="underline text-accent bg-transparent border-0 p-0 cursor-pointer text-[11.5px]"
         >
-          check again
+          {i18nT('apps.issueRadar.connectPanel.check_again')}
         </button>
         .
       </p>
       {detail && (
         <details className="text-[10.5px] text-muted opacity-60 max-w-full">
-          <summary className="cursor-pointer">Details</summary>
+          <summary className="cursor-pointer">{i18nT('apps.issueRadar.connectPanel.details')}</summary>
           <p className="mt-1 leading-[1.5] break-words">{detail}</p>
         </details>
       )}
@@ -691,7 +691,7 @@ function RepoRow({ repo, checked, onToggle, disabled }: {
       <div className="flex items-center gap-2.5 px-2.5 h-9 flex-shrink-0 rounded-md opacity-45">
         <Check size={13} className="flex-shrink-0 text-accent" />
         <span className="flex-1 min-w-0 text-[12.5px] text-text truncate font-mono">{repo.full_name}</span>
-        <span className="flex-shrink-0 text-[10.5px] text-muted">Connected</span>
+        <span className="flex-shrink-0 text-[10.5px] text-muted">{i18nT('apps.issueRadar.connectPanel.connected')}</span>
       </div>
     )
   }

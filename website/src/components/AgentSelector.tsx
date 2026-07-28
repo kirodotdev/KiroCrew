@@ -7,6 +7,7 @@ import { useProvider } from '../providers'
 import { Input, Btn } from './ui'
 import { SourceBadge } from './SourceBadge'
 
+import { i18nT } from '../i18n/t'
 export interface KiroCrewAgent {
   name: string
   kiro_agent: string
@@ -63,7 +64,7 @@ export default function AgentSelector({ agents, defaultAgent, value, onChange }:
         ref={btnRef}
         className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[13px] font-mono font-medium border border-border bg-bg-elevated text-text hover:border-border-strong transition-all cursor-pointer"
         onClick={() => setOpen(!open)}
-        aria-label="Switch agent"
+        aria-label={i18nT('components.agentSelector.switch_agent')}
         aria-expanded={open}
         aria-haspopup="listbox"
       >
@@ -93,14 +94,14 @@ export default function AgentSelector({ agents, defaultAgent, value, onChange }:
             <Input
               ref={inputRef}
               type="text"
-              aria-label="Filter agents"
-              placeholder="Type to filter…"
+              aria-label={i18nT('components.agentSelector.filter_agents')}
+              placeholder={i18nT('components.agentSelector.type_to_filter')}
               value={filter}
               onChange={e => setFilter(e.target.value)}
               className="w-full px-2 py-1 text-[13px] font-mono"
             />
           </div>
-          <div role="listbox" aria-label="Agent list" className="flex-1 min-h-0 overflow-y-auto divide-y divide-border">
+          <div role="listbox" aria-label={i18nT('components.agentSelector.agent_list')} className="flex-1 min-h-0 overflow-y-auto divide-y divide-border">
             {filtered.map(a => {
               const isCurrent = active === a.name
               const isDefault = a.name === defaultAgent
@@ -118,7 +119,7 @@ export default function AgentSelector({ agents, defaultAgent, value, onChange }:
                   <div className="flex flex-col min-w-0 flex-1">
                     <div className="flex items-center gap-1.5">
                       <span className={`text-[13px] font-mono font-semibold truncate ${isCurrent ? 'text-accent' : 'text-text'}`}>{a.name}</span>
-                      {isDefault && <span className="px-1.5 py-[1px] rounded-full text-[10px] font-bold bg-accent-subtle text-accent border border-accent/30 shrink-0">default</span>}
+                      {isDefault && <span className="px-1.5 py-[1px] rounded-full text-[10px] font-bold bg-accent-subtle text-accent border border-accent/30 shrink-0">{i18nT('components.agentSelector.default')}</span>}
                       {a.source && (
                         <SourceBadge source={a.source} className="shrink-0">
                           {a.source}
@@ -131,7 +132,7 @@ export default function AgentSelector({ agents, defaultAgent, value, onChange }:
                 </Btn>
               )
             })}
-            {filtered.length === 0 && <div className="px-3 py-2 text-[13px] text-muted italic">No matches</div>}
+            {filtered.length === 0 && <div className="px-3 py-2 text-[13px] text-muted italic">{i18nT('components.agentSelector.no_matches')}</div>}
           </div>
         </div>,
         document.body

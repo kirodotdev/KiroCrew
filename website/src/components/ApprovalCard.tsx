@@ -3,6 +3,7 @@ import { CheckCircle, Handshake, Ban, Package, Wrench } from 'lucide-react'
 import ToolInputPreview from './ToolInputPreview'
 import TrustDropdown from './TrustDropdown'
 
+import { i18nT } from '../i18n/t'
 export default function ApprovalCard({ title, toolInput, showButtons, showTrust = true, onApprove }: {
   title: string; toolInput: string; showButtons: boolean; showTrust?: boolean
   onApprove: (decision: string, pattern?: string) => void
@@ -19,22 +20,22 @@ export default function ApprovalCard({ title, toolInput, showButtons, showTrust 
   return (
     <div className={`bg-card border border-border border-l-[3px] ${borderColor} rounded-md px-3.5 py-2.5 text-sm animate-scale-in`}>
       {toolInput
-        ? <><strong>Tool approval requested:</strong></>
-        : <>{showButtons ? <><Package className="lucide-inline" /> Running: </> : <><Wrench className="lucide-inline" /> </>}<strong>{title}</strong>{showButtons ? ' wants to run' : ''}</>
+        ? <><strong>{i18nT('components.approvalCard.tool_approval_requested')}</strong></>
+        : <>{showButtons ? <><Package className="lucide-inline" /> {i18nT('components.approvalCard.running')} </> : <><Wrench className="lucide-inline" /> </>}<strong>{title}</strong>{showButtons ? ' wants to run' : ''}</>
       }
       {toolInput && <ToolInputPreview toolInput={toolInput} threshold={200} />}
       {showButtons && !decided && (
         <div className="mt-1.5 flex gap-1.5 flex-wrap">
-          <button className={btnClass} onClick={() => handle('approved')}><CheckCircle className="lucide-inline" /> Approve</button>
+          <button className={btnClass} onClick={() => handle('approved')}><CheckCircle className="lucide-inline" /> {i18nT('components.approvalCard.approve')}</button>
           {showTrust && <TrustDropdown fullCommand={normalized} baseCommand={baseCmd} isShell={isShell} className={btnClass} onAction={(action, pattern) => handle(action, pattern)} />}
-          <button className={btnClass + ' hover:!text-danger hover:!border-danger'} onClick={() => handle('rejected')}><Ban className="lucide-inline" /> Reject</button>
+          <button className={btnClass + ' hover:!text-danger hover:!border-danger'} onClick={() => handle('rejected')}><Ban className="lucide-inline" /> {i18nT('components.approvalCard.reject')}</button>
         </div>
       )}
       {decided && (
         <div className="mt-1.5 text-[13px] text-muted">
-          {decided === 'approved' && <><CheckCircle className="lucide-inline" /> Approved</>}
-          {(decided === 'trust' || decided === 'trust_command' || decided === 'trust_base') && <><Handshake className="lucide-inline" /> Trusted — auto-approving future calls</>}
-          {decided === 'rejected' && <><Ban className="lucide-inline" /> Rejected</>}
+          {decided === 'approved' && <><CheckCircle className="lucide-inline" /> {i18nT('components.approvalCard.approved')}</>}
+          {(decided === 'trust' || decided === 'trust_command' || decided === 'trust_base') && <><Handshake className="lucide-inline" /> {i18nT('components.approvalCard.trusted_auto_approving_future_calls')}</>}
+          {decided === 'rejected' && <><Ban className="lucide-inline" /> {i18nT('components.approvalCard.rejected')}</>}
         </div>
       )}
     </div>

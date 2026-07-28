@@ -8,6 +8,7 @@ import { Btn } from '../../components/ui'
 import { TagListEditor } from './SlackPanel'
 import { api, type WebexConfigData, type WebexConfigSave } from '../../api/client'
 
+import { i18nT } from '../../i18n/t'
 const CREATE_BOT_URL = 'https://developer.webex.com/my-apps/new/bot'
 const SETUP_GUIDE = 'https://github.com/kirodotdev/KiroCrew/blob/main/src/kiro_crew/docs/webex-integration.md'
 
@@ -126,8 +127,8 @@ export function WebexPanel() {
     saveMut.mutate(payload)
   }, [draft, botToken, botClear, saveMut])
 
-  if (isLoading) return <p className="text-[13px] text-muted p-4">Loading Webex config…</p>
-  if (isError || !data || !draft) return <p className="text-[13px] text-danger p-4">Cannot load Webex config. Is the gateway running?</p>
+  if (isLoading) return <p className="text-[13px] text-muted p-4">{i18nT('pages.settings.webexPanel.loading_webex_config')}</p>
+  if (isError || !data || !draft) return <p className="text-[13px] text-danger p-4">{i18nT('pages.settings.webexPanel.cannot_load_webex_config_is_the_gateway_running')}</p>
 
   const upd = (patch: Partial<Draft>) => setDraft(d => (d ? { ...d, ...patch } : d))
   const ro = data.read_only
@@ -141,12 +142,11 @@ export function WebexPanel() {
         </div>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-3 flex-wrap">
-            <h3 className="text-[15px] font-semibold text-text-strong">Webex</h3>
+            <h3 className="text-[15px] font-semibold text-text-strong">{i18nT('pages.settings.webexPanel.webex')}</h3>
             <StatusBadge config={data} />
           </div>
           <p className="text-[12px] text-muted mt-1">
-            Talk to your agents from Cisco Webex. No public URL needed — KiroCrew receives
-            messages over an outbound WebSocket, so it works behind a firewall.
+            {i18nT('pages.settings.webexPanel.talk_to_your_agents_from_cisco_webex_no_public_u')}
           </p>
           {connectionHint(data) && (
             <p className="text-[12px] text-warn mt-1 flex items-center gap-1.5">
@@ -162,18 +162,16 @@ export function WebexPanel() {
         <div className="flex items-center gap-2 rounded-md border border-border bg-bg-elevated px-3 py-2 mb-3">
           <Lock size={13} className="text-muted flex-none" />
           <span className="text-[12px] text-muted">
-            Webex settings are managed on the machine running KiroCrew and are read-only from remote sessions.
+            {i18nT('pages.settings.webexPanel.webex_settings_are_managed_on_the_machine_runnin')}
           </span>
         </div>
       )}
 
       {/* ── Credentials guide ── */}
-      <SettingsSection title="Get your credentials">
+      <SettingsSection title={i18nT('pages.settings.webexPanel.get_your_credentials')}>
         <SettingsCard>
           <p className="text-[13px] text-text m-0">
-            Create a bot on the Webex developer portal (name, username, icon), then paste
-            its access token here. The token is shown only once on the confirmation page —
-            you can regenerate it later from the bot's edit page.
+            {i18nT('pages.settings.webexPanel.create_a_bot_on_the_webex_developer_portal_name')}
           </p>
           <div className="flex items-center gap-2 mt-2 flex-wrap">
             <a
@@ -181,24 +179,24 @@ export function WebexPanel() {
               target="_blank" rel="noopener noreferrer"
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[13px] font-medium border transition-all bg-accent text-accent-fg border-accent hover:bg-accent-hover"
             >
-              Create Webex bot <ExternalLink size={13} />
+              {i18nT('pages.settings.webexPanel.create_webex_bot')} <ExternalLink size={13} />
             </a>
             <a href={SETUP_GUIDE} target="_blank" rel="noopener noreferrer"
               className="inline-flex items-center gap-1.5 text-[13px] font-medium text-accent hover:underline">
-              Setup guide <ExternalLink size={13} />
+              {i18nT('pages.settings.webexPanel.setup_guide')} <ExternalLink size={13} />
             </a>
           </div>
         </SettingsCard>
       </SettingsSection>
 
       {/* ── Required token ── */}
-      <SettingsSection title="Required">
+      <SettingsSection title={i18nT('pages.settings.webexPanel.required')}>
         <SettingsCard>
           <SecretField
             key={`bot-${formKey}`}
-            label="Webex bot token"
-            description="Bot access token from developer.webex.com (My Webex Apps)."
-            placeholder="Paste Webex bot access token"
+            label={i18nT('pages.settings.webexPanel.webex_bot_token')}
+            description={i18nT('pages.settings.webexPanel.bot_access_token_from_developer_webex_com_my_web')}
+            placeholder={i18nT('pages.settings.webexPanel.paste_webex_bot_access_token')}
             isSet={data.bot_token_set}
             preview={data.bot_token_preview}
             readOnly={ro}
@@ -212,20 +210,20 @@ export function WebexPanel() {
       </SettingsSection>
 
       {/* ── Access ── */}
-      <SettingsSection title="Access">
+      <SettingsSection title={i18nT('pages.settings.webexPanel.access')}>
         <SettingsCard>
           <SettingsToggle
-            label="Enable Webex channel"
-            description="Start the channel at gateway boot when a token is set."
+            label={i18nT('pages.settings.webexPanel.enable_webex_channel')}
+            description={i18nT('pages.settings.webexPanel.start_the_channel_at_gateway_boot_when_a_token_i')}
             checked={draft.enabled}
             onChange={v => upd({ enabled: v })}
             disabled={ro}
           />
           <TagListEditor
-            label="Allowed emails"
-            description="Webex account emails permitted to DM the bot. Empty = nobody (fail closed) — anyone in an org can message a Webex bot, so add only your own."
+            label={i18nT('pages.settings.webexPanel.allowed_emails')}
+            description={i18nT('pages.settings.webexPanel.webex_account_emails_permitted_to_dm_the_bot_emp')}
             values={draft.allowed_emails}
-            placeholder="you@example.com"
+            placeholder={i18nT('pages.settings.webexPanel.you_example_com')}
             onChange={v => upd({ allowed_emails: v })}
             validate={isValidEmail}
             readOnly={ro}

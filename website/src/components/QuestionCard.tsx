@@ -1,6 +1,7 @@
 import { useState, memo } from 'react'
 import { MessageSquare } from 'lucide-react'
 
+import { i18nT } from '../i18n/t'
 interface QuestionOption {
   label: string
   description?: string
@@ -94,8 +95,8 @@ function QuestionCard({ questions, onSubmit, onDismiss, busy = false }: Question
           </div>
           <input
             type="text"
-            aria-label="Custom answer"
-            placeholder="Or type a custom answer..."
+            aria-label={i18nT('components.questionCard.custom_answer')}
+            placeholder={i18nT('components.questionCard.or_type_a_custom_answer')}
             maxLength={2000}
             value={customInputs[qIdx] || ''}
             onChange={e => {
@@ -112,10 +113,10 @@ function QuestionCard({ questions, onSubmit, onDismiss, busy = false }: Question
           <button
             onClick={onDismiss}
             disabled={busy}
-            aria-label="Dismiss question without answering"
+            aria-label={i18nT('components.questionCard.dismiss_question_without_answering')}
             className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[13px] font-medium cursor-pointer transition-all disabled:opacity-30 disabled:cursor-not-allowed bg-transparent text-muted hover:text-text border border-border"
           >
-            Dismiss
+            {i18nT('components.questionCard.dismiss')}
           </button>
         )}
         <button
@@ -123,7 +124,7 @@ function QuestionCard({ questions, onSubmit, onDismiss, busy = false }: Question
           disabled={!allAnswered || busy}
           className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-md text-[13px] font-medium cursor-pointer transition-all disabled:opacity-30 disabled:cursor-not-allowed bg-accent text-accent-fg hover:bg-accent-hover border-none"
         >
-          <MessageSquare size={14} /> Submit
+          <MessageSquare size={14} /> {i18nT('components.questionCard.submit')}
         </button>
       </div>
     </div>

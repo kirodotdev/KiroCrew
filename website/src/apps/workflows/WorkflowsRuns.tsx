@@ -25,6 +25,7 @@ import { Badge } from '../../components/ui'
 import { latestBudget } from './runModel'
 import WorkflowRunTree from './WorkflowRunTree'
 
+import { i18nT } from '../../i18n/t'
 // Gateway CORE API base — distinct from the builtin-app proxy used by the
 // author/validate/run flow (`/apps/workflows/api/*`).
 const CORE_API_BASE = '/api/workflows'
@@ -241,19 +242,19 @@ export default function WorkflowsRuns() {
       {/* ----- Runs list ----- */}
       <div className="flex flex-col gap-3">
         <div className="flex items-center gap-2 text-[13px] text-muted">
-          <ListTree size={14} /> Background runs
+          <ListTree size={14} /> {i18nT('apps.workflows.workflowsRuns.background_runs')}
           <span className="ml-auto text-[11px] tabular-nums">{rows.length}</span>
         </div>
 
         {listError && (
           <div className="text-[12px] text-red-500 border border-red-500/30 rounded p-2">
-            Could not load runs: {listError}
+            {i18nT('apps.workflows.workflowsRuns.could_not_load_runs')} {listError}
           </div>
         )}
 
         {rows.length === 0 && !listError && (
           <div className="text-[12px] text-muted border border-dashed border-border rounded p-4">
-            No background runs yet. Runs started in the background appear here.
+            {i18nT('apps.workflows.workflowsRuns.no_background_runs_yet_runs_started_in_the_backg')}
           </div>
         )}
 
@@ -295,7 +296,7 @@ export default function WorkflowsRuns() {
                 <div className="ml-auto flex items-center gap-2 shrink-0">
                   <span className="text-[10px] text-muted tabular-nums">
                     {row.agentCount > 0 ? `${row.agentCount} agents · ` : ''}
-                    {row.eventCount} events
+                    {row.eventCount} {i18nT('apps.workflows.workflowsRuns.events')}
                   </span>
                   <Badge variant={row.badge.variant}>{row.badge.label}</Badge>
                   {row.cancellable && (
@@ -324,7 +325,7 @@ export default function WorkflowsRuns() {
           <WorkflowIcon size={14} /> {detail ? detail.name || detail.run_id : 'Run detail'}
           {budget && (
             <span className="ml-auto text-[11px] tabular-nums">
-              budget {budget.spent}
+              {i18nT('apps.workflows.workflowsRuns.budget')} {budget.spent}
               {budget.total != null ? ` / ${budget.total}` : ''}
             </span>
           )}
@@ -338,7 +339,7 @@ export default function WorkflowsRuns() {
 
         {!selectedId && !detailError && (
           <div className="text-[12px] text-muted border border-dashed border-border rounded p-4">
-            Select a run to see its phases, agents, and result.
+            {i18nT('apps.workflows.workflowsRuns.select_a_run_to_see_its_phases_agents_and_result')}
           </div>
         )}
 

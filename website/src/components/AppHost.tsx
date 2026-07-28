@@ -18,6 +18,7 @@ import { ArrowLeft, RefreshCw, PowerOff, AlertTriangle, Package, Bot } from 'luc
 import { AppApiProvider } from '../app-sdk'
 import { ContentSkeleton, Btn, PageHeader } from './ui'
 
+import { i18nT } from '../i18n/t'
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -95,18 +96,18 @@ function AppCrashFallback({
   const navigate = useNavigate()
   return (
     <>
-      <PageHeader title={appName} subtitle="App crashed" />
+      <PageHeader title={appName} subtitle={i18nT('components.appHost.app_crashed')} />
       <div className="flex-1 flex items-center justify-center p-8">
         <div className="text-center max-w-md">
           <AlertTriangle size={48} className="text-danger mx-auto mb-4" />
-          <h3 className="text-text font-medium mb-2">{appName} encountered an error</h3>
+          <h3 className="text-text font-medium mb-2">{appName} {i18nT('components.appHost.encountered_an_error')}</h3>
           <p className="text-sm text-muted mb-2">{error.message}</p>
           <p className="text-[12px] text-muted/60 mb-6 font-mono break-all max-h-24 overflow-y-auto">
             {error.stack?.split('\n').slice(0, 4).join('\n')}
           </p>
           <div className="flex gap-2 justify-center">
-            <Btn onClick={onRetry}><RefreshCw size={14} /> Retry</Btn>
-            <Btn onClick={() => navigate('/apps')}><ArrowLeft size={14} /> Apps</Btn>
+            <Btn onClick={onRetry}><RefreshCw size={14} /> {i18nT('components.appHost.retry')}</Btn>
+            <Btn onClick={() => navigate('/apps')}><ArrowLeft size={14} /> {i18nT('components.appHost.apps')}</Btn>
           </div>
         </div>
       </div>
@@ -124,7 +125,7 @@ function AppLoadingSkeleton({ appName }: { appName: string }) {
       <div className="skeleton h-7 w-48 rounded mb-2" />
       <div className="skeleton h-4 w-72 rounded mb-6" />
       <ContentSkeleton rows={6} />
-      <p className="text-[12px] text-muted mt-4">Loading {appName}…</p>
+      <p className="text-[12px] text-muted mt-4">{i18nT('components.appHost.loading')} {appName}…</p>
     </div>
   )
 }
@@ -137,12 +138,12 @@ function AppNotFound({ name }: { name: string }) {
   const navigate = useNavigate()
   return (
     <>
-      <PageHeader title="App Not Found" subtitle={`"${name}" is not installed`} />
+      <PageHeader title={i18nT('components.appHost.app_not_found')} subtitle={`"${name}" is not installed`} />
       <div className="flex-1 flex items-center justify-center p-8">
         <div className="text-center">
           <div className="text-[48px] mb-4 opacity-20"><Package size={48} /></div>
-          <p className="text-muted mb-4">Install it from Apps or via CLI</p>
-          <Btn onClick={() => navigate('/apps')}><ArrowLeft size={14} /> Apps</Btn>
+          <p className="text-muted mb-4">{i18nT('components.appHost.install_it_from_apps_or_via_cli')}</p>
+          <Btn onClick={() => navigate('/apps')}><ArrowLeft size={14} /> {i18nT('components.appHost.apps')}</Btn>
         </div>
       </div>
     </>
@@ -155,13 +156,13 @@ function AppDisabled({ app }: { app: AppHostProps['app'] }) {
     <>
       <PageHeader
         title={app.displayName || app.name}
-        subtitle="This app is disabled"
+        subtitle={i18nT('components.appHost.this_app_is_disabled')}
       />
       <div className="flex-1 flex items-center justify-center p-8">
         <div className="text-center max-w-md">
           <PowerOff size={48} className="text-muted mx-auto mb-4 opacity-30" />
-          <p className="text-sm text-muted mb-4">Enable this app from Apps to use it.</p>
-          <Btn onClick={() => navigate('/apps')}><ArrowLeft size={14} /> Apps</Btn>
+          <p className="text-sm text-muted mb-4">{i18nT('components.appHost.enable_this_app_from_apps_to_use_it')}</p>
+          <Btn onClick={() => navigate('/apps')}><ArrowLeft size={14} /> {i18nT('components.appHost.apps')}</Btn>
         </div>
       </div>
     </>
@@ -179,12 +180,11 @@ function AppNoUI({ app }: { app: AppHostProps['app'] }) {
       <div className="flex-1 flex items-center justify-center p-8">
         <div className="text-center max-w-md">
           <div className="text-[48px] mb-4 opacity-20"><Bot size={48} /></div>
-          <h3 className="text-text font-medium mb-2">Agent-only app</h3>
+          <h3 className="text-text font-medium mb-2">{i18nT('components.appHost.agent_only_app')}</h3>
           <p className="text-sm text-muted mb-4">
-            This app provides agents and skills but no visual interface.
-            Use its agents from chat.
+            {i18nT('components.appHost.this_app_provides_agents_and_skills_but_no_visua')}
           </p>
-          <Btn onClick={() => navigate('/apps')}><ArrowLeft size={14} /> Apps</Btn>
+          <Btn onClick={() => navigate('/apps')}><ArrowLeft size={14} /> {i18nT('components.appHost.apps')}</Btn>
         </div>
       </div>
     </>
@@ -234,9 +234,9 @@ function AppHostInner({ app }: AppHostProps) {
             <div className="flex-1 flex items-center justify-center p-8">
               <div className="text-center max-w-md">
                 <AlertTriangle size={48} className="text-danger mx-auto mb-4" />
-                <h3 className="text-text font-medium mb-2">Failed to load {app.displayName || app.name}</h3>
+                <h3 className="text-text font-medium mb-2">{i18nT('components.appHost.failed_to_load')} {app.displayName || app.name}</h3>
                 <p className="text-sm text-muted mb-4">{err.message}</p>
-                <Btn onClick={() => navigate('/apps')}><ArrowLeft size={14} /> Apps</Btn>
+                <Btn onClick={() => navigate('/apps')}><ArrowLeft size={14} /> {i18nT('components.appHost.apps')}</Btn>
               </div>
             </div>
           ),

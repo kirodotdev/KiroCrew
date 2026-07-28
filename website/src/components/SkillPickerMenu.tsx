@@ -6,6 +6,7 @@ import { api } from '../api/client'
 import { useListKeyboardNav } from '../hooks/useListKeyboardNav'
 import { menuGeometry, bottomUpOrder } from '../lib/pickerMenu'
 
+import { i18nT } from '../i18n/t'
 // — $skill inline trigger autocomplete.
 // Mirrors FilePickerMenu but lists skills (from /api/skills, all sources:
 // kirocrew + workspace + AIM). Selecting one inserts a `$leaf` token; the
@@ -114,8 +115,8 @@ export default function SkillPickerMenu({ query, anchorRef, open, onSelect, onCl
   const { top, left, width, maxHeight } = menuGeometry(anchorRef.current, results.length, 48)
 
   const empty = loading
-    ? <div className="px-3 py-3 text-[12px] text-muted">Loading skills…</div>
-    : <div className="px-3 py-3 text-[12px] text-muted">No matching skills</div>
+    ? <div className="px-3 py-3 text-[12px] text-muted">{i18nT('components.skillPickerMenu.loading_skills')}</div>
+    : <div className="px-3 py-3 text-[12px] text-muted">{i18nT('components.skillPickerMenu.no_matching_skills')}</div>
 
   return createPortal(
     <div

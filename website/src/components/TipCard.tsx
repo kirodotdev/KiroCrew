@@ -7,6 +7,7 @@ import { api } from '../api/client'
 import { safeGetItem, safeSetItem } from '../utils/safeStorage'
 import MarkdownRenderer from './MarkdownRenderer'
 
+import { i18nT } from '../i18n/t'
 // The Feature Tips toggle lives in Settings → Chat.
 export const TIPS_SETTINGS_PATH = '/settings?tab=chat'
 
@@ -120,7 +121,7 @@ export function TipCard({ tip, onDismiss }: TipCardProps) {
       exit={{ y: 4, opacity: 0 }}
       transition={{ duration: 0.25, ease: [0.2, 0.8, 0.2, 1] }}
       role="complementary"
-      aria-label="Feature tip"
+      aria-label={i18nT('components.tipCard.feature_tip')}
       title={tooltipText}
     >
       <Lightbulb size={14} className="shrink-0 mt-0.5" aria-hidden="true" style={{ color: 'var(--accent)' }} />
@@ -167,7 +168,7 @@ export function TipCard({ tip, onDismiss }: TipCardProps) {
                 className="inline-flex items-center gap-1 text-[11px] text-accent hover:underline hover:brightness-110 transition"
               >
                 <ExternalLink size={10} aria-hidden="true" />
-                Learn more
+                {i18nT('components.tipCard.learn_more')}
               </a>
             )}
           </div>
@@ -177,16 +178,16 @@ export function TipCard({ tip, onDismiss }: TipCardProps) {
               disabled={optOutMutation.isPending}
               className="text-[11px] hover:underline disabled:opacity-40 disabled:cursor-not-allowed"
               style={{ color: 'var(--muted)' }}
-              aria-label="Turn off tips"
+              aria-label={i18nT('components.tipCard.turn_off_tips')}
             >
-              Turn off tips
+              {i18nT('components.tipCard.turn_off_tips')}
             </button>
             <Link
               to={TIPS_SETTINGS_PATH}
               className="inline-flex items-center rounded p-0.5 transition-colors hover:bg-[var(--bg-hover)]"
               style={{ color: 'var(--muted)' }}
-              aria-label="Tip settings"
-              title="Tip settings"
+              aria-label={i18nT('components.tipCard.tip_settings')}
+              title={i18nT('components.tipCard.tip_settings')}
             >
               <Settings size={12} aria-hidden="true" />
             </Link>
@@ -199,7 +200,7 @@ export function TipCard({ tip, onDismiss }: TipCardProps) {
           onClick={handleDismiss}
           disabled={feedbackMutation.isPending}
           className="p-0.5 rounded transition-colors hover:bg-[var(--bg-hover)] disabled:opacity-40 disabled:cursor-not-allowed"
-          aria-label="Dismiss tip"
+          aria-label={i18nT('components.tipCard.dismiss_tip')}
         >
           <X size={12} style={{ color: 'var(--muted)' }} />
         </button>

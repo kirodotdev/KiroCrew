@@ -5,6 +5,7 @@ import { CommentRow } from './CommentsSidebar'
 import { useImeGuard } from '../hooks/useImeGuard'
 import { useAutoGrowTextarea } from '../hooks/useAutoGrowTextarea'
 
+import { i18nT } from '../i18n/t'
 /**
  * Floating thread popover (document-comment style): clicking a gutter bubble / highlight in
  * the doc opens this card right at the anchor, showing the whole conversation
@@ -121,15 +122,15 @@ export function CommentThreadPopover({
       className="fixed z-[1000] w-[360px] max-h-[70vh] flex flex-col rounded-xl border-2 border-border-strong bg-bg-elevated shadow-2xl ring-1 ring-accent/30 overflow-hidden"
       style={{ top: pos?.top ?? -9999, left: pos?.left ?? -9999 }}
       role="dialog"
-      aria-label="Comment thread"
+      aria-label={i18nT('components.commentThreadPopover.comment_thread')}
     >
       <div className="flex items-center gap-2 px-3 py-2 border-b border-border bg-bg-elevated shrink-0">
-        <span className="text-[13px] font-semibold text-text">{count} comment{count === 1 ? '' : 's'}</span>
+        <span className="text-[13px] font-semibold text-text">{count} {i18nT('components.commentThreadPopover.comment')}{count === 1 ? '' : 's'}</span>
         <button
           type="button"
           onClick={onClose}
           className="ml-auto p-1 rounded text-muted hover:text-text bg-transparent border-none cursor-pointer transition-colors"
-          aria-label="Close"
+          aria-label={i18nT('components.commentThreadPopover.close')}
         ><X size={14} /></button>
       </div>
       <div className="flex-1 min-h-0 overflow-y-auto px-3 py-2 space-y-2">
@@ -170,7 +171,7 @@ export function CommentThreadPopover({
           ref={composerRef}
           value={reply}
           rows={2}
-          placeholder="Reply…"
+          placeholder={i18nT('components.commentThreadPopover.reply')}
           onChange={e => setReply(e.target.value)}
           {...ime.composition}
           onKeyDown={e => {
@@ -184,7 +185,7 @@ export function CommentThreadPopover({
             disabled={!reply.trim()}
             onClick={submit}
             className="px-2.5 py-1 rounded text-[12px] font-medium border border-accent text-accent-fg bg-accent cursor-pointer hover:bg-accent-hover disabled:opacity-40 disabled:cursor-default"
-          >Reply</button>
+          >{i18nT('components.commentThreadPopover.reply_2')}</button>
         </div>
       </div>
     </div>

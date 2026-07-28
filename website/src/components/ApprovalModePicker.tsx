@@ -6,6 +6,7 @@ import { useAppDispatch } from '../store'
 import { changeApprovalMode } from '../store/dashboardSlice'
 import { safeSetItem } from '../utils/safeStorage'
 
+import { i18nT } from '../i18n/t'
 /** Single source of truth for approval-mode presentation. Previously this
  *  lived three times: APPROVAL_DISPLAY in ChatInput plus duplicated
  *  APPROVAL_SEGMENTS in ChatPage and ChatPane (which had drifted apart). */
@@ -54,7 +55,7 @@ export default function ApprovalModePicker({ mode, slotKey, compact }: { mode: s
   return (
     <DropdownMenu open={open} onOpenChange={onOpenChange}>
       <DropdownMenuTrigger asChild>
-        <button className="h-7 px-2 rounded-lg text-[12px] font-mono text-muted hover:text-text hover:bg-bg-hover flex items-center gap-1 cursor-pointer transition-all bg-transparent border-none shrink-0 whitespace-nowrap" title="Approval mode" aria-label={`Approval mode: ${display.label}`}>
+        <button className="h-7 px-2 rounded-lg text-[12px] font-mono text-muted hover:text-text hover:bg-bg-hover flex items-center gap-1 cursor-pointer transition-all bg-transparent border-none shrink-0 whitespace-nowrap" title={i18nT('components.approvalModePicker.approval_mode')} aria-label={`Approval mode: ${display.label}`}>
           <span className={`shrink-0 ${display.color}`}>{display.icon}</span>
           {!compact && display.label}
         </button>
@@ -95,22 +96,22 @@ export default function ApprovalModePicker({ mode, slotKey, compact }: { mode: s
               onClick={e => e.stopPropagation()}
               onKeyDown={e => e.stopPropagation()}
             >
-              <p className="font-medium text-text">YOLO mode is an app-wide setting</p>
-              <p className="text-muted mt-0.5">All tools will get auto-approved across all sessions.</p>
+              <p className="font-medium text-text">{i18nT('components.approvalModePicker.yolo_mode_is_an_app_wide_setting')}</p>
+              <p className="text-muted mt-0.5">{i18nT('components.approvalModePicker.all_tools_will_get_auto_approved_across_all_sess')}</p>
               <div className="flex items-center gap-2 mt-1.5">
                 <button
                   autoFocus
                   className="px-2.5 py-1 rounded-md bg-card border border-border text-danger font-medium hover:bg-bg-hover cursor-pointer"
                   onClick={() => { if (yoloDontAsk) safeSetItem('mc-yolo-ack', '1'); pick('yolo') }}
                 >
-                  Enable
+                  {i18nT('components.approvalModePicker.enable')}
                 </button>
                 <button className="px-2.5 py-1 rounded-md text-muted hover:text-text hover:bg-bg-hover cursor-pointer bg-transparent border-none" onClick={() => setYoloConfirm(0)}>
-                  Cancel
+                  {i18nT('components.approvalModePicker.cancel')}
                 </button>
                 <label className="flex items-center gap-1 text-[11px] text-muted cursor-pointer ml-auto">
                   <input type="checkbox" className="rounded" checked={yoloDontAsk} onChange={e => setYoloDontAsk(e.target.checked)} />
-                  Don't show again
+                  {i18nT('components.approvalModePicker.don_t_show_again')}
                 </label>
               </div>
             </motion.div>

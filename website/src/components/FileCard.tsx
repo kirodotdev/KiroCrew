@@ -1,6 +1,7 @@
 import { memo } from 'react'
 import { Music, Video, Image, Paperclip, ArrowDown } from 'lucide-react'
 
+import { i18nT } from '../i18n/t'
 export interface FileData {
   filename: string
   description?: string
@@ -64,7 +65,7 @@ export const FileCard = memo(function FileCard({ file }: { file: FileData }) {
         {file.description && <span className="text-muted text-[12px]">{file.description}</span>}
         {file.size != null && file.size > 0 && <span className="text-muted text-[12px]">{file.size < 1024 ? `${file.size} B` : file.size < 1024 * 1024 ? `${(file.size / 1024).toFixed(1)} KB` : `${(file.size / (1024 * 1024)).toFixed(1)} MB`}</span>}
       </span>
-      <span className="ml-auto text-accent text-[13px] font-medium shrink-0"><ArrowDown className="lucide-inline" /> Save</span>
+      <span className="ml-auto text-accent text-[13px] font-medium shrink-0"><ArrowDown className="lucide-inline" /> {i18nT('components.fileCard.save')}</span>
     </a>
   )
 })

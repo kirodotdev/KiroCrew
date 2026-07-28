@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { Trash2, RefreshCw, Download, AlertTriangle } from 'lucide-react'
 
+import { i18nT } from '../i18n/t'
 interface StorageEntry {
   key: string
   bytes: number
@@ -117,18 +118,18 @@ export default function LocalStorageDebug() {
   return (
     <div className="space-y-4">
       {/* ── Usage Overview ── */}
-      <h4 className="text-sm font-semibold text-text-strong mt-4 mb-2">Usage</h4>
+      <h4 className="text-sm font-semibold text-text-strong mt-4 mb-2">{i18nT('pages.localStorageDebug.usage')}</h4>
       <div className="card-glow border border-border bg-card rounded-lg p-5 mb-4 shadow-sm">
         <div className="flex items-center justify-between mb-3">
           <div>
-            <span className="text-sm font-medium text-text">{entries.length} keys</span>
-            <span className="text-muted text-sm ml-2">{formatBytes(totalBytes)} / ~5 MB</span>
+            <span className="text-sm font-medium text-text">{entries.length} {i18nT('pages.localStorageDebug.keys')}</span>
+            <span className="text-muted text-sm ml-2">{formatBytes(totalBytes)} {i18nT('pages.localStorageDebug.5_mb')}</span>
           </div>
           <div className="flex gap-2">
-            <button onClick={refresh} className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs border border-border bg-card text-text hover:bg-bg-hover transition-all" title="Refresh"><RefreshCw size={13} /> Refresh</button>
-            <button onClick={exportAll} className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs border border-border bg-card text-text hover:bg-bg-hover transition-all" title="Export JSON"><Download size={13} /> Export</button>
-            <button onClick={clearOrphans} className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs border border-danger/50 bg-card text-danger hover:bg-danger-subtle transition-all" title="Delete cached scroll positions from old sessions (safe — rebuilds automatically)">
-              <Trash2 size={13} /> Clear Old Caches
+            <button onClick={refresh} className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs border border-border bg-card text-text hover:bg-bg-hover transition-all" title={i18nT('pages.localStorageDebug.refresh')}><RefreshCw size={13} /> {i18nT('pages.localStorageDebug.refresh')}</button>
+            <button onClick={exportAll} className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs border border-border bg-card text-text hover:bg-bg-hover transition-all" title={i18nT('pages.localStorageDebug.export_json')}><Download size={13} /> {i18nT('pages.localStorageDebug.export')}</button>
+            <button onClick={clearOrphans} className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs border border-danger/50 bg-card text-danger hover:bg-danger-subtle transition-all" title={i18nT('pages.localStorageDebug.delete_cached_scroll_positions_from_old_sessions')}>
+              <Trash2 size={13} /> {i18nT('pages.localStorageDebug.clear_old_caches')}
             </button>
           </div>
         </div>
@@ -141,18 +142,18 @@ export default function LocalStorageDebug() {
         </div>
         {usagePercent > 80 && (
           <div className="flex items-center gap-1.5 text-xs text-danger mt-2">
-            <AlertTriangle size={12} /> Storage is {usagePercent.toFixed(0)}% full — app may crash on next write
+            <AlertTriangle size={12} /> {i18nT('pages.localStorageDebug.storage_is')} {usagePercent.toFixed(0)}{i18nT('pages.localStorageDebug.full_app_may_crash_on_next_write')}
           </div>
         )}
       </div>
 
       {/* ── Categories ── */}
-      <h4 className="text-sm font-semibold text-text-strong mt-4 mb-2">By Category</h4>
+      <h4 className="text-sm font-semibold text-text-strong mt-4 mb-2">{i18nT('pages.localStorageDebug.by_category')}</h4>
       <div className="card-glow border border-border bg-card rounded-lg p-5 mb-4 shadow-sm">
         <div className="flex items-center justify-between pb-2 mb-1 border-b border-border text-[11px] text-muted">
-          <span className="flex-1">Prefix</span>
-          <span className="w-14 text-right">Keys</span>
-          <span className="w-20 text-right">Size</span>
+          <span className="flex-1">{i18nT('pages.localStorageDebug.prefix')}</span>
+          <span className="w-14 text-right">{i18nT('pages.localStorageDebug.keys_2')}</span>
+          <span className="w-20 text-right">{i18nT('pages.localStorageDebug.size')}</span>
           <span className="w-16"></span>
         </div>
         <div className="flex flex-col">
@@ -168,7 +169,7 @@ export default function LocalStorageDebug() {
                     className="flex items-center gap-1 px-2 py-0.5 rounded text-[11px] border border-danger/30 text-danger hover:bg-danger-subtle transition-all"
                     title={`Delete all ${g.count} keys`}
                   >
-                    <Trash2 size={10} /> Clear
+                    <Trash2 size={10} /> {i18nT('pages.localStorageDebug.clear')}
                   </button>
                 )}
               </span>
@@ -178,12 +179,12 @@ export default function LocalStorageDebug() {
       </div>
 
       {/* ── Key Inspector ── */}
-      <h4 className="text-sm font-semibold text-text-strong mt-4 mb-2">All Keys</h4>
+      <h4 className="text-sm font-semibold text-text-strong mt-4 mb-2">{i18nT('pages.localStorageDebug.all_keys')}</h4>
       <div className="card-glow border border-border bg-card rounded-lg p-5 mb-4 shadow-sm">
         <input
           type="text"
-          placeholder="Filter keys..."
-          aria-label="Filter keys"
+          placeholder={i18nT('pages.localStorageDebug.filter_keys')}
+          aria-label={i18nT('pages.localStorageDebug.filter_keys_2')}
           value={filter}
           onChange={e => setFilter(e.target.value)}
           className="w-full px-3 py-2 text-xs rounded-md border border-border bg-bg text-text placeholder:text-muted mb-3 focus:border-accent focus:outline-none"
@@ -210,8 +211,8 @@ export default function LocalStorageDebug() {
                 <button
                   onClick={ev => { ev.stopPropagation(); deleteKey(e.key) }}
                   className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-danger-subtle text-danger transition-all"
-                  title="Delete key"
-                  aria-label="Delete key"
+                  title={i18nT('pages.localStorageDebug.delete_key')}
+                  aria-label={i18nT('pages.localStorageDebug.delete_key')}
                 >
                   <Trash2 size={12} />
                 </button>
@@ -225,7 +226,7 @@ export default function LocalStorageDebug() {
           ))}
           {filtered.length > 200 && (
             <div className="text-xs text-muted py-3 text-center">
-              Showing 200 of {filtered.length} — use filter to narrow
+              {i18nT('pages.localStorageDebug.showing_200_of')} {filtered.length} {i18nT('pages.localStorageDebug.use_filter_to_narrow')}
             </div>
           )}
         </div>

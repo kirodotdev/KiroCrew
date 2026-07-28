@@ -2,6 +2,7 @@ import React, { useEffect, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { X } from 'lucide-react'
 
+import { i18nT } from '../i18n/t'
 interface ModalProps {
   /** Whether the modal is open */
   open: boolean
@@ -77,7 +78,7 @@ export default function Modal({ open, onClose, title, footer, headerActions, max
                 <span className="text-base font-semibold text-text-strong truncate">{title}</span>
                 <div className="flex items-center gap-1.5 shrink-0">
                   {headerActions}
-                  <button aria-label="Close" className="p-1.5 rounded-md text-muted hover:text-text hover:bg-bg-hover transition-colors cursor-pointer" onClick={dismiss}><X size={16} /></button>
+                  <button aria-label={i18nT('components.modal.close')} className="p-1.5 rounded-md text-muted hover:text-text hover:bg-bg-hover transition-colors cursor-pointer" onClick={dismiss}><X size={16} /></button>
                 </div>
               </div>
               {/* Body */}

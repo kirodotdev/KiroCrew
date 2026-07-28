@@ -18,6 +18,7 @@ import FileViewer from './FileViewer'
 import SearchPanel from './SearchPanel'
 import type { FolderTab, FileTab, TreeEntry, GitInfo } from './types'
 
+import { i18nT } from '../../i18n/t'
 const newFolderTab = (rootPath = '/', label = ''): FolderTab => ({
   id: `ft-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
   rootPath, label,
@@ -347,7 +348,7 @@ export default function FileExplorerPage() {
         onNewFolder={newFolderTabAction}
         onRenameFolder={renameFolderTab}
       />
-      {healthError && <div className="mc-fe-banner"><AlertTriangle size={12} /> Backend not reachable: {(healthError as Error).message}</div>}
+      {healthError && <div className="mc-fe-banner"><AlertTriangle size={12} /> {i18nT('apps.fileExplorer.fileExplorerPage.backend_not_reachable')} {(healthError as Error).message}</div>}
       <PathBar rootPath={activeFolder.rootPath} gitInfo={rootGitInfo} onChangeRoot={changeRoot} onNavigate={openMaybe} />
       <div className="mc-fe-split">
         <div className="mc-fe-left" style={{ width: leftWidth }}>
@@ -371,23 +372,23 @@ export default function FileExplorerPage() {
             {contextNode && (
               <ContextMenuContent className="min-w-[200px]">
                 <ContextMenuItem className="gap-2 text-[12px]" onSelect={() => chatAboutPath(contextNode.path, contextNode.type)}>
-                  <MessageSquare size={12} /> Chat about this {contextNode.type === 'dir' ? 'folder' : 'file'}
+                  <MessageSquare size={12} /> {i18nT('apps.fileExplorer.fileExplorerPage.chat_about_this')} {contextNode.type === 'dir' ? 'folder' : 'file'}
                 </ContextMenuItem>
                 {contextNode.type !== 'dir' && (
                   <ContextMenuItem className="gap-2 text-[12px]" onSelect={() => openFile(contextNode.path)}>
-                    <Eye size={12} /> Open
+                    <Eye size={12} /> {i18nT('apps.fileExplorer.fileExplorerPage.open')}
                   </ContextMenuItem>
                 )}
                 {contextNode.type === 'dir' && (
                   <ContextMenuItem className="gap-2 text-[12px]" onSelect={() => changeRoot(contextNode.path)}>
-                    <CornerDownRight size={12} /> Open as workspace root
+                    <CornerDownRight size={12} /> {i18nT('apps.fileExplorer.fileExplorerPage.open_as_workspace_root')}
                   </ContextMenuItem>
                 )}
                 <ContextMenuItem className="gap-2 text-[12px]" onSelect={() => copyToClipboard(contextNode.path)}>
-                  <Copy size={12} /> Copy path
+                  <Copy size={12} /> {i18nT('apps.fileExplorer.fileExplorerPage.copy_path')}
                 </ContextMenuItem>
                 <ContextMenuItem className="gap-2 text-[12px]" onSelect={() => changeRoot(dirname(contextNode.path))}>
-                  <ArrowUpFromLine size={12} /> Reveal parent
+                  <ArrowUpFromLine size={12} /> {i18nT('apps.fileExplorer.fileExplorerPage.reveal_parent')}
                 </ContextMenuItem>
               </ContextMenuContent>
             )}
@@ -396,7 +397,7 @@ export default function FileExplorerPage() {
         {/* Pane splitter: mouse-drag-only resize affordance; role=separator is
             correct for a window splitter but is non-interactive per jsx-a11y. */}
         {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions */}
-        <div className="mc-fe-resizer" aria-label="Resize panel" aria-orientation="vertical" role="separator" tabIndex={-1} style={{ touchAction: 'none' }} {...leftResize} />
+        <div className="mc-fe-resizer" aria-label={i18nT('apps.fileExplorer.fileExplorerPage.resize_panel')} aria-orientation="vertical" role="separator" tabIndex={-1} style={{ touchAction: 'none' }} {...leftResize} />
         <div className="mc-fe-right">
           {showSearch ? (
             <SearchPanel

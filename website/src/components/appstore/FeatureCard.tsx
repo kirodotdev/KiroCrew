@@ -12,6 +12,7 @@ import { categoryFor } from './categories'
 import { useHeroArt } from './useHeroArt'
 import type { RegistryApp } from './types'
 
+import { i18nT } from '../../i18n/t'
 export default function FeatureCard({ app, onOpen, onGet, onEnable, busy }: {
   app: RegistryApp
   onOpen: (e?: React.MouseEvent | React.KeyboardEvent) => void
@@ -59,12 +60,12 @@ export default function FeatureCard({ app, onOpen, onGet, onEnable, busy }: {
           <span className="text-[11px] text-muted">{categoryFor(app.tags)}</span>
           {hiddenBuiltin ? (
             <Btn primary className="rounded-full px-3.5 text-[12px] font-semibold" disabled={busy} onClick={onEnable}>
-              <Power size={13} /> Enable
+              <Power size={13} /> {i18nT('components.appstore.featureCard.enable')}
             </Btn>
           ) : app.installed ? (
-            <span className="inline-flex items-center gap-1 text-[12px] text-muted"><Check size={12} /> Installed</span>
+            <span className="inline-flex items-center gap-1 text-[12px] text-muted"><Check size={12} /> {i18nT('components.appstore.featureCard.installed')}</span>
           ) : (
-            <Btn primary className="rounded-full px-3.5 text-[12px] font-semibold" disabled={busy} onClick={onGet}>Get</Btn>
+            <Btn primary className="rounded-full px-3.5 text-[12px] font-semibold" disabled={busy} onClick={onGet}>{i18nT('components.appstore.featureCard.get')}</Btn>
           )}
         </div>
       </div>

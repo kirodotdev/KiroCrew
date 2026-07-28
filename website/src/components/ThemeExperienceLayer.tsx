@@ -35,6 +35,7 @@ import { grantConsent, getStoredConsent, revokeConsent } from '../utils/themeCon
 import { MC_THEME_SOUND_EVENT, type ThemeSoundDetail } from '../hooks/themeSound'
 import { MC_NOTIFICATION_EVENT } from '../hooks/notificationEvent'
 
+import { i18nT } from '../i18n/t'
 // postMessage types accepted from theme iframes — everything else is ignored.
 const ALLOWED_MSG = new Set(['theme:resize', 'theme:sound', 'theme:visibility'])
 const MUTE_KEY = 'mc-theme-muted'
@@ -696,26 +697,26 @@ export default function ThemeExperienceLayer() {
       >
         <div className="w-full max-w-md rounded-xl border border-border bg-card p-5 text-text shadow-2xl">
           <h2 id="theme-consent-title" className="text-base font-semibold text-text-strong">
-            Enable “{active?.name}” experience?
+            {i18nT('components.themeExperienceLayer.enable')}{active?.name}{i18nT('components.themeExperienceLayer.experience')}
           </h2>
           <p className="mt-2 text-sm text-muted">
-            This is an experience theme. Enabling it will:
+            {i18nT('components.themeExperienceLayer.this_is_an_experience_theme_enabling_it_will')}
           </p>
           <ul className="mt-2 space-y-1 text-sm text-muted">
             {hasPersona && (
-              <li>• Adopt a themed persona in the assistant (security and accuracy always take priority; you can ask it to drop the persona at any time).</li>
+              <li>{i18nT('components.themeExperienceLayer.adopt_a_themed_persona_in_the_assistant_security')}</li>
             )}
-            {hasAudio && <li>• Play themed sounds (respects your mute toggle and reduced-motion setting).</li>}
-            {overlayDecls.length > 0 && <li>• Show animated visual overlays.</li>}
+            {hasAudio && <li>{i18nT('components.themeExperienceLayer.play_themed_sounds_respects_your_mute_toggle_and')}</li>}
+            {overlayDecls.length > 0 && <li>{i18nT('components.themeExperienceLayer.show_animated_visual_overlays')}</li>}
           </ul>
           {hasPersona && personaInfo?.text && (
             <div className="mt-3">
               <p className="text-xs font-medium text-muted">
-                Persona that will be added to the assistant’s system prompt:
+                {i18nT('components.themeExperienceLayer.persona_that_will_be_added_to_the_assistant_s_sy')}
               </p>
               <pre
                 className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-md border border-border bg-bg-elevated p-2 text-xs text-text"
-                aria-label="Persona text"
+                aria-label={i18nT('components.themeExperienceLayer.persona_text')}
                 data-testid="consent-persona-text"
               >
                 {personaInfo.text}
@@ -728,7 +729,7 @@ export default function ThemeExperienceLayer() {
               onClick={declineExperience}
               className="rounded-md border border-border px-3 py-1.5 text-sm text-text hover:bg-bg-hover"
             >
-              Keep colors only
+              {i18nT('components.themeExperienceLayer.keep_colors_only')}
             </button>
             <button
               type="button"
@@ -736,7 +737,7 @@ export default function ThemeExperienceLayer() {
               onClick={enableExperience}
               className="rounded-md bg-accent px-3 py-1.5 text-sm text-card hover:bg-accent-hover"
             >
-              Enable experience
+              {i18nT('components.themeExperienceLayer.enable_experience')}
             </button>
           </div>
         </div>

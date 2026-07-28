@@ -14,6 +14,7 @@ import {
   parseTs, dateGroup, KIND_META, DEFAULT_META, fmtTime, stripMd, notePriority, safeInternalUrl,
 } from './notifMeta'
 
+import { i18nT } from '../../i18n/t'
 /** localStorage key for app channels the user has already decided on (keep or
  *  mute) via the first-notification prompt. System channels never prompt. */
 export const SEEN_CHANNELS_STORAGE_KEY = 'mc:notif:seenChannels'
@@ -200,7 +201,7 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
   // original chips-then-search order; mac renders search-then-chips inside one
   // grouped card (with the host-provided header on top).
   const chipsRow = (
-    <div className={`flex gap-1 ${mac ? 'mb-1.5' : 'mb-2'} flex-wrap shrink-0`} role="group" aria-label="Filter notifications by kind">
+    <div className={`flex gap-1 ${mac ? 'mb-1.5' : 'mb-2'} flex-wrap shrink-0`} role="group" aria-label={i18nT('components.notifications.notificationFeed.filter_notifications_by_kind')}>
       {CATEGORIES.map(c => {
         const isActive = c.key === 'all' ? allActive : activeKinds.has(c.key as Kind)
         return (
@@ -224,16 +225,16 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
           className={`px-2 py-1 rounded-md text-[12px] font-medium cursor-pointer border border-dashed transition-all font-body ${showMuted ? 'bg-bg-hover text-text border-border-strong' : 'bg-transparent text-muted border-border hover:text-text hover:border-border-strong'}`}
           onClick={() => setShowMuted(v => !v)}
         >
-          <BellOff className="lucide-inline" /> Muted ({silencedCount})
+          <BellOff className="lucide-inline" /> {i18nT('components.notifications.notificationFeed.muted')}{silencedCount})
         </button>
       )}
     </div>
   )
   const searchRow = (
     <div className="flex gap-2 mb-2 items-center shrink-0">
-      <div className="flex-1"><SearchInput className="[&>input]:!bg-bg-elevated/40 [&>input]:!border-border/60" placeholder="Search…" value={filter} onChange={e => setFilter(e.target.value)} /></div>
-      {!mac && unread > 0 && <button className="px-2 py-1 rounded-md border border-ok/40 bg-ok/10 text-ok text-[12px] font-semibold cursor-pointer hover:bg-ok/20 transition-all font-body whitespace-nowrap" onClick={() => dispatch(ackAllNotifications())}><Check className="lucide-inline" /> All</button>}
-      {!mac && items.length > 0 && <button className="px-2 py-1 rounded-md border border-danger/40 bg-transparent text-danger text-[12px] font-medium cursor-pointer hover:bg-danger/10 transition-all font-body whitespace-nowrap" onClick={() => { if (confirm('Clear all notifications?')) dispatch(clearNotifications()) }}><X className="lucide-inline" /> Clear</button>}
+      <div className="flex-1"><SearchInput className="[&>input]:!bg-bg-elevated/40 [&>input]:!border-border/60" placeholder={i18nT('components.notifications.notificationFeed.search')} value={filter} onChange={e => setFilter(e.target.value)} /></div>
+      {!mac && unread > 0 && <button className="px-2 py-1 rounded-md border border-ok/40 bg-ok/10 text-ok text-[12px] font-semibold cursor-pointer hover:bg-ok/20 transition-all font-body whitespace-nowrap" onClick={() => dispatch(ackAllNotifications())}><Check className="lucide-inline" /> {i18nT('components.notifications.notificationFeed.all')}</button>}
+      {!mac && items.length > 0 && <button className="px-2 py-1 rounded-md border border-danger/40 bg-transparent text-danger text-[12px] font-medium cursor-pointer hover:bg-danger/10 transition-all font-body whitespace-nowrap" onClick={() => { if (confirm(i18nT('components.notifications.notificationFeed.clear_all_notifications'))) dispatch(clearNotifications()) }}><X className="lucide-inline" /> {i18nT('components.notifications.notificationFeed.clear')}</button>}
     </div>
   )
 
@@ -248,18 +249,18 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
             <div className="flex-1 min-w-0">{header}</div>
             {unread > 0 && (
               <button
-                title="Mark all as read"
-                aria-label="Mark all as read"
+                title={i18nT('components.notifications.notificationFeed.mark_all_as_read')}
+                aria-label={i18nT('components.notifications.notificationFeed.mark_all_as_read')}
                 className="w-6 h-6 rounded-md flex items-center justify-center text-ok bg-transparent border-none cursor-pointer hover:bg-ok/10 transition-colors shrink-0"
                 onClick={() => dispatch(ackAllNotifications())}
               ><CheckCheck className="lucide-inline" /></button>
             )}
             {items.length > 0 && (
               <button
-                title="Clear all notifications"
-                aria-label="Clear all notifications"
+                title={i18nT('components.notifications.notificationFeed.clear_all_notifications')}
+                aria-label={i18nT('components.notifications.notificationFeed.clear_all_notifications')}
                 className="w-6 h-6 rounded-md flex items-center justify-center text-muted bg-transparent border-none cursor-pointer hover:bg-danger/10 hover:text-danger transition-colors shrink-0"
-                onClick={() => { if (confirm('Clear all notifications?')) dispatch(clearNotifications()) }}
+                onClick={() => { if (confirm(i18nT('components.notifications.notificationFeed.clear_all_notifications'))) dispatch(clearNotifications()) }}
               ><Trash2 className="lucide-inline" /></button>
             )}
           </div>
@@ -277,7 +278,7 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
       {/* List */}
       <div className={`flex-1 overflow-y-auto ${mac ? 'px-4 -mx-4 pb-2' : 'scroll-shadow'}`}>
         {filtered.length === 0 ? (
-          <EmptyState icon={<Bell className="lucide-inline" />} title="No notifications" subtitle={noneActive ? 'No categories selected — click a category above' : filter ? 'Try a different search' : 'Activity will appear here'} />
+          <EmptyState icon={<Bell className="lucide-inline" />} title={i18nT('components.notifications.notificationFeed.no_notifications')} subtitle={noneActive ? 'No categories selected — click a category above' : filter ? 'Try a different search' : 'Activity will appear here'} />
         ) : (
           Array.from(stackedGroups.entries()).map(([group, rows]) => (
             <div key={group} className="mb-3">
@@ -341,7 +342,7 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                         <div className="flex flex-col items-end gap-0.5 shrink-0">
                           <span className={`text-[11px] text-muted ${mac ? '' : 'font-mono'}`}>{mac ? fmtRelative(n.ts) : fmtTime(n.ts)}</span>
                           {silenced ? (
-                            <span className="text-[10px] text-muted italic flex items-center gap-1"><BellOff className="lucide-inline" /> muted</span>
+                            <span className="text-[10px] text-muted italic flex items-center gap-1"><BellOff className="lucide-inline" /> {i18nT('components.notifications.notificationFeed.muted_2')}</span>
                           ) : !n.acked ? (
                             <span className={`w-1.5 h-1.5 rounded-full animate-dot-breathe ${prio === 'critical' ? 'bg-danger' : 'bg-accent'}`} data-priority={prio} />
                           ) : null}
@@ -351,7 +352,7 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                         </div>
                       </Clickable>
                       <Clickable
-                        aria-label="Dismiss notification"
+                        aria-label={i18nT('components.notifications.notificationFeed.dismiss_notification')}
                         className="opacity-0 group-hover:opacity-40 text-[11px] cursor-pointer hover:!opacity-100 hover:text-danger transition-opacity shrink-0"
                         onClick={async e => { e?.stopPropagation(); const row = (e?.currentTarget as HTMLElement | undefined)?.closest('[data-notif-row]') as HTMLElement | null; await disintegrate(row); dispatch(deleteNotification(n.ts)) }}
                       ><X className="lucide-inline" /></Clickable>
@@ -364,12 +365,12 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                                 type="button"
                                 className={`${actionBtn} text-ok`}
                                 onClick={e => { e.stopPropagation(); resolveApprovalNote(n, 'approve') }}
-                              >Approve</button>
+                              >{i18nT('components.notifications.notificationFeed.approve')}</button>
                               <button
                                 type="button"
                                 className={`${actionBtn} text-danger`}
                                 onClick={e => { e.stopPropagation(); resolveApprovalNote(n, 'reject') }}
-                              >Reject</button>
+                              >{i18nT('components.notifications.notificationFeed.reject')}</button>
                             </>
                           )}
                           {urlActions.map(a => (
@@ -410,17 +411,17 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                         ? 'rounded-b-2xl mb-2 bg-accent-subtle backdrop-blur-2xl border-[color-mix(in_srgb,var(--border)_55%,transparent)]'
                         : 'rounded-b-md mb-1 bg-accent-subtle border-border'}`}>
                         <Bell className="lucide-inline shrink-0 text-accent" />
-                        <div className="flex-1 min-w-0 text-[12px] text-text">First notification from <span className="font-semibold">{promptChannel.label}</span>. Keep receiving these?</div>
+                        <div className="flex-1 min-w-0 text-[12px] text-text">{i18nT('components.notifications.notificationFeed.first_notification_from')} <span className="font-semibold">{promptChannel.label}</span>{i18nT('components.notifications.notificationFeed.keep_receiving_these')}</div>
                         <button
                           type="button"
                           className="px-2.5 py-1 rounded-md text-[12px] font-semibold cursor-pointer border-none bg-accent text-card hover:opacity-90 transition-opacity font-body whitespace-nowrap"
                           onClick={() => markChannelSeen(promptChannel.channel)}
-                        >Keep</button>
+                        >{i18nT('components.notifications.notificationFeed.keep')}</button>
                         <button
                           type="button"
                           className="px-2.5 py-1 rounded-md text-[12px] font-medium cursor-pointer bg-transparent text-muted border border-border-strong hover:text-text transition-colors font-body whitespace-nowrap"
                           onClick={() => muteChannel(promptChannel.channel)}
-                        >Mute channel</button>
+                        >{i18nT('components.notifications.notificationFeed.mute_channel')}</button>
                       </div>
                     )}
                   </div>

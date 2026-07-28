@@ -1,5 +1,6 @@
 import { Lock, Loader2, AlertTriangle } from 'lucide-react'
 
+import { i18nT } from '../../i18n/t'
 /**
  * Shown in place of a channel's editable config panel when the `channels`
  * governance policy is not a confirmed ALLOW. The real panel (with the bot-token
@@ -28,7 +29,7 @@ export function ChannelDisabledPanel({
       <div className="py-10 flex flex-col items-center text-center max-w-md mx-auto">
         <Loader2 size={20} className="lucide-inline text-muted mb-4 animate-spin" />
         <div className="text-sm text-muted leading-relaxed">
-          Checking your organization's channel policy…
+          {i18nT('pages.settings.channelDisabledPanel.checking_your_organization_s_channel_policy')}
         </div>
       </div>
     )
@@ -40,12 +41,10 @@ export function ChannelDisabledPanel({
           <AlertTriangle size={20} className="lucide-inline text-warn" />
         </div>
         <div className="text-base font-semibold text-text-strong mb-1.5">
-          {label} policy status unavailable
+          {label} {i18nT('pages.settings.channelDisabledPanel.policy_status_unavailable')}
         </div>
         <p className="text-sm text-muted leading-relaxed">
-          KiroCrew couldn't confirm whether your organization's security policy
-          permits this channel. Its settings are hidden until the status resolves —
-          enforcement is unaffected. Try reloading.
+          {i18nT('pages.settings.channelDisabledPanel.kirocrew_couldn_t_confirm_whether_your_organizat')}
         </p>
       </div>
     )
@@ -56,11 +55,10 @@ export function ChannelDisabledPanel({
         <Lock size={20} className="lucide-inline text-muted" />
       </div>
       <div className="text-base font-semibold text-text-strong mb-1.5">
-        {label} is turned off by your administrator
+        {label} {i18nT('pages.settings.channelDisabledPanel.is_turned_off_by_your_administrator')}
       </div>
       <p className="text-sm text-muted leading-relaxed">
-        Your organization's security policy disables this channel. Its settings
-        are unavailable and any configuration here would not take effect.
+        {i18nT('pages.settings.channelDisabledPanel.your_organization_s_security_policy_disables_thi')}
       </p>
     </div>
   )

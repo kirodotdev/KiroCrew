@@ -49,6 +49,7 @@ import {
 import { commitUrlFor, userUrlFor, repoScopeKey } from '../lib/links'
 import { providerTerms } from '../lib/links'
 
+import { i18nT } from '../../../i18n/t'
 /** A relative timestamp that flips to the absolute local date-time when
  * clicked (and always shows it on hover). Within the last 24h it reads
  * "just now / 12m ago / 3h ago"; older it reads "Yesterday / 5 days ago / …".
@@ -100,20 +101,20 @@ function StatePill({ state, reason }: { state?: string; reason?: string | null }
   if (state !== 'closed') {
     return (
       <span className="inline-flex items-center gap-1 text-[12px] font-medium px-2 py-0.5 rounded-full bg-accent-subtle text-accent">
-        <CircleDot size={12} /> Open
+        <CircleDot size={12} /> {i18nT('apps.issueRadar.components.issueDetail.open')}
       </span>
     )
   }
   if (reason === 'not_planned') {
     return (
       <span className="inline-flex items-center gap-1 text-[12px] font-medium px-2 py-0.5 rounded-full bg-bg-elevated text-muted border border-border">
-        <CircleSlash size={12} /> Closed as not planned
+        <CircleSlash size={12} /> {i18nT('apps.issueRadar.components.issueDetail.closed_as_not_planned')}
       </span>
     )
   }
   return (
     <span className="inline-flex items-center gap-1 text-[12px] font-medium px-2 py-0.5 rounded-full bg-aim-subtle text-aim">
-      <CircleCheck size={12} /> Closed
+      <CircleCheck size={12} /> {i18nT('apps.issueRadar.components.issueDetail.closed')}
     </span>
   )
 }
@@ -137,31 +138,31 @@ function StateActions({
 
   if (state === 'closed') {
     return (
-      <button onClick={onReopen} disabled={pending} title="Reopen this issue" className={btn}>
-        {pending ? <Loader2 size={13} className="animate-spin" /> : <CircleDot size={13} className="text-ok" />} Reopen
+      <button onClick={onReopen} disabled={pending} title={i18nT('apps.issueRadar.components.issueDetail.reopen_this_issue')} className={btn}>
+        {pending ? <Loader2 size={13} className="animate-spin" /> : <CircleDot size={13} className="text-ok" />} {i18nT('apps.issueRadar.components.issueDetail.reopen')}
       </button>
     )
   }
   return (
     <div className="relative">
-      <button onClick={() => setMenu((v) => !v)} disabled={pending} title="Close this issue" className={btn}>
-        {pending ? <Loader2 size={13} className="animate-spin" /> : <CircleCheck size={13} />} Close <ChevronDown size={12} />
+      <button onClick={() => setMenu((v) => !v)} disabled={pending} title={i18nT('apps.issueRadar.components.issueDetail.close_this_issue')} className={btn}>
+        {pending ? <Loader2 size={13} className="animate-spin" /> : <CircleCheck size={13} />} {i18nT('apps.issueRadar.components.issueDetail.close')} <ChevronDown size={12} />
       </button>
       {menu && (
         <>
-          <Clickable className="fixed inset-0 z-10" aria-label="Dismiss menu" onClick={() => setMenu(false)} />
+          <Clickable className="fixed inset-0 z-10" aria-label={i18nT('apps.issueRadar.components.issueDetail.dismiss_menu')} onClick={() => setMenu(false)} />
           <div className="absolute right-0 mt-1 z-20 w-48 rounded-md border border-border bg-card shadow-lg py-1 text-[12.5px]">
             <button
               onClick={() => { setMenu(false); onClose('completed') }}
               className="w-full text-left px-3 py-1.5 hover:bg-bg-elevated flex items-center gap-2 cursor-pointer bg-transparent text-text"
             >
-              <CircleCheck size={13} className="text-aim" /> Close as completed
+              <CircleCheck size={13} className="text-aim" /> {i18nT('apps.issueRadar.components.issueDetail.close_as_completed')}
             </button>
             <button
               onClick={() => { setMenu(false); onClose('not_planned') }}
               className="w-full text-left px-3 py-1.5 hover:bg-bg-elevated flex items-center gap-2 cursor-pointer bg-transparent text-text"
             >
-              <CircleSlash size={13} className="text-muted" /> Close as not planned
+              <CircleSlash size={13} className="text-muted" /> {i18nT('apps.issueRadar.components.issueDetail.close_as_not_planned')}
             </button>
           </div>
         </>
@@ -188,7 +189,7 @@ function AiSuggestions({
     return (
       <div className="mt-3 text-[11px] text-muted flex items-center gap-1.5">
         <Sparkles size={11} className="text-accent flex-shrink-0" />
-        <Loader2 size={11} className="animate-spin flex-shrink-0" /> Finding suggestions…
+        <Loader2 size={11} className="animate-spin flex-shrink-0" /> {i18nT('apps.issueRadar.components.issueDetail.finding_suggestions')}
       </div>
     )
   }
@@ -196,7 +197,7 @@ function AiSuggestions({
   return (
     <div className="mt-3">
       <div className="flex items-center gap-1 text-[10.5px] uppercase tracking-wider text-accent mb-1.5 font-medium">
-        <Sparkles size={11} className="animate-pulse" /> Suggested
+        <Sparkles size={11} className="animate-pulse" /> {i18nT('apps.issueRadar.components.issueDetail.suggested')}
       </div>
       <div className="flex flex-wrap gap-1.5">
         {suggestions.map((s, i) => {
@@ -241,7 +242,7 @@ function AiSuggestions({
         })}
       </div>
       {!canWrite && (
-        <div className="text-[10.5px] text-muted mt-1.5">Read-only — connect with triage/push access to apply.</div>
+        <div className="text-[10.5px] text-muted mt-1.5">{i18nT('apps.issueRadar.components.issueDetail.read_only_connect_with_triage_push_access_to_app')}</div>
       )}
     </div>
   )
@@ -299,7 +300,7 @@ function CommentCard({
       <div className="px-3.5 py-3">
         {body?.trim()
           ? <RefMarkdown content={body} />
-          : <div className="text-[13px] text-muted italic">No description provided.</div>}
+          : <div className="text-[13px] text-muted italic">{i18nT('apps.issueRadar.components.issueDetail.no_description_provided')}</div>}
         {reactions && <ReactionStrip reactions={reactions} />}
       </div>
     </div>
@@ -319,18 +320,18 @@ function eventVisual(
 
   switch (ev.kind) {
     case 'labeled':
-      return { Icon: Tag, color: 'text-accent', body: <>{who} added the {labelChip} label</> }
+      return { Icon: Tag, color: 'text-accent', body: <>{who} {i18nT('apps.issueRadar.components.issueDetail.added_the')} {labelChip} {i18nT('apps.issueRadar.components.issueDetail.label')}</> }
     case 'unlabeled':
-      return { Icon: Tag, color: 'text-muted', body: <>{who} removed the {labelChip} label</> }
+      return { Icon: Tag, color: 'text-muted', body: <>{who} {i18nT('apps.issueRadar.components.issueDetail.removed_the')} {labelChip} {i18nT('apps.issueRadar.components.issueDetail.label')}</> }
     case 'assigned':
       return {
         Icon: UserPlus, color: 'text-muted',
         body: ev.actor && ev.actor === ev.assignee
-          ? <>{who} self-assigned this</>
-          : <>{who} assigned {person(ev.assignee)}</>,
+          ? <>{who} {i18nT('apps.issueRadar.components.issueDetail.self_assigned_this')}</>
+          : <>{who} {i18nT('apps.issueRadar.components.issueDetail.assigned')} {person(ev.assignee)}</>,
       }
     case 'unassigned':
-      return { Icon: UserMinus, color: 'text-muted', body: <>{who} unassigned {person(ev.assignee)}</> }
+      return { Icon: UserMinus, color: 'text-muted', body: <>{who} {i18nT('apps.issueRadar.components.issueDetail.unassigned')} {person(ev.assignee)}</> }
     case 'closed': {
       const notPlanned = ev.state_reason === 'not_planned'
       return {
@@ -338,29 +339,29 @@ function eventVisual(
         color: notPlanned ? 'text-muted' : 'text-aim',
         body: (
           <>
-            {who} closed this {notPlanned ? 'as not planned' : 'as completed'}
-            {commitUrl && <> in <a href={commitUrl} target="_blank" rel="noreferrer" className="font-mono text-accent hover:underline">{ev.commit_id!.slice(0, 7)}</a></>}
+            {who} {i18nT('apps.issueRadar.components.issueDetail.closed_this')} {notPlanned ? 'as not planned' : 'as completed'}
+            {commitUrl && <> {i18nT('apps.issueRadar.components.issueDetail.in')} <a href={commitUrl} target="_blank" rel="noreferrer" className="font-mono text-accent hover:underline">{ev.commit_id!.slice(0, 7)}</a></>}
           </>
         ),
       }
     }
     case 'reopened':
-      return { Icon: CircleDot, color: 'text-ok', body: <>{who} reopened this</> }
+      return { Icon: CircleDot, color: 'text-ok', body: <>{who} {i18nT('apps.issueRadar.components.issueDetail.reopened_this')}</> }
     case 'renamed':
       return {
         Icon: Pencil, color: 'text-muted',
-        body: <>{who} changed the title <span className="line-through">{ev.rename?.from}</span> → <span className="text-text">{ev.rename?.to}</span></>,
+        body: <>{who} {i18nT('apps.issueRadar.components.issueDetail.changed_the_title')} <span className="line-through">{ev.rename?.from}</span> → <span className="text-text">{ev.rename?.to}</span></>,
       }
     case 'milestoned':
-      return { Icon: MilestoneIcon, color: 'text-muted', body: <>{who} added this to the <span className="font-medium text-text">{ev.milestone}</span> milestone</> }
+      return { Icon: MilestoneIcon, color: 'text-muted', body: <>{who} {i18nT('apps.issueRadar.components.issueDetail.added_this_to_the')} <span className="font-medium text-text">{ev.milestone}</span> {i18nT('apps.issueRadar.components.issueDetail.milestone')}</> }
     case 'demilestoned':
-      return { Icon: MilestoneIcon, color: 'text-muted', body: <>{who} removed this from the <span className="font-medium text-text">{ev.milestone}</span> milestone</> }
+      return { Icon: MilestoneIcon, color: 'text-muted', body: <>{who} {i18nT('apps.issueRadar.components.issueDetail.removed_this_from_the')} <span className="font-medium text-text">{ev.milestone}</span> {i18nT('apps.issueRadar.components.issueDetail.milestone')}</> }
     case 'cross-referenced':
       return {
         Icon: ev.source?.is_pr ? GitPullRequest : Link2, color: 'text-accent',
         body: (
           <>
-            {who} referenced this in{' '}
+            {who} {i18nT('apps.issueRadar.components.issueDetail.referenced_this_in')}{' '}
             <a href={ev.source?.url} target="_blank" rel="noreferrer" className="text-accent hover:underline">
               {ev.source?.is_pr ? providerTerms(repoRef).changeRequestShort : 'issue'}
               {providerTerms(repoRef).sigil}{ev.source?.number}
@@ -372,7 +373,7 @@ function eventVisual(
     case 'referenced':
       return {
         Icon: GitCommitHorizontal, color: 'text-muted',
-        body: <>{who} referenced this in commit{' '}
+        body: <>{who} {i18nT('apps.issueRadar.components.issueDetail.referenced_this_in_commit')}{' '}
           {commitUrl
             ? <a href={commitUrl} target="_blank" rel="noreferrer" className="font-mono text-accent hover:underline">{ev.commit_id!.slice(0, 7)}</a>
             : <span className="font-mono">{ev.commit_id?.slice(0, 7)}</span>}
@@ -416,7 +417,7 @@ function RelatedLinks({ items }: { items: RelatedRef[] }) {
   return (
     <section className="mb-6">
       <div className="flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-muted mb-3 font-medium">
-        <Link2 size={12} /> Linked {terms.changeRequestPlural} &amp; issues
+        <Link2 size={12} /> {i18nT('apps.issueRadar.components.issueDetail.linked')} {terms.changeRequestPlural} {i18nT('apps.issueRadar.components.issueDetail.issues')}
         <span className="text-muted normal-case tracking-normal opacity-70">· {items.length}</span>
       </div>
       <div className="flex flex-col gap-1.5">
@@ -455,7 +456,7 @@ function RelatedLinks({ items }: { items: RelatedRef[] }) {
                     {r.is_pr ? terms.changeRequestShort : 'Issue'}{sigil}{r.number}
                   </span>
                   {r.state && <span>· {r.state}</span>}
-                  {r.actor && <span>· by {r.actor}</span>}
+                  {r.actor && <span>{i18nT('apps.issueRadar.components.issueDetail.by')} {r.actor}</span>}
                   {r.created_at && (
                     <span title={new Date(r.created_at).toLocaleString()}>· {relativeTimeOrDate(r.created_at)}</span>
                   )}
@@ -724,7 +725,7 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
                 <button
                   onClick={copyLink}
                   title={copied ? 'Link copied' : 'Copy link to this issue'}
-                  aria-label="Copy link to this issue"
+                  aria-label={i18nT('apps.issueRadar.components.issueDetail.copy_link_to_this_issue')}
                   className="inline-flex items-center -ml-0.5 p-0.5 cursor-pointer bg-transparent text-muted hover:text-accent"
                 >
                   {copied ? <Check size={13} className="text-ok" /> : <Copy size={13} />}
@@ -741,10 +742,10 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
               </span>
               <MemberBadge role={authorRole} assoc={association} />
               <span>
-                {author ? <span className="text-text font-medium">{author}</span> : 'someone'} opened{' '}
+                {author ? <span className="text-text font-medium">{author}</span> : 'someone'} {i18nT('apps.issueRadar.components.issueDetail.opened')}{' '}
                 {createdAt ? <RelTime iso={createdAt} /> : ''}
               </span>
-              {locked && <span className="inline-flex items-center gap-1 text-warn"><Lock size={12} /> locked</span>}
+              {locked && <span className="inline-flex items-center gap-1 text-warn"><Lock size={12} /> {i18nT('apps.issueRadar.components.issueDetail.locked')}</span>}
             </div>
             </>)}
           </div>
@@ -765,7 +766,7 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
             <button
               onClick={refreshDetail}
               disabled={detailQuery.isFetching}
-              aria-label="Refresh issue details"
+              aria-label={i18nT('apps.issueRadar.components.issueDetail.refresh_issue_details')}
               title={`Re-fetch this issue + its timeline from ${terms.providerName}`}
               className="inline-flex items-center text-muted hover:text-text disabled:opacity-30 cursor-pointer bg-transparent p-1"
             >
@@ -814,8 +815,8 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
 
             {/* Activity timeline — newest first, latest node pulsing. */}
             <div className="flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-muted mb-3 font-medium">
-              <CircleDot size={12} /> Timeline
-              <span className="text-muted normal-case tracking-normal opacity-70">· newest first</span>
+              <CircleDot size={12} /> {i18nT('apps.issueRadar.components.issueDetail.timeline')}
+              <span className="text-muted normal-case tracking-normal opacity-70">{i18nT('apps.issueRadar.components.issueDetail.newest_first')}</span>
             </div>
 
             {activityDesc.map((ev, i) => {
@@ -838,16 +839,16 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
 
             {activityLoading && <TimelineSkeleton />}
             {activityError && (
-              <div className="py-2 text-[12px] text-danger">Couldn't load activity: {activityError.message}</div>
+              <div className="py-2 text-[12px] text-danger">{i18nT('apps.issueRadar.components.issueDetail.couldn_t_load_activity')} {activityError.message}</div>
             )}
             {!activityLoading && !activityError && activityDesc.length === 0 && (
-              <div className="py-2 text-[12px] text-muted">No activity yet.</div>
+              <div className="py-2 text-[12px] text-muted">{i18nT('apps.issueRadar.components.issueDetail.no_activity_yet')}</div>
             )}
           </main>
 
           {/* Sidebar — most triage-useful GitHub metadata. */}
           <aside className="w-[236px] flex-shrink-0 overflow-y-auto scrollbar-none text-[12.5px]" style={{ scrollbarWidth: 'none' }}>
-            <Section title="Assignees" icon={<Users size={12} />}>
+            <Section title={i18nT('apps.issueRadar.components.issueDetail.assignees')} icon={<Users size={12} />}>
               {assignees.length > 0 ? (
                 <div className="flex flex-col gap-1">
                   {assignees.map((a) => (
@@ -857,19 +858,19 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
                   ))}
                 </div>
               ) : (
-                <span className="text-muted">No one assigned</span>
+                <span className="text-muted">{i18nT('apps.issueRadar.components.issueDetail.no_one_assigned')}</span>
               )}
             </Section>
 
             <Section
-              title="Labels"
+              title={i18nT('apps.issueRadar.components.issueDetail.labels')}
               icon={<Tag size={12} />}
               action={canWrite && repoLabels.length > 0 ? (
                 <button
                   onClick={() => setEditingLabels((v) => !v)}
                   className="inline-flex items-center gap-1 text-[11px] text-muted hover:text-accent cursor-pointer bg-transparent"
                 >
-                  {editingLabels ? <>Done</> : <><Pencil size={11} /> Edit</>}
+                  {editingLabels ? <>{i18nT('apps.issueRadar.components.issueDetail.done')}</> : <><Pencil size={11} /> {i18nT('apps.issueRadar.components.issueDetail.edit')}</>}
                 </button>
               ) : undefined}
             >
@@ -887,7 +888,7 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
                   {labelList.map((l) => <LabelChip key={l.name} name={l.name} color={l.color} />)}
                 </div>
               ) : (
-                <span className="text-muted">None yet</span>
+                <span className="text-muted">{i18nT('apps.issueRadar.components.issueDetail.none_yet')}</span>
               )}
 
               <AiSuggestions
@@ -904,30 +905,30 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
               )}
             </Section>
 
-            <Section title="Milestone" icon={<MilestoneIcon size={12} />}>
+            <Section title={i18nT('apps.issueRadar.components.issueDetail.milestone_2')} icon={<MilestoneIcon size={12} />}>
               {milestone ? (
                 <span className="inline-flex items-center gap-1.5 text-text">
                   {milestone.title}
                   <span className="text-[10.5px] text-muted">({milestone.state})</span>
                 </span>
               ) : (
-                <span className="text-muted">No milestone</span>
+                <span className="text-muted">{i18nT('apps.issueRadar.components.issueDetail.no_milestone')}</span>
               )}
             </Section>
 
-            <Section title="Dates" icon={<CalendarDays size={12} />}>
+            <Section title={i18nT('apps.issueRadar.components.issueDetail.dates')} icon={<CalendarDays size={12} />}>
               <dl className="space-y-1">
                 <div className="flex justify-between gap-2">
-                  <dt className="text-muted">Opened</dt>
+                  <dt className="text-muted">{i18nT('apps.issueRadar.components.issueDetail.opened_2')}</dt>
                   <dd className="text-text">{createdAt ? <RelTime iso={createdAt} /> : '—'}</dd>
                 </div>
                 <div className="flex justify-between gap-2">
-                  <dt className="text-muted">Updated</dt>
+                  <dt className="text-muted">{i18nT('apps.issueRadar.components.issueDetail.updated')}</dt>
                   <dd className="text-text">{updatedAt ? <RelTime iso={updatedAt} /> : '—'}</dd>
                 </div>
                 {closedAt && (
                   <div className="flex justify-between gap-2">
-                    <dt className="text-muted">Closed</dt>
+                    <dt className="text-muted">{i18nT('apps.issueRadar.components.issueDetail.closed')}</dt>
                     <dd className="text-text">
                       <RelTime iso={closedAt} />{closedBy ? ` · ${closedBy}` : ''}
                     </dd>

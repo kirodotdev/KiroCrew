@@ -23,6 +23,7 @@ import type { TouchedFile } from '../../hooks/useTouchedFiles'
 import type { ExtractedLink } from '../../utils/extractChatLinks'
 import type { PullRequestLink } from '../../utils/pullRequestLinks'
 
+import { i18nT } from '../../i18n/t'
 const KIND_ICON: Record<TabKind, ReactNode> = {
   changes: <GitPullRequest size={16} />, files: <FileText size={16} />, artifacts: <Component size={16} />, subagents: <Bot size={16} />, workflows: <Workflow size={16} />,
   logs: <ScrollText size={16} />, side: <MessageSquare size={16} />, terminal: <TerminalSquare size={16} />, browser: <Globe size={16} />,
@@ -252,7 +253,7 @@ export default function SidePanel({
   return (
     <div className="shrink-0 min-h-0 my-2 flex flex-col bg-bg overflow-hidden relative border-l border-t border-b border-border rounded-l-xl" style={{ width: effectiveWidth, maxWidth: '100vw' }}>
       {/* Left-edge resize handle */}
-      <div role="separator" aria-orientation="vertical" aria-label="Resize panel" className="absolute left-0 top-0 bottom-0 w-[6px] cursor-col-resize z-30 group/drag" style={{ touchAction: 'none' }} {...panelResize}>
+      <div role="separator" aria-orientation="vertical" aria-label={i18nT('pages.chat.sidePanel.resize_panel')} className="absolute left-0 top-0 bottom-0 w-[6px] cursor-col-resize z-30 group/drag" style={{ touchAction: 'none' }} {...panelResize}>
         <div className="absolute left-0 top-0 bottom-0 w-[2px] transition-colors duration-200 bg-transparent group-hover/drag:bg-accent resize-accent" />
       </div>
       {/* Tab strip — drag chips horizontally to reorder (framer Reorder).
@@ -265,8 +266,8 @@ export default function SidePanel({
         <button
           className="flex items-center justify-center w-7 h-7 rounded-md text-muted hover:text-text hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0"
           onClick={onClose}
-          title="Close panel"
-          aria-label="Close panel"
+          title={i18nT('pages.chat.sidePanel.close_panel')}
+          aria-label={i18nT('pages.chat.sidePanel.close_panel')}
         >
           <PanelRightClose size={15} />
         </button>
@@ -318,8 +319,8 @@ export default function SidePanel({
             ref={menuTriggerRef}
             className="flex items-center justify-center w-7 h-7 rounded-md text-muted hover:text-text hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer"
             onClick={() => setMenuOpen(v => !v)}
-            title="Open side panel tab"
-            aria-label="Open side panel tab"
+            title={i18nT('pages.chat.sidePanel.open_side_panel_tab')}
+            aria-label={i18nT('pages.chat.sidePanel.open_side_panel_tab')}
             aria-haspopup="menu"
             aria-expanded={menuOpen}
           >
@@ -361,7 +362,7 @@ export default function SidePanel({
              clickable, instead of a hint pointing at the + menu. */
           <div className="flex items-center justify-center h-full px-6">
             <div className="flex flex-col items-center gap-4 w-full max-w-[420px]">
-              <div className="text-[22px] text-muted font-semibold">Pick a panel to view</div>
+              <div className="text-[22px] text-muted font-semibold">{i18nT('pages.chat.sidePanel.pick_a_panel_to_view')}</div>
               <div className="grid grid-cols-2 gap-2.5 w-full">
               {menuItems.map(item => {
                 // Live badges from data already flowing into the panel — a
@@ -523,10 +524,10 @@ function TabBody({ tab, active, slot, onClose, onContentChange, onDiffModeChange
                   read redundantly next to the Turn Diff badge here. */}
               {(tab.path || '').split('/').pop() || tab.title}
             </button>
-            <span className="text-[10px] px-1.5 py-0.5 rounded bg-accent/15 text-accent font-medium shrink-0">Turn Diff</span>
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-accent/15 text-accent font-medium shrink-0">{i18nT('pages.chat.sidePanel.turn_diff')}</span>
             {(added > 0 || removed > 0) && <span className="text-[11px] font-mono font-semibold shrink-0">{added > 0 && <span className="text-ok">+{added}</span>}{removed > 0 && <span className="text-danger ml-1.5">-{removed}</span>}</span>}
             <span className="flex-1" />
-            <button onClick={() => onFileOpen?.(tab.path || '')} className="flex items-center justify-center w-[26px] h-[26px] rounded-md cursor-pointer transition-colors text-muted hover:text-text hover:bg-bg-hover bg-transparent border-none" title="Open in Editor" aria-label="Open in Editor"><Pen size={14} /></button>
+            <button onClick={() => onFileOpen?.(tab.path || '')} className="flex items-center justify-center w-[26px] h-[26px] rounded-md cursor-pointer transition-colors text-muted hover:text-text hover:bg-bg-hover bg-transparent border-none" title={i18nT('pages.chat.sidePanel.open_in_editor')} aria-label={i18nT('pages.chat.sidePanel.open_in_editor')}><Pen size={14} /></button>
             <button onClick={() => setDiffSideBySide(v => !v)} className={`flex items-center justify-center w-[26px] h-[26px] rounded-md cursor-pointer transition-colors border-none ${!diffSideBySide ? 'text-accent bg-accent-subtle' : 'text-muted hover:text-text hover:bg-bg-hover bg-transparent'}`} title={diffSideBySide ? 'Switch to unified view' : 'Switch to split view'} aria-label={diffSideBySide ? 'Switch to unified view' : 'Switch to split view'}><Columns2 size={14} /></button>
             <button onClick={() => setDiffLineNumbers(v => !v)} className={`flex items-center justify-center w-[26px] h-[26px] rounded-md cursor-pointer transition-colors border-none ${diffLineNumbers ? 'text-accent bg-accent-subtle' : 'text-muted hover:text-text hover:bg-bg-hover bg-transparent'}`} title={diffLineNumbers ? 'Hide line numbers' : 'Show line numbers'} aria-label={diffLineNumbers ? 'Hide line numbers' : 'Show line numbers'}><Hash size={14} /></button>
           </div>
@@ -593,8 +594,8 @@ function TabChip({ tab, active, onSelect, onClose, closable = true, onTransfer, 
             <button
               onClick={(e) => { e.stopPropagation(); onTransfer() }}
               className={`shrink-0 flex items-center justify-center w-[18px] h-[18px] rounded-full transition-all bg-transparent border-none cursor-pointer text-muted hover:text-text hover:bg-bg-hover ${active ? 'opacity-70' : 'opacity-0 group-hover:opacity-70'}`}
-              title="Move to bottom panel"
-              aria-label="Move to bottom panel"
+              title={i18nT('pages.chat.sidePanel.move_to_bottom_panel')}
+              aria-label={i18nT('pages.chat.sidePanel.move_to_bottom_panel')}
             >
               <PanelBottom size={12} />
             </button>
@@ -603,8 +604,8 @@ function TabChip({ tab, active, onSelect, onClose, closable = true, onTransfer, 
             <button
               onClick={(e) => { e.stopPropagation(); onClose() }}
               className={`shrink-0 -ml-0.5 flex items-center justify-center w-[18px] h-[18px] rounded-full transition-all bg-transparent border-none cursor-pointer text-muted hover:text-text hover:bg-bg-hover ${active ? 'opacity-70' : 'opacity-0 group-hover:opacity-70'}`}
-              title="Close tab"
-              aria-label="Close tab"
+              title={i18nT('pages.chat.sidePanel.close_tab')}
+              aria-label={i18nT('pages.chat.sidePanel.close_tab')}
             >
               <X size={12} />
             </button>

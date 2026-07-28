@@ -17,13 +17,15 @@ def _make_cfg(
     theme_color: str = "",
     onboarded: bool = False,
     import_onboarded: bool = False,
+    language: str = "",
 ):
-    """Build a mock KiroCrewConfig with dashboard theme fields."""
+    """Build a mock KiroCrewConfig with dashboard display fields."""
     cfg = MagicMock()
     cfg.dashboard.theme_mode = theme_mode
     cfg.dashboard.theme_color = theme_color
     cfg.dashboard.onboarded = onboarded
     cfg.dashboard.import_onboarded = import_onboarded
+    cfg.dashboard.language = language
     return cfg
 
 
@@ -40,6 +42,7 @@ async def test_theme_boot_returns_defaults() -> None:
     assert body == {
         "mode": "",
         "color": "",
+        "language": "",
         "onboarded": False,
         "import_onboarded": False,
     }
@@ -62,6 +65,7 @@ async def test_theme_boot_returns_configured_values() -> None:
     assert body == {
         "mode": "dark",
         "color": "kiro",
+        "language": "",
         "onboarded": True,
         "import_onboarded": True,
     }
@@ -85,6 +89,7 @@ async def test_theme_config_get() -> None:
     assert body == {
         "mode": "light",
         "color": "emerald",
+        "language": "",
         "onboarded": True,
         "import_onboarded": True,
     }
@@ -112,6 +117,7 @@ async def test_theme_config_put_updates_and_saves() -> None:
     assert body == {
         "mode": "dark",
         "color": "monokai",
+        "language": "",
         "onboarded": True,
         "import_onboarded": True,
     }
@@ -187,6 +193,7 @@ async def test_theme_config_put_serializes_full_load_modify_save_transaction() -
     persisted = {
         "mode": "",
         "color": "",
+        "language": "",
         "onboarded": False,
         "import_onboarded": False,
     }
@@ -198,6 +205,7 @@ async def test_theme_config_put_serializes_full_load_modify_save_transaction() -
             self.dashboard = type("Dashboard", (), {})()
             self.dashboard.theme_mode = persisted["mode"]
             self.dashboard.theme_color = persisted["color"]
+            self.dashboard.language = persisted["language"]
             self.dashboard.onboarded = persisted["onboarded"]
             self.dashboard.import_onboarded = persisted["import_onboarded"]
 
@@ -206,6 +214,7 @@ async def test_theme_config_put_serializes_full_load_modify_save_transaction() -
                 {
                     "mode": self.dashboard.theme_mode,
                     "color": self.dashboard.theme_color,
+                    "language": self.dashboard.language,
                     "onboarded": self.dashboard.onboarded,
                     "import_onboarded": self.dashboard.import_onboarded,
                 }
@@ -234,3 +243,120 @@ async def test_theme_config_put_serializes_full_load_modify_save_transaction() -
 
     assert persisted["mode"] == "dark"
     assert persisted["import_onboarded"] is True
+
+
+# ── UI language (dashboard.language) ──────────────────────────────────────────
+#
+# The language field rides on the EXISTING theme endpoints rather than a new
+# pair, so these tests cover the field's own validation and the round trip. The
+# empty string is a first-class value ("follow the browser"), not a missing
+# value, so clearing a choice must be writable.
+
+
+@pytest.mark.asyncio
+async def test_theme_boot_exposes_language() -> None:
+    """GET /api/theme/boot surfaces the configured UI language.
+
+    Boot is unauthenticated, so the SPA can pick the right language before the
+    token flow completes -- this is what prevents an English flash on load.
+    """
+    cfg = _make_cfg(language="zh-CN")
+    with patch.object(core_mod, "KiroCrewConfig") as mock_cls:
+        mock_cls.load.return_value = cfg
+        req = MagicMock(spec=web.Request)
+        resp = await core_mod.api_theme_boot(req)
+    assert json.loads(resp.body)["language"] == "zh-CN"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tag", ["en", "zh-CN", "pt-BR", "zh-Hans-CN", "fr"])
+async def test_theme_config_put_accepts_valid_language_tags(tag: str) -> None:
+    """A well-formed BCP-47 tag is accepted, including ones with no catalog.
+
+    Shape is validated, not membership: keeping the shipped-language list a pure
+    frontend concern means adding a language never needs a backend change.
+    """
+    cfg = _make_cfg()
+    with patch.object(core_mod, "KiroCrewConfig") as mock_cls:
+        mock_cls.load.return_value = cfg
+        req = MagicMock(spec=web.Request)
+        req.method = "PUT"
+        req.json = AsyncMock(return_value={"language": tag})
+        resp = await core_mod.api_theme_config(req)
+    assert resp.status == 200
+    assert json.loads(resp.body)["language"] == tag
+    cfg.save.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_theme_config_put_clears_language_to_auto() -> None:
+    """Writing '' clears the stored choice back to browser auto-detect."""
+    cfg = _make_cfg(language="zh-CN")
+    with patch.object(core_mod, "KiroCrewConfig") as mock_cls:
+        mock_cls.load.return_value = cfg
+        req = MagicMock(spec=web.Request)
+        req.method = "PUT"
+        req.json = AsyncMock(return_value={"language": ""})
+        resp = await core_mod.api_theme_config(req)
+    assert resp.status == 200
+    assert json.loads(resp.body)["language"] == ""
+    assert cfg.dashboard.language == ""
+    cfg.save.assert_called_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "e",  # too short
+        "english-language-name",  # subtag over 8 chars
+        "en_US",  # underscore is not BCP-47
+        "en-US-x-toolong-extra",  # too many subtags
+        "../../etc/passwd",  # path traversal shape
+        "<script>",  # markup
+        "zh CN",  # whitespace
+    ],
+)
+async def test_theme_config_put_rejects_malformed_language(bad: str) -> None:
+    """A malformed tag is a 400 and never reaches the config file."""
+    cfg = _make_cfg()
+    with patch.object(core_mod, "KiroCrewConfig") as mock_cls:
+        mock_cls.load.return_value = cfg
+        req = MagicMock(spec=web.Request)
+        req.method = "PUT"
+        req.json = AsyncMock(return_value={"language": bad})
+        with pytest.raises(web.HTTPBadRequest):
+            await core_mod.api_theme_config(req)
+    cfg.save.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_theme_config_put_rejects_non_string_language() -> None:
+    """A non-string language is a 400, not a coerced value."""
+    cfg = _make_cfg()
+    with patch.object(core_mod, "KiroCrewConfig") as mock_cls:
+        mock_cls.load.return_value = cfg
+        req = MagicMock(spec=web.Request)
+        req.method = "PUT"
+        req.json = AsyncMock(return_value={"language": ["zh-CN"]})
+        with pytest.raises(web.HTTPBadRequest):
+            await core_mod.api_theme_config(req)
+    cfg.save.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_theme_config_put_omitting_language_leaves_it_untouched() -> None:
+    """A PUT that doesn't mention language must not reset it.
+
+    The frontend patches single fields, so an unrelated theme write must never
+    clobber the user's language choice.
+    """
+    cfg = _make_cfg(language="zh-CN")
+    with patch.object(core_mod, "KiroCrewConfig") as mock_cls:
+        mock_cls.load.return_value = cfg
+        req = MagicMock(spec=web.Request)
+        req.method = "PUT"
+        req.json = AsyncMock(return_value={"color": "monokai"})
+        resp = await core_mod.api_theme_config(req)
+    assert json.loads(resp.body)["language"] == "zh-CN"
+    assert cfg.dashboard.language == "zh-CN"

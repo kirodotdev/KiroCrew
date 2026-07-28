@@ -6,6 +6,7 @@ import { isScreenSnipSupported } from '../hooks/useScreenSnip'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { useBrowserFrame } from '../hooks/useBrowserFrame'
 
+import { i18nT } from '../i18n/t'
 /**
  * WebPreviewPanel — a docked, session-scoped **live web preview** of a URL the
  * user is serving locally (a dev server / static server for the project they're
@@ -491,7 +492,7 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
     <div className="absolute inset-0 z-10 flex flex-col h-full min-h-0 bg-bg">
         <div className="flex items-center gap-2 px-3 py-1.5 border-b border-border shrink-0" style={{ backgroundColor: 'var(--bg-elevated)' }}>
           <Monitor size={14} className="shrink-0 text-muted" />
-          <span className="shrink-0 text-[13px] font-medium text-text">Browser — live</span>
+          <span className="shrink-0 text-[13px] font-medium text-text">{i18nT('components.webPreviewPanel.browser_live')}</span>
           <span className="inline-block w-1.5 h-1.5 rounded-full animate-pulse" style={{ backgroundColor: 'var(--ok)' }} aria-hidden />
           {sessionName ? (
             <span className="flex-1 min-w-0 truncate text-[12px] text-muted" title={sessionName}>· {sessionName}</span>
@@ -499,33 +500,33 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
             <div className="flex-1" />
           )}
           {browseOn ? (
-            <span className="shrink-0 inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full bg-accent/12 text-accent font-medium" title="Browser use is on — the agent can operate this page">
-              <MousePointerClick size={12} /> Interactive
+            <span className="shrink-0 inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full bg-accent/12 text-accent font-medium" title={i18nT('components.webPreviewPanel.browser_use_is_on_the_agent_can_operate_this_pag')}>
+              <MousePointerClick size={12} /> {i18nT('components.webPreviewPanel.interactive')}
             </span>
           ) : (
             <button
               type="button"
               onClick={requestInteraction}
               className="shrink-0 inline-flex items-center gap-1 text-[12px] px-2.5 py-1 rounded-md border border-border text-text hover:bg-bg-hover transition-colors cursor-pointer bg-transparent"
-              title="Turn on Browser use so the agent can click, type, and navigate this page"
+              title={i18nT('components.webPreviewPanel.turn_on_browser_use_so_the_agent_can_click_type')}
             >
-              <MousePointerClick size={13} /> Enable interaction
+              <MousePointerClick size={13} /> {i18nT('components.webPreviewPanel.enable_interaction')}
             </button>
           )}
         </div>
         <div className="relative bg-black flex-1 min-h-0 flex items-center justify-center">
           {frame ? (
-            <img src={frame} alt="Live browser session" className="max-w-full max-h-full object-contain" />
+            <img src={frame} alt={i18nT('components.webPreviewPanel.live_browser_session')} className="max-w-full max-h-full object-contain" />
           ) : (
             <div className="flex flex-col items-center gap-2 py-8 text-muted">
               <Monitor size={18} />
-              <span className="text-[11px]">Waiting for the browser to take a screenshot…</span>
+              <span className="text-[11px]">{i18nT('components.webPreviewPanel.waiting_for_the_browser_to_take_a_screenshot')}</span>
             </div>
           )}
         </div>
         <div className="px-3 py-1.5 border-t border-border text-[11px] text-muted flex items-center justify-between gap-2">
-          <span className="truncate">Read-only mirror of the browse session</span>
-          {lastTs && <span className="shrink-0">updated {new Date(lastTs).toLocaleTimeString()}</span>}
+          <span className="truncate">{i18nT('components.webPreviewPanel.read_only_mirror_of_the_browse_session')}</span>
+          {lastTs && <span className="shrink-0">{i18nT('components.webPreviewPanel.updated')} {new Date(lastTs).toLocaleTimeString()}</span>}
         </div>
       </div>
   )
@@ -543,10 +544,10 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
       >
         {/* Back / forward — outside the URL container, enabled only when the
             history stack has somewhere to go. */}
-        <button type="button" onClick={back} disabled={!canBack} className={iconBtn} title="Back" aria-label="Back">
+        <button type="button" onClick={back} disabled={!canBack} className={iconBtn} title={i18nT('components.webPreviewPanel.back')} aria-label={i18nT('components.webPreviewPanel.back')}>
           <ArrowLeft size={15} />
         </button>
-        <button type="button" onClick={forward} disabled={!canForward} className={iconBtn} title="Forward" aria-label="Forward">
+        <button type="button" onClick={forward} disabled={!canForward} className={iconBtn} title={i18nT('components.webPreviewPanel.forward')} aria-label={i18nT('components.webPreviewPanel.forward')}>
           <ArrowRight size={15} />
         </button>
         {/* URL container — reload lives inside on the left. */}
@@ -556,8 +557,8 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
             onClick={reload}
             disabled={!url}
             className="flex items-center justify-center w-6 h-6 rounded text-muted hover:text-text hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0 disabled:opacity-40 disabled:cursor-default disabled:hover:bg-transparent disabled:hover:text-muted"
-            title="Reload"
-            aria-label="Reload preview"
+            title={i18nT('components.webPreviewPanel.reload')}
+            aria-label={i18nT('components.webPreviewPanel.reload_preview')}
           >
             <RotateCw size={13} />
           </button>
@@ -565,8 +566,8 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
             type="text"
             value={draft}
             onChange={e => setDraft(e.target.value)}
-            placeholder="localhost:5173"
-            aria-label="Preview URL"
+            placeholder={i18nT('components.webPreviewPanel.localhost_5173')}
+            aria-label={i18nT('components.webPreviewPanel.preview_url')}
             spellCheck={false}
             autoCorrect="off"
             autoCapitalize="off"
@@ -578,8 +579,8 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
             rel="noreferrer"
             aria-disabled={!url}
             className={`flex items-center justify-center w-6 h-6 rounded text-muted hover:text-text hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0 no-underline ${!url ? 'opacity-40 pointer-events-none' : ''}`}
-            title="Open in browser"
-            aria-label="Open in browser"
+            title={i18nT('components.webPreviewPanel.open_in_browser')}
+            aria-label={i18nT('components.webPreviewPanel.open_in_browser')}
           >
             <ExternalLink size={13} />
           </a>
@@ -605,7 +606,7 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
               isDeviceSized ? 'text-accent bg-accent-subtle hover:text-accent' : 'text-muted hover:text-text hover:bg-bg-hover'
             }`}
             title={`Preview size: ${device.label}`}
-            aria-label="Preview size"
+            aria-label={i18nT('components.webPreviewPanel.preview_size')}
             aria-haspopup="menu"
             aria-expanded={deviceMenuOpen}
           >
@@ -641,8 +642,8 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
             type="button"
             onClick={() => window.dispatchEvent(new CustomEvent(PREVIEW_SNIP_EVENT))}
             className={iconBtn}
-            title="Screenshot an area into the chat"
-            aria-label="Screenshot an area into the chat"
+            title={i18nT('components.webPreviewPanel.screenshot_an_area_into_the_chat')}
+            aria-label={i18nT('components.webPreviewPanel.screenshot_an_area_into_the_chat')}
           >
             <Crop size={14} />
           </button>
@@ -656,9 +657,9 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
           // until the user explicitly clicks Load (no auto-GET from agent output).
           <div className="flex flex-col items-center justify-center h-full gap-3 px-6 text-center bg-bg">
             <Globe size={22} className="text-accent" />
-            <div className="text-[13px] font-medium text-text">Preview ready</div>
+            <div className="text-[13px] font-medium text-text">{i18nT('components.webPreviewPanel.preview_ready')}</div>
             <div className="text-[11px] text-muted max-w-[320px] leading-snug">
-              The agent started a local preview. Load it to view the site in this panel.
+              {i18nT('components.webPreviewPanel.the_agent_started_a_local_preview_load_it_to_vie')}
             </div>
             <code className="text-[11px] font-mono px-2 py-1 rounded bg-bg-elevated text-text break-all max-w-[320px]">
               {pending}
@@ -669,24 +670,23 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
                 onClick={() => commit(pending)}
                 className="inline-flex items-center gap-1.5 text-[12px] px-3 py-1.5 rounded-md bg-accent text-white hover:opacity-90 transition-opacity cursor-pointer border-none"
               >
-                <Globe size={13} /> Load preview
+                <Globe size={13} /> {i18nT('components.webPreviewPanel.load_preview')}
               </button>
               <button
                 type="button"
                 onClick={dismissPending}
                 className="text-[12px] px-3 py-1.5 rounded-md border border-border text-muted hover:text-text hover:bg-bg-hover transition-colors cursor-pointer bg-transparent"
               >
-                Dismiss
+                {i18nT('components.webPreviewPanel.dismiss')}
               </button>
             </div>
           </div>
         ) : !url ? (
           <div className="flex flex-col items-center justify-center h-full gap-3 px-6 text-center bg-bg">
             <Globe size={22} className="text-muted" />
-            <div className="text-[13px] font-medium text-text">Preview a local web server</div>
+            <div className="text-[13px] font-medium text-text">{i18nT('components.webPreviewPanel.preview_a_local_web_server')}</div>
             <div className="text-[11px] text-muted max-w-[300px] leading-snug">
-              Enter your dev-server URL above (e.g. a Vite or static server running on localhost) to
-              preview the site you&apos;re working on — it live-reloads as you edit.
+              {i18nT('components.webPreviewPanel.enter_your_dev_server_url_above_e_g_a_vite_or_st')}
             </div>
             <div className="flex flex-wrap gap-1.5 justify-center pt-1">
               {COMMON_PORTS.map(p => (
@@ -704,11 +704,11 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
         ) : mixedContent ? (
           <div className="flex flex-col items-center justify-center h-full gap-3 px-6 text-center bg-bg">
             <Globe size={22} className="text-muted" />
-            <div className="text-[13px] font-medium text-text">Can&apos;t embed an http:// page here</div>
+            <div className="text-[13px] font-medium text-text">{i18nT('components.webPreviewPanel.can_t_embed_an_http_page_here')}</div>
             <div className="text-[11px] text-muted max-w-[320px] leading-snug">
-              This dashboard is served over HTTPS, so the browser blocks embedding an
-              <span className="font-mono"> http:// </span>
-              page (mixed content). Open it in a new tab instead.
+              {i18nT('components.webPreviewPanel.this_dashboard_is_served_over_https_so_the_brows')}
+              <span className="font-mono"> {i18nT('components.webPreviewPanel.http')} </span>
+              {i18nT('components.webPreviewPanel.page_mixed_content_open_it_in_a_new_tab_instead')}
             </div>
             <a
               href={url}
@@ -716,7 +716,7 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
               rel="noreferrer"
               className="inline-flex items-center gap-1.5 text-[12px] px-3 py-1.5 rounded-md border border-border text-text hover:bg-bg-hover transition-colors no-underline"
             >
-              <ExternalLink size={13} /> Open {url}
+              <ExternalLink size={13} /> {i18nT('components.webPreviewPanel.open')} {url}
             </a>
           </div>
         ) : unreachable ? (
@@ -724,17 +724,16 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
           // instead of the stale last-rendered page (the iframe is unmounted).
           <div className="flex flex-col items-center justify-center h-full gap-3 px-6 text-center bg-bg">
             <Globe size={22} className="text-muted" />
-            <div className="text-[13px] font-medium text-text">Preview server not reachable</div>
+            <div className="text-[13px] font-medium text-text">{i18nT('components.webPreviewPanel.preview_server_not_reachable')}</div>
             <div className="text-[11px] text-muted max-w-[320px] leading-snug">
-              The server at <span className="font-mono break-all">{url}</span> stopped responding.
-              It&apos;ll reconnect automatically when it&apos;s back — or reload now.
+              {i18nT('components.webPreviewPanel.the_server_at')} <span className="font-mono break-all">{url}</span> {i18nT('components.webPreviewPanel.stopped_responding_it_ll_reconnect_automatically')}
             </div>
             <button
               type="button"
               onClick={() => { setUnreachable(false); reload() }}
               className="inline-flex items-center gap-1.5 text-[12px] px-3 py-1.5 rounded-md border border-border text-text hover:bg-bg-hover transition-colors cursor-pointer bg-transparent"
             >
-              <RotateCw size={13} /> Reload
+              <RotateCw size={13} /> {i18nT('components.webPreviewPanel.reload')}
             </button>
           </div>
         ) : isDeviceSized ? (
@@ -743,7 +742,7 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
             <iframe
               key={reloadKey}
               src={url}
-              title="Web preview"
+              title={i18nT('components.webPreviewPanel.web_preview')}
               style={{ width: device.w, height: device.h }}
               className="shrink-0 border border-border rounded-lg bg-white shadow-sm"
               sandbox={SANDBOX}
@@ -753,7 +752,7 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
           <iframe
             key={reloadKey}
             src={url}
-            title="Web preview"
+            title={i18nT('components.webPreviewPanel.web_preview')}
             className="absolute inset-0 w-full h-full border-0 bg-white"
             sandbox={SANDBOX}
           />

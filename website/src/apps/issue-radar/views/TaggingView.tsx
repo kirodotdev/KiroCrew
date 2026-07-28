@@ -13,6 +13,7 @@ import UntaggedIssueCard from './tagging/UntaggedIssueCard'
 import LabelsPanel, { settingsKeyForCategory } from './tagging/LabelsPanel'
 import { repoScopeKey } from '../lib/links'
 
+import { i18nT } from '../../../i18n/t'
 /** Tagging dashboard — bulk-label triage for the issues that have no labels at all.
  *
  * Three stacked blocks, top to bottom: the numbers, the repo's tag vocabulary,
@@ -425,12 +426,12 @@ function TaggingDashboard() {
         * queue, and the vocabulary available to clear it. "Analysed" and "Ready
         * to apply" are already legible from the rows and the Apply button. */}
       <div className="grid grid-cols-2 gap-3">
-        <Stat value={pending.length} label="Untagged" sub={
+        <Stat value={pending.length} label={i18nT('apps.issueRadar.views.taggingView.untagged')} sub={
           taggingQuery.data?.open_count
             ? `${Math.round((pending.length / taggingQuery.data.open_count) * 100)}% of open`
             : ''
         } />
-        <Stat value={repoLabels.length} label="Repo labels" sub="available to assign" />
+        <Stat value={repoLabels.length} label={i18nT('apps.issueRadar.views.taggingView.repo_labels')} sub="available to assign" />
       </div>
 
       {/* The repo's tag vocabulary — what it uses, and what it's missing. */}
@@ -449,9 +450,9 @@ function TaggingDashboard() {
       <section className="rounded-xl border border-border bg-bg-elevated shadow-sm p-4 flex flex-col gap-3">
         <div className="flex items-center gap-2.5 flex-wrap">
           <div className="text-[13px] font-semibold text-muted uppercase tracking-[.05em]">
-            Untagged issues
+            {i18nT('apps.issueRadar.views.taggingView.untagged_issues')}
           </div>
-          <div className="text-[12px] text-muted opacity-60">newest first</div>
+          <div className="text-[12px] text-muted opacity-60">{i18nT('apps.issueRadar.views.taggingView.newest_first')}</div>
 
           <div className="ml-auto flex items-center gap-2 flex-wrap">
             {queue.length > 0 && (
@@ -464,14 +465,14 @@ function TaggingDashboard() {
             )}
             {!canWrite && (
               <span className="text-[12px] text-muted inline-flex items-center gap-1">
-                <ReadOnlyTag /> applying needs write access
+                <ReadOnlyTag /> {i18nT('apps.issueRadar.views.taggingView.applying_needs_write_access')}
               </span>
             )}
             <button
               onClick={() => reload.mutate()}
               disabled={reload.isPending}
-              aria-label="Reload the untagged queue"
-              title="Reload the untagged queue"
+              aria-label={i18nT('apps.issueRadar.views.taggingView.reload_the_untagged_queue')}
+              title={i18nT('apps.issueRadar.views.taggingView.reload_the_untagged_queue')}
               className="inline-flex items-center justify-center h-7 w-7 rounded-md border border-border text-muted hover:text-text hover:border-border-strong disabled:opacity-40 cursor-pointer"
             >
               <RefreshCw size={12} className={reload.isPending ? 'animate-spin' : ''} />
@@ -519,22 +520,20 @@ function TaggingDashboard() {
 
         {noLabels && (
           <Banner kind="warn">
-            {owner}/{repo} defines no labels yet, so there is nothing to assign. Suggest a few above,
-            create the ones you want, then come back and suggest labels here.
+            {owner}/{repo} {i18nT('apps.issueRadar.views.taggingView.defines_no_labels_yet_so_there_is_nothing_to_ass')}
           </Banner>
         )}
         {labelsError && (
           <Banner kind="error">
-            Couldn't load {owner}/{repo}'s labels: {(labelsError as Error).message}
-            {' — '}applying is disabled until they load, because a suggestion naming a
-            label the repo no longer has would be rejected for the whole batch.
+            {i18nT('apps.issueRadar.views.taggingView.couldn_t_load')} {owner}/{repo}{i18nT('apps.issueRadar.views.taggingView.s_labels')} {(labelsError as Error).message}
+            {' — '}{i18nT('apps.issueRadar.views.taggingView.applying_is_disabled_until_they_load_because_a_s')}
           </Banner>
         )}
         {settingsError && <Banner kind="error">{settingsError}</Banner>}
         {reload.isError && (
           <Banner kind="error">
-            Couldn't reload the queue: {(reload.error as Error).message}
-            {' — '}what you see below is the previous result, not the current state.
+            {i18nT('apps.issueRadar.views.taggingView.couldn_t_reload_the_queue')} {(reload.error as Error).message}
+            {' — '}{i18nT('apps.issueRadar.views.taggingView.what_you_see_below_is_the_previous_result_not_th')}
           </Banner>
         )}
         {genError && <Banner kind="error">{genError}</Banner>}
@@ -542,12 +541,12 @@ function TaggingDashboard() {
         {applyNote && <Banner kind={Object.keys(rowErrors).length ? 'warn' : 'ok'}>{applyNote}</Banner>}
 
         {taggingQuery.isLoading ? (
-          <div className="text-[14px] text-muted py-2">Loading the untagged queue…</div>
+          <div className="text-[14px] text-muted py-2">{i18nT('apps.issueRadar.views.taggingView.loading_the_untagged_queue')}</div>
         ) : taggingQuery.isError ? (
           <Banner kind="error">{(taggingQuery.error as Error).message}</Banner>
         ) : queue.length === 0 ? (
           <div className="text-[14px] text-muted py-2">
-            Every open issue in {owner}/{repo} carries at least one label. Nothing to tag.
+            {i18nT('apps.issueRadar.views.taggingView.every_open_issue_in')} {owner}/{repo} {i18nT('apps.issueRadar.views.taggingView.carries_at_least_one_label_nothing_to_tag')}
           </div>
         ) : (
           <div className="flex flex-col gap-0.5">

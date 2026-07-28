@@ -10,6 +10,7 @@ import { timeAgo as _timeAgo } from '../utils/timeAgo'
 import { useSortableTable } from '../hooks/useSortableTable'
 import SortableHeader from '../components/SortableHeader'
 
+import { i18nT } from '../i18n/t'
 interface Hook {
   id: string; name: string; event: string; matcher: string
   command: string; timeout: number; enabled: boolean
@@ -66,23 +67,23 @@ function HookForm({ hook, onSave, onCancel }: {
       <CardTitle>{hook ? 'Edit Hook' : 'New Hook'} <InfoTip text="Script hooks fire shell commands on chat lifecycle events. PreToolUse/PostToolUse hooks can filter by tool name pattern." /></CardTitle>
       <div className="flex flex-col gap-3">
         <div className="flex gap-2 items-center flex-wrap">
-          <Input placeholder="Hook name" value={name} onChange={e => setName(e.target.value)} />
+          <Input placeholder={i18nT('pages.hooksPage.hook_name')} value={name} onChange={e => setName(e.target.value)} />
           <select className={`${sel} font-mono ${EVENT_STYLE[event] ? 'border-accent/40' : ''}`} value={event} onChange={e => setEvent(e.target.value)}>
             {EVENTS.map(e => <option key={e} value={e}>{e}</option>)}
           </select>
         </div>
         <div>
-          <Input className="w-full font-mono" placeholder="echo 'hook fired'" value={command} onChange={e => setCommand(e.target.value)} />
+          <Input className="w-full font-mono" placeholder={i18nT('pages.hooksPage.echo_hook_fired')} value={command} onChange={e => setCommand(e.target.value)} />
         </div>
         <div className="flex gap-2 items-center flex-wrap">
           <Input placeholder={isToolHook ? 'Matcher (tool filter, e.g. fs_write, @git/*)' : 'Matcher (optional, e.g. *deploy*)'} value={matcher} onChange={e => setMatcher(e.target.value)} />
           <div className="flex items-center gap-1.5 text-[13px] text-muted shrink-0">
-            <span>Timeout</span>
+            <span>{i18nT('pages.hooksPage.timeout')}</span>
             <Input type="number" min={1} max={300} className="w-16" value={timeout} onChange={e => setTimeout_(parseInt(e.target.value, 10) || 30)} />
-            <span>s</span>
+            <span>{i18nT('pages.hooksPage.s')}</span>
           </div>
-          <SendBtn onClick={() => onSave({ name, event, matcher, command, timeout })}>Save</SendBtn>
-          <Btn onClick={onCancel} className="h-9 px-4 text-sm font-semibold rounded-lg">Cancel</Btn>
+          <SendBtn onClick={() => onSave({ name, event, matcher, command, timeout })}>{i18nT('pages.hooksPage.save')}</SendBtn>
+          <Btn onClick={onCancel} className="h-9 px-4 text-sm font-semibold rounded-lg">{i18nT('pages.hooksPage.cancel')}</Btn>
         </div>
       </div>
     </Card>
@@ -138,7 +139,7 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
   }), [])
   const { sorted: sortedHooks, sort: hookSort, toggle: toggleHookSort } = useSortableTable(filtered, 'hooks', hookComparators, { key: 'name', dir: 'asc' })
 
-  if (loading) return <div className="p-6 text-muted">Loading…</div>
+  if (loading) return <div className="p-6 text-muted">{i18nT('pages.hooksPage.loading')}</div>
 
   const content = (
     <>
@@ -157,7 +158,7 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
           <div className="mb-4 bg-danger/10 border border-danger/20 rounded-lg p-3 flex items-start gap-3 animate-rise">
             <span className="text-danger text-lg shrink-0"><AlertTriangle className="lucide-inline" /></span>
             <div className="flex-1 min-w-0">
-              <div className="text-sm text-danger font-medium">Error</div>
+              <div className="text-sm text-danger font-medium">{i18nT('pages.hooksPage.error')}</div>
               <div className="text-[13px] text-danger/90 mt-0.5">{error || mutError}</div>
             </div>
             <Btn onClick={() => { createMut.reset(); updateMut.reset(); deleteMut.reset(); toggleMut.reset(); testMut.reset() }} className="text-danger/60 hover:text-danger shrink-0">×</Btn>
@@ -168,7 +169,7 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
           <HookForm onSave={handleCreate} onCancel={() => setCreating(false)} />
         ) : (
           <div className="flex items-center gap-2 mb-4">
-            <SendBtn onClick={() => { setCreating(true); setEditing(null) }}>+ New Hook</SendBtn>
+            <SendBtn onClick={() => { setCreating(true); setEditing(null) }}>{i18nT('pages.hooksPage.new_hook')}</SendBtn>
           </div>
         )}
 
@@ -178,29 +179,29 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
         })()}
 
         <Card>
-          <CardTitle>Hooks <InfoTip text="Hooks run shell commands on chat events: AgentSpawn, UserPromptSubmit, PreToolUse, PostToolUse, Stop. Tool hooks support matcher patterns to filter by tool name." /></CardTitle>
-          <div className="mb-3"><SearchInput placeholder="Filter hooks…" value={filter} onChange={e => setFilter(e.target.value)} /></div>
+          <CardTitle>{i18nT('pages.hooksPage.hooks')} <InfoTip text="Hooks run shell commands on chat events: AgentSpawn, UserPromptSubmit, PreToolUse, PostToolUse, Stop. Tool hooks support matcher patterns to filter by tool name." /></CardTitle>
+          <div className="mb-3"><SearchInput placeholder={i18nT('pages.hooksPage.filter_hooks')} value={filter} onChange={e => setFilter(e.target.value)} /></div>
           {hooks.length === 0 ? (
-            <EmptyState icon={<Anchor className="lucide-inline" />} title="No hooks yet" subtitle="Create a hook to run scripts on chat events" />
+            <EmptyState icon={<Anchor className="lucide-inline" />} title={i18nT('pages.hooksPage.no_hooks_yet')} subtitle={i18nT('pages.hooksPage.create_a_hook_to_run_scripts_on_chat_events')} />
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full border-collapse table-striped">
                 <thead>
                   <tr>
-                    <th aria-label="Enabled" className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium w-[52px]"></th>
-                    <SortableHeader label="Name" sortKey="name" sort={hookSort} onToggle={toggleHookSort} className="w-[120px]" />
-                    <SortableHeader label="Event" sortKey="event" sort={hookSort} onToggle={toggleHookSort} className="w-[130px]" />
-                    <th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium min-w-[200px]">Command</th>
-                    <th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium w-[120px]">Matcher</th>
-                    <SortableHeader label="Runs" sortKey="runs" sort={hookSort} onToggle={toggleHookSort} className="w-[60px]" />
-                    <SortableHeader label="Status" sortKey="status" sort={hookSort} onToggle={toggleHookSort} className="w-[80px]" />
-                    <SortableHeader label="Last Run" sortKey="lastRun" sort={hookSort} onToggle={toggleHookSort} className="w-[90px]" />
-                    <th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium w-[160px]">Actions</th>
+                    <th aria-label={i18nT('pages.hooksPage.enabled')} className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium w-[52px]"></th>
+                    <SortableHeader label={i18nT('pages.hooksPage.name')} sortKey="name" sort={hookSort} onToggle={toggleHookSort} className="w-[120px]" />
+                    <SortableHeader label={i18nT('pages.hooksPage.event')} sortKey="event" sort={hookSort} onToggle={toggleHookSort} className="w-[130px]" />
+                    <th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium min-w-[200px]">{i18nT('pages.hooksPage.command')}</th>
+                    <th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium w-[120px]">{i18nT('pages.hooksPage.matcher')}</th>
+                    <SortableHeader label={i18nT('pages.hooksPage.runs')} sortKey="runs" sort={hookSort} onToggle={toggleHookSort} className="w-[60px]" />
+                    <SortableHeader label={i18nT('pages.hooksPage.status')} sortKey="status" sort={hookSort} onToggle={toggleHookSort} className="w-[80px]" />
+                    <SortableHeader label={i18nT('pages.hooksPage.last_run')} sortKey="lastRun" sort={hookSort} onToggle={toggleHookSort} className="w-[90px]" />
+                    <th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium w-[160px]">{i18nT('pages.hooksPage.actions')}</th>
                   </tr>
                 </thead>
                 <tbody>
                   {filtered.length === 0 ? (
-                    <tr><td colSpan={9} className="text-muted italic px-2.5 py-3.5 text-sm">No matching hooks</td></tr>
+                    <tr><td colSpan={9} className="text-muted italic px-2.5 py-3.5 text-sm">{i18nT('pages.hooksPage.no_matching_hooks')}</td></tr>
                   ) : sortedHooks.map(h => (
                     <tr key={h.id} className={`hover:bg-bg-hover transition-colors ${h.enabled ? '' : 'opacity-50'}`}>
                       <td className="px-2.5 py-2 border-b border-border">
@@ -219,16 +220,16 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
                       <td className="px-2.5 py-2 border-b border-border text-sm font-mono">{h.run_count}</td>
                       <td className="px-2.5 py-2 border-b border-border text-sm">
                         {!h.last_status ? <span className="text-muted italic">—</span>
-                          : h.last_status === 'ok' ? <Badge variant="ok">OK</Badge>
-                          : h.last_status === 'error' ? <Badge variant="err">Error</Badge>
+                          : h.last_status === 'ok' ? <Badge variant="ok">{i18nT('pages.hooksPage.ok')}</Badge>
+                          : h.last_status === 'error' ? <Badge variant="err">{i18nT('pages.hooksPage.error')}</Badge>
                           : <Badge variant="warn">{h.last_status}</Badge>}
                       </td>
                       <td className="px-2.5 py-2 border-b border-border text-sm text-muted">{timeAgo(h.last_run)}</td>
-                      <td aria-label="Actions" className="px-2.5 py-2 border-b border-border text-sm">
+                      <td aria-label={i18nT('pages.hooksPage.actions')} className="px-2.5 py-2 border-b border-border text-sm">
                         <div className="flex gap-1.5">
-                          <Btn onClick={() => handleTest(h.id)} className="bg-accent/10 text-accent border-accent/30 hover:bg-accent/20">Test</Btn>
-                          <Btn onClick={() => { setEditing(h.id); setCreating(false) }}>Edit</Btn>
-                          <Btn danger onClick={() => { if (window.confirm(`Delete hook "${h.name}"?`)) handleDelete(h.id) }}>Delete</Btn>
+                          <Btn onClick={() => handleTest(h.id)} className="bg-accent/10 text-accent border-accent/30 hover:bg-accent/20">{i18nT('pages.hooksPage.test')}</Btn>
+                          <Btn onClick={() => { setEditing(h.id); setCreating(false) }}>{i18nT('pages.hooksPage.edit')}</Btn>
+                          <Btn danger onClick={() => { if (window.confirm(`Delete hook "${h.name}"?`)) handleDelete(h.id) }}>{i18nT('pages.hooksPage.delete')}</Btn>
                         </div>
                       </td>
                     </tr>
@@ -242,9 +243,9 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
             return (
               <div className="mt-3 bg-bg-elevated border border-border rounded-lg p-4 animate-scale-in">
                 <div className="flex items-center gap-3 mb-2">
-                  <span className="text-sm font-medium text-text">Test Result{h ? `: ${h.name}` : ''}</span>
+                  <span className="text-sm font-medium text-text">{i18nT('pages.hooksPage.test_result')}{h ? `: ${h.name}` : ''}</span>
                   <Badge variant={testResult.data.exit_code === 0 ? 'ok' : 'err'}>{testResult.data.exit_code === 0 ? 'OK' : `exit ${testResult.data.exit_code}`}</Badge>
-                  <span className="text-[12px] text-muted font-mono">{testResult.data.duration_ms}ms</span>
+                  <span className="text-[12px] text-muted font-mono">{testResult.data.duration_ms}{i18nT('pages.hooksPage.ms')}</span>
                   <Btn onClick={() => setTestResult(null)} className="ml-auto">×</Btn>
                 </div>
                 {testResult.data.error && <div className="text-[13px] text-danger mb-1">{testResult.data.error}</div>}
@@ -258,7 +259,7 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
         <Card>
           <CardTitle>{provider.labels.hooksSection} <InfoTip text={`Read-only view of provider hooks from ${provider.labels.configFile || 'config'}. These fire on tool calls including auto-approved ones.`} /></CardTitle>
           {providerHookError ? (
-            <EmptyState icon={<AlertTriangle className="lucide-inline text-warning" />} title={`Failed to load ${provider.labels.hooksSection.toLowerCase()}`} subtitle="Check your connection or configuration and try again." />
+            <EmptyState icon={<AlertTriangle className="lucide-inline text-warning" />} title={`Failed to load ${provider.labels.hooksSection.toLowerCase()}`} subtitle={i18nT('pages.hooksPage.check_your_connection_or_configuration_and_try_a')} />
           ) : Object.values(providerHooks).some(entries => entries.length > 0) ? (
             <div className="overflow-x-auto">
               <table className="w-full border-collapse table-striped">
@@ -279,7 +280,7 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
                           <tr key={`${event}-${i}`} className={`hover:bg-bg-hover transition-colors ${entry.source === 'bundled' ? 'bg-bg-elevated/50' : ''}`}>
                             <td className="px-2.5 py-2 border-b border-border text-[12px] text-muted font-mono">{order}</td>
                             <td className="px-2.5 py-2 border-b border-border text-sm"><Badge variant={EVENT_BADGE[normalizeEvent(event)] || 'warn'}>{normalizeEvent(event)}</Badge></td>
-                            <td className="px-2.5 py-2 border-b border-border text-sm">{entry.source === 'bundled' ? <span className="inline-flex items-center gap-1"><Lock className="w-3 h-3 text-muted" /><Badge variant="ok">bundled</Badge></span> : <Badge variant="warn">user</Badge>}</td>
+                            <td className="px-2.5 py-2 border-b border-border text-sm">{entry.source === 'bundled' ? <span className="inline-flex items-center gap-1"><Lock className="w-3 h-3 text-muted" /><Badge variant="ok">{i18nT('pages.hooksPage.bundled')}</Badge></span> : <Badge variant="warn">{i18nT('pages.hooksPage.user')}</Badge>}</td>
                             <td className="px-2.5 py-2 border-b border-border text-sm text-muted">{entry.matcher ? entry.matcher : <span className="italic">—</span>}</td>
                             <td className="px-2.5 py-2 border-b border-border text-sm font-mono text-text/80" title={entry.command}><div className="truncate max-w-[400px]">{entry.command}</div></td>
                           </tr>
@@ -302,7 +303,7 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
 
   return (
     <>
-      <PageHeader title="Hooks" subtitle="Shell commands that run automatically on agent events" />
+      <PageHeader title={i18nT('pages.hooksPage.hooks')} subtitle={i18nT('pages.hooksPage.shell_commands_that_run_automatically_on_agent_e')} />
       <div className="px-6 pb-8 overflow-y-auto flex-1 min-h-0">
         {content}
       </div>

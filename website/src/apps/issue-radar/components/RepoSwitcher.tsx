@@ -7,6 +7,7 @@ import { ProviderLogo, ProviderHostTag } from './ProviderBadge'
 import { useIssueRadar } from '../context'
 import ReadOnlyTag, { isReadOnly } from './ReadOnlyTag'
 
+import { i18nT } from '../../../i18n/t'
 /** Prominent repo picker pinned to the TOP of the rail. Opens downward. Uses
  * the shared Radix DropdownMenu (never a native <select>) per product decision.
  * Shows the PROVIDER's brand mark, the owner/repo, a self-managed host chip when
@@ -43,7 +44,7 @@ export default function RepoSwitcher() {
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" side="bottom" sideOffset={6} className="w-[288px]">
-        <DropdownMenuLabel className="text-[12px] uppercase tracking-[.04em]">Repositories</DropdownMenuLabel>
+        <DropdownMenuLabel className="text-[12px] uppercase tracking-[.04em]">{i18nT('apps.issueRadar.components.repoSwitcher.repositories')}</DropdownMenuLabel>
         {repos.map((r) => {
           const isActive = sameRepo(r)
           return (

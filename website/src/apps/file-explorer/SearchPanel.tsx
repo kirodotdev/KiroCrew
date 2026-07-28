@@ -8,6 +8,7 @@ import { basename } from './utils'
 import { useDebouncedValue } from './hooks'
 import type { SearchResult } from './types'
 
+import { i18nT } from '../../i18n/t'
 interface SearchPanelProps {
   rootPath: string
   onClose: () => void
@@ -53,15 +54,15 @@ export default function SearchPanel({ rootPath, onClose, onJump }: SearchPanelPr
           onKeyDown={(e) => { if (e.key === 'Escape') onClose() }}
         />
         <input
-          aria-label="Glob filter (comma-separated patterns)"
+          aria-label={i18nT('apps.fileExplorer.searchPanel.glob_filter_comma_separated_patterns')}
           className="mc-fe-search-glob"
           type="text"
-          placeholder="glob (e.g. *.md)"
+          placeholder={i18nT('apps.fileExplorer.searchPanel.glob_e_g_md')}
           value={include}
           onChange={(e) => setInclude(e.target.value)}
-          title="Comma-separated glob patterns"
+          title={i18nT('apps.fileExplorer.searchPanel.comma_separated_glob_patterns')}
         />
-        <button className="mc-fe-iconbtn" onClick={onClose} title="Close (Esc)" aria-label="Close search"><X size={14} /></button>
+        <button className="mc-fe-iconbtn" onClick={onClose} title={i18nT('apps.fileExplorer.searchPanel.close_esc')} aria-label={i18nT('apps.fileExplorer.searchPanel.close_search')}><X size={14} /></button>
       </div>
       <div className="mc-fe-search-status">
         {searching ? 'searching...'
@@ -70,7 +71,7 @@ export default function SearchPanel({ rootPath, onClose, onJump }: SearchPanelPr
       </div>
       <div className="mc-fe-search-results">
         {results.length === 0 && !searching && q && !error
-          ? <EmptyState icon={<Search size={22} />} title="No matches" />
+          ? <EmptyState icon={<Search size={22} />} title={i18nT('apps.fileExplorer.searchPanel.no_matches')} />
           : results.map((r, i) => (
               <Clickable
                 key={`${r.file}:${r.line}:${i}`}

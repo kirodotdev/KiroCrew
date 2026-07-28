@@ -9,6 +9,7 @@ import InfoTip from '../../components/InfoTip'
 import { api, type DeniedCommandsData, type DeniedCommandRule, type DeniedUserRule, type GovernancePolicyData, type GovernanceScope, type GovernanceScopeDetail, type SecurityPostureData } from '../../api/client'
 import { PostureDisclosureRow, CODE_BASE as POSTURE_CODE_BASE } from './PostureDisclosure'
 
+import { i18nT } from '../../i18n/t'
 /* ── Security feature registry ──
  *
  * Qualitative layer descriptions ONLY. Every control whose posture is a COUNT
@@ -199,7 +200,7 @@ function CategoryGroup({
         {pinned && <Lock size={12} className="shrink-0 text-muted" />}
         <span className="flex-1" />
         {allOff && !pinned && (
-          <span className="text-[11px] text-warn">off</span>
+          <span className="text-[11px] text-warn">{i18nT('pages.settings.securityPanel.off')}</span>
         )}
         <Badge variant="muted" className="tabular-nums">{enabled}/{rules.length}</Badge>
       </button>
@@ -263,12 +264,12 @@ function AddDenyInput({ onAdd, busy }: { onAdd: (pattern: string) => void; busy:
           value={value}
           onChange={e => { setValue(e.target.value); if (error) setError('') }}
           onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); submit() } }}
-          placeholder="Add a custom deny pattern (regex), e.g. rm -rf /tmp/mine"
-          aria-label="Custom deny pattern"
+          placeholder={i18nT('pages.settings.securityPanel.add_a_custom_deny_pattern_regex_e_g_rm_rf_tmp_mi')}
+          aria-label={i18nT('pages.settings.securityPanel.custom_deny_pattern')}
         />
         <Btn primary onClick={submit} disabled={busy || !value.trim()}>
           <Plus size={14} />
-          Add
+          {i18nT('pages.settings.securityPanel.add')}
         </Btn>
       </div>
       {error && <div className="text-[12px] text-danger mt-1.5">{error}</div>}
@@ -405,7 +406,7 @@ function GovernanceRow({ row }: { row: GovernanceScope }) {
             <InfoTip text={PINNED_TOOLTIP} />
           </>
         ) : (
-          <span className="text-[12px] text-muted italic shrink-0">Not restricted</span>
+          <span className="text-[12px] text-muted italic shrink-0">{i18nT('pages.settings.securityPanel.not_restricted')}</span>
         )}
       </div>
     </div>
@@ -459,43 +460,43 @@ function GovernancePolicyViewer() {
   }, [data, byScope])
 
   return (
-    <SettingsSection title="Governance Policy">
+    <SettingsSection title={i18nT('pages.settings.securityPanel.governance_policy')}>
       <SettingsCard>
         <div className="flex items-start gap-3 pb-1">
           <div className="mt-0.5 shrink-0 w-7 h-7 rounded-md bg-accent-subtle flex items-center justify-center text-accent">
             <Gavel size={14} className="lucide-inline" />
           </div>
           <div className="flex-1 min-w-0">
-            <div className="text-[13px] font-semibold text-text-strong">Effective security ceiling</div>
+            <div className="text-[13px] font-semibold text-text-strong">{i18nT('pages.settings.securityPanel.effective_security_ceiling')}</div>
             <div className="text-[12px] text-muted mt-0.5 leading-relaxed">
-              The strictest boundary in effect for each governed scope on the <strong>host surface</strong>, resolved as your organization's policy intersected with the host profile. Narrower profiles bound to a specific surface, app, or task (cron, Slack, subagents) can tighten a scope further at runtime. Read-only — the ceiling is authored in <code className="font-mono text-[11px]">security_policy.json</code> and cannot be changed here.
+              {i18nT('pages.settings.securityPanel.the_strictest_boundary_in_effect_for_each_govern')} <strong>{i18nT('pages.settings.securityPanel.host_surface')}</strong>{i18nT('pages.settings.securityPanel.resolved_as_your_organization_s_policy_intersect')} <code className="font-mono text-[11px]">{i18nT('pages.settings.securityPanel.security_policy_json')}</code> {i18nT('pages.settings.securityPanel.and_cannot_be_changed_here')}
             </div>
           </div>
         </div>
 
         {isLoading ? (
-          <div className="text-[12px] text-muted py-2">Loading governance policy…</div>
+          <div className="text-[12px] text-muted py-2">{i18nT('pages.settings.securityPanel.loading_governance_policy')}</div>
         ) : unavailable ? (
           <div className="flex items-start gap-2.5 py-2 mt-1">
             <AlertTriangle size={14} className="lucide-inline text-warn shrink-0 mt-0.5" />
-            <span className="text-[12px] text-muted leading-relaxed">Governance status is temporarily unavailable. Enforcement is unaffected — this view could not resolve the ceiling for display.</span>
+            <span className="text-[12px] text-muted leading-relaxed">{i18nT('pages.settings.securityPanel.governance_status_is_temporarily_unavailable_enf')}</span>
           </div>
         ) : !data?.has_policy && !data?.profile ? (
           <div className="flex items-start gap-2.5 py-3 mt-1 rounded-md bg-bg-elevated border border-border px-3">
             <ShieldCheck size={16} className="lucide-inline text-ok shrink-0 mt-0.5" />
             <div>
-              <div className="text-[13px] font-semibold text-text">No enterprise policy in effect</div>
-              <div className="text-[12px] text-muted mt-0.5 leading-relaxed">No policy or host profile restricts the host surface (standalone mode). Narrower profiles bound to a specific surface, app, or task may still apply elsewhere. To enforce a ceiling, author <code className="font-mono text-[11px]">~/.kiro/crew/security_policy.json</code> and per-surface <code className="font-mono text-[11px]">profiles/*.json</code>.</div>
+              <div className="text-[13px] font-semibold text-text">{i18nT('pages.settings.securityPanel.no_enterprise_policy_in_effect')}</div>
+              <div className="text-[12px] text-muted mt-0.5 leading-relaxed">{i18nT('pages.settings.securityPanel.no_policy_or_host_profile_restricts_the_host_sur')} <code className="font-mono text-[11px]">{i18nT('pages.settings.securityPanel.kiro_crew_security_policy_json')}</code> {i18nT('pages.settings.securityPanel.and_per_surface')} <code className="font-mono text-[11px]">{i18nT('pages.settings.securityPanel.profiles_json')}</code>.</div>
             </div>
           </div>
         ) : (
           <>
             <div className="flex items-center gap-2 mt-1 mb-1 flex-wrap">
               {data?.has_policy && (
-                <Badge variant="aim"><Building2 size={11} className="lucide-inline" /> Policy v{data.version ?? '?'}</Badge>
+                <Badge variant="aim"><Building2 size={11} className="lucide-inline" /> {i18nT('pages.settings.securityPanel.policy_v')}{data.version ?? '?'}</Badge>
               )}
               {data?.profile && (
-                <Badge variant="muted"><ListChecks size={11} className="lucide-inline" /> Profile: {data.profile}</Badge>
+                <Badge variant="muted"><ListChecks size={11} className="lucide-inline" /> {i18nT('pages.settings.securityPanel.profile')} {data.profile}</Badge>
               )}
             </div>
             {planeRows.map(({ plane, rows }) => rows.length === 0 ? null : (
@@ -621,22 +622,22 @@ export function SecurityPanel() {
       <div className="mb-5 bg-bg-elevated border rounded-lg p-4 flex items-start gap-3 animate-rise" style={{ borderColor: 'color-mix(in srgb, var(--warn) 45%, transparent)' }}>
         <AlertTriangle size={18} className="text-warn shrink-0 mt-0.5" />
         <div>
-          <div className="text-[13px] font-semibold text-text-strong">Data Classification Notice</div>
+          <div className="text-[13px] font-semibold text-text-strong">{i18nT('pages.settings.securityPanel.data_classification_notice')}</div>
           <div className="text-[12px] text-muted mt-1 leading-relaxed">
-            Do not enter highly sensitive or restricted data into KiroCrew. Follow your organization's data handling policy when deciding what content to share with the agent.
+            {i18nT('pages.settings.securityPanel.do_not_enter_highly_sensitive_or_restricted_data')}
           </div>
         </div>
       </div>
 
       {/* ── Live Security Posture ── */}
-      <SettingsSection title="Live Security Posture">
+      <SettingsSection title={i18nT('pages.settings.securityPanel.live_security_posture')}>
         <SettingsCard>
           {/* Non-expandable rows: single-valued modes, not counted sets. */}
-          <StatusRow icon={<Lock size={14} />} label="Process Sandbox" value="Standard" variant="ok"
+          <StatusRow icon={<Lock size={14} />} label={i18nT('pages.settings.securityPanel.process_sandbox')} value="Standard" variant="ok"
             href={`${CODE_BASE}/src/kiro_crew/sandbox.py`} />
           <StatusRow
             icon={yolo ? <ShieldAlert size={14} /> : <ShieldCheck size={14} />}
-            label="Tool Approval"
+            label={i18nT('pages.settings.securityPanel.tool_approval')}
             value={yolo ? 'YOLO (auto-approve)' : 'Interactive'}
             variant={yolo ? 'err' : 'ok'}
           />
@@ -646,17 +647,17 @@ export function SecurityPanel() {
               clicking it reveals the concrete list. */}
           <div className="mt-1 pt-1 border-t border-border">
             <div className="text-[12px] text-muted pb-1 leading-relaxed">
-              Click any control to see exactly what it covers.
+              {i18nT('pages.settings.securityPanel.click_any_control_to_see_exactly_what_it_covers')}
             </div>
             {postureError ? (
               <div className="flex items-start gap-2.5 py-2">
                 <AlertTriangle size={14} className="lucide-inline text-warn shrink-0 mt-0.5" />
                 <span className="text-[12px] text-muted leading-relaxed">
-                  Security posture detail is temporarily unavailable. Enforcement is unaffected — this view could not resolve the control list for display.
+                  {i18nT('pages.settings.securityPanel.security_posture_detail_is_temporarily_unavailab')}
                 </span>
               </div>
             ) : postureLoading ? (
-              <div className="text-[12px] text-muted py-2">Loading security posture…</div>
+              <div className="text-[12px] text-muted py-2">{i18nT('pages.settings.securityPanel.loading_security_posture')}</div>
             ) : (
               controls.map(control => (
                 <PostureDisclosureRow
@@ -706,17 +707,17 @@ export function SecurityPanel() {
       <GovernancePolicyViewer />
 
       {/* ── Denied Commands ── */}
-      <SettingsSection title="Denied Commands">
+      <SettingsSection title={i18nT('pages.settings.securityPanel.denied_commands')}>
         {/* Card A — Built-in denies */}
         <SettingsCard>
           <div className="flex items-center justify-between py-1.5">
             <div className="flex-1 min-w-0 mr-4">
               <div className="flex items-center gap-1.5">
-                <span className="text-[13px] font-semibold text-text">Disable all built-in denies</span>
+                <span className="text-[13px] font-semibold text-text">{i18nT('pages.settings.securityPanel.disable_all_built_in_denies')}</span>
                 {governanceLocked && <Lock size={13} className="text-muted" />}
               </div>
               <div className="text-[12px] text-muted mt-0.5 leading-relaxed">
-                Turn off every built-in denied-command rule at once. Independent defense-in-depth controls (sensitive paths, IMDS, git-publish) stay enforced{governanceLocked ? ', and rules pinned by your organization’s policy remain on.' : '.'}
+                {i18nT('pages.settings.securityPanel.turn_off_every_built_in_denied_command_rule_at_o')}{governanceLocked ? ', and rules pinned by your organization’s policy remain on.' : '.'}
               </div>
             </div>
             {/* Disable-all stays available even when governance-locked: the
@@ -726,34 +727,34 @@ export function SecurityPanel() {
                 pinned-policy tooltip alongside the still-functional toggle. */}
             <span className="flex items-center gap-1.5 shrink-0">
               {governanceLocked && <InfoTip text={PINNED_TOOLTIP} />}
-              <Toggle checked={disableAll} onChange={onDisableAllToggle} disabled={!dc} label="Disable all built-in denies" />
+              <Toggle checked={disableAll} onChange={onDisableAllToggle} disabled={!dc} label={i18nT('pages.settings.securityPanel.disable_all_built_in_denies')} />
             </span>
           </div>
 
           <div className="text-[12px] text-muted mt-1 mb-2 leading-relaxed">
-            Disabling a rule that overlaps an always-on control (sensitive-file reads, IMDS, git-publish) does not fully unblock it — defense-in-depth keeps it blocked.
+            {i18nT('pages.settings.securityPanel.disabling_a_rule_that_overlaps_an_always_on_cont')}
           </div>
 
           {!dc ? (
-            <div className="text-[12px] text-muted py-2">Loading built-in rules…</div>
+            <div className="text-[12px] text-muted py-2">{i18nT('pages.settings.securityPanel.loading_built_in_rules')}</div>
           ) : (
             <>
               <div className="flex items-center justify-between mt-1 mb-0.5">
-                <span className="text-[11px] text-muted">{Object.keys(grouped).length} categories · {dc.builtins.length} rules</span>
+                <span className="text-[11px] text-muted">{Object.keys(grouped).length} {i18nT('pages.settings.securityPanel.categories')} {dc.builtins.length} {i18nT('pages.settings.securityPanel.rules')}</span>
                 <div className="flex items-center gap-3">
                   <button
                     type="button"
                     className="text-[11px] text-muted hover:text-text bg-transparent border-none cursor-pointer p-0 transition-colors"
                     onClick={() => setExpandedCats(new Set(Object.keys(grouped)))}
                   >
-                    Expand all
+                    {i18nT('pages.settings.securityPanel.expand_all')}
                   </button>
                   <button
                     type="button"
                     className="text-[11px] text-muted hover:text-text bg-transparent border-none cursor-pointer p-0 transition-colors"
                     onClick={() => setExpandedCats(new Set())}
                   >
-                    Collapse all
+                    {i18nT('pages.settings.securityPanel.collapse_all')}
                   </button>
                 </div>
               </div>
@@ -781,9 +782,9 @@ export function SecurityPanel() {
 
         {/* Card B — Your custom denies */}
         <SettingsCard>
-          <div className="text-[13px] font-semibold text-text">Your custom denies</div>
+          <div className="text-[13px] font-semibold text-text">{i18nT('pages.settings.securityPanel.your_custom_denies')}</div>
           <div className="text-[12px] text-muted mt-0.5 mb-1 leading-relaxed">
-            Add your own deny patterns (Python-compatible regex). These are enforced at KiroCrew's PreToolUse gate alongside the built-in rules.
+            {i18nT('pages.settings.securityPanel.add_your_own_deny_patterns_python_compatible_reg')}
           </div>
           {dc && dc.user_added.length > 0 && (
             <div className="divide-y divide-border">
@@ -802,10 +803,10 @@ export function SecurityPanel() {
       </SettingsSection>
 
       {/* ── Defense-in-Depth Layers ── */}
-      <SettingsSection title="Defense-in-Depth Architecture">
+      <SettingsSection title={i18nT('pages.settings.securityPanel.defense_in_depth_architecture')}>
         <SettingsCard>
           <div className="text-[12px] text-muted mb-3 leading-relaxed">
-            KiroCrew implements 6 security layers. Each layer operates independently — an attacker must bypass all layers simultaneously to succeed.
+            {i18nT('pages.settings.securityPanel.kirocrew_implements_6_security_layers_each_layer')}
           </div>
           <div className="divide-y divide-border">
             {FEATURES.map(f => <FeatureRow key={f.label} feature={f} />)}
@@ -814,7 +815,7 @@ export function SecurityPanel() {
       </SettingsSection>
 
       {/* ── Documentation Links ── */}
-      <SettingsSection title="Documentation">
+      <SettingsSection title={i18nT('pages.settings.securityPanel.documentation')}>
         <SettingsCard>
           <div className="flex flex-col gap-2">
             {[
@@ -838,8 +839,8 @@ export function SecurityPanel() {
         maxWidth={480}
         footer={
           <>
-            <Btn onClick={() => setConfirm(null)}>Cancel</Btn>
-            <Btn danger disabled={!ack} onClick={runConfirm}>Disable</Btn>
+            <Btn onClick={() => setConfirm(null)}>{i18nT('pages.settings.securityPanel.cancel')}</Btn>
+            <Btn danger disabled={!ack} onClick={runConfirm}>{i18nT('pages.settings.securityPanel.disable')}</Btn>
           </>
         }
       >
@@ -850,7 +851,7 @@ export function SecurityPanel() {
         {/* eslint-disable-next-line jsx-a11y/label-has-associated-control, jsx-a11y/label-has-for -- the Checkbox control is nested inside the label */}
         <label className="flex items-center gap-2.5 mt-4 cursor-pointer">
           <Checkbox checked={ack} onChange={e => setAck(e.target.checked)} />
-          <span className="text-[13px] text-text">I understand this weakens KiroCrew's protection.</span>
+          <span className="text-[13px] text-text">{i18nT('pages.settings.securityPanel.i_understand_this_weakens_kirocrew_s_protection')}</span>
         </label>
       </Modal>
     </>

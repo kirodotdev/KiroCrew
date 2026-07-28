@@ -7,6 +7,7 @@ import { api } from '../api/client'
 import type { AgentSource } from './useAgentSync'
 import { KIRO_GHOST_PIXELS } from './sceneText'
 
+import { i18nT } from '../i18n/t'
 /** Minimal agent shape for hit-testing — all scene agent types satisfy this */
 export interface SceneAgent {
   id: string; name: string; x: number; y: number; running: boolean; detail: string
@@ -351,7 +352,7 @@ export function useSceneInteraction(
       <div style={{ color: '#f90', fontWeight: 'bold', overflow: 'hidden', textOverflow: 'ellipsis' }}>{tooltip.agent.name}</div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}><Circle size={8} fill={tooltip.agent.running ? '#4f4' : '#ccc'} color={tooltip.agent.running ? '#4f4' : '#ccc'} aria-hidden /> {agentStatusLine(tooltip.agent)}</div>
       {tooltipSource?.pendingApproval ? (
-        <div style={{ color: '#fb0', display: 'flex', alignItems: 'center', gap: 4 }}><Pause size={10} aria-hidden /> needs approval: {tooltipSource.pendingApproval.tool}</div>
+        <div style={{ color: '#fb0', display: 'flex', alignItems: 'center', gap: 4 }}><Pause size={10} aria-hidden /> {i18nT('hooks.useSceneInteraction.needs_approval')} {tooltipSource.pendingApproval.tool}</div>
       ) : null}
       {tooltipSource?.lastMessage ? (
         <div style={{ color: '#aab', overflow: 'hidden', textOverflow: 'ellipsis', display: 'flex', alignItems: 'center', gap: 4 }}><MessageSquare size={10} style={{ flexShrink: 0 }} aria-hidden /> <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{messagePreview(tooltipSource.lastMessage)}</span></div>
@@ -359,7 +360,7 @@ export function useSceneInteraction(
       <div style={{ color: '#777', fontStyle: 'italic' }}>{tooltip.agent.running ? theme.active : theme.idle}</div>
       {extraLine && extraLine(tooltip.agent)}
       {tooltip.agent.kind === 'slot' ? (
-        <div style={{ color: '#666', marginTop: 2 }}>click for thread</div>
+        <div style={{ color: '#666', marginTop: 2 }}>{i18nT('hooks.useSceneInteraction.click_for_thread')}</div>
       ) : null}
     </div>
   ) : null
@@ -381,11 +382,11 @@ export function useSceneInteraction(
           onClick={() => openChat(threadView.agent)}
           style={{ background: '#2a2a3a', border: '1px solid #555', borderRadius: 4, color: '#ddd', fontSize: 10, padding: '2px 8px', cursor: 'pointer' }}
         >
-          Open chat
+          {i18nT('hooks.useSceneInteraction.open_chat')}
         </button>
         <button
           onClick={() => setThreadView(null)}
-          aria-label="Close thread view"
+          aria-label={i18nT('hooks.useSceneInteraction.close_thread_view')}
           style={{ background: 'transparent', border: 'none', color: '#888', fontSize: 12, cursor: 'pointer', padding: '0 2px', lineHeight: 1 }}
         >
           <X size={12} aria-hidden />
@@ -393,11 +394,11 @@ export function useSceneInteraction(
       </div>
       <div style={{ maxHeight: 180, overflowY: 'auto', padding: '6px 8px', display: 'flex', flexDirection: 'column', gap: 5 }}>
         {threadView.loading ? (
-          <div style={{ color: '#777', fontStyle: 'italic' }}>Loading thread…</div>
+          <div style={{ color: '#777', fontStyle: 'italic' }}>{i18nT('hooks.useSceneInteraction.loading_thread')}</div>
         ) : threadView.error ? (
-          <div style={{ color: '#c66' }}>Couldn't load messages</div>
+          <div style={{ color: '#c66' }}>{i18nT('hooks.useSceneInteraction.couldn_t_load_messages')}</div>
         ) : threadView.messages.length === 0 ? (
-          <div style={{ color: '#777', fontStyle: 'italic' }}>No messages yet</div>
+          <div style={{ color: '#777', fontStyle: 'italic' }}>{i18nT('hooks.useSceneInteraction.no_messages_yet')}</div>
         ) : (
           threadView.messages.map((m, i) => (
             <div key={i} style={{ display: 'flex', gap: 5, alignItems: 'baseline' }}>
@@ -411,7 +412,7 @@ export function useSceneInteraction(
           ))
         )}
         {sourceFor(threadView.agent)?.running ? (
-          <div style={{ color: '#7a8', fontStyle: 'italic' }}>kiro is working…</div>
+          <div style={{ color: '#7a8', fontStyle: 'italic' }}>{i18nT('hooks.useSceneInteraction.kiro_is_working')}</div>
         ) : null}
         <div ref={messagesEndRef} />
       </div>
@@ -420,23 +421,23 @@ export function useSceneInteraction(
         return src?.pendingApproval ? (
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 8px', borderTop: '1px solid #333', background: '#241d10' }}>
             <span style={{ color: '#fb0', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: 4 }}>
-              <Pause size={10} style={{ flexShrink: 0 }} aria-hidden /> Waiting on approval: {src.pendingApproval.tool}
+              <Pause size={10} style={{ flexShrink: 0 }} aria-hidden /> {i18nT('hooks.useSceneInteraction.waiting_on_approval')} {src.pendingApproval.tool}
             </span>
             <button
               onClick={() => resolvePendingApproval(threadView.agent, 'approve')}
               disabled={approvalState === 'resolving'}
               style={{ background: '#1e4620', border: '1px solid #3a7a3d', borderRadius: 4, color: '#8f8', fontSize: 10, padding: '2px 8px', cursor: 'pointer' }}
             >
-              Approve
+              {i18nT('hooks.useSceneInteraction.approve')}
             </button>
             <button
               onClick={() => resolvePendingApproval(threadView.agent, 'reject')}
               disabled={approvalState === 'resolving'}
               style={{ background: '#46201e', border: '1px solid #7a3d3a', borderRadius: 4, color: '#f88', fontSize: 10, padding: '2px 8px', cursor: 'pointer' }}
             >
-              Deny
+              {i18nT('hooks.useSceneInteraction.deny')}
             </button>
-            {approvalState === 'failed' ? <span style={{ color: '#c66' }}>failed</span> : null}
+            {approvalState === 'failed' ? <span style={{ color: '#c66' }}>{i18nT('hooks.useSceneInteraction.failed')}</span> : null}
           </div>
         ) : null
       })()}

@@ -7,6 +7,7 @@ import { SecretField } from '../../components/SecretField'
 import { Input, Btn } from '../../components/ui'
 import { api, type SlackConfigData, type SlackConfigSave } from '../../api/client'
 
+import { i18nT } from '../../i18n/t'
 const SETUP_GUIDE = 'https://github.com/kirodotdev/KiroCrew/blob/main/SLACK_SETUP.md'
 
 type Draft = {
@@ -94,13 +95,13 @@ export function TagListEditor({ label, description, values, placeholder, onChang
           ))}
         </div>
       )}
-      {values.length === 0 && readOnly && <div className="text-[12px] text-muted">(none)</div>}
+      {values.length === 0 && readOnly && <div className="text-[12px] text-muted">{i18nT('pages.settings.slackPanel.none')}</div>}
       {!readOnly && (
         <div className="flex items-center gap-2">
           <Input value={draft} placeholder={placeholder} className="flex-none font-mono"
             onChange={e => { setDraft(e.target.value); setErr('') }}
             onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); add() } }} />
-          <Btn onClick={add} disabled={!draft.trim()}><Plus size={13} /> Add</Btn>
+          <Btn onClick={add} disabled={!draft.trim()}><Plus size={13} /> {i18nT('pages.settings.slackPanel.add')}</Btn>
         </div>
       )}
       {err && <div className="text-[12px] text-danger">{err}</div>}
@@ -207,8 +208,8 @@ export function SlackPanel() {
     saveMut.mutate(payload)
   }, [draft, botToken, appToken, botClear, appClear, saveMut])
 
-  if (isLoading) return <p className="text-[13px] text-muted p-4">Loading Slack config…</p>
-  if (isError || !data || !draft) return <p className="text-[13px] text-danger p-4">Cannot load Slack config. Is the gateway running?</p>
+  if (isLoading) return <p className="text-[13px] text-muted p-4">{i18nT('pages.settings.slackPanel.loading_slack_config')}</p>
+  if (isError || !data || !draft) return <p className="text-[13px] text-danger p-4">{i18nT('pages.settings.slackPanel.cannot_load_slack_config_is_the_gateway_running')}</p>
 
   const upd = (patch: Partial<Draft>) => setDraft(d => (d ? { ...d, ...patch } : d))
   const ro = data.read_only
@@ -222,11 +223,11 @@ export function SlackPanel() {
         </div>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-3 flex-wrap">
-            <h3 className="text-[15px] font-semibold text-text-strong">Slack</h3>
+            <h3 className="text-[15px] font-semibold text-text-strong">{i18nT('pages.settings.slackPanel.slack')}</h3>
             <StatusBadge config={data} />
           </div>
           <p className="text-[12px] text-muted mt-1">
-            Talk to your agents from Slack over Socket Mode. Add allowed member IDs so connected bots can respond.
+            {i18nT('pages.settings.slackPanel.talk_to_your_agents_from_slack_over_socket_mode')}
           </p>
           {connectionHint(data) && (
             <p className="text-[12px] text-warn mt-1 flex items-center gap-1.5">
@@ -242,18 +243,16 @@ export function SlackPanel() {
         <div className="flex items-center gap-2 rounded-md border border-border bg-bg-elevated px-3 py-2 mb-3">
           <Lock size={13} className="text-muted flex-none" />
           <span className="text-[12px] text-muted">
-            Slack settings are managed on the machine running KiroCrew and are read-only from remote sessions.
+            {i18nT('pages.settings.slackPanel.slack_settings_are_managed_on_the_machine_runnin')}
           </span>
         </div>
       )}
 
       {/* ── Credentials guide ── */}
-      <SettingsSection title="Get your credentials">
+      <SettingsSection title={i18nT('pages.settings.slackPanel.get_your_credentials')}>
         <SettingsCard>
           <p className="text-[13px] text-text m-0">
-            Create the Slack app from the pre-filled manifest below (Socket Mode and permissions
-            included, named KiroCrew-{manifestQ.data?.alias ?? 'you'}). Install it to your
-            workspace, then paste the bot token and app-level token here.
+            {i18nT('pages.settings.slackPanel.create_the_slack_app_from_the_pre_filled_manifes')}{manifestQ.data?.alias ?? 'you'}{i18nT('pages.settings.slackPanel.install_it_to_your_workspace_then_paste_the_bot')}
           </p>
           <div className="flex items-center gap-2 mt-2 flex-wrap">
             <a
@@ -262,27 +261,27 @@ export function SlackPanel() {
               aria-disabled={!manifestQ.data}
               className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[13px] font-medium border transition-all ${manifestQ.data ? 'bg-accent text-accent-fg border-accent hover:bg-accent-hover' : 'border-border text-muted pointer-events-none'}`}
             >
-              Create Slack app <ExternalLink size={13} />
+              {i18nT('pages.settings.slackPanel.create_slack_app')} <ExternalLink size={13} />
             </a>
             <Btn onClick={copyManifest} disabled={!manifestQ.data}>
-              {manifestCopied ? <><Check size={13} /> Copied</> : 'Copy manifest YAML'}
+              {manifestCopied ? <><Check size={13} /> {i18nT('pages.settings.slackPanel.copied')}</> : 'Copy manifest YAML'}
             </Btn>
             <a href={SETUP_GUIDE} target="_blank" rel="noopener noreferrer"
               className="inline-flex items-center gap-1.5 text-[13px] font-medium text-accent hover:underline">
-              Setup guide <ExternalLink size={13} />
+              {i18nT('pages.settings.slackPanel.setup_guide')} <ExternalLink size={13} />
             </a>
           </div>
         </SettingsCard>
       </SettingsSection>
 
       {/* ── Required tokens ── */}
-      <SettingsSection title="Required">
+      <SettingsSection title={i18nT('pages.settings.slackPanel.required')}>
         <SettingsCard>
           <SecretField
             key={`bot-${formKey}`}
-            label="Slack bot token"
-            description="From OAuth & Permissions after installing your Slack app (starts with xoxb-)."
-            placeholder="Paste Slack bot token (xoxb-…)"
+            label={i18nT('pages.settings.slackPanel.slack_bot_token')}
+            description={i18nT('pages.settings.slackPanel.from_oauth_permissions_after_installing_your_sla')}
+            placeholder={i18nT('pages.settings.slackPanel.paste_slack_bot_token_xoxb')}
             isSet={data.bot_token_set}
             preview={data.bot_token_preview}
             readOnly={ro}
@@ -294,9 +293,9 @@ export function SlackPanel() {
           />
           <SecretField
             key={`app-${formKey}`}
-            label="Slack app token"
-            description="App-level token required for Socket Mode (starts with xapp-)."
-            placeholder="Paste Slack app token (xapp-…)"
+            label={i18nT('pages.settings.slackPanel.slack_app_token')}
+            description={i18nT('pages.settings.slackPanel.app_level_token_required_for_socket_mode_starts')}
+            placeholder={i18nT('pages.settings.slackPanel.paste_slack_app_token_xapp')}
             isSet={data.app_token_set}
             preview={data.app_token_preview}
             readOnly={ro}
@@ -310,21 +309,21 @@ export function SlackPanel() {
       </SettingsSection>
 
       {/* ── Identity & access ── */}
-      <SettingsSection title="Identity & access">
+      <SettingsSection title={i18nT('pages.settings.slackPanel.identity_access')}>
         <SettingsCard>
           <SettingsInput
-            label="Owner Slack member ID"
-            description="The one member who can always interact with the bot (KIROCREW_OWNER_ID). Starts with U or W."
+            label={i18nT('pages.settings.slackPanel.owner_slack_member_id')}
+            description={i18nT('pages.settings.slackPanel.the_one_member_who_can_always_interact_with_the')}
             value={draft.owner_id}
             onChange={v => upd({ owner_id: v })}
-            placeholder="U0123ABC456"
+            placeholder={i18nT('pages.settings.slackPanel.u0123abc456')}
             disabled={ro}
           />
           <TagListEditor
-            label="Allowed enterprise orgs"
-            description="Enterprise Grid org IDs to allow (starts with E or T). Leave empty to allow all orgs."
+            label={i18nT('pages.settings.slackPanel.allowed_enterprise_orgs')}
+            description={i18nT('pages.settings.slackPanel.enterprise_grid_org_ids_to_allow_starts_with_e_o')}
             values={draft.allowed_enterprise_ids}
-            placeholder="E0123ABC456"
+            placeholder={i18nT('pages.settings.slackPanel.e0123abc456')}
             onChange={v => upd({ allowed_enterprise_ids: v })}
             validate={v => /^[ET][A-Z0-9]+$/.test(v)}
             readOnly={ro}
@@ -333,26 +332,26 @@ export function SlackPanel() {
       </SettingsSection>
 
       {/* ── Behavior ── */}
-      <SettingsSection title="Behavior">
+      <SettingsSection title={i18nT('pages.settings.slackPanel.behavior')}>
         <SettingsCard>
           <SettingsInput
-            label="Slash command"
-            description="Trigger word for the Slack slash command (without the leading /)."
+            label={i18nT('pages.settings.slackPanel.slash_command')}
+            description={i18nT('pages.settings.slackPanel.trigger_word_for_the_slack_slash_command_without')}
             value={draft.command}
             onChange={v => upd({ command: v })}
-            placeholder="kirocrew"
+            placeholder={i18nT('pages.settings.slackPanel.kirocrew')}
             disabled={ro}
           />
           <SettingsToggle
-            label="Phase reactions"
-            description="Show phase-aware emoji reactions (queued → thinking → coding → done) on messages."
+            label={i18nT('pages.settings.slackPanel.phase_reactions')}
+            description={i18nT('pages.settings.slackPanel.show_phase_aware_emoji_reactions_queued_thinking')}
             checked={draft.reactions_enabled}
             onChange={v => upd({ reactions_enabled: v })}
             disabled={ro}
           />
           <SettingsToggle
-            label="Show thinking"
-            description="Post the model's reasoning as a thread reply. Disable to keep responses concise."
+            label={i18nT('pages.settings.slackPanel.show_thinking')}
+            description={i18nT('pages.settings.slackPanel.post_the_model_s_reasoning_as_a_thread_reply_dis')}
             checked={draft.show_thinking}
             onChange={v => upd({ show_thinking: v })}
             disabled={ro}

@@ -5,6 +5,7 @@ import { IMAGE_EXTS } from './constants'
 import { extOf, basename } from './utils'
 import type { FolderTab, FileTab } from './types'
 
+import { i18nT } from '../../i18n/t'
 interface TabStripProps {
   folderTabs: FolderTab[]
   fileTabs: FileTab[]
@@ -62,7 +63,7 @@ export default function TabStrip({ folderTabs, fileTabs, activeFolderId, activeF
             {renameId === t.id ? (
               <input
                 className="mc-fe-tab-rename"
-                aria-label="Rename workspace tab"
+                aria-label={i18nT('apps.fileExplorer.tabStrip.rename_workspace_tab')}
                 autoFocus
                 value={renameDraft}
                 onChange={(e) => setRenameDraft(e.target.value)}
@@ -76,7 +77,7 @@ export default function TabStrip({ folderTabs, fileTabs, activeFolderId, activeF
             ) : (
               <span className="mc-fe-tab-label">{t.label || basename(t.rootPath) || '/'}</span>
             )}
-            <Clickable className="mc-fe-tab-close" onClick={(e) => { e?.stopPropagation(); onCloseFolder(t.id) }} title="Close workspace tab" aria-label="Close workspace tab">
+            <Clickable className="mc-fe-tab-close" onClick={(e) => { e?.stopPropagation(); onCloseFolder(t.id) }} title={i18nT('apps.fileExplorer.tabStrip.close_workspace_tab')} aria-label={i18nT('apps.fileExplorer.tabStrip.close_workspace_tab')}>
               <X size={11} />
             </Clickable>
           </div>
@@ -94,12 +95,12 @@ export default function TabStrip({ folderTabs, fileTabs, activeFolderId, activeF
           >
             {IMAGE_EXTS.has(extOf(ft.path)) ? <Image size={11} style={{ opacity: 0.7, marginRight: 5, flexShrink: 0 }} /> : <File size={11} style={{ opacity: 0.7, marginRight: 5, flexShrink: 0 }} />}
             <span className="mc-fe-tab-label">{basename(ft.path)}</span>
-            <Clickable className="mc-fe-tab-close" onClick={(e) => { e?.stopPropagation(); onCloseFile(ft.id) }} aria-label="Close file tab">
+            <Clickable className="mc-fe-tab-close" onClick={(e) => { e?.stopPropagation(); onCloseFile(ft.id) }} aria-label={i18nT('apps.fileExplorer.tabStrip.close_file_tab')}>
               <X size={11} />
             </Clickable>
           </div>
         ))}
-        <button className="mc-fe-tab-new" onClick={onNewFolder} title="New workspace tab (Ctrl/Cmd+T)" aria-label="New workspace tab">
+        <button className="mc-fe-tab-new" onClick={onNewFolder} title={i18nT('apps.fileExplorer.tabStrip.new_workspace_tab_ctrl_cmd_t')} aria-label={i18nT('apps.fileExplorer.tabStrip.new_workspace_tab')}>
           <Plus size={13} />
         </button>
       </div>

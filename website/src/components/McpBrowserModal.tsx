@@ -20,6 +20,7 @@ import { DiscoverySearchBar, DiscoveryStates } from './DiscoverySearchBar'
 import { safeHttpUrl } from '../lib/safeUrl'
 import type { DiscoveredMcpServer, McpDiscoverDetail, McpInstallPlan } from '../types'
 
+import { i18nT } from '../i18n/t'
 interface Props {
   open: boolean
   onClose: () => void
@@ -196,7 +197,7 @@ export default function McpBrowserModal({ open, onClose }: Props) {
   }, [moveSelection, selectedServer, installedOverride, installPhases, handleInstall, queryClient])
 
   return (
-    <Modal open={open} onClose={onClose} title="Add Server" maxWidth={1100} height="85vh"
+    <Modal open={open} onClose={onClose} title={i18nT('components.mcpBrowserModal.add_server')} maxWidth={1100} height="85vh"
       headerActions={
         isFetching ? <RefreshCw size={14} className="text-muted animate-spin" /> : undefined
       }
@@ -229,7 +230,7 @@ export default function McpBrowserModal({ open, onClose }: Props) {
               ref={listRef}
               id="mcp-results-list"
               role="listbox"
-              aria-label="MCP server search results"
+              aria-label={i18nT('components.mcpBrowserModal.mcp_server_search_results')}
               className={`${selectedServer && mobileDetail ? 'hidden md:block' : 'block'} w-full md:w-[40%] md:shrink-0 overflow-y-auto scrollbar-overlay space-y-1.5 pr-1`}
             >
               {results.map(server => {
@@ -264,7 +265,7 @@ export default function McpBrowserModal({ open, onClose }: Props) {
                           </span>
                           {server.deprecated && (
                             <span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded-full bg-warn-subtle text-[var(--warn)] font-medium">
-                              deprecated
+                              {i18nT('components.mcpBrowserModal.deprecated')}
                             </span>
                           )}
                         </div>
@@ -302,7 +303,7 @@ export default function McpBrowserModal({ open, onClose }: Props) {
                   {/* Back button stays fixed above the scrollable detail content */}
                   <div className="md:hidden mb-2 shrink-0">
                     <Btn onClick={() => setMobileDetail(false)}>
-                      <ArrowLeft size={14} aria-hidden="true" /> Back to results
+                      <ArrowLeft size={14} aria-hidden="true" /> {i18nT('components.mcpBrowserModal.back_to_results')}
                     </Btn>
                   </div>
                   <div className="flex-1 min-h-0 overflow-y-auto scrollbar-overlay">
@@ -316,7 +317,7 @@ export default function McpBrowserModal({ open, onClose }: Props) {
                 </>
               ) : (
                 <div className="flex items-center justify-center h-full text-muted text-sm">
-                  Select a server to preview
+                  {i18nT('components.mcpBrowserModal.select_a_server_to_preview')}
                 </div>
               )}
             </div>
@@ -353,7 +354,7 @@ function InstallStatus({
     return (
       <span className="flex items-center gap-1.5 text-xs text-muted" role="status">
         <Loader2 size={iconSize} className="animate-spin" aria-hidden="true" />
-        Installing...
+        {i18nT('components.mcpBrowserModal.installing')}
       </span>
     )
   }
@@ -363,12 +364,12 @@ function InstallStatus({
     return phase.enabled ? (
       <span className="flex items-center gap-1 text-xs text-green-400" role="status">
         <Check size={iconSize} aria-hidden="true" />
-        Installed
+        {i18nT('components.mcpBrowserModal.installed')}
       </span>
     ) : (
       <span className="flex items-center gap-1 text-xs text-amber-400" role="status">
         <Check size={iconSize} aria-hidden="true" />
-        Installed (disabled)
+        {i18nT('components.mcpBrowserModal.installed_disabled')}
       </span>
     )
   }
@@ -377,14 +378,14 @@ function InstallStatus({
     // path here — the existing entry is managed from the installed table.
     return (
       <span className="flex items-center gap-1 text-xs text-amber-400" role="status">
-        <AlertTriangle size={iconSize} aria-hidden="true" /> Name in use
+        <AlertTriangle size={iconSize} aria-hidden="true" /> {i18nT('components.mcpBrowserModal.name_in_use')}
       </span>
     )
   }
   if (installed) {
     return (
       <span className="flex items-center gap-1 text-xs text-green-400">
-        <Check size={iconSize} aria-hidden="true" /> Installed
+        <Check size={iconSize} aria-hidden="true" /> {i18nT('components.mcpBrowserModal.installed')}
       </span>
     )
   }
@@ -397,7 +398,7 @@ function InstallStatus({
       onClick={(e: React.MouseEvent) => { e.stopPropagation(); onInstall(server) }}
     >
       <Download size={iconSize} aria-hidden="true" />
-      Install{large ? ' Server' : ''}
+      {i18nT('components.mcpBrowserModal.install')}{large ? ' Server' : ''}
     </Btn>
   )
 }
@@ -445,7 +446,7 @@ function ServerDetailPanel({
           </span>
           {server.deprecated && (
             <span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded-full bg-warn-subtle text-[var(--warn)] font-medium">
-              deprecated
+              {i18nT('components.mcpBrowserModal.deprecated')}
             </span>
           )}
         </div>
@@ -456,7 +457,7 @@ function ServerDetailPanel({
 
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted mb-3">
         <span className="font-mono">{server.id}</span>
-        {server.version && <span>v{server.version}</span>}
+        {server.version && <span>{i18nT('components.mcpBrowserModal.v')}{server.version}</span>}
         {/* repo_url is publisher-controlled registry data: gate the scheme
           * through safeHttpUrl so a javascript:/data: URL can never become a
           * clickable href (redaction upstream scrubs content, not schemes). */}
@@ -467,15 +468,15 @@ function ServerDetailPanel({
             rel="noopener noreferrer"
             className="inline-flex items-center gap-1 text-accent hover:underline"
           >
-            <ExternalLink size={11} aria-hidden="true" /> Source
+            <ExternalLink size={11} aria-hidden="true" /> {i18nT('components.mcpBrowserModal.source')}
           </a>
         )}
       </div>
 
       {phase?.step === 'done' && !phase.enabled && (
         <div className="mb-3 p-2 rounded bg-warn-subtle border border-[var(--warn)]/30 text-xs text-[var(--warn)]" data-testid="installed-disabled-note">
-          Installed disabled. Review the entry in the servers table
-          {phase.requiredEnv.length > 0 ? ', set its environment variables,' : ''} and enable it there to start using it.
+          {i18nT('components.mcpBrowserModal.installed_disabled_review_the_entry_in_the_serve')}
+          {phase.requiredEnv.length > 0 ? ', set its environment variables,' : ''} {i18nT('components.mcpBrowserModal.and_enable_it_there_to_start_using_it')}
         </div>
       )}
       {phase?.step === 'error' && (
@@ -485,14 +486,13 @@ function ServerDetailPanel({
       )}
       {phase?.step === 'conflict' && (
         <div className="mb-3 p-2 rounded bg-warn-subtle border border-[var(--warn)]/30 text-xs text-[var(--warn)]">
-          A server named &ldquo;{server.name}&rdquo; already exists with a different configuration.
-          Manage it from the installed servers table.
+          {i18nT('components.mcpBrowserModal.a_server_named')}{server.name}{i18nT('components.mcpBrowserModal.already_exists_with_a_different_configuration_ma')}
         </div>
       )}
 
       {detailLoading ? (
         <div className="flex items-center gap-2 text-xs text-muted" role="status">
-          <Loader2 size={12} className="animate-spin" aria-hidden="true" /> Loading details...
+          <Loader2 size={12} className="animate-spin" aria-hidden="true" /> {i18nT('components.mcpBrowserModal.loading_details')}
         </div>
       ) : (
         <>
@@ -502,7 +502,7 @@ function ServerDetailPanel({
             <div className="mb-3 p-2.5 rounded-md border border-border bg-bg-elevated" data-testid="install-plan">
               <div className="flex items-center gap-1.5 text-xs font-medium text-text-strong mb-1">
                 <Terminal size={12} aria-hidden="true" />
-                Install plan
+                {i18nT('components.mcpBrowserModal.install_plan')}
                 <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-bg text-muted border border-border font-mono">
                   {detail.install_plan.method}
                 </span>
@@ -511,7 +511,7 @@ function ServerDetailPanel({
                 {installPlanCommand(detail.install_plan)}
               </code>
               <p className="mt-1 text-[11px] text-muted">
-                Installs disabled — you review and enable it from the servers table.
+                {i18nT('components.mcpBrowserModal.installs_disabled_you_review_and_enable_it_from')}
               </p>
             </div>
           )}
@@ -521,7 +521,7 @@ function ServerDetailPanel({
             <div className="mb-3 p-2.5 rounded-md border border-[var(--warn)]/30 bg-warn-subtle" data-testid="required-env">
               <div className="flex items-center gap-1.5 text-xs font-medium text-[var(--warn)] mb-1">
                 <KeyRound size={12} aria-hidden="true" />
-                Requires environment variables
+                {i18nT('components.mcpBrowserModal.requires_environment_variables')}
               </div>
               <div className="flex flex-wrap gap-1.5 mb-1">
                 {requiredEnv.map(v => (
@@ -529,7 +529,7 @@ function ServerDetailPanel({
                 ))}
               </div>
               <p className="text-[11px] text-muted">
-                Set these in the server config before enabling it.
+                {i18nT('components.mcpBrowserModal.set_these_in_the_server_config_before_enabling_i')}
               </p>
             </div>
           )}
@@ -540,7 +540,7 @@ function ServerDetailPanel({
               <MarkdownRenderer content={description} />
             </div>
           ) : (
-            <p className="text-sm text-muted">No description available.</p>
+            <p className="text-sm text-muted">{i18nT('components.mcpBrowserModal.no_description_available')}</p>
           )}
         </>
       )}

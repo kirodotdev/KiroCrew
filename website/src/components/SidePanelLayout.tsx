@@ -2,6 +2,7 @@ import React from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useIsMobile } from '../hooks/useIsMobile'
 
+import { i18nT } from '../i18n/t'
 export interface SidePanelTab {
   key: string
   label: string
@@ -63,7 +64,7 @@ export default function SidePanelLayout({ title, tabs, defaultTab, footer, heade
               >
                 <span className="w-3.5 h-3.5 shrink-0 flex items-center justify-center">{t.icon}</span>
                 {t.label}
-                {t.dot && <span className="w-1.5 h-1.5 bg-accent rounded-full shrink-0" role="status" aria-label="update available" />}
+                {t.dot && <span className="w-1.5 h-1.5 bg-accent rounded-full shrink-0" role="status" aria-label={i18nT('components.sidePanelLayout.update_available')} />}
               </button>
             ))}
           </div>
@@ -92,7 +93,7 @@ export default function SidePanelLayout({ title, tabs, defaultTab, footer, heade
                   {t.icon}
                 </span>
                 {t.label}
-                {t.dot && <span className="ml-auto w-2 h-2 bg-accent rounded-full shrink-0" role="status" aria-label="update available" />}
+                {t.dot && <span className="ml-auto w-2 h-2 bg-accent rounded-full shrink-0" role="status" aria-label={i18nT('components.sidePanelLayout.update_available')} />}
               </button>
             </React.Fragment>
           ))}

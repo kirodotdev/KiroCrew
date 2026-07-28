@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 
+import { i18nT } from '../i18n/t'
 interface ArchiveEntry {
   name: string
   key: string
@@ -69,14 +70,14 @@ export default function SessionArchive() {
     <div className="flex gap-4 h-full text-sm">
       <div className="w-1/3 flex flex-col border border-border rounded p-2 overflow-hidden">
         <div className="flex gap-2 mb-2">
-          <input aria-label="Fuzzy filter (substring match)" className="flex-1 bg-bg-2 border border-border rounded px-2 py-1 text-[13px]" placeholder="Fuzzy filter (substring match)" value={filterKey} onChange={e => setFilterKey(e.target.value)} />
-          <button className="px-2 py-1 bg-accent text-accent-fg rounded text-[13px]" onClick={loadList}>Reload</button>
+          <input aria-label={i18nT('pages.sessionArchive.fuzzy_filter_substring_match')} className="flex-1 bg-bg-2 border border-border rounded px-2 py-1 text-[13px]" placeholder={i18nT('pages.sessionArchive.fuzzy_filter_substring_match')} value={filterKey} onChange={e => setFilterKey(e.target.value)} />
+          <button className="px-2 py-1 bg-accent text-accent-fg rounded text-[13px]" onClick={loadList}>{i18nT('pages.sessionArchive.reload')}</button>
         </div>
-        {loading && <div className="text-muted text-[13px]">Loading…</div>}
+        {loading && <div className="text-muted text-[13px]">{i18nT('pages.sessionArchive.loading')}</div>}
         {error && <div className="text-red-500 text-[13px]">{error}</div>}
         <div className="overflow-auto flex-1">
-          {archives.length === 0 && !loading && !error && <div className="text-muted text-[13px] p-2">No archives. Archives are created when session files are rotated (&gt;2MB) or compacted.</div>}
-          {archives.length > 0 && visible.length === 0 && !error && <div className="text-muted text-[13px] p-2">No matches for "{filterKey}".</div>}
+          {archives.length === 0 && !loading && !error && <div className="text-muted text-[13px] p-2">{i18nT('pages.sessionArchive.no_archives_archives_are_created_when_session_fi')}</div>}
+          {archives.length > 0 && visible.length === 0 && !error && <div className="text-muted text-[13px] p-2">{i18nT('pages.sessionArchive.no_matches_for')}{filterKey}".</div>}
           {visible.map(a => (
             <div
               key={a.name}
@@ -93,11 +94,11 @@ export default function SessionArchive() {
         </div>
       </div>
       <div className="flex-1 flex flex-col border border-border rounded p-2 overflow-hidden">
-        {!selected && <div className="text-muted text-[13px] p-2">Select an archive to view its contents.</div>}
+        {!selected && <div className="text-muted text-[13px] p-2">{i18nT('pages.sessionArchive.select_an_archive_to_view_its_contents')}</div>}
         {selected && (
           <>
             <div className="text-[13px] text-muted mb-2 font-mono truncate">{selected}</div>
-            {contentLoading && <div className="text-muted text-[13px] p-2">Loading…</div>}
+            {contentLoading && <div className="text-muted text-[13px] p-2">{i18nT('pages.sessionArchive.loading')}</div>}
             {!contentLoading && contentError && <div className="text-red-500 text-[13px] p-2">{contentError}</div>}
             {!contentLoading && !contentError && <pre className="flex-1 overflow-auto text-[13px] bg-bg-2 p-2 rounded whitespace-pre-wrap">{content}</pre>}
           </>

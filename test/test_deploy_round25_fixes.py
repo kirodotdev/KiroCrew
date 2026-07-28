@@ -42,7 +42,17 @@ def test_f1_frontend_two_call_destroy():
 def test_f2_ui_surfaces_boundary_policy():
     src = (_ROOT / "website/src/pages/ArtifactDeployPage.tsx").read_text(encoding="utf-8")
     assert "boundary_policy" in src
-    assert "Copy boundary policy" in src
+    # The dashboard is translated, so the visible label lives in the i18n catalog
+    # rather than as a literal in the TSX. Assert the component renders the
+    # catalog key AND that the key resolves to the expected English text —
+    # together those still prove the copy affordance is surfaced, without
+    # re-breaking the moment a string moves into (or within) the catalog.
+    assert "pages.artifactDeployPage.copy_boundary_policy" in src
+    catalog = json.loads(
+        (_ROOT / "website/src/i18n/locales/en.json").read_text(encoding="utf-8")
+    )
+    label = catalog["pages"]["artifactDeployPage"]["copy_boundary_policy"]
+    assert label == "Copy boundary policy"
 
 
 # --- F3: boundary covers the reaper role's grants ---

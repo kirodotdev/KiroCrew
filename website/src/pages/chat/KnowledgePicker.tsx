@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { Brain, X, Loader2, Type, Network } from 'lucide-react'
 import type { KnowledgeResult } from './useKnowledgeFetch'
 
+import { i18nT } from '../../i18n/t'
 interface Props {
   results: KnowledgeResult[]
   query: string
@@ -36,7 +37,7 @@ export function KnowledgePicker({ results, query, loading, onInject, onSkip }: P
     return (
       <div className="border border-border rounded-lg p-4 mb-3 animate-pulse">
         <div className="flex items-center gap-2 text-muted text-sm">
-          <Loader2 size={14} className="animate-spin" /> Searching knowledge for &ldquo;{query}&rdquo;&hellip;
+          <Loader2 size={14} className="animate-spin" /> {i18nT('pages.chat.knowledgePicker.searching_knowledge_for')}{query}{"\u201d\u2026"}
         </div>
       </div>
     )
@@ -46,8 +47,8 @@ export function KnowledgePicker({ results, query, loading, onInject, onSkip }: P
     return (
       <div className="border border-border rounded-lg p-4 mb-3">
         <div className="flex items-center justify-between">
-          <span className="text-sm text-muted">No knowledge found for &ldquo;{query}&rdquo;</span>
-          <button onClick={onSkip} className="text-[13px] text-accent bg-transparent border-none cursor-pointer">Dismiss</button>
+          <span className="text-sm text-muted">{i18nT('pages.chat.knowledgePicker.no_knowledge_found_for')}{query}{"\u201d"}</span>
+          <button onClick={onSkip} className="text-[13px] text-accent bg-transparent border-none cursor-pointer">{i18nT('pages.chat.knowledgePicker.dismiss')}</button>
         </div>
       </div>
     )
@@ -60,9 +61,9 @@ export function KnowledgePicker({ results, query, loading, onInject, onSkip }: P
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2 text-sm font-medium text-text">
           <Brain size={14} className="text-accent" />
-          Knowledge results for &ldquo;{query}&rdquo;
+          {i18nT('pages.chat.knowledgePicker.knowledge_results_for')}{query}{"\u201d"}
         </div>
-        <button onClick={onSkip} className="text-muted hover:text-text bg-transparent border-none cursor-pointer" aria-label="Dismiss knowledge results">
+        <button onClick={onSkip} className="text-muted hover:text-text bg-transparent border-none cursor-pointer" aria-label={i18nT('pages.chat.knowledgePicker.dismiss_knowledge_results')}>
           <X size={14} />
         </button>
       </div>
@@ -83,7 +84,7 @@ export function KnowledgePicker({ results, query, loading, onInject, onSkip }: P
               <div className="text-[11px] text-muted mt-0.5 line-clamp-2">{r.summary}</div>
               <div className="flex items-center gap-2 mt-1 text-[10px] text-muted">
                 <span className="flex items-center gap-0.5"><MatchIcon type={r.match_type} /> {r.match_type}</span>
-                <span>{r.tokens} tokens</span>
+                <span>{r.tokens} {i18nT('pages.chat.knowledgePicker.tokens')}</span>
                 {r.source && <span className="truncate max-w-[150px]">{r.source}</span>}
               </div>
             </div>
@@ -92,19 +93,19 @@ export function KnowledgePicker({ results, query, loading, onInject, onSkip }: P
       </div>
 
       <div className="flex items-center justify-between">
-        <span className="text-[11px] text-muted">{selected.size} selected · {totalTokens} tokens</span>
+        <span className="text-[11px] text-muted">{selected.size} {i18nT('pages.chat.knowledgePicker.selected')} {totalTokens} {i18nT('pages.chat.knowledgePicker.tokens')}</span>
         <div className="flex gap-2">
           <button
             onClick={onSkip}
             className="px-3 py-1.5 text-[13px] border border-border rounded bg-transparent text-text hover:bg-bg-hover cursor-pointer"
           >
-            Cancel
+            {i18nT('pages.chat.knowledgePicker.cancel')}
           </button>
           <button
             onClick={() => onInject(results.filter(r => selected.has(r.id)))}
             className="px-3 py-1.5 text-[13px] bg-accent text-accent-fg rounded hover:bg-accent/80 cursor-pointer border-none"
           >
-            Inject Context
+            {i18nT('pages.chat.knowledgePicker.inject_context')}
           </button>
         </div>
       </div>

@@ -9,6 +9,7 @@ import MarkdownRenderer from '../../components/MarkdownRenderer'
 import { useKiroSessionReady } from '../../providers/KiroReadinessContext'
 import type { SideMessage } from '../../store/chatSlice'
 
+import { i18nT } from '../../i18n/t'
 const MAX_QUESTION_BYTES = 32_768
 // Max auto-grow height (px) for the side-question input before it scrolls.
 const MAX_INPUT_H = 240
@@ -39,7 +40,7 @@ function SideMessageBubble({ msg, isStreaming }: { msg: SideMessage; isStreaming
         <div className="flex items-center gap-1 mt-0.5 opacity-0 transition-opacity group-hover/side-msg:opacity-100">
           <button
             className="text-muted hover:text-text p-0.5 rounded transition-colors"
-            title="Copy"
+            title={i18nT('pages.chat.sideChat.copy')}
             aria-label={copied ? 'Copied!' : 'Copy'}
             onClick={() => {
               copyToClipboard(msg.content).then(() => {
@@ -200,7 +201,7 @@ export default function SideChat({ slot }: { slot: string }) {
       {showBanner && (
         <div className={`flex items-center justify-between px-3 py-1.5 text-[12px] border-b border-border shrink-0 ${isStale ? 'bg-warning/10 text-warning' : 'bg-bg-hover/50 text-muted'}`}>
           <span className="italic">
-            Context from {turnsBehind} turn{turnsBehind !== 1 ? 's' : ''} ago{age ? ` · ${age}` : ''}
+            {i18nT('pages.chat.sideChat.context_from')} {turnsBehind} {i18nT('pages.chat.sideChat.turn')}{turnsBehind !== 1 ? 's' : ''} {i18nT('pages.chat.sideChat.ago')}{age ? ` · ${age}` : ''}
           </span>
           <button
             onClick={() => void handleRefresh()}
@@ -208,7 +209,7 @@ export default function SideChat({ slot }: { slot: string }) {
             className="flex items-center gap-1 text-[11px] font-medium text-accent hover:text-accent-hover disabled:opacity-50 bg-transparent border-none cursor-pointer disabled:cursor-not-allowed"
           >
             <RotateCcw size={11} className={refreshMutation.isPending ? 'animate-spin' : ''} />
-            Refresh context
+            {i18nT('pages.chat.sideChat.refresh_context')}
           </button>
         </div>
       )}
@@ -216,7 +217,7 @@ export default function SideChat({ slot }: { slot: string }) {
         {messages.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-muted/30 gap-2 py-8">
             <span className="text-[24px]"><MessageSquare className="lucide-inline" /></span>
-            <span className="text-[13px]">Ask a side question — main agent keeps working</span>
+            <span className="text-[13px]">{i18nT('pages.chat.sideChat.ask_a_side_question_main_agent_keeps_working')}</span>
           </div>
         ) : (
           messages.map((m, i) => (
@@ -234,7 +235,7 @@ export default function SideChat({ slot }: { slot: string }) {
               <span className="w-1.5 h-1.5 rounded-full bg-current animate-pulse" style={{ animationDelay: '150ms' }} />
               <span className="w-1.5 h-1.5 rounded-full bg-current animate-pulse" style={{ animationDelay: '300ms' }} />
             </span>
-            <span className="text-[12px] streaming-indicator">Thinking…</span>
+            <span className="text-[12px] streaming-indicator">{i18nT('pages.chat.sideChat.thinking')}</span>
           </div>
         )}
       </div>
@@ -247,7 +248,7 @@ export default function SideChat({ slot }: { slot: string }) {
           value={draft}
           onChange={e => setDraft(e.target.value)}
           onKeyDown={onKeyDown}
-          aria-label="Ask a side question"
+          aria-label={i18nT('pages.chat.sideChat.ask_a_side_question')}
           placeholder={kiroSessionReady ? 'Ask a side question…' : 'Finish Kiro CLI setup first'}
           rows={2}
           disabled={sendMutation.isPending || !kiroSessionReady}
@@ -258,8 +259,8 @@ export default function SideChat({ slot }: { slot: string }) {
           onClick={() => void send()}
           disabled={sendMutation.isPending || !kiroSessionReady || !draft.trim()}
           className="shrink-0 px-2.5 py-1.5 rounded-md bg-accent text-accent-fg text-[12px] font-medium cursor-pointer hover:bg-accent-hover disabled:opacity-40 disabled:cursor-not-allowed border-none"
-          title="Send"
-          aria-label="Send"
+          title={i18nT('pages.chat.sideChat.send')}
+          aria-label={i18nT('pages.chat.sideChat.send')}
         >
           <Send size={13} />
         </button>

@@ -4,6 +4,7 @@ import { readableText, relativeTime } from '../../lib/format'
 import { safeHttpUrl } from '../../../../lib/safeUrl'
 import ShimmerLine from '../../components/ShimmerLine'
 
+import { i18nT } from '../../../../i18n/t'
 /** One row of the untagged queue — deliberately ONE line high, so a 50-issue
  * batch is scannable without scrolling past a card per issue.
  *
@@ -142,14 +143,14 @@ export default function UntaggedIssueCard({
               <ShimmerLine w="44px" delay={0.12} />
             </span>
           ) : analyzed ? (
-            <span className="flex-shrink-0 text-[12px] text-muted opacity-70">no label fits</span>
+            <span className="flex-shrink-0 text-[12px] text-muted opacity-70">{i18nT('apps.issueRadar.views.tagging.untaggedIssueCard.no_label_fits')}</span>
           ) : null
         )}
 
         <span className="flex-shrink-0 w-[76px] flex justify-end">
           {applied ? (
             <span className="inline-flex items-center gap-1 text-[12px] text-accent px-1">
-              <Check size={12} /> Added
+              <Check size={12} /> {i18nT('apps.issueRadar.views.tagging.untaggedIssueCard.added')}
             </span>
           ) : (
             <button
@@ -161,7 +162,7 @@ export default function UntaggedIssueCard({
               title={canWrite ? 'Add these labels on GitHub' : 'Read-only repo — needs triage or push access'}
               className="inline-flex items-center gap-1 text-[12px] px-2 py-0.5 rounded border border-accent/40 text-accent hover:bg-accent-subtle disabled:opacity-30 disabled:hover:bg-transparent cursor-pointer bg-transparent"
             >
-              <Plus size={11} className={applying ? 'animate-pulse' : ''} /> Add
+              <Plus size={11} className={applying ? 'animate-pulse' : ''} /> {i18nT('apps.issueRadar.views.tagging.untaggedIssueCard.add')}
             </button>
           )}
         </span>

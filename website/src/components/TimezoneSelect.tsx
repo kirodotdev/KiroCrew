@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
 import { formatTzOffset } from '../utils/tz'
 
+import { i18nT } from '../i18n/t'
 /** A curated short list of commonly used timezones, used as
  *  a fast-pick set. Full IANA list loaded on demand from the browser. */
 const COMMON_TZS = [
@@ -63,7 +64,7 @@ export default function TimezoneSelect({ value, onChange, className, id }: Props
       value={value}
       onChange={e => onChange(e.target.value)}
       className={`${selectCls} ${className || ''}`.trim()}
-      aria-label="Render timezone"
+      aria-label={i18nT('components.timezoneSelect.render_timezone')}
     >
       {allTzs.map(tz => (
         <option key={tz} value={tz}>

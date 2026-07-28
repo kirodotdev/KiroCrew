@@ -8,6 +8,7 @@ import { formatRelativeDate, SUPPORTED_FORMATS } from './helpers'
 import { parseSourceProps, shouldShowWordCount } from './knowledgeUtils'
 import type { Source, NamespaceInfo, IngestionJob, SourceFilesResponse } from './types'
 
+import { i18nT } from '../../i18n/t'
 export function SourceSummaryDisplay({ source }: { source: Source }) {
   if (!source.summary_topic) return null
   const themes: string[] = (() => { try { return JSON.parse(source.summary_themes || '[]') } catch { return [] } })()
@@ -26,15 +27,15 @@ export function SourceSummaryDisplay({ source }: { source: Source }) {
 function NamespacePicker({ value, onChange, namespaces }: { value: string; onChange: (v: string) => void; namespaces: NamespaceInfo[] }) {
   return (
     <div className="flex items-center gap-2">
-      <span className="text-[12px] text-muted shrink-0">Namespace:</span>
-      <input value={value} onChange={e => onChange(e.target.value)} placeholder="default"
-        aria-label="Namespace"
+      <span className="text-[12px] text-muted shrink-0">{i18nT('pages.knowledge.sourcesList.namespace')}</span>
+      <input value={value} onChange={e => onChange(e.target.value)} placeholder={i18nT('pages.knowledge.sourcesList.default')}
+        aria-label={i18nT('pages.knowledge.sourcesList.namespace_2')}
         className="bg-bg-elevated border border-border rounded-md px-2 py-1 text-[13px] text-text outline-none w-36"
         list="ns-picker-list" />
       <datalist id="ns-picker-list">
         {namespaces.map(ns => <option key={ns.name} value={ns.name}>{ns.name} ({ns.count})</option>)}
       </datalist>
-      <span className="text-[10px] text-muted">Type new to create</span>
+      <span className="text-[10px] text-muted">{i18nT('pages.knowledge.sourcesList.type_new_to_create')}</span>
     </div>
   )
 }
@@ -51,9 +52,9 @@ function DropZone({ onFiles, accept }: { onFiles: (files: File[]) => void; accep
       className={`border-2 border-dashed rounded-lg p-8 text-center cursor-pointer transition-all ${over ? 'border-accent bg-accent-subtle' : 'border-border hover:border-border-strong'}`}
     >
       <Upload size={28} className="mx-auto mb-2 text-muted" />
-      <div className="text-sm text-muted">Drop files here or click to upload</div>
+      <div className="text-sm text-muted">{i18nT('pages.knowledge.sourcesList.drop_files_here_or_click_to_upload')}</div>
       <div className="text-[11px] text-muted/50 mt-1">{SUPPORTED_FORMATS}</div>
-      <input ref={inputRef} type="file" multiple accept={accept} aria-label="Upload files" className="hidden" onChange={e => e.target.files && onFiles(Array.from(e.target.files))} />
+      <input ref={inputRef} type="file" multiple accept={accept} aria-label={i18nT('pages.knowledge.sourcesList.upload_files')} className="hidden" onChange={e => e.target.files && onFiles(Array.from(e.target.files))} />
     </Clickable>
   )
 }
@@ -74,7 +75,7 @@ function IngestionProgress({ jobs }: { jobs: IngestionJob[] }) {
 }
 
 function StalenessIndicator({ lastSynced }: { lastSynced?: string }) {
-  if (!lastSynced) return <span className="text-[11px] text-muted">never synced</span>
+  if (!lastSynced) return <span className="text-[11px] text-muted">{i18nT('pages.knowledge.sourcesList.never_synced')}</span>
   const daysSince = Math.floor((Date.now() - new Date(lastSynced).getTime()) / (1000 * 60 * 60 * 24))
   const stale = daysSince > 30
   return (
@@ -97,7 +98,7 @@ function FolderConfirmDialog({ fileCount, uri, onConfirm, onCancel, isPending }:
       </div>
       {isLarge && (
         <div className="text-[12px] text-warn">
-          Scanning this many files will take several minutes and use significant resources.
+          {i18nT('pages.knowledge.sourcesList.scanning_this_many_files_will_take_several_minut')}
         </div>
       )}
       <div className="text-[12px] text-muted">
@@ -106,7 +107,7 @@ function FolderConfirmDialog({ fileCount, uri, onConfirm, onCancel, isPending }:
           : 'This folder will be watched continuously. New files added here will be auto-ingested on the next scan cycle (~5 min).'}
       </div>
       <div className="flex gap-2 justify-end pt-1">
-        <button onClick={onCancel} className="px-3 py-1.5 text-xs border border-border rounded-md text-text">Cancel</button>
+        <button onClick={onCancel} className="px-3 py-1.5 text-xs border border-border rounded-md text-text">{i18nT('pages.knowledge.sourcesList.cancel')}</button>
         <button onClick={onConfirm} disabled={isPending}
           className="px-3 py-1.5 text-xs bg-accent text-accent-fg rounded-md disabled:opacity-50">
           {isPending ? 'Starting...' : fileCount === 0 ? 'Watch Anyway' : 'Start Scanning'}
@@ -170,7 +171,7 @@ function FolderProgress({ sourceId }: { sourceId: string }) {
           <div className="h-full bg-accent rounded-full transition-all" style={{ width: `${pct}%` }} />
         </div>
         <span>{data.done}/{data.total} ({pct}%)</span>
-        {data.failed > 0 && <span className="text-danger">{data.failed} failed</span>}
+        {data.failed > 0 && <span className="text-danger">{data.failed} {i18nT('pages.knowledge.sourcesList.failed')}</span>}
       </div>
       {/* Currently scanning */}
       {scanning && (
@@ -184,7 +185,7 @@ function FolderProgress({ sourceId }: { sourceId: string }) {
         <div key={f.file_path} className="flex items-center gap-1.5 text-[12px]">
           <CheckCircle size={11} className="text-ok" />
           <span className="text-muted truncate">{f.file_path.split('/').pop()}</span>
-          <span className="text-[10px] text-muted ml-auto">{f.item_count} items</span>
+          <span className="text-[10px] text-muted ml-auto">{f.item_count} {i18nT('pages.knowledge.sourcesList.items')}</span>
         </div>
       ))}
       {/* Failed files */}
@@ -193,8 +194,8 @@ function FolderProgress({ sourceId }: { sourceId: string }) {
           <AlertCircle size={11} className="text-danger" />
           <span className="text-text truncate flex-1" title={f.error_message || ''}>{f.file_path.split('/').pop()}</span>
           <span className="text-[10px] text-danger truncate max-w-[120px]">{f.error_message}</span>
-          <button onClick={() => retryMutation.mutate(f.file_path)} className="text-[10px] text-accent hover:underline">Retry</button>
-          <button onClick={() => skipMutation.mutate(f.file_path)} className="text-[10px] text-muted hover:underline">Skip</button>
+          <button onClick={() => retryMutation.mutate(f.file_path)} className="text-[10px] text-accent hover:underline">{i18nT('pages.knowledge.sourcesList.retry')}</button>
+          <button onClick={() => skipMutation.mutate(f.file_path)} className="text-[10px] text-muted hover:underline">{i18nT('pages.knowledge.sourcesList.skip')}</button>
         </div>
       ))}
     </div>
@@ -353,17 +354,17 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
   return (
     <div className="space-y-3">
       <div className="flex justify-end">
-        <button onClick={() => setShowAdd(true)} className="px-3 py-1.5 text-[13px] bg-accent text-accent-fg rounded-md hover:bg-accent/80">+ Add Source</button>
+        <button onClick={() => setShowAdd(true)} className="px-3 py-1.5 text-[13px] bg-accent text-accent-fg rounded-md hover:bg-accent/80">{i18nT('pages.knowledge.sourcesList.add_source')}</button>
       </div>
 
       {showAdd && (
         <div className="border border-border rounded-lg p-4 bg-bg-elevated space-y-3">
-          <div className="text-sm font-medium">Add Source</div>
+          <div className="text-sm font-medium">{i18nT('pages.knowledge.sourcesList.add_source_2')}</div>
           <div className="flex gap-2 flex-wrap">
             {(['local_file', 'local_folder'] as const).map(t => (
               <button key={t} onClick={() => setAddType(t)}
                 className={`px-3 py-1.5 text-[13px] rounded-md border flex items-center gap-1 ${addType === t ? 'border-accent bg-accent/10 text-accent' : 'border-border text-muted'}`}>
-                {t === 'local_file' ? <><Upload size={12} /> Local File</> : <><FolderOpen size={12} /> Local Folder</>}
+                {t === 'local_file' ? <><Upload size={12} /> {i18nT('pages.knowledge.sourcesList.local_file')}</> : <><FolderOpen size={12} /> {i18nT('pages.knowledge.sourcesList.local_folder')}</>}
               </button>
             ))}
           </div>
@@ -373,39 +374,39 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
               <DropZone onFiles={(files) => { onIngest(files); setShowAdd(false) }} accept={uploadAccept ?? ".md,.txt,.py,.java,.ts,.js,.rs,.go,.html,.htm,.csv,.log,.json,.yaml,.yml,.sh,.rb,.c,.cpp,.h,.docx,.pdf"} />
               <IngestionProgress jobs={ingestionJobs} />
               <div className="text-[11px] text-muted bg-bg rounded border border-border p-2">
-                Supports: Markdown, plain text, code files, HTML, JSON, YAML, CSV, DOCX, PDF. Max 50 MB per file.
+                {i18nT('pages.knowledge.sourcesList.supports_markdown_plain_text_code_files_html_jso')}
                 {acceptsNoExtension && ' Files with no extension (e.g. README) are ingested as plain text — drag-and-drop them here, since the file picker cannot list extensionless files.'}
               </div>
             </>
           ) : (
             <>
-              <input value={addName} onChange={e => setAddName(e.target.value)} placeholder="Name (optional)"
-                aria-label="Source name (optional)"
+              <input value={addName} onChange={e => setAddName(e.target.value)} placeholder={i18nT('pages.knowledge.sourcesList.name_optional')}
+                aria-label={i18nT('pages.knowledge.sourcesList.source_name_optional')}
                 className="w-full px-3 py-1.5 text-sm bg-bg rounded border border-border text-text" />
               <div className="flex gap-2">
                 <input value={addUri} onChange={e => setAddUri(e.target.value)}
-                  placeholder="Folder path (e.g., /home/user/notes)"
-                  aria-label="Folder path"
+                  placeholder={i18nT('pages.knowledge.sourcesList.folder_path_e_g_home_user_notes')}
+                  aria-label={i18nT('pages.knowledge.sourcesList.folder_path')}
                   className="flex-1 min-w-0 px-3 py-1.5 text-sm bg-bg rounded border border-border text-text" />
                 {folderPickerAvailable && (
                   <button type="button" onClick={() => pickFolderMutation.mutate()} disabled={pickFolderMutation.isPending}
-                    aria-label="Browse for a folder"
+                    aria-label={i18nT('pages.knowledge.sourcesList.browse_for_a_folder')}
                     className="shrink-0 px-3 py-1.5 text-sm border border-border rounded text-text hover:bg-bg-elevated disabled:opacity-50 flex items-center gap-1">
                     <FolderOpen size={14} /> {pickFolderMutation.isPending ? 'Opening...' : 'Browse...'}
                   </button>
                 )}
               </div>
               <textarea value={addIgnorePatterns} onChange={e => setAddIgnorePatterns(e.target.value)}
-                placeholder="Ignore patterns (one per line, e.g. .trash/*)&#10;Templates/*"
-                aria-label="Ignore patterns"
+                placeholder={i18nT('pages.knowledge.sourcesList.ignore_patterns_one_per_line_e_g_trash_templates')}
+                aria-label={i18nT('pages.knowledge.sourcesList.ignore_patterns')}
                 rows={3} className="w-full px-3 py-1.5 text-sm bg-bg rounded border border-border text-text resize-none" />
-              <div className="text-[11px] text-muted">Watches folder recursively. Supported files auto-ingested. Max 5,000 files per source.</div>
+              <div className="text-[11px] text-muted">{i18nT('pages.knowledge.sourcesList.watches_folder_recursively_supported_files_auto')}</div>
               <label htmlFor="sources-recursive" className="flex items-center gap-2 text-[12px] text-muted cursor-pointer">
-                <input id="sources-recursive" aria-label="Include subdirectories (recursive)" type="checkbox" checked={addRecursive} onChange={e => setAddRecursive(e.target.checked)} className="accent-accent" />
-                Include subdirectories (recursive)
+                <input id="sources-recursive" aria-label={i18nT('pages.knowledge.sourcesList.include_subdirectories_recursive')} type="checkbox" checked={addRecursive} onChange={e => setAddRecursive(e.target.checked)} className="accent-accent" />
+                {i18nT('pages.knowledge.sourcesList.include_subdirectories_recursive')}
               </label>
               <div className="flex gap-2 justify-end">
-                <button onClick={() => setShowAdd(false)} className="px-3 py-1.5 text-xs border border-border rounded-md text-text">Cancel</button>
+                <button onClick={() => setShowAdd(false)} className="px-3 py-1.5 text-xs border border-border rounded-md text-text">{i18nT('pages.knowledge.sourcesList.cancel')}</button>
                 <button onClick={handleAdd} disabled={addMutation.isPending || !addUri.trim()}
                   className="px-3 py-1.5 text-xs bg-accent text-accent-fg rounded-md disabled:opacity-50">{addMutation.isPending ? 'Adding...' : 'Add Folder'}</button>
               </div>
@@ -430,7 +431,7 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
       )}
 
       {!sources.length && !showAdd ? (
-        <EmptyState icon={<FolderSync size={40} />} title="No sources registered" subtitle="Upload local files or watch a local folder to ingest documents" />
+        <EmptyState icon={<FolderSync size={40} />} title={i18nT('pages.knowledge.sourcesList.no_sources_registered')} subtitle={i18nT('pages.knowledge.sourcesList.upload_local_files_or_watch_a_local_folder_to_in')} />
       ) : (
         sources.map(s => {
           const isDeleting = deleteMutation.isPending && deleteMutation.variables === s.id
@@ -456,17 +457,17 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
                   <div className="flex items-center gap-1">
                     <input autoFocus value={editDraft} onChange={e => setEditDraft(e.target.value)}
                       onKeyDown={e => { if (e.key === 'Enter' && !renameMutation.isPending) submitRename(); else if (e.key === 'Escape') setEditingId(null) }}
-                      maxLength={200} aria-label="Source name"
+                      maxLength={200} aria-label={i18nT('pages.knowledge.sourcesList.source_name')}
                       className="bg-bg-elevated border border-border rounded-md px-2 py-1 text-[13px] text-text outline-none w-full max-w-xs" />
-                    <button aria-label="Save name" onClick={submitRename} disabled={renameMutation.isPending}
+                    <button aria-label={i18nT('pages.knowledge.sourcesList.save_name')} onClick={submitRename} disabled={renameMutation.isPending}
                       className="text-ok shrink-0 p-1 rounded hover:bg-bg-elevated disabled:opacity-50"><Check size={14} /></button>
-                    <button aria-label="Cancel rename" onClick={() => setEditingId(null)}
+                    <button aria-label={i18nT('pages.knowledge.sourcesList.cancel_rename')} onClick={() => setEditingId(null)}
                       className="text-muted shrink-0 p-1 rounded hover:bg-bg-elevated"><X size={14} /></button>
                   </div>
                 ) : (
                   <div className="flex items-center gap-1 min-w-0 group/name">
                     <span className="text-sm font-medium text-text-strong truncate">{s.name}</span>
-                    <button aria-label="Rename source" onClick={() => startRename(s)}
+                    <button aria-label={i18nT('pages.knowledge.sourcesList.rename_source')} onClick={() => startRename(s)}
                       className="text-muted shrink-0 p-0.5 rounded opacity-100 sm:opacity-0 sm:group-hover/name:opacity-100 hover:text-text transition-opacity"><Pencil size={12} /></button>
                   </div>
                 )}
@@ -475,52 +476,52 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
                     {s.source_type}{s.uri ? ` · ${s.uri}` : ''}
                   </span>
                   {s.source_type === 'local_file'
-                    ? <span className="inline-flex items-center gap-0.5 text-ok shrink-0" title="Auto-watches for file changes every 5 min">● auto</span>
+                    ? <span className="inline-flex items-center gap-0.5 text-ok shrink-0" title={i18nT('pages.knowledge.sourcesList.auto_watches_for_file_changes_every_5_min')}>{i18nT('pages.knowledge.sourcesList.auto')}</span>
                     : isFolderType
                     ? <span className={`inline-flex items-center gap-0.5 shrink-0 ${isPaused ? 'text-warn' : isPending ? 'text-muted' : 'text-ok'}`} title={isPaused ? 'Paused' : isPending ? 'Awaiting confirmation' : 'Watching folder'}>● {isPaused ? 'paused' : isPending ? 'pending' : 'folder'}</span>
-                    : <span className="inline-flex items-center gap-0.5 text-muted shrink-0" title="Use Sync button to update">○ manual</span>}
+                    : <span className="inline-flex items-center gap-0.5 text-muted shrink-0" title={i18nT('pages.knowledge.sourcesList.use_sync_button_to_update')}>{i18nT('pages.knowledge.sourcesList.manual')}</span>}
                 </div>
                 <SourceSummaryDisplay source={s} />
               </div>
               </div>
               {/* Meta + actions: wraps under the identity block on narrow viewports. */}
               <div className="flex items-center gap-2 sm:gap-3 flex-wrap sm:flex-nowrap shrink-0 pl-6 sm:pl-0">
-              {isDeleting ? <Badge variant="warn">Deleting...</Badge> : (
+              {isDeleting ? <Badge variant="warn">{i18nT('pages.knowledge.sourcesList.deleting')}</Badge> : (
                 <Badge variant={s.sync_status === 'synced' || s.sync_status === 'active' ? 'ok' : s.sync_status === 'error' ? 'err' : s.sync_status === 'paused' ? 'warn' : 'aim'}>{s.sync_status}</Badge>
               )}
-              <span className="text-[11px] text-muted whitespace-nowrap">{s.item_count ?? 0} items</span>
+              <span className="text-[11px] text-muted whitespace-nowrap">{s.item_count ?? 0} {i18nT('pages.knowledge.sourcesList.items')}</span>
               {(() => { const { wordCount: wc } = parseSourceProps(s); if (!shouldShowWordCount(wc)) return null; return <span className="text-[11px] text-muted whitespace-nowrap">{wc! < 1000 ? `${wc} words` : `~${Math.round(wc! / 1000)}k words`}</span> })()}
               <StalenessIndicator lastSynced={s.last_synced} />
               {/* Pause/Resume/Confirm for folder sources */}
               {isFolderType && isPending && (
-                <button aria-label="Confirm scan" onClick={() => confirmMutation.mutate(s.id)}
+                <button aria-label={i18nT('pages.knowledge.sourcesList.confirm_scan')} onClick={() => confirmMutation.mutate(s.id)}
                   disabled={isDeleting || confirmMutation.isPending}
                   className="px-2 py-1 text-[11px] border border-accent rounded hover:bg-accent/10 text-accent disabled:opacity-50 flex items-center gap-1">
-                  <CheckCircle size={12} /> Confirm
+                  <CheckCircle size={12} /> {i18nT('pages.knowledge.sourcesList.confirm')}
                 </button>
               )}
               {isFolderType && !isPending && (
                 isPaused ? (
-                  <button aria-label="Resume scan" onClick={() => resumeMutation.mutate(s.id)} disabled={isDeleting}
+                  <button aria-label={i18nT('pages.knowledge.sourcesList.resume_scan')} onClick={() => resumeMutation.mutate(s.id)} disabled={isDeleting}
                     className="px-2 py-1 text-[11px] border border-border rounded hover:bg-bg-elevated disabled:opacity-50 flex items-center gap-1">
-                    <Play size={12} /> Resume
+                    <Play size={12} /> {i18nT('pages.knowledge.sourcesList.resume')}
                   </button>
                 ) : (
-                  <button aria-label="Pause scan" onClick={() => pauseMutation.mutate(s.id)} disabled={isDeleting}
+                  <button aria-label={i18nT('pages.knowledge.sourcesList.pause_scan')} onClick={() => pauseMutation.mutate(s.id)} disabled={isDeleting}
                     className="px-2 py-1 text-[11px] border border-border rounded hover:bg-bg-elevated disabled:opacity-50 flex items-center gap-1">
-                    <Pause size={12} /> Pause
+                    <Pause size={12} /> {i18nT('pages.knowledge.sourcesList.pause')}
                   </button>
                 )
               )}
               {!isFolderType && (
-                <button aria-label="Sync source" onClick={() => syncSource(s.id)} disabled={isDeleting || syncingIds.has(s.id)}
+                <button aria-label={i18nT('pages.knowledge.sourcesList.sync_source')} onClick={() => syncSource(s.id)} disabled={isDeleting || syncingIds.has(s.id)}
                   className="px-2 py-1 text-[11px] border border-border rounded hover:bg-bg-elevated disabled:opacity-50 flex items-center gap-1">
                   {syncingIds.has(s.id)
                     ? <RefreshCw size={12} className="animate-spin" />
-                    : <><RefreshCw size={12} /> Sync</>}
+                    : <><RefreshCw size={12} /> {i18nT('pages.knowledge.sourcesList.sync')}</>}
                 </button>
               )}
-              <button aria-label="Remove source" onClick={() => { if (confirm('Remove this source and all its ingested items?')) deleteMutation.mutate(s.id) }}
+              <button aria-label={i18nT('pages.knowledge.sourcesList.remove_source')} onClick={() => { if (confirm(i18nT('pages.knowledge.sourcesList.remove_this_source_and_all_its_ingested_items'))) deleteMutation.mutate(s.id) }}
                 disabled={isDeleting}
                 className="px-2 py-1 text-[11px] border border-border rounded hover:bg-bg-elevated text-danger/70 hover:text-danger disabled:opacity-50 flex items-center gap-0.5">
                 {isDeleting ? <RefreshCw size={12} className="animate-spin" /> : <X size={12} />}

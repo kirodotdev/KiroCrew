@@ -5,6 +5,7 @@ import { CodeBlock } from './CodeBlock'
 import RunInTerminalBtn, { SHELL_LANGS } from './RunInTerminalBtn'
 import { useTerminalEnabled } from '../utils/terminalRegistry'
 
+import { i18nT } from '../i18n/t'
 const Editor = lazy(async () => {
   const { ensureMonacoLocal } = await import('../utils/monacoLocal')
   await ensureMonacoLocal()
@@ -72,8 +73,8 @@ const MonacoCodeBlock = memo(function MonacoCodeBlock(
     <>
       {showRunBtn && <RunInTerminalBtn code={code} />}
       <button
-        aria-label="Edit code block"
-        title="Edit in Monaco editor"
+        aria-label={i18nT('components.monacoCodeBlock.edit_code_block')}
+        title={i18nT('components.monacoCodeBlock.edit_in_monaco_editor')}
         className="p-1 rounded text-muted hover:text-text hover:bg-bg-hover cursor-pointer"
         onClick={() => setEditing(true)}
       >
@@ -91,12 +92,12 @@ const MonacoCodeBlock = memo(function MonacoCodeBlock(
       <div className="flex items-center justify-between px-3 py-1">
         <span className="text-muted text-[13px] font-mono">{lang || 'code'}</span>
         <div className="flex items-center gap-1">
-          <button className="p-1 rounded text-muted hover:text-text hover:bg-bg-hover cursor-pointer" onClick={() => { setValue(code); setEditing(false) }} title="Close editor" aria-label="Close editor"><X size={13} /></button>
+          <button className="p-1 rounded text-muted hover:text-text hover:bg-bg-hover cursor-pointer" onClick={() => { setValue(code); setEditing(false) }} title={i18nT('components.monacoCodeBlock.close_editor')} aria-label={i18nT('components.monacoCodeBlock.close_editor')}><X size={13} /></button>
           <button className="p-1 rounded text-muted hover:text-text hover:bg-bg-hover cursor-pointer" onClick={copy} title={copied ? 'Copied!' : 'Copy'} aria-label={copied ? 'Copied!' : 'Copy'}>{copied ? <Check size={13} /> : <Copy size={13} />}</button>
         </div>
       </div>
       <div className="overflow-hidden">
-        <Suspense fallback={<div className="p-3 text-muted text-[12px] animate-pulse">Loading editor…</div>}>
+        <Suspense fallback={<div className="p-3 text-muted text-[12px] animate-pulse">{i18nT('components.monacoCodeBlock.loading_editor')}</div>}>
           <Editor
             height={`${lineCount(value) * 19 + 16}px`}
             language={monacoLang(lang)}

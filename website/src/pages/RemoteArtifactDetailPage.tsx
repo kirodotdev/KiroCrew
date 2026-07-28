@@ -15,6 +15,7 @@ import { InlineCommentOverlay } from '../components/InlineCommentOverlay'
 import { useCommentBridge, type IframeSelection } from '../hooks/useCommentBridge'
 import type { ArtifactComment } from '../types'
 
+import { i18nT } from '../i18n/t'
 function readThemeVars(): Record<string, string> {
   if (typeof window === 'undefined' || typeof document === 'undefined') return {}
   const computed = getComputedStyle(document.documentElement)
@@ -256,22 +257,22 @@ export default function RemoteArtifactDetailPage() {
     setPopover({ x: rect.left, y: rect.bottom, quote, prefix, suffix, startOffset, endOffset })
   }, [isMarkdown])
 
-  if (detailQuery.isLoading) return <div className="p-6 text-muted">Loading…</div>
+  if (detailQuery.isLoading) return <div className="p-6 text-muted">{i18nT('pages.remoteArtifactDetailPage.loading')}</div>
   if (detailQuery.error || !art) {
     const msg = detailQuery.error instanceof Error ? detailQuery.error.message : 'Failed to load remote artifact'
     return (
       <>
-        <PageHeader title="Remote artifact" subtitle={externalId} />
+        <PageHeader title={i18nT('pages.remoteArtifactDetailPage.remote_artifact')} subtitle={externalId} />
         <div className="px-6 pb-8 overflow-y-auto flex-1 min-h-0">
           <Card>
             <div className="flex items-start gap-3">
               <AlertTriangle className="lucide-inline text-danger" />
               <div>
-                <div className="text-sm text-danger font-medium">Failed to load remote artifact</div>
+                <div className="text-sm text-danger font-medium">{i18nT('pages.remoteArtifactDetailPage.failed_to_load_remote_artifact')}</div>
                 <div className="text-[13px] text-muted mt-1">{msg}</div>
               </div>
             </div>
-            <div className="mt-3"><Btn onClick={() => navigate('/artifacts')}>← Back to library</Btn></div>
+            <div className="mt-3"><Btn onClick={() => navigate('/artifacts')}>{i18nT('pages.remoteArtifactDetailPage.back_to_library')}</Btn></div>
           </Card>
         </div>
       </>
@@ -291,7 +292,7 @@ export default function RemoteArtifactDetailPage() {
       <div className="px-6 pb-8 overflow-y-auto flex-1 min-h-0">
         <div className="flex flex-wrap items-center gap-2 mb-4">
           <Btn onClick={() => navigate('/artifacts')} className="flex items-center gap-1">
-            <ArrowLeft size={13} /> Back
+            <ArrowLeft size={13} /> {i18nT('pages.remoteArtifactDetailPage.back')}
           </Btn>
           {art.visibility && <Badge variant="ok">{art.visibility}</Badge>}
           {art.owner && (
@@ -299,7 +300,7 @@ export default function RemoteArtifactDetailPage() {
               <User size={12} /> {art.owner}
             </span>
           )}
-          {art.current_version != null && <span className="text-[12px] text-muted">v{art.current_version}</span>}
+          {art.current_version != null && <span className="text-[12px] text-muted">{i18nT('pages.remoteArtifactDetailPage.v')}{art.current_version}</span>}
           {(art.tags ?? []).map(t => (
             <span key={t} className="text-[11px] px-1.5 py-0.5 rounded bg-bg-elevated border border-border text-muted">{t}</span>
           ))}
@@ -311,16 +312,16 @@ export default function RemoteArtifactDetailPage() {
               title={sidebarOpen ? 'Hide comments' : 'Show comments'}
               aria-pressed={sidebarOpen}
             >
-              <MessageSquare size={13} /> Comments
+              <MessageSquare size={13} /> {i18nT('pages.remoteArtifactDetailPage.comments')}
               {comments.length > 0 && <span className="ml-0.5 px-1 rounded bg-accent/20 text-[10px]">{comments.length}</span>}
             </Btn>
             {safeArtifactUrl && (
               <Btn
                 type="button"
                 onClick={() => window.open(safeArtifactUrl, '_blank', 'noopener,noreferrer')}
-                title="Open the original on the remote provider"
+                title={i18nT('pages.remoteArtifactDetailPage.open_the_original_on_the_remote_provider')}
               >
-                <ExternalLink size={13} /> Open original
+                <ExternalLink size={13} /> {i18nT('pages.remoteArtifactDetailPage.open_original')}
               </Btn>
             )}
             <Btn
@@ -328,9 +329,9 @@ export default function RemoteArtifactDetailPage() {
               primary
               onClick={handleFork}
               disabled={forking}
-              title="Fork into your local artifacts (editable copy)"
+              title={i18nT('pages.remoteArtifactDetailPage.fork_into_your_local_artifacts_editable_copy')}
             >
-              {forking ? <Loader2 size={13} className="animate-spin" /> : <GitFork size={13} />} Fork
+              {forking ? <Loader2 size={13} className="animate-spin" /> : <GitFork size={13} />} {i18nT('pages.remoteArtifactDetailPage.fork')}
             </Btn>
           </span>
         </div>
@@ -353,7 +354,7 @@ export default function RemoteArtifactDetailPage() {
                     style={{ height: 'calc(100vh - 240px)', minHeight: 480 }}
                     title={`Remote artifact: ${externalId}`}
                   />
-                ) : <div className="p-6 text-muted">Rendering…</div>}
+                ) : <div className="p-6 text-muted">{i18nT('pages.remoteArtifactDetailPage.rendering')}</div>}
               </div>
             ) : (
               <div ref={mdScrollerRef} className="relative rounded-xl border border-border bg-card overflow-auto p-5" style={{ minHeight: 480, height: 'calc(100vh - 240px)' }}>

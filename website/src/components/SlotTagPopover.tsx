@@ -9,6 +9,7 @@ import { useImeGuard } from '../hooks/useImeGuard'
 import { isTouchDevice } from '../utils/isTouchDevice'
 import { Input } from './ui'
 
+import { i18nT } from '../i18n/t'
 /**
  * The single app-wide per-slot tag-assignment popover. Which slot's picker is
  * open comes from the ChatPage-scoped TagPopover context, so any surface (the
@@ -65,7 +66,7 @@ export default function SlotTagPopover() {
   }
 
   return (
-    <div role="button" tabIndex={0} aria-label="Close tag picker"
+    <div role="button" tabIndex={0} aria-label={i18nT('components.slotTagPopover.close_tag_picker')}
       className="fixed inset-0 z-[9999]"
       onClick={e => { if (e.target === e.currentTarget) close() }}
       onKeyDown={e => {
@@ -74,16 +75,16 @@ export default function SlotTagPopover() {
         if (e.target !== e.currentTarget) return
         if (e.key === 'Enter' || e.key === ' ' || e.key === 'Escape') { e.preventDefault(); close() }
       }}>
-      <div role="dialog" aria-modal="true" aria-label="Assign tags" data-testid="slot-tag-picker"
+      <div role="dialog" aria-modal="true" aria-label={i18nT('components.slotTagPopover.assign_tags')} data-testid="slot-tag-picker"
         className="absolute bg-bg-elevated border border-border rounded-lg shadow-lg p-2 min-w-[240px] text-[13px]"
         style={{ left: '50%', top: '30%', transform: 'translate(-50%, 0)' }}
         onClick={e => e.stopPropagation()}
         onKeyDown={e => { if (e.key === 'Escape') close() }}>
         <div className="flex items-center justify-between mb-1">
-          <span className="text-[11px] font-semibold text-muted uppercase tracking-wider px-1">Assign tags</span>
-          <button type="button" className="text-muted hover:text-text cursor-pointer bg-transparent border-none p-0 leading-none" onClick={close} aria-label="Close"><X size={13} /></button>
+          <span className="text-[11px] font-semibold text-muted uppercase tracking-wider px-1">{i18nT('components.slotTagPopover.assign_tags')}</span>
+          <button type="button" className="text-muted hover:text-text cursor-pointer bg-transparent border-none p-0 leading-none" onClick={close} aria-label={i18nT('components.slotTagPopover.close')}><X size={13} /></button>
         </div>
-        <div ref={listRef} role="menu" aria-label="Tags" className="flex flex-col gap-0.5 max-h-[260px] overflow-y-auto"
+        <div ref={listRef} role="menu" aria-label={i18nT('components.slotTagPopover.tags')} className="flex flex-col gap-0.5 max-h-[260px] overflow-y-auto"
           onKeyDown={e => {
             // Roving focus across the tag options. Deliberately does NOT handle
             // Tab (keeps the "New tag" input reachable) or Escape (the dialog
@@ -96,7 +97,7 @@ export default function SlotTagPopover() {
             else if (e.key === 'Home') { e.preventDefault(); opts[0].focus() }
             else if (e.key === 'End') { e.preventDefault(); opts[opts.length - 1].focus() }
           }}>
-          {tags.length === 0 && <div className="text-muted px-2 py-1 text-[12px]">No tags yet. Create one below.</div>}
+          {tags.length === 0 && <div className="text-muted px-2 py-1 text-[12px]">{i18nT('components.slotTagPopover.no_tags_yet_create_one_below')}</div>}
           {[...tags].sort((a, b) => a.order - b.order).map(t => {
             const on = currentTags.has(t.id)
             return (
@@ -113,7 +114,7 @@ export default function SlotTagPopover() {
         <div className="mt-2 border-t border-border pt-2 flex items-center gap-1">
           <Input
             className="flex-1 text-[12px] py-1"
-            placeholder="New tag…"
+            placeholder={i18nT('components.slotTagPopover.new_tag')}
             {...ime.bindEnter<HTMLInputElement>({
               onEnter: () => {
                 const el = document.activeElement as HTMLInputElement | null

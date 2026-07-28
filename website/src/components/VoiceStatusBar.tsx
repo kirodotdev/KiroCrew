@@ -1,5 +1,6 @@
 import { Mic, AlertTriangle, X } from 'lucide-react'
 
+import { i18nT } from '../i18n/t'
 interface Props {
   /** True while actively capturing audio. */
   recording: boolean
@@ -32,7 +33,7 @@ export default function VoiceStatusBar({ recording, level, deviceLabel, error, o
           <button
             type="button"
             onClick={onDismissError}
-            aria-label="Dismiss microphone error"
+            aria-label={i18nT('components.voiceStatusBar.dismiss_microphone_error')}
             className="shrink-0 text-danger opacity-70 hover:opacity-100 cursor-pointer bg-transparent border-none p-0 flex items-center"
           >
             <X size={13} />
@@ -55,7 +56,7 @@ export default function VoiceStatusBar({ recording, level, deviceLabel, error, o
         <span className="absolute inline-flex h-full w-full rounded-full bg-danger opacity-60 animate-ping" />
         <span className="relative inline-flex h-2 w-2 rounded-full bg-danger" />
       </span>
-      <span className="font-medium shrink-0">Recording</span>
+      <span className="font-medium shrink-0">{i18nT('components.voiceStatusBar.recording')}</span>
       {/* live input-level meter */}
       <span
         className="w-20 shrink-0 h-1.5 rounded-full bg-danger-subtle overflow-hidden"

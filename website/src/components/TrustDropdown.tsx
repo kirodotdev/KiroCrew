@@ -4,6 +4,7 @@ import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem
 } from './ui/dropdown-menu'
 
+import { i18nT } from '../i18n/t'
 interface TrustDropdownProps {
   fullCommand: string
   baseCommand: string
@@ -24,7 +25,7 @@ export default function TrustDropdown({ fullCommand, baseCommand, isShell, disab
     <DropdownMenu open={open} onOpenChange={setOpen}>
       <DropdownMenuTrigger asChild>
         <button disabled={disabled} className={className}>
-          <Handshake size={12} className="shrink-0" />Trust<ChevronDown size={10} className="shrink-0 opacity-70" />
+          <Handshake size={12} className="shrink-0" />{i18nT('components.trustDropdown.trust')}<ChevronDown size={10} className="shrink-0 opacity-70" />
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent side="top" align="end" className="min-w-[220px] max-w-[450px]">
@@ -33,7 +34,7 @@ export default function TrustDropdown({ fullCommand, baseCommand, isShell, disab
           onSelect={() => onAction('trust_command', fullCommand)}
         >
           <Shield size={12} className="shrink-0 text-accent" />
-          <span className="truncate">Trust &ldquo;<span className="font-mono">{truncated}</span>&rdquo;</span>
+          <span className="truncate">{i18nT('components.trustDropdown.trust_2')}<span className="font-mono">{truncated}</span>{"\u201d"}</span>
         </DropdownMenuItem>
         {isShell && (
           <DropdownMenuItem
@@ -41,7 +42,7 @@ export default function TrustDropdown({ fullCommand, baseCommand, isShell, disab
             onSelect={() => onAction('trust_base', basePattern)}
           >
             <ShieldPlus size={12} className="shrink-0 text-ok" />
-            <span className="truncate">Trust all &ldquo;<span className="font-mono">{baseLabel}</span>&rdquo; commands</span>
+            <span className="truncate">{i18nT('components.trustDropdown.trust_all')}<span className="font-mono">{baseLabel}</span>{i18nT('components.trustDropdown.commands')}</span>
           </DropdownMenuItem>
         )}
         <DropdownMenuItem
@@ -49,7 +50,7 @@ export default function TrustDropdown({ fullCommand, baseCommand, isShell, disab
           onSelect={() => onAction('trust')}
         >
           <ShieldCheck size={12} className="shrink-0 text-warn" />
-          <span>Trust all tools</span>
+          <span>{i18nT('components.trustDropdown.trust_all_tools')}</span>
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>

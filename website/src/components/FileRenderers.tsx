@@ -1,6 +1,7 @@
 import { memo, useState, useMemo, useCallback, useRef } from 'react'
 import DOMPurify from 'dompurify'
 
+import { i18nT } from '../i18n/t'
 /* ── extension helpers ── */
 const IMG_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg', '.ico'])
 const CSV_EXTS = new Set(['.csv', '.tsv'])
@@ -84,7 +85,7 @@ export const CsvViewer = memo(function CsvViewer({ content, filePath }: { conten
     })
   }, [content, delimiter])
 
-  if (rows.length === 0) return <div className="text-muted text-sm">Empty file</div>
+  if (rows.length === 0) return <div className="text-muted text-sm">{i18nT('components.fileRenderers.empty_file')}</div>
   const [header, ...body] = rows
 
   return (
@@ -101,7 +102,7 @@ export const CsvViewer = memo(function CsvViewer({ content, filePath }: { conten
           ))}
         </tbody>
       </table>
-      {body.length > 500 && <div className="text-center text-muted text-[11px] py-2">Showing 500 of {body.length} rows</div>}
+      {body.length > 500 && <div className="text-center text-muted text-[11px] py-2">{i18nT('components.fileRenderers.showing_500_of')} {body.length} {i18nT('components.fileRenderers.rows')}</div>}
     </div>
   )
 })
@@ -118,8 +119,8 @@ export const JsonViewer = memo(function JsonViewer({ content }: { content: strin
     const preview = content.slice(0, 2000)
     return (
       <div className="h-full overflow-auto p-3 bg-bg-elevated border border-border rounded-md text-sm">
-        <div className="text-danger font-semibold font-mono mb-2">Invalid JSON: {parsed.error}</div>
-        <div className="text-[11px] text-muted mb-1 font-mono">Showing raw content ({content.length} chars{content.length > preview.length ? `, first ${preview.length} shown` : ''}):</div>
+        <div className="text-danger font-semibold font-mono mb-2">{i18nT('components.fileRenderers.invalid_json')} {parsed.error}</div>
+        <div className="text-[11px] text-muted mb-1 font-mono">{i18nT('components.fileRenderers.showing_raw_content')}{content.length} {i18nT('components.fileRenderers.chars')}{content.length > preview.length ? `, first ${preview.length} shown` : ''}):</div>
         <pre className="text-[13px] font-mono whitespace-pre-wrap break-all text-text">{preview}{content.length > preview.length ? '\n…' : ''}</pre>
       </div>
     )
@@ -133,7 +134,7 @@ export const JsonViewer = memo(function JsonViewer({ content }: { content: strin
 
 function JsonNode({ value, depth }: { value: unknown; depth: number }) {
   const [open, setOpen] = useState(depth < 2)
-  if (value === null) return <span className="text-muted">null</span>
+  if (value === null) return <span className="text-muted">{i18nT('components.fileRenderers.null')}</span>
   if (typeof value === 'boolean') return <span className="text-ok">{String(value)}</span>
   if (typeof value === 'number') return <span className="text-accent">{value}</span>
   if (typeof value === 'string') return <span className="text-warning">"{value.length > 200 ? value.slice(0, 200) + '…' : value}"</span>
@@ -145,7 +146,7 @@ function JsonNode({ value, depth }: { value: unknown; depth: number }) {
   return (
     <span>
       <button className="text-muted hover:text-text cursor-pointer bg-transparent border-none font-mono text-sm" onClick={() => setOpen(!open)}>
-        {open ? '▼' : '▶'} {bracket[0]}{!open && <span className="text-muted"> {entries.length} items {bracket[1]}</span>}
+        {open ? '▼' : '▶'} {bracket[0]}{!open && <span className="text-muted"> {entries.length} {i18nT('components.fileRenderers.items')} {bracket[1]}</span>}
       </button>
       {open && (
         <div style={{ paddingLeft: 16 }}>
@@ -156,7 +157,7 @@ function JsonNode({ value, depth }: { value: unknown; depth: number }) {
               <JsonNode value={v} depth={depth + 1} />
             </div>
           ))}
-          {entries.length > 200 && <div className="text-muted">… {entries.length - 200} more</div>}
+          {entries.length > 200 && <div className="text-muted">… {entries.length - 200} {i18nT('components.fileRenderers.more')}</div>}
         </div>
       )}
       {open && <span className="text-muted">{bracket[1]}</span>}
@@ -182,14 +183,14 @@ export const JsonlViewer = memo(function JsonlViewer({ content }: { content: str
 
   return (
     <div ref={containerRef} onScroll={onScroll} className="h-full overflow-auto p-3 bg-bg-elevated border border-border rounded-md space-y-2">
-      <div className="text-muted text-[11px]">{lines.length} lines</div>
+      <div className="text-muted text-[11px]">{lines.length} {i18nT('components.fileRenderers.lines')}</div>
       {lines.slice(0, visible).map((line, i) => (
         <div key={i} className="border-b border-border/50 pb-2">
           <JsonViewer content={line} />
         </div>
       ))}
       {visible < lines.length && (
-        <div className="text-muted text-xs text-center py-2">Scroll for more… ({lines.length - visible} remaining)</div>
+        <div className="text-muted text-xs text-center py-2">{i18nT('components.fileRenderers.scroll_for_more')}{lines.length - visible} {i18nT('components.fileRenderers.remaining')}</div>
       )}
     </div>
   )
@@ -203,7 +204,7 @@ export const HtmlViewer = memo(function HtmlViewer({ content }: { content: strin
         srcDoc={content}
         sandbox=""
         className="w-full h-full border-none"
-        title="HTML Preview"
+        title={i18nT('components.fileRenderers.html_preview')}
       />
     </div>
   )
@@ -214,12 +215,12 @@ export const PdfViewer = memo(function PdfViewer({ filePath }: { filePath: strin
   const url = '/api/file-raw?path=' + encodeURIComponent(filePath)
   return (
     <div className="h-full border border-border rounded-md overflow-hidden bg-white flex flex-col">
-      <iframe src={url} className="flex-1 w-full border-none" title="PDF Preview" />
+      <iframe src={url} className="flex-1 w-full border-none" title={i18nT('components.fileRenderers.pdf_preview')} />
       <div className="flex justify-end p-1 bg-chrome border-t border-border">
         <button
           className="px-2 py-1 rounded text-[11px] text-muted hover:text-text cursor-pointer bg-transparent border-none"
           onClick={() => window.open(url, '_blank')}
-        >Open in new tab</button>
+        >{i18nT('components.fileRenderers.open_in_new_tab')}</button>
       </div>
     </div>
   )

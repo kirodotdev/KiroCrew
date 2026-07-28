@@ -2,6 +2,7 @@ import { useLayoutEffect, useMemo, useState } from 'react'
 import type { ArtifactComment } from '../types'
 import { indexTextNodes, rangeForAnchor } from '../hooks/useMarkdownCommentHighlights'
 
+import { i18nT } from '../i18n/t'
 /**
  * Visible anchored-comment highlights for the markdown / text body, drawn as a
  * layer of absolutely-positioned <div>s OVER the rendered content (computed from
@@ -152,7 +153,7 @@ export function InlineCommentOverlay({
             data-mc-cid={b.id}
             role="button"
             tabIndex={i === 0 ? 0 : -1}
-            aria-label="Open comment thread"
+            aria-label={i18nT('components.inlineCommentOverlay.open_comment_thread')}
             onClick={() => onRectClick(b.id)}
             onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onRectClick(b.id) } }}
             className={`mc-cmt-rect${b.id === activeId ? ' active' : ''}`}

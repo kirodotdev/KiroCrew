@@ -26,6 +26,7 @@ import { useState } from 'react'
 import { Radar, Search, GitPullRequest, BookOpen, RefreshCw, ArrowLeft, ArrowRight } from 'lucide-react'
 import ConnectPanel, { COLLAPSED_CARD, EXPANDED_CARD, useConnectFlow } from './ConnectPanel'
 
+import { i18nT } from '../../i18n/t'
 interface Slide {
   title: string
   subtitle: string
@@ -139,7 +140,7 @@ export default function WelcomeCarousel({ onConnected }: { onConnected: (repo: A
             disabled={page === 0 || flow.pending}
             className="min-w-[84px] px-4 py-1.5 rounded-md border border-border bg-bg text-text text-xs cursor-pointer disabled:opacity-30 disabled:cursor-default hover:bg-bg-hover"
           >
-            <ArrowLeft size={12} className="lucide-inline" /> Back
+            <ArrowLeft size={12} className="lucide-inline" /> {i18nT('apps.issueRadar.welcomeCarousel.back')}
           </button>
           <div className="flex gap-1">
             {Array.from({ length: CONNECT_PAGE + 1 }, (_, i) => (
@@ -159,7 +160,7 @@ export default function WelcomeCarousel({ onConnected }: { onConnected: (repo: A
               onClick={() => setPage((p) => p + 1)}
               className="min-w-[84px] px-4 py-1.5 rounded-md border border-accent bg-accent text-bg text-xs font-semibold cursor-pointer hover:opacity-90"
             >
-              Next <ArrowRight size={12} className="lucide-inline" />
+              {i18nT('apps.issueRadar.welcomeCarousel.next')} <ArrowRight size={12} className="lucide-inline" />
             </button>
           )}
           {isConnectSlide && flow.provider && (
@@ -181,9 +182,9 @@ export default function WelcomeCarousel({ onConnected }: { onConnected: (repo: A
       {/* Bottom-right quote. */}
       <div className="absolute bottom-6 right-8 z-0 whitespace-nowrap">
         <span className="text-[11px] italic text-muted opacity-50">
-          "Somewhere, something incredible is waiting to be known."
+          {i18nT('apps.issueRadar.welcomeCarousel.somewhere_something_incredible_is_waiting_to_be')}
         </span>
-        <span className="text-[10px] text-muted opacity-35 ml-2">— Carl Sagan</span>
+        <span className="text-[10px] text-muted opacity-35 ml-2">{i18nT('apps.issueRadar.welcomeCarousel.carl_sagan')}</span>
       </div>
 
       <style>{`

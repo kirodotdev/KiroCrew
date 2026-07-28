@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Zap } from 'lucide-react'
 import { api } from '../api/client'
 
+import { i18nT } from '../i18n/t'
 export default function RestartButton() {
   const [restarting, setRestarting] = useState(false)
   const [msg, setMsg] = useState('')
@@ -37,8 +38,8 @@ export default function RestartButton() {
         {restarting && <span className="absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent animate-shimmer" />}
         <span className={`transition-transform duration-300 ${restarting ? 'animate-spin' : 'group-hover:rotate-12'}`}><Zap className="lucide-inline" /></span>
         {restarting
-          ? <span>Restarting…</span>
-          : <span>Apply & Restart</span>
+          ? <span>{i18nT('components.restartButton.restarting')}</span>
+          : <span>{i18nT('components.restartButton.apply_restart')}</span>
         }
       </button>
     </div>

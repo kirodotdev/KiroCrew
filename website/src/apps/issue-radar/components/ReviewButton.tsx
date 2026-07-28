@@ -15,6 +15,7 @@ import { useReviewPr } from '../lib/review'
 import AgentSessionButton from './AgentSessionButton'
 import { providerTerms, repoScopeKey } from '../lib/links'
 
+import { i18nT } from '../../../i18n/t'
 export default function ReviewButton({
   repoRef, pull,
 }: {
@@ -52,7 +53,7 @@ export default function ReviewButton({
   return (
     <AgentSessionButton
       icon={FileSearch}
-      label="Review"
+      label={i18nT('apps.issueRadar.components.reviewButton.review')}
       record={record}
       busy={busy || recordQuery.isLoading}
       disabled={unresolved}

@@ -4,6 +4,7 @@ import { ChevronRight } from 'lucide-react'
 import { Badge } from './ui'
 import { api } from '../api/client'
 
+import { i18nT } from '../i18n/t'
 export interface LogEntryData {
   run_id: string
   status: 'success' | 'failure' | 'timeout' | 'cancelled'
@@ -33,10 +34,10 @@ export default function LogEntry({ entry, jobId }: { entry: LogEntryData; jobId:
     enabled: open,
   })
 
-  const statusBadge = entry.status === 'success' ? <Badge variant="ok">OK</Badge>
-    : entry.status === 'failure' ? <Badge variant="err">Error</Badge>
-    : entry.status === 'cancelled' ? <Badge variant="warn">Cancelled</Badge>
-    : <Badge variant="warn">Timeout</Badge>
+  const statusBadge = entry.status === 'success' ? <Badge variant="ok">{i18nT('components.logEntry.ok')}</Badge>
+    : entry.status === 'failure' ? <Badge variant="err">{i18nT('components.logEntry.error')}</Badge>
+    : entry.status === 'cancelled' ? <Badge variant="warn">{i18nT('components.logEntry.cancelled')}</Badge>
+    : <Badge variant="warn">{i18nT('components.logEntry.timeout')}</Badge>
 
   const triggerPill = (
     <span className={`px-1.5 py-[1px] rounded-full text-[11px] font-medium ${
@@ -60,7 +61,7 @@ export default function LogEntry({ entry, jobId }: { entry: LogEntryData; jobId:
       {open && (
         <div className="px-3 pb-3 pl-9">
           {isLoading ? (
-            <div className="text-[12px] text-muted animate-pulse">Loading trace…</div>
+            <div className="text-[12px] text-muted animate-pulse">{i18nT('components.logEntry.loading_trace')}</div>
           ) : (
             <pre className="p-2.5 bg-bg-elevated border border-border rounded-md text-[12px] font-mono whitespace-pre-wrap break-words max-h-[300px] overflow-y-auto leading-relaxed">{trace}</pre>
           )}

@@ -24,6 +24,7 @@ import { safeGetItem, safeSetItem } from '../utils/safeStorage'
 import { KiroGhost } from './KiroGhost'
 import { Badge, Btn, Card, SendBtn } from './ui'
 
+import { i18nT } from '../i18n/t'
 const QUERY_KEY = ['kiro-prerequisite'] as const
 
 export function kiroPrerequisiteRefetchInterval(
@@ -126,22 +127,22 @@ function SetupStage() {
           <span aria-hidden="true">
             <KiroGhost size={28} className="h-8 w-7" />
           </span>
-          Kiro Crew
+          {i18nT('components.kiroPrerequisiteGate.kiro_crew')}
         </div>
         <div className="mt-12 max-w-sm lg:my-auto">
           <p className="text-[12px] font-bold uppercase tracking-[0.18em] text-white/75">
-            One quick setup
+            {i18nT('components.kiroPrerequisiteGate.one_quick_setup')}
           </p>
           <h2 className="mt-3 text-4xl font-semibold leading-[1.05] tracking-tight lg:text-5xl">
-            Your crew is almost ready.
+            {i18nT('components.kiroPrerequisiteGate.your_crew_is_almost_ready')}
           </h2>
           <p className="mt-5 max-w-xs text-sm leading-relaxed text-white/80">
-            Install Kiro CLI, sign in once, and Kiro Crew will take it from here.
+            {i18nT('components.kiroPrerequisiteGate.install_kiro_cli_sign_in_once_and_kiro_crew_will')}
           </p>
         </div>
         <div className="mt-8 flex items-center gap-2 text-[12px] font-semibold text-white/75">
           <span className="h-1.5 w-1.5 rounded-full bg-white shadow-[0_0_12px_rgba(255,255,255,.9)]" />
-          Secure setup on your gateway host
+          {i18nT('components.kiroPrerequisiteGate.secure_setup_on_your_gateway_host')}
         </div>
       </motion.div>
     </section>
@@ -197,7 +198,7 @@ function StepStatus({
   current: boolean
 }) {
   if (complete) {
-    return <Badge variant="ok"><CheckCircle2 className="lucide-inline" /> Complete</Badge>
+    return <Badge variant="ok"><CheckCircle2 className="lucide-inline" /> {i18nT('components.kiroPrerequisiteGate.complete')}</Badge>
   }
   return <Badge variant={current ? 'aim' : 'muted'}>{current ? 'Required' : 'Waiting'}</Badge>
 }
@@ -230,7 +231,7 @@ function OperationProgress({ status }: { status: KiroPrerequisiteStatus }) {
           target="_blank"
           rel="noopener noreferrer"
         >
-          Open Kiro sign-in page <ExternalLink className="lucide-inline" />
+          {i18nT('components.kiroPrerequisiteGate.open_kiro_sign_in_page')} <ExternalLink className="lucide-inline" />
         </a>
       )}
       {operation.detail && (
@@ -261,12 +262,12 @@ function TerminalLoginCommand() {
   return (
     <div className="pointer-events-auto mt-2 flex flex-wrap items-center gap-2">
       <span className="text-[12px] text-muted">
-        <Terminal className="lucide-inline" /> or run in terminal:
+        <Terminal className="lucide-inline" /> {i18nT('components.kiroPrerequisiteGate.or_run_in_terminal')}
       </span>
       <code className="rounded-md bg-bg px-2 py-1 font-mono text-[12px] text-text">
         {TERMINAL_LOGIN_COMMAND}
       </code>
-      <Btn type="button" onClick={copy} aria-label="Copy sign-in command">
+      <Btn type="button" onClick={copy} aria-label={i18nT('components.kiroPrerequisiteGate.copy_sign_in_command')}>
         <Copy className="lucide-inline" />
         {copied ? 'Copied' : 'Copy'}
       </Btn>
@@ -298,10 +299,9 @@ function UnavailableStatusBanner({
             <AlertTriangle className="lucide-inline" />
           </span>
           <div className="min-w-0">
-            <p className="font-semibold text-text-strong">Could not check Kiro CLI.</p>
+            <p className="font-semibold text-text-strong">{i18nT('components.kiroPrerequisiteGate.could_not_check_kiro_cli')}</p>
             <p className="mt-1 text-[13px] leading-relaxed text-muted">
-              Sessions are paused until the gateway check succeeds. Your artifacts, settings, and
-              history remain available.
+              {i18nT('components.kiroPrerequisiteGate.sessions_are_paused_until_the_gateway_check_succ')}
             </p>
             <p className="mt-2 text-[13px] text-danger">{message}</p>
           </div>
@@ -309,7 +309,7 @@ function UnavailableStatusBanner({
         <div className="pointer-events-auto flex shrink-0 items-center gap-2 sm:justify-end">
           <Btn type="button" disabled={retrying} onClick={onRetry}>
             <RefreshCw className={`lucide-inline ${retrying ? 'animate-spin' : ''}`} />
-            Check again
+            {i18nT('components.kiroPrerequisiteGate.check_again')}
           </Btn>
         </div>
       </div>
@@ -371,7 +371,7 @@ function ReauthenticationBanner({
                 target="_blank"
                 rel="noopener noreferrer"
               >
-                Open Kiro sign-in page <ExternalLink className="lucide-inline" />
+                {i18nT('components.kiroPrerequisiteGate.open_kiro_sign_in_page')} <ExternalLink className="lucide-inline" />
               </a>
             )}
             {!needsInstall && owner && <TerminalLoginCommand />}
@@ -389,7 +389,7 @@ function ReauthenticationBanner({
               {busy
                 ? <Loader2 className="lucide-inline animate-spin" />
                 : <Package className="lucide-inline" />}{' '}
-              Install Kiro CLI
+              {i18nT('components.kiroPrerequisiteGate.install_kiro_cli')}
             </SendBtn>
           )}
           {owner && status.installed && (
@@ -397,12 +397,12 @@ function ReauthenticationBanner({
               {busy
                 ? <Loader2 className="lucide-inline animate-spin" />
                 : <LogIn className="lucide-inline" />}{' '}
-              Sign in to Kiro
+              {i18nT('components.kiroPrerequisiteGate.sign_in_to_kiro')}
             </SendBtn>
           )}
           <Btn type="button" disabled={busy || retrying} onClick={onRetry}>
             <RefreshCw className={`lucide-inline ${retrying ? 'animate-spin' : ''}`} />
-            Refresh
+            {i18nT('components.kiroPrerequisiteGate.refresh')}
           </Btn>
           {owner && needsInstall && !status.can_auto_install && (
             <a
@@ -411,7 +411,7 @@ function ReauthenticationBanner({
               target="_blank"
               rel="noopener noreferrer"
             >
-              Installation guide <ExternalLink className="lucide-inline" />
+              {i18nT('components.kiroPrerequisiteGate.installation_guide')} <ExternalLink className="lucide-inline" />
             </a>
           )}
         </div>
@@ -434,19 +434,18 @@ function OwnerSetupRequired({
           <ShieldCheck className="lucide-inline" />
         </div>
         <p className="mt-6 text-[12px] font-bold uppercase tracking-[0.16em] text-accent">
-          Gateway setup required
+          {i18nT('components.kiroPrerequisiteGate.gateway_setup_required')}
         </p>
         <h1 className="mt-2 text-3xl font-bold tracking-tight text-text-strong">
-          The gateway owner needs to finish setup.
+          {i18nT('components.kiroPrerequisiteGate.the_gateway_owner_needs_to_finish_setup')}
         </h1>
         <p className="mt-3 max-w-lg text-sm leading-relaxed text-muted">
-          Ask the Kiro Crew owner to install Kiro CLI and sign in on this gateway. This dashboard
-          will open for you as soon as the gateway is ready.
+          {i18nT('components.kiroPrerequisiteGate.ask_the_kiro_crew_owner_to_install_kiro_cli_and')}
         </p>
         <div className="mt-6">
           <Btn type="button" disabled={retrying} onClick={onRetry}>
             <RefreshCw className={`lucide-inline ${retrying ? 'animate-spin' : ''}`} />
-            Check again
+            {i18nT('components.kiroPrerequisiteGate.check_again')}
           </Btn>
         </div>
       </section>
@@ -482,18 +481,18 @@ function SetupStatusError({
           <AlertTriangle className="lucide-inline" />
         </div>
         <p className="mt-6 text-[12px] font-bold uppercase tracking-[0.16em] text-danger">
-          Setup check unavailable
+          {i18nT('components.kiroPrerequisiteGate.setup_check_unavailable')}
         </p>
         <h1 className="mt-2 text-3xl font-bold tracking-tight text-text-strong">
-          We could not check Kiro CLI.
+          {i18nT('components.kiroPrerequisiteGate.we_could_not_check_kiro_cli')}
         </h1>
         <p className="mt-3 max-w-lg text-sm leading-relaxed text-muted">
-          {asSentence(message)} Retry the gateway check before starting a session.
+          {asSentence(message)} {i18nT('components.kiroPrerequisiteGate.retry_the_gateway_check_before_starting_a_sessio')}
         </p>
         <div className="mt-6">
           <SendBtn type="button" disabled={retrying} onClick={onRetry}>
             <RefreshCw className={`lucide-inline ${retrying ? 'animate-spin' : ''}`} />{' '}
-            Try again
+            {i18nT('components.kiroPrerequisiteGate.try_again')}
           </SendBtn>
         </div>
       </section>
@@ -621,15 +620,14 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
         <section className="p-7 sm:p-10 lg:p-12">
           <div className="mb-7">
             <div className="mb-3 flex items-center gap-2 text-[12px] font-semibold tracking-[0.14em] text-accent">
-              <span className="uppercase">Setup</span>
+              <span className="uppercase">{i18nT('components.kiroPrerequisiteGate.setup')}</span>
               <ArrowRight className="lucide-inline" />
-              <span>{platform} gateway</span>
+              <span>{platform} {i18nT('components.kiroPrerequisiteGate.gateway')}</span>
             </div>
-            <h1 className="text-3xl font-bold tracking-tight text-text-strong">Set up Kiro</h1>
+            <h1 className="text-3xl font-bold tracking-tight text-text-strong">{i18nT('components.kiroPrerequisiteGate.set_up_kiro')}</h1>
             <p className="mt-2 max-w-xl text-sm leading-relaxed text-muted">
-              Kiro Crew uses Kiro CLI as its agent engine. Complete these two steps on the{' '}
-              <strong className="font-semibold text-text">{platform} gateway host</strong>, then
-              the dashboard will open automatically.
+              {i18nT('components.kiroPrerequisiteGate.kiro_crew_uses_kiro_cli_as_its_agent_engine_comp')}{' '}
+              <strong className="font-semibold text-text">{platform} {i18nT('components.kiroPrerequisiteGate.gateway_host')}</strong>{i18nT('components.kiroPrerequisiteGate.then_the_dashboard_will_open_automatically')}
             </p>
           </div>
 
@@ -640,11 +638,10 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
                   <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-accent-subtle text-accent">
                     <Package className="lucide-inline" />
                   </span>
-                  Install Kiro CLI
+                  {i18nT('components.kiroPrerequisiteGate.install_kiro_cli')}
                 </h2>
                 <p className="mt-2 text-sm leading-relaxed text-muted">
-                  Kiro Crew downloads the official Kiro installer over HTTPS. Installation starts
-                  only when you choose the button below.
+                  {i18nT('components.kiroPrerequisiteGate.kiro_crew_downloads_the_official_kiro_installer')}
                 </p>
               </div>
               <StepStatus complete={status.installed} current={!status.installed} />
@@ -656,10 +653,10 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
                 onClick={() => installMutation.mutate()}
               >
                 {busy && status.operation.kind === 'install'
-                  ? <><Loader2 className="lucide-inline animate-spin" /> Installing…</>
+                  ? <><Loader2 className="lucide-inline animate-spin" /> {i18nT('components.kiroPrerequisiteGate.installing')}</>
                   : status.installed
-                    ? <><CheckCircle2 className="lucide-inline" /> Installed</>
-                    : <><Package className="lucide-inline" /> Install Kiro CLI</>}
+                    ? <><CheckCircle2 className="lucide-inline" /> {i18nT('components.kiroPrerequisiteGate.installed')}</>
+                    : <><Package className="lucide-inline" /> {i18nT('components.kiroPrerequisiteGate.install_kiro_cli')}</>}
               </SendBtn>
               <a
                 className="inline-flex items-center gap-1.5 text-[13px] font-medium text-accent hover:underline focus-ring"
@@ -667,13 +664,12 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
                 target="_blank"
                 rel="noopener noreferrer"
               >
-                Installation guide <ExternalLink className="lucide-inline" />
+                {i18nT('components.kiroPrerequisiteGate.installation_guide')} <ExternalLink className="lucide-inline" />
               </a>
             </div>
             {!status.installed && !status.can_auto_install && (
               <p className="mt-3 text-[13px] leading-relaxed text-muted">
-                Automatic installation is unavailable here. Install Kiro CLI from the official
-                guide on the gateway host, then choose Check again.
+                {i18nT('components.kiroPrerequisiteGate.automatic_installation_is_unavailable_here_insta')}
               </p>
             )}
             {status.operation.kind === 'install' && <OperationProgress status={status} />}
@@ -686,11 +682,10 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
                   <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-accent-subtle text-accent">
                     <LogIn className="lucide-inline" />
                   </span>
-                  Sign in to Kiro
+                  {i18nT('components.kiroPrerequisiteGate.sign_in_to_kiro')}
                 </h2>
                 <p className="mt-2 text-sm leading-relaxed text-muted">
-                  Start Kiro&apos;s device sign-in, open the secure page, and enter the code shown
-                  here. Credentials remain managed by Kiro CLI on the gateway host.
+                  {i18nT('components.kiroPrerequisiteGate.start_kiro_s_device_sign_in_open_the_secure_page')}
                 </p>
               </div>
               <StepStatus
@@ -709,10 +704,10 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
                 onClick={() => loginMutation.mutate()}
               >
                 {busy && status.operation.kind === 'login'
-                  ? <><Loader2 className="lucide-inline animate-spin" /> Waiting for sign-in…</>
+                  ? <><Loader2 className="lucide-inline animate-spin" /> {i18nT('components.kiroPrerequisiteGate.waiting_for_sign_in')}</>
                   : status.authenticated
-                    ? <><CheckCircle2 className="lucide-inline" /> Signed in</>
-                    : <><LogIn className="lucide-inline" /> Sign in to Kiro</>}
+                    ? <><CheckCircle2 className="lucide-inline" /> {i18nT('components.kiroPrerequisiteGate.signed_in')}</>
+                    : <><LogIn className="lucide-inline" /> {i18nT('components.kiroPrerequisiteGate.sign_in_to_kiro')}</>}
               </SendBtn>
             </div>
             {status.operation.kind === 'login' && <OperationProgress status={status} />}
@@ -740,7 +735,7 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
               onClick={() => statusQuery.refetch()}
             >
               <RefreshCw className={`lucide-inline ${statusQuery.isFetching ? 'animate-spin' : ''}`} />
-              Check again
+              {i18nT('components.kiroPrerequisiteGate.check_again')}
             </Btn>
           </div>
         </section>

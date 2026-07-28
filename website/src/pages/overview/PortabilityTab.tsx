@@ -2,6 +2,7 @@ import { useState, useRef } from 'react'
 import { Download, Upload, FileArchive, AlertCircle, CheckCircle } from 'lucide-react'
 import { Card, CardTitle } from '../../components/ui'
 
+import { i18nT } from '../../i18n/t'
 interface Manifest {
   version: number
   created_at: string
@@ -69,7 +70,7 @@ export default function PortabilityTab() {
   const handleImport = async () => {
     const file = fileRef.current?.files?.[0]
     if (!file) return
-    if (mode === 'replace' && !confirm('Replace mode will overwrite existing data. Continue?')) return
+    if (mode === 'replace' && !confirm(i18nT('pages.overview.portabilityTab.replace_mode_will_overwrite_existing_data_contin'))) return
 
     setImportStatus({ type: 'loading', msg: 'Importing...' })
     const fd = new FormData()
@@ -91,10 +92,9 @@ export default function PortabilityTab() {
   return (
     <div className="space-y-4">
       <Card>
-        <CardTitle>Export Configuration</CardTitle>
+        <CardTitle>{i18nT('pages.overview.portabilityTab.export_configuration')}</CardTitle>
         <p className="text-muted text-[13px] mb-3">
-          Download all settings, memory, skills, crons, and lessons as a portable zip file.
-          Credentials and session secrets are excluded.
+          {i18nT('pages.overview.portabilityTab.download_all_settings_memory_skills_crons_and_le')}
         </p>
         <div className="flex items-center gap-3">
           <button
@@ -116,21 +116,20 @@ export default function PortabilityTab() {
       </Card>
 
       <Card>
-        <CardTitle>Import Configuration</CardTitle>
+        <CardTitle>{i18nT('pages.overview.portabilityTab.import_configuration')}</CardTitle>
         <p className="text-muted text-[13px] mb-3">
-          Upload a KiroCrew export zip to restore settings on this instance.
-          Existing data will be merged by default (duplicates are skipped).
+          {i18nT('pages.overview.portabilityTab.upload_a_kirocrew_export_zip_to_restore_settings')}
         </p>
         <div className="flex items-center gap-3 flex-wrap">
           <label htmlFor="portability-import-file" className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-[13px] font-semibold font-body cursor-pointer bg-bg-elevated border border-border hover:border-accent transition-colors">
             <Upload size={14} />
-            Choose file
+            {i18nT('pages.overview.portabilityTab.choose_file')}
             <input
               id="portability-import-file"
               ref={fileRef}
               type="file"
               accept=".zip"
-              aria-label="Choose import file"
+              aria-label={i18nT('pages.overview.portabilityTab.choose_import_file')}
               onChange={handleFileChange}
               className="hidden"
             />
@@ -140,8 +139,8 @@ export default function PortabilityTab() {
             onChange={e => setMode(e.target.value as 'merge' | 'replace')}
             className="h-9 px-3 rounded-lg bg-bg-elevated border border-border text-[13px] text-text font-body focus:border-accent focus:outline-none"
           >
-            <option value="merge">Merge</option>
-            <option value="replace">Replace</option>
+            <option value="merge">{i18nT('pages.overview.portabilityTab.merge')}</option>
+            <option value="replace">{i18nT('pages.overview.portabilityTab.replace')}</option>
           </select>
           <button
             onClick={handleImport}
@@ -155,15 +154,15 @@ export default function PortabilityTab() {
 
         {preview && (
           <div className="mt-3 p-3 rounded-lg bg-bg-elevated border border-border text-[12px] font-mono space-y-1">
-            <div className="font-semibold text-text mb-1">Archive contents:</div>
-            {preview.contents['config.json'] != null && <div>Config: {(preview.contents['config.json'] / 1024).toFixed(1)} KB</div>}
-            {preview.contents['memory.db'] != null && <div>Memory DB: {(preview.contents['memory.db'] / 1024).toFixed(1)} KB</div>}
-            {preview.contents['crons.json'] != null && <div>Crons: {(preview.contents['crons.json'] / 1024).toFixed(1)} KB</div>}
-            {preview.contents.workspace_files != null && <div>Workspace files: {preview.contents.workspace_files}</div>}
-            {preview.contents.skill_count != null && <div>Skills: {preview.contents.skill_count}</div>}
-            {preview.contents.plan_memory_files != null && <div>Plan memory files: {preview.contents.plan_memory_files}</div>}
+            <div className="font-semibold text-text mb-1">{i18nT('pages.overview.portabilityTab.archive_contents')}</div>
+            {preview.contents['config.json'] != null && <div>{i18nT('pages.overview.portabilityTab.config')} {(preview.contents['config.json'] / 1024).toFixed(1)} {i18nT('pages.overview.portabilityTab.kb')}</div>}
+            {preview.contents['memory.db'] != null && <div>{i18nT('pages.overview.portabilityTab.memory_db')} {(preview.contents['memory.db'] / 1024).toFixed(1)} {i18nT('pages.overview.portabilityTab.kb')}</div>}
+            {preview.contents['crons.json'] != null && <div>{i18nT('pages.overview.portabilityTab.crons')} {(preview.contents['crons.json'] / 1024).toFixed(1)} {i18nT('pages.overview.portabilityTab.kb')}</div>}
+            {preview.contents.workspace_files != null && <div>{i18nT('pages.overview.portabilityTab.workspace_files')} {preview.contents.workspace_files}</div>}
+            {preview.contents.skill_count != null && <div>{i18nT('pages.overview.portabilityTab.skills')} {preview.contents.skill_count}</div>}
+            {preview.contents.plan_memory_files != null && <div>{i18nT('pages.overview.portabilityTab.plan_memory_files')} {preview.contents.plan_memory_files}</div>}
             <div className="pt-1 border-t border-border mt-1 text-muted">
-              Created: {preview.created_at} | From: {preview.user}@{preview.hostname}
+              {i18nT('pages.overview.portabilityTab.created')} {preview.created_at} {i18nT('pages.overview.portabilityTab.from')} {preview.user}@{preview.hostname}
             </div>
           </div>
         )}

@@ -2,6 +2,7 @@ import { memo, useEffect, useRef, useState } from 'react'
 import { GitBranch, Lightbulb, Plus, X } from 'lucide-react'
 import type { FollowupItem } from '../store/chatSlice'
 
+import { i18nT } from '../i18n/t'
 export interface FollowUpCardProps {
   items: FollowupItem[]
   /** Pre-fill THIS session's composer with the item's expanded prompt. */
@@ -87,12 +88,12 @@ function FollowUpCard({
     <div
       className="border border-accent/30 rounded-xl bg-card shadow-md overflow-hidden animate-scale-in"
       role="group"
-      aria-label="Follow-up suggestions"
+      aria-label={i18nT('components.followUpCard.follow_up_suggestions')}
     >
       <div className="flex items-center gap-2 px-4 pt-3 pb-1">
         <Lightbulb size={13} className="text-accent" aria-hidden="true" />
         <span className="text-[11px] font-semibold uppercase tracking-wider text-accent">
-          Suggested follow-up{items.length > 1 ? 's' : ''}
+          {i18nT('components.followUpCard.suggested_follow_up')}{items.length > 1 ? 's' : ''}
         </span>
       </div>
       {items.map((item, index) => {
@@ -121,18 +122,18 @@ function FollowUpCard({
               <button
                 onClick={() => onAddToSession(item)}
                 disabled={busyIndex !== null}
-                title="Pre-fill this session's composer with the expanded prompt"
+                title={i18nT('components.followUpCard.pre_fill_this_session_s_composer_with_the_expand')}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[12px] font-medium cursor-pointer transition-all disabled:opacity-40 disabled:cursor-not-allowed border border-border text-muted bg-bg hover:text-text hover:border-accent/40"
               >
-                <Plus size={13} aria-hidden="true" /> Add to this session
+                <Plus size={13} aria-hidden="true" /> {i18nT('components.followUpCard.add_to_this_session')}
               </button>
               <button
                 onClick={() => onSkip(index)}
                 disabled={busyIndex !== null}
-                title="Dismiss this suggestion"
+                title={i18nT('components.followUpCard.dismiss_this_suggestion')}
                 className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-[12px] cursor-pointer transition-all disabled:opacity-40 disabled:cursor-not-allowed border border-transparent text-muted hover:text-text bg-transparent"
               >
-                <X size={13} aria-hidden="true" /> Skip
+                <X size={13} aria-hidden="true" /> {i18nT('components.followUpCard.skip')}
               </button>
             </div>
             {error && (
@@ -144,7 +145,7 @@ function FollowUpCard({
         )
       })}
       <div className="px-4 pb-3 text-[11px] text-muted">
-        Both actions pre-fill the composer — nothing is sent until you press send.
+        {i18nT('components.followUpCard.both_actions_pre_fill_the_composer_nothing_is_se')}
       </div>
     </div>
   )

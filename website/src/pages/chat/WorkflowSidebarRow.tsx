@@ -15,6 +15,7 @@ import WorkflowRunTree from '../../apps/workflows/WorkflowRunTree'
 import WorkflowSourcePanel from '../../apps/workflows/WorkflowSourcePanel'
 import { useRunSnapshot } from '../../apps/workflows/useRunSnapshot'
 
+import { i18nT } from '../../i18n/t'
 export interface WfRunRow {
   run_id: string
   name?: string
@@ -70,7 +71,7 @@ const WorkflowSidebarRow = memo(function WorkflowSidebarRow({ row }: { row: WfRu
           />
         </div>
         <div className="text-[10px] text-muted mt-0.5 font-mono truncate">
-          {row.run_id} · {row.event_count ?? 0} events
+          {row.run_id} · {row.event_count ?? 0} {i18nT('pages.chat.workflowSidebarRow.events')}
         </div>
         {!expanded && row.status === 'running' && lastLog && (
           <div className="text-[11px] text-muted italic mt-0.5 truncate">
@@ -86,7 +87,7 @@ const WorkflowSidebarRow = memo(function WorkflowSidebarRow({ row }: { row: WfRu
         <div className="px-3 pb-2 pt-1 border-t border-border flex flex-col gap-2">
           {snapshotError && (
             <div className="text-[11px] text-red-500 border border-red-500/30 rounded p-2">
-              Could not load snapshot: {sanitizeLlmOutput(snapshotError).slice(0, 200)}
+              {i18nT('pages.chat.workflowSidebarRow.could_not_load_snapshot')} {sanitizeLlmOutput(snapshotError).slice(0, 200)}
             </div>
           )}
           <WorkflowRunTree

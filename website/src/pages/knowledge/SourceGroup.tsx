@@ -6,6 +6,7 @@ import { knowledgeApi } from './api'
 import { ItemCard, FileSubGroup } from './ItemCard'
 import type { KnowledgeItem, Source } from './types'
 
+import { i18nT } from '../../i18n/t'
 // Items fetched per expansion. The backend caps page size at 100
 // (dashboard/handlers/knowledge.py list_items), so requesting more would
 // silently truncate and break the in-group pager math.
@@ -138,10 +139,10 @@ export function SourceGroup({
           )}
           {totalPages > 1 && (
             <div className="flex items-center justify-center gap-3 pt-2 mt-1 border-t border-border">
-              <Btn disabled={page <= 1} onClick={() => setPage(p => p - 1)}>&larr; Prev</Btn>
-              <span className="text-[12px] text-text">Page {page} of {totalPages}</span>
-              <span className="text-[11px] text-muted">({total} items)</span>
-              <Btn disabled={page >= totalPages} onClick={() => setPage(p => p + 1)}>Next &rarr;</Btn>
+              <Btn disabled={page <= 1} onClick={() => setPage(p => p - 1)}>{i18nT('pages.knowledge.sourceGroup.prev')}</Btn>
+              <span className="text-[12px] text-text">{i18nT('pages.knowledge.sourceGroup.page')} {page} {i18nT('pages.knowledge.sourceGroup.of')} {totalPages}</span>
+              <span className="text-[11px] text-muted">({total} {i18nT('pages.knowledge.sourceGroup.items')}</span>
+              <Btn disabled={page >= totalPages} onClick={() => setPage(p => p + 1)}>{i18nT('pages.knowledge.sourceGroup.next')}</Btn>
             </div>
           )}
         </div>

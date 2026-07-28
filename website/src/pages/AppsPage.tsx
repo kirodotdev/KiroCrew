@@ -34,6 +34,7 @@ import { categoryFor, categoryCounts, type Category } from '../components/appsto
 import { hasHeroArt } from '../components/appstore/useHeroArt'
 import { isVerified, normalizeRegistryApp, type InstalledApp, type RegistryApp } from '../components/appstore/types'
 
+import { i18nT } from '../i18n/t'
 /** Uninstall preview payload (mirrors ``api.uninstallPreview`` return shape). */
 type UninstallPreview = Awaited<ReturnType<typeof api.uninstallPreview>>
 type RemovableDep = UninstallPreview['dependencies']['removable'][number]
@@ -357,8 +358,8 @@ export default function AppsPage() {
       {/* Standard page header with a right-side actions slot: tabs, search,
           and the Sources gear (page-layout-pattern). */}
       <PageHeader
-        title="Apps"
-        subtitle="Discover, install, and manage agentic apps"
+        title={i18nT('pages.appsPage.apps')}
+        subtitle={i18nT('pages.appsPage.discover_install_and_manage_agentic_apps')}
         actions={<>
           <SegmentedControl
             segments={[
@@ -374,7 +375,7 @@ export default function AppsPage() {
             value={query}
             onChange={(e: React.ChangeEvent<HTMLInputElement>) => setQuery(e.target.value)}
             className="w-[220px]"
-            aria-label="Search apps"
+            aria-label={i18nT('pages.appsPage.search_apps')}
           />
           <SourcesPopover open={sourcesOpen} onOpenChange={setSourcesOpen} onError={setError} />
         </>}
@@ -385,13 +386,13 @@ export default function AppsPage() {
         {displayError && (
           <div className="mb-4 bg-danger/10 border border-danger/20 rounded-lg p-3 flex items-center gap-3 animate-rise">
             <span className="text-danger text-sm flex-1">{displayError}</span>
-            <button aria-label="Dismiss error" className="text-danger/60 hover:text-danger text-sm" onClick={() => { setError(''); setDismissedQueryError(true) }}><X className="lucide-inline" /></button>
+            <button aria-label={i18nT('pages.appsPage.dismiss_error')} className="text-danger/60 hover:text-danger text-sm" onClick={() => { setError(''); setDismissedQueryError(true) }}><X className="lucide-inline" /></button>
           </div>
         )}
         {successMsg && (
           <div className="mb-4 bg-bg-elevated border rounded-lg p-3 flex items-center gap-3 animate-rise" style={{ borderColor: 'color-mix(in srgb, var(--ok) 45%, transparent)' }}>
             <span className="text-text text-sm flex-1">{successMsg}</span>
-            <button aria-label="Dismiss message" className="text-muted hover:text-text text-sm" onClick={() => setSuccessMsg('')}><X className="lucide-inline" /></button>
+            <button aria-label={i18nT('pages.appsPage.dismiss_message')} className="text-muted hover:text-text text-sm" onClick={() => setSuccessMsg('')}><X className="lucide-inline" /></button>
           </div>
         )}
 
@@ -405,7 +406,7 @@ export default function AppsPage() {
           <div className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/60 backdrop-blur-sm animate-rise"
             onClick={() => { setUninstallTarget(null); setUninstallPreview(null) }}
             onKeyDown={e => { if (e.key === 'Escape') { setUninstallTarget(null); setUninstallPreview(null) } }}
-            tabIndex={-1} ref={el => el?.focus()} role="dialog" aria-modal="true" aria-label="Confirm uninstall"
+            tabIndex={-1} ref={el => el?.focus()} role="dialog" aria-modal="true" aria-label={i18nT('pages.appsPage.confirm_uninstall')}
           >
             {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions, jsx-a11y/click-events-have-key-events */}
             <div className="bg-card border border-border rounded-xl p-6 max-w-md w-full mx-4 shadow-xl" onClick={e => e.stopPropagation()}>
@@ -414,43 +415,41 @@ export default function AppsPage() {
                   <Trash2 size={20} className="text-danger" />
                 </div>
                 <div>
-                  <div className="font-medium text-text">Uninstall {uninstallTarget.displayName || uninstallTarget.name}?</div>
-                  <div className="text-[12px] text-muted">v{uninstallTarget.version}</div>
+                  <div className="font-medium text-text">{i18nT('pages.appsPage.uninstall')} {uninstallTarget.displayName || uninstallTarget.name}?</div>
+                  <div className="text-[12px] text-muted">{i18nT('pages.appsPage.v')}{uninstallTarget.version}</div>
                 </div>
               </div>
 
-              <p className="text-[13px] text-muted mb-3">This will remove all resources provided by this app:</p>
+              <p className="text-[13px] text-muted mb-3">{i18nT('pages.appsPage.this_will_remove_all_resources_provided_by_this')}</p>
               <div className="text-[13px] text-text mb-4 space-y-1">
                 {uninstallTarget.resources === 'app' && !uninstallTarget.manifest?.setup?.onUninstall && uninstallTarget.origin !== 'registry' && (
                   <div className="bg-bg-elevated border border-border rounded-md px-2.5 py-2 text-[12px] text-muted mb-2">
-                    This is a self-managed app — only KiroCrew metadata and the app secret will be removed.
-                    The app itself and its agent/skill registrations are managed externally and will not be affected.
-                    If the app is still running, it may re-register on next launch.
+                    {i18nT('pages.appsPage.this_is_a_self_managed_app_only_kirocrew_metadat')}
                   </div>
                 )}
                 {uninstallTarget.manifest?.setup?.onUninstall && (
                   <div className="bg-danger/5 border border-danger/20 rounded-md px-2.5 py-2 text-[12px] text-muted mb-2">
-                    This app has an uninstall script that will run before removal. It may delete the app binary, agent configs, skills, and other resources it created during installation.
+                    {i18nT('pages.appsPage.this_app_has_an_uninstall_script_that_will_run_b')}
                   </div>
                 )}
                 {uninstallTarget.origin === 'registry' && (
                   <div className="bg-bg-elevated border border-border rounded-md px-2.5 py-2 text-[12px] text-muted mb-2">
-                    Installed from Apps — KiroCrew metadata{uninstallTarget.resources === 'app' ? ', the app secret, and' : ' and'} the downloaded source code will be removed.{uninstallTarget.resources === 'app' && !uninstallTarget.manifest?.setup?.onUninstall ? ' The app itself is managed externally.' : ''}
+                    {i18nT('pages.appsPage.installed_from_apps_kirocrew_metadata')}{uninstallTarget.resources === 'app' ? ', the app secret, and' : ' and'} {i18nT('pages.appsPage.the_downloaded_source_code_will_be_removed')}{uninstallTarget.resources === 'app' && !uninstallTarget.manifest?.setup?.onUninstall ? ' The app itself is managed externally.' : ''}
                   </div>
                 )}
                 {uninstallTarget.origin !== 'registry' && uninstallTarget.resources === 'app' && uninstallTarget.manifest?.setup?.onUninstall && (
                   <div className="bg-bg-elevated border border-border rounded-md px-2.5 py-2 text-[12px] text-muted mb-2">
-                    Not installed from Apps — your local source code will not be affected.
+                    {i18nT('pages.appsPage.not_installed_from_apps_your_local_source_code_w')}
                   </div>
                 )}
                 {(uninstallTarget.manifest?.agents?.length || 0) > 0 && (
-                  <div className="flex items-center gap-2"><Bot size={12} className="text-muted" /> {uninstallTarget.manifest.agents!.length} agent{uninstallTarget.manifest.agents!.length > 1 ? 's' : ''}</div>
+                  <div className="flex items-center gap-2"><Bot size={12} className="text-muted" /> {uninstallTarget.manifest.agents!.length} {i18nT('pages.appsPage.agent')}{uninstallTarget.manifest.agents!.length > 1 ? 's' : ''}</div>
                 )}
                 {(uninstallTarget.manifest?.skills?.length || 0) > 0 && (
-                  <div className="flex items-center gap-2"><Zap size={12} className="text-muted" /> {uninstallTarget.manifest.skills!.length} skill{uninstallTarget.manifest.skills!.length > 1 ? 's' : ''}</div>
+                  <div className="flex items-center gap-2"><Zap size={12} className="text-muted" /> {uninstallTarget.manifest.skills!.length} {i18nT('pages.appsPage.skill')}{uninstallTarget.manifest.skills!.length > 1 ? 's' : ''}</div>
                 )}
                 {(uninstallTarget.manifest?.crons?.length || 0) > 0 && (
-                  <div className="flex items-center gap-2"><Clock size={12} className="text-muted" /> {uninstallTarget.manifest.crons!.length} cron job{uninstallTarget.manifest.crons!.length > 1 ? 's' : ''}</div>
+                  <div className="flex items-center gap-2"><Clock size={12} className="text-muted" /> {uninstallTarget.manifest.crons!.length} {i18nT('pages.appsPage.cron_job')}{uninstallTarget.manifest.crons!.length > 1 ? 's' : ''}</div>
                 )}
               </div>
 
@@ -462,7 +461,7 @@ export default function AppsPage() {
                   if (!hasAny) return null
                   return (
                     <div className="mb-4">
-                      <p className="text-[13px] text-muted mb-2">Dependencies:</p>
+                      <p className="text-[13px] text-muted mb-2">{i18nT('pages.appsPage.dependencies')}</p>
                       <div className="space-y-2 text-[13px]">
                         {(deps.removable || []).map((d: RemovableDep) => (
                           <div key={d.id} className="flex items-start gap-2">
@@ -483,7 +482,7 @@ export default function AppsPage() {
                                   }}
                                   className="rounded"
                                 />
-                                Keep this dependency
+                                {i18nT('pages.appsPage.keep_this_dependency')}
                               </label>
                             </div>
                           </div>
@@ -493,7 +492,7 @@ export default function AppsPage() {
                             <Lock size={12} className="text-muted mt-0.5 shrink-0" />
                             <div>
                               <div className="text-text">{d.id.split('/').pop()}</div>
-                              <div className="text-[11px] text-muted">Kept — {d.reason}</div>
+                              <div className="text-[11px] text-muted">{i18nT('pages.appsPage.kept')} {d.reason}</div>
                             </div>
                           </div>
                         ))}
@@ -502,7 +501,7 @@ export default function AppsPage() {
                             <Lock size={12} className="text-muted mt-0.5 shrink-0" />
                             <div>
                               <div className="text-text">{d.id.split('/').pop()}</div>
-                              <div className="text-[11px] text-muted">Kept — installed by you</div>
+                              <div className="text-[11px] text-muted">{i18nT('pages.appsPage.kept_installed_by_you')}</div>
                             </div>
                           </div>
                         ))}
@@ -513,12 +512,12 @@ export default function AppsPage() {
               )}
 
               <label htmlFor="uninstall-keep-data" className="flex items-center gap-2 text-[13px] text-muted mb-5 cursor-pointer select-none">
-                <input id="uninstall-keep-data" type="checkbox" aria-label="Keep app data" checked={keepData} onChange={e => setKeepData(e.target.checked)} className="rounded" />
-                Keep app data
+                <input id="uninstall-keep-data" type="checkbox" aria-label={i18nT('pages.appsPage.keep_app_data')} checked={keepData} onChange={e => setKeepData(e.target.checked)} className="rounded" />
+                {i18nT('pages.appsPage.keep_app_data')}
               </label>
 
               <div className="flex items-center gap-2 justify-end">
-                <Btn onClick={() => { setUninstallTarget(null); setUninstallPreview(null) }}>Cancel</Btn>
+                <Btn onClick={() => { setUninstallTarget(null); setUninstallPreview(null) }}>{i18nT('pages.appsPage.cancel')}</Btn>
                 <Btn danger onClick={confirmUninstall} disabled={actionLoading === `${uninstallTarget.name}:uninstall`}>
                   {actionLoading === `${uninstallTarget.name}:uninstall` ? 'Removing…' : 'Uninstall'}
                 </Btn>
@@ -530,12 +529,12 @@ export default function AppsPage() {
         {/* ---- Discover tab ---- */}
         {tab === 'discover' && (
           loading ? (
-            <div className="text-center py-12 text-muted text-sm">Loading apps…</div>
+            <div className="text-center py-12 text-muted text-sm">{i18nT('pages.appsPage.loading_apps')}</div>
           ) : browseApps.length === 0 ? (
             <EmptyState
               icon={<ShoppingBag size={36} />}
-              title="No apps available"
-              subtitle="Add an app source (gear icon above) or install from a local path."
+              title={i18nT('pages.appsPage.no_apps_available')}
+              subtitle={i18nT('pages.appsPage.add_an_app_source_gear_icon_above_or_install_fro')}
             />
           ) : (
             <>
@@ -583,22 +582,22 @@ export default function AppsPage() {
                 </div>
                 <div className="min-w-0">
                   <div className="flex items-center justify-between mb-3 text-[12.5px] text-muted">
-                    <span>{filteredBrowse.length} app{filteredBrowse.length === 1 ? '' : 's'}</span>
+                    <span>{filteredBrowse.length} {i18nT('pages.appsPage.app')}{filteredBrowse.length === 1 ? '' : 's'}</span>
                     <label className="flex items-center gap-1.5">
-                      <span>Sort:</span>
+                      <span>{i18nT('pages.appsPage.sort')}</span>
                       <Select
                         value={sort}
                         onChange={e => setSort(e.target.value as 'name' | 'category')}
-                        aria-label="Sort apps"
+                        aria-label={i18nT('pages.appsPage.sort_apps')}
                         className="text-[12.5px] py-1"
                       >
-                        <option value="name">Name</option>
-                        <option value="category">Category</option>
+                        <option value="name">{i18nT('pages.appsPage.name')}</option>
+                        <option value="category">{i18nT('pages.appsPage.category')}</option>
                       </Select>
                     </label>
                   </div>
                   {filteredBrowse.length === 0 ? (
-                    <EmptyState icon={<ShoppingBag size={32} />} title="No matching apps" subtitle="Try a different search or category." />
+                    <EmptyState icon={<ShoppingBag size={32} />} title={i18nT('pages.appsPage.no_matching_apps')} subtitle={i18nT('pages.appsPage.try_a_different_search_or_category')} />
                   ) : (
                     filteredBrowse.map(app => (
                       <AppListRow
@@ -621,7 +620,7 @@ export default function AppsPage() {
         {/* ---- Library tab ---- */}
         {tab === 'library' && (
           appsLoading ? (
-            <div className="text-center py-12 text-muted text-sm">Loading apps…</div>
+            <div className="text-center py-12 text-muted text-sm">{i18nT('pages.appsPage.loading_apps')}</div>
           ) : filteredInstalled.length === 0 ? (
             <EmptyState
               icon={<Package size={36} />}
@@ -636,7 +635,7 @@ export default function AppsPage() {
                 <div className="mb-4 border border-[color-mix(in_srgb,var(--info)_45%,transparent)] bg-bg-elevated rounded-lg p-3 flex items-center gap-3 animate-rise">
                   <ArrowUp size={15} className="text-[var(--info)] shrink-0" />
                   <span className="text-text text-sm flex-1">
-                    {updatables.length} update{updatables.length === 1 ? '' : 's'} available
+                    {updatables.length} {i18nT('pages.appsPage.update')}{updatables.length === 1 ? '' : 's'} {i18nT('pages.appsPage.available')}
                   </span>
                   <Btn
                     className="!bg-[var(--info)] !text-white hover:!opacity-80"

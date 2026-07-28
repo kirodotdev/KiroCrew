@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { SettingsSection, SettingsCard, SettingsToggle } from '../../components/settings'
 import { api } from '../../api/client'
 
+import { i18nT } from '../../i18n/t'
 type SkillsCfg = { auto_create_from_sessions?: boolean; approval_required?: boolean }
 
 /**
@@ -49,18 +50,18 @@ export function SkillsPanel() {
   const disabled = cfgQ.isLoading || patchMut.isPending
 
   return (
-    <SettingsSection title="Skills">
+    <SettingsSection title={i18nT('pages.settings.skillsPanel.skills')}>
       <SettingsCard>
         <SettingsToggle
-          label="Auto-generate skills from sessions"
-          description="Analyze each completed session and draft a reusable SKILL.md when a non-trivial multi-step procedure is detected. Off by default. Drafts are staged to the pending queue on the Skills tab for review — nothing goes live without your approval (see below)."
+          label={i18nT('pages.settings.skillsPanel.auto_generate_skills_from_sessions')}
+          description={i18nT('pages.settings.skillsPanel.analyze_each_completed_session_and_draft_a_reusa')}
           checked={autoCreate}
           onChange={(v) => patchMut.mutate({ path: 'skills.auto_create_from_sessions', value: v })}
           disabled={disabled}
         />
         <SettingsToggle
-          label="Require approval before generated skills go live"
-          description="Keep every auto-generated candidate in the pending queue until you approve it. Turning this off lets prose-only skills publish automatically; skills that bundle scripts always require approval regardless."
+          label={i18nT('pages.settings.skillsPanel.require_approval_before_generated_skills_go_live')}
+          description={i18nT('pages.settings.skillsPanel.keep_every_auto_generated_candidate_in_the_pendi')}
           checked={approvalRequired}
           onChange={(v) => patchMut.mutate({ path: 'skills.approval_required', value: v })}
           disabled={disabled || !autoCreate}

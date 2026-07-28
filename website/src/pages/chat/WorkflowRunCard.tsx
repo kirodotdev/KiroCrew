@@ -20,6 +20,7 @@ import { openActivityToTab } from '../../store/chatSlice'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
 import type { ChatMessage } from '../../types'
 
+import { i18nT } from '../../i18n/t'
 /** The `workflow_run` tool result reads "Started workflow run `wf_NNNNNN`…"
  *  (see the workflow_run handler in mcp_core.py). Matching that phrase both
  *  identifies the call as a launch and captures its run id — and works for
@@ -77,7 +78,7 @@ const WorkflowRunCard = memo(function WorkflowRunCard({
       <button
         type="button"
         onClick={open}
-        title="Open in the Workflows panel"
+        title={i18nT('pages.chat.workflowRunCard.open_in_the_workflows_panel')}
         className="group w-full text-left rounded-md bg-accent/10 border border-accent/20 hover:bg-accent/15 hover:border-accent/40 transition-colors px-3 py-2 flex items-start gap-2"
       >
         <span className="shrink-0 mt-0.5">
@@ -103,7 +104,7 @@ const WorkflowRunCard = memo(function WorkflowRunCard({
             <div className="text-[12px] text-danger truncate mt-0.5">{errMsg}</div>
           )}
           <div className="text-[10px] text-muted font-mono truncate mt-0.5">
-            {runId} · Open Workflows panel
+            {runId} {i18nT('pages.chat.workflowRunCard.open_workflows_panel')}
           </div>
         </div>
         <PanelRight

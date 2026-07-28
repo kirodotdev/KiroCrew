@@ -5,6 +5,7 @@ import { Card, CardTitle } from '../../components/ui'
 import InfoTip from '../../components/InfoTip'
 import { useThemeEditor, ThemeEditorPanel } from '../../components/themeEditor'
 
+import { i18nT } from '../../i18n/t'
 const BTN = 'px-3 py-1 rounded-full text-[13px] cursor-pointer border transition-all'
 const active = (on: boolean) => on ? 'bg-accent-subtle text-accent border-accent' : 'bg-transparent text-muted border-border hover:border-border-strong hover:text-text'
 
@@ -17,7 +18,7 @@ export default function DisplayTab() {
   return (
     <div className="grid grid-cols-2 gap-4 max-[900px]:grid-cols-1">
       <Card>
-        <CardTitle>Zoom <InfoTip text={zoomSupported ? `Native window zoom, the same setting as ${modKey}+ / ${modKey}−. Click the percentage to reset to 100%.` : 'Use your browser\u2019s zoom. Your browser remembers it for this site.'} /></CardTitle>
+        <CardTitle>{i18nT('pages.overview.displayTab.zoom')} <InfoTip text={zoomSupported ? `Native window zoom, the same setting as ${modKey}+ / ${modKey}−. Click the percentage to reset to 100%.` : 'Use your browser\u2019s zoom. Your browser remembers it for this site.'} /></CardTitle>
         {zoomSupported ? (
           <div className="flex items-center gap-2">
             <button className={BTN + ' ' + active(false)} onClick={zoomOut}>−</button>
@@ -25,11 +26,11 @@ export default function DisplayTab() {
             <button className={BTN + ' ' + active(false)} onClick={zoomIn}>+</button>
           </div>
         ) : (
-          <div className="text-[13px] text-muted">Zoom with {modKey} + / {modKey} −</div>
+          <div className="text-[13px] text-muted">{i18nT('pages.overview.displayTab.zoom_with')} {modKey} + / {modKey} −</div>
         )}
       </Card>
       <Card>
-        <CardTitle>Font <InfoTip text="Change the dashboard font family. Persists across sessions." /></CardTitle>
+        <CardTitle>{i18nT('pages.overview.displayTab.font')} <InfoTip text="Change the dashboard font family. Persists across sessions." /></CardTitle>
         <div className="flex items-center gap-2">
           {(['sans', 'mono', 'system'] as const).map(f => (
             <button key={f} className={BTN + ' ' + active(family === f)} onClick={() => setFontFamily(f)}>
@@ -39,17 +40,17 @@ export default function DisplayTab() {
         </div>
       </Card>
       <Card>
-        <CardTitle>Mode <InfoTip text="Switch between color schemes. Auto follows your OS preference." /></CardTitle>
+        <CardTitle>{i18nT('pages.overview.displayTab.mode')} <InfoTip text="Switch between color schemes. Auto follows your OS preference." /></CardTitle>
         <div className="flex items-center gap-2">
           {(['system', 'light', 'dark'] as const).map(t => (
             <button key={t} className={BTN + ' ' + active(preference === t)} onClick={() => setTheme(t)}>
-              {t === 'system' ? <><Monitor className="lucide-inline" /> Auto</> : t === 'light' ? <><Sun className="lucide-inline" /> Light</> : <><Moon className="lucide-inline" /> Dark</>}
+              {t === 'system' ? <><Monitor className="lucide-inline" /> {i18nT('pages.overview.displayTab.auto')}</> : t === 'light' ? <><Sun className="lucide-inline" /> {i18nT('pages.overview.displayTab.light')}</> : <><Moon className="lucide-inline" /> {i18nT('pages.overview.displayTab.dark')}</>}
             </button>
           ))}
         </div>
       </Card>
       <Card>
-        <CardTitle>Color Theme <InfoTip text="Choose a color palette. Each theme supports dark and light modes. Custom themes are stored in ~/.kirocrew/themes/." /></CardTitle>
+        <CardTitle>{i18nT('pages.overview.displayTab.color_theme')} <InfoTip text="Choose a color palette. Each theme supports dark and light modes. Custom themes are stored in ~/.kirocrew/themes/." /></CardTitle>
         <div className="flex flex-wrap items-center gap-2">
           {allThemes.map(t => (
             <div key={t.value} className="relative group">
@@ -60,7 +61,7 @@ export default function DisplayTab() {
                 <button
                   onClick={(e) => { e.stopPropagation(); editor.openEditTheme(t.value.replace('custom-', '')) }}
                   className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-accent text-accent-fg text-[10px] leading-none flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer"
-                  title="Edit theme"
+                  title={i18nT('pages.overview.displayTab.edit_theme')}
                 ><Pencil className="lucide-inline" /></button>
               )}
             </div>
@@ -72,7 +73,7 @@ export default function DisplayTab() {
             )}
             onClick={editor.editorOpen ? editor.closeEditor : editor.openNewTheme}
           >
-            {editor.editorOpen && !editor.isEditing ? <><Pencil className="lucide-inline" /> Creating…</> : editor.editorOpen && editor.isEditing ? <><Pencil className="lucide-inline" /> Editing…</> : '+ New Theme'}
+            {editor.editorOpen && !editor.isEditing ? <><Pencil className="lucide-inline" /> {i18nT('pages.overview.displayTab.creating')}</> : editor.editorOpen && editor.isEditing ? <><Pencil className="lucide-inline" /> {i18nT('pages.overview.displayTab.editing')}</> : '+ New Theme'}
           </button>
         </div>
 

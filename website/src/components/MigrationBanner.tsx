@@ -9,6 +9,7 @@ import { useNavigate } from 'react-router-dom'
 import { AlertTriangle, ArrowRight } from 'lucide-react'
 import { Btn } from './ui'
 
+import { i18nT } from '../i18n/t'
 interface MigrationBannerProps {
   appName: string
   migratedTo: string // format "registry:{name}" or "standalone:{name}"
@@ -23,10 +24,10 @@ export default function MigrationBanner({ appName, migratedTo }: MigrationBanner
       <AlertTriangle size={18} className="text-warn shrink-0 mt-0.5" />
       <div className="flex-1 min-w-0">
         <div className="text-[13px] font-medium text-text">
-          This feature is moving to a standalone app
+          {i18nT('components.migrationBanner.this_feature_is_moving_to_a_standalone_app')}
         </div>
         <div className="text-[13px] text-muted mt-1">
-          Install "{appName}" from Apps before the next KiroCrew update to keep using it.
+          {i18nT('components.migrationBanner.install')}{appName}{i18nT('components.migrationBanner.from_apps_before_the_next_kirocrew_update_to_kee')}
         </div>
       </div>
       <Btn
@@ -34,7 +35,7 @@ export default function MigrationBanner({ appName, migratedTo }: MigrationBanner
         onClick={() => navigate(`/apps/detail/${encodeURIComponent(targetName)}`)}
         className="shrink-0"
       >
-        Install from Apps <ArrowRight size={14} />
+        {i18nT('components.migrationBanner.install_from_apps')} <ArrowRight size={14} />
       </Btn>
     </div>
   )

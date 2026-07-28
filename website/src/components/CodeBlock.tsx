@@ -3,6 +3,7 @@ import { Copy, Check } from 'lucide-react'
 import { copyCode } from '../utils/clipboard'
 import { highlightAsync } from '../utils/highlightClient'
 
+import { i18nT } from '../i18n/t'
 export function HighlightedCode({ code, lang, className }: { code: string; lang: string | undefined; className: string }) {
   const [html, setHtml] = useState('')
   // Reset to plain text the instant the code changes, so a stale highlight from
@@ -63,7 +64,7 @@ export const CodeBlock = memo(function CodeBlock(
       {/* eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex */}
       <pre className="overflow-x-auto scroll-fade px-3 py-2" tabIndex={0} role="region" aria-label={lang ? `${lang} code` : 'code'}>
         <HighlightedCode code={code} lang={lang} className={lang ? `language-${lang}` : ''} />
-        {!complete && <span className="text-muted text-[12px] italic animate-pulse ml-2">generating…</span>}
+        {!complete && <span className="text-muted text-[12px] italic animate-pulse ml-2">{i18nT('components.codeBlock.generating')}</span>}
       </pre>
     </div>
   )

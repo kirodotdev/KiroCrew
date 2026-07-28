@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { ChevronRight } from 'lucide-react'
 import type { PasteBlock } from '../utils/pasteTokens'
 
+import { i18nT } from '../i18n/t'
 /**
  * Inline chip shown in a sent user bubble in place of a collapsed-paste token.
  *
@@ -29,7 +30,7 @@ function PastedChip({ block }: { block: PasteBlock }) {
           aria-hidden
           className={`shrink-0 transition-transform ${expanded ? 'rotate-90' : ''}`}
         />
-        [ Paste #{block.seq} · {block.lines} {block.lines === 1 ? 'line' : 'lines'} ]
+        {i18nT('components.pastedChip.paste')}{block.seq} · {block.lines} {block.lines === 1 ? 'line' : 'lines'} ]
       </button>
       <AnimatePresence initial={false}>
         {expanded && (

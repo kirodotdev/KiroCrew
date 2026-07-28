@@ -4,6 +4,7 @@ import { Popover, PopoverTrigger, PopoverContent } from './ui/popover'
 import { loadGoalDraft, saveGoalDraft, type GoalDraft } from '../utils/goalDrafts'
 import { DRAFT_SAVE_DEBOUNCE_MS } from '../utils/draftConstants'
 
+import { i18nT } from '../i18n/t'
 export interface AutoNudgeLoop {
   id: string
   slot_key: string
@@ -177,31 +178,31 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
         <div className="flex items-center justify-between mb-2">
           <div className="flex items-center gap-2 font-medium text-text">
             <Goal size={14} className={loop?.active ? 'text-accent' : 'text-muted'} />
-            Set a goal
-            {loop?.active && <span className="text-muted text-[11px]">· cycle {loop.cycle_count}</span>}
+            {i18nT('components.autoNudgePopover.set_a_goal')}
+            {loop?.active && <span className="text-muted text-[11px]">{i18nT('components.autoNudgePopover.cycle')} {loop.cycle_count}</span>}
           </div>
-          <button aria-label="Close" onClick={() => onOpenChange(false)} className="text-muted hover:text-text bg-transparent border-none cursor-pointer">
+          <button aria-label={i18nT('components.autoNudgePopover.close')} onClick={() => onOpenChange(false)} className="text-muted hover:text-text bg-transparent border-none cursor-pointer">
             <X size={14} />
           </button>
         </div>
-        <p className="text-muted text-[11px] mb-3 leading-relaxed">Give the agent a goal and it will keep working toward it autonomously — nudging itself when idle until the goal is met or the cycle limit is reached.</p>
+        <p className="text-muted text-[11px] mb-3 leading-relaxed">{i18nT('components.autoNudgePopover.give_the_agent_a_goal_and_it_will_keep_working_t')}</p>
 
-        <div className="text-muted text-[11px] mb-1">Goal description</div>
+        <div className="text-muted text-[11px] mb-1">{i18nT('components.autoNudgePopover.goal_description')}</div>
         <textarea
-          aria-label="Goal description"
+          aria-label={i18nT('components.autoNudgePopover.goal_description')}
           value={message}
           onChange={e => { hasEdited.current = true; setMessage(e.target.value) }}
           rows={6}
           className="w-full bg-bg border border-border rounded p-2 text-[12px] font-mono resize-y mb-3 text-text"
-          placeholder="Describe what you want the agent to accomplish…"
+          placeholder={i18nT('components.autoNudgePopover.describe_what_you_want_the_agent_to_accomplish')}
         />
 
         <div className="flex gap-3 mb-3">
           <div className="flex-1">
-            <div className="text-muted text-[11px] mb-1">Idle seconds before nudge</div>
+            <div className="text-muted text-[11px] mb-1">{i18nT('components.autoNudgePopover.idle_seconds_before_nudge')}</div>
             <input
               type="number"
-              aria-label="Idle seconds before nudge"
+              aria-label={i18nT('components.autoNudgePopover.idle_seconds_before_nudge')}
               min={15}
               max={86400}
               value={idleInput}
@@ -211,10 +212,10 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
             />
           </div>
           <div className="flex-1">
-            <div className="text-muted text-[11px] mb-1">Max cycles (0 = ∞)</div>
+            <div className="text-muted text-[11px] mb-1">{i18nT('components.autoNudgePopover.max_cycles_0')}</div>
             <input
               type="number"
-              aria-label="Max cycles (0 = infinite)"
+              aria-label={i18nT('components.autoNudgePopover.max_cycles_0_infinite')}
               min={0}
               value={maxCyclesInput}
               onChange={e => { hasEdited.current = true; setMaxCyclesInput(e.target.value) }}
@@ -226,7 +227,7 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
 
         {loop && (
           <div className="text-muted text-[11px] mb-3">
-            Last fire: {loop.last_fire_ts ? new Date(loop.last_fire_ts * 1000).toLocaleTimeString() : 'never'}
+            {i18nT('components.autoNudgePopover.last_fire')} {loop.last_fire_ts ? new Date(loop.last_fire_ts * 1000).toLocaleTimeString() : 'never'}
           </div>
         )}
 
@@ -239,7 +240,7 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
               disabled={saving}
               className="px-3 py-1 rounded border border-border text-muted hover:text-danger hover:border-danger bg-transparent cursor-pointer disabled:opacity-50"
             >
-              Stop loop
+              {i18nT('components.autoNudgePopover.stop_loop')}
             </button>
           )}
           <button

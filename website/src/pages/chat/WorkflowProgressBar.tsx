@@ -9,6 +9,7 @@ import WorkflowSourcePanel from '../../apps/workflows/WorkflowSourcePanel'
 import { useRunSnapshot } from '../../apps/workflows/useRunSnapshot'
 import { runBelongsToSlot } from '../../apps/workflows/runModel'
 
+import { i18nT } from '../../i18n/t'
 const EMPTY_RUNS: Record<string, WorkflowRunProgress> = {}
 // How long a finished/failed/cancelled run lingers before being dropped.
 const TERMINAL_LINGER_MS = 4000
@@ -148,7 +149,7 @@ function ExpandableRunRow({
         <div className="px-3 pb-2 pt-1 flex flex-col gap-2">
           {snapshotError && (
             <div className="text-[11px] text-red-500 border border-red-500/30 rounded p-2">
-              Could not load run snapshot: {sanitizeLlmOutput(snapshotError).slice(0, 200)}
+              {i18nT('pages.chat.workflowProgressBar.could_not_load_run_snapshot')} {sanitizeLlmOutput(snapshotError).slice(0, 200)}
             </div>
           )}
           <WorkflowRunTree

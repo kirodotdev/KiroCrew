@@ -2,6 +2,7 @@ import { useRef, useEffect } from 'react'
 import { SourceBadge } from './SourceBadge'
 import { Star, Check } from 'lucide-react'
 
+import { i18nT } from '../i18n/t'
 export interface AgentItem {
   name: string
   source: string
@@ -69,7 +70,7 @@ export default function AgentDropdownList({ agents, activeAgent, defaultAgent, o
   }, [])
 
   if (agents.length === 0) {
-    return <div className="px-3 py-2 text-[13px] text-muted italic">No matches</div>
+    return <div className="px-3 py-2 text-[13px] text-muted italic">{i18nT('components.agentDropdownList.no_matches')}</div>
   }
 
   return (

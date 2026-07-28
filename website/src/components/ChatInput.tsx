@@ -70,6 +70,7 @@ import SkillPickerMenu from './SkillPickerMenu'
 import { matchFileToken, matchSkillToken, replaceTokenAtCaret } from './composerTokens'
 import { useStopEscapeHatch } from '../hooks/useStopEscapeHatch'
 
+import { i18nT } from '../i18n/t'
 const INPUT_MIN_H = 44
 const INPUT_DEFAULT_MAX_H = 140
 const INPUT_PREFILL_MAX_H = 320
@@ -306,14 +307,14 @@ function ResizeBadge({ resize }: { resize: ResizeInfo }) {
         aria-label={`Resized to fit model limits: ${resize.fromW}×${resize.fromH} to ${resize.toW}×${resize.toH}`}
         className="absolute bottom-1 left-1 z-10 px-1.5 py-[1px] rounded-full text-[10px] font-bold bg-accent text-accent-fg shadow-sm cursor-default"
         onMouseEnter={show} onMouseLeave={hide} onFocus={show} onBlur={hide}
-      >RESIZED</span>
+      >{i18nT('components.chatInput.resized')}</span>
       {tip && createPortal(
         <div
           role="tooltip"
           className="fixed z-[9999] -translate-y-full rounded-lg border border-border-strong bg-bg-elevated px-2.5 py-1.5 text-[11px] leading-snug shadow-lg pointer-events-none whitespace-nowrap"
           style={{ top: tip.top, left: tip.left }}
         >
-          <div className="text-text">Resized to fit model limits</div>
+          <div className="text-text">{i18nT('components.chatInput.resized_to_fit_model_limits')}</div>
           <div className="text-muted">{resize.fromW}×{resize.fromH} → {resize.toW}×{resize.toH}</div>
         </div>,
         document.body,
@@ -347,9 +348,9 @@ function FilePreviewStrip({ files, resizedInfo, onRemove }: { files: string[]; r
             {resize && <ResizeBadge resize={resize} />}
             {onRemove && (
               <button
-                aria-label="Remove"
+                aria-label={i18nT('components.chatInput.remove')}
                 className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-danger text-white text-[12px] flex items-center justify-center opacity-0 group-hover/preview:opacity-100 transition-opacity cursor-pointer"
-                onClick={() => onRemove(path)} title="Remove"
+                onClick={() => onRemove(path)} title={i18nT('components.chatInput.remove')}
               ><X className="lucide-inline" /></button>
             )}
           </div>
@@ -359,7 +360,7 @@ function FilePreviewStrip({ files, resizedInfo, onRemove }: { files: string[]; r
         <div key={path} className="relative group/preview shrink-0 flex items-center gap-1.5 px-2 py-1 rounded border border-border bg-bg-hover text-[12px] text-text">
           <span>{path.split('/').pop()}</span>
           {onRemove && (
-            <button className="text-muted hover:text-danger cursor-pointer bg-transparent border-none p-0" onClick={() => onRemove(path)} title="Remove"><X size={12} /></button>
+            <button className="text-muted hover:text-danger cursor-pointer bg-transparent border-none p-0" onClick={() => onRemove(path)} title={i18nT('components.chatInput.remove')} aria-label={i18nT('components.chatInput.remove')}><X size={12} /></button>
           )}
         </div>
       ))}
@@ -1737,7 +1738,7 @@ function ChatInput({
         style={{ touchAction: 'none' }}
         {...inputResize}
         onDoubleClick={resetHeight}
-        title="Drag to resize (double-click to reset)"
+        title={i18nT('components.chatInput.drag_to_resize_double_click_to_reset')}
       >
         <div className="w-12 h-[3px] rounded-full bg-border group-hover/drag:bg-accent group-active/drag:bg-accent-hover transition-all duration-200 opacity-0 group-hover/drag:opacity-100" />
       </div>}
@@ -1768,7 +1769,7 @@ function ChatInput({
                     : `${pendingSpawnApprovals.length} sub-agents are awaiting your approval to run`}
                 </span>
                 <span className="inline-flex items-center gap-1 text-[11px] text-muted shrink-0">
-                  <Target size={11} className="shrink-0" />Review in panel
+                  <Target size={11} className="shrink-0" />{i18nT('components.chatInput.review_in_panel')}
                 </span>
               </div>
             </button>
@@ -1839,17 +1840,17 @@ function ChatInput({
                       <button
                           type="button"
                           onClick={showInChat}
-                          title="Show pending tool call in chat"
-                          aria-label="Show pending tool call in chat"
+                          title={i18nT('components.chatInput.show_pending_tool_call_in_chat')}
+                          aria-label={i18nT('components.chatInput.show_pending_tool_call_in_chat')}
                           className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-transparent border border-border text-muted text-[11px] cursor-pointer hover:text-text hover:border-border-strong hover:bg-bg-hover transition-colors"
                       >
                           <Target size={11} className="shrink-0" />
-                          Show in chat
+                          {i18nT('components.chatInput.show_in_chat')}
                       </button>
                   )}
                   <div className="flex gap-1.5 flex-wrap items-center">
-                      <button disabled={approvalSubmitting} className={approvalBtnClass} onClick={() => handleApprovalAction('approved')}><CheckCircle size={12} className="shrink-0" />Allow once</button>
-                      {approvalIsReadOnly && !approvalIsUnattended && <button disabled={approvalSubmitting} className={approvalBtnClass} onClick={() => handleApprovalAction('trust_reads')}><BookOpen size={12} className="shrink-0" />Trust reads</button>}
+                      <button disabled={approvalSubmitting} className={approvalBtnClass} onClick={() => handleApprovalAction('approved')}><CheckCircle size={12} className="shrink-0" />{i18nT('components.chatInput.allow_once')}</button>
+                      {approvalIsReadOnly && !approvalIsUnattended && <button disabled={approvalSubmitting} className={approvalBtnClass} onClick={() => handleApprovalAction('trust_reads')}><BookOpen size={12} className="shrink-0" />{i18nT('components.chatInput.trust_reads')}</button>}
                       {!approvalIsUnattended && (
                         <TrustDropdown
                             fullCommand={approvalFullCommand || approvalLabelRaw}
@@ -1860,7 +1861,7 @@ function ChatInput({
                             onAction={(action, pattern) => { handleApprovalAction(action, pattern) }}
                         />
                       )}
-                      <button disabled={approvalSubmitting} className={`${approvalBtnClass} hover:!text-danger hover:!bg-[color-mix(in_srgb,var(--danger)_10%,transparent)]`} onClick={() => handleApprovalAction('rejected')}><Ban size={12} className="shrink-0" />Reject</button>
+                      <button disabled={approvalSubmitting} className={`${approvalBtnClass} hover:!text-danger hover:!bg-[color-mix(in_srgb,var(--danger)_10%,transparent)]`} onClick={() => handleApprovalAction('rejected')}><Ban size={12} className="shrink-0" />{i18nT('components.chatInput.reject')}</button>
                   </div>
               </div>
             </div>
@@ -1880,11 +1881,11 @@ function ChatInput({
 
       {!showGhost && prefillHint && (
         <div className="flex items-center gap-2 px-4 py-2 mb-1 bg-accent/10 rounded-lg">
-          <span className="text-accent text-[13px]"><ClipboardList className="lucide-inline" /> Plan pre-filled — add context then Send</span>
+          <span className="text-accent text-[13px]"><ClipboardList className="lucide-inline" /> {i18nT('components.chatInput.plan_pre_filled_add_context_then_send')}</span>
         </div>
       )}
 
-      <input ref={fileInputRef} type="file" aria-label="Attach files" multiple accept={FILE_ACCEPT} className="hidden" onChange={handleFileInputChange} />
+      <input ref={fileInputRef} type="file" aria-label={i18nT('components.chatInput.attach_files')} multiple accept={FILE_ACCEPT} className="hidden" onChange={handleFileInputChange} />
 
       <SlashCommandMenu input={value} anchorRef={inputRef as React.RefObject<HTMLElement>} open={slashMenuOpen} onSelect={cmd => { onChange(cmd); setSlashMenuOpen(false) }} onClose={() => setSlashMenuOpen(false)} />
 
@@ -1956,12 +1957,12 @@ function ChatInput({
 
         <VoiceStatusBar recording={voiceRecording} level={voiceLevel} deviceLabel={voiceDeviceLabel} error={voiceError} onDismissError={onClearVoiceError} />
 
-        {optimizing && <span className="absolute inset-0 flex items-start px-4 pt-3 text-sm text-white font-medium pointer-events-none z-10 bg-black/60 rounded-2xl"><Sparkles size={14} className="inline mr-1 text-yellow-400" /> Optimizing prompt…</span>}
+        {optimizing && <span className="absolute inset-0 flex items-start px-4 pt-3 text-sm text-white font-medium pointer-events-none z-10 bg-black/60 rounded-2xl"><Sparkles size={14} className="inline mr-1 text-yellow-400" /> {i18nT('components.chatInput.optimizing_prompt')}</span>}
         <div className={`relative ${manualHeight !== null ? 'flex-1 min-h-0 flex flex-col' : ''}`}>
         <PasteHighlightLayer ref={mirrorRef} value={value} blocks={pasteBlocks} />
         <textarea
           ref={inputRef}
-          aria-label="Message input"
+          aria-label={i18nT('components.chatInput.message_input')}
           className={`relative w-full bg-transparent border-none ${INPUT_TYPO} text-text outline-none min-h-[44px] max-h-[50vh] placeholder:text-muted resize-none ${manualHeight !== null ? 'flex-1' : ''} ${disabled ? 'opacity-40 pointer-events-none' : ''} ${optimizing ? 'opacity-30' : ''}`}
           style={manualHeight !== null ? { height: '100%' } : undefined}
           placeholder={!connected ? 'Gateway offline — message will not send' : kiroSetupRequired ? 'Finish Kiro CLI setup to start chatting' : disabledProp ? 'Stopping…' : voiceRecording ? 'Recording… click mic to stop' : voiceTranscribing ? 'Transcribing, please wait…' : resolvedPlaceholder}
@@ -2015,8 +2016,8 @@ function ChatInput({
                   disabled={uploading}
                   aria-haspopup="menu"
                   aria-expanded={plusOpen}
-                  aria-label="Add files & options"
-                  title="Add files & options"
+                  aria-label={i18nT('components.chatInput.add_files_options')}
+                  title={i18nT('components.chatInput.add_files_options')}
                 >
                   {uploading ? <Loader2 size={18} className="animate-spin" /> : <Plus size={18} className={`transition-transform ${plusOpen ? 'rotate-45' : ''}`} />}
                 </button>
@@ -2033,7 +2034,7 @@ function ChatInput({
                         className="flex-1 flex flex-col items-center gap-1.5 px-2 py-3 rounded-lg border border-border bg-transparent hover:bg-bg-hover hover:border-border-strong transition-all cursor-pointer"
                       >
                         <FileText size={18} className="text-muted" />
-                        <span className="text-[12px] font-medium text-text">Upload file</span>
+                        <span className="text-[12px] font-medium text-text">{i18nT('components.chatInput.upload_file')}</span>
                       </button>
                       {(isScreenSnipSupported() || isMac) && !isMobile && onScreenshot && (
                         <button
@@ -2042,7 +2043,7 @@ function ChatInput({
                           className="flex-1 flex flex-col items-center gap-1.5 px-2 py-3 rounded-lg border border-border bg-transparent hover:bg-bg-hover hover:border-border-strong transition-all cursor-pointer"
                         >
                           <Crop size={18} className="text-muted" />
-                          <span className="text-[12px] font-medium text-text">Screenshot</span>
+                          <span className="text-[12px] font-medium text-text">{i18nT('components.chatInput.screenshot')}</span>
                         </button>
                       )}
                     </div>
@@ -2052,49 +2053,49 @@ function ChatInput({
                       <button
                         type="button"
                         onClick={() => openTrigger('/')}
-                        title="Slash commands"
+                        title={i18nT('components.chatInput.slash_commands')}
                         className="w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg bg-transparent hover:bg-bg-hover transition-colors cursor-pointer text-left"
                       >
                         <span className="w-4 text-center text-[14px] font-mono leading-none text-muted shrink-0">/</span>
                         <div className="min-w-0">
-                          <div className="text-[12px] font-medium text-text">Command</div>
-                          <div className="text-[11px] text-muted leading-snug">Quick actions like clearing the chat or checking usage</div>
+                          <div className="text-[12px] font-medium text-text">{i18nT('components.chatInput.command')}</div>
+                          <div className="text-[11px] text-muted leading-snug">{i18nT('components.chatInput.quick_actions_like_clearing_the_chat_or_checking')}</div>
                         </div>
                       </button>
                       {onFileSelect && (
                         <button
                           type="button"
                           onClick={() => openTrigger('@')}
-                          title="Reference a file"
+                          title={i18nT('components.chatInput.reference_a_file')}
                           className="w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg bg-transparent hover:bg-bg-hover transition-colors cursor-pointer text-left"
                         >
                           <span className="w-4 text-center text-[14px] font-mono leading-none text-muted shrink-0">@</span>
                           <div className="min-w-0">
-                            <div className="text-[12px] font-medium text-text">File</div>
-                            <div className="text-[11px] text-muted leading-snug">Let the agent read one of your files</div>
+                            <div className="text-[12px] font-medium text-text">{i18nT('components.chatInput.file')}</div>
+                            <div className="text-[11px] text-muted leading-snug">{i18nT('components.chatInput.let_the_agent_read_one_of_your_files')}</div>
                           </div>
                         </button>
                       )}
                       <button
                         type="button"
                         onClick={() => openTrigger('$')}
-                        title="Use a skill"
+                        title={i18nT('components.chatInput.use_a_skill')}
                         className="w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg bg-transparent hover:bg-bg-hover transition-colors cursor-pointer text-left"
                       >
                         <span className="w-4 text-center text-[14px] font-mono leading-none text-muted shrink-0">$</span>
                         <div className="min-w-0">
-                          <div className="text-[12px] font-medium text-text">Skill</div>
-                          <div className="text-[11px] text-muted leading-snug">Apply a ready-made set of instructions</div>
+                          <div className="text-[12px] font-medium text-text">{i18nT('components.chatInput.skill')}</div>
+                          <div className="text-[11px] text-muted leading-snug">{i18nT('components.chatInput.apply_a_ready_made_set_of_instructions')}</div>
                         </div>
                       </button>
                     </div>
                     {onBrowseToggle && (
                       <div className="flex items-start justify-between gap-2 mt-2 pt-2.5 border-t border-border">
                         <div className="min-w-0">
-                          <div className="text-[12px] font-medium text-text flex items-center gap-1.5"><Globe size={13} className="text-muted shrink-0" />Browser use</div>
-                          <div className="text-[11px] text-muted mt-0.5 leading-snug">Let the agent open a real browser to load web pages and read what's on them.</div>
+                          <div className="text-[12px] font-medium text-text flex items-center gap-1.5"><Globe size={13} className="text-muted shrink-0" />{i18nT('components.chatInput.browser_use')}</div>
+                          <div className="text-[11px] text-muted mt-0.5 leading-snug">{i18nT('components.chatInput.let_the_agent_open_a_real_browser_to_load_web_pa')}</div>
                         </div>
-                        <div className="pt-0.5"><Toggle checked={browseMode} onChange={() => onBrowseToggle()} label="Browser use" /></div>
+                        <div className="pt-0.5"><Toggle checked={browseMode} onChange={() => onBrowseToggle()} label={i18nT('components.chatInput.browser_use')} /></div>
                       </div>
                     )}
                   </div>,
@@ -2143,16 +2144,16 @@ function ChatInput({
                     <button
                       className="w-8 h-8 rounded-lg bg-danger text-danger-fg border-none flex items-center justify-center cursor-pointer hover:bg-danger/80 transition-all"
                       onClick={onStop}
-                      title="Force reset — taking longer than expected"
-                      aria-label="Force reset session (taking longer than expected)"
+                      title={i18nT('components.chatInput.force_reset_taking_longer_than_expected')}
+                      aria-label={i18nT('components.chatInput.force_reset_session_taking_longer_than_expected')}
                       data-testid="stop-button-escape-hatch"
                     >
                       <Square size={18} fill="currentColor" />
                     </button>
-                    <span className="text-xs text-muted whitespace-nowrap" data-testid="stop-escape-hint">taking longer than expected</span>
+                    <span className="text-xs text-muted whitespace-nowrap" data-testid="stop-escape-hint">{i18nT('components.chatInput.taking_longer_than_expected')}</span>
                   </div>
                 ) : (
-                  <button className="w-8 h-8 rounded-lg bg-danger text-danger-fg border-none flex items-center justify-center cursor-not-allowed transition-all" disabled title="Killing…" aria-label="Killing session" data-testid="stop-button-killing">
+                  <button className="w-8 h-8 rounded-lg bg-danger text-danger-fg border-none flex items-center justify-center cursor-not-allowed transition-all" disabled title={i18nT('components.chatInput.killing')} aria-label={i18nT('components.chatInput.killing_session')} data-testid="stop-button-killing">
                     <Loader2 size={18} className="animate-spin" />
                   </button>
                 )
@@ -2161,18 +2162,18 @@ function ChatInput({
                   <motion.button
                     className="w-8 h-8 rounded-lg bg-transparent border-none text-danger hover:bg-danger/10 flex items-center justify-center cursor-pointer transition-all"
                     onClick={onStop}
-                    title="Force kill — discards in-progress work and queued messages"
-                    aria-label="Force kill session (discards in-progress work and queued messages)"
+                    title={i18nT('components.chatInput.force_kill_discards_in_progress_work_and_queued')}
+                    aria-label={i18nT('components.chatInput.force_kill_session_discards_in_progress_work_and')}
                     animate={{ opacity: [0.6, 1, 0.6] }}
                     transition={{ duration: 1.2, repeat: Infinity }}
                     data-testid="stop-button-pulsing"
                   >
                     <Square size={18} fill="currentColor" />
                   </motion.button>
-                  <span className="text-xs text-muted whitespace-nowrap" data-testid="stop-force-hint">Click again to force stop</span>
+                  <span className="text-xs text-muted whitespace-nowrap" data-testid="stop-force-hint">{i18nT('components.chatInput.click_again_to_force_stop')}</span>
                 </div>
               ) : isQueued ? (
-                <button className="w-8 h-8 rounded-full bg-warn text-warn-fg border-none flex items-center justify-center cursor-pointer hover:bg-warn/80 transition-all" onClick={onStop} title="Stopping…" aria-label="Stopping">
+                <button className="w-8 h-8 rounded-full bg-warn text-warn-fg border-none flex items-center justify-center cursor-pointer hover:bg-warn/80 transition-all" onClick={onStop} title={i18nT('components.chatInput.stopping')} aria-label={i18nT('components.chatInput.stopping_2')}>
                   <Loader2 size={18} className="animate-spin" />
                 </button>
               ) : value.trim() || pendingFiles.length ? (
@@ -2199,8 +2200,8 @@ function ChatInput({
                         onClick={toggleBusyMenu}
                         aria-haspopup="menu"
                         aria-expanded={busyMenuOpen}
-                        aria-label="Send options"
-                        title="Send options"
+                        aria-label={i18nT('components.chatInput.send_options')}
+                        title={i18nT('components.chatInput.send_options')}
                         data-testid="busy-send-caret"
                       >
                         <ChevronDown size={14} className={`transition-transform ${busyMenuOpen ? 'rotate-180' : ''}`} />
@@ -2238,12 +2239,12 @@ function ChatInput({
                     )}
                   </div>
                 ) : (
-                  <button className="w-8 h-8 rounded-full bg-warn text-warn-fg border-none flex items-center justify-center cursor-pointer hover:bg-warn/80 disabled:opacity-30 disabled:cursor-not-allowed transition-all" onClick={fireComposer} disabled={disabled} title="Queue message" aria-label="Queue message">
+                  <button className="w-8 h-8 rounded-full bg-warn text-warn-fg border-none flex items-center justify-center cursor-pointer hover:bg-warn/80 disabled:opacity-30 disabled:cursor-not-allowed transition-all" onClick={fireComposer} disabled={disabled} title={i18nT('components.chatInput.queue_message')} aria-label={i18nT('components.chatInput.queue_message')}>
                     <ArrowUpFromLine size={18} />
                   </button>
                 )
               ) : (
-                <button className="w-8 h-8 rounded-lg bg-transparent border-none text-danger hover:bg-danger/10 flex items-center justify-center cursor-pointer transition-all" onClick={onStop} title="Stop generation" aria-label="Stop generation" data-testid="stop-button-armed">
+                <button className="w-8 h-8 rounded-lg bg-transparent border-none text-danger hover:bg-danger/10 flex items-center justify-center cursor-pointer transition-all" onClick={onStop} title={i18nT('components.chatInput.stop_generation')} aria-label={i18nT('components.chatInput.stop_generation')} data-testid="stop-button-armed">
                   <Square size={18} fill="currentColor" />
                 </button>
               )
@@ -2270,7 +2271,7 @@ function ChatInput({
                 className="primary w-8 h-8 rounded-full bg-accent text-accent-fg border-none flex items-center justify-center cursor-pointer hover:bg-accent-hover disabled:opacity-30 disabled:cursor-not-allowed transition-all"
                 onClick={fireComposer}
                 disabled={(!value.trim() && !pendingFiles.length) || disabled || optimizing || !connected}
-                aria-label="Send"
+                aria-label={i18nT('components.chatInput.send')}
                 {...offlineProps(connected, 'send', 'Send')}
               >
                 <ArrowUp size={18} />
@@ -2320,7 +2321,7 @@ function ChatInput({
                 className={`inline-flex items-center h-7 px-2.5 rounded-md transition-colors border-none cursor-pointer ${ctxPopoverOpen ? 'bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))]' : 'bg-transparent hover:bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))]'}`}
                 onClick={() => setCtxPopoverOpen(o => !o)}
                 title={contextTip(contextPct)}
-                aria-label="Context usage"
+                aria-label={i18nT('components.chatInput.context_usage')}
               >
                 <ContextBar pct={contextPct} width={40} height={3} />
                 {showContextPct && <span className="text-[11px] font-mono ml-1.5 tabular-nums" style={{ color: contextColor(contextPct) }}>{contextPctClamped(contextPct)}%</span>}
@@ -2338,17 +2339,17 @@ function ChatInput({
                       return (
                         <>
                           <div className="flex items-center justify-between mb-2">
-                            <span className="text-[11px] font-semibold text-text">Context window</span>
+                            <span className="text-[11px] font-semibold text-text">{i18nT('components.chatInput.context_window')}</span>
                             <span className="text-[12px] font-mono font-bold" style={{ color: pctColor }}>{pct}%</span>
                           </div>
                           <div className="flex flex-col gap-1 text-[11px] font-mono">
-                            <div className="flex justify-between"><span className="text-muted">Used</span><span className="text-text">{approx ? '~' : ''}{k(used)}</span></div>
-                            <div className="flex justify-between"><span className="text-muted">Remaining</span><span className="text-text">{approx ? '~' : ''}{k(remaining)}</span></div>
-                            <div className="flex justify-between"><span className="text-muted">Total</span><span className="text-text">{k(win)}</span></div>
+                            <div className="flex justify-between"><span className="text-muted">{i18nT('components.chatInput.used')}</span><span className="text-text">{approx ? '~' : ''}{k(used)}</span></div>
+                            <div className="flex justify-between"><span className="text-muted">{i18nT('components.chatInput.remaining')}</span><span className="text-text">{approx ? '~' : ''}{k(remaining)}</span></div>
+                            <div className="flex justify-between"><span className="text-muted">{i18nT('components.chatInput.total')}</span><span className="text-text">{k(win)}</span></div>
                           </div>
                           {modelName && (
                             <div className="mt-2 pt-2 border-t border-border flex justify-between text-[11px] font-mono">
-                              <span className="text-muted">Model</span><span className="text-text truncate max-w-[120px]" title={modelName}>{modelName}</span>
+                              <span className="text-muted">{i18nT('components.chatInput.model')}</span><span className="text-text truncate max-w-[120px]" title={modelName}>{modelName}</span>
                             </div>
                           )}
                         </>

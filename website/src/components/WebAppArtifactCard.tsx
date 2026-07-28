@@ -18,6 +18,7 @@ import { Badge } from '../components/ui'
 import { framablePreviewUrl, safeHttpUrl } from '../lib/safeUrl'
 import type { Artifact, WebAppMetadata } from '../types'
 
+import { i18nT } from '../i18n/t'
 function statusBadgeVariant(status: string): 'ok' | 'warn' | 'err' | 'aim' {
   switch (status) {
     case 'live': return 'ok'
@@ -98,13 +99,13 @@ function ArchitectureRows({ architecture }: { architecture: WebAppMetadata['arch
   return (
     <div className="space-y-1.5">
       {architecture.frontend && (
-        <ArchRow icon={<Globe size={14} />} label="Frontend" text={architecture.frontend} resourceId={res('frontend')} />
+        <ArchRow icon={<Globe size={14} />} label={i18nT('components.webAppArtifactCard.frontend')} text={architecture.frontend} resourceId={res('frontend')} />
       )}
       {architecture.backend && (
-        <ArchRow icon={<Server size={14} />} label="Backend" text={architecture.backend} resourceId={res('backend')} />
+        <ArchRow icon={<Server size={14} />} label={i18nT('components.webAppArtifactCard.backend')} text={architecture.backend} resourceId={res('backend')} />
       )}
       {architecture.state && (
-        <ArchRow icon={<Database size={14} />} label="State" text={architecture.state} resourceId={res('state')} />
+        <ArchRow icon={<Database size={14} />} label={i18nT('components.webAppArtifactCard.state')} text={architecture.state} resourceId={res('state')} />
       )}
     </div>
   )
@@ -120,7 +121,7 @@ function CostPills({ cost, label }: { cost: WebAppMetadata['cost']; label: strin
         {/* Joe R2: "$45" was read as a monthly bill. Each pill is a
             what-if traffic scenario over the window — say so loudly. */}
         <span className="text-[10px] px-1.5 py-px rounded-full bg-warn-subtle text-warn font-medium uppercase tracking-wide">
-          estimate
+          {i18nT('components.webAppArtifactCard.estimate')}
         </span>
       </div>
       <div className="flex flex-wrap gap-1.5">
@@ -129,13 +130,13 @@ function CostPills({ cost, label }: { cost: WebAppMetadata['cost']; label: strin
             key={i}
             className="inline-flex items-baseline gap-1.5 rounded-full border border-border bg-bg-elevated px-2.5 py-1"
           >
-            <span className="text-[11px] text-muted">{Number(e.views ?? 0).toLocaleString()} views</span>
+            <span className="text-[11px] text-muted">{Number(e.views ?? 0).toLocaleString()} {i18nT('components.webAppArtifactCard.views')}</span>
             <span className="text-[12px] font-medium text-text-strong">${Number(e.usd ?? 0).toFixed(4)}</span>
           </span>
         ))}
       </div>
       <div className="text-[11px] text-muted mt-1.5">
-        What-if traffic scenarios &mdash; you pay only for actual usage &middot; {cost.note} &middot; idle &asymp; ${cost.idle_usd} &middot; billed to your account
+        {i18nT('components.webAppArtifactCard.what_if_traffic_scenarios_you_pay_only_for_actua')} {cost.note} {i18nT('components.webAppArtifactCard.idle')}{cost.idle_usd} {i18nT('components.webAppArtifactCard.billed_to_your_account')}
       </div>
     </div>
   )
@@ -149,14 +150,14 @@ function TargetPills({ dt }: { dt: WebAppMetadata['deploy_target'] }) {
         {dt.provider}
       </span>
       <span className="text-[11px] px-2 py-0.5 rounded-full bg-bg-elevated border border-border text-muted">
-        acct {dt.account}
+        {i18nT('components.webAppArtifactCard.acct')} {dt.account}
       </span>
       <span className="text-[11px] px-2 py-0.5 rounded-full bg-bg-elevated border border-border text-muted">
         {dt.region}
       </span>
       {dt.profile && (
         <span className="text-[11px] px-2 py-0.5 rounded-full bg-bg-elevated border border-border text-muted">
-          profile {dt.profile}
+          {i18nT('components.webAppArtifactCard.profile')} {dt.profile}
         </span>
       )}
     </div>
@@ -380,7 +381,7 @@ export default function WebAppArtifactCard({
 
   // Guard AFTER all hooks so the hook call order never changes between renders.
   if (!meta) {
-    return <div className="text-muted text-sm p-4">No app metadata available.</div>
+    return <div className="text-muted text-sm p-4">{i18nT('components.webAppArtifactCard.no_app_metadata_available')}</div>
   }
 
   const { deploy_target, architecture, lifecycle, cost, origin_session } = meta
@@ -421,24 +422,24 @@ export default function WebAppArtifactCard({
                 {tierSummary && <div className="text-[12px] text-muted">{tierSummary}</div>}
               </div>
             </div>
-            <Badge variant="aim">Not deployed</Badge>
+            <Badge variant="aim">{i18nT('components.webAppArtifactCard.not_deployed')}</Badge>
           </div>
           <p className="text-sm text-muted mt-3 mb-4">
-            Not deployed yet &mdash; deploy to your own AWS account for a global public link. Deploying requires an AWS profile.
+            {i18nT('components.webAppArtifactCard.not_deployed_yet_deploy_to_your_own_aws_account')}
           </p>
           <div className="flex items-center gap-2 flex-wrap">
             {registeredProfiles.length > 0 && (
               <select
                 value={deployProfile}
                 onChange={(e) => setDeployProfile(e.target.value)}
-                aria-label="AWS profile to deploy with"
+                aria-label={i18nT('components.webAppArtifactCard.aws_profile_to_deploy_with')}
                 className="px-2 py-1.5 rounded-md text-[12px] bg-bg-elevated border border-border text-text cursor-pointer"
               >
                 <option value="">
                   {defaultProfile ? `profile: ${defaultProfile} (default)` : 'profile: default'}
                 </option>
                 {registeredProfiles.filter((p) => p.name !== defaultProfile).map((p) => (
-                  <option key={p.name} value={p.name}>profile: {p.name}</option>
+                  <option key={p.name} value={p.name}>{i18nT('components.webAppArtifactCard.profile_2')} {p.name}</option>
                 ))}
               </select>
             )}
@@ -446,11 +447,11 @@ export default function WebAppArtifactCard({
               type="button"
               onClick={openDeployChat}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[13px] font-medium bg-accent text-accent-fg hover:bg-accent-hover cursor-pointer transition-all border-none"
-              title="Deploy this app to your AWS account"
-              aria-label="Deploy"
+              title={i18nT('components.webAppArtifactCard.deploy_this_app_to_your_aws_account')}
+              aria-label={i18nT('components.webAppArtifactCard.deploy')}
             >
               <Rocket size={14} aria-hidden="true" />
-              Deploy
+              {i18nT('components.webAppArtifactCard.deploy')}
             </button>
             <span className="text-[10px] text-muted">
               {registeredProfiles.length > 0
@@ -466,7 +467,7 @@ export default function WebAppArtifactCard({
               <ChromeDots />
               <div className="flex-1 min-w-0 flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-card border border-border">
                 <Globe size={12} className="text-muted shrink-0" aria-hidden="true" />
-                <span className="text-[12px] text-muted truncate">local preview &mdash; not deployed yet</span>
+                <span className="text-[12px] text-muted truncate">{i18nT('components.webAppArtifactCard.local_preview_not_deployed_yet')}</span>
               </div>
             </div>
             <LocalAppFrame base={previewBase} slug={artifact.slug} />
@@ -474,7 +475,7 @@ export default function WebAppArtifactCard({
         )}
         {(architecture.frontend || architecture.backend || architecture.state) && (
           <div className="rounded-xl border border-border bg-card p-4">
-            <div className="text-[12px] text-muted font-medium mb-2">Will provision</div>
+            <div className="text-[12px] text-muted font-medium mb-2">{i18nT('components.webAppArtifactCard.will_provision')}</div>
             <ArchitectureRows architecture={architecture} />
           </div>
         )}
@@ -504,7 +505,7 @@ export default function WebAppArtifactCard({
               <>
                 <CloudOff size={12} className="text-muted shrink-0" aria-hidden="true" />
                 <span className="text-[12px] text-muted truncate">
-                  Deployment torn down &mdash; infrastructure is removed by the in-account reaper.
+                  {i18nT('components.webAppArtifactCard.deployment_torn_down_infrastructure_is_removed_b')}
                 </span>
               </>
             ) : (
@@ -520,7 +521,7 @@ export default function WebAppArtifactCard({
                     {deploy_target.public_url}
                   </a>
                 ) : (
-                  <span className="text-[12px] text-muted truncate" title="Non-http(s) URL blocked">
+                  <span className="text-[12px] text-muted truncate" title={i18nT('components.webAppArtifactCard.non_http_s_url_blocked')}>
                     {deploy_target.public_url}
                   </span>
                 )}
@@ -533,8 +534,8 @@ export default function WebAppArtifactCard({
                 type="button"
                 onClick={handleCopy}
                 className="p-1 rounded text-muted hover:text-text transition-colors cursor-pointer bg-transparent border-none shrink-0"
-                title="Copy URL"
-                aria-label="Copy URL"
+                title={i18nT('components.webAppArtifactCard.copy_url')}
+                aria-label={i18nT('components.webAppArtifactCard.copy_url')}
               >
                 <Copy className="lucide-inline" />
               </button>
@@ -544,8 +545,8 @@ export default function WebAppArtifactCard({
                   target="_blank"
                   rel="noopener noreferrer"
                   className="p-1 rounded text-muted hover:text-text transition-colors shrink-0"
-                  title="Open in new tab"
-                  aria-label="Open in new tab"
+                  title={i18nT('components.webAppArtifactCard.open_in_new_tab')}
+                  aria-label={i18nT('components.webAppArtifactCard.open_in_new_tab')}
                 >
                   <ExternalLink className="lucide-inline" />
                 </a>
@@ -559,19 +560,19 @@ export default function WebAppArtifactCard({
         ) : isExpired ? (
           <div className="flex flex-col items-center justify-center gap-3 py-10 bg-bg-elevated/50">
             <CloudOff size={28} className="text-muted" aria-hidden="true" />
-            <div className="text-sm text-muted">This deployment has expired</div>
+            <div className="text-sm text-muted">{i18nT('components.webAppArtifactCard.this_deployment_has_expired')}</div>
           </div>
         ) : isDeploying ? (
           <div className="flex flex-col items-center justify-center gap-2 py-10 bg-bg-elevated/50">
             <Cloud size={28} className="text-warn animate-pulse" aria-hidden="true" />
-            <div className="text-sm text-muted">Deploying&hellip;</div>
+            <div className="text-sm text-muted">{i18nT('components.webAppArtifactCard.deploying')}</div>
           </div>
         ) : frameUrl ? (
           <LiveSiteFrame url={frameUrl} slug={artifact.slug} />
         ) : (
           <div className="flex flex-col items-center justify-center gap-2 py-10 bg-bg-elevated/50">
             <Globe size={28} className="text-muted" aria-hidden="true" />
-            <div className="text-[12px] text-muted">Preview unavailable for this host &mdash; open the link above</div>
+            <div className="text-[12px] text-muted">{i18nT('components.webAppArtifactCard.preview_unavailable_for_this_host_open_the_link')}</div>
           </div>
         )}
       </div>
@@ -594,7 +595,7 @@ export default function WebAppArtifactCard({
       {/* Info panels: architecture | lifecycle + cost */}
       <div className="grid gap-3 sm:grid-cols-2">
         <div className="rounded-xl border border-border bg-card p-4">
-          <div className="text-[12px] text-muted font-medium mb-2">Architecture</div>
+          <div className="text-[12px] text-muted font-medium mb-2">{i18nT('components.webAppArtifactCard.architecture')}</div>
           <ArchitectureRows architecture={architecture} />
         </div>
         <div className="rounded-xl border border-border bg-card p-4 space-y-4">
@@ -603,10 +604,10 @@ export default function WebAppArtifactCard({
               ticking clock on a dead deployment reads as alive. */}
           {!isExpired && (
             <div>
-              <div className="text-[12px] text-muted font-medium mb-1.5">Time to live</div>
+              <div className="text-[12px] text-muted font-medium mb-1.5">{i18nT('components.webAppArtifactCard.time_to_live')}</div>
               <div className="text-sm text-text-strong">
                 {countdown.startsWith('\u221e') ? (
-                  <span className="inline-flex items-center gap-1"><Infinity size={14} aria-label="persistent" /> persistent</span>
+                  <span className="inline-flex items-center gap-1"><Infinity size={14} aria-label={i18nT('components.webAppArtifactCard.persistent')} /> {i18nT('components.webAppArtifactCard.persistent')}</span>
                 ) : countdown}
               </div>
               {!lifecycle.persistent && lifecycle.expires_at && (
@@ -618,7 +619,7 @@ export default function WebAppArtifactCard({
                     />
                   </div>
                   <div className="text-[11px] text-muted mt-1">
-                    expires {lifecycle.expires_at} &middot; then auto-reaped &rarr; tombstone
+                    {i18nT('components.webAppArtifactCard.expires')} {lifecycle.expires_at} {i18nT('components.webAppArtifactCard.then_auto_reaped_tombstone')}
                   </div>
                 </>
               )}
@@ -631,7 +632,7 @@ export default function WebAppArtifactCard({
       {/* Footer */}
       <div className="flex items-center justify-between pt-2 border-t border-border">
         <div className="text-[12px] text-muted">
-          Generated in {origin_session}
+          {i18nT('components.webAppArtifactCard.generated_in')} {origin_session}
         </div>
         <div className="flex items-center gap-2">
           {isExpired && (
@@ -639,11 +640,11 @@ export default function WebAppArtifactCard({
               type="button"
               onClick={openDeployChat}
               className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md text-[12px] font-medium border border-accent/40 text-accent hover:bg-accent/10 cursor-pointer transition-all bg-transparent"
-              title="Redeploy this app — opens a fresh deploy session (same flow as Deploy)"
-              aria-label="Redeploy"
+              title={i18nT('components.webAppArtifactCard.redeploy_this_app_opens_a_fresh_deploy_session_s')}
+              aria-label={i18nT('components.webAppArtifactCard.redeploy')}
             >
               <Rocket size={12} aria-hidden="true" />
-              Redeploy
+              {i18nT('components.webAppArtifactCard.redeploy')}
             </button>
           )}
           <button
@@ -651,19 +652,19 @@ export default function WebAppArtifactCard({
             onClick={handleTeardown}
             disabled={teardownMut.isPending || isExpired}
             className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md text-[12px] font-medium border border-danger/40 text-danger hover:bg-danger/10 cursor-pointer transition-all disabled:opacity-40 disabled:cursor-not-allowed bg-transparent"
-            title="Cancel / Tear down — marks the deployment expired; infrastructure is removed by the in-account reaper or scripts/teardown.sh"
-            aria-label="Cancel / Tear down"
+            title={i18nT('components.webAppArtifactCard.cancel_tear_down_marks_the_deployment_expired_in')}
+            aria-label={i18nT('components.webAppArtifactCard.cancel_tear_down')}
           >
             <Trash2 className="lucide-inline" />
             {teardownMut.isPending ? 'Tearing down...' : 'Cancel / Tear down'}
           </button>
-          <span className="text-[10px] text-muted">owner-only &middot; confirm-gated</span>
+          <span className="text-[10px] text-muted">{i18nT('components.webAppArtifactCard.owner_only_confirm_gated')}</span>
         </div>
       </div>
 
       {teardownMut.error && (
         <div className="px-3 py-2 rounded-md border border-danger/40 bg-danger-subtle text-[13px] text-danger">
-          <strong>Teardown failed:</strong>{' '}
+          <strong>{i18nT('components.webAppArtifactCard.teardown_failed')}</strong>{' '}
           {teardownMut.error instanceof Error
             ? teardownMut.error.message
             : String(teardownMut.error)}

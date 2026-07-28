@@ -4,6 +4,7 @@ import { FolderOpen, ChevronRight, ChevronLeft, Clock, Search } from 'lucide-rea
 import { api } from '../api/client'
 import { useListKeyboardNav } from '../hooks/useListKeyboardNav'
 
+import { i18nT } from '../i18n/t'
 interface Props {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -138,10 +139,10 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
       {/* Tabs */}
       <div className="flex border-b border-border">
         <button className={`flex-1 px-3 py-2 text-[12px] font-medium flex items-center justify-center gap-1.5 transition-colors ${tab === 'recent' ? 'text-accent border-b-2 border-accent' : 'text-muted hover:text-text'}`} onMouseDown={e => { e.preventDefault(); setTab('recent') }}>
-          <Clock size={12} /> Recent
+          <Clock size={12} /> {i18nT('components.projectPicker.recent')}
         </button>
         <button className={`flex-1 px-3 py-2 text-[12px] font-medium flex items-center justify-center gap-1.5 transition-colors ${tab === 'browse' ? 'text-accent border-b-2 border-accent' : 'text-muted hover:text-text'}`} onMouseDown={e => { e.preventDefault(); setTab('browse') }}>
-          <FolderOpen size={12} /> Browse
+          <FolderOpen size={12} /> {i18nT('components.projectPicker.browse')}
         </button>
       </div>
 
@@ -155,9 +156,9 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
                   ref={recentSearchRef}
                   autoFocus
                   type="text"
-                  aria-label="Search recent projects"
+                  aria-label={i18nT('components.projectPicker.search_recent_projects')}
                   aria-controls="pp-recent-list"
-                  placeholder="Search recent projects…"
+                  placeholder={i18nT('components.projectPicker.search_recent_projects_2')}
                   value={recentQuery}
                   onChange={e => setRecentQuery(e.target.value)}
                   className="w-full bg-bg-elevated border border-border rounded pl-7 pr-3 py-1.5 text-[13px] text-text placeholder:text-muted focus:outline-none focus:border-accent"
@@ -165,11 +166,11 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
               </div>
             </div>
           )}
-          <div id="pp-recent-list" role="listbox" aria-label="Recent projects" className="overflow-y-auto flex-1 min-h-0">
+          <div id="pp-recent-list" role="listbox" aria-label={i18nT('components.projectPicker.recent_projects')} className="overflow-y-auto flex-1 min-h-0">
             {recentDirs.length === 0 ? (
-              <div className="px-3 py-6 text-[12px] text-muted text-center">No recent projects</div>
+              <div className="px-3 py-6 text-[12px] text-muted text-center">{i18nT('components.projectPicker.no_recent_projects')}</div>
             ) : filteredRecent.length === 0 ? (
-              <div className="px-3 py-6 text-[12px] text-muted text-center">No matching projects</div>
+              <div className="px-3 py-6 text-[12px] text-muted text-center">{i18nT('components.projectPicker.no_matching_projects')}</div>
             ) : filteredRecent.map((d, i) => (
               <button
                 key={d}
@@ -195,7 +196,7 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
         <>
           <div className="p-2 border-b border-border flex gap-1 items-center">
             {browseParent && browseParent !== browsePath && (
-              <button aria-label="Back" onClick={() => browse(browseParent)} className="p-1 text-muted hover:text-text rounded hover:bg-bg-hover shrink-0" title="Back"><ChevronLeft size={16} /></button>
+              <button aria-label={i18nT('components.projectPicker.back')} onClick={() => browse(browseParent)} className="p-1 text-muted hover:text-text rounded hover:bg-bg-hover shrink-0" title={i18nT('components.projectPicker.back')}><ChevronLeft size={16} /></button>
             )}
             <input
               ref={inputRef}
@@ -203,10 +204,10 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
               type="text"
               role="combobox"
               aria-expanded={true}
-              aria-label="Project directory path"
+              aria-label={i18nT('components.projectPicker.project_directory_path')}
               aria-controls="pp-browse-list"
               aria-activedescendant={filteredBrowse.length ? `pp-dir-${browseSel}` : undefined}
-              placeholder="/path/to/project"
+              placeholder={i18nT('components.projectPicker.path_to_project')}
               value={input}
               onChange={e => setInput(e.target.value)}
               onKeyDown={e => {
@@ -227,10 +228,10 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
               }}
               className="flex-1 bg-bg-elevated border border-border rounded px-2 py-1.5 text-[13px] font-mono text-text placeholder:text-muted focus:outline-none focus:border-accent"
             />
-            <button disabled={!input.trim() && !browsePath} onMouseDown={e => { e.preventDefault(); select(input.trim() || browsePath) }} className="px-2 py-1 text-[11px] bg-accent/20 text-accent rounded hover:bg-accent/30 disabled:opacity-40 disabled:cursor-not-allowed shrink-0">Select</button>
+            <button disabled={!input.trim() && !browsePath} onMouseDown={e => { e.preventDefault(); select(input.trim() || browsePath) }} className="px-2 py-1 text-[11px] bg-accent/20 text-accent rounded hover:bg-accent/30 disabled:opacity-40 disabled:cursor-not-allowed shrink-0">{i18nT('components.projectPicker.select')}</button>
           </div>
-          <div id="pp-browse-list" role="listbox" aria-label="Subdirectories" className="overflow-y-auto flex-1 min-h-0">
-            {filteredBrowse.length === 0 && <div className="px-3 py-4 text-[12px] text-muted text-center">No subdirectories</div>}
+          <div id="pp-browse-list" role="listbox" aria-label={i18nT('components.projectPicker.subdirectories')} className="overflow-y-auto flex-1 min-h-0">
+            {filteredBrowse.length === 0 && <div className="px-3 py-4 text-[12px] text-muted text-center">{i18nT('components.projectPicker.no_subdirectories')}</div>}
             {filteredBrowse.map((d, i) => (
               <button
                 key={d.path}

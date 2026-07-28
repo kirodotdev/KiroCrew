@@ -14,6 +14,7 @@ import ReadOnlyTag, { isReadOnly } from '../../components/ReadOnlyTag'
 import LabelPicker from '../../components/LabelPicker'
 import { asArray } from '../../lib/format'
 
+import { i18nT } from '../../../../i18n/t'
 // Heuristic name patterns used only to *suggest* likely labels (one-click add);
 // the user always confirms. Repos name these things a dozen different ways.
 const TRIAGE_PATTERN = /(^|[\s:_/-])(triage|untriaged|unconfirmed|pending|needs?[\s_/-]?(triage|info|repro|reproduction|investigation|review|response|details?|decision))/i
@@ -300,7 +301,7 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
           rel="noreferrer"
           className="text-[12px] text-muted hover:text-text inline-flex items-center gap-1"
         >
-          <ExternalLink size={12} /> Open on {terms.providerName}
+          <ExternalLink size={12} /> {i18nT('apps.issueRadar.views.settings.repoSettings.open_on')} {terms.providerName}
         </a>
         <button
           onClick={() => refreshMutation.mutate()}
@@ -308,17 +309,17 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
           title={`Re-fetch this repo's issues + labels from ${terms.providerName}`}
           className="ml-auto inline-flex items-center gap-1.5 text-[12px] text-muted hover:text-text disabled:opacity-40 cursor-pointer"
         >
-          <RefreshCw size={13} className={refreshMutation.isPending ? 'animate-spin' : ''} /> Refresh
+          <RefreshCw size={13} className={refreshMutation.isPending ? 'animate-spin' : ''} /> {i18nT('apps.issueRadar.views.settings.repoSettings.refresh')}
         </button>
       </div>
       {!settingsReady && !settingsQuery.isError && (
-        <p className="text-[13px] text-muted mb-4">Loading this repo's saved settings…</p>
+        <p className="text-[13px] text-muted mb-4">{i18nT('apps.issueRadar.views.settings.repoSettings.loading_this_repo_s_saved_settings')}</p>
       )}
       <p className="text-[13px] text-muted mb-4">
-        Local triage settings for this repo — they teach Issue Radar how {repo} organises its issues and are never written back to {terms.providerName}.
+        {i18nT('apps.issueRadar.views.settings.repoSettings.local_triage_settings_for_this_repo_they_teach_i')} {repo} {i18nT('apps.issueRadar.views.settings.repoSettings.organises_its_issues_and_are_never_written_back')} {terms.providerName}.
         {saveMutation.isPending
-          ? <span className="ml-2 opacity-70">Saving…</span>
-          : saveMutation.isSuccess ? <span className="ml-2 opacity-70 inline-flex items-center gap-1">Saved <Check size={12} className="lucide-inline" /></span> : null}
+          ? <span className="ml-2 opacity-70">{i18nT('apps.issueRadar.views.settings.repoSettings.saving')}</span>
+          : saveMutation.isSuccess ? <span className="ml-2 opacity-70 inline-flex items-center gap-1">{i18nT('apps.issueRadar.views.settings.repoSettings.saved')} <Check size={12} className="lucide-inline" /></span> : null}
       </p>
 
       {(settingsQuery.isError || saveMutation.isError) && (
@@ -328,14 +329,14 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
           </div>
           <div className="opacity-80">
             {((settingsQuery.error ?? saveMutation.error) as Error)?.message}
-            {' — '}your edits are kept here but won't persist. If you just updated Issue Radar, restart the backend so the settings API is available.
+            {' — '}{i18nT('apps.issueRadar.views.settings.repoSettings.your_edits_are_kept_here_but_won_t_persist_if_yo')}
           </div>
         </div>
       )}
 
       <Card
         icon={Bell}
-        title="Notifications"
+        title={i18nT('apps.issueRadar.views.settings.repoSettings.notifications')}
         desc="Watch this repo in the background and post a KiroCrew notification whenever a new issue is opened."
       >
         <SettingToggle
@@ -343,18 +344,16 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
           disabled={!settingsReady}
           onClick={() => update({ notify_on_new_issue: !settings.notify_on_new_issue })}
         >
-          Notify me when a <strong>new issue</strong> is opened in {owner}/{repo}
+          {i18nT('apps.issueRadar.views.settings.repoSettings.notify_me_when_a')} <strong>{i18nT('apps.issueRadar.views.settings.repoSettings.new_issue')}</strong> {i18nT('apps.issueRadar.views.settings.repoSettings.is_opened_in')} {owner}/{repo}
         </SettingToggle>
         <StatLine>
-          Checks about once a minute, inside KiroCrew — no cron job. It only runs while KiroCrew is
-          open and your machine is awake, using your existing <code>{terms.cli}</code> sign-in (no
-          extra credentials, no {terms.providerName} webhook).
+          {i18nT('apps.issueRadar.views.settings.repoSettings.checks_about_once_a_minute_inside_kirocrew_no_cr')} <code>{terms.cli}</code> {i18nT('apps.issueRadar.views.settings.repoSettings.sign_in_no_extra_credentials_no')} {terms.providerName} {i18nT('apps.issueRadar.views.settings.repoSettings.webhook')}
         </StatLine>
       </Card>
 
       <Card
         icon={ListChecks}
-        title="Triage labels"
+        title={i18nT('apps.issueRadar.views.settings.repoSettings.triage_labels')}
         desc="Which labels mean an issue still needs triage. Drives the Overview's “Untriaged” count and the needs-attention queue."
       >
         <SettingToggle
@@ -362,7 +361,7 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
           disabled={!settingsReady}
           onClick={() => update({ unlabeled_is_untriaged: !settings.unlabeled_is_untriaged })}
         >
-          Also treat issues with <strong>no labels</strong> as needing triage
+          {i18nT('apps.issueRadar.views.settings.repoSettings.also_treat_issues_with')} <strong>{i18nT('apps.issueRadar.views.settings.repoSettings.no_labels')}</strong> {i18nT('apps.issueRadar.views.settings.repoSettings.as_needing_triage')}
         </SettingToggle>
         <LabelPicker
           labels={labels}
@@ -377,13 +376,13 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
         <StatLine>
           {issuesQuery.isLoading
             ? 'Counting open issues…'
-            : <><strong className="text-text">{triageCount}</strong> of {openIssues.length} open issues currently need triage</>}
+            : <><strong className="text-text">{triageCount}</strong> {i18nT('apps.issueRadar.views.settings.repoSettings.of')} {openIssues.length} {i18nT('apps.issueRadar.views.settings.repoSettings.open_issues_currently_need_triage')}</>}
         </StatLine>
       </Card>
 
       <Card
         icon={Sparkles}
-        title="Good first issue labels"
+        title={i18nT('apps.issueRadar.views.settings.repoSettings.good_first_issue_labels')}
         desc="Which labels mark newcomer-friendly work, so Issue Radar can surface issues to route to first-time contributors."
       >
         <LabelPicker
@@ -399,13 +398,13 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
         <StatLine>
           {issuesQuery.isLoading
             ? 'Counting open issues…'
-            : <><strong className="text-text">{gfiCount}</strong> open issues are marked first-issue-friendly</>}
+            : <><strong className="text-text">{gfiCount}</strong> {i18nT('apps.issueRadar.views.settings.repoSettings.open_issues_are_marked_first_issue_friendly')}</>}
         </StatLine>
       </Card>
 
       <Card
         icon={Wand2}
-        title="AI label recommendations"
+        title={i18nT('apps.issueRadar.views.settings.repoSettings.ai_label_recommendations')}
         desc="Proposing NEW labels for this repo now lives on the Tagging dashboard, next to the untagged issues those labels get applied to."
       >
         <button
@@ -425,24 +424,22 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
           }}
           className="inline-flex items-center gap-1.5 text-[13px] px-3 py-1.5 rounded-md border border-border text-text hover:bg-bg-hover cursor-pointer bg-transparent"
         >
-          <Tags size={13} /> Open Tagging
+          <Tags size={13} /> {i18nT('apps.issueRadar.views.settings.repoSettings.open_tagging')}
         </button>
         <StatLine>
-          Recommending a taxonomy and applying it to issues are two halves of one job, so they share a
-          page. This settings page keeps the local definitions above — which of {repo}'s labels mean
-          “needs triage” or “good first issue”.
+          {i18nT('apps.issueRadar.views.settings.repoSettings.recommending_a_taxonomy_and_applying_it_to_issue')} {repo}{i18nT('apps.issueRadar.views.settings.repoSettings.s_labels_mean_needs_triage_or_good_first_issue')}
         </StatLine>
       </Card>
 
       <Card
         icon={Users}
-        title="Members"
+        title={i18nT('apps.issueRadar.views.settings.repoSettings.members')}
         desc={`Everyone with access to this repo, read from ${terms.providerName} — each with their role. Shown for reference; read-only here.`}
       >
         {membersLoading ? (
-          <div className="text-[12px] text-muted py-1">Loading members…</div>
+          <div className="text-[12px] text-muted py-1">{i18nT('apps.issueRadar.views.settings.repoSettings.loading_members')}</div>
         ) : (membersQuery.isError || issuesQuery.isError) ? (
-          <div className="text-[13px] text-muted py-1">Couldn't load members right now.</div>
+          <div className="text-[13px] text-muted py-1">{i18nT('apps.issueRadar.views.settings.repoSettings.couldn_t_load_members_right_now')}</div>
         ) : members.length === 0 ? (
           <div className="text-[13px] text-muted py-1">
             {memberSource === 'derived'
@@ -469,8 +466,7 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
         <StatLine>
           {memberSource === 'derived' ? (
             <>
-              Without push access to {owner}/{repo}, this is an approximate list inferred from issue
-              authors. The full roster and member management live on{' '}
+              {i18nT('apps.issueRadar.views.settings.repoSettings.without_push_access_to')} {owner}/{repo}{i18nT('apps.issueRadar.views.settings.repoSettings.this_is_an_approximate_list_inferred_from_issue')}{' '}
               <a
                 href={membersUrlFor(repoRef)}
                 target="_blank"
@@ -482,8 +478,7 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
             </>
           ) : (
             <>
-              Membership is read from {terms.providerName} and can&apos;t be changed here — to add or remove a member or
-              collaborator, manage access on{' '}
+              {i18nT('apps.issueRadar.views.settings.repoSettings.membership_is_read_from')} {terms.providerName} {i18nT('apps.issueRadar.views.settings.repoSettings.and_can_t_be_changed_here_to_add_or_remove_a_mem')}{' '}
               <a
                 href={membersUrlFor(repoRef)}
                 target="_blank"
@@ -491,7 +486,7 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
                 className="text-accent hover:underline inline-flex items-center gap-0.5"
               >
                 {terms.providerName} <ExternalLink size={11} />
-              </a>. It refreshes here after the next sync.
+              </a>{i18nT('apps.issueRadar.views.settings.repoSettings.it_refreshes_here_after_the_next_sync')}
             </>
           )}
         </StatLine>
@@ -500,10 +495,10 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
       {/* Danger zone */}
       <div className="rounded-xl border border-danger/40 bg-danger/5 p-5 mt-8">
         <div className="flex items-center gap-2 mb-1 text-[13px] font-semibold text-danger">
-          <AlertTriangle size={14} /> Disconnect repository
+          <AlertTriangle size={14} /> {i18nT('apps.issueRadar.views.settings.repoSettings.disconnect_repository')}
         </div>
         <p className="text-[12px] text-muted mb-3">
-          Removes {owner}/{repo} from Issue Radar and deletes its local cache. Your {terms.providerName} data and <code>{terms.cli}</code> auth are untouched — you can reconnect anytime.
+          {i18nT('apps.issueRadar.views.settings.repoSettings.removes')} {owner}/{repo} {i18nT('apps.issueRadar.views.settings.repoSettings.from_issue_radar_and_deletes_its_local_cache_you')} {terms.providerName} {i18nT('apps.issueRadar.views.settings.repoSettings.data_and')} <code>{terms.cli}</code> {i18nT('apps.issueRadar.views.settings.repoSettings.auth_are_untouched_you_can_reconnect_anytime')}
         </p>
         {confirmingDelete ? (
           <div className="flex items-center gap-2 flex-wrap">
@@ -518,7 +513,7 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
               onClick={() => setConfirmingDelete(false)}
               className="text-[13px] px-3 py-1.5 rounded-md border border-border text-muted hover:text-text cursor-pointer bg-transparent"
             >
-              Cancel
+              {i18nT('apps.issueRadar.views.settings.repoSettings.cancel')}
             </button>
           </div>
         ) : (
@@ -526,7 +521,7 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
             onClick={() => setConfirmingDelete(true)}
             className="inline-flex items-center gap-1.5 text-[13px] px-3 py-1.5 rounded-md border border-danger/50 text-danger hover:bg-danger/10 cursor-pointer bg-transparent"
           >
-            <Trash2 size={13} /> Disconnect
+            <Trash2 size={13} /> {i18nT('apps.issueRadar.views.settings.repoSettings.disconnect')}
           </button>
         )}
         {disconnectMutation.error && (

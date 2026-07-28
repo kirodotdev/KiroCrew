@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { api, type TunnelStatus as TunnelStatusData } from '../api/client'
 import { StatCard } from './ui'
 
+import { i18nT } from '../i18n/t'
 /** Human-readable label, color, and tooltip for a tunnel status.
  *  Pure function — unit tested independently of react-query.
  *
@@ -57,5 +58,5 @@ export function TunnelStatus({ delay }: { delay?: number }) {
   const display = tunnelDisplay(data)
   if (!display) return null
   const { value, colorClass, tooltip } = display
-  return <StatCard label="Tunnel" value={value} colorClass={colorClass} title={tooltip} delay={delay} />
+  return <StatCard label={i18nT('components.tunnelStatus.tunnel')} value={value} colorClass={colorClass} title={tooltip} delay={delay} />
 }

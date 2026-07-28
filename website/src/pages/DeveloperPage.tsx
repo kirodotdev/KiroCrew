@@ -10,6 +10,7 @@ import { McpPoolableServers } from './settings/McpPoolableServers'
 import { KiroCrewCfgTab, AgentCfgTab } from './overview'
 import MemoryGraphTab from './overview/MemoryGraphTab'
 
+import { i18nT } from '../i18n/t'
 const TABS = [
   { key: 'logs', label: 'Logs', icon: <ScrollText size={16} />, description: 'Live log viewer with level filtering and search' },
   { key: 'system', label: 'System', icon: <Monitor size={16} />, description: 'CPU, memory, network, and process metrics' },
@@ -23,7 +24,7 @@ const TABS = [
 
 export default function DeveloperPage() {
   return (
-    <SidePanelLayout title="Developer" tabs={TABS}>
+    <SidePanelLayout title={i18nT('pages.developerPage.developer')} tabs={TABS}>
       {tab => <>
         {tab === 'logs' && <div className="h-[calc(100vh-160px)] min-h-[300px] flex flex-col overflow-hidden"><LogViewer compact /></div>}
         {tab === 'system' && <SystemPage embedded />}

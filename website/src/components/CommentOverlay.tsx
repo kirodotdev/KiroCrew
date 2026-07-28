@@ -3,6 +3,7 @@ import { MessageSquare, MessageSquarePlus, X, Pencil, Check, Send } from 'lucide
 import { SendBtn } from './ui'
 import { useImeGuard } from '../hooks/useImeGuard'
 
+import { i18nT } from '../i18n/t'
 export interface InlineComment {
   id: string
   /** Anchor text from the document (prefix for matching). */
@@ -69,9 +70,9 @@ function CommentPopover({ x, y, onSubmit, onCancel, containerRef, scrollRef }: {
       style={{ left: Math.min(posX, maxW - 320), top: flipped ? Math.max(0, posY - 60) : posY + 8, width: 300 }}
     >
       <div className="flex items-center justify-between mb-2">
-        <span className="text-xs font-semibold text-text">Add comment</span>
+        <span className="text-xs font-semibold text-text">{i18nT('components.commentOverlay.add_comment')}</span>
         <button
-          aria-label="Close"
+          aria-label={i18nT('components.commentOverlay.close')}
           className="p-0.5 rounded text-muted hover:text-text cursor-pointer bg-transparent border-none transition-colors"
           onClick={onCancel}
         ><X size={14} /></button>
@@ -79,8 +80,8 @@ function CommentPopover({ x, y, onSubmit, onCancel, containerRef, scrollRef }: {
       <div className="relative">
         <textarea
           ref={inputRef}
-          aria-label="Add a comment"
-          placeholder="Write a comment…"
+          aria-label={i18nT('components.commentOverlay.add_a_comment')}
+          placeholder={i18nT('components.commentOverlay.write_a_comment')}
           value={text}
           rows={1}
           onChange={e => { setText(e.target.value); autoGrow(e.target) }}
@@ -89,7 +90,7 @@ function CommentPopover({ x, y, onSubmit, onCancel, containerRef, scrollRef }: {
           className="bg-bg-elevated border border-border rounded-md pl-3 pr-8 py-2 text-text text-sm font-body outline-none w-full transition-colors focus-ring resize-none leading-[21px] overflow-hidden"
         />
         <button
-          aria-label="Add comment"
+          aria-label={i18nT('components.commentOverlay.add_comment')}
           disabled={!text.trim()}
           className="absolute right-2 top-2 p-0.5 rounded text-muted hover:text-accent cursor-pointer bg-transparent border-none transition-colors disabled:opacity-30 disabled:cursor-default"
           onClick={() => text.trim() && onSubmit(text.trim())}
@@ -148,11 +149,11 @@ function CommentRow({ comment, onEdit, onRemove }: {
         )}
       </div>
       {editing ? (
-        <button aria-label="Save" onMouseDown={preventBlur} className="text-ok hover:text-ok text-[12px] shrink-0 cursor-pointer bg-transparent border-none" onClick={commitEdit}><Check className="lucide-inline" /></button>
+        <button aria-label={i18nT('components.commentOverlay.save')} onMouseDown={preventBlur} className="text-ok hover:text-ok text-[12px] shrink-0 cursor-pointer bg-transparent border-none" onClick={commitEdit}><Check className="lucide-inline" /></button>
       ) : (
-        <button aria-label="Edit" className="text-muted hover:text-accent text-[12px] shrink-0 cursor-pointer bg-transparent border-none" onClick={() => { setDraft(comment.text); setEditing(true) }}><Pencil className="lucide-inline" /></button>
+        <button aria-label={i18nT('components.commentOverlay.edit')} className="text-muted hover:text-accent text-[12px] shrink-0 cursor-pointer bg-transparent border-none" onClick={() => { setDraft(comment.text); setEditing(true) }}><Pencil className="lucide-inline" /></button>
       )}
-      <button aria-label="Remove" onMouseDown={preventBlur} className="text-muted hover:text-danger text-[12px] shrink-0 cursor-pointer bg-transparent border-none" onClick={() => onRemove(comment.id)}><X className="lucide-inline" /></button>
+      <button aria-label={i18nT('components.commentOverlay.remove')} onMouseDown={preventBlur} className="text-muted hover:text-danger text-[12px] shrink-0 cursor-pointer bg-transparent border-none" onClick={() => onRemove(comment.id)}><X className="lucide-inline" /></button>
     </div>
   )
 }
@@ -177,18 +178,18 @@ function CommentList({ comments, onEdit, onRemove, onSubmitAll, enableExtraPromp
     <div className="border-t border-border bg-chrome px-3 py-2">
       <div className="flex items-center justify-between mb-2">
         <div className="flex items-center gap-2">
-          <span className="text-[13px] font-semibold text-text">{comments.length} comment{comments.length > 1 ? 's' : ''} pending</span>
+          <span className="text-[13px] font-semibold text-text">{comments.length} {i18nT('components.commentOverlay.comment')}{comments.length > 1 ? 's' : ''} {i18nT('components.commentOverlay.pending')}</span>
           {enableExtraPrompt && (
             <button
               type="button"
-              aria-label="Toggle additional prompt"
+              aria-label={i18nT('components.commentOverlay.toggle_additional_prompt')}
               aria-pressed={showExtraPrompt}
               onClick={() => setShowExtraPrompt(v => !v)}
               className={`flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[11px] font-medium border cursor-pointer transition-all ${showExtraPrompt ? 'border-accent text-accent bg-accent-subtle' : 'border-border text-muted hover:text-text hover:border-border-strong'}`}
-            ><MessageSquarePlus className="lucide-inline" /> Add instruction</button>
+            ><MessageSquarePlus className="lucide-inline" /> {i18nT('components.commentOverlay.add_instruction')}</button>
           )}
         </div>
-        <SendBtn onClick={() => { onSubmitAll(enableExtraPrompt && showExtraPrompt ? extraPrompt : undefined); setExtraPrompt(''); setShowExtraPrompt(false) }}>Submit All <Send className="lucide-inline" /></SendBtn>
+        <SendBtn onClick={() => { onSubmitAll(enableExtraPrompt && showExtraPrompt ? extraPrompt : undefined); setExtraPrompt(''); setShowExtraPrompt(false) }}>{i18nT('components.commentOverlay.submit_all')} <Send className="lucide-inline" /></SendBtn>
       </div>
       <div className="space-y-1.5 max-h-[200px] overflow-y-auto">
         {comments.map(c => <CommentRow key={c.id} comment={c} onEdit={onEdit} onRemove={onRemove} />)}
@@ -196,8 +197,8 @@ function CommentList({ comments, onEdit, onRemove, onSubmitAll, enableExtraPromp
       {enableExtraPrompt && showExtraPrompt && (
         <textarea
           ref={extraPromptRef}
-          aria-label="Additional prompt"
-          placeholder="Optional: overall feedback or an extra instruction to send with these comments…"
+          aria-label={i18nT('components.commentOverlay.additional_prompt')}
+          placeholder={i18nT('components.commentOverlay.optional_overall_feedback_or_an_extra_instructio')}
           value={extraPrompt}
           onChange={e => setExtraPrompt(e.target.value)}
           rows={2}

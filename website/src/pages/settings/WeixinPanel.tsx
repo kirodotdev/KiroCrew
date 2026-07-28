@@ -5,6 +5,7 @@ import { api, type WeixinConfigSave } from '../../api/client'
 import { WeixinLogo } from '../../components/WeixinLogo'
 import { TagListEditor } from './SlackPanel'
 
+import { i18nT } from '../../i18n/t'
 const SETUP_GUIDE =
   'https://github.com/kirodotdev/KiroCrew/blob/main/src/kiro_crew/docs/weixin-integration.md'
 
@@ -127,10 +128,9 @@ export function WeixinPanel() {
           <WeixinLogo size={20} />
         </span>
         <div className="min-w-0">
-          <h3 className="text-[15px] font-semibold text-text-strong m-0">WeChat</h3>
+          <h3 className="text-[15px] font-semibold text-text-strong m-0">{i18nT('pages.settings.weixinPanel.wechat')}</h3>
           <p className="text-[12.5px] text-muted mt-1 mb-0">
-            Talk to your agent from personal WeChat over Tencent's iLink bot API. Sign in by
-            scanning a QR code — direct messages only.
+            {i18nT('pages.settings.weixinPanel.talk_to_your_agent_from_personal_wechat_over_ten')}
           </p>
         </div>
       </div>
@@ -141,11 +141,11 @@ export function WeixinPanel() {
         data-testid="weixin-status"
       >
         {isError ? (
-          <span className="text-[12.5px] text-muted">Status unavailable</span>
+          <span className="text-[12.5px] text-muted">{i18nT('pages.settings.weixinPanel.status_unavailable')}</span>
         ) : connected ? (
           <>
             <span className="w-1.5 h-1.5 rounded-full bg-ok shrink-0" />
-            <span className="text-[12.5px] text-ok font-medium">Connected</span>
+            <span className="text-[12.5px] text-ok font-medium">{i18nT('pages.settings.weixinPanel.connected')}</span>
             {data?.account_id && (
               <span className="text-[11.5px] text-muted font-mono">{data.account_id}</span>
             )}
@@ -153,10 +153,10 @@ export function WeixinPanel() {
         ) : credentialSet ? (
           <>
             <span className="w-1.5 h-1.5 rounded-full bg-warn shrink-0" />
-            <span className="text-[12.5px] text-warn font-medium">Signed in — restart to connect</span>
+            <span className="text-[12.5px] text-warn font-medium">{i18nT('pages.settings.weixinPanel.signed_in_restart_to_connect')}</span>
           </>
         ) : (
-          <span className="text-[12.5px] text-muted">Not signed in</span>
+          <span className="text-[12.5px] text-muted">{i18nT('pages.settings.weixinPanel.not_signed_in')}</span>
         )}
       </div>
 
@@ -164,9 +164,9 @@ export function WeixinPanel() {
       <div className="rounded-lg border border-border bg-card p-3.5">
         <div className="flex items-center justify-between gap-3">
           <div className="min-w-0">
-            <div className="text-[13px] font-semibold text-text-strong">Sign in with WeChat</div>
+            <div className="text-[13px] font-semibold text-text-strong">{i18nT('pages.settings.weixinPanel.sign_in_with_wechat')}</div>
             <div className="text-[11.5px] text-muted mt-0.5">
-              Scan the code with the WeChat mobile app, then confirm on your phone.
+              {i18nT('pages.settings.weixinPanel.scan_the_code_with_the_wechat_mobile_app_then_co')}
             </div>
           </div>
           {!readOnly && (
@@ -193,13 +193,13 @@ export function WeixinPanel() {
             {qrImg ? (
               <img
                 src={qrImg}
-                alt="WeChat login QR code"
+                alt={i18nT('pages.settings.weixinPanel.wechat_login_qr_code')}
                 width={180}
                 height={180}
                 className="rounded-md bg-white p-2"
               />
             ) : (
-              <div className="text-[12px] text-muted">Waiting for a code…</div>
+              <div className="text-[12px] text-muted">{i18nT('pages.settings.weixinPanel.waiting_for_a_code')}</div>
             )}
             <div className="flex items-center gap-1.5 text-[12px] text-muted">
               <Loader2 size={12} className="animate-spin" />
@@ -213,13 +213,13 @@ export function WeixinPanel() {
             className="mt-3 flex items-center gap-1.5 text-[12.5px] text-ok"
             data-testid="weixin-confirmed"
           >
-            <Check size={13} /> Signed in. Restart the gateway to start receiving messages.
+            <Check size={13} /> {i18nT('pages.settings.weixinPanel.signed_in_restart_the_gateway_to_start_receiving')}
           </div>
         )}
 
         {phase === 'expired' && (
           <div className="mt-3 flex items-center gap-1.5 text-[12.5px] text-warn" data-testid="weixin-expired">
-            <TriangleAlert size={13} /> The code expired. Try again.
+            <TriangleAlert size={13} /> {i18nT('pages.settings.weixinPanel.the_code_expired_try_again')}
           </div>
         )}
 
@@ -243,12 +243,12 @@ export function WeixinPanel() {
           onChange={e => save({ enabled: e.target.checked })}
           data-testid="weixin-enabled"
         />
-        <span className="text-[13px] text-text">Enable the WeChat channel</span>
+        <span className="text-[13px] text-text">{i18nT('pages.settings.weixinPanel.enable_the_wechat_channel')}</span>
       </label>
 
       <div>
         <label htmlFor="weixin-dm-policy" className="block">
-          <span className="block text-[11px] text-muted mb-1.5">Who can message the bot</span>
+          <span className="block text-[11px] text-muted mb-1.5">{i18nT('pages.settings.weixinPanel.who_can_message_the_bot')}</span>
           <select
             id="weixin-dm-policy"
             value={data?.dm_policy || 'allowlist'}
@@ -257,9 +257,9 @@ export function WeixinPanel() {
             data-testid="weixin-dm-policy"
             className="text-sm px-2.5 py-2 rounded-md bg-bg border border-border text-text"
           >
-            <option value="open">Anyone who messages the bot</option>
-            <option value="allowlist">Only allowed user IDs</option>
-            <option value="disabled">Nobody (ignore all messages)</option>
+            <option value="open">{i18nT('pages.settings.weixinPanel.anyone_who_messages_the_bot')}</option>
+            <option value="allowlist">{i18nT('pages.settings.weixinPanel.only_allowed_user_ids')}</option>
+            <option value="disabled">{i18nT('pages.settings.weixinPanel.nobody_ignore_all_messages')}</option>
           </select>
         </label>
       </div>
@@ -267,10 +267,10 @@ export function WeixinPanel() {
       {data?.dm_policy === 'allowlist' && (
         <div data-testid="weixin-allowlist">
           <TagListEditor
-            label="Allowed user IDs"
-            description="Allowed WeChat user IDs. Empty = deny all (fail closed)."
+            label={i18nT('pages.settings.weixinPanel.allowed_user_ids')}
+            description={i18nT('pages.settings.weixinPanel.allowed_wechat_user_ids_empty_deny_all_fail_clos')}
             values={data?.allowed_user_ids || []}
-            placeholder="wxid_…"
+            placeholder={i18nT('pages.settings.weixinPanel.wxid')}
             onChange={(vals: string[]) => save({ allowed_user_ids: vals })}
             readOnly={readOnly}
           />
@@ -278,15 +278,14 @@ export function WeixinPanel() {
       )}
 
       <p className="text-[11.5px] text-muted m-0">
-        Group chats are not supported: iLink bot identities do not receive ordinary WeChat group
-        events.{' '}
+        {i18nT('pages.settings.weixinPanel.group_chats_are_not_supported_ilink_bot_identiti')}{' '}
         <a
           href={SETUP_GUIDE}
           target="_blank"
           rel="noopener noreferrer"
           className="text-accent hover:underline"
         >
-          Setup guide
+          {i18nT('pages.settings.weixinPanel.setup_guide')}
         </a>
       </p>
     </div>

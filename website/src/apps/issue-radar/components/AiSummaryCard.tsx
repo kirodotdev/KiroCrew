@@ -11,6 +11,7 @@ import MarkdownRenderer from '../../../components/MarkdownRenderer'
 import ShimmerLine from './ShimmerLine'
 import { relativeTimeOrDate } from '../lib/format'
 
+import { i18nT } from '../../../i18n/t'
 /** Fast typewriter reveal for a freshly-generated summary. Returns a growing
  * prefix of `text` plus a `typing` flag. When `enabled` is false (a cached
  * result the user has already seen, or reduced-motion) it returns the full text
@@ -82,7 +83,7 @@ export default function AiSummaryCard({
   return (
     <div className="mb-5 rounded-lg border border-accent/25 bg-accent-subtle/40 overflow-hidden">
       <div className="flex items-center gap-1.5 px-3.5 py-2 border-b border-accent/20 text-[11px] uppercase tracking-wider text-accent font-medium">
-        <Sparkles size={12} className={generating || typing ? 'animate-pulse' : ''} /> AI summary
+        <Sparkles size={12} className={generating || typing ? 'animate-pulse' : ''} /> {i18nT('apps.issueRadar.components.aiSummaryCard.ai_summary')}
         {age && (
           <span
             className={
@@ -103,8 +104,8 @@ export default function AiSummaryCard({
         <button
           onClick={onRegenerate}
           disabled={fetching}
-          title="Regenerate summary"
-          aria-label="Regenerate AI summary"
+          title={i18nT('apps.issueRadar.components.aiSummaryCard.regenerate_summary')}
+          aria-label={i18nT('apps.issueRadar.components.aiSummaryCard.regenerate_ai_summary')}
           className={
             'inline-flex items-center text-accent/70 hover:text-accent disabled:opacity-40 ' +
             'cursor-pointer bg-transparent p-0.5' + (age ? '' : ' ml-auto')
@@ -115,10 +116,10 @@ export default function AiSummaryCard({
       </div>
       <div className="px-3.5 py-2.5 text-[13px] leading-relaxed text-text">
         {generating ? (
-          <div role="status" aria-label="Generating AI summary">
+          <div role="status" aria-label={i18nT('apps.issueRadar.components.aiSummaryCard.generating_ai_summary')}>
             <div className="flex items-center gap-1.5 text-[11.5px] text-accent mb-2">
               <Sparkles size={12} className="animate-pulse" />
-              <span className="animate-pulse">Reading &amp; summarizing…</span>
+              <span className="animate-pulse">{i18nT('apps.issueRadar.components.aiSummaryCard.reading_summarizing')}</span>
             </div>
             <div className="space-y-1.5">
               <ShimmerLine w="100%" />
@@ -132,20 +133,20 @@ export default function AiSummaryCard({
           // its old timestamp reads as a successful refresh.
           <>
             <div className="mb-2 text-[11.5px] text-danger">
-              Couldn't regenerate — showing the previous summary.{' '}
-              <button onClick={onRegenerate} className="underline cursor-pointer bg-transparent text-danger">Retry</button>
+              {i18nT('apps.issueRadar.components.aiSummaryCard.couldn_t_regenerate_showing_the_previous_summary')}{' '}
+              <button onClick={onRegenerate} className="underline cursor-pointer bg-transparent text-danger">{i18nT('apps.issueRadar.components.aiSummaryCard.retry')}</button>
             </div>
             <MarkdownRenderer content={summary} />
           </>
         ) : error ? (
           <span className="text-danger">
-            Couldn't generate a summary.{' '}
-            <button onClick={onRegenerate} className="underline cursor-pointer bg-transparent text-danger">Retry</button>
+            {i18nT('apps.issueRadar.components.aiSummaryCard.couldn_t_generate_a_summary')}{' '}
+            <button onClick={onRegenerate} className="underline cursor-pointer bg-transparent text-danger">{i18nT('apps.issueRadar.components.aiSummaryCard.retry')}</button>
           </span>
         ) : summary ? (
           <MarkdownRenderer content={typing ? shown : summary} />
         ) : (
-          <span className="text-muted">No summary available for this {subject}.</span>
+          <span className="text-muted">{i18nT('apps.issueRadar.components.aiSummaryCard.no_summary_available_for_this')} {subject}.</span>
         )}
       </div>
     </div>

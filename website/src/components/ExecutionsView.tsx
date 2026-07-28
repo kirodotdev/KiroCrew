@@ -5,6 +5,7 @@ import { api } from '../api/client'
 import { Badge, Btn, Skeleton } from './ui'
 import { useAppSelector } from '../store'
 
+import { i18nT } from '../i18n/t'
 interface HistoryEntry {
   job_id: string
   job_name: string
@@ -58,19 +59,19 @@ export default function ExecutionsView({ selectedJobId }: { selectedJobId?: stri
 
   if (isLoading) return <div className="flex justify-center py-12"><Skeleton className="h-6 w-32 rounded" /></div>
   if (error) return <div className="text-danger text-sm text-center py-8">{error instanceof Error ? error.message : 'Failed to load'}</div>
-  if (entries.length === 0) return <div className="text-muted text-sm text-center py-12">No execution history yet</div>
+  if (entries.length === 0) return <div className="text-muted text-sm text-center py-12">{i18nT('components.executionsView.no_execution_history_yet')}</div>
 
   return (
     <div>
       <div className="overflow-x-auto">
         <table className="w-full border-collapse table-striped">
           <thead><tr>
-            <th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium w-[70px]">Status</th>
-            <th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium">Job Name</th>
-            <th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium w-[160px]">Timestamp</th>
-            <th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium w-[90px]">Duration</th>
-            <th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium w-[80px]">Trigger</th>
-            <th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium">Summary</th>
+            <th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium w-[70px]">{i18nT('components.executionsView.status')}</th>
+            <th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium">{i18nT('components.executionsView.job_name')}</th>
+            <th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium w-[160px]">{i18nT('components.executionsView.timestamp')}</th>
+            <th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium w-[90px]">{i18nT('components.executionsView.duration')}</th>
+            <th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium w-[80px]">{i18nT('components.executionsView.trigger')}</th>
+            <th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium">{i18nT('components.executionsView.summary')}</th>
           </tr></thead>
           <tbody>
             {entries.map(e => {
@@ -79,9 +80,9 @@ export default function ExecutionsView({ selectedJobId }: { selectedJobId?: stri
               return (<Fragment key={e.run_id}>
                 <tr className={`hover:bg-bg-hover transition-colors cursor-pointer ${isDeleted ? 'opacity-50' : ''}`} onClick={() => toggleExpand(e)}>
                   <td className="px-2.5 py-2 border-b border-border text-sm">
-                    {e.status === 'success' ? <Badge variant="ok">OK</Badge> : e.status === 'failure' ? <Badge variant="err">Error</Badge> : e.status === 'cancelled' ? <Badge variant="warn">Cancelled</Badge> : <Badge variant="warn">Timeout</Badge>}
+                    {e.status === 'success' ? <Badge variant="ok">{i18nT('components.executionsView.ok')}</Badge> : e.status === 'failure' ? <Badge variant="err">{i18nT('components.executionsView.error')}</Badge> : e.status === 'cancelled' ? <Badge variant="warn">{i18nT('components.executionsView.cancelled')}</Badge> : <Badge variant="warn">{i18nT('components.executionsView.timeout')}</Badge>}
                   </td>
-                  <td className="px-2.5 py-2 border-b border-border text-sm">{e.job_name}{isDeleted && <span className="ml-1.5 text-muted text-[11px]">(deleted)</span>}</td>
+                  <td className="px-2.5 py-2 border-b border-border text-sm">{e.job_name}{isDeleted && <span className="ml-1.5 text-muted text-[11px]">{i18nT('components.executionsView.deleted')}</span>}</td>
                   <td className="px-2.5 py-2 border-b border-border text-sm text-muted">{fmtTime(e.started_at)}</td>
                   <td className="px-2.5 py-2 border-b border-border text-sm text-muted">{e.status === 'timeout' ? '…' : fmtDuration(e.duration_ms)}</td>
                   <td className="px-2.5 py-2 border-b border-border text-sm"><span className="px-1.5 py-[1px] rounded text-[11px] bg-bg-elevated border border-border">{e.trigger}</span></td>
@@ -99,10 +100,10 @@ export default function ExecutionsView({ selectedJobId }: { selectedJobId?: stri
         </table>
       </div>
       <div className="flex items-center justify-between mt-3 px-1">
-        <span className="text-[12px] text-muted">Page {page + 1}</span>
+        <span className="text-[12px] text-muted">{i18nT('components.executionsView.page')} {page + 1}</span>
         <div className="flex gap-2">
-          <Btn onClick={() => setPage(p => p - 1)} disabled={page === 0}>Prev</Btn>
-          <Btn onClick={() => setPage(p => p + 1)} disabled={!hasMore}>Next</Btn>
+          <Btn onClick={() => setPage(p => p - 1)} disabled={page === 0}>{i18nT('components.executionsView.prev')}</Btn>
+          <Btn onClick={() => setPage(p => p + 1)} disabled={!hasMore}>{i18nT('components.executionsView.next')}</Btn>
         </div>
       </div>
     </div>

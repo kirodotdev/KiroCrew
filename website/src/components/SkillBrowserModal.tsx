@@ -18,6 +18,7 @@ import { SkillMetaStrip } from './SkillDirectoryBrowser'
 import { parseFrontmatter } from './SkillForm'
 import type { DiscoveredSkill } from '../types'
 
+import { i18nT } from '../i18n/t'
 interface Props {
   open: boolean
   onClose: () => void
@@ -171,7 +172,7 @@ export default function SkillBrowserModal({ open, onClose }: Props) {
   }, [moveSelection, selectedSkill, installedOverride, installPhases, handleInstall])
 
   return (
-    <Modal open={open} onClose={onClose} title="Add Skill" maxWidth={1100} height="85vh"
+    <Modal open={open} onClose={onClose} title={i18nT('components.skillBrowserModal.add_skill')} maxWidth={1100} height="85vh"
       headerActions={
         isFetching ? <RefreshCw size={14} className="text-muted animate-spin" /> : undefined
       }
@@ -204,7 +205,7 @@ export default function SkillBrowserModal({ open, onClose }: Props) {
               ref={listRef}
               id="skill-results-list"
               role="listbox"
-              aria-label="Skill search results"
+              aria-label={i18nT('components.skillBrowserModal.skill_search_results')}
               className={`${selectedSkill && mobileDetail ? 'hidden md:block' : 'block'} w-full md:w-[40%] md:shrink-0 overflow-y-auto scrollbar-overlay space-y-1.5 pr-1`}
             >
               {results.map(skill => {
@@ -242,7 +243,7 @@ export default function SkillBrowserModal({ open, onClose }: Props) {
                           {(skill.installs ?? 0) > 0 && (
                             <span className="flex items-center gap-1 shrink-0">
                               <Download size={11} aria-hidden="true" />
-                              {formatInstalls(skill.installs!)} installs
+                              {formatInstalls(skill.installs!)} {i18nT('components.skillBrowserModal.installs')}
                             </span>
                           )}
                           {skill.description && (
@@ -273,7 +274,7 @@ export default function SkillBrowserModal({ open, onClose }: Props) {
                   {/* Back button stays fixed above the scrollable detail content */}
                   <div className="md:hidden mb-2 shrink-0">
                     <Btn onClick={() => setMobileDetail(false)}>
-                      <ArrowLeft size={14} aria-hidden="true" /> Back to results
+                      <ArrowLeft size={14} aria-hidden="true" /> {i18nT('components.skillBrowserModal.back_to_results')}
                     </Btn>
                   </div>
                   <div className="flex-1 min-h-0 overflow-y-auto scrollbar-overlay">
@@ -287,7 +288,7 @@ export default function SkillBrowserModal({ open, onClose }: Props) {
                 </>
               ) : (
                 <div className="flex items-center justify-center h-full text-muted text-sm">
-                  Select a skill to preview
+                  {i18nT('components.skillBrowserModal.select_a_skill_to_preview')}
                 </div>
               )}
             </div>
@@ -318,7 +319,7 @@ function InstallStatus({
     return (
       <span className="flex items-center gap-1.5 text-xs text-muted" role="status">
         <Loader2 size={iconSize} className="animate-spin" aria-hidden="true" />
-        Installing...
+        {i18nT('components.skillBrowserModal.installing')}
       </span>
     )
   }
@@ -334,10 +335,10 @@ function InstallStatus({
     return (
       <span className="flex items-center gap-1.5 text-xs">
         <span className="flex items-center gap-1 text-amber-400">
-          <AlertTriangle size={iconSize} aria-hidden="true" /> Exists
+          <AlertTriangle size={iconSize} aria-hidden="true" /> {i18nT('components.skillBrowserModal.exists')}
         </span>
         <Btn onClick={(e: React.MouseEvent) => { e.stopPropagation(); onInstall(skill, true) }}>
-          Overwrite
+          {i18nT('components.skillBrowserModal.overwrite')}
         </Btn>
       </span>
     )
@@ -345,7 +346,7 @@ function InstallStatus({
   if (installed) {
     return (
       <span className="flex items-center gap-1 text-xs text-green-400">
-        <Check size={iconSize} aria-hidden="true" /> Installed
+        <Check size={iconSize} aria-hidden="true" /> {i18nT('components.skillBrowserModal.installed')}
       </span>
     )
   }
@@ -355,7 +356,7 @@ function InstallStatus({
       onClick={(e: React.MouseEvent) => { e.stopPropagation(); onInstall(skill) }}
     >
       <Download size={iconSize} aria-hidden="true" />
-      Install{large ? ' Skill' : ''}
+      {i18nT('components.skillBrowserModal.install')}{large ? ' Skill' : ''}
     </Btn>
   )
 }
@@ -404,16 +405,16 @@ function SkillDetailPanel({
       </div>
 
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted mb-3">
-        {(preview?.author || skill.author) && <span>by {preview?.author || skill.author}</span>}
+        {(preview?.author || skill.author) && <span>{i18nT('components.skillBrowserModal.by')} {preview?.author || skill.author}</span>}
         {(skill.installs ?? 0) > 0 && (
           <span className="flex items-center gap-1">
-            <Download size={11} aria-hidden="true" /> {formatInstalls(skill.installs!)} installs
+            <Download size={11} aria-hidden="true" /> {formatInstalls(skill.installs!)} {i18nT('components.skillBrowserModal.installs')}
           </span>
         )}
-        {preview?.license && <span>License: {preview.license}</span>}
+        {preview?.license && <span>{i18nT('components.skillBrowserModal.license')} {preview.license}</span>}
         {(preview?.file_count ?? 0) > 0 && (
           <span className="flex items-center gap-1">
-            <FileText size={11} aria-hidden="true" /> {preview!.file_count} file{preview!.file_count === 1 ? '' : 's'}
+            <FileText size={11} aria-hidden="true" /> {preview!.file_count} {i18nT('components.skillBrowserModal.file')}{preview!.file_count === 1 ? '' : 's'}
           </span>
         )}
         {skill.repo_url && (
@@ -423,7 +424,7 @@ function SkillDetailPanel({
             rel="noopener noreferrer"
             className="inline-flex items-center gap-1 text-accent hover:underline"
           >
-            <ExternalLink size={11} aria-hidden="true" /> Source
+            <ExternalLink size={11} aria-hidden="true" /> {i18nT('components.skillBrowserModal.source')}
           </a>
         )}
       </div>
@@ -436,7 +437,7 @@ function SkillDetailPanel({
 
       {previewLoading ? (
         <div className="flex items-center gap-2 text-xs text-muted" role="status">
-          <Loader2 size={12} className="animate-spin" aria-hidden="true" /> Loading preview...
+          <Loader2 size={12} className="animate-spin" aria-hidden="true" /> {i18nT('components.skillBrowserModal.loading_preview')}
         </div>
       ) : preview?.content ? (
         <>
@@ -458,7 +459,7 @@ function SkillDetailPanel({
       {(preview?.files?.length ?? 0) > 1 && (
         <details className="mt-4">
           <summary className="text-xs text-muted cursor-pointer hover:text-text">
-            Bundle contents ({preview!.file_count} files)
+            {i18nT('components.skillBrowserModal.bundle_contents')}{preview!.file_count} {i18nT('components.skillBrowserModal.files')}
           </summary>
           <ul className="mt-1.5 text-xs text-muted font-mono space-y-0.5 max-h-40 overflow-y-auto scrollbar-overlay">
             {preview!.files!.map(f => <li key={f}>{f}</li>)}

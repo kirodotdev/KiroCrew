@@ -20,6 +20,7 @@ import { ChannelDisabledPanel } from './ChannelDisabledPanel'
 import { TeamsPanel } from './TeamsPanel'
 import { WeixinPanel } from './WeixinPanel'
 
+import { i18nT } from '../../i18n/t'
 /** Minimal status shape every channel config endpoint shares. */
 interface ChannelStatus {
   connected: boolean
@@ -159,7 +160,7 @@ export function ChannelsPanel() {
     <div
       className={twoPane ? 'w-[280px] shrink-0' : 'w-full'}
       role="listbox"
-      aria-label="Chat channels"
+      aria-label={i18nT('pages.settings.channelsPanel.chat_channels')}
     >
       <div className="rounded-lg border border-border bg-card overflow-hidden">
         {CHANNELS.map((c, i) => {
@@ -186,9 +187,9 @@ export function ChannelsPanel() {
                   // governed off. Full text in the title for the compact chip.
                   <span
                     className="inline-block mt-0.5 px-1.5 py-px rounded-full text-[11px] font-semibold uppercase bg-bg-hover text-muted border border-border whitespace-nowrap"
-                    title="Off by admin"
+                    title={i18nT('pages.settings.channelsPanel.off_by_admin')}
                   >
-                    Off by admin
+                    {i18nT('pages.settings.channelsPanel.off_by_admin')}
                   </span>
                 ) : (
                   <span className="flex items-center gap-1.5 text-[11.5px]" style={{ color: st.color }}>
@@ -221,7 +222,7 @@ export function ChannelsPanel() {
             className="flex items-center gap-1.5 self-start text-[13px] font-medium text-accent bg-transparent border-none cursor-pointer px-0 py-1 mb-2 hover:underline"
           >
             <ArrowLeft size={14} />
-            Channels
+            {i18nT('pages.settings.channelsPanel.channels')}
           </button>
         )}
         <div className={twoPane ? 'flex-1 min-w-0' : 'w-full'}>

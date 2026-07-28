@@ -19,6 +19,7 @@ import { useMutation } from '@tanstack/react-query'
 import { FileCode, Pencil, Play, ChevronRight } from 'lucide-react'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
 
+import { i18nT } from '../../i18n/t'
 const CORE_API_BASE = '/api/workflows'
 
 interface RerunOk {
@@ -113,7 +114,7 @@ const WorkflowSourcePanel = memo(function WorkflowSourcePanel({
           className={`text-muted shrink-0 transition-transform ${open ? 'rotate-90' : ''}`}
         />
         <FileCode size={12} className="text-muted shrink-0" />
-        <span className="text-left">View source</span>
+        <span className="text-left">{i18nT('apps.workflows.workflowSourcePanel.view_source')}</span>
         <span className="ml-auto text-[10px] text-muted">
           {source == null ? 'loading…' : `${source.split('\n').length} lines`}
         </span>
@@ -122,12 +123,12 @@ const WorkflowSourcePanel = memo(function WorkflowSourcePanel({
         <div className="p-2 flex flex-col gap-2">
           {sourceError && (
             <div className="text-[11px] text-red-500 border border-red-500/30 rounded p-2">
-              Could not load source: {sanitizeLlmOutput(sourceError).slice(0, 200)}
+              {i18nT('apps.workflows.workflowSourcePanel.could_not_load_source')} {sanitizeLlmOutput(sourceError).slice(0, 200)}
             </div>
           )}
           {source != null && source === '' && !sourceError && (
             <div className="text-[11px] text-muted italic">
-              No source captured for this run.
+              {i18nT('apps.workflows.workflowSourcePanel.no_source_captured_for_this_run')}
             </div>
           )}
           {source != null && source !== '' && (
@@ -143,7 +144,7 @@ const WorkflowSourcePanel = memo(function WorkflowSourcePanel({
 
           {errors && errors.length > 0 && (
             <div className="text-[11px] text-red-500 border border-red-500/30 rounded p-2">
-              <div className="font-medium mb-1">Invalid — fix before rerun:</div>
+              <div className="font-medium mb-1">{i18nT('apps.workflows.workflowSourcePanel.invalid_fix_before_rerun')}</div>
               <ul className="list-disc pl-4">
                 {errors.map((e, i) => (
                   <li key={i}>{sanitizeLlmOutput(e).slice(0, 200)}</li>
@@ -158,7 +159,7 @@ const WorkflowSourcePanel = memo(function WorkflowSourcePanel({
           )}
           {newRunId && (
             <div className="text-[11px] text-green-500 border border-green-500/30 rounded p-2 font-mono">
-              Started run {sanitizeLlmOutput(newRunId).slice(0, 80)}
+              {i18nT('apps.workflows.workflowSourcePanel.started_run')} {sanitizeLlmOutput(newRunId).slice(0, 80)}
             </div>
           )}
 
@@ -170,7 +171,7 @@ const WorkflowSourcePanel = memo(function WorkflowSourcePanel({
                 disabled={source == null || source === ''}
                 className="flex items-center gap-1 px-2 py-1 text-[11px] rounded border border-border disabled:opacity-50"
               >
-                <Pencil size={11} /> Edit
+                <Pencil size={11} /> {i18nT('apps.workflows.workflowSourcePanel.edit')}
               </button>
             ) : (
               <>
@@ -193,7 +194,7 @@ const WorkflowSourcePanel = memo(function WorkflowSourcePanel({
                   disabled={submitting}
                   className="px-2 py-1 text-[11px] rounded border border-border disabled:opacity-50"
                 >
-                  Cancel
+                  {i18nT('apps.workflows.workflowSourcePanel.cancel')}
                 </button>
               </>
             )}

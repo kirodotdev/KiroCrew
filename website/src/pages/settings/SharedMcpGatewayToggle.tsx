@@ -6,6 +6,7 @@ import Modal from '../../components/Modal'
 import { SettingsSection, SettingsCard, SettingsToggle } from '../../components/settings'
 import { api } from '../../api/client'
 
+import { i18nT } from '../../i18n/t'
 type GatewayStatus = { enabled: boolean; running: boolean; ping_ok: boolean }
 
 type Phase = 'idle' | 'confirm' | 'applying' | 'done' | 'failed'
@@ -47,10 +48,10 @@ export function SharedMcpGatewayToggle() {
   const btn = 'text-[13px] px-3 py-1.5 rounded-md transition-colors cursor-pointer'
 
   return (
-    <SettingsSection title="Shared MCP gateway">
+    <SettingsSection title={i18nT('pages.settings.sharedMcpGatewayToggle.shared_mcp_gateway')}>
       <SettingsCard>
         <SettingsToggle
-          label="Shared MCP gateway"
+          label={i18nT('pages.settings.sharedMcpGatewayToggle.shared_mcp_gateway')}
           description={subStatus}
           checked={enabled}
           disabled={statusQ.isLoading || busy}
@@ -65,11 +66,11 @@ export function SharedMcpGatewayToggle() {
         title={target ? 'Enable shared MCP gateway?' : 'Disable shared MCP gateway?'}
         maxWidth={460}
         footer={<>
-          <button className={`${btn} border border-border text-text hover:bg-bg-hover`} onClick={() => setPhase('idle')}>Cancel</button>
-          <button className={`${btn} bg-accent text-accent-fg hover:bg-accent-hover`} onClick={() => run(target)}>Continue</button>
+          <button className={`${btn} border border-border text-text hover:bg-bg-hover`} onClick={() => setPhase('idle')}>{i18nT('pages.settings.sharedMcpGatewayToggle.cancel')}</button>
+          <button className={`${btn} bg-accent text-accent-fg hover:bg-accent-hover`} onClick={() => run(target)}>{i18nT('pages.settings.sharedMcpGatewayToggle.continue')}</button>
         </>}
       >
-        <div className="text-[13px] text-text">This restarts all active sessions onto the new MCP routing — in-flight work will be interrupted. Your dashboard stays signed in. Continue?</div>
+        <div className="text-[13px] text-text">{i18nT('pages.settings.sharedMcpGatewayToggle.this_restarts_all_active_sessions_onto_the_new_m')}</div>
       </Modal>
 
       {/* Applying + terminal states */}
@@ -79,10 +80,10 @@ export function SharedMcpGatewayToggle() {
         title={phase === 'done' ? 'Done' : phase === 'failed' ? 'Could not apply' : (target ? 'Enabling shared MCP gateway' : 'Disabling shared MCP gateway')}
         maxWidth={460}
         footer={phase === 'done' ? (
-          <button className={`${btn} bg-accent text-accent-fg hover:bg-accent-hover`} onClick={() => setPhase('idle')}>Close</button>
+          <button className={`${btn} bg-accent text-accent-fg hover:bg-accent-hover`} onClick={() => setPhase('idle')}>{i18nT('pages.settings.sharedMcpGatewayToggle.close')}</button>
         ) : phase === 'failed' ? (<>
-          <button className={`${btn} border border-border text-text hover:bg-bg-hover`} onClick={() => setPhase('idle')}>Close</button>
-          {target && <button className={`${btn} bg-danger text-white hover:opacity-90`} onClick={() => run(false)}>Roll back (disable)</button>}
+          <button className={`${btn} border border-border text-text hover:bg-bg-hover`} onClick={() => setPhase('idle')}>{i18nT('pages.settings.sharedMcpGatewayToggle.close')}</button>
+          {target && <button className={`${btn} bg-danger text-white hover:opacity-90`} onClick={() => run(false)}>{i18nT('pages.settings.sharedMcpGatewayToggle.roll_back_disable')}</button>}
         </>) : undefined}
       >
         {phase === 'done' ? (
@@ -93,7 +94,7 @@ export function SharedMcpGatewayToggle() {
         ) : phase === 'failed' ? (
           <div className="flex items-start gap-2 text-[13px] text-text">
             <AlertTriangle size={16} className="text-danger mt-0.5 shrink-0" />
-            <span>The gateway did not reach the expected state.{target ? ' Roll back to the safe (disabled) state, or try again.' : ' Try again.'}</span>
+            <span>{i18nT('pages.settings.sharedMcpGatewayToggle.the_gateway_did_not_reach_the_expected_state')}{target ? ' Roll back to the safe (disabled) state, or try again.' : ' Try again.'}</span>
           </div>
         ) : (
           <div className="flex items-center gap-2 text-[13px] text-text">

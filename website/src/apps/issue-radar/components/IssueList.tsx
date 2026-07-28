@@ -8,6 +8,7 @@ import LabelChip from './LabelChip'
 import ListSkeleton from './ListSkeleton'
 import ListEmptyState from './ListEmptyState'
 
+import { i18nT } from '../../../i18n/t'
 /** Above this many rendered rows we skip the per-card layout/enter animation:
  * Framer's layout pass measures every node, which janks on large repos (Kiro
  * has thousands of open issues and the list isn't virtualized yet). Typing a
@@ -78,15 +79,15 @@ export default function IssueList({ resizing = false }: { resizing?: boolean }) 
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search Issues…"
-            aria-label="Search issues"
+            placeholder={i18nT('apps.issueRadar.components.issueList.search_issues')}
+            aria-label={i18nT('apps.issueRadar.components.issueList.search_issues_2')}
             className="flex-1 min-w-0 bg-transparent py-2.5 text-[13px] text-text placeholder:text-muted outline-none"
           />
           {query && (
             <button
               onClick={() => setQuery('')}
-              title="Clear search"
-              aria-label="Clear search"
+              title={i18nT('apps.issueRadar.components.issueList.clear_search')}
+              aria-label={i18nT('apps.issueRadar.components.issueList.clear_search')}
               className="flex-shrink-0 cursor-pointer bg-transparent leading-none text-muted hover:text-text"
             >
               <X size={13} />
@@ -102,7 +103,7 @@ export default function IssueList({ resizing = false }: { resizing?: boolean }) 
           {issuesLoading && <ListSkeleton />}
           {issuesError && <div className="px-1 py-2 text-[14px] text-danger">{issuesError.message}</div>}
           {!issuesLoading && filteredIssues.length === 0 && (
-            <ListEmptyState searching={Boolean(query.trim())} label="Issues" />
+            <ListEmptyState searching={Boolean(query.trim())} label={i18nT('apps.issueRadar.components.issueList.issues')} />
           )}
           {animate ? (
             <AnimatePresence initial={false} mode="popLayout">
@@ -149,19 +150,19 @@ export default function IssueList({ resizing = false }: { resizing?: boolean }) 
           The gradient fade above (see card list) replaces the old top border. */}
       <div className="flex-shrink-0 flex items-center gap-2 px-3 pt-2 pb-4 text-[12px] text-muted">
         <span title={stateFilter === 'closed' && issues.length >= 100 ? 'Closed issues are capped at the 100 most recently updated' : undefined}>
-          {filteredIssues.length} issue{filteredIssues.length === 1 ? '' : 's'}
+          {filteredIssues.length} {i18nT('apps.issueRadar.components.issueList.issue')}{filteredIssues.length === 1 ? '' : 's'}
         </span>
         <span className="ml-auto flex items-center gap-2">
           {lastUpdated && (
-            <span className="tabular-nums" title="Time since the issue list was last fetched from GitHub">
-              Updated {lastUpdated}
+            <span className="tabular-nums" title={i18nT('apps.issueRadar.components.issueList.time_since_the_issue_list_was_last_fetched_from')}>
+              {i18nT('apps.issueRadar.components.issueList.updated')} {lastUpdated}
             </span>
           )}
           <button
             onClick={refresh}
             disabled={refreshing}
-            title="Re-fetch issues + labels from GitHub"
-            aria-label="Refresh issues"
+            title={i18nT('apps.issueRadar.components.issueList.re_fetch_issues_labels_from_github')}
+            aria-label={i18nT('apps.issueRadar.components.issueList.refresh_issues')}
             className="inline-flex items-center cursor-pointer bg-transparent text-muted hover:text-text disabled:opacity-30"
           >
             <RefreshCw size={13} className={refreshing ? 'animate-spin' : ''} />

@@ -5,6 +5,7 @@ import { type RepoRef } from '../api'
 import { useIssueRadar } from '../context'
 import type { GeneralAnchor } from '../lib/types'
 
+import { i18nT } from '../../../i18n/t'
 /** Body of the "Settings" accordion section. Two groups:
  *   • General — account + the connected-repo list (app-wide).
  *   • Repository settings — one row per connected repo, each opening that
@@ -22,7 +23,7 @@ export default function SettingsSection() {
   return (
     <div className="px-3 pt-1 pb-1 flex flex-col gap-3">
       <div>
-        <GroupLabel>General</GroupLabel>
+        <GroupLabel>{i18nT('apps.issueRadar.components.settingsSection.general')}</GroupLabel>
         <div className="flex flex-col gap-0.5">
           {generalItems.map((g) => (
             <NavItem
@@ -37,7 +38,7 @@ export default function SettingsSection() {
       </div>
 
       <div>
-        <GroupLabel>Repository settings</GroupLabel>
+        <GroupLabel>{i18nT('apps.issueRadar.components.settingsSection.repository_settings')}</GroupLabel>
         <div className="flex flex-col gap-0.5">
           {repos.map((r) => (
             <NavItem
@@ -56,7 +57,7 @@ export default function SettingsSection() {
             className="mt-0.5 w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-[13px] text-left text-muted hover:text-text hover:bg-bg-hover cursor-pointer bg-transparent"
           >
             <Plus size={14} className="flex-shrink-0" />
-            <span className="flex-1">Connect repo</span>
+            <span className="flex-1">{i18nT('apps.issueRadar.components.settingsSection.connect_repo')}</span>
           </button>
         </div>
       </div>

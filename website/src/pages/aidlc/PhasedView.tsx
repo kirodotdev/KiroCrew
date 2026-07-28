@@ -2,6 +2,7 @@ import { type ReactNode } from 'react';
 import { Hourglass, RefreshCw, CheckCircle, Search, XCircle, SkipForward, Square, Wrench, Shield } from 'lucide-react';
 import type { TaskDetail } from '../../types';
 
+import { i18nT } from '../../i18n/t'
 interface Props {
   tasks: TaskDetail[];
   onTaskClick?: (index: number) => void;
@@ -47,7 +48,7 @@ function TaskGroup({ icon, label, items, onTaskClick, color, opacity, showError,
           }}
         >
           <span>{icon}</span>
-          <span style={{ flex: 1, fontSize: 13, opacity: opacity ?? 1 }}>Task {t.index}: {t.title}</span>
+          <span style={{ flex: 1, fontSize: 13, opacity: opacity ?? 1 }}>{i18nT('pages.aidlc.phasedView.task')} {t.index}: {t.title}</span>
           {pendingEditIndexes?.has(t.index) && <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#f59e32', flexShrink: 0 }} />}
           {showError && t.error && <span style={{ fontSize: 11, color: 'var(--danger)', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.error}</span>}
         </div>
@@ -82,21 +83,21 @@ export default function PhasedView({ tasks, onTaskClick, selectedIndex, pendingE
                     }}
                   >
                     <span>{icon}</span>
-                    <span style={{ flex: 1, fontSize: 13 }}>Task {t.index}: {t.title}</span>
+                    <span style={{ flex: 1, fontSize: 13 }}>{i18nT('pages.aidlc.phasedView.task')} {t.index}: {t.title}</span>
                     {pendingEditIndexes?.has(t.index) && <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#f59e32', flexShrink: 0 }} />}
                   </div>
                 );
               })}
               {items.length === 0 && (
-                <div style={{ fontSize: 12, color: 'var(--text-muted, #555)', fontStyle: 'italic', padding: '8px 0' }}>None</div>
+                <div style={{ fontSize: 12, color: 'var(--text-muted, #555)', fontStyle: 'italic', padding: '8px 0' }}>{i18nT('pages.aidlc.phasedView.none')}</div>
               )}
             </div>
           );
         })}
       </div>
-      <TaskGroup icon={<XCircle className="lucide-inline" />} label="Failed" items={tasks.filter(t => t.status === 'failed')} onTaskClick={onTaskClick} color="239,68,68" showError selectedIndex={selectedIndex} pendingEditIndexes={pendingEditIndexes} />
-      <TaskGroup icon={<SkipForward className="lucide-inline" />} label="Skipped" items={tasks.filter(t => t.status === 'skipped')} onTaskClick={onTaskClick} opacity={0.7} selectedIndex={selectedIndex} pendingEditIndexes={pendingEditIndexes} />
-      <TaskGroup icon={<Square className="lucide-inline" />} label="Cancelled" items={tasks.filter(t => t.status === 'cancelled')} onTaskClick={onTaskClick} opacity={0.7} selectedIndex={selectedIndex} pendingEditIndexes={pendingEditIndexes} />
+      <TaskGroup icon={<XCircle className="lucide-inline" />} label={i18nT('pages.aidlc.phasedView.failed')} items={tasks.filter(t => t.status === 'failed')} onTaskClick={onTaskClick} color="239,68,68" showError selectedIndex={selectedIndex} pendingEditIndexes={pendingEditIndexes} />
+      <TaskGroup icon={<SkipForward className="lucide-inline" />} label={i18nT('pages.aidlc.phasedView.skipped')} items={tasks.filter(t => t.status === 'skipped')} onTaskClick={onTaskClick} opacity={0.7} selectedIndex={selectedIndex} pendingEditIndexes={pendingEditIndexes} />
+      <TaskGroup icon={<Square className="lucide-inline" />} label={i18nT('pages.aidlc.phasedView.cancelled')} items={tasks.filter(t => t.status === 'cancelled')} onTaskClick={onTaskClick} opacity={0.7} selectedIndex={selectedIndex} pendingEditIndexes={pendingEditIndexes} />
     </div>
   );
 }

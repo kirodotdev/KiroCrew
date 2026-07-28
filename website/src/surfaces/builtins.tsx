@@ -27,6 +27,7 @@ registerBuiltinSurface({
   navId: 'chat',
   route: '/chat',
   label: 'Sessions',
+  labelKey: 'nav.sessions',
   icon: <MessageSquare size={16} />,
   group: 'Main',
   // Slot-bearing: default chat slots have surface === '' (or no mode set).
@@ -44,6 +45,7 @@ registerBuiltinSurface({
   navId: 'notifications',
   route: '/notifications',
   label: 'Notifications',
+  labelKey: 'nav.notifications',
   icon: <Bell size={16} />,
   group: 'Main',
   // Non-slot: count comes from the notifications panel.
@@ -59,6 +61,7 @@ registerBuiltinSurface({
   navId: 'projects',
   route: '/projects',
   label: 'Task Runner',
+  labelKey: 'nav.task_runner',
   icon: <ClipboardCheck size={16} />,
   group: 'Apps',
   appOnly: true,
@@ -74,6 +77,7 @@ registerBuiltinSurface({
   navId: 'schedule',
   route: '/schedule',
   label: 'Schedule',
+  labelKey: 'nav.schedule',
   icon: <CalendarDays size={16} />,
   group: 'Main',
 })
@@ -83,6 +87,7 @@ registerBuiltinSurface({
   navId: 'apps',
   route: '/apps',
   label: 'Explore',
+  labelKey: 'nav.explore',
   icon: <LayoutGrid size={16} />,
   group: 'Apps',
   // Rendered by App.tsx as the accent link in the "Apps" section-header row
@@ -99,6 +104,7 @@ registerBuiltinSurface({
   navId: 'artifacts',
   route: '/artifacts',
   label: 'Artifacts',
+  labelKey: 'nav.artifacts',
   icon: <Component size={16} />,
   group: 'Main',
 })
@@ -110,6 +116,7 @@ registerBuiltinSurface({
   navId: 'knowledge',
   route: '/knowledge',
   label: 'Knowledge',
+  labelKey: 'nav.knowledge',
   icon: <BookOpen size={16} />,
   group: 'Main',
 })
@@ -128,6 +135,7 @@ registerBuiltinSurface({
   navId: 'capabilities',
   route: '/capabilities',
   label: 'Agent Capabilities',
+  labelKey: 'nav.agent_capabilities',
   icon: <KiroGhostMark size={16} />,
   group: 'Bottom',
 })
@@ -136,6 +144,7 @@ registerBuiltinSurface({
   navId: 'settings',
   route: '/settings',
   label: 'Settings',
+  labelKey: 'nav.settings',
   icon: <Settings size={16} />,
   group: 'Bottom',
   // NOTE: the Settings nav dot (gateway update OR desktop update available)

@@ -3,6 +3,7 @@ import { Circle } from 'lucide-react'
 import { api } from '../api/client'
 import { StatCard, Card } from '../components/ui'
 
+import { i18nT } from '../i18n/t'
 type Backend = { server: string; agent: string; pid: number | null; sessions: number; idle_s: number; rss_kb: number }
 type Metrics = {
   running: boolean; size?: number; max_backends?: number; backends: Backend[]
@@ -78,7 +79,7 @@ export default function McpGatewayCard() {
   return (
     <Card className="mb-6">
       <div className="flex items-center justify-between mb-3">
-        <span className="text-[15px] font-semibold text-text-strong">Shared MCP gateway</span>
+        <span className="text-[15px] font-semibold text-text-strong">{i18nT('pages.mcpGatewayCard.shared_mcp_gateway')}</span>
         <span className={`inline-flex items-center gap-1 text-[12px] ${healthy ? 'text-ok' : 'text-danger'}`}>
           <Circle className="lucide-inline w-2 h-2 fill-current" />
           {healthy ? 'active' : running ? 'unhealthy' : 'stopped'}
@@ -86,13 +87,13 @@ export default function McpGatewayCard() {
       </div>
 
       <div className="grid gap-3 grid-cols-[repeat(auto-fit,minmax(130px,1fr))] mb-4">
-        <StatCard label="Backends" value={`${backends.length}${metricsQ.data?.max_backends ? ` / ${metricsQ.data.max_backends}` : ''}`} />
-        <StatCard label="Active sessions" value={sessions} />
-        <StatCard label="Pool RAM" value={formatKb(poolKb)} />
-        <StatCard label="RAM saved" value={`${formatKb(savedKb)} (${savedPct}%)`} accent />
+        <StatCard label={i18nT('pages.mcpGatewayCard.backends')} value={`${backends.length}${metricsQ.data?.max_backends ? ` / ${metricsQ.data.max_backends}` : ''}`} />
+        <StatCard label={i18nT('pages.mcpGatewayCard.active_sessions')} value={sessions} />
+        <StatCard label={i18nT('pages.mcpGatewayCard.pool_ram')} value={formatKb(poolKb)} />
+        <StatCard label={i18nT('pages.mcpGatewayCard.ram_saved')} value={`${formatKb(savedKb)} (${savedPct}%)`} accent />
         {warmEnabled && (
           <StatCard
-            label="Pool warm-hit rate"
+            label={i18nT('pages.mcpGatewayCard.pool_warm_hit_rate')}
             value={warmTotal > 0 ? `${metricsQ.data?.warm_pool_hit_rate_pct ?? 0}% (${warmHits}/${warmTotal})` : '—'}
           />
         )}
@@ -100,23 +101,23 @@ export default function McpGatewayCard() {
 
       {/* Before/after RAM comparison */}
       <div className="mb-4">
-        <div className="flex justify-between text-[11px] text-muted mb-1"><span>Without gateway (per-session copies)</span><span>{formatKb(unpooledKb)}</span></div>
+        <div className="flex justify-between text-[11px] text-muted mb-1"><span>{i18nT('pages.mcpGatewayCard.without_gateway_per_session_copies')}</span><span>{formatKb(unpooledKb)}</span></div>
         <div className="h-[18px] rounded-md mb-2" style={{ background: 'var(--danger)', width: '100%' }} />
-        <div className="flex justify-between text-[11px] text-muted mb-1"><span>With shared gateway (pooled)</span><span>{formatKb(poolKb)}</span></div>
+        <div className="flex justify-between text-[11px] text-muted mb-1"><span>{i18nT('pages.mcpGatewayCard.with_shared_gateway_pooled')}</span><span>{formatKb(poolKb)}</span></div>
         <div className="h-[18px] rounded-md" style={{ background: 'var(--ok)', width: `${withPct}%` }} />
       </div>
 
       {backends.length === 0 ? (
-        <div className="text-[12px] text-muted py-1">No backends spawned yet — start a session that calls an MCP tool to populate the pool.</div>
+        <div className="text-[12px] text-muted py-1">{i18nT('pages.mcpGatewayCard.no_backends_spawned_yet_start_a_session_that_cal')}</div>
       ) : (
         <table className="w-full text-[12px]">
           <thead>
             <tr className="text-muted text-left">
-              <th className="font-normal py-1 pr-3">Server</th>
-              <th className="font-normal py-1 pr-3">PID</th>
-              <th className="font-normal py-1 pr-3">Sessions</th>
-              <th className="font-normal py-1 pr-3">Idle</th>
-              <th className="font-normal py-1">RSS</th>
+              <th className="font-normal py-1 pr-3">{i18nT('pages.mcpGatewayCard.server')}</th>
+              <th className="font-normal py-1 pr-3">{i18nT('pages.mcpGatewayCard.pid')}</th>
+              <th className="font-normal py-1 pr-3">{i18nT('pages.mcpGatewayCard.sessions')}</th>
+              <th className="font-normal py-1 pr-3">{i18nT('pages.mcpGatewayCard.idle')}</th>
+              <th className="font-normal py-1">{i18nT('pages.mcpGatewayCard.rss')}</th>
             </tr>
           </thead>
           <tbody className="text-text">
@@ -125,7 +126,7 @@ export default function McpGatewayCard() {
                 <td className="py-1 pr-3">{b.server}</td>
                 <td className="py-1 pr-3">{b.pid ?? '—'}</td>
                 <td className="py-1 pr-3">{b.sessions}</td>
-                <td className="py-1 pr-3">{b.idle_s}s</td>
+                <td className="py-1 pr-3">{b.idle_s}{i18nT('pages.mcpGatewayCard.s')}</td>
                 <td className="py-1">{formatKb(b.rss_kb)}</td>
               </tr>
             ))}

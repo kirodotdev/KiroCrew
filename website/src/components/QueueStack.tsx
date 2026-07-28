@@ -3,6 +3,7 @@ import { AnimatePresence, motion, useMotionValue, useSpring } from 'framer-motio
 import { Hourglass, ChevronUp, X, Zap, Pencil, Check, Bot, Loader2 } from 'lucide-react'
 import type { ChatMessage } from '../types'
 
+import { i18nT } from '../i18n/t'
 /** System-injected sub-agent completion deliveries waiting for the busy slot.
  *  These are NOT user messages: they must not be editable/cancellable (either
  *  would silently lose a finished agent's result) and rendering each as a
@@ -27,7 +28,7 @@ export function SubagentDeliveryProgress({ count }: { count: number }) {
         <Bot size={13} className="text-accent/70 shrink-0" />
         <Loader2 size={12} className="animate-spin text-accent/70 shrink-0" />
         <span>
-          {count} sub-agent result{count > 1 ? 's' : ''} ready — processing after the current turn
+          {count} {i18nT('components.queueStack.sub_agent_result')}{count > 1 ? 's' : ''} {i18nT('components.queueStack.ready_processing_after_the_current_turn')}
         </span>
       </div>
     </div>
@@ -83,10 +84,10 @@ function EditInput({ initial, onCommit, onCancel }: {
         }}
         onBlur={commit}
         className="flex-1 min-w-0 bg-white/20 text-warn-fg placeholder:text-warn-fg/50 rounded px-1.5 py-0.5 text-[13px] outline-none border border-white/30 focus:border-white/60"
-        aria-label="Edit queued message"
+        aria-label={i18nT('components.queueStack.edit_queued_message')}
       />
       <button className="shrink-0 p-0.5 rounded hover:bg-white/20 transition-colors text-white"
-        title="Save" aria-label="Save edit"
+        title={i18nT('components.queueStack.save')} aria-label={i18nT('components.queueStack.save_edit')}
         // mousedown commits before the input's blur can fire with the same value.
         onMouseDown={e => { e.preventDefault(); e.stopPropagation() }}
         onClick={e => { e.stopPropagation(); commit() }}>
@@ -265,8 +266,8 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, fuseBelow = 
                       {onEdit && showActions && (
                         <button
                           className="shrink-0 p-0.5 rounded hover:bg-white/20 transition-colors"
-                          title="Edit queued message"
-                          aria-label="Edit queued message"
+                          title={i18nT('components.queueStack.edit_queued_message')}
+                          aria-label={i18nT('components.queueStack.edit_queued_message')}
                           onClick={(e) => { e.stopPropagation(); setEditingId(queueId!) }}
                         >
                           <Pencil size={13} />
@@ -275,8 +276,8 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, fuseBelow = 
                       {onInterrupt && showActions && (
                         <button
                           className="shrink-0 p-0.5 rounded hover:bg-white/20 transition-colors text-white"
-                          title="Interrupt current turn and send this now"
-                          aria-label="Send now"
+                          title={i18nT('components.queueStack.interrupt_current_turn_and_send_this_now')}
+                          aria-label={i18nT('components.queueStack.send_now')}
                           onClick={(e) => { e.stopPropagation(); onInterrupt(queueId!) }}
                         >
                           <Zap size={13} fill="currentColor" />
@@ -285,8 +286,8 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, fuseBelow = 
                       {onCancel && showActions && (
                         <button
                           className="shrink-0 p-0.5 rounded hover:bg-white/20 transition-colors"
-                          title="Cancel and move back to input"
-                          aria-label="Cancel queued message"
+                          title={i18nT('components.queueStack.cancel_and_move_back_to_input')}
+                          aria-label={i18nT('components.queueStack.cancel_queued_message')}
                           onClick={(e) => { e.stopPropagation(); onCancel(queueId!) }}
                         >
                           <X size={13} />
@@ -294,7 +295,7 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, fuseBelow = 
                       )}
                       {isFrontCollapsed && messages.length > 1 && (
                         <span className="shrink-0 flex items-center gap-1 text-[11px] opacity-70">
-                          {messages.length} queued
+                          {messages.length} {i18nT('components.queueStack.queued')}
                           <ChevronUp size={12} />
                         </span>
                       )}

@@ -5,6 +5,7 @@ import { useFilteredDropdown } from '../hooks/useFilteredDropdown'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { isTouchDevice } from '../utils/isTouchDevice'
 
+import { i18nT } from '../i18n/t'
 interface Props {
   options: string[]
   value: string
@@ -102,8 +103,8 @@ export default function StyledSelect({ options, value, onChange, action, placeho
               <input
                 ref={inputRef}
                 type="text"
-                aria-label="Filter options"
-                placeholder="Filter…"
+                aria-label={i18nT('components.styledSelect.filter_options')}
+                placeholder={i18nT('components.styledSelect.filter')}
                 value={filter}
                 onChange={e => setFilter(e.target.value)}
                 className="w-full px-2 py-1 rounded text-[13px] font-mono bg-bg-elevated border border-border text-text placeholder:text-muted focus:outline-none focus:border-accent"
@@ -148,7 +149,7 @@ export default function StyledSelect({ options, value, onChange, action, placeho
                 {item.name === value && <span className="float-right text-accent text-[11px]"><Check className="lucide-inline" /></span>}
               </button>
             ))}
-            {filtered.length === 0 && <div className="px-3 py-2 text-[13px] text-muted italic">No matches</div>}
+            {filtered.length === 0 && <div className="px-3 py-2 text-[13px] text-muted italic">{i18nT('components.styledSelect.no_matches')}</div>}
           </div>
         </div>,
         document.body

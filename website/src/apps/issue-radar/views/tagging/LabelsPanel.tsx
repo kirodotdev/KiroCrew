@@ -9,6 +9,7 @@ import { asArray, readableText, hexToRgba } from '../../lib/format'
 import ReadOnlyTag from '../../components/ReadOnlyTag'
 import ShimmerLine from '../../components/ShimmerLine'
 
+import { i18nT } from '../../../../i18n/t'
 /** The repo's tag vocabulary, in one panel: what it already uses (and how much),
  * and what it is missing.
  *
@@ -99,23 +100,23 @@ export default function LabelsPanel({
     <section className="rounded-xl border border-border bg-bg-elevated shadow-sm p-4 flex flex-col gap-3">
       <div className="flex items-center gap-3 flex-wrap">
         <div className="text-[13px] font-semibold text-muted uppercase tracking-[.05em]">
-          Labels
+          {i18nT('apps.issueRadar.views.tagging.labelsPanel.labels')}
         </div>
         <div className="text-[12px] text-muted opacity-60">
-          {labels.length} defined · by open-issue count
+          {labels.length} {i18nT('apps.issueRadar.views.tagging.labelsPanel.defined_by_open_issue_count')}
         </div>
 
         <div className="ml-auto flex items-center gap-2.5 flex-wrap">
           {!canWrite && (
             <span className="text-[12px] text-muted inline-flex items-center gap-1">
-              <ReadOnlyTag /> creating needs write access
+              <ReadOnlyTag /> {i18nT('apps.issueRadar.views.tagging.labelsPanel.creating_needs_write_access')}
             </span>
           )}
           <button
             onClick={() => refreshLabels.mutate()}
             disabled={refreshLabels.isPending}
-            aria-label="Re-fetch this repo's labels from GitHub"
-            title="Re-fetch this repo's labels from GitHub"
+            aria-label={i18nT('apps.issueRadar.views.tagging.labelsPanel.re_fetch_this_repo_s_labels_from_github')}
+            title={i18nT('apps.issueRadar.views.tagging.labelsPanel.re_fetch_this_repo_s_labels_from_github')}
             className="inline-flex items-center justify-center h-7 w-7 rounded-md border border-border text-muted hover:text-text hover:border-border-strong disabled:opacity-40 cursor-pointer"
           >
             <RefreshCw size={12} className={refreshLabels.isPending ? 'animate-spin' : ''} />
@@ -123,7 +124,7 @@ export default function LabelsPanel({
           <button
             onClick={() => generate.mutate()}
             disabled={generate.isPending}
-            title="Propose labels this repo is missing, from its open issues"
+            title={i18nT('apps.issueRadar.views.tagging.labelsPanel.propose_labels_this_repo_is_missing_from_its_ope')}
             className="inline-flex items-center gap-1.5 text-[13px] px-2.5 py-1 rounded-md border border-accent/40 text-accent hover:bg-accent-subtle disabled:opacity-50 cursor-pointer bg-transparent"
           >
             <Wand2 size={12} className={generate.isPending ? 'animate-pulse' : ''} />
@@ -177,7 +178,7 @@ export default function LabelsPanel({
 
       {generate.isPending && (
         <div className="pt-2 border-t border-border flex flex-col gap-2">
-          <div className="text-[12px] text-muted">Looking for labels this repo is missing…</div>
+          <div className="text-[12px] text-muted">{i18nT('apps.issueRadar.views.tagging.labelsPanel.looking_for_labels_this_repo_is_missing')}</div>
           <SuggestionSkeleton />
         </div>
       )}
@@ -185,12 +186,12 @@ export default function LabelsPanel({
       {!generate.isPending && recommendations !== null && (
         <div className="pt-2 border-t border-border flex flex-col gap-0.5">
           <div className="text-[12px] text-muted mb-0.5">
-            Suggested new labels — not created until you say so
+            {i18nT('apps.issueRadar.views.tagging.labelsPanel.suggested_new_labels_not_created_until_you_say_s')}
           </div>
 
           {visible.length === 0 ? (
             <div className="text-[13px] text-muted">
-              None — the repo’s taxonomy already covers what its open issues need.
+              {i18nT('apps.issueRadar.views.tagging.labelsPanel.none_the_repo_s_taxonomy_already_covers_what_its')}
             </div>
           ) : visible.map((rec) => {
             const isCreated = created.has(rec.name)
@@ -261,7 +262,7 @@ export default function LabelsPanel({
                   <div className="flex-shrink-0 flex items-center gap-2">
                     {isCreated ? (
                       <span className="inline-flex items-center gap-1 text-[12px] text-accent">
-                        <Check size={12} /> Created
+                        <Check size={12} /> {i18nT('apps.issueRadar.views.tagging.labelsPanel.created')}
                       </span>
                     ) : (
                       <button

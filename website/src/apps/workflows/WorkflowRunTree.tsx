@@ -22,6 +22,7 @@ import { CheckCircle2, XCircle, Loader2, ChevronRight, Workflow as WorkflowIcon 
 import { sanitizeLlmOutput } from '../../utils/sanitize'
 import { groupByPhase, latestBudget, type WfEvent } from './runModel'
 
+import { i18nT } from '../../i18n/t'
 export interface WorkflowRunTreeProps {
   events: WfEvent[]
   /** Terminal status of the run; drives the per-phase fallback when no agents
@@ -91,14 +92,14 @@ const WorkflowRunTree = memo(function WorkflowRunTree({
       {budget && (
         <div className="text-[11px] text-muted tabular-nums flex items-center gap-1.5">
           <WorkflowIcon size={11} />
-          budget {budget.spent}
+          {i18nT('apps.workflows.workflowRunTree.budget')} {budget.spent}
           {budget.total != null ? ` / ${budget.total}` : ''}
         </div>
       )}
 
       {showEmptyHint && (
         <div className="text-[11px] text-muted italic">
-          Waiting for events…
+          {i18nT('apps.workflows.workflowRunTree.waiting_for_events')}
         </div>
       )}
 
@@ -127,7 +128,7 @@ const WorkflowRunTree = memo(function WorkflowRunTree({
               )}
               <span className="truncate text-left flex-1">{title}</span>
               <span className="ml-auto text-[10px] text-muted tabular-nums shrink-0">
-                {phase.agents.length} agent{phase.agents.length === 1 ? '' : 's'}
+                {phase.agents.length} {i18nT('apps.workflows.workflowRunTree.agent')}{phase.agents.length === 1 ? '' : 's'}
               </span>
             </button>
             {!isCollapsed && phase.agents.length > 0 && (

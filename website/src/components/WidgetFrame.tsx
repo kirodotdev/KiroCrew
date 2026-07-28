@@ -9,6 +9,7 @@ import { effectiveWidgetSlug } from '../lib/widgetSlug'
 import { api, ApiError } from '../api/client'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 
+import { i18nT } from '../i18n/t'
 const MIN_HEIGHT = 80
 
 // Upper bound on the text a single widget action may pre-fill into the
@@ -588,7 +589,7 @@ export default function WidgetFrame({ html, title = 'Widget', slug, messageTs, w
           ) : (
             title
           )}
-          {saveError && <span className="ml-2 text-[12px] text-danger" title={saveError}>save failed</span>}
+          {saveError && <span className="ml-2 text-[12px] text-danger" title={saveError}>{i18nT('components.widgetFrame.save_failed')}</span>}
         </span>
         <IconButtonGroup reveal={!expanded}>
           <IconButton
@@ -607,10 +608,10 @@ export default function WidgetFrame({ html, title = 'Widget', slug, messageTs, w
           >
             <Star size={12} fill={savedSlug ? 'currentColor' : 'none'} />
           </IconButton>
-          <IconButton onClick={downloadAsHtml} title="Download as HTML" aria-label="Download as HTML">
+          <IconButton onClick={downloadAsHtml} title={i18nT('components.widgetFrame.download_as_html')} aria-label={i18nT('components.widgetFrame.download_as_html')}>
             <Download size={12} />
           </IconButton>
-          <IconButton onClick={openInNewTab} title="Open in new tab" aria-label="Open in new tab">
+          <IconButton onClick={openInNewTab} title={i18nT('components.widgetFrame.open_in_new_tab')} aria-label={i18nT('components.widgetFrame.open_in_new_tab')}>
             <ExternalLink size={12} />
           </IconButton>
           <IconButton onClick={() => setExpanded(!expanded)} title={expanded ? 'Minimize' : 'Expand'} aria-label={expanded ? 'Minimize' : 'Expand'}>

@@ -11,6 +11,7 @@ import ReadOnlyTag, { isReadOnly } from './ReadOnlyTag'
 import RepoSwitcher from './RepoSwitcher'
 import { providerTerms } from '../lib/links'
 
+import { i18nT } from '../../../i18n/t'
 /** The left rail: a prominent repo switcher pinned at the top, then a
  * four-section accordion (Dashboards / Issues / Pull requests / Settings) that
  * follows the main view (see context follow-mode), with the app identity at the
@@ -62,7 +63,7 @@ export default function LeftRail({
       </div>
 
       <AccordionSection
-        title="Dashboards"
+        title={i18nT('apps.issueRadar.components.leftRail.dashboards')}
         icon={LayoutDashboard}
         expanded={expanded === 'dashboards'}
         // Return to the dashboard you were last on, not Overview: `dashboardTab`
@@ -74,7 +75,7 @@ export default function LeftRail({
       </AccordionSection>
 
       <AccordionSection
-        title="Issues"
+        title={i18nT('apps.issueRadar.components.leftRail.issues')}
         icon={CircleDot}
         expanded={expanded === 'filters'}
         onToggle={() => openIssues()}
@@ -92,7 +93,7 @@ export default function LeftRail({
       </AccordionSection>
 
       <AccordionSection
-        title="Settings"
+        title={i18nT('apps.issueRadar.components.leftRail.settings')}
         icon={Settings}
         expanded={expanded === 'settings'}
         onToggle={() => openSettings()}
@@ -103,8 +104,8 @@ export default function LeftRail({
       {/* App identity — bottom-most. */}
       <div className="px-3 pb-2 flex items-center gap-2">
         <Radar size={16} className="text-accent flex-shrink-0" />
-        <span className="text-[14px] font-medium text-text">Issue Radar</span>
-        <span className="ml-auto text-[12px] text-muted opacity-70">v{APP_VERSION}</span>
+        <span className="text-[14px] font-medium text-text">{i18nT('apps.issueRadar.components.leftRail.issue_radar')}</span>
+        <span className="ml-auto text-[12px] text-muted opacity-70">{i18nT('apps.issueRadar.components.leftRail.v')}{APP_VERSION}</span>
       </div>
     </aside>
   )
@@ -134,7 +135,7 @@ function CollapsedRail({
           type="button"
           onClick={onExpand}
           title={`${full} — click to expand the sidebar`}
-          aria-label="Expand sidebar"
+          aria-label={i18nT('apps.issueRadar.components.leftRail.expand_sidebar')}
           className="flex-1 min-h-0 w-full flex flex-col items-center gap-3 pt-3.5 pb-2 cursor-pointer outline-none text-muted hover:text-text hover:bg-bg-hover transition-colors"
         >
           <GithubLogo size={18} className="flex-shrink-0 text-text" />

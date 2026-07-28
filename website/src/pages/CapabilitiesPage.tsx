@@ -8,6 +8,7 @@ import KiroCrewAgentsPage from './KiroCrewAgentsPage'
 import HooksPage from './HooksPage'
 import { McpTab, SkillsTab, PromptsTab, SteeringTab } from './overview'
 
+import { i18nT } from '../i18n/t'
 export default function CapabilitiesPage() {
   const provider = useProvider()
 
@@ -24,7 +25,7 @@ export default function CapabilitiesPage() {
   }, [provider])
 
   return (
-    <SidePanelLayout title="Agent Capabilities" tabs={tabs} headerRight={<RestartButton />}>
+    <SidePanelLayout title={i18nT('pages.capabilitiesPage.agent_capabilities')} tabs={tabs} headerRight={<RestartButton />}>
       {tab => <>
         {tab === 'agents' && <KiroCrewAgentsPage embedded />}
         {tab === 'templates' && <AgentsPage embedded />}

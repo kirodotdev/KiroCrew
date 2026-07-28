@@ -23,6 +23,7 @@ import SideChat from './SideChat'
 import WorkflowSidebarRow, { type WfRunRow } from './WorkflowSidebarRow'
 import { runBelongsToSlot } from '../../apps/workflows/runModel'
 
+import { i18nT } from '../../i18n/t'
 const STATUS = {
   pending: <Lock size={12} className="text-muted" />,
   running: <LoaderIcon size={12} className="text-accent animate-spin" />,
@@ -76,9 +77,9 @@ function DiskLoader({ id, autoLoad }: { id: string; autoLoad?: boolean }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoLoad])
   if (text !== null) return <>{text}</>
-  if (loading) return <span className="text-muted/30 italic">Loading…</span>
-  if (error) return <button className="text-danger/70 hover:text-danger text-[12px] underline cursor-pointer bg-transparent border-none p-0 font-mono" onClick={e => { e.stopPropagation(); load() }}>Failed — click to retry</button>
-  return <button className="text-accent/70 hover:text-accent text-[12px] underline cursor-pointer bg-transparent border-none p-0 font-mono" onClick={e => { e.stopPropagation(); load() }}>Load output from disk</button>
+  if (loading) return <span className="text-muted/30 italic">{i18nT('pages.chat.activityViewer.loading')}</span>
+  if (error) return <button className="text-danger/70 hover:text-danger text-[12px] underline cursor-pointer bg-transparent border-none p-0 font-mono" onClick={e => { e.stopPropagation(); load() }}>{i18nT('pages.chat.activityViewer.failed_click_to_retry')}</button>
+  return <button className="text-accent/70 hover:text-accent text-[12px] underline cursor-pointer bg-transparent border-none p-0 font-mono" onClick={e => { e.stopPropagation(); load() }}>{i18nT('pages.chat.activityViewer.load_output_from_disk')}</button>
 }
 
 function SubagentPane({ a, onClick, selected }: { a: SubagentActivity; onClick: () => void; selected?: boolean }) {
@@ -183,31 +184,31 @@ function SubagentPane({ a, onClick, selected }: { a: SubagentActivity; onClick: 
         <span className="text-[13px] font-semibold text-text truncate min-w-0" title={`Subagent ${statusLabel}`}>{statusLabel}</span>
         {a.agent && <code className="text-[11px] text-muted/50 bg-bg-hover px-1.5 py-0.5 rounded shrink-[3] min-w-0 max-w-[6.5rem] truncate inline-block align-middle" title={a.agent}>{a.agent}</code>}
         {!isPending && <span className="text-[11px] text-muted/40 ml-auto font-mono shrink-0 whitespace-nowrap tabular-nums">{fmtElapsed}</span>}
-        {isRunning && <button data-testid="subagent-cancel-btn" className="text-[11px] px-1.5 py-0.5 rounded border border-danger/40 text-danger/70 hover:bg-danger-subtle hover:text-danger cursor-pointer transition-all shrink-0 whitespace-nowrap inline-flex items-center" onClick={onCancel}><X className="lucide-inline" /> Cancel</button>}
+        {isRunning && <button data-testid="subagent-cancel-btn" className="text-[11px] px-1.5 py-0.5 rounded border border-danger/40 text-danger/70 hover:bg-danger-subtle hover:text-danger cursor-pointer transition-all shrink-0 whitespace-nowrap inline-flex items-center" onClick={onCancel}><X className="lucide-inline" /> {i18nT('pages.chat.activityViewer.cancel')}</button>}
         {isDone && <span className="text-[14px] text-muted bg-bg-hover px-1.5 py-0.5 rounded shrink-0 ml-1">{collapsed ? '▸' : '▾'}</span>}
       </div>
       {/* Input (task) */}
       {!collapsed && (
         <div className="px-3 pt-1 pb-2">
-          <div className="text-[10px] text-muted/40 uppercase tracking-wider mb-1">Input</div>
+          <div className="text-[10px] text-muted/40 uppercase tracking-wider mb-1">{i18nT('pages.chat.activityViewer.input')}</div>
           <pre className="px-2.5 py-2 bg-bg rounded-md text-[12px] font-mono whitespace-pre-wrap break-all max-h-[120px] overflow-y-auto text-muted/80 leading-relaxed">{a.task}</pre>
         </div>
       )}
       {/* Approval buttons for pending */}
       {isPending && !a.approving && (
         <div className="px-3 pb-2 flex gap-1.5">
-          <button className="px-2.5 py-1 rounded-md border border-border bg-transparent text-muted text-[12px] cursor-pointer hover:text-text hover:border-border-strong hover:bg-bg-hover transition-all" onClick={e => onApprove(e, 'approve')}><CheckCircle className="lucide-inline" /> Approve</button>
-          <button className="px-2.5 py-1 rounded-md border border-border bg-transparent text-muted text-[12px] cursor-pointer hover:text-danger hover:border-danger transition-all" onClick={e => onApprove(e, 'reject')}><Ban className="lucide-inline" /> Reject</button>
+          <button className="px-2.5 py-1 rounded-md border border-border bg-transparent text-muted text-[12px] cursor-pointer hover:text-text hover:border-border-strong hover:bg-bg-hover transition-all" onClick={e => onApprove(e, 'approve')}><CheckCircle className="lucide-inline" /> {i18nT('pages.chat.activityViewer.approve')}</button>
+          <button className="px-2.5 py-1 rounded-md border border-border bg-transparent text-muted text-[12px] cursor-pointer hover:text-danger hover:border-danger transition-all" onClick={e => onApprove(e, 'reject')}><Ban className="lucide-inline" /> {i18nT('pages.chat.activityViewer.reject')}</button>
         </div>
       )}
-      {isPending && a.approving && <div className="px-3 pb-2 text-[12px] text-muted/50">Resolving…</div>}
+      {isPending && a.approving && <div className="px-3 pb-2 text-[12px] text-muted/50">{i18nT('pages.chat.activityViewer.resolving')}</div>}
       {/* Output (streaming body) */}
       {!isPending && !collapsed && (
       <>
       <div className="px-3 pb-2">
-        <div className="text-[10px] text-muted/40 uppercase tracking-wider mb-1">Output</div>
+        <div className="text-[10px] text-muted/40 uppercase tracking-wider mb-1">{i18nT('pages.chat.activityViewer.output')}</div>
         <pre ref={bodyRef} onScroll={onScroll} className="px-2.5 py-2 bg-bg rounded-md text-[12px] font-mono whitespace-pre-wrap break-all max-h-[240px] overflow-y-auto text-muted/80 leading-relaxed">
-          {a.streaming || a.result || (isDone ? (isNative ? <span className="text-muted/30 italic">(output shown in chat)</span> : <DiskLoader id={a.id} autoLoad={selected} />) : <span className="text-muted/30 italic">Waiting for output…</span>)}
+          {a.streaming || a.result || (isDone ? (isNative ? <span className="text-muted/30 italic">{i18nT('pages.chat.activityViewer.output_shown_in_chat')}</span> : <DiskLoader id={a.id} autoLoad={selected} />) : <span className="text-muted/30 italic">{i18nT('pages.chat.activityViewer.waiting_for_output')}</span>)}
           {a.lastTool && <div className="text-accent mt-1"><Wrench className="lucide-inline" /> {a.lastTool}</div>}
         </pre>
       </div>
@@ -215,7 +216,7 @@ function SubagentPane({ a, onClick, selected }: { a: SubagentActivity; onClick: 
       {a.error && (
         <div className="px-3 py-1.5 text-[12px] border-t border-border/20 space-y-0.5">
           <div className="text-red-400">{a.error}</div>
-          {a.lastTool && <div className="text-muted/40">Last tool: {a.lastTool}</div>}
+          {a.lastTool && <div className="text-muted/40">{i18nT('pages.chat.activityViewer.last_tool')} {a.lastTool}</div>}
         </div>
       )}
       </>
@@ -257,7 +258,7 @@ function ApprovalEntry({ entry, slot }: { entry: ToolActivity; slot: string }) {
   const normalized = toolTitle.replace(/^(Running: |Reading )/, '')
   const baseCmd = normalized.split(/\s+/)[0] || normalized
 
-  const decisionLabel: Record<string, ReactNode> = { approved: <><CheckCircle className="lucide-inline" /> Approved</>, trust: <><Handshake className="lucide-inline" /> Trusted</>, trust_command: <><CheckCircle className="lucide-inline" /> Trusted command</>, trust_base: <><CheckCircle className="lucide-inline" /> Trusted base</>, rejected: <><Ban className="lucide-inline" /> Rejected</> }
+  const decisionLabel: Record<string, ReactNode> = { approved: <><CheckCircle className="lucide-inline" /> {i18nT('pages.chat.activityViewer.approved')}</>, trust: <><Handshake className="lucide-inline" /> {i18nT('pages.chat.activityViewer.trusted')}</>, trust_command: <><CheckCircle className="lucide-inline" /> {i18nT('pages.chat.activityViewer.trusted_command')}</>, trust_base: <><CheckCircle className="lucide-inline" /> {i18nT('pages.chat.activityViewer.trusted_base')}</>, rejected: <><Ban className="lucide-inline" /> {i18nT('pages.chat.activityViewer.rejected')}</> }
   const btnClass = 'px-2.5 py-1 rounded-md border border-border bg-transparent text-muted text-[12px] cursor-pointer hover:text-text hover:border-border-strong hover:bg-bg-hover transition-all'
   return (
     <div className={`mx-2 mb-2 rounded-lg border overflow-hidden shadow-sm transition-all ${isResolved ? 'border-ok/40 bg-card' : 'border-warn/40 bg-warn/5'}`}>
@@ -269,7 +270,7 @@ function ApprovalEntry({ entry, slot }: { entry: ToolActivity; slot: string }) {
       {!isResolved && <div className="px-3 pb-2 text-[13px] text-muted/70">{entry.text}</div>}
       {!isResolved && !acting && (
         <div className="px-3 pb-2 flex gap-1.5">
-          <button className={btnClass} onClick={() => onAction('approved')}><CheckCircle className="lucide-inline" /> Approve</button>
+          <button className={btnClass} onClick={() => onAction('approved')}><CheckCircle className="lucide-inline" /> {i18nT('pages.chat.activityViewer.approve')}</button>
           <TrustDropdown
             fullCommand={normalized}
             baseCommand={baseCmd}
@@ -277,10 +278,10 @@ function ApprovalEntry({ entry, slot }: { entry: ToolActivity; slot: string }) {
             className={btnClass}
             onAction={(action, pattern) => onAction(action, pattern)}
           />
-          <button className={btnClass + ' hover:!text-danger hover:!border-danger'} onClick={() => onAction('rejected')}><Ban className="lucide-inline" /> Reject</button>
+          <button className={btnClass + ' hover:!text-danger hover:!border-danger'} onClick={() => onAction('rejected')}><Ban className="lucide-inline" /> {i18nT('pages.chat.activityViewer.reject')}</button>
         </div>
       )}
-      {acting && <div className="px-3 pb-2 text-[12px] text-muted/50">Resolving…</div>}
+      {acting && <div className="px-3 pb-2 text-[12px] text-muted/50">{i18nT('pages.chat.activityViewer.resolving')}</div>}
     </div>
   )
 }
@@ -376,7 +377,7 @@ function FilePreview({ path, slot, onBack, onFileSave, onSubmitComments }: {
     // instead of MarkdownPanel) — its close guard can't fire. If an unsaved
     // draft exists, confirm before discarding it ourselves; otherwise just go
     // back. (The guarded path above already prompts, so this never double-asks.)
-    if (getInlineDraft(slot, path) !== undefined && !window.confirm('Discard unsaved changes?')) return
+    if (getInlineDraft(slot, path) !== undefined && !window.confirm(i18nT('pages.chat.activityViewer.discard_unsaved_changes'))) return
     handleClose()
   }, [slot, path, handleClose])
 
@@ -388,11 +389,11 @@ function FilePreview({ path, slot, onBack, onFileSave, onSubmitComments }: {
         <button
           onClick={back}
           className="flex items-center gap-1.5 h-7 px-2 rounded-md text-[12px] text-muted hover:text-text hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0"
-          title="Back to files"
-          aria-label="Back to files"
+          title={i18nT('pages.chat.activityViewer.back_to_files')}
+          aria-label={i18nT('pages.chat.activityViewer.back_to_files')}
         >
           <ArrowLeft size={14} />
-          <span>Files</span>
+          <span>{i18nT('pages.chat.activityViewer.files')}</span>
         </button>
         <span aria-hidden="true" className="w-px h-4 bg-border shrink-0" />
         <span className="flex items-center gap-1.5 min-w-0 text-[12px] text-text-strong">
@@ -402,7 +403,7 @@ function FilePreview({ path, slot, onBack, onFileSave, onSubmitComments }: {
       </div>
       <div className="flex-1 min-h-0 relative">
         {isLoading || (data?.ok && !inlineReady) ? (
-          <div className="flex items-center justify-center h-full text-muted text-[13px]">Loading…</div>
+          <div className="flex items-center justify-center h-full text-muted text-[13px]">{i18nT('pages.chat.activityViewer.loading')}</div>
         ) : data?.ok ? (
           <MarkdownPanel
             ref={panelRef}
@@ -428,7 +429,7 @@ function FilePreview({ path, slot, onBack, onFileSave, onSubmitComments }: {
               onClick={() => refetch()}
               className="h-7 px-3 rounded-md text-[12px] text-text border border-border hover:bg-bg-hover transition-colors bg-transparent cursor-pointer"
             >
-              Retry
+              {i18nT('pages.chat.activityViewer.retry')}
             </button>
           </div>
         )}
@@ -474,8 +475,8 @@ function FileTile({ f, onFileOpen, onFileRemove }: { f: TouchedFile; onFileOpen?
           <button
             className="absolute inset-0 flex items-center justify-center opacity-0 group-hover/icon:opacity-100 transition-opacity text-danger cursor-pointer bg-transparent border-none p-0"
             onClick={e => { e.stopPropagation(); onFileRemove(f.path) }}
-            title="Remove"
-            aria-label="Remove file from list"
+            title={i18nT('pages.chat.activityViewer.remove')}
+            aria-label={i18nT('pages.chat.activityViewer.remove_file_from_list')}
           >
             <X size={12} />
           </button>
@@ -801,7 +802,7 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
     // containerRef in the effect above) has a focus target; the panel itself is
     // a region, not an interactive control.
     // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex
-    <div ref={containerRef} role="region" aria-label="Activity" className="flex flex-col h-full bg-bg relative" tabIndex={0}>
+    <div ref={containerRef} role="region" aria-label={i18nT('pages.chat.activityViewer.activity')} className="flex flex-col h-full bg-bg relative" tabIndex={0}>
       {/* Tab bar — hidden when SidePanel drives the view via the `view` prop. */}
       {!view && (
         <div className="px-3 py-2 shrink-0 flex justify-center">
@@ -839,7 +840,7 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
                   disabled={retryingFailed}
                   data-testid="retry-failed-btn"
                 >
-                  <RotateCcw size={11} className={retryingFailed ? 'animate-spin' : ''} /> Retry failed ({failedRetryableIds.length})
+                  <RotateCcw size={11} className={retryingFailed ? 'animate-spin' : ''} /> {i18nT('pages.chat.activityViewer.retry_failed')}{failedRetryableIds.length})
                 </button>
               )}
               {terminalIds.length > 0 && (
@@ -848,7 +849,7 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
                   onClick={dismissDone}
                   data-testid="dismiss-done-btn"
                 >
-                  <X size={11} /> Dismiss done ({terminalIds.length})
+                  <X size={11} /> {i18nT('pages.chat.activityViewer.dismiss_done')}{terminalIds.length})
                 </button>
               )}
             </div>
@@ -868,7 +869,7 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
             >
               <Clock size={12} className="shrink-0" aria-hidden />
               <span>
-                {queuedCount} waiting to start — queued behind the concurrency limit
+                {queuedCount} {i18nT('pages.chat.activityViewer.waiting_to_start_queued_behind_the_concurrency_l')}
               </span>
             </div>
           )}
@@ -888,14 +889,14 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
                   onClick={() => setShowAllSubagents(true)}
                   data-testid="show-all-subagents"
                 >
-                  Show all ({ids.length})
+                  {i18nT('pages.chat.activityViewer.show_all')}{ids.length})
                 </button>
               )}
             </>
           ) : visibleLog.filter(isSpawnApproval).length === 0 && queuedCount === 0 && (
             <div className="flex flex-col items-center justify-center h-full text-muted/30 gap-2">
               <span className="text-[24px]"><Bot className="lucide-inline" /></span>
-              <span className="text-[13px]">No subagents running</span>
+              <span className="text-[13px]">{i18nT('pages.chat.activityViewer.no_subagents_running')}</span>
             </div>
           )}
         </div>
@@ -907,9 +908,9 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
           {wfRunsForSlot.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full text-muted/30 gap-2">
               <span className="text-[24px]"><Workflow className="lucide-inline" /></span>
-              <span className="text-[13px]">No workflow runs</span>
+              <span className="text-[13px]">{i18nT('pages.chat.activityViewer.no_workflow_runs')}</span>
               <span className="text-[11px] text-center px-4">
-                Ask me to &quot;use a dynamic workflow to …&quot; — runs from this chat appear here live.
+                {i18nT('pages.chat.activityViewer.ask_me_to_use_a_dynamic_workflow_to_runs_from_th')}
               </span>
             </div>
           ) : (
@@ -961,13 +962,13 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
           <div className="flex-1 flex flex-col overflow-hidden">
             <div className="flex-1 overflow-y-auto py-2">
               {(changed.length === 0 && resourceLinks.length === 0) ? (
-                <div className="flex-1 flex items-center justify-center text-muted text-[13px] py-8">No files changed yet</div>
+                <div className="flex-1 flex items-center justify-center text-muted text-[13px] py-8">{i18nT('pages.chat.activityViewer.no_files_changed_yet')}</div>
               ) : (
                 <>
                   {changed.length > 0 && (
                     <div className="px-3 mb-4">
                       <div className="flex items-center gap-2 my-2">
-                        <span className="text-[14px] font-semibold text-muted">Changed files</span>
+                        <span className="text-[14px] font-semibold text-muted">{i18nT('pages.chat.activityViewer.changed_files')}</span>
                         <span className="flex-1 h-px bg-border" />
                       </div>
                       <div className="flex flex-wrap gap-1.5">
@@ -978,9 +979,9 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
                   {resourceLinks.length > 0 && (
                     <div className="px-3 mb-4">
                       <div className="flex items-center gap-2 my-2">
-                        <span className="text-[14px] font-semibold text-muted">Resources</span>
+                        <span className="text-[14px] font-semibold text-muted">{i18nT('pages.chat.activityViewer.resources')}</span>
                         <span className="flex-1 h-px bg-border" />
-                        {navResolving && <span className="text-[10px] text-accent animate-pulse">resolving...</span>}
+                        {navResolving && <span className="text-[10px] text-accent animate-pulse">{i18nT('pages.chat.activityViewer.resolving_2')}</span>}
                       </div>
                       <div className="flex flex-col gap-0.5">
                         {resourceLinks.map((link, i) => (

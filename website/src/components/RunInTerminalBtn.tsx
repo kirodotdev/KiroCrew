@@ -2,6 +2,7 @@ import { useState, useCallback, useRef, useEffect } from 'react'
 import { SquareTerminal, Check, AlertCircle, ShieldAlert } from 'lucide-react'
 import { checkSensitiveCommand } from '../utils/sensitiveCommand'
 
+import { i18nT } from '../i18n/t'
 export const SHELL_LANGS = new Set(['bash', 'sh', 'shell', 'zsh', 'console', 'terminal', 'fish'])
 
 function stripPromptChars(code: string): string {
@@ -93,16 +94,16 @@ export default function RunInTerminalBtn({ code }: { code: string }) {
         <button
           className="px-1.5 py-0.5 rounded text-[11px] bg-warn/20 text-warn hover:bg-warn/30 cursor-pointer"
           onClick={confirmRun}
-          aria-label="Confirm run sensitive command"
+          aria-label={i18nT('components.runInTerminalBtn.confirm_run_sensitive_command')}
         >
-          Run anyway
+          {i18nT('components.runInTerminalBtn.run_anyway')}
         </button>
         <button
           className="px-1.5 py-0.5 rounded text-[11px] text-muted hover:text-text hover:bg-bg-hover cursor-pointer"
           onClick={cancelWarn}
-          aria-label="Cancel"
+          aria-label={i18nT('components.runInTerminalBtn.cancel')}
         >
-          Cancel
+          {i18nT('components.runInTerminalBtn.cancel')}
         </button>
       </span>
     )
@@ -110,7 +111,7 @@ export default function RunInTerminalBtn({ code }: { code: string }) {
 
   if (status === 'sent') {
     return (
-      <span className="p-1 rounded text-accent" title="Sent to terminal" aria-label="Sent to terminal">
+      <span className="p-1 rounded text-accent" title={i18nT('components.runInTerminalBtn.sent_to_terminal')} aria-label={i18nT('components.runInTerminalBtn.sent_to_terminal')}>
         <Check size={13} />
       </span>
     )
@@ -118,7 +119,7 @@ export default function RunInTerminalBtn({ code }: { code: string }) {
 
   if (status === 'error') {
     return (
-      <span className="p-1 rounded text-danger" title="Couldn't run in terminal" aria-label="Couldn't run in terminal">
+      <span className="p-1 rounded text-danger" title={i18nT('components.runInTerminalBtn.couldn_t_run_in_terminal')} aria-label={i18nT('components.runInTerminalBtn.couldn_t_run_in_terminal')}>
         <AlertCircle size={13} />
       </span>
     )
@@ -128,8 +129,8 @@ export default function RunInTerminalBtn({ code }: { code: string }) {
     <button
       className="p-1 rounded text-muted hover:text-text hover:bg-bg-hover cursor-pointer"
       onClick={run}
-      title="Run in terminal"
-      aria-label="Run in terminal"
+      title={i18nT('components.runInTerminalBtn.run_in_terminal')}
+      aria-label={i18nT('components.runInTerminalBtn.run_in_terminal')}
     >
       <SquareTerminal size={13} />
     </button>

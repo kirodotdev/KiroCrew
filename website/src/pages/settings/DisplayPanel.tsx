@@ -16,7 +16,10 @@ import type { DefaultColorSetting, PaletteName, IntensityName, SessionColorMode 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../../api/client'
 import { clampTintCount, RECENT_TINT_COUNT } from '../../utils/recencyTint'
+import { useLanguage } from '../../i18n/LanguageProvider'
+import { AUTO_LANGUAGE, SUPPORTED_LANGUAGES, languageLabel } from '../../i18n/languages'
 
+import { i18nT } from '../../i18n/t'
 /**
  * Lightweight inline spinner (no modal / progress bar — matches the "status,
  * not ceremony" preference). Colors come from theme CSS vars via Tailwind
@@ -51,6 +54,7 @@ function StatusIndicator({ label }: { label: string }) {
 }
 
 export function DisplayPanel() {
+  const { language, resolved: resolvedLanguage, setLanguage, syncFailed: langSyncFailed } = useLanguage()
   const { zoom, zoomSupported, zoomIn, zoomOut, reset, family, setFontFamily } = useZoomCtx()
   // Shortcut label for the zoom hint/description: ⌘ on macOS, Ctrl elsewhere.
   const modKey = /mac/i.test(navigator.platform) ? '⌘' : 'Ctrl'
@@ -125,9 +129,32 @@ export function DisplayPanel() {
 
   return (
     <>
-      <SettingsSection title="View">
+      <SettingsSection title={i18nT('pages.settings.displayPanel.view')}>
         <SettingsCard>
-          <SettingsButtonGroup label="Interface" description="Chat bubbles or CLI-style line-by-line output" value={uiMode}
+          {/* Options are built from SUPPORTED_LANGUAGES, so shipping a new
+              language needs no change here. The Auto entry's label shows which
+              language detection actually resolved to ("Auto — 简体中文"), so the
+              user can see what following the browser gets them. */}
+          <SettingsSelect
+            label={i18nT('settings.display.language.label')}
+            description={i18nT('settings.display.language.description')}
+            value={language}
+            options={[AUTO_LANGUAGE, ...SUPPORTED_LANGUAGES.map(l => l.code)]}
+            optionLabels={[
+              `${i18nT('settings.display.language.auto')} — ${languageLabel(resolvedLanguage)}`,
+              ...SUPPORTED_LANGUAGES.map(l => l.label),
+            ]}
+            onChange={setLanguage}
+          />
+          {/* A failed write means the choice is browser-local only, and the next
+              load will silently revert it to the server's value. Say so rather
+              than letting the user discover it on reload. */}
+          {langSyncFailed && (
+            <span className="text-[12px] text-danger" role="status" aria-live="polite">
+              {i18nT('settings.display.language.sync_failed')}
+            </span>
+          )}
+          <SettingsButtonGroup label={i18nT('pages.settings.displayPanel.interface')} description={i18nT('pages.settings.displayPanel.chat_bubbles_or_cli_style_line_by_line_output')} value={uiMode}
             options={[
               { value: 'chat', label: 'Chat' },
               { value: 'cli', label: 'CLI' },
@@ -136,15 +163,15 @@ export function DisplayPanel() {
         </SettingsCard>
       </SettingsSection>
 
-      <SettingsSection title="Zoom & Font">
+      <SettingsSection title={i18nT('pages.settings.displayPanel.zoom_font')}>
         <SettingsCard>
           {zoomSupported ? (
-            <SettingsStepper label="Zoom Level" description={`Native window zoom, the same setting as ${modKey}+ / ${modKey}− (50%–300%). Remembered across launches.`} value={zoom} suffix="%" onIncrement={zoomIn} onDecrement={zoomOut} onReset={reset} />
+            <SettingsStepper label={i18nT('pages.settings.displayPanel.zoom_level')} description={`Native window zoom, the same setting as ${modKey}+ / ${modKey}− (50%–300%). Remembered across launches.`} value={zoom} suffix="%" onIncrement={zoomIn} onDecrement={zoomOut} onReset={reset} />
           ) : (
             <div className="flex items-center justify-between gap-4 py-1.5">
               <div className="flex flex-col gap-0.5">
-                <span className="text-[13px] font-semibold text-text">Zoom Level</span>
-                <span className="text-[12px] text-muted">Use your browser's zoom. Your browser remembers it for this site.</span>
+                <span className="text-[13px] font-semibold text-text">{i18nT('pages.settings.displayPanel.zoom_level')}</span>
+                <span className="text-[12px] text-muted">{i18nT('pages.settings.displayPanel.use_your_browser_s_zoom_your_browser_remembers_i')}</span>
               </div>
               <span className="flex items-center gap-1 text-[12px] text-muted whitespace-nowrap">
                 <kbd className="px-1.5 py-0.5 rounded border border-border bg-bg-elevated text-text font-mono text-[11px]">{modKey}</kbd>
@@ -154,23 +181,23 @@ export function DisplayPanel() {
               </span>
             </div>
           )}
-          <SettingsButtonGroup label="Font Family" description="UI font family for the dashboard" value={family}
+          <SettingsButtonGroup label={i18nT('pages.settings.displayPanel.font_family')} description={i18nT('pages.settings.displayPanel.ui_font_family_for_the_dashboard')} value={family}
             options={[{ value: 'sans', label: 'Sans' }, { value: 'mono', label: 'Mono' }, { value: 'system', label: 'System' }]}
             onChange={v => setFontFamily(v as 'sans' | 'mono' | 'system')} />
         </SettingsCard>
       </SettingsSection>
 
-      <SettingsSection title="Theme">
+      <SettingsSection title={i18nT('pages.settings.displayPanel.theme')}>
         <SettingsCard>
           <div className="flex items-center gap-2">
             <div className="flex-1 min-w-0">
-              <SettingsSelect label="Theme" description="Select a theme for the dashboard" value={colorTheme}
+              <SettingsSelect label={i18nT('pages.settings.displayPanel.theme')} description={i18nT('pages.settings.displayPanel.select_a_theme_for_the_dashboard')} value={colorTheme}
                 options={allThemes.map(t => t.value)} optionLabels={allThemes.map(t => t.label)}
                 onChange={v => setColorTheme(v as ColorTheme)} />
             </div>
-            {themeSwitching && <StatusIndicator label="Applying…" />}
+            {themeSwitching && <StatusIndicator label={i18nT('pages.settings.displayPanel.applying')} />}
           </div>
-          <SettingsButtonGroup label="Mode" description="Light or dark appearance for the dashboard" value={preference}
+          <SettingsButtonGroup label={i18nT('pages.settings.displayPanel.mode')} description={i18nT('pages.settings.displayPanel.light_or_dark_appearance_for_the_dashboard')} value={preference}
             options={[
               { value: 'system', label: 'Auto', icon: <svg className="w-3.5 h-3.5 stroke-current fill-none" viewBox="0 0 24 24" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg> },
               { value: 'light', label: 'Light', icon: <svg className="w-3.5 h-3.5 stroke-current fill-none" viewBox="0 0 24 24" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg> },
@@ -180,34 +207,34 @@ export function DisplayPanel() {
 
           {allThemes.filter(t => t.custom).length > 0 && (
             <div className="flex flex-col gap-1.5 pt-2">
-              <span className="text-[12px] text-muted font-medium uppercase tracking-[.04em]">Custom & Installed Themes</span>
+              <span className="text-[12px] text-muted font-medium uppercase tracking-[.04em]">{i18nT('pages.settings.displayPanel.custom_installed_themes')}</span>
               {allThemes.filter(t => t.custom).map(t => (
                 <div key={t.value} className="flex items-center justify-between px-3 py-2 rounded-md bg-bg-elevated border border-border">
                   <span className="text-[13px] text-text font-medium">{t.label}</span>
                   <div className="flex items-center gap-2">
                     {!t.installed && (
-                      <button className="text-[13px] text-muted hover:text-text cursor-pointer bg-transparent border-none transition-colors" onClick={() => editor.openEditTheme(t.value.replace('custom-', ''))}>Edit</button>
+                      <button className="text-[13px] text-muted hover:text-text cursor-pointer bg-transparent border-none transition-colors" onClick={() => editor.openEditTheme(t.value.replace('custom-', ''))}>{i18nT('pages.settings.displayPanel.edit')}</button>
                     )}
-                    <button className="text-[13px] text-muted hover:text-danger cursor-pointer bg-transparent border-none transition-colors" onClick={() => editor.handleDelete(t.value.replace('custom-', ''))}>Delete</button>
+                    <button className="text-[13px] text-muted hover:text-danger cursor-pointer bg-transparent border-none transition-colors" onClick={() => editor.handleDelete(t.value.replace('custom-', ''))}>{i18nT('pages.settings.displayPanel.delete')}</button>
                   </div>
                 </div>
               ))}
             </div>
           )}
           <div className="pt-1">
-            <button className="px-2.5 py-1 rounded-md text-[13px] font-medium border border-dashed border-border-strong text-muted hover:text-accent hover:border-accent cursor-pointer transition-all bg-transparent" onClick={editor.openNewTheme}>+ New Theme</button>
+            <button className="px-2.5 py-1 rounded-md text-[13px] font-medium border border-dashed border-border-strong text-muted hover:text-accent hover:border-accent cursor-pointer transition-all bg-transparent" onClick={editor.openNewTheme}>{i18nT('pages.settings.displayPanel.new_theme')}</button>
           </div>
 
           <div className="flex flex-col gap-1.5 pt-2">
-            <span className="text-[12px] text-muted font-medium uppercase tracking-[.04em]">Install Theme</span>
+            <span className="text-[12px] text-muted font-medium uppercase tracking-[.04em]">{i18nT('pages.settings.displayPanel.install_theme')}</span>
             <div className="flex items-center gap-2">
-              <select aria-label="Theme source" value={installType}
+              <select aria-label={i18nT('pages.settings.displayPanel.theme_source')} value={installType}
                 onChange={e => setInstallType(e.target.value as 'github' | 'local')}
                 className="text-[13px] px-2 py-1.5 rounded-md bg-bg border border-border text-text cursor-pointer">
-                <option value="github">GitHub</option>
-                <option value="local">Local folder</option>
+                <option value="github">{i18nT('pages.settings.displayPanel.github')}</option>
+                <option value="local">{i18nT('pages.settings.displayPanel.local_folder')}</option>
               </select>
-              <input aria-label="Theme source location" value={installValue}
+              <input aria-label={i18nT('pages.settings.displayPanel.theme_source_location')} value={installValue}
                 onChange={e => setInstallValue(e.target.value)}
                 onKeyDown={e => { if (e.key === 'Enter') handleInstall() }}
                 placeholder={installType === 'github' ? 'https://github.com/user/theme' : '/path/to/theme'}
@@ -237,32 +264,32 @@ export function DisplayPanel() {
       )}
 
       {/* Sidebar Colors */}
-      <SettingsSection title="Sidebar Colors">
+      <SettingsSection title={i18nT('pages.settings.displayPanel.sidebar_colors')}>
         <SettingsCard>
           <SettingsButtonGroup
-            label="Palette"
-            description="Choose a color palette for your sidebar sessions."
+            label={i18nT('pages.settings.displayPanel.palette')}
+            description={i18nT('pages.settings.displayPanel.choose_a_color_palette_for_your_sidebar_sessions')}
             value={paletteName}
             options={PALETTE_NAMES.map(p => ({ value: p, label: p.charAt(0).toUpperCase() + p.slice(1) }))}
             onChange={v => dispatch(setSessionColorsPalette(v as PaletteName))}
           />
           <SettingsButtonGroup
-            label="Intensity"
-            description="How visible the color tint is on sidebar rows."
+            label={i18nT('pages.settings.displayPanel.intensity')}
+            description={i18nT('pages.settings.displayPanel.how_visible_the_color_tint_is_on_sidebar_rows')}
             value={intensity}
             options={INTENSITY_NAMES.map(n => ({ value: n, label: n.charAt(0).toUpperCase() + n.slice(1) }))}
             onChange={v => dispatch(setSessionColorsIntensity(v as IntensityName))}
           />
           <SettingsButtonGroup
-            label="Display Mode"
-            description="How the session color is applied to the row."
+            label={i18nT('pages.settings.displayPanel.display_mode')}
+            description={i18nT('pages.settings.displayPanel.how_the_session_color_is_applied_to_the_row')}
             value={colorMode}
             options={[{ value: 'tint', label: 'Solid Tint' }, { value: 'gradient', label: 'Gradient' }]}
             onChange={v => dispatch(setSessionColorsMode(v as SessionColorMode))}
           />
           <SettingsStepper
-            label="Highlight recent sessions"
-            description="Highlight the N most-recently-active sessions with a graded accent stripe (0 = off). Saved to your KiroCrew config."
+            label={i18nT('pages.settings.displayPanel.highlight_recent_sessions')}
+            description={i18nT('pages.settings.displayPanel.highlight_the_n_most_recently_active_sessions_wi')}
             value={recentTintCount}
             onIncrement={() => setTintCount(recentTintCount + 1)}
             onDecrement={() => setTintCount(recentTintCount - 1)}
@@ -270,14 +297,14 @@ export function DisplayPanel() {
           />
           {/* Color swatches use raw buttons — circular color dots don't fit SettingsButtonGroup's text-button pattern */}
           <div className="flex flex-col gap-1.5 py-1.5">
-            <span className="text-[13px] font-semibold text-text">Default for New Sessions</span>
-            <div className="text-[12px] text-muted">None, auto-cycle, or pick a fixed color.</div>
+            <span className="text-[13px] font-semibold text-text">{i18nT('pages.settings.displayPanel.default_for_new_sessions')}</span>
+            <div className="text-[12px] text-muted">{i18nT('pages.settings.displayPanel.none_auto_cycle_or_pick_a_fixed_color')}</div>
             <div className="flex flex-wrap items-center gap-1.5">
-              <button type="button" aria-label="No color" aria-pressed={defaultColor === null} className={`w-7 h-7 rounded-full border-2 cursor-pointer transition-transform hover:scale-110 ${defaultColor === null ? 'border-accent scale-110' : 'border-border'}`} style={{ background: 'var(--bg-accent)', backgroundImage: 'linear-gradient(135deg, transparent 45%, var(--danger) 45%, var(--danger) 55%, transparent 55%)' }} onClick={() => dispatch(setSessionDefaultColor(null))} title="No color" />
+              <button type="button" aria-label={i18nT('pages.settings.displayPanel.no_color')} aria-pressed={defaultColor === null} className={`w-7 h-7 rounded-full border-2 cursor-pointer transition-transform hover:scale-110 ${defaultColor === null ? 'border-accent scale-110' : 'border-border'}`} style={{ background: 'var(--bg-accent)', backgroundImage: 'linear-gradient(135deg, transparent 45%, var(--danger) 45%, var(--danger) 55%, transparent 55%)' }} onClick={() => dispatch(setSessionDefaultColor(null))} title={i18nT('pages.settings.displayPanel.no_color')} />
               {colors.map((c, i) => (
                 <button type="button" key={i} aria-label={`Color ${i + 1}`} aria-pressed={defaultColor === i} className={`w-7 h-7 rounded-full border-2 cursor-pointer transition-transform hover:scale-110 ${defaultColor === i ? 'border-accent scale-110' : 'border-border'}`} style={{ background: `linear-gradient(135deg, color-mix(in srgb, ${c} ${boost.activePct[i]}%, var(--bg-accent)) 50%, color-mix(in srgb, ${c} ${boost.idlePct[i]}%, var(--bg-accent)) 50%)` }} onClick={() => dispatch(setSessionDefaultColor(i))} title={`Color ${i + 1}`} />
               ))}
-              <button type="button" className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[13px] font-medium cursor-pointer border transition-all ${defaultColor === 'auto' ? 'bg-accent-subtle text-accent border-accent' : 'bg-transparent text-muted border-border hover:border-border-strong hover:text-text'}`} onClick={() => dispatch(setSessionDefaultColor('auto'))}>Auto</button>
+              <button type="button" className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[13px] font-medium cursor-pointer border transition-all ${defaultColor === 'auto' ? 'bg-accent-subtle text-accent border-accent' : 'bg-transparent text-muted border-border hover:border-border-strong hover:text-text'}`} onClick={() => dispatch(setSessionDefaultColor('auto'))}>{i18nT('pages.settings.displayPanel.auto')}</button>
             </div>
           </div>
         </SettingsCard>

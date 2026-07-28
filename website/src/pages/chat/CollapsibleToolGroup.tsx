@@ -3,6 +3,7 @@ import { CheckCircle, Handshake, Ban, Wrench, AlertTriangle } from 'lucide-react
 import { sanitizeLlmOutput } from '../../utils/sanitize'
 import { ToolInputText } from '../../components/ToolInputText'
 
+import { i18nT } from '../../i18n/t'
 interface CollapsibleToolGroupProps {
   count: number
   autoExpand?: boolean
@@ -58,14 +59,14 @@ const CollapsibleToolGroup = memo(function CollapsibleToolGroup({ count, autoExp
     wasRunning.current = !!isRunning
   }, [isRunning])
 
-  const decisionLabel: Record<string, ReactNode> = { approved: <><CheckCircle className="lucide-inline" /> Approved</>, trust: <><Handshake className="lucide-inline" /> Trusted</>, rejected: <><Ban className="lucide-inline" /> Rejected</> }
+  const decisionLabel: Record<string, ReactNode> = { approved: <><CheckCircle className="lucide-inline" /> {i18nT('pages.chat.collapsibleToolGroup.approved')}</>, trust: <><Handshake className="lucide-inline" /> {i18nT('pages.chat.collapsibleToolGroup.trusted')}</>, rejected: <><Ban className="lucide-inline" /> {i18nT('pages.chat.collapsibleToolGroup.rejected')}</> }
   const labelNode = localResolved
-    ? (decisionLabel[localResolved] || <><CheckCircle className="lucide-inline" /> Resolved</>)
+    ? (decisionLabel[localResolved] || <><CheckCircle className="lucide-inline" /> {i18nT('pages.chat.collapsibleToolGroup.resolved')}</>)
     : needsAttention
-      ? (pendingPermCount && pendingPermCount > 1 ? <><AlertTriangle className="lucide-inline" /> {pendingPermCount} approvals pending</> : <><AlertTriangle className="lucide-inline" /> Approval needed</>)
+      ? (pendingPermCount && pendingPermCount > 1 ? <><AlertTriangle className="lucide-inline" /> {pendingPermCount} {i18nT('pages.chat.collapsibleToolGroup.approvals_pending')}</> : <><AlertTriangle className="lucide-inline" /> {i18nT('pages.chat.collapsibleToolGroup.approval_needed')}</>)
       : isRunning
-        ? <><Wrench className="lucide-inline" /> running tools</>
-        : <><Wrench className="lucide-inline" /> {count} tool call{count === 1 ? '' : 's'}</>
+        ? <><Wrench className="lucide-inline" /> {i18nT('pages.chat.collapsibleToolGroup.running_tools')}</>
+        : <><Wrench className="lucide-inline" /> {count} {i18nT('pages.chat.collapsibleToolGroup.tool_call')}{count === 1 ? '' : 's'}</>
   const labelText = localResolved
     ? (localResolved === 'approved' ? 'Approved' : localResolved === 'trust' ? 'Trusted' : 'Rejected')
     : needsAttention ? 'Approval needed' : isRunning ? 'running tools' : `${count} tool call${count === 1 ? '' : 's'}`
@@ -98,14 +99,14 @@ const CollapsibleToolGroup = memo(function CollapsibleToolGroup({ count, autoExp
         aria-label={`${expanded ? 'Collapse' : 'Expand'} ${labelText}`}
       >
         {needsAttention ? (
-          <span className="relative w-2.5 h-2.5 flex-shrink-0" aria-label="Approval needed">
+          <span className="relative w-2.5 h-2.5 flex-shrink-0" aria-label={i18nT('pages.chat.collapsibleToolGroup.approval_needed')}>
             <span className="absolute inset-0 rounded-full bg-amber-400 animate-ping opacity-60" />
             <span className="relative block w-2.5 h-2.5 rounded-full bg-amber-400" />
           </span>
         ) : localResolved ? (
-          <span className="w-2.5 h-2.5 rounded-full bg-ok flex-shrink-0" aria-label="Resolved" />
+          <span className="w-2.5 h-2.5 rounded-full bg-ok flex-shrink-0" aria-label={i18nT('pages.chat.collapsibleToolGroup.resolved')} />
         ) : isRunning ? (
-          <span className="w-2.5 h-2.5 rounded-full bg-green-400 animate-pulse flex-shrink-0" aria-label="Running" />
+          <span className="w-2.5 h-2.5 rounded-full bg-green-400 animate-pulse flex-shrink-0" aria-label={i18nT('pages.chat.collapsibleToolGroup.running')} />
         ) : (
           <span className={`transition-transform duration-150 ${expanded ? 'rotate-90' : ''}`}>▶</span>
         )}
@@ -120,15 +121,15 @@ const CollapsibleToolGroup = memo(function CollapsibleToolGroup({ count, autoExp
       )}
       {needsAttention && !expanded && onApprove && (
         <div className="mt-1 ml-4 pl-3 flex gap-1.5 flex-wrap">
-          <button disabled={submitting} className="px-2.5 py-1 rounded-md border border-border bg-transparent text-muted text-[13px] cursor-pointer font-body hover:text-text hover:border-border-strong hover:bg-bg-hover transition-all disabled:opacity-50 disabled:cursor-not-allowed" onClick={e => { e.stopPropagation(); submitDecision('approved') }}><CheckCircle className="lucide-inline" /> Approve</button>
-          <button disabled={submitting} className="px-2.5 py-1 rounded-md border border-border bg-transparent text-muted text-[13px] cursor-pointer font-body hover:text-text hover:border-border-strong hover:bg-bg-hover transition-all disabled:opacity-50 disabled:cursor-not-allowed" onClick={e => { e.stopPropagation(); submitDecision('trust') }}><Handshake className="lucide-inline" /> Trust</button>
-          <button disabled={submitting} className="px-2.5 py-1 rounded-md border border-border bg-transparent text-muted text-[13px] cursor-pointer font-body hover:text-danger hover:border-danger transition-all disabled:opacity-50 disabled:cursor-not-allowed" onClick={e => { e.stopPropagation(); submitDecision('rejected') }}><Ban className="lucide-inline" /> Reject</button>
+          <button disabled={submitting} className="px-2.5 py-1 rounded-md border border-border bg-transparent text-muted text-[13px] cursor-pointer font-body hover:text-text hover:border-border-strong hover:bg-bg-hover transition-all disabled:opacity-50 disabled:cursor-not-allowed" onClick={e => { e.stopPropagation(); submitDecision('approved') }}><CheckCircle className="lucide-inline" /> {i18nT('pages.chat.collapsibleToolGroup.approve')}</button>
+          <button disabled={submitting} className="px-2.5 py-1 rounded-md border border-border bg-transparent text-muted text-[13px] cursor-pointer font-body hover:text-text hover:border-border-strong hover:bg-bg-hover transition-all disabled:opacity-50 disabled:cursor-not-allowed" onClick={e => { e.stopPropagation(); submitDecision('trust') }}><Handshake className="lucide-inline" /> {i18nT('pages.chat.collapsibleToolGroup.trust')}</button>
+          <button disabled={submitting} className="px-2.5 py-1 rounded-md border border-border bg-transparent text-muted text-[13px] cursor-pointer font-body hover:text-danger hover:border-danger transition-all disabled:opacity-50 disabled:cursor-not-allowed" onClick={e => { e.stopPropagation(); submitDecision('rejected') }}><Ban className="lucide-inline" /> {i18nT('pages.chat.collapsibleToolGroup.reject')}</button>
         </div>
       )}
 
       {expanded && <div className="mt-1 ml-4 border-l border-border pl-3 flex flex-col gap-1">
         {children}
-        {onViewActivity && !activityOpen && <button className="text-[12px] text-accent hover:underline cursor-pointer font-body self-start mt-1" onClick={onViewActivity}>View Full Activity →</button>}
+        {onViewActivity && !activityOpen && <button className="text-[12px] text-accent hover:underline cursor-pointer font-body self-start mt-1" onClick={onViewActivity}>{i18nT('pages.chat.collapsibleToolGroup.view_full_activity')}</button>}
       </div>}
     </div>
   )

@@ -11,6 +11,7 @@
 import { BadgeCheck, Database, Plus } from 'lucide-react'
 import type { Category } from './categories'
 
+import { i18nT } from '../../i18n/t'
 export type SourceRow = { name: string; label: string; count: number; builtin: boolean }
 
 export default function CategoryRail({ categories, total, selected, onSelect, sources, onAddSource }: {
@@ -41,20 +42,20 @@ export default function CategoryRail({ categories, total, selected, onSelect, so
   return (
     <div className="flex flex-col gap-[18px] w-full">
       <div>
-        <div className="text-[11px] font-bold tracking-[.1em] text-muted mb-2">CATEGORIES</div>
+        <div className="text-[11px] font-bold tracking-[.1em] text-muted mb-2">{i18nT('components.appstore.categoryRail.categories')}</div>
         {item('All apps', total, 'All')}
         {categories.map(({ category, count }) => item(category, count, category))}
       </div>
       <div>
-        <div className="text-[11px] font-bold tracking-[.1em] text-muted mb-2">SOURCES</div>
+        <div className="text-[11px] font-bold tracking-[.1em] text-muted mb-2">{i18nT('components.appstore.categoryRail.sources')}</div>
         {sources.map(s => (
           <div key={s.name} className="flex items-center gap-2 px-2.5 py-[7px] border border-border rounded-[9px] bg-card text-[12.5px] mb-1.5">
             {s.builtin
-              ? <BadgeCheck size={14} className="text-accent shrink-0" aria-label="First-party" />
+              ? <BadgeCheck size={14} className="text-accent shrink-0" aria-label={i18nT('components.appstore.categoryRail.first_party')} />
               : <Database size={14} className="text-muted shrink-0" />}
             <div className="min-w-0">
               <div className="text-text truncate">{s.label}</div>
-              <div className="text-muted text-[11px]">{s.count} app{s.count === 1 ? '' : 's'}</div>
+              <div className="text-muted text-[11px]">{s.count} {i18nT('components.appstore.categoryRail.app')}{s.count === 1 ? '' : 's'}</div>
             </div>
           </div>
         ))}
@@ -63,7 +64,7 @@ export default function CategoryRail({ categories, total, selected, onSelect, so
           className="flex items-center gap-1.5 text-[12.5px] text-accent cursor-pointer border-0 bg-transparent px-0.5 py-1 hover:underline"
           onClick={onAddSource}
         >
-          <Plus size={13} /> Add source
+          <Plus size={13} /> {i18nT('components.appstore.categoryRail.add_source')}
         </button>
       </div>
     </div>

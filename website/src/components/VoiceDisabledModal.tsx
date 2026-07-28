@@ -2,6 +2,7 @@ import { Mic } from 'lucide-react'
 import Modal from './Modal'
 import { Btn } from './ui'
 
+import { i18nT } from '../i18n/t'
 interface Props {
   /** Whether the modal is open */
   open: boolean
@@ -22,12 +23,12 @@ export default function VoiceDisabledModal({ open, onClose, onOpenSettings }: Pr
     <Modal
       open={open}
       onClose={onClose}
-      title="Turn on voice input"
+      title={i18nT('components.voiceDisabledModal.turn_on_voice_input')}
       maxWidth={440}
       footer={
         <>
-          <Btn onClick={onClose}>Not now</Btn>
-          <Btn primary onClick={onOpenSettings}>Open settings</Btn>
+          <Btn onClick={onClose}>{i18nT('components.voiceDisabledModal.not_now')}</Btn>
+          <Btn primary onClick={onOpenSettings}>{i18nT('components.voiceDisabledModal.open_settings')}</Btn>
         </>
       }
     >
@@ -37,10 +38,10 @@ export default function VoiceDisabledModal({ open, onClose, onOpenSettings }: Pr
         </div>
         <div className="text-[13px] text-text leading-relaxed">
           <p className="mb-2">
-            Speech-to-text is not enabled yet, so the microphone cannot turn your voice into text.
+            {i18nT('components.voiceDisabledModal.speech_to_text_is_not_enabled_yet_so_the_microph')}
           </p>
           <p className="text-muted">
-            Enable it under <span className="text-text font-medium">Settings &rarr; Voice</span>, then click the mic to dictate into the message box.
+            {i18nT('components.voiceDisabledModal.enable_it_under')} <span className="text-text font-medium">{i18nT('components.voiceDisabledModal.settings_voice')}</span>{i18nT('components.voiceDisabledModal.then_click_the_mic_to_dictate_into_the_message_b')}
           </p>
         </div>
       </div>

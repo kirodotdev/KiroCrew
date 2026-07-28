@@ -2,6 +2,7 @@ import { useMemo } from 'react'
 import { motion } from 'framer-motion'
 import { LayoutDashboard } from 'lucide-react'
 
+import { i18nT } from '../i18n/t'
 const COLS = 24
 const ROWS = 12
 
@@ -31,7 +32,7 @@ export default function WidgetPlaceholder({ title = 'Widget' }: { title?: string
       <div className="flex items-center gap-2 px-3 py-2 border-b border-border bg-bg-elevated">
         <LayoutDashboard size={13} className="text-accent" />
         <span className="text-[13px] font-medium text-text">{title}</span>
-        <span className="text-[12px] text-muted ml-1 animate-pulse">generating…</span>
+        <span className="text-[12px] text-muted ml-1 animate-pulse">{i18nT('components.widgetPlaceholder.generating')}</span>
       </div>
       <div
         style={{

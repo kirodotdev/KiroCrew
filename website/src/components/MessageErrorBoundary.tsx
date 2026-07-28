@@ -1,6 +1,7 @@
 import { Component, type ReactNode } from 'react'
 import { AlertTriangle, Code } from 'lucide-react'
 
+import { i18nT } from '../i18n/t'
 interface Props {
   children: ReactNode
   /** Raw text fallback shown when render fails */
@@ -47,7 +48,7 @@ export default class MessageErrorBoundary extends Component<Props, State> {
       <div className="flex flex-col gap-1 px-3 py-2 rounded-md border border-warning/40 bg-warning-subtle/30 text-sm">
         <div className="flex items-center gap-1.5 text-warning">
           <AlertTriangle size={14} />
-          <span className="font-medium">Message failed to render</span>
+          <span className="font-medium">{i18nT('components.messageErrorBoundary.message_failed_to_render')}</span>
           {this.props.rawContent && (
             <button
               className="ml-auto flex items-center gap-1 text-[11px] text-muted hover:text-text transition-colors cursor-pointer"

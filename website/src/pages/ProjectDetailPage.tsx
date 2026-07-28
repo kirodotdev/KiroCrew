@@ -12,6 +12,7 @@ import PixelCanvasWidget from '../components/PixelCanvasWidget';
 import { api } from '../api/client';
 import { AlertTriangle, Download } from 'lucide-react';
 
+import { i18nT } from '../i18n/t'
 type Tab = 'idea' | 'tasks';
 type ViewMode = 'dag' | 'phased';
 
@@ -164,13 +165,13 @@ export default function ProjectDetailPage({ run, onRetry, onRefresh }: Props) {
       <div className="flex-1 min-w-0 flex flex-col min-h-0">
         {/* Tab bar */}
         <div className="px-4 py-2 border-b border-border flex gap-1 items-center shrink-0">
-          <button onClick={() => setTab('idea')} className={tabCls(tab === 'idea')}>Idea</button>
-          <button onClick={() => setTab('tasks')} className={tabCls(tab === 'tasks')}>Tasks</button>
+          <button onClick={() => setTab('idea')} className={tabCls(tab === 'idea')}>{i18nT('pages.projectDetailPage.idea')}</button>
+          <button onClick={() => setTab('tasks')} className={tabCls(tab === 'tasks')}>{i18nT('pages.projectDetailPage.tasks')}</button>
           {tab === 'tasks' && !isPlanning && (
             <>
               <span className="mx-1 text-muted">·</span>
-              <button onClick={() => setView('dag')} className={tabCls(view === 'dag')}>DAG</button>
-              <button onClick={() => setView('phased')} className={tabCls(view === 'phased')}>Phased</button>
+              <button onClick={() => setView('dag')} className={tabCls(view === 'dag')}>{i18nT('pages.projectDetailPage.dag')}</button>
+              <button onClick={() => setView('phased')} className={tabCls(view === 'phased')}>{i18nT('pages.projectDetailPage.phased')}</button>
             </>
           )}
           <div className="flex-1" />
@@ -178,7 +179,7 @@ export default function ProjectDetailPage({ run, onRetry, onRefresh }: Props) {
             <button
               onClick={() => exportMutation.mutate()}
               disabled={exportMutation.isPending}
-              title="Export this plan as a YAML workflow — re-importable via the 'From YAML' tab"
+              title={i18nT('pages.projectDetailPage.export_this_plan_as_a_yaml_workflow_re_importabl')}
               className={`flex items-center gap-1.5 px-3 py-1.5 text-[13px] rounded border border-border text-muted cursor-pointer transition-all hover:text-accent hover:border-accent ${exportMutation.isPending ? 'opacity-50 cursor-not-allowed' : ''}`}
             >
               <Download size={13} /> {exportMutation.isPending ? 'Exporting…' : 'Export YAML'}
@@ -196,8 +197,8 @@ export default function ProjectDetailPage({ run, onRetry, onRefresh }: Props) {
           return (
             <div className="mx-4 mt-2 px-4 py-2.5 bg-[#eab308]/10 border border-[#eab308]/40 rounded-md flex items-center gap-3 text-[13px] shrink-0">
               <span className="text-[#eab308]"><AlertTriangle size={16} /></span>
-              <span className="text-[#eab308]/90 flex-1"><strong>Approval required:</strong> Task {t.index} "{t.title}" is waiting for your decision</span>
-              <button onClick={() => setSelectedTask(t.index)} className="px-3 py-1 bg-[#eab308] hover:bg-[#ca8a04] text-black text-[13px] rounded font-medium cursor-pointer border-none transition-all">Go to Task →</button>
+              <span className="text-[#eab308]/90 flex-1"><strong>{i18nT('pages.projectDetailPage.approval_required')}</strong> {i18nT('pages.projectDetailPage.task')} {t.index} "{t.title}{i18nT('pages.projectDetailPage.is_waiting_for_your_decision')}</span>
+              <button onClick={() => setSelectedTask(t.index)} className="px-3 py-1 bg-[#eab308] hover:bg-[#ca8a04] text-black text-[13px] rounded font-medium cursor-pointer border-none transition-all">{i18nT('pages.projectDetailPage.go_to_task')}</button>
             </div>
           );
         })()}
@@ -211,11 +212,11 @@ export default function ProjectDetailPage({ run, onRetry, onRefresh }: Props) {
                 <div className="whitespace-pre-wrap text-[13px] text-muted bg-bg-elevated rounded-lg p-4 max-h-[500px] overflow-auto border border-border">{idea}</div>
                 <button onClick={() => { dispatch(setPendingInput(idea)); navigate('/chat?prefill=plan') }}
                   className="mt-3 px-4 py-1.5 text-[13px] rounded-md bg-accent text-accent-fg border-none cursor-pointer hover:bg-accent-hover transition-all">
-                  Edit in Chat
+                  {i18nT('pages.projectDetailPage.edit_in_chat')}
                 </button>
               </div>
             ) : (
-              <div className="text-muted text-[13px]">No idea or spec content available.</div>
+              <div className="text-muted text-[13px]">{i18nT('pages.projectDetailPage.no_idea_or_spec_content_available')}</div>
             )
           ) : view === 'dag' ? (
             <DagView
@@ -261,9 +262,9 @@ function PlanningOverlay() {
     <div className="flex items-center justify-center h-full">
       <div className="text-center">
         <div className="w-10 h-10 border-3 border-accent/30 border-t-accent rounded-full animate-spin mx-auto mb-4" />
-        <div className="text-accent text-[16px] font-semibold">Generating execution plan{dots}</div>
-        <div className="text-muted text-[13px] mt-1">Analyzing task and building step-by-step plan</div>
-        <div className="text-muted text-[12px] mt-3">The DAG view will appear once the plan is ready</div>
+        <div className="text-accent text-[16px] font-semibold">{i18nT('pages.projectDetailPage.generating_execution_plan')}{dots}</div>
+        <div className="text-muted text-[13px] mt-1">{i18nT('pages.projectDetailPage.analyzing_task_and_building_step_by_step_plan')}</div>
+        <div className="text-muted text-[12px] mt-3">{i18nT('pages.projectDetailPage.the_dag_view_will_appear_once_the_plan_is_ready')}</div>
       </div>
     </div>
   );

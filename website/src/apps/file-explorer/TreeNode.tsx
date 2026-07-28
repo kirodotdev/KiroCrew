@@ -6,6 +6,7 @@ import { extOf } from './utils'
 import { fileExplorerApi } from './api'
 import type { TreeEntry, GitInfo } from './types'
 
+import { i18nT } from '../../i18n/t'
 function gitBadge(code: string | null) {
   if (!code) return null
   const c = code.trim()
@@ -117,7 +118,7 @@ export default function TreeNode({ node, depth, expanded, toggleExpand, selected
         />
       ))}
       {isDir && isOpen && !children && (
-        <div style={{ paddingLeft: 6 + (depth + 1) * 14 + 18, fontSize: 11, color: 'var(--muted)' }}>loading...</div>
+        <div style={{ paddingLeft: 6 + (depth + 1) * 14 + 18, fontSize: 11, color: 'var(--muted)' }}>{i18nT('apps.fileExplorer.treeNode.loading')}</div>
       )}
     </Fragment>
   )

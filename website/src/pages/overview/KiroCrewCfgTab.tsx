@@ -8,6 +8,7 @@ import { useProvider } from '../../providers'
 
 import type { KiroCrewAgent } from '../../components/AgentSelector'
 
+import { i18nT } from '../../i18n/t'
 type KiroCrewAgentCfg = Omit<KiroCrewAgent, 'name'>
 interface WorkspaceCfg { dir: string }
 interface MemoryStoreCfg { description: string; embedding_provider: string }
@@ -149,24 +150,24 @@ export default function KiroCrewCfgTab() {
     <>
       {/* Agents */}
       <Card>
-        <CardTitle><Bot className="lucide-inline" /> KiroCrew Agents <InfoTip text={`Named agent definitions that bind a ${provider.labels.agentTemplateField.toLowerCase()}, workspace, and memory store together. Edit config.json to add or modify agents.`} /></CardTitle>
+        <CardTitle><Bot className="lucide-inline" /> {i18nT('pages.overview.kiroCrewCfgTab.kirocrew_agents')} <InfoTip text={`Named agent definitions that bind a ${provider.labels.agentTemplateField.toLowerCase()}, workspace, and memory store together. Edit config.json to add or modify agents.`} /></CardTitle>
         {agents.length === 0 ? (
-          <EmptyState icon={<Bot className="lucide-inline" />} title="No agents defined" subtitle="Using legacy mode — agent.default_agent as agent template" />
+          <EmptyState icon={<Bot className="lucide-inline" />} title={i18nT('pages.overview.kiroCrewCfgTab.no_agents_defined')} subtitle={i18nT('pages.overview.kiroCrewCfgTab.using_legacy_mode_agent_default_agent_as_agent_t')} />
         ) : (
           <table className="w-full border-collapse table-striped">
             <thead>
               <tr>
-                <th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium">Name</th>
+                <th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium">{i18nT('pages.overview.kiroCrewCfgTab.name')}</th>
                 <th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium">{provider.labels.agentTemplateField}</th>
-                <th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium">Workspace</th>
-                <th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium">Memory Store</th>
+                <th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium">{i18nT('pages.overview.kiroCrewCfgTab.workspace')}</th>
+                <th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium">{i18nT('pages.overview.kiroCrewCfgTab.memory_store')}</th>
               </tr>
             </thead>
             <tbody>
               {agents.map(([name, a]) => (
                 <tr key={name}>
                   <td className="px-2.5 py-2 text-sm text-text font-medium">
-                    {name} {name === cfg.default_agent && <Badge variant="aim">default</Badge>}
+                    {name} {name === cfg.default_agent && <Badge variant="aim">{i18nT('pages.overview.kiroCrewCfgTab.default')}</Badge>}
                   </td>
                   <td className="px-2.5 py-2 text-[13px] font-mono text-muted">{a.kiro_agent || '—'}</td>
                   <td className="px-2.5 py-2 text-[13px] font-mono text-muted">{a.workspace}</td>
@@ -180,13 +181,13 @@ export default function KiroCrewCfgTab() {
 
       {/* Workspaces */}
       <Card>
-        <CardTitle><FolderOpen className="lucide-inline" /> Workspaces <InfoTip text="Named workspace directories. Each agent binds to one workspace." /></CardTitle>
+        <CardTitle><FolderOpen className="lucide-inline" /> {i18nT('pages.overview.kiroCrewCfgTab.workspaces')} <InfoTip text="Named workspace directories. Each agent binds to one workspace." /></CardTitle>
         <table className="w-full border-collapse table-striped">
           <thead>
             <tr>
-              <th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium">Name</th>
-              <th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium">Directory</th>
-              <th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium">Used By</th>
+              <th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium">{i18nT('pages.overview.kiroCrewCfgTab.name')}</th>
+              <th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium">{i18nT('pages.overview.kiroCrewCfgTab.directory')}</th>
+              <th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium">{i18nT('pages.overview.kiroCrewCfgTab.used_by')}</th>
             </tr>
           </thead>
           <tbody>
@@ -195,7 +196,7 @@ export default function KiroCrewCfgTab() {
               return (
                 <tr key={name}>
                   <td className="px-2.5 py-2 text-sm text-text font-medium">
-                    {name} {name === cfg.default_workspace && <Badge variant="ok">default</Badge>}
+                    {name} {name === cfg.default_workspace && <Badge variant="ok">{i18nT('pages.overview.kiroCrewCfgTab.default')}</Badge>}
                   </td>
                   <td className="px-2.5 py-2 text-[13px] font-mono text-muted">{ws.dir}</td>
                   <td className="px-2.5 py-2"><UsedByTags names={usedBy} /></td>
@@ -208,17 +209,17 @@ export default function KiroCrewCfgTab() {
 
       {/* Memory Stores */}
       <Card>
-        <CardTitle><Brain className="lucide-inline" /> Memory Stores <InfoTip text="Named memory stores with optional per-store embedding overrides. Unset fields inherit from the top-level memory section." /></CardTitle>
+        <CardTitle><Brain className="lucide-inline" /> {i18nT('pages.overview.kiroCrewCfgTab.memory_stores')} <InfoTip text="Named memory stores with optional per-store embedding overrides. Unset fields inherit from the top-level memory section." /></CardTitle>
         {stores.length === 0 ? (
-          <EmptyState icon={<Brain className="lucide-inline" />} title="No memory stores" subtitle="Using global memory settings" />
+          <EmptyState icon={<Brain className="lucide-inline" />} title={i18nT('pages.overview.kiroCrewCfgTab.no_memory_stores')} subtitle={i18nT('pages.overview.kiroCrewCfgTab.using_global_memory_settings')} />
         ) : (
           <table className="w-full border-collapse table-striped">
             <thead>
               <tr>
-                <th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium">Name</th>
-                <th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium">Description</th>
-                <th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium">Embedding</th>
-                <th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium">Used By</th>
+                <th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium">{i18nT('pages.overview.kiroCrewCfgTab.name')}</th>
+                <th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium">{i18nT('pages.overview.kiroCrewCfgTab.description')}</th>
+                <th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium">{i18nT('pages.overview.kiroCrewCfgTab.embedding')}</th>
+                <th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium">{i18nT('pages.overview.kiroCrewCfgTab.used_by')}</th>
               </tr>
             </thead>
             <tbody>
@@ -227,10 +228,10 @@ export default function KiroCrewCfgTab() {
                 return (
                   <tr key={name}>
                     <td className="px-2.5 py-2 text-sm text-text font-medium">
-                      {name} {name === cfg.default_memory_store && <Badge variant="ok">default</Badge>}
+                      {name} {name === cfg.default_memory_store && <Badge variant="ok">{i18nT('pages.overview.kiroCrewCfgTab.default')}</Badge>}
                     </td>
                     <td className="px-2.5 py-2 text-[13px] text-muted">{ms.description || '—'}</td>
-                    <td className="px-2.5 py-2 text-[13px] font-mono text-muted">{ms.embedding_provider || <span className="italic">inherited ({cfg.memory.embedding_provider})</span>}</td>
+                    <td className="px-2.5 py-2 text-[13px] font-mono text-muted">{ms.embedding_provider || <span className="italic">{i18nT('pages.overview.kiroCrewCfgTab.inherited')}{cfg.memory.embedding_provider})</span>}</td>
                     <td className="px-2.5 py-2"><UsedByTags names={usedBy} /></td>
                   </tr>
                 )
@@ -246,31 +247,31 @@ export default function KiroCrewCfgTab() {
       {/* Warm Pool */}
       {provider.capabilities.warmPool && (
       <Card>
-        <CardTitle><Flame className="lucide-inline" /> Warm Pool <InfoTip text={`${provider.labels.warmPoolDescription} Restart required to apply changes.`} /></CardTitle>
+        <CardTitle><Flame className="lucide-inline" /> {i18nT('pages.overview.kiroCrewCfgTab.warm_pool')} <InfoTip text={`${provider.labels.warmPoolDescription} Restart required to apply changes.`} /></CardTitle>
         {saveErr && <p className="text-danger text-[13px] mb-2">{saveErr}</p>}
         <div className="grid grid-cols-2 gap-x-6 gap-y-2 max-[600px]:grid-cols-1">
-          <CfgNumber key={`poolsize-${rev}`} label="Pool Size" path="session.pool_size" value={cfg.session.pool_size ?? 0} min={0} max={10} hint="Number of pre-spawned processes. 0 disables. Restart required." onSave={save} />
-          <CfgSelect key={`poolagent-${rev}`} label="Pool Agent" path="session.pool_agent" value={cfg.session.pool_agent ?? ''} options={['', ...Object.keys(cfg.agents)]} labels={{'': `(${cfg.default_agent || 'default agent'})`}} hint="Agent for pool processes. Empty uses default agent. Restart required." onSave={save} />
-          <CfgNumber key={`poolttl-${rev}`} label="Pool TTL" path="session.pool_ttl_secs" value={cfg.session.pool_ttl_secs} suffix="s" min={0} max={7200} hint="Max age for pooled processes. 0 disables expiry. Restart required." onSave={save} />
+          <CfgNumber key={`poolsize-${rev}`} label={i18nT('pages.overview.kiroCrewCfgTab.pool_size')} path="session.pool_size" value={cfg.session.pool_size ?? 0} min={0} max={10} hint={i18nT('pages.overview.kiroCrewCfgTab.number_of_pre_spawned_processes_0_disables_resta')} onSave={save} />
+          <CfgSelect key={`poolagent-${rev}`} label={i18nT('pages.overview.kiroCrewCfgTab.pool_agent')} path="session.pool_agent" value={cfg.session.pool_agent ?? ''} options={['', ...Object.keys(cfg.agents)]} labels={{'': `(${cfg.default_agent || 'default agent'})`}} hint={i18nT('pages.overview.kiroCrewCfgTab.agent_for_pool_processes_empty_uses_default_agen')} onSave={save} />
+          <CfgNumber key={`poolttl-${rev}`} label={i18nT('pages.overview.kiroCrewCfgTab.pool_ttl')} path="session.pool_ttl_secs" value={cfg.session.pool_ttl_secs} suffix="s" min={0} max={7200} hint={i18nT('pages.overview.kiroCrewCfgTab.max_age_for_pooled_processes_0_disables_expiry_r')} onSave={save} />
         </div>
       </Card>
       )}
 
       {/* Quick Info */}
       <Card>
-        <CardTitle><Settings className="lucide-inline" /> Config Summary</CardTitle>
+        <CardTitle><Settings className="lucide-inline" /> {i18nT('pages.overview.kiroCrewCfgTab.config_summary')}</CardTitle>
         {saveErr && <p className="text-danger text-[13px] mb-2">{saveErr}</p>}
         <div className="grid grid-cols-2 gap-x-6 gap-y-2 max-[600px]:grid-cols-1">
-          <div className={readonlyCls}><span className="text-muted"><Lock className="lucide-inline" /> Provider</span><span className="text-text font-mono text-[13px]">{cfg.agent.provider}</span></div>
-          <CfgSelect key={`approval-${rev}`} label="Approval Mode" path="agent.approval_mode" value={cfg.agent.approval_mode} options={['auto', 'interactive']} hint="Immediate. 'auto' approves all tools; 'interactive' asks before each." onSave={save} />
-          <CfgNumber key={`timeout-${rev}`} label="Session Timeout" path="session.timeout_secs" value={cfg.session.timeout_secs} suffix="s" min={60} max={86400} hint="Takes effect on next session. Range: 60–86400s." onSave={save} />
-          <CfgSelect key={`sandbox-${rev}`} label="Sandbox" path="agent.sandbox" value={cfg.agent.sandbox} options={['auto', 'off']} hint="Immediate. 'auto' enables sandbox for untrusted tools." onSave={save} />
-          <CfgSelect key={`enforce-${rev}`} label="Enforce Denied Commands" path="agent.enforce_denied_commands" value={cfg.agent.enforce_denied_commands ?? 'all'} options={['all', 'kirocrew']} hint="Immediate. 'all' enforces on every agent; 'kirocrew' only on kirocrew.json." onSave={save} />
-          <div className={readonlyCls}><span className="text-muted"><Lock className="lucide-inline" /> Embedding Provider</span><span className="text-text font-mono text-[13px]">{cfg.memory.embedding_provider}</span></div>
-          <CfgToggle key={`autoupdate-${rev}`} label="Auto Update" path="auto_update" value={cfg.auto_update} hint="Next update check cycle." onSave={save} />
-          <CfgToggle key={`toolsearch-${rev}`} label="MCP Tool Search" path="agent.tool_search" value={cfg.agent.tool_search ?? true} hint="Enable dynamic MCP tool discovery via kiro-cli. Takes effect on next session." onSave={save} />
-          <div className={readonlyCls}><span className="text-muted">Max Channels</span><span className="text-text font-mono text-[13px]">{cfg.agent.max_channels}</span></div>
-          <div className={readonlyCls}><span className="text-muted">Max Channel Agents</span><span className="text-text font-mono text-[13px]">{cfg.agent.max_channel_agents}</span></div>
+          <div className={readonlyCls}><span className="text-muted"><Lock className="lucide-inline" /> {i18nT('pages.overview.kiroCrewCfgTab.provider')}</span><span className="text-text font-mono text-[13px]">{cfg.agent.provider}</span></div>
+          <CfgSelect key={`approval-${rev}`} label={i18nT('pages.overview.kiroCrewCfgTab.approval_mode')} path="agent.approval_mode" value={cfg.agent.approval_mode} options={['auto', 'interactive']} hint={i18nT('pages.overview.kiroCrewCfgTab.immediate_auto_approves_all_tools_interactive_as')} onSave={save} />
+          <CfgNumber key={`timeout-${rev}`} label={i18nT('pages.overview.kiroCrewCfgTab.session_timeout')} path="session.timeout_secs" value={cfg.session.timeout_secs} suffix="s" min={60} max={86400} hint={i18nT('pages.overview.kiroCrewCfgTab.takes_effect_on_next_session_range_60_86400s')} onSave={save} />
+          <CfgSelect key={`sandbox-${rev}`} label={i18nT('pages.overview.kiroCrewCfgTab.sandbox')} path="agent.sandbox" value={cfg.agent.sandbox} options={['auto', 'off']} hint={i18nT('pages.overview.kiroCrewCfgTab.immediate_auto_enables_sandbox_for_untrusted_too')} onSave={save} />
+          <CfgSelect key={`enforce-${rev}`} label={i18nT('pages.overview.kiroCrewCfgTab.enforce_denied_commands')} path="agent.enforce_denied_commands" value={cfg.agent.enforce_denied_commands ?? 'all'} options={['all', 'kirocrew']} hint={i18nT('pages.overview.kiroCrewCfgTab.immediate_all_enforces_on_every_agent_kirocrew_o')} onSave={save} />
+          <div className={readonlyCls}><span className="text-muted"><Lock className="lucide-inline" /> {i18nT('pages.overview.kiroCrewCfgTab.embedding_provider')}</span><span className="text-text font-mono text-[13px]">{cfg.memory.embedding_provider}</span></div>
+          <CfgToggle key={`autoupdate-${rev}`} label={i18nT('pages.overview.kiroCrewCfgTab.auto_update')} path="auto_update" value={cfg.auto_update} hint={i18nT('pages.overview.kiroCrewCfgTab.next_update_check_cycle')} onSave={save} />
+          <CfgToggle key={`toolsearch-${rev}`} label={i18nT('pages.overview.kiroCrewCfgTab.mcp_tool_search')} path="agent.tool_search" value={cfg.agent.tool_search ?? true} hint={i18nT('pages.overview.kiroCrewCfgTab.enable_dynamic_mcp_tool_discovery_via_kiro_cli_t')} onSave={save} />
+          <div className={readonlyCls}><span className="text-muted">{i18nT('pages.overview.kiroCrewCfgTab.max_channels')}</span><span className="text-text font-mono text-[13px]">{cfg.agent.max_channels}</span></div>
+          <div className={readonlyCls}><span className="text-muted">{i18nT('pages.overview.kiroCrewCfgTab.max_channel_agents')}</span><span className="text-text font-mono text-[13px]">{cfg.agent.max_channel_agents}</span></div>
         </div>
       </Card>
     </>
@@ -300,43 +301,43 @@ function SubagentSettings({ cfg, onSaved }: { cfg: KiroCrewCfg; onSaved: () => v
     setSaving(true); setMsg('')
     try {
       const res = await api.saveKirocrewConfig({ subagent_max_turns: maxTurns, max_subagents: maxSubs, subagent_auto_max: autoMax, conductor_skill: conductor })
-      if (res.error) { setMsg(res.error); setMsgOk(false) } else { setMsg(<><Check className="lucide-inline" /> Saved</>); setMsgOk(true); onSaved() }
+      if (res.error) { setMsg(res.error); setMsgOk(false) } else { setMsg(<><Check className="lucide-inline" /> {i18nT('pages.overview.kiroCrewCfgTab.saved')}</>); setMsgOk(true); onSaved() }
     } catch (e) { setMsg(e instanceof Error ? e.message : String(e)); setMsgOk(false) }
     finally { setSaving(false) }
   }
 
   return (
     <Card>
-      <CardTitle><Bot className="lucide-inline" /> Subagent Settings <InfoTip text="Controls how many subagents can run concurrently and how many tool calls each subagent is allowed. Changes take effect on the next subagent spawn." /></CardTitle>
+      <CardTitle><Bot className="lucide-inline" /> {i18nT('pages.overview.kiroCrewCfgTab.subagent_settings')} <InfoTip text="Controls how many subagents can run concurrently and how many tool calls each subagent is allowed. Changes take effect on the next subagent spawn." /></CardTitle>
       <div className="grid grid-cols-2 gap-x-6 gap-y-3 max-[600px]:grid-cols-1">
         {/* label-has-for flags a label whose only control is a <button>; the
             toggle button is self-labeling (its text is the value) and the label
             wrapper only extends the click target to the row text — intentional. */}
         {/* eslint-disable-next-line jsx-a11y/label-has-for */}
         <label htmlFor="subagent-orchestrator-mode" className="flex justify-between items-center gap-3 py-1.5 border-b border-border text-sm">
-          <span className="text-muted inline-flex items-center gap-1">Orchestrator Mode <InfoTip text="Enable conductor skill for multi-agent orchestration. Restart required." /></span>
-          <button id="subagent-orchestrator-mode" aria-label="Orchestrator Mode" onClick={() => setConductor(!conductor)}
+          <span className="text-muted inline-flex items-center gap-1">{i18nT('pages.overview.kiroCrewCfgTab.orchestrator_mode')} <InfoTip text="Enable conductor skill for multi-agent orchestration. Restart required." /></span>
+          <button id="subagent-orchestrator-mode" aria-label={i18nT('pages.overview.kiroCrewCfgTab.orchestrator_mode')} onClick={() => setConductor(!conductor)}
             className={`px-3 py-1 rounded text-[13px] font-medium border cursor-pointer transition-all ${conductor ? 'bg-accent/10 border-accent text-accent' : 'bg-transparent border-border text-muted'}`}>
             {conductor ? 'Enabled' : 'Disabled'}
           </button>
         </label>
         <label htmlFor="subagent-max-turns" className="flex justify-between items-center gap-3 py-1.5 border-b border-border text-sm">
-          <span className="text-muted inline-flex items-center gap-1">Max Turns per Subagent <InfoTip text="Tool-call budget per subagent (1–200). Default: 100." /></span>
-          <input id="subagent-max-turns" aria-label="Max Turns per Subagent" type="number" min={1} max={200} value={maxTurns} onChange={e => setMaxTurns(parseInt(e.target.value) || 1)}
+          <span className="text-muted inline-flex items-center gap-1">{i18nT('pages.overview.kiroCrewCfgTab.max_turns_per_subagent')} <InfoTip text="Tool-call budget per subagent (1–200). Default: 100." /></span>
+          <input id="subagent-max-turns" aria-label={i18nT('pages.overview.kiroCrewCfgTab.max_turns_per_subagent')} type="number" min={1} max={200} value={maxTurns} onChange={e => setMaxTurns(parseInt(e.target.value) || 1)}
             className="w-20 px-2 py-1 rounded border border-border bg-bg-elevated text-text font-mono text-[13px] text-right" />
         </label>
         <label htmlFor="subagent-max-concurrent" className="flex justify-between items-center gap-3 py-1.5 border-b border-border text-sm">
-          <span className="text-muted inline-flex items-center gap-1">Max Concurrent Subagents <InfoTip text={`Maximum subagents running at once. 0 = auto-size from host memory/CPU (capped at ${hardCap}). Default: 3.`} /></span>
+          <span className="text-muted inline-flex items-center gap-1">{i18nT('pages.overview.kiroCrewCfgTab.max_concurrent_subagents')} <InfoTip text={`Maximum subagents running at once. 0 = auto-size from host memory/CPU (capped at ${hardCap}). Default: 3.`} /></span>
           <span className="inline-flex items-center gap-2">
-            {maxSubs === 0 && <span className="text-[11px] text-muted">auto</span>}
-            <input id="subagent-max-concurrent" aria-label="Max Concurrent Subagents" type="number" min={0} max={hardCap} value={maxSubs} onChange={e => { const v = parseInt(e.target.value); setMaxSubs(Number.isNaN(v) ? 0 : Math.max(0, v)) }}
+            {maxSubs === 0 && <span className="text-[11px] text-muted">{i18nT('pages.overview.kiroCrewCfgTab.auto')}</span>}
+            <input id="subagent-max-concurrent" aria-label={i18nT('pages.overview.kiroCrewCfgTab.max_concurrent_subagents')} type="number" min={0} max={hardCap} value={maxSubs} onChange={e => { const v = parseInt(e.target.value); setMaxSubs(Number.isNaN(v) ? 0 : Math.max(0, v)) }}
               className="w-20 px-2 py-1 rounded border border-border bg-bg-elevated text-text font-mono text-[13px] text-right" />
           </span>
         </label>
         {maxSubs === 0 && (
           <label htmlFor="subagent-auto-size-max" className="flex justify-between items-center gap-3 py-1.5 border-b border-border text-sm">
-            <span className="text-muted inline-flex items-center gap-1">Auto-Size Max <InfoTip text="Ceiling on the auto-sized concurrent subagent count (only applies when Max Concurrent Subagents = 0). The host memory/CPU formula never exceeds this. Range 1–64. Default: 16." /></span>
-            <input id="subagent-auto-size-max" aria-label="Auto-Size Max" type="number" min={1} max={64} value={autoMax} onChange={e => { const v = parseInt(e.target.value); setAutoMax(Number.isNaN(v) ? 1 : Math.min(64, Math.max(1, v))) }}
+            <span className="text-muted inline-flex items-center gap-1">{i18nT('pages.overview.kiroCrewCfgTab.auto_size_max')} <InfoTip text="Ceiling on the auto-sized concurrent subagent count (only applies when Max Concurrent Subagents = 0). The host memory/CPU formula never exceeds this. Range 1–64. Default: 16." /></span>
+            <input id="subagent-auto-size-max" aria-label={i18nT('pages.overview.kiroCrewCfgTab.auto_size_max')} type="number" min={1} max={64} value={autoMax} onChange={e => { const v = parseInt(e.target.value); setAutoMax(Number.isNaN(v) ? 1 : Math.min(64, Math.max(1, v))) }}
               className="w-20 px-2 py-1 rounded border border-border bg-bg-elevated text-text font-mono text-[13px] text-right" />
           </label>
         )}

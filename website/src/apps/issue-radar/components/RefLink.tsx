@@ -20,6 +20,7 @@ import { repoScopeKey } from '../lib/links'
 import type { RepoRef } from '../lib/refLinks'
 import ShimmerLine from './ShimmerLine'
 
+import { i18nT } from '../../../i18n/t'
 /** Delay before a hover opens the preview, so sweeping the pointer across a
  * paragraph of references doesn't flash a card per link (or spend a request per
  * link — the fetch is gated on the same flag). */
@@ -220,7 +221,7 @@ export default function RefLink({
             </div>
           ) : null}
           {measured && !summary.isLoading && summary.error && (
-            <div className="text-muted">Could not load #{target.number}.</div>
+            <div className="text-muted">{i18nT('apps.issueRadar.components.refLink.could_not_load')}{target.number}.</div>
           )}
           {measured && !summary.isLoading && data && life && (
             <>

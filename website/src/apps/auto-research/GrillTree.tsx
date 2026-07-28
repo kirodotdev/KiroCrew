@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import { ChevronDown, ChevronRight, Check, Circle, Search, Plus, Trash2, HelpCircle, Loader2, ThumbsUp } from 'lucide-react'
 import { GrillNode, GrillAction, nodeDepth } from './grillTreeModel'
 
+import { i18nT } from '../../i18n/t'
 const MAX_DEPTH = 4        // mirrors backend _MAX_GRILL_DEPTH
 const SOFT_LIMIT = 25      // soft "tree getting large" advisory (no hard cap)
 
@@ -42,7 +43,7 @@ function AutoGrow({ value, onChange, onSubmit, placeholder, className = '', aria
 function AnswerBox({ initial, onSubmit }: { initial?: string; onSubmit: (v: string) => void }) {
   const [val, setVal] = useState(initial || '')
   return (
-    <AutoGrow value={val} onChange={setVal} onSubmit={onSubmit} placeholder="answer…" ariaLabel="Clarifier answer"
+    <AutoGrow value={val} onChange={setVal} onSubmit={onSubmit} placeholder={i18nT('apps.autoResearch.grillTree.answer')} ariaLabel={i18nT('apps.autoResearch.grillTree.clarifier_answer')}
               className="flex-1 min-w-[18rem] bg-bg border border-border rounded px-1.5 py-0.5 text-text align-top" />
   )
 }
@@ -107,38 +108,38 @@ export default function GrillTree({ tree, dispatch, onExpand }: Props) {
 
           {node.kind === 'research' ? (
             <AutoGrow className="flex-1 bg-transparent text-text border-b border-transparent focus:border-border outline-none"
-                      ariaLabel="Research question"
+                      ariaLabel={i18nT('apps.autoResearch.grillTree.research_question')}
                       value={node.text} onChange={t => dispatch({ type: 'edit', id: node.id, text: t })} />
           ) : <span className="flex-1 text-text">{node.text}</span>}
 
-          <button onClick={() => dispatch({ type: 'prune', id: node.id })} className="text-danger mt-0.5" aria-label="Prune"><Trash2 size={12} /></button>
+          <button onClick={() => dispatch({ type: 'prune', id: node.id })} className="text-danger mt-0.5" aria-label={i18nT('apps.autoResearch.grillTree.prune')}><Trash2 size={12} /></button>
           <span title={whyPath(node.id)} className="text-muted mt-0.5 cursor-help"><HelpCircle size={12} /></span>
         </div>
 
         {node.kind === 'clarifier' && (
           <div className="ml-[34px] mt-1 text-xs text-muted flex items-center gap-2 flex-wrap">
-            {node.recommended && <span>rec: <em className="text-text">{node.recommended}</em></span>}
+            {node.recommended && <span>{i18nT('apps.autoResearch.grillTree.rec')} <em className="text-text">{node.recommended}</em></span>}
             {node.status === 'answered' ? (
               <>
-                <span className="text-text">answered: {node.answer}</span>
+                <span className="text-text">{i18nT('apps.autoResearch.grillTree.answered')} {node.answer}</span>
                 <button onClick={() => expand(node.id)} disabled={atMaxDepth || spinning}
                         className="flex items-center gap-1 text-accent disabled:opacity-40">
-                  {spinning ? <Loader2 size={12} className="animate-spin" /> : <Plus size={12} />} expand
+                  {spinning ? <Loader2 size={12} className="animate-spin" /> : <Plus size={12} />} {i18nT('apps.autoResearch.grillTree.expand')}
                 </button>
-                {atMaxDepth && <span className="text-warn">max depth — add research manually or prune</span>}
+                {atMaxDepth && <span className="text-warn">{i18nT('apps.autoResearch.grillTree.max_depth_add_research_manually_or_prune')}</span>}
               </>
             ) : (
               <>
                 <AnswerBox initial={node.answer}
                            onSubmit={v => dispatch({ type: 'setAnswer', id: node.id, answer: v })} />
-                <button onClick={() => dispatch({ type: 'accept', id: node.id })} className="flex items-center gap-1 text-accent"><ThumbsUp size={12} /> accept</button>
-                <button onClick={() => dispatch({ type: 'investigateInstead', id: node.id })} className="flex items-center gap-1 text-accent"><Search size={12} /> investigate instead</button>
+                <button onClick={() => dispatch({ type: 'accept', id: node.id })} className="flex items-center gap-1 text-accent"><ThumbsUp size={12} /> {i18nT('apps.autoResearch.grillTree.accept')}</button>
+                <button onClick={() => dispatch({ type: 'investigateInstead', id: node.id })} className="flex items-center gap-1 text-accent"><Search size={12} /> {i18nT('apps.autoResearch.grillTree.investigate_instead')}</button>
               </>
             )}
           </div>
         )}
 
-        {noResults && <div className="ml-[34px] mt-1 text-xs text-muted">no suggestions — add manually or retry</div>}
+        {noResults && <div className="ml-[34px] mt-1 text-xs text-muted">{i18nT('apps.autoResearch.grillTree.no_suggestions_add_manually_or_retry')}</div>}
 
         {!isCollapsed && kids.map(k => renderNode(k, depth + 1))}
       </div>
@@ -151,7 +152,7 @@ export default function GrillTree({ tree, dispatch, onExpand }: Props) {
   return (
     <div>
       {live.length > SOFT_LIMIT && (
-        <div className="text-xs text-warn mb-1">Tree is getting large — consider pruning branches you won't pursue.</div>
+        <div className="text-xs text-warn mb-1">{i18nT('apps.autoResearch.grillTree.tree_is_getting_large_consider_pruning_branches')}</div>
       )}
       {roots.map(n => renderNode(n, 0))}
     </div>

@@ -2,6 +2,7 @@ import { memo } from 'react'
 import { Hourglass, Search, Lightbulb, Settings, Zap, Check, Sparkles, Brain, Pen } from 'lucide-react'
 import { motion } from 'framer-motion'
 
+import { i18nT } from '../../i18n/t'
 type StopState = 'idle' | 'soft_pending' | 'killing'
 
 const ChatFooter = memo(function ChatFooter({ running, stopping, state, lastRole, regenerating, stopState }: { running: boolean; stopping: boolean; state: string; lastRole: string; regenerating?: boolean; stopState?: StopState }) {
@@ -17,13 +18,13 @@ const ChatFooter = memo(function ChatFooter({ running, stopping, state, lastRole
             className="text-danger text-[13px] font-mono"
             animate={{ opacity: [0.6, 1, 0.6] }}
             transition={{ duration: 1.2, repeat: Infinity }}
-          >Stopping…</motion.span>
+          >{i18nT('pages.chat.chatFooter.stopping')}</motion.span>
         ) : stopState === 'killing' ? (
-          <span className="text-danger text-[13px] font-mono">Killing…</span>
+          <span className="text-danger text-[13px] font-mono">{i18nT('pages.chat.chatFooter.killing')}</span>
         ) : !regenerating && stopping ? (
-          <span className="text-muted text-[13px] font-mono animate-pulse">Stopping…</span>
+          <span className="text-muted text-[13px] font-mono animate-pulse">{i18nT('pages.chat.chatFooter.stopping')}</span>
         ) : !regenerating && state === 'compacting' ? (
-          <span className="text-muted text-[13px] font-mono animate-pulse"><Hourglass className="lucide-inline" /> Compacting…</span>
+          <span className="text-muted text-[13px] font-mono animate-pulse"><Hourglass className="lucide-inline" /> {i18nT('pages.chat.chatFooter.compacting')}</span>
         ) : (
           <div className="csb4">
             <div className="slot"><Search size={14} /><Lightbulb size={14} /></div>

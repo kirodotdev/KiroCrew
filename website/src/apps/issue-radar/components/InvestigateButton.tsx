@@ -13,6 +13,7 @@ import { useInvestigate } from '../lib/investigate'
 import AgentSessionButton from './AgentSessionButton'
 import { repoScopeKey } from '../lib/links'
 
+import { i18nT } from '../../../i18n/t'
 export default function InvestigateButton({
   repoRef, issue,
 }: {
@@ -47,7 +48,7 @@ export default function InvestigateButton({
   return (
     <AgentSessionButton
       icon={Telescope}
-      label="Investigate"
+      label={i18nT('apps.issueRadar.components.investigateButton.investigate')}
       record={record}
       busy={busy || recordQuery.isLoading}
       disabled={unresolved}

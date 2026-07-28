@@ -4,6 +4,7 @@ import { api } from '../api/client'
 import { Btn } from './ui'
 import LogEntry, { type LogEntryData } from './LogEntry'
 
+import { i18nT } from '../i18n/t'
 const PAGE_SIZE = 10
 
 export default function JobLogsView({ jobId, isRunning, runningSince, onCancel, cancelError }: { jobId: string; isRunning?: boolean; runningSince?: number | null; onCancel?: () => void; cancelError?: string | null }) {
@@ -37,10 +38,10 @@ export default function JobLogsView({ jobId, isRunning, runningSince, onCancel, 
       {isRunning && (
         <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-ok-subtle border border-ok/20">
           <span className="w-2 h-2 rounded-full bg-ok animate-pulse" />
-          <span className="text-[13px] text-ok font-medium">Currently running…</span>
+          <span className="text-[13px] text-ok font-medium">{i18nT('components.jobLogsView.currently_running')}</span>
           <span className="ml-auto flex items-center gap-2">
-            {elapsed > 0 && <span className="text-[12px] text-muted">{elapsed}s elapsed</span>}
-            {onCancel && <Btn danger onClick={onCancel} title="Cancel running execution">Cancel</Btn>}
+            {elapsed > 0 && <span className="text-[12px] text-muted">{elapsed}{i18nT('components.jobLogsView.s_elapsed')}</span>}
+            {onCancel && <Btn danger onClick={onCancel} title={i18nT('components.jobLogsView.cancel_running_execution')}>{i18nT('components.jobLogsView.cancel')}</Btn>}
           </span>
         </div>
       )}
@@ -51,9 +52,9 @@ export default function JobLogsView({ jobId, isRunning, runningSince, onCancel, 
       {error ? (
         <div className="text-danger text-sm px-3">{error instanceof Error ? error.message : 'Failed to load history'}</div>
       ) : isLoading ? (
-        <div className="text-muted text-sm px-3 animate-pulse">Loading logs…</div>
+        <div className="text-muted text-sm px-3 animate-pulse">{i18nT('components.jobLogsView.loading_logs')}</div>
       ) : entries.length === 0 ? (
-        <div className="text-muted text-sm px-3 py-4 text-center">No execution history yet</div>
+        <div className="text-muted text-sm px-3 py-4 text-center">{i18nT('components.jobLogsView.no_execution_history_yet')}</div>
       ) : (
         <>
           <div className="border border-border rounded-lg overflow-hidden">
@@ -61,9 +62,9 @@ export default function JobLogsView({ jobId, isRunning, runningSince, onCancel, 
           </div>
           {totalPages > 1 && (
             <div className="flex items-center justify-between px-1">
-              <Btn onClick={() => setPage(p => p - 1)} disabled={page === 0}>← Prev</Btn>
+              <Btn onClick={() => setPage(p => p - 1)} disabled={page === 0}>{i18nT('components.jobLogsView.prev')}</Btn>
               <span className="text-[12px] text-muted">{page + 1} / {totalPages}</span>
-              <Btn onClick={() => setPage(p => p + 1)} disabled={page >= totalPages - 1}>Next →</Btn>
+              <Btn onClick={() => setPage(p => p + 1)} disabled={page >= totalPages - 1}>{i18nT('components.jobLogsView.next')}</Btn>
             </div>
           )}
         </>

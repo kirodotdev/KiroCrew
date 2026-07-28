@@ -45,6 +45,7 @@ import MarkdownRenderer from './MarkdownRenderer'
 import { Btn } from './ui'
 
 
+import { i18nT } from '../i18n/t'
 const CHECK_POLL_BASE_MS = 10_000
 const CHECK_POLL_MAX_MS = 60_000
 // Strip-wide status poll. Steady state is paced by the TTL the server reports
@@ -337,7 +338,7 @@ function DiffView({ patch, path }: { patch: string; path: string }) {
       row.kind === 'hunk-gap' ? '' : DOMPurify.sanitize(hljs.highlight(row.text, { language, ignoreIllegals: true }).value),
     )
   }, [rows, language, ready])
-  if (!ready) return <div className="px-3 py-3 text-[11px] text-muted">Loading diff…</div>
+  if (!ready) return <div className="px-3 py-3 text-[11px] text-muted">{i18nT('components.pullRequestPanel.loading_diff')}</div>
   return (
     <div className="min-w-max text-[11px] leading-5 font-mono">
       {rows.map((row, index) => {
@@ -389,7 +390,7 @@ function ChangeRow({ file }: { file: PullRequestFile }) {
           {file.patch ? (
             <DiffView patch={file.patch} path={file.path} />
           ) : (
-            <div className="px-3 py-4 text-[12px] text-muted">The provider did not return a patch for this file.</div>
+            <div className="px-3 py-4 text-[12px] text-muted">{i18nT('components.pullRequestPanel.the_provider_did_not_return_a_patch_for_this_fil')}</div>
           )}
         </div>
       )}
@@ -454,7 +455,7 @@ function CheckRow({ check, source, onAddToChat }: { check: PullRequestCheck; sou
           onClick={handoff}
           className="text-[11px] shrink-0 mr-3 px-2 py-1 rounded-md border border-border bg-transparent text-muted hover:text-text hover:bg-bg-hover cursor-pointer"
         >
-          Add to chat
+          {i18nT('components.pullRequestPanel.add_to_chat')}
         </Btn>
       )}
     </div>
@@ -490,11 +491,11 @@ function CommentCard({ comment, url, onAddToChat }: { comment: PullRequestCommen
           <span className="text-[11px] text-muted">{age(comment.createdAt)}</span>
           {commentUrl && (
             <a href={commentUrl} target="_blank" rel="noopener noreferrer" className="text-[11px] text-accent hover:underline inline-flex items-center gap-1">
-              Open <ExternalLink className="lucide-inline" />
+              {i18nT('components.pullRequestPanel.open')} <ExternalLink className="lucide-inline" />
             </a>
           )}
           {resolveMutation.error && (
-            <span className="text-[11px] text-danger">Could not resolve</span>
+            <span className="text-[11px] text-danger">{i18nT('components.pullRequestPanel.could_not_resolve')}</span>
           )}
           {canResolve && (
             <Btn
@@ -503,18 +504,18 @@ function CommentCard({ comment, url, onAddToChat }: { comment: PullRequestCommen
               disabled={resolveMutation.isPending}
               className="text-[11px] px-2 py-1 rounded-md border border-border bg-transparent text-muted hover:text-text hover:bg-bg-hover cursor-pointer inline-flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              <Check className="lucide-inline" /> Resolve
+              <Check className="lucide-inline" /> {i18nT('components.pullRequestPanel.resolve')}
             </Btn>
           )}
           {comment.resolved && (
-            <span className="text-[11px] text-muted inline-flex items-center gap-1"><Check className="lucide-inline text-ok" /> Resolved</span>
+            <span className="text-[11px] text-muted inline-flex items-center gap-1"><Check className="lucide-inline text-ok" /> {i18nT('components.pullRequestPanel.resolved')}</span>
           )}
           <Btn
             type="button"
             onClick={() => onAddToChat(`PR comment from ${comment.author || 'a reviewer'}${location ? ` on ${location}` : ''}:\n\n> ${comment.body.replace(/\n/g, '\n> ')}`)}
             className="text-[11px] px-2 py-1 rounded-md border border-border bg-transparent text-muted hover:text-text hover:bg-bg-hover cursor-pointer"
           >
-            Add to chat
+            {i18nT('components.pullRequestPanel.add_to_chat')}
           </Btn>
         </div>
       </div>
@@ -522,7 +523,7 @@ function CommentCard({ comment, url, onAddToChat }: { comment: PullRequestCommen
         <>
           {location && <div className="px-3 pt-2 text-[11px] text-muted truncate">{location}</div>}
           <div className="px-3 py-2 text-[13px] text-text">
-            {comment.body ? <MarkdownRenderer content={comment.body} /> : <span className="text-muted">No written comment.</span>}
+            {comment.body ? <MarkdownRenderer content={comment.body} /> : <span className="text-muted">{i18nT('components.pullRequestPanel.no_written_comment')}</span>}
           </div>
         </>
       )}
@@ -660,12 +661,12 @@ export function PullRequestActions({ source }: { source: PullRequestSource }) {
           className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md border border-border bg-transparent text-[11px] text-muted hover:text-text hover:bg-bg-hover cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {readyMutation.isPending ? <Loader className="lucide-inline animate-spin" /> : <GitPullRequest className="lucide-inline" />}
-          Ready for review
+          {i18nT('components.pullRequestPanel.ready_for_review')}
         </Btn>
       )}
       {source.autoMerge && (
         <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-aim/15 text-[11px] text-aim" title={isGitHub ? 'GitHub will merge this pull request once its requirements pass' : 'GitLab will merge this merge request when the pipeline succeeds'}>
-          <GitMerge className="lucide-inline" /> Auto-merge enabled{armedMethod ? ` (${armedMethod})` : ''}
+          <GitMerge className="lucide-inline" /> {i18nT('components.pullRequestPanel.auto_merge_enabled')}{armedMethod ? ` (${armedMethod})` : ''}
         </span>
       )}
       {showAutoMerge && (confirmAutoMerge || immediateMergeWarning) && (
@@ -675,7 +676,7 @@ export function PullRequestActions({ source }: { source: PullRequestSource }) {
           disabled={busy}
           className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md border border-border bg-transparent text-[11px] text-muted hover:text-text hover:bg-bg-hover cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          Cancel
+          {i18nT('components.pullRequestPanel.cancel')}
         </Btn>
       )}
       {showAutoMerge && (
@@ -701,7 +702,7 @@ export function PullRequestActions({ source }: { source: PullRequestSource }) {
       )}
       {confirmAutoMerge && !immediateMergeWarning && !autoMergeMutation.isPending && (
         <span className="text-[11px] text-warn">
-          This authorizes the merge{isGitHub ? ' as soon as requirements pass, squashing if this repository allows it (otherwise a merge commit, then rebase)' : ' when the pipeline succeeds'}.
+          {i18nT('components.pullRequestPanel.this_authorizes_the_merge')}{isGitHub ? ' as soon as requirements pass, squashing if this repository allows it (otherwise a merge commit, then rebase)' : ' when the pipeline succeeds'}.
         </span>
       )}
       {error && <span role="alert" className="text-[11px] text-danger">{error}</span>}
@@ -713,16 +714,16 @@ function PullRequestBody({ source, tab, onAddToChat }: { source: PullRequestSour
   if (tab === 'description') {
     return source.description
       ? <div className="px-4 py-4 text-[13px]"><MarkdownRenderer content={source.description} /></div>
-      : <EmptyTab>No description was provided.</EmptyTab>
+      : <EmptyTab>{i18nT('components.pullRequestPanel.no_description_was_provided')}</EmptyTab>
   }
   if (tab === 'changes') {
-    if (!source.files.length) return <EmptyTab>No changed files were returned.</EmptyTab>
+    if (!source.files.length) return <EmptyTab>{i18nT('components.pullRequestPanel.no_changed_files_were_returned')}</EmptyTab>
     const totalAdds = source.files.reduce((sum, file) => sum + file.additions, 0)
     const totalDels = source.files.reduce((sum, file) => sum + file.deletions, 0)
     return (
       <div>
         <div className="sticky top-0 z-[1] flex items-center gap-2 px-3 py-2 border-b border-border bg-bg text-[12px]">
-          <span className="font-medium text-text">{source.files.length} {source.files.length === 1 ? 'File' : 'Files'} Changed</span>
+          <span className="font-medium text-text">{source.files.length} {source.files.length === 1 ? 'File' : 'Files'} {i18nT('components.pullRequestPanel.changed')}</span>
           <span className="text-ok">+{totalAdds}</span>
           <span className="text-danger">-{totalDels}</span>
         </div>
@@ -758,10 +759,10 @@ function PullRequestBody({ source, tab, onAddToChat }: { source: PullRequestSour
           )
         })}
       </div>
-    ) : <EmptyTab>No commits were returned.</EmptyTab>
+    ) : <EmptyTab>{i18nT('components.pullRequestPanel.no_commits_were_returned')}</EmptyTab>
   }
   if (tab === 'checks') {
-    if (!source.checks.length) return <EmptyTab>No CI checks were returned.</EmptyTab>
+    if (!source.checks.length) return <EmptyTab>{i18nT('components.pullRequestPanel.no_ci_checks_were_returned')}</EmptyTab>
     const groups = (['failed', 'pending', 'passed', 'skipped'] as const)
       .map(bucket => ({ bucket, rows: source.checks.filter(check => check.bucket === bucket) }))
       .filter(group => group.rows.length)
@@ -782,7 +783,7 @@ function PullRequestBody({ source, tab, onAddToChat }: { source: PullRequestSour
     <div className="p-3 flex flex-col gap-3">
       {source.comments.map((comment, index) => <CommentCard key={comment.id || index} comment={comment} url={source.url} onAddToChat={onAddToChat} />)}
     </div>
-  ) : <EmptyTab>No PR comments or reviews were returned.</EmptyTab>
+  ) : <EmptyTab>{i18nT('components.pullRequestPanel.no_pr_comments_or_reviews_were_returned')}</EmptyTab>
 }
 
 export default function PullRequestPanel({
@@ -1007,7 +1008,7 @@ export default function PullRequestPanel({
 
   return (
     <div className="flex flex-col h-full min-h-0">
-      <div role="tablist" aria-label="Pull requests" className="shrink-0 border-b border-border px-2 py-2 flex items-center gap-1 overflow-x-auto">
+      <div role="tablist" aria-label={i18nT('components.pullRequestPanel.pull_requests')} className="shrink-0 border-b border-border px-2 py-2 flex items-center gap-1 overflow-x-auto">
         {cappedSources.map(item => (
           <Btn
             key={item.url}
@@ -1025,7 +1026,7 @@ export default function PullRequestPanel({
         ))}
       </div>
 
-      {query.isLoading && <div className="flex-1 flex items-center justify-center gap-2 text-[13px] text-muted"><Loader className="lucide-inline animate-spin" />Loading source provider…</div>}
+      {query.isLoading && <div className="flex-1 flex items-center justify-center gap-2 text-[13px] text-muted"><Loader className="lucide-inline animate-spin" />{i18nT('components.pullRequestPanel.loading_source_provider')}</div>}
       {query.error && (
         <div className="flex-1 flex items-center justify-center px-6">
           <div role="alert" className="max-w-md flex flex-col items-center">
@@ -1037,13 +1038,13 @@ export default function PullRequestPanel({
             </div>
             {queryError.loginCommand ? (
               <>
-                <div className="text-[12px] text-muted mt-1 text-center">Kiro Crew uses your local provider CLI to load pull requests. Run this command in your terminal, then retry.</div>
+                <div className="text-[12px] text-muted mt-1 text-center">{i18nT('components.pullRequestPanel.kiro_crew_uses_your_local_provider_cli_to_load_p')}</div>
                 <code className="inline-block mt-2 px-2 py-1 rounded bg-bg-hover text-[12px] text-text">{queryError.loginCommand}</code>
               </>
             ) : (
               <div className="mt-2 w-full max-h-64 overflow-y-auto rounded-md bg-bg-hover/50 border border-border px-3 py-2 text-left text-[12px] text-muted whitespace-pre-wrap break-words font-mono leading-relaxed">{queryError.message}</div>
             )}
-            <Btn type="button" onClick={handleRefresh} className="mt-3 inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border border-border bg-transparent text-[12px] text-muted hover:text-text hover:bg-bg-hover cursor-pointer"><RefreshCw className="lucide-inline" />Retry</Btn>
+            <Btn type="button" onClick={handleRefresh} className="mt-3 inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border border-border bg-transparent text-[12px] text-muted hover:text-text hover:bg-bg-hover cursor-pointer"><RefreshCw className="lucide-inline" />{i18nT('components.pullRequestPanel.retry')}</Btn>
           </div>
         </div>
       )}
@@ -1067,13 +1068,13 @@ export default function PullRequestPanel({
               >
                 <RefreshCw className={`lucide-inline ${query.isFetching ? 'animate-spin' : ''}`} />
               </Btn>
-              {sourceUrl && <a href={sourceUrl} target="_blank" rel="noopener noreferrer" className="p-1 rounded text-muted hover:text-text hover:bg-bg-hover" aria-label="Open pull request" title="Open pull request"><ExternalLink className="lucide-inline" /></a>}
+              {sourceUrl && <a href={sourceUrl} target="_blank" rel="noopener noreferrer" className="p-1 rounded text-muted hover:text-text hover:bg-bg-hover" aria-label={i18nT('components.pullRequestPanel.open_pull_request')} title={i18nT('components.pullRequestPanel.open_pull_request')}><ExternalLink className="lucide-inline" /></a>}
             </div>
             <div className="mt-2 text-[15px] font-semibold text-text-strong leading-snug">{source.title} <span className="font-normal text-muted">{source.provider === 'github' ? '#' : '!'}{source.number}</span></div>
             <div className="mt-1 flex items-center gap-2 text-[11px] text-muted">
               {source.author && <span>{source.author}</span>}
               <span><span className="text-ok">+{source.additions}</span> <span className="text-danger">-{source.deletions}</span></span>
-              {source.updatedAt && <span>Updated {age(source.updatedAt)}</span>}
+              {source.updatedAt && <span>{i18nT('components.pullRequestPanel.updated')} {age(source.updatedAt)}</span>}
             </div>
             <PullRequestActions key={source.url} source={source} />
           </div>
@@ -1090,7 +1091,7 @@ export default function PullRequestPanel({
                   onClick={() => onAddToChat(mergeBlocker.handoff!)}
                   className="text-[11px] shrink-0 px-2 py-1 rounded-md border border-border bg-transparent text-muted hover:text-text hover:bg-bg-hover cursor-pointer"
                 >
-                  Add to chat
+                  {i18nT('components.pullRequestPanel.add_to_chat')}
                 </Btn>
               )}
             </div>
@@ -1100,12 +1101,12 @@ export default function PullRequestPanel({
             <div role="status" className="shrink-0 flex items-start gap-2 px-4 py-2 border-b border-border bg-warn/10 text-[11px] text-muted">
               <AlertCircle className="lucide-inline shrink-0 mt-0.5 text-warn" />
               <span>
-                Provider results may be partial for {source.partialSections.join(', ')}. Open the {source.provider === 'github' ? 'pull request' : 'merge request'} for the complete set.
+                {i18nT('components.pullRequestPanel.provider_results_may_be_partial_for')} {source.partialSections.join(', ')}{i18nT('components.pullRequestPanel.open_the')} {source.provider === 'github' ? 'pull request' : 'merge request'} {i18nT('components.pullRequestPanel.for_the_complete_set')}
               </span>
             </div>
           )}
 
-          <div role="tablist" aria-label="Pull request sections" className="shrink-0 border-b border-border px-2 py-2 flex items-center gap-1 overflow-x-auto">
+          <div role="tablist" aria-label={i18nT('components.pullRequestPanel.pull_request_sections')} className="shrink-0 border-b border-border px-2 py-2 flex items-center gap-1 overflow-x-auto">
             {tabs.map(item => (
               <Btn
                 key={item.id}

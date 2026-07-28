@@ -11,6 +11,7 @@
 import { forwardRef } from 'react'
 import { Search, Loader2, X } from 'lucide-react'
 
+import { i18nT } from '../i18n/t'
 interface SearchBarProps {
   idPrefix: string
   /** Noun for a11y labels + placeholders, e.g. "skills" / "MCP servers". */
@@ -54,7 +55,7 @@ export const DiscoverySearchBar = forwardRef<HTMLInputElement, SearchBarProps>(
           {query && (
             <button
               onClick={onClear}
-              aria-label="Clear search"
+              aria-label={i18nT('components.discoverySearchBar.clear_search')}
               className="absolute right-2.5 top-1/2 -translate-y-1/2 p-0.5 rounded text-muted hover:text-text hover:bg-bg-hover"
             >
               <X size={14} aria-hidden="true" />
@@ -64,7 +65,7 @@ export const DiscoverySearchBar = forwardRef<HTMLInputElement, SearchBarProps>(
         <div className="mt-1.5 flex items-center justify-between text-xs text-muted">
           <span>{providers.length > 0 ? `Searching: ${providers.join(', ')}` : '\u00A0'}</span>
           {debouncedQuery.length >= 2 && !isLoading && (
-            <span>{resultCount} result{resultCount === 1 ? '' : 's'}</span>
+            <span>{resultCount} {i18nT('components.discoverySearchBar.result')}{resultCount === 1 ? '' : 's'}</span>
           )}
         </div>
       </div>
@@ -90,18 +91,18 @@ export function DiscoveryStates({ debouncedQuery, isLoading, resultCount, noun }
   noun: string
 }) {
   if (debouncedQuery.length < 2) {
-    return <DiscoveryPlaceholder>Type at least 2 characters to search</DiscoveryPlaceholder>
+    return <DiscoveryPlaceholder>{i18nT('components.discoverySearchBar.type_at_least_2_characters_to_search')}</DiscoveryPlaceholder>
   }
   if (isLoading) {
     return (
       <DiscoveryPlaceholder>
         <Loader2 size={20} className="animate-spin mb-2" aria-hidden="true" />
-        Searching...
+        {i18nT('components.discoverySearchBar.searching')}
       </DiscoveryPlaceholder>
     )
   }
   if (resultCount === 0) {
-    return <DiscoveryPlaceholder>No {noun} found for &ldquo;{debouncedQuery}&rdquo;</DiscoveryPlaceholder>
+    return <DiscoveryPlaceholder>{i18nT('components.discoverySearchBar.no')} {noun} {i18nT('components.discoverySearchBar.found_for')}{debouncedQuery}{"\u201d"}</DiscoveryPlaceholder>
   }
   return null
 }

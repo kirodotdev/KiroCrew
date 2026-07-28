@@ -1,6 +1,7 @@
 import { useMemo, type ReactNode } from 'react'
 import { Wrench, Shield, Hourglass, Pause, SkipForward, Square, Check, X } from 'lucide-react'
 
+import { i18nT } from '../../i18n/t'
 interface DagNode { id: string; title: string; status: string; task_type?: string; requires_approval?: boolean }
 interface DagEdge { from: string; to: string }
 
@@ -64,7 +65,7 @@ export default function DagView({ nodes, edges, onNodeClick, selectedId, pending
   }, [nodes, edges])
 
   if (!nodes.length) return (
-    <div className="text-[13px] text-center py-8" style={{ color: 'var(--muted)' }}>No tasks to visualize</div>
+    <div className="text-[13px] text-center py-8" style={{ color: 'var(--muted)' }}>{i18nT('pages.aidlc.dagView.no_tasks_to_visualize')}</div>
   )
 
   return (
@@ -135,8 +136,8 @@ export default function DagView({ nodes, edges, onNodeClick, selectedId, pending
               {approvalMap?.[Number(n.id)] && onApprove && effectiveStatus === 'in_progress' && (
                 <foreignObject x={n.x} y={n.y + NODE_H + 4} width={NODE_W} height={24}>
                   <div style={{ display: 'flex', gap: 4, justifyContent: 'center' }}>
-                    <button onClick={e => { e.stopPropagation(); onApprove(Number(n.id), 'approve'); }} style={{ padding: '2px 10px', fontSize: 10, fontWeight: 600, background: '#22c55e', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 2 }}><Check size={10} /> Approve</button>
-                    <button onClick={e => { e.stopPropagation(); onApprove(Number(n.id), 'reject'); }} style={{ padding: '2px 10px', fontSize: 10, fontWeight: 600, background: 'var(--danger)', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 2 }}><X size={10} /> Deny</button>
+                    <button onClick={e => { e.stopPropagation(); onApprove(Number(n.id), 'approve'); }} style={{ padding: '2px 10px', fontSize: 10, fontWeight: 600, background: '#22c55e', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 2 }}><Check size={10} /> {i18nT('pages.aidlc.dagView.approve')}</button>
+                    <button onClick={e => { e.stopPropagation(); onApprove(Number(n.id), 'reject'); }} style={{ padding: '2px 10px', fontSize: 10, fontWeight: 600, background: 'var(--danger)', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 2 }}><X size={10} /> {i18nT('pages.aidlc.dagView.deny')}</button>
                   </div>
                 </foreignObject>
               )}

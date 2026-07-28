@@ -10,6 +10,7 @@ import InfoTip from '../components/InfoTip'
 import { safeHttpUrl } from '../lib/safeUrl'
 import { formatCost } from '../utils/formatCost'
 
+import { i18nT } from '../i18n/t'
 const BASE = '/api/deploy'
 
 interface ProfileEntry { name: string; region: string; account: string; verified_at: string; note: string }
@@ -200,7 +201,7 @@ export default function ArtifactDeployPage() {
   const CmdRow = ({ text }: { text: string }) => (
     <div style={cmd}>
       <code style={{ overflow: 'auto', whiteSpace: 'nowrap' }}>{text}</code>
-      <Btn onClick={() => navigator.clipboard.writeText(text)}><Copy size={11} /> Copy</Btn>
+      <Btn onClick={() => navigator.clipboard.writeText(text)}><Copy size={11} /> {i18nT('pages.artifactDeployPage.copy')}</Btn>
     </div>
   )
 
@@ -217,21 +218,21 @@ export default function ArtifactDeployPage() {
           type="button"
           onClick={() => navigate('/artifacts')}
           className="inline-flex items-center gap-1.5 text-[13px] text-muted hover:text-text transition-colors cursor-pointer bg-transparent border-none px-0"
-          aria-label="Back to Artifacts"
+          aria-label={i18nT('pages.artifactDeployPage.back_to_artifacts')}
         >
           <ArrowLeft size={14} aria-hidden="true" />
-          Back to Artifacts
+          {i18nT('pages.artifactDeployPage.back_to_artifacts')}
         </button>
       </div>
-      <PageHeader title="Artifact Deploy" subtitle="One console for deploying artifacts to your own AWS — set up access, check health, and manage everything deployed." />
+      <PageHeader title={i18nT('pages.artifactDeployPage.artifact_deploy')} subtitle={i18nT('pages.artifactDeployPage.one_console_for_deploying_artifacts_to_your_own')} />
       <div className="px-6 pb-8 overflow-y-auto flex-1 min-h-0" style={{ color: 'var(--text)' }}>
 
       {/* StatCard row — mirrors AgentsPage/ArtifactsPage pattern */}
       <div className="grid gap-3.5 grid-cols-[repeat(auto-fit,minmax(150px,1fr))] mb-6">
-        <StatCard label="Profiles" value={profiles.length} />
-        <StatCard label="Active Deployments" value={totalDeployments} accent />
-        <StatCard label="Ready to Deploy" value={draftWebapps.length} delay={60} />
-        <StatCard label="Est. Cost (not a bill)" value={estCost > 0 ? `≤ ${formatCost(estCost)}` : formatCost(0)} delay={120} />
+        <StatCard label={i18nT('pages.artifactDeployPage.profiles')} value={profiles.length} />
+        <StatCard label={i18nT('pages.artifactDeployPage.active_deployments')} value={totalDeployments} accent />
+        <StatCard label={i18nT('pages.artifactDeployPage.ready_to_deploy')} value={draftWebapps.length} delay={60} />
+        <StatCard label={i18nT('pages.artifactDeployPage.est_cost_not_a_bill')} value={estCost > 0 ? `≤ ${formatCost(estCost)}` : formatCost(0)} delay={120} />
       </div>
 
       {notice && (
@@ -243,32 +244,30 @@ export default function ArtifactDeployPage() {
         <Clickable style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', marginBottom: showGuide ? 12 : 0 }}
              onClick={() => setShowGuide((v) => !v)}>
           {showGuide ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
-          <CardTitle className="!mb-0"><Terminal size={15} /> Getting started (one-time AWS setup)</CardTitle>
+          <CardTitle className="!mb-0"><Terminal size={15} /> {i18nT('pages.artifactDeployPage.getting_started_one_time_aws_setup')}</CardTitle>
         </Clickable>
         {showGuide && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12, fontSize: 13 }}>
             <div>
-              <b>1. Authenticate to AWS</b> in your terminal (KiroCrew never sees your keys). Pick one:
+              <b>{i18nT('pages.artifactDeployPage.1_authenticate_to_aws')}</b> {i18nT('pages.artifactDeployPage.in_your_terminal_kirocrew_never_sees_your_keys_p')}
               <div style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 6 }}>
                 <CmdRow text="aws configure sso        # recommended — short-lived, auto-refreshing" />
                 <CmdRow text="aws configure --profile myweb   # or a long-lived named profile" />
               </div>
               <div style={{ marginTop: 8, padding: '8px 10px', borderRadius: 6, border: '1px solid var(--warn-border, #fde68a)', background: 'var(--warn-subtle, #fffbeb)', color: 'var(--warn)', fontSize: 11.5, lineHeight: 1.5 }}>
-                <b>Two things that trip people up:</b>
+                <b>{i18nT('pages.artifactDeployPage.two_things_that_trip_people_up')}</b>
                 <ul style={{ margin: '4px 0 0', paddingLeft: 16 }}>
-                  <li>Configure the profile on the <b>machine running the gateway</b> (your host), not your laptop — Artifact Deploy shells to <code>aws</code> from the gateway process.</li>
-                  <li>SSO needs <b>AWS CLI v2</b>; v1 fails with <code>missing … sso_start_url, sso_region</code>. Make sure the gateway&apos;s <code>PATH</code> resolves v2 before any v1.</li>
+                  <li>{i18nT('pages.artifactDeployPage.configure_the_profile_on_the')} <b>{i18nT('pages.artifactDeployPage.machine_running_the_gateway')}</b> {i18nT('pages.artifactDeployPage.your_host_not_your_laptop_artifact_deploy_shells')} <code>{i18nT('pages.artifactDeployPage.aws')}</code> {i18nT('pages.artifactDeployPage.from_the_gateway_process')}</li>
+                  <li>{i18nT('pages.artifactDeployPage.sso_needs')} <b>{i18nT('pages.artifactDeployPage.aws_cli_v2')}</b>{i18nT('pages.artifactDeployPage.v1_fails_with')} <code>{i18nT('pages.artifactDeployPage.missing_sso_start_url_sso_region')}</code>{i18nT('pages.artifactDeployPage.make_sure_the_gateway_s')} <code>{i18nT('pages.artifactDeployPage.path')}</code> {i18nT('pages.artifactDeployPage.resolves_v2_before_any_v1')}</li>
                 </ul>
               </div>
             </div>
-            <div><b>2. Enter the profile name + region below</b> and click <b>Save</b>, then <b>Verify access</b>.</div>
+            <div><b>{i18nT('pages.artifactDeployPage.2_enter_the_profile_name_region_below')}</b> {i18nT('pages.artifactDeployPage.and_click')} <b>{i18nT('pages.artifactDeployPage.save')}</b>{i18nT('pages.artifactDeployPage.then')} <b>{i18nT('pages.artifactDeployPage.verify_access')}</b>.</div>
             <div>
-              <b>3. Apply the IAM policy</b> — click <b>Get IAM policy</b>, then apply it yourself to a dedicated
-              role/identity (console or your own <code>aws iam</code> command). KiroCrew never edits your IAM.
-              The first deploy reports the exact missing permission if anything&apos;s off.
+              <b>{i18nT('pages.artifactDeployPage.3_apply_the_iam_policy')}</b> {i18nT('pages.artifactDeployPage.click')} <b>{i18nT('pages.artifactDeployPage.get_iam_policy')}</b>{i18nT('pages.artifactDeployPage.then_apply_it_yourself_to_a_dedicated_role_ident')} <code>{i18nT('pages.artifactDeployPage.aws_iam')}</code> {i18nT('pages.artifactDeployPage.command_kirocrew_never_edits_your_iam_the_first')}
             </div>
             <span style={{ color: 'var(--accent)', fontSize: 12, cursor: 'default' }}>
-              Full setup guide (profile, AWS CLI v2, troubleshooting) →
+              {i18nT('pages.artifactDeployPage.full_setup_guide_profile_aws_cli_v2_troubleshoot')}
             </span>
           </div>
         )}
@@ -279,41 +278,30 @@ export default function ArtifactDeployPage() {
         <Clickable style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', marginBottom: showSecurity ? 12 : 0 }}
              onClick={() => setShowSecurity((v) => !v)}>
           {showSecurity ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
-          <CardTitle className="!mb-0"><Lock size={15} /> How this is secured</CardTitle>
+          <CardTitle className="!mb-0"><Lock size={15} /> {i18nT('pages.artifactDeployPage.how_this_is_secured')}</CardTitle>
         </Clickable>
         {showSecurity && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10, fontSize: 12.5, lineHeight: 1.55 }}>
             <div>
-              <b>Your credentials never touch KiroCrew.</b> Only the <b>profile name</b> is stored;
-              every AWS call runs through the <code>aws</code> CLI with <code>--profile</code> (never boto3),
-              so credential resolution stays in your OS credential store. KiroCrew never writes IAM and
-              never manages accounts, users, or roles — you apply the generated least-privilege policy yourself.
+              <b>{i18nT('pages.artifactDeployPage.your_credentials_never_touch_kirocrew')}</b> {i18nT('pages.artifactDeployPage.only_the')} <b>{i18nT('pages.artifactDeployPage.profile_name')}</b> {i18nT('pages.artifactDeployPage.is_stored_every_aws_call_runs_through_the')} <code>{i18nT('pages.artifactDeployPage.aws')}</code> {i18nT('pages.artifactDeployPage.cli_with')} <code>{i18nT('pages.artifactDeployPage.profile')}</code> {i18nT('pages.artifactDeployPage.never_boto3_so_credential_resolution_stays_in_yo')}
             </div>
             <div>
-              <b>The origin bucket is private.</b> It is created with Block Public Access on,
-              <code>BucketOwnerEnforced</code> ownership, and SSE-AES256 — with <b>no public bucket policy</b>.
-              Only CloudFront can read it, via an Origin Access Control (OAC) policy whose
-              <code>AWS:SourceArn</code> pins your specific distribution. The bucket name is random/opaque
-              and hidden from the public URL.
+              <b>{i18nT('pages.artifactDeployPage.the_origin_bucket_is_private')}</b> {i18nT('pages.artifactDeployPage.it_is_created_with_block_public_access_on')}
+              <code>{i18nT('pages.artifactDeployPage.bucketownerenforced')}</code> {i18nT('pages.artifactDeployPage.ownership_and_sse_aes256_with')} <b>{i18nT('pages.artifactDeployPage.no_public_bucket_policy')}</b>{i18nT('pages.artifactDeployPage.only_cloudfront_can_read_it_via_an_origin_access')}
+              <code>{i18nT('pages.artifactDeployPage.aws_sourcearn')}</code> {i18nT('pages.artifactDeployPage.pins_your_specific_distribution_the_bucket_name')}
             </div>
             <div>
-              <b>The published URL is public-by-link.</b> Content is served at a random
-              <code>*.cloudfront.net</code> domain — <b>anyone with the link can view it</b> (world-readable;
-              no auth in v1). Don&apos;t publish anything you wouldn&apos;t put on the open internet.
+              <b>{i18nT('pages.artifactDeployPage.the_published_url_is_public_by_link')}</b> {i18nT('pages.artifactDeployPage.content_is_served_at_a_random')}
+              <code>{i18nT('pages.artifactDeployPage.cloudfront_net')}</code> {i18nT('pages.artifactDeployPage.domain')} <b>{i18nT('pages.artifactDeployPage.anyone_with_the_link_can_view_it')}</b> {i18nT('pages.artifactDeployPage.world_readable_no_auth_in_v1_don_t_publish_anyth')}
             </div>
             <div>
-              <b>Pre-publish scan + sensitive-path guard.</b> Content is scanned for secrets and internal-data
-              signals (internal hostnames, account IDs/ARNs) and publishing is blocked-and-warned
-              until you explicitly override. Local directories are checked against sensitive credential paths
-              (<code>~/.aws</code>, <code>~/.ssh</code>, …) before any upload.
+              <b>{i18nT('pages.artifactDeployPage.pre_publish_scan_sensitive_path_guard')}</b> {i18nT('pages.artifactDeployPage.content_is_scanned_for_secrets_and_internal_data')}<code>{i18nT('pages.artifactDeployPage.aws_2')}</code>, <code>{i18nT('pages.artifactDeployPage.ssh')}</code>{i18nT('pages.artifactDeployPage.before_any_upload')}
             </div>
             <div>
-              <b>Confirm-gate + audit.</b> Deploy / Recall / Destroy each require explicit confirmation
-              (never auto-approved) and emit a SEL audit event. <b>Recall</b> takes a site down fast
-              (URL → 404, reversible); <b>Destroy</b> tears down all infra (irreversible).
+              <b>{i18nT('pages.artifactDeployPage.confirm_gate_audit')}</b> {i18nT('pages.artifactDeployPage.deploy_recall_destroy_each_require_explicit_conf')} <b>{i18nT('pages.artifactDeployPage.recall')}</b> {i18nT('pages.artifactDeployPage.takes_a_site_down_fast_url_404_reversible')} <b>{i18nT('pages.artifactDeployPage.destroy')}</b> {i18nT('pages.artifactDeployPage.tears_down_all_infra_irreversible')}
             </div>
             <span style={{ color: 'var(--accent)', fontSize: 12, cursor: 'default' }}>
-              Full setup &amp; security docs →
+              {i18nT('pages.artifactDeployPage.full_setup_security_docs')}
             </span>
           </div>
         )}
@@ -323,23 +311,23 @@ export default function ArtifactDeployPage() {
       <Card>
         <div className="flex justify-between items-center">
           <CardTitle>
-            AWS Profiles ({profiles.length}) <InfoTip text="Every deploy runs as a registered profile. Register your existing AWS CLI profiles or create new ones — KiroCrew stores only the name, never credentials." />
+            {i18nT('pages.artifactDeployPage.aws_profiles')}{profiles.length}) <InfoTip text="Every deploy runs as a registered profile. Register your existing AWS CLI profiles or create new ones — KiroCrew stores only the name, never credentials." />
           </CardTitle>
           <span style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-            <Btn onClick={() => setShowNewProfile((v) => !v)}><Plus size={12} /> New profile</Btn>
+            <Btn onClick={() => setShowNewProfile((v) => !v)}><Plus size={12} /> {i18nT('pages.artifactDeployPage.new_profile')}</Btn>
             <StyledSelect
               options={['static', 'fullstack']}
               value={policyTier}
               onChange={(v) => setPolicyTier(v as 'static' | 'fullstack')}
-              placeholder="Policy tier"
+              placeholder={i18nT('pages.artifactDeployPage.policy_tier')}
               style={{ minWidth: 120 }}
             />
-            <Btn onClick={loadPolicy}>Get IAM policy</Btn>
+            <Btn onClick={loadPolicy}>{i18nT('pages.artifactDeployPage.get_iam_policy')}</Btn>
           </span>
         </div>
         {profiles.length === 0 && (
           <div style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 8 }}>
-            No profiles yet — register one below. Every deploy runs as a registered profile.
+            {i18nT('pages.artifactDeployPage.no_profiles_yet_register_one_below_every_deploy')}
           </div>
         )}
         {/* Profiles table — table-striped pattern */}
@@ -370,15 +358,15 @@ export default function ArtifactDeployPage() {
                   <td className="px-2.5 py-2 border-b border-border text-sm text-muted">{p.region}</td>
                   <td className="px-2.5 py-2 border-b border-border text-sm">
                     {p.verified_at
-                      ? <span style={{ color: 'var(--ok)', fontSize: 11, display: 'inline-flex', alignItems: 'center', gap: 3 }}><CheckCircle size={11} /> verified</span>
-                      : <span style={{ color: 'var(--muted)', fontSize: 11 }}>unverified</span>}
+                      ? <span style={{ color: 'var(--ok)', fontSize: 11, display: 'inline-flex', alignItems: 'center', gap: 3 }}><CheckCircle size={11} /> {i18nT('pages.artifactDeployPage.verified')}</span>
+                      : <span style={{ color: 'var(--muted)', fontSize: 11 }}>{i18nT('pages.artifactDeployPage.unverified')}</span>}
                   </td>
                   <td className="px-2.5 py-2 border-b border-border text-sm">
                     <span style={{ display: 'flex', gap: 6 }}>
-                      <Btn onClick={() => verify.mutate(p.name)}><ShieldCheck size={11} /> Verify</Btn>
+                      <Btn onClick={() => verify.mutate(p.name)}><ShieldCheck size={11} /> {i18nT('pages.artifactDeployPage.verify')}</Btn>
                       <Btn aria-label={`Remove ${p.name} from registry`}
                         onClick={() => window.confirm(`Remove '${p.name}' from the registry? Your ~/.aws/config is NOT touched.`) && removeProfile.mutate(p.name)}>
-                        <Trash2 size={11} /> Remove
+                        <Trash2 size={11} /> {i18nT('pages.artifactDeployPage.remove')}
                       </Btn>
                     </span>
                   </td>
@@ -389,40 +377,40 @@ export default function ArtifactDeployPage() {
         )}
         {availableProfiles.length > 0 && (
           <div style={{ marginTop: 10, fontSize: 12, color: 'var(--muted)', display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-            <span>Found in your AWS config:</span>
+            <span>{i18nT('pages.artifactDeployPage.found_in_your_aws_config')}</span>
             {availableProfiles.slice(0, 8).map((n) => (
               <Btn key={n} onClick={() => addProfile.mutate({ name: n, region: 'us-west-2' })}>
                 <Plus size={10} /> {n}
               </Btn>
             ))}
-            {availableProfiles.length > 8 && <span>+{availableProfiles.length - 8} more</span>}
+            {availableProfiles.length > 8 && <span>+{availableProfiles.length - 8} {i18nT('pages.artifactDeployPage.more')}</span>}
           </div>
         )}
         {showNewProfile && (
           <div style={{ marginTop: 12, padding: 12, background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6 }}>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
               <span style={{ flex: 1, minWidth: 160 }}>
-                <label style={label} htmlFor="np-name">Profile name</label>
-                <Input id="np-name" style={{width: '100%' }} placeholder="e.g. my-sandbox" value={npName} onChange={(e) => setNpName(e.target.value)} />
+                <label style={label} htmlFor="np-name">{i18nT('pages.artifactDeployPage.profile_name_2')}</label>
+                <Input id="np-name" style={{width: '100%' }} placeholder={i18nT('pages.artifactDeployPage.e_g_my_sandbox')} value={npName} onChange={(e) => setNpName(e.target.value)} />
               </span>
               <span style={{ minWidth: 140 }}>
-                <label style={label} htmlFor="np-region">Region</label>
-                <Input id="np-region" style={{width: '100%' }} placeholder="us-west-2" value={npRegion} onChange={(e) => setNpRegion(e.target.value)} />
+                <label style={label} htmlFor="np-region">{i18nT('pages.artifactDeployPage.region')}</label>
+                <Input id="np-region" style={{width: '100%' }} placeholder={i18nT('pages.artifactDeployPage.us_west_2')} value={npRegion} onChange={(e) => setNpRegion(e.target.value)} />
               </span>
             </div>
             <div style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
-              <Toggle checked={npCreate} onChange={setNpCreate} label="Also create in AWS config" />
-              <span style={{ color: 'var(--muted)', fontSize: 11 }}>(writes only region / credential_process via <code>aws configure set</code> — never credentials)</span>
+              <Toggle checked={npCreate} onChange={setNpCreate} label={i18nT('pages.artifactDeployPage.also_create_in_aws_config')} />
+              <span style={{ color: 'var(--muted)', fontSize: 11 }}>{i18nT('pages.artifactDeployPage.writes_only_region_credential_process_via')} <code>{i18nT('pages.artifactDeployPage.aws_configure_set')}</code> {i18nT('pages.artifactDeployPage.never_credentials')}</span>
             </div>
             {npCreate && (
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
                 <span style={{ minWidth: 160 }}>
-                  <label style={label} htmlFor="np-account">Account (12 digits, optional — iam-identity-style)</label>
+                  <label style={label} htmlFor="np-account">{i18nT('pages.artifactDeployPage.account_12_digits_optional_iam_identity_style')}</label>
                   <Input id="np-account" style={{width: '100%' }} placeholder="123456789012" value={npAccount} onChange={(e) => setNpAccount(e.target.value)} />
                 </span>
                 <span style={{ minWidth: 140 }}>
-                  <label style={label} htmlFor="np-role">Role (optional)</label>
-                  <Input id="np-role" style={{width: '100%' }} placeholder="Admin" value={npRole} onChange={(e) => setNpRole(e.target.value)} />
+                  <label style={label} htmlFor="np-role">{i18nT('pages.artifactDeployPage.role_optional')}</label>
+                  <Input id="np-role" style={{width: '100%' }} placeholder={i18nT('pages.artifactDeployPage.admin')} value={npRole} onChange={(e) => setNpRole(e.target.value)} />
                 </span>
               </div>
             )}
@@ -436,7 +424,7 @@ export default function ArtifactDeployPage() {
           <div style={{ marginTop: 10, fontSize: 12, color: reach.reachable ? 'var(--ok)' : 'var(--danger)' }}>
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
               {reach.reachable
-                ? <><CheckCircle size={12} /> {reach.profile}: access reachable{reach.account ? ` (account ${reach.account})` : ''}</>
+                ? <><CheckCircle size={12} /> {reach.profile}{i18nT('pages.artifactDeployPage.access_reachable')}{reach.account ? ` (account ${reach.account})` : ''}</>
                 : <><XCircle size={12} /> {reach.detail || reach.error || 'not reachable'}</>}
             </span>
             <div style={{ color: 'var(--muted)', fontSize: 11 }}>{reach.note}</div>
@@ -445,25 +433,25 @@ export default function ArtifactDeployPage() {
         {policy && (
           <div style={{ marginTop: 10 }}>
             <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 4 }}>
-              Apply this policy yourself (KiroCrew never edits your IAM).
-              {policyTier === 'fullstack' && <span style={{ color: 'var(--accent)' }}> Fullstack tier: includes Lambda, API Gateway, DynamoDB, IAM PassRole — scoped to kirocrew-deploy-app-* resources.</span>}
+              {i18nT('pages.artifactDeployPage.apply_this_policy_yourself_kirocrew_never_edits')}
+              {policyTier === 'fullstack' && <span style={{ color: 'var(--accent)' }}> {i18nT('pages.artifactDeployPage.fullstack_tier_includes_lambda_api_gateway_dynam')}</span>}
             </div>
             <pre style={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, padding: 10, fontSize: 11, maxHeight: 240, overflow: 'auto' }}>{policy}</pre>
-            <Btn onClick={() => navigator.clipboard.writeText(policy)}><Copy size={12} /> Copy policy</Btn>
+            <Btn onClick={() => navigator.clipboard.writeText(policy)}><Copy size={12} /> {i18nT('pages.artifactDeployPage.copy_policy')}</Btn>
             {boundaryPolicy && (
               <div style={{ marginTop: 10 }}>
                 <div style={{ fontSize: 11, color: 'var(--warn)', marginBottom: 4 }}>
                   {boundaryNote || 'Fullstack also requires the permissions-boundary policy below — create it BEFORE the first deploy (role creation is conditioned on it).'}
                 </div>
                 <pre style={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, padding: 10, fontSize: 11, maxHeight: 200, overflow: 'auto' }}>{boundaryPolicy}</pre>
-                <Btn onClick={() => navigator.clipboard.writeText(boundaryPolicy)}><Copy size={12} /> Copy boundary policy</Btn>
+                <Btn onClick={() => navigator.clipboard.writeText(boundaryPolicy)}><Copy size={12} /> {i18nT('pages.artifactDeployPage.copy_boundary_policy')}</Btn>
               </div>
             )}
           </div>
         )}
         <div style={{ marginTop: 12, fontSize: 12, color: 'var(--muted)', display: 'flex', alignItems: 'center', gap: 6 }}>
           <Globe size={13} stroke={'var(--accent)'} />
-          To publish, open an artifact and choose <b style={{ color: 'var(--text)' }}>&nbsp;Publish&nbsp;→&nbsp;Publish to public web (your AWS)</b>.
+          {i18nT('pages.artifactDeployPage.to_publish_open_an_artifact_and_choose')} <b style={{ color: 'var(--text)' }}>{i18nT('pages.artifactDeployPage.publish_publish_to_public_web_your_aws')}</b>.
         </div>
       </Card>
 
@@ -474,7 +462,7 @@ export default function ArtifactDeployPage() {
       {draftWebapps.length > 0 && (
         <Card>
           <CardTitle>
-            Ready to deploy ({draftWebapps.length}) <InfoTip text="Webapp artifacts that haven't been deployed yet. Deploy opens a skill-loaded chat session that adapts the app and ships it." />
+            {i18nT('pages.artifactDeployPage.ready_to_deploy_2')}{draftWebapps.length}) <InfoTip text="Webapp artifacts that haven't been deployed yet. Deploy opens a skill-loaded chat session that adapts the app and ships it." />
           </CardTitle>
           <table className="w-full border-collapse table-striped">
             <thead>
@@ -494,7 +482,7 @@ export default function ArtifactDeployPage() {
                         <Rocket size={13} stroke={'var(--accent)'} /> {a.slug}
                       </span>
                     </td>
-                    <td className="px-2.5 py-2 border-b border-border text-sm"><Badge variant="warn">not deployed</Badge></td>
+                    <td className="px-2.5 py-2 border-b border-border text-sm"><Badge variant="warn">{i18nT('pages.artifactDeployPage.not_deployed')}</Badge></td>
                     <td className="px-2.5 py-2 border-b border-border text-sm text-muted">{cost > 0 ? `≤ $${cost.toFixed(4)}` : '~$0.00'}</td>
                     <td className="px-2.5 py-2 border-b border-border text-sm">
                       {profiles.length > 0 && (
@@ -510,10 +498,10 @@ export default function ArtifactDeployPage() {
                     <td className="px-2.5 py-2 border-b border-border text-sm text-right">
                       <span style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
                         <Btn primary onClick={() => deployDraft(a.slug)} aria-label={`Deploy ${a.slug}`}>
-                          <Rocket size={11} /> Deploy
+                          <Rocket size={11} /> {i18nT('pages.artifactDeployPage.deploy')}
                         </Btn>
                         <Link to={`/artifacts/${encodeURIComponent(a.slug)}`} style={linkBtn}>
-                          <ExternalLink size={11} /> Details
+                          <ExternalLink size={11} /> {i18nT('pages.artifactDeployPage.details')}
                         </Link>
                       </span>
                     </td>
@@ -523,7 +511,7 @@ export default function ArtifactDeployPage() {
             </tbody>
           </table>
           <div style={{ paddingTop: 10, fontSize: 11, color: 'var(--muted)' }}>
-            Deploy opens a new chat session that runs the artifact-deploy skill with the chosen profile.
+            {i18nT('pages.artifactDeployPage.deploy_opens_a_new_chat_session_that_runs_the_ar')}
           </div>
         </Card>
       )}
@@ -532,13 +520,13 @@ export default function ArtifactDeployPage() {
       <Card>
         <div className="flex justify-between items-center">
           <CardTitle>
-            Deployments ({sites.length + deployedWebapps.length}) <InfoTip text="All deployed assets — static sites published from artifacts and full-stack webapp deployments. Recall = reversible takedown; Destroy = permanent infra removal." />
+            {i18nT('pages.artifactDeployPage.deployments')}{sites.length + deployedWebapps.length}) <InfoTip text="All deployed assets — static sites published from artifacts and full-stack webapp deployments. Recall = reversible takedown; Destroy = permanent infra removal." />
           </CardTitle>
-          <Btn onClick={() => { qc.invalidateQueries({ queryKey: ['deploy-web', 'sites'] }); qc.invalidateQueries({ queryKey: ['deploy-web', 'webapps'] }) }}><RefreshCw size={12} /> Refresh</Btn>
+          <Btn onClick={() => { qc.invalidateQueries({ queryKey: ['deploy-web', 'sites'] }); qc.invalidateQueries({ queryKey: ['deploy-web', 'webapps'] }) }}><RefreshCw size={12} /> {i18nT('pages.artifactDeployPage.refresh')}</Btn>
         </div>
         {sites.length + deployedWebapps.length === 0 && (
           <div style={{ fontSize: 13, color: 'var(--muted)' }}>
-            No deployments yet — publish an artifact from its page to create one, or open a webapp artifact and click <b style={{ color: 'var(--text)' }}>Deploy</b>.
+            {i18nT('pages.artifactDeployPage.no_deployments_yet_publish_an_artifact_from_its')} <b style={{ color: 'var(--text)' }}>{i18nT('pages.artifactDeployPage.deploy')}</b>.
           </div>
         )}
         {(sites.length + deployedWebapps.length > 0) && (
@@ -555,15 +543,15 @@ export default function ArtifactDeployPage() {
               {sites.map((s) => (
                 <tr key={`static-${s.site_id}`} className="hover:bg-bg-hover transition-colors">
                   <td className="px-2.5 py-2 border-b border-border text-sm font-semibold">{s.site_id}</td>
-                  <td className="px-2.5 py-2 border-b border-border text-sm"><span style={{ border: '1px solid var(--border)', color: 'var(--muted)', padding: '1px 6px', borderRadius: 9999, fontSize: 10, fontWeight: 500 }}>static</span></td>
+                  <td className="px-2.5 py-2 border-b border-border text-sm"><span style={{ border: '1px solid var(--border)', color: 'var(--muted)', padding: '1px 6px', borderRadius: 9999, fontSize: 10, fontWeight: 500 }}>{i18nT('pages.artifactDeployPage.static')}</span></td>
                   <td className="px-2.5 py-2 border-b border-border text-sm"><Badge variant={s.status === 'deployed' || s.status === 'live' ? 'ok' : s.status === 'error' ? 'err' : 'warn'}>{s.status || 'unknown'}</Badge></td>
                   <td className="px-2.5 py-2 border-b border-border text-sm">{s.profile ? <span style={chip}>{s.profile}</span> : <span style={{ color: 'var(--muted)' }}>—</span>}</td>
                   <td className="px-2.5 py-2 border-b border-border text-sm" style={{ maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.url ? (safeHttpUrl(s.url) ? <a href={safeHttpUrl(s.url)!} target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}>{s.url}</a> : <span style={{ color: 'var(--muted)' }}>{s.url}</span>) : '—'}</td>
-                  <td className="px-2.5 py-2 border-b border-border text-sm text-muted">~$0.00/mo</td>
+                  <td className="px-2.5 py-2 border-b border-border text-sm text-muted">{i18nT('pages.artifactDeployPage.0_00_mo')}</td>
                   <td className="px-2.5 py-2 border-b border-border text-sm">
                     <span style={{ display: 'flex', gap: 5 }}>
-                      <Btn onClick={() => recall(s)}><Undo2 size={11} /> Recall</Btn>
-                      <Btn danger onClick={() => destroy(s)}><Trash2 size={11} /> Destroy</Btn>
+                      <Btn onClick={() => recall(s)}><Undo2 size={11} /> {i18nT('pages.artifactDeployPage.recall')}</Btn>
+                      <Btn danger onClick={() => destroy(s)}><Trash2 size={11} /> {i18nT('pages.artifactDeployPage.destroy')}</Btn>
                     </span>
                   </td>
                 </tr>
@@ -576,14 +564,14 @@ export default function ArtifactDeployPage() {
                 return (
                   <tr key={`webapp-${a.slug}`} className="hover:bg-bg-hover transition-colors">
                     <td className="px-2.5 py-2 border-b border-border text-sm font-semibold">{a.slug}</td>
-                    <td className="px-2.5 py-2 border-b border-border text-sm"><span style={{ background: 'var(--accent-subtle)', color: 'var(--accent)', padding: '1px 6px', borderRadius: 9999, fontSize: 10, fontWeight: 500 }}>webapp</span></td>
+                    <td className="px-2.5 py-2 border-b border-border text-sm"><span style={{ background: 'var(--accent-subtle)', color: 'var(--accent)', padding: '1px 6px', borderRadius: 9999, fontSize: 10, fontWeight: 500 }}>{i18nT('pages.artifactDeployPage.webapp')}</span></td>
                     <td className="px-2.5 py-2 border-b border-border text-sm"><Badge variant={m.lifecycle?.status === 'deployed' || m.lifecycle?.status === 'live' ? 'ok' : m.lifecycle?.status === 'error' ? 'err' : 'warn'}>{m.lifecycle?.status || 'unknown'}</Badge></td>
                     <td className="px-2.5 py-2 border-b border-border text-sm">{m.deploy_target?.profile ? <span style={chip}>{m.deploy_target.profile}</span> : <span style={{ color: 'var(--muted)' }}>—</span>}</td>
                     <td className="px-2.5 py-2 border-b border-border text-sm" style={{ maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{url ? (safeHttpUrl(url) ? <a href={safeHttpUrl(url)!} target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}>{url}</a> : <span style={{ color: 'var(--muted)' }}>{url}</span>) : '—'}</td>
                     <td className="px-2.5 py-2 border-b border-border text-sm text-muted">{cost > 0 ? `≤$${cost.toFixed(4)}` : '~$0.00'}</td>
                     <td className="px-2.5 py-2 border-b border-border text-sm">
                       <Link to={`/artifacts/${encodeURIComponent(a.slug)}`} style={linkBtn}>
-                        <ExternalLink size={11} /> Details
+                        <ExternalLink size={11} /> {i18nT('pages.artifactDeployPage.details')}
                       </Link>
                     </td>
                   </tr>
@@ -595,10 +583,10 @@ export default function ArtifactDeployPage() {
         {/* Account-level total */}
         {(sites.length + deployedWebapps.length > 0) && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, paddingTop: 12, fontSize: 12.5, fontWeight: 600 }}>
-            <span>Estimated total — {sites.length} static site{sites.length === 1 ? '' : 's'} + {deployedWebapps.length} webapp{deployedWebapps.length === 1 ? '' : 's'}:</span>
+            <span>{i18nT('pages.artifactDeployPage.estimated_total')} {sites.length} {i18nT('pages.artifactDeployPage.static_site')}{sites.length === 1 ? '' : 's'} + {deployedWebapps.length} {i18nT('pages.artifactDeployPage.webapp')}{deployedWebapps.length === 1 ? '' : 's'}:</span>
             <span style={{ color: 'var(--accent)' }}>~${totalWebappUsd.toFixed(4)}</span>
             <span style={{ color: 'var(--muted)', fontWeight: 400, fontSize: 11 }}>
-              (worst-case tiers, over each TTL window; estimate — not the AWS bill)
+              {i18nT('pages.artifactDeployPage.worst_case_tiers_over_each_ttl_window_estimate_n')}
             </span>
           </div>
         )}
@@ -667,7 +655,7 @@ function PendingConfirmations({ qc }: { qc: ReturnType<typeof useQueryClient> })
   return (
     <Card>
       <CardTitle>
-        <Rocket size={15} /> Pending confirmations ({pending.length})
+        <Rocket size={15} /> {i18nT('pages.artifactDeployPage.pending_confirmations')}{pending.length})
       </CardTitle>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10, fontSize: 13 }}>
         {pending.map((e) => {
@@ -679,11 +667,11 @@ function PendingConfirmations({ qc }: { qc: ReturnType<typeof useQueryClient> })
                 <div style={{ flex: 1 }}>
                   <div style={{ fontWeight: 500 }}>{e.site_id}</div>
                   <div style={{ color: 'var(--muted)', fontSize: 11 }}>
-                    Source: {source} &middot; Profile: {e.profile || 'default'} &middot; TTL: {e.ttl_hours}h &middot; Scan: {e.scan_summary} &middot; {age}m ago
+                    {i18nT('pages.artifactDeployPage.source')} {source} {i18nT('pages.artifactDeployPage.profile_2')} {e.profile || 'default'} {i18nT('pages.artifactDeployPage.ttl')} {e.ttl_hours}{i18nT('pages.artifactDeployPage.h_scan')} {e.scan_summary} &middot; {age}{i18nT('pages.artifactDeployPage.m_ago')}
                   </div>
                   {e.override_scan_required && (
                     <div style={{ color: 'var(--warn)', fontSize: 11, marginTop: 2 }}>
-                      Blocked by non-credential scan findings — review above, then &ldquo;Deploy anyway&rdquo; to override.
+                      {i18nT('pages.artifactDeployPage.blocked_by_non_credential_scan_findings_review_a')}
                     </div>
                   )}
                 </div>
@@ -691,7 +679,7 @@ function PendingConfirmations({ qc }: { qc: ReturnType<typeof useQueryClient> })
                   {e.override_scan_required ? 'Deploy anyway' : 'Confirm Deploy'}
                 </Btn>
                 <Btn onClick={() => dismissMut.mutate(e.id)} disabled={dismissMut.isPending}>
-                  Dismiss
+                  {i18nT('pages.artifactDeployPage.dismiss')}
                 </Btn>
               </div>
               {(confirmMut.isError || dismissMut.isError) && (

@@ -3,6 +3,7 @@ import { Lock, X } from 'lucide-react'
 import { useMutation } from '@tanstack/react-query'
 import { api } from '../api/client'
 
+import { i18nT } from '../i18n/t'
 interface AuthEvent {
   gate_type?: string
   url?: string
@@ -56,7 +57,7 @@ export default function BrowserAuthPrompt() {
     >
       <Lock size={16} className="shrink-0" style={{ color: 'var(--text)' }} />
       <div className="flex flex-col gap-0.5 flex-1 min-w-0">
-        <span className="text-[13px] font-medium">Browser needs authentication</span>
+        <span className="text-[13px] font-medium">{i18nT('components.browserAuthPrompt.browser_needs_authentication')}</span>
         <span className="text-[12px] opacity-80 truncate">
           {authEvent.hint || `Auth gate: ${authEvent.gate_type || 'unknown'}`}
         </span>
@@ -72,7 +73,7 @@ export default function BrowserAuthPrompt() {
       <button
         onClick={() => setVisible(false)}
         className="p-1 rounded hover:bg-bg-hover transition-colors"
-        aria-label="Dismiss auth prompt"
+        aria-label={i18nT('components.browserAuthPrompt.dismiss_auth_prompt')}
         style={{ color: 'var(--text)' }}
       >
         <X size={16} />

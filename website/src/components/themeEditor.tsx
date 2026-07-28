@@ -3,6 +3,7 @@ import { useTheme, type CustomThemeData, CUSTOM_THEMES_CHANGED_EVENT } from '../
 import { Input, Btn } from './ui'
 import { api } from '../api/client'
 
+import { i18nT } from '../i18n/t'
 /* ── CSS variable groups for the color picker ── */
 export const VAR_GROUPS: { label: string; vars: { key: string; label: string }[] }[] = [
   {
@@ -157,7 +158,7 @@ export function useThemeEditor() {
   const handleDelete = async (slug?: string) => {
     const target = slug || editingSlug
     if (!target) return
-    if (confirm('Delete this custom theme?')) {
+    if (confirm(i18nT('components.themeEditor.delete_this_custom_theme'))) {
       try { await deleteCustomTheme(target); closeEditor() }
       catch (e: unknown) { setError(e instanceof Error ? e.message : 'Failed to delete theme') }
     }
@@ -264,12 +265,12 @@ export function ThemeEditorPanel({ editor }: { editor: ReturnType<typeof useThem
         <button
           className={`px-3 py-1 rounded-md text-[13px] transition-colors cursor-pointer border-none ${creatorMode === 'picker' ? 'bg-accent-subtle text-accent' : 'text-muted hover:text-text bg-transparent'}`}
           onClick={() => { if (creatorMode === 'json') syncJsonToPicker(jsonText); setCreatorMode('picker') }}
-        >🎨 Color Picker</button>
+        >{i18nT('components.themeEditor.color_picker')}</button>
         <button
           className={`px-3 py-1 rounded-md text-[13px] transition-colors cursor-pointer border-none ${creatorMode === 'json' ? 'bg-accent-subtle text-accent' : 'text-muted hover:text-text bg-transparent'}`}
           onClick={() => { setCreatorMode('json'); setJsonText(pickerToJson) }}
-        >📋 Paste JSON</button>
-        {isEditing && <span className="ml-auto text-[12px] text-muted">Editing: {themeName || editingSlug}</span>}
+        >{i18nT('components.themeEditor.paste_json')}</button>
+        {isEditing && <span className="ml-auto text-[12px] text-muted">{i18nT('components.themeEditor.editing')} {themeName || editingSlug}</span>}
       </div>
 
       {error && <div className="mb-3 bg-danger/10 border border-danger/20 rounded-lg p-2.5 text-[13px] text-danger animate-rise">{error}</div>}
@@ -283,33 +284,33 @@ export function ThemeEditorPanel({ editor }: { editor: ReturnType<typeof useThem
                   see through the component wrapper, so scope-disable it. */}
               {/* eslint-disable-next-line jsx-a11y/label-has-for */}
               <label htmlFor="theme-editor-name">
-                <span className="text-[12px] text-muted uppercase tracking-[.04em] mb-1 block">Theme Name</span>
-                <Input id="theme-editor-name" value={themeName} onChange={e => setThemeName(e.target.value)} placeholder="My Custom Theme" />
+                <span className="text-[12px] text-muted uppercase tracking-[.04em] mb-1 block">{i18nT('components.themeEditor.theme_name')}</span>
+                <Input id="theme-editor-name" value={themeName} onChange={e => setThemeName(e.target.value)} placeholder={i18nT('components.themeEditor.my_custom_theme')} />
               </label>
             </div>
             <div className="w-16 shrink-0">
               {/* eslint-disable-next-line jsx-a11y/label-has-for */}
               <label htmlFor="theme-editor-emoji">
-                <span className="text-[12px] text-muted uppercase tracking-[.04em] mb-1 block">Emoji</span>
+                <span className="text-[12px] text-muted uppercase tracking-[.04em] mb-1 block">{i18nT('components.themeEditor.emoji')}</span>
                 <Input id="theme-editor-emoji" value={themeEmoji} onChange={e => setThemeEmoji(e.target.value)} placeholder="✨" className="text-center !flex-none w-full" />
               </label>
             </div>
           </div>
-          <ColorModeEditor label="Dark Mode Colors" vars={darkVars} onChange={updateDarkVar} />
+          <ColorModeEditor label={i18nT('components.themeEditor.dark_mode_colors')} vars={darkVars} onChange={updateDarkVar} />
           <div className="mt-3">
-            <ColorModeEditor label="Light Mode Colors" vars={lightVars} onChange={updateLightVar} />
+            <ColorModeEditor label={i18nT('components.themeEditor.light_mode_colors')} vars={lightVars} onChange={updateLightVar} />
           </div>
         </div>
       ) : (
         <div>
           <label htmlFor="theme-editor-json">
-            <span className="text-[12px] text-muted uppercase tracking-[.04em] mb-1 block">Theme JSON</span>
+            <span className="text-[12px] text-muted uppercase tracking-[.04em] mb-1 block">{i18nT('components.themeEditor.theme_json')}</span>
             <textarea
               id="theme-editor-json"
-              aria-label="Theme JSON"
+              aria-label={i18nT('components.themeEditor.theme_json')}
               value={jsonText} onChange={e => setJsonText(e.target.value)}
               onBlur={() => syncJsonToPicker(jsonText)}
-              placeholder={'{\n  "name": "My Theme",\n  "emoji": "✨",\n  "dark": { "--bg": "#12141a", ... },\n  "light": { "--bg": "#fafafa", ... }\n}'}
+              placeholder={i18nT('components.themeEditor.name_my_theme_emoji_dark_bg_12141a_light_bg_fafa')}
               className="w-full h-56 bg-bg-elevated border border-border rounded-md px-3 py-2 text-[13px] text-text font-mono outline-none resize-y focus-ring"
               spellCheck={false}
             />
@@ -321,11 +322,11 @@ export function ThemeEditorPanel({ editor }: { editor: ReturnType<typeof useThem
         <Btn onClick={saveTheme} className="bg-accent text-accent-fg hover:bg-accent-hover" disabled={saving}>
           {saving ? 'Saving…' : isEditing ? 'Update Theme' : 'Save Theme'}
         </Btn>
-        <Btn onClick={closeEditor}>Cancel</Btn>
+        <Btn onClick={closeEditor}>{i18nT('components.themeEditor.cancel')}</Btn>
         {isEditing && (
           <button onClick={() => handleDelete()}
             className="ml-auto px-3 py-1.5 rounded-md text-[13px] font-medium cursor-pointer bg-danger/15 border border-danger/40 text-danger hover:bg-danger/25 hover:border-danger/60 transition-all">
-            🗑 Delete Theme
+            {i18nT('components.themeEditor.delete_theme')}
           </button>
         )}
       </div>

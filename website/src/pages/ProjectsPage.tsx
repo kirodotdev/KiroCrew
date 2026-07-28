@@ -10,6 +10,7 @@ import AgentSelector from '../components/AgentSelector'
 import type { KiroCrewAgent } from '../components/AgentSelector'
 import ProjectDetailPage from './ProjectDetailPage'
 
+import { i18nT } from '../i18n/t'
 type Mode = 'compose' | 'spec' | 'yaml'
 
 function TextInputPanel({ text, setText, rows, placeholder, accept, onUpload, onRun, onPlan, disabled, isPlanning, onCancel, planError, banner }: {
@@ -22,9 +23,9 @@ function TextInputPanel({ text, setText, rows, placeholder, accept, onUpload, on
       {banner}
       <textarea aria-label={placeholder} className="w-full bg-bg-elevated border border-border rounded-md px-3 py-2.5 text-text text-sm font-mono outline-none transition-colors focus-ring resize-y min-h-[120px]" rows={rows} placeholder={placeholder} value={text} onChange={e => setText(e.target.value)} disabled={disabled} />
       <div className="flex gap-2 items-center flex-wrap">
-        <input type="file" aria-label="Upload a file" accept={accept} onChange={onUpload} disabled={disabled} className="text-sm text-muted file:mr-2 file:py-1 file:px-3 file:rounded-md file:border file:border-border file:bg-bg-elevated file:text-text file:text-sm file:cursor-pointer" />
-        <SendBtn onClick={onRun} disabled={!text.trim() || disabled}><Play className="lucide-inline" /> Run</SendBtn>
-        <Btn onClick={onPlan} disabled={!text.trim() || disabled}>{disabled ? <Hourglass className="lucide-inline" /> : <ClipboardList className="lucide-inline" />} Plan</Btn>
+        <input type="file" aria-label={i18nT('pages.projectsPage.upload_a_file')} accept={accept} onChange={onUpload} disabled={disabled} className="text-sm text-muted file:mr-2 file:py-1 file:px-3 file:rounded-md file:border file:border-border file:bg-bg-elevated file:text-text file:text-sm file:cursor-pointer" />
+        <SendBtn onClick={onRun} disabled={!text.trim() || disabled}><Play className="lucide-inline" /> {i18nT('pages.projectsPage.run')}</SendBtn>
+        <Btn onClick={onPlan} disabled={!text.trim() || disabled}>{disabled ? <Hourglass className="lucide-inline" /> : <ClipboardList className="lucide-inline" />} {i18nT('pages.projectsPage.plan')}</Btn>
       </div>
       {isPlanning && <PlanningBanner onCancel={onCancel} />}
       {planError && <div className="rounded-lg border border-danger/50 bg-danger/10 px-4 py-2.5 mt-2 text-danger text-[13px]">{planError}</div>}
@@ -185,7 +186,7 @@ export default function ProjectsPage() {
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
-    if (/\.ya?ml$/i.test(file.name)) { alert('YAML files should be uploaded via the "From YAML" tab.'); e.target.value = ''; return }
+    if (/\.ya?ml$/i.test(file.name)) { alert(i18nT('pages.projectsPage.yaml_files_should_be_uploaded_via_the_from_yaml')); e.target.value = ''; return }
     const reader = new FileReader()
     reader.onload = () => setSpecText(reader.result as string)
     reader.readAsText(file)
@@ -195,7 +196,7 @@ export default function ProjectsPage() {
   const handleYamlUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
-    if (!/\.ya?ml$/i.test(file.name)) { alert('Only .yaml/.yml files are accepted here. Use the "From Spec" tab for other formats.'); e.target.value = ''; return }
+    if (!/\.ya?ml$/i.test(file.name)) { alert(i18nT('pages.projectsPage.only_yaml_yml_files_are_accepted_here_use_the_fr')); e.target.value = ''; return }
     const reader = new FileReader()
     reader.onload = () => setYamlText(reader.result as string)
     reader.readAsText(file)
@@ -263,58 +264,58 @@ export default function ProjectsPage() {
   const composePanel = (
     <Card>
       <div className="flex items-center gap-1 mb-4">
-        <button onClick={() => setMode('compose')} disabled={anyPlanning} className={`px-3 py-1.5 rounded-md text-[13px] font-semibold transition-all ${mode === 'compose' ? 'bg-accent text-accent-fg shadow-sm' : 'text-muted hover:text-text hover:bg-bg-elevated'} ${anyPlanning ? 'opacity-50 cursor-not-allowed' : ''}`}><Sparkles className="lucide-inline" /> Compose</button>
-        <button onClick={() => setMode('spec')} disabled={anyPlanning} className={`px-3 py-1.5 rounded-md text-[13px] font-semibold transition-all ${mode === 'spec' ? 'bg-accent text-accent-fg shadow-sm' : 'text-muted hover:text-text hover:bg-bg-elevated'} ${anyPlanning ? 'opacity-50 cursor-not-allowed' : ''}`}><FileText className="lucide-inline" /> From Spec</button>
-        <button onClick={() => setMode('yaml')} disabled={anyPlanning} className={`px-3 py-1.5 rounded-md text-[13px] font-semibold transition-all ${mode === 'yaml' ? 'bg-accent text-accent-fg shadow-sm' : 'text-muted hover:text-text hover:bg-bg-elevated'} ${anyPlanning ? 'opacity-50 cursor-not-allowed' : ''}`}><Settings className="lucide-inline" /> From YAML</button>
+        <button onClick={() => setMode('compose')} disabled={anyPlanning} className={`px-3 py-1.5 rounded-md text-[13px] font-semibold transition-all ${mode === 'compose' ? 'bg-accent text-accent-fg shadow-sm' : 'text-muted hover:text-text hover:bg-bg-elevated'} ${anyPlanning ? 'opacity-50 cursor-not-allowed' : ''}`}><Sparkles className="lucide-inline" /> {i18nT('pages.projectsPage.compose')}</button>
+        <button onClick={() => setMode('spec')} disabled={anyPlanning} className={`px-3 py-1.5 rounded-md text-[13px] font-semibold transition-all ${mode === 'spec' ? 'bg-accent text-accent-fg shadow-sm' : 'text-muted hover:text-text hover:bg-bg-elevated'} ${anyPlanning ? 'opacity-50 cursor-not-allowed' : ''}`}><FileText className="lucide-inline" /> {i18nT('pages.projectsPage.from_spec')}</button>
+        <button onClick={() => setMode('yaml')} disabled={anyPlanning} className={`px-3 py-1.5 rounded-md text-[13px] font-semibold transition-all ${mode === 'yaml' ? 'bg-accent text-accent-fg shadow-sm' : 'text-muted hover:text-text hover:bg-bg-elevated'} ${anyPlanning ? 'opacity-50 cursor-not-allowed' : ''}`}><Settings className="lucide-inline" /> {i18nT('pages.projectsPage.from_yaml')}</button>
       </div>
       <div className="flex gap-2 items-center mb-3">
-        <span className="text-[13px] text-muted font-medium">Agent:</span>
+        <span className="text-[13px] text-muted font-medium">{i18nT('pages.projectsPage.agent')}</span>
         <AgentSelector agents={agents} defaultAgent={defaultAgentName} value={agent} onChange={(name) => setAgent(name)} />
-        <span className="text-[13px] text-muted font-medium ml-2">Workspace:</span>
+        <span className="text-[13px] text-muted font-medium ml-2">{i18nT('pages.projectsPage.workspace')}</span>
         <Input
           type="text"
-          aria-label="Workspace folder"
+          aria-label={i18nT('pages.projectsPage.workspace_folder')}
           value={workspaceDir}
           onChange={e => setWorkspaceDir(e.target.value)}
           placeholder={defaultWorkspaceDir || 'Default workspace folder'}
-          title="Root folder for a NEW plan. Leave blank to use the default per-run workspace; type a path to target a specific folder. Fixed at plan time — resuming an existing run keeps its original folder."
+          title={i18nT('pages.projectsPage.root_folder_for_a_new_plan_leave_blank_to_use_th')}
           disabled={anyPlanning}
           className={`min-w-[200px] px-2.5 py-1.5 text-[13px] font-mono ${anyPlanning ? 'opacity-50 cursor-not-allowed' : ''}`}
         />
       </div>
       {mode === 'compose' ? (
         <div className="space-y-3">
-          <textarea aria-label="Describe your task" className="w-full bg-bg-elevated border border-border rounded-md px-3 py-2.5 text-text text-sm font-body outline-none transition-colors focus-ring resize-y min-h-[80px]" rows={3} placeholder="Describe your task..." value={userInput} onChange={e => setUserInput(e.target.value)} disabled={isRefining || anyPlanning} />
+          <textarea aria-label={i18nT('pages.projectsPage.describe_your_task')} className="w-full bg-bg-elevated border border-border rounded-md px-3 py-2.5 text-text text-sm font-body outline-none transition-colors focus-ring resize-y min-h-[80px]" rows={3} placeholder={i18nT('pages.projectsPage.describe_your_task_2')} value={userInput} onChange={e => setUserInput(e.target.value)} disabled={isRefining || anyPlanning} />
           <div className="flex gap-2 items-center">
-            {!isRefining && <button className={`btn-sweep bg-accent text-accent-fg border-none rounded-lg px-4 h-9 text-sm font-semibold cursor-pointer hover:bg-accent-hover transition-all font-body ${anyPlanning ? 'opacity-50 cursor-not-allowed' : ''}`} onClick={refine} disabled={!userInput.trim() || anyPlanning}><Sparkles className="lucide-inline" /> Refine into Spec</button>}
-            {!isRefining && <button className={`px-4 h-9 rounded-md border border-accent bg-transparent text-accent text-sm font-semibold cursor-pointer font-body hover:bg-accent hover:text-accent-fg transition-all ${anyPlanning ? 'opacity-50 cursor-not-allowed' : ''}`} onClick={() => generatePlan(userInput, 'text')} disabled={!userInput.trim() || anyPlanning}>{anyPlanning ? <Hourglass className="lucide-inline" /> : <ClipboardList className="lucide-inline" />} Plan</button>}
-            {!isRefining && <button className={`px-4 h-9 rounded-lg border-none bg-ok text-ok-fg text-sm font-semibold cursor-pointer font-body hover:brightness-110 transition-all ${anyPlanning ? 'opacity-50 cursor-not-allowed' : ''}`} onClick={() => handleRun(userInput, 'text')} disabled={!userInput.trim() || anyPlanning}><Play className="lucide-inline" /> Run</button>}
+            {!isRefining && <button className={`btn-sweep bg-accent text-accent-fg border-none rounded-lg px-4 h-9 text-sm font-semibold cursor-pointer hover:bg-accent-hover transition-all font-body ${anyPlanning ? 'opacity-50 cursor-not-allowed' : ''}`} onClick={refine} disabled={!userInput.trim() || anyPlanning}><Sparkles className="lucide-inline" /> {i18nT('pages.projectsPage.refine_into_spec')}</button>}
+            {!isRefining && <button className={`px-4 h-9 rounded-md border border-accent bg-transparent text-accent text-sm font-semibold cursor-pointer font-body hover:bg-accent hover:text-accent-fg transition-all ${anyPlanning ? 'opacity-50 cursor-not-allowed' : ''}`} onClick={() => generatePlan(userInput, 'text')} disabled={!userInput.trim() || anyPlanning}>{anyPlanning ? <Hourglass className="lucide-inline" /> : <ClipboardList className="lucide-inline" />} {i18nT('pages.projectsPage.plan')}</button>}
+            {!isRefining && <button className={`px-4 h-9 rounded-lg border-none bg-ok text-ok-fg text-sm font-semibold cursor-pointer font-body hover:brightness-110 transition-all ${anyPlanning ? 'opacity-50 cursor-not-allowed' : ''}`} onClick={() => handleRun(userInput, 'text')} disabled={!userInput.trim() || anyPlanning}><Play className="lucide-inline" /> {i18nT('pages.projectsPage.run')}</button>}
             {isRefining && <>
-              <button className="px-4 h-9 rounded-md border border-border bg-transparent text-muted text-sm cursor-pointer font-body hover:text-danger hover:border-danger transition-all" onClick={async () => { await api.refineCancel(); setRefineStatus('cancelled') }}><Square className="lucide-inline" /> Cancel</button>
-              <span className="text-accent text-[13px] animate-pulse">Refining…</span>
+              <button className="px-4 h-9 rounded-md border border-border bg-transparent text-muted text-sm cursor-pointer font-body hover:text-danger hover:border-danger transition-all" onClick={async () => { await api.refineCancel(); setRefineStatus('cancelled') }}><Square className="lucide-inline" /> {i18nT('pages.projectsPage.cancel')}</button>
+              <span className="text-accent text-[13px] animate-pulse">{i18nT('pages.projectsPage.refining')}</span>
             </>}
           </div>
           {isPlanning && <PlanningBanner onCancel={cancelPlan} />}
           {planError && <div className="rounded-lg border border-danger/50 bg-danger/10 px-4 py-2.5 mt-2 text-danger text-[13px]">{planError}</div>}
           {(refined || isRefining) && (
             <div>
-              <textarea aria-label="Refined spec" className="w-full bg-bg-elevated border border-border rounded-md px-3 py-2.5 text-text text-sm font-mono outline-none transition-colors focus-ring resize-y min-h-[120px]" rows={8} value={refined} onChange={e => setRefined(e.target.value)} readOnly={isRefining} />
-              {refineError && <div className="text-danger mt-1 text-[13px]">Error: {refineError}</div>}
+              <textarea aria-label={i18nT('pages.projectsPage.refined_spec')} className="w-full bg-bg-elevated border border-border rounded-md px-3 py-2.5 text-text text-sm font-mono outline-none transition-colors focus-ring resize-y min-h-[120px]" rows={8} value={refined} onChange={e => setRefined(e.target.value)} readOnly={isRefining} />
+              {refineError && <div className="text-danger mt-1 text-[13px]">{i18nT('pages.projectsPage.error')} {refineError}</div>}
               {!isRefining && refined && (
                 <div className="flex gap-2 mt-2">
-                  <button className={`btn-sweep bg-accent text-accent-fg border-none rounded-lg px-4 h-9 text-sm font-semibold cursor-pointer hover:bg-accent-hover transition-all font-body ${anyPlanning ? 'opacity-50 cursor-not-allowed' : ''}`} onClick={() => generatePlan(refined, 'spec')} disabled={anyPlanning}><ClipboardList className="lucide-inline" /> Plan from Spec</button>
-                  <button className={`px-4 h-9 rounded-lg border-none bg-ok text-ok-fg text-sm font-semibold cursor-pointer font-body hover:brightness-110 transition-all ${anyPlanning ? 'opacity-50 cursor-not-allowed' : ''}`} onClick={() => handleRun(refined, 'spec')} disabled={anyPlanning}><Play className="lucide-inline" /> Run</button>
-                  <button className={`px-4 h-9 rounded-md border border-border bg-transparent text-muted text-sm cursor-pointer font-body hover:text-text hover:border-border-strong transition-all ${anyPlanning ? 'opacity-50 cursor-not-allowed' : ''}`} onClick={() => { setRefined(''); setRefineStatus('idle'); setRefineError('') }} disabled={anyPlanning}><X className="lucide-inline" /> Discard</button>
+                  <button className={`btn-sweep bg-accent text-accent-fg border-none rounded-lg px-4 h-9 text-sm font-semibold cursor-pointer hover:bg-accent-hover transition-all font-body ${anyPlanning ? 'opacity-50 cursor-not-allowed' : ''}`} onClick={() => generatePlan(refined, 'spec')} disabled={anyPlanning}><ClipboardList className="lucide-inline" /> {i18nT('pages.projectsPage.plan_from_spec')}</button>
+                  <button className={`px-4 h-9 rounded-lg border-none bg-ok text-ok-fg text-sm font-semibold cursor-pointer font-body hover:brightness-110 transition-all ${anyPlanning ? 'opacity-50 cursor-not-allowed' : ''}`} onClick={() => handleRun(refined, 'spec')} disabled={anyPlanning}><Play className="lucide-inline" /> {i18nT('pages.projectsPage.run')}</button>
+                  <button className={`px-4 h-9 rounded-md border border-border bg-transparent text-muted text-sm cursor-pointer font-body hover:text-text hover:border-border-strong transition-all ${anyPlanning ? 'opacity-50 cursor-not-allowed' : ''}`} onClick={() => { setRefined(''); setRefineStatus('idle'); setRefineError('') }} disabled={anyPlanning}><X className="lucide-inline" /> {i18nT('pages.projectsPage.discard')}</button>
                 </div>
               )}
             </div>
           )}
         </div>
       ) : mode === 'spec' ? (
-        <TextInputPanel text={specText} setText={setSpecText} rows={6} placeholder="Paste spec content or upload a file..." accept=".md,.txt" onUpload={handleFileUpload} onRun={() => handleRun(specText, 'spec')} onPlan={() => generatePlan(specText, 'spec')} disabled={anyPlanning} isPlanning={isPlanning} onCancel={cancelPlan} planError={planError} />
+        <TextInputPanel text={specText} setText={setSpecText} rows={6} placeholder={i18nT('pages.projectsPage.paste_spec_content_or_upload_a_file')} accept=".md,.txt" onUpload={handleFileUpload} onRun={() => handleRun(specText, 'spec')} onPlan={() => generatePlan(specText, 'spec')} disabled={anyPlanning} isPlanning={isPlanning} onCancel={cancelPlan} planError={planError} />
       ) : (
-        <TextInputPanel text={yamlText} setText={setYamlText} rows={8} placeholder="Paste YAML workflow or upload a .yaml file..." accept=".yaml,.yml" onUpload={handleYamlUpload} onRun={() => handleRun(yamlText, 'yaml')} onPlan={() => generatePlan(yamlText, 'yaml')} disabled={anyPlanning} isPlanning={isPlanning} onCancel={cancelPlan} planError={planError}
-          banner={<div className="rounded-md border bg-bg-elevated px-3 py-2 text-[12px] text-text" style={{ borderColor: 'color-mix(in srgb, var(--accent) 40%, transparent)' }}><Settings className="lucide-inline" /> YAML workflows bypass the LLM decomposer — <code>depends_on</code> is enforced as a hard DAG constraint.</div>} />
+        <TextInputPanel text={yamlText} setText={setYamlText} rows={8} placeholder={i18nT('pages.projectsPage.paste_yaml_workflow_or_upload_a_yaml_file')} accept=".yaml,.yml" onUpload={handleYamlUpload} onRun={() => handleRun(yamlText, 'yaml')} onPlan={() => generatePlan(yamlText, 'yaml')} disabled={anyPlanning} isPlanning={isPlanning} onCancel={cancelPlan} planError={planError}
+          banner={<div className="rounded-md border bg-bg-elevated px-3 py-2 text-[12px] text-text" style={{ borderColor: 'color-mix(in srgb, var(--accent) 40%, transparent)' }}><Settings className="lucide-inline" /> {i18nT('pages.projectsPage.yaml_workflows_bypass_the_llm_decomposer')} <code>{i18nT('pages.projectsPage.depends_on')}</code> {i18nT('pages.projectsPage.is_enforced_as_a_hard_dag_constraint')}</div>} />
       )}
     </Card>
   )
@@ -322,11 +323,11 @@ export default function ProjectsPage() {
   // Unified layout — sidebar always visible when runs exist
   return (
     <>
-      <PageHeader title="Task Runner" subtitle="Autonomous multi-step task execution" />
+      <PageHeader title={i18nT('pages.projectsPage.task_runner')} subtitle={i18nT('pages.projectsPage.autonomous_multi_step_task_execution')} />
       <div className="flex-1 min-h-0 flex">
         {runs.length > 0 && (
           <div className="w-[260px] shrink-0 border-r border-border overflow-y-auto p-3">
-            <button onClick={() => setSelectedRun(null)} className="w-full mb-3 px-3 py-2 rounded-lg text-[13px] font-semibold border cursor-pointer transition-all text-accent bg-accent/10 border-accent/30 hover:bg-accent/20"><Plus className="lucide-inline" /> New Task</button>
+            <button onClick={() => setSelectedRun(null)} className="w-full mb-3 px-3 py-2 rounded-lg text-[13px] font-semibold border cursor-pointer transition-all text-accent bg-accent/10 border-accent/30 hover:bg-accent/20"><Plus className="lucide-inline" /> {i18nT('pages.projectsPage.new_task')}</button>
             {projectList}
           </div>
         )}
@@ -334,12 +335,12 @@ export default function ProjectsPage() {
           <div className="flex-1 min-h-0 min-w-0 flex flex-col">
             <div className="px-4 py-2 flex items-center gap-2 border-b border-border shrink-0">
               {editingName ? (
-                <input aria-label="Project name" className="text-[13px] font-semibold bg-transparent border border-accent rounded px-1 py-0 text-text-strong outline-none min-w-[120px]" autoFocus maxLength={200} value={editNameValue} onChange={e => setEditNameValue(e.target.value)} onBlur={() => { const v = editNameValue.trim(); if (v && v !== (selectedRun.name || selectedRun.spec_name || '')) { api.renameTaskRun(selectedRun.task_id, v).then(load).catch(() => {}) }; setEditingName(false) }} onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); else if (e.key === 'Escape') setEditingName(false) }} />
+                <input aria-label={i18nT('pages.projectsPage.project_name')} className="text-[13px] font-semibold bg-transparent border border-accent rounded px-1 py-0 text-text-strong outline-none min-w-[120px]" autoFocus maxLength={200} value={editNameValue} onChange={e => setEditNameValue(e.target.value)} onBlur={() => { const v = editNameValue.trim(); if (v && v !== (selectedRun.name || selectedRun.spec_name || '')) { api.renameTaskRun(selectedRun.task_id, v).then(load).catch(() => {}) }; setEditingName(false) }} onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); else if (e.key === 'Escape') setEditingName(false) }} />
               ) : (
                 <span
                   role="button"
                   tabIndex={0}
-                  aria-label="Rename project"
+                  aria-label={i18nT('pages.projectsPage.rename_project')}
                   className="text-[13px] font-semibold text-text-strong truncate cursor-pointer hover:text-accent transition-all"
                   onClick={() => { setEditingName(true); setEditNameValue(selectedRun.name || selectedRun.spec_name || 'Project') }}
                   onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setEditingName(true); setEditNameValue(selectedRun.name || selectedRun.spec_name || 'Project') } }}
@@ -349,49 +350,49 @@ export default function ProjectsPage() {
                 role="button"
                 tabIndex={0}
                 className="text-[11px] text-muted cursor-pointer opacity-40 hover:opacity-100 hover:text-accent transition-all"
-                title="Rename project"
-                aria-label="Rename project"
+                title={i18nT('pages.projectsPage.rename_project')}
+                aria-label={i18nT('pages.projectsPage.rename_project')}
                 onClick={() => { setEditingName(true); setEditNameValue(selectedRun.name || selectedRun.spec_name || 'Project') }}
                 onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setEditingName(true); setEditNameValue(selectedRun.name || selectedRun.spec_name || 'Project') } }}
               ><Pencil className="lucide-inline" /></span>}
-              <span className="text-[12px] text-muted">{selectedRun.status === 'planning' ? <><Hourglass className="lucide-inline" /> Planning…</> : selectedRun.running ? <><RefreshCw className="lucide-inline" /> Running</> : selectedRun.status}</span>
+              <span className="text-[12px] text-muted">{selectedRun.status === 'planning' ? <><Hourglass className="lucide-inline" /> {i18nT('pages.projectsPage.planning')}</> : selectedRun.running ? <><RefreshCw className="lucide-inline" /> {i18nT('pages.projectsPage.running')}</> : selectedRun.status}</span>
               <div className="flex-1" />
               {selectedRun.status === 'planned' && <>
-                <label className="flex items-center gap-1.5 text-[12px] text-muted cursor-pointer select-none" title="Run unattended: auto-approve this run's tool calls. Deny-listed tools and force_approval gates still block.">
+                <label className="flex items-center gap-1.5 text-[12px] text-muted cursor-pointer select-none" title={i18nT('pages.projectsPage.run_unattended_auto_approve_this_run_s_tool_call')}>
                   <Checkbox checked={autoApprove} onChange={e => setAutoApprove(e.target.checked)} />
-                  Auto-approve tool calls
+                  {i18nT('pages.projectsPage.auto_approve_tool_calls')}
                 </label>
-                <button className="btn-sweep bg-accent text-accent-fg border-none rounded-lg px-4 h-8 text-[13px] font-semibold cursor-pointer hover:bg-accent-hover transition-all" onClick={async () => { const r = await api.executePlan(selectedRun.task_id, agent, autoApprove); if (r.ok) load() }}><Play className="lucide-inline" /> Execute</button>
-                <button className="px-3 h-8 rounded-md border border-border text-muted text-[13px] cursor-pointer hover:text-accent hover:border-accent transition-all" onClick={async () => { const res = await api.planContext(selectedRun.task_id); if (res.ok && res.context) { dispatch(setPendingInput("Let's optimize this plan:\n\n" + res.context)); navigate('/chat?autoSend=1&newSession=1') } }}><MessageSquare className="lucide-inline" /> Chat</button>
-                <button className="px-3 h-8 rounded-md border border-border text-muted text-[13px] cursor-pointer hover:text-danger hover:border-danger transition-all" onClick={async () => { await api.deleteTaskRun(selectedRun.task_id); setSelectedRun(null); load() }}><X className="lucide-inline" /> Discard</button>
+                <button className="btn-sweep bg-accent text-accent-fg border-none rounded-lg px-4 h-8 text-[13px] font-semibold cursor-pointer hover:bg-accent-hover transition-all" onClick={async () => { const r = await api.executePlan(selectedRun.task_id, agent, autoApprove); if (r.ok) load() }}><Play className="lucide-inline" /> {i18nT('pages.projectsPage.execute')}</button>
+                <button className="px-3 h-8 rounded-md border border-border text-muted text-[13px] cursor-pointer hover:text-accent hover:border-accent transition-all" onClick={async () => { const res = await api.planContext(selectedRun.task_id); if (res.ok && res.context) { dispatch(setPendingInput("Let's optimize this plan:\n\n" + res.context)); navigate('/chat?autoSend=1&newSession=1') } }}><MessageSquare className="lucide-inline" /> {i18nT('pages.projectsPage.chat')}</button>
+                <button className="px-3 h-8 rounded-md border border-border text-muted text-[13px] cursor-pointer hover:text-danger hover:border-danger transition-all" onClick={async () => { await api.deleteTaskRun(selectedRun.task_id); setSelectedRun(null); load() }}><X className="lucide-inline" /> {i18nT('pages.projectsPage.discard')}</button>
               </>}
-              {selectedRun.status === 'planning' && <button className="px-3 h-8 rounded-md border border-border text-muted text-[13px] cursor-pointer hover:text-danger hover:border-danger transition-all" onClick={async () => { await api.cancelPlan(); setSelectedRun(null) }}><X className="lucide-inline" /> Cancel</button>}
-              {selectedRun.running && <button className="px-3 h-8 rounded-md border border-border text-muted text-[13px] cursor-pointer hover:text-warning hover:border-warning transition-all" onClick={async () => { await api.pauseTaskRun(selectedRun.task_id); load() }}><Pause className="lucide-inline" /> Pause</button>}
-              {selectedRun.running && <button className="px-3 h-8 rounded-md border border-border text-muted text-[13px] cursor-pointer hover:text-danger hover:border-danger transition-all" onClick={async () => { await api.cancelTaskRunner(selectedRun.task_id); load() }}><Square className="lucide-inline" /> Cancel</button>}
+              {selectedRun.status === 'planning' && <button className="px-3 h-8 rounded-md border border-border text-muted text-[13px] cursor-pointer hover:text-danger hover:border-danger transition-all" onClick={async () => { await api.cancelPlan(); setSelectedRun(null) }}><X className="lucide-inline" /> {i18nT('pages.projectsPage.cancel')}</button>}
+              {selectedRun.running && <button className="px-3 h-8 rounded-md border border-border text-muted text-[13px] cursor-pointer hover:text-warning hover:border-warning transition-all" onClick={async () => { await api.pauseTaskRun(selectedRun.task_id); load() }}><Pause className="lucide-inline" /> {i18nT('pages.projectsPage.pause')}</button>}
+              {selectedRun.running && <button className="px-3 h-8 rounded-md border border-border text-muted text-[13px] cursor-pointer hover:text-danger hover:border-danger transition-all" onClick={async () => { await api.cancelTaskRunner(selectedRun.task_id); load() }}><Square className="lucide-inline" /> {i18nT('pages.projectsPage.cancel')}</button>}
               {!selectedRun.running && selectedRun.status !== 'planned' && selectedRun.status !== 'planning' && <>
                 {selectedRun.status === 'paused' && (
                   <>
-                    <label className="flex items-center gap-1.5 text-[12px] text-muted cursor-pointer select-none" title="Run unattended: auto-approve this run's tool calls. Deny-listed tools and force_approval gates still block.">
+                    <label className="flex items-center gap-1.5 text-[12px] text-muted cursor-pointer select-none" title={i18nT('pages.projectsPage.run_unattended_auto_approve_this_run_s_tool_call')}>
                       <Checkbox checked={autoApprove} onChange={e => setAutoApprove(e.target.checked)} />
-                      Auto-approve tool calls
+                      {i18nT('pages.projectsPage.auto_approve_tool_calls')}
                     </label>
-                    <button className="btn-sweep bg-accent text-accent-fg border-none rounded-lg px-4 h-8 text-[13px] font-semibold cursor-pointer hover:bg-accent-hover transition-all" onClick={async () => { const r = await api.executePlan(selectedRun.task_id, agent, autoApprove); if (r.ok) load() }}><Play className="lucide-inline" /> Resume</button>
+                    <button className="btn-sweep bg-accent text-accent-fg border-none rounded-lg px-4 h-8 text-[13px] font-semibold cursor-pointer hover:bg-accent-hover transition-all" onClick={async () => { const r = await api.executePlan(selectedRun.task_id, agent, autoApprove); if (r.ok) load() }}><Play className="lucide-inline" /> {i18nT('pages.projectsPage.resume')}</button>
                   </>
                 )}
                 {(selectedRun.status === 'completed' || selectedRun.status === 'cancelled') && (
                   <button className="px-3 h-8 rounded-md border border-accent bg-transparent text-accent text-[13px] font-semibold cursor-pointer hover:bg-accent hover:text-accent-fg transition-all" onClick={async () => {
                     const res = await api.taskRunToChat(selectedRun.task_id)
                     if (res.slot) { dispatch(switchSlot(res.slot)); navigate('/chat') }
-                  }}><MessageSquare className="lucide-inline" /> Chat</button>
+                  }}><MessageSquare className="lucide-inline" /> {i18nT('pages.projectsPage.chat')}</button>
                 )}
-                {selectedRun.status !== 'paused' && <button className="px-3 h-8 rounded-md border border-accent bg-transparent text-accent text-[13px] font-semibold cursor-pointer hover:bg-accent hover:text-accent-fg transition-all" onClick={async () => { await api.retryTaskRun(selectedRun.task_id, 1); load() }}><RotateCcw className="lucide-inline" /> Restart</button>}
+                {selectedRun.status !== 'paused' && <button className="px-3 h-8 rounded-md border border-accent bg-transparent text-accent text-[13px] font-semibold cursor-pointer hover:bg-accent hover:text-accent-fg transition-all" onClick={async () => { await api.retryTaskRun(selectedRun.task_id, 1); load() }}><RotateCcw className="lucide-inline" /> {i18nT('pages.projectsPage.restart')}</button>}
                 <button className="px-3 h-8 rounded-md border border-border text-muted text-[13px] cursor-pointer hover:text-accent hover:border-accent transition-all" onClick={async () => {
                   const name = selectedRun.name || selectedRun.spec_name || selectedRun.task_id
                   const spec = selectedRun.spec_content || selectedRun.original_input || ''
-                  if (!spec) { alert('No spec/idea to schedule'); return }
+                  if (!spec) { alert(i18nT('pages.projectsPage.no_spec_idea_to_schedule')); return }
                   await api.createCron({ name: `Project: ${name}`, message: `run __inline__:${spec}`, every: 86400 })
-                  alert('Scheduled as daily cron job')
-                }}><Clock className="lucide-inline" /> Schedule</button>
+                  alert(i18nT('pages.projectsPage.scheduled_as_daily_cron_job'))
+                }}><Clock className="lucide-inline" /> {i18nT('pages.projectsPage.schedule')}</button>
               </>}
             </div>
             <div className="flex-1 min-h-0 min-w-0 flex flex-col">
@@ -422,10 +423,10 @@ function PlanningBanner({ onCancel }: { onCancel: () => void }) {
       <div className="relative flex items-center gap-3">
         <div className="w-5 h-5 border-2 border-accent/30 border-t-accent rounded-full animate-spin shrink-0" />
         <div className="flex-1">
-          <div className="text-accent text-[14px] font-semibold">Generating execution plan{dots}</div>
-          <div className="text-muted text-[12px] mt-0.5">Analyzing task and building step-by-step plan</div>
+          <div className="text-accent text-[14px] font-semibold">{i18nT('pages.projectsPage.generating_execution_plan')}{dots}</div>
+          <div className="text-muted text-[12px] mt-0.5">{i18nT('pages.projectsPage.analyzing_task_and_building_step_by_step_plan')}</div>
         </div>
-        <button className="px-3 h-7 rounded-md border border-border bg-transparent text-muted text-[12px] cursor-pointer font-body hover:text-danger hover:border-danger transition-all shrink-0" onClick={onCancel}><X className="lucide-inline" /> Cancel</button>
+        <button className="px-3 h-7 rounded-md border border-border bg-transparent text-muted text-[12px] cursor-pointer font-body hover:text-danger hover:border-danger transition-all shrink-0" onClick={onCancel}><X className="lucide-inline" /> {i18nT('pages.projectsPage.cancel')}</button>
       </div>
     </div>
   )

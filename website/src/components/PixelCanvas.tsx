@@ -1,5 +1,6 @@
 import { useRef, useEffect, useCallback } from 'react'
 
+import { i18nT } from '../i18n/t'
 export type SlotState = 'empty' | 'typing'
 export interface SlotData { state: SlotState; label?: string }
 export interface PixelCanvasProps { slots: SlotData[] }
@@ -98,5 +99,5 @@ export default function PixelCanvas({ slots }: PixelCanvasProps) {
     return () => cancelAnimationFrame(raf)
   }, [render])
 
-  return <canvas ref={canvasRef} aria-label="Agent activity animation" width={W * SCALE} height={H * SCALE} style={{ imageRendering: 'pixelated', aspectRatio: '1/1' }} className="w-full rounded-lg" />
+  return <canvas ref={canvasRef} aria-label={i18nT('components.pixelCanvas.agent_activity_animation')} width={W * SCALE} height={H * SCALE} style={{ imageRendering: 'pixelated', aspectRatio: '1/1' }} className="w-full rounded-lg" />
 }

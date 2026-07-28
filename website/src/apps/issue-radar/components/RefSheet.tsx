@@ -25,6 +25,7 @@ import { useRefSummary } from './RefLink'
 import IssueDetail from './IssueDetail'
 import PrDetail from './PrDetail'
 
+import { i18nT } from '../../../i18n/t'
 const ICON_BTN =
   'inline-flex items-center gap-1 rounded-md p-1.5 text-muted hover:text-text hover:bg-bg-hover ' +
   'cursor-pointer bg-transparent border-0'
@@ -96,7 +97,7 @@ export default function RefSheet() {
           <Clickable
             className="absolute inset-0 bg-bg/50 backdrop-blur-sm"
             onClick={closeRefs}
-            aria-label="Close reference"
+            aria-label={i18nT('apps.issueRadar.components.refSheet.close_reference')}
           />
           <motion.div
             ref={dialogRef}
@@ -122,7 +123,7 @@ export default function RefSheet() {
             {/* Sheet chrome — the only thing added around the reused pane. */}
             <div className="flex items-center gap-2 px-3 py-2 border-b border-border bg-bg-elevated/60 flex-shrink-0">
               {refStack.length > 1 && (
-                <button onClick={popRef} aria-label="Back to the referencing item" title="Back" className={ICON_BTN}>
+                <button onClick={popRef} aria-label={i18nT('apps.issueRadar.components.refSheet.back_to_the_referencing_item')} title={i18nT('apps.issueRadar.components.refSheet.back')} className={ICON_BTN}>
                   <ChevronLeft className="lucide-inline" aria-hidden="true" />
                 </button>
               )}
@@ -133,15 +134,15 @@ export default function RefSheet() {
                 <span className="truncate">{owner}/{repo}</span>
                 <span className="font-mono text-text">{isPr ? terms.sigil : '#'}{top.number}</span>
                 {refStack.length > 1 && (
-                  <span className="text-muted opacity-70">· {refStack.length} deep</span>
+                  <span className="text-muted opacity-70">· {refStack.length} {i18nT('apps.issueRadar.components.refSheet.deep')}</span>
                 )}
               </span>
               <div className="ml-auto flex items-center gap-1">
                 {listed && (
                   <button
                     onClick={openInWorkspace}
-                    aria-label="Open this item in the workspace"
-                    title="Open in the list + detail column"
+                    aria-label={i18nT('apps.issueRadar.components.refSheet.open_this_item_in_the_workspace')}
+                    title={i18nT('apps.issueRadar.components.refSheet.open_in_the_list_detail_column')}
                     className={ICON_BTN}
                   >
                     <PanelRightOpen className="lucide-inline" aria-hidden="true" />
@@ -157,7 +158,7 @@ export default function RefSheet() {
                 >
                   <ExternalLink className="lucide-inline" aria-hidden="true" />
                 </a>
-                <button onClick={closeRefs} aria-label="Close" title="Close (Esc)" className={ICON_BTN}>
+                <button onClick={closeRefs} aria-label={i18nT('apps.issueRadar.components.refSheet.close')} title={i18nT('apps.issueRadar.components.refSheet.close_esc')} className={ICON_BTN}>
                   <X className="lucide-inline" aria-hidden="true" />
                 </button>
               </div>
@@ -172,7 +173,7 @@ export default function RefSheet() {
                 ? (
                   <div className="h-full flex items-center justify-center">
                     <Loader2 className="lucide-inline animate-spin text-muted" aria-hidden="true" />
-                    <span className="sr-only">Loading #{top.number}</span>
+                    <span className="sr-only">{i18nT('apps.issueRadar.components.refSheet.loading')}{top.number}</span>
                   </div>
                 )
                 : isPr

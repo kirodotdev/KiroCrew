@@ -2,6 +2,7 @@ import { memo, useState } from 'react'
 import { ChevronRight, RefreshCw } from 'lucide-react'
 import type { ChatMessage } from '../../types'
 
+import { i18nT } from '../../i18n/t'
 /** Matches the `[auto-nudge cycle N]` prefix the gateway prepends to nudge turns. */
 const NUDGE_TAG_RE = /^\[auto-nudge cycle (\d+)\]\n?/
 
@@ -104,7 +105,7 @@ export default memo(function NudgeCard({
             className="shrink-0 text-[11px] px-1.5 py-0.5 rounded border border-border hover:text-fg transition-colors"
             data-testid="nudge-card-open-loop"
           >
-            Loop
+            {i18nT('pages.chat.nudgeCard.loop')}
           </button>
         )}
       </div>

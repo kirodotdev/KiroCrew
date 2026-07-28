@@ -7,6 +7,7 @@ import type { ArtifactComment } from '../types'
 import { useImeGuard } from '../hooks/useImeGuard'
 import { useAutoGrowTextarea } from '../hooks/useAutoGrowTextarea'
 
+import { i18nT } from '../i18n/t'
 /** Short relative-ish timestamp for a comment row. */
 function fmtTs(ts: string): string {
   if (!ts) return ''
@@ -54,7 +55,7 @@ export function ReplyBox({ onSubmit, onCancel }: { onSubmit: (text: string) => v
         ref={ref}
         value={text}
         rows={2}
-        placeholder="Reply…"
+        placeholder={i18nT('components.commentsSidebar.reply')}
         onChange={e => setText(e.target.value)}
         {...ime.composition}
         onKeyDown={e => {
@@ -70,13 +71,13 @@ export function ReplyBox({ onSubmit, onCancel }: { onSubmit: (text: string) => v
           type="button"
           onClick={onCancel}
           className="px-2 py-0.5 rounded text-[11px] text-muted hover:text-text bg-transparent border-none cursor-pointer"
-        >Cancel</button>
+        >{i18nT('components.commentsSidebar.cancel')}</button>
         <button
           type="button"
           disabled={!text.trim()}
           onClick={() => text.trim() && onSubmit(text.trim())}
           className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium border border-accent text-accent-fg bg-accent cursor-pointer hover:bg-accent-hover disabled:opacity-40 disabled:cursor-default"
-        ><Send size={11} /> Reply</button>
+        ><Send size={11} /> {i18nT('components.commentsSidebar.reply_2')}</button>
       </div>
     </div>
   )
@@ -97,7 +98,7 @@ export function EditBox({ initial, onSubmit, onCancel }: { initial: string; onSu
         ref={ref}
         value={text}
         rows={2}
-        placeholder="Edit comment…"
+        placeholder={i18nT('components.commentsSidebar.edit_comment')}
         onChange={e => setText(e.target.value)}
         {...ime.composition}
         onKeyDown={e => {
@@ -113,13 +114,13 @@ export function EditBox({ initial, onSubmit, onCancel }: { initial: string; onSu
           type="button"
           onClick={onCancel}
           className="px-2 py-0.5 rounded text-[11px] text-muted hover:text-text bg-transparent border-none cursor-pointer"
-        >Cancel</button>
+        >{i18nT('components.commentsSidebar.cancel')}</button>
         <button
           type="button"
           disabled={!text.trim()}
           onClick={() => text.trim() && onSubmit(text.trim())}
           className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium border border-accent text-accent-fg bg-accent cursor-pointer hover:bg-accent-hover disabled:opacity-40 disabled:cursor-default"
-        ><Send size={11} /> Save</button>
+        ><Send size={11} /> {i18nT('components.commentsSidebar.save')}</button>
       </div>
     </div>
   )
@@ -197,8 +198,8 @@ export function CommentRow({
           >{initials(comment)}</span>
           <span className="text-[12px] font-semibold text-text-strong truncate">{authorName(comment)}</span>
           <span className="text-[10px] text-muted shrink-0">{fmtTs(comment.created_at)}</span>
-          {comment.is_agent && <Bot size={11} className="text-accent shrink-0" aria-label="AI agent" />}
-          {comment.scope === 'shared' && <Link2 size={11} className="text-muted shrink-0" aria-label="Shared comment" />}
+          {comment.is_agent && <Bot size={11} className="text-accent shrink-0" aria-label={i18nT('components.commentsSidebar.ai_agent')} />}
+          {comment.scope === 'shared' && <Link2 size={11} className="text-muted shrink-0" aria-label={i18nT('components.commentsSidebar.shared_comment')} />}
           {syncWarn && <AlertTriangle size={11} className="text-warn shrink-0" aria-label={syncWarn} />}
         </div>
         {/* body (or inline editor when editing) */}
@@ -218,51 +219,51 @@ export function CommentRow({
           type="button"
           onClick={() => onReply(comment)}
           className="inline-flex items-center gap-1 text-[12px] px-2 py-1 rounded-md text-muted hover:text-accent hover:bg-accent-subtle bg-transparent border-none cursor-pointer transition-colors"
-          title="Reply"
-        ><CornerDownRight size={13} /> Reply</button>
+          title={i18nT('components.commentsSidebar.reply_2')}
+        ><CornerDownRight size={13} /> {i18nT('components.commentsSidebar.reply_2')}</button>
         {canEdit && onEdit && (
           <button
             type="button"
             onClick={() => onEdit(comment)}
             className="inline-flex items-center gap-1 text-[12px] px-2 py-1 rounded-md text-muted hover:text-accent hover:bg-accent-subtle bg-transparent border-none cursor-pointer transition-colors"
-            title="Edit comment"
+            title={i18nT('components.commentsSidebar.edit_comment_2')}
             style={restrictActions ? { display: 'none' } : undefined}
-          ><Pencil size={13} /> Edit</button>
+          ><Pencil size={13} /> {i18nT('components.commentsSidebar.edit')}</button>
         )}
         {!isReply && comment.status === 'open' && (
           <button
             type="button"
             onClick={() => onMarkReview(comment)}
             className="inline-flex items-center gap-1 text-[12px] px-2 py-1 rounded-md text-muted hover:text-warn hover:bg-warn-subtle bg-transparent border-none cursor-pointer transition-colors"
-            title="Advance to Review"
+            title={i18nT('components.commentsSidebar.advance_to_review')}
             style={restrictActions ? { display: 'none' } : undefined}
-          ><Eye size={13} /> Review</button>
+          ><Eye size={13} /> {i18nT('components.commentsSidebar.review')}</button>
         )}
         {!isReply && comment.status !== 'resolved' && (
           <button
             type="button"
             onClick={() => onResolve(comment)}
             className="inline-flex items-center gap-1 text-[12px] px-2 py-1 rounded-md text-muted hover:text-ok hover:bg-ok-subtle bg-transparent border-none cursor-pointer transition-colors"
-            title="Resolve (human-only)"
+            title={i18nT('components.commentsSidebar.resolve_human_only')}
             style={(restrictActions || hideResolveEff) ? { display: 'none' } : undefined}
-          ><CheckCircle2 size={13} /> Resolve</button>
+          ><CheckCircle2 size={13} /> {i18nT('components.commentsSidebar.resolve')}</button>
         )}
         {!isReply && comment.status === 'resolved' && onReopen && (
           <button
             type="button"
             onClick={() => onReopen(comment)}
             className="inline-flex items-center gap-1 text-[12px] px-2 py-1 rounded-md text-muted hover:text-accent hover:bg-accent-subtle bg-transparent border-none cursor-pointer transition-colors"
-            title="Reopen this thread"
+            title={i18nT('components.commentsSidebar.reopen_this_thread')}
             style={(restrictActions || hideResolveEff) ? { display: 'none' } : undefined}
-          ><RotateCcw size={13} /> Reopen</button>
+          ><RotateCcw size={13} /> {i18nT('components.commentsSidebar.reopen')}</button>
         )}
         <button
           type="button"
           onClick={() => onDelete(comment)}
           className="inline-flex items-center gap-1 text-[12px] px-2 py-1 rounded-md text-muted hover:text-danger hover:bg-danger-subtle bg-transparent border-none cursor-pointer transition-colors ml-auto"
-          title="Delete"
+          title={i18nT('components.commentsSidebar.delete')}
           style={(restrictActions || hideDeleteEff) ? { display: 'none' } : undefined}
-        ><X size={13} /> Delete</button>
+        ><X size={13} /> {i18nT('components.commentsSidebar.delete')}</button>
       </div>
     </div>
   )
@@ -418,22 +419,22 @@ export const CommentsSidebar = memo(function CommentsSidebar(props: CommentsSide
       {/* header */}
       <div className="flex items-center gap-2 px-3 py-2 border-b border-border bg-bg-elevated shrink-0">
         <MessageSquare size={14} className="text-accent" />
-        <span className="text-[13px] font-semibold text-text">Comments</span>
+        <span className="text-[13px] font-semibold text-text">{i18nT('components.commentsSidebar.comments')}</span>
         <span className="text-[11px] text-muted">{comments.length}</span>
         <div className="ml-auto flex items-center gap-1">
           <button
             type="button"
             onClick={onRefresh}
             className="p-1 rounded text-muted hover:text-text bg-transparent border-none cursor-pointer transition-colors"
-            title="Refresh comments"
-            aria-label="Refresh comments"
+            title={i18nT('components.commentsSidebar.refresh_comments')}
+            aria-label={i18nT('components.commentsSidebar.refresh_comments')}
           ><RefreshCw size={13} className={loading ? 'animate-spin' : ''} /></button>
           <button
             type="button"
             onClick={onClose}
             className="p-1 rounded text-muted hover:text-text bg-transparent border-none cursor-pointer transition-colors"
-            title="Collapse comments"
-            aria-label="Collapse comments"
+            title={i18nT('components.commentsSidebar.collapse_comments')}
+            aria-label={i18nT('components.commentsSidebar.collapse_comments')}
           ><ChevronRight size={14} /></button>
         </div>
       </div>
@@ -442,7 +443,7 @@ export const CommentsSidebar = memo(function CommentsSidebar(props: CommentsSide
       {remoteSyncError && (
         <div className="px-3 py-2 border-b border-warn/30 bg-warn-subtle text-[11px] text-warn flex items-start gap-1.5 shrink-0">
           <AlertTriangle size={12} className="shrink-0 mt-0.5" />
-          <span>Remote comment sync unavailable: {remoteSyncError}</span>
+          <span>{i18nT('components.commentsSidebar.remote_comment_sync_unavailable')} {remoteSyncError}</span>
         </div>
       )}
 
@@ -450,7 +451,7 @@ export const CommentsSidebar = memo(function CommentsSidebar(props: CommentsSide
       <div className="flex-1 min-h-0 overflow-y-auto px-3 py-2 space-y-3">
         {roots.length === 0 && !loading && (
           <div className="text-[12px] text-muted py-4 text-center">
-            No comments yet. Select text in the content to anchor a comment, or use “Add comment” below.
+            {i18nT('components.commentsSidebar.no_comments_yet_select_text_in_the_content_to_an')}
           </div>
         )}
         {visibleRoots.map(root => (
@@ -509,7 +510,7 @@ export const CommentsSidebar = memo(function CommentsSidebar(props: CommentsSide
             onClick={() => setShowResolved(v => !v)}
             className="w-full inline-flex items-center justify-center gap-1 text-[11px] text-muted hover:text-text bg-transparent border-none cursor-pointer py-1.5 transition-colors"
           >
-            <CheckCircle2 size={12} /> {showResolved ? 'Hide' : 'Show'} {resolvedCount} resolved
+            <CheckCircle2 size={12} /> {showResolved ? 'Hide' : 'Show'} {resolvedCount} {i18nT('components.commentsSidebar.resolved')}
           </button>
         )}
       </div>
@@ -522,7 +523,7 @@ export const CommentsSidebar = memo(function CommentsSidebar(props: CommentsSide
               ref={addRef}
               value={addText}
               rows={2}
-              placeholder="Add a comment on the whole artifact…"
+              placeholder={i18nT('components.commentsSidebar.add_a_comment_on_the_whole_artifact')}
               onChange={e => setAddText(e.target.value)}
               {...ime.composition}
               onKeyDown={e => {
@@ -538,13 +539,13 @@ export const CommentsSidebar = memo(function CommentsSidebar(props: CommentsSide
                 type="button"
                 onClick={() => { setAdding(false); setAddText('') }}
                 className="px-2 py-0.5 rounded text-[11px] text-muted hover:text-text bg-transparent border-none cursor-pointer"
-              >Cancel</button>
+              >{i18nT('components.commentsSidebar.cancel')}</button>
               <button
                 type="button"
                 disabled={!addText.trim()}
                 onClick={submitAdd}
                 className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium border border-accent text-accent-fg bg-accent cursor-pointer hover:bg-accent-hover disabled:opacity-40 disabled:cursor-default"
-              ><Send size={11} /> Comment</button>
+              ><Send size={11} /> {i18nT('components.commentsSidebar.comment')}</button>
             </div>
           </div>
         ) : (
@@ -552,15 +553,15 @@ export const CommentsSidebar = memo(function CommentsSidebar(props: CommentsSide
             type="button"
             onClick={() => setAdding(true)}
             className="w-full inline-flex items-center justify-center gap-1 px-2 py-1.5 rounded-md text-[12px] font-medium border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer bg-transparent transition-colors"
-          ><Plus size={13} /> Add comment</button>
+          ><Plus size={13} /> {i18nT('components.commentsSidebar.add_comment')}</button>
         )}
         {onAskAgent && (
           <button
             type="button"
             onClick={onAskAgent}
             className="w-full inline-flex items-center justify-center gap-1 px-2 py-1.5 rounded-md text-[12px] font-medium border border-accent/40 text-accent hover:bg-accent-subtle cursor-pointer bg-transparent transition-colors"
-            title="Open a chat asking the agent to address these comments (the agent reads them directly)"
-          ><Sparkles size={13} /> Ask agent to address</button>
+            title={i18nT('components.commentsSidebar.open_a_chat_asking_the_agent_to_address_these_co')}
+          ><Sparkles size={13} /> {i18nT('components.commentsSidebar.ask_agent_to_address')}</button>
         )}
       </div>
     </aside>

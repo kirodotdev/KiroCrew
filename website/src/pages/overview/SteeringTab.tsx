@@ -8,6 +8,7 @@ import Modal from '../../components/Modal'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
 import type { SteeringFile, SteeringList } from '../../types'
 
+import { i18nT } from '../../i18n/t'
 const SOURCE_LABEL: Record<string, string> = { user: 'Global', workspace: 'Workspace' }
 
 const NEW_TEMPLATE = '# Title\n\nDescribe the convention the agent should always follow.\n'
@@ -136,31 +137,31 @@ export default function SteeringTab() {
     <Modal
       open={creating}
       onClose={() => setCreating(false)}
-      title="New steering file"
+      title={i18nT('pages.overview.steeringTab.new_steering_file')}
       maxWidth={640}
       footer={<>
-        <Btn onClick={() => setCreating(false)}>Cancel</Btn>
+        <Btn onClick={() => setCreating(false)}>{i18nT('pages.overview.steeringTab.cancel')}</Btn>
         <Btn
           primary
           disabled={!newName.trim() || !newBody.trim() || createFile.isPending}
           onClick={() => createFile.mutate({ name: newName.trim(), content: newBody, source: newSource })}
-        >Create</Btn>
+        >{i18nT('pages.overview.steeringTab.create')}</Btn>
       </>}
     >
       <div className="flex flex-col gap-3">
         <label className="flex flex-col gap-1" htmlFor="steering-new-name">
-          <span className="text-[13px] text-muted">File name</span>
+          <span className="text-[13px] text-muted">{i18nT('pages.overview.steeringTab.file_name')}</span>
           <input
             id="steering-new-name"
-            aria-label="Steering file name"
+            aria-label={i18nT('pages.overview.steeringTab.steering_file_name')}
             className="w-full bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-[13px] outline-none focus-ring"
-            placeholder="api-standards.md"
+            placeholder={i18nT('pages.overview.steeringTab.api_standards_md')}
             value={newName}
             onChange={e => setNewName(e.target.value)}
           />
         </label>
         <label className="flex flex-col gap-1" htmlFor="steering-new-scope">
-          <span className="text-[13px] text-muted">Scope</span>
+          <span className="text-[13px] text-muted">{i18nT('pages.overview.steeringTab.scope')}</span>
           <select
             id="steering-new-scope"
             className="w-full bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-[13px] outline-none focus-ring"
@@ -168,16 +169,16 @@ export default function SteeringTab() {
             onChange={e => setNewSource(e.target.value as 'user' | 'workspace')}
           >
             <option value="workspace" disabled={!hasProject}>
-              Workspace — this project only{hasProject ? '' : ' (no project set)'}
+              {i18nT('pages.overview.steeringTab.workspace_this_project_only')}{hasProject ? '' : ' (no project set)'}
             </option>
-            <option value="user">Global — every project</option>
+            <option value="user">{i18nT('pages.overview.steeringTab.global_every_project')}</option>
           </select>
         </label>
         <label className="flex flex-col gap-1" htmlFor="steering-new-body">
-          <span className="text-[13px] text-muted">Content</span>
+          <span className="text-[13px] text-muted">{i18nT('pages.overview.steeringTab.content')}</span>
           <textarea
             id="steering-new-body"
-            aria-label="Steering file content"
+            aria-label={i18nT('pages.overview.steeringTab.steering_file_content')}
             className={EDITOR_CLASS}
             rows={14}
             value={newBody}
@@ -188,26 +189,26 @@ export default function SteeringTab() {
     </Modal>
 
     <h4 className="text-sm font-semibold text-text-strong mt-4 mb-2 flex items-center gap-2">
-      Steering ({files.length})
+      {i18nT('pages.overview.steeringTab.steering')}{files.length})
       <InfoTip text="Always-on markdown conventions injected into every session. Global files live in ~/.kiro/steering and apply everywhere; workspace files live in <project>/.kiro/steering and apply to that project only." />
       <span className="ml-auto">
-        <Btn primary onClick={() => setCreating(true)}>New Steering File</Btn>
+        <Btn primary onClick={() => setCreating(true)}>{i18nT('pages.overview.steeringTab.new_steering_file_2')}</Btn>
       </span>
     </h4>
     <Card>
       <div className="flex items-center gap-2 mb-3">
         <div className="relative max-w-[480px] flex-1">
-          <SearchInput placeholder="Filter steering files…" value={filter} onChange={e => setFilter(e.target.value)} />
+          <SearchInput placeholder={i18nT('pages.overview.steeringTab.filter_steering_files')} value={filter} onChange={e => setFilter(e.target.value)} />
           {filter && (
             <button
               className="absolute right-2 top-1/2 -translate-y-1/2 text-muted hover:text-text transition-colors cursor-pointer"
               onClick={() => setFilter('')}
-              aria-label="Clear search"
-            >&times;</button>
+              aria-label={i18nT('pages.overview.steeringTab.clear_search')}
+            >{"\u00d7"}</button>
           )}
         </div>
         <div className="ml-auto flex items-center gap-2">
-          <Btn onClick={() => refetch()} disabled={isFetching} aria-label="Refresh steering files">
+          <Btn onClick={() => refetch()} disabled={isFetching} aria-label={i18nT('pages.overview.steeringTab.refresh_steering_files')}>
             <RefreshCw size={14} className={isFetching ? 'animate-spin' : ''} />
           </Btn>
         </div>
@@ -229,19 +230,19 @@ export default function SteeringTab() {
       ) : files.length === 0 ? (
         <EmptyState
           icon={<Compass className="lucide-inline" />}
-          title="No steering files yet"
+          title={i18nT('pages.overview.steeringTab.no_steering_files_yet')}
           subtitle={`Steering files are always-on markdown conventions. Looked in: ${rootHint || '~/.kiro/steering'}`}
         />
       ) : (
         <div className="flex gap-3 h-[calc(100vh-260px)] min-h-[420px]">
-          <div className="w-[240px] shrink-0 overflow-y-auto scrollbar-overlay border border-border rounded-md p-2" role="listbox" aria-label="Steering files">
+          <div className="w-[240px] shrink-0 overflow-y-auto scrollbar-overlay border border-border rounded-md p-2" role="listbox" aria-label={i18nT('pages.overview.steeringTab.steering_files')}>
             {filtered.map(renderRow)}
-            {filtered.length === 0 && <div className="text-muted/70 text-[12px] italic px-2 py-2">No files match “{filter}”.</div>}
+            {filtered.length === 0 && <div className="text-muted/70 text-[12px] italic px-2 py-2">{i18nT('pages.overview.steeringTab.no_files_match')}{filter}”.</div>}
           </div>
 
           <div className="flex-1 min-w-0 flex flex-col border border-border rounded-md bg-card overflow-hidden">
             {!selected ? (
-              <div className="flex items-center justify-center h-full text-muted text-[13px]">Select a steering file to view it</div>
+              <div className="flex items-center justify-center h-full text-muted text-[13px]">{i18nT('pages.overview.steeringTab.select_a_steering_file_to_view_it')}</div>
             ) : (
               <div className="flex flex-col h-full min-h-0">
                 <div className="flex items-center justify-between gap-2 px-4 py-2.5 border-b border-border shrink-0">
@@ -254,11 +255,11 @@ export default function SteeringTab() {
                   </div>
                   <div className="flex gap-2 shrink-0">
                     {editing ? (<>
-                      <Btn onClick={() => setEditing(false)}>Cancel</Btn>
-                      <Btn primary disabled={!draft.trim() || updateFile.isPending} onClick={() => updateFile.mutate({ key: selected.key, content: draft })}>Save</Btn>
+                      <Btn onClick={() => setEditing(false)}>{i18nT('pages.overview.steeringTab.cancel')}</Btn>
+                      <Btn primary disabled={!draft.trim() || updateFile.isPending} onClick={() => updateFile.mutate({ key: selected.key, content: draft })}>{i18nT('pages.overview.steeringTab.save')}</Btn>
                     </>) : (<>
-                      <Btn disabled={detail === undefined} onClick={() => { setDraft(detail?.content ?? ''); setEditing(true) }}>Edit</Btn>
-                      <Btn danger onClick={() => { if (confirm(`Delete "${selected.rel}"?`)) deleteFile.mutate(selected.key) }}>Delete</Btn>
+                      <Btn disabled={detail === undefined} onClick={() => { setDraft(detail?.content ?? ''); setEditing(true) }}>{i18nT('pages.overview.steeringTab.edit')}</Btn>
+                      <Btn danger onClick={() => { if (confirm(`Delete "${selected.rel}"?`)) deleteFile.mutate(selected.key) }}>{i18nT('pages.overview.steeringTab.delete')}</Btn>
                     </>)}
                   </div>
                 </div>
@@ -266,7 +267,7 @@ export default function SteeringTab() {
                   {editing
                     ? <textarea className={EDITOR_CLASS} aria-label={`Edit ${selected.rel}`} value={draft} onChange={e => setDraft(e.target.value)} />
                     : detail === undefined
-                      ? <div className="text-muted text-[13px]">Loading…</div>
+                      ? <div className="text-muted text-[13px]">{i18nT('pages.overview.steeringTab.loading')}</div>
                       : <div className="text-sm leading-relaxed"><MarkdownRenderer content={detail.content} /></div>}
                 </div>
               </div>

@@ -3,6 +3,7 @@ import { Check, Plus, X, Zap } from 'lucide-react'
 import type { ChatTag } from '../types'
 import { api } from '../api/client'
 
+import { i18nT } from '../i18n/t'
 export interface TagManagerListProps {
   /**
    * Governs the leading swatch:
@@ -133,7 +134,7 @@ export default function TagManagerList({ mode, selectedIds = [], onToggleTag, cr
         <input
           type="text"
           data-testid={createTestId}
-          placeholder="New tag… ↵"
+          placeholder={i18nT('components.tagManagerList.new_tag')}
           className="flex-1 min-w-0 bg-transparent border-none outline-none text-[12px] text-text py-0 px-0.5 placeholder:text-muted/60"
           onKeyDown={e => {
             if (e.key === 'Enter') {

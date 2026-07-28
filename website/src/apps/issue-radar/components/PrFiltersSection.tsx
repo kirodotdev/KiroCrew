@@ -6,6 +6,7 @@ import FilterRow from './FilterRow'
 import LabelPalette from './LabelPalette'
 import { providerTerms } from '../lib/links'
 
+import { i18nT } from '../../../i18n/t'
 /** Body of the "Pull requests" accordion section: Sort options, the state
  * (open / merged / closed) + draft / mine / review toggles, and the label
  * palette — the PR analogue of FiltersSection. Reads and drives everything
@@ -43,7 +44,7 @@ export default function PrFiltersSection() {
     <>
       <div className="px-3 pt-2">
         <div className="flex items-center gap-1.5 mb-1.5 text-[12px] font-semibold text-muted uppercase tracking-[.05em]">
-          <ArrowUpDown size={12} /> Sort
+          <ArrowUpDown size={12} /> {i18nT('apps.issueRadar.components.prFiltersSection.sort')}
         </div>
         <div className="flex flex-col gap-0.5">
           {PR_SORT_FIELDS.map((f) => {
@@ -71,14 +72,14 @@ export default function PrFiltersSection() {
       <div className="px-3 pt-5">
         <div className="flex items-center mb-1.5">
           <span className="inline-flex items-center gap-1.5 text-[12px] font-semibold text-muted uppercase tracking-[.05em]">
-            <ListFilter size={12} /> Filters
+            <ListFilter size={12} /> {i18nT('apps.issueRadar.components.prFiltersSection.filters')}
           </span>
           {anyPrFilterActive && (
             <button
               onClick={clearPrFilters}
               className="ml-auto inline-flex items-center gap-0.5 text-[12px] text-muted hover:text-text cursor-pointer bg-transparent"
             >
-              <X size={11} /> clear
+              <X size={11} /> {i18nT('apps.issueRadar.components.prFiltersSection.clear')}
             </button>
           )}
         </div>
@@ -86,18 +87,18 @@ export default function PrFiltersSection() {
           {/* Above the rule: the lifecycle — mutually exclusive (open / merged /
               closed replace one another). Below it: independent toggles that
               combine. The rule makes that difference visible. */}
-          <FilterRow label="Open" active={prStateFilter === 'open'} onToggle={() => setState('open')} />
-          <FilterRow label="Merged" active={prStateFilter === 'merged'} onToggle={() => setState('merged')} />
-          <FilterRow label="Closed (unmerged)" active={prStateFilter === 'closed'} onToggle={() => setState('closed')} />
+          <FilterRow label={i18nT('apps.issueRadar.components.prFiltersSection.open')} active={prStateFilter === 'open'} onToggle={() => setState('open')} />
+          <FilterRow label={i18nT('apps.issueRadar.components.prFiltersSection.merged')} active={prStateFilter === 'merged'} onToggle={() => setState('merged')} />
+          <FilterRow label={i18nT('apps.issueRadar.components.prFiltersSection.closed_unmerged')} active={prStateFilter === 'closed'} onToggle={() => setState('closed')} />
           <div className="my-1 border-t border-border" role="separator" />
-          <FilterRow label="Draft" active={prDraftOnly} onToggle={togglePrDraftOnly} />
+          <FilterRow label={i18nT('apps.issueRadar.components.prFiltersSection.draft')} active={prDraftOnly} onToggle={togglePrDraftOnly} />
           {/* The three "me" filters are answered by a repo-wide GitHub SEARCH
               rather than by filtering the capped list, so they find your older
               PRs too (see context: prPersonFilterActive). */}
-          <FilterRow label="Authored by me" active={prAuthoredByMe} disabled={!me} onToggle={togglePrAuthoredByMe} />
-          <FilterRow label="Assigned to me" active={prAssignedToMe} disabled={!me} onToggle={togglePrAssignedToMe} />
+          <FilterRow label={i18nT('apps.issueRadar.components.prFiltersSection.authored_by_me')} active={prAuthoredByMe} disabled={!me} onToggle={togglePrAuthoredByMe} />
+          <FilterRow label={i18nT('apps.issueRadar.components.prFiltersSection.assigned_to_me')} active={prAssignedToMe} disabled={!me} onToggle={togglePrAssignedToMe} />
           <FilterRow
-            label="Review requested"
+            label={i18nT('apps.issueRadar.components.prFiltersSection.review_requested')}
             active={prReviewRequestedByMe}
             disabled={!me}
             disabledHint="Sign in to gh to filter by your review requests"
@@ -107,7 +108,7 @@ export default function PrFiltersSection() {
               author / association is already on every row (search rows included),
               so it needs no extra query. */}
           <FilterRow
-            label="Created by member"
+            label={i18nT('apps.issueRadar.components.prFiltersSection.created_by_member')}
             active={prCreatedByMember}
             disabled={!hasMemberPulls}
             disabledHint={`No repo members found among these ${terms.changeRequestPlural}`}

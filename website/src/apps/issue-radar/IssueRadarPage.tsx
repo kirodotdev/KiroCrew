@@ -15,6 +15,7 @@ import RefSheet from './components/RefSheet'
 import WelcomeCarousel from './WelcomeCarousel'
 import ConnectRepoModal from './ConnectRepoModal'
 
+import { i18nT } from '../../i18n/t'
 export default function IssueRadarPage() {
   const queryClient = useQueryClient()
   const [active, setActive] = useState<ActiveRepo | null>(loadActiveRepo)
@@ -67,7 +68,7 @@ export default function IssueRadarPage() {
   }
 
   if (reposQuery.isLoading) {
-    return <div className="flex h-full items-center justify-center text-muted text-xs">Loading…</div>
+    return <div className="flex h-full items-center justify-center text-muted text-xs">{i18nT('apps.issueRadar.issueRadarPage.loading')}</div>
   }
 
   // First run (no repos yet): the full-screen onboarding carousel. Adding

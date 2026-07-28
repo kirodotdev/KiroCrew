@@ -20,6 +20,7 @@ import {
 } from 'lucide-react'
 import * as api from './devFleetApi'
 
+import { i18nT } from '../i18n/t'
 /* ─── Notification helper (replaces useNotify) ─── */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let _dispatch: any = null
@@ -281,14 +282,14 @@ function MenuBtn({ items }: { items: (MenuItemDef | null)[] }) {
 
   return (
     <span style={{ display: 'inline-flex' } as CSSProperties}>
-      <Btn ref={triggerRef} onClick={toggle} title="More actions" aria-label="More actions" aria-haspopup="menu" aria-expanded={open}>
+      <Btn ref={triggerRef} onClick={toggle} title={i18nT('pages.devFleetPage.more_actions')} aria-label={i18nT('pages.devFleetPage.more_actions')} aria-haspopup="menu" aria-expanded={open}>
         <Ellipsis size={15} className="lucide-inline" />
       </Btn>
       {open && rect && createPortal(
         <div
           ref={menuRef}
           role="menu"
-          aria-label="More actions"
+          aria-label={i18nT('pages.devFleetPage.more_actions')}
           data-placement={openUp ? 'up' : 'down'}
           style={{ ...posStyle, zIndex: 4000, overflowY: 'auto', background: 'var(--card, #16161a)', border: '1px solid var(--border)', borderRadius: 10, padding: 4, minWidth: 168, boxShadow: '0 8px 24px rgba(0,0,0,0.45)' } as CSSProperties}
         >
@@ -321,7 +322,7 @@ function ConfirmBtn({ title, desc, confirmLabel, onConfirm, btn, children }: Con
           <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 4 }}>{title}</div>
           <div style={{ fontSize: 11.5, color: 'var(--muted)', lineHeight: 1.5, marginBottom: 9 }}>{desc}</div>
           <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' } as CSSProperties}>
-            <Btn onClick={() => setOpen(false)}>Cancel</Btn>
+            <Btn onClick={() => setOpen(false)}>{i18nT('pages.devFleetPage.cancel')}</Btn>
             <Btn primary onClick={() => { setOpen(false); onConfirm() }}>{confirmLabel || 'Start'}</Btn>
           </div>
         </div>
@@ -359,10 +360,10 @@ function DetailPanel({ w, d, busy, onRemove, onLoadLogs, logs, logsLoading }: { 
   const [logsOpen, setLogsOpen] = useState(false)
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-      <div style={mutedSm}>Branch: <span style={{ ...mono, color: 'var(--text)' }}>{d.branch || '?'}</span></div>
+      <div style={mutedSm}>{i18nT('pages.devFleetPage.branch')} <span style={{ ...mono, color: 'var(--text)' }}>{d.branch || '?'}</span></div>
       {d.pr ? (
         <div style={mutedSm}>
-          PR: <a href={d.pr.url || '#'} target="_blank" rel="noopener noreferrer" title={d.pr.title || undefined} style={{ color: 'var(--accent)' }}>
+          {i18nT('pages.devFleetPage.pr')} <a href={d.pr.url || '#'} target="_blank" rel="noopener noreferrer" title={d.pr.title || undefined} style={{ color: 'var(--accent)' }}>
             #{d.pr.number || '?'}{d.pr.title ? ' \u2014 ' + d.pr.title : ''}
           </a>{' '}
           <Badge variant={d.pr.state === 'MERGED' ? 'aim' : d.pr.state === 'OPEN' ? 'ok' : 'warn'}>
@@ -371,11 +372,11 @@ function DetailPanel({ w, d, busy, onRemove, onLoadLogs, logs, logsLoading }: { 
         </div>
       ) : null}
       {d.summary ? (
-        <div style={mutedSm}>Purpose: <span style={{ color: 'var(--text)' }}>{d.summary}</span></div>
+        <div style={mutedSm}>{i18nT('pages.devFleetPage.purpose')} <span style={{ color: 'var(--text)' }}>{d.summary}</span></div>
       ) : null}
       {d.issues?.length > 0 ? (
         <div style={mutedSm}>
-          Issues:{' '}
+          {i18nT('pages.devFleetPage.issues')}{' '}
           {d.issues.map((it: IssueRef, i: number) => (
             it.url
               ? <a key={i} href={it.url} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent)', marginRight: 8 }}>#{it.number}</a>
@@ -385,7 +386,7 @@ function DetailPanel({ w, d, busy, onRemove, onLoadLogs, logs, logsLoading }: { 
       ) : null}
       {d.tickets?.length > 0 ? (
         <div style={mutedSm}>
-          Tickets:{' '}
+          {i18nT('pages.devFleetPage.tickets')}{' '}
           {d.tickets.map((t: TicketRef, i: number) => (
             t.url
               ? <a key={i} href={t.url} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent)', marginRight: 8 }}>{t.id}</a>
@@ -395,7 +396,7 @@ function DetailPanel({ w, d, busy, onRemove, onLoadLogs, logs, logsLoading }: { 
       ) : null}
       {d.design_docs?.length > 0 ? (
         <div style={mutedSm}>
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><FileText size={11} className="lucide-inline" /> Design docs:</span>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><FileText size={11} className="lucide-inline" /> {i18nT('pages.devFleetPage.design_docs')}</span>
           <ul style={{ margin: '2px 0 0 16px', padding: 0, listStyle: 'none' }}>
             {d.design_docs.map((doc: string, i: number) => <li key={i} style={mono}>{doc}</li>)}
           </ul>
@@ -403,7 +404,7 @@ function DetailPanel({ w, d, busy, onRemove, onLoadLogs, logs, logsLoading }: { 
       ) : null}
       {d.commits?.length > 0 ? (
         <div style={mutedSm}>
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><GitCommit size={11} className="lucide-inline" /> Commits:</span>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><GitCommit size={11} className="lucide-inline" /> {i18nT('pages.devFleetPage.commits')}</span>
           <ul style={{ margin: '2px 0 0 16px', padding: 0, listStyle: 'none' }}>
             {d.commits.map((c: { hash: string; subject: string; when: string }, i: number) => (
               <li key={i} style={{ ...mono, display: 'flex', gap: 8 }}>
@@ -415,10 +416,10 @@ function DetailPanel({ w, d, busy, onRemove, onLoadLogs, logs, logsLoading }: { 
           </ul>
         </div>
       ) : null}
-      {d.disk_mb != null ? <div style={mutedSm}>Disk: {d.disk_mb} MB</div> : null}
+      {d.disk_mb != null ? <div style={mutedSm}>{i18nT('pages.devFleetPage.disk')} {d.disk_mb} {i18nT('pages.devFleetPage.mb')}</div> : null}
       {d.pod_running ? (
         <div style={mutedSm}>
-          Pod: running on :{d.pod_port || '?'}
+          {i18nT('pages.devFleetPage.pod_running_on')}{d.pod_port || '?'}
         </div>
       ) : null}
       <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
@@ -995,13 +996,13 @@ export default function DevFleetPage() {
   function rowButtons(w: Worktree): ReactNode[] {
     if (w.is_main) {
       const out: ReactNode[] = [
-        <ConfirmBtn key="sync" title="Pull + Build main" desc="Pulls main and rebuilds (~6 min). Does NOT restart." confirmLabel="Start" onConfirm={() => syncMain()} btn={{ disabled: !!busy['__syncmain'] || syncRun?.status === 'running' || gatewayMutating }}>
+        <ConfirmBtn key="sync" title={i18nT('pages.devFleetPage.pull_build_main')} desc="Pulls main and rebuilds (~6 min). Does NOT restart." confirmLabel="Start" onConfirm={() => syncMain()} btn={{ disabled: !!busy['__syncmain'] || syncRun?.status === 'running' || gatewayMutating }}>
           {iconLabel(<RefreshCw size={13} className="lucide-inline" />, busy['__syncmain'] || syncRun?.status === 'running' ? 'Building\u2026' : 'Pull+Build')}
         </ConfirmBtn>,
       ]
       if (fleet?.gateway_service_active) {
         out.push(
-          <Btn key="restart" onClick={() => restartGateway()} disabled={gatewayMutating} aria-label="Restart gateway">
+          <Btn key="restart" onClick={() => restartGateway()} disabled={gatewayMutating} aria-label={i18nT('pages.devFleetPage.restart_gateway')}>
             {iconLabel(<RotateCw size={13} className="lucide-inline" />, 'Restart')}
           </Btn>
         )
@@ -1010,7 +1011,7 @@ export default function DevFleetPage() {
         // Consistent with makeLive()'s guard: shown iff the row is NOT live.
         if (!w.is_live) {
           out.push(
-            <Btn key="makelive" onClick={() => makeLive(w)} disabled={gatewayMutating} title="Repoint the live gateway back at main (restarts the gateway)">
+            <Btn key="makelive" onClick={() => makeLive(w)} disabled={gatewayMutating} title={i18nT('pages.devFleetPage.repoint_the_live_gateway_back_at_main_restarts_t')}>
               {iconLabel(<Rocket size={13} className="lucide-inline" />, 'Make live')}
             </Btn>
           )
@@ -1020,7 +1021,7 @@ export default function DevFleetPage() {
         // Keep the visible text short: the ACTIONS grid column is fixed-width and
         // the Badge pill is whitespace-nowrap, so long text overflows leftward
         // into the UPDATED/BEHIND columns. Full instruction lives in the tooltip.
-        out.push(<Badge key="bp" variant="warn" title={'build pending \u2014 restart gateway to apply (kirocrew restart)'}>build pending</Badge>)
+        out.push(<Badge key="bp" variant="warn" title={i18nT('pages.devFleetPage.build_pending_restart_gateway_to_apply_kirocrew')}>{i18nT('pages.devFleetPage.build_pending')}</Badge>)
       }
       return out
     }
@@ -1028,12 +1029,12 @@ export default function DevFleetPage() {
     if (!w.has_dist) {
       // Active/failed provisioning is rendered as a row-spanning stepper (see
       // renderProvStepper), so this branch only offers the entry-point button.
-      out.push(<Btn key="prov" onClick={() => provision(w.name)}>Provision</Btn>)
+      out.push(<Btn key="prov" onClick={() => provision(w.name)}>{i18nT('pages.devFleetPage.provision')}</Btn>)
     } else if (w.running) {
       out.push(<Btn key="open" onClick={() => act(w.name, 'open')}>{iconLabel(<ExternalLink size={13} className="lucide-inline" />, 'Open')}</Btn>)
     }
     const podBusy = busy[w.name + ':up'] || busy[w.name + ':down'] || busy[w.name + ':restart']
-    if (podBusy) out.push(<span key="podbusy" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, color: 'var(--muted)' } as CSSProperties}><LoaderCircle size={12} className="lucide-inline" /> pod{"\u2026"}</span>)
+    if (podBusy) out.push(<span key="podbusy" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, color: 'var(--muted)' } as CSSProperties}><LoaderCircle size={12} className="lucide-inline" /> {i18nT('pages.devFleetPage.pod')}{"\u2026"}</span>)
     out.push(<MenuBtn key="menu" items={[
       w.has_dist && !w.running ? { label: 'Spin up pod', icon: <Play size={13} className="lucide-inline" />, onClick: () => act(w.name, 'up') } : null,
       w.running ? { label: 'Restart pod', icon: <RefreshCw size={13} className="lucide-inline" />, onClick: () => act(w.name, 'restart') } : null,
@@ -1043,7 +1044,7 @@ export default function DevFleetPage() {
       w.running ? { label: 'Stop pod', icon: <Square size={13} className="lucide-inline" />, onClick: () => act(w.name, 'down'), danger: true } : null,
     ]} />)
     const rr = rebaseResult[w.name]
-    if (rr) out.push(<Clickable key="rr" aria-label="Dismiss" onClick={() => dismissRebaseResult(w.name)} style={{ fontSize: 11, color: rr.kind === 'ok' ? 'var(--ok)' : 'var(--danger)', cursor: 'pointer', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', background: 'none', border: 'none', padding: 0 } as CSSProperties}>{rr.text}</Clickable>)
+    if (rr) out.push(<Clickable key="rr" aria-label={i18nT('pages.devFleetPage.dismiss')} onClick={() => dismissRebaseResult(w.name)} style={{ fontSize: 11, color: rr.kind === 'ok' ? 'var(--ok)' : 'var(--danger)', cursor: 'pointer', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', background: 'none', border: 'none', padding: 0 } as CSSProperties}>{rr.text}</Clickable>)
     return out
   }
 
@@ -1056,36 +1057,36 @@ export default function DevFleetPage() {
       return (
         <div style={{ gridColumn: '4 / -1', display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 } as CSSProperties}>
           <LoaderCircle size={12} className="lucide-inline" style={{ color: 'var(--accent)', flexShrink: 0 } as CSSProperties} />
-          <span style={{ fontSize: 11, fontWeight: 600, flexShrink: 0 }}>Syncing</span>
-          {syncRun.stepLabel ? <span style={{ ...mono, flexShrink: 0 } as CSSProperties} title="current step">{syncRun.stepLabel}</span> : null}
-          <span role="progressbar" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100} aria-label="Sync progress" style={{ flex: 1, height: 4, borderRadius: 2, background: 'var(--border)', overflow: 'hidden', minWidth: 60 } as CSSProperties}>
+          <span style={{ fontSize: 11, fontWeight: 600, flexShrink: 0 }}>{i18nT('pages.devFleetPage.syncing')}</span>
+          {syncRun.stepLabel ? <span style={{ ...mono, flexShrink: 0 } as CSSProperties} title={i18nT('pages.devFleetPage.current_step')}>{syncRun.stepLabel}</span> : null}
+          <span role="progressbar" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100} aria-label={i18nT('pages.devFleetPage.sync_progress')} style={{ flex: 1, height: 4, borderRadius: 2, background: 'var(--border)', overflow: 'hidden', minWidth: 60 } as CSSProperties}>
             <span style={{ display: 'block', height: '100%', width: pct + '%', background: 'var(--accent)', borderRadius: 2, transition: 'width 0.6s ease' } as CSSProperties} />
           </span>
           <span style={{ ...mono, flexShrink: 0 } as CSSProperties}>{'~' + pct + '%'}</span>
           <span style={mono}>{fmtElapsed(Date.now() - syncRun.startedAt)}</span>
-          <Clickable aria-label="Toggle log" onClick={() => setSyncLogOpen((o) => !o)} style={{ background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: 11, padding: 2 } as CSSProperties}>{syncLogOpen ? 'log \u25B4' : 'log \u25BE'}</Clickable>
-          <Clickable aria-label="Dismiss sync status" onClick={() => dismissSync(syncRun?.rid)} style={{ background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: 14, padding: 2 } as CSSProperties}>&times;</Clickable>
+          <Clickable aria-label={i18nT('pages.devFleetPage.toggle_log')} onClick={() => setSyncLogOpen((o) => !o)} style={{ background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: 11, padding: 2 } as CSSProperties}>{syncLogOpen ? 'log \u25B4' : 'log \u25BE'}</Clickable>
+          <Clickable aria-label={i18nT('pages.devFleetPage.dismiss_sync_status')} onClick={() => dismissSync(syncRun?.rid)} style={{ background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: 14, padding: 2 } as CSSProperties}>{"\u00d7"}</Clickable>
         </div>
       )
     }
     if (syncRun.status === 'done') {
       return (
         <div style={{ gridColumn: '4 / -1', display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 } as CSSProperties}>
-          <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--ok)', display: 'inline-flex', alignItems: 'center', gap: 4 }}><Check size={12} className="lucide-inline" /> Synced</span>
-          <span style={{ fontSize: 11, color: 'var(--muted)' }}>restart gateway to apply the new build</span>
+          <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--ok)', display: 'inline-flex', alignItems: 'center', gap: 4 }}><Check size={12} className="lucide-inline" /> {i18nT('pages.devFleetPage.synced')}</span>
+          <span style={{ fontSize: 11, color: 'var(--muted)' }}>{i18nT('pages.devFleetPage.restart_gateway_to_apply_the_new_build')}</span>
           <span style={{ flex: 1 }} />
-          <Clickable aria-label="Toggle log" onClick={() => setSyncLogOpen((o) => !o)} style={{ background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: 11, padding: 2 } as CSSProperties}>{syncLogOpen ? 'log \u25B4' : 'log \u25BE'}</Clickable>
-          <Clickable aria-label="Dismiss sync status" onClick={() => dismissSync(syncRun?.rid)} style={{ background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: 14, padding: 2 } as CSSProperties}>&times;</Clickable>
+          <Clickable aria-label={i18nT('pages.devFleetPage.toggle_log')} onClick={() => setSyncLogOpen((o) => !o)} style={{ background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: 11, padding: 2 } as CSSProperties}>{syncLogOpen ? 'log \u25B4' : 'log \u25BE'}</Clickable>
+          <Clickable aria-label={i18nT('pages.devFleetPage.dismiss_sync_status')} onClick={() => dismissSync(syncRun?.rid)} style={{ background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: 14, padding: 2 } as CSSProperties}>{"\u00d7"}</Clickable>
         </div>
       )
     }
     // error
     return (
       <div style={{ gridColumn: '4 / -1', display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 } as CSSProperties}>
-        <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--danger)' }}>Pull+Build failed</span>
+        <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--danger)' }}>{i18nT('pages.devFleetPage.pull_build_failed')}</span>
         <span style={{ ...mono, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 } as CSSProperties} title={syncRun.last}>{syncRun.last}</span>
-        <Clickable aria-label="Toggle log" onClick={() => setSyncLogOpen((o) => !o)} style={{ background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: 11, padding: 2 } as CSSProperties}>{syncLogOpen ? 'log \u25B4' : 'log \u25BE'}</Clickable>
-        <Clickable aria-label="Dismiss sync status" onClick={() => dismissSync(syncRun?.rid)} style={{ background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: 14, padding: 2 } as CSSProperties}>&times;</Clickable>
+        <Clickable aria-label={i18nT('pages.devFleetPage.toggle_log')} onClick={() => setSyncLogOpen((o) => !o)} style={{ background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: 11, padding: 2 } as CSSProperties}>{syncLogOpen ? 'log \u25B4' : 'log \u25BE'}</Clickable>
+        <Clickable aria-label={i18nT('pages.devFleetPage.dismiss_sync_status')} onClick={() => dismissSync(syncRun?.rid)} style={{ background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: 14, padding: 2 } as CSSProperties}>{"\u00d7"}</Clickable>
       </div>
     )
   }
@@ -1097,7 +1098,7 @@ export default function DevFleetPage() {
     const mono: CSSProperties = { fontFamily: 'ui-monospace, monospace', fontVariantNumeric: 'tabular-nums', fontSize: 11, color: 'var(--muted)' }
     const open = !!provLogOpen[w.name]
     const logToggle = (
-      <Clickable aria-label="Toggle provision log" onClick={() => toggleProvLog(w.name)} style={{ background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: 11, padding: 2 } as CSSProperties}>{open ? 'log \u25B4' : 'log \u25BE'}</Clickable>
+      <Clickable aria-label={i18nT('pages.devFleetPage.toggle_provision_log')} onClick={() => toggleProvLog(w.name)} style={{ background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: 11, padding: 2 } as CSSProperties}>{open ? 'log \u25B4' : 'log \u25BE'}</Clickable>
     )
     if (pr.failed) {
       return (
@@ -1105,14 +1106,14 @@ export default function DevFleetPage() {
           <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--danger)', flexShrink: 0, display: 'inline-flex', alignItems: 'center', gap: 4 }}><X size={12} className="lucide-inline" />{'Provision failed' + (pr.exit != null ? ' (exit ' + pr.exit + ')' : '')}</span>
           <span style={{ ...mono, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 } as CSSProperties} title={lastLine(pr.lines)}>{lastLine(pr.lines)}</span>
           {logToggle}
-          <Clickable aria-label="Dismiss provision status" onClick={() => dismissProv(w.name)} style={{ background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: 14, padding: 2 } as CSSProperties}>&times;</Clickable>
+          <Clickable aria-label={i18nT('pages.devFleetPage.dismiss_provision_status')} onClick={() => dismissProv(w.name)} style={{ background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: 14, padding: 2 } as CSSProperties}>{"\u00d7"}</Clickable>
         </div>
       )
     }
     if (pr.done) {
       return (
         <div style={{ gridColumn: '4 / -1', display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 } as CSSProperties}>
-          <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--ok)', display: 'inline-flex', alignItems: 'center', gap: 4 }}><Check size={12} className="lucide-inline" /> Provisioned</span>
+          <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--ok)', display: 'inline-flex', alignItems: 'center', gap: 4 }}><Check size={12} className="lucide-inline" /> {i18nT('pages.devFleetPage.provisioned')}</span>
         </div>
       )
     }
@@ -1122,7 +1123,7 @@ export default function DevFleetPage() {
     return (
       <div style={{ gridColumn: '4 / -1', display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 } as CSSProperties}>
         <LoaderCircle size={12} className="lucide-inline" style={{ color: 'var(--accent)', flexShrink: 0 } as CSSProperties} />
-        <span style={{ fontSize: 11, fontWeight: 600, flexShrink: 0 }}>Provisioning</span>
+        <span style={{ fontSize: 11, fontWeight: 600, flexShrink: 0 }}>{i18nT('pages.devFleetPage.provisioning')}</span>
         {phase ? <span style={{ fontSize: 10, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--accent)', background: 'var(--accent-subtle, rgba(99,102,241,0.14))', borderRadius: 5, padding: '1px 6px', flexShrink: 0 } as CSSProperties}>{phase}</span> : null}
         <span style={{ ...mono, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 } as CSSProperties} title={last}>{last || 'starting\u2026'}</span>
         <span style={mono}>{fmtElapsed(Date.now() - pr.startedAt)}</span>
@@ -1133,7 +1134,7 @@ export default function DevFleetPage() {
 
   const columnHeader = (
     <div style={{ display: 'grid', gridTemplateColumns: '16px 84px minmax(0,1fr) 64px 48px 44px 212px', gap: 8, alignItems: 'center', padding: '2px 0 4px', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--muted)' } as CSSProperties}>
-      <span /><span>Pod</span><span>Worktree</span><span>PR</span><span title="Commits behind main">Behind</span><span title="Last commit activity">Updated</span><span style={{ textAlign: 'right' }}>Actions</span>
+      <span /><span>{i18nT('pages.devFleetPage.pod_2')}</span><span>{i18nT('pages.devFleetPage.worktree')}</span><span>{i18nT('pages.devFleetPage.pr_2')}</span><span title={i18nT('pages.devFleetPage.commits_behind_main')}>{i18nT('pages.devFleetPage.behind')}</span><span title={i18nT('pages.devFleetPage.last_commit_activity')}>{i18nT('pages.devFleetPage.updated')}</span><span style={{ textAlign: 'right' }}>{i18nT('pages.devFleetPage.actions')}</span>
     </div>
   )
 
@@ -1153,14 +1154,14 @@ export default function DevFleetPage() {
           <span style={{ overflow: 'hidden', display: 'flex' } as CSSProperties}>{stateDot(w)}</span>
           <div style={{ minWidth: 0, display: 'flex', alignItems: 'baseline', gap: 6, whiteSpace: 'nowrap', overflow: 'hidden' } as CSSProperties}>
             <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 13.5, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis' }}>{w.name}</span>
-            {w.dirty ? <span title="uncommitted changes">&bull;</span> : null}
-            {w.is_main ? <span style={mut}>&middot; main</span> : null}
-            {w.is_live ? <Badge variant="aim" className="text-[10px] px-1.5 py-0" title="The live gateway on this port runs from this checkout">live</Badge> : null}
+            {w.dirty ? <span title={i18nT('pages.devFleetPage.uncommitted_changes')}>{"\u2022"}</span> : null}
+            {w.is_main ? <span style={mut}>{i18nT('pages.devFleetPage.main')}</span> : null}
+            {w.is_live ? <Badge variant="aim" className="text-[10px] px-1.5 py-0" title={i18nT('pages.devFleetPage.the_live_gateway_on_this_port_runs_from_this_che')}>{i18nT('pages.devFleetPage.live')}</Badge> : null}
             {w.summary ? <span title={w.summary} style={{ fontSize: 11.5, color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0, flex: '0 1 auto' } as CSSProperties}>{w.summary}</span> : null}
           </div>
           {isMainWithStepper ? renderSyncStepper() : provActive ? renderProvStepper(w) : (
             <>
-              {rs && prUrl ? <a href={prUrl} target="_blank" rel="noopener noreferrer" title={w.pr?.title || rs.word} style={{ textDecoration: 'none' }}><Badge variant={rs.variant}>{rs.word}</Badge></a> : <span style={{ ...mut, opacity: 0.5 }}>&mdash;</span>}
+              {rs && prUrl ? <a href={prUrl} target="_blank" rel="noopener noreferrer" title={w.pr?.title || rs.word} style={{ textDecoration: 'none' }}><Badge variant={rs.variant}>{rs.word}</Badge></a> : <span style={{ ...mut, opacity: 0.5 }}>{"\u2014"}</span>}
               <span style={{ ...mut, opacity: (w.behind ?? 0) > 0 ? 1 : 0.5 }} title={(w.behind ?? 0) > 0 ? w.behind + ' commits behind main' : 'up to date with main'}>{(w.behind ?? 0) > 0 ? '\u2193' + w.behind : '\u2014'}</span>
               <span style={{ ...mut, opacity: 0.85 }}>{relTime(w.last_updated_at).replace(' ago', '')}</span>
               <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', alignItems: 'center', minWidth: 0, flexWrap: 'wrap' } as CSSProperties}>{rowButtons(w)}</div>
@@ -1186,31 +1187,31 @@ export default function DevFleetPage() {
   }
 
   const legacyToggle = legacyAll.length > 0 ? (
-    <Btn onClick={() => setShowLegacy((v) => !v)} style={{ display: 'block', width: '100%', textAlign: 'left', marginTop: 4, fontSize: 11.5, color: 'var(--muted)', background: 'transparent', border: '1px dashed var(--border)' }} title="Worktrees created under a previous repository name. Hidden by default; still covered by Prune merged.">
+    <Btn onClick={() => setShowLegacy((v) => !v)} style={{ display: 'block', width: '100%', textAlign: 'left', marginTop: 4, fontSize: 11.5, color: 'var(--muted)', background: 'transparent', border: '1px dashed var(--border)' }} title={i18nT('pages.devFleetPage.worktrees_created_under_a_previous_repository_na')}>
       {showLegacy ? `Hide ${legacyAll.length} legacy worktrees` : `${legacyAll.length} legacy worktrees hidden \u00b7 Show`}
     </Btn>
   ) : null
   let body: ReactNode
   if (loading && !fleet) body = <ContentSkeleton rows={5} />
   else if (error) body = isDiscoveryError
-    ? <div role="alert" style={{ padding: 24, borderRadius: 8, border: '1px solid var(--danger)', background: 'var(--danger-subtle, rgba(239,68,68,0.08))' }}><p style={{ margin: 0, fontWeight: 600, color: 'var(--danger)' }}>Discovery Error</p><p style={{ margin: '8px 0 0', color: 'var(--text)', fontSize: 14 }}>{error}</p></div>
-    : <EmptyState icon={<Server size={28} className="lucide-inline" />} title="Backend unavailable" subtitle={error} />
-  else if (!wts.length) body = <EmptyState icon={<Server size={28} className="lucide-inline" />} title="No worktrees found" subtitle="Nothing under the worktrees root yet." />
+    ? <div role="alert" style={{ padding: 24, borderRadius: 8, border: '1px solid var(--danger)', background: 'var(--danger-subtle, rgba(239,68,68,0.08))' }}><p style={{ margin: 0, fontWeight: 600, color: 'var(--danger)' }}>{i18nT('pages.devFleetPage.discovery_error')}</p><p style={{ margin: '8px 0 0', color: 'var(--text)', fontSize: 14 }}>{error}</p></div>
+    : <EmptyState icon={<Server size={28} className="lucide-inline" />} title={i18nT('pages.devFleetPage.backend_unavailable')} subtitle={error} />
+  else if (!wts.length) body = <EmptyState icon={<Server size={28} className="lucide-inline" />} title={i18nT('pages.devFleetPage.no_worktrees_found')} subtitle={i18nT('pages.devFleetPage.nothing_under_the_worktrees_root_yet')} />
   else body = <div>{columnHeader}{visible.map(renderRow)}{legacyToggle}</div>
 
   const confirmDialog = (
-    <Modal open={!!confirmReq} onClose={() => settleConfirm(false)} title={confirmReq?.title ?? ''} maxWidth={confirmReq?.width || 400} footer={<><Btn onClick={() => settleConfirm(false)}>Cancel</Btn><Btn primary={!confirmReq?.danger} danger={!!confirmReq?.danger} onClick={() => settleConfirm(true)}>{confirmReq?.confirmLabel || 'Confirm'}</Btn></>}>
+    <Modal open={!!confirmReq} onClose={() => settleConfirm(false)} title={confirmReq?.title ?? ''} maxWidth={confirmReq?.width || 400} footer={<><Btn onClick={() => settleConfirm(false)}>{i18nT('pages.devFleetPage.cancel')}</Btn><Btn primary={!confirmReq?.danger} danger={!!confirmReq?.danger} onClick={() => settleConfirm(true)}>{confirmReq?.confirmLabel || 'Confirm'}</Btn></>}>
       <p className="text-sm text-muted m-0">{confirmReq?.desc}</p>
     </Modal>
   )
 
   const pruneReviewDialog = pruneDialog && (() => {
     return (
-      <Modal open={true} onClose={() => setPruneDialog(null)} title="Prune worktrees" maxWidth={480} footer={<><Btn onClick={() => setPruneDialog(null)}>Cancel</Btn><Btn danger onClick={() => pruneExecute(pruneDialog.candidates.filter((c) => pruneSelected.has(c.name)).map((c) => c.name))}>Remove selected</Btn></>}>
+      <Modal open={true} onClose={() => setPruneDialog(null)} title={i18nT('pages.devFleetPage.prune_worktrees')} maxWidth={480} footer={<><Btn onClick={() => setPruneDialog(null)}>{i18nT('pages.devFleetPage.cancel')}</Btn><Btn danger onClick={() => pruneExecute(pruneDialog.candidates.filter((c) => pruneSelected.has(c.name)).map((c) => c.name))}>{i18nT('pages.devFleetPage.remove_selected')}</Btn></>}>
         <div style={{ maxHeight: 360, overflowY: 'auto' }}>
           {pruneDialog.candidates.length > 0 && (
             <div style={{ marginBottom: 10 }}>
-              <div style={{ fontSize: 10, letterSpacing: '0.08em', color: 'var(--muted)', textTransform: 'uppercase', borderBottom: '1px solid var(--border)', paddingBottom: 3, marginBottom: 4 }}>Remove</div>
+              <div style={{ fontSize: 10, letterSpacing: '0.08em', color: 'var(--muted)', textTransform: 'uppercase', borderBottom: '1px solid var(--border)', paddingBottom: 3, marginBottom: 4 }}>{i18nT('pages.devFleetPage.remove')}</div>
               {pruneDialog.candidates.map((c) => (
                 <label key={c.name} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0', cursor: 'pointer' }}>
                   <Checkbox checked={pruneSelected.has(c.name)} onChange={(e) => setPruneSelected((prev) => { const next = new Set(prev); if (e.target.checked) next.add(c.name); else next.delete(c.name); return next })} aria-label={`Select ${c.name}`} />
@@ -1222,7 +1223,7 @@ export default function DevFleetPage() {
           )}
           {pruneDialog.kept.length > 0 && (
             <div style={{ marginBottom: 10 }}>
-              <div style={{ fontSize: 10, letterSpacing: '0.08em', color: 'var(--muted)', textTransform: 'uppercase', borderBottom: '1px solid var(--border)', paddingBottom: 3, marginBottom: 4 }}>Kept</div>
+              <div style={{ fontSize: 10, letterSpacing: '0.08em', color: 'var(--muted)', textTransform: 'uppercase', borderBottom: '1px solid var(--border)', paddingBottom: 3, marginBottom: 4 }}>{i18nT('pages.devFleetPage.kept')}</div>
               {pruneDialog.kept.map((k) => (
                 <div key={k.name} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0' }}>
                   <span style={{ width: 13 }} />
@@ -1232,8 +1233,8 @@ export default function DevFleetPage() {
               ))}
             </div>
           )}
-          {pruneDialog.candidates.length === 0 && <p style={{ fontSize: 12, color: 'var(--muted)' }}>No candidates found.</p>}
-          <p style={{ fontSize: 11, color: 'var(--muted)', margin: '8px 0 0' }}>Removes worktrees and stops pods. Cannot be undone.</p>
+          {pruneDialog.candidates.length === 0 && <p style={{ fontSize: 12, color: 'var(--muted)' }}>{i18nT('pages.devFleetPage.no_candidates_found')}</p>}
+          <p style={{ fontSize: 11, color: 'var(--muted)', margin: '8px 0 0' }}>{i18nT('pages.devFleetPage.removes_worktrees_and_stops_pods_cannot_be_undon')}</p>
         </div>
       </Modal>
     )
@@ -1246,7 +1247,7 @@ export default function DevFleetPage() {
       onClose={() => { if (pruneDone) setPruneProgress(null) }}
       title={pruneDone ? 'Prune complete' : 'Pruning worktrees'}
       maxWidth={460}
-      footer={pruneDone ? <Btn onClick={() => setPruneProgress(null)}>Close</Btn> : undefined}
+      footer={pruneDone ? <Btn onClick={() => setPruneProgress(null)}>{i18nT('pages.devFleetPage.close')}</Btn> : undefined}
     >
       <div style={{ fontSize: 12 }}>
         <div style={{ fontWeight: 600, marginBottom: 8 }}>
@@ -1294,46 +1295,44 @@ export default function DevFleetPage() {
         <div role="alert" aria-busy="true" style={{ position: 'fixed', inset: 0, zIndex: 9999, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: 'var(--bg)', color: 'var(--text)' }}>
           <LoaderCircle size={32} className="lucide-inline" style={{ animation: 'spin 1s linear infinite' }} />
           <p style={{ marginTop: 16, fontSize: 16, fontWeight: 600 }}>{'Restarting \u2014 reconnecting\u2026'}</p>
-          <p style={{ fontSize: 12, color: 'var(--muted)' }}>Waiting for the new gateway process. The page reloads automatically once it is up.</p>
+          <p style={{ fontSize: 12, color: 'var(--muted)' }}>{i18nT('pages.devFleetPage.waiting_for_the_new_gateway_process_the_page_rel')}</p>
         </div>
       )}
       <div className="flex flex-1 min-h-0 overflow-hidden">
         <div className="flex-1 min-w-0 flex flex-col min-h-0">
-          <PageHeader title="Dev Fleet" subtitle="Manage the git worktrees of your main checkout — sync, rebase, QA pods, and cleanup in one place." />
+          <PageHeader title={i18nT('pages.devFleetPage.dev_fleet')} subtitle={i18nT('pages.devFleetPage.manage_the_git_worktrees_of_your_main_checkout_s')} />
           <div className="flex-1 overflow-y-auto px-6 pb-8 min-h-0">
             <p className="text-[12.5px] text-muted leading-relaxed mt-3 mb-1 max-w-[860px]">
-              Each row below is a git worktree discovered from the main checkout. Use{' '}
-              <span className="text-text-strong">Pull + Build</span> on the main row to fast-forward it from origin and rebuild
-              (then restart the gateway to apply). <span className="text-text-strong">Pod</span> boots any worktree as an
-              isolated throwaway gateway so you can QA a feature branch without touching your live instance.{' '}
-              <span className="text-text-strong">Rebase</span> moves a feature branch onto the latest main, and{' '}
-              <span className="text-text-strong">Prune</span> safely removes worktrees whose PR has already merged.
+              {i18nT('pages.devFleetPage.each_row_below_is_a_git_worktree_discovered_from')}{' '}
+              <span className="text-text-strong">{i18nT('pages.devFleetPage.pull_build')}</span> {i18nT('pages.devFleetPage.on_the_main_row_to_fast_forward_it_from_origin_a')} <span className="text-text-strong">{i18nT('pages.devFleetPage.pod_2')}</span> {i18nT('pages.devFleetPage.boots_any_worktree_as_an_isolated_throwaway_gate')}{' '}
+              <span className="text-text-strong">{i18nT('pages.devFleetPage.rebase')}</span> {i18nT('pages.devFleetPage.moves_a_feature_branch_onto_the_latest_main_and')}{' '}
+              <span className="text-text-strong">{i18nT('pages.devFleetPage.prune')}</span> {i18nT('pages.devFleetPage.safely_removes_worktrees_whose_pr_has_already_me')}
             </p>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 12, margin: '14px 0' } as CSSProperties}>
-              <StatCard label="Running pods" value={running} accent />
-              <StatCard label="Worktrees" value={wts.length} />
-              <StatCard label="Needs provision" value={needsProv} />
-              <StatCard label="Disk (worktrees)" value={diskGb} />
+              <StatCard label={i18nT('pages.devFleetPage.running_pods')} value={running} accent />
+              <StatCard label={i18nT('pages.devFleetPage.worktrees')} value={wts.length} />
+              <StatCard label={i18nT('pages.devFleetPage.needs_provision')} value={needsProv} />
+              <StatCard label={i18nT('pages.devFleetPage.disk_worktrees')} value={diskGb} />
             </div>
             <Card>
-              <CardTitle><span className="flex items-center gap-1.5">Worktrees ({wts.length})<InfoTip text="Every git worktree of the main checkout. Pull+Build syncs main; pods are isolated gateways booted from a worktree." /></span></CardTitle>
+              <CardTitle><span className="flex items-center gap-1.5">{i18nT('pages.devFleetPage.worktrees_2')}{wts.length})<InfoTip text="Every git worktree of the main checkout. Pull+Build syncs main; pods are isolated gateways booted from a worktree." /></span></CardTitle>
               <div style={{ display: 'flex', gap: 10, alignItems: 'center', margin: '12px 0 4px' } as CSSProperties}>
                 <div className="flex-1 min-w-0">
-                  <SearchInput placeholder={'Filter worktrees\u2026'} value={q} onChange={(e) => setQ((e.target as HTMLInputElement).value)} aria-label="Filter worktrees" />
+                  <SearchInput placeholder={i18nT('pages.devFleetPage.filter_worktrees')} value={q} onChange={(e) => setQ((e.target as HTMLInputElement).value)} aria-label={i18nT('pages.devFleetPage.filter_worktrees_2')} />
                 </div>
-                <span style={{ fontSize: 11.5, color: 'var(--muted)', flexShrink: 0 }}>{ql ? others.length + ' / ' : ''}{wts.length} rows</span>
+                <span style={{ fontSize: 11.5, color: 'var(--muted)', flexShrink: 0 }}>{ql ? others.length + ' / ' : ''}{wts.length} {i18nT('pages.devFleetPage.rows')}</span>
                 <Select
                   value={sortBy}
                   onChange={(e) => setSortBy(e.target.value)}
-                  aria-label="Sort worktrees"
+                  aria-label={i18nT('pages.devFleetPage.sort_worktrees')}
                 >
-                  <option value="status">Sort: status</option>
-                  <option value="recent">Sort: recent</option>
-                  <option value="name">Sort: name</option>
-                  <option value="behind">Sort: behind</option>
+                  <option value="status">{i18nT('pages.devFleetPage.sort_status')}</option>
+                  <option value="recent">{i18nT('pages.devFleetPage.sort_recent')}</option>
+                  <option value="name">{i18nT('pages.devFleetPage.sort_name')}</option>
+                  <option value="behind">{i18nT('pages.devFleetPage.sort_behind')}</option>
                 </Select>
                 <Btn danger onClick={pruneShipped} disabled={!!busy['__prune']}>{iconLabel(<Trash2 size={13} className="lucide-inline" />, 'Prune merged')}</Btn>
-                <Btn onClick={() => invalidateAll()} disabled={loading} aria-label="Refresh fleet">{iconLabel(<RefreshCw size={14} className="lucide-inline" />, 'Refresh')}</Btn>
+                <Btn onClick={() => invalidateAll()} disabled={loading} aria-label={i18nT('pages.devFleetPage.refresh_fleet')}>{iconLabel(<RefreshCw size={14} className="lucide-inline" />, 'Refresh')}</Btn>
               </div>
               {body}
             </Card>

@@ -5,6 +5,7 @@ import { SettingsSection, SettingsCard } from '../../components/settings'
 import { Toggle } from '../../components/ui'
 import { api, type McpPoolableServer } from '../../api/client'
 
+import { i18nT } from '../../i18n/t'
 type GatewayStatus = { enabled: boolean; running: boolean; ping_ok: boolean }
 
 /**
@@ -65,23 +66,22 @@ export function McpPoolableServers() {
   }
 
   return (
-    <SettingsSection title="Poolable MCP servers">
+    <SettingsSection title={i18nT('pages.settings.mcpPoolableServers.poolable_mcp_servers')}>
       <SettingsCard>
         {!gatewayEnabled && (
           <div className="text-[12px] text-muted mb-2">
-            Pooling takes effect when the shared MCP gateway is enabled. You can pre-configure which
-            servers are poolable here either way.
+            {i18nT('pages.settings.mcpPoolableServers.pooling_takes_effect_when_the_shared_mcp_gateway')}
           </div>
         )}
 
         {serversQ.isLoading ? (
           <div className="flex items-center gap-2 text-[13px] text-muted py-2">
-            <Loader2 size={14} className="animate-spin" /> Loading MCP servers…
+            <Loader2 size={14} className="animate-spin" /> {i18nT('pages.settings.mcpPoolableServers.loading_mcp_servers')}
           </div>
         ) : serversQ.isError ? (
-          <div className="text-[13px] text-danger py-2">Could not load MCP servers.</div>
+          <div className="text-[13px] text-danger py-2">{i18nT('pages.settings.mcpPoolableServers.could_not_load_mcp_servers')}</div>
         ) : servers.length === 0 ? (
-          <div className="text-[13px] text-muted py-2">No MCP servers configured.</div>
+          <div className="text-[13px] text-muted py-2">{i18nT('pages.settings.mcpPoolableServers.no_mcp_servers_configured')}</div>
         ) : (
           <div className="flex flex-col">
             {servers.map(srv => {
@@ -99,13 +99,13 @@ export function McpPoolableServers() {
                   <div className="flex-1 min-w-0 mr-4">
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className="text-[13px] font-semibold text-text">{srv.name}</span>
-                      {srv.denylisted && <Chip kind="blocked">blocked</Chip>}
-                      {!isStdio && <Chip kind="http">{srv.transport} · shared</Chip>}
-                      {srv.entry_poolable && !srv.in_allowlist && <Chip kind="http">poolable:true</Chip>}
+                      {srv.denylisted && <Chip kind="blocked">{i18nT('pages.settings.mcpPoolableServers.blocked')}</Chip>}
+                      {!isStdio && <Chip kind="http">{srv.transport} {i18nT('pages.settings.mcpPoolableServers.shared')}</Chip>}
+                      {srv.entry_poolable && !srv.in_allowlist && <Chip kind="http">{i18nT('pages.settings.mcpPoolableServers.poolable_true')}</Chip>}
                     </div>
                     {srv.agents.length > 0 && (
                       <div className="text-[12px] text-muted mt-0.5 truncate">
-                        used by {srv.agents.join(', ')}
+                        {i18nT('pages.settings.mcpPoolableServers.used_by')} {srv.agents.join(', ')}
                       </div>
                     )}
                   </div>

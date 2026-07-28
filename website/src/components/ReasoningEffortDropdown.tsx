@@ -7,6 +7,7 @@ import { api } from '../api/client'
 import { Slider, Toggle } from './ui'
 import InfoTip from './InfoTip'
 
+import { i18nT } from '../i18n/t'
 const EFFORT_HELP =
   'Reasoning effort sets how long the model thinks before answering. Higher means ' +
   'more time reasoning through hard problems (slower, better answers); lower is faster. ' +
@@ -99,7 +100,7 @@ export default function ReasoningEffortDropdown({ slot, currentEffort, embedded 
   return (
     <div className={embedded ? 'px-3 py-2.5' : 'rounded-lg bg-bg-elevated border border-border px-4 py-3.5 w-[240px]'}>
       <div className="flex items-center gap-1.5 mb-3">
-        <span className="text-[14px] font-medium text-muted uppercase tracking-[.04em] leading-none">Effort</span>
+        <span className="text-[14px] font-medium text-muted uppercase tracking-[.04em] leading-none">{i18nT('components.reasoningEffortDropdown.effort')}</span>
         <span className="relative inline-flex items-center overflow-hidden leading-none" style={{ height: '1.5em' }}>
           <AnimatePresence mode="popLayout" initial={false}>
             <motion.span
@@ -117,7 +118,7 @@ export default function ReasoningEffortDropdown({ slot, currentEffort, embedded 
         <span className="ml-auto flex"><InfoTip text={EFFORT_HELP} placement="top" /></span>
       </div>
       <Slider
-        aria-label="Reasoning effort"
+        aria-label={i18nT('components.reasoningEffortDropdown.reasoning_effort')}
         min={0}
         max={maxIdx}
         step={1}
@@ -128,12 +129,12 @@ export default function ReasoningEffortDropdown({ slot, currentEffort, embedded 
         formatValue={v => effortLabel(concrete[v] ?? '')}
       />
       <div className={`relative mt-1 h-[14px] text-[10px] text-muted select-none transition-opacity ${isDefault ? 'opacity-40' : ''}`}>
-        <span className="absolute left-0">Faster</span>
-        <span className="absolute right-0">Smarter</span>
+        <span className="absolute left-0">{i18nT('components.reasoningEffortDropdown.faster')}</span>
+        <span className="absolute right-0">{i18nT('components.reasoningEffortDropdown.smarter')}</span>
       </div>
       <div className="flex items-center justify-between gap-2 mt-3.5">
-        <span className="text-[12px] text-text">Use model default</span>
-        <Toggle checked={isDefault} onChange={handleToggleDefault} label="Use model default" />
+        <span className="text-[12px] text-text">{i18nT('components.reasoningEffortDropdown.use_model_default')}</span>
+        <Toggle checked={isDefault} onChange={handleToggleDefault} label={i18nT('components.reasoningEffortDropdown.use_model_default')} />
       </div>
     </div>
   )

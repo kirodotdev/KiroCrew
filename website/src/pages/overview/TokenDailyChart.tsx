@@ -1,6 +1,7 @@
 import { useEffect, useId, useMemo, useState } from 'react'
 import { formatCost } from '../../utils/formatCost'
 
+import { i18nT } from '../../i18n/t'
 export type TokenBucket = {
   input: number
   output: number
@@ -91,7 +92,7 @@ function FilterSelect({
         onChange={e => onChange(e.target.value)}
         className="bg-bg-elevated border border-border rounded-md px-2 py-1 text-text text-[12px] font-body outline-none cursor-pointer transition-colors focus-ring"
       >
-        <option value={ALL}>All</option>
+        <option value={ALL}>{i18nT('pages.overview.tokenDailyChart.all')}</option>
         {options.map(o => <option key={o} value={o}>{o}</option>)}
       </select>
     </label>
@@ -172,10 +173,10 @@ export function TokenDailyChart({
       {(providerOpts.length > 0 || modelOpts.length > 0) && (
         <div className="flex flex-wrap gap-3 mb-3">
           {providerOpts.length > 0 && (
-            <FilterSelect label="Provider" value={providerSel} onChange={setProviderSel} options={providerOpts} />
+            <FilterSelect label={i18nT('pages.overview.tokenDailyChart.provider')} value={providerSel} onChange={setProviderSel} options={providerOpts} />
           )}
           {modelOpts.length > 0 && (
-            <FilterSelect label="Model" value={modelSel} onChange={setModelSel} options={modelOpts} />
+            <FilterSelect label={i18nT('pages.overview.tokenDailyChart.model')} value={modelSel} onChange={setModelSel} options={modelOpts} />
           )}
         </div>
       )}
@@ -199,14 +200,14 @@ export function TokenDailyChart({
               {/* Tooltip -- positioned below top to avoid overflow clipping */}
               <div className="absolute top-0 left-1/2 -translate-x-1/2 mt-1 hidden group-hover:block bg-bg-elevated border border-border rounded px-2 py-1 text-[11px] whitespace-nowrap z-50 shadow-lg pointer-events-none">
                 <div className="font-medium">{d.date}</div>
-                <div>In: {fmtNum(d.input)} · Out: {fmtNum(d.output)}</div>
-                {d.cacheRead > 0 && <div>Cache read: {fmtNum(d.cacheRead)}</div>}
-                {d.cacheCreate > 0 && <div>Cache create: {fmtNum(d.cacheCreate)}</div>}
-                {d.costUsd > 0 && <div>Cost: {formatCost(d.costUsd)}</div>}
+                <div>{i18nT('pages.overview.tokenDailyChart.in')} {fmtNum(d.input)} {i18nT('pages.overview.tokenDailyChart.out')} {fmtNum(d.output)}</div>
+                {d.cacheRead > 0 && <div>{i18nT('pages.overview.tokenDailyChart.cache_read')} {fmtNum(d.cacheRead)}</div>}
+                {d.cacheCreate > 0 && <div>{i18nT('pages.overview.tokenDailyChart.cache_create')} {fmtNum(d.cacheCreate)}</div>}
+                {d.costUsd > 0 && <div>{i18nT('pages.overview.tokenDailyChart.cost')} {formatCost(d.costUsd)}</div>}
                 {(providerSel !== ALL || effectiveModel !== ALL) && (
                   <div className="mt-1 pt-1 border-t border-border text-muted">
-                    {providerSel !== ALL && <div>Provider: {providerSel}</div>}
-                    {effectiveModel !== ALL && <div>Model: {effectiveModel}</div>}
+                    {providerSel !== ALL && <div>{i18nT('pages.overview.tokenDailyChart.provider_2')} {providerSel}</div>}
+                    {effectiveModel !== ALL && <div>{i18nT('pages.overview.tokenDailyChart.model_2')} {effectiveModel}</div>}
                   </div>
                 )}
               </div>
@@ -225,10 +226,10 @@ export function TokenDailyChart({
       </div>
       {/* Legend */}
       <div className="flex gap-4 mt-3 text-[12px] text-muted justify-center flex-wrap">
-        <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-accent inline-block" /> Input</span>
-        <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm inline-block" style={{ background: 'var(--warn)' }} /> Output</span>
-        <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm inline-block" style={{ background: 'var(--danger)' }} /> Cache create</span>
-        <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm inline-block" style={{ background: 'var(--muted)' }} /> Cache read</span>
+        <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-accent inline-block" /> {i18nT('pages.overview.tokenDailyChart.input')}</span>
+        <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm inline-block" style={{ background: 'var(--warn)' }} /> {i18nT('pages.overview.tokenDailyChart.output')}</span>
+        <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm inline-block" style={{ background: 'var(--danger)' }} /> {i18nT('pages.overview.tokenDailyChart.cache_create_2')}</span>
+        <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm inline-block" style={{ background: 'var(--muted)' }} /> {i18nT('pages.overview.tokenDailyChart.cache_read_2')}</span>
       </div>
     </div>
   )

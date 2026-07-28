@@ -16,6 +16,7 @@ import InfoTip from './InfoTip'
 import Clickable from './Clickable'
 import { recordEvent } from '../rum'
 
+import { i18nT } from '../i18n/t'
 type Registry = { name: string; repo: string; branch: string }
 
 // Shell metacharacters / whitespace that must never appear in a repo value.
@@ -152,14 +153,14 @@ export default function RegistryManager({ bare = false }: { bare?: boolean } = {
   return (
     <Wrapper>
       <CardTitle>
-        External Registries
+        {i18nT('components.registryManager.external_registries')}
         <InfoTip text="Org-owned app catalogs hosted in Git repositories. Apps from these repos appear alongside core registry apps in the Browse tab." />
       </CardTitle>
 
       {error && (
         <div className="mb-3 bg-danger/10 border border-danger/20 rounded-lg p-2.5 flex items-center gap-2 animate-rise">
           <span className="text-danger text-[13px] flex-1">{error}</span>
-          <Clickable className="text-danger/60 hover:text-danger" onClick={() => setError('')} aria-label="Dismiss error">
+          <Clickable className="text-danger/60 hover:text-danger" onClick={() => setError('')} aria-label={i18nT('components.registryManager.dismiss_error')}>
             <X size={14} />
           </Clickable>
         </div>
@@ -169,21 +170,21 @@ export default function RegistryManager({ bare = false }: { bare?: boolean } = {
         <div className="mb-3 bg-accent/10 border border-accent/20 rounded-lg p-2.5 flex items-start gap-2 animate-rise">
           <ShieldCheck size={14} className="text-accent shrink-0 mt-0.5" />
           <span className="text-accent text-[13px] flex-1">
-            You are now trusting apps from {trustNotice.join(', ')}. Apps from {trustNotice.length > 1 ? 'these hosts' : 'this host'} become installable and run setup with gateway privileges.
+            {i18nT('components.registryManager.you_are_now_trusting_apps_from')} {trustNotice.join(', ')}{i18nT('components.registryManager.apps_from')} {trustNotice.length > 1 ? 'these hosts' : 'this host'} {i18nT('components.registryManager.become_installable_and_run_setup_with_gateway_pr')}
           </span>
-          <Clickable className="text-accent/60 hover:text-accent" onClick={() => setTrustNotice([])} aria-label="Dismiss trust notice">
+          <Clickable className="text-accent/60 hover:text-accent" onClick={() => setTrustNotice([])} aria-label={i18nT('components.registryManager.dismiss_trust_notice')}>
             <X size={14} />
           </Clickable>
         </div>
       )}
 
       {isLoading ? (
-        <div className="text-center py-8 text-muted text-sm">Loading…</div>
+        <div className="text-center py-8 text-muted text-sm">{i18nT('components.registryManager.loading')}</div>
       ) : registries.length === 0 && !adding ? (
         <EmptyState
           icon={<Database size={32} />}
-          title="No external registries"
-          subtitle="Add an org registry to discover team-specific apps"
+          title={i18nT('components.registryManager.no_external_registries')}
+          subtitle={i18nT('components.registryManager.add_an_org_registry_to_discover_team_specific_ap')}
         />
       ) : (
         <div className="space-y-2 mt-3">
@@ -235,20 +236,20 @@ export default function RegistryManager({ bare = false }: { bare?: boolean } = {
           <div className="grid grid-cols-[1fr_1fr_auto] gap-3 mb-3">
             <div>
               {/* eslint-disable-next-line jsx-a11y/label-has-for -- deprecated rule can't see the htmlFor→id link to the custom Input control; label-has-associated-control is satisfied. */}
-              <label htmlFor="registry-name" className="text-[12px] text-muted mb-1 block">Display Name</label>
+              <label htmlFor="registry-name" className="text-[12px] text-muted mb-1 block">{i18nT('components.registryManager.display_name')}</label>
               <Input
                 id="registry-name"
-                placeholder="e.g. Identity Services"
+                placeholder={i18nT('components.registryManager.e_g_identity_services')}
                 value={editName}
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEditName(e.target.value)}
               />
             </div>
             <div>
               {/* eslint-disable-next-line jsx-a11y/label-has-for -- deprecated rule can't see the htmlFor→id link to the custom Input control; label-has-associated-control is satisfied. */}
-              <label htmlFor="registry-repo" className="text-[12px] text-muted mb-1 block">Repo *</label>
+              <label htmlFor="registry-repo" className="text-[12px] text-muted mb-1 block">{i18nT('components.registryManager.repo')}</label>
               <Input
                 id="registry-repo"
-                placeholder="https://github.com/org/app-registry"
+                placeholder={i18nT('components.registryManager.https_github_com_org_app_registry')}
                 value={editRepo}
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEditRepo(e.target.value)}
                 onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => e.key === 'Enter' && handleAdd()}
@@ -256,10 +257,10 @@ export default function RegistryManager({ bare = false }: { bare?: boolean } = {
             </div>
             <div>
               {/* eslint-disable-next-line jsx-a11y/label-has-for -- deprecated rule can't see the htmlFor→id link to the custom Input control; label-has-associated-control is satisfied. */}
-              <label htmlFor="registry-branch" className="text-[12px] text-muted mb-1 block">Branch</label>
+              <label htmlFor="registry-branch" className="text-[12px] text-muted mb-1 block">{i18nT('components.registryManager.branch')}</label>
               <Input
                 id="registry-branch"
-                placeholder="main"
+                placeholder={i18nT('components.registryManager.main')}
                 value={editBranch}
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEditBranch(e.target.value)}
                 onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => e.key === 'Enter' && handleAdd()}
@@ -267,7 +268,7 @@ export default function RegistryManager({ bare = false }: { bare?: boolean } = {
             </div>
           </div>
           <div className="flex items-center gap-2 justify-end">
-            <Btn onClick={() => { setAdding(false); setError('') }}>Cancel</Btn>
+            <Btn onClick={() => { setAdding(false); setError('') }}>{i18nT('components.registryManager.cancel')}</Btn>
             <Btn onClick={handleAdd} disabled={mutation.isPending}>
               {mutation.isPending ? 'Adding…' : 'Add Registry'}
             </Btn>
@@ -276,21 +277,21 @@ export default function RegistryManager({ bare = false }: { bare?: boolean } = {
       ) : (
         <div className="mt-4 flex items-center gap-2">
           <Btn onClick={() => setAdding(true)}>
-            <Plus size={14} /> Add Registry
+            <Plus size={14} /> {i18nT('components.registryManager.add_registry')}
           </Btn>
           {registries.length > 0 && (
             <>
               <Btn
                 onClick={() => refreshMutation.mutate(undefined)}
                 disabled={refreshMutation.isPending}
-                aria-label="Sync registry apps"
+                aria-label={i18nT('components.registryManager.sync_registry_apps')}
               >
                 <RefreshCw size={14} className={refreshMutation.isPending && !refreshMutation.variables ? 'animate-spin' : ''} />
                 {refreshMutation.isPending && !refreshMutation.variables ? 'Syncing…' : 'Sync Apps'}
               </Btn>
               {lastSyncedAt && (
                 <span className="text-[12px] text-muted">
-                  Last synced {new Date(lastSyncedAt).toLocaleTimeString()}
+                  {i18nT('components.registryManager.last_synced')} {new Date(lastSyncedAt).toLocaleTimeString()}
                 </span>
               )}
             </>

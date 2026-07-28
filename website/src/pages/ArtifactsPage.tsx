@@ -28,6 +28,7 @@ import { useAppPreview } from '../components/WebAppArtifactCard'
 import { THEME_VAR_NAMES, buildSrcdoc } from '../lib/widgetSrcdoc'
 import type { Artifact, ArtifactFolder, PublishProviderDescriptor, RemoteArtifact, SessionDoc } from '../types'
 
+import { i18nT } from '../i18n/t'
 /** Read the current computed theme CSS vars (capped to the known set, each
  * value sanitized) so a sandboxed preview iframe matches the dashboard theme.
  * Mirrors the helper in ArtifactDetailPage. */
@@ -380,7 +381,7 @@ const FOLDER_COLORS = ['#ef4444', '#f59e0b', '#22c55e', '#06b6d4', '#3b82f6', '#
 /** Swatch strip for picking a folder color ('' clears back to default). */
 function FolderColorSwatches({ value, onPick, size = 16 }: { value?: string; onPick: (color: string) => void; size?: number }) {
   return (
-    <div className="flex items-center gap-1.5 flex-wrap" role="radiogroup" aria-label="Folder color">
+    <div className="flex items-center gap-1.5 flex-wrap" role="radiogroup" aria-label={i18nT('pages.artifactsPage.folder_color')}>
       {FOLDER_COLORS.map((c) => (
         <button
           key={c}
@@ -400,8 +401,8 @@ function FolderColorSwatches({ value, onPick, size = 16 }: { value?: string; onP
         type="button"
         role="radio"
         aria-checked={!value}
-        aria-label="No color"
-        title="No color"
+        aria-label={i18nT('pages.artifactsPage.no_color')}
+        title={i18nT('pages.artifactsPage.no_color')}
         onClick={(e) => { e.stopPropagation(); onPick('') }}
         onPointerDown={(e) => e.stopPropagation()}
         className={`rounded-full border cursor-pointer transition-transform hover:scale-110 flex items-center justify-center text-muted bg-transparent ${
@@ -487,7 +488,7 @@ function FolderMenu({ folder, folders, actions }: { folder: ArtifactFolder; fold
           type="button"
           onClick={(e) => e.stopPropagation()}
           className="p-1 rounded text-muted hover:text-text transition-colors cursor-pointer bg-transparent border-none"
-          title="Folder actions"
+          title={i18nT('pages.artifactsPage.folder_actions')}
           aria-label={`Actions for folder ${folder.name}`}
         >
           <MoreVertical size={13} />
@@ -495,7 +496,7 @@ function FolderMenu({ folder, folders, actions }: { folder: ArtifactFolder; fold
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
         <DropdownMenuItem onSelect={() => actions.onRename(folder)}>
-          <Pencil size={13} className="text-muted shrink-0" /> Rename
+          <Pencil size={13} className="text-muted shrink-0" /> {i18nT('pages.artifactsPage.rename')}
         </DropdownMenuItem>
         <FolderMoveSubmenu
           variant="dropdown"
@@ -507,12 +508,12 @@ function FolderMenu({ folder, folders, actions }: { folder: ArtifactFolder; fold
         {/* Color swatches live inline (not a menu item) so picking one doesn't
             navigate — the menu closes after the pick via the row's own click. */}
         <div className="px-2 py-1.5">
-          <div className="text-[11px] text-muted mb-1.5">Color</div>
+          <div className="text-[11px] text-muted mb-1.5">{i18nT('pages.artifactsPage.color')}</div>
           <FolderColorSwatches value={folder.color} onPick={(c) => actions.onSetColor(folder, c)} />
         </div>
         <DropdownMenuSeparator />
         <DropdownMenuItem className="text-danger" onSelect={() => actions.onDelete(folder)}>
-          <Trash2 size={13} className="shrink-0" /> Delete…
+          <Trash2 size={13} className="shrink-0" /> {i18nT('pages.artifactsPage.delete')}
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
@@ -588,7 +589,7 @@ function FolderCard({ folder, folders, previewArtifacts, actions }: {
                   {renaming ? (
                     <FolderNameInput
                       initial={folder.name}
-                      placeholder="Rename folder"
+                      placeholder={i18nT('pages.artifactsPage.rename_folder')}
                       onCommit={(name) => actions.onRenameSubmit(folder, name)}
                       onCancel={actions.onRenameCancel}
                     />
@@ -596,7 +597,7 @@ function FolderCard({ folder, folders, previewArtifacts, actions }: {
                     <div className="text-[15px] leading-tight text-text-strong font-semibold truncate">{folder.name}</div>
                   )}
                   <div className="text-[11px] text-muted mt-0.5">
-                    {stats.artifactCount} artifact{stats.artifactCount === 1 ? '' : 's'}
+                    {stats.artifactCount} {i18nT('pages.artifactsPage.artifact')}{stats.artifactCount === 1 ? '' : 's'}
                     {stats.subfolderCount > 0 ? ` · ${stats.subfolderCount} folder${stats.subfolderCount === 1 ? '' : 's'}` : ''}
                   </div>
                 </div>
@@ -656,7 +657,7 @@ function FolderBreadcrumbBar({ folders, currentFolderId, onNavigate }: {
     </DndDroppable>
   )
   return (
-    <nav aria-label="Folder breadcrumb" className="flex items-center flex-wrap gap-0.5 mb-3">
+    <nav aria-label={i18nT('pages.artifactsPage.folder_breadcrumb')} className="flex items-center flex-wrap gap-0.5 mb-3">
       {segment('All Artifacts', '', chain.length === 0)}
       {chain.map((f, i) => (
         <span key={f.id} className="flex items-center gap-0.5">
@@ -727,7 +728,7 @@ function LocalCardBody({ a, context }: { a: Artifact; context: LibCtx }) {
               )}
             </div>
             <code className="text-[11px] text-muted">{a.slug}</code>
-            {author && <span className="block text-[11px] text-muted mt-0.5">by {author}</span>}
+            {author && <span className="block text-[11px] text-muted mt-0.5">{i18nT('pages.artifactsPage.by')} {author}</span>}
           </div>
           <Badge variant={KIND_BADGE[a.kind]}>{a.kind}</Badge>
         </div>
@@ -740,14 +741,14 @@ function LocalCardBody({ a, context }: { a: Artifact; context: LibCtx }) {
           </div>
         )}
         <div className="flex items-center justify-between mt-2">
-          <span className="text-[11px] text-muted">v{a.version} · {_timeAgo(isoToTs(a.updated_at))}</span>
+          <span className="text-[11px] text-muted">{i18nT('pages.artifactsPage.v')}{a.version} · {_timeAgo(isoToTs(a.updated_at))}</span>
           <div className="flex items-center gap-1">
             <button
               type="button"
               onClick={(e) => { e.stopPropagation(); openPopout(a.slug, a.name) }}
               className="p-1 rounded text-muted hover:text-text transition-colors cursor-pointer bg-transparent border-none"
-              title="Pop out into its own window"
-              aria-label="Pop out to window"
+              title={i18nT('pages.artifactsPage.pop_out_into_its_own_window')}
+              aria-label={i18nT('pages.artifactsPage.pop_out_to_window')}
             >
               <ExternalLink size={13} />
             </button>
@@ -756,8 +757,8 @@ function LocalCardBody({ a, context }: { a: Artifact; context: LibCtx }) {
               disabled={deleting}
               onClick={(e) => { e.stopPropagation(); onDelete(a) }}
               className="p-1 rounded text-muted hover:text-danger transition-colors cursor-pointer bg-transparent border-none disabled:opacity-60 disabled:cursor-default"
-              title="Remove from library"
-              aria-label="Remove from artifacts library"
+              title={i18nT('pages.artifactsPage.remove_from_library')}
+              aria-label={i18nT('pages.artifactsPage.remove_from_artifacts_library')}
             >
               {deleting ? <Loader2 size={13} className="animate-spin" /> : <X size={13} />}
             </button>
@@ -845,15 +846,15 @@ function LibraryTableHead() {
   return (
     <thead>
       <tr>
-        <th className={`${th} w-[40px] text-center`} aria-label="Starred"></th>
-        <th className={`${th} min-w-[160px]`}>Name</th>
-        <th className={`${th} w-[180px]`}>Slug</th>
-        <th className={`${th} w-[100px]`}>Kind</th>
-        <th className={`${th} w-[110px]`}>Source</th>
-        <th className={`${th} w-[60px]`}>Ver</th>
-        <th className={`${th} min-w-[160px]`}>Tags</th>
-        <th className={`${th} w-[110px]`}>Updated</th>
-        <th className={`${th} w-[120px]`}>Actions</th>
+        <th className={`${th} w-[40px] text-center`} aria-label={i18nT('pages.artifactsPage.starred')}></th>
+        <th className={`${th} min-w-[160px]`}>{i18nT('pages.artifactsPage.name')}</th>
+        <th className={`${th} w-[180px]`}>{i18nT('pages.artifactsPage.slug')}</th>
+        <th className={`${th} w-[100px]`}>{i18nT('pages.artifactsPage.kind')}</th>
+        <th className={`${th} w-[110px]`}>{i18nT('pages.artifactsPage.source')}</th>
+        <th className={`${th} w-[60px]`}>{i18nT('pages.artifactsPage.ver')}</th>
+        <th className={`${th} min-w-[160px]`}>{i18nT('pages.artifactsPage.tags')}</th>
+        <th className={`${th} w-[110px]`}>{i18nT('pages.artifactsPage.updated')}</th>
+        <th className={`${th} w-[120px]`}>{i18nT('pages.artifactsPage.actions')}</th>
       </tr>
     </thead>
   )
@@ -927,7 +928,7 @@ function ArtifactRow({ a, onOpen, onDelete, deletingSlug, onTogglePin, pinningSl
             <Badge variant={KIND_BADGE[a.kind]}>{a.kind}</Badge>
           </td>
           <td className="px-2.5 py-2 border-b border-border text-[12px] text-muted truncate max-w-[180px]" title={a.session_title || a.source}>{a.session_title || a.source}</td>
-          <td className="px-2.5 py-2 border-b border-border text-sm text-muted">v{a.version}</td>
+          <td className="px-2.5 py-2 border-b border-border text-sm text-muted">{i18nT('pages.artifactsPage.v')}{a.version}</td>
           <td className="px-2.5 py-2 border-b border-border">
             <div className="flex flex-wrap gap-1">
               {(a.tags || []).map((t) => (
@@ -942,8 +943,8 @@ function ArtifactRow({ a, onOpen, onDelete, deletingSlug, onTogglePin, pinningSl
                 type="button"
                 onClick={(e) => { e.stopPropagation(); openPopout(a.slug, a.name) }}
                 className="p-1 rounded text-muted hover:text-text transition-colors cursor-pointer bg-transparent border-none"
-                title="Pop out into its own window"
-                aria-label="Pop out to window"
+                title={i18nT('pages.artifactsPage.pop_out_into_its_own_window')}
+                aria-label={i18nT('pages.artifactsPage.pop_out_to_window')}
               >
                 <ExternalLink size={13} />
               </button>
@@ -952,8 +953,8 @@ function ArtifactRow({ a, onOpen, onDelete, deletingSlug, onTogglePin, pinningSl
                 disabled={deletingSlug === a.slug}
                 onClick={(e) => { e.stopPropagation(); onDelete(a) }}
                 className="p-1 rounded text-muted hover:text-danger transition-colors cursor-pointer bg-transparent border-none disabled:opacity-60 disabled:cursor-default"
-                title="Remove from library"
-                aria-label="Remove from artifacts library"
+                title={i18nT('pages.artifactsPage.remove_from_library')}
+                aria-label={i18nT('pages.artifactsPage.remove_from_artifacts_library')}
               >
                 {deletingSlug === a.slug ? <Loader2 size={13} className="animate-spin" /> : <X size={13} />}
               </button>
@@ -984,8 +985,8 @@ function SessionDocRow({ d, busy, onMaterialize }: { d: SessionDoc; busy: boolea
           disabled={busy}
           onClick={() => onMaterialize(d.path, d.session_key)}
           className="p-0.5 rounded transition-colors cursor-pointer bg-transparent border-none disabled:cursor-default text-muted/40 hover:text-accent"
-          title="Star (creates a starred artifact from this document)"
-          aria-label="Star document"
+          title={i18nT('pages.artifactsPage.star_creates_a_starred_artifact_from_this_docume')}
+          aria-label={i18nT('pages.artifactsPage.star_document')}
           aria-pressed={false}
         >
           {busy ? <Loader2 size={14} className="animate-spin" /> : <Star size={14} />}
@@ -1086,7 +1087,7 @@ function FolderRow({ folder, folders, depth, expanded, onToggle, actions, dropHi
                     <span className="min-w-0 flex-1 max-w-[280px]">
                       <FolderNameInput
                         initial={folder.name}
-                        placeholder="Rename folder"
+                        placeholder={i18nT('pages.artifactsPage.rename_folder')}
                         onCommit={(name) => actions.onRenameSubmit(folder, name)}
                         onCancel={actions.onRenameCancel}
                       />
@@ -1198,10 +1199,10 @@ function LibraryTree({ items, folders, expandedIds, onToggleExpand, folderAction
                       dragActive ? `border border-dashed px-2 py-1.5 ${isOver || unfiledHot ? 'border-accent text-text' : 'border-border text-muted'}` : ''
                     }`}>
                       <span className="text-[11px] uppercase tracking-[.04em] text-muted font-medium">
-                        Unfiled · {unfiled.length}
+                        {i18nT('pages.artifactsPage.unfiled')} {unfiled.length}
                       </span>
                       {dragActive && (
-                        <span className="text-[11px] text-muted italic">— drop here to unfile</span>
+                        <span className="text-[11px] text-muted italic">{i18nT('pages.artifactsPage.drop_here_to_unfile')}</span>
                       )}
                     </div>
                   </td>
@@ -1575,23 +1576,23 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
       : String(deleteMut.error)
     : null
 
-  if (isLoading) return <div className="p-6 text-muted">Loading…</div>
+  if (isLoading) return <div className="p-6 text-muted">{i18nT('pages.artifactsPage.loading')}</div>
 
   return (
     <>
-      <PageHeader title="Artifacts" subtitle="Widgets, files, and snippets — live-tracked with version history" />
+      <PageHeader title={i18nT('pages.artifactsPage.artifacts')} subtitle={i18nT('pages.artifactsPage.widgets_files_and_snippets_live_tracked_with_ver')} />
       <div className="px-6 pb-8 overflow-y-auto flex-1 min-h-0">
         <div className="grid gap-3 grid-cols-2 sm:grid-cols-4 mb-4">
-          <StatCard label="Total" value={artifacts.length} accent />
-          <StatCard label="Starred" value={artifacts.filter(a => a.pinned).length} />
-          <StatCard label="Folders" value={folders.length} />
-          <StatCard label="Kinds" value={new Set(artifacts.map(a => a.kind)).size} />
+          <StatCard label={i18nT('pages.artifactsPage.total')} value={artifacts.length} accent />
+          <StatCard label={i18nT('pages.artifactsPage.starred')} value={artifacts.filter(a => a.pinned).length} />
+          <StatCard label={i18nT('pages.artifactsPage.folders')} value={folders.length} />
+          <StatCard label={i18nT('pages.artifactsPage.kinds')} value={new Set(artifacts.map(a => a.kind)).size} />
         </div>
         {(errMessage || mutErr) && (
           <div className="mb-4 bg-danger/10 border border-danger/20 rounded-lg p-3 flex items-start gap-3 animate-rise">
             <span className="text-danger text-lg shrink-0"><AlertTriangle className="lucide-inline" /></span>
             <div className="flex-1 min-w-0">
-              <div className="text-sm text-danger font-medium">Error</div>
+              <div className="text-sm text-danger font-medium">{i18nT('pages.artifactsPage.error')}</div>
               <div className="text-[13px] text-danger/90 mt-0.5">{errMessage || mutErr}</div>
             </div>
             <Btn onClick={() => deleteMut.reset()} className="text-danger/60 hover:text-danger shrink-0">×</Btn>
@@ -1599,10 +1600,10 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
         )}
 
         <div className="flex items-center justify-between gap-3 mb-3">
-          <h3 className="text-sm font-semibold text-text-strong">Your Artifacts</h3>
+          <h3 className="text-sm font-semibold text-text-strong">{i18nT('pages.artifactsPage.your_artifacts')}</h3>
           <div className="flex items-center gap-2">
-            <Btn onClick={handleNewFolder} className="flex items-center gap-1.5" title="Create a folder to organize your artifacts">
-              <FolderPlus size={13} /> New folder
+            <Btn onClick={handleNewFolder} className="flex items-center gap-1.5" title={i18nT('pages.artifactsPage.create_a_folder_to_organize_your_artifacts')}>
+              <FolderPlus size={13} /> {i18nT('pages.artifactsPage.new_folder')}
             </Btn>
             <SegmentedControl
               segments={[
@@ -1617,36 +1618,36 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
         </div>
         <div className="flex flex-wrap gap-2 items-center mb-3">
             <SearchInput
-              placeholder="Filter by name, slug, description…"
+              placeholder={i18nT('pages.artifactsPage.filter_by_name_slug_description')}
               value={filter}
               onChange={(e) => setFilter(e.target.value)}
             />
-            <select className={sel} value={kindFilter} aria-label="Filter by kind" onChange={(e) => setKindFilter(e.target.value)}>
+            <select className={sel} value={kindFilter} aria-label={i18nT('pages.artifactsPage.filter_by_kind')} onChange={(e) => setKindFilter(e.target.value)}>
               {KIND_OPTIONS.map((k) => (
                 <option key={k} value={k}>
                   {k ? `kind: ${k}` : 'all kinds'}
                 </option>
               ))}
             </select>
-            <select className={sel} value={tagFilter} aria-label="Filter by tag" onChange={(e) => setTagFilter(e.target.value)}>
-              <option value="">all tags</option>
+            <select className={sel} value={tagFilter} aria-label={i18nT('pages.artifactsPage.filter_by_tag')} onChange={(e) => setTagFilter(e.target.value)}>
+              <option value="">{i18nT('pages.artifactsPage.all_tags')}</option>
               {allTags.map((t) => (
                 <option key={t} value={t}>
-                  tag: {t}
+                  {i18nT('pages.artifactsPage.tag')} {t}
                 </option>
               ))}
             </select>
-            <Btn onClick={() => navigate('/deploy')} className="flex items-center gap-1.5 ml-auto" title="Artifact Deploy — AWS profiles and published sites">
-              <Globe size={13} /> Artifact Deploy
+            <Btn onClick={() => navigate('/deploy')} className="flex items-center gap-1.5 ml-auto" title={i18nT('pages.artifactsPage.artifact_deploy_aws_profiles_and_published_sites')}>
+              <Globe size={13} /> {i18nT('pages.artifactsPage.artifact_deploy')}
             </Btn>
-            <div className="inline-flex items-center rounded-lg border border-border bg-bg-elevated p-0.5" role="group" aria-label="Filter starred">
+            <div className="inline-flex items-center rounded-lg border border-border bg-bg-elevated p-0.5" role="group" aria-label={i18nT('pages.artifactsPage.filter_starred')}>
               <button
                 type="button"
                 onClick={() => { setPinnedOnly(true); safeSetItem('mc-artifacts-pinned-only', '1') }}
                 aria-pressed={pinnedOnly}
                 className={`px-2.5 py-1 rounded-md text-[12px] font-medium transition-colors cursor-pointer border-none inline-flex items-center gap-1 ${pinnedOnly ? 'bg-accent text-accent-fg' : 'bg-transparent text-muted hover:text-text'}`}
               >
-                <Star size={12} className={pinnedOnly ? 'fill-current' : ''} /> Starred
+                <Star size={12} className={pinnedOnly ? 'fill-current' : ''} /> {i18nT('pages.artifactsPage.starred')}
               </button>
               <button
                 type="button"
@@ -1654,7 +1655,7 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
                 aria-pressed={!pinnedOnly}
                 className={`px-2.5 py-1 rounded-md text-[12px] font-medium transition-colors cursor-pointer border-none ${!pinnedOnly ? 'bg-accent text-accent-fg' : 'bg-transparent text-muted hover:text-text'}`}
               >
-                All
+                {i18nT('pages.artifactsPage.all')}
               </button>
             </div>
           </div>
@@ -1684,7 +1685,7 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
                       <FolderIcon size={17} className="shrink-0" style={{ color: newFolderColor || 'var(--accent)' }} />
                       <div className="min-w-0 flex-1">
                         <FolderNameInput
-                          placeholder="New folder name"
+                          placeholder={i18nT('pages.artifactsPage.new_folder_name')}
                           onCommit={commitNewFolder}
                           onCancel={() => setCreatingFolder(false)}
                         />
@@ -1712,7 +1713,7 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
                   <FolderPlus size={15} className="shrink-0" style={{ color: newFolderColor || 'var(--accent)' }} />
                   <div className="min-w-0 flex-1">
                     <FolderNameInput
-                      placeholder="New folder name"
+                      placeholder={i18nT('pages.artifactsPage.new_folder_name')}
                       onCommit={commitNewFolder}
                       onCancel={() => setCreatingFolder(false)}
                     />
@@ -1728,8 +1729,8 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
               (artifacts.length === 0 && folders.length === 0) ? (
                 <EmptyState
                   icon={<Bookmark className="lucide-inline" />}
-                  title="No artifacts yet"
-                  subtitle="Click the bookmark icon on any rendered widget in chat to save it here."
+                  title={i18nT('pages.artifactsPage.no_artifacts_yet')}
+                  subtitle={i18nT('pages.artifactsPage.click_the_bookmark_icon_on_any_rendered_widget_i')}
                 />
               ) : (
                 <div className="text-muted italic px-2.5 py-3.5 text-sm">
@@ -1878,7 +1879,7 @@ function RemoteBrowseSection({ provider, onForked, onCloned }: {
   const actionsStale = useSearch && isPlaceholderData
   return (
     <Card className="mt-4">
-      <CardTitle>On {provider.display_name}</CardTitle>
+      <CardTitle>{i18nT('pages.artifactsPage.on')} {provider.display_name}</CardTitle>
       <div className="mb-2">
         <SearchInput placeholder={`Filter ${provider.display_name} artifacts…`} value={search} onChange={e => setSearch((e.target as HTMLInputElement).value)} />
       </div>

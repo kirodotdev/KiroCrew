@@ -15,6 +15,7 @@ import { categoryFor } from './categories'
 import { useHeroArt } from './useHeroArt'
 import { sourceLabel, isVerified, type RegistryApp } from './types'
 
+import { i18nT } from '../../i18n/t'
 export default function FeaturedSpotlight({ app, onOpen, onGet, onEnable, busy }: {
   app: RegistryApp
   onOpen: (e?: React.MouseEvent | React.KeyboardEvent) => void
@@ -32,13 +33,13 @@ export default function FeaturedSpotlight({ app, onOpen, onGet, onEnable, busy }
       onClick={onOpen}
     >
       <div className="px-9 py-8 flex flex-col justify-center gap-2.5 min-w-0">
-        <span className="text-[11px] font-bold tracking-[.14em] text-accent">FEATURED</span>
+        <span className="text-[11px] font-bold tracking-[.14em] text-accent">{i18nT('components.appstore.featuredSpotlight.featured')}</span>
         <h2 className="text-[32px] leading-[1.15] font-bold text-text-strong tracking-tight">{app.displayName}</h2>
         <p className="text-[15px] text-muted line-clamp-2">{app.description}</p>
         <div className="flex items-center gap-2 text-[12.5px] text-muted">
           {isVerified(app) && (
-            <BadgeCheck size={14} className="text-accent shrink-0" aria-label="Verified publisher">
-              <title>Verified publisher (first-party)</title>
+            <BadgeCheck size={14} className="text-accent shrink-0" aria-label={i18nT('components.appstore.featuredSpotlight.verified_publisher')}>
+              <title>{i18nT('components.appstore.featuredSpotlight.verified_publisher_first_party')}</title>
             </BadgeCheck>
           )}
           <span className="truncate">{app.author} · {categoryFor(app.tags)}</span>
@@ -51,16 +52,16 @@ export default function FeaturedSpotlight({ app, onOpen, onGet, onEnable, busy }
         >
           {hiddenBuiltin ? (
             <Btn primary className="rounded-full px-4 py-1.5 font-semibold" disabled={busy} onClick={onEnable}>
-              <Power size={14} /> Enable
+              <Power size={14} /> {i18nT('components.appstore.featuredSpotlight.enable')}
             </Btn>
           ) : app.installed ? (
-            <span className="inline-flex items-center gap-1.5 text-[13px] text-muted"><Check size={14} /> Installed</span>
+            <span className="inline-flex items-center gap-1.5 text-[13px] text-muted"><Check size={14} /> {i18nT('components.appstore.featuredSpotlight.installed')}</span>
           ) : (
             <Btn primary className="rounded-full px-4 py-1.5 font-semibold" disabled={busy} onClick={onGet}>
-              <Download size={14} /> Get
+              <Download size={14} /> {i18nT('components.appstore.featuredSpotlight.get')}
             </Btn>
           )}
-          <span className="text-[12px] text-muted">v{app.installedVersion || app.version} · {sourceLabel(app)}</span>
+          <span className="text-[12px] text-muted">{i18nT('components.appstore.featuredSpotlight.v')}{app.installedVersion || app.version} · {sourceLabel(app)}</span>
         </div>
       </div>
       <div

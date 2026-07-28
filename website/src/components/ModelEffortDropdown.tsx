@@ -6,6 +6,7 @@ import ModelDropdownList from './ModelDropdownList'
 import ReasoningEffortDropdown from './ReasoningEffortDropdown'
 import { effortLabel } from './ChatInput'
 
+import { i18nT } from '../i18n/t'
 interface ModelItem { name: string; description?: string }
 
 interface Props {
@@ -69,14 +70,14 @@ export default function ModelEffortDropdown({
               <Input
                 ref={inputRef}
                 type="text"
-                aria-label="Filter models"
-                placeholder="Type to filter…"
+                aria-label={i18nT('components.modelEffortDropdown.filter_models')}
+                placeholder={i18nT('components.modelEffortDropdown.type_to_filter')}
                 value={filter}
                 onChange={e => setFilter(e.target.value)}
                 className="w-full px-2 py-1 text-[13px] font-mono"
               />
             </div>
-            <div role="listbox" aria-label="Model list" className="overflow-y-auto max-h-[280px]">
+            <div role="listbox" aria-label={i18nT('components.modelEffortDropdown.model_list')} className="overflow-y-auto max-h-[280px]">
               <ModelDropdownList models={models} activeModel={activeModel} onSelect={onSelectModel} />
             </div>
             {hasEffort && slot && (
@@ -85,7 +86,7 @@ export default function ModelEffortDropdown({
                 onClick={() => setShowEffort(true)}
                 className="shrink-0 mt-0.5 border-t border-border rounded-b-lg flex items-center justify-between gap-2 px-3 py-2.5 text-[13px] cursor-pointer bg-transparent border-x-0 border-b-0 hover:bg-bg-hover transition-colors"
               >
-                <span className="text-muted">Reasoning</span>
+                <span className="text-muted">{i18nT('components.modelEffortDropdown.reasoning')}</span>
                 <span className="flex items-center gap-1 text-text font-medium">
                   {effortLabel(currentEffort)}
                   <ChevronRight size={14} className="text-muted" />
@@ -98,7 +99,7 @@ export default function ModelEffortDropdown({
                 onClick={onSetDefault}
                 className="shrink-0 border-t border-border rounded-b-lg flex items-center justify-between gap-2 px-3 py-2 text-[12px] cursor-pointer bg-transparent border-x-0 border-b-0 text-muted hover:text-text hover:bg-bg-hover transition-colors"
               >
-                <span>Set default for new sessions…</span>
+                <span>{i18nT('components.modelEffortDropdown.set_default_for_new_sessions')}</span>
                 <Settings2 size={13} />
               </button>
             )}
@@ -112,7 +113,7 @@ export default function ModelEffortDropdown({
               className="shrink-0 flex items-center gap-1 px-2 py-1.5 text-[12px] text-muted hover:text-text border-b border-border bg-transparent border-x-0 border-t-0 cursor-pointer self-stretch"
             >
               <ChevronLeft size={14} />
-              Models
+              {i18nT('components.modelEffortDropdown.models')}
             </button>
             {slot && (
               <ReasoningEffortDropdown slot={slot} currentEffort={currentEffort} onClose={onClose} embedded />

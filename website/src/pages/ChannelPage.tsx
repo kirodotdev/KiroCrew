@@ -13,6 +13,7 @@ import { useImeGuard } from '../hooks/useImeGuard'
 import { AnimatePresence } from 'framer-motion'
 import DetailPanel from '../components/DetailPanel'
 
+import { i18nT } from '../i18n/t'
 // ── Types ──
 
 interface ChannelAgent {
@@ -139,12 +140,12 @@ function MessageBubble({ msg, agents, onReply, onOpenThread, onApprove }: {
         <div className="flex items-center gap-2 mt-1">
           {msg.replyCount > 0 && (
             <Btn onClick={onOpenThread!} className="!p-0 !border-none !rounded-none text-[13px] text-accent hover:underline">
-              <MessageSquare className="lucide-inline" /> {msg.replyCount} repl{msg.replyCount === 1 ? 'y' : 'ies'}
+              <MessageSquare className="lucide-inline" /> {msg.replyCount} {i18nT('pages.channelPage.repl')}{msg.replyCount === 1 ? 'y' : 'ies'}
             </Btn>
           )}
           {onReply && (
             <Btn onClick={onReply} className="!p-0 !border-none !rounded-none text-[13px] text-muted hover:text-text opacity-0 group-hover:opacity-100 transition-opacity">
-              <MessageSquare className="lucide-inline" /> Reply
+              <MessageSquare className="lucide-inline" /> {i18nT('pages.channelPage.reply')}
             </Btn>
           )}
         </div>
@@ -191,8 +192,8 @@ function AgentControlRow({ agent, onDismiss, onListenChange, onClearContext }: {
           </div>}
         </div>
       </div>
-      {alive && <Btn onClick={onClearContext} aria-label="Clear context" title="Clear context"><RotateCcw className="lucide-inline" /></Btn>}
-      {alive && <Btn onClick={onDismiss} aria-label="Dismiss" danger title="Dismiss"><X className="lucide-inline" /></Btn>}
+      {alive && <Btn onClick={onClearContext} aria-label={i18nT('pages.channelPage.clear_context')} title={i18nT('pages.channelPage.clear_context')}><RotateCcw className="lucide-inline" /></Btn>}
+      {alive && <Btn onClick={onDismiss} aria-label={i18nT('pages.channelPage.dismiss')} danger title={i18nT('pages.channelPage.dismiss')}><X className="lucide-inline" /></Btn>}
     </div>
   )
 }
@@ -229,13 +230,13 @@ function NewChannelDialog({ onClose, onCreate, presets }: { onClose: () => void;
           custom <Input> as a nested control; htmlFor+id (and aria-label) already
           give a real programmatic association. */}
       {/* eslint-disable jsx-a11y/no-noninteractive-element-interactions, jsx-a11y/label-has-for */}
-      <div role="dialog" aria-modal="true" aria-label="New channel" className="bg-bg-elevated border border-border rounded-xl p-5 w-96 shadow-xl" onClick={e => e.stopPropagation()} onKeyDown={e => e.stopPropagation()}>
-        <h3 className="text-base font-semibold text-text-strong mb-4">New Channel</h3>
-        <label htmlFor="new-channel-topic" className="block text-[13px] font-medium text-muted mb-1">Topic</label>
-        <Input id="new-channel-topic" aria-label="Topic" value={topic} onChange={e => setTopic(e.target.value)} autoFocus
+      <div role="dialog" aria-modal="true" aria-label={i18nT('pages.channelPage.new_channel')} className="bg-bg-elevated border border-border rounded-xl p-5 w-96 shadow-xl" onClick={e => e.stopPropagation()} onKeyDown={e => e.stopPropagation()}>
+        <h3 className="text-base font-semibold text-text-strong mb-4">{i18nT('pages.channelPage.new_channel_2')}</h3>
+        <label htmlFor="new-channel-topic" className="block text-[13px] font-medium text-muted mb-1">{i18nT('pages.channelPage.topic')}</label>
+        <Input id="new-channel-topic" aria-label={i18nT('pages.channelPage.topic')} value={topic} onChange={e => setTopic(e.target.value)} autoFocus
           className="w-full mb-4"
-          placeholder="e.g. Investigate Gamma deployment failure" />
-        <span id="new-channel-preset-label" className="block text-[13px] font-medium text-muted mb-1">Team Preset</span>
+          placeholder={i18nT('pages.channelPage.e_g_investigate_gamma_deployment_failure')} />
+        <span id="new-channel-preset-label" className="block text-[13px] font-medium text-muted mb-1">{i18nT('pages.channelPage.team_preset')}</span>
         <div role="radiogroup" aria-labelledby="new-channel-preset-label" className="space-y-1.5 mb-4">
           {presets.map(p => (
             <Btn key={p.id} onClick={() => setPreset(p.id)}
@@ -246,8 +247,8 @@ function NewChannelDialog({ onClose, onCreate, presets }: { onClose: () => void;
           ))}
         </div>
         <div className="flex justify-end gap-2">
-          <Btn onClick={onClose}>Cancel</Btn>
-          <Btn onClick={handleCreate} disabled={!topic.trim()} primary>Create</Btn>
+          <Btn onClick={onClose}>{i18nT('pages.channelPage.cancel')}</Btn>
+          <Btn onClick={handleCreate} disabled={!topic.trim()} primary>{i18nT('pages.channelPage.create')}</Btn>
         </div>
       </div>
       {/* eslint-enable jsx-a11y/no-noninteractive-element-interactions, jsx-a11y/label-has-for */}
@@ -293,7 +294,7 @@ function MentionInput({ agents, value, onChange, onSend }: {
   return (
     <div className="relative flex-1">
       {show && active.length > 0 && (
-        <div role="listbox" aria-label="Mention suggestions" className="absolute bottom-full left-0 mb-1 w-60 bg-bg-elevated border border-border rounded-lg shadow-lg z-10 py-1">
+        <div role="listbox" aria-label={i18nT('pages.channelPage.mention_suggestions')} className="absolute bottom-full left-0 mb-1 w-60 bg-bg-elevated border border-border rounded-lg shadow-lg z-10 py-1">
           {active.map((a, i) => (
             <Btn key={a.id} onClick={() => pick(a)}
               className={`w-full text-left px-3 py-1.5 text-sm !border-none flex items-center gap-2 ${i === sel ? '!bg-accent !text-accent-fg' : 'hover:bg-bg-hover'}`}>
@@ -304,9 +305,9 @@ function MentionInput({ agents, value, onChange, onSend }: {
       )}
       <textarea ref={ref} value={value} onChange={handleChange}
         rows={1}
-        aria-label="Message the channel"
+        aria-label={i18nT('pages.channelPage.message_the_channel')}
         className="w-full bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm font-body outline-none flex-1 transition-colors focus-ring resize-none"
-        placeholder="Message the channel... (type @ to mention)"
+        placeholder={i18nT('pages.channelPage.message_the_channel_type_to_mention')}
         {...ime.composition}
         onKeyDown={e => {
           if (show && active.length > 0) {
@@ -330,17 +331,17 @@ function AddAgentForm({ onAdd, onCancel }: { onAdd: (role: string, task: string,
   return (
     <div className="p-2 space-y-2 border-t border-border">
       <div>
-        <span className="text-[11px] text-muted font-medium mb-1 block">Agent</span>
+        <span className="text-[11px] text-muted font-medium mb-1 block">{i18nT('pages.channelPage.agent')}</span>
         <AgentSelector agents={agents} defaultAgent={defaultAgent} value={agent || defaultAgent} onChange={setAgent} />
       </div>
-      <Input value={role} onChange={e => setRole(e.target.value)} placeholder="Role (e.g. Logs Agent)" aria-label="Role" autoFocus
+      <Input value={role} onChange={e => setRole(e.target.value)} placeholder={i18nT('pages.channelPage.role_e_g_logs_agent')} aria-label={i18nT('pages.channelPage.role')} autoFocus
         className="w-full text-[13px]" />
-      <Input value={task} onChange={e => setTask(e.target.value)} placeholder="Task (e.g. Search CloudWatch logs)" aria-label="Task"
+      <Input value={task} onChange={e => setTask(e.target.value)} placeholder={i18nT('pages.channelPage.task_e_g_search_cloudwatch_logs')} aria-label={i18nT('pages.channelPage.task')}
         className="w-full text-[13px]"
         onKeyDown={e => { if (e.key === 'Enter' && role.trim()) onAdd(role.trim(), task.trim(), agent || defaultAgent) }} />
       <div className="flex gap-1">
-        <Btn onClick={() => { if (role.trim()) onAdd(role.trim(), task.trim(), agent || defaultAgent) }} disabled={!role.trim()} primary className="flex-1">Add</Btn>
-        <Btn onClick={onCancel}>Cancel</Btn>
+        <Btn onClick={() => { if (role.trim()) onAdd(role.trim(), task.trim(), agent || defaultAgent) }} disabled={!role.trim()} primary className="flex-1">{i18nT('pages.channelPage.add')}</Btn>
+        <Btn onClick={onCancel}>{i18nT('pages.channelPage.cancel')}</Btn>
       </div>
     </div>
   )
@@ -354,8 +355,8 @@ function ChannelListItem({ ch, active, onClick }: { ch: Channel; active: boolean
     <Btn onClick={onClick} className={`w-full text-left px-3 py-2.5 !rounded-lg !border-none ${active ? 'bg-accent/15 text-text-strong' : 'text-muted hover:bg-bg-hover hover:text-text'}`}>
       <div className="text-sm font-medium truncate">{ch.topic}</div>
       <div className="flex items-center gap-2 mt-1 text-[13px] text-muted">
-        <span>{ch.agents.length} agent{ch.agents.length !== 1 ? 's' : ''}</span>
-        {working > 0 && <Badge variant="ok"><span className="inline-block w-2.5 h-2.5 rounded-full bg-[var(--ok)]" /> {working} active</Badge>}
+        <span>{ch.agents.length} {i18nT('pages.channelPage.agent_2')}{ch.agents.length !== 1 ? 's' : ''}</span>
+        {working > 0 && <Badge variant="ok"><span className="inline-block w-2.5 h-2.5 rounded-full bg-[var(--ok)]" /> {working} {i18nT('pages.channelPage.active')}</Badge>}
       </div>
     </Btn>
   )
@@ -468,7 +469,7 @@ export default function ChannelPage() {
     try { await api.channelUpdateAgent(channel.id, agentId, { listen: mode }) } catch { /* optimistic */ }
   }
 
-  if (loading) return <div className="flex items-center justify-center h-full text-muted">Loading channels...</div>
+  if (loading) return <div className="flex items-center justify-center h-full text-muted">{i18nT('pages.channelPage.loading_channels')}</div>
 
   const handleCreateChannel = async (topic: string, presetId: string) => {
     setShowNew(false)
@@ -490,7 +491,7 @@ export default function ChannelPage() {
 
   return (
     <>
-      <PageHeader title="Channels" subtitle="Multi-agent collaboration spaces" />
+      <PageHeader title={i18nT('pages.channelPage.channels')} subtitle={i18nT('pages.channelPage.multi_agent_collaboration_spaces')} />
       <div className="px-6 pb-8 overflow-y-auto flex-1 min-h-0">
     <div className="flex h-full relative">
       {showNew && <NewChannelDialog onClose={() => setShowNew(false)} presets={presets} onCreate={handleCreateChannel} />}
@@ -500,9 +501,9 @@ export default function ChannelPage() {
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[100]">
           <div className="bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl p-5 w-80 shadow-xl text-center">
             <div className="text-3xl mb-2"><AlertTriangle className="lucide-inline" /></div>
-            <div className="text-sm font-semibold text-[var(--text-strong)] mb-2">Limit Reached</div>
+            <div className="text-sm font-semibold text-[var(--text-strong)] mb-2">{i18nT('pages.channelPage.limit_reached')}</div>
             <div className="text-sm text-[var(--text)] mb-4">{error}</div>
-            <Btn onClick={() => setError(null)} primary>OK</Btn>
+            <Btn onClick={() => setError(null)} primary>{i18nT('pages.channelPage.ok')}</Btn>
           </div>
         </div>
       )}
@@ -510,11 +511,11 @@ export default function ChannelPage() {
       {/* Channel list sidebar */}
       <div className="w-64 shrink-0 border-r border-border flex flex-col">
         <div className="px-3 py-3 border-b border-border flex items-center justify-between">
-          <span className="text-sm font-semibold text-text-strong">Channels</span>
-          <Btn onClick={() => setShowNew(true)} primary title="New Channel">+ New</Btn>
+          <span className="text-sm font-semibold text-text-strong">{i18nT('pages.channelPage.channels')}</span>
+          <Btn onClick={() => setShowNew(true)} primary title={i18nT('pages.channelPage.new_channel_2')}>{i18nT('pages.channelPage.new')}</Btn>
         </div>
         <div className="flex-1 overflow-y-auto p-2 space-y-1">
-          {channels.length === 0 && <EmptyState icon={<MessageSquare className="lucide-inline" />} title="No channels yet" subtitle="Click + New to create one." />}
+          {channels.length === 0 && <EmptyState icon={<MessageSquare className="lucide-inline" />} title={i18nT('pages.channelPage.no_channels_yet')} subtitle={i18nT('pages.channelPage.click_new_to_create_one')} />}
           {channels.map(ch => (
             <ChannelListItem key={ch.id} ch={ch} active={ch.id === activeId} onClick={() => setActiveId(ch.id)} />
           ))}
@@ -528,26 +529,26 @@ export default function ChannelPage() {
             <h2 className="text-base font-semibold text-text-strong truncate">{channel.topic}</h2>
             <div className="flex items-center gap-1.5 shrink-0">
               <Btn onClick={() => setShowAgents(!showAgents)}>
-                <Users className="lucide-inline" /> {channel.agents.length} agent{channel.agents.length !== 1 ? 's' : ''}
+                <Users className="lucide-inline" /> {channel.agents.length} {i18nT('pages.channelPage.agent_2')}{channel.agents.length !== 1 ? 's' : ''}
                 {channel.agents.some(a => a.state === 'working' || a.state === 'tool_running') && <Badge variant="ok">●</Badge>}
               </Btn>
               <Btn onClick={async () => {
-                if (!confirm('This will reset conversation history for all agents. Configs are preserved.')) return
+                if (!confirm(i18nT('pages.channelPage.this_will_reset_conversation_history_for_all_age'))) return
                 try {
                   await api.channelClearContext(channel.id, 'all')
                   const res = await api.channelGet(channel.id)
                   setChannels(prev => prev.map(c => c.id === channel.id ? mapChannel(res) : c))
                 } catch (e) { alert('Failed to clear context: ' + (e instanceof Error ? e.message : 'unknown error')) }
-              }} title="Clear all context">
-                <RotateCcw className="lucide-inline" /> Clear Context
+              }} title={i18nT('pages.channelPage.clear_all_context')}>
+                <RotateCcw className="lucide-inline" /> {i18nT('pages.channelPage.clear_context_2')}
               </Btn>
               <Btn onClick={async () => {
-                if (!confirm('Close this channel? All agents will be dismissed.')) return
+                if (!confirm(i18nT('pages.channelPage.close_this_channel_all_agents_will_be_dismissed'))) return
                 try { await api.channelClose(channel.id) } catch { /* WS handles removal */ }
                 setChannels(prev => prev.filter(c => c.id !== channel.id))
                 setActiveId(null)
-              }} danger title="Close channel">
-                <X className="lucide-inline" /> Close
+              }} danger title={i18nT('pages.channelPage.close_channel')}>
+                <X className="lucide-inline" /> {i18nT('pages.channelPage.close')}
               </Btn>
             </div>
           </div>
@@ -555,7 +556,7 @@ export default function ChannelPage() {
           <div className="flex flex-1 min-h-0">
             <div className="flex-1 overflow-y-auto px-2 py-3 space-y-1">
               {topLevelMessages.length === 0 && (
-                <EmptyState icon={<Zap className="lucide-inline" />} title="Setting up channel…" subtitle={`${channel.agents.length} agent${channel.agents.length !== 1 ? 's' : ''} joining`} />
+                <EmptyState icon={<Zap className="lucide-inline" />} title={i18nT('pages.channelPage.setting_up_channel')} subtitle={`${channel.agents.length} agent${channel.agents.length !== 1 ? 's' : ''} joining`} />
               )}
               {topLevelMessages.map(msg => (
                 <MessageBubble key={msg.id} msg={msg} agents={channel.agents}
@@ -577,7 +578,7 @@ export default function ChannelPage() {
               const parent = channel.messages.find(m => m.id === threadId)
               const replies = channel.messages.filter(m => m.threadId === threadId)
               return (
-                <DetailPanel key="thread-panel" title="Thread" onClose={() => { setThreadId(null); setThreadInput('') }} initialWidth={320} minWidth={260} storageKey="mc-channel-thread-width" footer={
+                <DetailPanel key="thread-panel" title={i18nT('pages.channelPage.thread')} onClose={() => { setThreadId(null); setThreadInput('') }} initialWidth={320} minWidth={260} storageKey="mc-channel-thread-width" footer={
                   <MentionInput agents={channel.agents} value={threadInput} onChange={setThreadInput} onSend={async () => {
                     if (!threadInput.trim() || !threadId) return
                     await sendMessage(threadInput, threadId)
@@ -606,8 +607,8 @@ export default function ChannelPage() {
             {showAgents && (
               <div className="w-64 shrink-0 border-l border-border flex flex-col bg-bg-elevated">
                 <div className="px-3 py-2.5 border-b border-border flex items-center justify-between">
-                  <span className="text-sm font-semibold text-text-strong">Agents</span>
-                  <Btn onClick={() => setShowAgents(false)} aria-label="Close agents panel" className="!p-0 !border-none !rounded-none text-muted hover:text-text text-sm"><X className="lucide-inline" /></Btn>
+                  <span className="text-sm font-semibold text-text-strong">{i18nT('pages.channelPage.agents')}</span>
+                  <Btn onClick={() => setShowAgents(false)} aria-label={i18nT('pages.channelPage.close_agents_panel')} className="!p-0 !border-none !rounded-none text-muted hover:text-text text-sm"><X className="lucide-inline" /></Btn>
                 </div>
                 <div className="flex-1 overflow-y-auto p-2 space-y-1">
                   {channel.agents.map((agent) => (
@@ -632,7 +633,7 @@ export default function ChannelPage() {
                       try { await api.channelAddAgent(channel.id, { role, task: task || channel.topic, agent }) } catch (err) { setError(apiError(err, 'Failed to add agent')) }
                     }} />
                   ) : (
-                    <Btn onClick={() => setShowAddAgent(true)} primary className="w-full">+ Add Agent</Btn>
+                    <Btn onClick={() => setShowAddAgent(true)} primary className="w-full">{i18nT('pages.channelPage.add_agent')}</Btn>
                   )}
                 </div>
               </div>
@@ -642,13 +643,13 @@ export default function ChannelPage() {
           <div className="border-t border-border px-4 py-3">
             <div className="flex gap-2">
               <MentionInput agents={channel.agents} value={input} onChange={setInput} onSend={handleSend} />
-              <Btn onClick={handleSend} primary>Send</Btn>
+              <Btn onClick={handleSend} primary>{i18nT('pages.channelPage.send')}</Btn>
             </div>
           </div>
         </div>
       ) : (
         <div className="flex-1 flex items-center justify-center">
-          <EmptyState icon={<Users className="lucide-inline" />} title="Create a channel to get started" />
+          <EmptyState icon={<Users className="lucide-inline" />} title={i18nT('pages.channelPage.create_a_channel_to_get_started')} />
         </div>
       )}
     </div>

@@ -3,6 +3,7 @@ import { FileDiff, ChevronDown, ChevronUp } from 'lucide-react'
 import type { FileChipStyle } from '../pages/chat/ChatSettings'
 import { colorForExt, fileIcon } from '../utils/fileIcons'
 
+import { i18nT } from '../i18n/t'
 export interface FileChangeEntry {
   path: string
   before: string
@@ -105,9 +106,9 @@ function ExpandedRow({ fc, added, removed, isArtifact, onClick }: { fc: FileChan
       {isArtifact && (
         <span
           className="shrink-0 text-[10px] leading-none px-1.5 py-0.5 rounded-full border border-border text-muted font-medium"
-          title="This document is tracked as a session artifact, not a source-file change"
+          title={i18nT('components.fileChangeChips.this_document_is_tracked_as_a_session_artifact_n')}
         >
-          Artifact
+          {i18nT('components.fileChangeChips.artifact')}
         </span>
       )}
       <span className="flex-1 min-w-0" />
@@ -147,7 +148,7 @@ function ExpandedList({ fileChanges, onOpenDiff, artifactPaths }: {
     <div className="ft-block-reveal mt-2 mb-1.5 w-full max-w-full rounded-xl border border-border bg-bg overflow-hidden">
       <div className="flex items-center gap-2.5 px-3.5 py-2 border-b border-border">
         <FileDiff size={14} className="text-muted shrink-0" />
-        <span className="text-[12px] font-medium text-muted">{n} file{n === 1 ? '' : 's'} changed</span>
+        <span className="text-[12px] font-medium text-muted">{n} {i18nT('components.fileChangeChips.file')}{n === 1 ? '' : 's'} {i18nT('components.fileChangeChips.changed')}</span>
         {n > 1 && (
           <span className="ml-auto flex items-center gap-1.5 text-[11px] tabular-nums">
             <Stats added={totalAdded} removed={totalRemoved} />
@@ -165,8 +166,8 @@ function ExpandedList({ fileChanges, onOpenDiff, artifactPaths }: {
             aria-expanded={expanded}
           >
             {expanded
-              ? <><ChevronUp size={13} className="shrink-0" /> Show less</>
-              : <><ChevronDown size={13} className="shrink-0" /> Show {hiddenCount} more</>}
+              ? <><ChevronUp size={13} className="shrink-0" /> {i18nT('components.fileChangeChips.show_less')}</>
+              : <><ChevronDown size={13} className="shrink-0" /> {i18nT('components.fileChangeChips.show')} {hiddenCount} {i18nT('components.fileChangeChips.more')}</>}
           </button>
         )}
       </div>

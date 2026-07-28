@@ -12,6 +12,7 @@ import { SourceGroup, NO_SOURCE } from './SourceGroup'
 import { EmbeddingStatus } from './EmbeddingStatus'
 import type { KnowledgeItem, Entity, Source, NamespaceInfo, IngestionJob } from './types'
 
+import { i18nT } from '../../i18n/t'
 const KnowledgeGraph = lazy(() => import('./KnowledgeGraph'))
 
 const TABS = ['list', 'graph', 'sources'] as const
@@ -50,7 +51,7 @@ function EntityAutocomplete({ query, onSelect }: { query: string; onSelect: (nam
           className="w-full px-3 py-2 text-left text-[13px] hover:bg-bg-hover flex items-center gap-2 bg-transparent border-none cursor-pointer">
           <span className="text-accent text-[11px]">{e.entity_type}</span>
           <span className="text-text">{e.name}</span>
-          {e.mention_count && <span className="text-muted text-[10px] ml-auto">{e.mention_count} mentions</span>}
+          {e.mention_count && <span className="text-muted text-[10px] ml-auto">{e.mention_count} {i18nT('pages.knowledge.index.mentions')}</span>}
         </button>
       ))}
     </div>
@@ -127,11 +128,11 @@ function BulkActions({ selectedIds, items, onDone }: { selectedIds: Set<string>;
 
   return (
     <div className="flex items-center gap-2 px-3 py-2 bg-accent/5 border border-accent/20 rounded-lg mb-3">
-      <span className="text-[13px] text-text-strong font-medium">{selectedIds.size} selected</span>
-      <Btn disabled={pending} onClick={() => bulkArchiveMutation.mutate('archived')}>Archive</Btn>
-      <Btn disabled={pending} onClick={() => { if (confirm(`Delete ${selectedIds.size} items permanently?`)) bulkDeleteMutation.mutate() }}>Delete</Btn>
+      <span className="text-[13px] text-text-strong font-medium">{selectedIds.size} {i18nT('pages.knowledge.index.selected')}</span>
+      <Btn disabled={pending} onClick={() => bulkArchiveMutation.mutate('archived')}>{i18nT('pages.knowledge.index.archive')}</Btn>
+      <Btn disabled={pending} onClick={() => { if (confirm(`Delete ${selectedIds.size} items permanently?`)) bulkDeleteMutation.mutate() }}>{i18nT('pages.knowledge.index.delete')}</Btn>
       <Btn onClick={copySelected}><Copy size={12} /> {copied ? 'Copied!' : 'Copy Content'}</Btn>
-      <button onClick={onDone} className="ml-auto text-[12px] text-muted hover:text-text bg-transparent border-none cursor-pointer">Clear</button>
+      <button onClick={onDone} className="ml-auto text-[12px] text-muted hover:text-text bg-transparent border-none cursor-pointer">{i18nT('pages.knowledge.index.clear')}</button>
     </div>
   )
 }
@@ -408,12 +409,12 @@ export default function KnowledgePage() {
       <div className="flex items-start sm:items-end justify-between gap-3 sm:gap-4 px-4 sm:px-6 pt-4 pb-3">
         <div className="min-w-0">
           <div className="text-xl sm:text-2xl font-bold tracking-tight text-text-strong flex items-center gap-2">
-            <BookOpen size={22} className="shrink-0" /> Knowledge Library
+            <BookOpen size={22} className="shrink-0" /> {i18nT('pages.knowledge.index.knowledge_library')}
           </div>
-          <div className="text-muted text-[13px] sm:text-sm mt-1">Search, explore, and manage your knowledge base</div>
+          <div className="text-muted text-[13px] sm:text-sm mt-1">{i18nT('pages.knowledge.index.search_explore_and_manage_your_knowledge_base')}</div>
         </div>
         <div className="shrink-0">
-          <Btn onClick={() => setShowHelp(true)}><HelpCircle size={14} /> Help</Btn>
+          <Btn onClick={() => setShowHelp(true)}><HelpCircle size={14} /> {i18nT('pages.knowledge.index.help')}</Btn>
         </div>
       </div>
 
@@ -422,19 +423,20 @@ export default function KnowledgePage() {
           <div role="dialog" aria-modal="true" aria-labelledby="help-title" className="bg-bg-elevated border border-border rounded-xl p-6 max-w-md w-full mx-4 animate-rise">
             <div className="flex items-center justify-between mb-3">
               <h3 id="help-title" className="text-lg font-bold text-text-strong">{ONBOARDING.title}</h3>
-              <button aria-label="Close" onClick={() => setShowHelp(false)} className="text-muted hover:text-text bg-transparent border-none cursor-pointer"><X size={18} /></button>
+              <button aria-label={i18nT('pages.knowledge.index.close')} onClick={() => setShowHelp(false)} className="text-muted hover:text-text bg-transparent border-none cursor-pointer"><X size={18} /></button>
             </div>
             <p className="text-sm text-muted mb-3">{ONBOARDING.description}</p>
             <ol className="space-y-2">
               {ONBOARDING.steps.map((s, i) => <li key={i} className="text-[13px] text-text flex gap-2"><span className="text-accent font-bold">{i + 1}.</span>{s}</li>)}
             </ol>
             <div className="mt-4 pt-3 border-t border-border">
-              <div className="text-[12px] font-medium text-text-strong mb-1">Keyboard Shortcuts</div>
+              <div className="text-[12px] font-medium text-text-strong mb-1">{i18nT('pages.knowledge.index.keyboard_shortcuts')}</div>
               <div className="grid grid-cols-2 gap-1 text-[11px] text-muted">
-                <span><kbd className="px-1 bg-bg-elevated border border-border rounded">/</kbd> Focus search</span>
-                <span><kbd className="px-1 bg-bg-elevated border border-border rounded">Esc</kbd> Back / Clear</span>
-                <span><kbd className="px-1 bg-bg-elevated border border-border rounded">&larr;</kbd> <kbd className="px-1 bg-bg-elevated border border-border rounded">&rarr;</kbd> Prev/Next page</span>
-                <span><kbd className="px-1 bg-bg-elevated border border-border rounded">Ctrl+A</kbd> Select all</span>
+                <span><kbd className="px-1 bg-bg-elevated border border-border rounded">/</kbd> {i18nT('pages.knowledge.index.focus_search')}</span>
+                <span><kbd className="px-1 bg-bg-elevated border border-border rounded">{i18nT('pages.knowledge.index.esc')}</kbd> {i18nT('pages.knowledge.index.back_clear')}</span>
+                {/* Arrow glyphs are keycap symbols, not prose — no translation. */}
+                <span><kbd className="px-1 bg-bg-elevated border border-border rounded">←</kbd> <kbd className="px-1 bg-bg-elevated border border-border rounded">→</kbd> {i18nT('pages.knowledge.index.prev_next_page')}</span>
+                <span><kbd className="px-1 bg-bg-elevated border border-border rounded">{i18nT('pages.knowledge.index.ctrl_a')}</kbd> {i18nT('pages.knowledge.index.select_all')}</span>
               </div>
             </div>
           </div>
@@ -459,14 +461,14 @@ export default function KnowledgePage() {
             <BookOpen size={48} className="text-muted/20 mb-4" />
             <h3 className="text-lg font-bold text-text-strong mb-1">{ONBOARDING.title}</h3>
             <p className="text-sm text-muted mb-4 text-center max-w-md">{ONBOARDING.description}</p>
-            <button onClick={() => setTab('sources')} className="px-4 py-2 bg-accent text-accent-fg rounded-md text-sm hover:bg-accent/80 cursor-pointer">Go to Sources to upload files</button>
+            <button onClick={() => setTab('sources')} className="px-4 py-2 bg-accent text-accent-fg rounded-md text-sm hover:bg-accent/80 cursor-pointer">{i18nT('pages.knowledge.index.go_to_sources_to_upload_files')}</button>
           </div>
         ) : tab === 'list' ? (
           selectedId ? <DetailView itemId={selectedId} onBack={() => setSelectedId(null)} onEntityClick={handleEntitySelect} /> : (
             <>
               <div className="flex gap-2 mb-3 flex-wrap relative" ref={searchRef}>
                 <div className="relative flex-1 min-w-[200px]">
-                  <SearchInput placeholder="Search knowledge... (press Enter to search)" value={searchInput}
+                  <SearchInput placeholder={i18nT('pages.knowledge.index.search_knowledge_press_enter_to_search')} value={searchInput}
                     onChange={e => { setSearchInput((e.target as HTMLInputElement).value); setShowAutocomplete(true) }}
                     onKeyDown={e => { if ((e as React.KeyboardEvent).key === 'Enter') { setQuery(searchInput); setPage(1) } }}
                     onFocus={() => setShowAutocomplete(true)}
@@ -476,19 +478,19 @@ export default function KnowledgePage() {
                     <EntityAutocomplete query={searchInput} onSelect={handleEntitySelect} />
                   )}
                 </div>
-                <select value={typeFilter} aria-label="Filter by type" onChange={e => { setTypeFilter(e.target.value); setPage(1) }}
+                <select value={typeFilter} aria-label={i18nT('pages.knowledge.index.filter_by_type')} onChange={e => { setTypeFilter(e.target.value); setPage(1) }}
                   className="bg-bg-elevated border border-border rounded-md px-2 py-1.5 text-[13px] text-text outline-none">
-                  <option value="">All types</option>
+                  <option value="">{i18nT('pages.knowledge.index.all_types')}</option>
                   {ITEM_TYPES.map(t => <option key={t} value={t}>{t.replace(/_/g, ' ')}</option>)}
                 </select>
-                <select value={statusFilter} aria-label="Filter by status" onChange={e => { setStatusFilter(e.target.value); setPage(1) }}
+                <select value={statusFilter} aria-label={i18nT('pages.knowledge.index.filter_by_status')} onChange={e => { setStatusFilter(e.target.value); setPage(1) }}
                   className="bg-bg-elevated border border-border rounded-md px-2 py-1.5 text-[13px] text-text outline-none">
-                  <option value="">All statuses</option>
+                  <option value="">{i18nT('pages.knowledge.index.all_statuses')}</option>
                   {STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
                 </select>
-                <select value={namespaceFilter} aria-label="Filter by namespace" onChange={e => { setNamespaceFilter(e.target.value); setPage(1) }}
+                <select value={namespaceFilter} aria-label={i18nT('pages.knowledge.index.filter_by_namespace')} onChange={e => { setNamespaceFilter(e.target.value); setPage(1) }}
                   className="bg-bg-elevated border border-border rounded-md px-2 py-1.5 text-[13px] text-text outline-none">
-                  <option value="">All namespaces</option>
+                  <option value="">{i18nT('pages.knowledge.index.all_namespaces')}</option>
                   {namespaces.map(ns => <option key={ns.name} value={ns.name}>{ns.name} ({ns.count})</option>)}
                 </select>
               </div>
@@ -499,7 +501,7 @@ export default function KnowledgePage() {
 
               {loading ? <ContentSkeleton /> : sourceRows ? (
                 !sourceRows.length ? (
-                  <EmptyState icon={<Search size={40} />} title="No items match your filters" subtitle="Try a different type, status, or namespace" />
+                  <EmptyState icon={<Search size={40} />} title={i18nT('pages.knowledge.index.no_items_match_your_filters')} subtitle={i18nT('pages.knowledge.index.try_a_different_type_status_or_namespace')} />
                 ) : (
                   <div className="space-y-2 mt-3">
                     {sourceRows.map(row => (
@@ -528,7 +530,7 @@ export default function KnowledgePage() {
                   </div>
                 )
               ) : !items.length ? (
-                <EmptyState icon={<Search size={40} />} title="No items match your search" subtitle="Try different keywords or filters" />
+                <EmptyState icon={<Search size={40} />} title={i18nT('pages.knowledge.index.no_items_match_your_search')} subtitle={i18nT('pages.knowledge.index.try_different_keywords_or_filters')} />
               ) : (
                 <div className="space-y-2 mt-3">
                   {items.map(item => (
@@ -550,10 +552,10 @@ export default function KnowledgePage() {
                   source-first mode each group owns its own pager. */}
               {!sourceFirst && totalPages > 1 && (
                 <div className="flex items-center justify-center gap-3 mt-4 py-3 border-t border-border">
-                  <Btn disabled={page <= 1} onClick={() => setPage(p => p - 1)}>&larr; Prev</Btn>
-                  <span className="text-[13px] text-text font-medium">Page {page} of {totalPages}</span>
-                  <span className="text-[11px] text-muted">({total} items)</span>
-                  <Btn disabled={page >= totalPages} onClick={() => setPage(p => p + 1)}>Next &rarr;</Btn>
+                  <Btn disabled={page <= 1} onClick={() => setPage(p => p - 1)}>{i18nT('pages.knowledge.index.prev')}</Btn>
+                  <span className="text-[13px] text-text font-medium">{i18nT('pages.knowledge.index.page')} {page} {i18nT('pages.knowledge.index.of')} {totalPages}</span>
+                  <span className="text-[11px] text-muted">({total} {i18nT('pages.knowledge.index.items')}</span>
+                  <Btn disabled={page >= totalPages} onClick={() => setPage(p => p + 1)}>{i18nT('pages.knowledge.index.next')}</Btn>
                 </div>
               )}
             </>
@@ -568,10 +570,10 @@ export default function KnowledgePage() {
             {selectedEntity && (
               <div ref={entitySectionRef} className="border border-accent/30 rounded-lg p-4 bg-accent/5">
                 <div className="flex items-center gap-2 mb-2">
-                  <span className="text-sm font-medium text-text-strong">Items mentioning: <Badge variant="aim">{selectedEntity}</Badge></span>
-                  <Btn aria-label="Clear entity selection" onClick={() => { setSelectedEntity(null) }}><X size={12} /></Btn>
+                  <span className="text-sm font-medium text-text-strong">{i18nT('pages.knowledge.index.items_mentioning')} <Badge variant="aim">{selectedEntity}</Badge></span>
+                  <Btn aria-label={i18nT('pages.knowledge.index.clear_entity_selection')} onClick={() => { setSelectedEntity(null) }}><X size={12} /></Btn>
                 </div>
-                {entityItems.length === 0 ? <span className="text-[13px] text-muted">No items found</span> : (
+                {entityItems.length === 0 ? <span className="text-[13px] text-muted">{i18nT('pages.knowledge.index.no_items_found')}</span> : (
                   <div className="flex flex-col gap-1">
                     {entityItems.map(it => (
                       <Clickable key={it.id} onClick={() => { setSelectedId(it.id); setTab('list') }}
@@ -590,18 +592,18 @@ export default function KnowledgePage() {
       {/* Stats bar */}
       {stats && (
         <div className="border-t border-border px-4 sm:px-6 py-2 flex gap-x-3 gap-y-0.5 sm:gap-4 flex-wrap text-[11px] sm:text-[12px] text-muted shrink-0">
-          <span className="whitespace-nowrap">{stats.items} items</span>
-          <span className="whitespace-nowrap">{stats.entities} entities</span>
-          <span className="whitespace-nowrap">{stats.relations} relations</span>
-          <span className="whitespace-nowrap">{stats.sources} sources</span>
+          <span className="whitespace-nowrap">{stats.items} {i18nT('pages.knowledge.index.items_2')}</span>
+          <span className="whitespace-nowrap">{stats.entities} {i18nT('pages.knowledge.index.entities')}</span>
+          <span className="whitespace-nowrap">{stats.relations} {i18nT('pages.knowledge.index.relations')}</span>
+          <span className="whitespace-nowrap">{stats.sources} {i18nT('pages.knowledge.index.sources')}</span>
           {stats.embeddings?.enabled ? (
             <span className={`whitespace-nowrap ${stats.embeddings.available ? 'text-ok' : 'text-warn'}`} title={stats.embeddings.available ? `${stats.embeddings.model} — ${stats.embeddings.embedded_items} embedded` : `Embedding model loading (${stats.embeddings.model})`}>
               ● {stats.embeddings.available ? `embeddings (${stats.embeddings.embedded_items})` : 'embeddings loading'}
             </span>
           ) : (
-            <span className="text-muted whitespace-nowrap" title="Embedding model is downloading in the background">○ embeddings initializing</span>
+            <span className="text-muted whitespace-nowrap" title={i18nT('pages.knowledge.index.embedding_model_is_downloading_in_the_background')}>{i18nT('pages.knowledge.index.embeddings_initializing')}</span>
           )}
-          {tab === 'list' && <span className="ml-auto text-[10px] hidden sm:inline">/ to search, Esc to back, &larr;&rarr; to page</span>}
+          {tab === 'list' && <span className="ml-auto text-[10px] hidden sm:inline">{i18nT('pages.knowledge.index.to_search_esc_to_back_to_page')}</span>}
         </div>
       )}
     </div>

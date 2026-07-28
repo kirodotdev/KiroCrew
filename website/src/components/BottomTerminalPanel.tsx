@@ -14,6 +14,7 @@ import {
   type TermTab,
 } from '../hooks/useBottomTerminal'
 
+import { i18nT } from '../i18n/t'
 /** Fraction of the viewport the panel may grow to via the resize grip. */
 const MAX_VH = 0.72
 
@@ -56,15 +57,15 @@ function TabChip({ tab, active, onSelect, onClose, onTransfer, canTransfer }: {
           disabled={!canTransfer}
           className={transferCls}
           title={canTransfer ? 'Move to side panel' : 'Open a chat page to move this terminal there'}
-          aria-label="Move to side panel"
+          aria-label={i18nT('components.bottomTerminalPanel.move_to_side_panel')}
         >
           <PanelRight size={12} />
         </button>
         <button
           onClick={(e) => { e.stopPropagation(); onClose() }}
           className={`shrink-0 -ml-0.5 flex items-center justify-center w-[18px] h-[18px] rounded-full transition-all bg-transparent border-none cursor-pointer text-muted hover:text-text hover:bg-bg-hover ${active ? 'opacity-70' : 'opacity-0 group-hover:opacity-70'}`}
-          title="Close terminal"
-          aria-label="Close terminal"
+          title={i18nT('components.bottomTerminalPanel.close_terminal')}
+          aria-label={i18nT('components.bottomTerminalPanel.close_terminal')}
         >
           <X size={12} />
         </button>
@@ -164,7 +165,7 @@ export default function BottomTerminalPanel() {
             style={{ touchAction: 'none' }}
             role="separator"
             aria-orientation="horizontal"
-            aria-label="Resize terminal panel"
+            aria-label={i18nT('components.bottomTerminalPanel.resize_terminal_panel')}
           >
             <div className={`absolute inset-x-0 top-0 h-[2px] transition-colors duration-200 ${dragging ? 'bg-accent' : 'bg-transparent group-hover/drag:bg-accent'}`} />
           </div>
@@ -207,15 +208,15 @@ export default function BottomTerminalPanel() {
               onClick={() => addTab()}
               disabled={atCap}
               title={atCap ? `Maximum ${MAX_TERMINALS} terminals` : 'New terminal'}
-              aria-label="New terminal"
+              aria-label={i18nT('components.bottomTerminalPanel.new_terminal')}
             >
               <Plus size={15} />
             </button>
             <button
               className="flex items-center justify-center w-7 h-7 rounded-md text-muted hover:text-text hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0 ml-auto"
               onClick={() => closeBottomTerminal()}
-              title="Hide terminal panel"
-              aria-label="Hide terminal panel"
+              title={i18nT('components.bottomTerminalPanel.hide_terminal_panel')}
+              aria-label={i18nT('components.bottomTerminalPanel.hide_terminal_panel')}
             >
               <ChevronDown size={16} />
             </button>

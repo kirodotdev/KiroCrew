@@ -1,6 +1,7 @@
 import { Loader2, Check, type LucideIcon } from 'lucide-react'
 import type { InvestigationRecord } from '../api'
 
+import { i18nT } from '../../../i18n/t'
 /** Presentation for the issue "Investigate" and PR "Review" header controls —
  * identical in every respect except their icon and labels, so the markup lives
  * here once. Reflects the item's saved record:
@@ -79,7 +80,7 @@ export default function AgentSessionButton({
 
       {error && (
         <span className="text-[10.5px] text-danger" title={error.message}>
-          couldn't start
+          {i18nT('apps.issueRadar.components.agentSessionButton.couldn_t_start')}
         </span>
       )}
     </span>

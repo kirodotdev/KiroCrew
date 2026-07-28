@@ -23,6 +23,7 @@ import { selectSlotMessages, selectSlotStreamState, selectComposerBusy, hydrateS
 import { api } from '../api/client'
 
 
+import { i18nT } from '../i18n/t'
 /**
  * ChatPane — one live chat session in the native session grid (Path B S3 + S3d).
  *
@@ -236,17 +237,17 @@ export default function ChatPane({
           <span className="flex-1" />
           {running && <span className="shrink-0 text-[10px] text-ok font-mono">{streamState}</span>}
           {onSplitRight && (
-            <button onClick={onSplitRight} title="Split right (⌘D)" aria-label="Split right" className="shrink-0 p-1 rounded text-muted hover:text-text hover:bg-bg-hover cursor-pointer bg-transparent border-none transition-colors">
+            <button onClick={onSplitRight} title={i18nT('components.chatPane.split_right_d')} aria-label={i18nT('components.chatPane.split_right')} className="shrink-0 p-1 rounded text-muted hover:text-text hover:bg-bg-hover cursor-pointer bg-transparent border-none transition-colors">
               <SplitGlyph />
             </button>
           )}
           {onSplitDown && (
-            <button onClick={onSplitDown} title="Split down" aria-label="Split down" className="shrink-0 p-1 rounded text-muted hover:text-text hover:bg-bg-hover cursor-pointer bg-transparent border-none transition-colors">
+            <button onClick={onSplitDown} title={i18nT('components.chatPane.split_down')} aria-label={i18nT('components.chatPane.split_down')} className="shrink-0 p-1 rounded text-muted hover:text-text hover:bg-bg-hover cursor-pointer bg-transparent border-none transition-colors">
               <SplitGlyph down />
             </button>
           )}
           {onRemove && (
-            <button onClick={onRemove} title="Close pane" aria-label="Close pane" className="shrink-0 rounded text-muted hover:text-danger hover:bg-danger/10 cursor-pointer p-1 transition-colors bg-transparent border-none">
+            <button onClick={onRemove} title={i18nT('components.chatPane.close_pane')} aria-label={i18nT('components.chatPane.close_pane')} className="shrink-0 rounded text-muted hover:text-danger hover:bg-danger/10 cursor-pointer p-1 transition-colors bg-transparent border-none">
               <X size={15} />
             </button>
           )}
@@ -255,7 +256,7 @@ export default function ChatPane({
         {/* stable theming hook 'chat-container' — see website/docs/theming-contract.md */}
         <div className="chat-container flex-1 overflow-y-auto py-3 min-h-0">
           {messages.length === 0 && !running && (
-            <div className="text-center text-muted text-[13px] py-8">Session ready. Type a message to start.</div>
+            <div className="text-center text-muted text-[13px] py-8">{i18nT('components.chatPane.session_ready_type_a_message_to_start')}</div>
           )}
           <ChatMessageList messages={messages} running={running} renderTool={renderTool} />
           <div ref={endRef} />
@@ -331,14 +332,14 @@ export default function ChatPane({
               <input
                 ref={agentDD.inputRef}
                 type="text"
-                placeholder="Type to filter…"
+                placeholder={i18nT('components.chatPane.type_to_filter')}
                 value={agentDD.filter}
                 onChange={(e) => agentDD.setFilter(e.target.value)}
                 onKeyDown={(e) => { if (e.key === 'Escape') agentDD.setOpen(false); if (e.key === 'Enter' && agentDD.filtered.length === 1) { switchAgent(agentDD.filtered[0].name); agentDD.setOpen(false) } }}
                 className={ddInputCls}
               />
             </div>
-            <div role="listbox" aria-label="Agent list" className="overflow-y-auto max-h-[280px]">
+            <div role="listbox" aria-label={i18nT('components.chatPane.agent_list')} className="overflow-y-auto max-h-[280px]">
               <AgentDropdownList agents={agentDD.filtered} activeAgent={paneSlot?.agent || 'default'} defaultAgent={defaultAgent} onSelect={(name) => { switchAgent(name); agentDD.setOpen(false) }} />
             </div>
           </div>,
@@ -358,14 +359,14 @@ export default function ChatPane({
               <input
                 ref={modelDD.inputRef}
                 type="text"
-                placeholder="Type to filter…"
+                placeholder={i18nT('components.chatPane.type_to_filter')}
                 value={modelDD.filter}
                 onChange={(e) => modelDD.setFilter(e.target.value)}
                 onKeyDown={(e) => { if (e.key === 'Escape') modelDD.setOpen(false); if (e.key === 'Enter' && modelDD.filtered.length === 1) { switchModel(modelDD.filtered[0].name); modelDD.setOpen(false) } }}
                 className={ddInputCls}
               />
             </div>
-            <div role="listbox" aria-label="Model list" className="overflow-y-auto max-h-[280px]">
+            <div role="listbox" aria-label={i18nT('components.chatPane.model_list')} className="overflow-y-auto max-h-[280px]">
               <ModelDropdownList models={modelDD.filtered} activeModel={paneSlot?.model || 'auto'} onSelect={(name) => { switchModel(name); modelDD.setOpen(false) }} />
             </div>
           </div>,

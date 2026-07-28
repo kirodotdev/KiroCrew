@@ -18,6 +18,7 @@ import { useSortableTable } from '../../hooks/useSortableTable'
 import SortableHeader from '../../components/SortableHeader'
 import { useCronActions } from '../../hooks/useCronActions'
 
+import { i18nT } from '../../i18n/t'
 export default function CronTab({ refreshTrigger }: { refreshTrigger: number }) {
   const provider = useProvider()
   const noCrons = useAppSelector(s => s.dashboard.status?.no_crons)
@@ -109,60 +110,60 @@ export default function CronTab({ refreshTrigger }: { refreshTrigger: number }) 
     setName(''); setMsg(''); setDays([]); setIntervalVal(1); setError(''); setChannel(''); setApprovalMode(''); setSilent(false); load()
   }
   return (<>
-    {noCrons && <div className="bg-yellow-900/30 border border-yellow-700/50 text-yellow-200 px-4 py-2 rounded-lg mb-3 text-sm"><AlertTriangle className="lucide-inline" /> Cron execution disabled (<code className="text-yellow-300">--no-crons</code>) — jobs are managed by another instance</div>}
-    <Card><CardTitle>Add Job <InfoTip text={`Schedule recurring or one-time tasks. Jobs run in their own ${provider.labels.sessionProcess} session. Use cron expressions or interval seconds.`} /></CardTitle>
+    {noCrons && <div className="bg-yellow-900/30 border border-yellow-700/50 text-yellow-200 px-4 py-2 rounded-lg mb-3 text-sm"><AlertTriangle className="lucide-inline" /> {i18nT('pages.overview.cronTab.cron_execution_disabled')}<code className="text-yellow-300">{i18nT('pages.overview.cronTab.no_crons')}</code>{i18nT('pages.overview.cronTab.jobs_are_managed_by_another_instance')}</div>}
+    <Card><CardTitle>{i18nT('pages.overview.cronTab.add_job')} <InfoTip text={`Schedule recurring or one-time tasks. Jobs run in their own ${provider.labels.sessionProcess} session. Use cron expressions or interval seconds.`} /></CardTitle>
       <div className="flex flex-col gap-3">
-        <fieldset className="contents" aria-label="Job details">
+        <fieldset className="contents" aria-label={i18nT('pages.overview.cronTab.job_details')}>
         <div className="flex gap-2 items-center flex-wrap">
-          <Input placeholder="Job name" value={name} onChange={e => setName(e.target.value)} />
-          <Input placeholder="Message / task" style={{ flex: 2 }} value={msg} onChange={e => setMsg(e.target.value)} />
+          <Input placeholder={i18nT('pages.overview.cronTab.job_name')} value={name} onChange={e => setName(e.target.value)} />
+          <Input placeholder={i18nT('pages.overview.cronTab.message_task')} style={{ flex: 2 }} value={msg} onChange={e => setMsg(e.target.value)} />
           <AgentSelector agents={agents} defaultAgent={defaultAgent} value={agent} onChange={(name) => setAgent(name)} />
         </div>
         <div className="flex gap-2 items-center flex-wrap">
-          <Input placeholder="Channel ID (optional)" style={{ flex: '0 0 170px' }} value={channel} onChange={e => setChannel(e.target.value)} />
-          <label htmlFor="cron-silent" className="flex items-center gap-1.5 text-muted text-[13px] cursor-pointer"><input id="cron-silent" type="checkbox" aria-label="Silent" checked={silent} onChange={e => setSilent(e.target.checked)} /> Silent</label>
+          <Input placeholder={i18nT('pages.overview.cronTab.channel_id_optional')} style={{ flex: '0 0 170px' }} value={channel} onChange={e => setChannel(e.target.value)} />
+          <label htmlFor="cron-silent" className="flex items-center gap-1.5 text-muted text-[13px] cursor-pointer"><input id="cron-silent" type="checkbox" aria-label={i18nT('pages.overview.cronTab.silent')} checked={silent} onChange={e => setSilent(e.target.checked)} /> {i18nT('pages.overview.cronTab.silent')}</label>
           <select className={CRON_SEL} value={approvalMode} onChange={e => setApprovalMode(e.target.value)}>
-            <option value="">Approval: default</option><option value="auto">auto</option>
+            <option value="">{i18nT('pages.overview.cronTab.approval_default')}</option><option value="auto">{i18nT('pages.overview.cronTab.auto')}</option>
           </select>
         </div>
         </fieldset>
         <div className="flex gap-2 items-center flex-wrap">
           <select className={CRON_SEL} value={mode} onChange={e => setMode(e.target.value as 'interval' | 'weekly')}>
-            <option value="interval">Every interval</option>
-            <option value="weekly">Weekly schedule</option>
+            <option value="interval">{i18nT('pages.overview.cronTab.every_interval')}</option>
+            <option value="weekly">{i18nT('pages.overview.cronTab.weekly_schedule')}</option>
           </select>
           {mode === 'interval' ? (<>
             <Input type="number" min={1} style={{ flex: '0 0 70px' }} value={intervalVal} onChange={e => setIntervalVal(Math.max(1, parseInt(e.target.value) || 1))} />
             <select className={CRON_SEL} value={intervalUnit} onChange={e => setIntervalUnit(e.target.value as 'minutes' | 'hours' | 'days')}>
-              <option value="minutes">min</option><option value="hours">hr</option><option value="days">day</option>
+              <option value="minutes">{i18nT('pages.overview.cronTab.min')}</option><option value="hours">{i18nT('pages.overview.cronTab.hr')}</option><option value="days">{i18nT('pages.overview.cronTab.day')}</option>
             </select>
           </>) : (<>
             <div className="flex gap-1">{DAY_LABELS.map((d, i) => (
               <button key={d} onClick={() => toggleDay(i + 1)} className={`px-2.5 py-1.5 rounded-md text-[13px] font-medium border cursor-pointer transition-all ${days.includes(i + 1) ? 'bg-accent text-accent-fg border-accent' : 'bg-bg-elevated text-muted border-border hover:border-border-strong'}`}>{d}</button>
             ))}</div>
-            <span className="text-muted text-[13px]">at</span>
+            <span className="text-muted text-[13px]">{i18nT('pages.overview.cronTab.at')}</span>
             <Input type="time" style={{ flex: '0 0 100px' }} value={time} onChange={e => setTime(e.target.value)} />
             <select className={CRON_SEL} style={{ flex: '0 0 200px' }} value={tz} onChange={e => setTz(e.target.value)}>
               {TIMEZONES.map(z => <option key={z} value={z}>{z.replace(/_/g, ' ')}</option>)}
             </select>
           </>)}
-          <SendBtn onClick={add}>Add</SendBtn>
+          <SendBtn onClick={add}>{i18nT('pages.overview.cronTab.add')}</SendBtn>
         </div>
         {error && <div className="text-danger text-[13px]">{error}</div>}
       </div></Card>
-    <Card><CardTitle>Jobs</CardTitle>
-      <div className="mb-3"><SearchInput placeholder="Filter jobs…" value={cronFilter} onChange={e => setCronFilter(e.target.value)} /></div>
-      <div className="overflow-x-auto"><table className="w-full border-collapse table-striped"><thead><tr><th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium w-[72px]">ID</th><SortableHeader label="Name" sortKey="name" sort={cronSort} onToggle={toggleCronSort} className="w-[100px]" /><th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium w-[80px]">Agent</th><th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium w-[80px]">Model</th><th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium w-[90px]">Channel</th><th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium w-[80px]">Approval</th><SortableHeader label="Schedule" sortKey="schedule" sort={cronSort} onToggle={toggleCronSort} className="w-[110px]" /><th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium min-w-[400px]">Message</th><SortableHeader label="Status" sortKey="status" sort={cronSort} onToggle={toggleCronSort} className="w-[70px]" /><SortableHeader label="Last Run" sortKey="lastRun" sort={cronSort} onToggle={toggleCronSort} className="w-[80px]" /><th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium w-[180px]">Actions</th></tr></thead>
-        <tbody>{jobs.length === 0 ? <tr><td colSpan={11} className="text-muted italic px-2.5 py-3.5 text-sm">No cron jobs</td></tr> : sortedJobs.length === 0 ? <tr><td colSpan={11} className="text-muted italic px-2.5 py-3.5 text-sm">No matching jobs</td></tr> : sortedJobs.map(j => (
-          <tr key={j.id} className="hover:bg-bg-hover transition-colors"><td className="px-2.5 py-2 border-b border-border text-sm"><code>{j.id}</code></td><td className="px-2.5 py-2 border-b border-border text-sm">{esc(j.name)}</td><td className="px-2.5 py-2 border-b border-border text-sm">{j.agent ? <span className="px-1.5 py-[2px] rounded-full text-[12px] font-bold bg-aim-subtle text-aim border border-aim/30">{j.agent}</span> : <span className="text-muted text-[13px]">default</span>}</td><td className="px-2.5 py-2 border-b border-border text-sm">{j.model ? <span className="text-[13px] truncate block max-w-[120px]" title={j.model}>{j.model}</span> : <span className="text-muted text-[13px] italic">inherited</span>}</td><td className="px-2.5 py-2 border-b border-border text-sm">{j.channel ? <code>{j.channel}</code> : <span className="text-muted text-[13px]">DM</span>}</td><td className="px-2.5 py-2 border-b border-border text-sm">{j.approval_mode ? <Badge variant="ok">{j.approval_mode}</Badge> : <span className="text-muted text-[13px]">default</span>}{j.silent ? <> <VolumeX className="lucide-inline" /></> : ''}</td><td className="px-2.5 py-2 border-b border-border text-sm"><code>{esc(j.schedule)}</code>{j.timezone && <span className="block text-[11px] text-muted">{j.timezone.replace(/_/g, ' ')}</span>}</td><td className="px-2.5 py-2 border-b border-border text-sm break-words" title={j.message}>{esc(j.message)}</td>
-            <td className="px-2.5 py-2 border-b border-border text-sm">{j.enabled ? (j.last_status === 'ok' ? <Badge variant="ok">OK</Badge> : j.last_status === 'error' ? <Badge variant="err">Error</Badge> : <Badge variant="ok">Ready</Badge>) : <Badge variant="warn">Paused</Badge>}</td>
+    <Card><CardTitle>{i18nT('pages.overview.cronTab.jobs')}</CardTitle>
+      <div className="mb-3"><SearchInput placeholder={i18nT('pages.overview.cronTab.filter_jobs')} value={cronFilter} onChange={e => setCronFilter(e.target.value)} /></div>
+      <div className="overflow-x-auto"><table className="w-full border-collapse table-striped"><thead><tr><th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium w-[72px]">{i18nT('pages.overview.cronTab.id')}</th><SortableHeader label={i18nT('pages.overview.cronTab.name')} sortKey="name" sort={cronSort} onToggle={toggleCronSort} className="w-[100px]" /><th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium w-[80px]">{i18nT('pages.overview.cronTab.agent')}</th><th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium w-[80px]">{i18nT('pages.overview.cronTab.model')}</th><th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium w-[90px]">{i18nT('pages.overview.cronTab.channel')}</th><th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium w-[80px]">{i18nT('pages.overview.cronTab.approval')}</th><SortableHeader label={i18nT('pages.overview.cronTab.schedule')} sortKey="schedule" sort={cronSort} onToggle={toggleCronSort} className="w-[110px]" /><th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium min-w-[400px]">{i18nT('pages.overview.cronTab.message')}</th><SortableHeader label={i18nT('pages.overview.cronTab.status')} sortKey="status" sort={cronSort} onToggle={toggleCronSort} className="w-[70px]" /><SortableHeader label={i18nT('pages.overview.cronTab.last_run')} sortKey="lastRun" sort={cronSort} onToggle={toggleCronSort} className="w-[80px]" /><th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium w-[180px]">{i18nT('pages.overview.cronTab.actions')}</th></tr></thead>
+        <tbody>{jobs.length === 0 ? <tr><td colSpan={11} className="text-muted italic px-2.5 py-3.5 text-sm">{i18nT('pages.overview.cronTab.no_cron_jobs')}</td></tr> : sortedJobs.length === 0 ? <tr><td colSpan={11} className="text-muted italic px-2.5 py-3.5 text-sm">{i18nT('pages.overview.cronTab.no_matching_jobs')}</td></tr> : sortedJobs.map(j => (
+          <tr key={j.id} className="hover:bg-bg-hover transition-colors"><td className="px-2.5 py-2 border-b border-border text-sm"><code>{j.id}</code></td><td className="px-2.5 py-2 border-b border-border text-sm">{esc(j.name)}</td><td className="px-2.5 py-2 border-b border-border text-sm">{j.agent ? <span className="px-1.5 py-[2px] rounded-full text-[12px] font-bold bg-aim-subtle text-aim border border-aim/30">{j.agent}</span> : <span className="text-muted text-[13px]">{i18nT('pages.overview.cronTab.default')}</span>}</td><td className="px-2.5 py-2 border-b border-border text-sm">{j.model ? <span className="text-[13px] truncate block max-w-[120px]" title={j.model}>{j.model}</span> : <span className="text-muted text-[13px] italic">{i18nT('pages.overview.cronTab.inherited')}</span>}</td><td className="px-2.5 py-2 border-b border-border text-sm">{j.channel ? <code>{j.channel}</code> : <span className="text-muted text-[13px]">{i18nT('pages.overview.cronTab.dm')}</span>}</td><td className="px-2.5 py-2 border-b border-border text-sm">{j.approval_mode ? <Badge variant="ok">{j.approval_mode}</Badge> : <span className="text-muted text-[13px]">{i18nT('pages.overview.cronTab.default')}</span>}{j.silent ? <> <VolumeX className="lucide-inline" /></> : ''}</td><td className="px-2.5 py-2 border-b border-border text-sm"><code>{esc(j.schedule)}</code>{j.timezone && <span className="block text-[11px] text-muted">{j.timezone.replace(/_/g, ' ')}</span>}</td><td className="px-2.5 py-2 border-b border-border text-sm break-words" title={j.message}>{esc(j.message)}</td>
+            <td className="px-2.5 py-2 border-b border-border text-sm">{j.enabled ? (j.last_status === 'ok' ? <Badge variant="ok">{i18nT('pages.overview.cronTab.ok')}</Badge> : j.last_status === 'error' ? <Badge variant="err">{i18nT('pages.overview.cronTab.error')}</Badge> : <Badge variant="ok">{i18nT('pages.overview.cronTab.ready')}</Badge>) : <Badge variant="warn">{i18nT('pages.overview.cronTab.paused')}</Badge>}</td>
             <td className="px-2.5 py-2 border-b border-border text-sm text-muted">{fmtAgo(j.last_run_ts)}</td>
             <td className="px-2.5 py-2 border-b border-border text-sm whitespace-nowrap">
-              <span title="Edit"><Btn aria-label="Edit" onClick={() => openEdit(j)}><Pencil className="lucide-inline" /></Btn></span>{' '}
-              <span title={j.enabled ? "Run now" : "Resume job to run"} style={{ color: 'var(--ok)' }}><Btn aria-label={running.has(j.id) ? "Running" : "Run now"} onClick={() => runNow(j.id)} disabled={!j.enabled || running.has(j.id)}>{running.has(j.id) ? <Hourglass className="lucide-inline" /> : <><Play className="lucide-inline" /> Run</>}</Btn></span>{' '}
+              <span title={i18nT('pages.overview.cronTab.edit')}><Btn aria-label={i18nT('pages.overview.cronTab.edit')} onClick={() => openEdit(j)}><Pencil className="lucide-inline" /></Btn></span>{' '}
+              <span title={j.enabled ? "Run now" : "Resume job to run"} style={{ color: 'var(--ok)' }}><Btn aria-label={running.has(j.id) ? "Running" : "Run now"} onClick={() => runNow(j.id)} disabled={!j.enabled || running.has(j.id)}>{running.has(j.id) ? <Hourglass className="lucide-inline" /> : <><Play className="lucide-inline" /> {i18nT('pages.overview.cronTab.run')}</>}</Btn></span>{' '}
               <span title={j.has_slot ? "Continue session" : j.has_result ? "View last result" : "No result yet"}><Btn aria-label={j.has_slot ? "Continue session" : j.has_result ? "View last result" : "No result yet"} onClick={() => openInChat(j.id)} disabled={!j.has_result && !j.has_slot}><MessageSquare className="lucide-inline" /></Btn></span>{' '}
               <Btn onClick={async () => { await api.toggleCron(j.id, !j.enabled); load() }}>{j.enabled ? 'Pause' : 'Resume'}</Btn>{' '}
-              <Btn danger onClick={async () => { await api.deleteCron(j.id); load() }}>Delete</Btn>
+              <Btn danger onClick={async () => { await api.deleteCron(j.id); load() }}>{i18nT('pages.overview.cronTab.delete')}</Btn>
               {actionError?.id === j.id && <span className="text-danger text-[12px] ml-1">{actionError.msg}</span>}
             </td></tr>
         ))}</tbody></table></div></Card>
@@ -172,33 +173,33 @@ export default function CronTab({ refreshTrigger }: { refreshTrigger: number }) 
             doesn't bubble to the backdrop's close handler — the dialog itself is
             not an interactive control. */}
         {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions */}
-        <div role="dialog" aria-modal="true" aria-label="Edit cron job" className="bg-bg-elevated rounded-xl border border-border p-6 w-[500px] max-w-[90vw] shadow-xl" onClick={e => e.stopPropagation()} onKeyDown={e => e.stopPropagation()}>
-          <h3 className="text-lg font-semibold text-text mb-4">Edit Job: {editing.id}</h3>
+        <div role="dialog" aria-modal="true" aria-label={i18nT('pages.overview.cronTab.edit_cron_job')} className="bg-bg-elevated rounded-xl border border-border p-6 w-[500px] max-w-[90vw] shadow-xl" onClick={e => e.stopPropagation()} onKeyDown={e => e.stopPropagation()}>
+          <h3 className="text-lg font-semibold text-text mb-4">{i18nT('pages.overview.cronTab.edit_job')} {editing.id}</h3>
           {/* label-has-for is deprecated and requires physical nesting; the custom
               <Input> forwardRef can't be seen as a nested control by the linter, so
               we pair each caption <label htmlFor> with an id-matched control for a
               real programmatic association (label-has-associated-control passes). */}
           {/* eslint-disable jsx-a11y/label-has-for */}
           <div className="flex flex-col gap-3">
-            <label htmlFor="cron-edit-name" className="text-sm text-muted">Name</label>
-            <Input id="cron-edit-name" aria-label="Name" value={editName} onChange={e => setEditName(e.target.value)} />
-            <label htmlFor="cron-edit-message" className="text-sm text-muted">Message</label>
-            <textarea id="cron-edit-message" aria-label="Message" className="bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm font-body outline-none resize-y min-h-[80px] focus-ring" value={editMsg} onChange={e => setEditMsg(e.target.value)} />
-            <label htmlFor="cron-edit-schedule" className="text-sm text-muted">Schedule (cron expr or seconds)</label>
-            <Input id="cron-edit-schedule" aria-label="Schedule" value={editSchedule} onChange={e => setEditSchedule(e.target.value)} placeholder="0 9 * * 1-5 or 3600" />
-            <label htmlFor="cron-edit-tz" className="text-sm text-muted">Timezone</label>
-            <select id="cron-edit-tz" aria-label="Timezone" className={CRON_SEL} value={editTz} onChange={e => setEditTz(e.target.value)}>
+            <label htmlFor="cron-edit-name" className="text-sm text-muted">{i18nT('pages.overview.cronTab.name')}</label>
+            <Input id="cron-edit-name" aria-label={i18nT('pages.overview.cronTab.name')} value={editName} onChange={e => setEditName(e.target.value)} />
+            <label htmlFor="cron-edit-message" className="text-sm text-muted">{i18nT('pages.overview.cronTab.message')}</label>
+            <textarea id="cron-edit-message" aria-label={i18nT('pages.overview.cronTab.message')} className="bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm font-body outline-none resize-y min-h-[80px] focus-ring" value={editMsg} onChange={e => setEditMsg(e.target.value)} />
+            <label htmlFor="cron-edit-schedule" className="text-sm text-muted">{i18nT('pages.overview.cronTab.schedule_cron_expr_or_seconds')}</label>
+            <Input id="cron-edit-schedule" aria-label={i18nT('pages.overview.cronTab.schedule')} value={editSchedule} onChange={e => setEditSchedule(e.target.value)} placeholder={i18nT('pages.overview.cronTab.0_9_1_5_or_3600')} />
+            <label htmlFor="cron-edit-tz" className="text-sm text-muted">{i18nT('pages.overview.cronTab.timezone')}</label>
+            <select id="cron-edit-tz" aria-label={i18nT('pages.overview.cronTab.timezone')} className={CRON_SEL} value={editTz} onChange={e => setEditTz(e.target.value)}>
               {(editing?.timezone && !TIMEZONES.includes(editing.timezone) ? [editing.timezone, ...TIMEZONES] : TIMEZONES).map(z => <option key={z} value={z}>{z.replace(/_/g, ' ')}</option>)}
             </select>
-            <span className="text-sm text-muted">Agent</span>
+            <span className="text-sm text-muted">{i18nT('pages.overview.cronTab.agent')}</span>
             <AgentSelector agents={agents} defaultAgent={defaultAgent} value={editAgent} onChange={(name) => setEditAgent(name)} />
-            <label htmlFor="cron-edit-channel" className="text-sm text-muted">Channel ID</label>
-            <Input id="cron-edit-channel" aria-label="Channel ID" value={editChannel} onChange={e => setEditChannel(e.target.value)} placeholder="Optional" />
+            <label htmlFor="cron-edit-channel" className="text-sm text-muted">{i18nT('pages.overview.cronTab.channel_id')}</label>
+            <Input id="cron-edit-channel" aria-label={i18nT('pages.overview.cronTab.channel_id')} value={editChannel} onChange={e => setEditChannel(e.target.value)} placeholder={i18nT('pages.overview.cronTab.optional')} />
             {/* eslint-enable jsx-a11y/label-has-for */}
             {editError && <div className="text-danger text-[13px]">{editError}</div>}
             <div className="flex gap-2 justify-end mt-2">
-              <Btn onClick={() => setEditing(null)}>Cancel</Btn>
-              <SendBtn onClick={saveEdit}>Save</SendBtn>
+              <Btn onClick={() => setEditing(null)}>{i18nT('pages.overview.cronTab.cancel')}</Btn>
+              <SendBtn onClick={saveEdit}>{i18nT('pages.overview.cronTab.save')}</SendBtn>
             </div>
           </div>
         </div>

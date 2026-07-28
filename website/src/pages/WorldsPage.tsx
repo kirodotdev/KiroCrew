@@ -6,6 +6,7 @@ import { usePopoutSync } from '../hooks/usePopoutSync'
 import { SCENES, SCENE_STORAGE_KEY, SCENE_LAYOUT_SCALE, type SceneKey } from './scenes/config'
 import { SCENE_COMPONENTS } from './scenes/components'
 
+import { i18nT } from '../i18n/t'
 export default function WorldsPage() {
   const [scene, setScene] = useState<SceneKey>(() => {
     const saved = localStorage.getItem(SCENE_STORAGE_KEY)
@@ -41,10 +42,10 @@ export default function WorldsPage() {
       >
         <div style={{ overflow: 'hidden' }}>
         <div className="px-5 pt-4 pb-2">
-          <div className="text-lg font-semibold text-text-strong"><Sparkles className="lucide-inline" /> Agent Worlds</div>
+          <div className="text-lg font-semibold text-text-strong"><Sparkles className="lucide-inline" /> {i18nT('pages.worldsPage.agent_worlds')}</div>
           <div className="text-sm text-muted">
-            {agents.length} agent{agents.length !== 1 ? 's' : ''} present,{' '}
-            {activeCount} active, {maxAgents - agents.length} slot{maxAgents - agents.length !== 1 ? 's' : ''} open
+            {agents.length} {i18nT('pages.worldsPage.agent')}{agents.length !== 1 ? 's' : ''} {i18nT('pages.worldsPage.present')}{' '}
+            {activeCount} {i18nT('pages.worldsPage.active')} {maxAgents - agents.length} {i18nT('pages.worldsPage.slot')}{maxAgents - agents.length !== 1 ? 's' : ''} {i18nT('pages.worldsPage.open')}
           </div>
         </div>
 
@@ -103,8 +104,8 @@ export default function WorldsPage() {
             </button>
             <button
               onClick={openPopout}
-              title="Pop out to separate window"
-              aria-label="Pop out to separate window"
+              title={i18nT('pages.worldsPage.pop_out_to_separate_window')}
+              aria-label={i18nT('pages.worldsPage.pop_out_to_separate_window')}
               className="bg-black/55 hover:bg-black/75 transition-colors"
               style={{
                 border: '1px solid var(--border, #333)',
@@ -123,7 +124,7 @@ export default function WorldsPage() {
               background: 'var(--bg, #0a0a1a)', borderRadius: 8, gap: 12,
             }}>
               <PictureInPicture2 size={32} style={{ color: 'var(--accent, #f90)', opacity: 0.7 }} />
-              <div style={{ color: 'var(--text-muted, #999)', fontSize: 14 }}>Playing in popout window</div>
+              <div style={{ color: 'var(--text-muted, #999)', fontSize: 14 }}>{i18nT('pages.worldsPage.playing_in_popout_window')}</div>
               <button
                 onClick={openPopout}
                 style={{
@@ -132,7 +133,7 @@ export default function WorldsPage() {
                   color: 'var(--text, #eee)', fontFamily: 'var(--font-body, inherit)',
                 }}
               >
-                Focus popout
+                {i18nT('pages.worldsPage.focus_popout')}
               </button>
             </div>
           )}

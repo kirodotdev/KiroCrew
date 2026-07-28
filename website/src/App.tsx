@@ -7,7 +7,7 @@ import { fetchSlots, sseStatus, setUpdateProgress, setEnabledAppIds, changeAppro
 // Side-effect: registers every built-in surface in the registry. MUST run
 // before `getBuiltinSurfaces()` is invoked below to compute `NAV_ITEMS`.
 import './surfaces/builtins'
-import { getBuiltinSurfaces, getBuiltinSurface, selectSurfaceBadgeCount, selectSurfaceActivityCount, selectAllSurfacesAttention } from './surfaces/registry'
+import { getBuiltinSurfaces, getBuiltinSurface, selectSurfaceBadgeCount, selectSurfaceActivityCount, selectAllSurfacesAttention, surfaceLabel } from './surfaces/registry'
 import { createSlot, appendMessage, setSlotRunning, switchSlot } from './store/chatSlice'
 import { setNavIntentHandler as setArtifactNavIntentHandler } from './utils/artifactPopout'
 import { applyNavIntentInMain } from './utils/navIntent'
@@ -91,6 +91,7 @@ import ShortcutsModal from './components/ShortcutsModal'
 import CommandPalette from './components/CommandPalette'
 import Modal from './components/Modal'
 
+import { i18nT } from './i18n/t'
 type LogSubscribeFn = (cb: ((data: { level: string; msg: string }) => void) | null) => void
 
 /** Minimal shape of an entry from `GET /api/apps`, limited to the fields the
@@ -124,10 +125,18 @@ export const WsContext = createContext<{
  * Shape and order are preserved for back-compat with the rest of `App.tsx`
  * (group filtering, sortedAppGroup merge with dynamic apps, settings lookup).
  */
+/**
+ * Static nav descriptors. `label` is intentionally NOT resolved here — this is a
+ * module-level constant, so a translated string baked in at import time would be
+ * frozen in whatever language happened to be active then (and the rail would
+ * stay English while the rest of the dashboard switched). `labelKey` is carried
+ * through and resolved per render via `surfaceLabel()`.
+ */
 const NAV_ITEMS = getBuiltinSurfaces().map(s => ({
   path: s.route,
   id: s.navId,
   label: s.label,
+  labelKey: s.labelKey,
   group: s.group,
   icon: s.icon,
 }))
@@ -212,7 +221,7 @@ function UpdateOverlay({ onCancel }: { onCancel: () => void }) {
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/80 backdrop-blur-sm animate-rise">
       <div className="bg-card border border-border rounded-xl p-8 max-w-md w-full mx-4 shadow-xl text-center">
         <div className="text-4xl mb-4 animate-pulse">{info?.icon || <RefreshCw className="lucide-inline" />}</div>
-        <div className="text-lg font-bold text-text-strong mb-2">Updating KiroCrew…</div>
+        <div className="text-lg font-bold text-text-strong mb-2">{i18nT('app.updating_kirocrew')}</div>
         <div className="text-sm text-muted mb-5">{detail || 'Starting update…'}</div>
         {/* Step progress */}
         <div className="flex flex-col gap-2 text-left mb-5">
@@ -233,18 +242,18 @@ function UpdateOverlay({ onCancel }: { onCancel: () => void }) {
           <div className="flex flex-col gap-3 items-center">
             <div className="text-sm text-danger">{detail || 'Check logs for details.'}</div>
             <button className="px-4 py-1.5 rounded-lg text-[13px] font-medium cursor-pointer bg-card border border-border text-text hover:border-border-strong transition-colors" onClick={handleCancel}>
-              Dismiss
+              {i18nT('app.dismiss')}
             </button>
           </div>
         ) : isStuck ? (
           <div className="flex flex-col gap-3 items-center">
-            <div className="text-sm text-warn">This step seems to be taking longer than expected.</div>
+            <div className="text-sm text-warn">{i18nT('app.this_step_seems_to_be_taking_longer_than_expecte')}</div>
             <button className="px-4 py-1.5 rounded-lg text-[13px] font-medium cursor-pointer bg-danger/10 border border-danger/30 text-danger hover:bg-danger/20 transition-colors" onClick={handleCancel}>
-              Cancel Update
+              {i18nT('app.cancel_update')}
             </button>
           </div>
         ) : (
-          <div className="text-[13px] text-muted">Page will reconnect when ready…</div>
+          <div className="text-[13px] text-muted">{i18nT('app.page_will_reconnect_when_ready')}</div>
         )}
       </div>
     </div>
@@ -604,7 +613,7 @@ function NotificationsBellButton() {
           setSelectedTs(null)
         }}
         title={unacked.length > 0 ? `${unacked.length} notification${unacked.length === 1 ? '' : 's'}` : 'Notifications'}
-        aria-label="Notifications"
+        aria-label={i18nT('app.notifications')}
         aria-expanded={open}
       >
         <Bell size={15} />
@@ -625,8 +634,8 @@ function NotificationsBellButton() {
             fallback={
               <div className={`absolute top-0 right-0 pointer-events-auto ${isMobile ? 'left-0' : 'w-[400px]'} glass-surface glass-static rounded-xl shadow-xl flex flex-col items-center justify-center gap-2 p-6 text-center`} style={{ maxHeight: 240 }}>
                 <AlertTriangle size={20} className="text-warn" />
-                <div className="text-[13px] font-semibold text-text-strong">Notifications failed to load</div>
-                <button className="text-[12px] text-accent hover:text-accent-hover bg-transparent border-none cursor-pointer" onClick={() => { setOpen(false); navigate('/notifications') }}>Open the full inbox</button>
+                <div className="text-[13px] font-semibold text-text-strong">{i18nT('app.notifications_failed_to_load')}</div>
+                <button className="text-[12px] text-accent hover:text-accent-hover bg-transparent border-none cursor-pointer" onClick={() => { setOpen(false); navigate('/notifications') }}>{i18nT('app.open_the_full_inbox')}</button>
               </div>
             }
           >
@@ -654,7 +663,7 @@ function NotificationsBellButton() {
                 variant="mac"
                 header={
                   <div className="flex items-center px-1 pb-1.5">
-                    <span className="text-[14px] font-bold text-text-strong">Notifications</span>
+                    <span className="text-[14px] font-bold text-text-strong">{i18nT('app.notifications')}</span>
                   </div>
                 }
                 footer={
@@ -663,7 +672,7 @@ function NotificationsBellButton() {
                       className="text-[12px] text-accent hover:text-accent-hover bg-transparent border-none cursor-pointer"
                       onClick={() => { setOpen(false); navigate('/notifications') }}
                     >
-                      Open inbox
+                      {i18nT('app.open_inbox')}
                     </button>
                   </div>
                 }
@@ -1383,11 +1392,15 @@ export default function App() {
   // Render one standard nav row (used by the top-fixed mains, the Apps list,
   // and the bottom-fixed section). Active-state, mobile close, chat pin
   // toggle, and badge wiring are identical across sections.
-  const renderNavRow = (n: { path: string; id: string; label: string; icon: React.ReactNode }) => (
+  // `surfaceLabel` resolves `labelKey` against the active language at render
+  // time; a surface with no key (app-contributed) falls back to its literal.
+  const renderNavRow = (
+    n: { path: string; id: string; label: string; labelKey?: string; icon: React.ReactNode },
+  ) => (
     <NavItem
       navId={n.id}
       path={n.path}
-      label={n.label}
+      label={surfaceLabel(n)}
       icon={n.icon}
       active={n.path === '/apps' ? activePath === '/apps' : (activePath === n.path || activePath.startsWith(n.path + '/'))}
       collapsed={effectiveCollapsed}
@@ -1455,7 +1468,7 @@ export default function App() {
       {!isMobile && <div id="activity-bar-slot" className="h-full min-h-0 min-w-0" style={{ gridArea: 'actbar' }} />}
 
       {/* Skip to content — visible only on focus for keyboard users */}
-      <a href="#main-content" className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-[9999] focus:px-4 focus:py-2 focus:rounded-lg focus:bg-accent focus:text-accent-fg focus:text-sm focus:font-medium">Skip to content</a>
+      <a href="#main-content" className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-[9999] focus:px-4 focus:py-2 focus:rounded-lg focus:bg-accent focus:text-accent-fg focus:text-sm focus:font-medium">{i18nT('app.skip_to_content')}</a>
 
       {/* Topbar */}
       {/* stable theming hook — see website/docs/theming-contract.md */}
@@ -1470,7 +1483,7 @@ export default function App() {
           className={`relative flex items-center h-full shrink-0 gap-2 ${isMobile ? 'px-2' : ''}`}
         >
           {isMobile && (
-            <button className="p-2 rounded-md bg-transparent border-none cursor-pointer text-muted hover:text-text shrink-0" onClick={toggleNav} aria-label="Open menu">
+            <button className="p-2 rounded-md bg-transparent border-none cursor-pointer text-muted hover:text-text shrink-0" onClick={toggleNav} aria-label={i18nT('app.open_menu')}>
               <Menu size={20} />
             </button>
           )}
@@ -1483,10 +1496,10 @@ export default function App() {
             onClick={commandPalette.openPalette}
             className="absolute h-7 px-3 rounded-md border border-border bg-card text-muted hover:text-text hover:border-border-hover transition-colors flex items-center justify-center gap-2 cursor-pointer shadow-none"
             style={{ left: '50vw', transform: 'translateX(-50%)', width: 'calc(33.3333vw - 40px)', minWidth: TOPBAR_SEARCH_MIN_WIDTH }}
-            aria-label="Search sessions, files, and commands"
-            title="Search everywhere (⌘K)"
+            aria-label={i18nT('app.search_sessions_files_and_commands')}
+            title={i18nT('app.search_everywhere_k')}
           >
-            <span className="text-[13px] truncate">⌘K — Search for anything…</span>
+            <span className="text-[13px] truncate">{i18nT('app.k_search_for_anything')}</span>
           </button>
         )}
         {/* Theme decoration: the active theme's center top-bar element (e.g. a
@@ -1547,9 +1560,9 @@ export default function App() {
             if (!capsuleCollapsed) {
             if (!isMobile) {
               if (!metricsOpen) {
-                segments.push(<button key="metrics" className={`${seg} text-muted hover:text-text`} onClick={() => { setMetricsOpen(true); safeSetItem('mc-topbar-metrics', '1') }} title="System metrics" aria-label="System metrics"><AudioWaveform size={12} /></button>)
+                segments.push(<button key="metrics" className={`${seg} text-muted hover:text-text`} onClick={() => { setMetricsOpen(true); safeSetItem('mc-topbar-metrics', '1') }} title={i18nT('app.system_metrics')} aria-label={i18nT('app.system_metrics')}><AudioWaveform size={12} /></button>)
               } else if (!sysMetrics) {
-                if (sysMetricsError) segments.push(<button key="metrics" className={`${seg} text-danger text-[11px]`} title="Click to hide" onClick={() => { setMetricsOpen(false); safeSetItem('mc-topbar-metrics', '0') }}><AudioWaveform size={11} /> metrics unavailable</button>)
+                if (sysMetricsError) segments.push(<button key="metrics" className={`${seg} text-danger text-[11px]`} title={i18nT('app.click_to_hide')} onClick={() => { setMetricsOpen(false); safeSetItem('mc-topbar-metrics', '0') }}><AudioWaveform size={11} /> {i18nT('app.metrics_unavailable')}</button>)
               } else {
                 const m = sysMetrics
                 const memPct = m.memTotal > 0 ? m.memUsed / m.memTotal : 0
@@ -1560,9 +1573,9 @@ export default function App() {
                 const cpuValid = typeof m.cpuPct === 'number' && Number.isFinite(m.cpuPct)
                 const staleTitle = sysMetricsStale ? ' (stale: fetch failing)' : ''
                 segments.push(<button key="metrics" className={`${seg} gap-2 text-[11px] font-mono ${sysMetricsStale ? 'opacity-60' : ''}`} title={sysMetricsStale ? 'Metrics are stale, latest fetch failed' : 'Click to hide'} onClick={() => { setMetricsOpen(false); safeSetItem('mc-topbar-metrics', '0') }}>
-                  <span className={cpuValid ? metricColor(m.cpuPct / 100) : 'text-muted'} title={cpuValid ? `CPU: ${m.cpuPct.toFixed(0)}%${staleTitle}` : 'CPU: unavailable'}>CPU {cpuValid ? `${m.cpuPct.toFixed(0)}%` : '—'}</span>
-                  <span className={memValid ? metricColor(memPct) : 'text-muted'} title={memValid ? `Memory: ${m.memUsed.toFixed(1)}/${m.memTotal.toFixed(1)} GB${staleTitle}` : 'Memory: unavailable'}>MEM {memValid ? `${(memPct * 100).toFixed(0)}%` : '—'}</span>
-                  <span className={dskValid ? metricColor(dskPct) : 'text-muted'} title={dskValid ? `Disk: ${dskUsed.toFixed(0)}/${m.diskTotal.toFixed(0)} GB${staleTitle}` : 'Disk: unavailable'}>DSK {dskValid ? `${(dskPct * 100).toFixed(0)}%` : '—'}</span>
+                  <span className={cpuValid ? metricColor(m.cpuPct / 100) : 'text-muted'} title={cpuValid ? `CPU: ${m.cpuPct.toFixed(0)}%${staleTitle}` : 'CPU: unavailable'}>{i18nT('app.cpu')} {cpuValid ? `${m.cpuPct.toFixed(0)}%` : '—'}</span>
+                  <span className={memValid ? metricColor(memPct) : 'text-muted'} title={memValid ? `Memory: ${m.memUsed.toFixed(1)}/${m.memTotal.toFixed(1)} GB${staleTitle}` : 'Memory: unavailable'}>{i18nT('app.mem')} {memValid ? `${(memPct * 100).toFixed(0)}%` : '—'}</span>
+                  <span className={dskValid ? metricColor(dskPct) : 'text-muted'} title={dskValid ? `Disk: ${dskUsed.toFixed(0)}/${m.diskTotal.toFixed(0)} GB${staleTitle}` : 'Disk: unavailable'}>{i18nT('app.dsk')} {dskValid ? `${(dskPct * 100).toFixed(0)}%` : '—'}</span>
                 </button>)
               }
             }
@@ -1570,7 +1583,7 @@ export default function App() {
             // cache. Spinner while the cache warms; hidden when unavailable.
             if (kiroUsage !== 'none') {
               if (!kiroUsage) {
-                segments.push(<button key="usage" className={`${seg} text-muted`} onClick={() => setKiroUsageOpen(true)} title="Kiro credit usage — checking…" aria-label="Kiro credit usage — checking"><Coins size={12} /> {!isMobile && <Loader2 size={11} className="animate-spin" />}</button>)
+                segments.push(<button key="usage" className={`${seg} text-muted`} onClick={() => setKiroUsageOpen(true)} title={i18nT('app.kiro_credit_usage_checking')} aria-label={i18nT('app.kiro_credit_usage_checking_2')}><Coins size={12} /> {!isMobile && <Loader2 size={11} className="animate-spin" />}</button>)
               } else {
                 const pct = kiroUsage.limit > 0 ? (kiroUsage.used / kiroUsage.limit) * 100 : 0
                 const usedStr = kiroUsage.used >= 1000 ? `${(kiroUsage.used / 1000).toFixed(1)}K` : `${kiroUsage.used}`
@@ -1633,9 +1646,9 @@ export default function App() {
             <button
               className="flex items-center gap-1.5 h-7 px-2.5 rounded-xl bg-card text-muted hover:text-text transition-colors cursor-pointer text-[12px] whitespace-nowrap shrink-0"
               onClick={requestFeature}
-              title="Request a feature"
+              title={i18nT('app.request_a_feature')}
             >
-              <Lightbulb size={13} /> Request a Feature
+              <Lightbulb size={13} /> {i18nT('app.request_a_feature_2')}
             </button>
           )}
           {/* Notifications bell — borderless icon button, rightmost control.
@@ -1648,13 +1661,13 @@ export default function App() {
 
       {/* Update error modal */}
       {updateError && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/80 backdrop-blur-sm animate-rise" role="dialog" aria-modal="true" aria-label="Update error">
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/80 backdrop-blur-sm animate-rise" role="dialog" aria-modal="true" aria-label={i18nT('app.update_error')}>
           <div className="bg-card border border-border rounded-xl p-8 max-w-md w-full mx-4 shadow-xl text-center">
             <div className="text-4xl mb-4"><AlertTriangle className="lucide-inline" /></div>
-            <div className="text-lg font-bold text-text-strong mb-2">Update Failed</div>
+            <div className="text-lg font-bold text-text-strong mb-2">{i18nT('app.update_failed')}</div>
             <div className="text-sm text-danger mb-6">{updateError}</div>
             <button className="px-4 py-1.5 rounded-lg text-[13px] font-medium cursor-pointer bg-card border border-border text-text hover:border-border-strong transition-colors" onClick={() => setUpdateError('')}>
-              Dismiss
+              {i18nT('app.dismiss')}
             </button>
           </div>
         </div>
@@ -1663,35 +1676,35 @@ export default function App() {
       {/* Changelog modal */}
       {showChangelog && !updating && (
         <Clickable className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/60 backdrop-blur-sm animate-rise" onClick={e => { if (e && e.target === e.currentTarget) { setShowChangelog(false); setShowFull(false) } }}>
-          <div role="dialog" aria-modal="true" aria-label="Changelog" className={`bg-card border border-border rounded-xl p-6 w-full mx-4 shadow-xl transition-all duration-300 ${showFull ? 'max-w-2xl' : 'max-w-md'}`}>
+          <div role="dialog" aria-modal="true" aria-label={i18nT('app.changelog')} className={`bg-card border border-border rounded-xl p-6 w-full mx-4 shadow-xl transition-all duration-300 ${showFull ? 'max-w-2xl' : 'max-w-md'}`}>
             <div className="flex justify-between items-center mb-4">
-              <div className="text-sm font-bold text-text-strong"><Package className="lucide-inline" /> v{version}</div>
-              <button aria-label="Close" className="text-muted text-[13px] cursor-pointer hover:text-text" onClick={() => { setShowChangelog(false); setShowFull(false) }}><X className="lucide-inline" /></button>
+              <div className="text-sm font-bold text-text-strong"><Package className="lucide-inline" /> {i18nT('app.v')}{version}</div>
+              <button aria-label={i18nT('app.close')} className="text-muted text-[13px] cursor-pointer hover:text-text" onClick={() => { setShowChangelog(false); setShowFull(false) }}><X className="lucide-inline" /></button>
             </div>
             {updateAvailable ? (
               <>
                 {changes ? (
                   <>
-                    <div className="text-[13px] font-medium text-muted uppercase tracking-wider mb-2">What's new</div>
+                    <div className="text-[13px] font-medium text-muted uppercase tracking-wider mb-2">{i18nT('app.what_s_new')}</div>
                     <div className="p-3 bg-bg rounded-lg border border-border max-h-56 overflow-y-auto mb-4">
                       <div className="text-[13px] text-text leading-relaxed"><MarkdownRenderer content={changes} /></div>
                     </div>
                   </>
                 ) : (
                   <div className="p-3 bg-bg rounded-lg border border-border mb-4">
-                    <div className="text-[13px] text-muted leading-relaxed">A newer version is available. No changelog entry was added for this release.</div>
+                    <div className="text-[13px] text-muted leading-relaxed">{i18nT('app.a_newer_version_is_available_no_changelog_entry')}</div>
                   </div>
                 )}
                 <button className="w-full py-2 rounded-lg text-[13px] font-medium cursor-pointer bg-accent text-accent-fg border-none hover:opacity-90 transition-opacity" onClick={handleUpdate}>
-                  Update Now
+                  {i18nT('app.update_now')}
                 </button>
               </>
             ) : (
-              <div className="text-sm text-muted py-4 text-center"><CheckCircle className="lucide-inline" /> You're on the latest version</div>
+              <div className="text-sm text-muted py-4 text-center"><CheckCircle className="lucide-inline" /> {i18nT('app.you_re_on_the_latest_version')}</div>
             )}
             <div className="flex items-center justify-between mt-4 pt-3 border-t border-border">
-              <span className="text-[13px] text-muted">Auto-update on restart</span>
-              <Toggle checked={autoUpdate} label="Auto-update on restart"
+              <span className="text-[13px] text-muted">{i18nT('app.auto_update_on_restart')}</span>
+              <Toggle checked={autoUpdate} label={i18nT('app.auto_update_on_restart')}
                 onChange={async next => { setAutoUpdate(next); await api.setAutoUpdate(next) }} />
             </div>
             <div className="mt-3 pt-3 border-t border-border">
@@ -1769,7 +1782,7 @@ export default function App() {
         className={`bg-bg-elevated border border-border rounded-xl flex flex-col m-2 shadow-sm z-50 overflow-hidden ${isMobile ? 'fixed top-0 left-0 bottom-0' : ''}`}
         style={isMobile ? undefined : { gridArea: 'nav', width: 'auto' }}
         role="navigation"
-        aria-label="Main navigation"
+        aria-label={i18nT('app.main_navigation')}
       >
         {/* Top-fixed: menu row + primary destinations + Apps section header.
             The sidebar toggle lives HERE (menu row), not in the topbar. */}
@@ -1842,15 +1855,15 @@ export default function App() {
               and slides up into place. */}
           {!effectiveCollapsed ? (
             <div className="nav-section flex items-center justify-between gap-2 pl-3 pr-1 pt-3 pb-1">
-              <span className="text-[13px] font-medium text-muted whitespace-nowrap overflow-hidden">Apps</span>
+              <span className="text-[13px] font-medium text-muted whitespace-nowrap overflow-hidden">{i18nT('app.apps')}</span>
               <Clickable
                 data-onboarding-nav="apps"
                 onClick={() => { closeMobileNav?.(); navigate('/apps') }}
                 className={`flex items-center gap-1.5 px-1.5 py-1 rounded-md cursor-pointer text-[12px] font-medium whitespace-nowrap transition-colors ${activePath === '/apps' ? 'text-accent bg-accent-subtle' : 'text-accent hover:bg-bg-hover'}`}
-                aria-label="Explore Apps"
+                aria-label={i18nT('app.explore_apps')}
               >
                 <LayoutGrid size={14} className="shrink-0" />
-                Explore
+                {i18nT('app.explore')}
               </Clickable>
             </div>
           ) : (
@@ -1863,7 +1876,7 @@ export default function App() {
               <NavItem
                 navId="apps"
                 path="/apps"
-                label="Explore"
+                label={i18nT('app.explore')}
                 icon={<LayoutGrid size={16} />}
                 active={activePath === '/apps'}
                 collapsed
@@ -1959,7 +1972,7 @@ export default function App() {
                 return (
                 <NavItem
                   path={devPath}
-                  label="Developer"
+                  label={i18nT('app.developer')}
                   icon={<Code size={16} />}
                   active={activePath === devPath}
                   collapsed={effectiveCollapsed}
@@ -1971,7 +1984,7 @@ export default function App() {
               {terminalEnabled && (
                 <NavItem
                   path="#"
-                  label="Terminal"
+                  label={i18nT('app.terminal')}
                   icon={<SquareTerminal size={16} />}
                   active={false}
                   collapsed={effectiveCollapsed}
@@ -1982,22 +1995,22 @@ export default function App() {
               <div>{renderNavRow(cap)}</div>
               <NavItem
                 path={s.path}
-                label={s.label}
+                label={surfaceLabel(s)}
                 icon={s.icon}
                 active={activePath === s.path}
                 collapsed={effectiveCollapsed}
                 onClick={closeMobileNav}
-                badge={updateAvailable ? <span title="Update available" role="status" aria-label="update available" className={effectiveCollapsed ? 'absolute top-1 right-1 w-2 h-2 bg-accent rounded-full z-10' : 'absolute top-1/2 -translate-y-1/2 right-2 w-2 h-2 bg-accent rounded-full z-10'} /> : undefined}
+                badge={updateAvailable ? <span title={i18nT('app.update_available')} role="status" aria-label={i18nT('app.update_available_2')} className={effectiveCollapsed ? 'absolute top-1 right-1 w-2 h-2 bg-accent rounded-full z-10' : 'absolute top-1/2 -translate-y-1/2 right-2 w-2 h-2 bg-accent rounded-full z-10'} /> : undefined}
               />
               {/* Contact Us — icon links to kiro.dev, the GitHub repo,
                   and the Discord community. Hidden while the rail is collapsed
                   (folds away via max-height so the collapse stays smooth). */}
               <div {...(effectiveCollapsed ? { inert: '' } : {})} className={`overflow-hidden transition-all duration-200 ${effectiveCollapsed ? 'max-h-0 opacity-0' : 'max-h-16 opacity-100 mt-1'}`}>
                 <div className="flex items-center gap-1 border-t border-border-strong pl-3 pr-1 pt-2.5 pb-0.5 whitespace-nowrap">
-                  <span className="text-[13px] text-muted flex-1 overflow-hidden">Contact Us</span>
-                  <a href="https://kiro.dev" target="_blank" rel="noopener noreferrer" title="Kiro website" aria-label="Kiro website (kiro.dev)" className="flex items-center justify-center w-6 h-6 rounded-md text-muted hover:text-text hover:bg-bg-hover transition-colors shrink-0"><Globe size={15} /></a>
-                  <a href="https://github.com/kirodotdev/KiroCrew" target="_blank" rel="noopener noreferrer" title="GitHub repository" aria-label="KiroCrew GitHub repository" className="flex items-center justify-center w-6 h-6 rounded-md text-muted hover:text-text hover:bg-bg-hover transition-colors shrink-0"><GithubIcon size={15} /></a>
-                  <a href="https://kiro.dev/discord/" target="_blank" rel="noopener noreferrer" title="Discord community" aria-label="Kiro Discord community" className="flex items-center justify-center w-6 h-6 rounded-md text-muted hover:text-text hover:bg-bg-hover transition-colors shrink-0"><DiscordIcon size={15} /></a>
+                  <span className="text-[13px] text-muted flex-1 overflow-hidden">{i18nT('app.contact_us')}</span>
+                  <a href="https://kiro.dev" target="_blank" rel="noopener noreferrer" title={i18nT('app.kiro_website')} aria-label={i18nT('app.kiro_website_kiro_dev')} className="flex items-center justify-center w-6 h-6 rounded-md text-muted hover:text-text hover:bg-bg-hover transition-colors shrink-0"><Globe size={15} /></a>
+                  <a href="https://github.com/kirodotdev/KiroCrew" target="_blank" rel="noopener noreferrer" title={i18nT('app.github_repository')} aria-label={i18nT('app.kirocrew_github_repository')} className="flex items-center justify-center w-6 h-6 rounded-md text-muted hover:text-text hover:bg-bg-hover transition-colors shrink-0"><GithubIcon size={15} /></a>
+                  <a href="https://kiro.dev/discord/" target="_blank" rel="noopener noreferrer" title={i18nT('app.discord_community')} aria-label={i18nT('app.kiro_discord_community')} className="flex items-center justify-center w-6 h-6 rounded-md text-muted hover:text-text hover:bg-bg-hover transition-colors shrink-0"><DiscordIcon size={15} /></a>
                 </div>
               </div>
             </div>
@@ -2061,11 +2074,11 @@ export default function App() {
     )}
     </WsContext.Provider>
     {shortcutsOpen && <ShortcutsModal onClose={() => setShortcutsOpen(false)} />}
-    <Modal open={kiroUsageOpen} onClose={() => setKiroUsageOpen(false)} title={<span className="flex items-center gap-2"><Coins size={16} /> Kiro Credits</span>} maxWidth={460}>
+    <Modal open={kiroUsageOpen} onClose={() => setKiroUsageOpen(false)} title={<span className="flex items-center gap-2"><Coins size={16} /> {i18nT('app.kiro_credits')}</span>} maxWidth={460}>
       {!kiroUsage || kiroUsage === 'none' ? (
         <div className="flex items-center gap-2 text-sm text-muted py-4">
           <Loader2 size={14} className="animate-spin shrink-0" />
-          <span>Checking usage — running <code className="font-mono">kiro-cli /usage</code>…</span>
+          <span>{i18nT('app.checking_usage_running')} <code className="font-mono">{i18nT('app.kiro_cli_usage')}</code>…</span>
         </div>
       ) : (() => {
         const pct = kiroUsage.limit > 0 ? (kiroUsage.used / kiroUsage.limit) * 100 : 0
@@ -2080,21 +2093,21 @@ export default function App() {
           <div className="flex flex-col gap-3">
             <div className="flex items-baseline gap-2">
               <span className="text-2xl font-bold text-text">{kiroUsage.used.toLocaleString()}</span>
-              <span className="text-sm text-muted">/ {kiroUsage.limit.toLocaleString()} credits</span>
+              <span className="text-sm text-muted">/ {kiroUsage.limit.toLocaleString()} {i18nT('app.credits')}</span>
               <span className="ml-auto text-[12px] font-medium px-2 py-0.5 rounded-md" style={{ background: barColor, color: '#fff' }}>{pct.toFixed(0)}%</span>
             </div>
             <div className="w-full h-2 rounded-full overflow-hidden" style={{ background: 'var(--border)' }}>
               <div className="h-full rounded-full transition-all" style={{ width: `${Math.min(pct, 100)}%`, background: barColor }} />
             </div>
             <div className="mt-1">
-              {kiroUsage.plan && <Row label="Plan" value={kiroUsage.plan} />}
-              {kiroUsage.resets && <Row label="Resets" value={kiroUsage.resets} />}
-              <Row label="Overage used" value={`${kiroUsage.overage.toLocaleString()} credits`} />
-              {kiroUsage.overageRate && <Row label="Overage rate" value={`$${kiroUsage.overageRate} / credit`} />}
-              {kiroUsage.costUsd != null && <Row label="Est. overage cost" value={`$${kiroUsage.costUsd.toFixed(2)} USD`} />}
+              {kiroUsage.plan && <Row label={i18nT('app.plan')} value={kiroUsage.plan} />}
+              {kiroUsage.resets && <Row label={i18nT('app.resets')} value={kiroUsage.resets} />}
+              <Row label={i18nT('app.overage_used')} value={`${kiroUsage.overage.toLocaleString()} credits`} />
+              {kiroUsage.overageRate && <Row label={i18nT('app.overage_rate')} value={`$${kiroUsage.overageRate} / credit`} />}
+              {kiroUsage.costUsd != null && <Row label={i18nT('app.est_overage_cost')} value={`$${kiroUsage.costUsd.toFixed(2)} USD`} />}
             </div>
             <p className="text-[11px] text-muted leading-relaxed mt-1">
-              Monthly Kiro credit usage from <code className="font-mono">kiro-cli /usage</code> — across chat, agents, MCP, and subagents.
+              {i18nT('app.monthly_kiro_credit_usage_from')} <code className="font-mono">{i18nT('app.kiro_cli_usage')}</code> {i18nT('app.across_chat_agents_mcp_and_subagents')}
             </p>
             <a
               href="https://app.kiro.dev/settings/account"
@@ -2102,7 +2115,7 @@ export default function App() {
               rel="noopener noreferrer"
               className="inline-flex items-center gap-1 text-[12px] text-accent hover:underline mt-1 self-start"
             >
-              Manage account <ExternalLink size={12} />
+              {i18nT('app.manage_account')} <ExternalLink size={12} />
             </a>
           </div>
         )

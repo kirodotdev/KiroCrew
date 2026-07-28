@@ -20,25 +20,43 @@ import { ShortcutsPanel } from './settings/ShortcutsPanel'
 import { AboutPanel } from './settings/AboutPanel'
 import { ImportPanel } from './settings/ImportPanel'
 
-const GROUP_PREFERENCES = 'Preferences'
-const GROUP_SYSTEM = 'System'
+import { i18nT } from '../i18n/t'
+// Group headers double as the grouping KEY (SidePanelLayout starts a new header
+// whenever this string changes), so they are resolved inside `buildTabs()` —
+// which runs per render — rather than at module load. Translating them at module
+// scope would freeze the header in the boot language while the tabs switched.
 
-const TABS = [
-  { key: 'overview', label: 'Overview', icon: <PanelsTopLeft size={16} />, description: 'System health, activity, and usage & memory at a glance' },
-  { key: 'imports', label: 'Import / Export', icon: <Import size={16} />, description: 'Bring data from another AI agent, and back up or restore KiroCrew configuration' },
-  { key: 'chat', label: 'Chat', icon: <MessageSquare size={16} />, group: GROUP_PREFERENCES, description: 'Message behavior, history, timestamps, and context' },
-  { key: 'display', label: 'Display', icon: <Palette size={16} />, group: GROUP_PREFERENCES, description: 'Zoom, font, and color theme preferences' },
-  { key: 'voice', label: 'Voice', icon: <Mic size={16} />, group: GROUP_PREFERENCES, description: 'Text-to-speech and speech-to-text (dictation) settings' },
-  { key: 'notifications', label: 'Notifications', icon: <Bell size={16} />, group: GROUP_PREFERENCES, description: 'Sound effects and per-source alert preferences' },
-  { key: 'shortcuts', label: 'Shortcuts', icon: <Keyboard size={16} />, group: GROUP_PREFERENCES, description: 'Keyboard shortcuts reference and preferences' },
-  { key: 'skills', label: 'Skills', icon: <Sparkles size={16} />, group: GROUP_PREFERENCES, description: 'Automatic skill generation from sessions and the approval gate' },
-  { key: 'channels', label: 'Channels', icon: <Link2 size={16} />, description: 'Chat platforms the agent can send and receive on — Slack, Discord, Telegram, Webex, WeCom, Microsoft Teams, WeChat' },
-  { key: 'browser', label: 'Browser', icon: <Globe size={16} />, group: GROUP_SYSTEM, description: 'Playwright browser mode, extension token, and auth configuration' },
-  { key: 'instances', label: 'Instances', icon: <Server size={16} />, group: GROUP_SYSTEM, description: 'Manage remote KiroCrew instances over SSH tunnels; switch between them from the top header' },
-  { key: 'security', label: 'Security', icon: <ShieldCheck size={16} />, group: GROUP_SYSTEM, description: 'Security posture, defense layers, certifications, and data classification' },
-  { key: 'developer', label: 'Developer', icon: <Code size={16} />, group: GROUP_SYSTEM, description: 'Developer mode, logs, system metrics, and diagnostics' },
-  { key: 'about', label: 'About', icon: <Info size={16} />, dividerBefore: true, description: 'Version, update channel, check for updates, and license' },
-]
+/**
+ * Settings tab descriptors.
+ *
+ * A FUNCTION, not a module-level array: the labels/descriptions are translated,
+ * and a module-level constant would freeze them in whichever language was active
+ * at import time — leaving the tab rail English after a language switch. Called
+ * once per render inside the component instead.
+ *
+ * The group headers double as the grouping KEY (SidePanelLayout starts a new
+ * header whenever this string changes), so they are resolved here too.
+ */
+function buildTabs() {
+  const GROUP_PREFERENCES = i18nT('settings.groups.preferences')
+  const GROUP_SYSTEM = i18nT('settings.groups.system')
+  return [
+    { key: 'overview', label: i18nT('settings.tabs.overview.label'), icon: <PanelsTopLeft size={16} />, description: i18nT('settings.tabs.overview.description') },
+    { key: 'imports', label: i18nT('settings.tabs.imports.label'), icon: <Import size={16} />, description: i18nT('settings.tabs.imports.description') },
+    { key: 'chat', label: i18nT('settings.tabs.chat.label'), icon: <MessageSquare size={16} />, group: GROUP_PREFERENCES, description: i18nT('settings.tabs.chat.description') },
+    { key: 'display', label: i18nT('settings.tabs.display.label'), icon: <Palette size={16} />, group: GROUP_PREFERENCES, description: i18nT('settings.tabs.display.description') },
+    { key: 'voice', label: i18nT('settings.tabs.voice.label'), icon: <Mic size={16} />, group: GROUP_PREFERENCES, description: i18nT('settings.tabs.voice.description') },
+    { key: 'notifications', label: i18nT('settings.tabs.notifications.label'), icon: <Bell size={16} />, group: GROUP_PREFERENCES, description: i18nT('settings.tabs.notifications.description') },
+    { key: 'shortcuts', label: i18nT('settings.tabs.shortcuts.label'), icon: <Keyboard size={16} />, group: GROUP_PREFERENCES, description: i18nT('settings.tabs.shortcuts.description') },
+    { key: 'skills', label: i18nT('settings.tabs.skills.label'), icon: <Sparkles size={16} />, group: GROUP_PREFERENCES, description: i18nT('settings.tabs.skills.description') },
+    { key: 'channels', label: i18nT('settings.tabs.channels.label'), icon: <Link2 size={16} />, description: i18nT('settings.tabs.channels.description') },
+    { key: 'browser', label: i18nT('settings.tabs.browser.label'), icon: <Globe size={16} />, group: GROUP_SYSTEM, description: i18nT('settings.tabs.browser.description') },
+    { key: 'instances', label: i18nT('settings.tabs.instances.label'), icon: <Server size={16} />, group: GROUP_SYSTEM, description: i18nT('settings.tabs.instances.description') },
+    { key: 'security', label: i18nT('settings.tabs.security.label'), icon: <ShieldCheck size={16} />, group: GROUP_SYSTEM, description: i18nT('settings.tabs.security.description') },
+    { key: 'developer', label: i18nT('settings.tabs.developer.label'), icon: <Code size={16} />, group: GROUP_SYSTEM, description: i18nT('settings.tabs.developer.description') },
+    { key: 'about', label: i18nT('settings.tabs.about.label'), icon: <Info size={16} />, dividerBefore: true, description: i18nT('settings.tabs.about.description') },
+  ]
+}
 
 export default function SettingsPage() {
   const version = useAppSelector(s => s.dashboard.status?.version) || '—'
@@ -70,14 +88,15 @@ export default function SettingsPage() {
   // Update nudge: dot on the About entry while a desktop update is available
   // (mirrored from Electron update-state by useUpdateSubscription).
   const updateAvailable = useAppSelector(s => s.dashboard.desktopUpdateAvailable)
-  const baseTabs = embedded ? TABS.filter(t => t.key !== 'instances') : TABS
+  const allTabs = buildTabs()
+  const baseTabs = embedded ? allTabs.filter(t => t.key !== 'instances') : allTabs
   const tabs = updateAvailable ? baseTabs.map(t => (t.key === 'about' ? { ...t, dot: true } : t)) : baseTabs
 
   return (
     <SidePanelLayout
-      title="Settings"
+      title={i18nT('pages.settingsPage.settings')}
       tabs={tabs}
-      footer={<span className="text-[12px] text-muted">KiroCrew v{version}</span>}
+      footer={<span className="text-[12px] text-muted">{i18nT('pages.settingsPage.kirocrew_v')}{version}</span>}
     >
       {tab => <>
         {tab === 'overview' && <OverviewPanel />}

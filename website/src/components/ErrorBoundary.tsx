@@ -2,6 +2,7 @@ import { Component, type ErrorInfo, type ReactNode } from 'react'
 import { AlertTriangle } from 'lucide-react'
 import { recordEvent } from '../rum'
 
+import { i18nT } from '../i18n/t'
 interface State { error: Error | null }
 
 interface Props {
@@ -62,17 +63,17 @@ export default class ErrorBoundary extends Component<Props, State> {
           style={{ minHeight: '100vh', width: '100%', backgroundColor: '#1a1a1a', color: '#f5f5f5' }}
         >
           <div className="text-4xl"><AlertTriangle className="lucide-inline" /></div>
-          <div className="text-lg font-bold">Something went wrong</div>
+          <div className="text-lg font-bold">{i18nT('components.errorBoundary.something_went_wrong')}</div>
           <div className="text-sm max-w-md break-words" style={{ color: '#b0b0b0' }}>{this.state.error.message}</div>
           <div className="flex items-center gap-2">
             <button
               className="px-4 py-1.5 rounded-lg text-[13px] font-medium cursor-pointer border-none hover:opacity-90 transition-opacity"
               style={{ backgroundColor: '#2563eb', color: '#ffffff' }}
-              onClick={() => this.setState({ error: null })}>Try Again</button>
+              onClick={() => this.setState({ error: null })}>{i18nT('components.errorBoundary.try_again')}</button>
             <button
               className="px-4 py-1.5 rounded-lg text-[13px] font-medium cursor-pointer hover:opacity-90 transition-opacity"
               style={{ backgroundColor: '#33373d', color: '#f5f5f5', border: '1px solid #4a4f57' }}
-              onClick={() => window.location.reload()}>Reload page</button>
+              onClick={() => window.location.reload()}>{i18nT('components.errorBoundary.reload_page')}</button>
           </div>
         </div>
       )
@@ -82,10 +83,10 @@ export default class ErrorBoundary extends Component<Props, State> {
     return (
       <div className="flex flex-col items-center justify-center h-full gap-4 text-center p-8">
         <div className="text-4xl"><AlertTriangle className="lucide-inline" /></div>
-        <div className="text-lg font-bold text-text-strong">Something went wrong</div>
+        <div className="text-lg font-bold text-text-strong">{i18nT('components.errorBoundary.something_went_wrong')}</div>
         <div className="text-sm text-muted max-w-md break-words">{this.state.error.message}</div>
         <button className="px-4 py-1.5 rounded-lg text-[13px] font-medium cursor-pointer bg-accent text-accent-fg border-none hover:opacity-90 transition-opacity"
-          onClick={() => this.setState({ error: null })}>Try Again</button>
+          onClick={() => this.setState({ error: null })}>{i18nT('components.errorBoundary.try_again')}</button>
       </div>
     )
   }

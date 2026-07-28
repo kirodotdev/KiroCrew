@@ -4,6 +4,7 @@ import InfoTip from './InfoTip'
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from './ui/select'
 import { Input, Toggle } from './ui'
 
+import { i18nT } from '../i18n/t'
 /* ── Settings-specific UI primitives ──
  *
  * These match the pencil design system components:
@@ -225,7 +226,7 @@ export function SettingsStepper({ label, description, hint, value, onIncrement, 
           disabled={disabled}
           className="w-8 h-8 rounded-md border border-border bg-bg-elevated text-text text-sm font-bold cursor-pointer hover:border-border-strong hover:bg-bg-hover transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center"
           onClick={onDecrement}
-          aria-label="Decrease"
+          aria-label={i18nT('components.settings.decrease')}
         >−</button>
         <button
           type="button"
@@ -241,7 +242,7 @@ export function SettingsStepper({ label, description, hint, value, onIncrement, 
           disabled={disabled}
           className="w-8 h-8 rounded-md border border-border bg-bg-elevated text-text text-sm font-bold cursor-pointer hover:border-border-strong hover:bg-bg-hover transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center"
           onClick={onIncrement}
-          aria-label="Increase"
+          aria-label={i18nT('components.settings.increase')}
         >+</button>
       </div>
     </SettingsField>

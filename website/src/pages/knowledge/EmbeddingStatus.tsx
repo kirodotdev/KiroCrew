@@ -3,6 +3,7 @@ import { Brain, Check, AlertTriangle } from 'lucide-react'
 import { api } from '../../api/client'
 import { knowledgeApi } from './api'
 
+import { i18nT } from '../../i18n/t'
 interface KnowledgeEmbedStatus {
   enabled: boolean
   available: boolean
@@ -49,13 +50,13 @@ export function EmbeddingStatus() {
         embedded > 0 ? (
           <>
             <Check size={12} className="text-ok" />
-            <span className="text-text">Smart Search active</span>
-            <span className="text-muted">· {embedded}/{total} embedded ({pct}%)</span>
+            <span className="text-text">{i18nT('pages.knowledge.embeddingStatus.smart_search_active')}</span>
+            <span className="text-muted">· {embedded}/{total} {i18nT('pages.knowledge.embeddingStatus.embedded')}{pct}%)</span>
           </>
         ) : (
           <>
             <AlertTriangle size={12} className="text-warn" />
-            <span className="text-muted">Embedding engine ready — knowledge items need embedding.</span>
+            <span className="text-muted">{i18nT('pages.knowledge.embeddingStatus.embedding_engine_ready_knowledge_items_need_embe')}</span>
             <button
               onClick={() => generateMutation.mutate()}
               disabled={generateMutation.isPending}
@@ -68,7 +69,7 @@ export function EmbeddingStatus() {
       ) : (
         <>
           <AlertTriangle size={12} className="text-warn" />
-          <span className="text-muted">Smart Search unavailable — embedding model is downloading in the background.</span>
+          <span className="text-muted">{i18nT('pages.knowledge.embeddingStatus.smart_search_unavailable_embedding_model_is_down')}</span>
         </>
       )}
     </div>

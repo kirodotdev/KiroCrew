@@ -8,6 +8,7 @@ import { api } from '../../api/client'
 import { Card, CardTitle, Btn, Badge } from '../../components/ui'
 import InfoTip from '../../components/InfoTip'
 
+import { i18nT } from '../../i18n/t'
 // Hex per group, fed straight to sigma's WebGL node program.
 const GROUP_COLORS: Record<string, string> = {
   preference: '#3b82f6',
@@ -280,21 +281,21 @@ export default function MemoryGraphTab() {
     return acc
   }, {})
 
-  if (loading) return <Card><CardTitle><NetworkIcon className="lucide-inline" /> Memory Graph</CardTitle><p className="text-muted text-sm">Loading graph data…</p></Card>
-  if (nodes.length === 0) return <Card><CardTitle><NetworkIcon className="lucide-inline" /> Memory Graph</CardTitle><p className="text-muted text-sm">No memory data to visualize. Add preferences, projects, or lessons first.</p></Card>
+  if (loading) return <Card><CardTitle><NetworkIcon className="lucide-inline" /> {i18nT('pages.overview.memoryGraphTab.memory_graph')}</CardTitle><p className="text-muted text-sm">{i18nT('pages.overview.memoryGraphTab.loading_graph_data')}</p></Card>
+  if (nodes.length === 0) return <Card><CardTitle><NetworkIcon className="lucide-inline" /> {i18nT('pages.overview.memoryGraphTab.memory_graph')}</CardTitle><p className="text-muted text-sm">{i18nT('pages.overview.memoryGraphTab.no_memory_data_to_visualize_add_preferences_proj')}</p></Card>
 
   return (<>
     <Card>
-      <CardTitle><NetworkIcon className="lucide-inline" /> Memory Graph <InfoTip text="GPU-rendered visualization of all KiroCrew memory. Nodes are color-coded by type. Zoom in to reveal labels, click a node to inspect, use filters to focus." />
-        <Btn onClick={() => load()} className="ml-2"><RefreshCw className="lucide-inline" /> Refresh</Btn>
+      <CardTitle><NetworkIcon className="lucide-inline" /> {i18nT('pages.overview.memoryGraphTab.memory_graph')} <InfoTip text="GPU-rendered visualization of all KiroCrew memory. Nodes are color-coded by type. Zoom in to reveal labels, click a node to inspect, use filters to focus." />
+        <Btn onClick={() => load()} className="ml-2"><RefreshCw className="lucide-inline" /> {i18nT('pages.overview.memoryGraphTab.refresh')}</Btn>
       </CardTitle>
       <div className="flex gap-2 flex-wrap mb-3 items-center">
         <input
-          aria-label="Search memory nodes"
+          aria-label={i18nT('pages.overview.memoryGraphTab.search_memory_nodes')}
           className="bg-bg-elevated border border-border rounded-md px-3 py-1.5 text-text text-sm font-body outline-none transition-colors focus-ring flex-1 min-w-[200px]"
-          placeholder="Search nodes…" value={searchImmediate} onChange={e => setSearchImmediate(e.target.value)}
+          placeholder={i18nT('pages.overview.memoryGraphTab.search_nodes')} value={searchImmediate} onChange={e => setSearchImmediate(e.target.value)}
         />
-        <Btn onClick={() => setFilter(null)} className={!filter ? '!border-accent !text-accent' : ''}>All ({nodes.length})</Btn>
+        <Btn onClick={() => setFilter(null)} className={!filter ? '!border-accent !text-accent' : ''}>{i18nT('pages.overview.memoryGraphTab.all')}{nodes.length})</Btn>
         {Object.entries(GROUP_LABELS).map(([key, label]) => counts[key] ? (
           <Btn key={key} onClick={() => setFilter(filter === key ? null : key)} className={filter === key ? '!border-accent !text-accent' : ''}>{label} ({counts[key]})</Btn>
         ) : null)}

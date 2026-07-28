@@ -10,6 +10,7 @@ import { ContentRenderer, langFor, wrapCode } from './ContentRenderer'
 import type { FileType } from './FileRenderers'
 import type { Artifact, ArtifactComment } from '../types'
 
+import { i18nT } from '../i18n/t'
 // Extracted from ArtifactDetailPage so the full-page route and the chat
 // side-panel Artifacts tab share one renderer (markdown/text/json/svg natively
 // via ContentRenderer; widget/html via the sandboxed iframe).
@@ -203,7 +204,7 @@ export const ArtifactBodyIframe = memo(function ArtifactBodyIframe({
           title={`Artifact: ${slug}`}
         />
       ) : (
-        <div className="p-6 text-muted">Rendering…</div>
+        <div className="p-6 text-muted">{i18nT('components.artifactBody.rendering')}</div>
       )}
     </div>
   )

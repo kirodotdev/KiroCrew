@@ -6,6 +6,7 @@ import { api } from '../../api/client'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
 import type { SubagentActivity } from '../../types'
 
+import { i18nT } from '../../i18n/t'
 const EMPTY_SUBAGENTS: Record<string, SubagentActivity> = {}
 
 /** Max agent rows rendered in the chip — exceptions (stalled/retrying) sort
@@ -108,11 +109,11 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
           {/* Histogram header: whole-wave counts so mid-wave failures stay visible */}
           <span className="text-text-strong font-medium flex items-center gap-2 min-w-0" data-testid="subagent-histogram">
             <span className="inline-flex items-center gap-1" data-testid="subagent-running-count"><Loader2 size={12} className="animate-spin text-accent" /> {running}</span>
-            {queued > 0 && <span className="inline-flex items-center gap-1 text-muted" data-testid="subagent-queued-count" title="Waiting to start — queued behind the concurrency limit"><Clock size={12} /> {queued}</span>}
+            {queued > 0 && <span className="inline-flex items-center gap-1 text-muted" data-testid="subagent-queued-count" title={i18nT('pages.chat.subagentProgressBar.waiting_to_start_queued_behind_the_concurrency_l')}><Clock size={12} /> {queued}</span>}
             {counts.done > 0 && <span className="inline-flex items-center gap-1 text-ok"><CheckCircle size={12} /> {counts.done}</span>}
             {counts.failed > 0 && <span className="inline-flex items-center gap-1 text-danger"><AlertCircle size={12} /> {counts.failed}</span>}
             {counts.stopped > 0 && <span className="inline-flex items-center gap-1 text-muted"><Square size={12} /> {counts.stopped}</span>}
-            {counts.stalled > 0 && <span className="inline-flex items-center gap-1 text-warn" title="No activity — possibly stalled"><AlertTriangle size={12} /> {counts.stalled}</span>}
+            {counts.stalled > 0 && <span className="inline-flex items-center gap-1 text-warn" title={i18nT('pages.chat.subagentProgressBar.no_activity_possibly_stalled')}><AlertTriangle size={12} /> {counts.stalled}</span>}
           </span>
           <span className="ml-auto shrink-0 flex items-center gap-1.5">
             {failedIds.length > 0 && (
@@ -122,7 +123,7 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
                 disabled={retrying}
                 aria-label={`Retry ${failedIds.length} failed subagent${failedIds.length > 1 ? 's' : ''}`}
               >
-                <RotateCcw size={11} className={retrying ? 'animate-spin' : ''} /> Retry failed ({failedIds.length})
+                <RotateCcw size={11} className={retrying ? 'animate-spin' : ''} /> {i18nT('pages.chat.subagentProgressBar.retry_failed')}{failedIds.length})
               </button>
             )}
             {stoppableCount > 0 && (
@@ -131,7 +132,7 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
                 onClick={stopAll}
                 aria-label={stoppableCount > 1 ? 'Stop all running subagents' : 'Stop running subagent'}
               >
-                <X size={11} /> Stop{stoppableCount > 1 ? ' all' : ''}
+                <X size={11} /> {i18nT('pages.chat.subagentProgressBar.stop')}{stoppableCount > 1 ? ' all' : ''}
               </button>
             )}
           </span>
@@ -155,17 +156,17 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
                   <span className="min-w-0 flex-1">
                     <span className="flex items-center gap-1.5">
                       <span className="min-w-0 flex-1 truncate text-text">{agentLabel}</span>
-                      <span className="shrink-0 tabular-nums text-muted/50">{elapsed}s{typeof a.toolCount === 'number' && a.toolCount > 0 ? ` · ${a.toolCount} tool${a.toolCount > 1 ? 's' : ''}` : ''}</span>
+                      <span className="shrink-0 tabular-nums text-muted/50">{elapsed}{i18nT('pages.chat.subagentProgressBar.s')}{typeof a.toolCount === 'number' && a.toolCount > 0 ? ` · ${a.toolCount} tool${a.toolCount > 1 ? 's' : ''}` : ''}</span>
                     </span>
                     {a.retrying ? (
                       <span className="text-info flex items-center gap-1">
                         <Loader2 size={11} className="shrink-0 animate-spin" />
-                        <span className="truncate">backend hiccup — retrying…</span>
+                        <span className="truncate">{i18nT('pages.chat.subagentProgressBar.backend_hiccup_retrying')}</span>
                       </span>
                     ) : a.stalled ? (
                       <span className="text-warn flex items-center gap-1">
                         <AlertTriangle size={11} className="shrink-0" />
-                        <span className="truncate">stalled{a.lastTool ? ` at ${sanitizeLlmOutput(a.lastTool)}` : ''} — no activity</span>
+                        <span className="truncate">{i18nT('pages.chat.subagentProgressBar.stalled')}{a.lastTool ? ` at ${sanitizeLlmOutput(a.lastTool)}` : ''} {i18nT('pages.chat.subagentProgressBar.no_activity')}</span>
                       </span>
                     ) : (a.lastTool && <span className="block text-accent/60 truncate">→ {sanitizeLlmOutput(a.lastTool)}</span>)}
                   </span>
@@ -175,7 +176,7 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
                     className="shrink-0 flex items-center text-[11px] px-1 py-0.5 rounded border border-danger/40 text-danger/70 hover:bg-danger-subtle hover:text-danger cursor-pointer transition-all bg-transparent"
                     onClick={() => stopAgent(a.id)}
                     aria-label={`Stop subagent ${sanitizeLlmOutput(a.agent || a.id)}`}
-                    title="Stop this subagent"
+                    title={i18nT('pages.chat.subagentProgressBar.stop_this_subagent')}
                   >
                     <X size={11} />
                   </button>
@@ -192,7 +193,7 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
               aria-label={`Show ${hiddenCount} more running subagents in the sidebar`}
             >
               <span aria-hidden="true" className="shrink-0 text-border select-none">└─</span>
-              <span>+ {hiddenCount} more running normally…</span>
+              <span>+ {hiddenCount} {i18nT('pages.chat.subagentProgressBar.more_running_normally')}</span>
             </button>
           )}
         </div>

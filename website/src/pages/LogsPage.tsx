@@ -5,6 +5,7 @@ import { WsContext } from '../App'
 import { PageHeader } from '../components/ui'
 import { LAYOUT } from '../components/layout'
 
+import { i18nT } from '../i18n/t'
 const LEVELS = ['DEBUG', 'INFO', 'WARNING', 'ERROR'] as const
 const levelColor = (lvl: string) => lvl === 'ERROR' ? 'text-danger' : lvl === 'WARNING' ? 'text-warn' : lvl === 'DEBUG' ? 'text-muted' : 'text-text'
 const levelBg = (lvl: string, active: boolean) => {
@@ -103,21 +104,21 @@ export function LogViewer({ compact }: { compact?: boolean }) {
   return (
     <div className={`flex-1 flex flex-col min-h-0 ${compact ? '' : 'px-6 pb-8'}`}>
       <div className={`flex ${sz.gap} flex-wrap items-center`}>
-        <span className={`${sz.label} text-muted mr-1`}>Log Level:</span>
+        <span className={`${sz.label} text-muted mr-1`}>{i18nT('pages.logsPage.log_level')}</span>
         {LEVELS.map(l => (
           <button key={l} className={`${sz.btn} rounded-full font-medium font-body cursor-pointer border transition-all ${levelBg(l, currentLevel === l)}`} onClick={() => changeLevel(l)}>{l.charAt(0) + l.slice(1).toLowerCase()}</button>
         ))}
       </div>
       <div className={`flex gap-2 ${compact ? 'mb-2' : 'mb-3'} items-center`}>
-        <input type="text" aria-label="Filter logs" placeholder="Filter logs..." value={search}
+        <input type="text" aria-label={i18nT('pages.logsPage.filter_logs')} placeholder={i18nT('pages.logsPage.filter_logs_2')} value={search}
           onChange={e => { const v = e.target.value; setSearch(v); if (!v) setMatchesOnly(false) }}
           className={`flex-1 ${sz.input} rounded-lg border border-border bg-surface text-text font-mono placeholder:text-muted focus:outline-none focus:border-accent`}
         />
         {search && (
           <>
             <button className={`${sz.btn} rounded cursor-pointer border transition-all whitespace-nowrap ${matchesOnly ? 'bg-surface border-border-strong text-text' : 'bg-transparent border-border text-muted'}`}
-              onClick={() => setMatchesOnly(p => !p)}>Matches only</button>
-            <span className={`${sz.label} text-muted whitespace-nowrap`}>{matchCount} matches</span>
+              onClick={() => setMatchesOnly(p => !p)}>{i18nT('pages.logsPage.matches_only')}</button>
+            <span className={`${sz.label} text-muted whitespace-nowrap`}>{matchCount} {i18nT('pages.logsPage.matches')}</span>
           </>
         )}
         <button className={`${sz.btn} rounded cursor-pointer border transition-all whitespace-nowrap ml-auto ${newestFirst ? 'bg-surface border-border-strong text-text' : 'bg-transparent border-border text-muted'}`}
@@ -145,7 +146,7 @@ export function LogViewer({ compact }: { compact?: boolean }) {
 export default function LogsPage() {
   return (
     <>
-      <PageHeader title="Live Logs" subtitle="Real-time application output" />
+      <PageHeader title={i18nT('pages.logsPage.live_logs')} subtitle={i18nT('pages.logsPage.real_time_application_output')} />
       <LogViewer />
     </>
   )

@@ -15,6 +15,7 @@ import { loadChatConfig } from './ChatSettings'
 import { useSmoothStream } from '../../hooks/useSmoothStream'
 import type { PlanStepInput } from '../../api/client'
 import { OPTION_MARKER_RE } from '../../utils/optionsMarker'
+import { i18nT } from '../../i18n/t'
 const PLAN_HEADER_RE = /📋\s*Plan for:/i
 const STAGE_RE = /^Stage\s+\d+\s*:/m
 
@@ -88,7 +89,7 @@ function SteerAckChip({ summary }: { summary: string }) {
     >
       <span className="inline-flex items-center gap-1.5 text-accent">
         <Compass size={13} className="shrink-0" />
-        <span className="font-semibold">Steered</span>
+        <span className="font-semibold">{i18nT('pages.chat.assistantMessage.steered')}</span>
       </span>
       {summary ? <span className="text-text ml-[19px] mt-0.5">{summary}</span> : null}
     </motion.div>
@@ -234,21 +235,21 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
     {!isStreaming && showFooter && (
       <div className="flex items-center gap-1 mt-0.5 opacity-0 transition-opacity duration-300 delay-100 group-hover/msg:opacity-100 group-hover/msg:delay-300 group-focus-within/msg:opacity-100 group-focus-within/msg:delay-300">
         {timestamp && <span className="text-muted text-[12px] font-mono mr-1.5">{timestamp}</span>}
-        <button className="text-muted hover:text-text p-0.5 rounded transition-colors" title="Copy" aria-label={copied ? 'Copied!' : 'Copy'} onClick={() => { copyToClipboard(steerCleaned).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500) }).catch(() => {}) }}>{copied ? <Check size={14} className="text-ok" /> : <Copy size={14} />}</button>
-        {messageTs && slotKey && <button className="text-muted hover:text-text p-0.5 rounded transition-colors" title="Copy link to message" aria-label="Copy link to message" onClick={() => { copySessionLink(slotKey, slotTitle, messageTs, mode).then(() => { setLinkCopied(true); setTimeout(() => setLinkCopied(false), 1500) }).catch(() => {}) }}>{linkCopied ? <Check size={14} className="text-ok" /> : <Link2 size={14} />}</button>}
-        {onFork && forkIndex !== undefined && <button className="text-muted hover:text-text p-0.5 rounded transition-colors disabled:opacity-50" disabled={busyAction !== null} title="Fork conversation from here" aria-label="Fork conversation from here" onClick={async () => { setBusyAction('fork'); try { await onFork(forkIndex) } finally { setBusyAction(null) } }}>{busyAction === 'fork' ? <Loader2 size={14} className="animate-spin" /> : <GitFork size={14} />}</button>}
-        {onPlanFromHere && forkIndex !== undefined && <button className="text-muted hover:text-text p-0.5 rounded transition-colors disabled:opacity-50" disabled={busyAction !== null} title="Plan from here" aria-label="Plan from here" onClick={async () => { setBusyAction('plan'); try { await onPlanFromHere(forkIndex) } finally { setBusyAction(null) } }}>{busyAction === 'plan' ? <Loader2 size={14} className="animate-spin" /> : <ClipboardList size={14} />}</button>}
-        {text.length >= 50 && onSpeak && <button className="text-muted hover:text-text p-0.5 rounded transition-colors" title="Speak" aria-label="Speak message" onClick={onSpeak}><Volume2 size={14} /></button>}
+        <button className="text-muted hover:text-text p-0.5 rounded transition-colors" title={i18nT('pages.chat.assistantMessage.copy')} aria-label={copied ? 'Copied!' : 'Copy'} onClick={() => { copyToClipboard(steerCleaned).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500) }).catch(() => {}) }}>{copied ? <Check size={14} className="text-ok" /> : <Copy size={14} />}</button>
+        {messageTs && slotKey && <button className="text-muted hover:text-text p-0.5 rounded transition-colors" title={i18nT('pages.chat.assistantMessage.copy_link_to_message')} aria-label={i18nT('pages.chat.assistantMessage.copy_link_to_message')} onClick={() => { copySessionLink(slotKey, slotTitle, messageTs, mode).then(() => { setLinkCopied(true); setTimeout(() => setLinkCopied(false), 1500) }).catch(() => {}) }}>{linkCopied ? <Check size={14} className="text-ok" /> : <Link2 size={14} />}</button>}
+        {onFork && forkIndex !== undefined && <button className="text-muted hover:text-text p-0.5 rounded transition-colors disabled:opacity-50" disabled={busyAction !== null} title={i18nT('pages.chat.assistantMessage.fork_conversation_from_here')} aria-label={i18nT('pages.chat.assistantMessage.fork_conversation_from_here')} onClick={async () => { setBusyAction('fork'); try { await onFork(forkIndex) } finally { setBusyAction(null) } }}>{busyAction === 'fork' ? <Loader2 size={14} className="animate-spin" /> : <GitFork size={14} />}</button>}
+        {onPlanFromHere && forkIndex !== undefined && <button className="text-muted hover:text-text p-0.5 rounded transition-colors disabled:opacity-50" disabled={busyAction !== null} title={i18nT('pages.chat.assistantMessage.plan_from_here')} aria-label={i18nT('pages.chat.assistantMessage.plan_from_here')} onClick={async () => { setBusyAction('plan'); try { await onPlanFromHere(forkIndex) } finally { setBusyAction(null) } }}>{busyAction === 'plan' ? <Loader2 size={14} className="animate-spin" /> : <ClipboardList size={14} />}</button>}
+        {text.length >= 50 && onSpeak && <button className="text-muted hover:text-text p-0.5 rounded transition-colors" title={i18nT('pages.chat.assistantMessage.speak')} aria-label={i18nT('pages.chat.assistantMessage.speak_message')} onClick={onSpeak}><Volume2 size={14} /></button>}
         {text.length > 20 && <button className={`p-0.5 rounded transition-colors flex items-center gap-0.5 text-[11px] ${rawMode ? 'text-text' : 'text-muted hover:text-text'}`} title={rawMode ? 'Rendered view' : 'Raw markdown'} aria-label={rawMode ? 'Switch to rendered view' : 'Switch to raw markdown view'} onClick={() => setRawMode(!rawMode)}><Code size={14} />{rawMode ? 'rendered' : 'raw'}</button>}
-        {onRegenerate && !slotRunning && <button className="text-muted hover:text-text p-0.5 rounded transition-colors" title="Regenerate" aria-label="Regenerate response" onClick={onRegenerate}><RefreshCw size={14} /></button>}
+        {onRegenerate && !slotRunning && <button className="text-muted hover:text-text p-0.5 rounded transition-colors" title={i18nT('pages.chat.assistantMessage.regenerate')} aria-label={i18nT('pages.chat.assistantMessage.regenerate_response')} onClick={onRegenerate}><RefreshCw size={14} /></button>}
         {hasVariants && (() => {
           const curIdx = activeIdx
           const switchFn = onSwitchVariant || ((i: number) => setLocalIdx(i))
           return (
             <div className="flex items-center gap-0.5 ml-1 text-[11px] text-muted">
-              <button className="hover:text-text p-0.5 rounded transition-colors disabled:opacity-30 disabled:cursor-default cursor-pointer" title="Previous version" aria-label="Previous version" disabled={curIdx <= 0 || !!slotRunning} onClick={() => switchFn(curIdx - 1)}><ChevronLeft size={14} /></button>
+              <button className="hover:text-text p-0.5 rounded transition-colors disabled:opacity-30 disabled:cursor-default cursor-pointer" title={i18nT('pages.chat.assistantMessage.previous_version')} aria-label={i18nT('pages.chat.assistantMessage.previous_version')} disabled={curIdx <= 0 || !!slotRunning} onClick={() => switchFn(curIdx - 1)}><ChevronLeft size={14} /></button>
               <span className="font-mono">{curIdx + 1}/{variants!.length}</span>
-              <button className="hover:text-text p-0.5 rounded transition-colors disabled:opacity-30 disabled:cursor-default cursor-pointer" title="Next version" aria-label="Next version" disabled={curIdx >= variants!.length - 1 || !!slotRunning} onClick={() => switchFn(curIdx + 1)}><ChevronRight size={14} /></button>
+              <button className="hover:text-text p-0.5 rounded transition-colors disabled:opacity-30 disabled:cursor-default cursor-pointer" title={i18nT('pages.chat.assistantMessage.next_version')} aria-label={i18nT('pages.chat.assistantMessage.next_version')} disabled={curIdx >= variants!.length - 1 || !!slotRunning} onClick={() => switchFn(curIdx + 1)}><ChevronRight size={14} /></button>
             </div>
           )
         })()}
@@ -256,10 +257,10 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
     )}
     {planSteps && onApplyPlan && !applied && !isRegenerating && (
       <button className="mt-1 px-3 py-1.5 rounded-md text-[13px] font-medium border border-accent text-accent bg-transparent cursor-pointer hover:bg-accent hover:text-accent-fg transition-all" onClick={async () => { const ok = await onApplyPlan(planSteps); if (ok) setApplied(true) }}>
-        <ClipboardList className="lucide-inline" /> Use as Plan ({planSteps.length} steps)
+        <ClipboardList className="lucide-inline" /> {i18nT('pages.chat.assistantMessage.use_as_plan')}{planSteps.length} {i18nT('pages.chat.assistantMessage.steps')}
       </button>
     )}
-    {applied && <div className="mt-1 text-[13px] text-ok"><CheckCircle className="lucide-inline" /> Applied to Tasks</div>}
+    {applied && <div className="mt-1 text-[13px] text-ok"><CheckCircle className="lucide-inline" /> {i18nT('pages.chat.assistantMessage.applied_to_tasks')}</div>}
   </div>
 })
 

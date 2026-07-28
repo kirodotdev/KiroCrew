@@ -18,6 +18,7 @@ import { categoryFor } from './categories'
 import { useHeroArt } from './useHeroArt'
 import { sourceLabel, isVerified, type RegistryApp } from './types'
 
+import { i18nT } from '../../i18n/t'
 export default function AppListRow({ app, busy, onOpen, onGet, onUpdate, onEnable }: {
   app: RegistryApp
   busy?: boolean
@@ -53,8 +54,8 @@ export default function AppListRow({ app, busy, onOpen, onGet, onUpdate, onEnabl
         <div className="flex items-center gap-1.5 text-[14px] font-semibold text-text-strong">
           <span className="truncate">{app.displayName}</span>
           {isVerified(app) && (
-            <BadgeCheck size={14} className="text-accent shrink-0" aria-label="Verified publisher">
-              <title>Verified publisher (first-party)</title>
+            <BadgeCheck size={14} className="text-accent shrink-0" aria-label={i18nT('components.appstore.appListRow.verified_publisher')}>
+              <title>{i18nT('components.appstore.appListRow.verified_publisher_first_party')}</title>
             </BadgeCheck>
           )}
         </div>
@@ -70,15 +71,15 @@ export default function AppListRow({ app, busy, onOpen, onGet, onUpdate, onEnabl
         role="presentation"
       >
         {hiddenBuiltin ? (
-          <Btn disabled={busy} onClick={onEnable}><Power size={14} /> Enable</Btn>
+          <Btn disabled={busy} onClick={onEnable}><Power size={14} /> {i18nT('components.appstore.appListRow.enable')}</Btn>
         ) : app.installed && app.updateAvailable ? (
           <Btn disabled={busy} className="border-[var(--info)] text-[var(--info)] hover:text-[var(--info)] hover:border-[var(--info)]" onClick={onUpdate}>
-            <ArrowUp size={14} /> Update
+            <ArrowUp size={14} /> {i18nT('components.appstore.appListRow.update')}
           </Btn>
         ) : app.installed ? (
-          <span className="inline-flex items-center gap-1 text-[12px] text-muted"><Check size={12} /> Installed</span>
+          <span className="inline-flex items-center gap-1 text-[12px] text-muted"><Check size={12} /> {i18nT('components.appstore.appListRow.installed')}</span>
         ) : (
-          <Btn primary className="rounded-full px-3.5 text-[12px] font-semibold" disabled={busy} onClick={onGet}>Install</Btn>
+          <Btn primary className="rounded-full px-3.5 text-[12px] font-semibold" disabled={busy} onClick={onGet}>{i18nT('components.appstore.appListRow.install')}</Btn>
         )}
       </div>
     </Clickable>

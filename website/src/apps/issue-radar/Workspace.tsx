@@ -30,6 +30,7 @@ import SettingsView from './views/SettingsView'
 import { dashboardComponent } from './views/registry'
 import { providerTerms } from './lib/links'
 
+import { i18nT } from '../../i18n/t'
 // Module-level so the hook's memoised resolver isn't invalidated every render.
 const RAIL_COLLAPSE: CollapseConfig = { width: COLLAPSED_RAIL_WIDTH, storageKey: RAIL_COLLAPSED_KEY }
 
@@ -51,7 +52,7 @@ export default function Workspace() {
 
       {/* Drag handle — resize the left rail. Present in every main view, since
           the rail itself is. Dragging well past the minimum collapses it. */}
-      <ResizeHandle handleProps={rail.handleProps} label="Resize sidebar" />
+      <ResizeHandle handleProps={rail.handleProps} label={i18nT('apps.issueRadar.workspace.resize_sidebar')} />
 
       {mainView === 'issues' ? (
         <>
@@ -60,7 +61,7 @@ export default function Workspace() {
           </section>
 
           {/* Drag handle — resize the issue-list column. */}
-          <ResizeHandle handleProps={list.handleProps} label="Resize list" />
+          <ResizeHandle handleProps={list.handleProps} label={i18nT('apps.issueRadar.workspace.resize_list')} />
 
           <main className="flex-1 min-w-0 min-h-0">
             {activeIssue
@@ -68,7 +69,7 @@ export default function Workspace() {
               : (
                 <div className="h-full flex flex-col items-center justify-center text-muted gap-2">
                   <CircleDot size={26} strokeWidth={1.5} className="opacity-50" />
-                  <div className="text-[13px]">Select an issue to see its details.</div>
+                  <div className="text-[13px]">{i18nT('apps.issueRadar.workspace.select_an_issue_to_see_its_details')}</div>
                 </div>
               )}
           </main>
@@ -84,7 +85,7 @@ export default function Workspace() {
           </section>
 
           {/* Drag handle — resize the PR-list column. */}
-          <ResizeHandle handleProps={list.handleProps} label="Resize list" />
+          <ResizeHandle handleProps={list.handleProps} label={i18nT('apps.issueRadar.workspace.resize_list')} />
 
           <main className="flex-1 min-w-0 min-h-0">
             {activePull
@@ -92,7 +93,7 @@ export default function Workspace() {
               : (
                 <div className="h-full flex flex-col items-center justify-center text-muted gap-2">
                   <GitPullRequest size={26} strokeWidth={1.5} className="opacity-50" />
-                  <div className="text-[13px]">Select a {terms.changeRequestTitle} to see its details.</div>
+                  <div className="text-[13px]">{i18nT('apps.issueRadar.workspace.select_a')} {terms.changeRequestTitle} {i18nT('apps.issueRadar.workspace.to_see_its_details')}</div>
                 </div>
               )}
           </main>

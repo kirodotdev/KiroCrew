@@ -4,6 +4,7 @@ import type { SearchMatch } from '../hooks/useMessageSearch'
 import { platformShortcut } from '../utils/platform'
 import { SEARCH_LISTBOX_ID, searchOptionId } from './SearchResultsList'
 
+import { i18nT } from '../i18n/t'
 interface SearchBarProps {
   term: string
   setTerm: (t: string) => void
@@ -93,15 +94,15 @@ export default function SearchBar({ term, setTerm, matches, currentIdx, next, pr
         value={term}
         onChange={e => setTerm(e.target.value)}
         onKeyDown={handleKeyDown}
-        aria-label="Find in chat"
-        placeholder="Find in chat…"
+        aria-label={i18nT('components.searchBar.find_in_chat')}
+        placeholder={i18nT('components.searchBar.find_in_chat_2')}
         className={`bg-transparent border-none outline-none text-text placeholder:text-muted text-[13px] ${docked ? 'flex-1 min-w-0' : 'w-[180px]'}`}
       />
       <button
         onClick={toggleCaseSensitive}
         className={`p-0.5 rounded cursor-pointer border-none transition-colors ${caseSensitive ? 'bg-accent/20 text-accent' : 'bg-transparent text-muted hover:text-text'}`}
-        title="Case sensitive"
-        aria-label="Case sensitive"
+        title={i18nT('components.searchBar.case_sensitive')}
+        aria-label={i18nT('components.searchBar.case_sensitive')}
       >
         <CaseSensitive size={15} />
       </button>
@@ -110,14 +111,14 @@ export default function SearchBar({ term, setTerm, matches, currentIdx, next, pr
           {matches.length > 0 ? `${currentIdx + 1} of ${matches.length} results` : 'No results'}
         </span>
       )}
-      <button onClick={prev} className="p-0.5 rounded text-muted hover:text-text cursor-pointer border-none bg-transparent" title={`Previous (${platformShortcut('Shift+Enter')})`} aria-label="Previous match">
+      <button onClick={prev} className="p-0.5 rounded text-muted hover:text-text cursor-pointer border-none bg-transparent" title={`Previous (${platformShortcut('Shift+Enter')})`} aria-label={i18nT('components.searchBar.previous_match')}>
         <ChevronUp size={15} />
       </button>
-      <button onClick={next} className="p-0.5 rounded text-muted hover:text-text cursor-pointer border-none bg-transparent" title={`Next (${platformShortcut('Enter')})`} aria-label="Next match">
+      <button onClick={next} className="p-0.5 rounded text-muted hover:text-text cursor-pointer border-none bg-transparent" title={`Next (${platformShortcut('Enter')})`} aria-label={i18nT('components.searchBar.next_match')}>
         <ChevronDown size={15} />
       </button>
       {!docked && (
-        <button onClick={close} className="p-0.5 rounded text-muted hover:text-text cursor-pointer border-none bg-transparent" title="Close (Esc)" aria-label="Close (Esc)">
+        <button onClick={close} className="p-0.5 rounded text-muted hover:text-text cursor-pointer border-none bg-transparent" title={i18nT('components.searchBar.close_esc')} aria-label={i18nT('components.searchBar.close_esc')}>
           <X size={15} />
         </button>
       )}

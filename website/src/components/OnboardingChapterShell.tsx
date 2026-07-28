@@ -4,6 +4,7 @@ import { motion, useReducedMotion } from 'framer-motion'
 import { ArrowRight } from 'lucide-react'
 import { KiroGhost } from './KiroGhost'
 
+import { i18nT } from '../i18n/t'
 // Floating decorative mascot — the same treatment as the Kiro CLI setup gate
 // (KiroPrerequisiteGate's FloatingGhost) and the Import setup panel: staggered
 // fade + spring scale entrance and an infinite easeInOut bob. Honors the OS
@@ -95,7 +96,7 @@ export default function OnboardingChapterShell({
           <div className="relative z-10 flex w-full flex-col p-7 sm:p-10">
             <div className="flex items-center gap-3">
               <KiroGhost size={28} className="h-8 w-7" />
-              <span className="text-[15px] font-semibold tracking-wide">Kiro Crew</span>
+              <span className="text-[15px] font-semibold tracking-wide">{i18nT('components.onboardingChapterShell.kiro_crew')}</span>
             </div>
             <div className="mt-auto max-w-[290px]">
               <h1 className="text-4xl font-semibold leading-[1.05] tracking-[-0.02em] sm:text-[clamp(2.2rem,4vw,3.5rem)]">
@@ -112,16 +113,16 @@ export default function OnboardingChapterShell({
           <header className="shrink-0 px-6 pt-7 sm:px-10 sm:pt-10">
             <div className="flex items-center justify-between gap-4">
               <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted">
-                {chapterLabel} · {stepIndex} of {stepCount}
+                {chapterLabel} · {stepIndex} {i18nT('components.onboardingChapterShell.of')} {stepCount}
               </p>
               <button
                 type="button"
-                aria-label="Skip all setup and onboarding"
+                aria-label={i18nT('components.onboardingChapterShell.skip_all_setup_and_onboarding')}
                 disabled={skipDisabled}
                 onClick={onSkipAll}
                 className="inline-flex items-center gap-1.5 text-[13px] font-medium text-muted transition-colors hover:text-text disabled:cursor-not-allowed disabled:opacity-50"
               >
-                Skip all <ArrowRight className="lucide-inline" />
+                {i18nT('components.onboardingChapterShell.skip_all')} <ArrowRight className="lucide-inline" />
               </button>
             </div>
             <div className="mt-6">

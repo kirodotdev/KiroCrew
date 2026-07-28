@@ -6,6 +6,7 @@ import { SecretField } from '../../components/SecretField'
 import { Btn } from '../../components/ui'
 import { TagListEditor } from './SlackPanel'
 
+import { i18nT } from '../../i18n/t'
 /** Config shape shared by every bot-token channel (Discord, Telegram, …). */
 export interface BotChannelConfigData {
   connected: boolean
@@ -285,8 +286,8 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
     saveMut.mutate(payload)
   }, [draft, botToken, botClear, botId, botIdClear, saveMut])
 
-  if (isLoading) return <p className="text-[13px] text-muted p-4">Loading {spec.name} config…</p>
-  if (isError || !data || !draft) return <p className="text-[13px] text-danger p-4">Cannot load {spec.name} config. Is the gateway running?</p>
+  if (isLoading) return <p className="text-[13px] text-muted p-4">{i18nT('pages.settings.botChannelPanel.loading')} {spec.name} {i18nT('pages.settings.botChannelPanel.config')}</p>
+  if (isError || !data || !draft) return <p className="text-[13px] text-danger p-4">{i18nT('pages.settings.botChannelPanel.cannot_load')} {spec.name} {i18nT('pages.settings.botChannelPanel.config_is_the_gateway_running')}</p>
 
   const upd = (patch: Partial<Draft>) => setDraft(d => (d ? { ...d, ...patch } : d))
   const ro = data.read_only
@@ -319,7 +320,7 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
         <div className="flex items-center gap-2 rounded-md border border-border bg-bg-elevated px-3 py-2 mb-3">
           <Lock size={13} className="text-muted flex-none" />
           <span className="text-[12px] text-muted">
-            {spec.name} settings are managed on the machine running KiroCrew and are read-only from remote sessions.
+            {spec.name} {i18nT('pages.settings.botChannelPanel.settings_are_managed_on_the_machine_running_kiro')}
           </span>
         </div>
       )}
@@ -338,14 +339,14 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
             </a>
             <a href={spec.setupGuide} target="_blank" rel="noopener noreferrer"
               className="inline-flex items-center gap-1.5 text-[13px] font-medium text-accent hover:underline">
-              Setup guide <ExternalLink size={13} />
+              {i18nT('pages.settings.botChannelPanel.setup_guide')} <ExternalLink size={13} />
             </a>
           </div>
         </SettingsCard>
       </SettingsSection>
 
       {/* ── Required ── */}
-      <SettingsSection title="Required">
+      <SettingsSection title={i18nT('pages.settings.botChannelPanel.required')}>
         <SettingsCard>
           <SettingsToggle
             label={`Enable ${spec.name}`}
@@ -388,7 +389,7 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
       </SettingsSection>
 
       {/* ── Identity & access ── */}
-      <SettingsSection title="Identity & access">
+      <SettingsSection title={i18nT('pages.settings.botChannelPanel.identity_access')}>
         <SettingsCard>
           {spec.allowAll && (
             <>
@@ -403,7 +404,7 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
             </>
           )}
           <TagListEditor
-            label="Allowed user IDs"
+            label={i18nT('pages.settings.botChannelPanel.allowed_user_ids')}
             description={spec.allowlistDescription}
             values={draft.allowed_user_ids}
             placeholder={spec.allowlistPlaceholder}
@@ -439,7 +440,7 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
 
       {/* ── Forum topics (optional; Telegram supergroups) ── */}
       {spec.forum && (
-        <SettingsSection title="Forum topics">
+        <SettingsSection title={i18nT('pages.settings.botChannelPanel.forum_topics')}>
           <SettingsCard>
             <SettingsToggle
               label={spec.forum.toggleLabel}
@@ -472,10 +473,10 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
       )}
 
       {/* ── Behavior ── */}
-      <SettingsSection title="Behavior">
+      <SettingsSection title={i18nT('pages.settings.botChannelPanel.behavior')}>
         <SettingsCard>
           <SettingsInput
-            label="Soft context threshold %"
+            label={i18nT('pages.settings.botChannelPanel.soft_context_threshold')}
             description={spec.thresholdDescription}
             value={draft.soft_threshold_pct}
             onChange={v => upd({ soft_threshold_pct: v })}

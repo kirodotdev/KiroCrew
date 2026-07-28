@@ -28,6 +28,7 @@ import { useIssueRadar } from './context'
 import Clickable from '../../components/Clickable'
 import { useDialogFocusTrap } from '../../hooks/useDialogFocusTrap'
 
+import { i18nT } from '../../i18n/t'
 export default function ConnectRepoModal({
   onConnected,
   onClose,
@@ -91,13 +92,13 @@ export default function ConnectRepoModal({
         <Clickable
           className="absolute inset-0 bg-bg/50 backdrop-blur-sm"
           onClick={requestClose}
-          aria-label="Close connect dialog"
+          aria-label={i18nT('apps.issueRadar.connectRepoModal.close_connect_dialog')}
         />
         <motion.div
           ref={dialogRef}
           role="dialog"
           aria-modal="true"
-          aria-label="Connect a provider"
+          aria-label={i18nT('apps.issueRadar.connectRepoModal.connect_a_provider')}
           tabIndex={-1}
           initial={{ opacity: 0, y: 8, scale: 0.98 }}
           animate={{ opacity: 1, y: 0, scale: 1 }}
@@ -111,7 +112,7 @@ export default function ConnectRepoModal({
           <button
             onClick={requestClose}
             disabled={flow.pending}
-            aria-label="Close"
+            aria-label={i18nT('apps.issueRadar.connectRepoModal.close')}
             className="absolute top-3 right-3 p-1.5 rounded-md text-muted hover:text-text hover:bg-bg-hover cursor-pointer bg-transparent border-0 disabled:opacity-30 disabled:cursor-default"
           >
             <X size={16} />

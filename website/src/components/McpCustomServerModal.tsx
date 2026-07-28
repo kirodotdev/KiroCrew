@@ -21,6 +21,7 @@ import Modal from './Modal'
 import { Btn } from './ui'
 import type { McpCustomSpec } from '../types'
 
+import { i18nT } from '../i18n/t'
 interface Props {
   open: boolean
   onClose: () => void
@@ -189,15 +190,15 @@ export default function McpCustomServerModal({ open, onClose, editName }: Props)
       <div className="flex flex-col gap-3 p-1">
         {!editing && (
           <p className="text-xs text-muted m-0">
-            Paste an <code>mcpServers</code> block from a README, a{' '}
-            <code>{'{name: spec}'}</code> map, or a single spec. Specs take{' '}
-            <code>command</code>/<code>args</code>/<code>env</code> (stdio) or{' '}
-            <code>url</code> (remote).
+            {i18nT('components.mcpCustomServerModal.paste_an')} <code>{i18nT('components.mcpCustomServerModal.mcpservers')}</code> {i18nT('components.mcpCustomServerModal.block_from_a_readme_a')}{' '}
+            <code>{'{name: spec}'}</code> {i18nT('components.mcpCustomServerModal.map_or_a_single_spec_specs_take')}{' '}
+            <code>{i18nT('components.mcpCustomServerModal.command')}</code>/<code>{i18nT('components.mcpCustomServerModal.args')}</code>/<code>{i18nT('components.mcpCustomServerModal.env')}</code> {i18nT('components.mcpCustomServerModal.stdio_or')}{' '}
+            <code>{i18nT('components.mcpCustomServerModal.url')}</code> {i18nT('components.mcpCustomServerModal.remote')}
           </p>
         )}
         {editing && specQuery.isLoading && (
           <span className="flex items-center gap-1.5 text-xs text-muted" role="status">
-            <Loader2 size={13} className="animate-spin" aria-hidden="true" /> Loading current spec…
+            <Loader2 size={13} className="animate-spin" aria-hidden="true" /> {i18nT('components.mcpCustomServerModal.loading_current_spec')}
           </span>
         )}
         {editing && specQuery.isError && (
@@ -223,21 +224,21 @@ export default function McpCustomServerModal({ open, onClose, editName }: Props)
         )}
 
         {waitingForName && (
-          <p className="text-xs text-muted m-0">That looks like a single server spec — give it a name:</p>
+          <p className="text-xs text-muted m-0">{i18nT('components.mcpCustomServerModal.that_looks_like_a_single_server_spec_give_it_a_n')}</p>
         )}
         {!editing && parsed?.ok && parsed.needsName && (
           <input
             value={bareName}
             onChange={(e) => setBareName(e.target.value)}
-            placeholder="server-name"
-            aria-label="Server name"
+            placeholder={i18nT('components.mcpCustomServerModal.server_name')}
+            aria-label={i18nT('components.mcpCustomServerModal.server_name_2')}
             className="w-60 rounded-md border border-border bg-bg px-3 py-1.5 font-mono text-[12px] text-text focus:outline-none focus:ring-1 focus:ring-accent"
           />
         )}
 
         {!editing && canSubmit && (
           <div className="rounded-md border border-border bg-bg-elevated px-3 py-2">
-            <div className="text-[11px] uppercase tracking-wide text-muted mb-1">Will add</div>
+            <div className="text-[11px] uppercase tracking-wide text-muted mb-1">{i18nT('components.mcpCustomServerModal.will_add')}</div>
             <ul className="m-0 p-0 list-none space-y-0.5">
               {previewNames.map((n) => (
                 <li key={n} className="text-[12px] flex items-baseline gap-2 min-w-0">
@@ -264,14 +265,14 @@ export default function McpCustomServerModal({ open, onClose, editName }: Props)
                 onChange={(e) => setEnableNow(e.target.checked)}
                 className="accent-[var(--accent)]"
               />
-              Enable immediately
-              <span className="text-muted">(otherwise added disabled — enable in the table)</span>
+              {i18nT('components.mcpCustomServerModal.enable_immediately')}
+              <span className="text-muted">{i18nT('components.mcpCustomServerModal.otherwise_added_disabled_enable_in_the_table')}</span>
             </label>
           ) : (
-            <span className="text-xs text-muted">Saving keeps the server's enabled/disabled state.</span>
+            <span className="text-xs text-muted">{i18nT('components.mcpCustomServerModal.saving_keeps_the_server_s_enabled_disabled_state')}</span>
           )}
           <div className="flex items-center gap-2 shrink-0">
-            <Btn onClick={onClose}>Cancel</Btn>
+            <Btn onClick={onClose}>{i18nT('components.mcpCustomServerModal.cancel')}</Btn>
             <Btn primary onClick={submit} disabled={!canSubmit || busy}>
               {busy ? (
                 <Loader2 size={14} className="animate-spin" aria-hidden="true" />

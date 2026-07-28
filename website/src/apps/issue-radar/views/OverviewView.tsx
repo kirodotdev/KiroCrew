@@ -4,6 +4,7 @@ import { relativeDate, readableText } from '../lib/format'
 import { useIssueRadar } from '../context'
 import type { Issue } from '../api'
 
+import { i18nT } from '../../../i18n/t'
 // Overview — the triage command center. A full-width bento of "what's true
 // right now": headline KPIs, the issues most in need of action, label mix,
 // backlog age, recent activity, and discussion hotspots. Overview stays a
@@ -104,7 +105,7 @@ export default function OverviewView() {
   const openDetail = (n: number) => { setSelectedIssue(n); openIssues() }
 
   if (issuesLoading && open === 0) {
-    return <div className="h-full flex items-center justify-center text-muted text-[14px]">Loading overview…</div>
+    return <div className="h-full flex items-center justify-center text-muted text-[14px]">{i18nT('apps.issueRadar.views.overviewView.loading_overview')}</div>
   }
 
   const maxAge = Math.max(1, ...stats.ageBuckets)
@@ -128,16 +129,16 @@ export default function OverviewView() {
           >
             <div className="text-[26px] font-bold text-accent leading-none tabular-nums">{stats.mine}</div>
             <div>
-              <div className="text-[13px] font-medium text-text">Assigned to you</div>
-              <div className="text-[11px] text-muted mt-0.5">Filter the list to issues assigned to you</div>
+              <div className="text-[13px] font-medium text-text">{i18nT('apps.issueRadar.views.overviewView.assigned_to_you')}</div>
+              <div className="text-[11px] text-muted mt-0.5">{i18nT('apps.issueRadar.views.overviewView.filter_the_list_to_issues_assigned_to_you')}</div>
             </div>
           </button>
         ) : <div className="flex-1" />}
         <button
           onClick={refresh}
           disabled={refreshing}
-          aria-label="Refresh issues"
-          title="Re-fetch issues + labels from GitHub"
+          aria-label={i18nT('apps.issueRadar.views.overviewView.refresh_issues')}
+          title={i18nT('apps.issueRadar.views.overviewView.re_fetch_issues_labels_from_github')}
           className="flex-shrink-0 inline-flex items-center justify-center h-9 w-9 rounded-lg border border-border text-muted hover:text-text hover:border-border-strong disabled:opacity-40 cursor-pointer"
         >
           <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />
@@ -161,9 +162,9 @@ export default function OverviewView() {
 
       {/* Needs attention — full width, filled by a multi-column triage grid so
        * there's no wasted whitespace. Newest untriaged/unanswered first. */}
-      <Panel title="Needs attention" hint="newest issues still untriaged or unanswered">
+      <Panel title={i18nT('apps.issueRadar.views.overviewView.needs_attention')} hint={i18nT('apps.issueRadar.views.overviewView.newest_issues_still_untriaged_or_unanswered')}>
         {needsAttention.length === 0 ? (
-          <Empty>Nothing needs attention</Empty>
+          <Empty>{i18nT('apps.issueRadar.views.overviewView.nothing_needs_attention')}</Empty>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2.5">
             {needsAttention.map((i) => {
@@ -203,9 +204,9 @@ export default function OverviewView() {
 
       {/* Distributions: label mix + backlog age, side by side. */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
-        <Panel title="Label distribution" className="h-80">
+        <Panel title={i18nT('apps.issueRadar.views.overviewView.label_distribution')} className="h-80">
           {topLabels.length === 0 ? (
-            <Empty>No labels in use.</Empty>
+            <Empty>{i18nT('apps.issueRadar.views.overviewView.no_labels_in_use')}</Empty>
           ) : (
             <div className="flex-1 min-h-0 overflow-y-auto scrollbar-none" style={{ scrollbarWidth: 'none' }}>
               <div className="flex flex-col gap-2.5">
@@ -233,7 +234,7 @@ export default function OverviewView() {
           )}
         </Panel>
 
-        <Panel title="Backlog age" hint="by creation date" className="h-80">
+        <Panel title={i18nT('apps.issueRadar.views.overviewView.backlog_age')} hint={i18nT('apps.issueRadar.views.overviewView.by_creation_date')} className="h-80">
           <div className="flex flex-col gap-2.5">
             {ageRows.map((r) => (
               <div key={r.label}>
@@ -252,8 +253,8 @@ export default function OverviewView() {
 
       {/* Activity: recently updated + discussion hotspots, side by side. */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
-        <Panel title="Recently updated">
-          {recentlyUpdated.length === 0 ? <Empty>No activity.</Empty> : (
+        <Panel title={i18nT('apps.issueRadar.views.overviewView.recently_updated')}>
+          {recentlyUpdated.length === 0 ? <Empty>{i18nT('apps.issueRadar.views.overviewView.no_activity')}</Empty> : (
             <div className="flex flex-col">
               {recentlyUpdated.map((i) => (
                 <IssueRow
@@ -267,8 +268,8 @@ export default function OverviewView() {
           )}
         </Panel>
 
-        <Panel title="Discussion hotspots" hint="most comments & upvotes">
-          {hotspots.length === 0 ? <Empty>No discussion yet.</Empty> : (
+        <Panel title={i18nT('apps.issueRadar.views.overviewView.discussion_hotspots')} hint={i18nT('apps.issueRadar.views.overviewView.most_comments_upvotes')}>
+          {hotspots.length === 0 ? <Empty>{i18nT('apps.issueRadar.views.overviewView.no_discussion_yet')}</Empty> : (
             <div className="flex flex-col">
               {hotspots.map((i) => (
                 <IssueRow

@@ -5,6 +5,7 @@ import { fileReadUrl } from '../utils/fileReadUrl'
 import { isSafePath } from '../utils/safePath'
 import { parseDiffLines, DIFF_BG, DIFF_FG, type DiffLine } from '../utils/diffUtils'
 
+import { i18nT } from '../i18n/t'
 const SIGN: Record<string, string> = { add: '+', del: '-', hunk: '', meta: '', context: ' ' }
 
 type DiffSegment = { kind: 'context'; lines: DiffLine[] } | { kind: 'line'; line: DiffLine }
@@ -170,7 +171,7 @@ export default memo(function DiffBlock({ code, complete, onFileOpen, pathHint, s
   return (
     <div className="diff-block group/diff rounded-xl border border-border bg-bg-elevated overflow-hidden">
       <div className="flex items-center justify-between px-3 py-1">
-        <span className="text-muted text-[13px] font-mono">diff{filePath && <span className="ml-1.5 text-muted/70">— {filePath.split('/').pop()}</span>}</span>
+        <span className="text-muted text-[13px] font-mono">{i18nT('components.diffBlock.diff')}{filePath && <span className="ml-1.5 text-muted/70">— {filePath.split('/').pop()}</span>}</span>
         <div className="flex items-center gap-1 opacity-0 group-hover/diff:opacity-100 group-focus-within/diff:opacity-100 transition-opacity">
           {/* Open: hover-gated alongside the other diff actions for visual
               consistency (round 10: revert the always-visible variant —
@@ -183,7 +184,7 @@ export default memo(function DiffBlock({ code, complete, onFileOpen, pathHint, s
               title={`Open ${filePath} in side panel`}
               aria-label={`Open ${filePath} in side panel`}
             >
-              Open
+              {i18nT('components.diffBlock.open')}
             </button>
           )}
           <button className="p-1 rounded text-muted hover:text-text hover:bg-bg-hover cursor-pointer" onClick={() => setSideBySide(!sideBySide)} title={sideBySide ? 'Unified view' : 'Split view'} aria-label={sideBySide ? 'Switch to unified view' : 'Switch to split view'}>{sideBySide ? <Rows2 size={13} /> : <Columns2 size={13} />}</button>
@@ -231,19 +232,19 @@ export default memo(function DiffBlock({ code, complete, onFileOpen, pathHint, s
             if (expandedCtx.has(si)) {
               return <div key={si}>
                 {ctxLines.map((l, li) => renderUnifiedLine(l, si * 10000 + li))}
-                <div className="px-3 py-0.5 text-[12px] text-muted cursor-pointer hover:text-text bg-bg-hover/50" role="button" tabIndex={0} aria-expanded="true" onClick={() => toggleCtx(si)} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleCtx(si) } }}>▲ collapse {ctxLines.length} context lines</div>
+                <div className="px-3 py-0.5 text-[12px] text-muted cursor-pointer hover:text-text bg-bg-hover/50" role="button" tabIndex={0} aria-expanded="true" onClick={() => toggleCtx(si)} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleCtx(si) } }}>{i18nT('components.diffBlock.collapse')} {ctxLines.length} {i18nT('components.diffBlock.context_lines')}</div>
               </div>
             }
             // Show first 2 + last 2, collapse middle
             const hidden = ctxLines.length - 4
             return <div key={si}>
               {ctxLines.slice(0, 2).map((l, li) => renderUnifiedLine(l, si * 10000 + li))}
-              <div className="px-3 py-0.5 text-[12px] text-muted cursor-pointer hover:text-text bg-bg-hover/50 select-none" role="button" tabIndex={0} aria-expanded="false" onClick={() => toggleCtx(si)} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleCtx(si) } }}>▼ {hidden} lines hidden</div>
+              <div className="px-3 py-0.5 text-[12px] text-muted cursor-pointer hover:text-text bg-bg-hover/50 select-none" role="button" tabIndex={0} aria-expanded="false" onClick={() => toggleCtx(si)} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleCtx(si) } }}>▼ {hidden} {i18nT('components.diffBlock.lines_hidden')}</div>
               {ctxLines.slice(-2).map((l, li) => renderUnifiedLine(l, si * 10000 + 9000 + li))}
             </div>
           })
         )}
-        {!complete && <div className="px-3 py-1 text-muted text-[12px] italic animate-pulse">generating diff…</div>}
+        {!complete && <div className="px-3 py-1 text-muted text-[12px] italic animate-pulse">{i18nT('components.diffBlock.generating_diff')}</div>}
         </div>
       </pre>
     </div>

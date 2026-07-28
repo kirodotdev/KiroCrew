@@ -17,6 +17,7 @@ import { useFilteredDropdown } from '../hooks/useFilteredDropdown'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { formatCost } from '../utils/formatCost'
 
+import { i18nT } from '../i18n/t'
 function fmtTokens(n: number): string {
   return n >= 1_000_000 ? (n / 1_000_000).toFixed(n % 1_000_000 === 0 ? 0 : 1) + 'M' : (n / 1_000).toFixed(0) + 'K'
 }
@@ -78,7 +79,7 @@ function AgentMetadataEditor({ name }: { name: string }) {
     setSaving(true); setMsg('')
     try {
       await api.agentMetadataSave(name, content)
-      setOriginal(content); setMsg(<><Check className="lucide-inline" /> Saved</>); setMsgOk(true)
+      setOriginal(content); setMsg(<><Check className="lucide-inline" /> {i18nT('pages.agentsPage.saved')}</>); setMsgOk(true)
       setTimeout(() => setMsg(''), 2000)
     } catch (e) { setMsg(e instanceof Error ? e.message : String(e)); setMsgOk(false) }
     finally { setSaving(false) }
@@ -86,10 +87,10 @@ function AgentMetadataEditor({ name }: { name: string }) {
   return (
     <div className="mb-3">
       <div className="flex items-center gap-2 mb-1">
-        <span className="text-[12px] text-muted font-medium uppercase tracking-wider">Routing Metadata</span>
+        <span className="text-[12px] text-muted font-medium uppercase tracking-wider">{i18nT('pages.agentsPage.routing_metadata')}</span>
         <InfoTip text="Describes when to delegate tasks to this agent. Used by the conductor skill to route tasks to the right specialist. Markdown format." />
       </div>
-      <textarea aria-label="Routing metadata" className="w-full bg-bg-elevated border border-border rounded-md p-2.5 text-text font-mono text-[12px] outline-none resize-y leading-relaxed transition-colors focus-ring" rows={4} value={content} onChange={e => setContent(e.target.value)} placeholder="Describe when to use this agent…" />
+      <textarea aria-label={i18nT('pages.agentsPage.routing_metadata_2')} className="w-full bg-bg-elevated border border-border rounded-md p-2.5 text-text font-mono text-[12px] outline-none resize-y leading-relaxed transition-colors focus-ring" rows={4} value={content} onChange={e => setContent(e.target.value)} placeholder={i18nT('pages.agentsPage.describe_when_to_use_this_agent')} />
       <div className="flex items-center gap-2 mt-1">
         <Btn primary onClick={save} disabled={!dirty || saving}>{saving ? 'Saving…' : 'Save Metadata'}</Btn>
         {msg && <span className={`text-[12px] ${msgOk ? 'text-ok' : 'text-danger'}`}>{msg}</span>}
@@ -208,20 +209,20 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
 
   return (
     <>
-      {!embedded && <PageHeader title="Agent Templates" subtitle="Active sessions and subagent tasks" />}
+      {!embedded && <PageHeader title={i18nT('pages.agentsPage.agent_templates')} subtitle={i18nT('pages.agentsPage.active_sessions_and_subagent_tasks')} />}
       <div className={`${embedded ? '' : 'px-6 pb-8'} overflow-y-auto flex-1 min-h-0`}>
         <div className="grid gap-3.5 grid-cols-[repeat(auto-fit,minmax(150px,1fr))] mb-6">
-          <StatCard label="Sessions" value={status?.sessions} />
-          <StatCard label="Subagents" value={status?.subagents} accent />
+          <StatCard label={i18nT('pages.agentsPage.sessions')} value={status?.sessions} />
+          <StatCard label={i18nT('pages.agentsPage.subagents')} value={status?.subagents} accent />
         </div>
         {/* Installed Agents — fixed left list, fixed right detail */}
         {installedLoading ? (
           <div className="card-glow border border-border bg-card rounded-lg mb-4 shadow-sm flex items-center justify-center py-10 gap-2 text-muted text-sm">
-            <Hourglass className="lucide-inline animate-pulse" /> Loading agents…
+            <Hourglass className="lucide-inline animate-pulse" /> {i18nT('pages.agentsPage.loading_agents')}
           </div>
         ) : installed.length > 0 && (
           <div className="card-glow border border-border bg-card rounded-lg mb-4 animate-rise shadow-sm hover:border-border-strong hover:shadow-md transition-all overflow-hidden">
-            <div className="px-5 pt-5 pb-3"><h3 className="text-sm font-semibold text-text-strong flex items-center gap-1.5">Installed Agents <InfoTip text={`Agent templates grouped by package. Update and uninstall at package level. Individual agents can be deleted (removes config file).`} /></h3></div>
+            <div className="px-5 pt-5 pb-3"><h3 className="text-sm font-semibold text-text-strong flex items-center gap-1.5">{i18nT('pages.agentsPage.installed_agents')} <InfoTip text={`Agent templates grouped by package. Update and uninstall at package level. Individual agents can be deleted (removes config file).`} /></h3></div>
             <div className="flex" style={{ height: `${LAYOUT.AGENT_LIST_HEIGHT}px` }}>
               {/* Agent list — scrollable */}
               <div className="w-[260px] shrink-0 border-r border-border overflow-y-auto p-2">
@@ -290,9 +291,9 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
                           // eslint-disable-next-line jsx-a11y/no-static-element-interactions
                           <div ref={modelDropRef} tabIndex={-1} onKeyDown={onModelListKeyDown} className="fixed z-[9999] bg-card border border-border rounded-lg shadow-lg min-w-[260px] max-w-[340px] max-h-[320px] flex flex-col overflow-hidden animate-slide-up" style={(() => { const r = modelBtnRef.current!.getBoundingClientRect(); const dropH = 320; const top = r.bottom + 4 + dropH > window.innerHeight ? r.top - dropH - 4 : r.bottom + 4; const left = Math.max(8, Math.min(r.left, window.innerWidth - 348)); return { top, left } })()}>
                             <div className="p-2 border-b border-border">
-                              <Input ref={modelInputRef} type="text" aria-label="Filter models" placeholder="Type to filter…" value={modelFilter} onChange={e => setModelFilter(e.target.value)} className="w-full px-2 py-1 text-[13px] font-mono" />
+                              <Input ref={modelInputRef} type="text" aria-label={i18nT('pages.agentsPage.filter_models')} placeholder={i18nT('pages.agentsPage.type_to_filter')} value={modelFilter} onChange={e => setModelFilter(e.target.value)} className="w-full px-2 py-1 text-[13px] font-mono" />
                             </div>
-                            <div role="listbox" aria-label="Model list" className="overflow-y-auto flex-1 min-h-0">
+                            <div role="listbox" aria-label={i18nT('pages.agentsPage.model_list')} className="overflow-y-auto flex-1 min-h-0">
                             <ModelDropdownList models={filteredModels} activeModel={selectedAgent.model || 'auto'} onSelect={name => { const val = name === 'auto' ? '' : name; patchModelMut.mutate({ name: selectedAgent.name, model: val }); setModelDropOpen(false) }} />
                             </div>
                           </div>,
@@ -313,10 +314,9 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
                      * every real mapping from the agent's spec on disk. Show why
                      * it is unavailable instead of offering a write. */
                     <div className="mb-3">
-                      <div className="text-[12px] text-muted font-medium uppercase tracking-wider mb-1">Skills</div>
+                      <div className="text-[12px] text-muted font-medium uppercase tracking-wider mb-1">{i18nT('pages.agentsPage.skills')}</div>
                       <div className="text-[12px] text-warn">
-                        Could not load this agent&apos;s configuration — skills are hidden to avoid
-                        overwriting them. Reselect the agent to retry.
+                        {i18nT('pages.agentsPage.could_not_load_this_agent_s_configuration_skills')}
                       </div>
                     </div>
                   ) : (
@@ -335,21 +335,21 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
                       }}
                     />
                   )}
-                  {selectedAgent.prompt && <div className="mb-3"><div className="text-[12px] text-muted font-medium uppercase tracking-wider mb-1">System Prompt</div><pre className="text-[12px] text-text font-mono bg-bg-elevated rounded-md p-2.5 border border-border overflow-x-auto max-h-[160px] overflow-y-auto whitespace-pre-wrap leading-relaxed">{typeof selectedAgent.prompt === 'string' && selectedAgent.prompt.startsWith('file://') ? selectedAgent.prompt : (selectedAgent.prompt || '').slice(0, 2000)}</pre></div>}
-                  {selectedAgent.tools && <div className="mb-3"><div className="text-[12px] text-muted font-medium uppercase tracking-wider mb-1">Tools</div><div className="flex flex-wrap gap-1.5">{(selectedAgent.tools as string[]).map((t: string) => <span key={t} className="px-2 py-1 rounded-full text-[12px] font-mono bg-bg-elevated border border-border text-text">{t}</span>)}</div></div>}
-                  {selectedAgent.allowedTools && <div className="mb-3"><div className="text-[12px] text-muted font-medium uppercase tracking-wider mb-1">Auto-Approved</div><div className="flex flex-wrap gap-1.5">{(selectedAgent.allowedTools as string[]).map((t: string) => <span key={t} className="px-2 py-1 rounded-full text-[12px] font-mono bg-ok/10 border border-ok/30 text-ok">{t}</span>)}</div></div>}
-                  {selectedAgent.mcpServers && <div className="mb-3"><div className="text-[12px] text-muted font-medium uppercase tracking-wider mb-1">MCP Servers</div><div className="flex flex-wrap gap-1.5">{Object.keys(selectedAgent.mcpServers).map((s: string) => {
+                  {selectedAgent.prompt && <div className="mb-3"><div className="text-[12px] text-muted font-medium uppercase tracking-wider mb-1">{i18nT('pages.agentsPage.system_prompt')}</div><pre className="text-[12px] text-text font-mono bg-bg-elevated rounded-md p-2.5 border border-border overflow-x-auto max-h-[160px] overflow-y-auto whitespace-pre-wrap leading-relaxed">{typeof selectedAgent.prompt === 'string' && selectedAgent.prompt.startsWith('file://') ? selectedAgent.prompt : (selectedAgent.prompt || '').slice(0, 2000)}</pre></div>}
+                  {selectedAgent.tools && <div className="mb-3"><div className="text-[12px] text-muted font-medium uppercase tracking-wider mb-1">{i18nT('pages.agentsPage.tools')}</div><div className="flex flex-wrap gap-1.5">{(selectedAgent.tools as string[]).map((t: string) => <span key={t} className="px-2 py-1 rounded-full text-[12px] font-mono bg-bg-elevated border border-border text-text">{t}</span>)}</div></div>}
+                  {selectedAgent.allowedTools && <div className="mb-3"><div className="text-[12px] text-muted font-medium uppercase tracking-wider mb-1">{i18nT('pages.agentsPage.auto_approved')}</div><div className="flex flex-wrap gap-1.5">{(selectedAgent.allowedTools as string[]).map((t: string) => <span key={t} className="px-2 py-1 rounded-full text-[12px] font-mono bg-ok/10 border border-ok/30 text-ok">{t}</span>)}</div></div>}
+                  {selectedAgent.mcpServers && <div className="mb-3"><div className="text-[12px] text-muted font-medium uppercase tracking-wider mb-1">{i18nT('pages.agentsPage.mcp_servers')}</div><div className="flex flex-wrap gap-1.5">{Object.keys(selectedAgent.mcpServers).map((s: string) => {
                     const srv = (selectedAgent.mcpServers as Record<string, {args?: string[]}>)[s]
                     const args = srv?.args || []
                     const idx = args.indexOf('--include-tools')
                     const restricted = idx >= 0 && args[idx + 1] ? args[idx + 1].split(',') : null
                     const tools = restricted || mcpTools[s] || null
                     const label = restricted ? `${tools.length} restricted` : tools ? `${tools.length}` : null
-                    return <span key={s} className="group relative px-2 py-1 rounded-full text-[12px] font-mono bg-aim-subtle border border-aim/30 text-aim cursor-help">{s}{label && <span className={`text-[11px] ml-0.5 ${restricted ? 'text-warn' : 'text-muted'}`}>({label})</span>}{tools && <span className="invisible group-hover:visible absolute left-0 top-full mt-1 z-50 bg-card border border-border rounded-lg shadow-lg p-3 min-w-[220px] max-w-[360px] max-h-[200px] overflow-y-auto"><span className="block text-[13px] text-muted font-medium mb-1.5">{s} tools{restricted ? ' (restricted)' : ''}:</span>{tools.map(t => <span key={t} className="block text-[13px] text-text font-mono py-0.5">{t}</span>)}</span>}</span>
+                    return <span key={s} className="group relative px-2 py-1 rounded-full text-[12px] font-mono bg-aim-subtle border border-aim/30 text-aim cursor-help">{s}{label && <span className={`text-[11px] ml-0.5 ${restricted ? 'text-warn' : 'text-muted'}`}>({label})</span>}{tools && <span className="invisible group-hover:visible absolute left-0 top-full mt-1 z-50 bg-card border border-border rounded-lg shadow-lg p-3 min-w-[220px] max-w-[360px] max-h-[200px] overflow-y-auto"><span className="block text-[13px] text-muted font-medium mb-1.5">{s} {i18nT('pages.agentsPage.tools_2')}{restricted ? ' (restricted)' : ''}:</span>{tools.map(t => <span key={t} className="block text-[13px] text-text font-mono py-0.5">{t}</span>)}</span>}</span>
                   })}</div></div>}
-                  {selectedAgent.toolsSettings?.execute_bash?.deniedCommands && <div><div className="text-[12px] text-muted font-medium uppercase tracking-wider mb-1">Denied Commands <span className="text-danger"><Lock className="lucide-inline" /></span></div><details className="text-[12px]"><summary className="text-danger/70 font-mono cursor-pointer hover:text-danger transition-colors">{(selectedAgent.toolsSettings.execute_bash.deniedCommands as string[]).length} patterns blocked</summary><div className="mt-1.5 max-h-[200px] overflow-y-auto bg-bg-elevated rounded-md border border-border p-2 space-y-0.5">{(selectedAgent.toolsSettings.execute_bash.deniedCommands as string[]).map((p: string, i: number) => <div key={i} className="text-danger/60 font-mono">{p}</div>)}</div></details></div>}
+                  {selectedAgent.toolsSettings?.execute_bash?.deniedCommands && <div><div className="text-[12px] text-muted font-medium uppercase tracking-wider mb-1">{i18nT('pages.agentsPage.denied_commands')} <span className="text-danger"><Lock className="lucide-inline" /></span></div><details className="text-[12px]"><summary className="text-danger/70 font-mono cursor-pointer hover:text-danger transition-colors">{(selectedAgent.toolsSettings.execute_bash.deniedCommands as string[]).length} {i18nT('pages.agentsPage.patterns_blocked')}</summary><div className="mt-1.5 max-h-[200px] overflow-y-auto bg-bg-elevated rounded-md border border-border p-2 space-y-0.5">{(selectedAgent.toolsSettings.execute_bash.deniedCommands as string[]).map((p: string, i: number) => <div key={i} className="text-danger/60 font-mono">{p}</div>)}</div></details></div>}
                 </>) : (
-                  <div className="flex items-center justify-center h-full text-muted text-[13px]">Select an agent to view details</div>
+                  <div className="flex items-center justify-center h-full text-muted text-[13px]">{i18nT('pages.agentsPage.select_an_agent_to_view_details')}</div>
                 )}
               </div>
             </div>
@@ -357,8 +357,8 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
         )}
         {/* Context Window Usage */}
         <div className="card-glow border border-border bg-card rounded-lg p-5 mb-4 animate-rise shadow-sm transition-all">
-          <h3 className="text-sm font-semibold text-text-strong mb-3.5 flex items-center gap-1.5">Context Window Usage <InfoTip text={`Live context window utilization per active ${provider.labels.sessionProcess} session. Custom agents show their configured model. Compaction triggers at 90%.`} /></h3>
-          {ctx.length === 0 ? <p className="text-muted italic text-sm">No active sessions</p> : (
+          <h3 className="text-sm font-semibold text-text-strong mb-3.5 flex items-center gap-1.5">{i18nT('pages.agentsPage.context_window_usage')} <InfoTip text={`Live context window utilization per active ${provider.labels.sessionProcess} session. Custom agents show their configured model. Compaction triggers at 90%.`} /></h3>
+          {ctx.length === 0 ? <p className="text-muted italic text-sm">{i18nT('pages.agentsPage.no_active_sessions')}</p> : (
             <div className="space-y-4">
               {ctx.map(s => {
                 // Prefer the real served window the backend reports (the one
@@ -382,7 +382,7 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
                     </div>
                     <div className="relative h-5 bg-bg-elevated rounded-full overflow-hidden border border-border">
                       {awaiting ? (
-                        <div className="absolute inset-0 flex items-center justify-center text-[12px] font-mono text-muted">awaiting first prompt</div>
+                        <div className="absolute inset-0 flex items-center justify-center text-[12px] font-mono text-muted">{i18nT('pages.agentsPage.awaiting_first_prompt')}</div>
                       ) : (<>
                         <div
                           className={`absolute inset-y-0 left-0 rounded-full transition-all duration-700 ease-out ${barColor(pct)} ${pct > 5 ? barGlow(pct) : ''}`}
@@ -395,8 +395,8 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
                       </>)}
                     </div>
                     <div className="flex justify-between mt-1 text-[12px] text-muted">
-                      <span>{s.prompts} prompt{s.prompts !== 1 ? 's' : ''}</span>
-                      <span>{awaiting ? <><Hourglass className="lucide-inline" /> Idle</> : pct >= 90 ? <><span className="inline-block w-2.5 h-2.5 rounded-full bg-[var(--danger)]" /> Critical</> : pct >= 70 ? <><span className="inline-block w-2.5 h-2.5 rounded-full bg-[var(--warn)]" /> High</> : <><span className="inline-block w-2.5 h-2.5 rounded-full bg-[var(--ok)]" /> Healthy</>}</span>
+                      <span>{s.prompts} {i18nT('pages.agentsPage.prompt')}{s.prompts !== 1 ? 's' : ''}</span>
+                      <span>{awaiting ? <><Hourglass className="lucide-inline" /> {i18nT('pages.agentsPage.idle')}</> : pct >= 90 ? <><span className="inline-block w-2.5 h-2.5 rounded-full bg-[var(--danger)]" /> {i18nT('pages.agentsPage.critical')}</> : pct >= 70 ? <><span className="inline-block w-2.5 h-2.5 rounded-full bg-[var(--warn)]" /> {i18nT('pages.agentsPage.high')}</> : <><span className="inline-block w-2.5 h-2.5 rounded-full bg-[var(--ok)]" /> {i18nT('pages.agentsPage.healthy')}</>}</span>
                     </div>
                   </div>
                 )
@@ -408,10 +408,10 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
         {usage && (
           <div className="card-glow border border-border bg-card rounded-lg p-5 mb-4 animate-rise shadow-sm transition-all">
             <div className="flex items-center justify-between mb-4">
-              <h3 className="text-sm font-semibold text-text-strong flex items-center gap-1.5">{provider.displayName} Usage <InfoTip text={`${provider.displayName} consumption for the current billing period. Cached 10 min.`} /></h3>
+              <h3 className="text-sm font-semibold text-text-strong flex items-center gap-1.5">{provider.displayName} {i18nT('pages.agentsPage.usage')} <InfoTip text={`${provider.displayName} consumption for the current billing period. Cached 10 min.`} /></h3>
               <div className="flex items-center gap-2">
                 {usage.plan && <span className="px-2 py-0.5 rounded-full text-[12px] font-bold font-mono bg-accent/15 text-accent border border-accent/30">{usage.plan}</span>}
-                {usage.resets && <span className="text-[12px] text-muted">resets {usage.resets}</span>}
+                {usage.resets && <span className="text-[12px] text-muted">{i18nT('pages.agentsPage.resets')} {usage.resets}</span>}
               </div>
             </div>
             {usage.credits_used != null && usage.credits_plan != null && (() => {
@@ -425,7 +425,7 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
               const glow = pct >= 90 ? 'shadow-[0_0_8px_var(--danger)]' : pct >= 70 ? 'shadow-[0_0_8px_var(--warn)]' : 'shadow-[0_0_8px_var(--accent-glow)]'
               return (
                 <div>
-                  <div className="text-[13px] text-muted mb-1.5">Plan Credits</div>
+                  <div className="text-[13px] text-muted mb-1.5">{i18nT('pages.agentsPage.plan_credits')}</div>
                   <div className="relative h-6 bg-bg-elevated rounded-full overflow-hidden border border-border mb-3">
                     <div className={`absolute inset-y-0 left-0 rounded-full transition-all duration-1000 ease-out ${color} ${pct > 5 ? glow : ''}`} style={{ width: `${Math.max(pct, 1)}%` }} />
                     <div className="absolute inset-0 flex items-center justify-between px-3 text-[13px] font-mono font-bold">
@@ -435,11 +435,11 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
                   </div>
                   <div className="flex justify-between text-[13px]">
                     <div>
-                      {hasOverage && <span className="text-muted">Overage credits: <span className="text-warn font-medium">{overage.toFixed(1)}</span></span>}
+                      {hasOverage && <span className="text-muted">{i18nT('pages.agentsPage.overage_credits')} <span className="text-warn font-medium">{overage.toFixed(1)}</span></span>}
                     </div>
                     <div className="flex gap-3">
-                      <span className="text-muted">Est. cost: <span className="text-text-strong font-medium">{formatCost(usage.cost_usd)}</span></span>
-                      {usage.overage_rate && <span className="text-muted">${usage.overage_rate}/req</span>}
+                      <span className="text-muted">{i18nT('pages.agentsPage.est_cost')} <span className="text-text-strong font-medium">{formatCost(usage.cost_usd)}</span></span>
+                      {usage.overage_rate && <span className="text-muted">${usage.overage_rate}{i18nT('pages.agentsPage.req')}</span>}
                     </div>
                   </div>
                 </div>
@@ -448,11 +448,11 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
           </div>
         )}
         <div className="card-glow border border-border bg-card rounded-lg p-5 mb-4 animate-rise shadow-sm transition-all">
-          <h3 className="text-sm font-semibold text-text-strong mb-3.5 flex items-center gap-2">Subagents {agents.some(a => a.done) && <button className="px-2 py-0.5 rounded-md border border-border bg-transparent text-muted text-[13px] cursor-pointer hover:text-danger hover:border-danger transition-all" onClick={() => spawnClearMut.mutate()}>Clear completed</button>}</h3>
+          <h3 className="text-sm font-semibold text-text-strong mb-3.5 flex items-center gap-2">{i18nT('pages.agentsPage.subagents')} {agents.some(a => a.done) && <button className="px-2 py-0.5 rounded-md border border-border bg-transparent text-muted text-[13px] cursor-pointer hover:text-danger hover:border-danger transition-all" onClick={() => spawnClearMut.mutate()}>{i18nT('pages.agentsPage.clear_completed')}</button>}</h3>
           <table className="w-full border-collapse table-striped"><thead><tr>{['ID','Task','Status',''].map(h => <th key={h} className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium">{h}</th>)}</tr></thead>
-            <tbody>{agents.length === 0 ? <tr><td colSpan={4}><EmptyState icon={<Bot className="lucide-inline" />} title="No subagents" subtitle="Spawn tasks from chat or CLI" /></td></tr> : agents.map(a => (
+            <tbody>{agents.length === 0 ? <tr><td colSpan={4}><EmptyState icon={<Bot className="lucide-inline" />} title={i18nT('pages.agentsPage.no_subagents')} subtitle={i18nT('pages.agentsPage.spawn_tasks_from_chat_or_cli')} /></td></tr> : agents.map(a => (
               <tr key={a.id} className="hover:bg-bg-hover transition-colors"><td className="px-2.5 py-2 border-b border-border text-sm"><code>{a.id}</code></td><td className="px-2.5 py-2 border-b border-border text-sm">{a.task}</td>
-                <td className="px-2.5 py-2 border-b border-border text-sm">{a.done ? (a.error ? <span className="inline-flex items-center gap-1 px-2 py-[2px] rounded-full text-[13px] font-medium font-mono bg-danger-subtle text-danger">Failed</span> : <span className="inline-flex items-center gap-1 px-2 py-[2px] rounded-full text-[13px] font-medium font-mono bg-ok-subtle text-ok">Done</span>) : <span className="inline-flex items-center gap-1 px-2 py-[2px] rounded-full text-[13px] font-medium font-mono bg-warn-subtle text-warn">Running</span>}</td>
+                <td className="px-2.5 py-2 border-b border-border text-sm">{a.done ? (a.error ? <span className="inline-flex items-center gap-1 px-2 py-[2px] rounded-full text-[13px] font-medium font-mono bg-danger-subtle text-danger">{i18nT('pages.agentsPage.failed')}</span> : <span className="inline-flex items-center gap-1 px-2 py-[2px] rounded-full text-[13px] font-medium font-mono bg-ok-subtle text-ok">{i18nT('pages.agentsPage.done')}</span>) : <span className="inline-flex items-center gap-1 px-2 py-[2px] rounded-full text-[13px] font-medium font-mono bg-warn-subtle text-warn">{i18nT('pages.agentsPage.running')}</span>}</td>
                 <td className="px-2.5 py-2 border-b border-border text-sm text-right"><button className="px-1.5 py-0.5 rounded border border-border bg-transparent text-muted text-[13px] cursor-pointer hover:text-danger hover:border-danger transition-all" aria-label={`Delete subagent ${a.id}`} onClick={() => spawnDeleteMut.mutate(a.id)}><X className="lucide-inline" /></button></td></tr>
             ))}</tbody></table>
         </div>

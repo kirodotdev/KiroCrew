@@ -1263,6 +1263,8 @@ export const api = {
   updateThemeConfig: (body: {
     mode?: string
     color?: string
+    /** BCP-47 UI language tag; '' means follow the browser. */
+    language?: string
     onboarded?: boolean
     import_onboarded?: boolean
   }) =>

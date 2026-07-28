@@ -6,6 +6,7 @@ import { EmptyState } from '../../components/ui'
 import { knowledgeApi } from './api'
 import type { GraphData } from './types'
 
+import { i18nT } from '../../i18n/t'
 const TYPE_COLORS: Record<string, string> = { service: '#3b82f6', technology: '#22c55e', concept: '#a855f7', org: '#f97316' }
 
 /** A graph node augmented with the position/velocity fields d3 mutates in. */
@@ -232,15 +233,15 @@ export default function KnowledgeGraph({ onSelectEntity, highlightEntity }: { on
     return () => ro.disconnect()
   }, [graph])
 
-  if (isLoading) return <div className="text-muted text-sm p-4">Loading graph...</div>
-  if (!graph || !graph.nodes.length) return <EmptyState icon={<Network size={40} />} title="No graph data yet" subtitle="Ingest documents to build the entity graph" />
+  if (isLoading) return <div className="text-muted text-sm p-4">{i18nT('pages.knowledge.knowledgeGraph.loading_graph')}</div>
+  if (!graph || !graph.nodes.length) return <EmptyState icon={<Network size={40} />} title={i18nT('pages.knowledge.knowledgeGraph.no_graph_data_yet')} subtitle={i18nT('pages.knowledge.knowledgeGraph.ingest_documents_to_build_the_entity_graph')} />
 
   return (
     <div className="border border-border rounded-lg overflow-hidden flex flex-col flex-1 min-h-0">
       <div className="px-4 py-2 border-b border-border flex items-center gap-3 text-[12px] text-muted shrink-0">
-        <span>{graph.nodes.length} nodes, {graph.edges.length} edges</span>
+        <span>{graph.nodes.length} {i18nT('pages.knowledge.knowledgeGraph.nodes')} {graph.edges.length} {i18nT('pages.knowledge.knowledgeGraph.edges')}</span>
         <button onClick={() => zoomRef.current?.reset()} className="px-2 py-0.5 text-[11px] border border-border rounded hover:bg-bg-elevated bg-transparent cursor-pointer text-muted flex items-center gap-1">
-          <RotateCcw size={10} /> Recenter
+          <RotateCcw size={10} /> {i18nT('pages.knowledge.knowledgeGraph.recenter')}
         </button>
         <span className="ml-auto flex gap-2">
           {Object.entries(TYPE_COLORS).map(([t, c]) => <span key={t} className="flex items-center gap-1"><span className="w-2 h-2 rounded-full inline-block" style={{ background: c }} />{t}</span>)}

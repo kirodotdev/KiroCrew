@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Input } from './ui'
 
+import { i18nT } from '../i18n/t'
 export interface SkillFormData {
   name: string
   category: string
@@ -118,11 +119,11 @@ export default function SkillForm({ data, onChange, hideIdentity, allowRaw = tru
     return (
       <div className="flex flex-col gap-2">
         <div className="flex items-center justify-between">
-          <span className="text-[12px] text-muted font-mono">Raw YAML + Markdown</span>
-          <button className="text-[12px] text-accent hover:text-accent-hover cursor-pointer transition-colors" onClick={switchToStructured}>Switch to structured editor</button>
+          <span className="text-[12px] text-muted font-mono">{i18nT('components.skillForm.raw_yaml_markdown')}</span>
+          <button className="text-[12px] text-accent hover:text-accent-hover cursor-pointer transition-colors" onClick={switchToStructured}>{i18nT('components.skillForm.switch_to_structured_editor')}</button>
         </div>
         <textarea
-          aria-label="Raw YAML and Markdown"
+          aria-label={i18nT('components.skillForm.raw_yaml_and_markdown')}
           className="w-full bg-bg-elevated border border-border rounded-md p-3 text-text font-mono text-[13px] outline-none resize-y leading-normal transition-colors focus-ring"
           rows={20}
           value={data.raw || ''}
@@ -136,7 +137,7 @@ export default function SkillForm({ data, onChange, hideIdentity, allowRaw = tru
     <div className="flex flex-col gap-3">
       {allowRaw && (
         <div className="flex justify-end">
-          <button className="text-[12px] text-accent hover:text-accent-hover cursor-pointer transition-colors" onClick={switchToRaw}>Edit raw markdown</button>
+          <button className="text-[12px] text-accent hover:text-accent-hover cursor-pointer transition-colors" onClick={switchToRaw}>{i18nT('components.skillForm.edit_raw_markdown')}</button>
         </div>
       )}
       {!hideIdentity && <>
@@ -144,46 +145,46 @@ export default function SkillForm({ data, onChange, hideIdentity, allowRaw = tru
           {/* label-has-for can't resolve the control through the custom <Input>
               component; the runtime association via htmlFor + id + aria-label is correct. */}
           {/* eslint-disable-next-line jsx-a11y/label-has-for */}
-          <label htmlFor="skill-name" className="text-[13px] font-semibold text-text mb-1 block">Name</label>
-          <Input id="skill-name" aria-label="Name" placeholder="e.g. my-tool" value={data.name} onChange={e => set('name', e.target.value)} className="w-full" />
+          <label htmlFor="skill-name" className="text-[13px] font-semibold text-text mb-1 block">{i18nT('components.skillForm.name')}</label>
+          <Input id="skill-name" aria-label={i18nT('components.skillForm.name')} placeholder={i18nT('components.skillForm.e_g_my_tool')} value={data.name} onChange={e => set('name', e.target.value)} className="w-full" />
         </div>
         <div>
           {/* eslint-disable-next-line jsx-a11y/label-has-for -- control resolved at runtime via htmlFor + id */}
-          <label htmlFor="skill-category" className="text-[13px] font-semibold text-text mb-1 block">Category <span className="text-muted font-normal">(optional)</span></label>
-          <Input id="skill-category" aria-label="Category" placeholder="e.g. utils, code" value={data.category} onChange={e => set('category', e.target.value)} className="w-full" />
-          <div className="text-[11px] text-muted mt-1">Groups the skill in the list. Leave empty for the general category.</div>
+          <label htmlFor="skill-category" className="text-[13px] font-semibold text-text mb-1 block">{i18nT('components.skillForm.category')} <span className="text-muted font-normal">{i18nT('components.skillForm.optional')}</span></label>
+          <Input id="skill-category" aria-label={i18nT('components.skillForm.category')} placeholder={i18nT('components.skillForm.e_g_utils_code')} value={data.category} onChange={e => set('category', e.target.value)} className="w-full" />
+          <div className="text-[11px] text-muted mt-1">{i18nT('components.skillForm.groups_the_skill_in_the_list_leave_empty_for_the')}</div>
         </div>
       </>}
       <div>
         <label htmlFor="skill-description" className="text-[13px] font-semibold text-text mb-1 block">
-          <span className="block mb-1">Description</span>
-          <textarea id="skill-description" aria-label="Description" className="w-full bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm font-body outline-none resize-y leading-relaxed transition-colors focus-ring" rows={3} placeholder="What this skill does and when the agent should use it" value={data.description} onChange={e => set('description', e.target.value)} />
+          <span className="block mb-1">{i18nT('components.skillForm.description')}</span>
+          <textarea id="skill-description" aria-label={i18nT('components.skillForm.description')} className="w-full bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm font-body outline-none resize-y leading-relaxed transition-colors focus-ring" rows={3} placeholder={i18nT('components.skillForm.what_this_skill_does_and_when_the_agent_should_u')} value={data.description} onChange={e => set('description', e.target.value)} />
         </label>
       </div>
       <div>
         {/* label-has-for can't resolve the control through the custom <Input>
             component; the runtime association via htmlFor + id + aria-label is correct. */}
         {/* eslint-disable-next-line jsx-a11y/label-has-for */}
-        <label htmlFor="skill-triggers" className="text-[13px] font-semibold text-text mb-1 block">Triggers</label>
-        <Input id="skill-triggers" aria-label="Triggers" placeholder="keyword1, keyword2, keyword3" value={data.triggers} onChange={e => set('triggers', e.target.value)} className="w-full" />
-        <div className="text-[11px] text-muted mt-1">Comma-separated keywords that activate this skill. Prefix with ! to exclude.</div>
+        <label htmlFor="skill-triggers" className="text-[13px] font-semibold text-text mb-1 block">{i18nT('components.skillForm.triggers')}</label>
+        <Input id="skill-triggers" aria-label={i18nT('components.skillForm.triggers')} placeholder={i18nT('components.skillForm.keyword1_keyword2_keyword3')} value={data.triggers} onChange={e => set('triggers', e.target.value)} className="w-full" />
+        <div className="text-[11px] text-muted mt-1">{i18nT('components.skillForm.comma_separated_keywords_that_activate_this_skil')}</div>
       </div>
       <div>
         {/* eslint-disable-next-line jsx-a11y/label-has-for -- control resolved at runtime via htmlFor + id */}
-        <label htmlFor="skill-tags" className="text-[13px] font-semibold text-text mb-1 block">Tags <span className="text-muted font-normal">(optional)</span></label>
-        <Input id="skill-tags" aria-label="Tags" placeholder="skill, tool, aws" value={data.tags} onChange={e => set('tags', e.target.value)} className="w-full" />
-        <div className="text-[11px] text-muted mt-1">Comma-separated labels for categorization. Metadata only — not used for matching.</div>
+        <label htmlFor="skill-tags" className="text-[13px] font-semibold text-text mb-1 block">{i18nT('components.skillForm.tags')} <span className="text-muted font-normal">{i18nT('components.skillForm.optional')}</span></label>
+        <Input id="skill-tags" aria-label={i18nT('components.skillForm.tags')} placeholder={i18nT('components.skillForm.skill_tool_aws')} value={data.tags} onChange={e => set('tags', e.target.value)} className="w-full" />
+        <div className="text-[11px] text-muted mt-1">{i18nT('components.skillForm.comma_separated_labels_for_categorization_metada')}</div>
       </div>
       <div className="flex items-center gap-2">
         <label htmlFor="skill-always" className="flex items-center gap-2 text-[13px] text-text cursor-pointer">
-          <input type="checkbox" id="skill-always" aria-label="Always loaded" checked={data.always} onChange={e => set('always', e.target.checked)} className="accent-accent" />
-          <span>Always loaded <span className="text-muted">(inject full content into every session)</span></span>
+          <input type="checkbox" id="skill-always" aria-label={i18nT('components.skillForm.always_loaded')} checked={data.always} onChange={e => set('always', e.target.checked)} className="accent-accent" />
+          <span>{i18nT('components.skillForm.always_loaded')} <span className="text-muted">{i18nT('components.skillForm.inject_full_content_into_every_session')}</span></span>
         </label>
       </div>
       <div>
         <label htmlFor="skill-instructions" className="text-[13px] font-semibold text-text mb-1 block">
-          <span className="block mb-1">Instructions</span>
-          <textarea id="skill-instructions" aria-label="Instructions" className="w-full bg-bg-elevated border border-border rounded-md p-3 text-text font-mono text-[13px] outline-none resize-y leading-normal transition-colors focus-ring" rows={10} placeholder={"# My Skill\n\nStep-by-step instructions for the agent...\n\n## When to use\n- Scenario 1\n- Scenario 2"} value={data.body} onChange={e => set('body', e.target.value)} />
+          <span className="block mb-1">{i18nT('components.skillForm.instructions')}</span>
+          <textarea id="skill-instructions" aria-label={i18nT('components.skillForm.instructions')} className="w-full bg-bg-elevated border border-border rounded-md p-3 text-text font-mono text-[13px] outline-none resize-y leading-normal transition-colors focus-ring" rows={10} placeholder={i18nT('components.skillForm.my_skill_step_by_step_instructions_for_the_agent')} value={data.body} onChange={e => set('body', e.target.value)} />
         </label>
       </div>
     </div>

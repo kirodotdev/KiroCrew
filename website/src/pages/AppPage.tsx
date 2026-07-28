@@ -8,6 +8,7 @@ import { api } from '../api/client'
 import AppHost from '../components/AppHost'
 import type { AppHostProps } from '../components/AppHost'
 
+import { i18nT } from '../i18n/t'
 /** App metadata from /api/apps; null before load / on fetch failure. The
  *  response is a superset of AppHost's prop shape — it also carries `origin`,
  *  which the builtin-redirect check below reads. */
@@ -43,7 +44,7 @@ export default function AppPage() {
   if (loading) {
     return (
       <div className="flex-1 flex items-center justify-center text-muted text-sm">
-        <Loader2 size={16} className="animate-spin mr-2" /> Loading app…
+        <Loader2 size={16} className="animate-spin mr-2" /> {i18nT('pages.appPage.loading_app')}
       </div>
     )
   }

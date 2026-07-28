@@ -2,6 +2,7 @@ import { useState, useCallback } from 'react'
 import { Eye, EyeOff, X, ExternalLink, RotateCcw, Trash2, Lock } from 'lucide-react'
 import { Input } from './ui'
 
+import { i18nT } from '../i18n/t'
 /**
  * A write-only credential field. Stored secrets are never displayed: the
  * stored state renders a masked preview (e.g. `xoxb-••••wxyz`) with Replace /
@@ -73,13 +74,13 @@ export function SecretField({
           </code>
           <div className="flex items-center gap-1.5 text-[12px] text-muted">
             <Lock size={12} />
-            Managed on the server. Read-only from remote sessions.
+            {i18nT('components.secretField.managed_on_the_server_read_only_from_remote_sess')}
           </div>
         </div>
       ) : cleared ? (
         <div className="flex items-center justify-between gap-2 rounded-md border border-danger bg-bg-elevated px-3 py-2">
-          <span className="text-[12px] text-danger">Will be removed on save.</span>
-          <button type="button" className={iconBtn} onClick={() => onClearedChange(false)} aria-label="Undo remove" title="Undo">
+          <span className="text-[12px] text-danger">{i18nT('components.secretField.will_be_removed_on_save')}</span>
+          <button type="button" className={iconBtn} onClick={() => onClearedChange(false)} aria-label={i18nT('components.secretField.undo_remove')} title={i18nT('components.secretField.undo')}>
             <RotateCcw size={14} />
           </button>
         </div>
@@ -89,17 +90,17 @@ export function SecretField({
             <code className="flex-1 truncate rounded-md border border-border bg-bg-elevated px-3 py-2 text-[13px] text-text font-mono">
               {preview}
             </code>
-            <button type="button" className={iconBtn} onClick={startReplace} aria-label="Replace" title="Replace">
+            <button type="button" className={iconBtn} onClick={startReplace} aria-label={i18nT('components.secretField.replace')} title={i18nT('components.secretField.replace')}>
               <RotateCcw size={14} />
             </button>
             <button type="button" className={`${iconBtn} hover:text-danger hover:border-danger`} onClick={() => onClearedChange(true)}
-              aria-label="Remove" title="Remove">
+              aria-label={i18nT('components.secretField.remove')} title={i18nT('components.secretField.remove')}>
               <Trash2 size={14} />
             </button>
           </div>
           <div className="flex items-center gap-1.5 text-[12px] text-muted">
             <Lock size={12} />
-            Stored securely and never displayed. Replace to rotate.
+            {i18nT('components.secretField.stored_securely_and_never_displayed_replace_to_r')}
           </div>
         </div>
       ) : (
@@ -119,7 +120,7 @@ export function SecretField({
             {revealed ? <EyeOff size={14} /> : <Eye size={14} />}
           </button>
           {isSet && (
-            <button type="button" className={iconBtn} onClick={cancelReplace} aria-label="Cancel" title="Cancel">
+            <button type="button" className={iconBtn} onClick={cancelReplace} aria-label={i18nT('components.secretField.cancel')} title={i18nT('components.secretField.cancel')}>
               <X size={14} />
             </button>
           )}

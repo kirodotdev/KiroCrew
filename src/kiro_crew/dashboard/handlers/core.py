@@ -293,41 +293,53 @@ async def api_ready(request: web.Request) -> web.Response:
     return web.json_response(payload, status=200 if ready else 503)
 
 
+#: Accepted shape for ``dashboard.language`` — a conservative BCP-47 subset
+#: (``en``, ``zh-CN``, ``pt-BR``, ``zh-Hans-CN``). Deliberately validates SHAPE,
+#: not membership in the frontend's shipped-language list: keeping the set of
+#: available languages a pure frontend data change (``SUPPORTED_LANGUAGES`` +
+#: one catalog) means adding a language never needs a backend edit. An
+#: unrecognised-but-well-formed tag is safe because the SPA's
+#: ``resolveLanguage()`` falls back to browser detection for any code it has no
+#: catalog for.
+_LANGUAGE_TAG_RE = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,2}$")
+
+
+def _theme_payload(cfg: KiroCrewConfig) -> dict[str, object]:
+    """Workspace display preferences shared by the boot + config endpoints.
+
+    One builder for all four response sites so a newly-added preference cannot
+    be surfaced by some of them and silently omitted by the rest.
+    """
+    return {
+        "mode": cfg.dashboard.theme_mode or "",
+        "color": cfg.dashboard.theme_color or "",
+        "language": cfg.dashboard.language or "",
+        "onboarded": cfg.dashboard.onboarded,
+        "import_onboarded": cfg.dashboard.import_onboarded,
+    }
+
+
 async def api_theme_boot(request: web.Request) -> web.Response:
-    """GET /api/theme/boot — workspace theme config for frontend boot.
+    """GET /api/theme/boot — workspace display config for frontend boot.
 
     Unauthenticated (same boundary as /api/health) so the SPA can read the
-    workspace theme before the token flow completes. Contains no secrets —
-    only the workspace-level theme preferences and onboarding flags.
+    workspace theme and UI language before the token flow completes. Contains
+    no secrets — only workspace-level display preferences and onboarding flags.
     """
     cfg = KiroCrewConfig.load()
-    return web.json_response(
-        {
-            "mode": cfg.dashboard.theme_mode or "",
-            "color": cfg.dashboard.theme_color or "",
-            "onboarded": cfg.dashboard.onboarded,
-            "import_onboarded": cfg.dashboard.import_onboarded,
-        }
-    )
+    return web.json_response(_theme_payload(cfg))
 
 
 async def api_theme_config(request: web.Request) -> web.Response:
-    """GET/PUT /api/config/theme — read or update workspace theme settings.
+    """GET/PUT /api/config/theme — read or update workspace display settings.
 
-    GET returns the current theme config. PUT accepts
-    {mode?, color?, onboarded?, import_onboarded?} and persists to the workspace
-    config file.
+    GET returns the current config. PUT accepts
+    {mode?, color?, language?, onboarded?, import_onboarded?} and persists to
+    the workspace config file.
     """
     if request.method == "GET":
         cfg = KiroCrewConfig.load()
-        return web.json_response(
-            {
-                "mode": cfg.dashboard.theme_mode or "",
-                "color": cfg.dashboard.theme_color or "",
-                "onboarded": cfg.dashboard.onboarded,
-                "import_onboarded": cfg.dashboard.import_onboarded,
-            }
-        )
+        return web.json_response(_theme_payload(cfg))
 
     # PUT
     body = await request.json()
@@ -352,6 +364,20 @@ async def api_theme_config(request: web.Request) -> web.Response:
             if cfg.dashboard.theme_color != color:
                 cfg.dashboard.theme_color = color
                 changed = True
+        if "language" in body:
+            language = body["language"]
+            # "" is the explicit "follow the browser" sentinel, so it must stay
+            # writable — a user returning to Auto has to be able to clear the
+            # stored choice.
+            if not isinstance(language, str):
+                raise web.HTTPBadRequest(text="language must be a string")
+            if language and not _LANGUAGE_TAG_RE.match(language):
+                raise web.HTTPBadRequest(
+                    text="language must be '' or a BCP-47 tag (e.g. 'en', 'zh-CN')"
+                )
+            if cfg.dashboard.language != language:
+                cfg.dashboard.language = language
+                changed = True
         if "onboarded" in body:
             onboarded = bool(body["onboarded"])
             if cfg.dashboard.onboarded != onboarded:
@@ -368,14 +394,7 @@ async def api_theme_config(request: web.Request) -> web.Response:
         if changed:
             await asyncio.to_thread(cfg.save)
 
-    return web.json_response(
-        {
-            "mode": cfg.dashboard.theme_mode or "",
-            "color": cfg.dashboard.theme_color or "",
-            "onboarded": cfg.dashboard.onboarded,
-            "import_onboarded": cfg.dashboard.import_onboarded,
-        }
-    )
+    return web.json_response(_theme_payload(cfg))
 
 
 async def pwa_file(request: web.Request) -> web.StreamResponse:

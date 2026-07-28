@@ -22,6 +22,7 @@ import { useArtifactsProvider } from './commandPalette/providers/artifactsProvid
 import { useRecentsProvider } from './commandPalette/providers/recentsProvider'
 import { useSettingsProvider } from './commandPalette/providers/settingsProvider'
 
+import { i18nT } from '../i18n/t'
 /**
  * Search Everywhere command palette.
  *
@@ -451,7 +452,7 @@ export default function CommandPalette({
   if (!open) return null
 
   const emptyState = loading ? (
-    <div className="px-3 py-6 text-center text-[12px] text-muted">Searching…</div>
+    <div className="px-3 py-6 text-center text-[12px] text-muted">{i18nT('components.commandPalette.searching')}</div>
   ) : (
     <div className="px-3 py-6 text-center text-[12px] text-muted">
       {query.trim()
@@ -467,7 +468,7 @@ export default function CommandPalette({
       className="fixed inset-0 z-[9999] flex items-start justify-center bg-bg/60 backdrop-blur-sm animate-rise"
       role="dialog"
       aria-modal="true"
-      aria-label="Search everywhere"
+      aria-label={i18nT('components.commandPalette.search_everywhere')}
       onMouseDown={onClose}
     >
       <div
@@ -482,7 +483,7 @@ export default function CommandPalette({
               {scopeLabel}
               <button
                 type="button"
-                aria-label="Clear filter"
+                aria-label={i18nT('components.commandPalette.clear_filter')}
                 className="text-muted hover:text-text bg-transparent border-none cursor-pointer p-0 flex items-center"
                 onMouseDown={(e) => {
                   e.preventDefault()
@@ -512,19 +513,19 @@ export default function CommandPalette({
               }
             }}
             placeholder={scopeLabel ? `Search ${scopeLabel.toLowerCase()}…` : 'Search for anything'}
-            aria-label="Search everywhere"
+            aria-label={i18nT('components.commandPalette.search_everywhere')}
             className="flex-1 bg-transparent border-none outline-none text-[14px] text-text placeholder:text-muted"
           />
           {scopeHint && (
             <span className="shrink-0 flex items-center gap-1 text-[11px] text-muted">
-              <kbd className="font-mono px-1 rounded bg-bg border border-border">tab</kbd> {scopeHint.label}
+              <kbd className="font-mono px-1 rounded bg-bg border border-border">{i18nT('components.commandPalette.tab')}</kbd> {scopeHint.label}
             </span>
           )}
           <button
             type="button"
             className="text-muted cursor-pointer hover:text-text bg-transparent border-none"
             onClick={onClose}
-            aria-label="Close"
+            aria-label={i18nT('components.commandPalette.close')}
           >
             <X size={16} />
           </button>
@@ -591,7 +592,7 @@ export default function CommandPalette({
                                 <Pin
                                   size={10}
                                   className="text-accent shrink-0 lucide-inline"
-                                  aria-label="Pinned"
+                                  aria-label={i18nT('components.commandPalette.pinned')}
                                 />
                               )}
                               {r.isNew && (

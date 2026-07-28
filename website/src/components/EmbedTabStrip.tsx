@@ -6,6 +6,7 @@ import { createSlot } from '../store/chatSlice'
 import { X, Plus } from 'lucide-react'
 import type { ChatSlot } from '../types'
 
+import { i18nT } from '../i18n/t'
 interface Tab { slug: string }
 
 /** Tab state injected by the host embedding plugin onto `window`. */
@@ -387,7 +388,7 @@ export default function EmbedTabStrip() {
                 className={`transition-opacity ${
                   active ? 'opacity-60 hover:opacity-100 hover:text-text' : 'opacity-0 group-hover/tab:opacity-60 group-focus-within/tab:opacity-60 hover:!opacity-100 hover:text-text'
                 }`}
-                aria-label="Close tab"
+                aria-label={i18nT('components.embedTabStrip.close_tab')}
               >
                 <X size={11} />
               </button>
@@ -405,8 +406,8 @@ export default function EmbedTabStrip() {
           }
         }}
         className="shrink-0 ml-1 p-1.5 rounded-full text-muted hover:text-text hover:bg-bg-elevated/50 transition-colors"
-        aria-label="New tab"
-        title="New tab (Shift+click for new chat)"
+        aria-label={i18nT('components.embedTabStrip.new_tab')}
+        title={i18nT('components.embedTabStrip.new_tab_shift_click_for_new_chat')}
       >
         <Plus size={14} />
       </button>

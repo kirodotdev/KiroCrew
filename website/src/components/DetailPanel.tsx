@@ -5,6 +5,7 @@ import { X } from 'lucide-react'
 import { Btn } from './ui'
 import { usePointerDrag } from '../hooks/usePointerDrag'
 
+import { i18nT } from '../i18n/t'
 interface DetailPanelProps {
   title: React.ReactNode
   onClose: () => void
@@ -178,14 +179,14 @@ export default function DetailPanel({ title, onClose, footer, headerActions, sec
         /* Drag-to-resize splitter: pointer-only affordance (no meaningful
             keyboard gesture for a 6px handle); role="separator" is the correct
             ARIA role. */
-        <div role="separator" aria-orientation="vertical" aria-label="Resize panel" className="absolute left-0 top-0 bottom-0 w-[6px] cursor-col-resize z-20 group/drag" style={{ touchAction: 'none' }} {...drag}>
+        <div role="separator" aria-orientation="vertical" aria-label={i18nT('components.detailPanel.resize_panel')} className="absolute left-0 top-0 bottom-0 w-[6px] cursor-col-resize z-20 group/drag" style={{ touchAction: 'none' }} {...drag}>
           <div className="absolute left-0 top-0 bottom-0 w-[2px] transition-colors duration-200 bg-transparent group-hover/drag:bg-accent resize-accent" />
         </div>
       )}
       {customHeader ?? (<>
       <div className={`flex items-center justify-between px-3 h-12 shrink-0 border-b ${headerClassName ?? 'border-border'}`}>
         <div className="flex items-center gap-2 min-w-0">
-          <Btn className="p-1.5 shrink-0" onClick={onClose} aria-label="Close panel" title="Close panel"><X size={16} /></Btn>
+          <Btn className="p-1.5 shrink-0" onClick={onClose} aria-label={i18nT('components.detailPanel.close_panel')} title={i18nT('components.detailPanel.close_panel')}><X size={16} /></Btn>
           <span className="text-base font-semibold text-text-strong truncate">{title}</span>
         </div>
         <div className="flex items-center gap-1.5 shrink-0">

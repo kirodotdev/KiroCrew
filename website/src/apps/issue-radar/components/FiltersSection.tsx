@@ -4,6 +4,7 @@ import { SORT_FIELDS } from '../lib/format'
 import FilterRow from './FilterRow'
 import LabelPalette from './LabelPalette'
 
+import { i18nT } from '../../../i18n/t'
 /** Body of the "Filters" accordion section: Sort options, the state / mine
  * toggles, and the label palette. Reads and drives everything through the
  * shared context. */
@@ -22,7 +23,7 @@ export default function FiltersSection() {
     <>
       <div className="px-3 pt-2">
         <div className="flex items-center gap-1.5 mb-1.5 text-[12px] font-semibold text-muted uppercase tracking-[.05em]">
-          <ArrowUpDown size={12} /> Sort
+          <ArrowUpDown size={12} /> {i18nT('apps.issueRadar.components.filtersSection.sort')}
         </div>
         <div className="flex flex-col gap-0.5">
           {SORT_FIELDS.map((f) => {
@@ -50,14 +51,14 @@ export default function FiltersSection() {
       <div className="px-3 pt-5">
         <div className="flex items-center mb-1.5">
           <span className="inline-flex items-center gap-1.5 text-[12px] font-semibold text-muted uppercase tracking-[.05em]">
-            <ListFilter size={12} /> Filters
+            <ListFilter size={12} /> {i18nT('apps.issueRadar.components.filtersSection.filters')}
           </span>
           {anyFilterActive && (
             <button
               onClick={clearFilters}
               className="ml-auto inline-flex items-center gap-0.5 text-[12px] text-muted hover:text-text cursor-pointer bg-transparent"
             >
-              <X size={11} /> clear
+              <X size={11} /> {i18nT('apps.issueRadar.components.filtersSection.clear')}
             </button>
           )}
         </div>
@@ -66,13 +67,13 @@ export default function FiltersSection() {
               replaces the other. Below it: independent toggles that combine.
               The rule makes that difference visible instead of leaving the user
               to discover it by clicking. */}
-          <FilterRow label="Open" active={stateFilter === 'open'} onToggle={() => { setStateFilter('open'); setSelectedIssue(null); openIssues() }} />
-          <FilterRow label="Closed" active={stateFilter === 'closed'} onToggle={() => { setStateFilter('closed'); setSelectedIssue(null); openIssues() }} />
+          <FilterRow label={i18nT('apps.issueRadar.components.filtersSection.open')} active={stateFilter === 'open'} onToggle={() => { setStateFilter('open'); setSelectedIssue(null); openIssues() }} />
+          <FilterRow label={i18nT('apps.issueRadar.components.filtersSection.closed')} active={stateFilter === 'closed'} onToggle={() => { setStateFilter('closed'); setSelectedIssue(null); openIssues() }} />
           <div className="my-1 border-t border-border" role="separator" />
-          <FilterRow label="Requested by me" active={requestedByMe} disabled={!me} onToggle={toggleRequestedByMe} />
-          <FilterRow label="Assigned to me" active={assignedToMe} disabled={!me} onToggle={toggleAssignedToMe} />
+          <FilterRow label={i18nT('apps.issueRadar.components.filtersSection.requested_by_me')} active={requestedByMe} disabled={!me} onToggle={toggleRequestedByMe} />
+          <FilterRow label={i18nT('apps.issueRadar.components.filtersSection.assigned_to_me')} active={assignedToMe} disabled={!me} onToggle={toggleAssignedToMe} />
           <FilterRow
-            label="Created by member"
+            label={i18nT('apps.issueRadar.components.filtersSection.created_by_member')}
             active={createdByMember}
             disabled={!hasMemberIssues}
             disabledHint="No repo members found among these issues"

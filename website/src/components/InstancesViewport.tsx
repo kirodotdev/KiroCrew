@@ -42,6 +42,7 @@ import { TRAFFIC_LIGHT_INSET_PX } from '../lib/electron'
 import { isEmbeddedPane } from '../lib/embedded'
 import { isElectron } from '../lib/electron'
 
+import { i18nT } from '../i18n/t'
 // Refresh the embedded token once elapsed reaches this fraction of its TTL
 // (mirrors the gateway's default 80% threshold). Proactive refresh reloads the
 // out-of-view iframe with a fresh token well before the gateway's TTL cap.
@@ -435,7 +436,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
             <div className="flex flex-col items-center gap-3 text-center">
               <Loader2 size={28} className="animate-spin text-muted" />
               <div className="text-sm font-medium text-text">{nameFor(activeId)}</div>
-              <div className="text-xs text-muted">Loading pane…</div>
+              <div className="text-xs text-muted">{i18nT('components.instancesViewport.loading_pane')}</div>
             </div>
           </div>
         </div>
@@ -472,8 +473,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
               </div>
               {!panelConnecting && activeTimedOut && !panelError && (
                 <div className="text-xs text-muted">
-                  The tunnel looks connected but the remote dashboard never loaded. It may be
-                  restarting — retry, or switch tabs above.
+                  {i18nT('components.instancesViewport.the_tunnel_looks_connected_but_the_remote_dashbo')}
                 </div>
               )}
               {!panelConnecting && panelError && (
@@ -487,10 +487,10 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
                 onClick={() => retry(activeId)}
                 className="mt-1 inline-flex items-center gap-1.5 text-xs py-1.5 px-3.5 rounded-md bg-accent text-accent-fg disabled:opacity-60"
               >
-                <RefreshCw size={13} className={panelConnecting ? 'animate-spin' : ''} /> Retry
+                <RefreshCw size={13} className={panelConnecting ? 'animate-spin' : ''} /> {i18nT('components.instancesViewport.retry')}
               </button>
               <div className="text-[11px] text-muted">
-                This tab stays until you disconnect the instance in Settings → Instances.
+                {i18nT('components.instancesViewport.this_tab_stays_until_you_disconnect_the_instance')}
               </div>
             </div>
           </div>

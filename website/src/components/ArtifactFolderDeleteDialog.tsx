@@ -5,6 +5,7 @@ import { Btn } from './ui'
 import { folderSubtreeStats } from '../utils/artifactFolderTree'
 import type { ArtifactFolder } from '../types'
 
+import { i18nT } from '../i18n/t'
 /**
  * Delete-folder confirmation dialog (§8). Never silent: the user
  * explicitly picks between the destructive cascade (folder + every descendant
@@ -41,7 +42,7 @@ export default function ArtifactFolderDeleteDialog({
   return (
     <Modal open={!!folder} onClose={() => { if (!busy) onClose() }} title={`Delete folder “${folder?.name ?? ''}”?`} maxWidth={480}>
       <p className="text-sm text-text m-0">
-        This folder contains {plural(stats.artifactCount, 'artifact')}
+        {i18nT('components.artifactFolderDeleteDialog.this_folder_contains')} {plural(stats.artifactCount, 'artifact')}
         {stats.subfolderCount > 0 ? ` across ${plural(stats.subfolderCount, 'subfolder')}` : ''}.
       </p>
       <div className="flex flex-col gap-2 mt-4">
@@ -53,9 +54,9 @@ export default function ArtifactFolderDeleteDialog({
         >
           {busy === 'cascade' ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
           <span>
-            <span className="block font-medium">Delete folder and all contents</span>
+            <span className="block font-medium">{i18nT('components.artifactFolderDeleteDialog.delete_folder_and_all_contents')}</span>
             <span className="block text-[12px] opacity-80">
-              Permanently deletes every artifact and subfolder inside. Cannot be undone.
+              {i18nT('components.artifactFolderDeleteDialog.permanently_deletes_every_artifact_and_subfolder')}
             </span>
           </span>
         </Btn>
@@ -66,14 +67,14 @@ export default function ArtifactFolderDeleteDialog({
         >
           {busy === 'keep' ? <Loader2 size={14} className="animate-spin" /> : <FolderOutput size={14} />}
           <span>
-            <span className="block font-medium">Delete folder only, keep artifacts</span>
+            <span className="block font-medium">{i18nT('components.artifactFolderDeleteDialog.delete_folder_only_keep_artifacts')}</span>
             <span className="block text-[12px] opacity-80">
-              Contents move up to {folder?.parent_id ? 'the parent folder' : 'the library root'}.
+              {i18nT('components.artifactFolderDeleteDialog.contents_move_up_to')} {folder?.parent_id ? 'the parent folder' : 'the library root'}.
             </span>
           </span>
         </Btn>
         <Btn disabled={busy !== null} onClick={onClose} className="justify-center">
-          Cancel
+          {i18nT('components.artifactFolderDeleteDialog.cancel')}
         </Btn>
       </div>
     </Modal>

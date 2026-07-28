@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Activity, Rocket, Zap } from 'lucide-react'
 import { api } from '../api/client'
 
+import { i18nT } from '../i18n/t'
 // ── GET /api/telemetry/startup shape (dashboard/handlers/telemetry.py) ──
 type Stat = {
   count: number
@@ -102,13 +103,13 @@ export default function TelemetryPanel() {
     refetchInterval: 5000,
   })
 
-  if (isLoading && !data) return <Notice>Loading telemetry…</Notice>
+  if (isLoading && !data) return <Notice>{i18nT('pages.telemetryPanel.loading_telemetry')}</Notice>
   if (data && !data.enabled) {
     return (
       <Notice>
-        <div className="text-text font-medium mb-1">Telemetry is off</div>
-        Enable with <code className="text-accent">telemetry.enabled = true</code>. Metrics stay local (
-        <code className="text-accent">{data.metrics_dir}</code>) — nothing leaves this machine.
+        <div className="text-text font-medium mb-1">{i18nT('pages.telemetryPanel.telemetry_is_off')}</div>
+        {i18nT('pages.telemetryPanel.enable_with')} <code className="text-accent">{i18nT('pages.telemetryPanel.telemetry_enabled_true')}</code>{i18nT('pages.telemetryPanel.metrics_stay_local')}
+        <code className="text-accent">{data.metrics_dir}</code>{i18nT('pages.telemetryPanel.nothing_leaves_this_machine')}
       </Notice>
     )
   }
@@ -118,7 +119,7 @@ export default function TelemetryPanel() {
   const other = data?.other ?? []
   const hasData = !!(s && s.overall.count) || !!(t && t.count) || other.length > 0
   if (!data || !hasData) {
-    return <Notice>No telemetry recorded yet in the last {data?.window_days ?? 14} days.</Notice>
+    return <Notice>{i18nT('pages.telemetryPanel.no_telemetry_recorded_yet_in_the_last')} {data?.window_days ?? 14} {i18nT('pages.telemetryPanel.days')}</Notice>
   }
 
   const oh = (name: string) => other.find(o => o.name === name && o.kind === 'histogram')
@@ -155,24 +156,24 @@ export default function TelemetryPanel() {
   return (
     <div className="overflow-y-auto flex-1 min-h-0 pb-8">
       {/* ── Section 1: Key metrics ─────────────────────────────── */}
-      <Section title="Key metrics" icon={<Activity size={13} />}>
+      <Section title={i18nT('pages.telemetryPanel.key_metrics')} icon={<Activity size={13} />}>
         <div className="grid gap-2.5 grid-cols-[repeat(auto-fit,minmax(150px,1fr))]">
           <Tile
-            label="Turn latency (p50)"
+            label={i18nT('pages.telemetryPanel.turn_latency_p50')}
             value={t ? fmtMs(t.p50_ms) : '—'}
             sub={t ? `p90 ${fmtMs(t.p90_ms)}` : 'no turns yet'}
             color="var(--accent)"
           />
           <Tile
-            label="Fault rate"
+            label={i18nT('pages.telemetryPanel.fault_rate')}
             value={faultPct == null ? '—' : String(faultPct)}
             unit={faultPct == null ? undefined : '%'}
             sub={t ? `${turnFaults} faults / ${t.count} turns` : 'no turns yet'}
             color={faultColor}
           />
-          <Tile label="Throughput" value={t ? String(t.count) : '—'} unit={t ? 'turns' : undefined} sub={`last ${data.window_days}d`} />
+          <Tile label={i18nT('pages.telemetryPanel.throughput')} value={t ? String(t.count) : '—'} unit={t ? 'turns' : undefined} sub={`last ${data.window_days}d`} />
           <Tile
-            label="Ready rate"
+            label={i18nT('pages.telemetryPanel.ready_rate')}
             value={s ? String(readyRate) : '—'}
             unit={s ? '%' : undefined}
             sub={s ? `${s.overall.count} startups` : undefined}
@@ -187,31 +188,31 @@ export default function TelemetryPanel() {
               <span style={{ flex: t.outcome.timeout ?? 0, background: 'var(--warn)' }} />
             </div>
             <div className="flex gap-4 mt-1 text-[10px] text-muted">
-              <span>ok {t.outcome.ok ?? 0}</span>
-              <span>error {t.outcome.error ?? 0}</span>
-              <span>timeout {t.outcome.timeout ?? 0}</span>
+              <span>{i18nT('pages.telemetryPanel.ok')} {t.outcome.ok ?? 0}</span>
+              <span>{i18nT('pages.telemetryPanel.error')} {t.outcome.error ?? 0}</span>
+              <span>{i18nT('pages.telemetryPanel.timeout')} {t.outcome.timeout ?? 0}</span>
             </div>
           </div>
         )}
         {!t && (
           <div className="text-muted text-[11px] mt-2">
-            Agent-turn latency &amp; fault rate populate after the next turns complete.
+            {i18nT('pages.telemetryPanel.agent_turn_latency_fault_rate_populate_after_the')}
           </div>
         )}
       </Section>
 
       {/* ── Section 2: Session startup ─────────────────────────── */}
       {s && s.overall.count > 0 && (
-        <Section title="Session startup" icon={<Rocket size={13} />}>
+        <Section title={i18nT('pages.telemetryPanel.session_startup')} icon={<Rocket size={13} />}>
           <div className="grid gap-2.5 grid-cols-[repeat(auto-fit,minmax(140px,1fr))] mb-3">
-            <Tile label="Cold start (p50)" value={fmtMs(s.cold.p50_ms)} color="var(--accent)" sub={`${s.cold.count} cold`} />
-            <Tile label="Cold start (p90)" value={fmtMs(s.cold.p90_ms)} color="var(--warn)" />
-            <Tile label="Warm start (p50)" value={fmtMs(s.warm.p50_ms)} color="var(--ok)" sub={`${s.warm.count} warm`} />
-            <Tile label="Overall mean" value={fmtMs(s.overall.mean_ms)} sub={`min ${fmtMs(s.overall.min_ms)} · max ${fmtMs(s.overall.max_ms)}`} />
+            <Tile label={i18nT('pages.telemetryPanel.cold_start_p50')} value={fmtMs(s.cold.p50_ms)} color="var(--accent)" sub={`${s.cold.count} cold`} />
+            <Tile label={i18nT('pages.telemetryPanel.cold_start_p90')} value={fmtMs(s.cold.p90_ms)} color="var(--warn)" />
+            <Tile label={i18nT('pages.telemetryPanel.warm_start_p50')} value={fmtMs(s.warm.p50_ms)} color="var(--ok)" sub={`${s.warm.count} warm`} />
+            <Tile label={i18nT('pages.telemetryPanel.overall_mean')} value={fmtMs(s.overall.mean_ms)} sub={`min ${fmtMs(s.overall.min_ms)} · max ${fmtMs(s.overall.max_ms)}`} />
           </div>
           {distRows.length > 0 && (
             <div className="card-glow border border-border bg-card rounded-xl p-3.5">
-              <div className="text-[10px] text-muted mb-2">Startup latency distribution · from OTEL histogram buckets</div>
+              <div className="text-[10px] text-muted mb-2">{i18nT('pages.telemetryPanel.startup_latency_distribution_from_otel_histogram')}</div>
               <div className="flex flex-col gap-1.5">
                 {distRows.map(r => (
                   <div key={r.label} className="flex items-center gap-2 text-[10px]">
@@ -229,60 +230,60 @@ export default function TelemetryPanel() {
       )}
 
       {/* ── Section 3: Acceleration internals ──────────────────── */}
-      <Section title="Acceleration internals" icon={<Zap size={13} />}>
+      <Section title={i18nT('pages.telemetryPanel.acceleration_internals')} icon={<Zap size={13} />}>
         <div className="grid grid-cols-2 gap-2.5 max-[720px]:grid-cols-1">
-          <Card title="Warm-pool efficiency" meaning="Sessions reusing a warm MCP backend vs a cold spawn">
+          <Card title={i18nT('pages.telemetryPanel.warm_pool_efficiency')} meaning="Sessions reusing a warm MCP backend vs a cold spawn">
             {warmHit + warmMiss > 0 ? (
               <>
                 <div className="text-[18px] font-bold" style={{ color: warmRate >= 50 ? 'var(--ok)' : 'var(--warn)' }}>
                   {warmRate}
-                  <span className="text-[10px] text-muted font-normal">% hit</span>
+                  <span className="text-[10px] text-muted font-normal">{i18nT('pages.telemetryPanel.hit')}</span>
                 </div>
                 <div className="flex h-3.5 rounded-md overflow-hidden border border-border mt-1.5">
                   <span style={{ flex: warmHit, background: 'var(--ok)' }} title={`hit ${warmHit}`} />
                   <span style={{ flex: warmMiss, background: 'var(--muted)' }} title={`miss ${warmMiss}`} />
                 </div>
-                <div className="text-[10px] text-muted mt-1">{warmHit} hit · {warmMiss} cold spawn</div>
+                <div className="text-[10px] text-muted mt-1">{warmHit} {i18nT('pages.telemetryPanel.hit_2')} {warmMiss} {i18nT('pages.telemetryPanel.cold_spawn')}</div>
               </>
             ) : (
-              <div className="text-muted text-[11px]">no acquisitions yet</div>
+              <div className="text-muted text-[11px]">{i18nT('pages.telemetryPanel.no_acquisitions_yet')}</div>
             )}
           </Card>
-          <Card title="MCP backend acquire" meaning="Time to hand a pooled MCP backend to a session">
+          <Card title={i18nT('pages.telemetryPanel.mcp_backend_acquire')} meaning="Time to hand a pooled MCP backend to a session">
             {acquire ? (
               <div className="text-[18px] font-bold">
                 {fmtMs(acquire.p50_ms)}
-                <span className="text-[10px] text-muted font-normal"> typ · p90 {fmtMs(acquire.p90_ms)} · n={acquire.count ?? 0}</span>
+                <span className="text-[10px] text-muted font-normal"> {i18nT('pages.telemetryPanel.typ_p90')} {fmtMs(acquire.p90_ms)} {i18nT('pages.telemetryPanel.n')}{acquire.count ?? 0}</span>
               </div>
             ) : (
-              <div className="text-muted text-[11px]">no data yet</div>
+              <div className="text-muted text-[11px]">{i18nT('pages.telemetryPanel.no_data_yet')}</div>
             )}
           </Card>
-          <Card title="MCP cold-load (first use)" meaning="First-use spawn of an MCP server backend">
+          <Card title={i18nT('pages.telemetryPanel.mcp_cold_load_first_use')} meaning="First-use spawn of an MCP server backend">
             {mcpLazy ? (
               <div className="text-[18px] font-bold">
                 {fmtMs(mcpLazy.p50_ms)}
-                <span className="text-[10px] text-muted font-normal"> · {mcpLazyN} loads</span>
+                <span className="text-[10px] text-muted font-normal"> · {mcpLazyN} {i18nT('pages.telemetryPanel.loads')}</span>
               </div>
             ) : (
-              <div className="text-muted text-[11px]">no data yet</div>
+              <div className="text-muted text-[11px]">{i18nT('pages.telemetryPanel.no_data_yet')}</div>
             )}
           </Card>
-          <Card title="Skill load" meaning="On-demand read of a skill body from disk">
+          <Card title={i18nT('pages.telemetryPanel.skill_load')} meaning="On-demand read of a skill body from disk">
             {skillLazy ? (
               <div className="text-[18px] font-bold" style={{ color: 'var(--ok)' }}>
                 {fmtMs(skillLazy.p50_ms)}
-                <span className="text-[10px] text-muted font-normal"> · {skillLazyN} loads</span>
+                <span className="text-[10px] text-muted font-normal"> · {skillLazyN} {i18nT('pages.telemetryPanel.loads')}</span>
               </div>
             ) : (
-              <div className="text-muted text-[11px]">no data yet</div>
+              <div className="text-muted text-[11px]">{i18nT('pages.telemetryPanel.no_data_yet')}</div>
             )}
           </Card>
         </div>
       </Section>
 
       <div className="text-muted text-[11px] mt-2">
-        Window: last {data.window_days}d · {data.shard_count} shard(s) · source <code>{data.metrics_dir}</code> · local-only, no egress
+        {i18nT('pages.telemetryPanel.window_last')} {data.window_days}{i18nT('pages.telemetryPanel.d')} {data.shard_count} {i18nT('pages.telemetryPanel.shard_s_source')} <code>{data.metrics_dir}</code> {i18nT('pages.telemetryPanel.local_only_no_egress')}
       </div>
     </div>
   )

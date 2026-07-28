@@ -8,6 +8,7 @@ import { registerPopout, returnSelfToMain } from '../utils/artifactPopout'
 import ArtifactDetailPage from './ArtifactDetailPage'
 import type { Artifact } from '../types'
 
+import { i18nT } from '../i18n/t'
 /**
  * The window shell for a popped-out artifact (`/popout/artifact/:slug`).
  *
@@ -50,10 +51,10 @@ export default function ArtifactPopoutFrame() {
       <Btn
         onClick={returnSelfToMain}
         className="fixed bottom-3 right-3 z-[60] opacity-60 hover:opacity-100 bg-bg-elevated"
-        aria-label="Return to main window and close this popout"
-        title="Return to main window and close this popout"
+        aria-label={i18nT('pages.artifactPopoutFrame.return_to_main_window_and_close_this_popout')}
+        title={i18nT('pages.artifactPopoutFrame.return_to_main_window_and_close_this_popout')}
       >
-        <PictureInPicture2 size={13} /> Return
+        <PictureInPicture2 size={13} /> {i18nT('pages.artifactPopoutFrame.return')}
       </Btn>
     </div>
   )

@@ -26,6 +26,7 @@ import {
 import { KiroGhost } from './KiroGhost'
 import { Btn, SendBtn } from './ui'
 
+import { i18nT } from '../i18n/t'
 type Stage = 1 | 2 | 3 | 4
 
 const STAGE_LABELS = ['Sources', 'Categories', 'Review', 'Results']
@@ -121,7 +122,7 @@ function ImportingLabel() {
   }, [])
   return (
     <>
-      Importing<span className="inline-block w-3 text-left">{dots}</span>
+      {i18nT('components.agentImportFlow.importing')}<span className="inline-block w-3 text-left">{dots}</span>
     </>
   )
 }
@@ -345,13 +346,13 @@ export default function AgentImportFlow({
     if (stage === 1) {
       return (
         <>
-          <Btn type="button" className="h-9 rounded-lg px-4" disabled={isBusy} onClick={skip}>Skip import</Btn>
+          <Btn type="button" className="h-9 rounded-lg px-4" disabled={isBusy} onClick={skip}>{i18nT('components.agentImportFlow.skip_import')}</Btn>
           <SendBtn
             type="button"
             disabled={selectedSources.size === 0}
             onClick={() => setStage(2)}
           >
-            Continue
+            {i18nT('components.agentImportFlow.continue')}
           </SendBtn>
         </>
       )
@@ -360,10 +361,10 @@ export default function AgentImportFlow({
       return (
         <>
           <Btn type="button" className="h-9 rounded-lg px-4" onClick={() => setStage(1)}>
-            Back
+            {i18nT('components.agentImportFlow.back')}
           </Btn>
           <SendBtn type="button" disabled={!hasSelection} onClick={() => setStage(3)}>
-            Continue
+            {i18nT('components.agentImportFlow.continue')}
           </SendBtn>
         </>
       )
@@ -372,7 +373,7 @@ export default function AgentImportFlow({
       return (
         <>
           <Btn type="button" className="h-9 rounded-lg px-4" disabled={applyMutation.isPending} onClick={() => setStage(2)}>
-            Back
+            {i18nT('components.agentImportFlow.back')}
           </Btn>
           <SendBtn type="button" disabled={applyMutation.isPending} onClick={beginImport}>
             {applyMutation.isPending ? <ImportingLabel /> : 'Import selected'}
@@ -383,7 +384,7 @@ export default function AgentImportFlow({
     return (
       <>
         <Btn type="button" className="h-9 rounded-lg px-4" disabled={completionMutation.isPending} onClick={importAnother}>
-          <RefreshCw className="lucide-inline" /> Import another
+          <RefreshCw className="lucide-inline" /> {i18nT('components.agentImportFlow.import_another')}
         </Btn>
         <SendBtn
           type="button"
@@ -391,7 +392,7 @@ export default function AgentImportFlow({
           onClick={() => completionMutation.mutate()}
         >
           {completionMutation.isPending && <Loader2 className="lucide-inline animate-spin" />}
-          Continue
+          {i18nT('components.agentImportFlow.continue')}
         </SendBtn>
       </>
     )
@@ -445,9 +446,9 @@ export default function AgentImportFlow({
         <div className="flex min-h-[360px] flex-col items-center justify-center text-center">
           <Loader2 className="lucide-inline animate-spin text-accent" />
           <h1 ref={headingRef} tabIndex={-1} className="mt-4 text-2xl font-semibold text-text-strong outline-none">
-            Scanning for agent setup
+            {i18nT('components.agentImportFlow.scanning_for_agent_setup')}
           </h1>
-          <p className="mt-2 text-sm text-muted">Checking supported tools on this gateway host.</p>
+          <p className="mt-2 text-sm text-muted">{i18nT('components.agentImportFlow.checking_supported_tools_on_this_gateway_host')}</p>
         </div>
       )
     }
@@ -456,13 +457,13 @@ export default function AgentImportFlow({
         <div className="flex min-h-[360px] flex-col items-center justify-center text-center">
           <AlertTriangle className="lucide-inline text-danger" />
           <h1 ref={headingRef} tabIndex={-1} className="mt-4 text-2xl font-semibold text-text-strong outline-none">
-            We could not scan agent setup
+            {i18nT('components.agentImportFlow.we_could_not_scan_agent_setup')}
           </h1>
           <p className="mt-2 max-w-lg text-sm text-danger" role="alert">
             {errorMessage(scanQuery.error, 'The gateway returned an unexpected error.')}
           </p>
           <SendBtn type="button" className="mt-5" onClick={() => scanQuery.refetch()}>
-            <RefreshCw className="lucide-inline" /> Try again
+            <RefreshCw className="lucide-inline" /> {i18nT('components.agentImportFlow.try_again')}
           </SendBtn>
         </div>
       )
@@ -472,10 +473,10 @@ export default function AgentImportFlow({
         <div className="flex min-h-[360px] flex-col items-center justify-center text-center">
           <FileSearch className="lucide-inline text-muted" />
           <h1 ref={headingRef} tabIndex={-1} className="mt-4 text-2xl font-semibold text-text-strong outline-none">
-            No supported setup found
+            {i18nT('components.agentImportFlow.no_supported_setup_found')}
           </h1>
           <p className="mt-2 max-w-lg text-sm leading-relaxed text-muted">
-            KiroCrew did not find supported setup to import on this gateway host.
+            {i18nT('components.agentImportFlow.kirocrew_did_not_find_supported_setup_to_import')}
           </p>
           <SendBtn
             type="button"
@@ -484,7 +485,7 @@ export default function AgentImportFlow({
             onClick={skip}
           >
             {isBusy && <Loader2 className="lucide-inline animate-spin" />}
-            Skip import
+            {i18nT('components.agentImportFlow.skip_import')}
           </SendBtn>
           {completionError && (
             <p className="mt-4 text-sm text-danger" role="alert">
@@ -528,7 +529,7 @@ export default function AgentImportFlow({
                     <span className="block font-semibold text-text-strong">{source.name}</span>
                     {source.detail && <span className="mt-1 block break-words text-[13px] text-muted">{source.detail}</span>}
                   </span>
-                  <span className="shrink-0 text-[13px] font-medium text-muted">{count} found</span>
+                  <span className="shrink-0 text-[13px] font-medium text-muted">{count} {i18nT('components.agentImportFlow.found')}</span>
                 </label>
               )
             })}
@@ -579,7 +580,7 @@ export default function AgentImportFlow({
             ))}
           </div>
           <p className="mt-5 text-center text-[13px] text-muted">
-            Your existing KiroCrew setup will not be affected.
+            {i18nT('components.agentImportFlow.your_existing_kirocrew_setup_will_not_be_affecte')}
           </p>
         </>
       )
@@ -594,15 +595,14 @@ export default function AgentImportFlow({
           )}
           <section className="rounded-lg border border-ok/30 bg-ok-subtle p-4">
             <h2 className="flex items-center gap-2 text-sm font-semibold text-text-strong">
-              <ShieldCheck className="lucide-inline text-ok" /> Merge only
+              <ShieldCheck className="lucide-inline text-ok" /> {i18nT('components.agentImportFlow.merge_only')}
             </h2>
             <p className="mt-2 text-sm leading-relaxed text-muted">
-              Existing KiroCrew setup is never overwritten. Matching items are deduplicated,
-              and conflicts keep the current KiroCrew version.
+              {i18nT('components.agentImportFlow.existing_kirocrew_setup_is_never_overwritten_mat')}
             </p>
           </section>
           <section className="mt-6">
-            <h2 className="text-sm font-semibold text-text-strong">Selected setup</h2>
+            <h2 className="text-sm font-semibold text-text-strong">{i18nT('components.agentImportFlow.selected_setup')}</h2>
             <div className="mt-2 divide-y divide-border rounded-xl border border-border bg-bg">
               {applyPayload.sources.map(selection => {
                 const source = sources.find(candidate => candidate.id === selection.id)
@@ -623,13 +623,12 @@ export default function AgentImportFlow({
                 )
               })}
             </div>
-            <p className="mt-2 text-[13px] text-muted">{selectedItemCount} items selected</p>
+            <p className="mt-2 text-[13px] text-muted">{selectedItemCount} {i18nT('components.agentImportFlow.items_selected')}</p>
           </section>
           <section className="mt-6">
-            <h2 className="text-sm font-semibold text-text-strong">Not imported</h2>
+            <h2 className="text-sm font-semibold text-text-strong">{i18nT('components.agentImportFlow.not_imported')}</h2>
             <p className="mt-2 text-[13px] leading-relaxed text-muted">
-              Credentials remain with their source. Rules, hooks, agents or personas, and
-              raw instructions are unsupported and stay unchanged.
+              {i18nT('components.agentImportFlow.credentials_remain_with_their_source_rules_hooks')}
             </p>
             {(scanQuery.data?.skipped?.length ?? 0) > 0 && (
               <div className="mt-3 divide-y divide-border rounded-xl border border-border bg-bg">
@@ -656,15 +655,15 @@ export default function AgentImportFlow({
       <>
         <dl className="grid grid-cols-1 divide-y divide-border rounded-xl border border-border bg-bg sm:grid-cols-3 sm:divide-x sm:divide-y-0">
           <div className="p-4 text-center">
-            <dt className="text-[13px] text-muted">Imported</dt>
+            <dt className="text-[13px] text-muted">{i18nT('components.agentImportFlow.imported')}</dt>
             <dd className="mt-1 text-2xl font-semibold text-text-strong">{summary?.imported ?? 0}</dd>
           </div>
           <div className="p-4 text-center">
-            <dt className="text-[13px] text-muted">Deduplicated</dt>
+            <dt className="text-[13px] text-muted">{i18nT('components.agentImportFlow.deduplicated')}</dt>
             <dd className="mt-1 text-2xl font-semibold text-text-strong">{summary?.deduplicated ?? 0}</dd>
           </div>
           <div className="p-4 text-center">
-            <dt className="text-[13px] text-muted">Skipped</dt>
+            <dt className="text-[13px] text-muted">{i18nT('components.agentImportFlow.skipped')}</dt>
             <dd className="mt-1 text-2xl font-semibold text-text-strong">{summary?.skipped ?? 0}</dd>
           </div>
         </dl>
@@ -682,7 +681,7 @@ export default function AgentImportFlow({
       ref={dialogRef}
       role="dialog"
       aria-modal="true"
-      aria-label="Import agent setup"
+      aria-label={i18nT('components.agentImportFlow.import_agent_setup')}
       className="fixed inset-0 z-[140] flex min-h-0 overflow-y-auto bg-bg/70 backdrop-blur-sm p-0 text-text sm:items-center sm:justify-center sm:p-6"
     >
       <div className="relative flex min-h-screen w-full flex-col overflow-hidden bg-card shadow-xl sm:h-[min(760px,calc(100vh-48px))] sm:min-h-0 sm:max-w-6xl sm:flex-row sm:rounded-2xl sm:border sm:border-border">
@@ -694,19 +693,18 @@ export default function AgentImportFlow({
           <div className="relative z-10 flex w-full flex-col p-7 sm:p-10">
             <div className="flex items-center gap-3">
               <KiroGhost size={28} className="h-8 w-7" />
-              <span className="text-[15px] font-semibold tracking-wide">Kiro Crew</span>
+              <span className="text-[15px] font-semibold tracking-wide">{i18nT('components.agentImportFlow.kiro_crew')}</span>
             </div>
             <div className="mt-auto max-w-[290px]">
               <h1 className="text-4xl font-semibold leading-[1.05] tracking-[-0.02em] sm:text-[clamp(2.2rem,4vw,3.5rem)]">
-                Bring your crew with you.
+                {i18nT('components.agentImportFlow.bring_your_crew_with_you')}
               </h1>
               <p className="mt-5 max-w-[270px] text-sm leading-relaxed text-accent-fg/80">
-                Bring your supported setup—sessions, memories, workspaces, MCP servers,
-                skills, schedules, and safe settings—into Kiro Crew.
+                {i18nT('components.agentImportFlow.bring_your_supported_setup_sessions_memories_wor')}
               </p>
             </div>
             <p className="mt-8 text-[12px] font-medium text-accent-fg/75">
-              Merge-only setup · credentials stay where they are
+              {i18nT('components.agentImportFlow.merge_only_setup_credentials_stay_where_they_are')}
             </p>
           </div>
         </aside>
@@ -714,16 +712,16 @@ export default function AgentImportFlow({
           <header className="shrink-0 px-6 pt-7 sm:px-10 sm:pt-10">
             <div className="flex items-center justify-between gap-4">
               <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted">
-                Import setup{showStepFooter && ` · ${stage} of ${STAGE_LABELS.length}`}
+                {i18nT('components.agentImportFlow.import_setup')}{showStepFooter && ` · ${stage} of ${STAGE_LABELS.length}`}
               </p>
               <button
                 type="button"
-                aria-label="Skip all setup and onboarding"
+                aria-label={i18nT('components.agentImportFlow.skip_all_setup_and_onboarding')}
                 disabled={isBusy}
                 onClick={skipAll}
                 className="inline-flex items-center gap-1.5 text-[13px] font-medium text-muted transition-colors hover:text-text disabled:cursor-not-allowed disabled:opacity-50"
               >
-                Skip all <ArrowRight className="lucide-inline" />
+                {i18nT('components.agentImportFlow.skip_all')} <ArrowRight className="lucide-inline" />
               </button>
             </div>
             {stageHeader}

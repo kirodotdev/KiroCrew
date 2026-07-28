@@ -20,6 +20,7 @@ import { openActivityToTab, selectSubagent } from '../../store/chatSlice'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
 import type { ChatMessage, SubagentActivity } from '../../types'
 
+import { i18nT } from '../../i18n/t'
 /** The `spawn_run` tool result opens with "Spawned N subagent(s)." followed by
  *  one indented "  <id> (<agent>): <task>" line per accepted agent (see the
  *  spawn_run handler in mcp_core.py). Matching the header identifies the call
@@ -133,7 +134,7 @@ const SubagentRunCard = memo(function SubagentRunCard({
       <button
         type="button"
         onClick={open}
-        title="Open in the Subagents panel"
+        title={i18nT('pages.chat.subagentRunCard.open_in_the_subagents_panel')}
         data-testid="subagent-run-card"
         className="group w-full text-left rounded-md bg-accent/10 border border-accent/20 hover:bg-accent/15 hover:border-accent/40 transition-colors px-3 py-2 flex items-start gap-2"
       >
@@ -156,9 +157,9 @@ const SubagentRunCard = memo(function SubagentRunCard({
               <span
                 className="shrink-0 inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-muted/15 border border-border text-muted"
                 data-testid="subagent-card-queued"
-                title="Waiting to start — queued behind the concurrency limit"
+                title={i18nT('pages.chat.subagentRunCard.waiting_to_start_queued_behind_the_concurrency_l')}
               >
-                <Clock size={10} aria-hidden /> {queued} waiting
+                <Clock size={10} aria-hidden /> {queued} {i18nT('pages.chat.subagentRunCard.waiting')}
               </span>
             )}
             {counts.done > 0 && (
@@ -179,7 +180,7 @@ const SubagentRunCard = memo(function SubagentRunCard({
           </div>
           <div className="text-[10px] text-muted font-mono truncate mt-0.5">
             {idPreview ? `${idPreview}${launch.ids.length > 4 ? ` +${launch.ids.length - 4}` : ''} · ` : ''}
-            Open Subagents panel
+            {i18nT('pages.chat.subagentRunCard.open_subagents_panel')}
           </div>
         </div>
         <PanelRight

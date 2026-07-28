@@ -3,6 +3,7 @@ import type { SearchMatch } from '../hooks/useMessageSearch'
 import type { ChatMessage } from '../types'
 import { searchableTextMemo } from '../utils/searchableText'
 
+import { i18nT } from '../i18n/t'
 interface SearchResultsListProps {
   matches: SearchMatch[]
   currentIdx: number
@@ -119,7 +120,7 @@ export default function SearchResultsList({
       id={SEARCH_LISTBOX_ID}
       className="h-full overflow-y-auto py-1 text-[13px]"
       role="listbox"
-      aria-label="Search results"
+      aria-label={i18nT('components.searchResultsList.search_results')}
     >
       {snippets.map(s => {
         const active = s.matchIdx === currentIdx
@@ -148,7 +149,7 @@ export default function SearchResultsList({
       })}
       {matches.length > MAX_ROWS && (
         <div className="px-3 py-1.5 text-[11px] text-muted border-t border-border">
-          Showing {snippets.length} of {matches.length} matches around the current result — narrow your search to see all.
+          {i18nT('components.searchResultsList.showing')} {snippets.length} {i18nT('components.searchResultsList.of')} {matches.length} {i18nT('components.searchResultsList.matches_around_the_current_result_narrow_your_se')}
         </div>
       )}
     </div>

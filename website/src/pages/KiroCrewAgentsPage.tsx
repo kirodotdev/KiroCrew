@@ -10,6 +10,7 @@ import StyledSelect from '../components/StyledSelect'
 import type { KiroCrewAgent } from '../components/AgentSelector'
 import { SourceBadge } from '../components/SourceBadge'
 
+import { i18nT } from '../i18n/t'
 /** Common shape returned by the agent/workspace mutation endpoints. */
 interface AgentMutationResult {
   error?: string
@@ -75,44 +76,44 @@ function WorkspaceModal({
 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center">
-      <Clickable aria-label="Close dialog" className="absolute inset-0 bg-black/50" onClick={onClose} />
-      <div role="dialog" aria-modal="true" aria-label="Create Workspace" className="relative z-10 w-full max-w-md">
+      <Clickable aria-label={i18nT('pages.kiroCrewAgentsPage.close_dialog')} className="absolute inset-0 bg-black/50" onClick={onClose} />
+      <div role="dialog" aria-modal="true" aria-label={i18nT('pages.kiroCrewAgentsPage.create_workspace')} className="relative z-10 w-full max-w-md">
         <Card className="!mb-0">
-          <CardTitle>Create Workspace</CardTitle>
+          <CardTitle>{i18nT('pages.kiroCrewAgentsPage.create_workspace')}</CardTitle>
         <div className="flex flex-col gap-3">
           <div className="flex flex-col gap-1">
             <div className="flex items-center gap-1">
               {/* Native input associated via htmlFor+id; label-has-for's nesting requirement is a false positive. */}
               {/* eslint-disable-next-line jsx-a11y/label-has-for */}
-              <label htmlFor="ws-name" className="text-[11px] text-muted uppercase tracking-wider font-medium">Name</label>
+              <label htmlFor="ws-name" className="text-[11px] text-muted uppercase tracking-wider font-medium">{i18nT('pages.kiroCrewAgentsPage.name')}</label>
               <InfoTip text="A unique identifier for this workspace. Agents reference workspaces by name." />
             </div>
-            <Input id="ws-name" placeholder="e.g. oncall" value={wsName} onChange={e => handleNameChange(e.target.value)} autoFocus />
+            <Input id="ws-name" placeholder={i18nT('pages.kiroCrewAgentsPage.e_g_oncall')} value={wsName} onChange={e => handleNameChange(e.target.value)} autoFocus />
           </div>
           <div className="flex flex-col gap-1">
             <div className="flex items-center gap-1">
               {/* Native input associated via htmlFor+id; label-has-for's nesting requirement is a false positive. */}
               {/* eslint-disable-next-line jsx-a11y/label-has-for */}
-              <label htmlFor="ws-dir" className="text-[11px] text-muted uppercase tracking-wider font-medium">Directory</label>
+              <label htmlFor="ws-dir" className="text-[11px] text-muted uppercase tracking-wider font-medium">{i18nT('pages.kiroCrewAgentsPage.directory')}</label>
               <InfoTip text="Subdirectory inside ~/.kiro/crew where this workspace stores its data (chat history, lessons, projects). Each workspace gets its own isolated directory." />
             </div>
-            <Input id="ws-dir" placeholder="workspace" value={wsDir} onChange={e => { setDirTouched(true); setWsDir(e.target.value) }} />
+            <Input id="ws-dir" placeholder={i18nT('pages.kiroCrewAgentsPage.workspace')} value={wsDir} onChange={e => { setDirTouched(true); setWsDir(e.target.value) }} />
           </div>
           <div className="flex flex-col gap-1">
             <div className="flex items-center gap-1">
-              <span className="text-[11px] text-muted uppercase tracking-wider font-medium">Copy from (optional)</span>
+              <span className="text-[11px] text-muted uppercase tracking-wider font-medium">{i18nT('pages.kiroCrewAgentsPage.copy_from_optional')}</span>
               <InfoTip text="Copy the contents of an existing workspace into the new one. Leave as '— none —' to start fresh." />
             </div>
             <StyledSelect
               options={workspaceOptions}
               value={copyFrom}
               onChange={setCopyFrom}
-              placeholder="— none —"
+              placeholder={i18nT('pages.kiroCrewAgentsPage.none')}
             />
           </div>
           {wsError && <div className="text-danger text-[13px]">{wsError}</div>}
           <div className="flex gap-2 justify-end mt-1">
-            <Btn onClick={onClose}>Cancel</Btn>
+            <Btn onClick={onClose}>{i18nT('pages.kiroCrewAgentsPage.cancel')}</Btn>
             <SendBtn onClick={submit} disabled={submitting}>{submitting ? 'Creating…' : 'Create'}</SendBtn>
           </div>
         </div>
@@ -216,28 +217,28 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
 
   return (
     <>
-      {!embedded && <PageHeader title="Agents" subtitle="Manage agent → workspace → memory store bindings" />}
+      {!embedded && <PageHeader title={i18nT('pages.kiroCrewAgentsPage.agents')} subtitle={i18nT('pages.kiroCrewAgentsPage.manage_agent_workspace_memory_store_bindings')} />}
       <div className={`${embedded ? '' : 'px-6'} pb-8 overflow-y-auto flex-1 min-h-0`}>
         <div className="grid gap-3.5 grid-cols-[repeat(auto-fit,minmax(150px,1fr))] mb-6">
-          <StatCard label="Total Agents" value={agents.length} accent />
-          <StatCard label="Default" value={defaultAgent || '—'} />
+          <StatCard label={i18nT('pages.kiroCrewAgentsPage.total_agents')} value={agents.length} accent />
+          <StatCard label={i18nT('pages.kiroCrewAgentsPage.default')} value={defaultAgent || '—'} />
         </div>
 
         <Card>
-          <CardTitle>Create Agent <InfoTip text={`Create a new agent binding. Each agent maps a name to a ${provider.labels.agentTemplateField.toLowerCase()}, workspace, and memory store.`} /></CardTitle>
+          <CardTitle>{i18nT('pages.kiroCrewAgentsPage.create_agent')} <InfoTip text={`Create a new agent binding. Each agent maps a name to a ${provider.labels.agentTemplateField.toLowerCase()}, workspace, and memory store.`} /></CardTitle>
           <div className="flex gap-2 items-end flex-wrap">
             <div className="flex flex-col gap-1">
               {/* Native input associated via htmlFor+id; label-has-for's nesting requirement is a false positive. */}
               {/* eslint-disable-next-line jsx-a11y/label-has-for */}
-              <label htmlFor="agent-name" className="text-[11px] text-muted uppercase tracking-wider font-medium">Name</label>
-              <Input id="agent-name" placeholder="e.g. oncall" value={name} onChange={e => setName(e.target.value)} style={{ width: 140 }} />
+              <label htmlFor="agent-name" className="text-[11px] text-muted uppercase tracking-wider font-medium">{i18nT('pages.kiroCrewAgentsPage.name')}</label>
+              <Input id="agent-name" placeholder={i18nT('pages.kiroCrewAgentsPage.e_g_oncall')} value={name} onChange={e => setName(e.target.value)} style={{ width: 140 }} />
             </div>
             <div className="flex flex-col gap-1">
               <span className="text-[11px] text-muted uppercase tracking-wider font-medium">{provider.labels.agentTemplateField}</span>
               <StyledSelect options={kiroAgentOptions} value={kiroAgent} onChange={setKiroAgent} style={{ width: 160 }} />
             </div>
             <div className="flex flex-col gap-1">
-              <span className="text-[11px] text-muted uppercase tracking-wider font-medium">Workspace</span>
+              <span className="text-[11px] text-muted uppercase tracking-wider font-medium">{i18nT('pages.kiroCrewAgentsPage.workspace_2')}</span>
               <StyledSelect
                 options={workspaceOptions}
                 value={workspace}
@@ -247,19 +248,19 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
               />
             </div>
             <div className="flex flex-col gap-1">
-              <span className="text-[11px] text-muted uppercase tracking-wider font-medium">Memory Store</span>
+              <span className="text-[11px] text-muted uppercase tracking-wider font-medium">{i18nT('pages.kiroCrewAgentsPage.memory_store')}</span>
               <StyledSelect options={memoryStoreOptions} value={memoryStore} onChange={setMemoryStore} style={{ width: 160 }} />
             </div>
-            <SendBtn onClick={create}>Create</SendBtn>
+            <SendBtn onClick={create}>{i18nT('pages.kiroCrewAgentsPage.create')}</SendBtn>
           </div>
           {error && <div className="text-danger text-[13px] mt-2">{error}</div>}
         </Card>
 
         <Card>
           <div className="flex items-center gap-2 mb-2">
-            <CardTitle>Agents</CardTitle>
+            <CardTitle>{i18nT('pages.kiroCrewAgentsPage.agents')}</CardTitle>
           </div>
-          <div className="mb-3"><SearchInput placeholder="Filter agents…" value={filter} onChange={e => setFilter(e.target.value)} /></div>
+          <div className="mb-3"><SearchInput placeholder={i18nT('pages.kiroCrewAgentsPage.filter_agents')} value={filter} onChange={e => setFilter(e.target.value)} /></div>
           <div className="overflow-x-auto">
             <table className="w-full border-collapse table-striped">
               <thead>
@@ -271,12 +272,12 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
               </thead>
               <tbody>
                 {filtered.length === 0 ? (
-                  <tr><td colSpan={6} className="text-muted italic px-2.5 py-3.5 text-sm">No agents</td></tr>
+                  <tr><td colSpan={6} className="text-muted italic px-2.5 py-3.5 text-sm">{i18nT('pages.kiroCrewAgentsPage.no_agents')}</td></tr>
                 ) : filtered.map((a) => (
                   <tr key={a.name} className="hover:bg-bg-hover transition-colors">
                     <td className="px-2.5 py-2 border-b border-border text-sm font-mono font-semibold">
                       {a.name}
-                      {a.name === defaultAgent && <> <Badge variant="ok">default</Badge></>}
+                      {a.name === defaultAgent && <> <Badge variant="ok">{i18nT('pages.kiroCrewAgentsPage.default_2')}</Badge></>}
                     </td>
                     {editing === a.name ? (
                       <>
@@ -297,8 +298,8 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
                           <StyledSelect options={[...memoryStoreOptions, ...(!memoryStoreOptions.includes(editMs) ? [editMs] : [])]} value={editMs} onChange={setEditMs} style={{ width: 140 }} />
                         </td>
                         <td className="px-2.5 py-2 border-b border-border text-sm">
-                          <Btn onClick={saveEdit}>Save</Btn>{' '}
-                          <Btn onClick={() => setEditing(null)}>Cancel</Btn>
+                          <Btn onClick={saveEdit}>{i18nT('pages.kiroCrewAgentsPage.save')}</Btn>{' '}
+                          <Btn onClick={() => setEditing(null)}>{i18nT('pages.kiroCrewAgentsPage.cancel')}</Btn>
                         </td>
                       </>
                     ) : (
@@ -308,8 +309,8 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
                         <td className="px-2.5 py-2 border-b border-border text-sm font-mono">{a.workspace}</td>
                         <td className="px-2.5 py-2 border-b border-border text-sm font-mono">{a.memory_store}</td>
                         <td className="px-2.5 py-2 border-b border-border text-sm">
-                          <Btn onClick={() => startEdit(a)}>Edit</Btn>{' '}
-                          {a.name !== defaultAgent && <Btn danger onClick={() => remove(a.name)}>Delete</Btn>}
+                          <Btn onClick={() => startEdit(a)}>{i18nT('pages.kiroCrewAgentsPage.edit')}</Btn>{' '}
+                          {a.name !== defaultAgent && <Btn danger onClick={() => remove(a.name)}>{i18nT('pages.kiroCrewAgentsPage.delete')}</Btn>}
                         </td>
                       </>
                     )}

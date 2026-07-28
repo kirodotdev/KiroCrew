@@ -85,6 +85,56 @@ Do NOT use emojis, `size={N}` props, `inline-flex` wrappers, inline SVG icon com
 
 See `AUTOSDE.yaml` rules `use-lucide-icons` and `no-emoji-as-icons` for enforcement.
 
+## Internationalization (i18n)
+
+The dashboard is translated. **Never hardcode a user-facing English string** —
+route it through the catalog or it will render as English in every language.
+
+- **Inside a component body:** `const { t } = useTranslation()` then `t('key')`.
+  Preferred for new code — it subscribes to language changes.
+- **Anywhere a hook is illegal** (render callbacks, plain helpers, non-component
+  modules): `import { i18nT } from '../i18n/t'` then `i18nT('key')`. It reads the
+  current language but does NOT subscribe; `LanguageProvider` remounts the tree on
+  a language change so these re-evaluate.
+- **Never `import { t } from 'i18next'`** — `t` is a very common local identifier
+  here (`.map(t => …)` over tabs/turns/tasks/themes) and a bare `t` gets shadowed,
+  turning the call into `SomeObject(...)`.
+
+Catalogs live in `src/i18n/locales/`:
+
+| File | Owner |
+|---|---|
+| `en.json` | **generated** — `node scripts/i18n-codemod.mjs` rewrites it wholesale. Never hand-edit. |
+| `en.manual.json` | hand-authored English with no source literal to extract (e.g. the language picker's own labels). |
+| `<tag>.json` | one per translation, key set must match `en.json` exactly. |
+
+Adding a language is a **data change** — three edits, no component or test changes:
+
+1. `locales/<tag>.json` (same key set as `en.json` + `en.manual.json`)
+2. one entry in `SUPPORTED_LANGUAGES` (`src/i18n/languages.ts`)
+3. one line in `CATALOGS` (`src/i18n/index.ts`)
+
+`catalogParity.test.ts` generates its cases from `SUPPORTED_LANGUAGES` and reads
+catalogs from the runtime `CATALOGS` map, so the new language automatically gets
+its own key-parity, placeholder-preservation, and no-empty-value tests. Miss one
+of the three edits and CI fails naming the gap; it can't silently ship as
+English. To seed a catalog for translation, `node scripts/i18n-shard.mjs split
+<dir>` writes flat key→value shards and `join <dir> <tag>` reassembles them,
+refusing to write a partial result.
+
+Guard tests that must stay green: `catalogParity.test.ts` (cross-language key
+parity), `englishIdentity.test.ts` (catalog holds real prose — no encoded HTML
+entities, raw keys, or JSX fragments), `detect.test.ts` (resolution precedence),
+`LanguageProvider.test.tsx` (persistence + cross-tab sync).
+
+**Gotcha — the settings-search extractor.** `scripts/settingsExtract.ts` parses
+Settings panels to generate `settingsRegistry.gen.ts` (which powers
+command-palette settings search). It resolves BOTH `i18nT('k')` and `t('k')`
+against the English catalogs. If you introduce a third way to render a settings
+label, teach the extractor about it — otherwise those settings silently vanish
+from search with no error anywhere (the generator has a floor check that now
+fails loudly instead). Re-run `npm run gen:settings` after touching a panel.
+
 ## Data Fetching
 
 Always use React Query (`useQuery`/`useMutation`) for server state. Do NOT use manual `useState` + `useEffect` + `useCallback` patterns for API calls. Use optimistic updates via `queryClient.setQueryData` where possible. Query keys follow `['resource-name']` convention (e.g. `['mcp-servers']`, `['mcp-registry']`, `['skills']`).

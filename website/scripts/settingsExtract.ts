@@ -3,8 +3,24 @@
  *
  * Parses `src/pages/settings/*.tsx` for JSX usages of settings primitives
  * (SettingsToggle, SettingsSelect, SettingsInput, SettingsStepper,
- * SettingsButtonGroup) and extracts label + description string literals +
- * primitive type.
+ * SettingsButtonGroup) and extracts label + description + primitive type.
+ *
+ * A label/description is read from EITHER form:
+ *   - a string literal          `label="Zoom Level"`
+ *   - a translation call        `label={t('settings.display.language.label')}`
+ *
+ * The `t()` form is resolved against `src/i18n/locales/en.json`, so the
+ * generated registry keeps holding real English text. This matters because the
+ * registry powers command-palette settings SEARCH: if a translated label were
+ * skipped (as a plain "dynamic label" is), that setting would silently vanish
+ * from search — the control still renders, but nobody can find it. Resolving
+ * the key instead of skipping it is what keeps i18n conversion invisible to the
+ * search index.
+ *
+ * Search is indexed in English on purpose: `SETTINGS_REGISTRY` is generated at
+ * build time and cannot vary per user language. Localizing it would mean
+ * generating one registry per language and selecting at runtime — deliberately
+ * out of scope, and tracked as a follow-up rather than half-built here.
  *
  * Used by:
  *  - `scripts/gen-settings-registry.mjs` (gen script)
@@ -16,6 +32,52 @@ import * as path from 'path'
 import type { SettingEntry, SettingPrimitiveType } from '../src/components/commandPalette/settingsTypes'
 
 export type { SettingEntry, SettingPrimitiveType }
+
+/** English catalogs, in load order (manual wins) — mirrors `src/i18n/index.ts`. */
+const EN_CATALOG_PATHS = [
+  path.resolve(__dirname, '../src/i18n/locales/en.json'),
+  path.resolve(__dirname, '../src/i18n/locales/en.manual.json'),
+]
+
+/** Flatten a nested catalog into dotted leaf paths, matching i18next lookup. */
+function flattenCatalog(obj: unknown, prefix = ''): Record<string, string> {
+  const out: Record<string, string> = {}
+  if (obj === null || typeof obj !== 'object') return out
+  for (const [key, value] of Object.entries(obj as Record<string, unknown>)) {
+    const dotted = prefix ? `${prefix}.${key}` : key
+    if (value !== null && typeof value === 'object') {
+      Object.assign(out, flattenCatalog(value, dotted))
+    } else {
+      out[dotted] = String(value)
+    }
+  }
+  return out
+}
+
+/** Lazily-read, memoized English catalog (flattened). */
+let enCatalog: Record<string, string> | null = null
+
+function getEnCatalog(): Record<string, string> {
+  if (enCatalog === null) {
+    const merged: Record<string, string> = {}
+    for (const file of EN_CATALOG_PATHS) {
+      try {
+        Object.assign(merged, flattenCatalog(JSON.parse(fs.readFileSync(file, 'utf-8'))))
+      } catch {
+        // Missing/malformed catalog: degrade to literal-only extraction rather
+        // than failing the build. A genuinely missing key is caught by the
+        // anti-stale guard test, which compares against the committed registry.
+      }
+    }
+    enCatalog = merged
+  }
+  return enCatalog
+}
+
+/** Reset the memoized catalog. Test-only seam. */
+export function __resetCatalogCache(): void {
+  enCatalog = null
+}
 
 /** Panel file → tab key mapping (derived from SettingsPage.tsx switch).
  *  Only panels that actually render inside a Settings tab are mapped — the
@@ -41,6 +103,10 @@ const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'InstancesPanel.tsx': 'instances',
   'SecurityPanel.tsx': 'security',
   'NotificationsPanel.tsx': 'notifications',
+  // Added upstream (auto-skill generation) without a mapping here, so its two
+  // settings were absent from command-palette search. Registered while
+  // converting this file for i18n.
+  'SkillsPanel.tsx': 'skills',
   'SlackPanel.tsx': { tab: 'channels', params: { channel: 'slack' } },
   'DeveloperPanel.tsx': 'developer',
   'AboutPanel.tsx': 'about',
@@ -66,17 +132,41 @@ function toKebab(s: string): string {
     .replace(/^-|-$/g, '')
 }
 
-/** Extract string literal from a JSX prop. */
+/**
+ * Extract a JSX prop's text, from a literal or a translation call.
+ *
+ * Literal forms:  `p="X"`, `p={'X'}`, `p={"X"}`
+ * Translated:     `p={i18nT('key')}`, `p={t('key')}` (either helper)
+ *
+ * Both call names are accepted: converted files use the codemod's collision-free
+ * `i18nT`, while code written by hand inside a component may use
+ * `useTranslation()`'s `t`. Matching only one silently drops every setting using
+ * the other — which is exactly how this regression happened (the extractor knew
+ * `t(` while the codemod emitted `i18nT(`, and the registry generated 0 entries,
+ * taking ALL of settings search down).
+ *
+ * A key absent from the catalog returns `undefined` (treated as dynamic and
+ * skipped) rather than emitting the raw key as a searchable label — a search hit
+ * reading `settings.display.language.label` would be worse than the setting
+ * simply not being indexed.
+ */
 function extractStringProp(source: string, propName: string): string | undefined {
-  const patterns = [
+  const literalPatterns = [
     new RegExp(`${propName}="([^"]*)"`, 'g'),
     new RegExp(`${propName}=\\{'([^']*)'\\}`, 'g'),
     new RegExp(`${propName}=\\{"([^"]*)"\\}`, 'g'),
   ]
-  for (const re of patterns) {
+  for (const re of literalPatterns) {
     const m = re.exec(source)
     if (m) return m[1]
   }
+  // `i18nT('key')` / `t("key")` — either helper, optional inner whitespace.
+  const tCall = new RegExp(
+    `${propName}=\\{\\s*(?:i18nT|t)\\(\\s*['"]([^'"]+)['"]\\s*\\)\\s*\\}`,
+    'g',
+  )
+  const tMatch = tCall.exec(source)
+  if (tMatch) return getEnCatalog()[tMatch[1]]
   return undefined
 }
 

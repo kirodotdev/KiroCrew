@@ -13,6 +13,7 @@ import { MemoryTab, UsageTab } from './overview'
 import { useProvider } from '../providers'
 import type { NormalizedUsage } from '../providers'
 
+import { i18nT } from '../i18n/t'
 /**
  * Settings > Overview — mission control.
  *
@@ -41,11 +42,11 @@ function DrillIn({ title, onBack, children }: { title: string; onBack: () => voi
     <div>
       <button
         onClick={onBack}
-        aria-label="Back to Overview"
+        aria-label={i18nT('pages.overviewPage.back_to_overview')}
         className="flex items-center gap-1.5 text-[13px] font-medium text-accent bg-transparent border-none cursor-pointer px-0 py-1 mb-2 hover:underline"
       >
         <ArrowLeft size={14} />
-        Overview
+        {i18nT('pages.overviewPage.overview')}
       </button>
       <div className="text-xl font-bold tracking-tight text-text-strong mb-3">{title}</div>
       {children}
@@ -66,20 +67,20 @@ function UsageSummaryCard({ onOpen }: { onOpen: () => void }) {
   return (
     <Card>
       <CardTitle>
-        <BarChart3 className="lucide-inline" /> Usage
+        <BarChart3 className="lucide-inline" /> {i18nT('pages.overviewPage.usage')}
         <button onClick={onOpen} className="ml-auto inline-flex items-center gap-1 text-[12px] font-medium text-accent bg-transparent border-none cursor-pointer hover:underline">
-          View details <ArrowRight size={12} />
+          {i18nT('pages.overviewPage.view_details')} <ArrowRight size={12} />
         </button>
       </CardTitle>
       {!provider.capabilities.usageBilling ? (
-        <div className="text-[13px] text-muted">Usage tracking is not available for {provider.displayName}.</div>
+        <div className="text-[13px] text-muted">{i18nT('pages.overviewPage.usage_tracking_is_not_available_for')} {provider.displayName}.</div>
       ) : !data ? (
         <div className="skeleton h-14 rounded" />
       ) : (
         <div className="flex flex-col gap-2">
           <div className="text-[13px] text-muted">
-            Today: {fmtNum(today?.sessions)} sessions · {fmtNum(today?.messages)} messages
-            {data.tokens?.total != null && <> · {fmtNum(data.tokens.total)} tokens</>}
+            {i18nT('pages.overviewPage.today')} {fmtNum(today?.sessions)} {i18nT('pages.overviewPage.sessions')} {fmtNum(today?.messages)} {i18nT('pages.overviewPage.messages')}
+            {data.tokens?.total != null && <> · {fmtNum(data.tokens.total)} {i18nT('pages.overviewPage.tokens')}</>}
             {data.costUsd != null && <> · ${data.costUsd.toFixed(2)}</>}
           </div>
           {b?.plan && (
@@ -110,9 +111,9 @@ function MemorySummaryCard({ onOpen }: { onOpen: () => void }) {
   return (
     <Card>
       <CardTitle>
-        <Brain className="lucide-inline" /> Memory
+        <Brain className="lucide-inline" /> {i18nT('pages.overviewPage.memory')}
         <button onClick={onOpen} className="ml-auto inline-flex items-center gap-1 text-[12px] font-medium text-accent bg-transparent border-none cursor-pointer hover:underline">
-          View details <ArrowRight size={12} />
+          {i18nT('pages.overviewPage.view_details')} <ArrowRight size={12} />
         </button>
       </CardTitle>
       {!data ? (
@@ -120,11 +121,11 @@ function MemorySummaryCard({ onOpen }: { onOpen: () => void }) {
       ) : (
         <div className="flex flex-col gap-1 text-[13px] text-muted">
           <span>
-            Summarizes chats into memory after {data.history_idle_hours ?? 3}h idle
-            {!data.migrated && <> · keeps {data.history_max_days ?? 90} days of history</>}
-            {data.migrated && <> · semantic memory active</>}
+            {i18nT('pages.overviewPage.summarizes_chats_into_memory_after')} {data.history_idle_hours ?? 3}{i18nT('pages.overviewPage.h_idle')}
+            {!data.migrated && <> {i18nT('pages.overviewPage.keeps')} {data.history_max_days ?? 90} {i18nT('pages.overviewPage.days_of_history')}</>}
+            {data.migrated && <> {i18nT('pages.overviewPage.semantic_memory_active')}</>}
           </span>
-          <span>Memory graph and store internals live on the Developer page</span>
+          <span>{i18nT('pages.overviewPage.memory_graph_and_store_internals_live_on_the_dev')}</span>
         </div>
       )}
     </Card>
@@ -152,16 +153,16 @@ export default function OverviewPage() {
   const restart = async () => {
     setRestarting(true)
     await api.restartSessions()
-    setRestartMsg(<><CheckCircle className="lucide-inline" /> Sessions restarted.</>)
+    setRestartMsg(<><CheckCircle className="lucide-inline" /> {i18nT('pages.overviewPage.sessions_restarted')}</>)
     setRestarting(false)
     setTimeout(() => setRestartMsg(''), 5000)
   }
 
   if (view === 'memory') {
-    return <DrillIn title="Memory" onBack={() => setView(null)}><MemoryTab refreshTrigger={refreshTrigger} /></DrillIn>
+    return <DrillIn title={i18nT('pages.overviewPage.memory')} onBack={() => setView(null)}><MemoryTab refreshTrigger={refreshTrigger} /></DrillIn>
   }
   if (view === 'usage') {
-    return <DrillIn title="Usage" onBack={() => setView(null)}><UsageTab /></DrillIn>
+    return <DrillIn title={i18nT('pages.overviewPage.usage')} onBack={() => setView(null)}><UsageTab /></DrillIn>
   }
 
   return (
@@ -174,7 +175,7 @@ export default function OverviewPage() {
             {connected && status ? 'All systems running' : status ? 'Reconnecting…' : 'Connecting…'}
           </div>
           <div className="text-[12.5px] text-muted mt-0.5">
-            Up {uptime}{status?.version ? <> · v{status.version}</> : null}
+            {i18nT('pages.overviewPage.up')} {uptime}{status?.version ? <> {i18nT('pages.overviewPage.v')}{status.version}</> : null}
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -182,7 +183,7 @@ export default function OverviewPage() {
           <button
             onClick={restart}
             disabled={restarting}
-            title="Apply config changes by restarting all sessions"
+            title={i18nT('pages.overviewPage.apply_config_changes_by_restarting_all_sessions')}
             className={`group relative inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-[13px] font-semibold font-body cursor-pointer transition-all duration-300 overflow-hidden border-none ${
               restarting
                 ? 'bg-accent/60 text-accent-fg/80 cursor-wait'
@@ -192,8 +193,8 @@ export default function OverviewPage() {
             {restarting && <span className="absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent animate-shimmer" />}
             <span className={`transition-transform duration-300 ${restarting ? 'animate-spin' : 'group-hover:rotate-12'}`}><Zap className="lucide-inline" /></span>
             {restarting
-              ? <span className="hidden sm:inline">Restarting…</span>
-              : <><span className="hidden lg:inline">Apply & Restart</span><span className="hidden sm:inline lg:hidden">Restart</span></>
+              ? <span className="hidden sm:inline">{i18nT('pages.overviewPage.restarting')}</span>
+              : <><span className="hidden lg:inline">{i18nT('pages.overviewPage.apply_restart')}</span><span className="hidden sm:inline lg:hidden">{i18nT('pages.overviewPage.restart')}</span></>
             }
           </button>
         </div>

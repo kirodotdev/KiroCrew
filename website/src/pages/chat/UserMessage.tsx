@@ -8,6 +8,7 @@ import { applySearchHighlights } from '../../utils/domHighlight'
 import { scrollCurrentMatchIntoView } from '../../utils/searchScroll'
 import { type PasteBlock, expandAll as expandPasteTokens } from '../../utils/pasteTokens'
 
+import { i18nT } from '../../i18n/t'
 // Steer bubbles play a one-shot entrance (slide-in + ring pulse) when they land.
 // The chat transcript is virtualized, so a row can remount when scrolled away and
 // back; without this guard the entrance would replay every time. Module-level set
@@ -142,7 +143,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, render
           <textarea
             ref={taRef}
             rows={1}
-            aria-label="Edit message"
+            aria-label={i18nT('pages.chat.userMessage.edit_message')}
             className="bg-transparent text-card-fg resize-none overflow-hidden focus:outline-none text-sm leading-relaxed"
             value={draft}
             onChange={e => setDraft(e.target.value)}
@@ -152,11 +153,11 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, render
         {/* Actions sit BELOW the bubble (like the read-only action row) so they
             never impose a min-width floor on the auto-sized bubble. */}
         <div className="flex justify-end gap-1.5 mt-1">
-          <button onClick={cancel} className="px-2.5 py-1 text-[13px] text-muted hover:text-text rounded border border-border hover:bg-hover transition-colors" title="Cancel (Esc)">
-            Cancel
+          <button onClick={cancel} className="px-2.5 py-1 text-[13px] text-muted hover:text-text rounded border border-border hover:bg-hover transition-colors" title={i18nT('pages.chat.userMessage.cancel_esc')}>
+            {i18nT('pages.chat.userMessage.cancel')}
           </button>
-          <button onClick={submit} className="flex items-center gap-1 px-2.5 py-1 text-[13px] bg-accent text-accent-fg rounded hover:bg-accent/80 transition-colors" title="Send (Enter)">
-            <Send size={10} /> Send
+          <button onClick={submit} className="flex items-center gap-1 px-2.5 py-1 text-[13px] bg-accent text-accent-fg rounded hover:bg-accent/80 transition-colors" title={i18nT('pages.chat.userMessage.send_enter')}>
+            <Send size={10} /> {i18nT('pages.chat.userMessage.send')}
           </button>
         </div>
       </div>
@@ -186,7 +187,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, render
           {/* Injected into the RUNNING turn — badge + accent bubble + one-shot
               entrance so the steer is visibly distinct from a normal message. */}
           <div className="inline-flex items-center gap-1 text-[12px] font-semibold text-accent mb-1 pr-1">
-            <Target size={12} className="shrink-0" /> Steered into the running turn
+            <Target size={12} className="shrink-0" /> {i18nT('pages.chat.userMessage.steered_into_the_running_turn')}
           </div>
           <motion.div
             className="relative"
@@ -222,8 +223,8 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, render
             }).catch(() => {})
           }}
           className="text-muted hover:text-text p-0.5 rounded transition-colors"
-          title="Copy"
-          aria-label="Copy"
+          title={i18nT('pages.chat.userMessage.copy')}
+          aria-label={i18nT('pages.chat.userMessage.copy')}
         >
           {copied ? <Check size={14} className="text-ok" /> : <Copy size={14} />}
         </button>
@@ -231,8 +232,8 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, render
           <button
             onClick={() => { copySessionLink(slotKey, slotTitle, messageTs, mode).then(() => { setLinkCopied(true); setTimeout(() => setLinkCopied(false), 1500) }).catch(() => {}) }}
             className="text-muted hover:text-text p-0.5 rounded transition-colors"
-            title="Copy link to message"
-            aria-label="Copy link to message"
+            title={i18nT('pages.chat.userMessage.copy_link_to_message')}
+            aria-label={i18nT('pages.chat.userMessage.copy_link_to_message')}
           >
             {linkCopied ? <Check size={14} className="text-ok" /> : <Link2 size={14} />}
           </button>
@@ -241,8 +242,8 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, render
           <button
             onClick={startEdit}
             className="text-muted hover:text-text p-0.5 rounded transition-colors"
-            title="Edit & Resend"
-            aria-label="Edit & Resend"
+            title={i18nT('pages.chat.userMessage.edit_resend')}
+            aria-label={i18nT('pages.chat.userMessage.edit_resend')}
           >
             <Pencil size={14} />
           </button>

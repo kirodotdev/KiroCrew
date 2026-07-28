@@ -9,6 +9,7 @@ import { Btn, SendBtn } from './ui'
 import OnboardingChapterShell from './OnboardingChapterShell'
 import { api } from '../api/client'
 
+import { i18nT } from '../i18n/t'
 /**
  * First-run onboarding flow (5 steps):
  *   1. Pick your look   — centered modal, reuses the real theme picker.
@@ -359,15 +360,15 @@ export default function OnboardingFlow({
         chapterLabel="Customize"
         stepIndex={1}
         stepCount={2}
-        ariaLabel="Customize KiroCrew"
+        ariaLabel={i18nT('components.onboardingFlow.customize_kirocrew')}
         panelHeadline="Make it yours."
         panelBody="Set your look and tell Kiro about you so responses fit the way you work."
         panelFootnote="Change anything later in Settings."
-        title="Pick your look"
-        description="Choose a color theme and mode — you can change it anytime."
+        title={i18nT('components.onboardingFlow.pick_your_look')}
+        description={i18nT('components.onboardingFlow.choose_a_color_theme_and_mode_you_can_change_it')}
         onSkipAll={finish}
         dialogRef={dialogRef}
-        footer={<SendBtn type="button" onClick={next}>Continue</SendBtn>}
+        footer={<SendBtn type="button" onClick={next}>{i18nT('components.onboardingFlow.continue')}</SendBtn>}
       >
         <div className="flex gap-1 border border-border rounded-[10px] p-1" style={{ background: 'var(--panel-strong)' }}>
           {(['system', 'light', 'dark'] as ModePreference[]).map(m => (
@@ -386,9 +387,9 @@ export default function OnboardingFlow({
         </div>
 
         <div className="mt-5 text-[11px] uppercase tracking-wide text-muted mb-1.5">
-          Color theme
+          {i18nT('components.onboardingFlow.color_theme')}
         </div>
-        <div className="grid grid-cols-3 gap-2" role="group" aria-label="Color theme">
+        <div className="grid grid-cols-3 gap-2" role="group" aria-label={i18nT('components.onboardingFlow.color_theme')}>
           {allThemes.map(t => (
             <button
               key={t.value}
@@ -429,19 +430,19 @@ export default function OnboardingFlow({
         chapterLabel="Customize"
         stepIndex={2}
         stepCount={2}
-        ariaLabel="Customize KiroCrew"
+        ariaLabel={i18nT('components.onboardingFlow.customize_kirocrew')}
         panelHeadline="Make it yours."
         panelBody="Set your look and tell Kiro about you so responses fit the way you work."
         panelFootnote="Change anything later in Settings."
-        title="Tell Kiro about you"
-        description="Answers set how Kiro explains things — plain language or full technical detail. Saved on this device; change anytime in Settings → Chat."
+        title={i18nT('components.onboardingFlow.tell_kiro_about_you')}
+        description={i18nT('components.onboardingFlow.answers_set_how_kiro_explains_things_plain_langu')}
         onSkipAll={finish}
         skipDisabled={savingProfile}
         dialogRef={dialogRef}
         footer={
           <>
             <Btn type="button" className="h-9 rounded-lg px-4" disabled={savingProfile} onClick={() => setStep(1)}>
-              Back
+              {i18nT('components.onboardingFlow.back')}
             </Btn>
             <SendBtn type="button" disabled={savingProfile} onClick={next}>
               {savingProfile ? 'Saving…' : 'Continue'}
@@ -453,7 +454,7 @@ export default function OnboardingFlow({
           id="onboarding-role-label"
           className="text-[11px] uppercase tracking-wide text-muted mb-1.5"
         >
-          Your role
+          {i18nT('components.onboardingFlow.your_role')}
         </div>
         <div className="flex flex-wrap gap-1.5" role="group" aria-labelledby="onboarding-role-label">
           {ROLE_OPTIONS.map(o => (
@@ -479,7 +480,7 @@ export default function OnboardingFlow({
           id="onboarding-tech-label"
           className="text-[11px] uppercase tracking-wide text-muted mt-4 mb-1.5"
         >
-          How technical are you?
+          {i18nT('components.onboardingFlow.how_technical_are_you')}
         </div>
         <div
           className="flex flex-col gap-1.5"
@@ -507,8 +508,7 @@ export default function OnboardingFlow({
 
         {profileSaveError && (
           <p role="alert" className="text-[12.5px] mt-3 mb-0" style={{ color: 'var(--danger)' }}>
-            Couldn't save your answers — press Next to retry, or Skip again to
-            continue without saving.
+            {i18nT('components.onboardingFlow.couldn_t_save_your_answers_press_next_to_retry_o')}
           </p>
         )}
       </OnboardingChapterShell>
@@ -547,7 +547,7 @@ export default function OnboardingFlow({
                 onClick={finish}
                 className="text-[13px] text-muted hover:text-text-strong cursor-pointer bg-transparent border-none"
               >
-                Skip
+                {i18nT('components.onboardingFlow.skip')}
               </button>
             )}
             <button

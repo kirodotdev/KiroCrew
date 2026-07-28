@@ -413,6 +413,7 @@ class DashboardConfig:
     verbosity: str = "default"     # "default" | "concise"; "concise" injects a brevity guideline block into the agent prompt ({{VERBOSITY_BLOCK}}). Read/written via GET/PUT /api/dashboard/config (rejects values other than default|concise). Resolved for all transports in ContextBuilder._resolve_prompt_templates.
     theme_mode: str = ""           # "dark" | "light" | "system"; empty = unset (frontend falls back to localStorage or "system")
     theme_color: str = ""          # color-theme slug (e.g. "kiro", "emerald", "monokai"); empty = unset
+    language: str = ""             # dashboard UI language, BCP-47 (e.g. "en", "zh-CN"); empty = auto-detect from the browser. See "Dashboard UI language" below.
     onboarded: bool = False         # whether the "Choose your look" onboarding modal was completed
     import_onboarded: bool = False  # whether foreign-agent import was completed or skipped
     tips_enabled: bool = True      # feature-discovery tips (GET /api/tips/next); live-read
@@ -489,6 +490,34 @@ closing the direct-config-edit DoS gap.
 (shared across ports and devices) rather than browser-local. The frontend reads
 them at boot via `GET /api/theme/boot`; empty `theme_mode`/`theme_color` mean
 unset (the frontend falls back to `localStorage` or the built-in default).
+
+### Dashboard UI language
+
+`DashboardConfig.language` selects the dashboard interface language. It rides the
+same two endpoints as the theme fields — surfaced by `GET /api/theme/boot`
+(unauthenticated, so the SPA can pick a language before the token flow completes
+and avoid an English flash) and written by `PUT /api/config/theme`
+(`{"language": "<tag>"}`). Both responses are built by one helper
+(`handlers/core.py::_theme_payload`), so every read site returns the same shape.
+
+Resolution precedence, implemented in `website/src/i18n/detect.ts`:
+
+1. this config value (mirrored into `localStorage['mc-lang']` for a synchronous
+   first paint),
+2. the browser's `navigator.languages`, matched exact-then-primary-subtag
+   (so `zh`/`zh-Hans` resolve to `zh-CN`),
+3. `en`.
+
+`""` is a first-class value meaning **auto-detect**, not "missing" — the picker's
+Auto option writes `""` to clear a previous explicit choice. An explicit choice
+always outranks detection, so a user who selects English on a zh-CN machine is
+not re-detected back to Chinese on the next load.
+
+The backend validates **shape only** (`_LANGUAGE_TAG_RE`, a conservative BCP-47
+subset), not membership in the set of shipped catalogs. That keeps "which
+languages exist" a pure frontend data change (`SUPPORTED_LANGUAGES` + one
+`locales/<tag>.json`) and never requires a backend edit to add one; a well-formed
+tag with no catalog falls back to detection client-side.
 
 ### Foreign-agent import onboarding state
 

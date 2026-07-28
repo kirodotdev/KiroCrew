@@ -43,6 +43,7 @@ import { selectUnreadByMode, slotSurfaceKey } from '../store/dashboardSlice'
 import type { ChatSlot } from '../types'
 import type { RootState } from '../store'
 
+import { i18nT } from '../i18n/t'
 export type SurfaceGroup = 'Main' | 'Apps' | 'Platform' | 'Bottom'
 
 /** Anything that can appear as a top-level destination in the left rail. */
@@ -51,8 +52,22 @@ export interface Surface {
   navId: string
   /** Route path (must be unique across surfaces). */
   route: string
-  /** Display label used in the nav item. */
+  /**
+   * Display label used in the nav item — the English fallback.
+   *
+   * Surfaces are registered at MODULE LOAD, before any language is resolved, so
+   * this string cannot be translated in place: whatever language was active at
+   * import time would be frozen in forever. Set `labelKey` instead and let the
+   * consumer resolve it per render.
+   */
   label: string
+  /**
+   * i18n catalog key for `label`, resolved at RENDER time via `surfaceLabel()`.
+   *
+   * Optional so a downstream edition (or an app-contributed surface) can keep
+   * registering a plain `label` and stay correct — it simply renders untranslated.
+   */
+  labelKey?: string
   /** Lucide icon (or per-app `<img>`) — built-ins import from lucide-react. */
   icon: ReactElement
   /** Sidebar group bucket. */
@@ -292,4 +307,19 @@ export function selectAllSurfacesAttention(state: RootState): number {
 export function _resetBuiltinsForTest(): void {
   _builtins.length = 0
   _badgeCountSelectorCache.clear()
+}
+
+/**
+ * Resolve a surface's display label for the CURRENT language.
+ *
+ * Surfaces register at module load — before a language is known — so their
+ * `label` is a frozen English fallback. Call this at render time instead of
+ * reading `.label` directly, or the nav rail stays English while the rest of the
+ * dashboard translates (which is exactly the bug this exists to fix).
+ *
+ * A surface with no `labelKey` (an app-contributed or edition-registered one)
+ * falls through to its literal label rather than rendering a raw key.
+ */
+export function surfaceLabel(s: { label: string; labelKey?: string }): string {
+  return s.labelKey ? i18nT(s.labelKey) : s.label
 }

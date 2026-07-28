@@ -13,6 +13,7 @@ import { api } from '../api/client'
 import { useSessionActions } from '../hooks/useSessionActions'
 import { useChatPopouts } from '../hooks/useChatPopouts'
 
+import { i18nT } from '../i18n/t'
 export interface SessionActionsMenuProps {
   /** Chooses the Radix primitive family; must match the enclosing menu. */
   variant: 'dropdown' | 'context'
@@ -116,7 +117,7 @@ export default function SessionActionsMenu({
     [
       onRename && (
         <Item key="rename" onSelect={onRename}>
-          <Pencil size={13} className="shrink-0 text-muted" /> Rename
+          <Pencil size={13} className="shrink-0 text-muted" /> {i18nT('components.sessionActionsMenu.rename')}
         </Item>
       ),
       <Item key="read" onSelect={() => toggleRead(slotKey)}>
@@ -135,18 +136,18 @@ export default function SessionActionsMenu({
           folders={folders}
           currentFolderId={currentFolderId}
           onPick={(folderId) => move(slotKey, folderId)}
-          label="Move to folder…"
+          label={i18nT('components.sessionActionsMenu.move_to_folder')}
         />
       ),
       <Item key="tags" onSelect={() => openTagPopover(slotKey)}>
-        <TagIcon size={13} className="shrink-0 text-muted" /> Tags…
+        <TagIcon size={13} className="shrink-0 text-muted" /> {i18nT('components.sessionActionsMenu.tags')}
       </Item>,
     ],
     // Navigation / access
     [
       onReveal && (
         <Item key="reveal" onSelect={onReveal}>
-          <Locate size={13} className="shrink-0 text-muted" /> Reveal in sidebar
+          <Locate size={13} className="shrink-0 text-muted" /> {i18nT('components.sessionActionsMenu.reveal_in_sidebar')}
         </Item>
       ),
       // Pop out to a dedicated browser window — or, if already out, focus /
@@ -155,24 +156,24 @@ export default function SessionActionsMenu({
       // itself, the only meaningful action is returning to the main dashboard.
       selfPopout ? (
         <Item key="bring-back-self" onSelect={returnSelfToMain}>
-          <Undo2 size={13} className="shrink-0 text-muted" /> Bring back to main
+          <Undo2 size={13} className="shrink-0 text-muted" /> {i18nT('components.sessionActionsMenu.bring_back_to_main')}
         </Item>
       ) : poppedOut ? (
         <Item key="focus-popout" onSelect={() => focusPopout(slotKey)}>
-          <Monitor size={13} className="shrink-0 text-muted" /> Focus popped-out window
+          <Monitor size={13} className="shrink-0 text-muted" /> {i18nT('components.sessionActionsMenu.focus_popped_out_window')}
         </Item>
       ) : (
         <Item key="popout" onSelect={() => openPopout(slotKey, slot?.title)}>
-          <ExternalLink size={13} className="shrink-0 text-muted" /> Pop out to window
+          <ExternalLink size={13} className="shrink-0 text-muted" /> {i18nT('components.sessionActionsMenu.pop_out_to_window')}
         </Item>
       ),
       poppedOut && (
         <Item key="bring-back" onSelect={() => bringBack(slotKey)}>
-          <Undo2 size={13} className="shrink-0 text-muted" /> Bring back to main
+          <Undo2 size={13} className="shrink-0 text-muted" /> {i18nT('components.sessionActionsMenu.bring_back_to_main')}
         </Item>
       ),
       <Item key="copy" onSelect={() => copyLink(slotKey)}>
-        <Link2 size={13} className="shrink-0 text-muted" /> Copy link
+        <Link2 size={13} className="shrink-0 text-muted" /> {i18nT('components.sessionActionsMenu.copy_link')}
       </Item>,
       // Slack link/unlink — a connected sub-section keyed on slotKey, so it
       // renders on every surface (not just the header). It returns null until
@@ -186,7 +187,7 @@ export default function SessionActionsMenu({
     // Close session — terminal, destructive
     [
       <Item key="close" className="text-danger focus:text-danger" onSelect={() => close(slotKey)}>
-        <X size={13} /> Close session
+        <X size={13} /> {i18nT('components.sessionActionsMenu.close_session')}
       </Item>,
     ],
   ])

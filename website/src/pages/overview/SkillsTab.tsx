@@ -11,6 +11,7 @@ import SkillBrowserModal from '../../components/SkillBrowserModal'
 import { useProvider } from '../../providers'
 import type { Skill } from '../../types'
 
+import { i18nT } from '../../i18n/t'
 const EMPTY_FORM: SkillFormData = { name: '', category: '', description: '', triggers: '', tags: '', always: false, body: '' }
 
 /** Humanize a kebab/snake-case skill name for display. */
@@ -146,15 +147,15 @@ export default function SkillsTab() {
         <div className="flex items-center gap-1.5 min-w-0">
           <span className="text-[13px] font-semibold text-text truncate flex-1">{displayName(s)}</span>
           {s.source === 'package'
-            ? <span className="text-[10px] px-1.5 py-[1px] rounded-full bg-aim-subtle text-aim border border-aim/30 font-bold shrink-0">Package</span>
+            ? <span className="text-[10px] px-1.5 py-[1px] rounded-full bg-aim-subtle text-aim border border-aim/30 font-bold shrink-0">{i18nT('pages.overview.skillsTab.package')}</span>
             : s.always
-              ? <span className="text-[10px] px-1.5 py-[1px] rounded-full bg-ok-subtle text-ok font-bold shrink-0">auto</span>
-              : <span className="text-[10px] px-1.5 py-[1px] rounded-full bg-bg-elevated text-muted border border-border font-bold shrink-0">on-demand</span>}
+              ? <span className="text-[10px] px-1.5 py-[1px] rounded-full bg-ok-subtle text-ok font-bold shrink-0">{i18nT('pages.overview.skillsTab.auto')}</span>
+              : <span className="text-[10px] px-1.5 py-[1px] rounded-full bg-bg-elevated text-muted border border-border font-bold shrink-0">{i18nT('pages.overview.skillsTab.on_demand')}</span>}
         </div>
         <div className="text-[11px] text-muted font-mono truncate">{s.key}</div>
         {s.loaded_by_agents && s.loaded_by_agents.length > 0 && (
           <div className="text-[10px] text-muted/70 truncate" title={`Loaded by: ${s.loaded_by_agents.join(', ')}`}>
-            Loaded by {s.loaded_by_agents.length} agent{s.loaded_by_agents.length === 1 ? '' : 's'}
+            {i18nT('pages.overview.skillsTab.loaded_by')} {s.loaded_by_agents.length} {i18nT('pages.overview.skillsTab.agent')}{s.loaded_by_agents.length === 1 ? '' : 's'}
           </div>
         )}
       </div>
@@ -162,7 +163,7 @@ export default function SkillsTab() {
   }
 
   if (isLoading) return (<>
-    <h4 className="text-sm font-semibold text-text-strong mt-4 mb-2 flex items-center gap-2">Skills <InfoTip text="On-demand skills loaded when the agent determines they're relevant." /> <Btn primary disabled>Create New Skill</Btn></h4>
+    <h4 className="text-sm font-semibold text-text-strong mt-4 mb-2 flex items-center gap-2">{i18nT('pages.overview.skillsTab.skills')} <InfoTip text="On-demand skills loaded when the agent determines they're relevant." /> <Btn primary disabled>{i18nT('pages.overview.skillsTab.create_new_skill')}</Btn></h4>
     <Card>
       <div className="flex items-center gap-2 mb-3"><div className="h-8 max-w-[480px] flex-1 rounded-md animate-pulse" style={{ background: 'var(--border)', opacity: 0.5 }} /></div>
       <div className="flex gap-3 h-[calc(100vh-260px)] min-h-[420px]">
@@ -177,33 +178,33 @@ export default function SkillsTab() {
   return (<>
     <PendingSkillsPanel />
     {/* Create Skill Modal */}
-    <Modal open={creating} onClose={() => setCreating(false)} title="Create New Skill" maxWidth={560} footer={<>
-      <Btn onClick={() => setCreating(false)}>Cancel</Btn>
-      <Btn primary onClick={() => { if (formData.name) { const path = formData.category ? `${formData.category}/${formData.name}` : formData.name; createSkill.mutate({ name: path, content: assembleSkillContent(formData) }) } }} disabled={!formData.name}>Create</Btn>
+    <Modal open={creating} onClose={() => setCreating(false)} title={i18nT('pages.overview.skillsTab.create_new_skill')} maxWidth={560} footer={<>
+      <Btn onClick={() => setCreating(false)}>{i18nT('pages.overview.skillsTab.cancel')}</Btn>
+      <Btn primary onClick={() => { if (formData.name) { const path = formData.category ? `${formData.category}/${formData.name}` : formData.name; createSkill.mutate({ name: path, content: assembleSkillContent(formData) }) } }} disabled={!formData.name}>{i18nT('pages.overview.skillsTab.create')}</Btn>
     </>}>
       <SkillForm data={formData} onChange={setFormData} />
     </Modal>
 
-    <h4 className="text-sm font-semibold text-text-strong mt-4 mb-2 flex items-center gap-2">Skills ({skills.length}) <InfoTip text="On-demand skills loaded when the agent determines they're relevant. Skills with the 'auto' badge are always injected into every session. Skills are discovered from KiroCrew, kiro-cli (~/.kiro/skills), and AIM packages." /> <span className="ml-auto flex items-center gap-2"><Btn onClick={() => setSkillBrowserOpen(true)}><Download size={14} /> Add Skill</Btn><Btn primary onClick={() => { setFormData(EMPTY_FORM); setCreating(true) }}>Create New Skill</Btn></span></h4>
+    <h4 className="text-sm font-semibold text-text-strong mt-4 mb-2 flex items-center gap-2">{i18nT('pages.overview.skillsTab.skills_2')}{skills.length}) <InfoTip text="On-demand skills loaded when the agent determines they're relevant. Skills with the 'auto' badge are always injected into every session. Skills are discovered from KiroCrew, kiro-cli (~/.kiro/skills), and AIM packages." /> <span className="ml-auto flex items-center gap-2"><Btn onClick={() => setSkillBrowserOpen(true)}><Download size={14} /> {i18nT('pages.overview.skillsTab.add_skill')}</Btn><Btn primary onClick={() => { setFormData(EMPTY_FORM); setCreating(true) }}>{i18nT('pages.overview.skillsTab.create_new_skill')}</Btn></span></h4>
     <Card>
       <div className="flex items-center gap-2 mb-3">
         <div className="relative max-w-[480px] flex-1">
-          <SearchInput placeholder="Filter skills…" value={skillFilter} onChange={e => setSkillFilter(e.target.value)} />
-          {skillFilter && <button className="absolute right-2 top-1/2 -translate-y-1/2 text-muted hover:text-text transition-colors cursor-pointer" onClick={() => setSkillFilter('')} aria-label="Clear search">&times;</button>}
+          <SearchInput placeholder={i18nT('pages.overview.skillsTab.filter_skills')} value={skillFilter} onChange={e => setSkillFilter(e.target.value)} />
+          {skillFilter && <button className="absolute right-2 top-1/2 -translate-y-1/2 text-muted hover:text-text transition-colors cursor-pointer" onClick={() => setSkillFilter('')} aria-label={i18nT('pages.overview.skillsTab.clear_search')}>{"\u00d7"}</button>}
         </div>
         <div className="ml-auto flex items-center gap-2">
-          <Btn onClick={() => refetch()} disabled={isFetching} aria-label="Refresh skills"><RefreshCw size={14} className={isFetching ? 'animate-spin' : ''} /></Btn>
+          <Btn onClick={() => refetch()} disabled={isFetching} aria-label={i18nT('pages.overview.skillsTab.refresh_skills')}><RefreshCw size={14} className={isFetching ? 'animate-spin' : ''} /></Btn>
         </div>
       </div>
 
-      {skills.length === 0 ? <div className="text-muted italic py-3.5 text-sm">No skills installed</div> : (
+      {skills.length === 0 ? <div className="text-muted italic py-3.5 text-sm">{i18nT('pages.overview.skillsTab.no_skills_installed')}</div> : (
         /* Master-detail: skill list (pane 1) on the left, then the directory
          *  browser (panes 2+3: file tree + file content) on the right. */
         <div className="flex gap-3 h-[calc(100vh-260px)] min-h-[420px]">
           {/* Pane 1 — skill list.  ``scrollbar-overlay`` keeps the scrollbar
            *  hidden until hover and overlays it so the row width never shifts
            *  between scrollable and non-scrollable states. */}
-          <div className="w-[240px] shrink-0 overflow-y-auto scrollbar-overlay border border-border rounded-md p-2" role="listbox" aria-label="Skills">
+          <div className="w-[240px] shrink-0 overflow-y-auto scrollbar-overlay border border-border rounded-md p-2" role="listbox" aria-label={i18nT('pages.overview.skillsTab.skills')}>
             {localSkills.map(renderRow)}
             {packageSkills.length > 0 && (
               <div className="mt-2">
@@ -213,20 +214,20 @@ export default function SkillsTab() {
                 {packageSkills.map(renderRow)}
               </div>
             )}
-            {allFiltered.length === 0 && <div className="text-muted/70 text-[12px] italic px-2 py-2">No skills match “{skillFilter}”.</div>}
+            {allFiltered.length === 0 && <div className="text-muted/70 text-[12px] italic px-2 py-2">{i18nT('pages.overview.skillsTab.no_skills_match')}{skillFilter}”.</div>}
           </div>
 
           {/* Panes 2+3 — directory browser, or the edit form */}
           <div className="flex-1 min-w-0 flex flex-col border border-border rounded-md bg-card overflow-hidden">
             {!selectedSkill ? (
-              <div className="flex items-center justify-center h-full text-muted text-[13px]">Select a skill to view its files</div>
+              <div className="flex items-center justify-center h-full text-muted text-[13px]">{i18nT('pages.overview.skillsTab.select_a_skill_to_view_its_files')}</div>
             ) : detailEditing ? (
               <div className="flex flex-col h-full min-h-0">
                 <div className="flex items-center justify-between gap-2 px-4 py-2.5 border-b border-border shrink-0">
                   <span className="text-sm font-mono font-bold text-text-strong truncate">{selectedSkill.key}</span>
                   <div className="flex gap-2 shrink-0">
-                    <Btn onClick={() => setDetailEditing(false)}>Cancel</Btn>
-                    <Btn primary onClick={() => updateSkill.mutate({ key: selectedSkill.key, content: assembleSkillContent(formData) })}>Save</Btn>
+                    <Btn onClick={() => setDetailEditing(false)}>{i18nT('pages.overview.skillsTab.cancel')}</Btn>
+                    <Btn primary onClick={() => updateSkill.mutate({ key: selectedSkill.key, content: assembleSkillContent(formData) })}>{i18nT('pages.overview.skillsTab.save')}</Btn>
                   </div>
                 </div>
                 <div className="flex-1 min-h-0 overflow-y-auto p-4">
@@ -245,8 +246,8 @@ export default function SkillsTab() {
                   </div>
                   {selectedSkill.source === 'kirocrew' && (
                     <div className="flex gap-2 shrink-0">
-                      <Btn disabled={!detailReady} onClick={() => { setDetailEditing(true); setFormData(parseSkillContent(detailContent, selectedSkill.key)) }}>Edit</Btn>
-                      <Btn danger onClick={() => { if (confirm(`Delete "${selectedSkill.key}"?`)) deleteSkill.mutate(selectedSkill.key) }}>Delete</Btn>
+                      <Btn disabled={!detailReady} onClick={() => { setDetailEditing(true); setFormData(parseSkillContent(detailContent, selectedSkill.key)) }}>{i18nT('pages.overview.skillsTab.edit')}</Btn>
+                      <Btn danger onClick={() => { if (confirm(`Delete "${selectedSkill.key}"?`)) deleteSkill.mutate(selectedSkill.key) }}>{i18nT('pages.overview.skillsTab.delete')}</Btn>
                     </div>
                   )}
                 </div>
@@ -301,22 +302,22 @@ function PendingCandidateRow({ p, onApprove, onDismiss }: {
           <div className="text-sm font-medium text-text-strong truncate">
             {p.name}
             {p.has_scripts && (
-              <span className="ml-2 text-[10px] px-1.5 py-[1px] rounded-full bg-warn-subtle text-warn font-bold">script</span>
+              <span className="ml-2 text-[10px] px-1.5 py-[1px] rounded-full bg-warn-subtle text-warn font-bold">{i18nT('pages.overview.skillsTab.script')}</span>
             )}
           </div>
           <div className="text-[12px] text-muted truncate">{p.description}</div>
         </div>
         <Btn onClick={() => setOpen(o => !o)}>{open ? 'Hide' : 'Review'}</Btn>
-        <Btn primary disabled={!open || !detail} onClick={() => onApprove(p.slug)}>Approve</Btn>
-        <Btn danger onClick={() => { if (confirm(`Dismiss "${p.name}"?`)) onDismiss(p.slug) }}>Dismiss</Btn>
+        <Btn primary disabled={!open || !detail} onClick={() => onApprove(p.slug)}>{i18nT('pages.overview.skillsTab.approve')}</Btn>
+        <Btn danger onClick={() => { if (confirm(`Dismiss "${p.name}"?`)) onDismiss(p.slug) }}>{i18nT('pages.overview.skillsTab.dismiss')}</Btn>
       </div>
       {open && detail && (
         <div className="mt-2 space-y-2">
-          <div className="text-[11px] font-semibold text-muted">SKILL.md</div>
+          <div className="text-[11px] font-semibold text-muted">{i18nT('pages.overview.skillsTab.skill_md')}</div>
           <pre className="text-[11px] whitespace-pre-wrap max-h-64 overflow-auto p-2 rounded bg-bg-elevated border border-border">{detail.content}</pre>
           {(detail.scripts ?? []).map(s => (
             <div key={s.filename}>
-              <div className="text-[11px] font-semibold text-warn">scripts/{s.filename}</div>
+              <div className="text-[11px] font-semibold text-warn">{i18nT('pages.overview.skillsTab.scripts')}{s.filename}</div>
               <pre className="text-[11px] whitespace-pre-wrap max-h-64 overflow-auto p-2 rounded bg-bg-elevated border border-border">{s.content}</pre>
             </div>
           ))}
@@ -364,7 +365,7 @@ function PendingSkillsPanel() {
   return (
     <div className="mt-4 mb-2">
       <h4 className="text-sm font-semibold text-text-strong mb-2 flex items-center gap-2">
-        Pending review ({pending.length})
+        {i18nT('pages.overview.skillsTab.pending_review')}{pending.length})
         <InfoTip text="Auto-generated skill candidates awaiting your approval. Click Review to inspect the SKILL.md and any bundled script before approving. Approve makes the skill live (and marks scripts executable); dismiss discards it. Nothing goes live until you approve it." />
       </h4>
       <Card>

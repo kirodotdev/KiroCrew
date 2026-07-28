@@ -19,6 +19,7 @@ import AppIcon from '../components/AppIcon'
 import { recordEvent } from '../rum'
 import { useTheme } from '../hooks/useTheme'
 
+import { i18nT } from '../i18n/t'
 type AppInfo = {
   name: string
   displayName: string
@@ -114,7 +115,7 @@ function ScreenshotGallery({ screenshots }: { screenshots: string[] }) {
   return (
     <>
       <div className="mb-6">
-        <div className="text-[12px] text-muted uppercase tracking-wider mb-3">Screenshots</div>
+        <div className="text-[12px] text-muted uppercase tracking-wider mb-3">{i18nT('pages.appDetailPage.screenshots')}</div>
         <div className="flex gap-3 overflow-x-auto pb-2 scrollbar-none">
           {screenshots.map((url, i) => (
             <button
@@ -160,12 +161,12 @@ function ScreenshotGallery({ screenshots }: { screenshots: string[] }) {
           {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions, jsx-a11y/click-events-have-key-events */}
           <div className="relative max-w-4xl max-h-[80vh] mx-4" onClick={e => e.stopPropagation()}>
             <img src={screenshots[selected]} alt="" className="max-w-full max-h-[80vh] rounded-xl shadow-2xl" />
-            <button className="absolute top-2 right-2 bg-bg/80 rounded-full p-1.5 text-muted hover:text-text" onClick={() => setSelected(null)} aria-label="Close"><X size={18} /></button>
+            <button className="absolute top-2 right-2 bg-bg/80 rounded-full p-1.5 text-muted hover:text-text" onClick={() => setSelected(null)} aria-label={i18nT('pages.appDetailPage.close')}><X size={18} /></button>
             {selected > 0 && (
-              <button className="absolute left-2 top-1/2 -translate-y-1/2 bg-bg/80 rounded-full p-2 text-muted hover:text-text" onClick={e => { e.stopPropagation(); setSelected(selected - 1) }} aria-label="Previous"><ChevronLeft size={20} /></button>
+              <button className="absolute left-2 top-1/2 -translate-y-1/2 bg-bg/80 rounded-full p-2 text-muted hover:text-text" onClick={e => { e.stopPropagation(); setSelected(selected - 1) }} aria-label={i18nT('pages.appDetailPage.previous')}><ChevronLeft size={20} /></button>
             )}
             {selected < screenshots.length - 1 && (
-              <button className="absolute right-2 top-1/2 -translate-y-1/2 bg-bg/80 rounded-full p-2 text-muted hover:text-text" onClick={e => { e.stopPropagation(); setSelected(selected + 1) }} aria-label="Next"><ChevronRight size={20} /></button>
+              <button className="absolute right-2 top-1/2 -translate-y-1/2 bg-bg/80 rounded-full p-2 text-muted hover:text-text" onClick={e => { e.stopPropagation(); setSelected(selected + 1) }} aria-label={i18nT('pages.appDetailPage.next')}><ChevronRight size={20} /></button>
             )}
             <div className="absolute bottom-3 left-1/2 -translate-x-1/2 text-[12px] text-muted bg-bg/80 px-3 py-1 rounded-full">{selected + 1} / {screenshots.length}</div>
           </div>
@@ -403,9 +404,9 @@ export default function AppDetailPage() {
   if (loading) {
     return (
       <>
-        <PageHeader title="Apps" subtitle="Loading…" />
+        <PageHeader title={i18nT('pages.appDetailPage.apps')} subtitle={i18nT('pages.appDetailPage.loading')} />
         <div className="flex-1 flex items-center justify-center text-muted text-sm">
-          <Loader2 size={16} className="animate-spin mr-2" /> Loading app details…
+          <Loader2 size={16} className="animate-spin mr-2" /> {i18nT('pages.appDetailPage.loading_app_details')}
         </div>
       </>
     )
@@ -414,9 +415,9 @@ export default function AppDetailPage() {
   if (!app) {
     return (
       <>
-        <PageHeader title="App Not Found" subtitle={error || `"${name}" doesn't exist`} />
+        <PageHeader title={i18nT('pages.appDetailPage.app_not_found')} subtitle={error || `"${name}" doesn't exist`} />
         <div className="flex-1 flex items-center justify-center p-8">
-          <Btn onClick={() => navigate('/apps')}><ArrowLeft size={14} /> Back to Apps</Btn>
+          <Btn onClick={() => navigate('/apps')}><ArrowLeft size={14} /> {i18nT('pages.appDetailPage.back_to_apps')}</Btn>
         </div>
       </>
     )
@@ -446,18 +447,18 @@ export default function AppDetailPage() {
 
   return (
     <>
-      <PageHeader title="Apps" subtitle={app.displayName} />
+      <PageHeader title={i18nT('pages.appDetailPage.apps')} subtitle={app.displayName} />
       <div className="px-6 pb-8 overflow-y-auto flex-1 min-h-0">
         {/* Back link */}
         <button className="flex items-center gap-1.5 text-[13px] text-muted hover:text-text mb-5 bg-transparent border-none cursor-pointer p-0 font-body transition-colors" onClick={() => navigate('/apps')}>
-          <ArrowLeft size={14} /> Back to Apps
+          <ArrowLeft size={14} /> {i18nT('pages.appDetailPage.back_to_apps')}
         </button>
 
         {/* Error */}
         {error && (
           <div className="mb-4 bg-danger/10 border border-danger/20 rounded-lg p-3 flex items-center gap-3 animate-rise">
             <span className="text-danger text-sm flex-1">{error}</span>
-            <button aria-label="Dismiss error" className="text-danger/60 hover:text-danger text-sm" onClick={() => setError('')}><X className="lucide-inline" /></button>
+            <button aria-label={i18nT('pages.appDetailPage.dismiss_error')} className="text-danger/60 hover:text-danger text-sm" onClick={() => setError('')}><X className="lucide-inline" /></button>
           </div>
         )}
 
@@ -469,7 +470,7 @@ export default function AppDetailPage() {
           <div className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/60 backdrop-blur-sm animate-rise"
             onClick={() => setShowUninstallConfirm(false)}
             onKeyDown={e => { if (e.key === 'Escape') setShowUninstallConfirm(false) }}
-            tabIndex={-1} ref={el => el?.focus()} role="dialog" aria-modal="true" aria-label="Confirm uninstall"
+            tabIndex={-1} ref={el => el?.focus()} role="dialog" aria-modal="true" aria-label={i18nT('pages.appDetailPage.confirm_uninstall')}
           >
             {/* Presentational wrapper: stops backdrop-dismiss on inner clicks. */}
             {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions, jsx-a11y/click-events-have-key-events */}
@@ -479,20 +480,20 @@ export default function AppDetailPage() {
                   <Trash2 size={20} className="text-danger" />
                 </div>
                 <div>
-                  <div className="font-medium text-text">Uninstall {app.displayName}?</div>
-                  <div className="text-[12px] text-muted">v{app.installedVersion || app.version}</div>
+                  <div className="font-medium text-text">{i18nT('pages.appDetailPage.uninstall')} {app.displayName}?</div>
+                  <div className="text-[12px] text-muted">{i18nT('pages.appDetailPage.v')}{app.installedVersion || app.version}</div>
                 </div>
               </div>
 
-              <p className="text-[13px] text-muted mb-4">This will remove the app and all its registered resources.</p>
+              <p className="text-[13px] text-muted mb-4">{i18nT('pages.appDetailPage.this_will_remove_the_app_and_all_its_registered')}</p>
 
               <label htmlFor="keep-app-data" className="flex items-center gap-2 text-[13px] text-muted mb-5 cursor-pointer select-none">
-                <input id="keep-app-data" type="checkbox" checked={keepData} onChange={e => setKeepData(e.target.checked)} className="rounded" aria-label="Keep app data" />
-                Keep app data
+                <input id="keep-app-data" type="checkbox" checked={keepData} onChange={e => setKeepData(e.target.checked)} className="rounded" aria-label={i18nT('pages.appDetailPage.keep_app_data')} />
+                {i18nT('pages.appDetailPage.keep_app_data')}
               </label>
 
               <div className="flex items-center gap-2 justify-end">
-                <Btn onClick={() => setShowUninstallConfirm(false)}>Cancel</Btn>
+                <Btn onClick={() => setShowUninstallConfirm(false)}>{i18nT('pages.appDetailPage.cancel')}</Btn>
                 <Btn danger onClick={confirmUninstall} disabled={actionLoading === 'uninstall'}>
                   {actionLoading === 'uninstall' ? 'Removing…' : 'Uninstall'}
                 </Btn>
@@ -523,48 +524,48 @@ export default function AppDetailPage() {
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-3 mb-1 flex-wrap">
               <span className="text-xl font-medium text-text">{app.displayName}</span>
-              {app.installed && isBuiltin && <Badge variant="aim">Built-in</Badge>}
-              {app.installed && isSelfManaged && !isBuiltin && <Badge variant="ok">Self-managed</Badge>}
+              {app.installed && isBuiltin && <Badge variant="aim">{i18nT('pages.appDetailPage.built_in')}</Badge>}
+              {app.installed && isSelfManaged && !isBuiltin && <Badge variant="ok">{i18nT('pages.appDetailPage.self_managed')}</Badge>}
               {app.installed && !isSelfManaged && !isBuiltin && <Badge variant={app.enabled ? 'ok' : 'warn'}>{app.enabled ? 'Enabled' : 'Disabled'}</Badge>}
             </div>
-            <div className="text-[13px] text-muted mb-3">{app.author} · v{app.version}</div>
+            <div className="text-[13px] text-muted mb-3">{app.author} {i18nT('pages.appDetailPage.v_2')}{app.version}</div>
 
             {/* Actions */}
             <div className="flex items-center gap-2 flex-wrap">
               {!app.installed && !clientInstall && (
                 <Btn primary onClick={handleInstall} disabled={actionLoading === 'install'}>
-                  {actionLoading === 'install' ? <><Loader2 size={14} className="animate-spin" /> Installing…</> : <><Download size={14} /> Install</>}
+                  {actionLoading === 'install' ? <><Loader2 size={14} className="animate-spin" /> {i18nT('pages.appDetailPage.installing')}</> : <><Download size={14} /> {i18nT('pages.appDetailPage.install')}</>}
                 </Btn>
               )}
               {!app.installed && clientInstall && (
-                <div className="text-[13px] text-muted flex items-center gap-1.5"><Monitor size={14} /> Requires local install</div>
+                <div className="text-[13px] text-muted flex items-center gap-1.5"><Monitor size={14} /> {i18nT('pages.appDetailPage.requires_local_install')}</div>
               )}
               {app.installed && isBuiltin && (
                 <>
                   {app.enabled ? (
-                    <Btn onClick={() => handleAction('disable')} disabled={actionLoading === 'disable'}><PowerOff size={14} /> Hide</Btn>
+                    <Btn onClick={() => handleAction('disable')} disabled={actionLoading === 'disable'}><PowerOff size={14} /> {i18nT('pages.appDetailPage.hide')}</Btn>
                   ) : (
-                    <Btn onClick={() => handleAction('enable')} disabled={actionLoading === 'enable'}><Power size={14} /> Show</Btn>
+                    <Btn onClick={() => handleAction('enable')} disabled={actionLoading === 'enable'}><Power size={14} /> {i18nT('pages.appDetailPage.show')}</Btn>
                   )}
                 </>
               )}
               {app.installed && isSelfManaged && !isBuiltin && (
                 <>
-                  <div className="text-[13px] text-ok flex items-center gap-1.5"><Check size={14} /> Installed (v{app.installedVersion})</div>
-                  {app.updateAvailable && <Btn onClick={handleInstall} disabled={actionLoading === 'install'} className="!bg-[var(--info)] !text-white hover:!opacity-80">{actionLoading === 'install' ? <><Loader2 size={14} className="animate-spin" /> Updating…</> : <><ArrowUp size={14} /> Update</>}</Btn>}
-                  {canUninstall && <Btn danger onClick={() => handleAction('uninstall')} disabled={actionLoading === 'uninstall'} title="Removes KiroCrew metadata only — the app itself is managed externally"><Trash2 size={14} /> Uninstall</Btn>}
+                  <div className="text-[13px] text-ok flex items-center gap-1.5"><Check size={14} /> {i18nT('pages.appDetailPage.installed_v')}{app.installedVersion})</div>
+                  {app.updateAvailable && <Btn onClick={handleInstall} disabled={actionLoading === 'install'} className="!bg-[var(--info)] !text-white hover:!opacity-80">{actionLoading === 'install' ? <><Loader2 size={14} className="animate-spin" /> {i18nT('pages.appDetailPage.updating')}</> : <><ArrowUp size={14} /> {i18nT('pages.appDetailPage.update')}</>}</Btn>}
+                  {canUninstall && <Btn danger onClick={() => handleAction('uninstall')} disabled={actionLoading === 'uninstall'} title={i18nT('pages.appDetailPage.removes_kirocrew_metadata_only_the_app_itself_is')}><Trash2 size={14} /> {i18nT('pages.appDetailPage.uninstall')}</Btn>}
                 </>
               )}
               {app.installed && !isSelfManaged && !isBuiltin && (
                 <>
                   {app.enabled ? (
-                    <Btn onClick={() => handleAction('disable')} disabled={actionLoading === 'disable'}><PowerOff size={14} /> Disable</Btn>
+                    <Btn onClick={() => handleAction('disable')} disabled={actionLoading === 'disable'}><PowerOff size={14} /> {i18nT('pages.appDetailPage.disable')}</Btn>
                   ) : (
-                    <Btn onClick={() => handleAction('enable')} disabled={actionLoading === 'enable'}><Power size={14} /> Enable</Btn>
+                    <Btn onClick={() => handleAction('enable')} disabled={actionLoading === 'enable'}><Power size={14} /> {i18nT('pages.appDetailPage.enable')}</Btn>
                   )}
-                  {canUpdate && app.updateAvailable && <Btn onClick={handleInstall} disabled={actionLoading === 'install'} className="!bg-[var(--info)] !text-white hover:!opacity-80">{actionLoading === 'install' ? <><Loader2 size={14} className="animate-spin" /> Updating…</> : <><ArrowUp size={14} /> Update</>}</Btn>}
-                  {canUpdate && !app.updateAvailable && <Btn onClick={() => handleAction('update')} disabled={actionLoading === 'update'} title="Sync app from its source directory"><RefreshCw size={14} /> Sync</Btn>}
-                  {canUninstall && <Btn danger onClick={() => handleAction('uninstall')} disabled={actionLoading === 'uninstall'}><Trash2 size={14} /> Uninstall</Btn>}
+                  {canUpdate && app.updateAvailable && <Btn onClick={handleInstall} disabled={actionLoading === 'install'} className="!bg-[var(--info)] !text-white hover:!opacity-80">{actionLoading === 'install' ? <><Loader2 size={14} className="animate-spin" /> {i18nT('pages.appDetailPage.updating')}</> : <><ArrowUp size={14} /> {i18nT('pages.appDetailPage.update')}</>}</Btn>}
+                  {canUpdate && !app.updateAvailable && <Btn onClick={() => handleAction('update')} disabled={actionLoading === 'update'} title={i18nT('pages.appDetailPage.sync_app_from_its_source_directory')}><RefreshCw size={14} /> {i18nT('pages.appDetailPage.sync')}</Btn>}
+                  {canUninstall && <Btn danger onClick={() => handleAction('uninstall')} disabled={actionLoading === 'uninstall'}><Trash2 size={14} /> {i18nT('pages.appDetailPage.uninstall')}</Btn>}
                 </>
               )}
             </div>
@@ -599,11 +600,11 @@ export default function AppDetailPage() {
                     ].join('\n')
                     openChatWithMessage(msg)
                   }}>
-                    <Sparkles size={14} /> Fix with AI
+                    <Sparkles size={14} /> {i18nT('pages.appDetailPage.fix_with_ai')}
                   </Btn>
                 )}
                 {installDone && (
-                  <button className="text-muted hover:text-text transition-colors p-1" onClick={() => setShowInstallLog(false)} aria-label="Close">
+                  <button className="text-muted hover:text-text transition-colors p-1" onClick={() => setShowInstallLog(false)} aria-label={i18nT('pages.appDetailPage.close')}>
                     <X size={14} />
                   </button>
                 )}
@@ -633,16 +634,15 @@ export default function AppDetailPage() {
                 <Terminal size={20} className="text-accent" />
               </div>
               <div className="flex-1 min-w-0">
-                <div className="font-medium text-text mb-1">Install on your Mac</div>
+                <div className="font-medium text-text mb-1">{i18nT('pages.appDetailPage.install_on_your_mac')}</div>
                 <p className="text-[13px] text-muted mb-3">
-                  This app requires macOS and needs to be installed on your local machine.
-                  Run this in your Mac terminal:
+                  {i18nT('pages.appDetailPage.this_app_requires_macos_and_needs_to_be_installe')}
                 </p>
                 <div className="relative group/cmd">
                   <pre className="bg-bg border border-border rounded-lg p-3 pr-10 text-[13px] font-mono text-text overflow-x-auto whitespace-pre-wrap break-all">{resolvedShell}</pre>
                   <button
                     className="absolute top-2 right-2 p-1.5 rounded-md bg-bg-elevated border border-border text-muted hover:text-text hover:border-accent/40 transition-all opacity-0 group-hover/cmd:opacity-100"
-                    aria-label="Copy command"
+                    aria-label={i18nT('pages.appDetailPage.copy_command')}
                     onClick={() => {
                       navigator.clipboard.writeText(resolvedShell)
                       setCopied(true)
@@ -654,11 +654,11 @@ export default function AppDetailPage() {
                 </div>
                 {resolvedPostInstall && (
                   <p className="text-[12px] text-muted mt-2">
-                    After installation, run: <code className="bg-bg-elevated px-1.5 py-0.5 rounded text-[12px]">{resolvedPostInstall}</code>
+                    {i18nT('pages.appDetailPage.after_installation_run')} <code className="bg-bg-elevated px-1.5 py-0.5 rounded text-[12px]">{resolvedPostInstall}</code>
                   </p>
                 )}
                 <p className="text-[12px] text-muted mt-2">
-                  Once launched, the app will automatically connect to this KiroCrew instance and appear in Apps.
+                  {i18nT('pages.appDetailPage.once_launched_the_app_will_automatically_connect')}
                 </p>
               </div>
             </div>
@@ -681,7 +681,7 @@ export default function AppDetailPage() {
         {/* Features */}
         {(app.highlights || []).length > 0 && (
           <Card>
-            <CardTitle>Features</CardTitle>
+            <CardTitle>{i18nT('pages.appDetailPage.features')}</CardTitle>
             <div className="grid gap-2 mt-2">
               {app.highlights!.map((h, i) => (
                 <div key={i} className="flex items-start gap-2.5 text-[13px] text-text">
@@ -698,11 +698,11 @@ export default function AppDetailPage() {
           {/* Permissions (transparency) */}
           {app.manifest?.permissions && (
             <Card>
-              <CardTitle>Permissions</CardTitle>
+              <CardTitle>{i18nT('pages.appDetailPage.permissions')}</CardTitle>
               <div className="grid gap-2 mt-2 text-[13px]">
                 {(app.manifest.permissions.api || []).length > 0 && (
                   <div>
-                    <div className="text-muted text-[11px] uppercase tracking-wider mb-1">API Access</div>
+                    <div className="text-muted text-[11px] uppercase tracking-wider mb-1">{i18nT('pages.appDetailPage.api_access')}</div>
                     <div className="flex flex-wrap gap-1">
                       {(app.manifest.permissions.api || []).map((p: string) => (
                         <code key={p} className="bg-bg-elevated border border-border px-1.5 py-0.5 rounded text-[11px] text-text">{p}</code>
@@ -712,7 +712,7 @@ export default function AppDetailPage() {
                 )}
                 {(app.manifest.permissions.events || []).length > 0 && (
                   <div>
-                    <div className="text-muted text-[11px] uppercase tracking-wider mb-1">WebSocket Events</div>
+                    <div className="text-muted text-[11px] uppercase tracking-wider mb-1">{i18nT('pages.appDetailPage.websocket_events')}</div>
                     <div className="flex flex-wrap gap-1">
                       {(app.manifest.permissions.events || []).map((e: string) => (
                         <code key={e} className="bg-bg-elevated border border-border px-1.5 py-0.5 rounded text-[11px] text-text">{e}</code>
@@ -722,7 +722,7 @@ export default function AppDetailPage() {
                 )}
                 {(app.manifest.permissions.mcpTools || []).length > 0 && (
                   <div>
-                    <div className="text-muted text-[11px] uppercase tracking-wider mb-1">MCP Tools</div>
+                    <div className="text-muted text-[11px] uppercase tracking-wider mb-1">{i18nT('pages.appDetailPage.mcp_tools')}</div>
                     <div className="flex flex-wrap gap-1">
                       {(app.manifest.permissions.mcpTools || []).map((t: string) => (
                         <code key={t} className="bg-ok-subtle border border-ok/20 px-1.5 py-0.5 rounded text-[11px] text-ok">{t}</code>
@@ -731,10 +731,10 @@ export default function AppDetailPage() {
                   </div>
                 )}
                 <div className="flex flex-wrap gap-3 text-[12px] text-muted mt-1">
-                  {app.manifest.permissions.storage && <span className="flex items-center gap-1">Storage: yes</span>}
-                  {app.manifest.permissions.cron && <span className="flex items-center gap-1">Cron: yes</span>}
-                  {app.manifest.permissions.network && <span className="flex items-center gap-1">Network: yes</span>}
-                  {app.manifest.permissions.memory && <span className="flex items-center gap-1">Memory: {String(app.manifest.permissions.memory)}</span>}
+                  {app.manifest.permissions.storage && <span className="flex items-center gap-1">{i18nT('pages.appDetailPage.storage_yes')}</span>}
+                  {app.manifest.permissions.cron && <span className="flex items-center gap-1">{i18nT('pages.appDetailPage.cron_yes')}</span>}
+                  {app.manifest.permissions.network && <span className="flex items-center gap-1">{i18nT('pages.appDetailPage.network_yes')}</span>}
+                  {app.manifest.permissions.memory && <span className="flex items-center gap-1">{i18nT('pages.appDetailPage.memory')} {String(app.manifest.permissions.memory)}</span>}
                 </div>
               </div>
             </Card>
@@ -743,7 +743,7 @@ export default function AppDetailPage() {
           {/* MCP Servers */}
           {app.manifest?.mcpServers && Object.keys(app.manifest.mcpServers).length > 0 && (
             <Card>
-              <CardTitle>MCP Servers</CardTitle>
+              <CardTitle>{i18nT('pages.appDetailPage.mcp_servers')}</CardTitle>
               <div className="grid gap-2 mt-2 text-[13px]">
                 {Object.entries(app.manifest.mcpServers).map(([sName, sConfig]) => (
                   <div key={sName} className="bg-bg-elevated border border-border rounded-md px-2.5 py-2">
@@ -766,7 +766,7 @@ export default function AppDetailPage() {
           {/* Tags */}
           {(app.tags || []).length > 0 && (
             <Card>
-              <CardTitle>Tags</CardTitle>
+              <CardTitle>{i18nT('pages.appDetailPage.tags')}</CardTitle>
               <div className="flex items-center gap-1.5 flex-wrap mt-2">
                 {app.tags!.map(t => (
                   <span key={t} className="bg-bg-elevated border border-border px-2 py-0.5 rounded text-[11px] text-muted">{t}</span>
@@ -778,7 +778,7 @@ export default function AppDetailPage() {
           {/* Resources (installed only) */}
           {app.installed && (agentCount > 0 || skillCount > 0 || cronCount > 0) && (
             <Card>
-              <CardTitle>Resources</CardTitle>
+              <CardTitle>{i18nT('pages.appDetailPage.resources')}</CardTitle>
               <div className="grid gap-1.5 mt-2 text-[13px]">
                 {(app.manifest?.agents || []).length > 0 && (
                   <div className="flex items-start gap-2 text-muted">
@@ -804,14 +804,14 @@ export default function AppDetailPage() {
 
           {/* Metadata */}
           <Card>
-            <CardTitle>Details</CardTitle>
+            <CardTitle>{i18nT('pages.appDetailPage.details')}</CardTitle>
             <div className="grid gap-1.5 mt-2 text-[13px] text-muted">
-              {app.repo && <div>Repository: {app.repo}</div>}
-              {app.author && <div>Author: {app.author}</div>}
-              {app.installedAt && <div>Installed: {new Date(app.installedAt).toLocaleDateString()}</div>}
-              {app.origin && <div>Origin: {app.origin} | Resources: {app.resources || 'gateway'} | Lifecycle: {app.lifecycle || 'gateway'}</div>}
-              {app.manifest?.minKiroCrewVersion && <div>Min KiroCrew: v{app.manifest.minKiroCrewVersion}</div>}
-              {app.platform?.os && <div>Platform: {app.platform.os.join(', ')}</div>}
+              {app.repo && <div>{i18nT('pages.appDetailPage.repository')} {app.repo}</div>}
+              {app.author && <div>{i18nT('pages.appDetailPage.author')} {app.author}</div>}
+              {app.installedAt && <div>{i18nT('pages.appDetailPage.installed')} {new Date(app.installedAt).toLocaleDateString()}</div>}
+              {app.origin && <div>{i18nT('pages.appDetailPage.origin')} {app.origin} {i18nT('pages.appDetailPage.resources_2')} {app.resources || 'gateway'} {i18nT('pages.appDetailPage.lifecycle')} {app.lifecycle || 'gateway'}</div>}
+              {app.manifest?.minKiroCrewVersion && <div>{i18nT('pages.appDetailPage.min_kirocrew_v')}{app.manifest.minKiroCrewVersion}</div>}
+              {app.platform?.os && <div>{i18nT('pages.appDetailPage.platform')} {app.platform.os.join(', ')}</div>}
             </div>
           </Card>
         </div>

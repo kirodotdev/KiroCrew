@@ -4,6 +4,7 @@ import { dedupResourceLinks } from '../../utils/extractChatLinks'
 import type { ChatSection } from '../../hooks/useChatNavigation'
 import Clickable from '../../components/Clickable'
 
+import { i18nT } from '../../i18n/t'
 interface ChatNavContentProps {
   links: ExtractedLink[]
   sections: ChatSection[]
@@ -44,8 +45,8 @@ export default function ChatNavContent({ links, sections, onScrollToSection, res
       {/* Key Resources */}
       <div>
         <div className="flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-muted font-semibold mb-1.5">
-          <Link2 size={11} /> Resources
-          {resolving && <span className="ml-auto text-[10px] text-accent animate-pulse">resolving…</span>}
+          <Link2 size={11} /> {i18nT('pages.chat.chatNavPanel.resources')}
+          {resolving && <span className="ml-auto text-[10px] text-accent animate-pulse">{i18nT('pages.chat.chatNavPanel.resolving')}</span>}
         </div>
         {resourceLinks.length > 0 ? (
           <div className="flex flex-col gap-0.5">
@@ -67,7 +68,7 @@ export default function ChatNavContent({ links, sections, onScrollToSection, res
             ))}
           </div>
         ) : (
-          <span className="text-muted text-[12px] px-2">No links found</span>
+          <span className="text-muted text-[12px] px-2">{i18nT('pages.chat.chatNavPanel.no_links_found')}</span>
         )}
       </div>
 
@@ -77,7 +78,7 @@ export default function ChatNavContent({ links, sections, onScrollToSection, res
       {/* Conversation Outline */}
       <div>
         <div className="flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-muted font-semibold mb-1.5">
-          <List size={11} /> Outline
+          <List size={11} /> {i18nT('pages.chat.chatNavPanel.outline')}
         </div>
         {sections.length > 0 ? (
           <div className="flex flex-col gap-0.5">
@@ -94,7 +95,7 @@ export default function ChatNavContent({ links, sections, onScrollToSection, res
             ))}
           </div>
         ) : (
-          <span className="text-muted text-[12px] px-2">Start chatting to see sections</span>
+          <span className="text-muted text-[12px] px-2">{i18nT('pages.chat.chatNavPanel.start_chatting_to_see_sections')}</span>
         )}
       </div>
     </div>

@@ -18,6 +18,7 @@ import { Zap, Wrench } from 'lucide-react'
 import { ToolInputText } from '../../components/ToolInputText'
 import { HighlightedCode } from '../../components/CodeBlock'
 
+import { i18nT } from '../../i18n/t'
 export function ToolDetails({ purpose, pillLabel, toolName, input, output, auto, pending, ts, hasEntry, fmtTime, barColor, layoutId, compact }: {
   purpose: string
   /** What the pill itself displays. The meta row hides the `→ purpose` line
@@ -111,10 +112,10 @@ export function ToolDetails({ purpose, pillLabel, toolName, input, output, auto,
                 border: '1px solid color-mix(in srgb, var(--warn) 30%, transparent)',
               }}
             >
-              Waiting for approval
+              {i18nT('pages.chat.toolDetails.waiting_for_approval')}
             </span>
           )}
-          {auto && <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md border border-border bg-bg-elevated text-muted text-[11px] font-mono"><Zap size={10} /> Auto</span>}
+          {auto && <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md border border-border bg-bg-elevated text-muted text-[11px] font-mono"><Zap size={10} /> {i18nT('pages.chat.toolDetails.auto')}</span>}
           {showPurpose && <span className={`text-[12px] text-muted/50 break-words min-w-0 ${compact ? 'line-clamp-1' : ''}`}>→ {purpose}</span>}
           {(activeIsJson || (compact ? (hasInput && hasOutput) : (hasInput || hasOutput))) && (
             <div className="ml-auto shrink-0 flex items-center gap-1.5">
@@ -299,7 +300,7 @@ function tryParseJsonObject(text: string): Record<string, unknown> | null {
  *  <pre> cell; scalars render inline with type coloring; nested objects/arrays
  *  fall back to indented, highlighted JSON. */
 function JsonValue({ value, lang }: { value: unknown; lang?: string }): ReactNode {
-  if (value === null) return <span style={{ color: 'var(--json-bool)' }}>null</span>
+  if (value === null) return <span style={{ color: 'var(--json-bool)' }}>{i18nT('pages.chat.toolDetails.null')}</span>
   if (typeof value === 'boolean') return <span style={{ color: 'var(--json-bool)' }}>{String(value)}</span>
   if (typeof value === 'number') return <span style={{ color: 'var(--json-num)' }}>{value}</span>
   if (typeof value === 'string') {

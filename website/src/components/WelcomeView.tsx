@@ -7,6 +7,7 @@ import { useTheme } from '../hooks/useTheme'
 import { getThemeBranding } from '../themeBranding'
 import { api } from '../api/client'
 
+import { i18nT } from '../i18n/t'
 interface WelcomeViewProps {
   mode?: string
   setInput: (v: string) => void
@@ -64,8 +65,8 @@ function SuggestedPills({ setInput }: { setInput: (v: string) => void }) {
         onClick={handleRefresh}
         disabled={spinning}
         className="p-1.5 rounded-lg text-muted hover:text-accent border border-transparent hover:border-border transition-all cursor-pointer bg-transparent"
-        title="Refresh suggestions"
-        aria-label="Refresh suggestions"
+        title={i18nT('components.welcomeView.refresh_suggestions')}
+        aria-label={i18nT('components.welcomeView.refresh_suggestions')}
       >
         <RefreshCw size={13} className={spinning ? 'animate-spin' : ''} />
       </button>
@@ -118,14 +119,14 @@ export default function WelcomeView({
           <h2 className="text-5xl font-light text-text-strong tracking-tight">{mode === 'orchestrator' ? 'Autopilot' : 'What can I do for you?'}</h2>
           {mode !== 'orchestrator' && <div className="w-[64px] shrink-0" />}
         </div>
-        {mode === 'orchestrator' && <p className="text-[13px] text-muted mt-1">Simple tasks run instantly. Complex ones get a plan you approve first.</p>}
+        {mode === 'orchestrator' && <p className="text-[13px] text-muted mt-1">{i18nT('components.welcomeView.simple_tasks_run_instantly_complex_ones_get_a_pl')}</p>}
       </div>
       {mode === 'orchestrator' && (
         <button
           className="px-4 py-2 rounded-lg text-[13px] text-muted border border-border bg-card hover:border-accent hover:text-text transition-all cursor-pointer"
           onClick={() => setInput('Create a plan to analyze KiroCrew code package and report file count by major components')}
         >
-          Try: &ldquo;Create a plan to analyze KiroCrew code package and report file count by major components&rdquo;
+          {i18nT('components.welcomeView.try_create_a_plan_to_analyze_kirocrew_code_packa')}
         </button>
       )}
       {(onSwitchMode || onToggleClean) && (
@@ -187,9 +188,9 @@ export default function WelcomeView({
                 >
                   <div className="flex items-center gap-1.5 text-[13px] font-semibold text-text">
                     <Droplet size={14} className="text-accent" />
-                    <span>Clean</span>
+                    <span>{i18nT('components.welcomeView.clean')}</span>
                   </div>
-                  <div className="text-[11px] text-muted leading-snug">Agent-only — no KiroCrew context or MCP</div>
+                  <div className="text-[11px] text-muted leading-snug">{i18nT('components.welcomeView.agent_only_no_kirocrew_context_or_mcp')}</div>
                 </button>
               )}
             </div>,

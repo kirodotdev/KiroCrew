@@ -7,6 +7,7 @@ import { CodeBlock } from './CodeBlock'
 import { parseFrontmatter } from './SkillForm'
 import type { Skill, SkillTreeEntry } from '../types'
 
+import { i18nT } from '../i18n/t'
 interface TreeNode {
   name: string                   // basename
   path: string                   // relative path from skill root
@@ -80,13 +81,13 @@ export function SkillMetaStrip({
     <div className="space-y-2 mb-3 pb-3 border-b border-border" data-testid="frontmatter-strip">
       {description && (
         <div>
-          <div className="text-[11px] text-muted uppercase tracking-wide font-semibold mb-0.5">Description</div>
+          <div className="text-[11px] text-muted uppercase tracking-wide font-semibold mb-0.5">{i18nT('components.skillDirectoryBrowser.description')}</div>
           <div className="text-[13px] text-text leading-relaxed">{description}</div>
         </div>
       )}
       {triggers && (
         <div>
-          <div className="text-[11px] text-muted uppercase tracking-wide font-semibold mb-0.5">Triggers</div>
+          <div className="text-[11px] text-muted uppercase tracking-wide font-semibold mb-0.5">{i18nT('components.skillDirectoryBrowser.triggers')}</div>
           <div className="flex gap-1 flex-wrap">{triggers.split(',').map((t, i) => (
             <span key={i} className="text-[12px] px-1.5 py-[1px] rounded bg-bg-elevated text-muted border border-border font-mono">{t.trim()}</span>
           ))}</div>
@@ -94,7 +95,7 @@ export function SkillMetaStrip({
       )}
       {tags && (
         <div>
-          <div className="text-[11px] text-muted uppercase tracking-wide font-semibold mb-0.5">Tags</div>
+          <div className="text-[11px] text-muted uppercase tracking-wide font-semibold mb-0.5">{i18nT('components.skillDirectoryBrowser.tags')}</div>
           <div className="flex gap-1 flex-wrap">{tags.replace(/[[\]]/g, '').split(',').map((t, i) => (
             <span key={i} className="text-[12px] px-1.5 py-[1px] rounded bg-accent-subtle text-accent font-mono">{t.trim()}</span>
           ))}</div>
@@ -102,7 +103,7 @@ export function SkillMetaStrip({
       )}
       {loadedByAgents && loadedByAgents.length > 0 && (
         <div>
-          <div className="text-[11px] text-muted uppercase tracking-wide font-semibold mb-0.5">Loaded by agents</div>
+          <div className="text-[11px] text-muted uppercase tracking-wide font-semibold mb-0.5">{i18nT('components.skillDirectoryBrowser.loaded_by_agents')}</div>
           <div className="flex gap-1 flex-wrap">{loadedByAgents.map((a, i) => (
             <span key={i} className="text-[12px] px-1.5 py-[1px] rounded bg-bg-elevated text-text border border-border font-mono">{a}</span>
           ))}</div>
@@ -255,10 +256,10 @@ export default function SkillDirectoryBrowser({
     <div className="flex gap-3 h-full min-h-0" data-testid="skill-directory-browser">
       {/* File-tree pane (pane 2 of the master-detail layout) */}
       <div className="w-[200px] shrink-0 overflow-y-auto scrollbar-overlay border border-border rounded-md bg-bg-elevated/50 p-1">
-        {treeLoading && <div className="text-muted text-[12px] p-2 animate-pulse">Loading tree…</div>}
-        {treeErr && <div className="text-danger text-[12px] p-2 flex items-start gap-1.5"><AlertCircle size={14} className="shrink-0" />Failed to load tree</div>}
+        {treeLoading && <div className="text-muted text-[12px] p-2 animate-pulse">{i18nT('components.skillDirectoryBrowser.loading_tree')}</div>}
+        {treeErr && <div className="text-danger text-[12px] p-2 flex items-start gap-1.5"><AlertCircle size={14} className="shrink-0" />{i18nT('components.skillDirectoryBrowser.failed_to_load_tree')}</div>}
         {!treeLoading && !treeErr && root.children.length === 0 && (
-          <div className="text-muted/70 text-[12px] italic p-2">(empty skill folder)</div>
+          <div className="text-muted/70 text-[12px] italic p-2">{i18nT('components.skillDirectoryBrowser.empty_skill_folder')}</div>
         )}
         {!treeLoading && root.children.map(c => (
           <TreeRow
@@ -278,7 +279,7 @@ export default function SkillDirectoryBrowser({
           loadedByAgents={skill?.loaded_by_agents}
         />
         <div className="text-[11px] font-mono text-muted mb-2 truncate" title={selected}>{selected || '(no file selected)'}</div>
-        {fileLoading && <div className="text-muted text-[12px] animate-pulse">Loading file…</div>}
+        {fileLoading && <div className="text-muted text-[12px] animate-pulse">{i18nT('components.skillDirectoryBrowser.loading_file')}</div>}
         {fileErr && (
           <div className="text-danger text-[12px] flex items-start gap-1.5">
             <AlertCircle size={14} className="shrink-0" />

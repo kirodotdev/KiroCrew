@@ -6,6 +6,7 @@ import { api } from '../api/client'
 import { timeAgo } from '../utils/timeAgo'
 import type { RemoteArtifact } from '../types'
 
+import { i18nT } from '../i18n/t'
 // Normalize a best-effort "ISO/epoch string" (the documented, unit-ambiguous
 // updated_at contract) to a seconds epoch. ISO strings parse via Date.parse;
 // bare numeric strings may be seconds OR milliseconds — a ms value (>= ~1e12,
@@ -123,7 +124,7 @@ export default function RemoteArtifactCard({
               {artifact.owner}
             </span>
           )}
-          {typeof artifact.current_version === 'number' && <span>v{artifact.current_version}</span>}
+          {typeof artifact.current_version === 'number' && <span>{i18nT('components.remoteArtifactCard.v')}{artifact.current_version}</span>}
           {artifact.updated_at && <span>{timeAgo(toTs(artifact.updated_at))}</span>}
         </div>
         {artifact.snippet && (
@@ -142,10 +143,10 @@ export default function RemoteArtifactCard({
               handleClone()
             }}
             disabled={cloning || actionsDisabled}
-            title="Clone into your artifacts — a bidirectional copy whose edits sync back to this same remote artifact"
+            title={i18nT('components.remoteArtifactCard.clone_into_your_artifacts_a_bidirectional_copy_w')}
           >
             {cloning ? <Loader2 className="lucide-inline w-3.5 h-3.5 animate-spin" /> : <Copy className="lucide-inline w-3.5 h-3.5" />}
-            Clone
+            {i18nT('components.remoteArtifactCard.clone')}
           </Btn>
         )}
         <Btn
@@ -154,10 +155,10 @@ export default function RemoteArtifactCard({
             handleFork()
           }}
           disabled={forking || actionsDisabled}
-          title="Fork into your local artifacts — your own divergent copy"
+          title={i18nT('components.remoteArtifactCard.fork_into_your_local_artifacts_your_own_divergen')}
         >
           {forking ? <Loader2 className="lucide-inline w-3.5 h-3.5 animate-spin" /> : <GitFork className="lucide-inline w-3.5 h-3.5" />}
-          Fork
+          {i18nT('components.remoteArtifactCard.fork')}
         </Btn>
       </div>
     </div>

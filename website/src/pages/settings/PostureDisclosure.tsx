@@ -5,6 +5,7 @@ import { Badge, SearchInput } from '../../components/ui'
 import Clickable from '../../components/Clickable'
 import type { PostureControl, PostureItem } from '../../api/client'
 
+import { i18nT } from '../../i18n/t'
 /* ── Expandable security-posture row ──
  *
  * Every posture count used to be a dead pill ("5 output paths") with no way to
@@ -144,7 +145,7 @@ export function PostureDisclosureRow({
       </div>
       <div className="flex items-center gap-1.5 shrink-0">
         {unresolved ? (
-          <Badge variant="warn"><AlertTriangle className="lucide-inline" /> unavailable</Badge>
+          <Badge variant="warn"><AlertTriangle className="lucide-inline" /> {i18nT('pages.settings.postureDisclosure.unavailable')}</Badge>
         ) : (
           <Badge variant="ok" className="tabular-nums">{count} {control.unit}</Badge>
         )}
@@ -200,7 +201,7 @@ export function PostureDisclosureRow({
               )}
 
               {filtered.length === 0 ? (
-                <div className="text-[12px] text-muted py-2 pl-6">No matches for “{filter}”.</div>
+                <div className="text-[12px] text-muted py-2 pl-6">{i18nT('pages.settings.postureDisclosure.no_matches_for')}{filter}”.</div>
               ) : (
                 <div className="divide-y divide-border rounded-md bg-bg-elevated/40">
                   {/* Index-keyed: labels are unique across every shipped control
@@ -217,7 +218,7 @@ export function PostureDisclosureRow({
                   className="text-[12px] text-accent hover:underline bg-transparent border-none cursor-pointer p-0 mt-1.5 ml-6"
                   onClick={() => setExpandedFor(query)}
                 >
-                  Show {hidden} more
+                  {i18nT('pages.settings.postureDisclosure.show')} {hidden} {i18nT('pages.settings.postureDisclosure.more')}
                 </button>
               )}
 

@@ -15,6 +15,7 @@ import { Btn, Input, IconButton } from '../ui'
 import { Popover, PopoverTrigger, PopoverContent } from '../ui/popover'
 import RegistryManager from '../RegistryManager'
 
+import { i18nT } from '../../i18n/t'
 export default function SourcesPopover({ open, onOpenChange, onError }: {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -44,7 +45,7 @@ export default function SourcesPopover({ open, onOpenChange, onError }: {
   return (
     <Popover open={open} onOpenChange={onOpenChange}>
       <PopoverTrigger asChild>
-        <IconButton aria-label="Manage app sources" title="Manage app sources">
+        <IconButton aria-label={i18nT('components.appstore.sourcesPopover.manage_app_sources')} title={i18nT('components.appstore.sourcesPopover.manage_app_sources')}>
           <Database size={15} />
         </IconButton>
       </PopoverTrigger>
@@ -52,13 +53,13 @@ export default function SourcesPopover({ open, onOpenChange, onError }: {
         <RegistryManager bare />
         <div className="border-t border-border mt-4 pt-4">
           <div className="text-sm font-semibold tracking-tight text-text-strong mb-2 flex items-center gap-2">
-            Install from Path
+            {i18nT('components.appstore.sourcesPopover.install_from_path')}
           </div>
-          <p className="text-[12px] text-muted mb-2.5">Developer install of a local app directory (equivalent to <code className="bg-bg-elevated px-1 py-0.5 rounded">kirocrew app install &lt;path&gt;</code>).</p>
+          <p className="text-[12px] text-muted mb-2.5">{i18nT('components.appstore.sourcesPopover.developer_install_of_a_local_app_directory_equiv')} <code className="bg-bg-elevated px-1 py-0.5 rounded">{i18nT('components.appstore.sourcesPopover.kirocrew_app_install_path')}</code>).</p>
           <div className="flex items-center gap-2">
             <FolderOpen size={15} className="text-muted shrink-0" />
             <Input
-              placeholder="/path/to/app-directory"
+              placeholder={i18nT('components.appstore.sourcesPopover.path_to_app_directory')}
               value={installPath}
               onChange={(e: React.ChangeEvent<HTMLInputElement>) => setInstallPath(e.target.value)}
               onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => e.key === 'Enter' && handleInstall()}

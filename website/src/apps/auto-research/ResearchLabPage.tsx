@@ -7,6 +7,7 @@ import MarkdownRenderer from '../../components/MarkdownRenderer'
 import GrillTree from './GrillTree'
 import { grillReducer, promotedResearch, answeredClarifiers, suggestedMaxCycles, GrillNode } from './grillTreeModel'
 
+import { i18nT } from '../../i18n/t'
 const ACTIVE_STATUSES = ['running', 'paused', 'stagnant', 'needs_input']
 
 interface Campaign { id: string; name: string; question: string; sub_questions: string; sources: string; max_cycles: number; idle_secs: number; status: string; total_cycles: number; findings?: Finding[]; error_message?: string; pending_question?: string; parent_id?: string; parallel_workers?: number }
@@ -52,9 +53,9 @@ function GrowTextarea({ value, onChange, onSubmit, placeholder, className = '', 
 }
 
 function EvidenceBadge({ s }: { s: string }) {
-  if (s === 'strong') return <span className="text-xs px-1.5 py-0.5 rounded bg-bg-elevated text-ok inline-flex items-center gap-0.5"><ThumbsUp size={10} /> Strong</span>
-  if (s === 'moderate') return <span className="text-xs px-1.5 py-0.5 rounded bg-bg-elevated text-warn inline-flex items-center gap-0.5"><ArrowRight size={10} /> Moderate</span>
-  return <span className="text-xs px-1.5 py-0.5 rounded bg-bg-elevated text-muted inline-flex items-center gap-0.5"><HelpCircle size={10} /> Weak</span>
+  if (s === 'strong') return <span className="text-xs px-1.5 py-0.5 rounded bg-bg-elevated text-ok inline-flex items-center gap-0.5"><ThumbsUp size={10} /> {i18nT('apps.autoResearch.researchLabPage.strong')}</span>
+  if (s === 'moderate') return <span className="text-xs px-1.5 py-0.5 rounded bg-bg-elevated text-warn inline-flex items-center gap-0.5"><ArrowRight size={10} /> {i18nT('apps.autoResearch.researchLabPage.moderate')}</span>
+  return <span className="text-xs px-1.5 py-0.5 rounded bg-bg-elevated text-muted inline-flex items-center gap-0.5"><HelpCircle size={10} /> {i18nT('apps.autoResearch.researchLabPage.weak')}</span>
 }
 
 // Maps every campaign status to a single, consistent state pill so the root
@@ -89,18 +90,18 @@ function FindingCard({ f }: { f: Finding }) {
         {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-xs text-muted">Cycle {f.cycle}</span>
+            <span className="text-xs text-muted">{i18nT('apps.autoResearch.researchLabPage.cycle')} {f.cycle}</span>
             <EvidenceBadge s={f.evidence_strength} />
-            {f.verification && <span className={`text-xs px-1.5 py-0.5 rounded inline-flex items-center gap-0.5 ${f.verification.passed ? 'bg-ok/15 text-ok' : 'bg-bg-elevated text-muted'}`}>{f.verification.passed ? <><CheckCircle size={10} /> Goal met</> : 'Goal: not yet'}</span>}
+            {f.verification && <span className={`text-xs px-1.5 py-0.5 rounded inline-flex items-center gap-0.5 ${f.verification.passed ? 'bg-ok/15 text-ok' : 'bg-bg-elevated text-muted'}`}>{f.verification.passed ? <><CheckCircle size={10} /> {i18nT('apps.autoResearch.researchLabPage.goal_met')}</> : 'Goal: not yet'}</span>}
           </div>
-          <div className="text-sm font-medium mt-0.5">&ldquo;{f.key_insight || f.summary}&rdquo;</div>
+          <div className="text-sm font-medium mt-0.5">{"\u201c"}{f.key_insight || f.summary}{"\u201d"}</div>
         </div>
       </Clickable>
       {open && (
         <div className="mt-2 pl-5 text-sm space-y-1">
           <p className="text-muted">{f.summary}</p>
-          {f.sources_checked?.length > 0 && <div><span className="text-xs font-medium text-muted">Sources:</span>{f.sources_checked.map((s, i) => <div key={i} className="text-xs ml-2">• {s}</div>)}</div>}
-          {f.sources_empty?.length > 0 && <div><span className="text-xs font-medium text-muted">Searched (empty):</span>{f.sources_empty.map((s, i) => <div key={i} className="text-xs ml-2 italic">• {s}</div>)}</div>}
+          {f.sources_checked?.length > 0 && <div><span className="text-xs font-medium text-muted">{i18nT('apps.autoResearch.researchLabPage.sources')}</span>{f.sources_checked.map((s, i) => <div key={i} className="text-xs ml-2">• {s}</div>)}</div>}
+          {f.sources_empty?.length > 0 && <div><span className="text-xs font-medium text-muted">{i18nT('apps.autoResearch.researchLabPage.searched_empty')}</span>{f.sources_empty.map((s, i) => <div key={i} className="text-xs ml-2 italic">• {s}</div>)}</div>}
         </div>
       )}
     </div>
@@ -195,78 +196,78 @@ function SetupWizard({ onDone, onCancel }: { onDone: () => void; onCancel: () =>
 
       {step === 0 && <div className="space-y-4">
         <div className="p-3 rounded-md bg-bg border border-border">
-          <div className="text-xs text-muted mb-2">How sub-agent execution is orchestrated. Both handle open-ended research. Choose once at setup.</div>
+          <div className="text-xs text-muted mb-2">{i18nT('apps.autoResearch.researchLabPage.how_sub_agent_execution_is_orchestrated_both_han')}</div>
           <div className="grid grid-cols-2 gap-2">
             <button type="button" onClick={() => setExecutionMode('agent')} className={`text-left p-2 rounded border ${executionMode === 'agent' ? 'border-accent bg-accent/10' : 'border-border'}`}>
-              <div className="font-medium text-sm">Agent <span className="text-muted font-normal">(adaptive)</span></div>
-              <div className="text-xs text-muted mt-0.5">The AI drives every round itself — deciding what to investigate, managing sub-agents, and following new leads from findings as they emerge.</div>
+              <div className="font-medium text-sm">{i18nT('apps.autoResearch.researchLabPage.agent')} <span className="text-muted font-normal">{i18nT('apps.autoResearch.researchLabPage.adaptive')}</span></div>
+              <div className="text-xs text-muted mt-0.5">{i18nT('apps.autoResearch.researchLabPage.the_ai_drives_every_round_itself_deciding_what_t')}</div>
             </button>
             <button type="button" onClick={() => setExecutionMode('workflow')} className={`text-left p-2 rounded border ${executionMode === 'workflow' ? 'border-accent bg-accent/10' : 'border-border'}`}>
-              <div className="font-medium text-sm">Dynamic Workflow <span className="text-muted font-normal">(scripted)</span></div>
-              <div className="text-xs text-muted mt-0.5">The AI writes an orchestration script up front; a deterministic runner manages sub-agent execution while the AI only plans, investigates, and synthesizes. Replayable, budget-capped.</div>
+              <div className="font-medium text-sm">{i18nT('apps.autoResearch.researchLabPage.dynamic_workflow')} <span className="text-muted font-normal">{i18nT('apps.autoResearch.researchLabPage.scripted')}</span></div>
+              <div className="text-xs text-muted mt-0.5">{i18nT('apps.autoResearch.researchLabPage.the_ai_writes_an_orchestration_script_up_front_a')}</div>
             </button>
           </div>
           {executionMode === 'workflow' && (
             <div className="text-xs text-warn mt-2 flex items-start gap-1">
               <AlertTriangle size={12} className="mt-0.5 shrink-0" />
-              <span>Dynamic Workflow can fan out to many sub-agents, and its budget cap stops the run hard if hit (mid-run synthesis may be lost). Start with conservative cycle/worker limits.</span>
+              <span>{i18nT('apps.autoResearch.researchLabPage.dynamic_workflow_can_fan_out_to_many_sub_agents')}</span>
             </div>
           )}
         </div>
         <div>
-          <label htmlFor="research-question" className="text-sm font-medium">What do you want to research?
-            <textarea id="research-question" aria-label="What do you want to research?" className="w-full mt-1 p-2 rounded-md text-sm bg-bg border border-border resize-y" rows={3} value={question} onChange={e => setQuestion(e.target.value)} placeholder="How do other teams handle API rate limiting?" />
+          <label htmlFor="research-question" className="text-sm font-medium">{i18nT('apps.autoResearch.researchLabPage.what_do_you_want_to_research')}
+            <textarea id="research-question" aria-label={i18nT('apps.autoResearch.researchLabPage.what_do_you_want_to_research')} className="w-full mt-1 p-2 rounded-md text-sm bg-bg border border-border resize-y" rows={3} value={question} onChange={e => setQuestion(e.target.value)} placeholder={i18nT('apps.autoResearch.researchLabPage.how_do_other_teams_handle_api_rate_limiting')} />
           </label>
-          <div className="text-xs text-muted">Min 20 characters.</div>
+          <div className="text-xs text-muted">{i18nT('apps.autoResearch.researchLabPage.min_20_characters')}</div>
         </div>
         <div>
           <div className="flex items-center justify-between">
-            <span className="text-sm font-medium">Sub-questions</span>
+            <span className="text-sm font-medium">{i18nT('apps.autoResearch.researchLabPage.sub_questions')}</span>
             <button className="text-xs text-accent flex items-center gap-1 disabled:opacity-50" onClick={grillMe} disabled={question.length < 20 || grilling}><Sparkles size={12} /> {grilling ? 'Grilling…' : 'Grill me →'}</button>
           </div>
-          {tree.some(n => n.status !== 'pruned') && <div className="text-xs text-muted mt-1">Answer clarifiers to refine, or just pick sub-questions and go.</div>}
+          {tree.some(n => n.status !== 'pruned') && <div className="text-xs text-muted mt-1">{i18nT('apps.autoResearch.researchLabPage.answer_clarifiers_to_refine_or_just_pick_sub_que')}</div>}
           <div className="mt-2"><GrillTree tree={tree} dispatch={dispatchTree} onExpand={onExpand} /></div>
-          {grillUnavailable && <div className="text-xs text-warn mt-2">Grill unavailable — add sub-questions manually below.</div>}
-          {subQs.map((sq, i) => <div key={i} className="flex items-start gap-2 mt-1"><GrowTextarea ariaLabel={`Sub-question ${i + 1}`} className="flex-1 text-sm p-1.5 rounded bg-bg border border-border" value={sq} onChange={v => { const n = [...subQs]; n[i] = v; setSubQs(n) }} /><button className="text-xs text-danger mt-1.5" onClick={() => setSubQs(subQs.filter((_, j) => j !== i))} aria-label="Remove sub-question"><X size={12} /></button></div>)}
-          <GrowTextarea ariaLabel="Add sub-question manually" className="w-full text-sm p-1.5 rounded bg-bg border border-border mt-2" placeholder="Add sub-question manually (Enter; Shift+Enter for newline)" value={newSub} onChange={setNewSub} onSubmit={() => { if (newSub.trim()) { setSubQs([...subQs, newSub.trim()]); setNewSub('') } }} />
+          {grillUnavailable && <div className="text-xs text-warn mt-2">{i18nT('apps.autoResearch.researchLabPage.grill_unavailable_add_sub_questions_manually_bel')}</div>}
+          {subQs.map((sq, i) => <div key={i} className="flex items-start gap-2 mt-1"><GrowTextarea ariaLabel={`Sub-question ${i + 1}`} className="flex-1 text-sm p-1.5 rounded bg-bg border border-border" value={sq} onChange={v => { const n = [...subQs]; n[i] = v; setSubQs(n) }} /><button className="text-xs text-danger mt-1.5" onClick={() => setSubQs(subQs.filter((_, j) => j !== i))} aria-label={i18nT('apps.autoResearch.researchLabPage.remove_sub_question')}><X size={12} /></button></div>)}
+          <GrowTextarea ariaLabel={i18nT('apps.autoResearch.researchLabPage.add_sub_question_manually')} className="w-full text-sm p-1.5 rounded bg-bg border border-border mt-2" placeholder={i18nT('apps.autoResearch.researchLabPage.add_sub_question_manually_enter_shift_enter_for')} value={newSub} onChange={setNewSub} onSubmit={() => { if (newSub.trim()) { setSubQs([...subQs, newSub.trim()]); setNewSub('') } }} />
         </div>
       </div>}
 
       {step === 1 && <div className="space-y-4">
-        <span className="text-sm font-medium block">When should the agent stop?</span>
-        <div className="text-xs text-muted">Stops at the cycle cap, when the Definition of Done is met, on stagnation, or when you Stop it.</div>
-        <div className="flex items-center gap-2"><span className="text-sm">Max cycles:</span><input type="number" aria-label="Max cycles" min={5} max={100} value={maxCycles} className="w-20 text-sm p-1 rounded bg-bg border border-border" onChange={e => { setMaxCyclesTouched(true); setMaxCycles(Number(e.target.value)) }} />{subCount > 0 && !maxCyclesTouched && <span className="text-xs text-muted">suggested from {subCount} sub-questions</span>}</div>
-        <div className="flex items-center gap-2"><span className="text-sm">Idle between cycles:</span><select aria-label="Idle between cycles" value={idleSecs} onChange={e => setIdleSecs(Number(e.target.value))} className="text-sm p-1 rounded bg-bg border border-border"><option value={30}>30s</option><option value={60}>60s</option><option value={120}>120s</option></select></div>
+        <span className="text-sm font-medium block">{i18nT('apps.autoResearch.researchLabPage.when_should_the_agent_stop')}</span>
+        <div className="text-xs text-muted">{i18nT('apps.autoResearch.researchLabPage.stops_at_the_cycle_cap_when_the_definition_of_do')}</div>
+        <div className="flex items-center gap-2"><span className="text-sm">{i18nT('apps.autoResearch.researchLabPage.max_cycles')}</span><input type="number" aria-label={i18nT('apps.autoResearch.researchLabPage.max_cycles_2')} min={5} max={100} value={maxCycles} className="w-20 text-sm p-1 rounded bg-bg border border-border" onChange={e => { setMaxCyclesTouched(true); setMaxCycles(Number(e.target.value)) }} />{subCount > 0 && !maxCyclesTouched && <span className="text-xs text-muted">{i18nT('apps.autoResearch.researchLabPage.suggested_from')} {subCount} {i18nT('apps.autoResearch.researchLabPage.sub_questions_2')}</span>}</div>
+        <div className="flex items-center gap-2"><span className="text-sm">{i18nT('apps.autoResearch.researchLabPage.idle_between_cycles')}</span><select aria-label={i18nT('apps.autoResearch.researchLabPage.idle_between_cycles_2')} value={idleSecs} onChange={e => setIdleSecs(Number(e.target.value))} className="text-sm p-1 rounded bg-bg border border-border"><option value={30}>{i18nT('apps.autoResearch.researchLabPage.30s')}</option><option value={60}>{i18nT('apps.autoResearch.researchLabPage.60s')}</option><option value={120}>{i18nT('apps.autoResearch.researchLabPage.120s')}</option></select></div>
         <div>
-          <span className="text-sm font-medium block">Definition of Done (optional)</span>
-          <textarea aria-label="Definition of Done (optional)" className="w-full text-sm p-1.5 rounded bg-bg border border-border mt-1 resize-y" rows={2} placeholder="e.g. AI code review finds no blocking issues and the test build passes" value={successCriteria} onChange={e => setSuccessCriteria(e.target.value)} />
-          <div className="text-xs text-muted mt-1">If set, the agent verifies against this each cycle and completes when met.</div>
+          <span className="text-sm font-medium block">{i18nT('apps.autoResearch.researchLabPage.definition_of_done_optional')}</span>
+          <textarea aria-label={i18nT('apps.autoResearch.researchLabPage.definition_of_done_optional')} className="w-full text-sm p-1.5 rounded bg-bg border border-border mt-1 resize-y" rows={2} placeholder={i18nT('apps.autoResearch.researchLabPage.e_g_ai_code_review_finds_no_blocking_issues_and')} value={successCriteria} onChange={e => setSuccessCriteria(e.target.value)} />
+          <div className="text-xs text-muted mt-1">{i18nT('apps.autoResearch.researchLabPage.if_set_the_agent_verifies_against_this_each_cycl')}</div>
         </div>
         <label htmlFor="auto-approve" className="flex items-center gap-2 text-sm">
-          <input id="auto-approve" type="checkbox" aria-label="Run unattended (skip clarification questions)" checked={autoApprove} onChange={e => setAutoApprove(e.target.checked)} />
-          Run unattended (skip clarification questions)
+          <input id="auto-approve" type="checkbox" aria-label={i18nT('apps.autoResearch.researchLabPage.run_unattended_skip_clarification_questions')} checked={autoApprove} onChange={e => setAutoApprove(e.target.checked)} />
+          {i18nT('apps.autoResearch.researchLabPage.run_unattended_skip_clarification_questions')}
         </label>
-        <div className="flex items-center gap-2"><span className="text-sm">Parallel workers:</span><input type="number" aria-label="Parallel workers" min={1} max={5} value={parallelWorkers} className="w-16 text-sm p-1 rounded bg-bg border border-border" onChange={e => setParallelWorkers(Math.min(5, Math.max(1, Number(e.target.value))))} /><span className="text-xs text-muted">{parallelWorkers > 1 ? `${parallelWorkers} sub-questions investigated in parallel each cycle` : 'sequential (default)'}</span></div>
+        <div className="flex items-center gap-2"><span className="text-sm">{i18nT('apps.autoResearch.researchLabPage.parallel_workers')}</span><input type="number" aria-label={i18nT('apps.autoResearch.researchLabPage.parallel_workers_2')} min={1} max={5} value={parallelWorkers} className="w-16 text-sm p-1 rounded bg-bg border border-border" onChange={e => setParallelWorkers(Math.min(5, Math.max(1, Number(e.target.value))))} /><span className="text-xs text-muted">{parallelWorkers > 1 ? `${parallelWorkers} sub-questions investigated in parallel each cycle` : 'sequential (default)'}</span></div>
       </div>}
 
       {step === 2 && <div className="space-y-3">
-        <span className="text-sm font-medium block">Pre-flight Check:</span>
+        <span className="text-sm font-medium block">{i18nT('apps.autoResearch.researchLabPage.pre_flight_check')}</span>
         {validation ? <>
           {validation.errors.map((e, i) => <div key={i} className="text-sm flex items-center gap-1"><XCircle size={14} className="text-danger" /> {e}</div>)}
-          {validation.errors.length === 0 && <div className="text-sm text-ok flex items-center gap-1"><CheckCircle size={14} /> All checks passed</div>}
+          {validation.errors.length === 0 && <div className="text-sm text-ok flex items-center gap-1"><CheckCircle size={14} /> {i18nT('apps.autoResearch.researchLabPage.all_checks_passed')}</div>}
           {validation.warnings.map((w, i) => <div key={i} className="text-sm text-warn flex items-center gap-1"><AlertTriangle size={14} /> {w}</div>)}
           <div className="mt-3 p-3 rounded text-sm bg-bg border border-border">
-            <div>Research &ldquo;{question.slice(0, 50)}{question.length > 50 ? '...' : ''}&rdquo;</div>
-            <div className="text-muted">Up to {maxCycles} cycles, {idleSecs}s idle. ~{validation.estimated_duration_min} min</div>
-            {successCriteria && <div className="text-muted">Done when: {successCriteria}</div>}
+            <div>{i18nT('apps.autoResearch.researchLabPage.research')}{question.slice(0, 50)}{question.length > 50 ? '...' : ''}{"\u201d"}</div>
+            <div className="text-muted">{i18nT('apps.autoResearch.researchLabPage.up_to')} {maxCycles} {i18nT('apps.autoResearch.researchLabPage.cycles')} {idleSecs}{i18nT('apps.autoResearch.researchLabPage.s_idle')}{validation.estimated_duration_min} {i18nT('apps.autoResearch.researchLabPage.min')}</div>
+            {successCriteria && <div className="text-muted">{i18nT('apps.autoResearch.researchLabPage.done_when')} {successCriteria}</div>}
           </div>
-        </> : <div className="text-sm text-muted">Validating...</div>}
+        </> : <div className="text-sm text-muted">{i18nT('apps.autoResearch.researchLabPage.validating')}</div>}
         {error && <div className="text-sm text-danger flex items-center gap-1"><XCircle size={14} /> {error}</div>}
       </div>}
 
       <div className="flex justify-between mt-6">
         <button className="text-sm text-muted hover:text-text" onClick={step === 0 ? onCancel : () => setStep(step - 1)}>{step === 0 ? 'Cancel' : '← Back'}</button>
-        {step < 2 ? <button className="text-sm px-3 py-1.5 rounded-md bg-accent text-accent-fg disabled:opacity-50" disabled={step === 0 && question.length < 20} onClick={() => setStep(step + 1)}>Next →</button>
+        {step < 2 ? <button className="text-sm px-3 py-1.5 rounded-md bg-accent text-accent-fg disabled:opacity-50" disabled={step === 0 && question.length < 20} onClick={() => setStep(step + 1)}>{i18nT('apps.autoResearch.researchLabPage.next')}</button>
           : <button className="text-sm px-3 py-1.5 rounded-md bg-accent text-accent-fg disabled:opacity-50" disabled={!validation?.can_start || submitting} onClick={submit}>{submitting ? 'Starting...' : 'Start Campaign'}</button>}
       </div>
     </div>
@@ -374,20 +375,20 @@ function ForkFlow({ parentId, onCancel, onDone }: { parentId: string; onCancel: 
   const subCount = promotedResearch(tree).length + manualSubs.length
 
   return <div className="max-w-2xl mx-auto space-y-4">
-    <div className="text-sm text-muted">Challenge the findings from "{question?.slice(0, 60)}…", then fork into a new campaign.</div>
+    <div className="text-sm text-muted">{i18nT('apps.autoResearch.researchLabPage.challenge_the_findings_from')}{question?.slice(0, 60)}{i18nT('apps.autoResearch.researchLabPage.then_fork_into_a_new_campaign')}</div>
     {error && <div className="text-xs text-danger">{error}</div>}
     {tree.length === 0 ? (
-      <button className="text-sm px-3 py-1.5 rounded-md bg-accent text-accent-fg disabled:opacity-50" disabled={grilling || !question} onClick={startChallenge}>{grilling ? 'Challenging…' : <><Flame size={12} className="inline" /> Challenge Findings →</>}</button>
+      <button className="text-sm px-3 py-1.5 rounded-md bg-accent text-accent-fg disabled:opacity-50" disabled={grilling || !question} onClick={startChallenge}>{grilling ? 'Challenging…' : <><Flame size={12} className="inline" /> {i18nT('apps.autoResearch.researchLabPage.challenge_findings')}</>}</button>
     ) : (
       <>
-        <div className="text-xs text-muted">Answer challenges to refine, or just pick sub-questions and fork.</div>
+        <div className="text-xs text-muted">{i18nT('apps.autoResearch.researchLabPage.answer_challenges_to_refine_or_just_pick_sub_que')}</div>
         <GrillTree tree={tree} dispatch={dispatchTree} onExpand={onExpand} />
         <div className="mt-3">
-          {manualSubs.map((sq, i) => <div key={i} className="flex items-start gap-2 mt-1"><GrowTextarea ariaLabel={`Sub-question ${i + 1}`} className="flex-1 text-sm p-1.5 rounded bg-bg border border-border" value={sq} onChange={v => { const n = [...manualSubs]; n[i] = v; setManualSubs(n) }} /><button className="text-xs text-danger mt-1.5" onClick={() => setManualSubs(manualSubs.filter((_, j) => j !== i))} aria-label="Remove sub-question"><X size={12} /></button></div>)}
-          <GrowTextarea ariaLabel="Add your own sub-question or guidance" className="w-full text-sm p-1.5 rounded bg-bg border border-border mt-1" placeholder="Add your own sub-question or guidance (Enter; Shift+Enter for newline)" value={newSub} onChange={setNewSub} onSubmit={() => { if (newSub.trim()) { setManualSubs([...manualSubs, newSub.trim()]); setNewSub('') } }} />
+          {manualSubs.map((sq, i) => <div key={i} className="flex items-start gap-2 mt-1"><GrowTextarea ariaLabel={`Sub-question ${i + 1}`} className="flex-1 text-sm p-1.5 rounded bg-bg border border-border" value={sq} onChange={v => { const n = [...manualSubs]; n[i] = v; setManualSubs(n) }} /><button className="text-xs text-danger mt-1.5" onClick={() => setManualSubs(manualSubs.filter((_, j) => j !== i))} aria-label={i18nT('apps.autoResearch.researchLabPage.remove_sub_question')}><X size={12} /></button></div>)}
+          <GrowTextarea ariaLabel={i18nT('apps.autoResearch.researchLabPage.add_your_own_sub_question_or_guidance')} className="w-full text-sm p-1.5 rounded bg-bg border border-border mt-1" placeholder={i18nT('apps.autoResearch.researchLabPage.add_your_own_sub_question_or_guidance_enter_shif')} value={newSub} onChange={setNewSub} onSubmit={() => { if (newSub.trim()) { setManualSubs([...manualSubs, newSub.trim()]); setNewSub('') } }} />
         </div>
         <div className="flex justify-between mt-4">
-          <button className="text-sm text-muted" onClick={() => { clearPersisted(); onCancel() }}>Cancel</button>
+          <button className="text-sm text-muted" onClick={() => { clearPersisted(); onCancel() }}>{i18nT('apps.autoResearch.researchLabPage.cancel')}</button>
           <button className="text-sm px-3 py-1.5 rounded-md bg-accent text-accent-fg disabled:opacity-50" disabled={subCount === 0 || forking} onClick={doFork}>{forking ? 'Forking…' : `Fork with ${subCount} sub-questions →`}</button>
         </div>
       </>
@@ -413,13 +414,13 @@ function ExportArtifactButton({ id }: { id: string }) {
       const r = await api.researchToArtifact(id)
       if (r?.slug) setLocalSlug(r.slug)
       qc.invalidateQueries({ queryKey: ['research-report-status', id] })
-    } catch { alert('Failed to export as artifact') }
+    } catch { alert(i18nT('apps.autoResearch.researchLabPage.failed_to_export_as_artifact')) }
     finally { setLoading(false) }
   }
   if (slug) return (
     <span className="flex items-center gap-2">
-      <a href={`/artifacts/${slug}`} target="_blank" rel="noopener noreferrer" className="text-xs text-ok flex items-center gap-1"><FileText size={12} /> View report <ExternalLink size={10} /></a>
-      <button className="text-xs px-2 py-1 rounded bg-bg-elevated disabled:opacity-50" disabled={loading} onClick={go} title="Regenerate the report — updates the same artifact as a new version">
+      <a href={`/artifacts/${slug}`} target="_blank" rel="noopener noreferrer" className="text-xs text-ok flex items-center gap-1"><FileText size={12} /> {i18nT('apps.autoResearch.researchLabPage.view_report')} <ExternalLink size={10} /></a>
+      <button className="text-xs px-2 py-1 rounded bg-bg-elevated disabled:opacity-50" disabled={loading} onClick={go} title={i18nT('apps.autoResearch.researchLabPage.regenerate_the_report_updates_the_same_artifact')}>
         <RefreshCw size={12} className="inline" /> {loading ? 'Regenerating…' : 'Regenerate'}
       </button>
     </span>
@@ -448,8 +449,8 @@ function AddToKnowledgeButton({ id }: { id: string }) {
       else { setStatus('idle'); alert(err?.message || 'Failed to add to Knowledge Library') }
     }
   }
-  if (status === 'done') return <span className="text-xs text-ok flex items-center gap-1"><CheckCircle size={12} /> Added to Knowledge</span>
-  if (status === 'exists' || kstatus?.in_library) return <span className="text-xs text-muted flex items-center gap-1"><BookOpen size={12} /> Already in Knowledge</span>
+  if (status === 'done') return <span className="text-xs text-ok flex items-center gap-1"><CheckCircle size={12} /> {i18nT('apps.autoResearch.researchLabPage.added_to_knowledge')}</span>
+  if (status === 'exists' || kstatus?.in_library) return <span className="text-xs text-muted flex items-center gap-1"><BookOpen size={12} /> {i18nT('apps.autoResearch.researchLabPage.already_in_knowledge')}</span>
   return <button className="text-xs px-2 py-1 rounded bg-bg-elevated disabled:opacity-50" disabled={status === 'loading'} onClick={go}><BookOpen size={12} className="inline" /> {status === 'loading' ? 'Adding…' : 'Add to Knowledge'}</button>
 }
 
@@ -485,7 +486,7 @@ function ReportSections({ report }: { report: string }) {
       <div key={i} className="relative border border-border rounded-md p-3 mb-2 bg-card">
         <button
           className="absolute top-2 right-2 text-[10px] px-2 py-0.5 rounded bg-bg-elevated"
-          title="Copy this section's markdown to paste into chat or autopilot"
+          title={i18nT('apps.autoResearch.researchLabPage.copy_this_section_s_markdown_to_paste_into_chat')}
           onClick={() => copy(sec, i)}
         >{copied === i ? 'Copied!' : 'Copy'}</button>
         <MarkdownRenderer content={sec} />
@@ -506,7 +507,7 @@ function SubQuestionAdder({ id, campaign }: { id: string; campaign: Campaign }) 
   const originLabel = (o?: string) => o === 'manual' ? 'your guidance' : o === 'emergent' ? 'emergent' : (o || 'grill')
   return <div className="mb-4">
     <Clickable className="flex items-center gap-1 text-sm font-medium" onClick={() => setOpen(!open)}>
-      {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />} Sub-questions &amp; guidance ({subs.length})
+      {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />} {i18nT('apps.autoResearch.researchLabPage.sub_questions_guidance')}{subs.length})
     </Clickable>
     {open && <div className="mt-2 pl-4 space-y-1">
       {subs.map((s, i) => <div key={i} className="text-xs flex items-center gap-1.5">
@@ -516,10 +517,10 @@ function SubQuestionAdder({ id, campaign }: { id: string; campaign: Campaign }) 
       </div>)}
       {ACTIVE_STATUSES.includes(campaign.status) && <div className="mt-2">
         <div className="flex items-center gap-2">
-          <GrowTextarea ariaLabel="Add guidance or a sub-question" className="flex-1 text-xs p-1.5 rounded bg-bg border border-border" placeholder="Add guidance or a sub-question… (Enter; Shift+Enter for newline)" value={text} onChange={setText} onSubmit={() => { if (text.trim()) addMut.mutate(text.trim()) }} />
+          <GrowTextarea ariaLabel={i18nT('apps.autoResearch.researchLabPage.add_guidance_or_a_sub_question')} className="flex-1 text-xs p-1.5 rounded bg-bg border border-border" placeholder={i18nT('apps.autoResearch.researchLabPage.add_guidance_or_a_sub_question_enter_shift_enter')} value={text} onChange={setText} onSubmit={() => { if (text.trim()) addMut.mutate(text.trim()) }} />
           <button className="text-xs px-2 py-1 rounded bg-accent text-accent-fg disabled:opacity-50" disabled={!text.trim() || addMut.isPending} onClick={() => addMut.mutate(text.trim())}>{addMut.isPending ? '…' : 'Add'}</button>
         </div>
-        <div className="text-[10px] text-muted mt-1">Free-form — a sub-question or an instruction the agent should follow next cycle.</div>
+        <div className="text-[10px] text-muted mt-1">{i18nT('apps.autoResearch.researchLabPage.free_form_a_sub_question_or_an_instruction_the_a')}</div>
       </div>}
     </div>}
   </div>
@@ -557,89 +558,89 @@ function CampaignDetail({ id, onBack, onFork, onOpen }: { id: string; onBack: ()
   const nudgeMut = useMutation({ mutationFn: (text: string) => api.researchNudge(id, text), onSuccess: () => { setShowNudge(false); setNudgeText(''); setAnswerText(''); qc.invalidateQueries({ queryKey: ['research-campaign', id] }) } })
   const deleteMut = useMutation({ mutationFn: () => api.researchDelete(id), onSuccess: () => { qc.invalidateQueries({ queryKey: ['research-campaigns'] }); onBack() } })
 
-  if (!campaign) return <div className="text-sm text-muted">Loading...</div>
+  if (!campaign) return <div className="text-sm text-muted">{i18nT('apps.autoResearch.researchLabPage.loading')}</div>
   const findings = campaign.findings || []
   const isActive = ACTIVE_STATUSES.includes(campaign.status)
   const sorted = isActive ? [...findings].reverse() : findings
 
   return <div>
     <div className="flex items-center gap-3 mb-4">
-      <button className="text-sm text-accent" onClick={onBack}>← Back</button>
+      <button className="text-sm text-accent" onClick={onBack}>{i18nT('apps.autoResearch.researchLabPage.back')}</button>
       <h2 className="text-lg font-semibold">{campaign.name}</h2>
       <span className="text-xs px-2 py-0.5 rounded bg-bg-elevated">{campaign.status}</span>
-      <button className="text-xs px-2 py-1 rounded bg-bg-elevated text-danger ml-auto" onClick={() => { if (window.confirm('Delete this campaign and its report? This cannot be undone.')) deleteMut.mutate() }}><Trash2 size={12} className="inline" /> Delete</button>
+      <button className="text-xs px-2 py-1 rounded bg-bg-elevated text-danger ml-auto" onClick={() => { if (window.confirm(i18nT('apps.autoResearch.researchLabPage.delete_this_campaign_and_its_report_this_cannot'))) deleteMut.mutate() }}><Trash2 size={12} className="inline" /> {i18nT('apps.autoResearch.researchLabPage.delete')}</button>
     </div>
     {campaign.question && (() => {
       const isLong = campaign.question.length > 280
       return <div className="mb-4">
         <div className={`text-sm text-muted break-words ${isLong && !questionExpanded ? 'line-clamp-3' : ''}`}>{campaign.question}</div>
         {isLong && <button className="text-xs text-accent mt-1 inline-flex items-center gap-0.5" onClick={() => setQuestionExpanded(v => !v)}>
-          {questionExpanded ? <><ChevronDown size={12} /> Show less</> : <><ChevronRight size={12} /> Show more</>}
+          {questionExpanded ? <><ChevronDown size={12} /> {i18nT('apps.autoResearch.researchLabPage.show_less')}</> : <><ChevronRight size={12} /> {i18nT('apps.autoResearch.researchLabPage.show_more')}</>}
         </button>}
       </div>
     })()}
     <div className="flex items-center justify-between mb-4">
-      <div className="text-sm text-muted">Cycle {campaign.total_cycles}/{campaign.max_cycles} · {findings.filter(f => f.new_findings_count > 0).length} findings</div>
+      <div className="text-sm text-muted">{i18nT('apps.autoResearch.researchLabPage.cycle')} {campaign.total_cycles}/{campaign.max_cycles} · {findings.filter(f => f.new_findings_count > 0).length} {i18nT('apps.autoResearch.researchLabPage.findings')}</div>
       {isActive && <div className="flex gap-2">
-        {campaign.status === 'running' && <button className="text-xs px-2 py-1 rounded bg-bg-elevated" onClick={() => actionMut.mutate('pause')}><Pause size={12} className="inline" /> Pause</button>}
-        {campaign.status !== 'running' && <button className="text-xs px-2 py-1 rounded bg-bg-elevated" onClick={() => actionMut.mutate('resume')}><Play size={12} className="inline" /> Resume</button>}
-        <button className="text-xs px-2 py-1 rounded bg-bg-elevated" onClick={() => actionMut.mutate('stop')}><Square size={12} className="inline" /> Stop</button>
-        <button className="text-xs px-2 py-1 rounded bg-bg-elevated" onClick={() => setShowNudge(true)}><MessageCircle size={12} className="inline" /> Nudge</button>
+        {campaign.status === 'running' && <button className="text-xs px-2 py-1 rounded bg-bg-elevated" onClick={() => actionMut.mutate('pause')}><Pause size={12} className="inline" /> {i18nT('apps.autoResearch.researchLabPage.pause')}</button>}
+        {campaign.status !== 'running' && <button className="text-xs px-2 py-1 rounded bg-bg-elevated" onClick={() => actionMut.mutate('resume')}><Play size={12} className="inline" /> {i18nT('apps.autoResearch.researchLabPage.resume')}</button>}
+        <button className="text-xs px-2 py-1 rounded bg-bg-elevated" onClick={() => actionMut.mutate('stop')}><Square size={12} className="inline" /> {i18nT('apps.autoResearch.researchLabPage.stop')}</button>
+        <button className="text-xs px-2 py-1 rounded bg-bg-elevated" onClick={() => setShowNudge(true)}><MessageCircle size={12} className="inline" /> {i18nT('apps.autoResearch.researchLabPage.nudge')}</button>
       </div>}
     </div>
     {campaign.status === 'stagnant' && <div className="p-3 rounded-md mb-4 border border-warn bg-warn/10">
-      <div className="text-sm font-medium text-warn flex items-center gap-1"><AlertTriangle size={14} /> Research Stalled</div>
-      <div className="text-xs mt-1">No new findings in the last 5 cycles.</div>
+      <div className="text-sm font-medium text-warn flex items-center gap-1"><AlertTriangle size={14} /> {i18nT('apps.autoResearch.researchLabPage.research_stalled')}</div>
+      <div className="text-xs mt-1">{i18nT('apps.autoResearch.researchLabPage.no_new_findings_in_the_last_5_cycles')}</div>
       <div className="flex gap-2 mt-2">
-        <button className="text-xs px-2 py-1 rounded bg-accent text-accent-fg" onClick={() => setShowNudge(true)}>Give direction</button>
-        <button className="text-xs px-2 py-1 rounded bg-bg-elevated" onClick={() => actionMut.mutate('stop')}>Stop</button>
-        <button className="text-xs px-2 py-1 rounded bg-bg-elevated" onClick={() => actionMut.mutate('resume')}>Continue</button>
+        <button className="text-xs px-2 py-1 rounded bg-accent text-accent-fg" onClick={() => setShowNudge(true)}>{i18nT('apps.autoResearch.researchLabPage.give_direction')}</button>
+        <button className="text-xs px-2 py-1 rounded bg-bg-elevated" onClick={() => actionMut.mutate('stop')}>{i18nT('apps.autoResearch.researchLabPage.stop')}</button>
+        <button className="text-xs px-2 py-1 rounded bg-bg-elevated" onClick={() => actionMut.mutate('resume')}>{i18nT('apps.autoResearch.researchLabPage.continue')}</button>
       </div>
     </div>}
     {campaign.status === 'needs_input' && <div className="p-3 rounded-md mb-4 border bg-bg-elevated" style={{ borderColor: 'color-mix(in srgb, var(--info) 45%, transparent)' }}>
-      <div className="text-sm font-medium text-info flex items-center gap-1"><MessageCircle size={14} /> Agent needs input</div>
+      <div className="text-sm font-medium text-info flex items-center gap-1"><MessageCircle size={14} /> {i18nT('apps.autoResearch.researchLabPage.agent_needs_input')}</div>
       <div className="text-sm mt-1">{campaign.pending_question || 'The agent is waiting for your direction.'}</div>
-      <textarea aria-label="Your answer" className="w-full p-2 mt-2 rounded text-sm bg-bg border border-border resize-y" rows={2} value={answerText} onChange={e => setAnswerText(e.target.value)} placeholder="Your answer..." />
+      <textarea aria-label={i18nT('apps.autoResearch.researchLabPage.your_answer')} className="w-full p-2 mt-2 rounded text-sm bg-bg border border-border resize-y" rows={2} value={answerText} onChange={e => setAnswerText(e.target.value)} placeholder={i18nT('apps.autoResearch.researchLabPage.your_answer_2')} />
       <div className="flex gap-2 mt-2 justify-end">
         <button className="text-xs px-2 py-1 rounded bg-accent text-accent-fg disabled:opacity-50" onClick={() => nudgeMut.mutate(answerText)} disabled={!answerText || nudgeMut.isPending}>{nudgeMut.isPending ? 'Sending…' : 'Answer & resume'}</button>
       </div>
     </div>}
     {campaign.status === 'failed' && <div className="p-3 rounded-md mb-4 border border-danger bg-danger/10">
-      <div className="text-sm font-medium text-danger flex items-center gap-1"><AlertTriangle size={14} /> Research stopped</div>
-      <div className="text-xs mt-1">{campaign.error_message || 'The campaign stopped unexpectedly.'} Findings so far are preserved below.</div>
-      <button className="text-xs px-2 py-1 mt-2 rounded bg-accent text-accent-fg" onClick={() => actionMut.mutate('resume')}><Play size={12} className="inline" /> Resume</button>
+      <div className="text-sm font-medium text-danger flex items-center gap-1"><AlertTriangle size={14} /> {i18nT('apps.autoResearch.researchLabPage.research_stopped')}</div>
+      <div className="text-xs mt-1">{campaign.error_message || 'The campaign stopped unexpectedly.'} {i18nT('apps.autoResearch.researchLabPage.findings_so_far_are_preserved_below')}</div>
+      <button className="text-xs px-2 py-1 mt-2 rounded bg-accent text-accent-fg" onClick={() => actionMut.mutate('resume')}><Play size={12} className="inline" /> {i18nT('apps.autoResearch.researchLabPage.resume')}</button>
     </div>}
     {(campaign.status === 'complete' || campaign.status === 'stopped') && !isActive && (
       <div className="p-3 rounded-md mb-4 border border-accent bg-accent/5">
-        <div className="text-sm font-medium flex items-center gap-1"><GitFork size={14} /> Continue Research</div>
-        <div className="text-xs mt-1 text-muted">Pick up where this campaign left off.</div>
+        <div className="text-sm font-medium flex items-center gap-1"><GitFork size={14} /> {i18nT('apps.autoResearch.researchLabPage.continue_research')}</div>
+        <div className="text-xs mt-1 text-muted">{i18nT('apps.autoResearch.researchLabPage.pick_up_where_this_campaign_left_off')}</div>
         <div className="flex gap-2 mt-2 flex-wrap">
-          <button className="text-xs px-2 py-1 rounded bg-bg-elevated" onClick={() => onFork(id)}><GitFork size={12} className="inline" /> Fork & Challenge</button>
+          <button className="text-xs px-2 py-1 rounded bg-bg-elevated" onClick={() => onFork(id)}><GitFork size={12} className="inline" /> {i18nT('apps.autoResearch.researchLabPage.fork_challenge')}</button>
           <AddToKnowledgeButton id={id} />
           <ExportArtifactButton id={id} />
         </div>
       </div>
     )}
-    {campaign.parent_id && <div className="text-xs text-muted mb-3">Forked from: <button className="text-accent underline" onClick={() => onOpen(campaign.parent_id!)}>{campaign.parent_id}</button></div>}
+    {campaign.parent_id && <div className="text-xs text-muted mb-3">{i18nT('apps.autoResearch.researchLabPage.forked_from')} <button className="text-accent underline" onClick={() => onOpen(campaign.parent_id!)}>{campaign.parent_id}</button></div>}
     <SubQuestionAdder id={id} campaign={campaign} />
     {showNudge && <div className="p-3 rounded-md mb-4 border border-border bg-card">
-      <div className="text-sm font-medium mb-2 flex items-center gap-1"><MessageCircle size={14} /> Nudge Direction</div>
-      <textarea aria-label="Nudge direction" className="w-full p-2 rounded text-sm bg-bg border border-border resize-y" rows={3} value={nudgeText} onChange={e => setNudgeText(e.target.value)} placeholder="Focus on..." />
+      <div className="text-sm font-medium mb-2 flex items-center gap-1"><MessageCircle size={14} /> {i18nT('apps.autoResearch.researchLabPage.nudge_direction')}</div>
+      <textarea aria-label={i18nT('apps.autoResearch.researchLabPage.nudge_direction_2')} className="w-full p-2 rounded text-sm bg-bg border border-border resize-y" rows={3} value={nudgeText} onChange={e => setNudgeText(e.target.value)} placeholder={i18nT('apps.autoResearch.researchLabPage.focus_on')} />
       <div className="flex gap-2 mt-2 justify-end">
-        <button className="text-xs text-muted" onClick={() => setShowNudge(false)}>Cancel</button>
+        <button className="text-xs text-muted" onClick={() => setShowNudge(false)}>{i18nT('apps.autoResearch.researchLabPage.cancel')}</button>
         <button className="text-xs px-2 py-1 rounded bg-accent text-accent-fg disabled:opacity-50" onClick={() => nudgeMut.mutate(nudgeText)} disabled={!nudgeText || nudgeMut.isPending}>{nudgeMut.isPending ? 'Sending…' : 'Send'}</button>
       </div>
     </div>}
     <div className="mt-4">
       <div className="flex items-center justify-between mb-2">
-        <div className="text-sm font-medium">Findings ({findings.filter(f => f.new_findings_count > 0).length})</div>
+        <div className="text-sm font-medium">{i18nT('apps.autoResearch.researchLabPage.findings_2')}{findings.filter(f => f.new_findings_count > 0).length})</div>
         <button className="text-xs px-2 py-1 rounded bg-bg-elevated" onClick={() => setShowReport(v => !v)}>{showReport ? 'Hide report' : 'View report'}</button>
       </div>
       {showReport && <div className="mb-3">
-        {reportData?.report ? <ReportSections report={reportData.report} /> : <div className="text-sm text-muted">No report yet.</div>}
+        {reportData?.report ? <ReportSections report={reportData.report} /> : <div className="text-sm text-muted">{i18nT('apps.autoResearch.researchLabPage.no_report_yet')}</div>}
       </div>}
       {sorted.filter(f => f.new_findings_count > 0 || f.cycle === 1).map(f => <FindingCard key={f.cycle} f={f} />)}
-      {findings.length === 0 && <div className="text-sm text-muted">First cycle in progress...</div>}
+      {findings.length === 0 && <div className="text-sm text-muted">{i18nT('apps.autoResearch.researchLabPage.first_cycle_in_progress')}</div>}
     </div>
   </div>
 }
@@ -660,44 +661,44 @@ export default function ResearchLabPage() {
 
   const active = campaigns.find((c: Campaign) => ACTIVE_STATUSES.includes(c.status))
 
-  if (view === 'wizard') return <div className="px-6 py-4"><h1 className="text-lg font-semibold mb-4">New Campaign</h1><SetupWizard onCancel={() => setView('list')} onDone={() => { qc.invalidateQueries({ queryKey: ['research-campaigns'] }); setView('list') }} /></div>
-  if (view === 'fork' && forkParentId) return <div className="px-6 py-4"><h1 className="text-lg font-semibold mb-4">Continue Research</h1><ForkFlow parentId={forkParentId} onCancel={() => setView('list')} onDone={() => { qc.invalidateQueries({ queryKey: ['research-campaigns'] }); setView('list') }} /></div>
+  if (view === 'wizard') return <div className="px-6 py-4"><h1 className="text-lg font-semibold mb-4">{i18nT('apps.autoResearch.researchLabPage.new_campaign')}</h1><SetupWizard onCancel={() => setView('list')} onDone={() => { qc.invalidateQueries({ queryKey: ['research-campaigns'] }); setView('list') }} /></div>
+  if (view === 'fork' && forkParentId) return <div className="px-6 py-4"><h1 className="text-lg font-semibold mb-4">{i18nT('apps.autoResearch.researchLabPage.continue_research')}</h1><ForkFlow parentId={forkParentId} onCancel={() => setView('list')} onDone={() => { qc.invalidateQueries({ queryKey: ['research-campaigns'] }); setView('list') }} /></div>
   if (view === 'detail' && selectedId) return <div className="px-6 py-4"><CampaignDetail id={selectedId} onBack={() => setView('list')} onFork={(id) => { setForkParentId(id); setView('fork') }} onOpen={(pid) => setSelectedId(pid)} /></div>
 
   return <div className="px-6 py-4">
     <div className="flex items-center justify-between mb-4">
-      <h1 className="text-lg font-semibold flex items-center gap-2"><FlaskConical size={20} /> Research Lab</h1>
-      <button className="text-sm px-3 py-1.5 rounded-md bg-accent text-accent-fg disabled:opacity-50" disabled={!!active} onClick={() => setView('wizard')} title={active ? 'One campaign at a time' : ''}>+ New Campaign</button>
+      <h1 className="text-lg font-semibold flex items-center gap-2"><FlaskConical size={20} /> {i18nT('apps.autoResearch.researchLabPage.research_lab')}</h1>
+      <button className="text-sm px-3 py-1.5 rounded-md bg-accent text-accent-fg disabled:opacity-50" disabled={!!active} onClick={() => setView('wizard')} title={active ? 'One campaign at a time' : ''}>{i18nT('apps.autoResearch.researchLabPage.new_campaign_2')}</button>
     </div>
-    <div className="text-xs text-muted mb-4 flex items-start gap-1"><Lock size={12} className="mt-0.5 shrink-0" /> <span><span className="font-medium">Research-only.</span> Research Lab investigates and reports — it never takes actions on your systems (no writes, deployments, or code changes). Any next step that requires acting is handed off to the main agent for you to review and drive.</span></div>
-    {isLoading ? <div className="text-sm text-muted">Loading...</div> : campaigns.length === 0 ? (
+    <div className="text-xs text-muted mb-4 flex items-start gap-1"><Lock size={12} className="mt-0.5 shrink-0" /> <span><span className="font-medium">{i18nT('apps.autoResearch.researchLabPage.research_only')}</span> {i18nT('apps.autoResearch.researchLabPage.research_lab_investigates_and_reports_it_never_t')}</span></div>
+    {isLoading ? <div className="text-sm text-muted">{i18nT('apps.autoResearch.researchLabPage.loading')}</div> : campaigns.length === 0 ? (
       <div className="text-center py-12">
         <FlaskConical size={48} className="mx-auto text-muted mb-3" />
-        <div className="text-sm text-muted">Run autonomous research campaigns</div>
-        <button className="mt-3 text-sm px-3 py-1.5 rounded-md bg-accent text-accent-fg" onClick={() => setView('wizard')}>+ New Campaign</button>
+        <div className="text-sm text-muted">{i18nT('apps.autoResearch.researchLabPage.run_autonomous_research_campaigns')}</div>
+        <button className="mt-3 text-sm px-3 py-1.5 rounded-md bg-accent text-accent-fg" onClick={() => setView('wizard')}>{i18nT('apps.autoResearch.researchLabPage.new_campaign_2')}</button>
       </div>
     ) : <div className="space-y-3">
-      {active && <div><div className="text-xs font-medium text-muted mb-1">ACTIVE</div>
+      {active && <div><div className="text-xs font-medium text-muted mb-1">{i18nT('apps.autoResearch.researchLabPage.active')}</div>
         <Clickable className="border border-border rounded-md p-3 bg-card" onClick={() => { setSelectedId(active.id); setView('detail') }}>
           <div className="flex items-start gap-2">
             <StateBadge status={active.status} />
-            <div className="font-medium text-sm line-clamp-2 flex-1" title={active.question}>{active.parent_id && <span className="text-[10px] font-medium text-accent bg-accent-subtle rounded px-1 py-0.5 mr-1 inline-flex items-center gap-0.5 align-middle"><GitFork size={10} /> Forked</span>}{active.question}</div>
+            <div className="font-medium text-sm line-clamp-2 flex-1" title={active.question}>{active.parent_id && <span className="text-[10px] font-medium text-accent bg-accent-subtle rounded px-1 py-0.5 mr-1 inline-flex items-center gap-0.5 align-middle"><GitFork size={10} /> {i18nT('apps.autoResearch.researchLabPage.forked')}</span>}{active.question}</div>
           </div>
-          <div className="text-xs text-muted mt-1">Cycle {active.total_cycles}/{active.max_cycles}</div>
+          <div className="text-xs text-muted mt-1">{i18nT('apps.autoResearch.researchLabPage.cycle')} {active.total_cycles}/{active.max_cycles}</div>
         </Clickable></div>}
       {campaigns.filter((c: Campaign) => !ACTIVE_STATUSES.includes(c.status)).length > 0 && <div>
-        <div className="text-xs font-medium text-muted mb-1">HISTORY</div>
+        <div className="text-xs font-medium text-muted mb-1">{i18nT('apps.autoResearch.researchLabPage.history')}</div>
         {campaigns.filter((c: Campaign) => !ACTIVE_STATUSES.includes(c.status)).map((c: Campaign) => (
           <Clickable key={c.id} className="border border-border rounded-md p-3 bg-card mb-2" onClick={() => { setSelectedId(c.id); setView('detail') }}>
             <div className="flex items-start gap-2">
               <StateBadge status={c.status} />
-              <div className="text-sm line-clamp-2 flex-1" title={c.question}>{c.parent_id && <span className="text-[10px] font-medium text-accent bg-accent-subtle rounded px-1 py-0.5 mr-1 inline-flex items-center gap-0.5 align-middle"><GitFork size={10} /> Forked</span>}{c.question}</div>
+              <div className="text-sm line-clamp-2 flex-1" title={c.question}>{c.parent_id && <span className="text-[10px] font-medium text-accent bg-accent-subtle rounded px-1 py-0.5 mr-1 inline-flex items-center gap-0.5 align-middle"><GitFork size={10} /> {i18nT('apps.autoResearch.researchLabPage.forked')}</span>}{c.question}</div>
             </div>
-            <div className="text-xs text-muted mt-1">{c.total_cycles} cycles</div>
+            <div className="text-xs text-muted mt-1">{c.total_cycles} {i18nT('apps.autoResearch.researchLabPage.cycles_2')}</div>
           </Clickable>
         ))}
       </div>}
-      {active && <div className="text-xs text-muted flex items-center gap-1"><Lock size={12} /> One campaign at a time — research benefits from focused depth.</div>}
+      {active && <div className="text-xs text-muted flex items-center gap-1"><Lock size={12} /> {i18nT('apps.autoResearch.researchLabPage.one_campaign_at_a_time_research_benefits_from_fo')}</div>}
     </div>}
   </div>
 }

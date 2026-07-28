@@ -24,6 +24,7 @@ import { type WarmConn } from '../store/instancesSlice'
 import { isEmbeddedPane } from '../lib/embedded'
 import { useSelectInstance } from '../hooks/useSelectInstance'
 
+import { i18nT } from '../i18n/t'
 /**
  * Instances that get a tab: sticky connect intent (`was_connected`, cleared
  * only on explicit disconnect) OR currently connected OR warm. Exported as the
@@ -94,9 +95,9 @@ function LocalTab({ active, onClick }: { active: boolean; onClick: () => void })
       aria-selected={active}
       className={tabCls(active)}
       onClick={onClick}
-      title="Local dashboard"
+      title={i18nT('components.instanceTabBar.local_dashboard')}
     >
-      <Home size={13} /> Local
+      <Home size={13} /> {i18nT('components.instanceTabBar.local')}
     </button>
   )
 }
@@ -170,7 +171,7 @@ function EmbeddedInstanceTabBar({ variant }: { variant: 'strip' | 'inline' }) {
   }, [])
   if (!host || host.tabs.length === 0) return null
   return (
-    <div className={barCls(variant)} role="tablist" aria-label="Instances">
+    <div className={barCls(variant)} role="tablist" aria-label={i18nT('components.instanceTabBar.instances')}>
       <div className={`flex items-center gap-1 min-w-0 overflow-x-auto no-scrollbar ${variant === 'strip' ? 'flex-1' : ''}`}>
         <LocalTab active={host.activeId === null} onClick={onLocal} />
         {host.tabs.map(t => (
@@ -269,7 +270,7 @@ export default function InstanceTabBar({
   }
 
   return (
-    <div className={barCls(variant)} style={style} role="tablist" aria-label="Instances">
+    <div className={barCls(variant)} style={style} role="tablist" aria-label={i18nT('components.instanceTabBar.instances')}>
       <div className={`flex items-center gap-1 min-w-0 overflow-x-auto no-scrollbar ${variant === 'strip' ? 'flex-1' : ''}`}>
         <LocalTab active={activeId === null} onClick={onLocal} />
         {tabInstances.map(inst => {

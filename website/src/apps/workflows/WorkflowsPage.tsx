@@ -24,6 +24,7 @@ import WorkflowsRuns from './WorkflowsRuns'
 import WorkflowRunTree from './WorkflowRunTree'
 import { groupByPhase, latestBudget, type WfEvent, type AgentRow, type PhaseGroup } from './runModel'
 
+import { i18nT } from '../../i18n/t'
 // Re-export the pure event-stream helpers and types from the shared runModel
 // so the existing test imports (`from '../apps/workflows/WorkflowsPage'`) keep
 // working without touching test code.
@@ -132,7 +133,7 @@ export default function WorkflowsPage() {
 
   return (
     <div>
-      <PageHeader title="Workflows" subtitle="Author, run, and watch dynamic workflows" />
+      <PageHeader title={i18nT('apps.workflows.workflowsPage.workflows')} subtitle={i18nT('apps.workflows.workflowsPage.author_run_and_watch_dynamic_workflows')} />
       <div className="px-6 pb-4">
         <SegmentedControl<WorkflowsView>
           segments={[
@@ -152,14 +153,14 @@ export default function WorkflowsPage() {
         {/* ----- Author ----- */}
         <div className="flex flex-col gap-3">
           <div className="flex items-center gap-2 text-[13px] text-muted">
-            <FileCode size={14} /> Workflow script (Python)
+            <FileCode size={14} /> {i18nT('apps.workflows.workflowsPage.workflow_script_python')}
           </div>
           <textarea
             value={source}
             onChange={e => setSource(e.target.value)}
             spellCheck={false}
             className="font-mono text-[12px] leading-relaxed h-72 p-3 rounded border border-border bg-card resize-y"
-            aria-label="workflow source"
+            aria-label={i18nT('apps.workflows.workflowsPage.workflow_source')}
           />
           <div className="flex items-center gap-2">
             <button
@@ -173,7 +174,7 @@ export default function WorkflowsPage() {
               onClick={validate}
               className="px-3 py-1.5 text-[13px] rounded border border-border"
             >
-              Validate
+              {i18nT('apps.workflows.workflowsPage.validate')}
             </button>
             {examples.length > 0 && (
               <select
@@ -184,7 +185,7 @@ export default function WorkflowsPage() {
                 defaultValue=""
                 className="ml-auto px-2 py-1.5 text-[13px] rounded border border-border bg-card"
               >
-                <option value="" disabled>Load example…</option>
+                <option value="" disabled>{i18nT('apps.workflows.workflowsPage.load_example')}</option>
                 {examples.map(ex => (
                   <option key={ex.name} value={ex.name}>{ex.name}</option>
                 ))}
@@ -193,7 +194,7 @@ export default function WorkflowsPage() {
           </div>
           {validation && !validation.ok && (
             <div className="text-[12px] text-red-500 border border-red-500/30 rounded p-2">
-              <div className="font-medium mb-1">Invalid — fix before running:</div>
+              <div className="font-medium mb-1">{i18nT('apps.workflows.workflowsPage.invalid_fix_before_running')}</div>
               <ul className="list-disc pl-4">
                 {validation.errors.map((e, i) => <li key={i}>{e}</li>)}
               </ul>
@@ -204,23 +205,23 @@ export default function WorkflowsPage() {
         {/* ----- Live run view ----- */}
         <div className="flex flex-col gap-3">
           <div className="flex items-center gap-2 text-[13px] text-muted">
-            <WorkflowIcon size={14} /> Run
+            <WorkflowIcon size={14} /> {i18nT('apps.workflows.workflowsPage.run')}
             {budget && (
               <span className="ml-auto text-[11px] tabular-nums">
-                budget {budget.spent}{budget.total != null ? ` / ${budget.total}` : ''}
+                {i18nT('apps.workflows.workflowsPage.budget')} {budget.spent}{budget.total != null ? ` / ${budget.total}` : ''}
               </span>
             )}
           </div>
 
           {error && (
             <div className="text-[12px] text-red-500 border border-red-500/30 rounded p-2">
-              Request failed: {error}
+              {i18nT('apps.workflows.workflowsPage.request_failed')} {error}
             </div>
           )}
 
           {events.length === 0 && !error && (
             <div className="text-[12px] text-muted border border-dashed border-border rounded p-4">
-              Run a workflow to see its phases, agents, and result here.
+              {i18nT('apps.workflows.workflowsPage.run_a_workflow_to_see_its_phases_agents_and_resu')}
             </div>
           )}
 

@@ -7,6 +7,7 @@ import SessionGridLayout from './SessionGridLayout'
 import ChatPane from './ChatPane'
 import { useSessionGrid, type GridLeaf } from '../hooks/useSessionGrid'
 
+import { i18nT } from '../i18n/t'
 type Slot = {
   key: string
   title?: string
@@ -125,7 +126,7 @@ export default function SessionGridView({
       // Phase 2 — terminal panes (xterm/PTY) not wired yet.
       return (
         <div className="h-full flex items-center justify-center text-muted text-[12px] border border-border rounded-lg m-1">
-          Terminal pane — coming in Phase 2
+          {i18nT('components.sessionGridView.terminal_pane_coming_in_phase_2')}
         </div>
       )
     }
@@ -155,7 +156,7 @@ export default function SessionGridView({
           <SessionGridLayout node={grid.tree} renderLeaf={renderLeaf} onResize={grid.resize} />
         </div>
       ) : (
-        <div className="flex-1 flex items-center justify-center text-muted text-sm">Loading…</div>
+        <div className="flex-1 flex items-center justify-center text-muted text-sm">{i18nT('components.sessionGridView.loading')}</div>
       )}
     </div>
   )
@@ -226,19 +227,19 @@ function PlaceholderPane({
           autoFocus={focused}
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search sessions…"
+          placeholder={i18nT('components.sessionGridView.search_sessions')}
           className="flex-1 min-w-0 bg-bg-elevated border border-border rounded px-2 py-1 text-[13px] text-text placeholder:text-muted outline-none focus:border-accent"
         />
-        <button onClick={onSplitRight} title="Split right (⌘D)" aria-label="Split right" className={ctrlBtn}>
+        <button onClick={onSplitRight} title={i18nT('components.sessionGridView.split_right_d')} aria-label={i18nT('components.sessionGridView.split_right')} className={ctrlBtn}>
           <SplitGlyph />
         </button>
-        <button onClick={onSplitDown} title="Split down" aria-label="Split down" className={ctrlBtn}>
+        <button onClick={onSplitDown} title={i18nT('components.sessionGridView.split_down')} aria-label={i18nT('components.sessionGridView.split_down')} className={ctrlBtn}>
           <SplitGlyph down />
         </button>
         <button
           onClick={onCancel}
-          title="Close cell"
-          aria-label="Close cell"
+          title={i18nT('components.sessionGridView.close_cell')}
+          aria-label={i18nT('components.sessionGridView.close_cell')}
           className="shrink-0 p-1 rounded text-muted hover:text-danger hover:bg-danger/10 cursor-pointer bg-transparent border-none transition-colors"
         >
           <X size={14} />
@@ -252,7 +253,7 @@ function PlaceholderPane({
           onClick={() => createSession.mutate()}
           className="flex-1 inline-flex items-center justify-center gap-1 text-[12px] font-semibold text-accent bg-accent/10 rounded px-2 py-1.5 cursor-pointer border-none hover:bg-accent/20 disabled:opacity-50 transition-colors"
         >
-          {createSession.isPending ? <Loader2 size={13} className="animate-spin" /> : <Plus size={13} />} New session
+          {createSession.isPending ? <Loader2 size={13} className="animate-spin" /> : <Plus size={13} />} {i18nT('components.sessionGridView.new_session')}
         </button>
         <button
           disabled={!forkSourceSlot || forkSession.isPending}
@@ -260,13 +261,13 @@ function PlaceholderPane({
           title={forkSourceSlot ? `Fork ${forkSourceTitle || forkSourceSlot} (child session)` : 'No session to fork yet'}
           className="flex-1 inline-flex items-center justify-center gap-1 text-[12px] font-semibold text-text border border-border rounded px-2 py-1.5 cursor-pointer bg-transparent hover:bg-bg-hover disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
         >
-          {forkSession.isPending ? <Loader2 size={13} className="animate-spin" /> : <GitFork size={13} />} Fork
+          {forkSession.isPending ? <Loader2 size={13} className="animate-spin" /> : <GitFork size={13} />} {i18nT('components.sessionGridView.fork')}
         </button>
       </div>
 
       <div className="flex-1 overflow-y-auto">
         {available.length === 0 ? (
-          <div className="text-[12px] text-muted p-3 text-center">No matching sessions</div>
+          <div className="text-[12px] text-muted p-3 text-center">{i18nT('components.sessionGridView.no_matching_sessions')}</div>
         ) : (
           available.map((s) => (
             <button
@@ -279,7 +280,7 @@ function PlaceholderPane({
                 className={`shrink-0 ${s.pending_approval ? 'fill-warn text-warn' : s.running ? 'fill-ok text-ok' : 'fill-muted text-muted'}`}
               />
               <span className="truncate flex-1">{s.title || s.key}</span>
-              <span className="text-[11px] text-muted shrink-0">{s.messages ?? 0} msgs</span>
+              <span className="text-[11px] text-muted shrink-0">{s.messages ?? 0} {i18nT('components.sessionGridView.msgs')}</span>
             </button>
           ))
         )}

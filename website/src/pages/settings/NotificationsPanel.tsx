@@ -10,6 +10,7 @@ import {
   loadSoundSettings, saveSoundSettings, playPreset,
 } from '../../hooks/useNotificationSound'
 
+import { i18nT } from '../../i18n/t'
 const PRESET_OPTIONS: SoundPreset[] = ['none', ...SOUND_PRESETS]
 const PRESET_LABELS: Record<SoundPreset, string> = {
   none: 'Silent', chime: 'Chime (C6-E6-G6)', ding: 'Ding', blip: 'Blip', pop: 'Pop',
@@ -68,21 +69,21 @@ function ChannelsSection() {
     })
   }
 
-  if (error) return <SettingsSection title="Sources"><div className="text-[12px] text-muted">{error}</div></SettingsSection>
+  if (error) return <SettingsSection title={i18nT('pages.settings.notificationsPanel.sources')}><div className="text-[12px] text-muted">{error}</div></SettingsSection>
   if (channels === null || channels.length === 0) return null
 
   const sources = Array.from(new Set(channels.map(c => c.source)))
     .sort((a, b) => (a === 'system' ? -1 : b === 'system' ? 1 : a.localeCompare(b)))
 
   return (
-    <SettingsSection title="Sources">
-      <div className="text-[12px] text-muted -mt-1 mb-2">Mute notification sources or override their priority. Muted notifications stay in history but never badge, sound, or banner.</div>
+    <SettingsSection title={i18nT('pages.settings.notificationsPanel.sources')}>
+      <div className="text-[12px] text-muted -mt-1 mb-2">{i18nT('pages.settings.notificationsPanel.mute_notification_sources_or_override_their_prio')}</div>
       {sources.map(source => (
         <SettingsCard key={source}>
           <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[.05em] text-muted pb-1 border-b border-border">
             {source === 'system' ? <MonitorCog className="lucide-inline" /> : <Blocks className="lucide-inline" />}
             {source}
-            {source !== 'system' && <span className="text-[10px] font-medium normal-case tracking-normal px-1.5 py-px rounded-full bg-accent-subtle text-accent">app</span>}
+            {source !== 'system' && <span className="text-[10px] font-medium normal-case tracking-normal px-1.5 py-px rounded-full bg-accent-subtle text-accent">{i18nT('pages.settings.notificationsPanel.app')}</span>}
           </div>
           {channels.filter(c => c.source === source).map(c => {
             const muted = !!c.settings.muted
@@ -92,7 +93,7 @@ function ChannelsSection() {
                 <div className="flex-1 min-w-0 basis-40">
                   <div className="text-[13px] text-text flex items-center gap-1.5">
                     {channelLabel(c)}
-                    {c.protected && <Lock className="lucide-inline text-muted" aria-label="Protected channel" />}
+                    {c.protected && <Lock className="lucide-inline text-muted" aria-label={i18nT('pages.settings.notificationsPanel.protected_channel')} />}
                   </div>
                   <div className="text-[11px] text-muted">
                     {!c.registered
@@ -103,7 +104,7 @@ function ChannelsSection() {
                   </div>
                 </div>
                 {c.protected ? (
-                  <span className="text-[11px] text-muted italic shrink-0">protected</span>
+                  <span className="text-[11px] text-muted italic shrink-0">{i18nT('pages.settings.notificationsPanel.protected')}</span>
                 ) : (
                   <>
                     <div className="shrink-0 w-full sm:w-48">
@@ -163,21 +164,21 @@ export function NotificationsPanel() {
   return (
     <>
       <ChannelsSection />
-      <SettingsSection title="Sound">
+      <SettingsSection title={i18nT('pages.settings.notificationsPanel.sound')}>
         <SettingsCard>
           <SettingsToggle
-            label="Play sound on new notifications"
+            label={i18nT('pages.settings.notificationsPanel.play_sound_on_new_notifications')}
             checked={settings.enabled}
             onChange={v => update({ enabled: v })}
           />
           <div className="flex flex-col gap-1.5 py-1.5">
             {/* Slider is correctly associated via htmlFor+id (a range input can't be nested); label-has-for's nesting requirement is a false positive here. */}
             {/* eslint-disable-next-line jsx-a11y/label-has-for */}
-            <label htmlFor="mc-volume-slider" className="text-[13px] font-semibold text-text">Volume</label>
+            <label htmlFor="mc-volume-slider" className="text-[13px] font-semibold text-text">{i18nT('pages.settings.notificationsPanel.volume')}</label>
             <div className="text-[12px] text-muted">{Math.round(settings.volume * 100)}%</div>
             <input
               id="mc-volume-slider"
-              aria-label="Volume"
+              aria-label={i18nT('pages.settings.notificationsPanel.volume')}
               type="range" min={0} max={100} step={5}
               value={Math.round(settings.volume * 100)}
               onChange={e => update({ volume: Number(e.target.value) / 100 })}
@@ -188,7 +189,7 @@ export function NotificationsPanel() {
         </SettingsCard>
       </SettingsSection>
 
-      <SettingsSection title="Per-category sounds">
+      <SettingsSection title={i18nT('pages.settings.notificationsPanel.per_category_sounds')}>
         <SettingsCard>
           {CATEGORY_ROWS.map(row => {
             const hasOverride = row.key !== 'all' && settings.perCategory[row.key] !== undefined
@@ -224,7 +225,7 @@ export function NotificationsPanel() {
                   disabled={!settings.enabled || effective === 'none' || settings.volume === 0}
                   className="mb-2 px-3 py-1.5 rounded-md border border-border text-[12px] font-medium cursor-pointer bg-transparent text-muted hover:text-text hover:border-border-strong disabled:opacity-40 disabled:cursor-not-allowed transition-all font-body"
                 >
-                  Test
+                  {i18nT('pages.settings.notificationsPanel.test')}
                 </button>
               </div>
             )

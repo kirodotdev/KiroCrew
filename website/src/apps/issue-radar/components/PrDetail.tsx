@@ -40,6 +40,7 @@ import {
 import { commitUrlFor, userUrlFor, repoScopeKey } from '../lib/links'
 import { providerTerms } from '../lib/links'
 
+import { i18nT } from '../../../i18n/t'
 /** A relative timestamp that flips to the absolute local date-time on click
  * (and shows it on hover). Renders nothing for a missing/unparseable value. */
 function RelTime({ iso, className = '' }: { iso?: string | null; className?: string }) {
@@ -68,27 +69,27 @@ function StatePill({ state, draft, merged }: { state: string; draft?: boolean; m
   if (merged) {
     return (
       <span className="inline-flex items-center gap-1 text-[12px] font-medium px-2 py-0.5 rounded-full bg-aim-subtle text-aim">
-        <GitMerge size={12} /> Merged
+        <GitMerge size={12} /> {i18nT('apps.issueRadar.components.prDetail.merged')}
       </span>
     )
   }
   if (state === 'closed') {
     return (
       <span className="inline-flex items-center gap-1 text-[12px] font-medium px-2 py-0.5 rounded-full bg-bg-elevated text-danger border border-border">
-        <GitPullRequestClosed size={12} /> Closed
+        <GitPullRequestClosed size={12} /> {i18nT('apps.issueRadar.components.prDetail.closed')}
       </span>
     )
   }
   if (draft) {
     return (
       <span className="inline-flex items-center gap-1 text-[12px] font-medium px-2 py-0.5 rounded-full bg-bg-elevated text-muted border border-border">
-        <GitPullRequestDraft size={12} /> Draft
+        <GitPullRequestDraft size={12} /> {i18nT('apps.issueRadar.components.prDetail.draft')}
       </span>
     )
   }
   return (
     <span className="inline-flex items-center gap-1 text-[12px] font-medium px-2 py-0.5 rounded-full bg-ok-subtle text-ok">
-      <GitPullRequest size={12} /> Open
+      <GitPullRequest size={12} /> {i18nT('apps.issueRadar.components.prDetail.open')}
     </span>
   )
 }
@@ -144,9 +145,9 @@ function CollapsibleBody({ body }: { body: string }) {
           <div aria-hidden className="pointer-events-none absolute inset-x-0 bottom-0 h-7 bg-gradient-to-t from-card to-transparent" />
           <button
             onClick={() => setExpanded(true)}
-            aria-label="Expand comment"
+            aria-label={i18nT('apps.issueRadar.components.prDetail.expand_comment')}
             aria-expanded={false}
-            title="Click to expand"
+            title={i18nT('apps.issueRadar.components.prDetail.click_to_expand')}
             className="absolute inset-0 w-full cursor-pointer bg-transparent"
           />
         </>
@@ -158,8 +159,8 @@ function CollapsibleBody({ body }: { body: string }) {
           className="relative mt-1.5 inline-flex items-center gap-0.5 text-[11.5px] text-accent hover:underline cursor-pointer bg-transparent"
         >
           {expanded
-            ? <>Show less <ChevronUp size={11} /></>
-            : <>Show more <ChevronDown size={11} /></>}
+            ? <>{i18nT('apps.issueRadar.components.prDetail.show_less')} <ChevronUp size={11} /></>
+            : <>{i18nT('apps.issueRadar.components.prDetail.show_more')} <ChevronDown size={11} /></>}
         </button>
       )}
     </div>
@@ -193,7 +194,7 @@ function CommentCard({
       </div>
       <div className="px-3.5 py-3">
         {!text
-          ? <div className="text-[13px] text-muted italic">No description provided.</div>
+          ? <div className="text-[13px] text-muted italic">{i18nT('apps.issueRadar.components.prDetail.no_description_provided')}</div>
           : opening
             ? <RefMarkdown content={text} />
             : <CollapsibleBody body={text} />}
@@ -290,41 +291,41 @@ function eventVisual(
         Icon: GitCommitHorizontal, color: 'text-muted',
         body: (
           <>
-            {who} added a commit
+            {who} {i18nT('apps.issueRadar.components.prDetail.added_a_commit')}
             {commitUrl && <> <a href={commitUrl} target="_blank" rel="noreferrer" className="font-mono text-accent hover:underline">{ev.commit_id!.slice(0, 7)}</a></>}
             {ev.message && <span className="text-muted"> — {ev.message}</span>}
           </>
         ),
       }
     case 'labeled':
-      return { Icon: Tag, color: 'text-accent', body: <>{who} added the {labelChip} label</> }
+      return { Icon: Tag, color: 'text-accent', body: <>{who} {i18nT('apps.issueRadar.components.prDetail.added_the')} {labelChip} {i18nT('apps.issueRadar.components.prDetail.label')}</> }
     case 'unlabeled':
-      return { Icon: Tag, color: 'text-muted', body: <>{who} removed the {labelChip} label</> }
+      return { Icon: Tag, color: 'text-muted', body: <>{who} {i18nT('apps.issueRadar.components.prDetail.removed_the')} {labelChip} {i18nT('apps.issueRadar.components.prDetail.label')}</> }
     case 'assigned':
-      return { Icon: UserPlus, color: 'text-muted', body: <>{who} assigned {ev.assignee ?? 'someone'}</> }
+      return { Icon: UserPlus, color: 'text-muted', body: <>{who} {i18nT('apps.issueRadar.components.prDetail.assigned')} {ev.assignee ?? 'someone'}</> }
     case 'unassigned':
-      return { Icon: UserMinus, color: 'text-muted', body: <>{who} unassigned {ev.assignee ?? 'someone'}</> }
+      return { Icon: UserMinus, color: 'text-muted', body: <>{who} {i18nT('apps.issueRadar.components.prDetail.unassigned')} {ev.assignee ?? 'someone'}</> }
     case 'closed':
       return {
         Icon: CircleSlash,
         color: 'text-danger',
-        body: <>{who} closed this {providerTerms(repoRef).changeRequestTitle}</>,
+        body: <>{who} {i18nT('apps.issueRadar.components.prDetail.closed_this')} {providerTerms(repoRef).changeRequestTitle}</>,
       }
     case 'reopened':
-      return { Icon: CircleDot, color: 'text-ok', body: <>{who} reopened this</> }
+      return { Icon: CircleDot, color: 'text-ok', body: <>{who} {i18nT('apps.issueRadar.components.prDetail.reopened_this')}</> }
     case 'renamed':
       return {
         Icon: Pencil, color: 'text-muted',
-        body: <>{who} changed the title <span className="line-through">{ev.rename?.from}</span> → <span className="text-text">{ev.rename?.to}</span></>,
+        body: <>{who} {i18nT('apps.issueRadar.components.prDetail.changed_the_title')} <span className="line-through">{ev.rename?.from}</span> → <span className="text-text">{ev.rename?.to}</span></>,
       }
     case 'milestoned':
-      return { Icon: MilestoneIcon, color: 'text-muted', body: <>{who} added this to the <span className="font-medium text-text">{ev.milestone}</span> milestone</> }
+      return { Icon: MilestoneIcon, color: 'text-muted', body: <>{who} {i18nT('apps.issueRadar.components.prDetail.added_this_to_the')} <span className="font-medium text-text">{ev.milestone}</span> {i18nT('apps.issueRadar.components.prDetail.milestone')}</> }
     case 'cross-referenced':
       return {
         Icon: Link2, color: 'text-accent',
         body: (
           <>
-            {who} referenced this in{' '}
+            {who} {i18nT('apps.issueRadar.components.prDetail.referenced_this_in')}{' '}
             <a href={ev.source?.url} target="_blank" rel="noreferrer" className="text-accent hover:underline">
               {ev.source?.is_pr ? providerTerms(repoRef).changeRequestShort : 'issue'}
               {providerTerms(repoRef).sigil}{ev.source?.number}
@@ -414,11 +415,11 @@ function AutoReviewChecks(
   const otherCount = quiet.length - passedCount
 
   return (
-    <Section title="Auto review" icon={<ShieldCheck size={12} />}>
+    <Section title={i18nT('apps.issueRadar.components.prDetail.auto_review')} icon={<ShieldCheck size={12} />}>
       {loading && checks.length === 0 && (
         <span className="inline-flex items-center gap-1.5 text-muted">
           <Loader2 size={12} className="animate-spin flex-shrink-0 text-accent" />
-          Loading checks…
+          {i18nT('apps.issueRadar.components.prDetail.loading_checks')}
         </span>
       )}
       {/* "Could not read" is NOT "none": reporting no checks after a failed fetch
@@ -432,7 +433,7 @@ function AutoReviewChecks(
       {failing.length > 0 && (
         <div className="mb-2">
           <div className="text-[10.5px] uppercase tracking-wider text-danger font-medium mb-1">
-            {failing.length} failing
+            {failing.length} {i18nT('apps.issueRadar.components.prDetail.failing')}
           </div>
           <div className="flex flex-col">
             {failing.map((c, i) => <CheckRow key={checkKey(c, i)} check={c} />)}
@@ -443,7 +444,7 @@ function AutoReviewChecks(
       {running.length > 0 && (
         <div className="mb-2">
           <div className="text-[10.5px] uppercase tracking-wider text-accent font-medium mb-1">
-            {running.length} running
+            {running.length} {i18nT('apps.issueRadar.components.prDetail.running')}
           </div>
           <div className="flex flex-col">
             {running.map((c, i) => <CheckRow key={checkKey(c, i)} check={c} />)}
@@ -464,7 +465,7 @@ function AutoReviewChecks(
                 so the three counts read as one set. No status icon: the colour
                 already carries the state, and the chevron is the affordance. */}
             <span className="text-[10.5px] uppercase tracking-wider font-medium text-ok">
-              {passedCount} passed{otherCount > 0 ? ` · ${otherCount} skipped` : ''}
+              {passedCount} {i18nT('apps.issueRadar.components.prDetail.passed')}{otherCount > 0 ? ` · ${otherCount} skipped` : ''}
             </span>
           </button>
           {showPassed && (
@@ -685,7 +686,7 @@ export default function PrDetail({ pull }: { pull: PullRequest }) {
               </span>
               <MemberBadge role={authorRole} assoc={association} />
               <span>
-                {author ? <span className="text-text font-medium">{author}</span> : 'someone'} opened{' '}
+                {author ? <span className="text-text font-medium">{author}</span> : 'someone'} {i18nT('apps.issueRadar.components.prDetail.opened')}{' '}
                 {createdAt ? <RelTime iso={createdAt} /> : ''}
               </span>
             </div>
@@ -754,8 +755,8 @@ export default function PrDetail({ pull }: { pull: PullRequest }) {
 
             {/* Activity timeline — newest first, latest node pulsing. */}
             <div className="flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-muted mb-3 font-medium">
-              <CircleDot size={12} /> Timeline
-              <span className="text-muted normal-case tracking-normal opacity-70">· newest first</span>
+              <CircleDot size={12} /> {i18nT('apps.issueRadar.components.prDetail.timeline')}
+              <span className="text-muted normal-case tracking-normal opacity-70">{i18nT('apps.issueRadar.components.prDetail.newest_first')}</span>
             </div>
 
             {activityDesc.map((ev, i) => {
@@ -809,7 +810,7 @@ export default function PrDetail({ pull }: { pull: PullRequest }) {
               </div>
             )}
             {!activityLoading && !activityError && activityDesc.length === 0 && (
-              <div className="py-2 text-[12px] text-muted">No activity yet.</div>
+              <div className="py-2 text-[12px] text-muted">{i18nT('apps.issueRadar.components.prDetail.no_activity_yet')}</div>
             )}
           </main>
 
@@ -823,7 +824,7 @@ export default function PrDetail({ pull }: { pull: PullRequest }) {
               failed={Boolean(detailQuery.error)}
             />
 
-            <Section title="Reviewers" icon={<Users size={12} />}>
+            <Section title={i18nT('apps.issueRadar.components.prDetail.reviewers')} icon={<Users size={12} />}>
               {reviewers.length > 0 ? (
                 <div className="flex flex-col gap-1">
                   {reviewers.map((a) => (
@@ -832,10 +833,10 @@ export default function PrDetail({ pull }: { pull: PullRequest }) {
                     </a>
                   ))}
                 </div>
-              ) : <span className="text-muted">No reviewers requested</span>}
+              ) : <span className="text-muted">{i18nT('apps.issueRadar.components.prDetail.no_reviewers_requested')}</span>}
             </Section>
 
-            <Section title="Assignees" icon={<Users size={12} />}>
+            <Section title={i18nT('apps.issueRadar.components.prDetail.assignees')} icon={<Users size={12} />}>
               {assignees.length > 0 ? (
                 <div className="flex flex-col gap-1">
                   {assignees.map((a) => (
@@ -844,53 +845,53 @@ export default function PrDetail({ pull }: { pull: PullRequest }) {
                     </a>
                   ))}
                 </div>
-              ) : <span className="text-muted">No one assigned</span>}
+              ) : <span className="text-muted">{i18nT('apps.issueRadar.components.prDetail.no_one_assigned')}</span>}
             </Section>
 
-            <Section title="Labels" icon={<Tag size={12} />}>
+            <Section title={i18nT('apps.issueRadar.components.prDetail.labels')} icon={<Tag size={12} />}>
               {labelObjs.length > 0 ? (
                 <div className="flex items-center gap-1.5 flex-wrap">
                   {labelObjs.map((l) => <LabelChip key={l.name} name={l.name} color={l.color} />)}
                 </div>
-              ) : <span className="text-muted">None yet</span>}
+              ) : <span className="text-muted">{i18nT('apps.issueRadar.components.prDetail.none_yet')}</span>}
             </Section>
 
-            <Section title="Milestone" icon={<MilestoneIcon size={12} />}>
+            <Section title={i18nT('apps.issueRadar.components.prDetail.milestone_2')} icon={<MilestoneIcon size={12} />}>
               {milestone ? (
                 <span className="inline-flex items-center gap-1.5 text-text">
                   {milestone.title}
                   <span className="text-[10.5px] text-muted">({milestone.state})</span>
                 </span>
-              ) : <span className="text-muted">No milestone</span>}
+              ) : <span className="text-muted">{i18nT('apps.issueRadar.components.prDetail.no_milestone')}</span>}
             </Section>
 
-            <Section title="Branches" icon={<GitBranch size={12} />}>
+            <Section title={i18nT('apps.issueRadar.components.prDetail.branches')} icon={<GitBranch size={12} />}>
               {base || head ? (
                 <div className="flex flex-col gap-1 font-mono text-[11.5px]">
                   <div className="flex items-baseline gap-1.5">
-                    <span className="text-muted font-body flex-shrink-0">into</span>
+                    <span className="text-muted font-body flex-shrink-0">{i18nT('apps.issueRadar.components.prDetail.into')}</span>
                     <span className="text-text break-all">{base ?? '—'}</span>
                   </div>
                   <div className="flex items-baseline gap-1.5">
-                    <span className="text-muted font-body flex-shrink-0">from</span>
+                    <span className="text-muted font-body flex-shrink-0">{i18nT('apps.issueRadar.components.prDetail.from')}</span>
                     <span className="text-text break-all">{head ?? '—'}</span>
                   </div>
                 </div>
-              ) : <span className="text-muted">Unknown branches</span>}
+              ) : <span className="text-muted">{i18nT('apps.issueRadar.components.prDetail.unknown_branches')}</span>}
             </Section>
 
-            <Section title="Changes" icon={<FileDiff size={12} />}>
+            <Section title={i18nT('apps.issueRadar.components.prDetail.changes')} icon={<FileDiff size={12} />}>
               <dl className="space-y-1">
                 <div className="flex justify-between gap-2">
-                  <dt className="text-muted">Commits</dt>
+                  <dt className="text-muted">{i18nT('apps.issueRadar.components.prDetail.commits')}</dt>
                   <dd className="text-text tabular-nums">{commits ?? unknownValue}</dd>
                 </div>
                 <div className="flex justify-between gap-2">
-                  <dt className="text-muted">Files</dt>
+                  <dt className="text-muted">{i18nT('apps.issueRadar.components.prDetail.files')}</dt>
                   <dd className="text-text tabular-nums">{changedFiles ?? unknownValue}</dd>
                 </div>
                 <div className="flex justify-between gap-2">
-                  <dt className="text-muted">Diff</dt>
+                  <dt className="text-muted">{i18nT('apps.issueRadar.components.prDetail.diff')}</dt>
                   <dd className="tabular-nums">
                     {additions === null && deletions === null
                       ? unknownValue
@@ -904,26 +905,26 @@ export default function PrDetail({ pull }: { pull: PullRequest }) {
                 </div>
                 {mergeableState && !merged && state !== 'closed' && (
                   <div className="flex justify-between gap-2">
-                    <dt className="text-muted">Mergeable</dt>
+                    <dt className="text-muted">{i18nT('apps.issueRadar.components.prDetail.mergeable')}</dt>
                     <dd className="text-text capitalize">{mergeableState.replace(/_/g, ' ')}</dd>
                   </div>
                 )}
               </dl>
             </Section>
 
-            <Section title="Dates" icon={<CalendarDays size={12} />}>
+            <Section title={i18nT('apps.issueRadar.components.prDetail.dates')} icon={<CalendarDays size={12} />}>
               <dl className="space-y-1">
                 <div className="flex justify-between gap-2">
-                  <dt className="text-muted">Opened</dt>
+                  <dt className="text-muted">{i18nT('apps.issueRadar.components.prDetail.opened_2')}</dt>
                   <dd className="text-text">{createdAt ? <RelTime iso={createdAt} /> : '—'}</dd>
                 </div>
                 <div className="flex justify-between gap-2">
-                  <dt className="text-muted">Updated</dt>
+                  <dt className="text-muted">{i18nT('apps.issueRadar.components.prDetail.updated')}</dt>
                   <dd className="text-text">{updatedAt ? <RelTime iso={updatedAt} /> : '—'}</dd>
                 </div>
                 {detail?.merged_at && (
                   <div className="flex justify-between gap-2">
-                    <dt className="text-muted">Merged</dt>
+                    <dt className="text-muted">{i18nT('apps.issueRadar.components.prDetail.merged')}</dt>
                     <dd className="text-text">
                       <RelTime iso={detail.merged_at} />{detail.merged_by ? ` · ${detail.merged_by}` : ''}
                     </dd>
@@ -931,7 +932,7 @@ export default function PrDetail({ pull }: { pull: PullRequest }) {
                 )}
                 {detail?.closed_at && !detail?.merged_at && (
                   <div className="flex justify-between gap-2">
-                    <dt className="text-muted">Closed</dt>
+                    <dt className="text-muted">{i18nT('apps.issueRadar.components.prDetail.closed')}</dt>
                     <dd className="text-text"><RelTime iso={detail.closed_at} /></dd>
                   </div>
                 )}

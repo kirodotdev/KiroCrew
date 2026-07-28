@@ -11,6 +11,7 @@ import { ScanSearch, GitPullRequest, ExternalLink, Circle, Settings, Brain, Plus
 import { SendBtn } from '../../components/ui'
 import Clickable from '../../components/Clickable'
 
+import { i18nT } from '../../i18n/t'
 const API = '/api/apps/code-review-sage'
 
 interface RunProgressEntry { phase: string; counts?: { red?: number; yellow?: number }; error?: string }
@@ -205,65 +206,61 @@ export default function CodeReviewSagePage() {
 
   return (
     <div className="p-6 max-w-[860px] mx-auto text-text">
-      <h1 className="flex items-center gap-2.5 text-xl"><ScanSearch size={22} /> Code Review Sage</h1>
+      <h1 className="flex items-center gap-2.5 text-xl"><ScanSearch size={22} /> {i18nT('apps.codeReviewSage.codeReviewSagePage.code_review_sage')}</h1>
       <p className="text-muted text-[13px] mt-1">
-        Self-evolving deep reviewer for GitHub PRs. Findings post as a PENDING (draft)
-        review you submit yourself on GitHub.
+        {i18nT('apps.codeReviewSage.codeReviewSagePage.self_evolving_deep_reviewer_for_github_prs_findi')}
       </p>
 
       {/* Always-visible GitHub one-time setup hint */}
       <div className="text-xs text-text bg-bg border border-border rounded-md px-3 py-2.5 my-3.5 leading-relaxed">
         <GitPullRequest size={14} className="inline align-middle mr-1.5" />
-        <strong>GitHub PR — one-time setup.</strong> The review runs on the gateway host
-        and needs the <code>gh</code> CLI authenticated there: run{' '}
-        <code>gh auth login --hostname github.com</code> once (never paste a token into
-        this page). Findings post as a single PENDING review you submit in the GitHub UI.
-        A PR shown as <em>“unavailable — could not be fetched”</em> usually means{' '}
-        <code>gh</code> is not authenticated on the gateway host.
+        <strong>{i18nT('apps.codeReviewSage.codeReviewSagePage.github_pr_one_time_setup')}</strong> {i18nT('apps.codeReviewSage.codeReviewSagePage.the_review_runs_on_the_gateway_host_and_needs_th')} <code>{i18nT('apps.codeReviewSage.codeReviewSagePage.gh')}</code> {i18nT('apps.codeReviewSage.codeReviewSagePage.cli_authenticated_there_run')}{' '}
+        <code>{i18nT('apps.codeReviewSage.codeReviewSagePage.gh_auth_login_hostname_github_com')}</code> {i18nT('apps.codeReviewSage.codeReviewSagePage.once_never_paste_a_token_into_this_page_findings')} <em>{i18nT('apps.codeReviewSage.codeReviewSagePage.unavailable_could_not_be_fetched')}</em> {i18nT('apps.codeReviewSage.codeReviewSagePage.usually_means')}{' '}
+        <code>{i18nT('apps.codeReviewSage.codeReviewSagePage.gh')}</code> {i18nT('apps.codeReviewSage.codeReviewSagePage.is_not_authenticated_on_the_gateway_host')}
       </div>
 
       {/* Repo mode — enumerate a repo's open PRs and review the un-reviewed ones */}
       <div className="border border-border rounded-md p-3 my-3.5">
         <div className="text-[13px] font-medium flex items-center gap-1.5 mb-2">
-          <FolderGit2 size={14} /> Review a whole repository
+          <FolderGit2 size={14} /> {i18nT('apps.codeReviewSage.codeReviewSagePage.review_a_whole_repository')}
         </div>
         <div className="flex items-center gap-2">
           <input
             value={repoUrl}
             onChange={e => setRepoUrl(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter') listRepo() }}
-            aria-label="Repository URL"
-            placeholder="https://github.com/<owner>/<repo>"
+            aria-label={i18nT('apps.codeReviewSage.codeReviewSagePage.repository_url')}
+            placeholder={i18nT('apps.codeReviewSage.codeReviewSagePage.https_github_com_owner_repo')}
             className="flex-1 box-border text-[13px] px-3 py-2 rounded-md bg-bg text-text border border-border font-mono"
           />
           <button onClick={listRepo} disabled={!repoUrl.trim() || repoLoading}
             className="inline-flex items-center gap-1 text-xs px-2.5 py-2 rounded-md border border-border text-muted hover:text-text hover:border-border-strong disabled:opacity-30 cursor-pointer bg-transparent">
-            <RefreshCw size={12} className={repoLoading ? 'animate-spin' : ''} /> List open PRs
+            <RefreshCw size={12} className={repoLoading ? 'animate-spin' : ''} /> {i18nT('apps.codeReviewSage.codeReviewSagePage.list_open_prs')}
           </button>
         </div>
         {repoErr && <div className="text-danger text-xs mt-2">{repoErr}</div>}
-        {repoLoading && !repoPrs && <div className="text-muted text-xs mt-2">Listing open PRs…</div>}
+        {repoLoading && !repoPrs && <div className="text-muted text-xs mt-2">{i18nT('apps.codeReviewSage.codeReviewSagePage.listing_open_prs')}</div>}
         {staleList && (
           <div className="text-warn text-[11px] mt-2">
-            Showing <span className="font-mono">{submittedRepo}</span> — click “List open PRs” to load the URL above.
+            {i18nT('apps.codeReviewSage.codeReviewSagePage.showing')} <span className="font-mono">{submittedRepo}</span> {i18nT('apps.codeReviewSage.codeReviewSagePage.click_list_open_prs_to_load_the_url_above')}
           </div>
         )}
         {repoPrs && (repoPrs.count === 0 ? (
-          <div className="text-muted text-xs mt-3">No open PRs in {repoPrs.repo}.</div>
+          <div className="text-muted text-xs mt-3">{i18nT('apps.codeReviewSage.codeReviewSagePage.no_open_prs_in')} {repoPrs.repo}.</div>
         ) : (
           <div className="mt-3">
             <div className="flex items-center gap-2.5 text-xs mb-2 flex-wrap">
               <span className="text-muted">
-                {repoPrs.repo}: {repoPrs.count} open PR{repoPrs.count === 1 ? '' : 's'}, {unreviewedCount} not yet reviewed
+                {repoPrs.repo}: {repoPrs.count} {i18nT('apps.codeReviewSage.codeReviewSagePage.open_pr')}{repoPrs.count === 1 ? '' : 's'}, {unreviewedCount} {i18nT('apps.codeReviewSage.codeReviewSagePage.not_yet_reviewed')}
               </span>
               <div className="ml-auto flex items-center gap-2">
                 <SendBtn onClick={() => reviewRepo(false)} disabled={running || unreviewedCount === 0}>
                   {running ? 'Running…' : `Review ${unreviewedCount} new`}
                 </SendBtn>
                 <button onClick={() => reviewRepo(true)} disabled={running || repoPrs.count === 0}
-                  title="Re-review every open PR, ignoring the reviewed history"
+                  title={i18nT('apps.codeReviewSage.codeReviewSagePage.re_review_every_open_pr_ignoring_the_reviewed_hi')}
                   className="text-xs px-2.5 py-1.5 rounded-md border border-border text-muted hover:text-text hover:border-border-strong disabled:opacity-30 cursor-pointer bg-transparent">
-                  Force review all ({repoPrs.count})
+                  {i18nT('apps.codeReviewSage.codeReviewSagePage.force_review_all')}{repoPrs.count})
                 </button>
               </div>
             </div>
@@ -274,27 +271,27 @@ export default function CodeReviewSagePage() {
                   <span className="truncate text-text" title={pr.title}>{pr.title}</span>
                   <span className="ml-auto shrink-0">
                     {pr.reviewed
-                      ? <span className="text-accent text-[10px] border border-border rounded px-1.5 py-0.5">reviewed</span>
+                      ? <span className="text-accent text-[10px] border border-border rounded px-1.5 py-0.5">{i18nT('apps.codeReviewSage.codeReviewSagePage.reviewed')}</span>
                       : pr.reviewed_stale
-                        ? <span className="text-warn text-[10px] border border-border rounded px-1.5 py-0.5">updated</span>
-                        : <span className="text-muted text-[10px] border border-border rounded px-1.5 py-0.5">new</span>}
+                        ? <span className="text-warn text-[10px] border border-border rounded px-1.5 py-0.5">{i18nT('apps.codeReviewSage.codeReviewSagePage.updated')}</span>
+                        : <span className="text-muted text-[10px] border border-border rounded px-1.5 py-0.5">{i18nT('apps.codeReviewSage.codeReviewSagePage.new')}</span>}
                   </span>
                 </li>
               ))}
             </ul>
             <div className="text-[11px] text-muted mt-1.5">
-              “new” = never reviewed · “updated” = reviewed before but the PR has new commits · “reviewed” = up to date.
+              {i18nT('apps.codeReviewSage.codeReviewSagePage.new_never_reviewed_updated_reviewed_before_but_t')}
             </div>
           </div>
         ))}
       </div>
 
-      <div className="text-[11px] text-muted mb-1.5">Or paste individual PR links:</div>
+      <div className="text-[11px] text-muted mb-1.5">{i18nT('apps.codeReviewSage.codeReviewSagePage.or_paste_individual_pr_links')}</div>
       <textarea
         value={input}
         onChange={e => setInput(e.target.value)}
         rows={3}
-        placeholder="Paste one or more GitHub PR links (one per line or comma-separated)"
+        placeholder={i18nT('apps.codeReviewSage.codeReviewSagePage.paste_one_or_more_github_pr_links_one_per_line_o')}
         className="w-full box-border text-[13px] px-3 py-2.5 rounded-md bg-bg text-text border border-border resize-y font-body"
       />
       <div className="flex items-center gap-3 mt-3">
@@ -303,12 +300,12 @@ export default function CodeReviewSagePage() {
         </SendBtn>
         {s && (
           <span className="ml-auto text-[11px] text-muted">
-            Model: {s.model || 'default'} · effort: {s.effort || 'default'} · concurrency: {s.max_concurrent ?? 5}
+            {i18nT('apps.codeReviewSage.codeReviewSagePage.model')} {s.model || 'default'} {i18nT('apps.codeReviewSage.codeReviewSagePage.effort')} {s.effort || 'default'} {i18nT('apps.codeReviewSage.codeReviewSagePage.concurrency')} {s.max_concurrent ?? 5}
           </span>
         )}
       </div>
       <div className="text-[11px] text-muted mt-2.5">
-        Each PR is reviewed in its own clean pooled worker; comments are posted as drafts only.
+        {i18nT('apps.codeReviewSage.codeReviewSagePage.each_pr_is_reviewed_in_its_own_clean_pooled_work')}
       </div>
       {reviewErr && <div className="text-danger text-xs mt-2.5">{reviewErr}</div>}
 
@@ -316,11 +313,11 @@ export default function CodeReviewSagePage() {
       {run && (
         <div className="mt-[22px] border-t border-border pt-4">
           <div className="flex items-center gap-2.5 text-[13px]">
-            <strong>Run {run.status === 'running' ? '(in progress)' : run.status}</strong>
+            <strong>{i18nT('apps.codeReviewSage.codeReviewSagePage.run')} {run.status === 'running' ? '(in progress)' : run.status}</strong>
             {run.report_slug && (
               <a href={`/artifacts/${run.report_slug}`}
                 className="ml-auto flex items-center gap-1 text-accent text-xs">
-                Open focus report <ExternalLink size={12} />
+                {i18nT('apps.codeReviewSage.codeReviewSagePage.open_focus_report')} <ExternalLink size={12} />
               </a>
             )}
           </div>
@@ -360,27 +357,27 @@ export default function CodeReviewSagePage() {
       {settings && (
         <details className="mt-[22px]">
           <summary className="cursor-pointer text-[13px] flex items-center gap-1.5">
-            <Settings size={13} /> Configuration
+            <Settings size={13} /> {i18nT('apps.codeReviewSage.codeReviewSagePage.configuration')}
           </summary>
           <div className="flex gap-[18px] mt-3 flex-wrap">
             <label className="text-xs text-muted">
-              Model{' '}
+              {i18nT('apps.codeReviewSage.codeReviewSagePage.model_2')}{' '}
               <select value={s?.model ?? ''} onChange={e => saveMut.mutate({ model: e.target.value || null })}
                 className="text-xs px-2 py-1 rounded-md bg-bg text-text border border-border">
-                <option value="">Default (agent config)</option>
+                <option value="">{i18nT('apps.codeReviewSage.codeReviewSagePage.default_agent_config')}</option>
                 {settings.models.map(m => <option key={m} value={m}>{m}</option>)}
               </select>
             </label>
             <label className="text-xs text-muted">
-              Effort{' '}
+              {i18nT('apps.codeReviewSage.codeReviewSagePage.effort_2')}{' '}
               <select value={s?.effort ?? ''} onChange={e => saveMut.mutate({ effort: e.target.value })}
                 className="text-xs px-2 py-1 rounded-md bg-bg text-text border border-border">
-                <option value="">Default (model/provider)</option>
+                <option value="">{i18nT('apps.codeReviewSage.codeReviewSagePage.default_model_provider')}</option>
                 {settings.efforts.map(ef => <option key={ef} value={ef}>{ef}</option>)}
               </select>
             </label>
-            <label className="text-xs text-muted" title="Max PRs reviewed at once on the shared runtime">
-              Concurrency{' '}
+            <label className="text-xs text-muted" title={i18nT('apps.codeReviewSage.codeReviewSagePage.max_prs_reviewed_at_once_on_the_shared_runtime')}>
+              {i18nT('apps.codeReviewSage.codeReviewSagePage.concurrency_2')}{' '}
               <select value={s?.max_concurrent ?? 5}
                 onChange={e => saveMut.mutate({ max_concurrent: Number(e.target.value) })}
                 className="text-xs px-2 py-1 rounded-md bg-bg text-text border border-border">
@@ -400,17 +397,16 @@ export default function CodeReviewSagePage() {
       {nsData && (
         <details className="mt-[22px]" open>
           <summary className="cursor-pointer text-[13px] flex items-center gap-1.5">
-            <Brain size={13} /> Self-learning
+            <Brain size={13} /> {i18nT('apps.codeReviewSage.codeReviewSagePage.self_learning')}
           </summary>
           <p className="text-[11px] text-muted mt-2 leading-relaxed">
-            Reviews load learned patterns from the <strong>active</strong> namespaces. New
-            learnings accrue as <em>pending candidates</em>; run the{' '}
-            <code>learn-from-sage</code> skill to consolidate them into the ruleset.
+            {i18nT('apps.codeReviewSage.codeReviewSagePage.reviews_load_learned_patterns_from_the')} <strong>{i18nT('apps.codeReviewSage.codeReviewSagePage.active')}</strong> {i18nT('apps.codeReviewSage.codeReviewSagePage.namespaces_new_learnings_accrue_as')} <em>{i18nT('apps.codeReviewSage.codeReviewSagePage.pending_candidates')}</em>{i18nT('apps.codeReviewSage.codeReviewSagePage.run_the')}{' '}
+            <code>{i18nT('apps.codeReviewSage.codeReviewSagePage.learn_from_sage')}</code> {i18nT('apps.codeReviewSage.codeReviewSagePage.skill_to_consolidate_them_into_the_ruleset')}
           </p>
 
           {/* At-a-glance: which namespaces reviews actually load right now. */}
           <div className="text-[11px] mt-2.5">
-            <span className="text-muted">Loaded during reviews: </span>
+            <span className="text-muted">{i18nT('apps.codeReviewSage.codeReviewSagePage.loaded_during_reviews')} </span>
             <span className="text-accent font-medium">{[...activeSet].sort().join(', ')}</span>
           </div>
 
@@ -431,12 +427,12 @@ export default function CodeReviewSagePage() {
                       {ns.name}
                     </button>
                     {isActive
-                      ? <span className="text-accent text-[10px]">active</span>
-                      : <span className="text-muted text-[10px]">inactive</span>}
+                      ? <span className="text-accent text-[10px]">{i18nT('apps.codeReviewSage.codeReviewSagePage.active')}</span>
+                      : <span className="text-muted text-[10px]">{i18nT('apps.codeReviewSage.codeReviewSagePage.inactive')}</span>}
                     <span className="ml-auto flex items-center gap-3 text-muted">
-                      <span title="Consolidated patterns loaded during reviews">{ns.patterns} pattern{ns.patterns === 1 ? '' : 's'}</span>
+                      <span title={i18nT('apps.codeReviewSage.codeReviewSagePage.consolidated_patterns_loaded_during_reviews')}>{ns.patterns} {i18nT('apps.codeReviewSage.codeReviewSagePage.pattern')}{ns.patterns === 1 ? '' : 's'}</span>
                       {ns.candidate > 0 && (
-                        <span className="text-warn" title="Pending candidates awaiting consolidation">{ns.candidate} pending</span>
+                        <span className="text-warn" title={i18nT('apps.codeReviewSage.codeReviewSagePage.pending_candidates_awaiting_consolidation')}>{ns.candidate} {i18nT('apps.codeReviewSage.codeReviewSagePage.pending')}</span>
                       )}
                       {ns.name !== 'default' && (
                         <Clickable aria-label={`Delete namespace ${ns.name} and all its learnings`}
@@ -451,7 +447,7 @@ export default function CodeReviewSagePage() {
                   {isOpen && (
                     <div className="pb-3 pl-6">
                       {(learnings?.patterns?.length ?? 0) === 0 && (learnings?.candidate?.length ?? 0) === 0 && (
-                        <div className="text-[11px] text-muted italic">No learnings yet — patterns appear here after reviews stage them and you consolidate.</div>
+                        <div className="text-[11px] text-muted italic">{i18nT('apps.codeReviewSage.codeReviewSagePage.no_learnings_yet_patterns_appear_here_after_revi')}</div>
                       )}
                       {learnings?.patterns?.map(p => (
                         <div key={p.id} className="text-[11px] mb-2">
@@ -463,7 +459,7 @@ export default function CodeReviewSagePage() {
                       ))}
                       {(learnings?.candidate?.length ?? 0) > 0 && (
                         <div className="mt-2 pt-2 border-t border-border">
-                          <div className="text-[10px] text-warn uppercase tracking-wide mb-1">Pending consolidation</div>
+                          <div className="text-[10px] text-warn uppercase tracking-wide mb-1">{i18nT('apps.codeReviewSage.codeReviewSagePage.pending_consolidation')}</div>
                           {learnings?.candidate?.map(c => (
                             <div key={c.id} className="text-[11px] mb-1.5 text-muted">
                               <strong className="text-text">{c.title}</strong> — {c.guidance}
@@ -486,22 +482,22 @@ export default function CodeReviewSagePage() {
                   if (e.key === 'Enter' && nsInput.trim()) createNsMut.mutate(nsInput.trim())
                   if (e.key === 'Escape') { setShowNsInput(false); setNsInput('') }
                 }}
-                placeholder="new-namespace"
+                placeholder={i18nT('apps.codeReviewSage.codeReviewSagePage.new_namespace')}
                 className="text-xs px-2 py-1 rounded-md bg-bg text-text border border-border" />
               <button onClick={() => nsInput.trim() && createNsMut.mutate(nsInput.trim())}
                 disabled={!nsInput.trim() || createNsMut.isPending}
                 className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-md border border-border text-muted hover:text-text hover:border-border-strong disabled:opacity-30 cursor-pointer bg-transparent">
-                <Plus size={12} /> Add
+                <Plus size={12} /> {i18nT('apps.codeReviewSage.codeReviewSagePage.add')}
               </button>
               <button onClick={() => { setShowNsInput(false); setNsInput('') }}
                 className="text-[11px] text-muted hover:text-text bg-transparent border-none cursor-pointer">
-                Cancel
+                {i18nT('apps.codeReviewSage.codeReviewSagePage.cancel')}
               </button>
             </div>
           ) : (
             <button onClick={() => setShowNsInput(true)}
               className="inline-flex items-center gap-1 text-[11px] text-muted hover:text-accent bg-transparent border-none cursor-pointer mt-3 p-0">
-              <Plus size={12} /> New namespace
+              <Plus size={12} /> {i18nT('apps.codeReviewSage.codeReviewSagePage.new_namespace_2')}
             </button>
           )}
           {nsErr && <div className="text-danger text-xs mt-2">{nsErr}</div>}
