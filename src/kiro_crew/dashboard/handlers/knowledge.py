@@ -9,6 +9,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import zipfile
 from datetime import datetime
 from pathlib import Path
 
@@ -16,6 +17,7 @@ from aiohttp import web
 
 from kiro_crew.artifacts import get_default_store
 from kiro_crew.config.loader import KiroCrewConfig, config_dir
+from kiro_crew.dashboard.handlers.files import _ZIP_CONTAINER_EXTS, _content_matches_ext
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.knowledge.agent_fetch import fetch_url_content
 from kiro_crew.knowledge.artifact_ingest import ArtifactKnowledgeSync
@@ -1137,6 +1139,37 @@ async def get_stats(request: web.Request) -> web.Response:
 
 
 _MAX_INGEST_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
+# Decompression-bomb bounds for zip-container uploads (.docx/.xlsx/.pptx/...).
+# A valid PK signature passes the magic-byte gate but the archive can still be
+# a bomb whose members expand unbounded once a parser (python-docx) opens it
+# (CWE-770). Bound the declared aggregate uncompressed size and member count
+# from the central directory before any parser touches the file.
+_MAX_INGEST_ARCHIVE_UNCOMPRESSED = 200 * 1024 * 1024  # 200 MB uncompressed total
+_MAX_INGEST_ARCHIVE_MEMBERS = 10000
+
+
+def _inspect_zip_archive(path: str) -> str | None:
+    """Bound a zip-container's member count + declared aggregate uncompressed
+    size using central-directory metadata only (no extraction).
+
+    Returns a short rejection reason, or ``None`` if within limits. This does
+    synchronous zip I/O, so callers MUST run it off the event loop (via
+    ``asyncio.to_thread``) — a large/hostile central directory would otherwise
+    stall the gateway loop and heartbeat.
+    """
+    try:
+        with zipfile.ZipFile(path) as zf:
+            infos = zf.infolist()
+            if len(infos) > _MAX_INGEST_ARCHIVE_MEMBERS:
+                return "too_many_members"
+            uncompressed = 0
+            for zi in infos:
+                uncompressed += zi.file_size
+                if uncompressed > _MAX_INGEST_ARCHIVE_UNCOMPRESSED:
+                    return "uncompressed_too_large"
+    except zipfile.BadZipFile:
+        return "bad_archive"
+    return None
 
 
 async def ingest_file(request: web.Request) -> web.Response:
@@ -1153,9 +1186,14 @@ async def ingest_file(request: web.Request) -> web.Response:
 
     filename = getattr(field, "filename", None) or "upload"
     suffix = Path(filename).suffix
+    ext = suffix.lower()
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix, prefix="kn_")
     try:
         total_size = 0
+        # Capture the leading bytes so the claimed extension can be verified
+        # against the file signature; 16 bytes covers every prefix in the
+        # sibling gate (PNG magic is 8, WEBP needs bytes 8:12, zip/PDF fewer).
+        head = bytearray()
         while True:
             chunk = await field.read_chunk()  # type: ignore[union-attr]
             if not chunk:
@@ -1166,8 +1204,36 @@ async def ingest_file(request: web.Request) -> web.Response:
                 Path(tmp.name).unlink(missing_ok=True)
                 return web.json_response(
                     {"error": f"file too large (max {_MAX_INGEST_FILE_SIZE // (1024 * 1024)} MB)"}, status=413)
+            if len(head) < 16:
+                head.extend(chunk[: 16 - len(head)])
             tmp.write(chunk)
         tmp.close()
+
+        # Content-signature gate (CWE-434): the extension is attacker-controlled
+        # and FileReader dispatches to binary parsers (.pdf/.docx) purely by
+        # extension, so verify the magic bytes match the claimed type BEFORE the
+        # file is handed to a parser. Text formats have no reliable signature and
+        # pass through, matching the sibling upload gate in handlers/files.py.
+        if not _content_matches_ext(ext, bytes(head)):
+            Path(tmp.name).unlink(missing_ok=True)
+            _sel_log("ingest", filename=filename, outcome="rejected")
+            return web.json_response(
+                {"error": f"file content does not match its type: {ext}"}, status=400)
+
+        # Decompression-bomb guard (CWE-770): a valid-signature OOXML/zip can
+        # still be a bomb whose members expand unbounded once python-docx / the
+        # zip parser opens it. Bound the declared member count and aggregate
+        # uncompressed size from the central directory (metadata only, no
+        # extraction) BEFORE the file reaches a parser; reject a breach or a
+        # corrupt/lying archive. Run off the event loop so a hostile central
+        # directory can't stall the gateway loop/heartbeat.
+        if ext in _ZIP_CONTAINER_EXTS:
+            reason = await asyncio.to_thread(_inspect_zip_archive, tmp.name)
+            if reason is not None:
+                Path(tmp.name).unlink(missing_ok=True)
+                _sel_log("ingest", filename=filename, outcome="rejected", reason=reason)
+                return web.json_response(
+                    {"error": f"{ext} archive rejected ({reason})"}, status=400)
 
         # Create source record immediately so it appears in the UI
         store = _store(request)

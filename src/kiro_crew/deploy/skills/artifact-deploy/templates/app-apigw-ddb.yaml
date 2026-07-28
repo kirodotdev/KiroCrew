@@ -18,6 +18,20 @@ Parameters:
   Handler:
     Type: String
     Default: index.handler
+  # CWE-770: per-app request-rate guardrails on the $default stage. Parameterized
+  # (with sane defaults) so a deployer can tune per app, matching the existing
+  # Runtime/Handler parameter convention.
+  ApiThrottlingRateLimit:
+    Type: Number
+    Default: 50
+    Description: >
+      Steady-state request rate cap (requests/second) applied to every route on
+      the $default stage. Bounds Lambda invocation volume / cost (CWE-770).
+  ApiThrottlingBurstLimit:
+    Type: Number
+    Default: 100
+    Description: >
+      Burst (token-bucket) request cap for the $default stage (CWE-770).
   OriginVerifySecret:
     Type: String
     Default: ''
@@ -157,6 +171,12 @@ Resources:
       ApiId: !Ref HttpApi
       StageName: '$default'
       AutoDeploy: true
+      # CWE-770: throttle the $default stage so a per-app deploy cannot be driven
+      # into unbounded request/Lambda-invocation volume. DefaultRouteSettings
+      # applies to every route on the stage.
+      DefaultRouteSettings:
+        ThrottlingRateLimit: !Ref ApiThrottlingRateLimit
+        ThrottlingBurstLimit: !Ref ApiThrottlingBurstLimit
 
   InvokePerm:
     Type: AWS::Lambda::Permission

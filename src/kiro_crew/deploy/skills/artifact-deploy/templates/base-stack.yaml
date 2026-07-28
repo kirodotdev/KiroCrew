@@ -13,6 +13,30 @@ Parameters:
     Description: >
       CloudFront edge coverage. PriceClass_All = maximum global reach
       (Vercel-like). Lower tiers are cheaper but use fewer edge locations.
+  # CWE-770: optional WAFv2 WebACL for CloudFront rate limiting / request
+  # filtering. REGION CONSTRAINT: CloudFront only accepts a WAFv2 WebACL whose
+  # Scope is CLOUDFRONT, and such a WebACL MUST be created in us-east-1. This
+  # base stack is deployed in the deploy profile's region (see deploy.sh /
+  # handlers.py — default us-west-2, NOT pinned to us-east-1), so an INLINE
+  # AWS::WAFv2::WebACL (Scope: CLOUDFRONT) declared here would FAIL to create in
+  # any non-us-east-1 deployment. Rather than ship a resource that breaks the
+  # stack, we expose the WebACL ARN as an opt-in parameter: create a
+  # CLOUDFRONT-scoped, rate-based WebACL separately in us-east-1 and pass its
+  # ARN here to attach it. Empty (default) leaves the distribution unchanged.
+  WafWebAclArn:
+    Type: String
+    Default: ''
+    Description: >
+      Optional ARN of a WAFv2 WebACL (Scope: CLOUDFRONT, created in us-east-1)
+      to attach to the shared distribution for rate limiting (CWE-770). Empty =
+      no WAF attached. Example rule to put in the WebACL: a RateBasedStatement
+      with Limit 2000 per 5 min, AggregateKeyType IP, plus the AWS managed
+      AWSManagedRulesCommonRuleSet.
+
+Conditions:
+  # Only wire WebACLId when a WebACL ARN was supplied — an empty string is not a
+  # valid WebACLId and would fail the distribution create.
+  HasWafWebAcl: !Not [!Equals [!Ref WafWebAclArn, '']]
 
 Resources:
 
@@ -127,6 +151,11 @@ Resources:
       DistributionConfig:
         Enabled: true
         Comment: KiroCrew One-Click Deploy shared distribution
+        # CWE-770: attach an optional WAFv2 WebACL (rate limiting / request
+        # filtering) when one is supplied. Must be a CLOUDFRONT-scoped WebACL in
+        # us-east-1 (see WafWebAclArn parameter). AWS::NoValue keeps the property
+        # absent when unset, preserving current behavior.
+        WebACLId: !If [HasWafWebAcl, !Ref WafWebAclArn, !Ref 'AWS::NoValue']
         PriceClass: !Ref PriceClass
         HttpVersion: http2and3
         IPV6Enabled: true

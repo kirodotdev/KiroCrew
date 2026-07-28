@@ -141,6 +141,7 @@ from kiro_crew.dashboard.port_reclaim import (
     RECLAIMED,
     reclaim_stale_gateway_port,
 )
+from kiro_crew.dashboard.slowloris import build_hardened_runner
 from kiro_crew.dashboard.state import _DEFAULT_PORT, DashboardState
 from kiro_crew.dashboard.token_auth import (
     _cookie_port_from_host,
@@ -2210,7 +2211,9 @@ async def start_dashboard(
     # ``_register_instances_hooks`` for why ordering matters.
     _register_instances_hooks(app, state, port)
 
-    runner = web.AppRunner(app)
+    # Hardened runner: bounds the request-line/header read time (slowloris /
+    # CWE-400) and reaps idle keep-alive connections. See dashboard.slowloris.
+    runner = build_hardened_runner(app)
     await runner.setup()
     site = web.TCPSite(runner, bind_address_for(local_only), port)
     await _start_site(site, port)
@@ -2627,7 +2630,8 @@ async def start_api_server(
 
     app.on_cleanup.append(_kiro_prerequisite_shutdown)
 
-    runner = web.AppRunner(app)
+    # Hardened runner: same slowloris / CWE-400 mitigation as start_dashboard.
+    runner = build_hardened_runner(app)
     await runner.setup()
     # Same bind resolution as start_dashboard: loopback unless the operator
     # widened it (dashboard.url opt-out of local_only, or the KIROCREW_BIND

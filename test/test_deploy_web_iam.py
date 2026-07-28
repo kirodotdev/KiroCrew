@@ -37,11 +37,21 @@ def test_policy_prefix_matches_template_bucket():
     # that yaml.safe_load can't handle — add constructors for the ones we need.
     class _CfnLoader(yaml.SafeLoader):
         pass
-    for tag in ("!Sub", "!Ref", "!GetAtt", "!If", "!Select", "!Join"):
-        _CfnLoader.add_constructor(tag, lambda loader, node: {"Fn::Sub": loader.construct_scalar(node)}
-                                   if node.tag == "!Sub" else loader.construct_scalar(node))
-    # Re-register !Sub properly — it's the one we care about.
-    _CfnLoader.add_constructor("!Sub", lambda loader, node: {"Fn::Sub": loader.construct_scalar(node)})
+    # !Sub is the tag this test asserts on — map it to {"Fn::Sub": <scalar>}.
+    _CfnLoader.add_constructor(
+        "!Sub", lambda loader, node: {"Fn::Sub": loader.construct_scalar(node)})
+
+    # Tolerate every other CFN intrinsic via a catch-all so an unknown tag never
+    # breaks the parse — including the condition tags (!Not/!Equals/!If) added
+    # when the optional CloudFront WAF WebACL opt-in landed in base-stack.yaml.
+    def _cfn_ignore(loader, tag_suffix, node):
+        if isinstance(node, yaml.ScalarNode):
+            return loader.construct_scalar(node)
+        if isinstance(node, yaml.SequenceNode):
+            return loader.construct_sequence(node, deep=True)
+        return loader.construct_mapping(node, deep=True)
+
+    _CfnLoader.add_multi_constructor(None, _cfn_ignore)
 
     template_path = _PKG / "skills" / "artifact-deploy" / "templates" / "base-stack.yaml"
     with open(template_path) as f:
