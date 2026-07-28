@@ -286,27 +286,57 @@ def _resolve_kirocrew_bin() -> str:
     return "kirocrew"
 
 
+def _bin_in_running_env(bin_path: str) -> bool:
+    """True if ``bin_path`` lives inside the running interpreter's environment.
+
+    A launcher outside ``sys.prefix`` -- e.g. a ``bin/kirocrew`` resolved by
+    walking the source tree whose own ``.venv`` was never built, or an edition
+    whose console script is named differently (``kirocrew-amazon``) so only a
+    foreign ``kirocrew`` shim is found -- can pass the file/exec-bit usability
+    check yet fail at spawn (``KiroCrew venv not found``), silently dropping the
+    ``kirocrew-core`` / ``kirocrew-cron`` MCP servers. Only an in-env launcher
+    is trusted; anything else uses the interpreter-module fallback.
+    """
+    try:
+        resolved = os.path.realpath(bin_path)
+        prefix = os.path.realpath(sys.prefix)
+        return resolved == prefix or resolved.startswith(prefix + os.sep)
+    except OSError:
+        return False
+
+
 def _kirocrew_mcp_invocation(subcommand: str) -> tuple[str, list[str]]:
     """Resolve a CWD- and shebang-independent invocation for a built-in
     MCP server (``kirocrew-cron`` / ``kirocrew-core``).
 
-    Prefers a standalone ``kirocrew`` binary when one resolves. Falls back
-    to ``<interpreter> -m kiro_crew <subcommand>`` when
-    :func:`_resolve_kirocrew_bin` cannot find a usable standalone binary --
-    e.g. an install whose launcher is not on the service PATH (the gateway
-    running as a systemd user service is the common case): there
-    ``_resolve_kirocrew_bin`` returns the bare ``"kirocrew"`` sentinel, the
-    command fails to validate, and the server gets dropped from
-    ``kirocrew.json`` on every config refresh.
+    Prefers a standalone ``kirocrew`` binary only when it is the frozen app OR
+    lives inside the running interpreter's environment; otherwise falls back to
+    ``<interpreter> -m kiro_crew <subcommand>``. Two cases need the fallback:
+
+    1. :func:`_resolve_kirocrew_bin` cannot find a usable standalone binary and
+       returns the bare ``"kirocrew"`` sentinel -- e.g. an install whose
+       launcher is not on the service PATH (the gateway running as a systemd
+       user service is the common case): the command fails to validate and the
+       server gets dropped from ``kirocrew.json`` on every config refresh.
+    2. It resolves a launcher OUTSIDE the running interpreter's environment --
+       e.g. a ``bin/kirocrew`` found by walking the source tree whose own
+       ``.venv`` was never built, or an edition whose console script is named
+       ``kirocrew-amazon`` so only a foreign ``kirocrew`` is found. Such a
+       launcher passes the file/exec-bit usability check yet dies at spawn
+       (``KiroCrew venv not found``), silently dropping kirocrew-core /
+       kirocrew-cron.
 
     ``sys.executable`` is the absolute path of the running interpreter, so it
-    needs no PATH entry and ignores any broken launcher. ``python -m
-    kiro_crew`` dispatches the same CLI as the ``kirocrew`` console script.
+    needs no PATH entry, ignores any broken launcher, and works regardless of
+    the edition's console-script name. ``python -m kiro_crew`` dispatches the
+    same CLI as the ``kirocrew`` console script.
     """
     bin_path = _resolve_kirocrew_bin()
-    if bin_path == "kirocrew":  # unresolved sentinel from _resolve_kirocrew_bin
-        return sys.executable, ["-m", "kiro_crew", subcommand]
-    return bin_path, [subcommand]
+    if bin_path != "kirocrew" and (
+        getattr(sys, "frozen", False) or _bin_in_running_env(bin_path)
+    ):
+        return bin_path, [subcommand]
+    return sys.executable, ["-m", "kiro_crew", subcommand]
 
 
 # ---------------------------------------------------------------------------

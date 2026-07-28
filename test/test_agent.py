@@ -1046,11 +1046,16 @@ class TestKirocrewMcpInvocation:
     every refresh.
     """
 
-    def test_uses_standalone_binary_when_resolved(self):
+    def test_uses_standalone_binary_when_in_running_env(self):
         from kiro_crew.agent import _kirocrew_mcp_invocation
 
-        with patch("kiro_crew.agent._resolve_kirocrew_bin", return_value="/opt/bin/kirocrew"):
-            cmd, args = _kirocrew_mcp_invocation("mcp-cron")
+        # A standalone launcher is trusted only when it lives inside the
+        # running interpreter's environment.
+        with patch(
+            "kiro_crew.agent._resolve_kirocrew_bin", return_value="/opt/bin/kirocrew"
+        ):
+            with patch("kiro_crew.agent._bin_in_running_env", return_value=True):
+                cmd, args = _kirocrew_mcp_invocation("mcp-cron")
         assert cmd == "/opt/bin/kirocrew"
         assert args == ["mcp-cron"]
 
@@ -1062,6 +1067,50 @@ class TestKirocrewMcpInvocation:
             cmd, args = _kirocrew_mcp_invocation("mcp-core")
         assert cmd == sys.executable
         assert args == ["-m", "kiro_crew", "mcp-core"]
+
+    def test_foreign_env_binary_falls_back_to_interpreter_module(self):
+        """A resolved launcher OUTSIDE the running interpreter's env is not
+        trusted -- it can be a source-tree ``bin/kirocrew`` with no built
+        ``.venv`` (or an edition whose script is ``kirocrew-amazon``) that
+        passes the exec-bit check but dies at spawn. Fall back to the
+        interpreter-module form, which always launches under the current venv.
+        """
+        from kiro_crew.agent import _kirocrew_mcp_invocation
+
+        with patch(
+            "kiro_crew.agent._resolve_kirocrew_bin",
+            return_value="/some/other/tree/bin/kirocrew",
+        ):
+            with patch("kiro_crew.agent._bin_in_running_env", return_value=False):
+                with patch.object(sys, "frozen", False, create=True):
+                    cmd, args = _kirocrew_mcp_invocation("mcp-core")
+        assert cmd == sys.executable
+        assert args == ["-m", "kiro_crew", "mcp-core"]
+
+    def test_frozen_app_binary_is_trusted_outside_env(self):
+        """In a frozen (PyInstaller) build ``sys.executable`` IS the kirocrew
+        CLI and accepts the subcommands, but it need not sit under
+        ``sys.prefix``; it must still be trusted rather than fed to a
+        nonexistent ``-m`` module runner.
+        """
+        from kiro_crew.agent import _kirocrew_mcp_invocation
+
+        with patch(
+            "kiro_crew.agent._resolve_kirocrew_bin",
+            return_value="/frozen/app/kirocrew-backend",
+        ):
+            with patch("kiro_crew.agent._bin_in_running_env", return_value=False):
+                with patch.object(sys, "frozen", True, create=True):
+                    cmd, args = _kirocrew_mcp_invocation("mcp-cron")
+        assert cmd == "/frozen/app/kirocrew-backend"
+        assert args == ["mcp-cron"]
+
+    def test_bin_in_running_env_detects_prefix_membership(self):
+        from kiro_crew.agent import _bin_in_running_env
+
+        inside = os.path.join(sys.prefix, "bin", "kirocrew")
+        assert _bin_in_running_env(inside) is True
+        assert _bin_in_running_env("/definitely/not/in/prefix/kirocrew") is False
 
 
 class TestKiroHooksMerge:
