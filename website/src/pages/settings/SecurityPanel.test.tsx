@@ -256,6 +256,18 @@ describe('SecurityPanel — denied commands', () => {
     expect(await screen.findByText('129 active')).toBeInTheDocument()
   })
 
+  it('status rows reserve the external-link slot so every badge shares one right edge', async () => {
+    // Regression: the hover-only ExternalLink used to render ONLY on rows with
+    // an href, pushing those badges left of the unlinked rows' badges.
+    await renderPanel()
+
+    // 'Standard' (Process Sandbox) is linked; 'Interactive' (Tool Approval) is not.
+    for (const text of ['Standard', 'Interactive']) {
+      const trailing = screen.getByText(text).parentElement
+      expect(trailing?.children).toHaveLength(2)
+    }
+  })
+
   it('chevron reveals the built-in pattern text', async () => {
     await renderPanel()
 

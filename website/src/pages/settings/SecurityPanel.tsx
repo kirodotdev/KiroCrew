@@ -53,7 +53,12 @@ function StatusRow({ icon, label, value, variant, href }: { icon: React.ReactNod
       </div>
       <div className="flex items-center gap-1.5">
         <Badge variant={variant}>{value}</Badge>
-        {href && <ExternalLink size={11} className="text-muted opacity-0 group-hover:opacity-100 transition-opacity" />}
+        {/* Slot is always rendered so linked and unlinked rows keep their badges
+         *  on the same right edge — otherwise only the linked rows get pushed
+         *  left by the icon's width. */}
+        <span className="w-[11px] shrink-0" aria-hidden="true">
+          {href && <ExternalLink size={11} className="text-muted opacity-0 group-hover:opacity-100 transition-opacity" />}
+        </span>
       </div>
     </div>
   )
