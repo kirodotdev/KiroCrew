@@ -25,6 +25,8 @@ from kiro_crew.dashboard.refresh_tokens import (
     MAX_REFRESH_TTL_SECS,
     REFRESH_COOKIE_PATH,
     _get_state,
+    cookie_jar_needs_pruning,
+    foreign_port_cookies,
     generate_refresh_token,
     refresh_cookie_name,
     validate_refresh_token,
@@ -274,6 +276,30 @@ def _clear_refresh_cookie(
     resp.set_cookie(cookie_name, "", max_age=0, path=REFRESH_COOKIE_PATH)
 
 
+def _expire_foreign_port_cookies(
+    resp: web.Response,
+    request: web.Request,
+) -> None:
+    """Expire per-port auth cookies left behind by gateways on OTHER ports.
+
+    Keeps the shared 127.0.0.1 cookie jar from growing past aiohttp's header
+    limit (see ``refresh_tokens.foreign_port_cookies``). Runs on the refresh
+    happy path, which — unlike the initial page mint — sees BOTH cookie types
+    because ``/api/auth/refresh`` matches the access (``/``) and refresh
+    (``/api/auth``) cookie paths, so one refresh cycle trims the whole jar.
+
+    No-op unless the jar is actually approaching the limit
+    (``cookie_jar_needs_pruning``) so co-existing live gateways in one browser
+    keep their sessions until accumulation genuinely threatens overflow.
+    """
+    if not cookie_jar_needs_pruning(request.cookies):
+        return
+    port = request.app.get("port", 7777)
+    current = _cookie_port_from_host(request, port)
+    for name, path in foreign_port_cookies(request.cookies, current):
+        resp.set_cookie(name, "", max_age=0, path=path)
+
+
 def _audit(
     user_id: str,
     operation: str,
@@ -417,6 +443,7 @@ async def api_auth_refresh(request: web.Request) -> web.Response:
                 _set_refresh_cookie(
                     resp, request, payload["_refresh_token"], payload["refresh_exp"]
                 )
+                _expire_foreign_port_cookies(resp, request)
                 _audit(user_id, "refresh_token_use", "grace_replay")
                 return resp
         # Genuine reuse → revoke the chain.
@@ -476,6 +503,7 @@ async def api_auth_refresh(request: web.Request) -> web.Response:
     resp = web.json_response(public_payload)
     _set_access_cookie(resp, request, new_access_token, new_session_exp)
     _set_refresh_cookie(resp, request, new_refresh_token, new_refresh_exp)
+    _expire_foreign_port_cookies(resp, request)
     _audit(user_id, "refresh_token_use", "ok")
     return resp
 

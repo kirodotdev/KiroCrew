@@ -117,4 +117,7 @@ def test_start_paths_use_hardened_runner() -> None:
     src = inspect.getsource(dashboard_server)
     # Neither start path may fall back to a bare web.AppRunner(app).
     assert "web.AppRunner(app)" not in src
-    assert src.count("build_hardened_runner(app)") == 2
+    # Both start paths call the hardened runner. Match the call prefix (not a
+    # fixed closing paren) so passing extra kwargs — e.g.
+    # max_field_size=_MAX_HEADER_FIELD_SIZE — still satisfies the invariant.
+    assert src.count("build_hardened_runner(app") == 2

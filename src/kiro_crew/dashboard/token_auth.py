@@ -28,6 +28,8 @@ from kiro_crew.dashboard.origin import is_https_request, is_loopback
 from kiro_crew.dashboard.refresh_tokens import (
     MAX_REFRESH_TTL_SECS,
     REFRESH_COOKIE_PATH,
+    cookie_jar_needs_pruning,
+    foreign_port_cookies,
     generate_refresh_token,
     refresh_cookie_name,
 )
@@ -1583,6 +1585,19 @@ def token_auth_middleware(
             )
             # Clean up legacy cookie from pre-port-specific era
             resp.set_cookie("mc_token", "", max_age=0, path="/")
+
+            # Trim other-port auth cookies from the shared 127.0.0.1 jar so it
+            # can't grow past aiohttp's header limit (see
+            # refresh_tokens.foreign_port_cookies). Gated on jar size so live
+            # co-existing gateways keep their sessions until accumulation
+            # genuinely threatens overflow. This page request only carries
+            # other-port ACCESS cookies (path "/"); other-port refresh cookies
+            # (path "/api/auth") are trimmed on the next refresh call.
+            if cookie_jar_needs_pruning(request.cookies):
+                for _stale_name, _stale_path in foreign_port_cookies(
+                    request.cookies, _cookie_port_from_host(request, port)
+                ):
+                    resp.set_cookie(_stale_name, "", max_age=0, path=_stale_path)
 
             # Initial mint via token URL: also attach a refresh cookie so
             # the user does not have to re-mint via URL every ~20h. Inlined

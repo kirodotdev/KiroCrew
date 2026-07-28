@@ -22,6 +22,8 @@ from kiro_crew.dashboard.refresh_tokens import (
     MAX_REFRESH_TTL_SECS,
     REFRESH_GRACE_SECS,
     RefreshStateManager,
+    cookie_jar_needs_pruning,
+    foreign_port_cookies,
     generate_refresh_token,
     refresh_cookie_name,
     validate_refresh_token,
@@ -744,6 +746,66 @@ def test_refresh_cookie_name_per_port():
     assert refresh_cookie_name("5555") == "mc_refresh_5555"
 
 
+# -- Foreign-port cookie pruning (cookie-jar overflow, issue #610) ------------
+
+
+def test_foreign_port_cookies_selects_other_ports_with_matching_paths():
+    """Other-port access/refresh cookies are returned with the path each was
+    set with (access="/", refresh="/api/auth") so a max_age=0 Set-Cookie
+    actually deletes them (cookie deletion is path-sensitive)."""
+    jar = [
+        "mc_token_7777",
+        "mc_refresh_7777",
+        "mc_token_5599",
+        "mc_refresh_5599",
+        "mc_token_6821",
+    ]
+    stale = foreign_port_cookies(jar, 7777)
+    assert set(stale) == {
+        ("mc_token_5599", "/"),
+        ("mc_refresh_5599", "/api/auth"),
+        ("mc_token_6821", "/"),
+    }
+
+
+def test_foreign_port_cookies_preserves_current_port():
+    """The current port's own pair must never be expired."""
+    stale = foreign_port_cookies(["mc_token_7777", "mc_refresh_7777"], 7777)
+    assert stale == []
+    # Current port passed as int or str resolves identically.
+    assert foreign_port_cookies(["mc_token_7777"], "7777") == []
+
+
+def test_foreign_port_cookies_ignores_non_port_names():
+    """Legacy 'mc_token' (no suffix), non-digit suffixes, and unrelated
+    cookies must be left untouched — only digit-suffixed per-port names
+    are pruned."""
+    jar = [
+        "mc_token",  # legacy, pre-per-port
+        "mc_token_abc",  # non-digit suffix
+        "session",  # unrelated
+        "mc_refresh_",  # empty suffix
+        "mc_token_5599",  # genuine other port -> only this one
+    ]
+    stale = foreign_port_cookies(jar, 7777)
+    assert stale == [("mc_token_5599", "/")]
+
+
+def test_cookie_jar_needs_pruning_threshold():
+    """The size gate is False for a small jar (live gateways coexist) and True
+    once the approximate Cookie header size crosses the threshold."""
+    from kiro_crew.dashboard.refresh_tokens import COOKIE_JAR_PRUNE_THRESHOLD_BYTES
+
+    small = {"mc_token_7777": "abc", "mc_refresh_7777": "def"}
+    assert cookie_jar_needs_pruning(small) is False
+
+    # One oversized value pushes the jar past the threshold.
+    big = {"mc_token_7777": "x" * (COOKIE_JAR_PRUNE_THRESHOLD_BYTES + 1)}
+    assert cookie_jar_needs_pruning(big) is True
+
+    assert cookie_jar_needs_pruning({}) is False
+
+
 # -- Atomic write under crash (TR-U-19) — best-effort smoke test --------------
 
 
@@ -1048,3 +1110,100 @@ def test_tr_u_27_logout_revokes_access_cookie(tmp_path, monkeypatch):
     ok, _uid, reason = validate_token(access_token, use_session_exp=True)
     assert ok is False
     assert reason == "session revoked"
+
+
+# -- Refresh endpoint trims the shared cookie jar (issue #610) ----------------
+
+
+def test_refresh_expires_foreign_port_cookies_keeps_current(
+    isolated_state: RefreshStateManager,
+):
+    """POST /api/auth/refresh must expire other-port mc_token_*/mc_refresh_*
+    cookies (max_age=0 with the matching path) so the shared 127.0.0.1 jar
+    self-trims, while re-setting the CURRENT port's pair with a live TTL.
+    Without this the per-port cookies accumulate until the Cookie header
+    exceeds aiohttp's max_field_size and every request 400s (LineTooLong).
+    """
+    import asyncio
+    from unittest.mock import MagicMock
+
+    from aiohttp import web
+
+    from kiro_crew.dashboard.handlers import auth_refresh as ar
+
+    token, _chain_id, _jti, _exp = generate_refresh_token("alice")
+
+    request = MagicMock(spec=web.Request)
+    request.app = {"port": 7777, "allowed_origins": set()}
+    request.cookies = {
+        refresh_cookie_name(7777): token,
+        # Stale pairs left by gateways on other ports, sized so the whole jar
+        # exceeds COOKIE_JAR_PRUNE_THRESHOLD_BYTES and the size gate fires.
+        "mc_token_5599": "x" * 2500,
+        "mc_refresh_5599": "y" * 2500,
+        "mc_token_6821": "z" * 2500,
+    }
+    request.headers = {"Origin": "http://localhost:7777", "Host": "localhost:7777"}
+    request.scheme = "http"
+    request.host = "localhost:7777"
+    request.remote = "127.0.0.1"
+
+    with patch(
+        "kiro_crew.dashboard.handlers.auth_refresh.check_origin", return_value=True
+    ), patch(
+        "kiro_crew.dashboard.handlers.auth_refresh._rate_limited", return_value=False
+    ):
+        resp = asyncio.run(ar.api_auth_refresh(request))
+
+    assert resp.status == 200
+    # Current port's pair re-issued with a live TTL (not expired).
+    assert int(resp.cookies["mc_token_7777"]["max-age"]) > 0
+    assert int(resp.cookies["mc_refresh_7777"]["max-age"]) > 0
+    # Foreign-port cookies expired with the path each was set with.
+    assert int(resp.cookies["mc_token_5599"]["max-age"]) == 0
+    assert resp.cookies["mc_token_5599"]["path"] == "/"
+    assert int(resp.cookies["mc_refresh_5599"]["max-age"]) == 0
+    assert resp.cookies["mc_refresh_5599"]["path"] == "/api/auth"
+    assert int(resp.cookies["mc_token_6821"]["max-age"]) == 0
+    assert resp.cookies["mc_token_6821"]["path"] == "/"
+
+
+def test_refresh_leaves_small_jar_untouched(
+    isolated_state: RefreshStateManager,
+):
+    """With a small cookie jar (e.g. two live gateways sharing a browser), the
+    refresh endpoint must NOT expire the other port's cookies — pruning only
+    fires once the jar approaches the header limit."""
+    import asyncio
+    from unittest.mock import MagicMock
+
+    from aiohttp import web
+
+    from kiro_crew.dashboard.handlers import auth_refresh as ar
+
+    token, _chain_id, _jti, _exp = generate_refresh_token("alice")
+
+    request = MagicMock(spec=web.Request)
+    request.app = {"port": 7777, "allowed_origins": set()}
+    request.cookies = {
+        refresh_cookie_name(7777): token,
+        # A second LIVE gateway's cookies — small jar, must be preserved.
+        "mc_token_6821": "small",
+        "mc_refresh_6821": "small",
+    }
+    request.headers = {"Origin": "http://localhost:7777", "Host": "localhost:7777"}
+    request.scheme = "http"
+    request.host = "localhost:7777"
+    request.remote = "127.0.0.1"
+
+    with patch(
+        "kiro_crew.dashboard.handlers.auth_refresh.check_origin", return_value=True
+    ), patch(
+        "kiro_crew.dashboard.handlers.auth_refresh._rate_limited", return_value=False
+    ):
+        resp = asyncio.run(ar.api_auth_refresh(request))
+
+    assert resp.status == 200
+    # The other live gateway's cookies were not touched (no expiry Set-Cookie).
+    assert "mc_token_6821" not in resp.cookies
+    assert "mc_refresh_6821" not in resp.cookies

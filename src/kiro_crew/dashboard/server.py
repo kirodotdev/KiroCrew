@@ -383,6 +383,19 @@ _PERMISSIONS_POLICY = "clipboard-write=(self), clipboard-read=(self)"
 _IMMUTABLE_PATH_PREFIXES = ("/assets/",)
 _IMMUTABLE_CACHE_CONTROL = "public, max-age=31536000, immutable"
 
+# Max size of a single incoming HTTP header field, raised from aiohttp's
+# 8190-byte default. Browser cookies are not port-isolated (RFC 6265), so on
+# 127.0.0.1 the per-port mc_token_<port>/mc_refresh_<port> cookies of every
+# gateway instance pile up in one shared Cookie header. At the 8190 default
+# that header crosses the limit after ~16 ports and aiohttp's C parser rejects
+# the request with 400 LineTooLong BEFORE any handler runs — so the request
+# that would prune the jar can never execute. This headroom lets an oversized
+# request reach the handler, which then expires the other-port cookies (see
+# refresh_tokens.foreign_port_cookies) so the jar self-trims. 32 KiB stays well
+# under a DoS-relevant size while covering ~60 accumulated ports plus other
+# request headers.
+_MAX_HEADER_FIELD_SIZE = 32 * 1024
+
 
 def _extra_frame_ancestors(
     request: "web.Request | None", app: "web.Application | None" = None
@@ -2220,7 +2233,10 @@ async def start_dashboard(
 
     # Hardened runner: bounds the request-line/header read time (slowloris /
     # CWE-400) and reaps idle keep-alive connections. See dashboard.slowloris.
-    runner = build_hardened_runner(app)
+    # max_field_size is raised from aiohttp's 8190 default so the accumulated
+    # shared per-port cookie jar can't 400 at the parser before a handler
+    # prunes it (see refresh_tokens.foreign_port_cookies).
+    runner = build_hardened_runner(app, max_field_size=_MAX_HEADER_FIELD_SIZE)
     await runner.setup()
     site = web.TCPSite(runner, bind_address_for(local_only), port)
     await _start_site(site, port)
@@ -2637,8 +2653,10 @@ async def start_api_server(
 
     app.on_cleanup.append(_kiro_prerequisite_shutdown)
 
-    # Hardened runner: same slowloris / CWE-400 mitigation as start_dashboard.
-    runner = build_hardened_runner(app)
+    # Hardened runner: same slowloris / CWE-400 mitigation as start_dashboard,
+    # plus the raised max_field_size (see start_dashboard for the cookie-jar
+    # rationale).
+    runner = build_hardened_runner(app, max_field_size=_MAX_HEADER_FIELD_SIZE)
     await runner.setup()
     # Same bind resolution as start_dashboard: loopback unless the operator
     # widened it (dashboard.url opt-out of local_only, or the KIROCREW_BIND

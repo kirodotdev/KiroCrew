@@ -196,14 +196,17 @@ def build_hardened_runner(
     *,
     header_read_timeout: float = HEADER_READ_TIMEOUT,
     keepalive_timeout: float = KEEPALIVE_TIMEOUT,
+    **kwargs: Any,
 ) -> web.AppRunner:
     """Return an ``AppRunner`` with slowloris mitigation wired in.
 
     Drop-in replacement for ``web.AppRunner(app)`` at the dashboard / API
-    server start sites.
+    server start sites. Extra ``**kwargs`` (e.g. ``max_field_size``) are
+    forwarded through to the underlying aiohttp request handler.
     """
     return SlowlorisAppRunner(
         app,
         header_read_timeout=header_read_timeout,
         keepalive_timeout=keepalive_timeout,
+        **kwargs,
     )

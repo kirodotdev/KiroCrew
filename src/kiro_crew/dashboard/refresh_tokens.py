@@ -29,7 +29,7 @@ import os
 import threading
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Iterable, Mapping
 
 from kiro_crew import platform_compat
 from kiro_crew.config.loader import config_dir
@@ -60,6 +60,28 @@ MAX_REFRESH_TTL_SECS = 30 * 86400  # 30 days
 # must add its own scrubbing — but that's a deliberate choice we'd
 # rather make than have logout silently no-op.
 REFRESH_COOKIE_PATH = "/api/auth"
+
+# Per-port cookie name prefixes. Browser cookies are NOT isolated by port
+# (RFC 6265 §8.5), so on 127.0.0.1 every gateway instance ever run on a
+# different port leaves its own ``mc_token_<port>`` / ``mc_refresh_<port>``
+# pair in the single shared cookie jar. Nothing pruned them, so the Cookie
+# header grew without bound until it crossed aiohttp's ``max_field_size``
+# and every request 400'd (``LineTooLong``) inside the C parser, before any
+# handler could run. Callers expire the OTHER-port pairs on a successful
+# auth so the jar self-trims — see ``foreign_port_cookies``.
+ACCESS_COOKIE_PREFIX = "mc_token_"
+REFRESH_COOKIE_PREFIX = "mc_refresh_"
+ACCESS_COOKIE_PATH = "/"
+
+# Only trim the jar once it is actually approaching the header limit. Below
+# this, per-port cookies coexist untouched — so a developer legitimately
+# running two LIVE gateways in one browser (e.g. the main instance plus an
+# isolated test pod) does not have one session's refresh expire the other's
+# cookie. Pruning kicks in only when accumulation (mostly dead ports whose
+# gateways no longer exist) genuinely threatens overflow. 6 KiB leaves ample
+# headroom under the raised 32 KiB parser limit AND under the stock 8190-byte
+# default any fronting proxy might still enforce.
+COOKIE_JAR_PRUNE_THRESHOLD_BYTES = 6 * 1024
 
 # Multi-tab grace window: a jti consumed within this many seconds is
 # still accepted from the same chain + same source IP. The handler
@@ -459,4 +481,51 @@ def validate_refresh_token(token: str) -> tuple[bool, str, str, str, str, float]
 
 def refresh_cookie_name(port: str | int) -> str:
     """Mirror the existing per-port pattern used for the access cookie."""
-    return f"mc_refresh_{port}"
+    return f"{REFRESH_COOKIE_PREFIX}{port}"
+
+
+def foreign_port_cookies(
+    cookie_names: Iterable[str], current_port: str | int
+) -> list[tuple[str, str]]:
+    """Return ``(name, path)`` pairs for per-port auth cookies of OTHER ports.
+
+    ``cookie_names`` is what the browser sent (e.g. ``request.cookies``);
+    ``current_port`` is the port THIS gateway resolved for the request
+    (``_cookie_port_from_host``), whose own pair is always preserved.
+
+    The returned ``path`` matches how each cookie was originally set
+    (access = ``/``, refresh = ``/api/auth``) because cookie deletion is
+    path-sensitive: a ``Set-Cookie`` with ``max_age=0`` only removes a
+    cookie when its ``path`` matches the one used to set it. Suffixes must
+    be digit-only, so non-port names — including the legacy ``mc_token``
+    (no suffix) — are never touched.
+
+    Callers expire the returned cookies on successful auth so the shared
+    127.0.0.1 jar self-trims and can never grow past aiohttp's header limit.
+    """
+    current = str(current_port)
+    stale: list[tuple[str, str]] = []
+    for name in cookie_names:
+        for prefix, path in (
+            (ACCESS_COOKIE_PREFIX, ACCESS_COOKIE_PATH),
+            (REFRESH_COOKIE_PREFIX, REFRESH_COOKIE_PATH),
+        ):
+            if not name.startswith(prefix):
+                continue
+            suffix = name[len(prefix) :]
+            if suffix.isdigit() and suffix != current:
+                stale.append((name, path))
+            break
+    return stale
+
+
+def cookie_jar_needs_pruning(cookies: Mapping[str, str]) -> bool:
+    """True when the incoming cookie jar is large enough to warrant trimming.
+
+    Approximates the wire size of the ``Cookie`` request header (``name=value``
+    pairs joined by ``"; "``). Kept as a cheap gate so pruning only fires once
+    accumulation approaches the limit — see ``COOKIE_JAR_PRUNE_THRESHOLD_BYTES``
+    for why small jars are deliberately left alone.
+    """
+    total = sum(len(name) + len(value) + 2 for name, value in cookies.items())
+    return total > COOKIE_JAR_PRUNE_THRESHOLD_BYTES
