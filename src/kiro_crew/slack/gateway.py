@@ -884,20 +884,22 @@ class GatewayOrchestrator:
                 else ""
             )
 
-            # Heuristic fallback: pick the first running slot only when the caller
-            # supplied neither an authoritative parent nor an explicit resolver.
-            resolved_slot = parent_slot
-            if (
-                not resolved_slot
-                and slot_resolver is None
-                and self.dashboard_state
-                and self.dashboard_state._slots
-            ):
-                for k in self.dashboard_state._slots:
-                    if self.dashboard_state._slots[k].running:
-                        resolved_slot = k.removeprefix("dashboard:")
-                        break
-
+            # NO heuristic fallback. A background caller (cron / taskrunner /
+            # autonudge) that supplies neither an authoritative parent session
+            # nor a ``slot_resolver`` has no owning conversation, and there is
+            # no way to guess one. Borrowing "the first slot that is running"
+            # hijacked an unrelated chat and was wrong in three directions at
+            # once:
+            #   * the prompt surfaced in a conversation that never raised it,
+            #     with a truncated label and no provenance;
+            #   * the Trust control resolved against that innocent slot, so
+            #     trusting a cron's command granted blanket auto-approval to
+            #     the borrowed session (and did nothing for the cron);
+            #   * conversely, a borrowed slot that already had trust enabled
+            #     silently auto-approved the background command below —
+            #     privilege the cron was never granted.
+            # Unowned approvals now carry slot="" and are surfaced ONLY on the
+            # global approvals surface (notification feed / /api/approvals).
             if parent_slot:
                 approval_slot = parent_slot
             elif slot_resolver:
@@ -907,7 +909,7 @@ class GatewayOrchestrator:
                     logger.warning("slot_resolver failed for %s", request_id, exc_info=True)
                     approval_slot = ""
             else:
-                approval_slot = resolved_slot
+                approval_slot = ""
 
             # Per-source auto-approve (e.g. cron, taskrunner, subagent)
             if source in self._cfg.hooks.get("auto_approve_sources", []):
@@ -945,11 +947,11 @@ class GatewayOrchestrator:
 
             if self.dashboard_state:
                 # Check if the parent slot is trusted (not all slots).
-                # Use slot_resolver or resolved_slot to find the parent;
-                # only fall back to all-slots check when neither exists.
-                # When slot_resolver exists but returns falsy, we do NOT
-                # fall back to the heuristic -- if the explicit resolver
-                # can't find the parent, guessing would widen trust scope.
+                # The parent comes from the authoritative parent session key or
+                # an explicit slot_resolver -- never from a guess. When a
+                # slot_resolver exists but returns falsy we do NOT fall back to
+                # the all-slots rule: if the explicit resolver cannot find the
+                # parent, widening trust scope would be unsound.
 
                 def _sel_log(
                     *, caller: str, operation: str, outcome: str, resources: str = ""
@@ -992,24 +994,34 @@ class GatewayOrchestrator:
                             outcome="not_auto_approved",
                             resources=_safe_title,
                         )
-                elif not slot_resolver and not resolved_slot:
-                    # No resolver available at all -- fall back to all-slots
-                    slots = self.dashboard_state._slots
-                    if slots and all(s._trust for s in slots.values()):
-                        _sel_log(
-                            caller=f"source:{source}",
-                            operation=f"{source}.all_slots_trust_auto_approve",
-                            outcome="ok",
-                            resources=_safe_title,
-                        )
-                        return True
-                    else:
-                        _sel_log(
-                            caller=f"source:{source}",
-                            operation=f"{source}.all_slots_trust_not_trusted",
-                            outcome="not_auto_approved",
-                            resources=_safe_title,
-                        )
+                elif not slot_resolver:
+                    # No owning slot and no resolver at all. There is NO
+                    # implicit trust path here: an unowned background command
+                    # always prompts.
+                    #
+                    # This used to consult an "all open conversations are
+                    # trusted" rule, which was narrower than the heuristic it
+                    # replaced but still reproduced the exact harm this change
+                    # exists to remove. For a single-user dashboard with one
+                    # trusted chat open -- the typical state -- `all()` is
+                    # trivially satisfied, so a cron's command was silently
+                    # auto-approved with no prompt: privilege the job was never
+                    # granted, justified by trust the user granted to a
+                    # conversation the job has nothing to do with.
+                    #
+                    # Session trust means "auto-approve tools for THIS chat
+                    # session". An unattended job is not this session, so no
+                    # amount of session trust should speak for it. Operators who
+                    # do want a source to run unprompted have the explicit
+                    # opt-in above (``hooks.auto_approve_sources``), which is
+                    # consent for that source rather than a side effect of
+                    # trusting a chat.
+                    _sel_log(
+                        caller=f"source:{source}",
+                        operation=f"{source}.unowned_no_implicit_trust",
+                        outcome="not_auto_approved",
+                        resources=_safe_title,
+                    )
                 else:
                     # Resolver existed but failed -- fall through to interactive approval
                     _sel_log(

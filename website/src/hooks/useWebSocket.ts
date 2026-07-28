@@ -324,8 +324,15 @@ export function useWebSocket() {
               ts: String(data.ts || Date.now() / 1000),
               approval_id: data.id,
             } as Notification))
-            // Also inject inline in active chat
-            const targetSlot = data.slot || store.getState().chat.activeSlot || ''
+            // Inject inline in the OWNING chat only. An approval with no
+            // explicit slot has no owning conversation (an unowned cron /
+            // taskrunner command): falling back to activeSlot planted the card
+            // in whatever chat the user happened to be viewing, where its
+            // Trust control resolved against that innocent slot and the card
+            // 404'd as soon as the short background window elapsed. Unowned
+            // approvals live on the global surface (notification feed) only —
+            // the addNotification above already delivered it there.
+            const targetSlot = data.slot || ''
             if (targetSlot) {
               dispatch(sseChatMessage({
                 slot: targetSlot,
@@ -356,7 +363,10 @@ export function useWebSocket() {
             const match = items.find((n: Notification) => n.approval_id === data.id)
             if (match) dispatch(removeNotificationByTs(match.ts))
             dispatch(resolveByApprovalId({ id: data.id, decision: data.approved ? 'approved' : 'rejected' }))
-            const targetSlot = data.slot || store.getState().chat.activeSlot || ''
+            // Resolve only in the slot that raised the card. Guessing
+            // activeSlot here mirrored the raise-path leak: it wrote
+            // subagent spawn/done entries into an unrelated conversation.
+            const targetSlot = data.slot || ''
             const resolvedType = typeof data.id === 'string' && data.id.startsWith('spawn:') ? 'spawn' : 'chat'
             if (targetSlot) {
               const chatState = store.getState().chat

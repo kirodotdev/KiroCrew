@@ -531,8 +531,16 @@ class TestInteractiveApproval:
         )
 
     @pytest.mark.asyncio
-    async def test_all_slots_trusted_approves(self):
-        """All slots trusted, no resolver → auto-approve."""
+    async def test_all_slots_trusted_does_not_auto_approve(self):
+        """All slots trusted, no resolver → still PROMPTS (no implicit trust).
+
+        This previously asserted auto-approval. That rule is gone: session
+        trust speaks for a chat session, not for an unattended job, and with
+        one trusted chat open the `all()` test was trivially satisfied.
+        Asserting the return value alone would now pass vacuously, because the
+        mocked `request_approval` also returns True -- so assert the prompt was
+        actually raised.
+        """
         orch = _make_orchestrator(slack_enabled=False)
         ds = _mock_dashboard_state()
         ds._yolo = False
@@ -550,8 +558,8 @@ class TestInteractiveApproval:
         with patch("kiro_crew.slack.handler.is_yolo_mode", return_value=False):
             with patch("kiro_crew.sel.sel") as mock_sel:
                 mock_sel.return_value.log_api_access = MagicMock()
-                result = await callback(event, "")
-        assert result is True
+                await callback(event, "")
+        ds.request_approval.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_auto_approve_sources_config(self):

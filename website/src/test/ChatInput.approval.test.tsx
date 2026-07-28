@@ -398,3 +398,90 @@ describe('ChatInput sub-agent spawn-approval reminder', () => {
     expect(screen.queryByText(/awaiting your approval to run/)).not.toBeInTheDocument()
   })
 })
+
+/**
+ * Unattended sources (cron / heartbeat / taskrunner) run with no human bound to
+ * the conversation the card renders in. Session-scoped Trust is incoherent for
+ * them: `api.approveChatSlot` grants on THIS slot, widening its auto-approval
+ * surface for a job that is not this session — and doing nothing for the job.
+ * So the Trust controls are withheld, and the expiry copy names the source
+ * because these approvals deny-fast on a short window.
+ */
+describe('ChatInput unattended-source approvals', () => {
+  const withSource = (source: string, opts: { viaLabel?: boolean } = {}) => {
+    const state = stateWithApproval()
+    if (opts.viaLabel) {
+      // Rehydrated-from-content path: chatSlice's reconstruct carries no
+      // `source`, so the `[source]` label prefix is the only signal.
+      state.chat!.messages[1].content = `[${source}] Running: ls /tmp`
+    } else {
+      state.chat!.messages[1].meta!.source = source
+    }
+    return state
+  }
+
+  it.each(['cron', 'heartbeat', 'taskrunner'])('withholds Trust for %s', (source) => {
+    const store = createTestStore(withSource(source))
+    renderWithProviders(<ChatInput {...defaultProps} />, { store })
+    expect(screen.queryByText('Trust')).not.toBeInTheDocument()
+    expect(screen.queryByText('Trust reads')).not.toBeInTheDocument()
+    // The actionable controls remain — the card is still answerable.
+    expect(screen.getByText('Allow once')).toBeInTheDocument()
+    expect(screen.getByText('Reject')).toBeInTheDocument()
+  })
+
+  it('keeps Trust for autonudge, which does run in this session', () => {
+    const store = createTestStore(withSource('autonudge'))
+    renderWithProviders(<ChatInput {...defaultProps} />, { store })
+    expect(screen.getByText('Trust')).toBeInTheDocument()
+  })
+
+  it('keeps Trust for an ordinary in-session approval', () => {
+    const store = createTestStore(stateWithApproval())
+    renderWithProviders(<ChatInput {...defaultProps} />, { store })
+    expect(screen.getByText('Trust')).toBeInTheDocument()
+  })
+
+  it('withholds Trust when the source survives only in the card label', () => {
+    const store = createTestStore(withSource('cron', { viaLabel: true }))
+    renderWithProviders(<ChatInput {...defaultProps} />, { store })
+    expect(screen.queryByText('Trust')).not.toBeInTheDocument()
+  })
+
+  it.each([
+    ['Allow once', 'approve'],
+    ['Reject', 'reject'],
+  ])('answers an unattended card via %s without the slot-scoped grant', async (label, decision) => {
+    // No control on an unattended card may route through approveChatSlot,
+    // which grants on THIS slot. (handleApprovalAction also downgrades a trust
+    // decision to a one-shot allow as defence in depth, but the UI withholds
+    // those controls entirely, so that branch is not reachable from here.)
+    const store = createTestStore(withSource('cron'))
+    renderWithProviders(<ChatInput {...defaultProps} />, { store })
+    fireEvent.click(screen.getByText(label))
+    await waitFor(() => {
+      expect(api.resolveApproval).toHaveBeenCalledWith('ap-123', decision)
+    })
+    expect(api.approveChatSlot).not.toHaveBeenCalled()
+  })
+
+  it('names the source when an unattended request already timed out', async () => {
+    vi.mocked(api.resolveApproval).mockRejectedValueOnce(new ApiError(404, 'gone'))
+    const store = createTestStore(withSource('cron'))
+    renderWithProviders(<ChatInput {...defaultProps} />, { store })
+    fireEvent.click(screen.getByText('Allow once'))
+    await waitFor(() => {
+      expect(screen.getByRole('status')).toHaveTextContent(/cron request already timed out/i)
+    })
+  })
+
+  it('keeps the generic copy for an ordinary expired approval', async () => {
+    vi.mocked(api.resolveApproval).mockRejectedValueOnce(new ApiError(404, 'gone'))
+    const store = createTestStore(stateWithApproval())
+    renderWithProviders(<ChatInput {...defaultProps} />, { store })
+    fireEvent.click(screen.getByText('Allow once'))
+    await waitFor(() => {
+      expect(screen.getByRole('status')).toHaveTextContent(/That approval expired/i)
+    })
+  })
+})

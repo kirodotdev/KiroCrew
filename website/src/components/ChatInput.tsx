@@ -117,6 +117,13 @@ function toApiDecision(d: string): 'approve' | 'reject' {
   return (d === 'approved' || d === 'trust' || d === 'trust_reads') ? 'approve' : 'reject'
 }
 
+/** Approval sources that run unattended, with no human bound to the chat the
+ *  card renders in. Session-scoped Trust is meaningless for these (see
+ *  `approvalIsUnattended`), so the Trust controls are withheld and only
+ *  Allow once / Reject are offered. Kept in sync with the backend's
+ *  `_BACKGROUND_APPROVAL_SOURCES` minus `autonudge`, which does run in-session. */
+export const UNATTENDED_APPROVAL_SOURCES = new Set(['cron', 'heartbeat', 'taskrunner'])
+
 // Pending-approval selection is now slot-aware — see selectSlotPendingApproval
 // in chatSlice (Path B S3): each grid pane's approval bar reflects ITS slot.
 
@@ -455,6 +462,20 @@ function ChatInput({
   const approvalBaseCommand = (approvalMeta?.base_command as string) || ''
   const approvalToolTitle = (approvalMeta?.tool_title as string) || ''
   const approvalIsShell = approvalToolTitle.startsWith('Running: ')
+  /** Sources that run with no human attached to THIS conversation. Session
+   *  trust means "auto-approve tools for this chat session", which is
+   *  incoherent for an unattended job: the job is not this session, so the
+   *  grant would widen this slot's own auto-approval surface while doing
+   *  nothing for the job. `autonudge` is deliberately absent — a monitor loop
+   *  runs *in* this session, so trusting it is meaningful. */
+  const approvalSource = (approvalMeta?.source as string)
+    // Persisted permission rows are rehydrated from content alone (chatSlice's
+    // reconstruct path carries no `source`), so fall back to the `[source]`
+    // prefix the card was written with rather than silently treating a
+    // reloaded cron card as an ordinary in-session one.
+    || (pendingApproval?.content || '').match(/^(?:🔧\s*)?\[([a-z_]+)\]/)?.[1]
+    || ''
+  const approvalIsUnattended = UNATTENDED_APPROVAL_SOURCES.has(approvalSource)
   const simplified = useSimplifiedToolNames()
   const approvalLabelRaw = sanitizeLlmOutput(pendingApproval?.content || '').replace(/^🔧\s*/, '')
 
@@ -522,7 +543,15 @@ function ChatInput({
       // bug), so clear it and say why instead of only logging to the console.
       if (err instanceof ApiError && err.status === 404) {
         dispatch(resolveByApprovalId({ id: approvalId, decision: 'stale' }))
-        setApprovalNotice('That approval expired — the turn it belonged to is no longer waiting.')
+        // Say WHOSE turn expired. Unattended sources deny-fast on a short
+        // window (minutes), so by the time a human reads the card the job has
+        // usually already been denied and moved on — "expired" alone reads as
+        // a dashboard bug rather than the job's documented timeout.
+        setApprovalNotice(
+          approvalIsUnattended
+            ? `That ${approvalSource} request already timed out and was denied — the job is no longer waiting. Check the approvals feed for the record.`
+            : 'That approval expired — the turn it belonged to is no longer waiting.'
+        )
         return
       }
       // eslint-disable-next-line no-console -- surface real approval-resolution failures to the dev console
@@ -530,13 +559,22 @@ function ChatInput({
       setApprovalNotice('Could not submit that decision — see the console for details.')
     }
     if (['trust_command', 'trust_base', 'trust', 'trust_reads'].includes(decision) && activeSlot) {
+      // Defence in depth: the Trust controls are not rendered for unattended
+      // sources, but never let a trust grant be applied on their behalf. The
+      // grant would land on THIS slot (api.approveChatSlot is slot-scoped),
+      // widening its auto-approval surface for a job that is not this session.
+      // Downgrade to a one-shot allow instead of silently over-granting.
+      if (approvalIsUnattended) {
+        api.resolveApproval(approvalId, 'approve').then(finish).catch(fail)
+        return
+      }
       const extra: Record<string, string> = { request_id: approvalId }
       if (pattern) extra.pattern = pattern
       api.approveChatSlot(activeSlot, decision, extra).then(finish).catch(fail)
     } else {
       api.resolveApproval(approvalId, toApiDecision(decision)).then(finish).catch(fail)
     }
-  }, [approvalId, activeSlot, dispatch])
+  }, [approvalId, activeSlot, approvalIsUnattended, approvalSource, dispatch])
 
   // Pending sub-agent SPAWN approvals for this slot (blocked on user approval).
   // Surfaced as a top-level REMINDER only — the banner does not resolve
@@ -1811,15 +1849,17 @@ function ChatInput({
                   )}
                   <div className="flex gap-1.5 flex-wrap items-center">
                       <button disabled={approvalSubmitting} className={approvalBtnClass} onClick={() => handleApprovalAction('approved')}><CheckCircle size={12} className="shrink-0" />Allow once</button>
-                      {approvalIsReadOnly && <button disabled={approvalSubmitting} className={approvalBtnClass} onClick={() => handleApprovalAction('trust_reads')}><BookOpen size={12} className="shrink-0" />Trust reads</button>}
-                      <TrustDropdown
-                          fullCommand={approvalFullCommand || approvalLabelRaw}
-                          baseCommand={approvalBaseCommand || approvalLabelRaw.split(/\s+/)[0] || ''}
-                          isShell={approvalIsShell}
-                          disabled={approvalSubmitting}
-                          className={approvalBtnClass}
-                          onAction={(action, pattern) => { handleApprovalAction(action, pattern) }}
-                      />
+                      {approvalIsReadOnly && !approvalIsUnattended && <button disabled={approvalSubmitting} className={approvalBtnClass} onClick={() => handleApprovalAction('trust_reads')}><BookOpen size={12} className="shrink-0" />Trust reads</button>}
+                      {!approvalIsUnattended && (
+                        <TrustDropdown
+                            fullCommand={approvalFullCommand || approvalLabelRaw}
+                            baseCommand={approvalBaseCommand || approvalLabelRaw.split(/\s+/)[0] || ''}
+                            isShell={approvalIsShell}
+                            disabled={approvalSubmitting}
+                            className={approvalBtnClass}
+                            onAction={(action, pattern) => { handleApprovalAction(action, pattern) }}
+                        />
+                      )}
                       <button disabled={approvalSubmitting} className={`${approvalBtnClass} hover:!text-danger hover:!bg-[color-mix(in_srgb,var(--danger)_10%,transparent)]`} onClick={() => handleApprovalAction('rejected')}><Ban size={12} className="shrink-0" />Reject</button>
                   </div>
               </div>
