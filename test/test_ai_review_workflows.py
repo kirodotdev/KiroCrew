@@ -324,14 +324,18 @@ class TestDesignReviewPresentation:
 class TestPreparePrPreSubmitReview:
     def test_two_read_only_reviewers_run_before_the_first_push(self) -> None:
         skill = _prepare_pr_skill()
-        description = skill.index("Reconcile code and description before review")
-        review = skill.index("Run the mandatory pre-submit subagent review")
-        push = skill.index("Push only the reviewed commit")
+        # Full-cycle loop: Sync (reconcile) -> Local review gate -> Push.
+        sync = skill.index("Reconcile code and description.")
+        review = skill.index("Local review that MIRRORS the server reviewers")
+        push = skill.index("Push only the reviewed commit.")
 
-        assert description < review < push
-        assert "two independent subagents in parallel" in skill
-        assert "They review; they never edit." in skill
+        assert sync < review < push
+        assert "two separate model-pinned `spawn_run` calls" in skill
+        assert "concurrently" in skill.lower() or "run at the same time" in skill.lower()
+        assert "Charter is read-only" in skill
+        # The two reviewers mirror their own (divergent) server contracts.
         assert ".github/workflows/codex-review.yml" in skill
+        assert ".github/workflows/claude-review.yml" in skill
         assert "REVIEWED_SHA=$(git rev-parse HEAD)" in skill
         assert '"$(git rev-parse HEAD)" = "$REVIEWED_SHA"' in skill
 
@@ -339,22 +343,25 @@ class TestPreparePrPreSubmitReview:
         skill = _prepare_pr_skill()
         findings = PREPARE_PR_FINDINGS.read_text(encoding="utf-8")
 
-        assert "Critical/High must meet the canonical blocking bar" in skill
-        assert "Medium/Low are advisory" in skill
-        assert "initial two-reviewer fan-out plus one verifier" in skill
+        assert "fix all legitimate Critical/High" in skill
+        assert "advisory unless Arbiter escalates them" in skill
+        assert "one focused verifier" in skill
         assert "fix every legitimate Critical/High finding + failing check" in findings
         assert "fix every legitimate High/Medium" not in findings
 
     def test_rebuttals_are_recorded_before_the_next_review_run(self) -> None:
         skill = _prepare_pr_skill()
-        disposition = skill.index("Record GPT dispositions before re-pushing")
-        repush = skill.index("re-push (`--force-with-lease`")
+        # Dispositions are posted this iteration, before the loop re-enters
+        # sync/review for the next server round.
+        disposition = skill.index("Record dispositions.")
+        next_review = skill.index("loop back to Phase 1")
 
-        assert disposition < repush
+        assert disposition < next_review
         assert "<!-- ai-review-disposition target=gpt -->" in skill
         assert "prior reviewed SHA" in skill
-        assert "smallest evidence-based reason" in skill
+        assert "`fixed`/`rebutted`/`accepted`" in skill
         assert "does not authorize or suppress a finding" in skill
+        assert "current-SHA-scoped" in skill
 
 
 class TestArbiterPresentation:
