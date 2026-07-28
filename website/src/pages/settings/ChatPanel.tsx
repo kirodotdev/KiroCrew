@@ -3,6 +3,9 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { SettingsSection, SettingsCard, SettingsToggle, SettingsSelect, SettingsInput, SettingsButtonGroup } from '../../components/settings'
 import { loadChatConfig, saveChatConfig, type ChatConfig, type ContentWidth, type DashboardConfig, type SendMode } from '../chat/ChatSettings'
 import { api } from '../../api/client'
+import { useProvider } from '../../providers'
+import { modelListRefetchInterval } from '../../providers/modelListHealth'
+import { EFFORT_LEVELS, effortLabel, modelSupportsEffort } from '../../lib/effort'
 import { isMac } from '../../utils/platform'
 
 const RESTORE_OPTIONS = ['15', '30', '60', '120', '360', '720', '1440', '0']
@@ -34,6 +37,7 @@ const COMPLETION_KEEP_CHARS_DEFAULT = 3000
 
 export function ChatPanel() {
   const qc = useQueryClient()
+  const provider = useProvider()
   const [chatCfg, setChatCfg] = useState<ChatConfig>(loadChatConfig)
   const [saveError, setSaveError] = useState('')
 
@@ -89,6 +93,8 @@ export function ChatPanel() {
   const mcQ = useQuery<{
     session?: { autocompact_pct?: number }
     agent?: {
+      model?: string
+      reasoning_effort?: string
       soft_stop_budget_secs?: number
       completion_keep?: CompletionKeepMode
       completion_keep_chars?: number
@@ -160,6 +166,44 @@ export function ChatPanel() {
     onError: () => setSaveError('Failed to save completion-keep mode'),
   })
 
+  // ── Default model + default reasoning effort ──
+  // These are the DEFAULTS for new sessions. A session's own model/effort
+  // picker still overrides them per-slot; nothing here touches live sessions.
+  // Same query key as every other model picker so the list is fetched once.
+  const { data: availableModels = [{ name: 'auto', description: 'Default' }] } = useQuery({
+    queryKey: ['available-models', provider.id],
+    queryFn: async () => {
+      const models = await provider.fetchAvailableModels()
+      return [{ name: 'auto', description: 'Default' }, ...models.filter(m => m.name !== 'auto')]
+    },
+    refetchInterval: modelListRefetchInterval,
+  })
+  // '' in config means "unset" and resolves the same way 'auto' does, so both
+  // render as the 'auto' option rather than as a missing selection.
+  const defaultModel = mcCfg?.agent?.model || 'auto'
+  const modelOptions = availableModels.map(m => m.name)
+  // A model the live backend no longer advertises must still be selectable,
+  // otherwise the select would silently jump to another entry and a stray
+  // change event would overwrite the user's stored choice.
+  if (!modelOptions.includes(defaultModel)) modelOptions.unshift(defaultModel)
+
+  const defaultModelMut = useMutation({
+    mutationFn: (v: string) => api.patchConfig('agent.model', v),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['kirocrewConfig'] }),
+    onError: () => setSaveError('Failed to save default model'),
+  })
+
+  const defaultEffort = mcCfg?.agent?.reasoning_effort ?? ''
+  // Effort is only meaningful on reasoning-capable models. Rather than hide the
+  // row (which would make the setting look absent), keep it visible and
+  // disabled with an explanatory hint.
+  const effortSupported = modelSupportsEffort(defaultModel)
+  const defaultEffortMut = useMutation({
+    mutationFn: (v: string) => api.patchConfig('agent.reasoning_effort', v),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['kirocrewConfig'] }),
+    onError: () => setSaveError('Failed to save default reasoning effort'),
+  })
+
   // ── Local chat config (localStorage) ──
   const setChat = useCallback(<K extends keyof ChatConfig>(k: K, v: ChatConfig[K]) => {
     setChatCfg(prev => {
@@ -195,6 +239,35 @@ export function ChatPanel() {
           <button className="underline cursor-pointer bg-transparent border-none text-danger" onClick={() => mcQ.refetch()}>Retry</button>
         </div>
       )}
+
+      <SettingsSection title="Model">
+        <SettingsCard>
+          <SettingsSelect
+            label="Default Model"
+            description="Which model new sessions start with. Pick a model inside a session to override it there."
+            hint="'Default' defers to your agent config, and then to Kiro's own default. Changing this does not affect sessions that are already open."
+            value={defaultModel}
+            options={modelOptions}
+            optionLabels={modelOptions.map(m => (m === 'auto' ? 'Default (auto)' : m))}
+            onChange={v => defaultModelMut.mutate(v)}
+            disabled={!mcQ.isSuccess}
+          />
+          <SettingsSelect
+            label="Default Reasoning Effort"
+            description="How long models think before answering by default. Higher is slower and costs more. Only available on reasoning-capable models (Opus, Sonnet, Fable, GPT-5.x)."
+            hint={
+              effortSupported
+                ? "'Model default' applies no override — the model picks its own effort."
+                : `Reasoning effort is not available on ${defaultModel}. Choose a reasoning-capable model to set a default.`
+            }
+            value={defaultEffort}
+            options={[...EFFORT_LEVELS]}
+            optionLabels={EFFORT_LEVELS.map(l => (l === '' ? 'Model default' : effortLabel(l)))}
+            onChange={v => defaultEffortMut.mutate(v)}
+            disabled={!mcQ.isSuccess || !effortSupported}
+          />
+        </SettingsCard>
+      </SettingsSection>
 
       <SettingsSection title="About You">
         <SettingsCard>

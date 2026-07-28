@@ -4,6 +4,7 @@ import { useLocation, useNavigate, useNavigationType, useSearchParams } from 're
 import { useQuery, useQueries, useMutation, useQueryClient } from '@tanstack/react-query'
 import { modelListRefetchInterval } from '../providers/modelListHealth'
 import { useIsMobile } from '../hooks/useIsMobile'
+import { SETTINGS_DEFAULT_MODEL_ID } from '../hooks/useSettingHighlight'
 import { isTouchDevice } from '../utils/isTouchDevice'
 import { useSwipeEdge } from '../hooks/useSwipeEdge'
 import type { ResizeInfo } from '../utils/resizeImage'
@@ -4128,6 +4129,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
                 hasEffort={!!(activeSlot && provider.capabilities.reasoningEffort && modelSupportsEffort(currentSlot?.model || resolvedModel))}
                 slot={activeSlot}
                 currentEffort={currentSlot?.reasoning_effort || ''}
+                onSetDefault={() => {
+                  setModelDropdown(false)
+                  navigate(`/settings?tab=chat&highlight=${SETTINGS_DEFAULT_MODEL_ID}`)
+                }}
               />,
               document.body
             )}

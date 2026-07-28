@@ -36,6 +36,7 @@ Set via `kirocrew config set sandbox.mode auto`.
     "default_agent": "kirocrew",
     "approval_mode": "interactive",
     "model": "auto",
+    "reasoning_effort": "",
     "bot_name": "",
     "conductor_skill": false,
     "max_channels": 1,
@@ -95,7 +96,8 @@ Set via `kirocrew config set sandbox.mode auto`.
 | `agent.provider` | LLM provider backend: `"acp"` (KiroACP / kiro-cli) | `"acp"` |
 | `agent.default_agent` | Default agent name | `"kirocrew"` |
 | `agent.approval_mode` | `"auto"` or `"interactive"` | `"interactive"` |
-| `agent.model` | LLM model override | `"auto"` |
+| `agent.model` | Default LLM model for new sessions. `"auto"` defers to the agent config, then to Kiro's own default. Editable from Settings → Chat → Model; a per-session model picker overrides it for that session only | `"auto"` |
+| `agent.reasoning_effort` | Default reasoning effort for new sessions on reasoning-capable models (Opus, Sonnet, Fable, GPT-5.x). One of `""`, `low`, `medium`, `high`, `xhigh`, `max`; `""` defers to the provider/model default. Editable from Settings → Chat → Model; a per-session effort override wins | `""` |
 | `agent.bot_name` | Custom name the bot identifies as | `""` |
 | `agent.conductor_skill` | Enable agent delegation conductor | `false` |
 | `agent.max_channels` | Max concurrent agent channels (1-5) | `1` |

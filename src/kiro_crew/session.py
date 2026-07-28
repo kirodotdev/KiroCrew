@@ -689,6 +689,49 @@ class SessionManager:
             ]
         )
 
+    async def refresh_defaults(self) -> None:
+        """Adopt config changes that only affect NEW sessions.
+
+        For settings that are *defaults* — ``agent.model``,
+        ``agent.reasoning_effort`` — the new value must reach the next session
+        without a gateway restart, because the provider factory and ``_cfg``
+        both capture them when they are built.
+
+        Unlike :meth:`reload_provider_factory`, this deliberately does NOT touch
+        ``_sessions``: a default is by definition not retroactive, and shutting
+        down live providers to pick one up would kill in-flight turns and lose
+        their responses. The warm pool IS drained, because a pre-warmed provider
+        was constructed by the old factory and would hand the stale default to
+        the very next session — and unlike a live session, a pooled provider has
+        no conversation to lose.
+        """
+        cfg = KiroCrewConfig.load()
+        async with self._pool_fill_lock:
+            async with self._lock:
+                self._cfg = cfg
+                self._provider_factory = build_provider_factory(cfg)
+                while not self._warm_pool.empty():
+                    try:
+                        provider, _ = self._warm_pool.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
+                    await self._discard_pool_provider(provider, "Default changed")
+        # Refill with the NEW factory. This is not optional bookkeeping: the
+        # health sweep returns early on an empty pool (`if not qsize: return`),
+        # so a drained pool would never refill on its own and a configured warm
+        # pool would sit empty until the next gateway restart. Done outside both
+        # locks — start_pool -> _fill_pool takes _pool_fill_lock itself.
+        self._pool_started = False
+        if self._pool_health_task and not self._pool_health_task.done():
+            self._pool_health_task.cancel()
+            self._pool_health_task = None
+        await self.start_pool(blocking=False)
+        logger.info(
+            "Session defaults refreshed: model=%s effort=%r (live sessions untouched)",
+            cfg.agent.model,
+            cfg.agent.reasoning_effort,
+        )
+
     async def reload_provider_factory(self) -> None:
         """Reload provider factory from current config (after provider switch)."""
         cfg = KiroCrewConfig.load()

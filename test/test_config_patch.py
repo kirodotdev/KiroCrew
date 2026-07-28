@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
@@ -355,3 +355,127 @@ class TestUserProfilePatch:
         async with TestClient(TestServer(_make_app())) as c:
             resp = await _patch(c, "dashboard.user_technical_level", "expert")
             assert resp.status == 400
+
+
+# ── Default model + default reasoning effort (Settings > Chat) ────────────
+
+
+def _make_app_with_sessions() -> tuple[web.Application, MagicMock]:
+    """Build a PATCH app whose state exposes an awaitable refresh_defaults.
+
+    ``agent.model`` / ``agent.reasoning_effort`` reload the provider factory so
+    the new default reaches new sessions without a gateway restart; without the
+    stub the handler raises ``KeyError``.
+    """
+    app = _make_app()
+    sessions = MagicMock(spec=["refresh_defaults", "reload_provider_factory"])
+    sessions.refresh_defaults = AsyncMock()
+    sessions.reload_provider_factory = AsyncMock()
+    app["state"] = SimpleNamespace(sessions=sessions)
+    return app, sessions
+
+
+class TestDefaultModelPatch:
+    @pytest.mark.asyncio
+    async def test_kiro_style_id_persists(self, tmp_config) -> None:
+        app, _ = _make_app_with_sessions()
+        async with TestClient(TestServer(app)) as c:
+            resp = await _patch(c, "agent.model", "claude-opus-4.8")
+            assert resp.status == 200
+        data = json.loads(tmp_config.read_text(encoding="utf-8"))
+        assert data["agent"]["model"] == "claude-opus-4.8"
+
+    @pytest.mark.asyncio
+    async def test_canonical_registry_key_persists(self, tmp_config) -> None:
+        """Canonical keys carry a bracket-free suffix and must survive the grammar."""
+        app, _ = _make_app_with_sessions()
+        async with TestClient(TestServer(app)) as c:
+            assert (await _patch(c, "agent.model", "opus-4.8-1m")).status == 200
+        data = json.loads(tmp_config.read_text(encoding="utf-8"))
+        assert data["agent"]["model"] == "opus-4.8-1m"
+
+    @pytest.mark.asyncio
+    async def test_auto_persists(self, tmp_config) -> None:
+        app, _ = _make_app_with_sessions()
+        async with TestClient(TestServer(app)) as c:
+            assert (await _patch(c, "agent.model", "auto")).status == 200
+        data = json.loads(tmp_config.read_text(encoding="utf-8"))
+        assert data["agent"]["model"] == "auto"
+
+    @pytest.mark.asyncio
+    async def test_reloads_provider_factory(self, tmp_config) -> None:
+        """The factory captures the model at build time — defaults must refresh."""
+        app, sessions = _make_app_with_sessions()
+        async with TestClient(TestServer(app)) as c:
+            assert (await _patch(c, "agent.model", "claude-sonnet-4.5")).status == 200
+        sessions.refresh_defaults.assert_awaited_once()
+        # A default change must NEVER take the destructive path — that clears
+        # _sessions and shuts live providers down, killing in-flight turns.
+        sessions.reload_provider_factory.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "claude opus",  # whitespace
+            "model;rm -rf /",  # shell metacharacters
+            "../../etc/passwd",  # path traversal
+            "model$(id)",  # command substitution
+            "model\nnewline",
+        ],
+    )
+    async def test_malformed_ids_rejected(self, tmp_config, bad) -> None:
+        app, _ = _make_app_with_sessions()
+        async with TestClient(TestServer(app)) as c:
+            assert (await _patch(c, "agent.model", bad)).status == 400
+        data = json.loads(tmp_config.read_text(encoding="utf-8"))
+        assert "model" not in data["agent"]
+
+    @pytest.mark.asyncio
+    async def test_overlong_id_rejected(self, tmp_config) -> None:
+        app, _ = _make_app_with_sessions()
+        async with TestClient(TestServer(app)) as c:
+            assert (await _patch(c, "agent.model", "a" * 65)).status == 400
+
+    @pytest.mark.asyncio
+    async def test_non_string_rejected(self, tmp_config) -> None:
+        app, _ = _make_app_with_sessions()
+        async with TestClient(TestServer(app)) as c:
+            assert (await _patch(c, "agent.model", 42)).status == 400
+
+
+class TestDefaultReasoningEffortPatch:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("level", ["low", "medium", "high", "xhigh", "max"])
+    async def test_each_level_persists(self, tmp_config, level) -> None:
+        app, _ = _make_app_with_sessions()
+        async with TestClient(TestServer(app)) as c:
+            assert (await _patch(c, "agent.reasoning_effort", level)).status == 200
+        data = json.loads(tmp_config.read_text(encoding="utf-8"))
+        assert data["agent"]["reasoning_effort"] == level
+
+    @pytest.mark.asyncio
+    async def test_empty_clears_to_model_default(self, tmp_config) -> None:
+        """'' is the 'let the model decide' sentinel, not an invalid value."""
+        app, _ = _make_app_with_sessions()
+        async with TestClient(TestServer(app)) as c:
+            assert (await _patch(c, "agent.reasoning_effort", "high")).status == 200
+            assert (await _patch(c, "agent.reasoning_effort", "")).status == 200
+        data = json.loads(tmp_config.read_text(encoding="utf-8"))
+        assert data["agent"]["reasoning_effort"] == ""
+
+    @pytest.mark.asyncio
+    async def test_unknown_level_rejected(self, tmp_config) -> None:
+        app, _ = _make_app_with_sessions()
+        async with TestClient(TestServer(app)) as c:
+            assert (await _patch(c, "agent.reasoning_effort", "ultra")).status == 400
+
+    @pytest.mark.asyncio
+    async def test_reloads_provider_factory(self, tmp_config) -> None:
+        app, sessions = _make_app_with_sessions()
+        async with TestClient(TestServer(app)) as c:
+            assert (await _patch(c, "agent.reasoning_effort", "xhigh")).status == 200
+        sessions.refresh_defaults.assert_awaited_once()
+        # A default change must NEVER take the destructive path — that clears
+        # _sessions and shuts live providers down, killing in-flight turns.
+        sessions.reload_provider_factory.assert_not_awaited()

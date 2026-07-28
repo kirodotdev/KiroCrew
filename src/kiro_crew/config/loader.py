@@ -68,7 +68,7 @@ from kiro_crew.config.validation import (  # noqa: F401
     _mask_value,
 )
 from kiro_crew.config.validation import validate_config_data as _validate_config_data  # noqa: F401
-from kiro_crew.effort import is_valid_effort, model_supports_effort
+from kiro_crew.effort import EFFORT_LEVELS, is_valid_effort, model_supports_effort
 from kiro_crew.instances.constants import DEFAULT_MAX_RECOVERY_ATTEMPTS as _DEFAULT_MAX_RECOVERY
 from kiro_crew.instances.constants import DEFAULT_PROBE_FAILURE_THRESHOLD as _DEFAULT_PROBE_FAILS
 from kiro_crew.instances.constants import DEFAULT_RECOVER_BACKOFF_MAX_SECS as _DEFAULT_BACKOFF_MAX
@@ -525,6 +525,15 @@ class AgentConfig:
     model: str = field(
         default=DEFAULT_MODEL,
         metadata=_meta("Model", "LLM model identifier. 'auto' resolves from agent config."),
+    )
+    reasoning_effort: str = field(
+        default="",
+        metadata=_meta(
+            "Reasoning Effort",
+            "Default reasoning effort for new sessions on models that support it. "
+            "Empty defers to the provider/model default. Per-session overrides win.",
+            enum=["", *EFFORT_LEVELS],
+        ),
     )
     provider: str = field(
         default="acp",
@@ -3425,6 +3434,7 @@ class KiroCrewConfig:
                 approval_mode=agent_data.get("approval_mode", "auto"),
                 streaming=agent_data.get("streaming", True),
                 model=agent_data.get("model", DEFAULT_MODEL),
+                reasoning_effort=agent_data.get("reasoning_effort", ""),
                 provider=agent_data.get("provider", "acp"),
                 default_agent=agent_data.get("default_agent", ""),
                 sandbox=agent_data.get("sandbox", "off"),
@@ -4141,6 +4151,11 @@ class KiroCrewConfig:
 
         sandbox = self.agent.sandbox
         tool_search = self.agent.tool_search
+        # Global default effort for new sessions. A per-slot override always
+        # wins; this only fills in when the slot carries none, so a session that
+        # has never touched the effort control still starts at the user's
+        # configured default instead of the provider/model default.
+        default_effort = self.agent.reasoning_effort
 
         # MCP gateway: resolve overlay + socket once when enabled. None when
         # the feature flag is off -> AcpClient falls through to per-session MCP.
@@ -4197,13 +4212,9 @@ class KiroCrewConfig:
             # pick up effort already recovered from a pre-existing overlay,
             # never the freshly-set slot value. Mirrors the _claude_code path.
             _eff_per_model: dict[str, str] = {}
-            if (
-                m
-                and reasoning_effort_override
-                and is_valid_effort(reasoning_effort_override)
-                and model_supports_effort(m)
-            ):
-                _eff_per_model[m] = reasoning_effort_override
+            _eff = reasoning_effort_override or default_effort
+            if m and _eff and is_valid_effort(_eff) and model_supports_effort(m):
+                _eff_per_model[m] = _eff
             return AcpProvider(
                 work_dir=wdir,
                 model=m,

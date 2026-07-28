@@ -10,6 +10,7 @@ import logging
 import math
 import os
 import platform
+import re
 import shlex
 import shutil
 import subprocess
@@ -32,6 +33,7 @@ from kiro_crew.context_management import RESULT_FILE_MAX_BYTES
 from kiro_crew.dashboard.origin import check_host, is_direct_local_request
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.dashboard.token_auth import MAX_SESSION_TTL_SECS, generate_token, parse_duration
+from kiro_crew.effort import EFFORT_LEVELS
 from kiro_crew.security_posture import build_posture_snapshot_async, posture_counts_async
 from kiro_crew.transcribe import ensure_ffmpeg_in_path, is_available
 
@@ -1134,6 +1136,16 @@ def _agent_values() -> set[str]:
 
 _EDITABLE_CONFIG: dict[str, dict] = {
     "agent.provider": {"type": "enum", "values": ["acp"]},
+    # Default model for new sessions. Membership can NOT be validated against a
+    # fixed list: the real vocabulary is whatever the live kiro-cli advertises
+    # (/api/models spawns it to find out), and it spans both canonical registry
+    # keys ("opus-4.8-1m") and kiro's own ids ("claude-opus-4.8"). So this is a
+    # grammar check instead — model-id charset only, no separators or shell
+    # metacharacters — and an unknown-but-well-formed id is rejected downstream
+    # by kiro itself rather than silently accepted here. "auto"/"" = defer to
+    # the agent config / kiro's own default.
+    "agent.model": {"type": "str", "max_len": 64, "pattern": r"^[A-Za-z0-9._\-\[\]]*$"},
+    "agent.reasoning_effort": {"type": "enum", "values": ["", *EFFORT_LEVELS]},
     "agent.approval_mode": {"type": "enum", "values": ["auto", "interactive"]},
     "agent.sandbox": {"type": "enum", "values": ["auto", "off"]},
     "agent.sandbox_allow_no_isolation": {"type": "bool"},
@@ -1241,6 +1253,9 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
             return _deny(f"must be at most {max_len} characters", f"{path_key}={value}")
         if "values" in spec and value not in spec["values"]:
             return _deny(f"invalid value, must be one of {spec['values']}", f"{path_key}={value}")
+        pattern = spec.get("pattern")
+        if pattern and not re.fullmatch(pattern, value):
+            return _deny(f"invalid value for {path_key}", f"{path_key}={value}")
         values_fn = spec.get("values_fn")
         if values_fn and value not in values_fn():
             return _deny(f"invalid value for {path_key}", f"{path_key}={value}")
@@ -1304,6 +1319,18 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
         logger.info(
             "Provider switched to %s — config rebuilt, factory reloaded, slot models cleared", value
         )
+
+    # The default model and default reasoning effort are captured when the
+    # provider factory is built (at gateway startup), so a config write alone
+    # would not reach new sessions until a restart. refresh_defaults() rebuilds
+    # the factory and drains the warm pool WITHOUT touching live sessions —
+    # reload_provider_factory() must NOT be used here: it clears _sessions and
+    # shuts every provider down, which is correct for a provider switch but
+    # would kill in-flight turns just because a default changed.
+    if path_key in ("agent.model", "agent.reasoning_effort"):
+        state = request.app["state"]
+        await state.sessions.refresh_defaults()
+        logger.info("%s set to %r — session defaults refreshed", path_key, value)
 
     # If completion-keep mode or budget changed, propagate to the live
     # SubagentManager so the next subagent to complete uses the new value.

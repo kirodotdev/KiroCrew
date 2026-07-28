@@ -940,6 +940,114 @@ class TestReloadProviderFactoryRefillsPool:
 
 
 # ---------------------------------------------------------------------------
+# refresh_defaults adopts new defaults WITHOUT tearing down live sessions
+# ---------------------------------------------------------------------------
+
+
+class TestRefreshDefaultsSparesLiveSessions:
+    """``agent.model`` / ``agent.reasoning_effort`` are defaults: they apply to
+    the NEXT session. Adopting them must not shut down providers that are
+    mid-turn, which is what reload_provider_factory() does."""
+
+    @pytest.mark.asyncio
+    async def test_live_sessions_are_not_cleared_or_shut_down(self):
+        mgr, _ = _make_manager(pool_size=0)
+        live_provider = _make_provider()
+        mgr._sessions["dashboard:1"] = SimpleNamespace(provider=live_provider)
+
+        with patch("kiro_crew.session.KiroCrewConfig.load") as mock_load:
+            new_cfg = _make_cfg(pool_size=0)
+            new_cfg.create_provider_factory = MagicMock(
+                return_value=MagicMock(side_effect=lambda *a, **kw: _make_provider())
+            )
+            new_cfg.agent.model = "claude-opus-4.8"
+            new_cfg.agent.reasoning_effort = "xhigh"
+            mock_load.return_value = new_cfg
+
+            await mgr.refresh_defaults()
+
+        assert "dashboard:1" in mgr._sessions, "live session was evicted"
+        live_provider.shutdown.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_adopts_the_new_config_and_factory(self):
+        # Identity-level only: proves the refresh swapped in the reloaded cfg and
+        # a freshly built factory (the two things a stale default would come
+        # from). The resulting model/effort values are asserted against the real
+        # factory in test_effort.py::TestFactoryDefaultEffortFallback.
+        mgr, old_factory = _make_manager(pool_size=0)
+
+        with patch("kiro_crew.session.KiroCrewConfig.load") as mock_load:
+            new_cfg = _make_cfg(pool_size=0)
+            new_factory = MagicMock(side_effect=lambda *a, **kw: _make_provider())
+            new_cfg.create_provider_factory = MagicMock(return_value=new_factory)
+            new_cfg.agent.model = "claude-sonnet-4.5"
+            new_cfg.agent.reasoning_effort = "high"
+            mock_load.return_value = new_cfg
+
+            await mgr.refresh_defaults()
+
+        assert mgr._cfg is new_cfg
+        assert mgr._provider_factory is not old_factory
+
+    @pytest.mark.asyncio
+    async def test_warm_pool_is_drained(self):
+        # A pooled provider was built by the OLD factory and would hand the
+        # stale default to the very next session; unlike a live session it has
+        # no conversation to lose, so draining it is safe and necessary.
+        # NOTE: this asserts the drain only. That a NEW session then actually
+        # receives the refreshed default is covered end-to-end by
+        # test_effort.py::TestFactoryDefaultEffortFallback, and the pool being
+        # re-armed after the drain by test_pool_is_restarted_after_the_drain —
+        # an empty pool alone would satisfy this test even while broken.
+        mgr, _ = _make_manager(pool_size=1)
+        mgr._pool_started = True
+        stale_pooled = _make_provider()
+        mgr._warm_pool.put_nowait((stale_pooled, time.monotonic()))
+
+        with patch("kiro_crew.session.KiroCrewConfig.load") as mock_load:
+            new_cfg = _make_cfg(pool_size=1)
+            new_cfg.create_provider_factory = MagicMock(
+                return_value=MagicMock(side_effect=lambda *a, **kw: _make_provider())
+            )
+            new_cfg.agent.model = "claude-opus-4.8"
+            new_cfg.agent.reasoning_effort = ""
+            mock_load.return_value = new_cfg
+
+            await mgr.refresh_defaults()
+
+        stale_pooled.shutdown.assert_awaited()
+        assert mgr._warm_pool.empty()
+
+    @pytest.mark.asyncio
+    async def test_pool_is_restarted_after_the_drain(self):
+        # The health sweep returns early on an empty pool, so a drain that does
+        # not re-arm start_pool would leave a configured warm pool permanently
+        # empty until the next gateway restart.
+        mgr, _ = _make_manager(pool_size=1)
+        mgr._pool_started = True
+        stale_task = MagicMock()
+        stale_task.done.return_value = False
+        stale_task.cancel = MagicMock()
+        mgr._pool_health_task = stale_task
+        mgr._warm_pool.put_nowait((_make_provider(), time.monotonic()))
+
+        with patch("kiro_crew.session.KiroCrewConfig.load") as mock_load:
+            new_cfg = _make_cfg(pool_size=1)
+            new_cfg.create_provider_factory = MagicMock(
+                return_value=MagicMock(side_effect=lambda *a, **kw: _make_provider())
+            )
+            new_cfg.agent.model = "claude-opus-4.8"
+            new_cfg.agent.reasoning_effort = "high"
+            mock_load.return_value = new_cfg
+
+            await mgr.refresh_defaults()
+
+        stale_task.cancel.assert_called_once()
+        assert mgr._pool_started is True, "start_pool never re-armed after the drain"
+
+
+# ---------------------------------------------------------------------------
 # default_project_dir
 # ---------------------------------------------------------------------------
 

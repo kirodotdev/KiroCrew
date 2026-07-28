@@ -17,6 +17,7 @@
         "approval_mode": "auto",
         "streaming": true,
         "model": "auto",
+        "reasoning_effort": "",
         "provider": "acp",
         "default_agent": "",
         "sandbox": "off",
@@ -97,6 +98,27 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": "auto"
+    },
+    {
+      "path": "agent.reasoning_effort",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Reasoning Effort",
+      "help": "Default reasoning effort for new sessions on models that support it. Empty defers to the provider/model default. Per-session overrides win.",
+      "hasChildren": false,
+      "enumValues": [
+        "",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "defaultValue": ""
     },
     {
       "path": "agent.provider",

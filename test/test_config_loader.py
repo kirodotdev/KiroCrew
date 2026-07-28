@@ -3401,3 +3401,36 @@ def test_legacy_wechat_config_key_still_populates_wecom():
     assert cfg.wecom.enabled is True
     assert cfg.wecom.allowed_users == [{"userid": "zhangsan", "name": "Z"}]
     assert cfg.wecom.hard_threshold_pct == 90
+
+
+class TestAgentDefaultsRoundTrip:
+    """``agent.model`` / ``agent.reasoning_effort`` are the persisted defaults the
+    Settings UI writes. They must survive a real load() from disk.
+
+    Regression: ``reasoning_effort`` was declared on the dataclass but omitted
+    from load()'s explicit kwarg list, so it always fell back to ``""``. That
+    made the whole default-effort feature inert AND erased the user's stored
+    value on the next save(), because to_dict() serialises the (empty) in-memory
+    field back over config.json. Tests that set the attribute on a directly
+    constructed config passed right through the bug — only a load() from disk
+    catches it.
+    """
+
+    def test_reasoning_effort_is_hydrated_from_disk(self) -> None:
+        cfg = _load_from_dict({"agent": {"reasoning_effort": "xhigh"}})
+        assert cfg.agent.reasoning_effort == "xhigh"
+
+    def test_reasoning_effort_defaults_to_empty_when_absent(self) -> None:
+        cfg = _load_from_dict({"agent": {}})
+        assert cfg.agent.reasoning_effort == ""
+
+    def test_model_is_hydrated_from_disk(self) -> None:
+        cfg = _load_from_dict({"agent": {"model": "claude-opus-4.8"}})
+        assert cfg.agent.model == "claude-opus-4.8"
+
+    def test_defaults_survive_a_save_reload_round_trip(self) -> None:
+        """to_dict() -> load() must not lose either default."""
+        cfg = _load_from_dict({"agent": {"model": "claude-sonnet-4.5", "reasoning_effort": "high"}})
+        round_tripped = _load_from_dict(cfg.to_dict())
+        assert round_tripped.agent.model == "claude-sonnet-4.5"
+        assert round_tripped.agent.reasoning_effort == "high"

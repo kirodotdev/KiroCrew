@@ -27,6 +27,17 @@ export function resolveLegacyHighlightId(id: string): string {
 }
 
 /**
+ * Deep-link target for the "Default Model" row in Settings → Chat.
+ *
+ * Registry ids are derived from the setting's LABEL, so renaming that row
+ * silently breaks any hard-coded link. Callers (the in-session model picker)
+ * import this constant instead of inlining the string, and
+ * `ModelEffortDropdown.defaultLink.test.tsx` asserts it still resolves in
+ * SETTINGS_REGISTRY — so a rename fails a test instead of shipping a dead link.
+ */
+export const SETTINGS_DEFAULT_MODEL_ID = 'chat.default-model'
+
+/**
  * useSettingHighlight — deep-link + highlight hook for Settings.
  *
  * Reads `?highlight=<id>` from the URL, resolves the id to a label via

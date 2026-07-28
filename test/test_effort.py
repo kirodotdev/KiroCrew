@@ -265,13 +265,14 @@ class TestFactoryEffortThreading:
     into effort_per_model for BOTH ACP backends — otherwise a cold start
     (or the handler's reset-then-respawn) never applies the persisted effort."""
 
-    def _capture_provider_kwargs(self, provider_name: str, **factory_call):
+    def _capture_provider_kwargs(self, provider_name: str, *, config_effort: str = "", **factory_call):
         # Both factory branches lazily `from kiro_crew.providers.acp import
         # AcpProvider` (circular-import workaround). That import runs inside
         # create_provider_factory(), so patch the source module symbol BEFORE
         # building the factory, then capture the construction kwargs.
         cfg = KiroCrewConfig()
         cfg.agent.provider = provider_name
+        cfg.agent.reasoning_effort = config_effort
         with patch("kiro_crew.providers.acp.AcpProvider") as mock_provider:
             mock_provider.return_value = MagicMock()
             factory = cfg.create_provider_factory()
@@ -324,5 +325,65 @@ class TestFactoryEffortThreading:
             session_key="dashboard:1",
             model_override="claude-opus-4.7",
             reasoning_effort_override="ultra",
+        )
+        assert kwargs.get("effort_per_model") == {}
+
+
+class TestFactoryDefaultEffortFallback:
+    """``agent.reasoning_effort`` is the global default for sessions that carry
+    no per-slot override. A slot override always wins; the default only fills
+    the gap, so a brand-new session starts at the user's configured effort
+    instead of the provider/model default."""
+
+    def _capture(self, *, config_effort: str, **factory_call):
+        cfg = KiroCrewConfig()
+        cfg.agent.provider = "acp"
+        cfg.agent.reasoning_effort = config_effort
+        with patch("kiro_crew.providers.acp.AcpProvider") as mock_provider:
+            mock_provider.return_value = MagicMock()
+            factory = cfg.create_provider_factory()
+            factory(**factory_call)
+            assert mock_provider.called, "factory did not construct AcpProvider"
+            return mock_provider.call_args.kwargs
+
+    def test_config_default_applies_when_slot_has_no_override(self):
+        kwargs = self._capture(
+            config_effort="high",
+            session_key="dashboard:1",
+            model_override="claude-opus-4.7",
+        )
+        assert kwargs.get("effort_per_model") == {"claude-opus-4.7": "high"}
+
+    def test_slot_override_beats_config_default(self):
+        kwargs = self._capture(
+            config_effort="low",
+            session_key="dashboard:1",
+            model_override="claude-opus-4.7",
+            reasoning_effort_override="max",
+        )
+        assert kwargs.get("effort_per_model") == {"claude-opus-4.7": "max"}
+
+    def test_empty_config_default_threads_nothing(self):
+        kwargs = self._capture(
+            config_effort="",
+            session_key="dashboard:1",
+            model_override="claude-opus-4.7",
+        )
+        assert kwargs.get("effort_per_model") == {}
+
+    def test_config_default_not_applied_to_incapable_model(self):
+        """A default must never be forced onto a model that rejects effort."""
+        kwargs = self._capture(
+            config_effort="high",
+            session_key="dashboard:1",
+            model_override="auto",
+        )
+        assert kwargs.get("effort_per_model") == {}
+
+    def test_invalid_config_default_ignored(self):
+        kwargs = self._capture(
+            config_effort="ultra",
+            session_key="dashboard:1",
+            model_override="claude-opus-4.7",
         )
         assert kwargs.get("effort_per_model") == {}

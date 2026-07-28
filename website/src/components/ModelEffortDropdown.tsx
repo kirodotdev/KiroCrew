@@ -1,6 +1,6 @@
 import { useState, useRef, useLayoutEffect } from 'react'
 import { motion } from 'framer-motion'
-import { ChevronRight, ChevronLeft } from 'lucide-react'
+import { ChevronRight, ChevronLeft, Settings2 } from 'lucide-react'
 import { Input } from './ui'
 import ModelDropdownList from './ModelDropdownList'
 import ReasoningEffortDropdown from './ReasoningEffortDropdown'
@@ -22,6 +22,10 @@ interface Props {
   slot: string | null
   currentEffort: string
   onListKeyDown: (e: React.KeyboardEvent) => void
+  /** Deep-link to the Settings row that sets the default model for NEW sessions.
+   *  Optional so call sites that have no router (or don't want the link) are
+   *  unaffected — the row is simply not rendered. */
+  onSetDefault?: () => void
 }
 
 const WIDTH = 340
@@ -33,7 +37,7 @@ const SPRING = { type: 'spring' as const, stiffness: 420, damping: 38 }
  *  a back chevron returns. The popover height springs to the active page. */
 export default function ModelEffortDropdown({
   anchorRect, dropdownRef, inputRef, models, activeModel, onSelectModel,
-  filter, setFilter, onClose, hasEffort, slot, currentEffort, onListKeyDown,
+  filter, setFilter, onClose, hasEffort, slot, currentEffort, onListKeyDown, onSetDefault,
 }: Props) {
   const [showEffort, setShowEffort] = useState(false)
   const modelPage = useRef<HTMLDivElement>(null)
@@ -44,7 +48,7 @@ export default function ModelEffortDropdown({
   useLayoutEffect(() => {
     const el = showEffort ? effortPage.current : modelPage.current
     if (el) setHeight(el.offsetHeight)
-  }, [showEffort, models.length, filter, currentEffort, hasEffort])
+  }, [showEffort, models.length, filter, currentEffort, hasEffort, onSetDefault])
 
   // Right-align the dropdown to the button's right edge (clamped to viewport).
   const left = Math.max(8, Math.min(anchorRect.right - WIDTH, window.innerWidth - WIDTH - 8))
@@ -86,6 +90,16 @@ export default function ModelEffortDropdown({
                   {effortLabel(currentEffort)}
                   <ChevronRight size={14} className="text-muted" />
                 </span>
+              </button>
+            )}
+            {onSetDefault && (
+              <button
+                type="button"
+                onClick={onSetDefault}
+                className="shrink-0 border-t border-border rounded-b-lg flex items-center justify-between gap-2 px-3 py-2 text-[12px] cursor-pointer bg-transparent border-x-0 border-b-0 text-muted hover:text-text hover:bg-bg-hover transition-colors"
+              >
+                <span>Set default for new sessions…</span>
+                <Settings2 size={13} />
               </button>
             )}
           </div>
