@@ -97,6 +97,32 @@ that dir is appended to the MCP spawn `PATH` automatically
 
 The not-yet items are tracked as Windows feature-parity follow-ups.
 
+## The OS-level sandbox has no Windows backend
+
+`sandbox.detect_backend()` supports exactly two backends — Linux user namespaces
+and macOS `sandbox-exec` — so on Windows it always reports `none`. `wrap_argv()`
+**fail-closes** (raises `RuntimeError`) whenever no backend is available and the
+requested mode is anything other than `"off"`, unless the operator sets
+`agent.sandbox_allow_unsandboxed_exec=true`.
+
+Windows works today because the shipped default is `agent.sandbox: "off"`, which
+delegates isolation to kiro-cli's own internal agent sandbox. Consequences to
+keep in mind:
+
+- **Leave `agent.sandbox` at `"off"` on Windows.** Setting it to `"auto"` makes
+  every kiro-cli spawn fail closed, including chat itself.
+- Callers that **hardcode** a non-`off` mode still fail closed here regardless of
+  config. That is why the pull-request source-drawer providers are listed as
+  not-yet above. One-shot `kiro-cli` queries (`--list-models`, `/usage`) follow
+  the configured tier instead and therefore work — see the security spec's
+  "One-shot kiro-cli spawns follow the configured tier".
+- The app-level controls are unaffected: denied-command patterns, sensitive-path
+  blocking, credential redaction, governance, and the SEL audit log all run in
+  the KiroCrew process and apply identically on Windows.
+
+A native Windows confinement backend (AppContainer / restricted token / job
+object) is not implemented.
+
 ## Secret-at-rest posture on Windows
 
 Files under `%USERPROFILE%\.kiro\crew` that hold auth material — the token
@@ -126,6 +152,17 @@ under NTFS.
   against the wildcard foreign address and the literal English `LISTENING`;
   some localized Windows editions emit translated state names. Workaround:
   `netstat -ano | findstr :5476` to find the PID and `taskkill /F /PID <pid>`.
+- **Model picker shows only "Auto"** — fixed. `GET /api/models` shells `kiro-cli
+  chat --list-models` and used to wrap it at `wrap_argv`'s hardcoded `"auto"`
+  tier, which demands an OS-level sandbox backend; Windows has none, so the wrap
+  fail-closed, the handler returned its degraded 503, and the dashboard fell back
+  to an auto-only list. It now requests the configured `agent.sandbox` tier
+  (`sandbox.agent_sandbox_mode()`), the same one the agent session itself uses.
+  If the picker is still auto-only, check that `agent.sandbox` in
+  `%USERPROFILE%\.kiro\crew\config.json` is `"off"` (the shipped default) —
+  setting it to `"auto"` on Windows re-enables the fail-closed path, because
+  KiroCrew's OS sandbox has no Windows backend. The same applies to the credits
+  usage pill.
 - **Web terminal / interactive SSO login panels** — unavailable on Windows
   (they need `pty`/`fork`/`termios`); they return a clear "not supported on
   Windows" response instead of crashing.

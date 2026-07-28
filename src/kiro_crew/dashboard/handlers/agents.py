@@ -15,7 +15,7 @@ from typing import Any
 
 from aiohttp import web
 
-from kiro_crew import agent_state, model_registry
+from kiro_crew import agent_state, model_registry, platform_compat
 from kiro_crew.agent_discovery import clear_list_agents_cache, list_agents
 from kiro_crew.config.loader import (
     KiroCrewAgentConfig,
@@ -692,6 +692,7 @@ async def api_models(request: web.Request) -> web.Response:
         )
         from kiro_crew.env import augmented_path  # noqa: F811
         from kiro_crew.sandbox import (  # noqa: F811
+            agent_sandbox_mode,
             cgroup_scope_argv,
             resource_limit_preexec,
             wrap_argv,
@@ -709,7 +710,17 @@ async def api_models(request: web.Request) -> web.Response:
         # Note: AcpClient._spawn() is for interactive ACP sessions (stdin/stdout
         # pipes); this is a one-shot read-only command, so we replicate the
         # sandbox setup directly.  See the security-controls rule.
-        argv, cleanup = wrap_argv(argv)
+        #
+        # The tier comes from agent_sandbox_mode() — the SAME ``agent.sandbox``
+        # value AcpClient._spawn passes — not wrap_argv's hardcoded "auto"
+        # default. This spawns the identical binary the agent session runs, so
+        # confining the read-only listing MORE tightly than the session buys
+        # nothing; and on a host with no sandbox backend (Windows, Linux without
+        # user namespaces) "auto" made wrap_argv fail closed, which this handler
+        # swallowed into a 503. The client then fell back to its degraded
+        # auto-only model list, so the picker offered nothing but "auto" and no
+        # other model was selectable.
+        argv, cleanup = wrap_argv(argv, mode=agent_sandbox_mode())
         argv = cgroup_scope_argv(argv)  # cgroup DoS ceiling
         try:
             env = {**os.environ}
@@ -719,7 +730,8 @@ async def api_models(request: web.Request) -> web.Response:
                 *argv,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                start_new_session=True,
+                start_new_session=platform_compat.IS_POSIX,
+                creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
                 env=env,
                 preexec_fn=resource_limit_preexec(),
             )

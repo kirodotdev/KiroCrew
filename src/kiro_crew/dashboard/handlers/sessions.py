@@ -34,7 +34,12 @@ from kiro_crew.mcp_discovery import (
     register_servers_for_cc,
     sync_to_agent_config,
 )
-from kiro_crew.sandbox import cgroup_scope_argv, resource_limit_preexec, wrap_argv
+from kiro_crew.sandbox import (
+    agent_sandbox_mode,
+    cgroup_scope_argv,
+    resource_limit_preexec,
+    wrap_argv,
+)
 from kiro_crew.security import redact, redact_credentials, redact_exfiltration_urls
 from kiro_crew.validation import sanitize_string
 
@@ -416,10 +421,15 @@ async def _fetch_usage_bg() -> None:
         # on recent kiro-cli (no overage line), but the only source when the API
         # path is unavailable (no token / non-Kiro build).
         # Route through the OS-level sandbox, consistent with how the main agent
-        # kiro-cli process is spawned (AcpClient._spawn -> wrap_argv).
+        # kiro-cli process is spawned (AcpClient._spawn -> wrap_argv) — which
+        # means the SAME ``agent.sandbox`` tier, via agent_sandbox_mode(), not a
+        # hardcoded one. A hardcoded "standard" confined this read-only spawn
+        # more tightly than the agent session it reports on, and fail-closed on
+        # any host with no sandbox backend (Windows, Linux without user
+        # namespaces), silently hiding the usage pill.
         argv, sandbox_cleanup = wrap_argv(
             [kiro_bin, "chat", "--no-interactive", "--agent", "kirocrew-lite", "/usage"],
-            mode="standard",
+            mode=agent_sandbox_mode(),
         )
         argv = cgroup_scope_argv(argv)  # cgroup DoS ceiling (Talos bdf0d7e5)
         proc = await asyncio.create_subprocess_exec(

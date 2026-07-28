@@ -1522,6 +1522,51 @@ def _allow_unsandboxed_exec() -> bool:
         return False
 
 
+# The full ``mode`` vocabulary wrap_argv accepts (see _SANDBOX_MODE_ALIASES for
+# the alias resolution and the module docstring for what each tier hides).
+_VALID_SANDBOX_MODES = frozenset({"auto", "standard", "strict", "cc", "off"})
+
+
+def agent_sandbox_mode() -> str:
+    """The operator's ``agent.sandbox`` tier — the mode ``kiro-cli`` spawns run at.
+
+    Use this for ONE-SHOT ``kiro-cli`` invocations (``--list-models``,
+    ``/usage``, ...) so they are confined at exactly the same tier as the
+    interactive session spawn of the same binary (``AcpClient._spawn`` passes
+    ``mode=cfg.agent.sandbox``).  Hardcoding ``"auto"`` at such a call site is
+    strictly TIGHTER than the agent session it describes — no security benefit,
+    and on a host with no sandbox backend (Windows, Linux without user
+    namespaces) :func:`wrap_argv` fail-closes and the feature silently dies.
+
+    Fallbacks distinguish two cases so a config ERROR can never silently disable
+    sandboxing (mirrors ``knowledge.llm_pool._get_sandbox_mode``):
+
+    - ``sandbox`` **absent/unset** -> ``"off"``: the shipped default, deferring
+      isolation to kiro-cli's own internal sandbox (kiro-cli >= 2.13).
+    - ``sandbox`` **present but malformed** (typo, wrong type) -> ``"auto"``:
+      fail SECURE.  A garbage value is a misconfiguration, not an intent to run
+      unconfined.
+
+    Note this is only the REQUESTED tier: governance may still clamp it up to a
+    ``sandbox.min_level`` floor inside :func:`wrap_argv`.
+    """
+    try:
+        from kiro_crew.config.loader import (
+            KiroCrewConfig,  # circular import: sandbox is a low-level dep of config.loader
+        )
+
+        mode = getattr(KiroCrewConfig.load().agent, "sandbox", None)
+    except Exception:
+        # Config unavailable (early boot, tests): fail secure, same as malformed.
+        logger.debug("agent_sandbox_mode: config unavailable, defaulting to 'auto'")
+        return "auto"
+    if mode is None or mode == "":
+        return "off"
+    if isinstance(mode, str) and mode in _VALID_SANDBOX_MODES:
+        return mode
+    return "auto"
+
+
 # The single environment marker that proves this process is already INSIDE a
 # KiroCrew namespace sandbox. Deny-by-default: the gate keys ONLY on the
 # explicit, single-purpose ``KIROCREW_SANDBOX_ACTIVE``, which is exported at
