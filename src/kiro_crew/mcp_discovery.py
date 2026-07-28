@@ -826,6 +826,30 @@ async def _read_stdio_jsonrpc_response(
             return parsed
 
 
+def _is_managed_server(name: str) -> bool:
+    """True when *name* is one of KiroCrew's OWN managed MCP servers.
+
+    Reads ``agent._MANAGED_MCP_SERVERS`` (the single source of truth —
+    ``kirocrew-cron`` / ``kirocrew-core``, both invoked as KiroCrew's own
+    console script) rather than duplicating the names here, so adding a managed
+    server stays a one-line change in ``agent.py``.
+
+    Deliberately does NOT consult ``agent._extra_mcp_servers()``: those entries
+    are edition/companion-contributed and must not inherit first-party trust
+    from the public core.
+
+    Fails CLOSED (``False``) if the import or lookup fails, so an unresolvable
+    name is treated as third-party and keeps the stricter sandbox tier.
+    """
+    try:
+        from kiro_crew.agent import _MANAGED_MCP_SERVERS  # circular import
+
+        return name in _MANAGED_MCP_SERVERS
+    except Exception:
+        logger.debug("_is_managed_server(%r): lookup failed, treating as third-party", name)
+        return False
+
+
 async def probe_server(server: McpServerInfo) -> McpServerInfo:
     """Probe a single MCP server by spawning it and sending initialize.
 
@@ -873,9 +897,44 @@ async def probe_server(server: McpServerInfo) -> McpServerInfo:
         # credential-scrubbed environment (on top of the augmented PATH built
         # above). ``strip_python_env`` keeps KiroCrew's PYTHONPATH/PYTHONHOME out
         # of a foreign Python MCP server. See the related security-review finding.
+        #
+        # Windows has NO OS-level sandbox backend, so wrap_argv fail-closes for
+        # every mode except "off" and this probe used to be 100% unavailable
+        # there — including for KiroCrew's OWN managed servers, which left the
+        # agent's first-party cron/spawn/learn toolset permanently un-probeable
+        # and reported as an error by `kirocrew doctor`. For a MANAGED server the
+        # target is KiroCrew's own module launched by KiroCrew's own interpreter
+        # (`_MANAGED_MCP_SERVERS` -> `kirocrew mcp-cron` / `mcp-core`), i.e. the
+        # same trust level as the gateway process doing the probing, so on
+        # Windows we request mode="off" rather than fail closed. This mirrors the
+        # carve-out `kiro_prerequisite._run_process` already applies to the
+        # trusted kiro-cli binary (`if sandboxed and not IS_WINDOWS`).
+        #
+        # Deliberately narrow, so the security posture is unchanged:
+        #   - Gated on IS_WINDOWS, NOT on detect_backend() == "none", so a
+        #     TRANSIENT userns probe failure on Linux can never silently drop a
+        #     probe to "off" (detect_backend returns "none" for those too).
+        #   - macOS/Linux behavior is byte-identical to before.
+        #   - THIRD-PARTY servers still get mode="standard" and still fail
+        #     closed on Windows: they are untrusted by definition and Windows
+        #     offers no confinement for them.
+        #   - Only `_MANAGED_MCP_SERVERS` qualifies — edition-contributed
+        #     `_extra_mcp_servers()` entries do NOT, so companion-supplied
+        #     servers gain no trust from this.
+        # It still goes through `sandboxed_spawn_argv`, so the credential-env
+        # scrub and the PYTHONPATH/PYTHONHOME strip apply exactly as before.
+        probe_mode = "standard"
+        if platform_compat.IS_WINDOWS and _is_managed_server(server.name):
+            probe_mode = "off"
+            logger.debug(
+                "MCP probe [%s]: managed first-party server on Windows — no OS "
+                "sandbox backend exists, probing unwrapped (env scrub still "
+                "applies)",
+                server.name,
+            )
         wrapped_argv, env, sandbox_cleanup = sandboxed_spawn_argv(
             [resolved, *(server.args or [])],
-            mode="standard",
+            mode=probe_mode,
             env=env,
             strip_python_env=True,
         )

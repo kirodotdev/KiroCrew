@@ -2050,6 +2050,27 @@ def wrap_argv(
                     "execution, or install a supported sandbox backend "
                     "(Linux user namespaces, or macOS sandbox-exec). "
                 )
+                if platform_compat.IS_WINDOWS:
+                    # The generic guidance above is actively misleading here:
+                    # there is NO Windows backend to install (detect_backend
+                    # implements Linux user namespaces + macOS sandbox-exec
+                    # only), so a Windows operator cannot resolve this by
+                    # installing anything. Say so, and name the only two real
+                    # options, so the failure reads as a documented platform
+                    # limitation rather than a broken install. See
+                    # docs/windows-install.md.
+                    guidance = (
+                        "This is Windows, which has NO OS-level sandbox backend "
+                        "at all (only Linux user namespaces and macOS "
+                        "sandbox-exec are implemented) — there is nothing to "
+                        "install that would satisfy this check. Either this "
+                        "feature is unavailable on Windows by design (see "
+                        "docs/windows-install.md), or the caller should request "
+                        'mode="off" when the target is first-party/trusted. '
+                        "Setting agent.sandbox_allow_unsandboxed_exec=true "
+                        "removes the check GLOBALLY, for untrusted spawns too, "
+                        "so prefer the per-caller fix. "
+                    )
             # Emit SEL audit event for this security-relevant denial so it
             # appears in the tamper-evident audit log (security-review requirement).
             try:

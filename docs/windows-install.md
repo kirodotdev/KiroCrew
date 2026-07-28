@@ -87,6 +87,7 @@ that dir is appended to the MCP spawn `PATH` automatically
 | Feature | Status on Windows |
 |---------|-------------------|
 | Core gateway / chat / cron / dashboard | works |
+| MCP tool probing / `Discover & Sync` inventory | first-party (`kirocrew-cron`, `kirocrew-core`) works; third-party servers cannot be probed (they need the POSIX OS-level sandbox and fail closed). The tools themselves still run — kiro-cli spawns them, and registration never gated on probe status |
 | Pull-request source drawer provider fetch/check/resolve | not yet — provider CLIs require the POSIX OS-level sandbox and fail closed with a clear unsupported response |
 | Browser automation (Playwright MCP) | works (installed via `npm`/`npx @playwright/mcp`) |
 | Vector memory / embeddings | via a **remote embedding endpoint or Docker**; local Ollama auto-install is not yet supported |
@@ -119,6 +120,36 @@ keep in mind:
 - The app-level controls are unaffected: denied-command patterns, sensitive-path
   blocking, credential redaction, governance, and the SEL audit log all run in
   the KiroCrew process and apply identically on Windows.
+
+### Audit: which spawn sites this affects
+
+Every site below wraps an **untrusted or agent-influenced** target, so the
+hardcoded tier is a deliberate security control and is *kept* — these features
+fail closed on Windows by design rather than running unconfined:
+
+| Spawn site | Target | Tier |
+|---|---|---|
+| `mcp_discovery.probe_server` (third-party servers) | any binary named in MCP config | `standard` |
+| `apps/registry.py`, `apps/routes.py` | `git clone`/`pull` of app repos | `strict` / derived |
+| `apps/backend.py` | app venv, `pip install`, `npm install` | `standard` |
+| `dashboard/handlers/themes.py` | `git clone` of a theme URL | `standard` |
+| `dashboard/handlers/memory.py` | `ensurepip`, `pip install faiss-cpu` | `standard` |
+| `cron_script.py` | user/agent-authored cron scripts | `standard` / `cc` |
+| `hooks.py` | user/agent-authored hook command (`cmd /c`) | `auto` |
+| `cloud/aws.py`, `deploy/engine.py` | `aws` CLI | `standard` |
+| `dashboard/handlers/source_providers.py` | `gh` / `glab` CLI | `standard` |
+| `dashboard/handlers/worktree.py`, `git_coord.py`, `file_explorer` | `git` | `strict` / `standard` |
+| `task_executor.py` | project test command | `standard` |
+| `voice_reply.py` | Piper / Polly binary | `standard` |
+
+Trusted first-party targets instead take the same carve-out `kiro_prerequisite`
+has always applied to `kiro-cli` on Windows:
+
+| Spawn site | Target | Behavior on Windows |
+|---|---|---|
+| `kiro_prerequisite._run_process` | `kiro-cli` | wrap skipped (`not IS_WINDOWS`) |
+| `api_models`, `_fetch_usage_bg` | `kiro-cli` one-shot | configured `agent.sandbox` tier |
+| `mcp_discovery.probe_server` (managed) | `kirocrew-cron` / `kirocrew-core` | `mode="off"` |
 
 A native Windows confinement backend (AppContainer / restricted token / job
 object) is not implemented.
