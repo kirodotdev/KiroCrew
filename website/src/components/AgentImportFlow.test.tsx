@@ -87,13 +87,13 @@ function mockSuccessfulRequests(scan = SCAN_RESPONSE) {
 
 async function goToCategories() {
   await screen.findByRole('heading', { name: 'Choose sources' })
-  await userEvent.click(screen.getByRole('button', { name: 'Choose categories' }))
+  await userEvent.click(screen.getByRole('button', { name: 'Continue' }))
   return screen.findByRole('heading', { name: 'Select items to import' })
 }
 
 async function goToReview() {
   await goToCategories()
-  await userEvent.click(screen.getByRole('button', { name: 'Review import' }))
+  await userEvent.click(screen.getByRole('button', { name: 'Continue' }))
   return screen.findByRole('heading', { name: 'Review import' })
 }
 
@@ -164,7 +164,7 @@ describe('AgentImportFlow', () => {
     await goToCategories()
     await userEvent.click(screen.getByRole('checkbox', { name: /MCP servers.*2/ }))
     await userEvent.click(screen.getByRole('checkbox', { name: /Workspaces.*6/ }))
-    await userEvent.click(screen.getByRole('button', { name: 'Review import' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Continue' }))
 
     expect(screen.getByText(/existing KiroCrew setup is never overwritten/i)).toBeInTheDocument()
     expect(screen.getByText(/matching items are deduplicated/i)).toBeInTheDocument()
@@ -192,7 +192,7 @@ describe('AgentImportFlow', () => {
     await startImport()
 
     expect(await screen.findByRole('alert')).toHaveTextContent('Import service unavailable')
-    await userEvent.click(screen.getByRole('button', { name: 'Retry import' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Import selected' }))
     expect(await screen.findByText('Import complete')).toBeInTheDocument()
     expect(api.onboardingImportApply).toHaveBeenCalledTimes(2)
     expect(screen.getByText('10')).toBeInTheDocument()
@@ -207,7 +207,7 @@ describe('AgentImportFlow', () => {
     renderWithProviders(<AgentImportFlow initialOpen onComplete={vi.fn()} />)
 
     await startImport()
-    expect(screen.getByRole('button', { name: 'Skip import and close' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Skip all setup and onboarding' })).toBeDisabled()
 
     fireEvent.keyDown(document, { key: 'Escape' })
     expect(api.onboardingImportState).not.toHaveBeenCalled()
@@ -322,7 +322,7 @@ describe('AgentImportFlow', () => {
     renderWithProviders(<AgentImportFlow initialOpen onComplete={onComplete} />)
 
     await screen.findByRole('heading', { name: 'Choose sources' })
-    await userEvent.click(screen.getByRole('button', { name: 'Skip for now' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Skip import' }))
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
       'Could not save onboarding state',

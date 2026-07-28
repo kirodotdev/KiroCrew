@@ -1,18 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { motion, useReducedMotion } from 'framer-motion'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import {
   AlertTriangle,
-  ArrowLeft,
   ArrowRight,
   Brain,
   CalendarClock,
-  Check,
-  CheckCircle2,
-  CopyCheck,
   FileSearch,
   FolderOpen,
-  Import,
   Loader2,
   MessageCircle,
   Plug,
@@ -27,7 +23,7 @@ import {
   type AgentImportApplyRequest,
   type AgentImportSource,
 } from '../api/client'
-import { GhostVar1, GhostVar2 } from '../assets/onboarding/GhostIcons'
+import { KiroGhost } from './KiroGhost'
 import { Btn, SendBtn } from './ui'
 
 type Stage = 1 | 2 | 3 | 4
@@ -78,12 +74,69 @@ function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message ? error.message : fallback
 }
 
+// Floating decorative mascot — an exact copy of the Kiro CLI setup gate's
+// FloatingGhost (components/KiroPrerequisiteGate.tsx): same KiroGhost art,
+// staggered fade + spring scale entrance, and an infinite easeInOut bob.
+// Honors the OS reduce-motion setting.
+function FloatingGhost({
+  className,
+  delay,
+  rotate = 0,
+}: {
+  className: string
+  delay: number
+  rotate?: number
+}) {
+  const reduceMotion = useReducedMotion()
+  return (
+    <motion.div
+      aria-hidden="true"
+      className={`pointer-events-none absolute z-0 text-white drop-shadow-[0_12px_20px_rgba(24,20,38,0.26)] ${className}`}
+      initial={reduceMotion ? false : { opacity: 0, scale: 0.72 }}
+      animate={{
+        opacity: 1,
+        scale: 1,
+        y: reduceMotion ? 0 : [-5, 5, -5],
+        rotate,
+      }}
+      transition={{
+        opacity: { delay, duration: 0.35 },
+        scale: { delay, duration: 0.45, type: 'spring', bounce: 0.45 },
+        y: { delay, duration: 3.8, ease: 'easeInOut', repeat: Infinity },
+      }}
+    >
+      <KiroGhost size={160} className="h-full w-full" />
+    </motion.div>
+  )
+}
+
+// Animated "Importing…" label — cycles the trailing dots between ".", ".." and
+// "..." while an import is in flight. The dots span reserves width so the
+// button doesn't jitter as they grow.
+function ImportingLabel() {
+  const [dots, setDots] = useState('.')
+  useEffect(() => {
+    const id = setInterval(() => setDots(d => (d.length >= 3 ? '.' : `${d}.`)), 400)
+    return () => clearInterval(id)
+  }, [])
+  return (
+    <>
+      Importing<span className="inline-block w-3 text-left">{dots}</span>
+    </>
+  )
+}
+
 export default function AgentImportFlow({
   initialOpen,
   onComplete,
+  onSkipAll,
 }: {
   initialOpen: boolean
   onComplete: () => void
+  // "Skip all" abandons the whole first-run flow (import + onboarding tour) and
+  // drops the user straight into the product. Falls back to onComplete when the
+  // host does not provide a distinct skip-all path.
+  onSkipAll?: () => void
 }) {
   const [open, setOpen] = useState(initialOpen)
   const [stage, setStage] = useState<Stage>(1)
@@ -131,12 +184,21 @@ export default function AgentImportFlow({
 
   const applyMutation = useMutation({
     mutationFn: () => api.onboardingImportApply(applyPayload),
+    onSuccess: () => setStage(4),
   })
   const completionMutation = useMutation({
     mutationFn: () => api.onboardingImportState({ completed: true }),
     onSuccess: () => {
       setOpen(false)
       onComplete()
+    },
+  })
+  const skipAllMutation = useMutation({
+    mutationFn: () => api.onboardingImportState({ completed: true }),
+    onSuccess: () => {
+      setOpen(false)
+      if (onSkipAll) onSkipAll()
+      else onComplete()
     },
   })
 
@@ -203,8 +265,13 @@ export default function AgentImportFlow({
   }, [open, stage, scanQuery.isPending, scanQuery.isError, applyMutation.status])
 
   const skip = () => {
-    if (!completionMutation.isPending && !applyMutation.isPending) {
+    if (!completionMutation.isPending && !applyMutation.isPending && !skipAllMutation.isPending) {
       completionMutation.mutate()
+    }
+  }
+  const skipAll = () => {
+    if (!completionMutation.isPending && !applyMutation.isPending && !skipAllMutation.isPending) {
+      skipAllMutation.mutate()
     }
   }
 
@@ -236,7 +303,7 @@ export default function AgentImportFlow({
     return () => document.removeEventListener('keydown', onKeyDown)
     // `skip` intentionally follows the current mutation state.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, completionMutation.isPending, applyMutation.isPending])
+  }, [open, completionMutation.isPending, applyMutation.isPending, skipAllMutation.isPending])
 
   if (!open) return null
 
@@ -265,12 +332,112 @@ export default function AgentImportFlow({
     0,
   )
   const beginImport = () => {
-    setStage(4)
     applyMutation.mutate()
   }
   const importAnother = () => resetFlow(true)
   const completionError = completionMutation.error
-  const isBusy = completionMutation.isPending || applyMutation.isPending
+  const isBusy = completionMutation.isPending || applyMutation.isPending || skipAllMutation.isPending
+  const hasSelection = applyPayload.sources.length > 0
+
+  // Per-stage navigation buttons, rendered in the shared pinned footer bar
+  // (right side). The footer's left side shows the stage indicator.
+  const stepFooterNav = (() => {
+    if (stage === 1) {
+      return (
+        <>
+          <Btn type="button" className="h-9 rounded-lg px-4" disabled={isBusy} onClick={skip}>Skip import</Btn>
+          <SendBtn
+            type="button"
+            disabled={selectedSources.size === 0}
+            onClick={() => setStage(2)}
+          >
+            Continue
+          </SendBtn>
+        </>
+      )
+    }
+    if (stage === 2) {
+      return (
+        <>
+          <Btn type="button" className="h-9 rounded-lg px-4" onClick={() => setStage(1)}>
+            Back
+          </Btn>
+          <SendBtn type="button" disabled={!hasSelection} onClick={() => setStage(3)}>
+            Continue
+          </SendBtn>
+        </>
+      )
+    }
+    if (stage === 3) {
+      return (
+        <>
+          <Btn type="button" className="h-9 rounded-lg px-4" disabled={applyMutation.isPending} onClick={() => setStage(2)}>
+            Back
+          </Btn>
+          <SendBtn type="button" disabled={applyMutation.isPending} onClick={beginImport}>
+            {applyMutation.isPending ? <ImportingLabel /> : 'Import selected'}
+          </SendBtn>
+        </>
+      )
+    }
+    return (
+      <>
+        <Btn type="button" className="h-9 rounded-lg px-4" disabled={completionMutation.isPending} onClick={importAnother}>
+          <RefreshCw className="lucide-inline" /> Import another
+        </Btn>
+        <SendBtn
+          type="button"
+          disabled={completionMutation.isPending}
+          onClick={() => completionMutation.mutate()}
+        >
+          {completionMutation.isPending && <Loader2 className="lucide-inline animate-spin" />}
+          Continue
+        </SendBtn>
+      </>
+    )
+  })()
+
+  // The stepper footer shows for the four real stages, but not for the
+  // full-panel scanning / error / empty states or the mid-import spinner.
+  const showStepFooter =
+    !scanQuery.isPending
+    && !scanQuery.isError
+    && sources.length > 0
+
+  // Stage title + description, rendered in the FIXED header region (not the
+  // scroll body) so they stay put while the stage content scrolls. Returns null
+  // for the results stage and the full-panel scanning / error / empty states,
+  // which carry their own centered headings in the body.
+  const stageHeader = (() => {
+    if (!showStepFooter) return null
+    const headings: Record<Stage, { title: string; description: string }> = {
+      1: {
+        title: 'Choose sources',
+        description: 'KiroCrew found agent setup on this gateway host. Select the sources to review.',
+      },
+      2: {
+        title: 'Select items to import',
+        description: 'Import all your supported work or handpick what to bring over.',
+      },
+      3: {
+        title: 'Review import',
+        description: 'Review the merge before KiroCrew changes local setup.',
+      },
+      4: {
+        title: 'Import complete',
+        description: 'Your selected setup is ready in KiroCrew.',
+      },
+    }
+    const { title, description } = headings[stage]
+    return (
+      <div className="mt-6">
+        <h1 ref={headingRef} tabIndex={-1} className="text-2xl font-semibold text-text-strong outline-none">
+          {title}
+        </h1>
+        <p className="mt-2 text-sm leading-relaxed text-muted">{description}</p>
+      </div>
+    )
+  })()
 
   const stageContent = (() => {
     if (scanQuery.isPending) {
@@ -330,18 +497,12 @@ export default function AgentImportFlow({
     if (stage === 1) {
       return (
         <>
-          <h1 ref={headingRef} tabIndex={-1} className="text-2xl font-semibold text-text-strong outline-none">
-            Choose sources
-          </h1>
-          <p className="mt-2 text-sm leading-relaxed text-muted">
-            KiroCrew found agent setup on this gateway host. Select the sources to review.
-          </p>
           {completionError && (
-            <p className="mt-4 text-sm text-danger" role="alert">
+            <p className="mb-4 text-sm text-danger" role="alert">
               {errorMessage(completionError, 'Could not save onboarding state.')}
             </p>
           )}
-          <div className="mt-6 space-y-3">
+          <div className="space-y-3">
             {sources.map(source => {
               const count = supportedCategories(source).reduce((sum, category) => sum + category.count, 0)
               const inputId = `agent-import-source-${source.id}`
@@ -372,39 +533,13 @@ export default function AgentImportFlow({
               )
             })}
           </div>
-          <div className="mt-7 flex flex-wrap items-center justify-between gap-3 border-t border-border pt-5">
-            <Btn type="button" disabled={isBusy} onClick={skip}>Skip for now</Btn>
-            <SendBtn
-              type="button"
-              disabled={selectedSources.size === 0}
-              onClick={() => setStage(2)}
-            >
-              Choose categories <ArrowRight className="lucide-inline" />
-            </SendBtn>
-          </div>
         </>
       )
     }
     if (stage === 2) {
-      const hasSelection = applyPayload.sources.length > 0
       return (
         <>
-          <div className="mb-8 flex items-center justify-center gap-5" aria-hidden="true">
-            <span className="flex h-16 w-16 items-center justify-center rounded-lg bg-accent text-accent-fg shadow-sm">
-              <FolderOpen className="lucide-inline" />
-            </span>
-            <ArrowRight className="lucide-inline text-muted" />
-            <span className="flex h-16 w-16 items-center justify-center rounded-lg border border-border bg-card text-text-strong shadow-sm">
-              <CopyCheck className="lucide-inline" />
-            </span>
-          </div>
-          <h1 ref={headingRef} tabIndex={-1} className="text-center text-4xl font-semibold text-text-strong outline-none">
-            Select items to import
-          </h1>
-          <p className="mt-3 text-center text-base leading-relaxed text-muted">
-            Import all your supported work or handpick what to bring over.
-          </p>
-          <div className="mt-10 space-y-5">
+          <div className="space-y-5">
             {sources.filter(source => selectedSources.has(source.id)).map(source => (
               <fieldset key={source.id} aria-label={`${source.name} categories`}>
                 <legend className="mb-2 text-sm font-semibold text-text-strong">{source.name}</legend>
@@ -446,27 +581,18 @@ export default function AgentImportFlow({
           <p className="mt-5 text-center text-[13px] text-muted">
             Your existing KiroCrew setup will not be affected.
           </p>
-          <div className="mt-7 flex items-center justify-between gap-3 border-t border-border pt-5">
-            <Btn type="button" onClick={() => setStage(1)}>
-              <ArrowLeft className="lucide-inline" /> Back
-            </Btn>
-            <SendBtn type="button" disabled={!hasSelection} onClick={() => setStage(3)}>
-              Review import <ArrowRight className="lucide-inline" />
-            </SendBtn>
-          </div>
         </>
       )
     }
     if (stage === 3) {
       return (
         <>
-          <h1 ref={headingRef} tabIndex={-1} className="text-2xl font-semibold text-text-strong outline-none">
-            Review import
-          </h1>
-          <p className="mt-2 text-sm leading-relaxed text-muted">
-            Review the merge before KiroCrew changes local setup.
-          </p>
-          <section className="mt-6 rounded-lg border border-ok/30 bg-ok-subtle p-4">
+          {applyMutation.isError && (
+            <p className="mb-4 text-sm text-danger" role="alert">
+              {errorMessage(applyMutation.error, 'The import did not finish. Please try again.')}
+            </p>
+          )}
+          <section className="rounded-lg border border-ok/30 bg-ok-subtle p-4">
             <h2 className="flex items-center gap-2 text-sm font-semibold text-text-strong">
               <ShieldCheck className="lucide-inline text-ok" /> Merge only
             </h2>
@@ -521,62 +647,14 @@ export default function AgentImportFlow({
               </div>
             )}
           </section>
-          <div className="mt-7 flex items-center justify-between gap-3 border-t border-border pt-5">
-            <Btn type="button" onClick={() => setStage(2)}>
-              <ArrowLeft className="lucide-inline" /> Back
-            </Btn>
-            <SendBtn type="button" onClick={beginImport}>
-              <Import className="lucide-inline" /> Import selected
-            </SendBtn>
-          </div>
         </>
-      )
-    }
-
-    if (applyMutation.isPending) {
-      return (
-        <div className="flex min-h-[360px] flex-col items-center justify-center text-center" aria-live="polite">
-          <Loader2 className="lucide-inline animate-spin text-accent" />
-          <h1 ref={headingRef} tabIndex={-1} className="mt-4 text-2xl font-semibold text-text-strong outline-none">
-            Importing setup
-          </h1>
-          <p className="mt-2 text-sm text-muted">Merging selected items into KiroCrew.</p>
-        </div>
-      )
-    }
-    if (applyMutation.isError) {
-      return (
-        <div className="flex min-h-[360px] flex-col items-center justify-center text-center">
-          <AlertTriangle className="lucide-inline text-danger" />
-          <h1 ref={headingRef} tabIndex={-1} className="mt-4 text-2xl font-semibold text-text-strong outline-none">
-            Import did not finish
-          </h1>
-          <p className="mt-3 max-w-lg text-sm text-danger" role="alert">
-            {errorMessage(applyMutation.error, 'The gateway returned an unexpected error.')}
-          </p>
-          <div className="mt-5 flex flex-wrap justify-center gap-2">
-            <Btn type="button" onClick={() => setStage(3)}>
-              <ArrowLeft className="lucide-inline" /> Back to review
-            </Btn>
-            <SendBtn type="button" onClick={() => applyMutation.mutate()}>
-              <RefreshCw className="lucide-inline" /> Retry import
-            </SendBtn>
-          </div>
-        </div>
       )
     }
 
     const summary = applyMutation.data?.summary
     return (
       <>
-        <div className="text-center">
-          <CheckCircle2 className="lucide-inline text-ok" />
-          <h1 ref={headingRef} tabIndex={-1} className="mt-4 text-2xl font-semibold text-text-strong outline-none">
-            Import complete
-          </h1>
-          <p className="mt-2 text-sm text-muted">Your selected setup is ready in KiroCrew.</p>
-        </div>
-        <dl className="mt-7 grid grid-cols-1 divide-y divide-border rounded-xl border border-border bg-bg sm:grid-cols-3 sm:divide-x sm:divide-y-0">
+        <dl className="grid grid-cols-1 divide-y divide-border rounded-xl border border-border bg-bg sm:grid-cols-3 sm:divide-x sm:divide-y-0">
           <div className="p-4 text-center">
             <dt className="text-[13px] text-muted">Imported</dt>
             <dd className="mt-1 text-2xl font-semibold text-text-strong">{summary?.imported ?? 0}</dd>
@@ -595,21 +673,6 @@ export default function AgentImportFlow({
             {errorMessage(completionError, 'Could not save onboarding state.')}
           </div>
         )}
-        <div className="mt-7 flex flex-wrap items-center justify-between gap-3 border-t border-border pt-5">
-          <Btn type="button" disabled={completionMutation.isPending} onClick={importAnother}>
-            <RefreshCw className="lucide-inline" /> Import another
-          </Btn>
-          <SendBtn
-            type="button"
-            disabled={completionMutation.isPending}
-            onClick={() => completionMutation.mutate()}
-          >
-            {completionMutation.isPending
-              ? <Loader2 className="lucide-inline animate-spin" />
-              : <Check className="lucide-inline" />}
-            Continue
-          </SendBtn>
-        </div>
       </>
     )
   })()
@@ -620,39 +683,26 @@ export default function AgentImportFlow({
       role="dialog"
       aria-modal="true"
       aria-label="Import agent setup"
-      className="fixed inset-0 z-[140] flex min-h-0 overflow-y-auto bg-bg-elevated p-0 text-text sm:items-center sm:justify-center sm:p-6"
+      className="fixed inset-0 z-[140] flex min-h-0 overflow-y-auto bg-bg/70 backdrop-blur-sm p-0 text-text sm:items-center sm:justify-center sm:p-6"
     >
-      <div className="relative flex min-h-screen w-full flex-col overflow-hidden bg-card shadow-xl sm:min-h-[min(760px,calc(100vh-48px))] sm:max-w-6xl sm:flex-row sm:rounded-2xl sm:border sm:border-border">
+      <div className="relative flex min-h-screen w-full flex-col overflow-hidden bg-card shadow-xl sm:h-[min(760px,calc(100vh-48px))] sm:min-h-0 sm:max-w-6xl sm:flex-row sm:rounded-2xl sm:border sm:border-border">
         <aside className="relative flex min-h-[248px] w-full shrink-0 overflow-hidden bg-accent text-accent-fg sm:min-h-0 sm:w-[36%]">
-          <div className="pointer-events-none absolute inset-0 opacity-90" aria-hidden="true">
-            <div className="absolute -left-12 top-[-72px]">
-              <GhostVar1 width={170} />
-            </div>
-            <div className="absolute -right-10 top-10">
-              <GhostVar2 width={150} />
-            </div>
-            <div className="absolute -bottom-16 -right-16">
-              <GhostVar1 width={190} />
-            </div>
-            <div className="absolute -bottom-10 -left-14">
-              <GhostVar2 width={124} />
-            </div>
-          </div>
+          <FloatingGhost className="-left-8 top-[24%] h-24 w-20 rotate-90 lg:h-28 lg:w-24" delay={0.15} rotate={90} />
+          <FloatingGhost className="-right-5 top-5 h-28 w-20 -rotate-12 lg:h-36 lg:w-28" delay={0.35} rotate={-12} />
+          <FloatingGhost className="bottom-[-5.5rem] right-[-12%] hidden h-64 w-48 lg:block" delay={0.55} />
+          <FloatingGhost className="-top-20 left-[40%] hidden h-48 w-36 rotate-180 lg:block" delay={0.75} rotate={180} />
           <div className="relative z-10 flex w-full flex-col p-7 sm:p-10">
             <div className="flex items-center gap-3">
-              <GhostVar1 width={32} />
+              <KiroGhost size={28} className="h-8 w-7" />
               <span className="text-[15px] font-semibold tracking-wide">Kiro Crew</span>
             </div>
             <div className="mt-auto max-w-[290px]">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-accent-fg/75">
-                Import setup
-              </p>
-              <h1 className="mt-3 text-4xl font-semibold leading-[1.05] tracking-[-0.02em] sm:text-[clamp(2.2rem,4vw,3.5rem)]">
+              <h1 className="text-4xl font-semibold leading-[1.05] tracking-[-0.02em] sm:text-[clamp(2.2rem,4vw,3.5rem)]">
                 Bring your crew with you.
               </h1>
               <p className="mt-5 max-w-[270px] text-sm leading-relaxed text-accent-fg/80">
-                Move supported sessions, memories, workspaces, MCP servers, skills,
-                schedules, and safe settings into KiroCrew.
+                Bring your supported setup—sessions, memories, workspaces, MCP servers,
+                skills, schedules, and safe settings—into Kiro Crew.
               </p>
             </div>
             <p className="mt-8 text-[12px] font-medium text-accent-fg/75">
@@ -661,34 +711,33 @@ export default function AgentImportFlow({
           </div>
         </aside>
         <section className="flex min-h-[calc(100vh-248px)] min-w-0 flex-1 flex-col bg-card sm:min-h-0">
-          <header className="flex shrink-0 items-start justify-between gap-4 px-6 pb-0 pt-7 sm:px-10 sm:pt-10">
-            <div>
-              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-accent">
-                Setup <span className="px-1 text-muted">→</span> Import
+          <header className="shrink-0 px-6 pt-7 sm:px-10 sm:pt-10">
+            <div className="flex items-center justify-between gap-4">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted">
+                Import setup{showStepFooter && ` · ${stage} of ${STAGE_LABELS.length}`}
               </p>
-              <p className="mt-2 text-[13px] text-muted">
-                Bring supported setup into your KiroCrew workspace.
-              </p>
-            </div>
-            <div className="flex shrink-0 flex-col items-end gap-2">
-              <span className="text-[12px] font-medium text-muted">
-                {stage} / {STAGE_LABELS.length} · {STAGE_LABELS[stage - 1]}
-              </span>
-              <Btn
+              <button
                 type="button"
-                aria-label="Skip import and close"
+                aria-label="Skip all setup and onboarding"
                 disabled={isBusy}
-                onClick={skip}
+                onClick={skipAll}
+                className="inline-flex items-center gap-1.5 text-[13px] font-medium text-muted transition-colors hover:text-text disabled:cursor-not-allowed disabled:opacity-50"
               >
-                Skip
-              </Btn>
+                Skip all <ArrowRight className="lucide-inline" />
+              </button>
             </div>
+            {stageHeader}
           </header>
           <div className="min-h-0 flex-1 overflow-y-auto">
-            <main className="w-full px-6 py-8 sm:px-10 sm:py-10">
+            <main className="w-full px-6 pb-8 pt-6 sm:px-10 sm:pb-10 sm:pt-6">
               <div className="mx-auto max-w-2xl">{stageContent}</div>
             </main>
           </div>
+          {showStepFooter && (
+            <footer className="flex shrink-0 flex-wrap items-center justify-end gap-3 px-6 pt-4 pb-6 sm:px-10 sm:pb-10">
+              {stepFooterNav}
+            </footer>
+          )}
         </section>
       </div>
     </div>,

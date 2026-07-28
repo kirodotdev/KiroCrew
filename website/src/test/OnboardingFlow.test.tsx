@@ -25,7 +25,7 @@ const patchConfig = vi.mocked(api.patchConfig)
 const kirocrewConfig = vi.mocked(api.kirocrewConfig)
 
 const advanceToStep2 = () => {
-  fireEvent.click(screen.getByRole('button', { name: 'Next' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
   expect(screen.getByText('Tell Kiro about you')).toBeInTheDocument()
 }
 
@@ -56,7 +56,7 @@ describe('OnboardingFlow — About You step', () => {
     advanceToStep2()
     fireEvent.click(screen.getByRole('button', { name: 'UX Designer' }))
     fireEvent.click(screen.getByRole('button', { name: 'Somewhat' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Next' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
     await waitFor(() => {
       expect(patchConfig).toHaveBeenCalledWith('dashboard.user_role', 'designer')
       expect(patchConfig).toHaveBeenCalledWith(
@@ -71,7 +71,7 @@ describe('OnboardingFlow — About You step', () => {
   it('does not write config when nothing was selected', async () => {
     renderWithProviders(<OnboardingFlow initialOpen onComplete={vi.fn()} />)
     advanceToStep2()
-    fireEvent.click(screen.getByRole('button', { name: 'Next' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
     expect(await screen.findByText('Work that runs on time')).toBeInTheDocument()
     expect(patchConfig).not.toHaveBeenCalled()
   })
@@ -84,7 +84,7 @@ describe('OnboardingFlow — About You step', () => {
     expect(chip).toHaveAttribute('aria-pressed', 'true')
     fireEvent.click(chip) // toggle off — back to the initial ''
     expect(chip).toHaveAttribute('aria-pressed', 'false')
-    fireEvent.click(screen.getByRole('button', { name: 'Next' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
     expect(await screen.findByText('Work that runs on time')).toBeInTheDocument()
     expect(patchConfig).not.toHaveBeenCalled()
   })
@@ -142,7 +142,7 @@ describe('OnboardingFlow — About You step', () => {
       )
     })
     // Unchanged answers → Next writes nothing
-    fireEvent.click(screen.getByRole('button', { name: 'Next' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
     expect(await screen.findByText('Work that runs on time')).toBeInTheDocument()
     expect(patchConfig).not.toHaveBeenCalled()
   })
@@ -152,7 +152,7 @@ describe('OnboardingFlow — About You step', () => {
     renderWithProviders(<OnboardingFlow initialOpen onComplete={vi.fn()} />)
     advanceToStep2()
     fireEvent.click(screen.getByRole('button', { name: 'UX Designer' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Next' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
     // Error surfaces, still on step 2, tour NOT shown
     expect(await screen.findByRole('alert')).toHaveTextContent(/Couldn't save/)
     expect(screen.getByText('Tell Kiro about you')).toBeInTheDocument()
@@ -164,10 +164,10 @@ describe('OnboardingFlow — About You step', () => {
     renderWithProviders(<OnboardingFlow initialOpen onComplete={vi.fn()} />)
     advanceToStep2()
     fireEvent.click(screen.getByRole('button', { name: 'UX Designer' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Next' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
     await screen.findByRole('alert')
     // Baseline must NOT have advanced on failure — retry re-sends the field.
-    fireEvent.click(screen.getByRole('button', { name: 'Next' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
     expect(await screen.findByText('Work that runs on time')).toBeInTheDocument()
     expect(patchConfig).toHaveBeenCalledTimes(2)
     expect(patchConfig).toHaveBeenLastCalledWith('dashboard.user_role', 'designer')
@@ -183,7 +183,7 @@ describe('OnboardingFlow — About You step', () => {
     renderWithProviders(<OnboardingFlow initialOpen onComplete={onComplete} />)
     advanceToStep2()
     fireEvent.click(screen.getByRole('button', { name: 'Developer' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Next' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
     // In-flight: every input frozen — changing a chip now would advance the
     // flow with a stale value persisted (GPT round-3 race).
     await screen.findByRole('button', { name: 'Saving…' })

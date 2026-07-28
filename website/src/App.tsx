@@ -1724,6 +1724,15 @@ export default function App() {
           }
           continueTourAfterImport.current = false
         }}
+        onSkipAll={() => {
+          // Skip the entire first-run flow: mark both import + onboarding tour
+          // done and close both so the user lands in the product (new chat).
+          markImportOnboarded()
+          markOnboarded()
+          setShowAgentImport(false)
+          setShowOnboarding(false)
+          continueTourAfterImport.current = false
+        }}
       />
 
       {/* First-run onboarding: 4-step flow (theme → Schedule → Apps → Sessions).

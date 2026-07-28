@@ -4,8 +4,9 @@ import { useNavigate } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ArrowRight, Check, Monitor, Sun, Moon } from 'lucide-react'
 import { useTheme, type ModePreference, type ColorTheme } from '../hooks/useTheme'
-import { GhostVar1, GhostVar2 } from '../assets/onboarding/GhostIcons'
-import { SettingsSelect } from '../components/settings'
+import { GhostVar2 } from '../assets/onboarding/GhostIcons'
+import { Btn, SendBtn } from './ui'
+import OnboardingChapterShell from './OnboardingChapterShell'
 import { api } from '../api/client'
 
 /**
@@ -351,74 +352,64 @@ export default function OnboardingFlow({
     else finish()
   }
 
-  // ── Step 1: Pick your look (centered modal) ──────────────────────────────
+  // ── Step 1: Pick your look (Customize chapter — import-setup layout) ──────
   if (step === 1) {
-    return createPortal(
-      <div className="fixed inset-0 z-[120] flex items-center justify-center bg-bg/70 backdrop-blur-sm animate-rise">
-        <div
-          ref={dialogRef}
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="onboarding-look-title"
-          className="relative bg-card border border-accent p-6 w-[412px] max-w-[92vw]"
-          style={{ boxShadow: RING_SHADOW, borderRadius: '0px 16px 16px 16px' }}
-        >
-          <div className="absolute" style={{ bottom: 'calc(100% + 6px)', left: 0 }}>
-            <GhostVar1 width={52} />
-          </div>
-          <div className="flex items-start justify-between">
-            <h2 id="onboarding-look-title" className="text-[22px] font-semibold text-text-strong">Pick your look</h2>
+    return (
+      <OnboardingChapterShell
+        chapterLabel="Customize"
+        stepIndex={1}
+        stepCount={2}
+        ariaLabel="Customize KiroCrew"
+        panelHeadline="Make it yours."
+        panelBody="Set your look and tell Kiro about you so responses fit the way you work."
+        panelFootnote="Change anything later in Settings."
+        title="Pick your look"
+        description="Choose a color theme and mode — you can change it anytime."
+        onSkipAll={finish}
+        dialogRef={dialogRef}
+        footer={<SendBtn type="button" onClick={next}>Continue</SendBtn>}
+      >
+        <div className="flex gap-1 border border-border rounded-[10px] p-1" style={{ background: 'var(--panel-strong)' }}>
+          {(['system', 'light', 'dark'] as ModePreference[]).map(m => (
             <button
-              onClick={finish}
-              className="flex items-center gap-1 text-[13px] text-muted hover:text-text-strong cursor-pointer bg-transparent border-none"
+              key={m}
+              onClick={() => setModePref(m)}
+              className={`flex-1 flex items-center justify-center gap-1.5 py-2 rounded-[7px] text-[13px] cursor-pointer border-none transition-colors ${
+                modePref === m ? 'font-medium' : 'bg-transparent text-muted hover:text-text'
+              }`}
+              style={modePref === m ? { background: ACCENT_20, color: 'var(--accent)' } : undefined}
             >
-              Skip <ArrowRight size={13} />
+              {m === 'system' ? <Monitor size={14} /> : m === 'light' ? <Sun size={14} /> : <Moon size={14} />}
+              {m[0].toUpperCase() + m.slice(1)}
             </button>
-          </div>
-          <p className="text-[13.5px] text-muted mt-2">
-            Choose a color theme and mode — you can change it anytime.
-          </p>
-
-          <div className="flex gap-1 border border-border rounded-[10px] p-1 mt-4" style={{ background: 'var(--panel-strong)' }}>
-            {(['system', 'light', 'dark'] as ModePreference[]).map(m => (
-              <button
-                key={m}
-                onClick={() => setModePref(m)}
-                className={`flex-1 flex items-center justify-center gap-1.5 py-2 rounded-[7px] text-[13px] cursor-pointer border-none transition-colors ${
-                  modePref === m ? 'font-medium' : 'bg-transparent text-muted hover:text-text'
-                }`}
-                style={modePref === m ? { background: ACCENT_20, color: 'var(--accent)' } : undefined}
-              >
-                {m === 'system' ? <Monitor size={14} /> : m === 'light' ? <Sun size={14} /> : <Moon size={14} />}
-                {m[0].toUpperCase() + m.slice(1)}
-              </button>
-            ))}
-          </div>
-
-          <div className="mt-4">
-            <SettingsSelect
-              label="Color Theme"
-              description="Select a color palette for the dashboard"
-              value={colorTheme}
-              options={allThemes.map(t => t.value)}
-              optionLabels={allThemes.map(t => t.label)}
-              onChange={v => setColorTheme(v as ColorTheme)}
-            />
-          </div>
-
-          <button
-            onClick={next}
-            className="w-full mt-5 py-3 rounded-[11px] bg-accent text-accent-fg text-[14.5px] font-semibold cursor-pointer border-none hover:opacity-90 transition-opacity"
-          >
-            Next
-          </button>
+          ))}
         </div>
-      </div>,
-      document.body,
+
+        <div className="mt-5 text-[11px] uppercase tracking-wide text-muted mb-1.5">
+          Color theme
+        </div>
+        <div className="grid grid-cols-3 gap-2" role="group" aria-label="Color theme">
+          {allThemes.map(t => (
+            <button
+              key={t.value}
+              onClick={() => setColorTheme(t.value as ColorTheme)}
+              aria-pressed={colorTheme === t.value}
+              className={`flex min-w-0 items-center justify-center gap-1.5 truncate rounded-lg border px-3 py-2.5 text-[13px] cursor-pointer transition-colors ${
+                colorTheme === t.value
+                  ? 'border-accent font-medium'
+                  : 'border-border bg-transparent text-text hover:text-text-strong'
+              }`}
+              style={colorTheme === t.value ? { background: ACCENT_20, color: 'var(--accent)' } : undefined}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+      </OnboardingChapterShell>
     )
   }
 
-  // ── Step 2: About you (centered modal) ───────────────────────────────────
+  // ── Step 2: About you (Customize chapter — import-setup layout) ──────────
   if (step === 2) {
     // Freeze all inputs while a save is in flight: changing a chip after Next
     // snapshots the PATCH payload would advance the flow with a stale value
@@ -433,106 +424,94 @@ export default function OnboardingFlow({
       profileTouched.current = true
       setTechLevel(t => (t === v ? '' : v))
     }
-    return createPortal(
-      <div className="fixed inset-0 z-[120] flex items-center justify-center bg-bg/70 backdrop-blur-sm animate-rise">
+    return (
+      <OnboardingChapterShell
+        chapterLabel="Customize"
+        stepIndex={2}
+        stepCount={2}
+        ariaLabel="Customize KiroCrew"
+        panelHeadline="Make it yours."
+        panelBody="Set your look and tell Kiro about you so responses fit the way you work."
+        panelFootnote="Change anything later in Settings."
+        title="Tell Kiro about you"
+        description="Answers set how Kiro explains things — plain language or full technical detail. Saved on this device; change anytime in Settings → Chat."
+        onSkipAll={finish}
+        skipDisabled={savingProfile}
+        dialogRef={dialogRef}
+        footer={
+          <>
+            <Btn type="button" className="h-9 rounded-lg px-4" disabled={savingProfile} onClick={() => setStep(1)}>
+              Back
+            </Btn>
+            <SendBtn type="button" disabled={savingProfile} onClick={next}>
+              {savingProfile ? 'Saving…' : 'Continue'}
+            </SendBtn>
+          </>
+        }
+      >
         <div
-          ref={dialogRef}
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="onboarding-profile-title"
-          className="relative bg-card border border-accent p-6 w-[412px] max-w-[92vw]"
-          style={{ boxShadow: RING_SHADOW, borderRadius: '0px 16px 16px 16px' }}
+          id="onboarding-role-label"
+          className="text-[11px] uppercase tracking-wide text-muted mb-1.5"
         >
-          <div className="absolute" style={{ bottom: 'calc(100% + 6px)', left: 0 }}>
-            <GhostVar1 width={52} />
-          </div>
-          <div className="flex items-start justify-between">
-            <h2 id="onboarding-profile-title" className="text-[22px] font-semibold text-text-strong">Tell Kiro about you</h2>
-            <button
-              onClick={finish}
-              disabled={savingProfile}
-              className="flex items-center gap-1 text-[13px] text-muted hover:text-text-strong cursor-pointer bg-transparent border-none disabled:opacity-60 disabled:cursor-default"
-            >
-              Skip <ArrowRight size={13} />
-            </button>
-          </div>
-          <p className="text-[13.5px] text-muted mt-2">
-            Answers set how Kiro explains things — plain language or full
-            technical detail. Saved on this device; change anytime in
-            Settings&nbsp;&rarr;&nbsp;Chat.
-          </p>
-
-          <div
-            id="onboarding-role-label"
-            className="text-[11px] uppercase tracking-wide text-muted mt-4 mb-1.5"
-          >
-            Your role
-          </div>
-          <div className="flex flex-wrap gap-1.5" role="group" aria-labelledby="onboarding-role-label">
-            {ROLE_OPTIONS.map(o => (
-              <button
-                key={o.value}
-                onClick={() => pickRole(o.value)}
-                disabled={savingProfile}
-                aria-pressed={role === o.value}
-                className={`flex items-center gap-1 rounded-full px-3 py-1.5 text-[13px] cursor-pointer transition-colors border ${
-                  role === o.value
-                    ? 'border-accent font-medium'
-                    : 'border-border bg-transparent text-text hover:text-text-strong'
-                }`}
-                style={role === o.value ? { background: ACCENT_20, color: 'var(--accent)' } : undefined}
-              >
-                {role === o.value && <Check size={13} aria-hidden />}
-                {o.label}
-              </button>
-            ))}
-          </div>
-
-          <div
-            id="onboarding-tech-label"
-            className="text-[11px] uppercase tracking-wide text-muted mt-4 mb-1.5"
-          >
-            How technical are you?
-          </div>
-          <div
-            className="flex gap-1 border border-border rounded-[10px] p-1"
-            style={{ background: 'var(--panel-strong)' }}
-            role="group"
-            aria-labelledby="onboarding-tech-label"
-          >
-            {TECH_OPTIONS.map(o => (
-              <button
-                key={o.value}
-                onClick={() => pickTech(o.value)}
-                disabled={savingProfile}
-                aria-pressed={techLevel === o.value}
-                className={`flex-1 flex items-center justify-center py-2 rounded-[7px] text-[13px] cursor-pointer border-none transition-colors ${
-                  techLevel === o.value ? 'font-medium' : 'bg-transparent text-muted hover:text-text'
-                }`}
-                style={techLevel === o.value ? { background: ACCENT_20, color: 'var(--accent)' } : undefined}
-              >
-                {o.label}
-              </button>
-            ))}
-          </div>
-
-          {profileSaveError && (
-            <p role="alert" className="text-[12.5px] mt-3 mb-0" style={{ color: 'var(--danger)' }}>
-              Couldn't save your answers — press Next to retry, or Skip again to
-              continue without saving.
-            </p>
-          )}
-
-          <button
-            onClick={next}
-            disabled={savingProfile}
-            className="w-full mt-5 py-3 rounded-[11px] bg-accent text-accent-fg text-[14.5px] font-semibold cursor-pointer border-none hover:opacity-90 transition-opacity disabled:opacity-60 disabled:cursor-default"
-          >
-            {savingProfile ? 'Saving…' : 'Next'}
-          </button>
+          Your role
         </div>
-      </div>,
-      document.body,
+        <div className="flex flex-wrap gap-1.5" role="group" aria-labelledby="onboarding-role-label">
+          {ROLE_OPTIONS.map(o => (
+            <button
+              key={o.value}
+              onClick={() => pickRole(o.value)}
+              disabled={savingProfile}
+              aria-pressed={role === o.value}
+              className={`flex items-center gap-1 rounded-full px-3 py-1.5 text-[13px] cursor-pointer transition-colors border ${
+                role === o.value
+                  ? 'border-accent font-medium'
+                  : 'border-border bg-transparent text-text hover:text-text-strong'
+              }`}
+              style={role === o.value ? { background: ACCENT_20, color: 'var(--accent)' } : undefined}
+            >
+              {role === o.value && <Check size={13} aria-hidden />}
+              {o.label}
+            </button>
+          ))}
+        </div>
+
+        <div
+          id="onboarding-tech-label"
+          className="text-[11px] uppercase tracking-wide text-muted mt-4 mb-1.5"
+        >
+          How technical are you?
+        </div>
+        <div
+          className="flex flex-col gap-1.5"
+          role="group"
+          aria-labelledby="onboarding-tech-label"
+        >
+          {TECH_OPTIONS.map(o => (
+            <button
+              key={o.value}
+              onClick={() => pickTech(o.value)}
+              disabled={savingProfile}
+              aria-pressed={techLevel === o.value}
+              className={`flex items-center gap-2 rounded-lg border px-3 py-2.5 text-[13px] cursor-pointer transition-colors ${
+                techLevel === o.value
+                  ? 'border-accent font-medium'
+                  : 'border-border bg-transparent text-text hover:text-text-strong'
+              }`}
+              style={techLevel === o.value ? { background: ACCENT_20, color: 'var(--accent)' } : undefined}
+            >
+              {techLevel === o.value && <Check size={13} aria-hidden />}
+              {o.label}
+            </button>
+          ))}
+        </div>
+
+        {profileSaveError && (
+          <p role="alert" className="text-[12.5px] mt-3 mb-0" style={{ color: 'var(--danger)' }}>
+            Couldn't save your answers — press Next to retry, or Skip again to
+            continue without saving.
+          </p>
+        )}
+      </OnboardingChapterShell>
     )
   }
 
