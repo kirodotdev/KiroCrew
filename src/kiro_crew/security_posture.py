@@ -142,6 +142,14 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "StreamRedactor mirroring the main chat for the side-question stream.",
     ),
     (
+        "Steering file metadata",
+        "dashboard/handlers/steering.py",
+        "First-heading descriptions and display paths in the /api/steering listing "
+        "and detail responses. Document CONTENT is deliberately NOT redacted: it "
+        "populates the tab's editor and is written straight back on save, so "
+        "redacting it would overwrite the user's own file with markers.",
+    ),
+    (
         "OpenAI-compatible API",
         "dashboard/openai_compat.py",
         "Streamed and non-streamed completions served to third-party clients.",

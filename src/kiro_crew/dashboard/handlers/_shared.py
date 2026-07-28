@@ -130,6 +130,55 @@ def _resolve_aim_skill_path(name: str) -> Path | None:
     return None
 
 
+def active_project_dir(state: DashboardState, session_key: str = "") -> Path | None:
+    """Return the project directory that workspace-scoped resources resolve against.
+
+    Workspace-scoped resources (``<project>/.kiro/skills``,
+    ``<project>/.kiro/steering``) live under the directory the agent actually
+    runs in, which the dashboard stores per chat slot as ``_ChatSlot.project``
+    (set by ``PUT /api/chat/slots/{slot}/project`` and the ``set_project`` MCP
+    tool).  ``project_dir`` is accepted as a fallback for slot-like objects that
+    expose that name instead.
+
+    Resolution is deterministic, in this order:
+
+    1. the slot named by *session_key*, when it has a project;
+    2. otherwise the single project shared by every slot that has one;
+    3. otherwise ``None``.
+
+    Step 3 matters for mutations: with two chats open on different projects
+    there is no defensible "active" project for a settings page, and silently
+    picking the first-inserted slot would create, overwrite or delete files in
+    the wrong project.  Failing closed makes the caller surface the ambiguity
+    instead.
+    """
+    slots = getattr(state, "_slots", {}) or {}
+
+    def _project_of(slot: Any) -> Path | None:
+        pd = getattr(slot, "project", None) or getattr(slot, "project_dir", None)
+        if isinstance(pd, Path):
+            return pd
+        if isinstance(pd, str) and pd:
+            return Path(pd)
+        return None
+
+    if session_key:
+        slot_name = session_key.split(":", 1)[-1] if ":" in session_key else session_key
+        slot = slots.get(slot_name)
+        if slot is not None:
+            scoped = _project_of(slot)
+            if scoped is not None:
+                return scoped
+    distinct: dict[str, Path] = {}
+    for slot in slots.values():
+        proj = _project_of(slot)
+        if proj is not None:
+            distinct[str(proj)] = proj
+    if len(distinct) == 1:
+        return next(iter(distinct.values()))
+    return None
+
+
 # ── Kiro-cli native skills (~/.kiro/skills/, <project>/.kiro/skills/) ──
 
 
@@ -517,13 +566,8 @@ def _resolve_skill_root(name: str, state: DashboardState) -> Path | None:
     elif name.startswith("kiro-workspace/"):
         rel = name[len("kiro-workspace/") :]
         # We cannot reliably resolve project dir here — gate this to
-        # paths under any active slot's project_dir.
-        proj: Path | None = None
-        for slot in getattr(state, "_slots", {}).values():
-            pd = getattr(slot, "project_dir", None)
-            if pd:
-                proj = Path(pd)
-                break
+        # paths under any active slot's project directory.
+        proj = active_project_dir(state)
         if proj is None:
             return None
         root = proj / ".kiro" / "skills"

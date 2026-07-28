@@ -56,6 +56,7 @@ Load relevant module specs before making changes to that component. Read common 
 | [inline-action-buttons](features/inline-action-buttons.md) | Interactive buttons in chat messages |
 | [prompt-optimizer](features/prompt-optimizer.md) | Native pre-send prompt optimization (Cmd+Shift+Enter) |
 | [stt-streaming](features/stt-streaming.md) | Live speech-to-text via AWS Transcribe Streaming |
+| [steering-viewer](features/steering-viewer.md) | Steering tab under Agent Capabilities: view + edit `~/.kiro/steering` and project `.kiro/steering` files |
 | [turn-complete-chime](features/turn-complete-chime.md) | Notification sound whenever the agent finishes a turn in any chat |
 | [turn-stats-footer](features/turn-stats-footer.md) | Per-turn elapsed time + credits footer under assistant messages (kiro-cli parity) |
 | [voice-streaming](features/voice-streaming.md) | Real-time Polly TTS with streaming auto-speak and interrupt |

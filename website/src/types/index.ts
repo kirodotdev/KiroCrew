@@ -77,6 +77,31 @@ export interface SkillTreeEntry {
   size: number
 }
 
+/** A Kiro steering file — always-on markdown injected into every session. */
+export interface SteeringFile {
+  /** ``"<source>/<rel>"`` — the API handle for read/update/delete. */
+  key: string
+  /** File name only (e.g. ``api-standards.md``). */
+  name: string
+  /** Path relative to the steering root, posix-style. */
+  rel: string
+  /** ``user`` → ~/.kiro/steering (global), ``workspace`` → <project>/.kiro/steering. */
+  source: string
+  /** Display path with the home prefix collapsed to ``~``. */
+  path: string
+  size: number
+  /** First markdown heading, used as a one-line summary. */
+  description: string
+}
+
+/** Response shape of ``GET /api/steering``. */
+export interface SteeringList {
+  files: SteeringFile[]
+  roots: Array<{ source: string; path: string; exists: boolean }>
+  /** Active project directory (display path), empty when none is set. */
+  project: string
+}
+
 /** A skill result from the multi-provider discover endpoint. */
 export interface DiscoveredSkill {
   id: string

@@ -1502,6 +1502,16 @@ async def start_dashboard(
     app.router.add_put("/api/skills/{name:.+}", handlers.api_skill_detail)
     app.router.add_delete("/api/skills/{name:.+}", handlers.api_skill_detail)
 
+    # Kiro steering files (~/.kiro/steering + <project>/.kiro/steering).  Plain
+    # markdown documents, so no tree browser — the key is ``<source>/<relpath>``
+    # and the fixed list/create route is registered before the catch-all
+    # {key:.+} detail routes so aiohttp reaches it first.
+    app.router.add_get("/api/steering", handlers.api_steering)
+    app.router.add_post("/api/steering", handlers.api_steering_create)
+    app.router.add_get("/api/steering/{key:.+}", handlers.api_steering_detail)
+    app.router.add_put("/api/steering/{key:.+}", handlers.api_steering_detail)
+    app.router.add_delete("/api/steering/{key:.+}", handlers.api_steering_detail)
+
     # Custom Themes (CRUD)
     app.router.add_get("/api/themes", handlers.api_themes)
     app.router.add_post("/api/themes", handlers.api_themes_create)

@@ -300,6 +300,15 @@ from kiro_crew.dashboard.handlers.side import (  # noqa: E402, F401
 from kiro_crew.dashboard.handlers.sso_login import (  # noqa: E402, F401
     api_sso_login_ws,
 )
+from kiro_crew.dashboard.handlers.steering import (  # noqa: E402, F401
+    STEERING_FILE_MAX_BYTES,
+    api_steering,
+    api_steering_create,
+    api_steering_detail,
+    list_steering_blocking,
+    resolve_steering_file,
+    steering_roots,
+)
 
 # ── Task Runner (extracted to handlers/taskrunner.py) ──
 from kiro_crew.dashboard.handlers.taskrunner import (  # noqa: E402, F401

@@ -18,6 +18,7 @@ from ._shared import (
     _capability_manager,
     _get_skills,
     _resolve_skill_root,
+    active_project_dir,
     collect_skills_blocking,
     list_skill_tree,
     read_skill_file,
@@ -183,12 +184,7 @@ async def api_skills(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     skills = _get_skills(state)
     # Resolve the active project dir (cheap in-memory scan of slots) on the loop.
-    project_dir: Path | None = None
-    for slot in getattr(state, "_slots", {}).values():
-        pd = getattr(slot, "project_dir", None)
-        if pd:
-            project_dir = Path(pd)
-            break
+    project_dir: Path | None = active_project_dir(state)
     # Run the AIM subprocess async (on the loop, non-blocking), then offload ALL
     # blocking filesystem work — kirocrew list_skills() (os.walk + per-file
     # frontmatter reads), AIM path globs, kiro per-skill resolve/read, and the

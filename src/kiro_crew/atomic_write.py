@@ -36,6 +36,7 @@ def atomic_write(
     *,
     fsync: bool = False,
     mode: int | None = None,
+    newline: str | None = None,
 ) -> None:
     """Write *content* to *path* atomically via unique temp file + rename.
 
@@ -44,12 +45,18 @@ def atomic_write(
 
     *mode* sets explicit permissions (e.g. ``0o600`` for secrets).
     ``None`` (default) applies umask-based permissions (matching ``open()``).
+
+    *newline* is passed straight to ``open()``. The default (``None``) keeps
+    the historical behavior: universal-newline translation, which rewrites
+    ``\\n`` to ``\\r\\n`` on Windows. Pass ``""`` when the content must land on
+    disk byte-for-byte — e.g. a document that is read back, edited and saved
+    again, where translation on every save would accumulate carriage returns.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
+        with os.fdopen(fd, "w", encoding="utf-8", newline=newline) as f:
             fd = -1  # fdopen took ownership; prevent double-close
             # No-op on Windows (no POSIX permission bits / os.fchmod).
             platform_compat.fchmod_safe(

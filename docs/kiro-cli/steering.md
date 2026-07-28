@@ -13,6 +13,10 @@ Persistent project knowledge via markdown files. Instead of explaining conventio
 
 Workspace steering takes priority over global on conflicts.
 
+## Viewing and editing in KiroCrew
+
+The dashboard surfaces both locations under **Agent Capabilities → Steering**: it lists every `.md` file in `~/.kiro/steering` and the active project's `.kiro/steering`, renders the content, and supports creating, editing and deleting files. See `docs/system-specs/features/steering-viewer.md`.
+
 ## Foundational steering files
 
 - `product.md` — product purpose, users, features, business objectives

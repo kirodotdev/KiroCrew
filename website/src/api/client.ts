@@ -913,6 +913,15 @@ export const api = {
   createSkill: (name: string, content: string) => post('/api/skills', { name, content }).then(j),
   updateSkill: (name: string, content: string) => put('/api/skills/' + name.split('/').map(encodeURIComponent).join('/'), { content }).then(j),
   deleteSkill: (name: string) => del('/api/skills/' + name.split('/').map(encodeURIComponent).join('/')).then(j),
+
+  // Steering (Kiro steering files — ~/.kiro/steering + <project>/.kiro/steering)
+  steeringFiles: () => fetch('/api/steering').then(j),
+  steeringFile: (key: string) => fetch('/api/steering/' + key.split('/').map(encodeURIComponent).join('/')).then(j),
+  createSteering: (name: string, content: string, source?: string) =>
+    post('/api/steering', { name, content, source }).then(j),
+  updateSteering: (key: string, content: string) =>
+    put('/api/steering/' + key.split('/').map(encodeURIComponent).join('/'), { content }).then(j),
+  deleteSteering: (key: string) => del('/api/steering/' + key.split('/').map(encodeURIComponent).join('/')).then(j),
   /** Multi-provider skill discovery (skills.sh, etc.) */
   discoverSkills: (query: string, opts?: { provider?: string; limit?: number }) =>
     get(`/api/skills/-/discover?q=${encodeURIComponent(query)}${opts?.provider ? `&provider=${opts.provider}` : ''}${opts?.limit ? `&limit=${opts.limit}` : ''}`).then(j) as Promise<import('../types').DiscoverSkillsResponse>,
