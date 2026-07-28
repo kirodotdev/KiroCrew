@@ -90,6 +90,26 @@ def test_policy_covers_cloudfront_function_and_headers():
     assert "cloudfront:DeleteResponseHeadersPolicy" in managed_actions
 
 
+def test_policy_covers_base_stack_audit_controls():
+    """CWE-778: base-stack.yaml adds S3 server access logging + a CloudTrail
+    data-event trail. The generated deploy policy must grant the actions CFN
+    needs to create those, or the base-stack deploy AccessDenies and rolls back.
+    """
+    doc = iam_mod.policy_document()
+    s3_bucket = next(s for s in doc["Statement"] if s["Sid"] == "S3BucketLevel")
+    assert "s3:PutBucketLogging" in s3_bucket["Action"]
+    trail = next(s for s in doc["Statement"] if s["Sid"] == "CloudTrailBaseStack")
+    for needed in ("cloudtrail:CreateTrail", "cloudtrail:PutEventSelectors",
+                   "cloudtrail:StartLogging", "cloudtrail:DeleteTrail",
+                   "cloudtrail:AddTags"):
+        assert needed in trail["Action"], f"missing {needed}"
+    # Least-privilege: scoped to the trail name the template creates, not "*".
+    assert trail["Resource"] == "arn:aws:cloudtrail:*:*:trail/kirocrew-deploy-trail-*"
+    # Present in the static tier too (base-stack is deployed by the static tier).
+    static_sids = {s["Sid"] for s in iam_mod.policy_document(tier="static")["Statement"]}
+    assert "CloudTrailBaseStack" in static_sids
+
+
 def test_policy_no_iam_or_billing_actions():
     """§6.1 / Q6: never any IAM-write or billing actions in the generated policy."""
     text = iam_mod.policy_json(include_custom_domain=True)

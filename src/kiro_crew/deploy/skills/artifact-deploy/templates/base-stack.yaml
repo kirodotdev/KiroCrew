@@ -46,6 +46,11 @@ Resources:
     Type: AWS::S3::Bucket
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
+    # The server-access-log target bucket policy must exist before S3 will
+    # accept this bucket's LoggingConfiguration (PutBucketLogging validates
+    # write permission to the target). LogBucketPolicy references OriginBucket
+    # only by its computed ARN (not !GetAtt), so there is no dependency cycle.
+    DependsOn: LogBucketPolicy
     Properties:
       BucketName: !Sub 'kirocrew-deploy-${AWS::AccountId}-${AWS::Region}'
       PublicAccessBlockConfiguration:
@@ -80,8 +85,101 @@ Resources:
             Prefix: ''
             AbortIncompleteMultipartUpload:
               DaysAfterInitiation: 7
+      # CWE-778 (SAX-05): server access logging to a dedicated log bucket so
+      # reads/writes of deploy artifacts served through the shared distribution
+      # are auditable (detect insider misuse, unauthorized reads, tampering).
+      LoggingConfiguration:
+        DestinationBucketName: !Ref LogBucket
+        LogFilePrefix: s3-access/
       Tags:
         - { Key: 'kirocrew:managed', Value: 'true' }
+
+  # Dedicated log target for OriginBucket's S3 server access logs (prefix
+  # s3-access/) and the CloudTrail S3 data-event trail (prefix AWSLogs/). It is
+  # itself private + encrypted, and does NOT enable its own server access
+  # logging (a log bucket logging to itself would recurse without bound). Logs
+  # are expired after 365 days so audit retention does not grow storage forever.
+  LogBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub 'kirocrew-deploy-logs-${AWS::AccountId}-${AWS::Region}'
+      # BucketOwnerEnforced disables ACLs; log delivery is authorized via the
+      # bucket policy's service-principal grants below (the modern, ACL-free way
+      # to receive both S3 server access logs and CloudTrail logs).
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: expire-logs
+            Status: Enabled
+            Prefix: ''
+            ExpirationInDays: 365
+          - Id: abort-incomplete-multipart
+            Status: Enabled
+            Prefix: ''
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+      Tags:
+        - { Key: 'kirocrew:managed', Value: 'true' }
+
+  # Authorizes the two log-delivery service principals to write into LogBucket.
+  # OriginBucket and DeployTrail are referenced by their COMPUTED ARNs (via
+  # !Sub, not !GetAtt/!Ref) so this policy has no dependency on either resource
+  # — that is what lets OriginBucket DependsOn this policy, and DeployTrail
+  # DependsOn this policy, without a CloudFormation cycle.
+  LogBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref LogBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          # S3 server access log delivery for OriginBucket (SAX-05).
+          - Sid: S3ServerAccessLogsWrite
+            Effect: Allow
+            Principal:
+              Service: logging.s3.amazonaws.com
+            Action: s3:PutObject
+            Resource: !Sub '${LogBucket.Arn}/s3-access/*'
+            Condition:
+              StringEquals:
+                'aws:SourceAccount': !Ref 'AWS::AccountId'
+              ArnLike:
+                'aws:SourceArn': !Sub 'arn:aws:s3:::kirocrew-deploy-${AWS::AccountId}-${AWS::Region}'
+          # CloudTrail bucket-ACL check + log delivery for the S3 data-event
+          # trail (SAX-06). SourceArn pins the specific trail by its computed
+          # ARN so no other trail can write here.
+          - Sid: AWSCloudTrailAclCheck
+            Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action: s3:GetBucketAcl
+            Resource: !GetAtt LogBucket.Arn
+            Condition:
+              StringEquals:
+                'aws:SourceArn': !Sub 'arn:aws:cloudtrail:${AWS::Region}:${AWS::AccountId}:trail/kirocrew-deploy-trail-${AWS::AccountId}-${AWS::Region}'
+          - Sid: AWSCloudTrailWrite
+            Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action: s3:PutObject
+            Resource: !Sub '${LogBucket.Arn}/AWSLogs/${AWS::AccountId}/*'
+            Condition:
+              StringEquals:
+                's3:x-amz-acl': bucket-owner-full-control
+                'aws:SourceArn': !Sub 'arn:aws:cloudtrail:${AWS::Region}:${AWS::AccountId}:trail/kirocrew-deploy-trail-${AWS::AccountId}-${AWS::Region}'
 
   # OAC lets CloudFront read the private bucket without making it public.
   OriginAccessControl:
@@ -210,6 +308,32 @@ Resources:
             Resource:
               - !Sub '${OriginBucket.Arn}/*/.kirocrew-deploy.json'
               - !Sub '${OriginBucket.Arn}/_quarantine/*'
+
+  # CWE-778 (SAX-06): CloudTrail S3 data events for OriginBucket, so object-level
+  # reads/writes of deploy artifacts are traceable beyond aggregate access logs.
+  # Scoped to DATA events for THIS bucket only — IncludeManagementEvents:false —
+  # so it does not duplicate an account/org management trail and keeps cost
+  # proportional to deploy object activity (typically low). Single-region: the
+  # bucket is regional, so a region-local trail covers it.
+  DeployTrail:
+    Type: AWS::CloudTrail::Trail
+    DependsOn: LogBucketPolicy
+    Properties:
+      TrailName: !Sub 'kirocrew-deploy-trail-${AWS::AccountId}-${AWS::Region}'
+      S3BucketName: !Ref LogBucket
+      IsLogging: true
+      IsMultiRegionTrail: false
+      IncludeGlobalServiceEvents: false
+      EnableLogFileValidation: true
+      EventSelectors:
+        - ReadWriteType: All
+          IncludeManagementEvents: false
+          DataResources:
+            - Type: AWS::S3::Object
+              Values:
+                - !Sub '${OriginBucket.Arn}/'
+      Tags:
+        - { Key: 'kirocrew:managed', Value: 'true' }
 
 Outputs:
   BucketName:

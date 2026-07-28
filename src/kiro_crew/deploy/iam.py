@@ -191,6 +191,12 @@ def policy_document(*, include_custom_domain: bool = False, tier: str = "static"
                 # CFN calls these bucket-level APIs during base-stack create/update.
                 "s3:PutBucketVersioning", "s3:GetBucketVersioning",
                 "s3:PutLifecycleConfiguration", "s3:GetLifecycleConfiguration",
+                # Server access logging on OriginBucket (CWE-778 audit control):
+                # base-stack.yaml's LoggingConfiguration makes CFN call
+                # PutBucketLogging during create/update. Both the OriginBucket
+                # and the kirocrew-deploy-logs-* target bucket match the
+                # kirocrew-deploy-* resource prefix below.
+                "s3:PutBucketLogging", "s3:GetBucketLogging",
             ],
             "Resource": [f"arn:aws:s3:::{S3_PREFIX}", S3_PREFIX_WEB],
         },
@@ -275,6 +281,26 @@ def policy_document(*, include_custom_domain: bool = False, tier: str = "static"
             "Effect": "Allow",
             "Action": ["tag:GetResources", "sts:GetCallerIdentity", "s3:ListAllMyBuckets"],
             "Resource": "*",
+        },
+        {
+            # base-stack.yaml's DeployTrail (AWS::CloudTrail::Trail) records S3
+            # data events for the origin bucket (CWE-778 audit control).
+            # CloudFormation invokes these CloudTrail APIs on create/update/
+            # delete of the trail; without them the base-stack deploy
+            # AccessDenies and rolls back. Scoped to the trail name the template
+            # creates (kirocrew-deploy-trail-*) — all these actions support the
+            # trail resource type.
+            "Sid": "CloudTrailBaseStack",
+            "Effect": "Allow",
+            "Action": [
+                "cloudtrail:CreateTrail", "cloudtrail:UpdateTrail",
+                "cloudtrail:DeleteTrail", "cloudtrail:StartLogging",
+                "cloudtrail:StopLogging", "cloudtrail:PutEventSelectors",
+                "cloudtrail:GetEventSelectors", "cloudtrail:GetTrail",
+                "cloudtrail:GetTrailStatus", "cloudtrail:ListTags",
+                "cloudtrail:AddTags", "cloudtrail:RemoveTags",
+            ],
+            "Resource": "arn:aws:cloudtrail:*:*:trail/kirocrew-deploy-trail-*",
         },
     ]
     statements.append({
