@@ -65,6 +65,7 @@ _CATEGORY_DESCRIPTIONS = {
     "schedules": "Compatible schedules, imported paused",
     "settings": "Compatible display and timezone settings",
 }
+_CONFLICT_STRATEGIES = frozenset({"skip", "rename", "overwrite"})
 _ITEM_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 _ITEM_OUTCOMES = frozenset({"accepted", "deduplicated", "rejected"})
 _IMPORT_LOCK = asyncio.Lock()
@@ -123,6 +124,24 @@ def _caller(request: web.Request, operation: str) -> tuple[str | None, web.Respo
         )
         return None, web.json_response({"error": "authentication required"}, status=401)
     return str(request["user"]), None
+
+
+def _parse_conflict_strategy(body: object) -> str:
+    """Read the requested strategy, rejecting anything unrecognized.
+
+    Absent means ``skip`` (the safe default), but a PRESENT-but-unknown value is
+    a hard 400: silently downgrading "overwrite" to "skip" would tell the client
+    its destructive request succeeded when nothing was replaced.
+    """
+
+    if not isinstance(body, dict):
+        raise _InvalidSelection
+    raw = body.get("conflict_strategy")
+    if raw is None:
+        return "skip"
+    if not isinstance(raw, str) or raw not in _CONFLICT_STRATEGIES:
+        raise _InvalidSelection
+    return raw
 
 
 def _parse_selection(body: object) -> tuple[list[str], set[tuple[str, str]]]:
@@ -320,8 +339,16 @@ def _apply_response(result: object) -> dict[str, Any]:
     if not isinstance(skipped, list) or not isinstance(conflicts, list):
         raise RuntimeError("invalid import result")
 
+    # A conflict the user can act on (rename/overwrite) vs one they cannot.
+    # Counts only — never the restore/rename PATHS: those are filesystem details
+    # and this response crosses into the browser.
+    resolvable = sum(
+        1 for entry in conflicts if isinstance(entry, dict) and entry.get("resolvable")
+    )
+    strategy = result.get("conflict_strategy")
     return {
         "ok": True,
+        "conflict_strategy": strategy if isinstance(strategy, str) else "skip",
         "summary": {
             "imported": _nonnegative_count(imported_count),
             "deduplicated": _nonnegative_count(
@@ -333,6 +360,9 @@ def _apply_response(result: object) -> dict[str, Any]:
                 + len(conflicts)
                 + _nonnegative_count(result.get("secret_count"), default=0)
             ),
+            "conflicts": len(conflicts),
+            # How many of those a retry with rename/overwrite could clear.
+            "resolvable_conflicts": resolvable,
         },
     }
 
@@ -343,6 +373,7 @@ def _apply_import(
     cron_service: object | None,
     vector_store: object | None,
     lesson_store: object | None,
+    conflict_strategy: str,
 ) -> object:
     backend = _backend()
     plan = _select_fresh_plan(
@@ -354,11 +385,16 @@ def _apply_import(
         cron_service=cron_service,
         vector_store=vector_store,
         lesson_store=lesson_store,
+        conflict_strategy=conflict_strategy,
     )
 
 
-def _merge_import_results(results: list[object]) -> dict[str, Any]:
+def _merge_import_results(
+    results: list[object],
+    conflict_strategy: str = "skip",
+) -> dict[str, Any]:
     merged: dict[str, Any] = {
+        "conflict_strategy": conflict_strategy,
         "imported": {},
         "imported_count": 0,
         "already_imported": 0,
@@ -479,6 +515,7 @@ async def api_onboarding_import_apply(request: web.Request) -> web.Response:
     try:
         body = await request.json()
         source_ids, selected = _parse_selection(body)
+        conflict_strategy = _parse_conflict_strategy(body)
     except (ValueError, TypeError):
         _audit(caller=caller, operation=operation, outcome="failed", error="invalid_request")
         return web.json_response({"error": "invalid request"}, status=400)
@@ -506,6 +543,7 @@ async def api_onboarding_import_apply(request: web.Request) -> web.Response:
                             cron_service,
                             vector_store,
                             lesson_store,
+                            conflict_strategy,
                         )
                     )
             if mcp_selected:
@@ -519,10 +557,11 @@ async def api_onboarding_import_apply(request: web.Request) -> web.Response:
                         cron_service,
                         vector_store,
                         lesson_store,
+                        conflict_strategy,
                     )
                 )
                 await asyncio.to_thread(_rebuild_agent_config)
-            result = _merge_import_results(results)
+            result = _merge_import_results(results, conflict_strategy)
             response = web.json_response(_apply_response(result))
     except _InvalidSelection:
         _audit(caller=caller, operation=operation, outcome="failed", error="invalid_request")

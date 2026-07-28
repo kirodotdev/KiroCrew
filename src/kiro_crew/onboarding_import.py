@@ -73,6 +73,18 @@ class _NoAliasSafeLoader(yaml.SafeLoader):
 
 
 SOURCE_IDS = ("codex", "claude_code", "meshclaw", "openclaw", "hermes")
+# Conflict strategies. ``skip`` is the default and the only non-destructive one;
+# the other two require an explicit user choice per apply request. See
+# docs/system-specs/modules/onboarding-import.md -> "Conflict strategy".
+STRATEGY_SKIP = "skip"
+STRATEGY_RENAME = "rename"
+STRATEGY_OVERWRITE = "overwrite"
+CONFLICT_STRATEGIES = (STRATEGY_SKIP, STRATEGY_RENAME, STRATEGY_OVERWRITE)
+# Categories whose destination collisions a strategy can actually resolve. The
+# rest are merge-only (instructions, memories, denied_commands, settings) or
+# semantically deduplicated (schedules), so a strategy has nothing to act on.
+STRATEGY_CATEGORIES = frozenset({"skills", "mcp_servers", "workspaces"})
+
 CATEGORY_IDS = (
     "instructions",
     "memories",
@@ -140,6 +152,9 @@ _MIN_INSTRUCTION_CHARS = 10
 _LEDGER_VERSION = 1
 _PLAN_VERSION = 1
 _LEDGER_RELATIVE_PATH = Path("imports") / "foreign-agent-imports.json"
+# ``overwrite`` never destroys without a restore copy. One dir per apply run so a
+# user can find everything a single import replaced together.
+_REPLACED_RELATIVE_DIR = Path("imports") / "replaced"
 _MAX_FILES = 500
 _MAX_FILE_BYTES = 8 * 1024 * 1024
 _MAX_SKILL_BYTES = 256 * 1024
@@ -301,6 +316,21 @@ class _Item:
     def fingerprint(self) -> str:
         material = f"{self.source_id}\0{self.category}\0{self.key}".encode("utf-8")
         return hashlib.sha256(material).hexdigest()
+
+
+@dataclass(frozen=True)
+class _WriteOutcome:
+    """One writer's result plus the details the API must report back.
+
+    ``status`` is the four-value writer vocabulary (imported/existing/conflict/
+    rejected). ``renamed_to`` and ``restored_to`` are set only when a strategy
+    actually took effect, so a plain ``skip`` apply reports exactly what it did
+    before this existed.
+    """
+
+    status: str
+    renamed_to: str = ""
+    restored_to: str = ""
 
 
 @dataclass
@@ -2950,7 +2980,50 @@ def _record_ledger(
     records[item.fingerprint] = record
 
 
-def _write_instruction(item: _Item, lesson_store: Any) -> str:
+def _normalize_strategy(value: Any) -> str:
+    """Coerce a client-supplied strategy to a known one, defaulting to skip."""
+
+    candidate = str(value or "").strip().lower()
+    return candidate if candidate in CONFLICT_STRATEGIES else STRATEGY_SKIP
+
+
+def _rename_candidates(base: str, item: _Item) -> list[str]:
+    """Derived non-colliding names, most readable first.
+
+    A user who renames wants to recognize the result, so the source-suffixed
+    form is tried before the digest-suffixed fallback.
+    """
+
+    suffixed = f"{base}-{item.source_id}"
+    digest = f"{base}-{item.fingerprint[:8]}"
+    return [name for name in (suffixed, digest) if name != base]
+
+
+def _restore_dir(data_home: Path, run_stamp: str, category: str) -> Path:
+    return data_home / _REPLACED_RELATIVE_DIR / run_stamp / category
+
+
+def _preserve_replaced_tree(source: Path, destination: Path) -> str:
+    """Copy a directory aside before it is replaced. Returns the restore path.
+
+    Raises so the caller can refuse to overwrite: losing the restore copy is the
+    one failure that makes ``overwrite`` unrecoverable.
+    """
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(source, destination, symlinks=True, dirs_exist_ok=False)
+    return str(destination)
+
+
+def _preserve_replaced_json(payload: Any, destination: Path) -> str:
+    """Write a replaced JSON fragment aside. Returns the restore path."""
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    _write_json(destination, payload)
+    return str(destination)
+
+
+def _write_instruction(item: _Item, lesson_store: Any) -> _WriteOutcome:
     """Append one imported directive to the highest-priority durable tier.
 
     ``LessonStore.save`` is itself exact-rule deduplicating, so a re-import is
@@ -2960,10 +3033,10 @@ def _write_instruction(item: _Item, lesson_store: Any) -> str:
     """
 
     if lesson_store is None:
-        return "rejected"
+        return _WriteOutcome("rejected")
     rule = str(item.payload.get("rule", "")).strip()
     if not rule:
-        return "rejected"
+        return _WriteOutcome("rejected")
     from kiro_crew.learn import Lesson
 
     load_all = getattr(lesson_store, "load_all", None)
@@ -2971,7 +3044,7 @@ def _write_instruction(item: _Item, lesson_store: Any) -> str:
         normalized = rule.lower()
         for existing in load_all():
             if str(getattr(existing, "rule", "")).lower().strip() == normalized:
-                return "existing"
+                return _WriteOutcome("existing")
     lesson_store.save(
         Lesson(
             ts=datetime.now(timezone.utc).isoformat(),
@@ -2979,17 +3052,17 @@ def _write_instruction(item: _Item, lesson_store: Any) -> str:
             category="preference",
         )
     )
-    return "imported"
+    return _WriteOutcome("imported")
 
 
 def _write_memory(
     item: _Item,
     data_home: Path,
     vector_store: VectorMemoryStore | None,
-) -> str:
+) -> _WriteOutcome:
     if isinstance(item.payload, dict) and item.payload.get("kind") == "semantic":
         if vector_store is None:
-            return "rejected"
+            return _WriteOutcome("rejected")
         key = str(item.payload["key"])
         value = item.payload["value"]
         outcome = vector_store.set_semantic_if_absent(
@@ -2999,20 +3072,21 @@ def _write_memory(
             "import",
         )
         if outcome == "imported":
-            return "imported"
+            return _WriteOutcome("imported")
         existing = vector_store.get_semantic(key)
         if existing is not None:
             try:
-                return "existing" if json.loads(existing["value_json"]) == value else "conflict"
+                same = json.loads(existing["value_json"]) == value
+                return _WriteOutcome("existing" if same else "conflict")
             except (KeyError, TypeError, json.JSONDecodeError, RecursionError):
-                return "conflict"
-        return "rejected"
+                return _WriteOutcome("conflict")
+        return _WriteOutcome("rejected")
     if isinstance(item.payload, dict) and item.payload.get("kind") == "episodic":
         if vector_store is None:
-            return "rejected"
+            return _WriteOutcome("rejected")
         text = str(item.payload["text"])
         if vector_store.has_episodic_text(text):
-            return "existing"
+            return _WriteOutcome("existing")
         written = vector_store.write_episodic(
             text,
             tags=["imported", item.source_id],
@@ -3021,14 +3095,26 @@ def _write_memory(
             preserve_existing=True,
         )
         if written:
-            return "imported"
-        return "existing" if vector_store.has_episodic_text(text) else "rejected"
+            return _WriteOutcome("imported")
+        present = vector_store.has_episodic_text(text)
+        return _WriteOutcome("existing" if present else "rejected")
 
-    return "rejected"
+    return _WriteOutcome("rejected")
 
 
-def _write_workspace(item: _Item, data_home: Path) -> str:
-    workspace = Path(str(item.payload)).resolve(strict=True)
+def _write_workspace(
+    item: _Item,
+    data_home: Path,
+    *,
+    strategy: str = STRATEGY_SKIP,
+) -> _WriteOutcome:
+    workspace = Path(str(item.payload))
+    try:
+        workspace = workspace.resolve(strict=True)
+    except OSError:
+        # A configured workspace that no longer exists is a normal skip, not a
+        # write failure.
+        return _WriteOutcome("rejected")
     destination = data_home.resolve()
     if (
         not workspace.is_dir()
@@ -3036,7 +3122,7 @@ def _write_workspace(item: _Item, data_home: Path) -> str:
         or workspace == destination
         or destination in workspace.parents
     ):
-        return "rejected"
+        return _WriteOutcome("rejected")
 
     path = data_home / "config.json"
     data = _load_json_dict(path, fail_closed=True)
@@ -3045,7 +3131,7 @@ def _write_workspace(item: _Item, data_home: Path) -> str:
         workspaces = {}
         data["workspaces"] = workspaces
     if not isinstance(workspaces, dict):
-        return "conflict"
+        return _WriteOutcome("conflict")
 
     canonical = str(workspace)
     for existing in workspaces.values():
@@ -3058,23 +3144,31 @@ def _write_workspace(item: _Item, data_home: Path) -> str:
             continue
         try:
             if str(Path(existing_dir).expanduser().resolve()) == canonical:
-                return "existing"
+                return _WriteOutcome("existing")
         except (OSError, RuntimeError):
             continue
 
     base_name = _SAFE_NAME_RE.sub("-", workspace.name).strip("-._").lower()
     base_name = base_name[:64] or f"imported-{item.source_id}"
-    name = base_name
-    if name in workspaces:
-        name = f"{base_name}-{item.source_id}"[:64]
-    if name in workspaces:
-        suffix = item.fingerprint[:8]
-        name = f"{base_name[:55]}-{suffix}"
-    if name in workspaces:
-        return "conflict"
-    workspaces[name] = {"dir": canonical}
-    _write_json(path, data)
-    return "imported"
+    if base_name not in workspaces:
+        workspaces[base_name] = {"dir": canonical}
+        _write_json(path, data)
+        return _WriteOutcome("imported")
+
+    # The name is taken by a DIFFERENT directory. Deriving a suffixed name is a
+    # rename, so it now requires the user to have asked for one; a plain skip
+    # reports the collision instead of quietly inventing a name.
+    if strategy != STRATEGY_RENAME:
+        return _WriteOutcome("conflict")
+    for candidate in (
+        f"{base_name}-{item.source_id}"[:64],
+        f"{base_name[:55]}-{item.fingerprint[:8]}",
+    ):
+        if candidate not in workspaces:
+            workspaces[candidate] = {"dir": canonical}
+            _write_json(path, data)
+            return _WriteOutcome("imported", renamed_to=candidate)
+    return _WriteOutcome("conflict")
 
 
 @contextmanager
@@ -3090,7 +3184,14 @@ def _mcp_lock(_path: Path) -> Iterator[None]:
         yield
 
 
-def _write_mcp(item: _Item, data_home: Path, user_home: Path) -> str:
+def _write_mcp(
+    item: _Item,
+    data_home: Path,
+    user_home: Path,
+    *,
+    strategy: str = STRATEGY_SKIP,
+    run_stamp: str = "",
+) -> _WriteOutcome:
     path = data_home / "mcp.json"
     with _mcp_lock(path):
         data = _load_json_dict(path, fail_closed=True)
@@ -3100,21 +3201,60 @@ def _write_mcp(item: _Item, data_home: Path, user_home: Path) -> str:
         else:
             servers = data["mcpServers"]
             if not isinstance(servers, dict):
-                return "conflict"
-        name = item.payload["name"]
+                return _WriteOutcome("conflict")
+        name = str(item.payload["name"])
         spec = item.payload["spec"]
-        if name in servers:
-            return "existing" if servers[name] == spec else "conflict"
         from kiro_crew.mcp_discovery import configured_mcp_aliases
 
-        if mcp_server_alias(name) in configured_mcp_aliases(
-            data_home=data_home,
-            user_home=user_home,
-        ):
-            return "conflict"
-        servers[name] = spec
-        _write_json(path, data)
-    return "imported"
+        reserved = configured_mcp_aliases(data_home=data_home, user_home=user_home)
+
+        def _install(target_name: str) -> None:
+            servers[target_name] = spec
+            _write_json(path, data)
+
+        if name not in servers:
+            # An alias collision means some OTHER effective MCP source already
+            # owns this name, so writing it here would shadow a server the user
+            # did not import. A rename is a legitimate way out.
+            if mcp_server_alias(name) not in reserved:
+                _install(name)
+                return _WriteOutcome("imported")
+        elif servers[name] == spec:
+            return _WriteOutcome("existing")
+
+        if strategy == STRATEGY_RENAME:
+            for candidate in _rename_candidates(name, item):
+                if candidate in servers:
+                    if servers[candidate] == spec:
+                        return _WriteOutcome("existing", renamed_to=candidate)
+                    continue
+                if mcp_server_alias(candidate) in reserved:
+                    continue
+                _install(candidate)
+                return _WriteOutcome("imported", renamed_to=candidate)
+            return _WriteOutcome("conflict")
+
+        if strategy == STRATEGY_OVERWRITE:
+            # Only an entry WE can see in this file is replaceable; a name
+            # reserved by another source is not ours to overwrite.
+            if name not in servers:
+                return _WriteOutcome("conflict")
+            try:
+                restored = _preserve_replaced_json(
+                    {name: servers[name]},
+                    _restore_dir(data_home, run_stamp, "mcp_servers")
+                    / f"{_SAFE_NAME_RE.sub('-', name)}.json",
+                )
+            except OSError:
+                logger.warning(
+                    "Could not preserve the MCP server being replaced; refusing to overwrite",
+                    exc_info=True,
+                )
+                return _WriteOutcome("conflict")
+            _install(name)
+            return _WriteOutcome("imported", restored_to=restored)
+
+        return _WriteOutcome("conflict")
 
 
 def _has_symlink_component(path: Path, anchor: Path) -> bool:
@@ -3136,35 +3276,51 @@ def _has_symlink_component(path: Path, anchor: Path) -> bool:
     return False
 
 
-def _write_skill(item: _Item, data_home: Path) -> str:
-    destination = data_home / "skills" / "imported" / item.source_id / item.payload["name"]
-    files = item.payload.get("files")
+def _skill_files_are_valid(files: Any) -> bool:
     if not isinstance(files, dict) or "SKILL.md" not in files:
-        return "rejected"
-    if _has_symlink_component(destination, data_home):
-        return "rejected"
-    existing_count = 0
+        return False
     for relative, content in files.items():
         if not isinstance(relative, str) or not isinstance(content, str):
-            return "rejected"
+            return False
         relative_path = Path(relative)
         if relative_path.is_absolute() or ".." in relative_path.parts:
-            return "rejected"
-        target = destination / relative_path
+            return False
+    return True
+
+
+def _skill_tree_state(
+    destination: Path,
+    files: dict[str, str],
+    data_home: Path,
+) -> str:
+    """Classify a candidate skill destination: absent / existing / conflict."""
+
+    present = 0
+    for relative, content in files.items():
+        target = destination / Path(relative)
         if _has_symlink_component(target, data_home):
             return "rejected"
         if not target.exists():
             continue
-        existing_count += 1
+        present += 1
         try:
             if target.read_bytes() != content.encode("utf-8"):
                 return "conflict"
         except OSError:
             return "conflict"
-    if existing_count == len(files):
+    if present == len(files):
         return "existing"
-    if existing_count:
+    if present:
         return "conflict"
+    # A destination dir that exists but holds none of our files is still occupied.
+    if destination.exists() or _is_link_like(destination):
+        return "conflict"
+    return "absent"
+
+
+def _install_skill_tree(destination: Path, files: dict[str, str], data_home: Path) -> str:
+    """Stage the package in a sibling temp dir and move it into place atomically."""
+
     destination.parent.mkdir(parents=True, exist_ok=True)
     if _has_symlink_component(destination, data_home):
         return "rejected"
@@ -3179,6 +3335,8 @@ def _write_skill(item: _Item, data_home: Path) -> str:
             target = staging / Path(relative)
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(content.encode("utf-8"))
+        # Re-check immediately before the move: the plan-time check is a TOCTOU
+        # window, and this is the last moment we can still refuse.
         if _has_symlink_component(destination, data_home):
             return "rejected"
         if destination.exists() or _is_link_like(destination):
@@ -3187,6 +3345,67 @@ def _write_skill(item: _Item, data_home: Path) -> str:
         return "imported"
     finally:
         shutil.rmtree(staging, ignore_errors=True)
+
+
+def _write_skill(
+    item: _Item,
+    data_home: Path,
+    *,
+    strategy: str = STRATEGY_SKIP,
+    run_stamp: str = "",
+) -> _WriteOutcome:
+    files = item.payload.get("files")
+    if not _skill_files_are_valid(files):
+        return _WriteOutcome("rejected")
+    name = str(item.payload["name"])
+    root = data_home / "skills" / "imported" / item.source_id
+    destination = root / name
+    if _has_symlink_component(destination, data_home):
+        return _WriteOutcome("rejected")
+
+    state = _skill_tree_state(destination, files, data_home)
+    if state in ("rejected", "existing"):
+        return _WriteOutcome(state)
+    if state == "absent":
+        return _WriteOutcome(_install_skill_tree(destination, files, data_home))
+
+    # state == "conflict": a different package already occupies this name.
+    if strategy == STRATEGY_RENAME:
+        for candidate in _rename_candidates(name, item):
+            alternate = root / candidate
+            if _has_symlink_component(alternate, data_home):
+                continue
+            alternate_state = _skill_tree_state(alternate, files, data_home)
+            if alternate_state == "existing":
+                # The renamed copy is already installed and identical.
+                return _WriteOutcome("existing", renamed_to=candidate)
+            if alternate_state == "absent":
+                status = _install_skill_tree(alternate, files, data_home)
+                return _WriteOutcome(
+                    status,
+                    renamed_to=candidate if status == "imported" else "",
+                )
+        return _WriteOutcome("conflict")
+
+    if strategy == STRATEGY_OVERWRITE:
+        # The restore copy is written FIRST and its failure aborts the
+        # overwrite: an unrecoverable replace is worse than a reported conflict.
+        try:
+            restored = _preserve_replaced_tree(
+                destination,
+                _restore_dir(data_home, run_stamp, "skills") / item.source_id / name,
+            )
+        except (OSError, shutil.Error):
+            logger.warning(
+                "Could not preserve the skill being replaced; refusing to overwrite",
+                exc_info=True,
+            )
+            return _WriteOutcome("conflict")
+        shutil.rmtree(destination, ignore_errors=True)
+        status = _install_skill_tree(destination, files, data_home)
+        return _WriteOutcome(status, restored_to=restored if status == "imported" else "")
+
+    return _WriteOutcome("conflict")
 
 
 def _same_schedule(job: Any, payload: dict[str, Any]) -> bool:
@@ -3206,7 +3425,7 @@ def _same_schedule(job: Any, payload: dict[str, Any]) -> bool:
     return getattr(schedule, "at_ts", None) == payload.get("at_ts")
 
 
-def _write_schedule(item: _Item, cron_service: Any) -> str:
+def _write_schedule(item: _Item, cron_service: Any) -> _WriteOutcome:
     payload = item.payload
     add_if_absent = getattr(cron_service, "add_job_if_absent", None)
     if callable(add_if_absent) and "add_job" not in vars(cron_service):
@@ -3221,10 +3440,10 @@ def _write_schedule(item: _Item, cron_service: Any) -> str:
             enabled=False,
             timezone=payload.get("timezone", ""),
         )
-        return "existing" if job is None else "imported"
+        return _WriteOutcome("existing" if job is None else "imported")
     for job in cron_service.list_jobs(include_disabled=True):
         if _same_schedule(job, payload):
-            return "existing"
+            return _WriteOutcome("existing")
     cron_service.add_job(
         name=payload["name"],
         message=payload["message"],
@@ -3235,17 +3454,17 @@ def _write_schedule(item: _Item, cron_service: Any) -> str:
         enabled=False,
         timezone=payload.get("timezone", ""),
     )
-    return "imported"
+    return _WriteOutcome("imported")
 
 
-def _write_settings(item: _Item, data_home: Path) -> str:
+def _write_settings(item: _Item, data_home: Path) -> _WriteOutcome:
     path = data_home / "config.json"
     data = _load_json_dict(path, fail_closed=True)
     changed = _merge_missing(data, item.payload)
     if not changed:
-        return "existing"
+        return _WriteOutcome("existing")
     _write_json(path, data)
-    return "imported"
+    return _WriteOutcome("imported")
 
 
 def apply_import(
@@ -3255,8 +3474,17 @@ def apply_import(
     cron_service: Any = None,
     vector_store: VectorMemoryStore | None = None,
     lesson_store: Any = None,
+    conflict_strategy: str = STRATEGY_SKIP,
 ) -> dict[str, Any]:
-    """Apply selected source/category pairs with merge-only, idempotent writes."""
+    """Apply selected source/category pairs with merge-only, idempotent writes.
+
+    ``conflict_strategy`` decides what happens when a destination already holds a
+    DIFFERENT item under the same identity. ``skip`` (the default) leaves it
+    alone and reports a conflict; ``rename`` installs alongside it under a
+    derived name; ``overwrite`` replaces it after writing a restore copy under
+    ``imports/replaced/<timestamp>/``. Only ``skills``, ``mcp_servers``, and
+    ``workspaces`` have resolvable collisions — the rest are merge-only.
+    """
     destination = Path(data_home) if data_home is not None else config_dir()
     destination.mkdir(parents=True, exist_ok=True)
     selected = _selected_pairs(plan)
@@ -3264,6 +3492,10 @@ def apply_import(
     user_homes = _plan_user_homes(plan)
     config_paths = _plan_private_paths(plan, "_config_paths")
     workspace_paths = _plan_private_paths(plan, "_workspace_paths")
+    strategy = _normalize_strategy(conflict_strategy)
+    # One restore dir per apply run, so everything a single import replaced is
+    # found together. Stamped once here rather than per item.
+    run_stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     ledger_path = destination / _LEDGER_RELATIVE_PATH
     ledger = _load_ledger(ledger_path)
     records = ledger["records"]
@@ -3351,22 +3583,37 @@ def apply_import(
                     already_imported += 1
                     item_outcomes.append({**outcome, "outcome": "deduplicated"})
                     continue
-                status = "skipped"
+                written = _WriteOutcome("skipped")
                 try:
                     if category == "instructions":
-                        status = _write_instruction(item, lesson_store)
+                        written = _write_instruction(item, lesson_store)
                     elif category == "memories":
-                        status = _write_memory(item, destination, vector_store)
+                        written = _write_memory(item, destination, vector_store)
                     elif category == "workspaces":
-                        status = _write_workspace(item, destination)
+                        written = _write_workspace(
+                            item,
+                            destination,
+                            strategy=strategy,
+                        )
                     elif category == "mcp_servers":
-                        status = _write_mcp(item, destination, scan.user_home)
+                        written = _write_mcp(
+                            item,
+                            destination,
+                            scan.user_home,
+                            strategy=strategy,
+                            run_stamp=run_stamp,
+                        )
                     elif category == "skills":
-                        status = _write_skill(item, destination)
+                        written = _write_skill(
+                            item,
+                            destination,
+                            strategy=strategy,
+                            run_stamp=run_stamp,
+                        )
                     elif category == "schedules":
-                        status = _write_schedule(item, cron_service)
+                        written = _write_schedule(item, cron_service)
                     elif category == "settings":
-                        status = _write_settings(item, destination)
+                        written = _write_settings(item, destination)
                 except (OSError, ValueError, TypeError, sqlite3.Error):
                     logger.warning(
                         "Foreign-agent import failed for %s/%s",
@@ -3383,21 +3630,35 @@ def apply_import(
                     )
                     item_outcomes.append({**outcome, "outcome": "rejected"})
                     continue
+                status = written.status
+                # Only set when a strategy actually took effect, so a plain skip
+                # apply reports exactly the shape it did before strategies existed.
+                details = {
+                    key: value
+                    for key, value in (
+                        ("renamed_to", written.renamed_to),
+                        ("restored_to", written.restored_to),
+                    )
+                    if value
+                }
                 if status in ("imported", "existing"):
                     _record_ledger(ledger, item)
                     ledger_dirty = True
                     if status == "imported":
                         imported[category] += 1
-                        item_outcomes.append({**outcome, "outcome": "accepted"})
+                        item_outcomes.append({**outcome, **details, "outcome": "accepted"})
                     else:
                         already_imported += 1
-                        item_outcomes.append({**outcome, "outcome": "deduplicated"})
+                        item_outcomes.append({**outcome, **details, "outcome": "deduplicated"})
                 elif status == "conflict":
                     conflicts.append(
                         {
                             "source_id": source_id,
                             "category_id": category,
                             "reason": "destination_conflict",
+                            # Tell the client which strategies could resolve this
+                            # one, so a retry is an informed choice.
+                            "resolvable": category in STRATEGY_CATEGORIES,
                         }
                     )
                     item_outcomes.append({**outcome, "outcome": "rejected"})
@@ -3432,4 +3693,5 @@ def apply_import(
             sum(scan.unsupported_count for scan in scans.values()),
         ),
         "ledger": str(_LEDGER_RELATIVE_PATH).replace("\\", "/"),
+        "conflict_strategy": strategy,
     }

@@ -72,10 +72,25 @@ const SCAN_RESPONSE: AgentImportScanResponse = {
 
 const APPLY_RESPONSE: AgentImportApplyResponse = {
   ok: true,
+  conflict_strategy: 'skip',
   summary: {
     imported: 10,
     deduplicated: 1,
     skipped: 2,
+    conflicts: 0,
+    resolvable_conflicts: 0,
+  },
+}
+
+const CONFLICTED_APPLY_RESPONSE: AgentImportApplyResponse = {
+  ok: true,
+  conflict_strategy: 'skip',
+  summary: {
+    imported: 0,
+    deduplicated: 0,
+    skipped: 2,
+    conflicts: 2,
+    resolvable_conflicts: 2,
   },
 }
 
@@ -178,6 +193,9 @@ describe('AgentImportFlow', () => {
           { id: 'claude_code', categories: ['skills'] },
           { id: 'meshclaw', categories: ['skills'] },
         ],
+        // The first apply is always the non-destructive strategy; rename and
+        // overwrite require an explicit click on the conflict notice.
+        conflict_strategy: 'skip',
       })
     })
   })
@@ -329,5 +347,39 @@ describe('AgentImportFlow', () => {
     )
     expect(screen.getByRole('dialog', { name: 'Import agent setup' })).toBeInTheDocument()
     expect(onComplete).not.toHaveBeenCalled()
+  })
+
+  it('offers a resolution when items conflict, and does not by default', async () => {
+    mockSuccessfulRequests()
+    vi.mocked(api.onboardingImportApply).mockResolvedValue(CONFLICTED_APPLY_RESPONSE)
+
+    renderWithProviders(<AgentImportFlow initialOpen onComplete={vi.fn()} />)
+    await startImport()
+    await screen.findByText('Import complete')
+
+    // The user is told nothing changed, and given both ways out.
+    await screen.findByText('2 items already exist with different content.')
+    const keepBoth = screen.getByRole('button', { name: 'Keep both' })
+    expect(screen.getByRole('button', { name: 'Replace mine' })).toBeInTheDocument()
+
+    await userEvent.click(keepBoth)
+
+    // The retry re-sends the SAME selection with the chosen strategy.
+    await waitFor(() => {
+      expect(api.onboardingImportApply).toHaveBeenLastCalledWith(
+        expect.objectContaining({ conflict_strategy: 'rename' }),
+      )
+    })
+  })
+
+  it('shows no conflict resolution when nothing conflicted', async () => {
+    mockSuccessfulRequests()
+
+    renderWithProviders(<AgentImportFlow initialOpen onComplete={vi.fn()} />)
+    await startImport()
+    await screen.findByText('Import complete')
+
+    expect(screen.queryByRole('button', { name: 'Keep both' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Replace mine' })).not.toBeInTheDocument()
   })
 })

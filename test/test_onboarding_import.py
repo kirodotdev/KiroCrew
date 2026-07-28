@@ -1914,7 +1914,9 @@ class TestApply:
             },
         )
 
-        assert api._write_mcp(item, tmp_path / "destination", tmp_path / "home") == "imported"
+        assert (
+            api._write_mcp(item, tmp_path / "destination", tmp_path / "home").status == "imported"
+        )
         assert entered == [True]
 
     @pytest.mark.parametrize(
@@ -1982,6 +1984,9 @@ class TestApply:
                 "source_id": "meshclaw",
                 "category_id": "mcp_servers",
                 "reason": "destination_conflict",
+                # An alias collision IS resolvable — a rename gives the user a
+                # way out without shadowing the other source's server.
+                "resolvable": True,
             }
         ]
         assert not (data_home / "mcp.json").exists()
@@ -3177,7 +3182,7 @@ class TestApply:
         }
         (data_home / "config.json").write_text(json.dumps(config), encoding="utf-8")
 
-        status = api._write_workspace(item, data_home)
+        status = api._write_workspace(item, data_home).status
         written = json.loads((data_home / "config.json").read_text(encoding="utf-8"))
 
         assert status == "conflict"
@@ -3208,7 +3213,7 @@ class TestApply:
             },
         )
 
-        status = api._write_memory(item, tmp_path, store)
+        status = api._write_memory(item, tmp_path, store).status
 
         assert status == "conflict"
         existing = store.get_semantic("pref.editor")
@@ -3271,7 +3276,7 @@ class TestApply:
             },
         )
 
-        status = api._write_memory(item, tmp_path, store)
+        status = api._write_memory(item, tmp_path, store).status
 
         active = store.get_episodic_list(limit=10)
         deleted = store.db.execute(
@@ -3302,7 +3307,7 @@ class TestApply:
             },
         )
 
-        status = api._write_memory(item, tmp_path, store)
+        status = api._write_memory(item, tmp_path, store).status
 
         active = store.get_episodic_list(limit=10)
         deleted = store.db.execute(
@@ -3340,7 +3345,7 @@ class TestApply:
             },
         )
 
-        status = api._write_memory(item, tmp_path, store)
+        status = api._write_memory(item, tmp_path, store).status
 
         assert status == "existing"
         assert lookups == [text]
@@ -3363,7 +3368,7 @@ class TestApply:
                 api._write_schedule(
                     api._Item(source_id, "schedules", source_id, payload),
                     service,
-                )
+                ).status
             )
 
         threads = [
@@ -3821,3 +3826,232 @@ class TestTransitiveReimport:
             for path in (destination / "skills" / "imported").rglob("SKILL.md")
         )
         assert skill_dirs == ["claude_code/foo"]
+
+
+def _skill_source(home: Path, source_dir: str, name: str, body: str) -> None:
+    skill = home / source_dir / "skills" / name
+    skill.mkdir(parents=True, exist_ok=True)
+    (skill / "SKILL.md").write_text(body, encoding="utf-8")
+
+
+class TestConflictStrategies:
+    """A destination collision is a user decision, not a terminal failure.
+
+    See docs/system-specs/modules/onboarding-import.md -> "Conflict strategy".
+    ``skip`` is the default; ``rename`` and ``overwrite`` require an explicit
+    choice, and ``overwrite`` always writes a restore copy first.
+    """
+
+    def _import_skill(self, tmp_path: Path, body: str, **kwargs: object) -> dict:
+        api = _api()
+        home = tmp_path / "home"
+        _skill_source(home, ".codex", "review", body)
+        plan = api.preview_import(home=home, env={})
+        return api.apply_import(plan, data_home=tmp_path / "destination", **kwargs)
+
+    def _installed(self, destination: Path) -> dict[str, str]:
+        root = destination / "skills" / "imported"
+        return {
+            str(path.parent.relative_to(root)): path.read_text(encoding="utf-8")
+            for path in root.rglob("SKILL.md")
+        }
+
+    def test_skip_is_the_default_and_preserves_the_existing_item(self, tmp_path: Path) -> None:
+        destination = tmp_path / "destination"
+        first = self._import_skill(tmp_path, "# Original\n")
+        assert first["imported"]["skills"] == 1
+        assert first["conflict_strategy"] == "skip"
+
+        # Same name, different content: an upstream edit.
+        second = self._import_skill(tmp_path, "# Edited upstream\n")
+
+        assert second["imported"]["skills"] == 0
+        assert second["conflicts"] == [
+            {
+                "source_id": "codex",
+                "category_id": "skills",
+                "reason": "destination_conflict",
+                "resolvable": True,
+            }
+        ]
+        # KiroCrew's copy is untouched.
+        assert self._installed(destination) == {"codex/review": "# Original\n"}
+
+    def test_rename_installs_alongside_and_reports_the_new_name(self, tmp_path: Path) -> None:
+        destination = tmp_path / "destination"
+        self._import_skill(tmp_path, "# Original\n")
+
+        result = self._import_skill(tmp_path, "# Edited upstream\n", conflict_strategy="rename")
+
+        assert result["imported"]["skills"] == 1
+        assert result["conflicts"] == []
+        assert self._installed(destination) == {
+            "codex/review": "# Original\n",
+            "codex/review-codex": "# Edited upstream\n",
+        }
+        renamed = [
+            entry for entry in result["item_outcomes"] if entry.get("renamed_to") == "review-codex"
+        ]
+        assert len(renamed) == 1
+        assert renamed[0]["outcome"] == "accepted"
+
+    def test_overwrite_replaces_only_after_writing_a_restore_copy(self, tmp_path: Path) -> None:
+        destination = tmp_path / "destination"
+        self._import_skill(tmp_path, "# Original\n")
+
+        result = self._import_skill(tmp_path, "# Edited upstream\n", conflict_strategy="overwrite")
+
+        assert result["imported"]["skills"] == 1
+        assert self._installed(destination) == {"codex/review": "# Edited upstream\n"}
+        restored = [
+            entry["restored_to"] for entry in result["item_outcomes"] if entry.get("restored_to")
+        ]
+        assert len(restored) == 1
+        # The replaced bytes are recoverable, under a per-run stamped dir.
+        preserved = Path(restored[0]) / "SKILL.md"
+        assert preserved.read_text(encoding="utf-8") == "# Original\n"
+        assert (destination / "imports" / "replaced") in preserved.parents
+
+    def test_overwrite_refuses_when_the_restore_copy_cannot_be_written(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        api = _api()
+        destination = tmp_path / "destination"
+        self._import_skill(tmp_path, "# Original\n")
+
+        def fail_copytree(*_args: object, **_kwargs: object) -> None:
+            raise OSError("no space left on device")
+
+        monkeypatch.setattr(api.shutil, "copytree", fail_copytree)
+
+        result = self._import_skill(tmp_path, "# Edited upstream\n", conflict_strategy="overwrite")
+
+        # An unrecoverable replace is worse than a reported conflict.
+        assert result["imported"]["skills"] == 0
+        assert result["conflicts"][0]["reason"] == "destination_conflict"
+        assert self._installed(destination) == {"codex/review": "# Original\n"}
+
+    def test_unchanged_reimport_is_still_deduplicated_under_every_strategy(
+        self, tmp_path: Path
+    ) -> None:
+        for strategy in ("skip", "rename", "overwrite"):
+            root = tmp_path / strategy
+            self._import_skill_at(root, "# Same\n")
+            again = self._import_skill_at(root, "# Same\n", conflict_strategy=strategy)
+
+            assert again["imported"]["skills"] == 0, strategy
+            assert again["conflicts"] == [], strategy
+            # No rename, no restore copy: nothing collided.
+            assert not (root / "destination" / "imports" / "replaced").exists(), strategy
+            assert self._installed(root / "destination") == {"codex/review": "# Same\n"}, strategy
+
+    def _import_skill_at(self, root: Path, body: str, **kwargs: object) -> dict:
+        api = _api()
+        home = root / "home"
+        _skill_source(home, ".codex", "review", body)
+        plan = api.preview_import(home=home, env={})
+        return api.apply_import(plan, data_home=root / "destination", **kwargs)
+
+    def test_unknown_strategy_falls_back_to_skip_in_the_backend(self, tmp_path: Path) -> None:
+        # The API rejects an unknown strategy with a 400; the backend is the
+        # second line of defence for a non-HTTP caller and must fail SAFE.
+        destination = tmp_path / "destination"
+        self._import_skill(tmp_path, "# Original\n")
+
+        result = self._import_skill(tmp_path, "# Edited upstream\n", conflict_strategy="obliterate")
+
+        assert result["conflict_strategy"] == "skip"
+        assert self._installed(destination) == {"codex/review": "# Original\n"}
+
+    def test_mcp_rename_avoids_shadowing_another_sources_server(self, tmp_path: Path) -> None:
+        api = _api()
+        home = tmp_path / "home"
+        codex = home / ".codex"
+        codex.mkdir(parents=True)
+        (codex / "config.toml").write_text(
+            '[mcp_servers.helper]\ncommand = "codex-helper"\n', encoding="utf-8"
+        )
+        destination = tmp_path / "destination"
+        destination.mkdir()
+        # A server the user already has under that name, with a different spec.
+        (destination / "mcp.json").write_text(
+            json.dumps({"mcpServers": {"helper": {"command": "mine"}}}), encoding="utf-8"
+        )
+
+        plan = api.preview_import(home=home, env={})
+        result = api.apply_import(plan, data_home=destination, conflict_strategy="rename")
+
+        servers = json.loads((destination / "mcp.json").read_text(encoding="utf-8"))["mcpServers"]
+        assert result["imported"]["mcp_servers"] == 1
+        # The user's own entry is untouched; the import lands beside it.
+        assert servers["helper"] == {"command": "mine"}
+        # Imported servers always land disabled.
+        assert servers["helper-codex"] == {"command": "codex-helper", "disabled": True}
+
+    def test_mcp_overwrite_preserves_the_replaced_spec(self, tmp_path: Path) -> None:
+        api = _api()
+        home = tmp_path / "home"
+        codex = home / ".codex"
+        codex.mkdir(parents=True)
+        (codex / "config.toml").write_text(
+            '[mcp_servers.helper]\ncommand = "codex-helper"\n', encoding="utf-8"
+        )
+        destination = tmp_path / "destination"
+        destination.mkdir()
+        (destination / "mcp.json").write_text(
+            json.dumps({"mcpServers": {"helper": {"command": "mine"}}}), encoding="utf-8"
+        )
+
+        plan = api.preview_import(home=home, env={})
+        result = api.apply_import(plan, data_home=destination, conflict_strategy="overwrite")
+
+        servers = json.loads((destination / "mcp.json").read_text(encoding="utf-8"))["mcpServers"]
+        assert servers["helper"] == {"command": "codex-helper", "disabled": True}
+        restored = next(
+            entry["restored_to"] for entry in result["item_outcomes"] if entry.get("restored_to")
+        )
+        assert json.loads(Path(restored).read_text(encoding="utf-8")) == {
+            "helper": {"command": "mine"}
+        }
+
+    def test_workspace_name_collision_needs_rename_not_silent_suffixing(
+        self, tmp_path: Path
+    ) -> None:
+        api = _api()
+        home = tmp_path / "home"
+        codex = home / ".codex"
+        codex.mkdir(parents=True)
+        project = tmp_path / "shared" / "demo"
+        project.mkdir(parents=True)
+        (codex / "config.toml").write_text(
+            f'[projects."{str(project).replace(chr(92), chr(92) * 2)}"]\n'
+            'trust_level = "trusted"\n',
+            encoding="utf-8",
+        )
+        destination = tmp_path / "destination"
+        destination.mkdir()
+        other = tmp_path / "other" / "demo"
+        other.mkdir(parents=True)
+        # The name "demo" is taken by a DIFFERENT directory.
+        (destination / "config.json").write_text(
+            json.dumps({"workspaces": {"demo": {"dir": str(other)}}}), encoding="utf-8"
+        )
+
+        plan = api.preview_import(home=home, env={})
+        skipped = api.apply_import(plan, data_home=destination)
+
+        assert skipped["imported"]["workspaces"] == 0
+        assert skipped["conflicts"][0]["category_id"] == "workspaces"
+        config = json.loads((destination / "config.json").read_text(encoding="utf-8"))
+        assert config["workspaces"] == {"demo": {"dir": str(other)}}
+
+        renamed = api.apply_import(
+            api.preview_import(home=home, env={}),
+            data_home=destination,
+            conflict_strategy="rename",
+        )
+        config = json.loads((destination / "config.json").read_text(encoding="utf-8"))
+
+        assert renamed["imported"]["workspaces"] == 1
+        assert config["workspaces"]["demo"] == {"dir": str(other)}
+        assert config["workspaces"]["demo-codex"] == {"dir": str(project.resolve())}

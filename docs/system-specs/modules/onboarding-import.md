@@ -160,7 +160,7 @@ Applicability and rename derivation per category:
 |----------|-----------|-------------|
 | `skills` | skip · rename · overwrite | `<name>-imported-<source>`, then `<name>-<fingerprint[:8]>` |
 | `mcp_servers` | skip · rename · overwrite | `<name>-<source>`, then `<name>-<fingerprint[:8]>` |
-| `workspaces` | skip · rename | existing three-step ladder (`base` → `base-<source>` → `base-<fp[:8]>`) |
+| `workspaces` | skip · rename | `base-<source>`, then `base-<fp[:8]>`. **Behavior change:** the pre-existing three-step ladder silently suffixed on a name collision; that is a rename, so it now requires `rename`. Plain `skip` reports the collision. |
 | `instructions`, `memories` | n/a — merge-only, never collide destructively | — |
 | `denied_commands`, `settings` | n/a — merge-missing only | — |
 | `schedules` | skip only — a duplicate schedule is matched by `_same_schedule` | — |
@@ -168,8 +168,27 @@ Applicability and rename derivation per category:
 Rules:
 
 - `overwrite` MUST write a restore copy under
-  `imports/replaced/<timestamp>/<category>/` before replacing anything, and MUST
-  record the restore path in the item outcome.
+  `imports/replaced/<run-stamp>/<category>/` before replacing anything, and MUST
+  record the restore path in the item outcome. The stamp is taken ONCE per apply
+  run (`%Y%m%dT%H%M%SZ`), so everything a single import replaced is found
+  together. **If the restore copy cannot be written, the overwrite is abandoned
+  and the item reports `conflict`** — an unrecoverable replace is worse than a
+  reported conflict.
+- The strategy is validated at the API boundary: absent means `skip`, but a
+  present-but-unrecognized value is a **400**, never a silent downgrade.
+  Quietly treating a typo'd `overwrite` as `skip` would report success while
+  replacing nothing. `_normalize_strategy` in the backend is a second,
+  fail-safe layer for non-HTTP callers.
+- A writer returns `_WriteOutcome(status, renamed_to, restored_to)`. The two
+  detail fields are populated ONLY when a strategy actually took effect, so a
+  plain `skip` apply produces exactly the payload it did before strategies
+  existed.
+- `renamed_to` / `restored_to` are **backend-only**. They are filesystem
+  details and MUST NOT cross into the browser; the HTTP response carries
+  `conflict_strategy` plus `conflicts` / `resolvable_conflicts` **counts** only.
+- A conflict entry carries `resolvable: bool` (true iff the category is in
+  `STRATEGY_CATEGORIES`), so a client can offer a retry only when one could
+  actually help.
 - A strategy is chosen **per apply request**, applying to every item in it. A
   finer-grained per-item choice is a UI concern layered on top: the UI may issue
   several apply requests with different strategies.
@@ -288,7 +307,7 @@ be `""` — an app token is never a dashboard user.
 | Endpoint | Phase | Body |
 |----------|-------|------|
 | `GET /api/onboarding/import/scan` | detect + dry run | — |
-| `POST /api/onboarding/import/apply` | apply | `{selection: [{source_id, category_id}], conflict_strategy?, workspace_target?}` |
+| `POST /api/onboarding/import/apply` | apply | `{sources: [{id, categories: [...]}], conflict_strategy?}` — `conflict_strategy` is one of `skip`/`rename`/`overwrite`; absent = `skip`, unrecognized = 400 |
 | `POST /api/onboarding/import/state` | onboarding bookkeeping | `{completed: bool}` |
 
 Concurrency: apply holds a module-level import lock. Config-writing categories

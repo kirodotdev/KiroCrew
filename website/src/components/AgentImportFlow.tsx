@@ -25,6 +25,7 @@ import {
 import {
   api,
   type AgentImportApplyRequest,
+  type AgentImportConflictStrategy,
   type AgentImportSource,
 } from '../api/client'
 import { GhostVar1, GhostVar2 } from '../assets/onboarding/GhostIcons'
@@ -89,6 +90,7 @@ export default function AgentImportFlow({
   const [stage, setStage] = useState<Stage>(1)
   const [scanGeneration, setScanGeneration] = useState(0)
   const [selectedSources, setSelectedSources] = useState<Set<string>>(new Set())
+  const [strategy, setStrategy] = useState<AgentImportConflictStrategy>('skip')
   const [selectedCategories, setSelectedCategories] = useState<Record<string, Set<string>>>({})
   const dialogRef = useRef<HTMLDivElement>(null)
   const headingRef = useRef<HTMLHeadingElement>(null)
@@ -112,6 +114,7 @@ export default function AgentImportFlow({
     setStage(1)
     setSelectedSources(new Set())
     setSelectedCategories({})
+    setStrategy('skip')
     applyMutation.reset()
     completionMutation.reset()
     if (refresh) setScanGeneration(value => value + 1)
@@ -127,7 +130,8 @@ export default function AgentImportFlow({
           .map(category => category.id),
       }))
       .filter(source => source.categories.length > 0),
-  }), [selectedCategories, selectedSources, sources])
+    conflict_strategy: strategy,
+  }), [selectedCategories, selectedSources, sources, strategy])
 
   const applyMutation = useMutation({
     mutationFn: () => api.onboardingImportApply(applyPayload),
@@ -590,6 +594,38 @@ export default function AgentImportFlow({
             <dd className="mt-1 text-2xl font-semibold text-text-strong">{summary?.skipped ?? 0}</dd>
           </div>
         </dl>
+        {!!summary?.resolvable_conflicts && (
+          <div
+            className="mt-5 rounded-lg border border-warn/30 bg-warn/10 p-3 text-sm"
+            role="status"
+          >
+            <p className="font-medium text-text-strong">
+              {summary.resolvable_conflicts === 1
+                ? '1 item already exists with different content.'
+                : `${summary.resolvable_conflicts} items already exist with different content.`}
+            </p>
+            <p className="mt-1 text-[13px] text-muted">
+              Nothing was changed. Import the new copy alongside yours, or replace yours
+              (a restore copy is kept on the gateway).
+            </p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <Btn
+                type="button"
+                disabled={isBusy}
+                onClick={() => { setStrategy('rename'); applyMutation.mutate() }}
+              >
+                Keep both
+              </Btn>
+              <Btn
+                type="button"
+                disabled={isBusy}
+                onClick={() => { setStrategy('overwrite'); applyMutation.mutate() }}
+              >
+                Replace mine
+              </Btn>
+            </div>
+          </div>
+        )}
         {completionError && (
           <div className="mt-5 rounded-lg border border-danger/20 bg-danger/10 p-3 text-sm text-danger" role="alert">
             {errorMessage(completionError, 'Could not save onboarding state.')}
