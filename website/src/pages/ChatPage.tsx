@@ -3989,6 +3989,13 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
                 // This is more precise than item-level anchoring because
                 // it works at the DOM-element granularity.
                 overflowAnchor: 'auto',
+                // Keep wheel/touch momentum inside the message list. Without
+                // this, a delta that arrives at the top or bottom edge chains
+                // to the nearest scrollable ancestor — the document, which
+                // `body{overflow-y:auto}` leaves scrollable — and drags the
+                // whole app shell by however many pixels of slack exist
+                // (a browser-extension node parked past the shell is enough).
+                overscrollBehavior: 'contain',
               } as React.CSSProperties}
               aria-label={i18nT('pages.chatPage.chat_messages')}
               aria-live="polite"

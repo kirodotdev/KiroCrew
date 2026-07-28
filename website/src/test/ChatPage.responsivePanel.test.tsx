@@ -351,3 +351,27 @@ describe('ChatPage — activity toggle on mobile', () => {
     expect(screen.queryByLabelText('Window too narrow for the activity panel')).not.toBeInTheDocument()
   })
 })
+
+describe('ChatPage — message scroller contains its scroll', () => {
+  beforeEach(() => setWindowWidth(1400))
+
+  it('sets overscroll-behavior:contain so wheel deltas never chain to the document', async () => {
+    const store = createTestStore()
+    act(() => {
+      store.dispatch(switchSlot.pending('req-scroll', 'slot-scroll'))
+      store.dispatch(switchSlot.fulfilled({
+        key: 'slot-scroll',
+        messages: [{ role: 'assistant', content: 'hi', cls: '' }],
+        running: false, hasMore: false, total: 1, queue: [],
+      }, 'req-scroll', 'slot-scroll'))
+    })
+    renderChat(store)
+
+    const scroller = await screen.findByLabelText('Chat messages')
+    // Positive control: the list really is the scroll container under test.
+    expect(scroller.style.overflowY).toBe('auto')
+    // The guard: without containment, a delta at the top or bottom edge
+    // chains to the document and drags the whole app shell.
+    expect(scroller.style.overscrollBehavior).toBe('contain')
+  })
+})

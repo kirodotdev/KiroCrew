@@ -947,8 +947,17 @@
   *{box-sizing:border-box;margin:0;padding:0}
   html,body,#root{height:100%}
   body{font:400 0.875rem/1.55 var(--font-body);letter-spacing:normal;background:var(--bg);color:var(--text);
-    -webkit-font-smoothing:antialiased;overflow-x:hidden;overflow-y:auto;
+    -webkit-font-smoothing:antialiased;overflow-x:hidden;overflow-y:auto;overscroll-behavior-y:none;
     transition:background-color .25s ease,color .25s ease}
+  /* The dashboard shell is height-locked (h-screen + overflow-hidden), so the
+     document has no reason to scroll on those routes. Lock it. A third-party
+     node appended to <body> — browser extensions do this routinely — otherwise
+     leaves a few pixels of slack, and a wheel event that lands on the document
+     rather than on a pane drags the whole app through them. Containment on the
+     panes cannot cover that path because no chaining is involved.
+     Scoped with :has() so the onboarding and welcome views, which legitimately
+     grow past the viewport, keep their document scroll. */
+  body:has([data-testid="dashboard-shell"]){overflow:hidden}
   /* Global focus ring for keyboard navigation */
   /* TESTING: disabled to check scroll bug */
   /* :focus-visible{outline:2px solid var(--accent);outline-offset:2px} */
