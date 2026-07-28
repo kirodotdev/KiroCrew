@@ -53,6 +53,57 @@ export function nextSeq(blocks: PasteBlock[]): number {
   return max + 1
 }
 
+/**
+ * Re-sequence `carried` blocks whose `seq` is already taken by `used`, and rewrite
+ * their markers in `text` to match.
+ *
+ * Markers resolve by `seq` alone, so re-using a seq makes two blocks collapse onto
+ * one on expansion — one blob's content is sent twice and the other is dropped.
+ * Rewriting must therefore happen in a SINGLE right-to-left pass over the located
+ * ranges: a naive per-block `split/join` re-matches markers an earlier iteration
+ * just emitted (the needle `[ Paste #N · M lines ]` collides whenever two blocks
+ * share a line count), which cascades every marker onto the last block.
+ *
+ * `used` is mutated to include the assigned seqs. Blocks keep their identity and
+ * content; only `seq` changes, and only when it has to.
+ */
+export function remapCarriedBlocks(
+  text: string,
+  carried: PasteBlock[],
+  used: Set<number>,
+): { text: string; blocks: PasteBlock[] } {
+  let free = 0
+  for (const v of used) if (v > free) free = v
+  free += 1
+  const remap = new Map<number, number>()
+  const blocks: PasteBlock[] = []
+  for (const b of carried) {
+    // Re-derive `free` against `used` on every allocation. A block that KEEPS its
+    // seq also lands in `used`, so a single max()-seed goes stale the moment a kept
+    // seq is >= free — and the next block needing a new seq would be handed one the
+    // kept block already holds, recreating the duplicate this function exists to
+    // prevent. (Reachable when the live list has a seq gap, e.g. after a paste chip
+    // is deleted, then a second failed recovery runs.)
+    while (used.has(free)) free++
+    const seq = used.has(b.seq) ? free++ : b.seq
+    used.add(seq)
+    if (seq !== b.seq) remap.set(b.seq, seq)
+    blocks.push(seq === b.seq ? b : { ...b, seq })
+  }
+  if (!remap.size) return { text, blocks }
+  // Right-to-left so each splice leaves the earlier ranges' offsets valid, and so
+  // no marker written by this pass is ever re-examined.
+  let out = text
+  const ranges = findTokenRanges(text, carried)
+  for (let i = ranges.length - 1; i >= 0; i--) {
+    const { start, end, block } = ranges[i]
+    const mapped = remap.get(block.seq)
+    if (mapped === undefined) continue
+    out = out.slice(0, start) + formatToken({ ...block, seq: mapped }) + out.slice(end)
+  }
+  return { text: out, blocks }
+}
+
 /** Ranges for each token whose seq is present in `blocks`, in document order. */
 export function findTokenRanges(
   text: string,

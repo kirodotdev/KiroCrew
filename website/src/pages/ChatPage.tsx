@@ -21,7 +21,7 @@ import {
   setActiveSlot, truncateAfterIndex, replaceMessages,
   requestStop, pendingQuestionFor, clearFollowupCard, dismissFollowupItem,
 } from '../store/chatSlice'
-import { removeNotificationByTs } from '../store/notificationsSlice'
+import { addNotification, removeNotificationByTs } from '../store/notificationsSlice'
 import { onTerminalReady, sendToTerminalSession } from '../utils/terminalRegistry'
 import { interceptSlashCommand } from './chat/ChatInput'
 import { sseSlotTitle } from '../store/dashboardSlice'
@@ -45,7 +45,7 @@ import type { DisplayItem, TurnItem } from './chat/types'
 import { useScrollManager } from './chat/useScrollManager'
 import { useVirtualChat } from '../hooks/virtualizer/useVirtualChat'
 import { parseFiles, prepareSendPayload, resolveFileSegment, buildFileLabels, findUnreferencedAttachments } from '../utils/fileTokens'
-import { type PasteBlock, expandAll as expandPasteTokens, findTokenRanges, pruneBlocks as pruneBlocksUtil, saveStoredPaste, recollapsePastes } from '../utils/pasteTokens'
+import { type PasteBlock, expandAll as expandPasteTokens, findTokenRanges, pruneBlocks as pruneBlocksUtil, remapCarriedBlocks, saveStoredPaste, recollapsePastes } from '../utils/pasteTokens'
 import { extractPromptFromToken, extractSlackContextFromToken } from '../utils/tokenPrompt'
 // Roles that fold into a collapsible group in the turn view. Thinking is NOT
 // here: it carries real content and renders as its own standalone block (a
@@ -149,6 +149,28 @@ import WorkflowProgressBar from './chat/WorkflowProgressBar'
 import { tryQuickSend } from '../lib/quickSend'
 import { rewindWithRollback } from '../lib/rewindCall'
 
+
+/**
+ * Human-readable reason from a rejected thunk. `unwrap()` rejects with RTK's
+ * SERIALIZED error — a plain object, never an `Error` instance — so an
+ * `instanceof Error` test always fails and every user would read the developer
+ * fallback. Read `message` structurally instead, with a plain-language fallback.
+ */
+/** Unique `ts` for a client-side notification that the feed can still PARSE.
+ *  `addNotification` dedupes on `ts`, so two entries in the same millisecond would
+ *  see the second silently dropped — which for a payload-carrying entry discards
+ *  the user's message. The disambiguator goes in FRACTIONAL digits because
+ *  `parseTs` only accepts `\d+(\.\d+)?`; a `<ms>-<n>` form falls through to
+ *  `new Date(string)`, which is Invalid Date in V8 → "Invalid Date" headers and
+ *  "NaNd ago" in the bell feed. */
+let notificationTsSeq = 0
+const uniqueNotificationTs = (): string => `${Date.now()}.${notificationTsSeq++}`
+
+
+const createFailReason = (e: unknown): string => {
+  const msg = typeof e === 'object' && e !== null ? (e as { message?: unknown }).message : undefined
+  return typeof msg === 'string' && msg.trim() ? msg : 'the server did not respond'
+}
 
 export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, mode }: {
   activeSlot: string | null; agent?: string; onReveal?: () => void; onRename?: () => void; mode?: string
@@ -2139,6 +2161,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
       return
     }
 
+    // Snapshot the staged attachments BEFORE the composer is cleared below, so a
+    // failed send can put them back (prepareSendPayload's `filePaths` drops
+    // images, which would silently lose them on restore).
+    const sentFiles = pendingFilesRef.current.slice()
     const { txt, displayTxt, filePaths } = prepareSendPayload(raw, pendingFilesRef.current)
     // Expand paste tokens for the LLM; UI-facing displayTxt keeps the tokens
     // intact so the user bubble can render them as clickable chips.
@@ -2177,7 +2203,164 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
     }
     if (!slot || forceNew) {
       sendingRef.current = true;
-      const result = await dispatch(createSlot({ agent: pendingAgentRef.current || defaultAgent || undefined, model: pendingModelRef.current || undefined, mode: modeRef.current })).unwrap();
+      // The composer was cleared above, so a create failure here would destroy
+      // the user's text: `.unwrap()` rejects, send() unwinds, and nothing is
+      // ever sent — no error bubble, no draft to recover, and sendingRef stuck
+      // true (which suppresses the welcome state). Restore the composer, its
+      // paste blocks and attachments, surface the failure, and bail.
+      let created: { key: string } | null = null
+      try {
+        created = await dispatch(createSlot({ agent: pendingAgentRef.current || defaultAgent || undefined, model: pendingModelRef.current || undefined, mode: modeRef.current })).unwrap()
+      } catch (e: unknown) {
+        sendingRef.current = false
+        // Recover the payload WITHOUT clobbering anything newer. Two traps make a
+        // plain assignment lossy here:
+        //  - The composer is only cleared above when `!optionText`, and the
+        //    reachable forceNew path IS the optionText path (Projects / Dev Fleet /
+        //    Prompts navigate to ?autoSend=1&newSession=1), so the composer still
+        //    holds the user's own draft — overwriting it would destroy exactly the
+        //    kind of text this guard exists to protect.
+        //  - The create is awaited, so meanwhile the user may have typed, attached
+        //    files, or switched sessions.
+        // So MERGE into whatever the target slot holds now, and only touch live
+        // composer state while that slot is still the one on screen.
+        // Restore in place ONLY when the composer still belongs to the slot that
+        // issued the send. A no-slot send (auto-send that fires before the slot list
+        // resolves) must NOT fall back to whatever session auto-selection has since
+        // activated: that would splice a new-session payload into an unrelated
+        // session and send it there on retry. Those cases get a notification.
+        const sameSlot = activeSlotRef.current === uiSlot
+        const onScreen = sameSlot
+        // Un-consume the one-shot new-session intent while the user is still on the
+        // slot that issued the send — re-arming after they switched away would make
+        // THAT session's next message spawn an unintended new session. Also re-arm
+        // whenever there was no origin slot: the queued retry below MUST still create
+        // its own session, and `sameSlot` is false there as soon as auto-selection
+        // activates one mid-await, which would otherwise send the payload into an
+        // unrelated existing session.
+        // `|| !uiSlot` on the VALUE too, not just the condition: a slotless send also
+        // reaches the create branch via `!slot` with `forceNew === false` (the
+        // challenge-token flow, whose own createSlot failed), and arming `false` there
+        // would let the queued retry deliver the payload as a user turn in whatever
+        // unrelated session auto-selection activates. A send that had no origin slot
+        // must always create its own session on retry.
+        if (sameSlot || !uiSlot) newSessionRef.current = forceNew || !uiSlot
+        const keepFiles = onScreen ? pendingFilesRef.current : (uiSlot ? fileDrafts.current[uiSlot] ?? [] : [])
+        const restoredFiles = [...new Set([...keepFiles, ...sentFiles])]
+        const keepPastes = onScreen ? pasteBlocksRef.current : (uiSlot ? pasteDrafts.current[uiSlot] ?? [] : [])
+        const keptPasteIds = new Set(keepPastes.map(b => b.id))
+        // Collapsed pastes resolve by `seq`, not id, and a paste made while the
+        // composer was empty restarts at #1 — so a naive id-merge can leave two
+        // blocks sharing #1, with both markers resolving to one of them and
+        // silently swapping the user's content on retry. Re-sequence the carried
+        // blocks past the kept ones and rewrite their markers in the payload text.
+        const { text: payload, blocks: carriedPastes } = remapCarriedBlocks(
+          raw,
+          activePastes.filter(x => !keptPasteIds.has(x.id)),
+          new Set(keepPastes.map(b => b.seq)),
+        )
+        const restoredPastes = [...keepPastes, ...carriedPastes]
+        const keepText = onScreen ? inputRef.current : (uiSlot ? drafts.current[uiSlot] ?? '' : '')
+        // Don't append a payload the composer already holds: a synchronously
+        // rejected create can land before React flushes the clear, and the user may
+        // have typed AROUND the payload during a slow one (superset case). The match
+        // must be whitespace-delimited, not a bare substring — payload "test" inside
+        // a newer draft "latest" is a different message, and treating it as already
+        // restored would drop it.
+        // Dedupe ONLY on exact equality. A whitespace-delimited occurrence is not
+        // proof the payload was already restored — a draft like "please run tests
+        // first" contains the distinct payload "run tests" — and treating it as
+        // restored drops the message. Equality still covers the case this guard
+        // exists for (a synchronously rejected create landing before React flushes
+        // the clear), and errs toward a visible duplicate rather than silent loss.
+        const alreadyRestored = keepText.trim() === payload.trim()
+        const restoredText = !keepText.trim()
+          ? payload
+          : alreadyRestored
+            ? keepText
+            : `${keepText.replace(/\s+$/, '')}\n\n${payload}`
+        if (onScreen && uiSlot) {
+          setInput(restoredText); setPasteBlocks(restoredPastes); setPendingFiles(restoredFiles)
+          // clearPending() above already consumed the knowledge selection, so a
+          // retry would otherwise go out WITHOUT the context the user picked. Slot-
+          // gated: selection is per-slot, so re-injecting while the user views another
+          // session would smear it there. MERGE rather than skip-or-replace — `inject`
+          // replaces, so skipping when a newer selection exists would drop the failed
+          // turn's context, and replacing would drop what the user picked since. Newer
+          // items win on an id collision.
+          if (knowledgeBlock) {
+            const newer = knowledgeFetchRef.current.pendingKnowledge?.items ?? []
+            const newerIds = new Set(newer.map(i => i.id))
+            knowledgeFetchRef.current.inject([...knowledgeBlock.items.filter(i => !newerIds.has(i.id)), ...newer])
+          }
+          dispatch(appendMessage({ role: 'error', content: `Could not start a new session: ${createFailReason(e)}. Your message was restored — send it again to retry.`, cls: '' }))
+        }
+        // Announce the failure wherever the in-chat bubble could not. Two shapes:
+        //  - No origin slot at all: nothing durable can hold the text (a draft under
+        //    the session auto-selection just activated would splice this payload into
+        //    an unrelated conversation, and a composer restore lives in state the
+        //    next slot switch wipes). So the notification CARRIES the message —
+        //    expanded pastes and attachment paths included.
+        //  - Origin slot exists but the user moved on: the draft is parked there, so
+        //    point at it. An error bubble would land in the wrong session.
+        if (!uiSlot) {
+          // No session to restore into or persist to (a draft under the session
+          // auto-selection just activated would splice this into an unrelated
+          // conversation, and a notification body reaches the OS notification centre
+          // — `useNativeNotification` publishes the latest unacked body, and any entry
+          // can be re-marked unread, so `acked` is no barrier). Hand the payload back
+          // to the mechanism that produced it instead: re-arming `autoSendRef` makes
+          // the auto-send effect resend it. Text only — paste blocks and attachments
+          // cannot exist on this path (no composer renders without a slot).
+          //
+          // If a slot is ALREADY active, the effect's deps
+          // (`[send, connected, autoSendTick]`) will not change again on their own, so
+          // bump the tick to drive the retry now — and stay silent, because that
+          // retry reports its own outcome (it runs with a slot, so a second failure
+          // produces the error bubble or the moved-on notification below). Telling the
+          // user to retype while a retry is in flight invites a duplicate turn.
+          // Otherwise nothing can drive it until a real `connected`/slot change, so
+          // report it and be honest that the queue is tab-local.
+          const retryNow = !!activeSlotRef.current
+          autoSendRef.current = payload
+          if (retryNow) {
+            setAutoSendTick(t => t + 1)
+          } else {
+            dispatch(addNotification({
+              ts: uniqueNotificationTs(),
+              kind: 'agent',
+              priority: 'critical',
+              title: 'Could not start a new session',
+              body: `${createFailReason(e)}. Your message is queued and will be sent when a session is ready — but it is held in this tab only, so if you navigate away or reload you will need to retype it.`,
+            }))
+          }
+        } else if (!onScreen) {
+          // The knowledge selection is NOT restored here: `inject` writes to the slot
+          // the user is now viewing, so restoring it off-screen would attach the failed
+          // turn's context to an unrelated session. Re-selecting is a two-click library
+          // action (unlike typed text, which is unrecoverable), so this reports the gap
+          // instead of routing knowledge per-slot — but it must not be silent.
+          const lostContext = knowledgeBlock
+            ? ' Its knowledge context was not kept — re-pick it before you resend.'
+            : ''
+          dispatch(addNotification({
+            ts: uniqueNotificationTs(),
+            kind: 'agent',
+            priority: 'critical',
+            title: 'Could not start a new session',
+            body: `${createFailReason(e)}. Your message is saved as a draft in the session you sent it from.${lostContext}`,
+            slot: uiSlot,
+          }))
+        }
+        if (uiSlot) {
+          setDraft(drafts.current, uiSlot, restoredText)
+          setPasteDraft(pasteDrafts.current, uiSlot, restoredPastes)
+          setFileDraft(fileDrafts.current, uiSlot, restoredFiles)
+          saveDrafts()
+        }
+        return
+      }
+      const result = created
       slot = result.key;
       if (pendingProjectRef.current) {
         await api.chatSlotProject(result.key, pendingProjectRef.current).catch(e => {
