@@ -144,50 +144,53 @@ export function TipCard({ tip, onDismiss }: TipCardProps) {
           <MarkdownRenderer content={tip.body} />
         </div>
         <div className="flex items-center gap-3 mt-1">
-          {actionRoute && (
+          <div className="flex items-center gap-3 min-w-0">
+            {actionRoute && (
+              <button
+                onClick={handleAction}
+                className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium hover:brightness-110 transition"
+                style={{
+                  color: 'var(--accent)',
+                  background: 'color-mix(in srgb, var(--accent) 12%, transparent)',
+                  border: '1px solid color-mix(in srgb, var(--accent) 30%, transparent)',
+                }}
+              >
+                {tip.action?.label}
+                <ArrowRight size={11} aria-hidden="true" />
+              </button>
+            )}
+            {docHref && (
+              <a
+                href={docHref}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 text-[11px] text-accent hover:underline hover:brightness-110 transition"
+              >
+                <ExternalLink size={10} aria-hidden="true" />
+                Learn more
+              </a>
+            )}
+          </div>
+          <div className="flex items-center gap-2 ml-auto shrink-0">
             <button
-              onClick={handleAction}
-              className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium hover:brightness-110 transition"
-              style={{
-                color: 'var(--accent)',
-                background: 'color-mix(in srgb, var(--accent) 12%, transparent)',
-                border: '1px solid color-mix(in srgb, var(--accent) 30%, transparent)',
-              }}
+              onClick={handleOptOut}
+              disabled={optOutMutation.isPending}
+              className="text-[11px] hover:underline disabled:opacity-40 disabled:cursor-not-allowed"
+              style={{ color: 'var(--muted)' }}
+              aria-label="Turn off tips"
             >
-              {tip.action?.label}
-              <ArrowRight size={11} aria-hidden="true" />
+              Turn off tips
             </button>
-          )}
-          {docHref && (
-            <a
-              href={docHref}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-1 text-[11px] hover:underline"
-              style={{ color: 'var(--accent)' }}
+            <Link
+              to={TIPS_SETTINGS_PATH}
+              className="inline-flex items-center rounded p-0.5 transition-colors hover:bg-[var(--bg-hover)]"
+              style={{ color: 'var(--muted)' }}
+              aria-label="Tip settings"
+              title="Tip settings"
             >
-              <ExternalLink size={10} aria-hidden="true" />
-              Learn more
-            </a>
-          )}
-          <button
-            onClick={handleOptOut}
-            disabled={optOutMutation.isPending}
-            className="text-[11px] hover:underline disabled:opacity-40 disabled:cursor-not-allowed"
-            style={{ color: 'var(--muted)' }}
-            aria-label="Turn off tips"
-          >
-            Turn off tips
-          </button>
-          <Link
-            to={TIPS_SETTINGS_PATH}
-            className="inline-flex items-center gap-1 text-[11px] hover:underline"
-            style={{ color: 'var(--muted)' }}
-            aria-label="Tip settings"
-          >
-            <Settings size={10} aria-hidden="true" />
-            Settings
-          </Link>
+              <Settings size={12} aria-hidden="true" />
+            </Link>
+          </div>
         </div>
       </div>
 

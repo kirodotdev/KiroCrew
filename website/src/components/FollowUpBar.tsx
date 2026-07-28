@@ -17,7 +17,7 @@ interface FollowUpBarProps {
 function chipClassName(isPicked: boolean, extra: string = '') {
   return `${extra} px-3 py-1.5 rounded-lg text-[13px] cursor-pointer transition-all border ${
     isPicked
-      ? 'border-solid border-accent text-accent bg-accent-subtle'
+      ? 'border-solid border-accent/50 text-accent bg-accent-subtle'
       : 'border-border text-muted hover:text-text hover:border-accent/40 bg-bg-elevated'
   }`
 }
@@ -25,7 +25,7 @@ function chipClassName(isPicked: boolean, extra: string = '') {
 function sendSegmentClassName(isPicked: boolean) {
   return `px-1.5 py-1.5 rounded-r-lg cursor-pointer transition-all border border-l-0 ${
     isPicked
-      ? 'border-solid border-accent text-accent bg-accent-subtle hover:bg-accent/20'
+      ? 'border-solid border-accent/50 text-accent bg-accent-subtle hover:bg-accent/20'
       : 'border-border text-muted hover:text-accent hover:border-accent/40 bg-bg-elevated'
   }`
 }
