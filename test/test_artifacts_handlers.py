@@ -247,14 +247,41 @@ class TestList:
         assert {a["slug"] for a in _json_body(resp)["artifacts"]} == {"orphan"}
 
     @pytest.mark.asyncio
-    async def test_malformed_session_does_not_widen_to_all(
+    async def test_malformed_session_returns_nothing_not_the_no_origin_bucket(
         self, isolated_store, patch_restricted
     ) -> None:
-        """A hostile/invalid key must collapse to "", never leak every artifact."""
+        """An invalid key must match NOTHING — not the ``""`` bucket, not everything.
+
+        The unattributed artifact here is load-bearing: every ``artifact_save``
+        from the MCP path stores ``session_key=""``, so a validation miss that
+        collapsed to ``""`` would hand the caller a FOREIGN artifact list. With
+        only attributed fixtures this test passes either way.
+        """
         isolated_store.create(name="mine", content="x", session_key="dashboard:chat-1")
         isolated_store.create(name="other", content="x", session_key="dashboard:chat-2")
+        isolated_store.create(name="unattributed", content="x")  # session_key=""
         resp = await api_artifacts_list(_request(query={"session": "../../etc/passwd"}))
         assert _json_body(resp)["artifacts"] == []
+
+    @pytest.mark.asyncio
+    async def test_over_long_session_key_does_not_leak_another_session(
+        self, isolated_store, patch_restricted
+    ) -> None:
+        """A >128-char slot key is REAL, not hostile — it must not return foreign rows.
+
+        The artifact companion-chat flow names a slot ``Artifact: <name>`` and
+        artifact names run to ``MAX_NAME_LEN`` (200), so a slot key can exceed the
+        session-key grammar's 128-char cap. The write side stores that key
+        verbatim, so its artifacts exist; the read side must either find them or
+        find nothing — never someone else's.
+        """
+        long_slot = "chat-1-" + "x" * 140
+        assert len(long_slot) > 128
+        isolated_store.create(name="mine", content="x", session_key=long_slot)
+        isolated_store.create(name="unattributed", content="x")  # session_key=""
+        resp = await api_artifacts_list(_request(query={"session": long_slot}))
+        slugs = {a["slug"] for a in _json_body(resp)["artifacts"]}
+        assert "unattributed" not in slugs, "must not fall back to the no-origin bucket"
 
     # ── ?pinned= ────────────────────────────────────────────────────────────
 

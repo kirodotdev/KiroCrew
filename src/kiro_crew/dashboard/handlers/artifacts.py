@@ -993,11 +993,22 @@ async def api_artifacts_list(request: web.Request) -> web.Response:
     folder = request.query["folder"] if "folder" in request.query else None
     # ``session`` scopes to the artifacts one chat session produced (the
     # in-session Artifacts tab). Validated through the same grammar as a save's
-    # ``origin_session_key`` so a hostile value can't reach the store as a
-    # filter; an invalid value collapses to "" (the no-origin bucket) rather
-    # than silently widening to every artifact.
+    # ``origin_session_key`` so a hostile value can't reach the store as a filter.
+    #
+    # On a validation MISS the raw value is kept rather than collapsed to "".
+    # Collapsing is right for a WRITE (attributing a save to no session is safe)
+    # but wrong for a READ filter: "" is the real no-origin bucket, so an
+    # over-long key would return some OTHER session's artifacts — e.g. every
+    # ``artifact_save`` from the MCP path, which stores ``session_key=""``. A slot
+    # key can exceed the 128-char limit today: the artifact companion-chat flow
+    # names a slot ``Artifact: <name>`` and names run to ``MAX_NAME_LEN`` (200).
+    # ``store.list`` compares exactly, so the raw over-long key matches zero
+    # records — an honestly empty tab instead of a foreign one.
+    _raw_session = request.query.get("session")
     session = (
-        _clean_origin_session_key(request.query["session"]) if "session" in request.query else None
+        (_clean_origin_session_key(_raw_session) or _raw_session)
+        if "session" in request.query
+        else None
     )
     pinned = _clean_pinned_filter(request.query.get("pinned"))
     try:

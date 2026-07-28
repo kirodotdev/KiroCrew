@@ -381,11 +381,21 @@ the document list are dropped in favor of the path-aware row. The star means
 else is a `pinned` flip.
 
 `?session=` is validated through the same grammar as a save's
-`origin_session_key`; a malformed value collapses to `""` (the no-origin bucket)
-rather than widening to every artifact. Like `?folder=`, absent means "don't
-scope" while present-but-empty means "only unattributed" — the handler reads the
-raw key to keep the two distinct. `?pinned=` is tri-state for the same reason: an
-unrecognized value does not scope rather than being read as `false`.
+`origin_session_key`, but a validation **miss keeps the raw value** instead of
+collapsing to `""`. Collapsing is correct for a *write* (attributing a save to no
+session is safe) and wrong for a *read* filter: `""` is the real no-origin bucket,
+so an unvalidatable key would return some **other** session's artifacts — notably
+every `artifact_save` from the MCP path, which stores `session_key=""`. Since
+`store.list` compares exactly, the raw value matches zero records: an honestly
+empty tab rather than a foreign one. This is not only a hostile-input case — a slot
+key can legitimately exceed the grammar's 128-char cap, because the artifact
+companion-chat flow names a slot `Artifact: <name>` and names run to
+`MAX_NAME_LEN` (200).
+
+Like `?folder=`, absent means "don't scope" while present-but-empty means "only
+unattributed" — the handler reads the raw key to keep the two distinct. `?pinned=`
+is tri-state for the same reason: an unrecognized value does not scope rather than
+being read as `false`.
 
 **The session key is the BARE slot key** (`chat-<N>-<ts>`), never a decorated
 `dashboard:<key>` form. `ArtifactStore.list` compares `session_key` exactly — it
