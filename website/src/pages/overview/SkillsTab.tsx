@@ -40,6 +40,11 @@ export default function SkillsTab() {
   const { data: skills = [], isLoading, isFetching, refetch } = useQuery<Skill[]>({
     queryKey: ['skills'],
     queryFn: () => api.skills(),
+    // Fetch fresh on each mount so an approved/edited skill is reflected the
+    // moment the tab opens (the 30s global staleTime otherwise serves a cached
+    // list). The shared ['skills'] cache still backs the palette/picker.
+    staleTime: 0,
+    refetchOnMount: 'always',
   })
 
   // Content of the selected skill's SKILL.md — only needed to seed the edit
@@ -326,7 +331,13 @@ function PendingSkillsPanel() {
   const { data } = useQuery<{ pending: PendingSkill[] }>({
     queryKey: ['skills-pending'],
     queryFn: () => api.skillsPending(),
+    // Skills tab is conditionally mounted (CapabilitiesPage), so it remounts on
+    // every open. Fetch fresh on each mount (overriding the 30s global
+    // staleTime) so a just-staged candidate appears immediately instead of
+    // after the cached list expires; the interval stays as a live backstop.
     refetchInterval: 30000,
+    staleTime: 0,
+    refetchOnMount: 'always',
   })
   const pending: PendingSkill[] = data?.pending ?? []
   const approve = useMutation({

@@ -1,20 +1,31 @@
 ---
 name: crystallize
-description: Turn the current session into a reusable skill candidate on demand, staged for approval
-triggers: crystallize, crystallize this session, create a skill from this, make this reusable, save this as a skill, turn this into a skill
+description: Capture the current session as a reusable skill — staged as a candidate by default, or live only when the user explicitly asks for a live/active skill.
+triggers: crystallize, create a skill, create a skill from this, save this as a skill, make this reusable, turn this into a skill, create a live skill, create an active skill
 ---
 
 # Crystallize a session into a skill
 
-Use this when the user explicitly asks to capture the current session as a
-reusable skill — e.g. "crystallize this", "create a skill from this", "make
-this reusable", "save this as a skill". This is the **on-demand** counterpart
-to the automatic post-session skill generation: the user is telling you *now*
-that the work you just did is worth keeping.
+Use this whenever the user asks to capture work as a reusable skill —
+"crystallize this", "create a skill", "save this as a skill", "make this
+reusable", or "turn this into a skill". This is the **on-demand** counterpart to
+the automatic post-session skill generation: the user is telling you *now* that
+the work is worth keeping.
+
+**Two modes, chosen from the user's wording:**
+
+- **Candidate (default).** Stage the skill in the pending queue for human
+  approval. Every phrasing above means this unless the user says otherwise.
+- **Live (explicit only).** Write the skill straight to a live,
+  immediately-loadable location, bypassing approval. Take this path **ONLY**
+  when the user explicitly says "create a live skill" or "create an active
+  skill" (or confirms it when asked). Never infer it from a plain "create a
+  skill" — that stays a candidate.
 
 ## When to use
 
-- The user says any of the trigger phrases above.
+- The user says any trigger phrase above (candidate mode), or explicitly asks
+  for a "live" / "active" skill (live mode).
 - The session contains a **non-trivial, reusable procedure** — a multi-step
   workflow, a debugging path for a class of error, a fixed command/API
   sequence, or a research-synthesis flow — that a future session would benefit
@@ -38,22 +49,30 @@ session that touched credentials / sensitive paths.
    consolidation pass would also capture this same session, don't stage a
    second copy.
 
-3. **Decide prose vs. script.** If part of the procedure is genuinely
-   deterministic — a fixed command chain, a set API sequence, a predictable
-   file transform — author a small **Python** helper script (Python only, so it
-   runs on macOS/Linux/Windows) so the result is repeatable rather than
-   re-improvised. Keep judgment-based / context-dependent steps as prose.
-   Scripts must not access credentials, wipe files, or call unknown network
-   hosts, and must stay under 4 KB — they are statically validated and always
-   require human approval.
+3. **Write prose by default; add a script only when determinism earns it.**
+   Most skills are judgment or workflow guidance and should be plain **prose
+   steps** — that is the expected shape. Reach for a helper script *only* when
+   part of the procedure is genuinely deterministic and error-prone to
+   re-improvise: a fixed multi-command chain, a set API sequence, or a fiddly
+   file transform. If prose captures it clearly, do not write a script. When a
+   script truly is warranted, it must be **Python** (so it runs on
+   macOS/Linux/Windows), must not access credentials, wipe files, or call
+   unknown network hosts, and must stay under 4 KB. A staged candidate's script
+   is statically validated and requires human approval before it can run; a
+   live-mode script (step 4b) gets no such check, so you must hold it to these
+   same limits yourself.
 
-4. **Write the candidate to the pending queue** (never live). First resolve
-   your KiroCrew skills directory — it is the SAME directory that holds the
-   `auto/` group you inspected in step 3 (honor `$KIROCREW_HOME` if set; do
-   **not** assume a literal `~/.kirocrew`, since migrated installs live
-   elsewhere). Then create `<skills-dir>/auto/.pending/<slug>/` where `<slug>`
-   is kebab-case, 3–60 chars. Put the skill in `SKILL.md` with this exact
-   frontmatter shape:
+4. **Choose the destination — candidate by default, live only on an explicit
+   request.** First resolve your KiroCrew skills directory — the SAME directory
+   that holds the `auto/` group you inspected in step 2 (honor `$KIROCREW_HOME`
+   if set; do **not** assume a literal `~/.kirocrew`, since migrated installs
+   live elsewhere).
+
+   **(a) Candidate — the default.** For "crystallize", "create a skill",
+   "save this as a skill", "make this reusable" and every other phrasing, stage
+   to the pending queue so a human approves before anything loads. Create
+   `<skills-dir>/auto/.pending/<slug>/` (`<slug>` kebab-case, 3–60 chars) with
+   `SKILL.md`:
 
    ```
    ---
@@ -75,24 +94,65 @@ session that touched credentials / sensitive paths.
    ...
    ```
 
-   If you generated a script, put it under `scripts/<name>.py` in that folder.
-   Add a `.meta.json` next to `SKILL.md`:
+   Always add a `.meta.json` next to `SKILL.md` — the pending list/detail API
+   reads the candidate's `description`, `triggers`, `name`, and `source` from it
+   (there is **no** SKILL.md-frontmatter fallback), so without it the candidate
+   shows blank in **Skills → Pending review** and dedup loses its match data:
    `{"slug": "<slug>", "name": "auto/<slug>", "source": "crystallize",
    "created_at": "<ISO>", "description": "...", "triggers": "...",
-   "has_scripts": <bool>, "scripts": ["<name>.py"]}`.
+   "has_scripts": <bool>, "scripts": [...]}`.
+   Only `scripts/` is conditional: if you generated a script, put it under
+   `scripts/<name>.py` in that folder, set `"has_scripts": true`, and list it in
+   `scripts`; for a prose-only candidate use `"has_scripts": false, "scripts": []`.
 
-   Do **not** include absolute paths, credentials, tokens, or user PII in the
-   body or the script.
+   **(b) Live — ONLY on an explicit "create a live skill" / "create an active
+   skill".** The user must actually say "live" or "active" (or confirm it when
+   asked) — never take this path by inference. Write directly to a top-level
+   live directory `<skills-dir>/<slug>/SKILL.md` — no `auto/` prefix, no
+   `.meta.json`, no pending stage — using this frontmatter:
 
-5. **Hand off to the user for approval.** Tell them the candidate is staged and
-   they can review it in **Skills → Pending review** — approve to make it live
-   (and mark any script executable), or dismiss it. Nothing goes live until
-   they approve.
+   ```
+   ---
+   name: <slug>
+   description: <=150 chars, starts with a verb
+   triggers: <3-8 comma-separated keywords/phrases>
+   source: crystallize
+   ---
+
+   # <slug>
+
+   ## When to use
+   ...
+   ## Steps
+   ...
+   ## Gotchas
+   ...
+   ```
+
+   **Do not overwrite an existing skill:** if `<skills-dir>/<slug>/` already
+   exists (a live or builtin skill), pick a different slug or ask the user —
+   the live path has no collision guard, so writing blindly clobbers it. Put
+   any script under `scripts/<name>.py` and, since no approval step runs for
+   you, mark it executable yourself — on POSIX, `chmod +x`; skip that on
+   Windows, where the executable bit is a no-op.
+
+   In BOTH cases: do **not** include absolute paths, credentials, tokens, or
+   user PII in the body or the script.
+
+5. **Hand off.**
+   - **Candidate:** tell the user it is staged and they can review it in
+     **Skills → Pending review** — approve to make it live (and mark any script
+     executable), or dismiss it. Nothing loads until they approve.
+   - **Live:** tell the user it is active immediately and discoverable by its
+     triggers (no approval needed), and point them at the file in case they want
+     to edit or remove it.
 
 ## Gotchas
 
-- **Never write directly to the live `<skills-dir>/auto/<slug>/`.**
-  Always stage under `auto/.pending/` so a human reviews it first.
+- **Default to the pending queue.** Only write directly to a live location
+  (`<skills-dir>/<slug>/`) when the user explicitly asked for a "live" or
+  "active" skill — otherwise always stage under `auto/.pending/` so a human
+  reviews it first.
 - One skill per distinct procedure — don't bundle unrelated workflows.
 - Keep the description trigger-class-focused (it is matched on, and truncated
   in the system-prompt skill index).
