@@ -124,6 +124,22 @@ describe('PullRequestPanel', () => {
     expect(gitlabTab.querySelector('[data-provider-mark="gitlab"]')).toBeInTheDocument()
   })
 
+  it('copies the head branch name to the clipboard when the branch chip is clicked', async () => {
+    const originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+    try {
+      renderPanel()
+      const copyBtn = await screen.findByRole('button', { name: /Copy branch name feature\/source-tabs/i })
+      fireEvent.click(copyBtn)
+      expect(writeText).toHaveBeenCalledWith('feature/source-tabs')
+      await screen.findByRole('button', { name: /Copied branch name feature\/source-tabs/i })
+    } finally {
+      if (originalClipboard) Object.defineProperty(navigator, 'clipboard', originalClipboard)
+      else delete (navigator as { clipboard?: unknown }).clipboard
+    }
+  })
+
   it('shows lifecycle and CI state on every source tab, not just the selected one', async () => {
     mockApi.pullRequestStatuses.mockResolvedValue({
       statuses: {
