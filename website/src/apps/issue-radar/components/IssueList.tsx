@@ -16,8 +16,13 @@ const ANIM_CAP = 200
 
 /** Middle column: a search box, the filtered + sorted issue list (cards
  * animate as the search narrows them), and a footer carrying the count, the
- * time since the last refresh, and the refresh button. */
-export default function IssueList() {
+ * time since the last refresh, and the refresh button.
+ *
+ * `resizing` is true while the user drags the column's width handle: card layout
+ * animation is switched off for the duration, since animating a size change
+ * scale-transforms the card and visibly stretches its text on every pointer
+ * move. Dropped from the drag, the cards simply re-wrap. */
+export default function IssueList({ resizing = false }: { resizing?: boolean }) {
   const {
     filteredIssues, sortedIssues, issuesLoading, issuesError,
     stateFilter, issues, colorByName,
@@ -104,7 +109,10 @@ export default function IssueList() {
               {sortedIssues.map((iss) => (
                 <motion.button
                   key={iss.number}
-                  layout
+                  // 'position' (not the default size+position): a size-animating
+                  // layout pass distorts the card's text with a scale transform
+                  // whenever the column rewraps. Off entirely mid-resize.
+                  layout={resizing ? false : 'position'}
                   initial={{ opacity: 0, y: 6 }}
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, scale: 0.97 }}

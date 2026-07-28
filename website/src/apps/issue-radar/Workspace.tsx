@@ -12,79 +12,51 @@
 // registry. 'settings' shows the Settings page in the same area. The rail stays
 // visible in every mode. All shared state comes from useIssueRadar(); this file
 // owns only presentational layout (column resize).
-import { useState, useRef, useEffect } from 'react'
 import { CircleDot, GitPullRequest } from 'lucide-react'
 import { useIssueRadar } from './context'
 import {
   loadListWidth, LIST_WIDTH_KEY, MIN_LIST_WIDTH, MAX_LIST_WIDTH,
+  loadRailWidth, loadRailCollapsed, RAIL_WIDTH_KEY, RAIL_COLLAPSED_KEY,
+  MIN_RAIL_WIDTH, MAX_RAIL_WIDTH, COLLAPSED_RAIL_WIDTH,
 } from './lib/format'
+import { useColumnResize, type CollapseConfig } from './lib/useColumnResize'
 import LeftRail from './components/LeftRail'
+import ResizeHandle from './components/ResizeHandle'
 import IssueList from './components/IssueList'
 import IssueDetail from './components/IssueDetail'
 import PrList from './components/PrList'
 import PrDetail from './components/PrDetail'
 import SettingsView from './views/SettingsView'
 import { dashboardComponent } from './views/registry'
-import { usePointerDrag } from '../../hooks/usePointerDrag'
+
+// Module-level so the hook's memoised resolver isn't invalidated every render.
+const RAIL_COLLAPSE: CollapseConfig = { width: COLLAPSED_RAIL_WIDTH, storageKey: RAIL_COLLAPSED_KEY }
 
 export default function Workspace() {
   const { mainView, dashboardTab, activeIssue, activePull } = useIssueRadar()
-  const [listWidth, setListWidth] = useState<number>(loadListWidth)
-
-  const startWRef = useRef(0)
-  const listDraggingRef = useRef(false)
-  const listResize = usePointerDrag({
-    threshold: 0,
-    onStart: () => {
-      startWRef.current = listWidth
-      listDraggingRef.current = true
-      document.body.style.cursor = 'col-resize'
-      document.body.style.userSelect = 'none'
-    },
-    onMove: ({ dx }) => {
-      setListWidth(Math.min(MAX_LIST_WIDTH, Math.max(MIN_LIST_WIDTH, startWRef.current + dx)))
-    },
-    onEnd: ({ dx }) => {
-      listDraggingRef.current = false
-      const finalW = Math.min(MAX_LIST_WIDTH, Math.max(MIN_LIST_WIDTH, startWRef.current + dx))
-      localStorage.setItem(LIST_WIDTH_KEY, String(finalW))
-      document.body.style.cursor = ''
-      document.body.style.userSelect = ''
-    },
-  })
-  // Unmount guard: onEnd can't fire if the component unmounts mid-drag
-  // (setPointerCapture dies with the element), so restore the global body styles
-  // here to avoid leaving the resize cursor / text-selection lock stuck.
-  useEffect(() => () => {
-    if (listDraggingRef.current) {
-      listDraggingRef.current = false
-      document.body.style.cursor = ''
-      document.body.style.userSelect = ''
-    }
-  }, [])
+  const rail = useColumnResize(
+    RAIL_WIDTH_KEY, loadRailWidth, MIN_RAIL_WIDTH, MAX_RAIL_WIDTH, RAIL_COLLAPSE, loadRailCollapsed,
+  )
+  const list = useColumnResize(LIST_WIDTH_KEY, loadListWidth, MIN_LIST_WIDTH, MAX_LIST_WIDTH)
 
   const DashboardView = dashboardComponent(dashboardTab)
 
   return (
     <div className="flex h-full bg-bg text-text">
-      <LeftRail />
+      <LeftRail width={rail.width} collapsed={rail.collapsed} onExpand={rail.expand} />
+
+      {/* Drag handle — resize the left rail. Present in every main view, since
+          the rail itself is. Dragging well past the minimum collapses it. */}
+      <ResizeHandle handleProps={rail.handleProps} label="Resize sidebar" />
 
       {mainView === 'issues' ? (
         <>
-          <section style={{ width: listWidth }} className="flex-shrink-0 min-h-0">
-            <IssueList />
+          <section style={{ width: list.width }} className="flex-shrink-0 min-h-0">
+            <IssueList resizing={list.dragging} />
           </section>
 
           {/* Drag handle — resize the issue-list column. */}
-          <div
-            {...listResize}
-            role="separator"
-            aria-orientation="vertical"
-            aria-label="Resize list"
-            title="Drag to resize"
-            className="w-1.5 flex-shrink-0 cursor-col-resize hover:bg-accent/30 transition-colors"
-            style={{ touchAction: 'none' }}
-          />
+          <ResizeHandle handleProps={list.handleProps} label="Resize list" />
 
           <main className="flex-1 min-w-0 min-h-0">
             {activeIssue
@@ -103,20 +75,12 @@ export default function Workspace() {
         </main>
       ) : mainView === 'pulls' ? (
         <>
-          <section style={{ width: listWidth }} className="flex-shrink-0 min-h-0">
-            <PrList />
+          <section style={{ width: list.width }} className="flex-shrink-0 min-h-0">
+            <PrList resizing={list.dragging} />
           </section>
 
           {/* Drag handle — resize the PR-list column. */}
-          <div
-            {...listResize}
-            role="separator"
-            aria-orientation="vertical"
-            aria-label="Resize list"
-            title="Drag to resize"
-            className="w-1.5 flex-shrink-0 cursor-col-resize hover:bg-accent/30 transition-colors"
-            style={{ touchAction: 'none' }}
-          />
+          <ResizeHandle handleProps={list.handleProps} label="Resize list" />
 
           <main className="flex-1 min-w-0 min-h-0">
             {activePull

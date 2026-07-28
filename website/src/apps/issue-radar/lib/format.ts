@@ -10,6 +10,17 @@ export const DEFAULT_LIST_WIDTH = 320
 export const MIN_LIST_WIDTH = 240
 export const MAX_LIST_WIDTH = 600
 
+export const RAIL_WIDTH_KEY = 'kc:issue-radar:rail-width'
+export const RAIL_COLLAPSED_KEY = 'kc:issue-radar:rail-collapsed'
+/** Matches the rail's original fixed `w-72`, so an existing user sees no jump. */
+export const DEFAULT_RAIL_WIDTH = 288
+export const MIN_RAIL_WIDTH = 220
+export const MAX_RAIL_WIDTH = 460
+/** Width of the collapsed rail: a vertical rounded-rect strip showing only the
+ * repo logo and the full owner/repo turned on its side. Dragging the rail well
+ * past its minimum snaps to this instead of stopping at a stubborn wall. */
+export const COLLAPSED_RAIL_WIDTH = 48
+
 export const APP_VERSION = '0.1.0'
 
 /** Coerce an API/cache value to an array. A non-array — an unexpected response
@@ -109,10 +120,27 @@ export function relativeDate(iso: string): string {
   return `${y} year${y > 1 ? 's' : ''} ago`
 }
 
+/** Read a persisted column width, falling back to `fallback` when the stored
+ * value is missing, unparseable, or outside the allowed range (a stale value
+ * from an older min/max, or a hand-edited key). */
+function loadWidth(key: string, min: number, max: number, fallback: number): number {
+  const raw = Number(localStorage.getItem(key))
+  if (raw >= min && raw <= max) return raw
+  return fallback
+}
+
 export function loadListWidth(): number {
-  const raw = Number(localStorage.getItem(LIST_WIDTH_KEY))
-  if (raw >= MIN_LIST_WIDTH && raw <= MAX_LIST_WIDTH) return raw
-  return DEFAULT_LIST_WIDTH
+  return loadWidth(LIST_WIDTH_KEY, MIN_LIST_WIDTH, MAX_LIST_WIDTH, DEFAULT_LIST_WIDTH)
+}
+
+export function loadRailWidth(): number {
+  return loadWidth(RAIL_WIDTH_KEY, MIN_RAIL_WIDTH, MAX_RAIL_WIDTH, DEFAULT_RAIL_WIDTH)
+}
+
+/** Collapsed state is stored apart from the width so collapsing and re-expanding
+ * the rail returns it to the width the user had chosen, not the default. */
+export function loadRailCollapsed(): boolean {
+  return localStorage.getItem(RAIL_COLLAPSED_KEY) === '1'
 }
 
 export function loadActiveRepo(): ActiveRepo | null {

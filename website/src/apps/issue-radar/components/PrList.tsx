@@ -112,8 +112,10 @@ function ChecksDot({ state }: { state: PullRequest['checks_state'] }) {
 /** Middle column for the pull-request view: a search box, the filtered + sorted
  * PR list (cards animate as the search narrows them), and a footer carrying the
  * count, the time since the last refresh, and the refresh button. The PR
- * analogue of IssueList. */
-export default function PrList() {
+ * analogue of IssueList. `resizing` (true while the width handle is dragged)
+ * switches off the card layout animation, which would otherwise scale-distort
+ * the card text on every pointer move — see IssueList. */
+export default function PrList({ resizing = false }: { resizing?: boolean }) {
   const {
     filteredPulls, sortedPulls, pullsLoading, pullsError,
     prStateFilter, colorByName,
@@ -230,7 +232,10 @@ export default function PrList() {
               {sortedPulls.map((pr) => (
                 <motion.button
                   key={pr.number}
-                  layout
+                  // 'position' (not the default size+position): a size-animating
+                  // layout pass distorts the card's text with a scale transform
+                  // whenever the column rewraps. Off entirely mid-resize.
+                  layout={resizing ? false : 'position'}
                   initial={{ opacity: 0, y: 6 }}
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, scale: 0.97 }}
