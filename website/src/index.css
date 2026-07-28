@@ -1025,21 +1025,22 @@ button:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
 
 /* ── Per-char streaming reveal ──
    `.ft-word` spans are injected by rehypeStreamingReveal around each character
-   during streaming. Each span animates once on mount; already-revealed chars
-   keep their (stable) DOM node so they don't re-fire. The parent
-   `.ft-anim-smooth` class (set on MarkdownRenderer's root) selects the
-   entrance animation. Reverts to plain text when streaming ends. */
+   of the streaming EDGE, each carrying `--ft-o` = an opacity derived from that
+   char's distance to the tip (revealOpacity). The reveal is therefore driven
+   by a POSITIONAL opacity, not a mount-triggered keyframe: react-markdown
+   remounts edge spans whenever a markdown token completes, and a mount
+   animation re-fired on every such remount → the visible "flashing" bug. A
+   remounted span now re-appears at the identical `--ft-o`, so it cannot
+   re-fade; only the tip advancing changes a char's opacity. The short
+   transition smooths that per-frame climb for spans that persist across frames
+   (a fresh mount paints its value directly, with no transition → no flash).
+   `.ft-anim-smooth` (MarkdownRenderer's root) scopes this to smooth mode; it
+   reverts to plain text when streaming ends. */
 @keyframes ft-fade{from{opacity:0}to{opacity:1}}
-/* Char reveal uses a SHORTER, SOFTER fade than the shared ft-fade block
-   entrance: streaming re-parse can briefly remount an edge char (a completing
-   markdown token), and a 0->1 / 0.6s pop makes that read as a flash. Fading
-   from 0.55 over 0.3s keeps new text legible on arrival while making any
-   residual edge re-fade a subtle blip rather than a full appear. */
-@keyframes ft-char-fade{from{opacity:.55}to{opacity:1}}
-.ft-word{white-space:pre-wrap}
-.ft-anim-smooth .ft-word{animation:ft-char-fade .3s ease-out both}
+.ft-word{white-space:pre-wrap;opacity:1}
+.ft-anim-smooth .ft-word{opacity:var(--ft-o,1);transition:opacity .25s linear}
 @media (prefers-reduced-motion:reduce){
-  .ft-anim-smooth .ft-word{animation:none}
+  .ft-anim-smooth .ft-word{opacity:1;transition:none}
 }
 
 /* ── Streaming block: height grow (code/diff) + per-line rise (diff) ──

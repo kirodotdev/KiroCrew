@@ -695,41 +695,55 @@ function rehypeStreamingGlow(options?: { tailChars?: number }) {
 /** Split a text run into individual characters for per-char animation. */
 const REVEAL_CHAR_RE = /[\s\S]/g
 
-/** How many trailing characters of the streaming tail get wrapped in per-char
- *  `.ft-word` fade spans. Only this growing EDGE animates; text that has
- *  settled behind it is left as plain text nodes.
- *
- *  Why bounded (streaming-flash fix): react-markdown re-parses the whole tail
- *  block every streamed frame. When a newly-revealed char COMPLETES a markdown
- *  token (inline `code`, **bold**, a [link], …) the subtree restructures, so
- *  React unmounts/remounts the `.ft-word` spans for text that was already on
- *  screen — re-firing the mount `ft-fade` and making already-visible words
- *  flash. Confirmed by src/test/streamingFlashRepro.test.tsx (append remounts
- *  0 spans; a completing token remounts already-visible spans). Wrapping only
- *  the trailing edge means settled text carries no animated span, so a re-parse
- *  can no longer re-fade it — the flash is confined to (and masked by) the
- *  actively-arriving edge. The budget is generous enough to cover the smooth
- *  buffer's per-frame reveal wave so genuinely-new text still fades in fully. */
-const REVEAL_TAIL_CHARS = 240
+/** How many trailing characters of the streaming tail carry the reveal fade.
+ *  Only this growing EDGE is sub-opaque; text that has settled behind it is
+ *  left as plain, fully-opaque text nodes. Sized to comfortably cover the
+ *  smooth buffer's per-frame reveal wave (MAX_CPS burst) so genuinely-new text
+ *  still materializes over several frames. */
+const REVEAL_FADE_CHARS = 32
+/** Opacity of the newest (tip) character; older chars ramp linearly to 1 across
+ *  REVEAL_FADE_CHARS. Kept well above 0 so a mid-stream PAUSE never leaves the
+ *  trailing words hard to read — the reveal is a gentle materialization, not a
+ *  fade-from-invisible. */
+const REVEAL_MIN_OPACITY = 0.6
+
+/** Opacity for a character `d` positions back from the streaming tip (d=0 is
+ *  the newest char). Deliberately a pure function of POSITION, not of mount
+ *  time — this is the streaming-flash fix. react-markdown re-parses the whole
+ *  tail every frame, and when a newly-revealed char COMPLETES a markdown token
+ *  (inline `code`, **bold**, a [link], a heading/list marker, …) the subtree
+ *  restructures, so React unmounts/remounts the `.ft-word` spans for text that
+ *  was ALREADY on screen. The former approach fired a mount CSS keyframe
+ *  (`ft-char-fade`), which re-ran on every such remount → the visible flash,
+ *  right at the active edge where the eye is. With position-derived opacity a
+ *  remounted span re-appears at the IDENTICAL opacity, so it cannot re-fade;
+ *  only the tip advancing changes a char's opacity, giving a smooth
+ *  materialization. Confirmed by src/test/streamingFlashRepro.test.tsx. */
+function revealOpacity(d: number): number {
+  if (d >= REVEAL_FADE_CHARS - 1) return 1
+  const o = REVEAL_MIN_OPACITY + (1 - REVEAL_MIN_OPACITY) * (d / (REVEAL_FADE_CHARS - 1))
+  return Math.round(o * 100) / 100
+}
 
 /**
  * Rehype plugin: wrap the streaming tail's TRAILING EDGE in `<span
- * class="ft-word">` so each newly-revealed character plays a one-shot CSS
- * entrance (fade). Only the last REVEAL_TAIL_CHARS characters (across the
- * trailing text nodes, cut on a word boundary) are wrapped; text that has
- * settled behind the edge stays as plain text nodes.
+ * class="ft-word" style="--ft-o:…">` so each character carries a
+ * position-derived opacity (see revealOpacity). Only the last
+ * REVEAL_FADE_CHARS characters are wrapped; text that has settled behind the
+ * edge stays as plain, fully-opaque text nodes.
  *
  * Text inside `code`/`pre` (rendered by the code components) and
  * `.streaming-glow` is skipped. Atomic block components (fenced code, widgets,
- * mermaid, diffs) are separate non-text blocks and are not char-faded here.
+ * mermaid, diffs) are separate non-text blocks and are not faded here.
  *
- * Safe against react-markdown re-parsing every frame on TWO levels: (a) within
- * the edge, React reconciles the per-char spans by position so append-only
- * growth only mounts new trailing chars; (b) bounding to the edge means a
- * markdown-token completion behind it restructures only PLAIN text nodes (no
- * `.ft-word`), so the mount `ft-fade` cannot re-fire on already-visible text —
- * the streaming-flash root cause. On stream end the plugin drops out and the
- * tail reverts to plain text (clean for selection/copy).
+ * The reveal is driven by CSS opacity that is a pure function of each char's
+ * distance to the tip — NOT a mount-triggered animation — so react-markdown's
+ * per-frame re-parse (which remounts edge spans whenever a markdown token
+ * completes) can never re-fire the fade on already-visible text. That
+ * remount-immunity is the streaming-flash fix. This plugin runs AFTER
+ * rehypeSanitize in the pipeline, so the inline `--ft-o` style it adds is not
+ * stripped by the attribute allowlist. On stream end the plugin drops out and
+ * the tail reverts to plain text (clean for selection/copy).
  */
 function rehypeStreamingReveal() {
   return (tree: HastRoot) => {
@@ -754,35 +768,34 @@ function rehypeStreamingReveal() {
     }
     for (let i = 0; i < tree.children.length; i++) walk(tree.children[i], tree, i, false)
     if (candidates.length === 0) return
-    // Wrap only the trailing REVEAL_TAIL_CHARS characters, walking candidates
+    // Wrap only the trailing REVEAL_FADE_CHARS characters, walking candidates
     // from the last (deepest in document order) backward and spending a shared
-    // budget. Everything before the edge is left as-is (plain text) so a
-    // re-parse behind the edge cannot re-fade already-visible text.
-    let budget = REVEAL_TAIL_CHARS
+    // budget. Everything before the edge is left as-is (plain text). `fromEnd`
+    // tracks how many wrapped chars lie AFTER the current candidate so each
+    // span gets an opacity derived from its distance to the streaming tip.
+    let budget = REVEAL_FADE_CHARS
+    let fromEnd = 0
     for (let c = candidates.length - 1; c >= 0 && budget > 0; c--) {
       const { parent, index, value } = candidates[c]
-      // For the boundary node, keep the leading (settled) portion as a plain
-      // text node and only wrap its trailing chars. Cut BACKWARD to the prior
-      // space (wrap a whole word rather than split one) — this consumes >=
-      // budget, so the budget is spent here and does not leak onto earlier
-      // (settled) candidates, keeping settled tokens plain.
-      let cut = 0
-      if (value.length > budget) {
-        const start = value.length - budget
-        const sp = value.lastIndexOf(' ', start)
-        cut = sp >= 0 ? sp + 1 : start
-      }
+      // Keep the leading (settled) portion of the boundary node as a plain text
+      // node; only wrap its trailing chars. A char-exact cut is fine because
+      // opacity is continuous — the boundary char lands at ~1.0, matching the
+      // adjacent plain text, so there is no visible seam.
+      const cut = value.length > budget ? value.length - budget : 0
       budget -= (value.length - cut)
       const head = value.slice(0, cut)
       const tail = value.slice(cut)
       const tokens = tail.match(REVEAL_CHAR_RE)
       if (!tokens || tokens.length === 0) continue
-      const spans: Array<HastElement | HastText> = tokens.map(tok => ({
+      // tokens are in document order; the last token of the last candidate is
+      // the tip. distance-from-tip for tokens[i] = fromEnd + (last - i).
+      const spans: Array<HastElement | HastText> = tokens.map((tok, i) => ({
         type: 'element',
         tagName: 'span',
-        properties: { className: ['ft-word'] },
+        properties: { className: ['ft-word'], style: `--ft-o:${revealOpacity(fromEnd + (tokens.length - 1 - i))}` },
         children: [{ type: 'text', value: tok }],
       }))
+      fromEnd += tokens.length
       // Splice highest index first (candidates ascend in document order, so
       // walking c downward gives descending indices within a shared parent),
       // keeping earlier candidates' indices valid.
