@@ -75,7 +75,7 @@ green). Flags:
 | `--keep` / `--no-stop` | leave the pod running after tests (debug) |
 | `--api-only` | skip the Playwright phase |
 | `--fe-only` | skip the API-test phase |
-| `--video` | record the session at 1080p → `.webm` + `.mp4` |
+| `--video` | record the session at 1080p → `.webm` + `.mp4` (finalization is time-capped) |
 
 ## What each phase does
 
@@ -97,8 +97,25 @@ green). Flags:
      gracefully** (no failure, just a warning).
    - `--video` requires `ffmpeg` for mp4 transcoding; if absent, the `.webm` is
      kept but no `.mp4` is produced.
+   - **Bounded, always.** The whole phase runs under `timeout`
+     (`POD_E2E_PW_TIMEOUT`, default 600s) and each browser-teardown step under
+     its own cap (`POD_E2E_TEARDOWN_TIMEOUT`, default 30s). Video finalization
+     (`context.close()`) has been observed to block forever *after* a spec
+     passed; on expiry the driver keeps every artifact, kills the browser tree,
+     and exits, and the summary reports `playwright — TIMED OUT` as a distinct
+     outcome. A recording that grew past 200MB is reported and left
+     un-transcoded — for a short spec that size is itself a defect signal.
+     The per-step cap uses `SIGALRM`, so on a platform without it the teardown
+     degrades to unbounded and says so in the log (the harness is POSIX-only
+     anyway); the phase-level `timeout` still applies.
 6. **collect** — all logs + screenshots land in
-   `~/.kirocrew-pods/.e2e-artifacts/<wt>/`.
+   `~/.kirocrew-pods/.e2e-artifacts/<wt>/`. Per-phase results are appended to
+   `verdict.jsonl` **as they are decided** (and `playwright.log` is unbuffered),
+   so a stalled or killed run still leaves a readable verdict. The file is
+   truncated at the start of **every** run — including runs that skip the FE
+   phase — so it can never show a previous run's rows. The rest of the artifact
+   dir DOES persist across runs, so check timestamps before trusting an old
+   screenshot.
 7. **stop** — `kirocrew pod down <wt>` (zero residue). Skipped if `--keep` or if
    the pod was already up.
 
@@ -127,8 +144,11 @@ you would be willing to build and test locally.
 A spec is plain Python exec'd with these names in scope (no imports needed):
 `page` (already on the authed app), `context`, `base_url`, `token`,
 `artifact_dir`, `expect` (Playwright's **native web-first assertion** —
-`expect(locator).to_be_visible()`, auto-retries), and `expect_true(cond, msg)`
-(boolean fallback, raises `AssertionError`). Assert UI, take screenshots into
+`expect(locator).to_be_visible()`, auto-retries), `expect_true(cond, msg)`
+(boolean fallback, raises `AssertionError`), and `record(name, ok, detail="")`
+(append a per-assertion row to `verdict.jsonl` immediately, so a later stall
+still leaves your decided results on disk — an `ok=False` row **fails the run**,
+it is not a silent note). Assert UI, take screenshots into
 `artifact_dir`. Run with `--video` to also record a `.webm` (+ a shareable
 `.mp4`) at 1080p, paced.
 
@@ -167,8 +187,9 @@ Rules:
 - Do NOT `cat` any .local_secret yourself (credential-read blocked). The script
   mints the token internally via the CLI — just run the one command above.
 - After it finishes, READ the artifacts in the printed ARTIFACT_DIR:
-  api-tests.log, playwright.log, fe-*.png screenshots (use the Read tool on the
-  .png to actually look at the UI), and boot-fail.log if present.
+  verdict.jsonl (per-phase results, written as decided — trust this even if the
+  run was killed), api-tests.log, playwright.log, fe-*.png screenshots (use the
+  Read tool on the .png to actually look at the UI), and boot-fail.log if present.
 
 Then return a QA VERDICT, not a raw dump:
   1. Overall: PASS / FAIL / BLOCKED (couldn't even boot the pod).
@@ -207,8 +228,10 @@ no dist → build-or-`--provision`.
 
 - Playwright venv: controlled by env `KIROCREW_PW_PY`.
   The FE phase skips gracefully if this interpreter is not executable.
-- `--video` needs `ffmpeg` on PATH (or pointed to by `POD_FFMPEG` env).
-  If absent, `.webm` is kept but no `.mp4` transcoding occurs.
+- `--video` needs `ffmpeg` on PATH (or pointed to by `POD_E2E_FFMPEG` env).
+  If absent, `.webm` is kept but no `.mp4` transcoding occurs. Recording
+  finalization is time-capped (see `POD_E2E_TEARDOWN_TIMEOUT`), so `--video`
+  can cost you the `.mp4` — never the verdict.
 
 ## Hands off the live plane
 

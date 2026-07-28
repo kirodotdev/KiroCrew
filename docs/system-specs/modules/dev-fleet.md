@@ -423,7 +423,14 @@ All user-visible output passes through `redact_credentials()` and
 
 The app bundles two skills declared in `app.json`:
 
-- `skills/pod-e2e` — end-to-end test harness for isolated pod instances
+- `skills/pod-e2e` — end-to-end test harness for isolated pod instances.
+  Every phase is time-bounded: the Playwright phase runs under `timeout`
+  (`POD_E2E_PW_TIMEOUT`, default 600s) and each browser-teardown step under
+  `POD_E2E_TEARDOWN_TIMEOUT` (default 30s), because video finalization
+  (`context.close()`) can block indefinitely. On expiry the runner keeps the
+  artifacts, kills the browser descendants, and reports a timeout as a distinct
+  outcome. Per-phase results are appended to `verdict.jsonl` as they are decided
+  so a killed run still yields a verdict.
 - `skills/feature-demo-recording` — headless Playwright video recording
 
 `kirocrew-worktree-dev` is deliberately NOT bundled: the canonical copy is

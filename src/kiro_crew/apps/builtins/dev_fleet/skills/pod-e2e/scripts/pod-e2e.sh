@@ -12,6 +12,10 @@
 #
 # Exit code = number of failed phases (0 = all green). Structured summary + an
 # artifact dir path are printed at the end so a subagent can parse them.
+#
+# Env knobs:
+#   POD_E2E_PW_TIMEOUT        hard cap (s) on the whole Playwright phase (default 600)
+#   POD_E2E_TEARDOWN_TIMEOUT  hard cap (s) per browser-teardown step (default 30)
 set -uo pipefail
 
 # ---------------------------------------------------------------- args ----
@@ -111,9 +115,17 @@ case "$(readlink -f -- "$ARTIFACT_DIR" 2>/dev/null || echo "$ARTIFACT_DIR")" in
 esac
 mkdir -p "$ARTIFACT_DIR"
 
+# Truncate the verdict on EVERY invocation, not just when the driver is
+# launched. The artifact dir is keyed per worktree and persists, so a run
+# that skips the FE phase (--api-only, unhealthy pod, no KIROCREW_PW_PY) or
+# a driver that dies before it can reset the file itself would otherwise
+# leave a PREVIOUS run's rows to be read as this run's verdict.
+: > "$ARTIFACT_DIR/verdict.jsonl"
+
 # ---------------------------------------------------------------- state ---
 ALREADY_UP=0   # if pod was already running, don't stop it
 FAILURES=0
+WARNINGS=0
 declare -a RESULTS=()
 
 # Initialize MANIFEST early (before both API and FE phases reference it).
@@ -134,6 +146,9 @@ trap '_pod_down_best_effort' EXIT
 log() { printf '\033[36m[pod-e2e]\033[0m %s\n' "$*"; }
 pass() { RESULTS+=("  ✅ $1"); }
 fail() { RESULTS+=("  ❌ $1"); FAILURES=$((FAILURES + 1)); }
+# A warning is neither a pass nor a fail — it is counted separately so it
+# never inflates the passed count in the summary.
+warn() { RESULTS+=("  ⚠️  $1"); WARNINGS=$((WARNINGS + 1)); }
 
 # ---------------------------------------------------------------- up ------
 log "starting pod '$NAME' ..."
@@ -234,15 +249,16 @@ fi
 if [ "$RUN_FE" -eq 1 ] && [ "$HEALTHY" -eq 1 ]; then
   if [ -z "$PW_PY" ] || [ ! -x "$PW_PY" ]; then
     log "SKIP: Playwright python not found (set KIROCREW_PW_PY)"
-    RESULTS+=("  ⚠️  playwright — skipped (no KIROCREW_PW_PY)")
+    warn "playwright — skipped (no KIROCREW_PW_PY)"
   elif [ ! -f "$PW_RUNNER" ]; then
     log "SKIP: pod-playwright.py not found at $PW_RUNNER"
-    RESULTS+=("  ⚠️  playwright — skipped (script missing)")
+    warn "playwright — skipped (script missing)"
   else
     log "running Playwright FE check ..."
     # Token goes via env, not argv — process arguments are world-readable
     # on Linux (/proc/<pid>/cmdline) while environment is uid-restricted.
     PW_ARGS=("$PW_RUNNER" --base-url "$BASE_URL" --artifact-dir "$ARTIFACT_DIR" --checkout "$CHECKOUT")
+    PW_ARGS+=(--teardown-timeout "${POD_E2E_TEARDOWN_TIMEOUT:-30}")
     [ "$VIDEO" -eq 1 ] && PW_ARGS+=(--video)
     # Declarative manifest parse: extract ONLY the PLAYWRIGHT_SPEC value.
     # The manifest is branch-controlled — never source/eval it on the host.
@@ -259,10 +275,31 @@ if [ "$RUN_FE" -eq 1 ] && [ "$HEALTHY" -eq 1 ]; then
       esac
       PW_ARGS+=(--spec "$PLAYWRIGHT_SPEC")
     fi
-    if KIROCREW_POD_TOKEN="$TOKEN" "$PW_PY" "${PW_ARGS[@]}" > "$ARTIFACT_DIR/playwright.log" 2>&1; then
-      pass "playwright — headless chromium loaded dashboard, SPA rendered"
+    # Every other phase here is bounded (health polling caps at 45s); this one
+    # used to be unbounded and could stall forever in browser teardown, burning
+    # a whole agent budget after the verdict was already decided. `python -u`
+    # keeps playwright.log flushed so a stall is still diagnosable.
+    PW_TIMEOUT="${POD_E2E_PW_TIMEOUT:-600}"
+    PW_CMD=("$PW_PY" -u "${PW_ARGS[@]}")
+    if command -v timeout >/dev/null 2>&1; then
+      PW_CMD=(timeout --kill-after=30s "${PW_TIMEOUT}s" "${PW_CMD[@]}")
     else
-      fail "playwright — exit $? (see playwright.log + screenshots)"
+      log "WARN: coreutils 'timeout' not found — Playwright phase runs unbounded"
+    fi
+    KIROCREW_POD_TOKEN="$TOKEN" "${PW_CMD[@]}" > "$ARTIFACT_DIR/playwright.log" 2>&1
+    PW_RC=$?
+    if [ "$PW_RC" -eq 0 ]; then
+      pass "playwright — headless chromium loaded dashboard, SPA rendered"
+    elif [ "$PW_RC" -eq 124 ] || [ "$PW_RC" -eq 137 ]; then
+      # 124 = timeout expired, 137 = SIGKILL from --kill-after.
+      fail "playwright — TIMED OUT after ${PW_TIMEOUT}s (partial artifacts kept: see playwright.log, verdict.jsonl, screenshots)"
+    else
+      fail "playwright — exit $PW_RC (see playwright.log + screenshots)"
+    fi
+    # A bounded-teardown bail keeps the verdict (so the phase can still pass),
+    # but the operator should know the recording may be truncated.
+    if grep -q '"phase": "teardown".*"status": "fail"' "$ARTIFACT_DIR/verdict.jsonl" 2>/dev/null; then
+      warn "playwright teardown — abandoned on timeout; recording may be truncated (assertions above still valid)"
     fi
   fi
 fi
@@ -280,7 +317,9 @@ trap - EXIT
 echo ""
 echo "=== POD-E2E SUMMARY ==="
 printf '%s\n' "${RESULTS[@]}"
-PASSED=$(( ${#RESULTS[@]} - FAILURES ))
-echo "result:       $PASSED passed, $FAILURES failed"
+PASSED=$(( ${#RESULTS[@]} - FAILURES - WARNINGS ))
+SUMMARY="result:       $PASSED passed, $FAILURES failed"
+[ "$WARNINGS" -gt 0 ] && SUMMARY="$SUMMARY, $WARNINGS warning(s)"
+echo "$SUMMARY"
 echo "ARTIFACT_DIR=$ARTIFACT_DIR"
 exit "$FAILURES"
