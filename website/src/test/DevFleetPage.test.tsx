@@ -3,10 +3,10 @@
  * verifies loading state, fleet table, and empty state.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { screen, waitFor, fireEvent } from '@testing-library/react'
+import { screen, waitFor, fireEvent, within } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 
-import DevFleetPage, { mergeLogWindow, LOG_GAP_MARKER, pruneVerdictLabel } from '../pages/DevFleetPage'
+import DevFleetPage, { mergeLogWindow, LOG_GAP_MARKER, pruneVerdictLabel, gatewayRecovered } from '../pages/DevFleetPage'
 
 function renderPage() {
   return renderWithProviders(<DevFleetPage />, { route: '/dev-fleet' })
@@ -785,4 +785,178 @@ describe('pruneVerdictLabel', () => {
     expect(pruneVerdictLabel(undefined)).toBe('')
     expect(pruneVerdictLabel('')).toBe('')
   })
+})
+
+
+// Restart identity handshake (issue #639): "recovered" means a DIFFERENT start
+// identity appeared, never "a 200 came back".
+describe('gatewayRecovered', () => {
+  it('is true only when a captured id and a different current id are both present', () => {
+    expect(gatewayRecovered('100', '200')).toBe(true)
+  })
+  it('is false when the current id equals the captured id (old process still winding down)', () => {
+    expect(gatewayRecovered('100', '100')).toBe(false)
+  })
+  it('is false when identity is unavailable on either side (degrade, never falsely recover)', () => {
+    expect(gatewayRecovered(null, '200')).toBe(false)
+    expect(gatewayRecovered('100', null)).toBe(false)
+    expect(gatewayRecovered('100', undefined)).toBe(false)
+    expect(gatewayRecovered(undefined, undefined)).toBe(false)
+  })
+})
+
+describe('DevFleetPage restart handshake', () => {
+  beforeEach(() => { vi.restoreAllMocks() })
+
+  it('enters the "Restarting — reconnecting" state and disables the action buttons on restart', async () => {
+    const FLEET_LIVE = {
+      gateway_service_active: true,
+      worktrees: [
+        { name: 'main', is_main: true, running: false, has_dist: true, behind: 0, is_live: true, path: '/wt/main' },
+      ],
+    }
+    vi.spyOn(globalThis, 'fetch').mockImplementation((url) => {
+      const u = typeof url === 'string' ? url : (url as Request).url
+      if (u.includes('/fleet')) return Promise.resolve(new Response(JSON.stringify(FLEET_LIVE), { status: 200 }))
+      if (u.includes('/disk')) return Promise.resolve(new Response(JSON.stringify({ total_mb: 1024 }), { status: 200 }))
+      if (u.includes('/restart-gateway')) return Promise.resolve(new Response(JSON.stringify({ ok: true, start_id: 'BEFORE' }), { status: 200 }))
+      // Health keeps returning the SAME identity, so the handshake never fires a
+      // reload during the test — we can observe the held "restarting" state.
+      if (u.includes('/apps/dev-fleet/api/health')) return Promise.resolve(new Response(JSON.stringify({ status: 'ok', start_id: 'BEFORE' }), { status: 200 }))
+      return Promise.resolve(new Response('{}', { status: 200 }))
+    })
+    renderWithProviders(<DevFleetPage />, { route: '/dev-fleet' })
+    await waitFor(() => expect(screen.getAllByText('main').length).toBeGreaterThan(0))
+
+    const syncBtn = () => screen.getByText('Pull+Build').closest('button') as HTMLButtonElement
+    expect(syncBtn()).not.toBeDisabled()
+
+    // Click the row Restart button, then confirm in the dialog.
+    fireEvent.click(screen.getByLabelText('Restart gateway'))
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Restart' }))
+
+    // The explicit overlay shows and the action buttons are disabled while held.
+    await waitFor(() => expect(screen.getByText(/Restarting/)).toBeInTheDocument())
+    expect(syncBtn()).toBeDisabled()
+    expect(screen.getByLabelText('Restart gateway')).toBeDisabled()
+  })
+
+  it('reloads once the polled start identity DIFFERS from the captured one', async () => {
+    const FLEET_LIVE = {
+      gateway_service_active: true,
+      worktrees: [
+        { name: 'main', is_main: true, running: false, has_dist: true, behind: 0, is_live: true, path: '/wt/main' },
+      ],
+    }
+    vi.spyOn(globalThis, 'fetch').mockImplementation((url) => {
+      const u = typeof url === 'string' ? url : (url as Request).url
+      if (u.includes('/fleet')) return Promise.resolve(new Response(JSON.stringify(FLEET_LIVE), { status: 200 }))
+      if (u.includes('/disk')) return Promise.resolve(new Response(JSON.stringify({ total_mb: 1024 }), { status: 200 }))
+      if (u.includes('/restart-gateway')) return Promise.resolve(new Response(JSON.stringify({ ok: true, start_id: 'BEFORE' }), { status: 200 }))
+      // The NEW process reports a DIFFERENT identity -> handshake must reload.
+      if (u.includes('/apps/dev-fleet/api/health')) return Promise.resolve(new Response(JSON.stringify({ status: 'ok', start_id: 'AFTER' }), { status: 200 }))
+      return Promise.resolve(new Response('{}', { status: 200 }))
+    })
+    // Stub the navigation side effect so the identity-change branch is observable.
+    const origReload = window.location.reload
+    const reloadSpy = vi.fn()
+    Object.defineProperty(window.location, 'reload', { configurable: true, value: reloadSpy })
+    try {
+      renderWithProviders(<DevFleetPage />, { route: '/dev-fleet' })
+      await waitFor(() => expect(screen.getAllByText('main').length).toBeGreaterThan(0))
+
+      fireEvent.click(screen.getByLabelText('Restart gateway'))
+      const dialog = await screen.findByRole('dialog')
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Restart' }))
+
+      // awaitGatewayBack sleeps ~3s before its first poll, then reloads on the
+      // differing identity; allow generous headroom over real timers.
+      await waitFor(() => expect(reloadSpy).toHaveBeenCalled(), { timeout: 8000 })
+    } finally {
+      Object.defineProperty(window.location, 'reload', { configurable: true, value: origReload })
+    }
+  }, 12000)
+
+  it('disables Restart and Pull+Build while a Make Live request is still in flight', async () => {
+    // Regression: `restarting` only goes true AFTER the /make-live POST resolves,
+    // but that POST is what writes the systemd drop-in and issues the
+    // daemon-reload. A Restart fired inside that window can tear the gateway down
+    // mid-write, leaving persisted and loaded unit state inconsistent. The global
+    // action predicates must therefore also honour an in-flight cutover.
+    const FLEET = {
+      gateway_service_active: true,
+      worktrees: [
+        { name: 'main', is_main: true, running: false, has_dist: true, behind: 0, is_live: false, path: '/wt/main' },
+      ],
+    }
+    // Hold /make-live open so the test observes the pre-`restarting` window.
+    let releaseMakeLive: (() => void) | null = null
+    const makeLiveHeld = new Promise<void>((res) => { releaseMakeLive = res })
+    vi.spyOn(globalThis, 'fetch').mockImplementation((url) => {
+      const u = typeof url === 'string' ? url : (url as Request).url
+      if (u.includes('/fleet')) return Promise.resolve(new Response(JSON.stringify(FLEET), { status: 200 }))
+      if (u.includes('/disk')) return Promise.resolve(new Response(JSON.stringify({ total_mb: 1024 }), { status: 200 }))
+      if (u.includes('/make-live')) {
+        return makeLiveHeld.then(
+          () => new Response(JSON.stringify({ ok: true, cutover: true, start_id: 'BEFORE' }), { status: 200 }),
+        )
+      }
+      return Promise.resolve(new Response('{}', { status: 200 }))
+    })
+    try {
+      renderWithProviders(<DevFleetPage />, { route: '/dev-fleet' })
+      await waitFor(() => expect(screen.getAllByText('main').length).toBeGreaterThan(0))
+
+      expect(screen.getByLabelText('Restart gateway')).not.toBeDisabled()
+
+      fireEvent.click(screen.getByText('Make live').closest('button') as HTMLButtonElement)
+      const dialog = await screen.findByRole('dialog')
+      fireEvent.click(within(dialog).getByRole('button', { name: /Make live/i }))
+
+      // POST is still pending: `restarting` is false, yet both global actions
+      // must already be locked out.
+      await waitFor(() => expect(screen.getByLabelText('Restart gateway')).toBeDisabled())
+      expect(screen.getByText('Pull+Build').closest('button')).toBeDisabled()
+    } finally {
+      releaseMakeLive?.()
+    }
+  }, 15000)
+
+  it('treats a reachable 404 on the health route as recovery instead of waiting out the timeout', async () => {
+    // Regression: making live a worktree that predates /api/health means the new
+    // gateway answers 404 forever, so its identity can never appear and the
+    // handshake would burn the whole 60s window. A reachable 404 during the
+    // handshake proves a gateway IS serving us — reload into it.
+    const FLEET_LIVE = {
+      gateway_service_active: true,
+      worktrees: [
+        { name: 'main', is_main: true, running: false, has_dist: true, behind: 0, is_live: true, path: '/wt/main' },
+      ],
+    }
+    vi.spyOn(globalThis, 'fetch').mockImplementation((url) => {
+      const u = typeof url === 'string' ? url : (url as Request).url
+      if (u.includes('/fleet')) return Promise.resolve(new Response(JSON.stringify(FLEET_LIVE), { status: 200 }))
+      if (u.includes('/disk')) return Promise.resolve(new Response(JSON.stringify({ total_mb: 1024 }), { status: 200 }))
+      if (u.includes('/restart-gateway')) return Promise.resolve(new Response(JSON.stringify({ ok: true, start_id: 'BEFORE' }), { status: 200 }))
+      // Post-cutover backend has no /api/health at all.
+      if (u.includes('/apps/dev-fleet/api/health')) return Promise.resolve(new Response('not found', { status: 404 }))
+      return Promise.resolve(new Response('{}', { status: 200 }))
+    })
+    const origReload = window.location.reload
+    const reloadSpy = vi.fn()
+    Object.defineProperty(window.location, 'reload', { configurable: true, value: reloadSpy })
+    try {
+      renderWithProviders(<DevFleetPage />, { route: '/dev-fleet' })
+      await waitFor(() => expect(screen.getAllByText('main').length).toBeGreaterThan(0))
+
+      fireEvent.click(screen.getByLabelText('Restart gateway'))
+      const dialog = await screen.findByRole('dialog')
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Restart' }))
+
+      await waitFor(() => expect(reloadSpy).toHaveBeenCalled(), { timeout: 8000 })
+    } finally {
+      Object.defineProperty(window.location, 'reload', { configurable: true, value: origReload })
+    }
+  }, 12000)
 })

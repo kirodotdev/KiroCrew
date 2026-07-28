@@ -68,6 +68,27 @@ function filterStepMarkers(lines: string[]): string[] {
   return lines.filter((l) => !STEP_MARKER_RE.test(l))
 }
 
+/* ─── Restart identity handshake (issue #639) ─── */
+// POST /restart-gateway and /make-live return the unit's start identity
+// captured BEFORE the bounce; GET /apps/dev-fleet/api/health reports the CURRENT
+// one. (It must be the /api/ path: the gateway only proxies /apps/dev-fleet/api/*
+// to the backend -- the bare /health is the gateway's own internal liveness
+// poll and never reaches the browser.) The UI holds "Restarting — reconnecting"
+// until it observes a DIFFERENT identity, so a 200 from the OLD process still
+// winding down never counts as recovered (the re-click trap issue #639 describes).
+const RESTART_TIMEOUT_MS = 60000
+
+// Recovered iff we captured an identity AND the gateway now reports a different
+// one. A null captured id (platform can't report identity) or a null/absent
+// current id is NOT recovery — the caller degrades or keeps waiting.
+export function gatewayRecovered(
+  capturedId: string | null | undefined,
+  currentId: string | null | undefined,
+): boolean {
+  if (capturedId == null || currentId == null) return false
+  return String(currentId) !== String(capturedId)
+}
+
 /* ─── Provision progress model (issue #231) ─── */
 // The last non-blank output line — the "current activity" shown inline.
 function lastLine(lines: string[] | undefined): string {
@@ -323,7 +344,7 @@ interface Worktree {
   path?: string
 }
 interface FleetData { worktrees: Worktree[]; error?: string; sync_run_id?: string; build_pending?: boolean; gateway_service_active?: boolean }
-interface SyncRun { rid: string; status: 'running' | 'done' | 'error'; phase: number; phaseAt?: number; lines: string[]; startedAt: number; exit?: number | null; last?: string }
+interface SyncRun { rid: string; status: 'running' | 'done' | 'error'; phase: number; phaseAt?: number; lines: string[]; startedAt: number; exit?: number | null; last?: string; stepLabel?: string }
 // Provision run state (issue #231): the FULL output is kept (not just the last
 // line) so the expandable log panel can show everything, and a failed run
 // persists (failed=true) until the user dismisses it rather than vanishing.
@@ -508,6 +529,15 @@ export default function DevFleetPage() {
   function toggleProvLog(name: string) { setProvLogOpen((o) => ({ ...o, [name]: !o[name] })) }
   const [confirmReq, setConfirmReq] = useState<{ title: string; desc: ReactNode; confirmLabel?: string; danger?: boolean; width?: number; resolve: (v: boolean) => void } | null>(null)
   const [restarting, setRestarting] = useState(false)
+  // A cutover is dangerous BEFORE `restarting` goes true: makeLive() awaits the
+  // /make-live POST, and that request writes the systemd drop-in and issues the
+  // daemon-reload. A Restart fired inside that window can tear the gateway down
+  // between the write and the reload, leaving persisted and loaded unit state
+  // inconsistent. `restarting` only covers the wait AFTER the POST returns, so
+  // every global action predicate must also honour an in-flight cutover on ANY
+  // row (the busy flag is per-worktree, the hazard is process-wide).
+  const makeLivePending = Object.entries(busy).some(([k, v]) => v && k.endsWith(':makelive'))
+  const gatewayMutating = restarting || makeLivePending
   const [pruneDialog, setPruneDialog] = useState<{ candidates: { name: string; code?: string }[]; kept: { name: string; code?: string }[]; scanned: number } | null>(null)
   const [pruneSelected, setPruneSelected] = useState<Set<string>>(new Set())
   const [pruneProgress, setPruneProgress] = useState<{ names: string[]; items: Record<string, { status: string; error?: string | null }>; done: number; total: number; running: boolean } | null>(null)
@@ -528,11 +558,11 @@ export default function DevFleetPage() {
     if (!fleet?.sync_run_id || syncAttachedRef.current) return
     syncAttachedRef.current = true
     const rid = fleet.sync_run_id
-    api.get<{ status?: string; output?: string[]; started?: number; step?: number }>('/run?id=' + rid)
+    api.get<{ status?: string; output?: string[]; started?: number; step?: number; step_label?: string }>('/run?id=' + rid)
       .then((run) => {
         if (run?.status === 'running') {
           const t0 = run.started ? run.started * 1000 : Date.now()
-          setSyncRun({ rid, status: 'running', phase: typeof run.step === 'number' ? run.step : syncPhaseFromLines(run.output || [], 0), lines: run.output || [], startedAt: t0 })
+          setSyncRun({ rid, status: 'running', phase: typeof run.step === 'number' ? run.step : syncPhaseFromLines(run.output || [], 0), lines: run.output || [], startedAt: t0, stepLabel: run.step_label })
           pollSyncRun(rid, t0)
         }
       })
@@ -555,7 +585,7 @@ export default function DevFleetPage() {
     for (let i = 0; i < 900; i++) {
       await sleep(2000)
       if (!pollAliveRef.current || cancelledRunsRef.current.has(rid)) return
-      let run: { status?: string; output?: string[]; exit_code?: number; started?: number; step?: number } | null = null
+      let run: { status?: string; output?: string[]; exit_code?: number; started?: number; step?: number; step_label?: string } | null = null
       let gone = false
       try { run = await api.get('/run?id=' + rid) } catch (e) {
         // 404 = the gateway restarted and dropped the run registry — the run
@@ -589,7 +619,7 @@ export default function DevFleetPage() {
         invalidateFleet()
         return
       }
-      setSyncRun({ rid, status: 'running', phase, phaseAt, lines: out, startedAt: t0, last })
+      setSyncRun({ rid, status: 'running', phase, phaseAt, lines: out, startedAt: t0, last, stepLabel: run.step_label })
     }
     setSyncRun((s) => (s && s.rid === rid ? { ...s, status: 'error', last: 'timed out after 30 min' } : s))
     setFlag('__syncmain', false)
@@ -828,27 +858,57 @@ export default function DevFleetPage() {
     }
   }
 
-  async function restartGateway() {
-    const ok = await askConfirm('Restart gateway?', 'Applies the last Pull+Build. The dashboard will briefly disconnect.', { confirmLabel: 'Restart' })
-    if (!ok) return
-    setRestarting(true)
-    try {
-      const r = await api.post<{ ok?: boolean; error?: string }>('/restart-gateway', {})
-      if (!r?.ok) { notify(r?.error || 'Restart failed', { type: 'error' }); setRestarting(false); return }
-      const ctrl = new AbortController()
-      const deadline = Date.now() + 60000
-      await sleep(3000)
-      while (Date.now() < deadline) {
-        try {
+  // Poll until the gateway reports a start identity DIFFERENT from the one
+  // captured before the restart, then hard-reload into the fresh process.
+  // `capturedId == null` means the platform can't report identity (non-Linux /
+  // no systemctl) — degrade to the legacy "reload on first response" so those
+  // hosts don't hang in the overlay forever. Returns only on the timeout path;
+  // the success path reloads the page, and the caller clears its own state.
+  async function awaitGatewayBack(capturedId: string | null): Promise<void> {
+    const deadline = Date.now() + RESTART_TIMEOUT_MS
+    await sleep(3000)  // let the detached systemd-run tear the old listener down
+    while (Date.now() < deadline) {
+      if (!pollAliveRef.current) return  // component unmounted — stop the loop
+      try {
+        if (capturedId == null) {
+          // Legacy degrade: no identity to compare, so any answer means "back".
           await fetch('/', { signal: AbortSignal.timeout(3000) })
           window.location.reload()
           return
-        } catch { /* still restarting */ }
-        await sleep(2000)
-      }
-      ctrl.abort()
-      setRestarting(false)
-      notify('Gateway still restarting after 60s \u2014 reload manually', { type: 'error' })
+        }
+        const res = await fetch('/apps/dev-fleet/api/health', { credentials: 'same-origin', signal: AbortSignal.timeout(3000) })
+        if (res.status === 404) {
+          // The route answered 404, which means a gateway IS serving us — just
+          // one whose dev-fleet backend predates /api/health. That is the normal
+          // outcome of a cutover to an older worktree, and its identity can never
+          // appear, so waiting for one would burn the full timeout. A reachable
+          // 404 during the handshake is therefore recovery: reload into it.
+          window.location.reload()
+          return
+        }
+        if (res.ok) {
+          const j = (await res.json().catch(() => null)) as { start_id?: string | null } | null
+          if (gatewayRecovered(capturedId, j?.start_id)) { window.location.reload(); return }
+          // A reachable health with the SAME id is the OLD process still winding
+          // down (or identity unavailable) — keep waiting, never reload here.
+        }
+      } catch { /* gateway is down mid-bounce — keep polling */ }
+      await sleep(2000)
+    }
+    setRestarting(false)
+    notify('Gateway did not come back within 60s \u2014 reload the page manually, or check `kirocrew logs`.', { type: 'error' })
+  }
+
+  async function restartGateway() {
+    const ok = await askConfirm('Restart gateway?', 'Applies the last Pull+Build. The dashboard will briefly disconnect and reconnect on its own.', { confirmLabel: 'Restart' })
+    if (!ok) return
+    setRestarting(true)
+    try {
+      const r = await api.post<{ ok?: boolean; error?: string; start_id?: string | null }>('/restart-gateway', {})
+      if (!r?.ok) { notify(r?.error || 'Restart failed', { type: 'error' }); setRestarting(false); return }
+      // Wait for the NEW process (a different start identity), not "a 200 came
+      // back" — see gatewayRecovered / issue #639.
+      await awaitGatewayBack(r.start_id ?? null)
     } catch (e: unknown) { notify((e as Error)?.message || String(e), { type: 'error' }); setRestarting(false) }
   }
 
@@ -863,19 +923,15 @@ export default function DevFleetPage() {
     if (!ok) return
     setFlag(w.name + ':makelive', true)
     try {
-      const r = await api.post<{ ok?: boolean; error?: string }>('/make-live', { path: w.path })
+      const r = await api.post<{ ok?: boolean; error?: string; start_id?: string | null }>('/make-live', { path: w.path })
       if (!r?.ok) { notify(r?.error || 'Make live failed', { type: 'error' }); setFlag(w.name + ':makelive', false); return }
-      // Gateway is restarting into the new worktree — reuse the restart overlay,
-      // poll until it answers again, then reload into the freshly-live code.
+      // Gateway is restarting into the new worktree — reuse the restart overlay
+      // and the SAME identity handshake (a cutover is a restart into different
+      // code, with the identical early-200 hazard). awaitGatewayBack reloads on
+      // a fresh identity; only its timeout path returns here.
       setRestarting(true)
-      await sleep(3000)
-      const deadline = Date.now() + 60000
-      while (Date.now() < deadline) {
-        try { await fetch('/', { signal: AbortSignal.timeout(3000) }); window.location.reload(); return } catch { /* still restarting */ }
-        await sleep(2000)
-      }
-      setRestarting(false); setFlag(w.name + ':makelive', false)
-      notify('Gateway still restarting after 60s \u2014 reload manually', { type: 'error' })
+      await awaitGatewayBack(r.start_id ?? null)
+      setFlag(w.name + ':makelive', false)
     } catch (e: unknown) { notify((e as Error)?.message || String(e), { type: 'error' }); setRestarting(false); setFlag(w.name + ':makelive', false) }
   }
 
@@ -939,13 +995,13 @@ export default function DevFleetPage() {
   function rowButtons(w: Worktree): ReactNode[] {
     if (w.is_main) {
       const out: ReactNode[] = [
-        <ConfirmBtn key="sync" title="Pull + Build main" desc="Pulls main and rebuilds (~6 min). Does NOT restart." confirmLabel="Start" onConfirm={() => syncMain()} btn={{ disabled: !!busy['__syncmain'] || syncRun?.status === 'running' }}>
+        <ConfirmBtn key="sync" title="Pull + Build main" desc="Pulls main and rebuilds (~6 min). Does NOT restart." confirmLabel="Start" onConfirm={() => syncMain()} btn={{ disabled: !!busy['__syncmain'] || syncRun?.status === 'running' || gatewayMutating }}>
           {iconLabel(<RefreshCw size={13} className="lucide-inline" />, busy['__syncmain'] || syncRun?.status === 'running' ? 'Building\u2026' : 'Pull+Build')}
         </ConfirmBtn>,
       ]
       if (fleet?.gateway_service_active) {
         out.push(
-          <Btn key="restart" onClick={() => restartGateway()} aria-label="Restart gateway">
+          <Btn key="restart" onClick={() => restartGateway()} disabled={gatewayMutating} aria-label="Restart gateway">
             {iconLabel(<RotateCw size={13} className="lucide-inline" />, 'Restart')}
           </Btn>
         )
@@ -954,7 +1010,7 @@ export default function DevFleetPage() {
         // Consistent with makeLive()'s guard: shown iff the row is NOT live.
         if (!w.is_live) {
           out.push(
-            <Btn key="makelive" onClick={() => makeLive(w)} disabled={!!busy[w.name + ':makelive']} title="Repoint the live gateway back at main (restarts the gateway)">
+            <Btn key="makelive" onClick={() => makeLive(w)} disabled={gatewayMutating} title="Repoint the live gateway back at main (restarts the gateway)">
               {iconLabel(<Rocket size={13} className="lucide-inline" />, 'Make live')}
             </Btn>
           )
@@ -982,7 +1038,7 @@ export default function DevFleetPage() {
       w.has_dist && !w.running ? { label: 'Spin up pod', icon: <Play size={13} className="lucide-inline" />, onClick: () => act(w.name, 'up') } : null,
       w.running ? { label: 'Restart pod', icon: <RefreshCw size={13} className="lucide-inline" />, onClick: () => act(w.name, 'restart') } : null,
       { label: 'Rebase onto main', icon: <RefreshCw size={13} className="lucide-inline" />, onClick: () => rebaseWorktree(w.name), disabled: !!busy[w.name + ':rebase'] },
-      !w.is_live ? { label: 'Make live', icon: <Rocket size={13} className="lucide-inline" />, onClick: () => makeLive(w), disabled: !!busy[w.name + ':makelive'], title: 'Repoint the live gateway at this worktree (restarts the gateway)' } : null,
+      !w.is_live ? { label: 'Make live', icon: <Rocket size={13} className="lucide-inline" />, onClick: () => makeLive(w), disabled: gatewayMutating, title: 'Repoint the live gateway at this worktree (restarts the gateway)' } : null,
       { label: 'QA + video', icon: <Video size={13} className="lucide-inline" />, onClick: () => launchQa(w.name) },
       w.running ? { label: 'Stop pod', icon: <Square size={13} className="lucide-inline" />, onClick: () => act(w.name, 'down'), danger: true } : null,
     ]} />)
@@ -1001,6 +1057,7 @@ export default function DevFleetPage() {
         <div style={{ gridColumn: '4 / -1', display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 } as CSSProperties}>
           <LoaderCircle size={12} className="lucide-inline" style={{ color: 'var(--accent)', flexShrink: 0 } as CSSProperties} />
           <span style={{ fontSize: 11, fontWeight: 600, flexShrink: 0 }}>Syncing</span>
+          {syncRun.stepLabel ? <span style={{ ...mono, flexShrink: 0 } as CSSProperties} title="current step">{syncRun.stepLabel}</span> : null}
           <span role="progressbar" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100} aria-label="Sync progress" style={{ flex: 1, height: 4, borderRadius: 2, background: 'var(--border)', overflow: 'hidden', minWidth: 60 } as CSSProperties}>
             <span style={{ display: 'block', height: '100%', width: pct + '%', background: 'var(--accent)', borderRadius: 2, transition: 'width 0.6s ease' } as CSSProperties} />
           </span>
@@ -1234,10 +1291,10 @@ export default function DevFleetPage() {
       {pruneReviewDialog}
       {pruneProgressModal}
       {restarting && (
-        <div style={{ position: 'fixed', inset: 0, zIndex: 9999, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: 'var(--bg)', color: 'var(--text)' }}>
+        <div role="alert" aria-busy="true" style={{ position: 'fixed', inset: 0, zIndex: 9999, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: 'var(--bg)', color: 'var(--text)' }}>
           <LoaderCircle size={32} className="lucide-inline" style={{ animation: 'spin 1s linear infinite' }} />
-          <p style={{ marginTop: 16, fontSize: 16, fontWeight: 600 }}>Restarting gateway...</p>
-          <p style={{ fontSize: 12, color: 'var(--muted)' }}>The page will reload automatically when the gateway is back.</p>
+          <p style={{ marginTop: 16, fontSize: 16, fontWeight: 600 }}>{'Restarting \u2014 reconnecting\u2026'}</p>
+          <p style={{ fontSize: 12, color: 'var(--muted)' }}>Waiting for the new gateway process. The page reloads automatically once it is up.</p>
         </div>
       )}
       <div className="flex flex-1 min-h-0 overflow-hidden">

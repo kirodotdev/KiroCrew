@@ -34,6 +34,7 @@ verification. Route names below are relative to that prefix.
 
 | Route | Description |
 |-------|-------------|
+| `/apps/dev-fleet/api/health` | Liveness + gateway **start identity**: `{status, start_id}`. `start_id` is the live unit's `ExecMainStartTimestampMonotonic` (or `null` when unavailable); the dashboard polls it to detect the NEW process after a restart (see Action narration). Served on the proxied `/api/` namespace because the gateway only forwards `/apps/dev-fleet/api/*` to the backend. (The bare `/health` carries the same body but is HMAC-exempt and reached only by the gateway's own internal liveness poll.) |
 | `/apps/dev-fleet/api/fleet` | Lightweight worktree + pod list (polled every 12s). `?fresh=1` forces cache bypass. |
 | `/apps/dev-fleet/api/worktree?name=` | Lazy per-branch detail: PR, commits, disk usage |
 | `/apps/dev-fleet/api/pod/logs?name=&n=` | Pod journal tail (recent N lines, default 120) |
@@ -46,7 +47,7 @@ verification. Route names below are relative to that prefix.
 
 | Route | Body | Description |
 |-------|------|-------------|
-| `/apps/dev-fleet/api/sync` | — | Pull main + rebuild (single-flight) |
+| `/apps/dev-fleet/api/sync` | — | Pull main + rebuild (single-flight; a concurrent call is refused **409**) |
 | `/apps/dev-fleet/api/worktree/remove` | `{name, force?}` | Remove a worktree (stops pod first) |
 | `/apps/dev-fleet/api/prune-run` | `{names[]}` | Batch-remove eligible worktrees |
 | `/apps/dev-fleet/api/pod/up` | `{name}` | Start isolated pod instance (re-verifies the unit is active) |
@@ -55,8 +56,8 @@ verification. Route names below are relative to that prefix.
 | `/apps/dev-fleet/api/pod/token` | `{name}` | Mint a dashboard token for the pod |
 | `/apps/dev-fleet/api/pod/provision` | `{name}` | Start async venv+dist build (returns `{run_id}`) |
 | `/apps/dev-fleet/api/rebase` | `{name}` | Rebase worktree onto origin/main |
-| `/apps/dev-fleet/api/restart-gateway` | — | Restart the live gateway in place (detached `systemd-run`) |
-| `/apps/dev-fleet/api/make-live` | `{path, dry_run?}` | Repoint the live gateway at another worktree (see Make Live) |
+| `/apps/dev-fleet/api/restart-gateway` | — | Restart the live gateway in place (detached `systemd-run`); returns the pre-restart `start_id` for the restart handshake |
+| `/apps/dev-fleet/api/make-live` | `{path, dry_run?}` | Repoint the live gateway at another worktree (see Make Live); a real cutover returns `start_id` for the restart handshake |
 
 ## Authorization
 
@@ -258,6 +259,85 @@ Server-backed reattach (exposing active/failed provision run ids in `/fleet` so
 the page can reattach on mount, mirroring `sync_run_id`) is tracked as follow-up
 work ([issue #321](https://github.com/kirodotdev/KiroCrew/issues/321); see also
 [issue #231](https://github.com/kirodotdev/KiroCrew/issues/231), PR #320).
+
+## Action narration (restart + sync feedback)
+
+Dev Fleet's two slowest actions — **Restart Gateway** and **Sync (Pull+Build)** —
+narrate their progress so users don't read them as hung and fire them again. A
+duplicate Restart Gateway causes a second real ~10s gateway outage
+([issue #639](https://github.com/kirodotdev/KiroCrew/issues/639)).
+
+### Restart identity handshake
+
+`POST /apps/dev-fleet/api/restart-gateway` returns `{"ok": true, "start_id": …}`
+the instant `systemd-run --collect systemctl --user restart <unit>` has
+**scheduled** the restart — the bounce happens after the response and takes ~10s
+because graceful shutdown times out. "The request succeeded" therefore says
+nothing about whether the gateway is back.
+
+To close that gap the backend captures the unit's **start identity** BEFORE
+scheduling the restart and hands it to the frontend:
+
+- **Identity = `ExecMainStartTimestampMonotonic`** — the CLOCK_MONOTONIC
+  microsecond stamp of the unit's ExecStart *main* PID (`_gateway_start_id`).
+  Chosen because it is (a) monotonic, so it can only increase and never repeats
+  or goes backwards across a restart even if the wall clock is stepped by NTP,
+  and (b) tied to the actual main-process spawn, so it changes the instant the
+  NEW process starts (a unit can enter `active` before its replacement main PID
+  exists, so `ActiveEnterTimestampMonotonic` is a weaker signal).
+- The current identity is reported by extending the existing **`/health`**
+  surface (`{status, start_id}`). Because the gateway proxies only
+  `/apps/dev-fleet/api/*` to the backend, the same handler is registered at
+  **`/api/health`** and the dashboard polls **`/apps/dev-fleet/api/health`**
+  (the bare `/health` stays HMAC-exempt for the gateway's internal liveness
+  poll). The gateway is treated as recovered ONLY when the reported `start_id`
+  DIFFERS from the one captured before the restart. A 200 from the old process
+  still winding down returns the SAME identity and is correctly NOT counted as
+  recovered.
+- **None-safe degrade.** On a platform that cannot report identity (non-Linux,
+  no `systemctl`, or a `0`/absent stamp) `start_id` is `null`; the frontend then
+  degrades to the legacy "reload on the first reachable response" instead of
+  hanging forever in the restarting overlay.
+- **A reachable 404 counts as recovery.** Cutting over to a worktree whose
+  dev-fleet backend predates `/api/health` leaves that route answering 404
+  permanently, so its `start_id` can never appear and waiting for one would burn
+  the whole timeout. A 404 during the handshake still proves a gateway IS serving
+  us, so it is treated as recovered and the page reloads into it. (A backend that
+  is not up at all fails differently — the proxy answers 502, or the fetch
+  rejects — so this rule does not fire while the new process is still starting.)
+- **Make Live reuses the same handshake** — a cutover is a restart into
+  different code with the identical early-200 hazard, so a real
+  `POST …/make-live` cutover also returns the pre-restart `start_id` and the UI
+  recovers on an identity change.
+
+### Restarting UI state
+
+While the handshake runs, the frontend holds an explicit **"Restarting —
+reconnecting"** full-screen state and disables Restart / Pull+Build / Make Live
+so the slow window cannot be re-fired. The poll is bounded (`RESTART_TIMEOUT_MS`,
+60s); on timeout it surfaces an actionable error ("reload manually / check
+`kirocrew logs`") instead of spinning forever.
+
+**The lockout starts before the overlay does.** The restarting flag only goes
+true once `POST …/make-live` has *returned*, but that request is itself what
+writes the systemd drop-in and issues the daemon-reload — a Restart fired inside
+that window can tear the gateway down between the write and the reload, leaving
+persisted and loaded unit state inconsistent. Every global action predicate
+therefore also honours an in-flight cutover on ANY worktree row (the busy flag is
+per-worktree; the hazard is process-wide).
+
+### Sync single-flight + step narration
+
+`POST /apps/dev-fleet/api/sync` is single-flight: a second concurrent request is
+refused with **HTTP 409** (`{"ok": false, "error": "sync already running",
+"run_id": …}`) rather than launching a second ~90s fetch → merge → pip install →
+npm ci → npm build. The run script emits a `::step::<idx>::<label>` marker per
+step; the run worker records BOTH the authoritative step index and its **label**
+onto the run entry (`step` / `step_label`), so `/run` can name the CURRENT step
+even after the marker scrolls out of the 60-line output tail window. The
+frontend shows that label beside the "Syncing" progress bar. This reuses the
+existing `_RUNS` / `::step::` / `/run` run-tracking mechanism — the same channel
+the provision log panel uses (#320) — rather than adding a second one.
 
 ## Make Live
 

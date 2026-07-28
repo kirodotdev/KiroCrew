@@ -3756,3 +3756,218 @@ def test_own_checkout_path_resolves_this_worktree():
     assert own is not None
     from pathlib import Path
     assert (Path(own) / "src" / "kiro_crew").is_dir()
+
+
+# =============================================================================
+# Task: restart identity handshake + sync step labels (issue #639)
+# =============================================================================
+
+
+def test_parse_step_marker_index_and_label():
+    from kiro_crew.apps.builtins.dev_fleet.server import _parse_step_marker
+
+    assert _parse_step_marker("::step::0::Pull") == (0, "Pull")
+    assert _parse_step_marker("::step::3::pip install") == (3, "pip install")
+
+
+def test_parse_step_marker_non_marker_and_partial():
+    from kiro_crew.apps.builtins.dev_fleet.server import _parse_step_marker
+
+    assert _parse_step_marker("regular build output") == (None, None)
+    assert _parse_step_marker("::step::") == (None, None)  # no index or label
+    assert _parse_step_marker("::step::2::") == (2, None)  # empty label
+    assert _parse_step_marker("::step::x::npm ci") == (None, "npm ci")  # bad idx
+
+
+@pytest.mark.asyncio
+async def test_run_endpoint_exposes_step_label():
+    """/run returns the server-tracked step + step_label so the UI can name the
+    CURRENT sync step ("npm ci") instead of a bare spinner. The label survives
+    the 60-line output tail window because it is stored on the run entry."""
+    rid = "steplabel-rid"
+    async with mod._RUNS_LOCK:
+        mod._RUNS[rid] = {
+            "status": "running", "exit_code": None, "label": "sync",
+            "output": ["::step::3::npm ci"], "started": time.time(),
+            "step": 3, "step_label": "npm ci",
+        }
+    try:
+        req = MagicMock()
+        req.query = {"id": rid}
+        resp = await mod.api_dev_fleet_run(req)
+        payload = json.loads(resp.text)
+        assert payload["step"] == 3
+        assert payload["step_label"] == "npm ci"
+    finally:
+        async with mod._RUNS_LOCK:
+            del mod._RUNS[rid]
+
+
+@pytest.mark.asyncio
+async def test_gateway_start_id_reads_monotonic():
+    """_gateway_start_id reads the unit's ExecMainStartTimestampMonotonic."""
+    async def fake_run_cmd(cmd, **kw):
+        assert "show" in cmd and "--value" in cmd
+        assert any("ExecMainStartTimestampMonotonic" in c for c in cmd)
+        return (0, "123456789\n", "")
+
+    with patch.object(mod, "_run_cmd", side_effect=fake_run_cmd), \
+         patch.object(mod, "sys", MagicMock(platform="linux")), \
+         patch.object(mod, "shutil",
+                      MagicMock(which=MagicMock(return_value="/usr/bin/systemctl"))):
+        assert await mod._gateway_start_id() == "123456789"
+
+
+@pytest.mark.asyncio
+async def test_gateway_start_id_none_on_non_linux():
+    """Non-Linux / no systemctl degrades to None (no hang in 'restarting')."""
+    with patch.object(mod, "sys", MagicMock(platform="darwin")), \
+         patch.object(mod, "shutil", MagicMock(which=MagicMock(return_value=None))):
+        assert await mod._gateway_start_id() is None
+
+
+@pytest.mark.asyncio
+async def test_gateway_start_id_none_on_zero_empty_or_error():
+    """A '0'/empty stamp or a failed probe all normalise to None."""
+    with patch.object(mod, "sys", MagicMock(platform="linux")), \
+         patch.object(mod, "shutil",
+                      MagicMock(which=MagicMock(return_value="/usr/bin/systemctl"))):
+        with patch.object(mod, "_run_cmd", new_callable=AsyncMock,
+                          return_value=(0, "0\n", "")):
+            assert await mod._gateway_start_id() is None
+        with patch.object(mod, "_run_cmd", new_callable=AsyncMock,
+                          return_value=(0, "\n", "")):
+            assert await mod._gateway_start_id() is None
+        with patch.object(mod, "_run_cmd", new_callable=AsyncMock,
+                          return_value=(1, "", "err")):
+            assert await mod._gateway_start_id() is None
+
+
+@pytest.mark.asyncio
+async def test_restart_gateway_returns_start_id_captured_before_restart():
+    """restart-gateway captures the unit's start identity BEFORE scheduling the
+    detached restart and returns it, so the frontend waits for a DIFFERENT one
+    rather than 'a 200 came back' (issue #639)."""
+    calls: list[list[str]] = []
+
+    async def mock_run_cmd(cmd, **kw):
+        calls.append(cmd)
+        if "is-active" in cmd:
+            return (0, "active\n", "")
+        if "show" in cmd:  # _gateway_start_id identity probe
+            return (0, "555000\n", "")
+        return (0, "", "")  # systemd-run
+
+    with patch.object(mod, "_run_cmd", side_effect=mock_run_cmd), \
+         patch.object(mod, "sys", MagicMock(platform="linux")), \
+         patch.object(mod, "shutil",
+                      MagicMock(which=MagicMock(return_value="/usr/bin/systemctl"))):
+        result = await mod._restart_gateway()
+
+    assert result["ok"] is True
+    assert result["start_id"] == "555000"
+    # The identity probe MUST run before the detached restart is scheduled.
+    show_idx = next(i for i, c in enumerate(calls) if "show" in c)
+    run_idx = next(i for i, c in enumerate(calls) if "systemd-run" in c)
+    assert show_idx < run_idx
+
+
+@pytest.mark.asyncio
+async def test_restart_gateway_start_id_none_safe_when_probe_fails():
+    """A failed identity probe still restarts, with start_id=None — the frontend
+    then degrades to reload-on-first-response instead of hanging."""
+    async def mock_run_cmd(cmd, **kw):
+        if "is-active" in cmd:
+            return (0, "active\n", "")
+        if "show" in cmd:
+            return (1, "", "boom")  # probe fails
+        return (0, "", "")  # systemd-run
+
+    with patch.object(mod, "_run_cmd", side_effect=mock_run_cmd), \
+         patch.object(mod, "sys", MagicMock(platform="linux")), \
+         patch.object(mod, "shutil",
+                      MagicMock(which=MagicMock(return_value="/usr/bin/systemctl"))):
+        result = await mod._restart_gateway()
+
+    assert result["ok"] is True
+    assert result["start_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_api_health_includes_start_id():
+    """/health carries the current start identity for the restart handshake."""
+    with patch.object(mod, "_gateway_start_id", new_callable=AsyncMock,
+                      return_value="98765"):
+        resp = await mod.api_health(MagicMock())
+    payload = json.loads(resp.text)
+    assert resp.status == 200
+    assert payload["status"] == "ok"
+    assert payload["start_id"] == "98765"
+
+
+@pytest.mark.asyncio
+async def test_api_health_start_id_none_safe():
+    """/health stays 200/ok with start_id=None when identity is unavailable."""
+    with patch.object(mod, "_gateway_start_id", new_callable=AsyncMock,
+                      return_value=None):
+        resp = await mod.api_health(MagicMock())
+    payload = json.loads(resp.text)
+    assert resp.status == 200
+    assert payload["status"] == "ok"
+    assert payload["start_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_make_live_returns_start_id(monkeypatch, tmp_path):
+    """A real cutover captures + returns the pre-restart start identity so the
+    dashboard reuses the same restart handshake (issue #639)."""
+    wt = _mk_make_live_wt(tmp_path, venv=True, dist=True)
+    dropin = tmp_path / "dropins" / "make-live.conf"
+    _stub_make_live(monkeypatch, wt)
+    monkeypatch.setattr(mod, "_dropin_path", lambda: dropin)
+    monkeypatch.setattr(mod, "sys", MagicMock(platform="linux"))
+    monkeypatch.setattr(
+        mod, "shutil", MagicMock(which=MagicMock(return_value="/usr/bin/systemctl"))
+    )
+    calls: list = []
+
+    async def fake_run_cmd(cmd, **kw):
+        calls.append(cmd)
+        if "show" in cmd and any("ExecMainStartTimestampMonotonic" in c for c in cmd):
+            return (0, "777111\n", "")
+        return (0, "", "")
+
+    monkeypatch.setattr(mod, "_run_cmd", fake_run_cmd)
+    res = await mod._make_live(str(wt), dry_run=False)
+    assert res["ok"] is True and res.get("cutover") is True
+    assert res["start_id"] == "777111"
+    # The identity probe must precede the detached restart.
+    show_idx = next(
+        i for i, c in enumerate(calls)
+        if "show" in c and any("ExecMainStart" in x for x in c)
+    )
+    run_idx = next(
+        i for i, c in enumerate(calls)
+        if c[:2] == ["systemd-run", "--user"] and "restart" in c
+    )
+    assert show_idx < run_idx
+
+
+def test_health_registered_on_proxied_api_path():
+    """The restart handshake is only reachable if the identity handler is
+    registered on the PROXIED /api namespace.
+
+    The browser reaches this backend solely through the gateway proxy, which
+    matches /apps/dev-fleet/api/{path} and forwards to /api/{path}; a bare
+    /apps/dev-fleet/health is NOT proxied. So /api/health (not just the
+    HMAC-exempt internal /health) is what makes the handshake work on the live
+    gateway (issue #639). Guard both registrations against a silent regression.
+    """
+    app = mod.create_app()
+    paths = {
+        r.resource.canonical
+        for r in app.router.routes()
+        if r.method == "GET" and r.resource is not None
+    }
+    assert "/health" in paths        # gateway-internal liveness poll (exempt)
+    assert "/api/health" in paths    # proxied path the dashboard actually polls

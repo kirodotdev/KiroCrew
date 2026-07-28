@@ -24,7 +24,8 @@ Routes (as seen by the backend after prefix stripping by gateway):
   POST /api/pod/provision {name}  -> start async build, returns {run_id}
   POST /api/rebase  {name}
   POST /api/make-live {path, dry_run?}  -> repoint the live gateway at a worktree
-  GET  /health                -> {"status": "ok"}
+  GET  /api/health            -> {"status": "ok", "start_id": ...}  (restart handshake; proxied)
+  GET  /health                -> same body, HMAC-exempt (gateway-internal liveness poll only)
 """
 
 from __future__ import annotations
@@ -681,6 +682,24 @@ _ACTIVE_RUNS: dict[str, tuple[asyncio.Task, Any]] = {}
 _RUNS_MAX_COMPLETED = 50
 
 
+def _parse_step_marker(text: str) -> tuple[int | None, str | None]:
+    """Parse a ``::step::<idx>::<label>`` progress marker into (index, label).
+
+    The sync/build script emits one marker per step (see _sync_start_locked).
+    The run worker records the parsed index AND label into the run entry so the
+    dashboard can name the CURRENT step ("npm ci") instead of showing a bare
+    percentage -- both survive the 60-line output tail window a chatty build
+    step would otherwise flush the marker out of. Either element is ``None``
+    when absent/malformed; a non-``::step::`` line yields ``(None, None)``.
+    """
+    if not text.startswith("::step::"):
+        return None, None
+    parts = text.split("::", 4)  # ['', 'step', '<idx>', '<label>', <rest>]
+    idx = int(parts[2]) if len(parts) >= 3 and parts[2].isdigit() else None
+    label = parts[3] if len(parts) >= 4 and parts[3] else None
+    return idx, label
+
+
 async def _start_run(
     label: str, cmd: list[str], *, cwd: str | None = None,
     env: dict | None = None, cleanup_paths: list[str] | None = None,
@@ -758,12 +777,14 @@ async def _start_run(
                     out = _RUNS[rid]["output"]
                     text = line.decode(errors="replace").rstrip("\n")
                     if text.startswith("::step::"):
-                        # Authoritative step index survives the output-window
-                        # cap (a chatty build step floods markers out of the
-                        # last-60-lines snapshot the API returns).
-                        parts = text.split("::", 4)
-                        if len(parts) >= 3 and parts[2].isdigit():
-                            _RUNS[rid]["step"] = int(parts[2])
+                        # Authoritative step index AND label survive the
+                        # output-window cap (a chatty build step floods markers
+                        # out of the last-60-lines snapshot the API returns).
+                        idx, label = _parse_step_marker(text)
+                        if idx is not None:
+                            _RUNS[rid]["step"] = idx
+                        if label is not None:
+                            _RUNS[rid]["step_label"] = label
                     out.append(text)
                     if len(out) > 500:
                         del out[: len(out) - 500]
@@ -2826,7 +2847,13 @@ async def hmac_proxy_middleware(request: web.Request, handler) -> web.Response:
 # =============================================================================
 
 async def api_health(request: web.Request) -> web.Response:
-    return web.json_response({"status": "ok"})
+    # Served at BOTH /health (HMAC-exempt, gateway-internal liveness poll) and
+    # /api/health (proxied, reached by the browser at /apps/dev-fleet/api/health).
+    # ``start_id`` lets the dashboard's restart handshake wait for the NEW
+    # gateway process rather than "a 200 came back" (see _gateway_start_id).
+    # None-safe: a platform that cannot report identity returns None here and
+    # the frontend degrades to reload-on-first-response instead of hanging.
+    return web.json_response({"status": "ok", "start_id": await _gateway_start_id()})
 
 
 # --- gateway service detection + restart ---
@@ -2900,11 +2927,53 @@ async def _gateway_service_active() -> bool:
     return _GATEWAY_SERVICE_ACTIVE
 
 
+async def _gateway_start_id() -> str | None:
+    """Monotonic start identity of the live gateway unit, or ``None``.
+
+    Reads ``ExecMainStartTimestampMonotonic`` -- the CLOCK_MONOTONIC microsecond
+    stamp of the unit's ExecStart *main* PID. Chosen over a wall-clock stamp or
+    ``ActiveEnterTimestampMonotonic`` because it is (a) monotonic, so it can
+    only increase and never repeats or goes backwards across a restart even if
+    the wall clock is stepped by NTP, and (b) tied to the actual main-process
+    spawn, so it changes the instant the NEW gateway process starts -- precisely
+    the "the new process is up" signal the restart handshake needs (a unit can
+    enter ``active`` before its replacement main PID exists).
+
+    Returns ``None`` on non-Linux / no ``systemctl`` / a failed probe / an unset
+    value (systemd prints ``0`` when no main-start stamp is recorded). Callers
+    MUST treat ``None`` as "identity unavailable" and degrade to the legacy
+    reload-on-first-response behaviour rather than waiting forever in
+    "restarting". Uses ``_gateway_unit_name()`` so it matches whichever unit
+    ``_restart_gateway`` / ``_make_live`` actually bounce (pod or live).
+    """
+    if sys.platform != "linux" or not shutil.which("systemctl"):
+        return None
+    rc, out, _err = await _run_cmd(
+        ["systemctl", "--user", "show", _gateway_unit_name(),
+         "--property=ExecMainStartTimestampMonotonic", "--value"],
+        timeout=5,
+    )
+    if rc != 0:
+        return None
+    val = out.strip()
+    # "0" == systemd has no recorded main-start stamp; empty == property absent.
+    # Both are indistinguishable from "unknown" for a handshake, so normalise to
+    # None (comparing against a stamp that can never change would hang the UI).
+    if not val or val == "0":
+        return None
+    return val
+
+
 async def _restart_gateway() -> dict:
     """Restart the gateway service via a detached systemd-run.
 
     The restart kills the current process, so we use systemd-run --collect
     to schedule a restart that survives our own death.
+
+    Returns the pre-restart ``start_id`` (the live unit's start identity
+    captured BEFORE scheduling) so the caller can poll until a DIFFERENT
+    identity appears -- a 200 from this same process still winding down must
+    not read as "recovered". ``start_id`` is None-safe (see _gateway_start_id).
     """
     if sys.platform != "linux" or not shutil.which("systemctl"):
         return {"ok": False, "error": "gateway is not running as a user service"}
@@ -2914,6 +2983,10 @@ async def _restart_gateway() -> dict:
     )
     if rc != 0:
         return {"ok": False, "error": "gateway is not running as a user service"}
+    # Capture identity BEFORE scheduling the restart: afterwards the systemd-run
+    # bounce can tear this process down at any moment, and the whole point is to
+    # hand the frontend the OLD identity to wait past.
+    start_id = await _gateway_start_id()
     rc, _, stderr = await _run_cmd(
         ["systemd-run", "--user", "--collect",
          "systemctl", "--user", "restart", _gateway_unit_name()],
@@ -2921,7 +2994,7 @@ async def _restart_gateway() -> dict:
     )
     if rc != 0:
         return {"ok": False, "error": _redact(stderr.strip()[:200]) or "systemd-run failed"}
-    return {"ok": True}
+    return {"ok": True, "start_id": start_id}
 
 
 @_audited("dev_fleet_restart_gateway")
@@ -3274,7 +3347,12 @@ async def _make_live(path: str, dry_run: bool = False) -> dict:
 
         # The restart tears down THIS backend with the gateway, so schedule it
         # via `systemd-run --collect` (same pattern as _restart_gateway) so the
-        # restart survives our own death.
+        # restart survives our own death. Capture the pre-restart identity FIRST
+        # so the dashboard reuses the same handshake it uses for restart-gateway
+        # (wait for a DIFFERENT start id, not "a 200 came back") -- a cutover is
+        # just a restart into different code, so it has the identical early-200
+        # hazard. None-safe (see _gateway_start_id).
+        start_id = await _gateway_start_id()
         rc, _out, stderr = await _run_cmd(
             ["systemd-run", "--user", "--collect",
              "systemctl", "--user", "restart", unit],
@@ -3301,7 +3379,8 @@ async def _make_live(path: str, dry_run: bool = False) -> dict:
         _LIVE_WORKTREE = None
         _LIVE_CHECK_AT = 0.0
 
-        return {"ok": True, "cutover": True, "target": str(real), "plan": plan}
+        return {"ok": True, "cutover": True, "target": str(real),
+                "plan": plan, "start_id": start_id}
 
 
 @_audited("dev_fleet_make_live")
@@ -3329,6 +3408,14 @@ def create_app() -> web.Application:
     """Build the aiohttp Application with all routes and lifecycle hooks."""
     app = web.Application(middlewares=[hmac_proxy_middleware])
     app.router.add_get("/health", api_health)
+    # The dashboard reaches this backend ONLY through the gateway proxy, which
+    # matches /apps/dev-fleet/api/{path} and forwards to /api/{path}
+    # (handle_app_api_proxy). The bare /health above is reachable only by the
+    # gateway's own in-process liveness poll (127.0.0.1:<port>/health, and it is
+    # the one path the HMAC middleware exempts). So the restart-identity
+    # handshake (issue #639) MUST poll a PROXIED path -- expose the same handler
+    # under /api/health, which the browser reaches at /apps/dev-fleet/api/health.
+    app.router.add_get("/api/health", api_health)
     app.router.add_get("/api/fleet", api_dev_fleet_fleet)
     app.router.add_get("/api/worktree", api_dev_fleet_worktree)
     app.router.add_get("/api/pod/logs", api_dev_fleet_pod_logs)
