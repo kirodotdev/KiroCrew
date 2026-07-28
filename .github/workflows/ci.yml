@@ -128,11 +128,9 @@ jobs:
             --splits "$SHARD_COUNT" --group ${{ matrix.group }} \
             ${{ matrix.python-version == '3.12' && '--cov=kiro_crew' || '--no-cov' }} \
             --deselect=test/test_script_hooks.py \
-            --deselect=test/test_cron_script.py \
-            --deselect=test/test_run_aim_path.py
+            --deselect=test/test_cron_script.py
         # Deselected tests require capabilities unavailable on GH Actions:
         #   test_script_hooks, test_cron_script: Linux namespace sandbox (unshare NEWNS)
-        #   test_run_aim_path: `aim` CLI binary (Amazon-internal tool)
 
       - name: Stage shard coverage data
         if: matrix.python-version == '3.12'
@@ -200,10 +198,9 @@ jobs:
           pytest -q -n auto --timeout=180 --no-cov \
             --splits "$SHARD_COUNT" --group ${{ matrix.group }} \
             --deselect=test/test_script_hooks.py \
-            --deselect=test/test_cron_script.py \
-            --deselect=test/test_run_aim_path.py
-        # Same deselects as backend-test (Linux-namespace sandbox tests and
-        # the Amazon-internal `aim` CLI are unavailable here too).
+            --deselect=test/test_cron_script.py
+        # Same deselects as backend-test (the Linux-namespace sandbox tests are
+        # unavailable here too).
 
   # Runs the tests the sharded matrix deselects. They need unprivileged user
   # namespaces (unshare NEWNS), which ubuntu-24.04 restricts via AppArmor --
@@ -211,9 +208,6 @@ jobs:
   # this job the ~/.kiro/crew sensitive-path keystone has no CI coverage at all,
   # even though branch protection treats breaking it as a blocking offence.
   #
-  # test_run_aim_path stays deselected everywhere: it needs the `aim` CLI, an
-  # Amazon-internal binary that does not exist in this fork. Consider deleting
-  # it from the public tree rather than carrying a permanently-skipped test.
   backend-test-sandbox:
     name: Backend Tests (namespace sandbox)
     runs-on: ubuntu-latest

@@ -21,7 +21,7 @@ This makes it impossible to express valid combinations like:
 The setup hooks are also incomplete — only `onInstall` and `onUninstall`
 exist, with no support for update or enable/disable scripts.
 
-Finally, apps can declare `mcpServers` and AIM dependencies in their
+Finally, apps can declare `mcpServers` and capability dependencies in their
 manifest, but KiroCrew never auto-installs them.
 
 ---
@@ -326,8 +326,8 @@ New `dependencies` field in `app.json`:
   "dependencies": {
     "managedBy": "gateway",
 
-    "aim": {
-      "mcp": ["aws-documentation-mcp-server"],
+    "capabilities": {
+      "mcp": ["some-documentation-mcp-server"],
       "skills": ["SomeSkillPackage"],
       "agents": ["SomeAgentPackage"]
     },
@@ -345,12 +345,12 @@ on `InstalledApp` which controls **resource registration** (agents/skills/crons)
 
 | Concept | Field | Scope |
 |---------|-------|-------|
-| Who installs external dependencies (AIM packages) | `dependencies.managedBy` | manifest |
+| Who installs external dependencies (capability packages) | `dependencies.managedBy` | manifest |
 | Who registers app-provided resources (symlinks) | `InstalledApp.resources` | installed metadata |
 
 | Value | Behavior |
 |-------|----------|
-| `"gateway"` (default) | KiroCrew runs `aim install` for each dependency |
+| `"gateway"` (default) | KiroCrew installs each dependency through the edition's `CapabilityManager` seam |
 | `"app"` | KiroCrew only checks existence, does not install |
 
 Per-dependency override is supported for mixed cases:
@@ -359,9 +359,9 @@ Per-dependency override is supported for mixed cases:
 {
   "dependencies": {
     "managedBy": "gateway",
-    "aim": {
+    "capabilities": {
       "mcp": [
-        "aws-documentation-mcp-server",
+        "some-documentation-mcp-server",
         { "id": "my-custom-mcp", "managedBy": "app" }
       ]
     }
@@ -375,10 +375,20 @@ String entries use the default `managedBy`. Object entries can override.
 
 | Type | Install mechanism | Uninstall mechanism |
 |------|-------------------|---------------------|
-| `aim.mcp` | `aim mcp install {id}` | `aim mcp uninstall {id}` |
-| `aim.skills` | `aim skills install {pkg}` | `aim skills uninstall {pkg}` |
-| `aim.agents` | `aim agents install {pkg}` | `aim agents uninstall {pkg}` |
+| `capability.mcp` | `CapabilityManager.install_mcp({id})` | `CapabilityManager.uninstall_mcp({id})` |
+| `capability.skills` | `CapabilityManager.install_skill({pkg})` | `CapabilityManager.uninstall_skill({pkg})` |
+| `capability.agents` | *(none — declarable but never gateway-installed)* | *(none)* |
 | `commands` | Check only (`shutil.which`) | Never removed |
+
+The core names no external binary: resolution goes through the
+`CapabilityManager` CPP seam, and the edition owns which package manager (if
+any) backs it. The public edition ships none (`available()` → `False`), so
+capability entries report as unresolved and the app still installs.
+`capability.agents` has no seam install op, so it always reports unresolved —
+declare it `managedBy: app` or install it out of band.
+
+The wire key is `capabilities`; the former `aim` key is still READ as a
+deprecated alias but is never written back, so a manifest round-trip migrates it.
 
 For `commands`: if a required command is missing, `resolve_dependencies()`
 adds it to the `missing` list in `DependencyResult`. The install proceeds
@@ -386,7 +396,7 @@ adds it to the `missing` list in `DependencyResult`. The install proceeds
 some features may not work. Install Node.js to resolve." The app is
 responsible for graceful degradation when optional commands are absent.
 
-### 4.4 Key Distinction: `dependencies.aim.mcp` vs `mcpServers`
+### 4.4 Key Distinction: `dependencies.capabilities.mcp` vs `mcpServers`
 
 These are different things:
 
@@ -394,13 +404,13 @@ These are different things:
   (e.g. Mochi's `mochi-pet` server at `localhost:7778`). Registered into
   the agent config by bridges.py.
 
-- **`dependencies.aim.mcp`** — External MCP servers the app needs but
-  doesn't provide. Installed system-wide via AIM CLI.
+- **`dependencies.capabilities.mcp`** — External MCP servers the app needs but
+  doesn't provide. Installed system-wide through the `CapabilityManager` seam.
 
 ### 4.5 Install Failure Policy
 
 Dependency install failures are **non-blocking**. Reasons:
-- AIM CLI may not be available (Cloud Desktop)
+- No capability manager may be available (public edition, Cloud Desktop)
 - Network issues cause transient failures
 - Some dependencies may be optional for degraded operation
 
@@ -431,15 +441,15 @@ the same dependency.
 
 ```jsonc
 {
-  "aim/mcp/aws-documentation-mcp-server": {
+  "capability/mcp/some-documentation-mcp-server": {
     "installedBy": ["oncall-watchtower"],
     "installedAt": "2026-04-20T10:00:00Z",
-    "type": "aim.mcp"
+    "type": "capability.mcp"
   },
-  "aim/skills/SomeSkillPackage": {
+  "capability/skills/SomeSkillPackage": {
     "installedBy": ["oncall-watchtower", "another-app"],
     "installedAt": "2026-04-18T08:00:00Z",
-    "type": "aim.skills"
+    "type": "capability.skills"
   }
 }
 ```
@@ -474,14 +484,14 @@ Returns an impact analysis classifying each dependency:
     "removable": [
       {
         "id": "aws-documentation-mcp-server",
-        "type": "aim.mcp",
+        "type": "capability.mcp",
         "reason": "Only used by this app"
       }
     ],
     "shared": [
       {
         "id": "SomeSkillPackage",
-        "type": "aim.skills",
+        "type": "capability.skills",
         "usedBy": ["another-app"],
         "reason": "Also used by another-app"
       }
@@ -489,7 +499,7 @@ Returns an impact analysis classifying each dependency:
     "userInstalled": [
       {
         "id": "some-other-mcp",
-        "type": "aim.mcp",
+        "type": "capability.mcp",
         "reason": "Installed by user (not tracked)"
       }
     ]
@@ -561,7 +571,7 @@ show a Lock icon and cannot be toggled.
 ```python
 # manifest.py
 @dataclass
-class AimDependencies:
+class CapabilityDependencies:
     mcp: list[str | dict[str, str]] = field(default_factory=list)
     skills: list[str | dict[str, str]] = field(default_factory=list)
     agents: list[str | dict[str, str]] = field(default_factory=list)
@@ -569,7 +579,7 @@ class AimDependencies:
 @dataclass
 class Dependencies:
     managedBy: str = "gateway"
-    aim: AimDependencies = field(default_factory=AimDependencies)
+    capabilities: CapabilityDependencies = field(default_factory=CapabilityDependencies)
     commands: list[str] = field(default_factory=list)
 
 # dependency_ledger.py (new file)
@@ -577,7 +587,7 @@ class Dependencies:
 class LedgerEntry:
     installedBy: list[str]
     installedAt: str
-    type: str  # "aim.mcp" | "aim.skills" | "aim.agents"
+    type: str  # "capability.mcp" | "capability.skills" | "capability.agents"
 
 def record_install(dep_key: str, app_name: str, dep_type: str) -> None: ...
 def record_uninstall(dep_key: str, app_name: str) -> None: ...
@@ -654,7 +664,7 @@ register_app(app_name)
 
 ```
 1. Clone repo → ~/.kirocrew/app-sources/{repo}/
-2. resolve_dependencies()          ← aim install for managedBy=gateway deps
+2. resolve_dependencies()          ← capability install for managedBy=gateway deps
 3. Copy to ~/.kirocrew/apps/{name}/
 4. register_app()                  ← symlink agents/skills/crons + register MCP
 5. Run onInstall script            ← compile, initialize
@@ -665,7 +675,7 @@ register_app(app_name)
 
 ```
 1. Clone repo → ~/.kirocrew/app-sources/{repo}/
-2. resolve_dependencies()          ← aim install for managedBy=gateway deps
+2. resolve_dependencies()          ← capability install for managedBy=gateway deps
 3. Run onInstall script            ← build + package .app + copy to ~/Applications
 4. App launches → SDK authenticate() → register_external_app()
    (resources=app, so no bridges.py registration)
@@ -686,12 +696,12 @@ register_app(app_name)
 | File | Changes |
 |------|---------|
 | `apps/manager.py` | `InstalledApp` dataclass: replace `managed` with `origin`/`resources`/`lifecycle`; update `register_builtin_apps()`, `register_external_app()`, `install_app()`, `uninstall_app()` |
-| `apps/manifest.py` | Add `SetupConfig.onUpdate`/`onEnable`/`onDisable`; add `Dependencies`, `AimDependencies` dataclasses; add to `_KNOWN_FIELDS` |
+| `apps/manifest.py` | Add `SetupConfig.onUpdate`/`onEnable`/`onDisable`; add `Dependencies`, `CapabilityDependencies` dataclasses; add to `_KNOWN_FIELDS` |
 | `apps/bridges.py` | Add `_register_mcp_servers()` / `_deregister_mcp_servers()`; update `register_app()` / `deregister_app()` |
 | `apps/routes.py` | Update all `managed` checks to use new fields; add `GET .../uninstall/preview`; update uninstall to support `keep_dependencies`/`keep_specific`; run `onEnable`/`onDisable`/`onUpdate` scripts |
 | `apps/registry.py` | Update `_enrich_with_install_status()` to use new fields; update `install_from_registry()` to call `resolve_dependencies()` |
 | `apps/dependency_ledger.py` | New file: ledger CRUD, `classify_for_uninstall()` |
-| `apps/dependencies.py` | New file: `resolve_dependencies()` using AIM CLI |
+| `apps/dependencies.py` | New file: `resolve_dependencies()` via the `CapabilityManager` seam |
 | `apps/app-registry.json` | Replace `managed` with `resources`/`lifecycle` for Mochi entry |
 | `KiroCrewWebsite/src/pages/AppsPage.tsx` | Update badge logic, button visibility; update uninstall dialog with dependency preview |
 | `KiroCrewWebsite/src/api/client.ts` | Add `uninstallPreview()` API call |
@@ -736,10 +746,10 @@ longer read.
 | Module | Test focus |
 |--------|-----------|
 | `manager.py` | `InstalledApp` serialization round-trip with new fields; migration from old `managed`; `uninstall_app()` with `lifecycle=locked` rejection |
-| `manifest.py` | `SetupConfig` with new hooks; `Dependencies` / `AimDependencies` parsing; validation of `managedBy` values |
+| `manifest.py` | `SetupConfig` with new hooks; `Dependencies` / `CapabilityDependencies` parsing; validation of `managedBy` values |
 | `bridges.py` | `_register_mcp_servers()` writes correct entries to mcp.json; `_deregister_mcp_servers()` removes only namespaced entries; colon separator parsing |
 | `dependency_ledger.py` | CRUD operations; `classify_for_uninstall()` with removable/shared/userInstalled cases; concurrent access with file locking |
-| `dependencies.py` | `resolve_dependencies()` with AIM CLI mocked; `managedBy` override logic; missing commands detection |
+| `dependencies.py` | `resolve_dependencies()` with the capability manager faked; `managedBy` override logic; missing commands detection |
 | `routes.py` | Enable/disable with `onEnable`/`onDisable` scripts; update with `onUpdate` + rollback; uninstall preview + confirm flow |
 | `registry.py` | `_enrich_with_install_status()` with new fields; `install_from_registry()` calling `resolve_dependencies()` |
 
@@ -762,4 +772,4 @@ longer read.
 Lifecycle scripts are tested via integration tests with minimal shell
 scripts that create/check marker files. The sandbox (`wrap_argv`) is
 tested separately in existing test infrastructure. CI does not execute
-real AIM CLI commands — `_run_aim()` is mocked in all dependency tests.
+any real package manager — the `CapabilityManager` seam is faked in all dependency tests.

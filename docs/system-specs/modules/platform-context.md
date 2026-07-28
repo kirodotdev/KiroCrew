@@ -650,7 +650,24 @@ is byte-identical) with no `CONTRACT_VERSION` bump.
   `DefaultCapabilityManager.available()` is `False` → the handlers return HTTP 503;
   a companion implements registry-backed management. This is the operations-based
   Protocol the prior binary-name seam's contract note anticipated — chosen now,
-  pre-launch, so no Amazon CLI grammar fossilizes in the core.
+  pre-launch, so no external CLI grammar fossilizes in the core.
+
+  **Second consumer — App Kit dependency resolution.** `apps/dependencies.py`
+  resolves an app manifest's `dependencies.capabilities.{mcp,skills}` through
+  `install_mcp`/`install_skill` (and `uninstall_*` on cleanup) rather than
+  shelling out to a named binary, reading the manager via `current_context()` so
+  it inherits the `BoundedCapabilityManager` timeout wrapper. The seam is probed
+  **lazily** — a commands-only manifest never touches it. When `available()` is
+  `False` the entries are recorded as `failed` (unresolved) and the app still
+  installs, so a public install surfaces the unmet dependency instead of silently
+  reporting success. `dependencies.capabilities.agents` is **declarable but never
+  gateway-installed**: the Protocol exposes `list_agents` only (package/agent
+  install routes were removed), so those entries always report unresolved —
+  declare them `managedBy: app` or install them out of band. The wire key `aim`
+  is a deprecated READ alias (`Dependencies.from_dict`) that is never
+  re-emitted, so a manifest round-trip migrates it; ledger keys/types likewise
+  resolve the pre-rename `aim/*` / `aim.*` spellings so an upgraded install does
+  not orphan tracked dependencies.
 - `McpToolingProvider.extra_mcp_scopes() -> List[McpScope]` — provider-specific
   GLOBAL MCP config scopes. `/api/mcp/apply` and the MCP uninstall path write
   each returned scope's `global_json` (and strip its `agent_mcp_file`) IN

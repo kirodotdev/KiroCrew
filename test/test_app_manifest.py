@@ -8,8 +8,8 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from kiro_crew.apps.manifest import (
-    AimDependencies,
     AppManifest,
+    CapabilityDependencies,
     Dependencies,
     SetupConfig,
 )
@@ -224,7 +224,7 @@ class TestValidation:
             "agents": ["agents/ticket-analyst.json"],
             "skills": ["skills/ticket-triage"],
             "sops": ["sops/ticket-rca.sop.md"],
-            "mcpServers": {"cw-mcp": {"command": "aim", "args": ["mcp", "run", "cw"]}},
+            "mcpServers": {"cw-mcp": {"command": "capmgr", "args": ["mcp", "run", "cw"]}},
             "crons": [{"name": "refresh", "every": 3600, "message": "refresh data"}],
             "ui": {"pages": [{"route": "/apps/owt", "label": "Dashboard", "icon": "Shield"}]},
             "backend": {"entryPoint": "backend/app.py"},
@@ -496,13 +496,13 @@ class TestDependencies:
     def test_empty_dependencies(self):
         deps = Dependencies.from_dict({})
         assert deps.managedBy == "gateway"
-        assert deps.aim.mcp == []
+        assert deps.capabilities.mcp == []
         assert deps.commands == []
 
     def test_full_dependencies_round_trip(self):
         data = {
             "managedBy": "app",
-            "aim": {
+            "capabilities": {
                 "mcp": ["aws-docs-mcp"],
                 "skills": ["SomeSkill"],
                 "agents": ["SomeAgent"],
@@ -511,48 +511,48 @@ class TestDependencies:
         }
         deps = Dependencies.from_dict(data)
         assert deps.managedBy == "app"
-        assert deps.aim.mcp == ["aws-docs-mcp"]
+        assert deps.capabilities.mcp == ["aws-docs-mcp"]
         assert deps.commands == ["node", "python3"]
         d = deps.to_dict()
         restored = Dependencies.from_dict(d)
         assert restored.managedBy == deps.managedBy
-        assert restored.aim.mcp == deps.aim.mcp
+        assert restored.capabilities.mcp == deps.capabilities.mcp
         assert restored.commands == deps.commands
 
     def test_default_managed_by_omitted(self):
-        deps = Dependencies(aim=AimDependencies(mcp=["x"]))
+        deps = Dependencies(capabilities=CapabilityDependencies(mcp=["x"]))
         d = deps.to_dict()
         assert "managedBy" not in d  # default "gateway" omitted
 
     def test_mixed_string_and_object_entries(self):
         deps = Dependencies.from_dict({
-            "aim": {
+            "capabilities": {
                 "mcp": [
                     "simple-mcp",
                     {"id": "custom-mcp", "managedBy": "app"},
                 ]
             }
         })
-        assert len(deps.aim.mcp) == 2
-        assert deps.aim.mcp[0] == "simple-mcp"
-        assert deps.aim.mcp[1] == {"id": "custom-mcp", "managedBy": "app"}
+        assert len(deps.capabilities.mcp) == 2
+        assert deps.capabilities.mcp[0] == "simple-mcp"
+        assert deps.capabilities.mcp[1] == {"id": "custom-mcp", "managedBy": "app"}
 
     def test_manifest_with_dependencies(self):
         m = AppManifest.from_dict(_valid_manifest(
             dependencies={
                 "managedBy": "gateway",
-                "aim": {"mcp": ["aws-docs"]},
+                "capabilities": {"mcp": ["aws-docs"]},
                 "commands": ["node"],
             }
         ))
         assert m.dependencies.managedBy == "gateway"
-        assert m.dependencies.aim.mcp == ["aws-docs"]
+        assert m.dependencies.capabilities.mcp == ["aws-docs"]
         assert m.dependencies.commands == ["node"]
         # Round-trip through manifest
         d = m.to_dict()
         assert "dependencies" in d
         m2 = AppManifest.from_dict(d)
-        assert m2.dependencies.aim.mcp == ["aws-docs"]
+        assert m2.dependencies.capabilities.mcp == ["aws-docs"]
 
 
 # ---------------------------------------------------------------------------
@@ -644,15 +644,15 @@ class TestManifestNewProperties:
         """**Validates: Requirements 5.2**"""
         deps = Dependencies(
             managedBy=managed_by,
-            aim=AimDependencies(mcp=mcp_deps, skills=skill_deps),
+            capabilities=CapabilityDependencies(mcp=mcp_deps, skills=skill_deps),
             commands=commands,
         )
         d = deps.to_dict()
         restored = Dependencies.from_dict(d)
         # Semantic equivalence: field values match even if dict structure differs
         assert restored.managedBy == deps.managedBy
-        assert restored.aim.mcp == deps.aim.mcp
-        assert restored.aim.skills == deps.aim.skills
+        assert restored.capabilities.mcp == deps.capabilities.mcp
+        assert restored.capabilities.skills == deps.capabilities.skills
         assert restored.commands == deps.commands
 
     # Feature: app-classification-redesign, Property 4: 单依赖项 managedBy 覆盖
@@ -665,7 +665,7 @@ class TestManifestNewProperties:
         """**Validates: Requirements 5.5**"""
         deps = Dependencies.from_dict({
             "managedBy": default_managed,
-            "aim": {
+            "capabilities": {
                 "mcp": [
                     "simple-dep",
                     {"id": "override-dep", "managedBy": override_managed},
@@ -673,9 +673,29 @@ class TestManifestNewProperties:
             }
         })
         # String entry uses default
-        entry0 = deps.aim.mcp[0]
+        entry0 = deps.capabilities.mcp[0]
         assert isinstance(entry0, str)
         # Object entry preserves its own managedBy
-        entry1 = deps.aim.mcp[1]
+        entry1 = deps.capabilities.mcp[1]
         assert isinstance(entry1, dict)
         assert entry1["managedBy"] == override_managed
+
+
+class TestCapabilityDepTypesContract:
+    """``CAPABILITY_DEP_TYPES`` drives the resolver loop via ``getattr``, so it
+    must name the ``CapabilityDependencies`` fields exactly — a drift would
+    silently resolve a whole dependency type to nothing."""
+
+    def test_types_match_dataclass_fields(self):
+        import dataclasses
+
+        from kiro_crew.apps.dependency_ledger import CAPABILITY_DEP_TYPES
+
+        fields = {f.name for f in dataclasses.fields(CapabilityDependencies)}
+        assert set(CAPABILITY_DEP_TYPES) == fields
+
+    def test_installable_subset_is_derived(self):
+        from kiro_crew.apps.dependencies import _INSTALLABLE_TYPES
+        from kiro_crew.apps.dependency_ledger import CAPABILITY_DEP_TYPES
+
+        assert set(_INSTALLABLE_TYPES) <= set(CAPABILITY_DEP_TYPES)

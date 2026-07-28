@@ -148,7 +148,9 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # git rev-parse at startup, no agent input, no sandbox needed).
         "apps/builtins/dev_fleet/server.py::_resolve_primary_checkout",
         "apps/builtins/dev_fleet/server.py::worker",
-        "apps/dependencies.py::_run_aim",
+        # (apps/dependencies.py::_run_aim removed — App Kit capability deps now
+        # resolve through the CapabilityManager seam, so the resolver spawns no
+        # subprocess at all and needs no allowlist entry.)
         "cli.py::_consolidate_cmd",
         "cli.py::_ensure_node",
         "cli.py::_node_ok",

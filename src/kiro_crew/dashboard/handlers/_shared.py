@@ -100,8 +100,8 @@ def _edition_skill_roots() -> list[Path]:
 
     Reads ``McpToolingProvider.extra_skills()`` fail-closed through
     ``safe_context_call`` (public Default: ``[]``), so on a vanilla OSS install
-    there are no roots to discover and the AIM-flavored skill helpers below
-    return "nothing found" rather than globbing a hardcoded ``~/.aim``.
+    there are no roots to discover and the edition skill helpers below
+    return "nothing found" rather than globbing a hardcoded home-dir tree.
     Deferred import (sel.py pattern) so this module never imports the platform
     package at module load.
     """
@@ -119,7 +119,8 @@ def _resolve_aim_skill_path(name: str) -> Path | None:
     """Find SKILL.md for an edition-contributed skill by leaf name.
 
     Iterates the edition skill roots (``McpToolingProvider.extra_skills()``)
-    instead of globbing ``~/.aim`` directly. Within each root a skill lives at
+    instead of globbing an edition home-dir tree directly. Within each root a
+    skill lives at
     either ``<root>/<pkg>/<name>/SKILL.md`` or ``<root>/<name>/SKILL.md``; the
     first match (roots in seam order) wins.
     """

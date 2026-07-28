@@ -274,7 +274,7 @@ only one app is uninstalled.
 {
   "dependencies": {
     "managedBy": "gateway",
-    "aim": {
+    "capabilities": {
       "mcp": [
         { "id": "some-mcp-server", "source": "registry" }
       ],
@@ -293,11 +293,15 @@ only one app is uninstalled.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `dependencies.managedBy` | string | `"gateway"` | Who manages dependency lifecycle: `"gateway"` or `"app"` |
-| `dependencies.aim` | object | `{}` | Capability-package dependencies (MCP servers, skills, agents) installed via the optional `aim` package manager. If the `aim` CLI is not on PATH, these are skipped gracefully. |
-| `dependencies.aim.mcp` | object[] | `[]` | Required MCP server dependencies |
-| `dependencies.aim.skills` | object[] | `[]` | Required skill dependencies |
-| `dependencies.aim.agents` | object[] | `[]` | Required agent dependencies |
+| `dependencies.capabilities` | object | `{}` | Capability-package dependencies (MCP servers, skills, agents) resolved through the edition's capability manager. The open-source edition ships none, so these entries are reported as **unresolved** (they appear in the install result's `failed` list) and the app still installs — design for graceful degradation. |
+| `dependencies.capabilities.mcp` | object[] | `[]` | Required MCP server dependencies |
+| `dependencies.capabilities.skills` | object[] | `[]` | Required skill dependencies |
+| `dependencies.capabilities.agents` | object[] | `[]` | **Deprecated for `managedBy: "gateway"`** — no capability-manager install operation exists for agents in any edition, so a gateway-managed entry can never succeed and is always reported unresolved. Declare `managedBy: "app"` (or install out of band) instead. |
 | `dependencies.commands` | string[] | `[]` | System commands that must be on PATH (checked via `which`) |
+
+> The former `dependencies.aim` key is still accepted as a deprecated alias, but
+> it is never written back — a manifest round-trip migrates it to
+> `dependencies.capabilities`. Use `capabilities` in new manifests.
 
 ## Lifecycle & Resource Management
 

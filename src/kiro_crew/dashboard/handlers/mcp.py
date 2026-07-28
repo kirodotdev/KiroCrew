@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 # in AIM / kiro-cli (alphanumerics, dashes, underscores, slashes, dots,
 # and ``@`` for scoped names like ``@org/server``) and defends against
 # command-injection into subprocess calls that pass the name as an argv
-# element (e.g. `aim mcp uninstall <name>`).
+# element (e.g. a capability-manager `uninstall <name>` argv).
 #
 # The leading char must be alphanumeric or ``@`` so a name can't begin
 # with ``.`` or ``/``.  Path-traversal sequences (``..``) are rejected
@@ -1455,7 +1455,7 @@ async def _do_mcp_apply(request: web.Request) -> web.Response:
                 if not name:
                     results.append({"error": "empty name", "change": change})
                     continue
-                # Defense-in-depth: name flows into subprocess argv (aim mcp
+                # Defense-in-depth: name flows into subprocess argv (capability
                 # uninstall) and filesystem paths via scope helpers.  Even
                 # though we use list-form subprocess (no shell), reject names
                 # that contain argv-injection chars or path traversal.
@@ -1647,7 +1647,7 @@ async def _do_mcp_apply(request: web.Request) -> web.Response:
         # Rebuild failures can surface file paths, env var contents, or
         # credential fragments (e.g. JSON decode errors that echo file
         # contents).  Apply the same redaction pipeline we use for the
-        # AIM uninstall error before handing it to the dashboard.
+        # capability-manager uninstall error before handing it to the dashboard.
         _urls_clean, _ = redact_exfiltration_urls(str(exc))
         rebuild_error, _ = redact_credentials(_urls_clean)
         logger.warning("rebuild_agent_config failed after apply: %s", exc)

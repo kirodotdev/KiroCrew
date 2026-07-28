@@ -1,23 +1,34 @@
-"""Dependency resolver — install and clean up app dependencies via AIM CLI.
+"""Dependency resolver — install and clean up app dependencies.
 
-Handles three types of AIM dependencies (mcp, skills, agents) and system
+Handles three types of capability dependencies (mcp, skills, agents) and system
 command checks. Non-blocking — failures are recorded but don't prevent
 app installation.
+
+Capability dependencies resolve through the ``CapabilityManager`` CPP seam
+(``platform/interfaces.py``): the edition owns which package manager backs them,
+its invocation grammar, and its error translation — the core only calls an
+operation and records the outcome.  The public edition ships no capability
+manager (``available()`` is ``False``), so such entries are recorded as
+unresolved instead of shelling out to any named binary.
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 import shutil
 from dataclasses import dataclass, field
 from typing import Any
 
-from kiro_crew.apps.dependency_ledger import record_install, record_uninstall
+from kiro_crew.apps.dependency_ledger import (
+    CAPABILITY_DEP_TYPES,
+    CAPABILITY_UNCLEANABLE_TYPES,
+    capability_dep_key,
+    capability_dep_type,
+    record_install,
+    record_uninstall,
+)
 from kiro_crew.apps.manifest import Dependencies
 
 logger = logging.getLogger(__name__)
-
-_AIM_TIMEOUT = 120  # seconds per aim install command
 
 
 @dataclass
@@ -56,40 +67,66 @@ def _get_managed_by(entry: str | dict, default: str) -> str:
     return default
 
 
-async def _run_aim(*args: str, timeout: int = _AIM_TIMEOUT) -> tuple[int, str]:
-    """Run an ``aim`` CLI command. Returns (returncode, output)."""
-    aim = shutil.which("aim")
-    if not aim:
-        return (1, "aim CLI not found")
-    proc = await asyncio.create_subprocess_exec(
-        aim, *args,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-    )
+_CAPABILITY_UNAVAILABLE = "no capability manager available in this edition"
+
+#: Dependency types the ``CapabilityManager`` seam can install/uninstall.
+#: ``agents`` is declarable (it is in ``CAPABILITY_DEP_TYPES``) but has no seam op
+#: — the Protocol exposes ``list_agents`` only, and package/agent install routes
+#: were removed — so it is never gateway-installed and is recorded as unresolved
+#: rather than silently dropped. Derived from the canonical tuple so adding a type
+#: there cannot silently skip this list.
+_INSTALLABLE_TYPES = tuple(
+    t for t in CAPABILITY_DEP_TYPES if t not in CAPABILITY_UNCLEANABLE_TYPES
+)
+
+
+def _capability_manager() -> Any:
+    """The edition's capability manager, or ``None`` when unavailable.
+
+    Read through ``current_context()`` so the ``BoundedCapabilityManager``
+    timeout wrapper applied at context composition is inherited (a slow
+    companion op must not stall an app install).
+    """
     try:
-        out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except asyncio.TimeoutError:
-        try:
-            proc.kill()
-        except ProcessLookupError:
-            pass
-        await proc.communicate()
-        return (1, f"aim command timed out after {timeout}s")
-    return (proc.returncode or 0, (out or b"").decode(errors="replace"))
+        # circular import: platform.defaults imports kiro_crew.apps.registry, so
+        # apps -> platform at module scope closes the cycle. Deferred to call time,
+        # the same pattern every other core seam reader uses (agent_discovery.py,
+        # mcp_discovery.py, dashboard/handlers/_shared.py).
+        from kiro_crew.platform.context import current_context
+
+        mgr = current_context().capability_manager
+    except Exception:
+        logger.warning("capability_manager lookup failed; treating as unavailable", exc_info=True)
+        return None
+    try:
+        if not mgr.available():
+            return None
+    except Exception:
+        logger.warning("capability_manager.available() raised; treating as unavailable")
+        return None
+    return mgr
 
 
-# Map dependency type to aim CLI subcommand
-_AIM_TYPE_MAP = {
-    "mcp": ("mcp", "install"),
-    "skills": ("skills", "install"),
-    "agents": ("agents", "install"),
-}
+async def _capability_install(mgr: Any, dep_type: str, dep_id: str) -> tuple[bool, str]:
+    """Install one dependency through the seam. Returns (ok, message)."""
+    if dep_type == "mcp":
+        res = await mgr.install_mcp(dep_id)
+    elif dep_type == "skills":
+        res = await mgr.install_skill(dep_id)
+    else:  # pragma: no cover - guarded by _INSTALLABLE_TYPES
+        return (False, f"no install operation for dependency type {dep_type!r}")
+    return (bool(res.ok), str(res.message or ""))
 
-_AIM_UNINSTALL_MAP = {
-    "mcp": ("mcp", "uninstall"),
-    "skills": ("skills", "uninstall"),
-    "agents": ("agents", "uninstall"),
-}
+
+async def _capability_uninstall(mgr: Any, dep_type: str, dep_id: str) -> tuple[bool, str]:
+    """Uninstall one dependency through the seam. Returns (ok, message)."""
+    if dep_type == "mcp":
+        res = await mgr.uninstall_mcp(dep_id)
+    elif dep_type == "skills":
+        res = await mgr.uninstall_skill(dep_id)
+    else:  # pragma: no cover - guarded by _INSTALLABLE_TYPES
+        return (False, f"no uninstall operation for dependency type {dep_type!r}")
+    return (bool(res.ok), str(res.message or ""))
 
 
 async def resolve_dependencies(
@@ -98,50 +135,74 @@ async def resolve_dependencies(
 ) -> DependencyResult:
     """Resolve and install app dependencies. Non-blocking — failures don't prevent install.
 
-    For ``managedBy="gateway"`` entries: runs ``aim install``.
+    For ``managedBy="gateway"`` entries: installs via the ``CapabilityManager`` seam.
     For ``managedBy="app"`` entries: only checks existence (no install).
     For ``commands``: checks ``shutil.which()`` and reports missing.
+
+    When the edition provides no capability manager, gateway-managed capability
+    entries are recorded as ``failed`` (unresolved) — the app still installs, and
+    the caller surfaces the unmet dependency to the user.
     """
     result = DependencyResult()
     default_managed = deps.managedBy
 
-    # Process AIM dependencies
-    for dep_type, entries in [
-        ("mcp", deps.aim.mcp),
-        ("skills", deps.aim.skills),
-        ("agents", deps.aim.agents),
-    ]:
-        aim_cmds = _AIM_TYPE_MAP.get(dep_type)
-        if not aim_cmds:
-            continue
+    mgr: Any = None
+    mgr_probed = False
+
+    for dep_type in CAPABILITY_DEP_TYPES:
+        # CAPABILITY_DEP_TYPES names the CapabilityDependencies fields 1:1; a new
+        # type added there without a matching field would silently resolve to no
+        # entries, so default defensively rather than raising mid-install.
+        entries = getattr(deps.capabilities, dep_type, [])
         for entry in entries:
             dep_id = _get_dep_id(entry)
             if not dep_id:
                 continue
             managed_by = _get_managed_by(entry, default_managed)
-            dep_key = f"aim/{dep_type}/{dep_id}"
+            dep_key = capability_dep_key(dep_type, dep_id)
 
             if managed_by == "app":
                 # App manages this dep — just note it
                 result.skipped.append(dep_key)
                 continue
 
-            # Gateway manages — try to install via AIM
+            if dep_type not in _INSTALLABLE_TYPES:
+                result.failed.append(dep_key)
+                logger.warning(
+                    "Dependency %s for app %s has no capability install operation — "
+                    "declare it as managedBy=app or install it out of band",
+                    dep_key, app_name,
+                )
+                continue
+
+            # Probe the seam once, lazily — only when there is work for it.
+            if not mgr_probed:
+                mgr = _capability_manager()
+                mgr_probed = True
+            if mgr is None:
+                result.failed.append(dep_key)
+                logger.info(
+                    "Cannot resolve dependency %s for app %s: %s",
+                    dep_key, app_name, _CAPABILITY_UNAVAILABLE,
+                )
+                continue
+
+            # Gateway manages — install through the edition's capability manager
             try:
-                rc, output = await _run_aim(aim_cmds[0], aim_cmds[1], dep_id)
+                ok, message = await _capability_install(mgr, dep_type, dep_id)
             except Exception as exc:
                 result.failed.append(dep_key)
                 logger.warning("Exception installing %s: %s", dep_key, exc)
                 continue
-            if rc == 0:
+            if ok:
                 result.installed.append(dep_key)
-                record_install(dep_key, app_name, f"aim.{dep_type}")
+                record_install(dep_key, app_name, capability_dep_type(dep_type))
                 logger.info("Installed dependency %s for app %s", dep_key, app_name)
             else:
                 result.failed.append(dep_key)
                 logger.warning(
                     "Failed to install dependency %s for app %s: %s",
-                    dep_key, app_name, output[:200],
+                    dep_key, app_name, message[:200],
                 )
 
     # Check system commands
@@ -170,30 +231,39 @@ async def clean_dependencies(
         List of successfully uninstalled dependency keys.
     """
     cleaned: list[str] = []
+    mgr: Any = None
+    mgr_probed = False
+
     for dep in removable_deps:
         dep_id = dep.get("id", "")
         dep_type = dep.get("type", "")
         if not dep_id:
             continue
 
-        # Parse type to get aim subcommand
-        # dep_type is like "aim.mcp" → we need "mcp"
-        aim_type = dep_type.split(".")[-1] if "." in dep_type else ""
-        aim_cmds = _AIM_UNINSTALL_MAP.get(aim_type)
-
-        if not aim_cmds:
-            logger.warning("Unknown dependency type %r for %s — skipping uninstall", dep_type, dep_id)
+        # dep_type is like "capability.mcp" (or a legacy-prefixed equivalent) → "mcp"
+        base_type = dep_type.split(".")[-1] if "." in dep_type else ""
+        if base_type not in _INSTALLABLE_TYPES:
+            logger.warning(
+                "Unknown dependency type %r for %s — skipping uninstall", dep_type, dep_id
+            )
             continue
 
-        # Extract the package name from the dep_id (which is the full key like "aim/mcp/name")
+        if not mgr_probed:
+            mgr = _capability_manager()
+            mgr_probed = True
+        if mgr is None:
+            logger.info("Cannot uninstall %s: %s", dep_id, _CAPABILITY_UNAVAILABLE)
+            continue
+
+        # dep_id is the full ledger key ("capability/mcp/name") — take the id.
         pkg_name = dep_id.split("/")[-1] if "/" in dep_id else dep_id
         try:
-            rc, output = await _run_aim(aim_cmds[0], aim_cmds[1], pkg_name)
+            ok, message = await _capability_uninstall(mgr, base_type, pkg_name)
         except Exception as exc:
             logger.warning("Exception uninstalling %s: %s", dep_id, exc)
             continue
-        if rc != 0:
-            logger.warning("Failed to uninstall %s: %s", dep_id, output[:200])
+        if not ok:
+            logger.warning("Failed to uninstall %s: %s", dep_id, message[:200])
             continue
 
         record_uninstall(dep_id, app_name)

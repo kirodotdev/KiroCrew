@@ -1,6 +1,6 @@
 """Tests for dependency resolution during app enable.
 
-Verifies that handle_enable_app() resolves dependencies.aim when a user
+Verifies that handle_enable_app() resolves dependencies.capabilities when a user
 enables an app (builtin or otherwise).
 """
 from __future__ import annotations
@@ -20,18 +20,18 @@ def _mock_dashboard_server():
 
 
 class TestEnableDepsResolution:
-    """Verify dependencies.aim is resolved when an app is enabled."""
+    """Verify dependencies.capabilities is resolved when an app is enabled."""
 
     @pytest.mark.asyncio
     async def test_dependencies_resolved_on_enable(self) -> None:
-        """When manifest has dependencies.aim, resolve_dependencies is called."""
+        """When the manifest declares capability deps, resolve_dependencies is called."""
         from kiro_crew.apps.dependencies import DependencyResult
 
         fake_app_info = {
             "name": "test-app",
             "manifest": {
                 "dependencies": {
-                    "aim": ["TestAICapabilities"],
+                    "capabilities": {"agents": ["TestCapabilityPkg"]},
                 },
             },
             "resources": "gateway",
@@ -39,7 +39,7 @@ class TestEnableDepsResolution:
             "origin": "builtin",
         }
 
-        mock_dep_result = DependencyResult(installed=["aim/agents/TestAICapabilities"])
+        mock_dep_result = DependencyResult(installed=["capability/agents/TestCapabilityPkg"])
 
         with (
             patch("kiro_crew.apps.routes.get_app", return_value=fake_app_info),
@@ -67,7 +67,7 @@ class TestEnableDepsResolution:
             import json
             body = json.loads(response.body)
             assert "dependencies" in body
-            assert body["dependencies"]["installed"] == ["aim/agents/TestAICapabilities"]
+            assert body["dependencies"]["installed"] == ["capability/agents/TestCapabilityPkg"]
 
     @pytest.mark.asyncio
     async def test_no_dependencies_skips_resolution(self) -> None:
@@ -107,7 +107,7 @@ class TestEnableDepsResolution:
             "name": "partial-app",
             "manifest": {
                 "dependencies": {
-                    "aim": ["GoodPkg", "BadPkg"],
+                    "capabilities": {"agents": ["GoodPkg", "BadPkg"]},
                 },
             },
             "resources": "gateway",
@@ -115,8 +115,8 @@ class TestEnableDepsResolution:
         }
 
         mock_dep_result = DependencyResult(
-            installed=["aim/agents/GoodPkg"],
-            failed=["aim/agents/BadPkg"],
+            installed=["capability/agents/GoodPkg"],
+            failed=["capability/agents/BadPkg"],
         )
 
         with (
@@ -142,8 +142,8 @@ class TestEnableDepsResolution:
             assert body["ok"] is True
             # But reports the failure
             assert "dependencies" in body
-            assert "aim/agents/BadPkg" in body["dependencies"]["failed"]
-            assert "aim/agents/GoodPkg" in body["dependencies"]["installed"]
+            assert "capability/agents/BadPkg" in body["dependencies"]["failed"]
+            assert "capability/agents/GoodPkg" in body["dependencies"]["installed"]
 
     @pytest.mark.asyncio
     async def test_deps_resolved_before_on_enable_script(self) -> None:
@@ -155,7 +155,7 @@ class TestEnableDepsResolution:
         fake_app_info = {
             "name": "ordered-app",
             "manifest": {
-                "dependencies": {"aim": ["SomePkg"]},
+                "dependencies": {"capabilities": {"agents": ["SomePkg"]}},
                 "setup": {"onEnable": "echo post-install"},
             },
             "resources": "gateway",
@@ -164,7 +164,7 @@ class TestEnableDepsResolution:
 
         async def mock_resolve(*args, **kwargs):
             call_order.append("resolve_deps")
-            return DependencyResult(installed=["aim/agents/SomePkg"])
+            return DependencyResult(installed=["capability/agents/SomePkg"])
 
         async def mock_script(*args, **kwargs):
             call_order.append("on_enable_script")

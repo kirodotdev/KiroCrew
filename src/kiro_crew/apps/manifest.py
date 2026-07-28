@@ -411,8 +411,14 @@ class SetupConfig:
 
 
 @dataclass
-class AimDependencies:
-    """AIM CLI-managed dependencies (MCP servers, skills, agents)."""
+class CapabilityDependencies:
+    """Capability-manager-provided dependencies (MCP servers, skills, agents).
+
+    Resolved through the ``CapabilityManager`` CPP seam, NOT a named external
+    binary — the edition owns which package manager (if any) backs these and its
+    invocation grammar.  The public edition ships no capability manager, so these
+    entries are reported as unresolved rather than installed.
+    """
 
     mcp: list[Any] = field(default_factory=list)  # str or {"id": str, "managedBy": str}
     skills: list[Any] = field(default_factory=list)
@@ -429,7 +435,7 @@ class AimDependencies:
         return d
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> AimDependencies:
+    def from_dict(cls, data: dict[str, Any]) -> CapabilityDependencies:
         return cls(
             mcp=list(data.get("mcp", [])),
             skills=list(data.get("skills", [])),
@@ -442,35 +448,47 @@ class Dependencies:
     """External dependencies that KiroCrew should resolve during install.
 
     ``managedBy`` controls the default installation strategy:
-      - ``"gateway"``: KiroCrew runs ``aim install`` for each dependency
+      - ``"gateway"``: KiroCrew resolves each dependency through the edition's
+        ``CapabilityManager`` seam
       - ``"app"``: KiroCrew only checks existence, does not install
 
     Individual entries can override via object format:
     ``{"id": "some-mcp", "managedBy": "app"}``
+
+    The wire key is ``capabilities``.  ``aim`` is accepted as a DEPRECATED read
+    alias so manifests authored against the pre-rename schema keep loading; it is
+    never re-emitted by :meth:`to_dict`, so a round-trip migrates the manifest.
     """
 
     managedBy: str = "gateway"  # noqa: N815
-    aim: AimDependencies = field(default_factory=AimDependencies)
+    capabilities: CapabilityDependencies = field(default_factory=CapabilityDependencies)
     commands: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {}
         if self.managedBy != "gateway":
             d["managedBy"] = self.managedBy
-        aim_d = self.aim.to_dict()
-        if aim_d:
-            d["aim"] = aim_d
+        cap_d = self.capabilities.to_dict()
+        if cap_d:
+            d["capabilities"] = cap_d
         if self.commands:
             d["commands"] = self.commands
         return d
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Dependencies:
-        aim_raw = data.get("aim", {})
-        aim = AimDependencies.from_dict(aim_raw) if isinstance(aim_raw, dict) else AimDependencies()
+        raw = data.get("capabilities")
+        if not isinstance(raw, dict):
+            # Deprecated alias — read-only, never written back.
+            raw = data.get("aim")
+        capabilities = (
+            CapabilityDependencies.from_dict(raw)
+            if isinstance(raw, dict)
+            else CapabilityDependencies()
+        )
         return cls(
             managedBy=str(data.get("managedBy", "gateway")),  # noqa: N815
-            aim=aim,
+            capabilities=capabilities,
             commands=[str(c) for c in data.get("commands", [])],
         )
 

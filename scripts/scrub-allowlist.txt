@@ -117,3 +117,36 @@ src/kiro_crew/apps/builtins/code_review_sage/tests/
 test/test_deploy_web_profiles.py
 test/test_deploy_web_handlers.py
 test/test_deploy_web_iam.py
+
+# The ``~/.aim`` skill-discovery scan in agent.py (``_all_skill_paths`` and the
+# managed-MCP path note) is OSS-inert — no such tree exists on a vanilla install
+# — and carries its own TODO(aim-governance follow-up) to route through the
+# ``McpToolingProvider.extra_skills()`` CPP seam. That move is deferred to its
+# own PR because of the security-sensitive symlink-resolution and sensitive-path
+# gating around it.
+#
+# These MUST stay path+pattern anchored, never a bare ``src/kiro_crew/agent.py``:
+# the allowlist is applied as a plain ``grep -v`` to BOTH the internal-marker
+# scan and the employee-alias scan, so a path-only entry would drop every line of
+# this 2000+ line file from BOTH gates — a future ``code.amazon``/``brazil-build``
+# /``CR-######``/alias in agent.py would then ship with CI green, exactly the
+# failure mode AIM_PATTERN was added to close.
+# Remove these entries when that follow-up lands.
+src/kiro_crew/agent.py:.*~/\.aim
+src/kiro_crew/agent.py:.*aim mcp install
+src/kiro_crew/agent.py:.*AIM skills
+src/kiro_crew/agent.py:.*AIM-installed
+src/kiro_crew/agent.py:.*AIM install neutralized
+src/kiro_crew/agent.py:.*Path.home() / "\.aim"
+src/kiro_crew/agent.py:.*pkg / "\.aim"
+
+# Two more pre-existing, OSS-inert ``.aim`` reads that the path-BUILDING half of
+# AIM_PATTERN newly surfaces (the ``~/.aim`` literal alone missed them). Both are
+# the same deferred follow-up as agent.py above, allowlisted line-anchored so the
+# gate still catches a NEW one:
+#   - slack/handler.py: reads ``~/.aim/cc-plugins`` for cc-plugin agent names.
+#   - dashboard/handlers/files.py: ``.aim`` is one element of a directory-SKIP set
+#     (a file-indexer exclusion), so it is an inert name, not a coupling.
+src/kiro_crew/slack/handler.py:.*~/\.aim/cc-plugins
+src/kiro_crew/slack/handler.py:.*Path.home() / "\.aim" / "cc-plugins"
+src/kiro_crew/dashboard/handlers/files.py:.*"\.kirocrew", "\.kiro", "\.aim"

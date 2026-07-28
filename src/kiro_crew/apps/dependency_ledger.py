@@ -1,8 +1,8 @@
 """Dependency ledger — reference-counted tracking for app dependencies.
 
-Tracks which apps installed which external dependencies (AIM MCP servers,
-skills, agents) so that uninstall can safely clean up dependencies that
-are no longer referenced by any app.
+Tracks which apps installed which external dependencies (capability-manager
+MCP servers, skills, agents) so that uninstall can safely clean up dependencies
+that are no longer referenced by any app.
 
 All reads/writes use ``fcntl.flock()`` for concurrency safety, consistent
 with KiroCrew's existing file locking patterns.  Read-modify-write cycles
@@ -32,13 +32,127 @@ def _ledger_path() -> Path:
     return config_dir() / "dependency-ledger.json"
 
 
+#: Key namespace for capability-manager-provided dependencies.
+CAPABILITY_KEY_PREFIX = "capability"
+
+#: Pre-rename namespace, still read so ledgers written by older builds resolve.
+_LEGACY_KEY_PREFIX = "aim"
+
+#: Every capability dependency type a manifest may declare, in emit order.
+#: Single source of truth — ``dependencies.py`` derives its installable subset
+#: from this rather than re-spelling the tuple.
+CAPABILITY_DEP_TYPES = ("mcp", "skills", "agents")
+
+#: Types the ``CapabilityManager`` seam exposes NO install/uninstall op for, so
+#: KiroCrew can neither install nor clean them up. Their ledger rows must SURVIVE
+#: an uninstall: deleting the row for something we cannot actually remove would
+#: leave the installed package on disk with no record that anything referenced it
+#: (an untraceable orphan). Ownership is dropped instead, so the dep reads as
+#: user-installed and a future uninstall op — or the user — can still reclaim it.
+CAPABILITY_UNCLEANABLE_TYPES = ("agents",)
+
+
+def _is_uncleanable(dep_type: str) -> bool:
+    """True when *dep_type* has no cleanup operation, so its ledger row must be
+    preserved. Accepts a bare type (``agents``) or any prefixed spelling,
+    canonical or legacy, since ledger rows carry whichever was written."""
+    base = dep_type.split(".")[-1] if "." in dep_type else dep_type
+    return base in CAPABILITY_UNCLEANABLE_TYPES
+
+
+def capability_dep_key(dep_type: str, dep_id: str) -> str:
+    """Ledger key for a capability dependency (``capability/<type>/<id>``)."""
+    return f"{CAPABILITY_KEY_PREFIX}/{dep_type}/{dep_id}"
+
+
+def capability_dep_type(dep_type: str) -> str:
+    """Ledger ``type`` value for a capability dependency (``capability.<type>``)."""
+    return f"{CAPABILITY_KEY_PREFIX}.{dep_type}"
+
+
+def canonical_dep_key(dep_key: str) -> str:
+    """Normalize a caller-supplied dependency key to the canonical prefix.
+
+    Client-supplied keys (an uninstall request's ``keep_specific``) may carry the
+    pre-rename prefix: a dashboard session that loaded its uninstall preview from
+    an OLDER build echoes those ids straight back. Classification emits canonical
+    ids, so an un-normalized legacy key would silently miss the ``keep`` membership
+    test and delete a dependency the user explicitly chose to keep. Idempotent for
+    already-canonical keys, and leaves unrelated strings untouched.
+
+    Non-string input is returned unchanged rather than raising: callers sanitize
+    at their own boundary, but this is consumed mid-uninstall (after the
+    onUninstall script and deregistration have run), so raising here would leave
+    an app partially uninstalled instead of failing cleanly.
+    """
+    if not isinstance(dep_key, str):
+        return dep_key
+    prefix = f"{_LEGACY_KEY_PREFIX}/"
+    if dep_key.startswith(prefix):
+        return f"{CAPABILITY_KEY_PREFIX}/{dep_key[len(prefix):]}"
+    return dep_key
+
+
+def declared_capability_keys(deps_data: dict[str, Any]) -> list[str]:
+    """Ledger keys for every capability dependency declared in a raw manifest dict.
+
+    Reads the ``capabilities`` wire key, falling back to the deprecated ``aim``
+    alias (see :class:`kiro_crew.apps.manifest.Dependencies`).  Shared by the
+    uninstall-preview and uninstall paths so both derive identical keys.
+    """
+    raw = deps_data.get("capabilities")
+    if not isinstance(raw, dict):
+        raw = deps_data.get("aim")
+    if not isinstance(raw, dict):
+        return []
+    keys: list[str] = []
+    for dep_type in CAPABILITY_DEP_TYPES:
+        entries = raw.get(dep_type)
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            dep_id = entry.get("id") if isinstance(entry, dict) else entry
+            if not dep_id:
+                continue
+            keys.append(capability_dep_key(dep_type, str(dep_id)))
+    return keys
+
+
+def _legacy_key(dep_key: str) -> str | None:
+    """The pre-rename spelling of *dep_key*, or ``None`` if it has none.
+
+    Lets a ledger written by an older build keep resolving after the rename
+    without a migration pass: lookups fall back to the legacy key, and writes
+    reuse whichever spelling already exists.
+    """
+    if dep_key.startswith(f"{CAPABILITY_KEY_PREFIX}/"):
+        return f"{_LEGACY_KEY_PREFIX}/{dep_key[len(CAPABILITY_KEY_PREFIX) + 1:]}"
+    return None
+
+
+def _resolve_key(ledger: dict[str, Any], dep_key: str) -> str:
+    """Return the key *dep_key* is actually stored under in *ledger*.
+
+    Prefers the canonical key; falls back to the legacy spelling only when the
+    canonical one is absent and the legacy one is present.
+    """
+    if dep_key in ledger:
+        return dep_key
+    legacy = _legacy_key(dep_key)
+    if legacy is not None and legacy in ledger:
+        return legacy
+    return dep_key
+
+
 @dataclass
 class LedgerEntry:
     """A single dependency tracked in the ledger."""
 
     installedBy: list[str] = field(default_factory=list)  # noqa: N815
     installedAt: str = ""  # noqa: N815
-    type: str = ""  # "aim.mcp" | "aim.skills" | "aim.agents"
+    #: ``"capability.mcp"`` | ``"capability.skills"`` | ``"capability.agents"``
+    #: (legacy ledgers may carry the pre-rename ``"aim.*"`` spelling).
+    type: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -112,14 +226,18 @@ def record_install(dep_key: str, app_name: str, dep_type: str) -> None:
     """
     with _locked_ledger():
         ledger = _read_ledger_unlocked()
-        entry = ledger.get(dep_key)
+        # Reuse the legacy spelling when that is where the entry already lives,
+        # so an older ledger accrues refcounts in one place instead of splitting
+        # across two keys for the same dependency.
+        key = _resolve_key(ledger, dep_key)
+        entry = ledger.get(key)
         if entry:
             installed_by = entry.get("installedBy", [])
             if app_name not in installed_by:
                 installed_by.append(app_name)
                 entry["installedBy"] = installed_by
         else:
-            ledger[dep_key] = {
+            ledger[key] = {
                 "installedBy": [app_name],
                 "installedAt": _now_iso(),
                 "type": dep_type,
@@ -135,14 +253,15 @@ def record_uninstall(dep_key: str, app_name: str) -> None:
     """
     with _locked_ledger():
         ledger = _read_ledger_unlocked()
-        entry = ledger.get(dep_key)
+        key = _resolve_key(ledger, dep_key)
+        entry = ledger.get(key)
         if not entry:
             return
         installed_by = entry.get("installedBy", [])
         if app_name in installed_by:
             installed_by.remove(app_name)
         if not installed_by:
-            del ledger[dep_key]
+            del ledger[key]
         else:
             entry["installedBy"] = installed_by
         _write_ledger_unlocked(ledger)
@@ -150,9 +269,13 @@ def record_uninstall(dep_key: str, app_name: str) -> None:
 
 
 def get_entry(dep_key: str) -> LedgerEntry | None:
-    """Get a single dependency's ledger entry, or None."""
+    """Get a single dependency's ledger entry, or None.
+
+    Falls back to the pre-rename key spelling so entries written by an older
+    build remain visible.
+    """
     ledger = _read_ledger()
-    raw = ledger.get(dep_key)
+    raw = ledger.get(_resolve_key(ledger, dep_key))
     if not raw:
         return None
     return LedgerEntry.from_dict(raw)
@@ -196,7 +319,10 @@ def classify_and_clean_for_uninstall(
     cycle to prevent TOCTOU races when two apps sharing a dependency
     are uninstalled concurrently.
 
-    - Removable deps not in *keep_specific* have their ledger entry deleted.
+    - Removable deps not in *keep_specific* have their ledger entry deleted,
+      EXCEPT uncleanable types (see :data:`CAPABILITY_UNCLEANABLE_TYPES`), which
+      only lose this app's ownership — dropping the row for a dependency no
+      cleanup op can remove would orphan the installed package untraceably.
     - Shared deps have the current app removed from ``installedBy``.
     - User-installed deps are untouched.
 
@@ -209,26 +335,30 @@ def classify_and_clean_for_uninstall(
 
         # Update ledger for removable deps
         for dep in result["removable"]:
-            dep_key = dep["id"]
-            if dep_key in keep:
-                # User chose to keep this dep — still remove the app's
-                # ownership so the dep is classified as "user installed"
-                # in future uninstalls (no orphaned reference).
+            dep_key = _resolve_key(ledger, dep["id"])
+            uncleanable = _is_uncleanable(str(dep.get("type", "")))
+            if dep["id"] in keep or uncleanable:
+                # Either the user chose to keep this dep, or nothing can clean it
+                # up. Drop this app's ownership so it classifies as
+                # "user installed" next time (no orphaned reference).
                 entry = ledger.get(dep_key)
                 if entry:
                     installed_by = entry.get("installedBy", [])
                     if app_name in installed_by:
                         installed_by.remove(app_name)
-                    if not installed_by:
+                    entry["installedBy"] = installed_by
+                    # An emptied row is normally pruned — but for an UNCLEANABLE
+                    # type the row is the only remaining record that the package
+                    # was installed at all (KiroCrew has no operation to remove
+                    # it), so retain it ownerless instead of orphaning the package.
+                    if not installed_by and not uncleanable:
                         del ledger[dep_key]
-                    else:
-                        entry["installedBy"] = installed_by
                 continue
             ledger.pop(dep_key, None)
 
         # Update ledger for shared deps (remove this app's reference)
         for dep in result["shared"]:
-            dep_key = dep["id"]
+            dep_key = _resolve_key(ledger, dep["id"])
             entry = ledger.get(dep_key)
             if entry:
                 installed_by = entry.get("installedBy", [])
@@ -254,7 +384,7 @@ def _classify_deps(
     user_installed: list[dict[str, Any]] = []
 
     for dep_key in declared_deps:
-        raw = ledger.get(dep_key)
+        raw = ledger.get(_resolve_key(ledger, dep_key))
         if not raw:
             user_installed.append({
                 "id": dep_key,

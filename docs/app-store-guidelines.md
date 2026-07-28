@@ -153,14 +153,16 @@ Rules:
 
 ### Dependencies
 
-Declare external dependencies that KiroCrew should install for your app:
+Declare external dependencies that KiroCrew should install for your app.
+The open-source edition ships no capability manager, so `capabilities` entries
+are reported as unresolved and the app still installs — degrade gracefully:
 
 ```json
 {
   "dependencies": {
     "managedBy": "gateway",
-    "aim": {
-      "mcp": ["aws-documentation-mcp-server"],
+    "capabilities": {
+      "mcp": ["some-documentation-mcp-server"],
       "skills": ["SomeSkillPackage"],
       "agents": ["SomeAgentPackage"]
     },
@@ -171,10 +173,10 @@ Declare external dependencies that KiroCrew should install for your app:
 
 | Field | Description |
 |-------|-------------|
-| `managedBy` | `"gateway"` (default) = KiroCrew installs via AIM CLI. `"app"` = app handles its own deps, KiroCrew only checks existence. |
-| `aim.mcp` | AIM MCP servers to install. |
-| `aim.skills` | AIM skill packages to install. |
-| `aim.agents` | AIM agent packages to install. |
+| `managedBy` | `"gateway"` (default) = KiroCrew resolves deps through the edition's capability manager. `"app"` = app handles its own deps, KiroCrew only checks existence. |
+| `capabilities.mcp` | MCP servers to install. |
+| `capabilities.skills` | Skill packages to install. |
+| `capabilities.agents` | Declarable, but never gateway-installed — always reported unresolved. |
 | `commands` | System commands to check (not installed, just verified). Missing commands produce a warning. |
 
 Per-dependency override: use object format to override `managedBy` for individual entries:
@@ -183,9 +185,9 @@ Per-dependency override: use object format to override `managedBy` for individua
 {
   "dependencies": {
     "managedBy": "gateway",
-    "aim": {
+    "capabilities": {
       "mcp": [
-        "aws-docs-mcp",
+        "some-docs-mcp",
         { "id": "my-custom-mcp", "managedBy": "app" }
       ]
     }

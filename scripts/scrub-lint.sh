@@ -32,16 +32,37 @@ if [[ "${1:-}" == "--test" ]]; then
   dim "Running self-test..."
   MARKER_FILE="src/__scrub_test_marker.py"
 
-  # Plant a marker that should trigger the scan
-  echo '# test marker: code.amazon.com/packages/FakePackage' > "$MARKER_FILE"
-  if "$SELF" >/dev/null 2>&1; then
-    red "SELF-TEST FAIL: planted marker was not detected"
+  # Plant markers that should each trigger the scan. One probe per pattern
+  # FAMILY, so a typo that silently breaks a family is caught here rather than
+  # discovered when an internal marker ships green.
+  probe_fail=0
+  PROBES=(
+    'internal-domain|# test marker: code.amazon.com/packages/FakePackage'
+    'aim-invocation|# test marker: aim mcp install some-server'
+    'aim-dep-contract|TYPE = "aim.mcp"'
+    'aim-home-tree|P = "~/.aim/skills"'
+  )
+  for probe in "${PROBES[@]}"; do
+    probe_label="${probe%%|*}"
+    probe_line="${probe#*|}"
+    printf '%s\n' "$probe_line" > "$MARKER_FILE"
+    # --no-history: the probes only exercise the working-tree scan, and the
+    # history pass is slow enough that running it per-probe dominates runtime.
+    # </dev/null so the child cannot consume this shell's stdin.
+    if "$SELF" --no-history >/dev/null 2>&1 </dev/null; then
+      red "SELF-TEST FAIL: planted $probe_label marker was not detected"
+      probe_fail=1
+    else
+      green "  ✓ Planted $probe_label marker correctly detected"
+    fi
+    rm -f "$MARKER_FILE"
+  done
+  if [[ $probe_fail -ne 0 ]]; then
     rm -f "$MARKER_FILE"
     exit 1
   fi
-  green "  ✓ Planted marker correctly detected (scan failed as expected)"
 
-  # Remove marker — scan should pass (ignoring git history which always fails pre-rewrite)
+  # Markers removed — scan should pass (ignoring git history which always fails pre-rewrite)
   rm -f "$MARKER_FILE"
   # Run checks 1+2 only (history will fail until rewrite)
   output=$("$SELF" 2>&1 || true)
@@ -64,6 +85,22 @@ fi
 dim "[1/4] Scanning working tree for internal markers..."
 
 INTERNAL_PATTERN='amazon\.com|a2z\.com|aws\.dev|\.amazon\.|code\.amazon|t\.corp|sim\.amazon|isengard|phonetool|midway-auth|mwinit|brazil ws|brazil-build|brazil-runtime|brazil-pkg-cache|meshclaw|Mesh-[0-9]|AVP-[0-9]|account.?[0-9]{12}|CR-[0-9]{6,}|\bP[0-9]{6,}\b'
+
+# The internal package manager (AIM) needs a NARROW pattern, not a bare word:
+# ``--aim``/``bg-aim``/``text-aim`` is an unrelated CSS color token used ~40
+# places in the frontend, and English "aim" appears in prose ("aim an artifact
+# at"). So match only the shapes that constitute a real coupling: the invocation
+# grammar, the ``~/.aim`` home tree, and the ``aim.<type>``/``aim/<type>``
+# dependency-contract strings. A bare ``\baim\b`` would be unusable here.
+# The quoted ``".aim"`` alternative catches the path-BUILDING form
+# (``Path.home() / ".aim" / ...``), which the ``~/.aim`` literal misses.
+#
+# NOT yet covered: the ``~/.aim`` skill scan in agent.py carries its own
+# TODO(aim-governance follow-up) to route through the McpToolingProvider seam;
+# until that lands its call sites are allowlisted by path below.
+AIM_PATTERN='\baim (mcp|skills|agents|install|uninstall)\b|\baim\.(mcp|skills|agents)\b|\baim/(mcp|skills|agents)\b|~/\.aim|\bAIM CLI\b|"\.aim"'
+
+INTERNAL_PATTERN="$INTERNAL_PATTERN|$AIM_PATTERN"
 
 matches=$(grep -rniE "$INTERNAL_PATTERN" \
   src/ website/src/ website/docs/ docs/ skills/ scripts/ config/ packaging/ \

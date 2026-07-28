@@ -1656,7 +1656,7 @@ async def start_dashboard(
     app.router.add_post("/api/agents/sync", handlers.api_kirocrew_agents_sync)
     app.router.add_put("/api/agents/{name}", handlers.api_kirocrew_agent_update)
     app.router.add_delete("/api/agents/{name}", handlers.api_kirocrew_agent_delete)
-    # AIM agents
+    # Edition capability agents
     app.router.add_get("/api/capability/agents", handlers.api_capability_agents_list)
     # Agent metadata (Phase 1)
     app.router.add_get("/api/agent-metadata/{name}", handlers.api_agent_metadata_get)

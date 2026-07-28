@@ -944,7 +944,7 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
             logger.warning("SEL logging failed for agent sync noop", exc_info=True)
 
     if pruned:
-        logger.info("Pruned %d stale AIM agents: %s", len(pruned), ", ".join(pruned))
+        logger.info("Pruned %d stale package agents: %s", len(pruned), ", ".join(pruned))
 
     return web.json_response({"ok": True, "synced": synced, "pruned": pruned})
 

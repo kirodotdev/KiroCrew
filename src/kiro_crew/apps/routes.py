@@ -38,7 +38,14 @@ from kiro_crew.apps.bridges import (
     reregister_app_mcp_servers,
 )
 from kiro_crew.apps.builtins import BUILTIN_NAMES
+from kiro_crew.apps.dependencies import clean_dependencies
 from kiro_crew.apps.dependencies import resolve_dependencies as _resolve_deps
+from kiro_crew.apps.dependency_ledger import (
+    canonical_dep_key,
+    classify_and_clean_for_uninstall,
+    classify_for_uninstall,
+    declared_capability_keys,
+)
 from kiro_crew.apps.hooks_integration import on_app_disable, on_app_enable
 from kiro_crew.apps.manager import (
     app_lifecycle_lock,
@@ -660,17 +667,9 @@ async def handle_uninstall_preview(request: web.Request) -> web.Response:
     deps_data = manifest.get("dependencies", {})
 
     # Collect declared dependency keys
-    declared_deps: list[str] = []
-    aim_deps = deps_data.get("aim", {})
-    for dep_type in ("mcp", "skills", "agents"):
-        for entry in aim_deps.get(dep_type, []):
-            dep_id = entry.get("id") if isinstance(entry, dict) else entry
-            if not dep_id:
-                continue
-            declared_deps.append(f"aim/{dep_type}/{dep_id}")
+    declared_deps = declared_capability_keys(deps_data)
 
     # Classify dependencies
-    from kiro_crew.apps.dependency_ledger import classify_for_uninstall
     dep_classification = classify_for_uninstall(name, declared_deps)
 
     return web.json_response({
@@ -723,7 +722,13 @@ async def handle_uninstall_app(request: web.Request) -> web.Response:
         body = await request.json()
         keep_data = body.get("keep_data", False)
         keep_dependencies = body.get("keep_dependencies", False)
-        keep_specific = body.get("keep_specific", [])
+        # Sanitize here, at the parse boundary: this is unvalidated client JSON,
+        # and the dependency step that consumes it runs AFTER the onUninstall
+        # script and deregistration — so a `{"keep_specific": [null]}` body that
+        # raised downstream would leave the app half-removed.
+        raw_keep = body.get("keep_specific", [])
+        if isinstance(raw_keep, list):
+            keep_specific = [k for k in raw_keep if isinstance(k, str) and k]
     except Exception:
         pass
 
@@ -841,25 +846,21 @@ async def handle_uninstall_app(request: web.Request) -> web.Response:
         cleaned_deps: list[str] = []
         if not keep_dependencies:
             deps_data = manifest.get("dependencies", {})
-            aim_deps = deps_data.get("aim", {})
-            declared_deps: list[str] = []
-            for dep_type in ("mcp", "skills", "agents"):
-                for entry in aim_deps.get(dep_type, []):
-                    dep_id = entry.get("id") if isinstance(entry, dict) else entry
-                    if not dep_id:
-                        continue
-                    declared_deps.append(f"aim/{dep_type}/{dep_id}")
+            declared_deps = declared_capability_keys(deps_data)
 
-            from kiro_crew.apps.dependency_ledger import classify_and_clean_for_uninstall
+            # Normalize client-supplied keep ids: a dashboard session whose
+            # uninstall preview came from a pre-rename build echoes legacy keys,
+            # and classification emits canonical ones — comparing the two raw
+            # would drop the keep and delete a dep the user chose to keep.
+            keep_canonical = [canonical_dep_key(k) for k in keep_specific]
             classification = classify_and_clean_for_uninstall(
-                name, declared_deps, keep_specific=list(keep_specific),
+                name, declared_deps, keep_specific=keep_canonical,
             )
             removable = [
                 d for d in classification.get("removable", [])
-                if d.get("id") not in keep_specific
+                if d.get("id") not in keep_canonical
             ]
             if removable:
-                from kiro_crew.apps.dependencies import clean_dependencies
                 cleaned_deps = await clean_dependencies(name, removable)
                 if cleaned_deps:
                     uninstall_log.append(f"Cleaned {len(cleaned_deps)} dependency(ies)")

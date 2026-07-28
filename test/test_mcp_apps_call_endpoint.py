@@ -477,7 +477,7 @@ async def test_relay_rejects_session_mismatch(relay_env, spool_tmp):
 
 
 @pytest.fixture
-def relay_env(tmp_path, monkeypatch):
+def relay_env(short_sock_dir, monkeypatch):
     """Client factory for an app exposing ONLY the relay route, with the
     gateway socket redirected at a tmp path via the config override hook.
 
@@ -486,8 +486,13 @@ def relay_env(tmp_path, monkeypatch):
     pytest-asyncio (its wrapper reads ``fixturedef.unittest``, removed in
     pytest 8.1), so the suite avoids ``@pytest_asyncio.fixture`` by
     convention (see test_denied_commands_api.py).
+
+    Uses ``short_sock_dir`` rather than ``tmp_path``: an AF_UNIX path is capped
+    at ~104 bytes by ``sockaddr_un.sun_path``, and pytest's ``tmp_path`` under
+    macOS's ``/private/var/folders/...`` temp root already exceeds that before
+    the filename is appended.
     """
-    sock = tmp_path / "gateway.sock"
+    sock = short_sock_dir / "gateway.sock"
     monkeypatch.setattr(mcp_apps_handlers, "_socket_path", lambda: str(sock))
 
     @web.middleware

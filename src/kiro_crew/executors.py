@@ -32,7 +32,7 @@ Three pools, deliberately split:
 * :func:`discovery_executor` -- browser-triggerable, read-only filesystem
   discovery for dashboard list endpoints (``GET /api/skills``,
   ``/api/agents/installed``, ``/api/prompts``): ``os.walk`` of skill/agent/SOP
-  trees, per-file frontmatter reads, ``~/.aim`` globs.  A large catalog makes
+  trees, per-file frontmatter reads, edition skill-root globs.  A large catalog
   one such scan take seconds, and a ``run_in_executor`` future cannot be
   cancelled once started, so N concurrent dashboard tabs would each pin a
   worker for the full scan.  This gets its OWN pool so those user-triggerable

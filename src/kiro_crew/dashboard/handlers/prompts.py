@@ -75,9 +75,9 @@ def _redact_prompt(p: dict[str, Any]) -> None:
 
 async def api_prompts(request: web.Request) -> web.Response:
     """GET /api/prompts — list available prompts and agent SOPs."""
-    # _list_aim_prompts() walks ~/.aim/packages (rglob *.sop.md + per-file
-    # resolve/read + frontmatter parse) on a cold cache — blocking FS work that
-    # can stall the event loop on a large ~/.aim tree. It has a 5s TTL cache,
+    # _list_aim_prompts() walks the edition package tree (rglob *.sop.md +
+    # per-file resolve/read + frontmatter parse) on a cold cache — blocking FS
+    # work that can stall the event loop on a large tree. It has a 5s TTL cache,
     # but the cold/expired build must run off the loop. (The cache lives in the
     # parent package; the executor call still benefits from it on warm builds.)
     prompts = await asyncio.get_running_loop().run_in_executor(

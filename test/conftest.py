@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import pathlib
 import shutil
 import sys
 
@@ -16,7 +17,7 @@ from kiro_crew.slack.client import SlackClientOps
 from kiro_crew.slack.handler import _PHASE_EMOJIS, _build_phase_emojis
 
 # ── Hypothesis profiles ─────────────────────────────────────────────────
-# Default (CI): fast iteration.  Run ``HYPOTHESIS_PROFILE=thorough brazil-build test``
+# Default (CI): fast iteration.  Run ``HYPOTHESIS_PROFILE=thorough python -m pytest``
 # for deeper coverage.
 settings.register_profile("default", max_examples=20, suppress_health_check=[HealthCheck.too_slow], deadline=None)
 settings.register_profile("thorough", max_examples=100)
@@ -695,3 +696,31 @@ def _reset_platform_context(monkeypatch):
     yield
     reset_context()
     _reset_boot_state()
+
+
+@pytest.fixture
+def short_sock_dir(tmp_path):
+    """A temp dir short enough to hold an AF_UNIX socket path.
+
+    ``sockaddr_un.sun_path`` caps a unix-socket path at ~104 bytes on macOS (108
+    on Linux). pytest's ``tmp_path`` is derived from the platform temp root plus
+    the test name, and on macOS that root is ``/private/var/folders/<...>/T``,
+    which already blows the cap before a filename is appended — so binding under
+    ``tmp_path`` fails with ``OSError: AF_UNIX path too long`` on a developer
+    machine while passing in CI (Linux, short ``/tmp``).
+
+    Yields a short-rooted dir instead, cleaned up afterwards. Falls back to
+    ``tmp_path`` where no short root exists (notably Windows, where AF_UNIX tests
+    are skipped anyway), so this never hard-fails on an unusual platform.
+    """
+    import tempfile
+
+    short_root = "/tmp" if os.path.isdir("/tmp") else None
+    if short_root is None:
+        yield tmp_path
+        return
+    path = tempfile.mkdtemp(dir=short_root, prefix="kcsock-")
+    try:
+        yield pathlib.Path(path)
+    finally:
+        shutil.rmtree(path, ignore_errors=True)
