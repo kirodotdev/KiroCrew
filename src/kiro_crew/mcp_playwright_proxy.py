@@ -239,7 +239,23 @@ def _post_frame_to_gateway(img_bytes: bytes, fmt: str, source: str = "agent") ->
         try:
             b64 = base64.b64encode(img_bytes).decode("ascii")
             body = json.dumps(
-                {"data": b64, "format": fmt, "source": source, "session_key": _SESSION_KEY}
+                {
+                    "data": b64,
+                    "format": fmt,
+                    "source": source,
+                    # Frozen-env session key: correct for per-session spawns, but
+                    # empty for warm-pool workers (pre-spawned before a slot is
+                    # assigned, so KIROCREW_SESSION_KEY was never set). Sent as a
+                    # fallback only.
+                    "session_key": _SESSION_KEY,
+                    # This proxy's pid, so the gateway can resolve the AUTHORITATIVE
+                    # session key by walking our process ancestry to the kiro-cli
+                    # worker and verifying its gateway-signed session_pid sidecar
+                    # (the same per-turn mapping every managed MCP tool resolves).
+                    # This is what makes the live mirror work under the warm pool,
+                    # where the frozen env key above is empty.
+                    "host_pid": os.getpid(),
+                }
             ).encode("utf-8")
             headers = {"Content-Type": "application/json"}
             secret = _internal_secret()

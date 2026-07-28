@@ -13,6 +13,7 @@ from typing import Any, Callable
 
 from aiohttp import web
 
+from kiro_crew import platform_compat
 from kiro_crew.browser.auth import ensure as browser_auth_ensure
 from kiro_crew.browser.screencast import BROWSER_FRAME_EVENT, build_frame_payload
 from kiro_crew.browser.setup import (
@@ -36,6 +37,7 @@ from kiro_crew.notifications.bus import (
     NotificationValidationError,
 )
 from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
+from kiro_crew.session_pid_sig import verify_session_pid
 from kiro_crew.slack.format import build_options_blocks, extract_options
 from kiro_crew.subagent_persistence import _agent_dir, read_state
 from kiro_crew.validation import (
@@ -138,8 +140,8 @@ async def api_spawn(request: web.Request) -> web.Response:
         # this member as a lost submission (double-count would close the
         # wave early).
         return web.json_response(
-            {"error": f"capacity reached ({state.subagents.max_concurrent})",
-             "counted": True}, status=429
+            {"error": f"capacity reached ({state.subagents.max_concurrent})", "counted": True},
+            status=429,
         )
     if info.done and info.error:
         # Rejected INSIDE mgr.spawn: already counted as submitted and (for
@@ -689,9 +691,7 @@ async def api_notification_agent_push(request: web.Request) -> web.Response:
             source="notifications_api",
             error="internal-secret authentication required (cookie callers forbidden)",
         )
-        return web.json_response(
-            {"error": "internal-secret authentication required"}, status=403
-        )
+        return web.json_response({"error": "internal-secret authentication required"}, status=403)
     # Bound the body BEFORE decoding, mirroring the app push endpoint:
     # without this the strict-internal route inherits the server-wide
     # client_max_size, and a large JSON object would be buffered and decoded
@@ -720,9 +720,7 @@ async def api_notification_agent_push(request: web.Request) -> web.Response:
     for field_name in ("title", "body", "priority", "url", "group_key"):
         value = body.get(field_name)
         if value is not None and not isinstance(value, str):
-            return web.json_response(
-                {"error": f"{field_name} must be a string"}, status=400
-            )
+            return web.json_response({"error": f"{field_name} must be a string"}, status=400)
     actions = body.get("actions")
     if actions is not None and not isinstance(actions, list):
         return web.json_response({"error": "actions must be a list"}, status=400)
@@ -1559,6 +1557,42 @@ async def api_browser_event(request: web.Request) -> web.Response:
     return web.json_response({"ok": True})
 
 
+def _resolve_browse_session_key(host_pid: Any) -> str:
+    """Resolve the authoritative session key for a browse frame from the posting
+    proxy's ``host_pid``, walking process ancestors and verifying each one's
+    gateway-signed ``session_pid_<pid>.txt`` sidecar.
+
+    Warm-pool ``kiro-cli`` workers are pre-spawned before a slot is assigned, so
+    ``KIROCREW_SESSION_KEY`` is never in their env and the Playwright proxy's
+    frozen-env key (``session_key`` in the POST body) is empty. The reliable
+    source is the signed pid->key mapping the gateway publishes on session claim
+    — the same per-turn mechanism every managed MCP tool resolves (see
+    ``kiro_crew.mcp_core._resolve_session_key``). The proxy's immediate parent
+    (``kiro-cli-chat``) has no PID file, so we walk up to the ``kiro-cli`` worker
+    that does. ``verify_session_pid`` requires the HMAC sidecar (agents cannot
+    forge it) and binds the pid into the MAC, so a wrong/forged pid can't cross a
+    session boundary. Returns ``""`` when no ancestor has a verifiable mapping.
+    """
+    try:
+        pid = int(host_pid)
+    except (TypeError, ValueError):
+        return ""
+    seen: set[int] = set()
+    steps = 0
+    # Bounded walk: guards against a cycle (seen) or a pathological chain (steps).
+    while pid > 1 and pid not in seen and steps < 40:
+        seen.add(pid)
+        steps += 1
+        key = verify_session_pid(pid)
+        if key:
+            return key
+        try:
+            pid = platform_compat.get_ppid(pid)
+        except Exception:
+            break
+    return ""
+
+
 async def api_browser_frame(request: web.Request) -> web.Response:
     """POST /api/browser/frame — receive a browse screenshot and rebroadcast it.
 
@@ -1601,6 +1635,25 @@ async def api_browser_frame(request: web.Request) -> web.Response:
             resources="no-frame-data",
         )
         return web.json_response({"error": "no frame data"}, status=400)
+    # Stamp the AUTHORITATIVE session key resolved from the posting proxy's host
+    # pid (gateway-signed session_pid sidecar), overriding the proxy's frozen-env
+    # key which is empty under the warm pool. This is what lets the client-side
+    # panel (scoped by frameSessionKey === sessionKey) render the mirror and
+    # keeps a background session's frames from surfacing in the wrong panel. When
+    # no ancestor has a verifiable mapping we leave the proxy-provided fallback
+    # (empty on warm pool → client drops it, same as before — never worse).
+    resolved_key = await asyncio.to_thread(
+        _resolve_browse_session_key,
+        body.get("host_pid") if isinstance(body, dict) else None,
+    )
+    if resolved_key:
+        # verify_session_pid returns the FULL namespaced session key
+        # (e.g. "dashboard:chat-70-<ts>"), but the client panel filters frames
+        # by `frame.session_key === activeSlot`, where activeSlot is the BARE
+        # slot key ("chat-70-<ts>"). Without stripping the "dashboard:" prefix
+        # every frame is dropped on the mismatch and the mirror never renders.
+        # (Same normalization as the Slack slot-key resolution below.)
+        payload["session_key"] = resolved_key.removeprefix("dashboard:")
     state.broadcast_ws(BROWSER_FRAME_EVENT, payload)
     # Label the audit event by frame origin so the proxy's active pump frames are
     # distinguishable from agent-initiated screenshots. Bounded to a known set so
@@ -2549,9 +2602,7 @@ async def _telegram_config_save_locked(request: web.Request) -> web.Response:
                 if any(ch.isspace() for ch in tok):
                     return _deny("bot_token must not contain whitespace")
                 if not _TELEGRAM_TOKEN_RE.match(tok):
-                    return _deny(
-                        "bot_token must look like <bot_id>:<secret> from @BotFather"
-                    )
+                    return _deny("bot_token must look like <bot_id>:<secret> from @BotFather")
                 env_updates[CRED_TELEGRAM_BOT_TOKEN] = tok
 
     # Config → config.json under "telegram" (staged, applied only after Phase 1).
@@ -3195,9 +3246,7 @@ async def api_wecom_config_get(request: web.Request) -> web.Response:
     secret = creds.get(CRED_WECOM_SECRET, "")
     wc = cfg.wecom
     userids = [
-        str(u.get("userid"))
-        for u in wc.allowed_users
-        if isinstance(u, dict) and u.get("userid")
+        str(u.get("userid")) for u in wc.allowed_users if isinstance(u, dict) and u.get("userid")
     ]
     state: DashboardState = request.app["state"]
     return web.json_response(

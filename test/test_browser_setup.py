@@ -22,6 +22,7 @@ from kiro_crew.browser.setup import (
     _converge_playwright_agent_files,
     _drop_superseded_playwright,
     _entry_is_playwright_proxy,
+    check_playwright_launchable,
     converge_playwright_servers,
     ensure_playwright_installed,
     generate_playwright_config,
@@ -33,6 +34,7 @@ from kiro_crew.browser.setup import (
     patch_mcp_extension,
     patch_mcp_headless,
     refresh_storage_state,
+    register_playwright_proxy,
 )
 from kiro_crew.config.paths import config_dir
 from kiro_crew.mcp_utils import mcp_server_alias
@@ -227,6 +229,81 @@ class TestGeneratePlaywrightConfig:
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         config = json.loads(generate_playwright_config().read_text(encoding="utf-8"))
         assert config["browser"]["launchOptions"]["channel"] == "chromium"
+
+    def test_config_runs_headless(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        # The dashboard Browser panel mirror is the view surface, so the browser
+        # runs headless — no visible OS window (and works on display-less Linux).
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        config = json.loads(generate_playwright_config().read_text(encoding="utf-8"))
+        assert config["browser"]["launchOptions"]["headless"] is True
+
+
+# ── TestBrowseSetupHelpers (guided one-command setup) ────────────────────────
+
+
+class TestCheckPlaywrightLaunchable:
+    def test_ok_when_resolver_returns_cmd(self, monkeypatch: pytest.MonkeyPatch):
+        # setup.py imports _resolve_playwright_cmd at module scope, so patch the
+        # name where it is looked up (setup_mod), not on the origin module.
+        monkeypatch.setattr(setup_mod, "_resolve_playwright_cmd", lambda: "/usr/bin/npx")
+        ok, detail = check_playwright_launchable()
+        assert ok is True
+        assert detail == "/usr/bin/npx"
+
+    def test_not_ok_with_install_hint_when_unresolvable(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(setup_mod, "_resolve_playwright_cmd", lambda: None)
+        ok, detail = check_playwright_launchable()
+        assert ok is False
+        assert "@playwright/mcp" in detail
+
+
+class TestRegisterPlaywrightProxy:
+    def test_creates_mcp_json_and_registers_canonical(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        # A fresh user has no ~/.kiro/settings/mcp.json; register creates it and
+        # writes the canonical proxy entry so one command fully wires the panel.
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(setup_mod, "_kirocrew_bin", lambda: "kirocrew")
+        monkeypatch.setattr(setup_mod, "has_playwright_extension", lambda: False)
+        mcp_json = tmp_path / ".kiro" / "settings" / "mcp.json"
+        assert not mcp_json.exists()
+        returned, status = register_playwright_proxy()
+        assert returned == mcp_json and mcp_json.exists()
+        assert status == "registered"
+        servers = json.loads(mcp_json.read_text(encoding="utf-8"))["mcpServers"]
+        assert _CANONICAL in servers
+        assert "mcp-playwright-proxy" in servers[_CANONICAL]["args"]
+
+    def test_registers_into_existing_mcp_json_without_clobbering_user(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(setup_mod, "_kirocrew_bin", lambda: "kirocrew")
+        monkeypatch.setattr(setup_mod, "has_playwright_extension", lambda: False)
+        mcp_json = _write_mcp_json(tmp_path, {"other-mcp": {"command": "foo"}})
+        _, status = register_playwright_proxy()
+        assert status == "registered"
+        servers = json.loads(mcp_json.read_text(encoding="utf-8"))["mcpServers"]
+        assert _CANONICAL in servers
+        assert servers["other-mcp"] == {"command": "foo"}
+
+    def test_keeps_user_direct_server_under_canonical_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        # A user hand-authored their OWN direct (non-proxy) server under the
+        # canonical `playwright-mcp` key. `browse setup` must NOT overwrite it —
+        # authorship is by launch target, not key name. Leave it byte-identical
+        # and report kept-user-entry.
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(setup_mod, "_kirocrew_bin", lambda: "kirocrew")
+        monkeypatch.setattr(setup_mod, "has_playwright_extension", lambda: False)
+        direct = {"command": "npx", "args": ["@playwright/mcp@latest"]}
+        mcp_json = _write_mcp_json(tmp_path, {_CANONICAL: dict(direct)})
+        before = mcp_json.read_text(encoding="utf-8")
+        _, status = register_playwright_proxy()
+        assert status == "kept-user-entry"
+        assert mcp_json.read_text(encoding="utf-8") == before
 
 
 # ── TestRefreshStorageState ──────────────────────────────────────────────────
@@ -851,7 +928,9 @@ class TestConvergePlaywrightAgentFiles:
         # The .bak file was NOT swept (still holds the duplicate).
         assert (
             "playwright-proxy-mcp"
-            in json.loads((kiro_dir / "kirocrew.json.bak.123").read_text(encoding="utf-8"))["mcpServers"]
+            in json.loads((kiro_dir / "kirocrew.json.bak.123").read_text(encoding="utf-8"))[
+                "mcpServers"
+            ]
         )
 
     def test_no_error_when_dirs_absent(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -895,11 +974,21 @@ class TestConvergePlaywrightAgentFiles:
 
         # KiroCrew-owned files converged to one server.
         assert set(json.loads(owned.read_text(encoding="utf-8"))["mcpServers"]) == {_CANONICAL}
-        assert set(json.loads(owned_variant.read_text(encoding="utf-8"))["mcpServers"]) == {_CANONICAL}
+        assert set(json.loads(owned_variant.read_text(encoding="utf-8"))["mcpServers"]) == {
+            _CANONICAL
+        }
         # User-owned files byte-identical (both proxies preserved).
-        assert "playwright-proxy-mcp" in json.loads(user_prefixed.read_text(encoding="utf-8"))["mcpServers"]
-        assert "playwright-proxy-mcp" in json.loads(user_kiro.read_text(encoding="utf-8"))["mcpServers"]
-        assert "playwright-proxy-mcp" in json.loads(user_cc.read_text(encoding="utf-8"))["mcpServers"]
+        assert (
+            "playwright-proxy-mcp"
+            in json.loads(user_prefixed.read_text(encoding="utf-8"))["mcpServers"]
+        )
+        assert (
+            "playwright-proxy-mcp"
+            in json.loads(user_kiro.read_text(encoding="utf-8"))["mcpServers"]
+        )
+        assert (
+            "playwright-proxy-mcp" in json.loads(user_cc.read_text(encoding="utf-8"))["mcpServers"]
+        )
 
     @pytest.mark.skipif(not IS_POSIX, reason="POSIX permission bits only")
     def test_preserves_0600_file_mode_on_sweep(
@@ -928,7 +1017,9 @@ class TestConvergePlaywrightAgentFiles:
         _converge_playwright_agent_files()
 
         # Converged (one server left) AND still owner-only readable.
-        assert set(json.loads(secret_file.read_text(encoding="utf-8"))["mcpServers"]) == {_CANONICAL}
+        assert set(json.loads(secret_file.read_text(encoding="utf-8"))["mcpServers"]) == {
+            _CANONICAL
+        }
         assert stat.S_IMODE(secret_file.stat().st_mode) == 0o600
 
 

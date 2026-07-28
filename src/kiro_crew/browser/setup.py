@@ -23,6 +23,7 @@ from kiro_crew.agent_files import OWNED_CC_AGENT_FILES, OWNED_KIRO_AGENT_FILES
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.browser.auth import parse_netscape_cookies
 from kiro_crew.config.paths import config_dir
+from kiro_crew.mcp_playwright_proxy import _resolve_playwright_cmd
 from kiro_crew.mcp_utils import mcp_server_alias
 
 logger = logging.getLogger(__name__)
@@ -168,6 +169,12 @@ def generate_playwright_config() -> Path:
             "isolated": True,
             "launchOptions": {
                 "channel": "chromium",
+                # Run headless: the live mirror in the dashboard Browser panel is
+                # the intended view surface, so a separate visible OS window is
+                # redundant (and breaks on display-less Linux hosts). Auth is
+                # seeded via ``storageState`` below, so no interactive SSO window
+                # is needed.
+                "headless": True,
                 "args": [],
             },
             "contextOptions": {
@@ -682,6 +689,78 @@ def patch_mcp_headless() -> None:
         _record_owned_mcp_key(canonical)
     except (json.JSONDecodeError, OSError):
         pass
+
+
+def check_playwright_launchable() -> tuple[bool, str]:
+    """Best-effort check that a Playwright MCP launcher is resolvable.
+
+    Reuses the proxy's own resolution order (``KIROCREW_PLAYWRIGHT_CMD`` →
+    a ``mcp-server-playwright``/``playwright-mcp`` binary → ``npx``), so the
+    check agrees with what the proxy would actually spawn. Returns
+    ``(ok, detail)`` where ``detail`` is the resolved launcher, or an install
+    hint when nothing is resolvable (e.g. Node/npm absent).
+    """
+    cmd = _resolve_playwright_cmd()
+    if cmd is None:
+        return (
+            False,
+            "not found — install Node.js then `npm i -g @playwright/mcp` "
+            "(or ensure `npx` is on PATH)",
+        )
+    return True, cmd
+
+
+def register_playwright_proxy() -> tuple[Path, str]:
+    """Register KiroCrew's Playwright proxy in kiro's ``mcp.json``.
+
+    Unlike the boot-time converge helpers, this is the explicit ``browse setup``
+    entry point: it CREATES ``~/.kiro/settings/mcp.json`` when absent (so a fresh
+    user gets a wired server from one command) and then writes the canonical
+    proxy entry via the mode-appropriate patch (extension vs headless config).
+
+    Returns ``(mcp_json_path, status)`` where ``status`` is ``"registered"``
+    (KiroCrew's proxy was written/refreshed) or ``"kept-user-entry"`` (a
+    user-authored NON-proxy server already holds the canonical ``playwright-mcp``
+    key, so we left it untouched rather than clobber their config — authorship is
+    by launch target, not key name, mirroring the boot-time migration guard).
+    """
+    mcp_json = Path.home() / ".kiro" / "settings" / "mcp.json"
+    mcp_json.parent.mkdir(parents=True, exist_ok=True)
+    # Serialize with the other writers of this SAME file — the dashboard MCP
+    # handler and the app bridges both take an exclusive flock on the shared
+    # ``mcp.lock`` sidecar (via platform_compat.file_lock) before mutating
+    # mcp.json. Hold that lock across our read + create + patch_mcp_* write so a
+    # concurrent gateway/bridge update can't be clobbered (which would drop the
+    # other writer's server entries).
+    lock_path = mcp_json.with_suffix(".lock")
+    lock_path.touch(exist_ok=True)
+    canonical = mcp_server_alias(_PLAYWRIGHT_MCP_PACKAGE)
+    # "r+" (not "r"): Windows msvcrt.locking requires a writable fd.
+    with open(lock_path, "r+") as lf:
+        with platform_compat.file_lock(lf.fileno(), exclusive=True):
+            if mcp_json.exists():
+                try:
+                    existing = json.loads(mcp_json.read_text(encoding="utf-8"))
+                except (json.JSONDecodeError, OSError):
+                    existing = {}
+                servers = existing.get("mcpServers") if isinstance(existing, dict) else None
+                canon = servers.get(canonical) if isinstance(servers, dict) else None
+                # A user may hand-author their OWN direct (non-proxy) server under
+                # the canonical key. patch_mcp_* would overwrite it, silently
+                # losing their config — so leave it untouched and report back.
+                if canon is not None and not _spec_is_proxy(canon):
+                    return mcp_json, "kept-user-entry"
+            else:
+                mcp_json.write_text(json.dumps({"mcpServers": {}}, indent=2), encoding="utf-8")
+            if has_playwright_extension():
+                token = get_extension_token() or ""
+                if token:
+                    patch_mcp_extension(token)
+                else:
+                    patch_mcp_headless()
+            else:
+                patch_mcp_headless()
+    return mcp_json, "registered"
 
 
 def inject_cookies_via_playwright(cookie_file: str | None = None) -> dict[str, Any]:

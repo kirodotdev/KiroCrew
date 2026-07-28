@@ -161,7 +161,7 @@ def _make_frame_app(state) -> web.Application:
     app.router.add_post("/api/browser/frame", api_browser_frame)
     app["state"] = state
     # ws_client_count() must return an int for json_response serialization.
-    if not hasattr(state.ws_client_count, 'return_value') or not isinstance(
+    if not hasattr(state.ws_client_count, "return_value") or not isinstance(
         state.ws_client_count.return_value, int
     ):
         state.ws_client_count.return_value = 0
@@ -240,11 +240,133 @@ class TestApiBrowserFrameHandler:
         state.broadcast_ws.assert_not_called()
 
 
+class TestBrowseSessionKeyResolution:
+    """Warm-pool fix: the proxy sends its host pid, and the gateway resolves the
+    authoritative session key by walking process ancestors + verifying the
+    signed session_pid sidecar — overriding the (empty on warm pool) env key."""
+
+    def test_post_frame_body_includes_host_pid_and_env_key(self, monkeypatch):
+        import json as _json
+
+        import kiro_crew.mcp_playwright_proxy as proxy
+
+        captured = {}
+
+        class _Resp:
+            def read(self):
+                return b'{"ok": true, "subscribers": 1}'
+
+            def close(self):
+                pass
+
+        def _fake_urlopen(req, timeout=2):
+            captured["body"] = req.data
+            return _Resp()
+
+        class _Thread:  # run the daemon send synchronously
+            def __init__(self, *a, **k):
+                self._t = k.get("target")
+
+            def start(self):
+                self._t()
+
+        monkeypatch.setattr(proxy, "_EXTENSION_MODE", False)
+        monkeypatch.setattr(proxy.threading, "Thread", _Thread)
+        monkeypatch.setattr(proxy.urllib.request, "urlopen", _fake_urlopen)
+        monkeypatch.setattr(proxy, "_internal_secret", lambda: "secret")
+        monkeypatch.setattr(proxy, "_SESSION_KEY", "env-key")
+
+        proxy._post_frame_to_gateway(b"\xff\xd8\xff", "jpeg")
+
+        payload = _json.loads(captured["body"])
+        assert payload["host_pid"] == os.getpid()
+        assert payload["session_key"] == "env-key"  # fallback still sent
+
+    def test_resolver_walks_ancestors_and_verifies(self, monkeypatch):
+        from kiro_crew.dashboard.handlers.messaging import _resolve_browse_session_key
+
+        # ppid chain: 100 -> 200 -> 300 -> 1; only 300 has a verifiable sidecar.
+        ppids = {100: 200, 200: 300, 300: 1}
+        verified = {300: "sess-live"}
+        monkeypatch.setattr("kiro_crew.platform_compat.get_ppid", lambda pid: ppids.get(pid, -1))
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.messaging.verify_session_pid",
+            lambda pid: verified.get(int(pid), ""),
+        )
+        assert _resolve_browse_session_key(100) == "sess-live"
+        assert _resolve_browse_session_key("100") == "sess-live"
+
+    def test_resolver_returns_empty_on_bad_or_unmapped_pid(self, monkeypatch):
+        from kiro_crew.dashboard.handlers.messaging import _resolve_browse_session_key
+
+        monkeypatch.setattr("kiro_crew.platform_compat.get_ppid", lambda pid: 1)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.messaging.verify_session_pid", lambda pid: ""
+        )
+        assert _resolve_browse_session_key(None) == ""
+        assert _resolve_browse_session_key("not-an-int") == ""
+        assert _resolve_browse_session_key(4242) == ""  # no ancestor mapping
+
+    @pytest.mark.asyncio
+    async def test_resolved_key_overrides_payload(self):
+        state = MagicMock()
+        app = _make_frame_app(state)
+        with (
+            patch("kiro_crew.dashboard.handlers.messaging.is_loopback", return_value=True),
+            patch("kiro_crew.dashboard.handlers.messaging._sel"),
+            patch(
+                "kiro_crew.dashboard.handlers.messaging._resolve_browse_session_key",
+                return_value="sess-authoritative",
+            ),
+        ):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post(
+                    "/api/browser/frame", json={**_VALID_FRAME, "host_pid": 12345}
+                )
+                assert resp.status == 200
+        _event, payload = state.broadcast_ws.call_args[0]
+        assert payload["session_key"] == "sess-authoritative"
+
+    @pytest.mark.asyncio
+    async def test_resolved_key_strips_dashboard_prefix(self):
+        # verify_session_pid returns the full namespaced key ("dashboard:<slot>"),
+        # but the client panel filters by the BARE slot key. The handler must strip
+        # the "dashboard:" prefix so the frame matches the on-screen slot; otherwise
+        # every frame is dropped on the mismatch and the mirror never renders.
+        state = MagicMock()
+        app = _make_frame_app(state)
+        with (
+            patch("kiro_crew.dashboard.handlers.messaging.is_loopback", return_value=True),
+            patch("kiro_crew.dashboard.handlers.messaging._sel"),
+            patch(
+                "kiro_crew.dashboard.handlers.messaging._resolve_browse_session_key",
+                return_value="dashboard:chat-70-1785264224",
+            ),
+        ):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post(
+                    "/api/browser/frame", json={**_VALID_FRAME, "host_pid": 12345}
+                )
+                assert resp.status == 200
+        _event, payload = state.broadcast_ws.call_args[0]
+        assert payload["session_key"] == "chat-70-1785264224"
+
+
 class TestActivePump:
     """B′ active pump: idle-gated self-issued screenshots that keep the mirror current."""
 
-    def _reset(self, proxy, monkeypatch, *, enabled=True, pending=None, inflight=None,
-               sent_at=0.0, activity=None, subs=1):
+    def _reset(
+        self,
+        proxy,
+        monkeypatch,
+        *,
+        enabled=True,
+        pending=None,
+        inflight=None,
+        sent_at=0.0,
+        activity=None,
+        subs=1,
+    ):
         now = 1000.0
         monkeypatch.setattr(proxy, "_pump_enabled", enabled)
         monkeypatch.setattr(proxy, "_PENDING_REQUESTS", pending if pending is not None else {})
@@ -290,8 +412,9 @@ class TestActivePump:
         import kiro_crew.mcp_playwright_proxy as proxy
 
         # stuck pump older than _PUMP_TIMEOUT no longer blocks
-        now = self._reset(proxy, monkeypatch, inflight="__mc_pump_1",
-                          sent_at=1000.0 - proxy._PUMP_TIMEOUT - 1)
+        now = self._reset(
+            proxy, monkeypatch, inflight="__mc_pump_1", sent_at=1000.0 - proxy._PUMP_TIMEOUT - 1
+        )
         assert proxy._should_pump(now) is True
 
     def test_should_pump_blocked_when_session_idle_cold(self, monkeypatch):
@@ -311,7 +434,9 @@ class TestActivePump:
         import kiro_crew.mcp_playwright_proxy as proxy
 
         monkeypatch.setattr(proxy, "_last_browse_activity", 0.0)
-        proxy._note_browse_activity({"method": "tools/call", "params": {"name": "browser_navigate"}})
+        proxy._note_browse_activity(
+            {"method": "tools/call", "params": {"name": "browser_navigate"}}
+        )
         assert proxy._last_browse_activity > 0.0  # browser_* updates it
 
         monkeypatch.setattr(proxy, "_last_browse_activity", 0.0)
@@ -324,13 +449,19 @@ class TestActivePump:
         import kiro_crew.mcp_playwright_proxy as proxy
 
         posted = []
-        monkeypatch.setattr(proxy, "_post_frame_to_gateway",
-                            lambda b, fmt, source="agent": posted.append((b, fmt, source)))
+        monkeypatch.setattr(
+            proxy,
+            "_post_frame_to_gateway",
+            lambda b, fmt, source="agent": posted.append((b, fmt, source)),
+        )
         png_b64 = (
             "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M8AAAMCAQAB"
             "GqQ4QAAAAABJRU5ErkJggg=="
         )
-        msg = {"id": "__mc_pump_3", "result": {"content": [{"type": "image", "data": png_b64, "mimeType": "image/png"}]}}
+        msg = {
+            "id": "__mc_pump_3",
+            "result": {"content": [{"type": "image", "data": png_b64, "mimeType": "image/png"}]},
+        }
         proxy._relay_pump_frame(msg)
         # pump frames are tagged source="pump" so the gateway can label them in SEL
         assert len(posted) == 1 and isinstance(posted[0][0], bytes) and posted[0][0]
@@ -340,8 +471,12 @@ class TestActivePump:
         import kiro_crew.mcp_playwright_proxy as proxy
 
         posted = []
-        monkeypatch.setattr(proxy, "_post_frame_to_gateway", lambda b, fmt, source="agent": posted.append(b))
-        proxy._relay_pump_frame({"id": "__mc_pump_4", "result": {"content": [{"type": "text", "text": "x"}]}})
+        monkeypatch.setattr(
+            proxy, "_post_frame_to_gateway", lambda b, fmt, source="agent": posted.append(b)
+        )
+        proxy._relay_pump_frame(
+            {"id": "__mc_pump_4", "result": {"content": [{"type": "text", "text": "x"}]}}
+        )
         proxy._relay_pump_frame({"id": "__mc_pump_5", "error": {"code": -32000}})  # error response
         assert posted == []
 
@@ -349,11 +484,16 @@ class TestActivePump:
         import kiro_crew.mcp_playwright_proxy as proxy
 
         posted = []
-        monkeypatch.setattr(proxy, "_post_frame_to_gateway",
-                            lambda b, fmt, source="agent": posted.append(b))
+        monkeypatch.setattr(
+            proxy, "_post_frame_to_gateway", lambda b, fmt, source="agent": posted.append(b)
+        )
         # malformed base64 makes _encode_frame raise; the main relay loop must not crash
-        msg = {"id": "__mc_pump_6",
-               "result": {"content": [{"type": "image", "data": "!!!not base64!!!", "mimeType": "image/png"}]}}
+        msg = {
+            "id": "__mc_pump_6",
+            "result": {
+                "content": [{"type": "image", "data": "!!!not base64!!!", "mimeType": "image/png"}]
+            },
+        }
         proxy._relay_pump_frame(msg)  # must not raise
         assert posted == []
 
@@ -451,9 +591,7 @@ class TestPumpAudit:
 
         calls = []
         monkeypatch.setattr(proxy, "_EXTENSION_MODE", True)
-        monkeypatch.setattr(
-            proxy.urllib.request, "urlopen", lambda *a, **k: calls.append("post")
-        )
+        monkeypatch.setattr(proxy.urllib.request, "urlopen", lambda *a, **k: calls.append("post"))
         # Extension mode: the user sees their own Chrome; no audit POST, and the
         # caller treats the False return as "do not inject".
         assert proxy._post_pump_audit() is False

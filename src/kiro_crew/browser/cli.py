@@ -61,10 +61,12 @@ def run_browse(args: list[str]) -> None:
 
 
 def _print_help() -> None:
-    print("""kirocrew browse — Playwright MCP browser setup
+    print(
+        """kirocrew browse — Playwright MCP browser setup
 
 Commands:
-  setup                Generate the Playwright MCP config (OSS)
+  setup                Configure the Browser panel: write config, register the
+                       proxy, and check the @playwright/mcp launcher (OSS)
   auth health          not available in OSS
   auth inject          not available in OSS
   auth refresh         not available in OSS
@@ -77,21 +79,49 @@ Modes:
     with all existing auth — no cookie injection needed. Requires the Playwright
     Chrome extension: https://chromewebstore.google.com/detail/mmlmfjhmonkocbjadbfplnigmagldckm
   Headless mode (default on Linux): Launches separate Chromium.
-""")
+"""
+    )
 
 
 def _cmd_setup() -> None:
-    """Generate the Playwright MCP config (OSS).
+    """Guided one-command Playwright MCP setup for the Browser panel.
 
-    Automated Playwright MCP installation is not available in the open-source
-    build. Install the public ``@playwright/mcp`` package yourself (for example
-    via ``npx @playwright/mcp``); this command only writes the local config.
+    Writes the headless Chromium config, registers the compression proxy in
+    kiro's ``mcp.json`` (creating it if absent), and checks that a Playwright
+    launcher is resolvable — then prints a ✓/✗ checklist and the single
+    remaining action (restart the gateway). The public ``@playwright/mcp``
+    package still installs separately in the OSS build; this reports whether it
+    is resolvable and gives the exact install command when it is not.
     """
-    print("Generating Playwright MCP config...")
-    _setup.ensure_playwright_installed()
-    _setup.generate_playwright_config()
-    print(f"Done. Wrote Playwright MCP config to {config_dir() / 'playwright-config.json'}.")
-    print("Install the public @playwright/mcp package separately (e.g. npx @playwright/mcp).")
+    print("Setting up Playwright MCP for the Browser panel...\n")
+
+    cfg = _setup.generate_playwright_config()
+    print(f"  \u2713 Playwright config (headless)   {cfg}")
+
+    mcp_json, reg_status = _setup.register_playwright_proxy()
+    if reg_status == "kept-user-entry":
+        print(f"  \u00b7 Proxy NOT registered           {mcp_json}")
+        print("    (you already have your own 'playwright-mcp' server — left untouched)")
+    else:
+        print(f"  \u2713 Proxy registered               {mcp_json}")
+
+    ok, detail = _setup.check_playwright_launchable()
+    mark = "\u2713" if ok else "\u2717"
+    print(f"  {mark} @playwright/mcp launcher       {detail}")
+
+    storage_state = config_dir() / "playwright-storage-state.json"
+    if storage_state.exists():
+        print(f"  \u2713 Storage state                  {storage_state}")
+    else:
+        print("  \u00b7 Storage state (optional)       not set — public sites work without it")
+
+    print()
+    if not ok:
+        print("Action needed — install the Playwright MCP package, then re-run this:")
+        print("  npm install -g @playwright/mcp        # or: npx @playwright/mcp\n")
+    print("Restart the gateway to apply:   kirocrew stop && kirocrew gateway\n")
+    print("The Browser panel is a read-only live mirror (view-only). Toggle")
+    print('"Browser use" (the Globe) to let the agent operate the page.')
 
 
 def _cmd_extension(action: str) -> None:

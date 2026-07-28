@@ -100,9 +100,7 @@ class ProcessTopology:
 
     def write_session_pid(self, host_pid: int, session_key: str = SESSION_KEY) -> None:
         """The gateway-side contract: files keyed by HOST pid, always."""
-        (self.cfg_dir / f"session_pid_{host_pid}.txt").write_text(
-            session_key, encoding="utf-8"
-        )
+        (self.cfg_dir / f"session_pid_{host_pid}.txt").write_text(session_key, encoding="utf-8")
 
     # -- what a given process observes under a view ------------------------
 
@@ -138,10 +136,10 @@ class ProcessTopology:
 
 # Canonical subagent tree. Host pids are chosen above any real test-host
 # process range concern because all lookups are routed through the fixture.
-GATEWAY = 100          # writes session_pid files; outside any namespace
-SESSION_HOST = 110     # ns PID 1 when the sandbox adds a pid namespace
-KIRO_CLI = 120         # ns PID 2
-MCP_SERVER = 130       # ns PID 3 — the process running the resolvers below
+GATEWAY = 100  # writes session_pid files; outside any namespace
+SESSION_HOST = 110  # ns PID 1 when the sandbox adds a pid namespace
+KIRO_CLI = 120  # ns PID 2
+MCP_SERVER = 130  # ns PID 3 — the process running the resolvers below
 
 
 @pytest.fixture()
@@ -164,9 +162,7 @@ def _wire_common(monkeypatch: pytest.MonkeyPatch, topo: ProcessTopology, view: s
     # sandbox whose launcher exports it) would short-circuit the /proc walk
     # under test and flip the strict pidns xfails to XPASS.
     monkeypatch.delenv("KIROCREW_HOST_PID", raising=False)
-    monkeypatch.setattr(
-        "os.getppid", lambda: topo.observed_ppid(MCP_SERVER, view)
-    )
+    monkeypatch.setattr("os.getppid", lambda: topo.observed_ppid(MCP_SERVER, view))
     # Reset the fork's process-lifetime from_env cache: a previously-resolved
     # identity from an earlier test (or the host-view run of this test) would
     # otherwise short-circuit the walk and XPASS the strict pidns variants.
@@ -185,9 +181,7 @@ def test_from_env_resolves_session_key(topo, monkeypatch, view) -> None:
     _wire_common(monkeypatch, topo, view)
     monkeypatch.setattr(mcp_caller, "_parent_pid", topo.parent_lookup(view))
     # from_env imports config_dir lazily from the loader module.
-    monkeypatch.setattr(
-        "kiro_crew.config.loader.config_dir", lambda: topo.cfg_dir
-    )
+    monkeypatch.setattr("kiro_crew.config.loader.config_dir", lambda: topo.cfg_dir)
 
     ctx = mcp_caller.CallerContext.from_env()
     assert ctx.session_key == SESSION_KEY
@@ -236,9 +230,7 @@ def test_mcp_shared_policy_walk_reaches_gateway(topo, monkeypatch, view) -> None
 
     cfg = MagicMock()
     cfg.dashboard.url = "http://localhost:5476/"
-    monkeypatch.setattr(
-        mcp_shared.KiroCrewConfig, "load", classmethod(lambda cls: cfg)
-    )
+    monkeypatch.setattr(mcp_shared.KiroCrewConfig, "load", classmethod(lambda cls: cfg))
     monkeypatch.setattr(mcp_shared, "parse_dashboard_url", lambda url: ("localhost", 5476))
     monkeypatch.setattr(mcp_shared, "config_dir", lambda: topo.cfg_dir)
     (topo.cfg_dir / ".local_secret").write_text("s")
@@ -273,9 +265,7 @@ def test_stub_caller_block_carries_session_key(topo, monkeypatch, view) -> None:
 
     _wire_common(monkeypatch, topo, view)
     monkeypatch.setattr(mcp_caller, "_parent_pid", topo.parent_lookup(view))
-    monkeypatch.setattr(
-        "kiro_crew.config.loader.config_dir", lambda: topo.cfg_dir
-    )
+    monkeypatch.setattr("kiro_crew.config.loader.config_dir", lambda: topo.cfg_dir)
 
     caller = stub._build_caller_block(None)
     assert caller["session_key"] == SESSION_KEY
@@ -315,9 +305,7 @@ def test_from_env_host_pid_env_resolves_in_any_view(topo, monkeypatch, view) -> 
 
     _wire_common(monkeypatch, topo, view)
     monkeypatch.setattr(mcp_caller, "_parent_pid", topo.parent_lookup(view))
-    monkeypatch.setattr(
-        "kiro_crew.config.loader.config_dir", lambda: topo.cfg_dir
-    )
+    monkeypatch.setattr("kiro_crew.config.loader.config_dir", lambda: topo.cfg_dir)
     # The launcher (session host) exported its HOST pid before unshare.
     monkeypatch.setenv("KIROCREW_HOST_PID", str(SESSION_HOST))
 
@@ -382,9 +370,7 @@ def test_from_env_refuses_symlinked_pid_file(topo, monkeypatch) -> None:
     _plant_symlink(topo, SESSION_HOST)
     _wire_common(monkeypatch, topo, "host")
     monkeypatch.setattr(mcp_caller, "_parent_pid", topo.parent_lookup("host"))
-    monkeypatch.setattr(
-        "kiro_crew.config.loader.config_dir", lambda: topo.cfg_dir
-    )
+    monkeypatch.setattr("kiro_crew.config.loader.config_dir", lambda: topo.cfg_dir)
 
     ctx = mcp_caller.CallerContext.from_env()
     assert ctx.session_key == ""
@@ -400,9 +386,7 @@ def test_mcp_shared_refuses_symlinked_pid_file(topo, monkeypatch) -> None:
 
     cfg = MagicMock()
     cfg.dashboard.url = "http://localhost:5476/"
-    monkeypatch.setattr(
-        mcp_shared.KiroCrewConfig, "load", classmethod(lambda cls: cfg)
-    )
+    monkeypatch.setattr(mcp_shared.KiroCrewConfig, "load", classmethod(lambda cls: cfg))
     monkeypatch.setattr(mcp_shared, "parse_dashboard_url", lambda url: ("localhost", 5476))
     monkeypatch.setattr(mcp_shared, "config_dir", lambda: topo.cfg_dir)
     (topo.cfg_dir / ".local_secret").write_text("s")
@@ -485,8 +469,13 @@ _REGISTERED_CALL_SITES: dict[str, str] = {
         "session_pid_sig.read_session_pid_txt (hardened, unsigned)"
     ),
     "mcp_gateway/stub.py": "reader via CallerContext.from_env; register-time caller block — assumes HOST pids",
+    "dashboard/handlers/messaging.py": (
+        "reader (STRICT): api_browser_frame resolves the browse-mirror session "
+        "key from the posting Playwright proxy's host_pid by walking process "
+        "ancestry and calling session_pid_sig.verify_session_pid (HMAC-verified) "
+        "on each ancestor — HOST-pid-keyed, no unsigned .txt read"
+    ),
     "mcp_gateway/gatewayd.py": (
-        "reader: SERVER-side /proc ancestry walk from the SO_PEERCRED peer pid "
         "(_resolve_peer_identity) — runs in gatewayd's own (host) pid namespace, "
         "so it is immune to client-side namespace divergence; also indexes the "
         "host ancestor chain for claim-push matching; .txt reads via "
