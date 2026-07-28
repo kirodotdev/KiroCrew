@@ -1774,6 +1774,29 @@ class TestStop:
         assert "No Kiro Crew gateway" in capsys.readouterr().out
 
 
+class TestWaitForPidsExit:
+    """Tests for the bounded ``_wait_for_pids_exit`` helper."""
+
+    def test_empty_pid_list_returns_immediately(self):
+        from kiro_crew.cli_server import _wait_for_pids_exit
+
+        assert _wait_for_pids_exit([], timeout=99) == []
+
+    def test_zero_timeout_still_probes_once(self):
+        """A zero timeout must not skip the check and report a false all-clear."""
+        from kiro_crew.cli_server import _wait_for_pids_exit
+
+        with patch("kiro_crew.cli_server._pid_exited", return_value=False) as mock_exited:
+            assert _wait_for_pids_exit([7], timeout=0) == [7]
+        mock_exited.assert_called_once_with(7)
+
+    def test_returns_only_the_pids_still_alive(self):
+        from kiro_crew.cli_server import _wait_for_pids_exit
+
+        with patch("kiro_crew.cli_server._pid_exited", side_effect=lambda p: p != 9):
+            assert _wait_for_pids_exit([8, 9], timeout=0) == [9]
+
+
 class TestRestart:
     """Tests for the service-aware ``_restart`` CLI function.
 
@@ -1912,6 +1935,116 @@ class TestRestart:
         mock_stop.assert_called_once_with(None)
         mock_spawn.assert_called_once()
         assert "9999" in capsys.readouterr().out
+
+    def test_waits_for_incumbent_to_exit_before_spawning(self):
+        """The replacement must not be spawned while the old gateway is alive.
+
+        The incumbent holds the ``KIROCREW_HOME`` flock for its whole graceful
+        shutdown, and ``_stop`` waits only ~1s for exit without reporting back.
+        A replacement spawned inside that window is refused by the lock and exits
+        1, leaving NO gateway running. Assert the spawn happens strictly after
+        the incumbent pid is observed gone.
+        """
+        from kiro_crew import cli_server
+
+        # Alive for the first two probes, gone from the third.
+        exited = iter([False, False, True, True, True])
+        probe_log: list[bool] = []
+
+        def fake_pid_exited(pid: int) -> bool:
+            val = next(exited, True)
+            probe_log.append(val)
+            return val
+
+        with (
+            self._mock_sel(),
+            patch(
+                "kiro_crew.cli_server.service_controller.restart_service",
+                return_value=False,
+            ),
+            patch(
+                "kiro_crew.cli_server.platform_compat.find_listening_pids",
+                return_value=[1234],
+            ),
+            patch("kiro_crew.cli_server._is_kirocrew_process", return_value=True),
+            patch("kiro_crew.cli_server._stop"),
+            patch("kiro_crew.cli_server._pid_exited", side_effect=fake_pid_exited),
+            patch("kiro_crew.cli_server._print_token_url"),
+            patch("kiro_crew.cli_server._spawn_detached_gateway", return_value=5678) as mock_spawn,
+        ):
+            cli_server._restart(None)
+
+        mock_spawn.assert_called_once()
+        # The wait actually polled past the "still alive" answers rather than
+        # spawning on the first one.
+        assert probe_log[:3] == [False, False, True]
+
+    def test_refuses_to_spawn_when_incumbent_never_exits(self, capsys):
+        """A wedged incumbent must abort the restart, not produce zero gateways.
+
+        Spawning anyway would print a success line for a child the lock kills,
+        so the user ends up with nothing. Aborting leaves the (slow) gateway up
+        and names the pid to force.
+        """
+        from kiro_crew import cli_server
+
+        with (
+            self._mock_sel(),
+            patch(
+                "kiro_crew.cli_server.service_controller.restart_service",
+                return_value=False,
+            ),
+            patch(
+                "kiro_crew.cli_server.platform_compat.find_listening_pids",
+                return_value=[1234],
+            ),
+            patch("kiro_crew.cli_server._is_kirocrew_process", return_value=True),
+            patch("kiro_crew.cli_server._stop"),
+            patch("kiro_crew.cli_server._pid_exited", return_value=False),
+            patch("kiro_crew.cli_server._RESTART_STOP_TIMEOUT", 0),
+            patch("kiro_crew.cli_server._spawn_detached_gateway") as mock_spawn,
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli_server._restart(None)
+
+        assert exc.value.code == 1
+        mock_spawn.assert_not_called()
+        out = capsys.readouterr().out
+        assert "1234" in out
+        assert "did not exit" in out
+
+    def test_unrelated_port_listener_is_not_waited_on(self):
+        """A non-KiroCrew listener must never gate the restart.
+
+        ``find_listening_pids`` reports whatever holds the port. Blocking on a
+        foreign process would make restart hang for the full timeout and then
+        refuse, so the wait set is filtered by ``_is_kirocrew_process``.
+        """
+        from kiro_crew import cli_server
+
+        with (
+            self._mock_sel(),
+            patch(
+                "kiro_crew.cli_server.service_controller.restart_service",
+                return_value=False,
+            ),
+            patch(
+                "kiro_crew.cli_server.platform_compat.find_listening_pids",
+                return_value=[1234],
+            ),
+            patch("kiro_crew.cli_server._is_kirocrew_process", return_value=False),
+            patch("kiro_crew.cli_server._stop") as mock_stop,
+            patch("kiro_crew.cli_server._pid_exited", return_value=False) as mock_exited,
+            patch("kiro_crew.cli_server._print_token_url"),
+            patch("kiro_crew.cli_server._spawn_detached_gateway", return_value=5678) as mock_spawn,
+        ):
+            cli_server._restart(None)
+
+        # _stop still runs (it owns the "not a KiroCrew gateway" diagnostic)...
+        mock_stop.assert_called_once_with(None)
+        # ...but nothing is waited on, and the spawn proceeds.
+        mock_exited.assert_not_called()
+        mock_spawn.assert_called_once()
 
     def test_spawn_detached_gateway_binds_requested_port(self, tmp_path, monkeypatch):
         """The child must bind the port the parent resolved.

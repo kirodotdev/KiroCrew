@@ -661,6 +661,38 @@ def _pid_exited(pid: int) -> bool:
     return not platform_compat.pid_exists(pid)
 
 
+def _wait_for_pids_exit(pids: list[int], timeout: float) -> list[int]:
+    """Block until every pid in *pids* is gone. Return the ones still alive.
+
+    An empty return means they all exited. :func:`_restart` uses this to keep a
+    replacement gateway from starting while the incumbent is still shutting down.
+
+    The incumbent holds an exclusive ``flock`` on ``<KIROCREW_HOME>/gateway.lock``
+    (see :mod:`kiro_crew.gateway_lock`) for its whole lifetime, and the release
+    happens only after ``asyncio.run(_gateway(...))`` returns — so the lock
+    outlives dashboard teardown, cron-scheduler stop, conversation-log flushes,
+    and MCP child reaping. The replacement's acquire is a single non-blocking
+    attempt that prints a refusal and exits 1, so spawning it too early leaves NO
+    gateway running at all. ``_stop`` waits at most 1s and reports nothing back,
+    which is why restart does its own bounded wait.
+
+    Pid reuse is possible but fails SAFE: the caller classifies the pids as
+    KiroCrew gateways once, before the stop, and a pid recycled onto an unrelated
+    process only makes this wait time out. That produces a loud refusal, never a
+    premature "the incumbent is gone" all-clear. Re-classifying inside the loop
+    would invert that -- a recycled pid would read as "not a gateway" and let the
+    replacement spawn while the real incumbent still holds the lock.
+    """
+    if not pids:
+        return []
+    deadline = time.monotonic() + timeout
+    while True:
+        alive = [p for p in pids if not _pid_exited(p)]
+        if not alive or time.monotonic() >= deadline:
+            return alive
+        time.sleep(0.1)
+
+
 def _own_console_script() -> str | None:
     """Absolute path of the console script *this* CLI process was invoked as.
 
@@ -781,6 +813,11 @@ def _spawn_detached_gateway(port: int | None = None) -> int:
 
 _RESTART_TOKEN_TTL = "20h"
 _RESTART_READY_TIMEOUT = 15  # seconds to wait for gateway to become ready
+# Seconds to wait for the incumbent gateway to exit before spawning its
+# replacement. Generous because a graceful shutdown reaps MCP servers and
+# kiro-cli children; the wait ends as soon as the pids are gone, so the common
+# case costs a fraction of a second.
+_RESTART_STOP_TIMEOUT = 30.0
 
 
 def _print_token_url(port: int) -> None:
@@ -855,10 +892,16 @@ def _restart(cli_port: int | None = None) -> None:
     # only on a truthy result would skip the stop and double-spawn a second
     # gateway on a lsof-less POSIX host. _stop() surfaces the distinct
     # "lsof not found" diagnostic (and exits) in that case.
-    if (
-        platform_compat.find_listening_pids(port)
-        or not platform_compat.listening_pid_tool_available()
-    ):
+    #
+    # Capture the incumbent pids HERE, before the stop, so we can wait for them
+    # afterwards: the replacement must not start while the old gateway still owns
+    # the KIROCREW_HOME lock (see _wait_for_pids_exit). Filter with _stop()'s own
+    # kirocrew-process predicate so an unrelated listener on this port never
+    # becomes something we block on. The entry condition below stays on the
+    # UNFILTERED lookup so _stop() keeps emitting its existing diagnostics.
+    listeners = platform_compat.find_listening_pids(port)
+    incumbents = [p for p in listeners if _is_kirocrew_process(p)]
+    if listeners or not platform_compat.listening_pid_tool_available():
         # TOCTOU: the gateway can exit between the check above and _stop()'s own
         # lookup. _stop() raises SystemExit(1) when it finds nothing — for restart
         # that's the wrong behavior. Swallow SystemExit so we always proceed to
@@ -868,6 +911,29 @@ def _restart(cli_port: int | None = None) -> None:
             _stop(cli_port)
         except SystemExit:
             pass
+
+        alive = _wait_for_pids_exit(incumbents, _RESTART_STOP_TIMEOUT)
+        if alive:
+            # Refuse rather than spawn a replacement that the lock would reject.
+            # Aborting leaves the user with a (slow) gateway; spawning anyway
+            # would leave them with none, reported as a success.
+            pids = ", ".join(str(p) for p in alive)
+            sel().log_api_access(
+                caller="cli",
+                operation="gateway_restart",
+                outcome="denied",
+                source="cli",
+                resources=f"port={port} reason=incumbent_still_running pids={alive}",
+            )
+            print(
+                f"❌ Gateway (pid {pids}) did not exit within "
+                f"{int(_RESTART_STOP_TIMEOUT)}s. Not starting a replacement.\n"
+                f"   The old gateway still owns {config_dir()}, so a new one "
+                f"would be refused and exit immediately.\n"
+                f"   To inspect the shutdown, run: kirocrew logs -f\n"
+                f"   If the process is wedged, force it: kill -9 {pids}"
+            )
+            sys.exit(1)
 
     pid = _spawn_detached_gateway(port)
     sel().log_api_access(
