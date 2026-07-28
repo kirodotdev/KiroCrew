@@ -1234,6 +1234,65 @@ function ChatSidebar({
     [enrichedSlots, slotFilter, slotSearchKeys, pinned, sortKey, activeFilters]
   )
 
+  // Folder IDs whose sessions are hidden in flat view because the folder — or
+  // any ancestor — is collapsed. Flat view has no folder headers, so without
+  // this a collapsed folder's sessions would leak into the flat lane; this
+  // makes "flat view" mean "flatten the folders I currently have expanded".
+  const collapsedHiddenFolders = useMemo(() => {
+    const byId = new Map(folders.map(f => [f.id, f]))
+    const hidden = new Set<string>()
+    for (const f of folders) {
+      let cur: ChatFolder | undefined = f
+      const visited = new Set<string>()
+      while (cur && !visited.has(cur.id)) {
+        visited.add(cur.id)
+        if (cur.collapsed) { hidden.add(f.id); break }
+        cur = cur.parent_id ? byId.get(cur.parent_id) : undefined
+      }
+    }
+    return hidden
+  }, [folders])
+
+  // Flat-view slot list: filteredSlots minus sessions in collapsed folders —
+  // EXCEPT while searching, where every match must stay reachable so a
+  // collapsed folder never becomes a search dead-end.
+  const flatSlots = useMemo(() => {
+    if (slotFilter.trim() !== '' || collapsedHiddenFolders.size === 0) return filteredSlots
+    return filteredSlots.filter(s => {
+      const fid = slotFolders[s.key]
+      return !(fid && collapsedHiddenFolders.has(fid))
+    })
+  }, [filteredSlots, slotFilter, collapsedHiddenFolders, slotFolders])
+
+  // Topmost collapsed folders that actually hide ≥1 flat-view session — the
+  // pills in the flat-lane reveal strip. Only the highest collapsed folder in
+  // each chain is listed (expanding it reveals its sessions; a nested collapsed
+  // child re-appears here once its parent is expanded). Empty while searching.
+  const collapsedFolderPills = useMemo(() => {
+    if (slotFilter.trim() !== '' || collapsedHiddenFolders.size === 0) return [] as ChatFolder[]
+    const byId = new Map(folders.map(f => [f.id, f]))
+    const topCollapsedOf = (fid: string): ChatFolder | undefined => {
+      let cur: ChatFolder | undefined = byId.get(fid)
+      let top: ChatFolder | undefined
+      const visited = new Set<string>()
+      while (cur && !visited.has(cur.id)) {
+        visited.add(cur.id)
+        if (cur.collapsed) top = cur
+        cur = cur.parent_id ? byId.get(cur.parent_id) : undefined
+      }
+      return top
+    }
+    const seen = new Map<string, ChatFolder>()
+    for (const s of filteredSlots) {
+      const fid = slotFolders[s.key]
+      if (fid && collapsedHiddenFolders.has(fid)) {
+        const top = topCollapsedOf(fid)
+        if (top && !seen.has(top.id)) seen.set(top.id, top)
+      }
+    }
+    return [...seen.values()].sort((a, b) => a.order - b.order)
+  }, [folders, filteredSlots, slotFolders, collapsedHiddenFolders, slotFilter])
+
   // Flat-view projection: every visible session (foldered + unfoldered) in one
   // list. Removes ONLY the folder rendering hierarchy — the user's sort
   // (incl. pin priority) and active filters/search apply exactly as in the
@@ -2603,6 +2662,25 @@ function ChatSidebar({
           // Inactive without folders (the toggle is hidden then too), so a
           // persisted flat preference can never strand the user.
           <motion.div layoutScroll className="flex-1 min-h-0 overflow-y-auto p-2 flex flex-col" data-testid="flat-view-lane">
+            {collapsedFolderPills.length > 0 && (
+              <div className="px-1 pb-2 flex items-center gap-1.5 flex-wrap" data-testid="flat-collapsed-strip">
+                <span className="text-[11px] text-muted select-none">Show collapsed folders:</span>
+                {collapsedFolderPills.map(f => (
+                  <button
+                    key={f.id}
+                    type="button"
+                    className="inline-flex items-center gap-1 pl-1.5 pr-2 py-0.5 rounded-full text-[11px] cursor-pointer transition-colors border-none"
+                    style={{ background: 'color-mix(in srgb, var(--muted) 12%, transparent)', color: 'var(--muted)', borderWidth: 1, borderColor: 'color-mix(in srgb, var(--muted) 30%, transparent)' }}
+                    onClick={() => toggleCollapse(f.id)}
+                    title={`Show sessions in ${f.name}`}
+                    aria-label={`Show sessions in folder ${f.name}`}
+                  >
+                    <FolderGlyph icon={f.icon} size={11} className="shrink-0" />
+                    <span className="truncate max-w-[110px]">{f.name}</span>
+                  </button>
+                ))}
+              </div>
+            )}
             {(() => {
               // Date segments (Today / Yesterday / Last 7 Days / …) between
               // rows — resurrects the 9bb0f71 active-list pattern: only for
@@ -2612,11 +2690,11 @@ function ChatSidebar({
               const isDateSort = sortKey === 'date-desc' || sortKey === 'date-asc'
               const segOf = (s: Slot) => isDateSort && !pinned.has(s.key) ? dateSegment(s.last_ts || s.created) : ''
               let prevSeg = ''
-              return filteredSlots.map((s, i) => {
+              return flatSlots.map((s, i) => {
                 const seg = segOf(s)
                 const showHeader = seg !== '' && seg !== prevSeg
                 if (seg) prevSeg = seg
-                const next = i < filteredSlots.length - 1 ? filteredSlots[i + 1] : null
+                const next = i < flatSlots.length - 1 ? flatSlots[i + 1] : null
                 const nextIsActive = next != null && activeSlot === next.key
                 const isActive = activeSlot === s.key
                 // No divider before a segment header — the header separates.
@@ -2632,7 +2710,7 @@ function ChatSidebar({
                 )
               })
             })()}
-            {filteredSlots.length === 0 && (
+            {flatSlots.length === 0 && (
               <div className="px-3 py-4 text-[12px] text-muted">No sessions match</div>
             )}
             {!historyOpen && (
