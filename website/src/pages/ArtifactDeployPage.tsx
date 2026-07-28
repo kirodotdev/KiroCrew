@@ -5,7 +5,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft, Globe, Copy, ExternalLink, RefreshCw, Trash2, Undo2, ShieldCheck, Terminal, ChevronDown, ChevronRight, Lock, CheckCircle, XCircle, Rocket, Plus, Star } from 'lucide-react'
 import type { Artifact } from '../types'
 import { PageHeader, Card, CardTitle, StatCard, Btn, Input, Toggle , Badge} from '../components/ui'
-import StyledSelect from '../components/StyledSelect'
+import SimpleSelect from '../components/SimpleSelect'
 import InfoTip from '../components/InfoTip'
 import { safeHttpUrl } from '../lib/safeUrl'
 import { formatCost } from '../utils/formatCost'
@@ -315,11 +315,11 @@ export default function ArtifactDeployPage() {
           </CardTitle>
           <span style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
             <Btn onClick={() => setShowNewProfile((v) => !v)}><Plus size={12} /> {i18nT('pages.artifactDeployPage.new_profile')}</Btn>
-            <StyledSelect
+            <SimpleSelect
               options={['static', 'fullstack']}
               value={policyTier}
               onChange={(v) => setPolicyTier(v as 'static' | 'fullstack')}
-              placeholder={i18nT('pages.artifactDeployPage.policy_tier')}
+              aria-label={i18nT('pages.artifactDeployPage.policy_tier')}
               style={{ minWidth: 120 }}
             />
             <Btn onClick={loadPolicy}>{i18nT('pages.artifactDeployPage.get_iam_policy')}</Btn>
@@ -486,11 +486,12 @@ export default function ArtifactDeployPage() {
                     <td className="px-2.5 py-2 border-b border-border text-sm text-muted">{cost > 0 ? `≤ $${cost.toFixed(4)}` : '~$0.00'}</td>
                     <td className="px-2.5 py-2 border-b border-border text-sm">
                       {profiles.length > 0 && (
-                        <StyledSelect
+                        <SimpleSelect
                           options={profiles.map((p) => p.name)}
                           value={draftProfiles[a.slug] || defaultProfile || ''}
                           onChange={(v) => setDraftProfiles((m) => ({ ...m, [a.slug]: v }))}
-                          placeholder={defaultProfile ? `${defaultProfile} (default)` : 'default'}
+                          clearLabel={defaultProfile ? `${defaultProfile} (default)` : 'default'}
+                          aria-label={i18nT('pages.artifactDeployPage.deploy_profile_for_slug', { slug: a.slug })}
                           style={{ minWidth: 100 }}
                         />
                       )}

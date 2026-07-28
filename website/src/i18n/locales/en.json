@@ -1777,11 +1777,6 @@
       "drag_to_select_the_screen_region_to_capture": "Drag to select the screen region to capture",
       "screen_capture_drag_the_area_you_want_it_attache": "Screen capture — drag the area you want; it attaches automatically on release"
     },
-    "styledSelect": {
-      "filter": "Filter…",
-      "filter_options": "Filter options",
-      "no_matches": "No matches"
-    },
     "tagManagerList": {
       "new_tag": "New tag… ↵"
     },
@@ -2198,6 +2193,7 @@
       "copy_policy": "Copy policy",
       "deploy": "Deploy",
       "deploy_opens_a_new_chat_session_that_runs_the_ar": "Deploy opens a new chat session that runs the artifact-deploy skill with the chosen profile.",
+      "deploy_profile_for_slug": "Deploy profile for {{slug}}",
       "deploy_recall_destroy_each_require_explicit_conf": "Deploy / Recall / Destroy each require explicit confirmation\n              (never auto-approved) and emit a SEL audit event.",
       "deployments": "Deployments (",
       "destroy": "Destroy",
@@ -2984,6 +2980,7 @@
       "cancel": "Cancel",
       "close_dialog": "Close dialog",
       "copy_from_optional": "Copy from (optional)",
+      "copy_from_workspace": "Copy from workspace",
       "create": "Create",
       "create_agent": "Create Agent",
       "create_workspace": "Create Workspace",
@@ -2993,6 +2990,9 @@
       "directory": "Directory",
       "e_g_oncall": "e.g. oncall",
       "edit": "Edit",
+      "edit_agent_template": "Edit agent template",
+      "edit_memory_store": "Edit memory store",
+      "edit_workspace": "Edit workspace",
       "filter_agents": "Filter agents…",
       "manage_agent_workspace_memory_store_bindings": "Manage agent → workspace → memory store bindings",
       "memory_store": "Memory Store",

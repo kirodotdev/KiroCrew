@@ -157,13 +157,11 @@ describe('ArtifactDeployPage (Artifact Deploy console)', () => {
     renderPage(<ArtifactDeployPage />)
     await waitFor(() => expect(screen.getByText(/Ready to deploy \(1\)/)).toBeInTheDocument())
     expect(screen.getByText('parkinglot-draft')).toBeInTheDocument()
-    // StyledSelect: click the trigger button (shows current value or placeholder)
-    // to open the dropdown, then click the desired option
-    const triggers = screen.getAllByRole('button', { expanded: false })
-    // Find the profile selector trigger — it shows the defaultProfile value
-    const profileTrigger = triggers.find(b => b.textContent?.includes('my-deploy'))
-    expect(profileTrigger).toBeTruthy()
-    fireEvent.click(profileTrigger!)
+    // Radix Select: click the combobox trigger (shows current value) to open
+    // the dropdown, then click the desired option
+    const profileTrigger = screen.getByRole('combobox', { name: 'Deploy profile for parkinglot-draft' })
+    expect(profileTrigger).toHaveTextContent('my-deploy')
+    fireEvent.click(profileTrigger)
     await waitFor(() => expect(screen.getByRole('option', { name: 'my-sandbox' })).toBeInTheDocument())
     fireEvent.click(screen.getByRole('option', { name: 'my-sandbox' }))
     fireEvent.click(screen.getByLabelText('Deploy parkinglot-draft'))

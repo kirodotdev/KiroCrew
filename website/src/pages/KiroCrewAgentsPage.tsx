@@ -6,7 +6,7 @@ import { api } from '../api/client'
 import { useProvider } from '../providers'
 import { Card, CardTitle, Btn, SendBtn, Input, Badge, SearchInput, StatCard, PageHeader } from '../components/ui'
 import InfoTip from '../components/InfoTip'
-import StyledSelect from '../components/StyledSelect'
+import SimpleSelect from '../components/SimpleSelect'
 import type { KiroCrewAgent } from '../components/AgentSelector'
 import { SourceBadge } from '../components/SourceBadge'
 
@@ -104,11 +104,12 @@ function WorkspaceModal({
               <span className="text-[11px] text-muted uppercase tracking-wider font-medium">{i18nT('pages.kiroCrewAgentsPage.copy_from_optional')}</span>
               <InfoTip text="Copy the contents of an existing workspace into the new one. Leave as '— none —' to start fresh." />
             </div>
-            <StyledSelect
+            <SimpleSelect
               options={workspaceOptions}
               value={copyFrom}
               onChange={setCopyFrom}
-              placeholder={i18nT('pages.kiroCrewAgentsPage.none')}
+              clearLabel={i18nT('pages.kiroCrewAgentsPage.none')}
+              aria-label={i18nT('pages.kiroCrewAgentsPage.copy_from_workspace')}
             />
           </div>
           {wsError && <div className="text-danger text-[13px]">{wsError}</div>}
@@ -235,21 +236,22 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
             </div>
             <div className="flex flex-col gap-1">
               <span className="text-[11px] text-muted uppercase tracking-wider font-medium">{provider.labels.agentTemplateField}</span>
-              <StyledSelect options={kiroAgentOptions} value={kiroAgent} onChange={setKiroAgent} style={{ width: 160 }} />
+              <SimpleSelect options={kiroAgentOptions} value={kiroAgent} onChange={setKiroAgent} aria-label={provider.labels.agentTemplateField} style={{ width: 160 }} />
             </div>
             <div className="flex flex-col gap-1">
               <span className="text-[11px] text-muted uppercase tracking-wider font-medium">{i18nT('pages.kiroCrewAgentsPage.workspace_2')}</span>
-              <StyledSelect
+              <SimpleSelect
                 options={workspaceOptions}
                 value={workspace}
                 onChange={setWorkspace}
                 action={{ label: '+ New workspace…', onSelect: () => setWsModalTarget('create') }}
+                aria-label={i18nT('pages.kiroCrewAgentsPage.workspace_2')}
                 style={{ width: 160 }}
               />
             </div>
             <div className="flex flex-col gap-1">
               <span className="text-[11px] text-muted uppercase tracking-wider font-medium">{i18nT('pages.kiroCrewAgentsPage.memory_store')}</span>
-              <StyledSelect options={memoryStoreOptions} value={memoryStore} onChange={setMemoryStore} style={{ width: 160 }} />
+              <SimpleSelect options={memoryStoreOptions} value={memoryStore} onChange={setMemoryStore} aria-label={i18nT('pages.kiroCrewAgentsPage.memory_store')} style={{ width: 160 }} />
             </div>
             <SendBtn onClick={create}>{i18nT('pages.kiroCrewAgentsPage.create')}</SendBtn>
           </div>
@@ -282,20 +284,21 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
                     {editing === a.name ? (
                       <>
                         <td className="px-2.5 py-2 border-b border-border">
-                          <StyledSelect options={[...kiroAgentOptions, ...(!kiroAgentOptions.includes(editKiro) ? [editKiro] : [])]} value={editKiro} onChange={setEditKiro} style={{ width: 140 }} />
+                          <SimpleSelect options={[...kiroAgentOptions, ...(!kiroAgentOptions.includes(editKiro) ? [editKiro] : [])]} value={editKiro} onChange={setEditKiro} aria-label={i18nT('pages.kiroCrewAgentsPage.edit_agent_template')} style={{ width: 140 }} />
                         </td>
                         <td className="px-2.5 py-2 border-b border-border text-sm"><SourceBadge source={a.source || 'kirocrew'} /></td>
                         <td className="px-2.5 py-2 border-b border-border">
-                          <StyledSelect
+                          <SimpleSelect
                             options={[...workspaceOptions, ...(!workspaceOptions.includes(editWs) ? [editWs] : [])]}
                             value={editWs}
                             onChange={setEditWs}
                             action={{ label: '+ New workspace…', onSelect: () => setWsModalTarget('edit') }}
+                            aria-label={i18nT('pages.kiroCrewAgentsPage.edit_workspace')}
                             style={{ width: 140 }}
                           />
                         </td>
                         <td className="px-2.5 py-2 border-b border-border">
-                          <StyledSelect options={[...memoryStoreOptions, ...(!memoryStoreOptions.includes(editMs) ? [editMs] : [])]} value={editMs} onChange={setEditMs} style={{ width: 140 }} />
+                          <SimpleSelect options={[...memoryStoreOptions, ...(!memoryStoreOptions.includes(editMs) ? [editMs] : [])]} value={editMs} onChange={setEditMs} aria-label={i18nT('pages.kiroCrewAgentsPage.edit_memory_store')} style={{ width: 140 }} />
                         </td>
                         <td className="px-2.5 py-2 border-b border-border text-sm">
                           <Btn onClick={saveEdit}>{i18nT('pages.kiroCrewAgentsPage.save')}</Btn>{' '}

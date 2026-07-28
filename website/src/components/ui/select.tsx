@@ -70,12 +70,21 @@ SelectScrollDownButton.displayName = SelectPrimitive.ScrollDownButton.displayNam
 const SelectContent = React.forwardRef<
   React.ComponentRef<typeof SelectPrimitive.Content>,
   React.ComponentPropsWithoutRef<typeof SelectPrimitive.Content>
->(({ className, children, position = 'popper', ...props }, ref) => (
+>(({ className, children, position = 'popper', onEscapeKeyDown, ...props }, ref) => (
   <SelectPrimitive.Portal>
     <SelectPrimitive.Content
       ref={ref}
       position={position}
       sideOffset={4}
+      // Escape must dismiss ONLY the select, not the surface hosting it. Radix
+      // dismisses from a document-level listener, so without this the same
+      // keydown keeps bubbling to window-level Escape handlers (e.g. the
+      // workspace modal in KiroCrewAgentsPage) and closes them too. We stop
+      // propagation but never preventDefault, so Radix still closes the select.
+      onEscapeKeyDown={e => {
+        e.stopPropagation()
+        onEscapeKeyDown?.(e)
+      }}
       className={cn(
         'z-[9999] max-h-[240px] overflow-hidden rounded-lg border border-border bg-bg-elevated p-1 text-text shadow-lg',
         'data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95',

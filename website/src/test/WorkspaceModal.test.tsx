@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -174,12 +174,11 @@ describe('WorkspaceModal — creation flow', () => {
     await waitFor(() => expect(mockApi.workspaces).toHaveBeenCalled())
     await openModalViaWorkspaceDropdown()
 
-    // The "Copy from" StyledSelect shows "— none —" as placeholder
-    const modal = screen.getByText('Create Workspace').closest('.fixed')!
-    const copyTrigger = Array.from(modal.querySelectorAll('button[aria-haspopup="listbox"]'))
-      .find(b => b.textContent?.includes('— none —'))
-    expect(copyTrigger).toBeTruthy()
-    fireEvent.click(copyTrigger!)
+    // The "Copy from" select shows "— none —" as its clear row / trigger text
+    const modal = screen.getByText('Create Workspace').closest('.fixed')! as HTMLElement
+    const copyTrigger = within(modal).getByRole('combobox', { name: 'Copy from workspace' })
+    expect(copyTrigger).toHaveTextContent('— none —')
+    fireEvent.click(copyTrigger)
 
     // The portal dropdown should show workspace options
     await waitFor(() => {

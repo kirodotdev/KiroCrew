@@ -3,7 +3,7 @@ import { isTouchDevice } from '../utils/isTouchDevice'
 
 /**
  * Roving-focus keyboard navigation for a portal listbox that pairs with
- * `useFilteredDropdown` (StyledSelect, AgentSelector). Real DOM focus moves
+ * `useFilteredDropdown` (AgentSelector). Real DOM focus moves
  * across elements marked `data-option` inside `dropdownRef`; the trigger
  * regains focus on close (the caller owns `closeToTrigger`). This is the
  * WAI-ARIA listbox / combobox pattern.
@@ -33,7 +33,7 @@ export function useListboxKeyboard(opts: {
   const { open, dropdownRef, inputRef, hasFilterInput, filteredCount, onEnterSingleMatch, closeToTrigger } = opts
 
   const optionEls = useCallback(
-    // StyledSelect marks options (and its "+ New" action) with `data-option`;
+    // AgentSelector marks options (and action rows) with `data-option`;
     // AgentSelector's option rows carry role="option". Match either.
     () => Array.from(dropdownRef.current?.querySelectorAll<HTMLElement>('[data-option],[role="option"]') ?? []),
     [dropdownRef],

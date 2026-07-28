@@ -1777,11 +1777,6 @@
       "drag_to_select_the_screen_region_to_capture": "拖动以选择要截取的屏幕区域",
       "screen_capture_drag_the_area_you_want_it_attache": "屏幕截图 — 拖出你想要的区域；松开后自动附加"
     },
-    "styledSelect": {
-      "filter": "筛选…",
-      "filter_options": "筛选选项",
-      "no_matches": "无匹配项"
-    },
     "tagManagerList": {
       "new_tag": "新标签… ↵"
     },
@@ -2209,6 +2204,7 @@
       "copy_policy": "复制策略",
       "deploy": "部署",
       "deploy_opens_a_new_chat_session_that_runs_the_ar": "“部署”会打开一个新的聊天会话，用所选配置文件运行 artifact-deploy 技能。",
+      "deploy_profile_for_slug": "{{slug}} 的部署配置文件",
       "deploy_recall_destroy_each_require_explicit_conf": "部署 / 撤回 / 销毁 都需要显式确认\n              （从不自动批准），并会发出 SEL 审计事件。",
       "deployments": "部署 (",
       "destroy": "销毁",
@@ -2995,6 +2991,7 @@
       "cancel": "取消",
       "close_dialog": "关闭对话框",
       "copy_from_optional": "复制来源（可选）",
+      "copy_from_workspace": "从工作区复制",
       "create": "创建",
       "create_agent": "创建代理",
       "create_workspace": "创建工作区",
@@ -3004,6 +3001,9 @@
       "directory": "目录",
       "e_g_oncall": "例如 oncall",
       "edit": "编辑",
+      "edit_agent_template": "编辑代理模板",
+      "edit_memory_store": "编辑记忆存储",
+      "edit_workspace": "编辑工作区",
       "filter_agents": "筛选代理…",
       "manage_agent_workspace_memory_store_bindings": "管理代理 → 工作区 → 记忆存储的绑定关系",
       "memory_store": "记忆存储",

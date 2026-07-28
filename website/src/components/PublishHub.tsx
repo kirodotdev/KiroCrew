@@ -13,7 +13,7 @@ import { useNavigate } from 'react-router-dom'
 import { AlertCircle, Check, ExternalLink, Globe, Settings, Upload, X } from 'lucide-react'
 import { api, type AppPublishProvider } from '../api/client'
 import { Card, Btn } from './ui'
-import StyledSelect from './StyledSelect'
+import SimpleSelect from './SimpleSelect'
 import type { Artifact } from '../types'
 import { safeHttpUrl } from '../lib/safeUrl'
 
@@ -283,10 +283,11 @@ export function PublishHub({
           </div>
           <div>
             <label className="text-[11px] text-muted block mb-1">{i18nT('components.publishHub.ttl_time_to_live')}</label>
-            <StyledSelect
+            <SimpleSelect
               options={['Persistent (no expiry)', '72 hours (requires reaper)']}
               value={ttlHours}
               onChange={onTtlChange}
+              aria-label={i18nT('components.publishHub.ttl_time_to_live')}
             />
           </div>
           <div className="flex gap-2">

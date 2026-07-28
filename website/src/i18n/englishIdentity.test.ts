@@ -77,8 +77,11 @@ describe('en catalog integrity', () => {
 
   it('has no value containing raw JSX or TS syntax', () => {
     // Signals the extractor swallowed an expression rather than a text node.
+    // Well-formed `{{placeholders}}` are stripped first: they are legitimate
+    // i18next interpolation (the next test validates their shape), and the
+    // single-brace JSX pattern below otherwise matches their inner braces.
     const codeish = ENTRIES
-      .filter(([, v]) => /\{[a-zA-Z_$][\w$]*\}|=>|<\/[a-zA-Z]/.test(v))
+      .filter(([, v]) => /\{[a-zA-Z_$][\w$]*\}|=>|<\/[a-zA-Z]/.test(v.replace(/\{\{[^}]*\}\}/g, '')))
       .map(([k, v]) => `${k} = ${JSON.stringify(v)}`)
     expect(codeish, codeish.slice(0, 5).join('\n')).toEqual([])
   })
