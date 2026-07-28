@@ -24,6 +24,7 @@ on:
       - Opus 5 Review
       - GPT 5.6 Review
       - Design Review
+      - UX Review
       - CodeQL
     # `completed` publishes the real verdict. `requested`/`in_progress` exist so
     # a monitored workflow flipping BACK to running -- most commonly a re-run of
@@ -208,6 +209,7 @@ jobs:
               "Opus 5 Review (fork PR)"
               "GPT 5.6 Review (fork PR)"
               "Design Review (fork PR)"
+              "UX Review (fork PR)"
               "Arbiter — judge from comments (fork PR)"
             )
           else
@@ -216,6 +218,7 @@ jobs:
               "claude-review.yml|Opus 5 Review"
               "codex-review.yml|GPT 5.6 Review"
               "design-review.yml|Design Review"
+              "ux-review.yml|UX Review"
             )
           fi
           passed=()
@@ -258,10 +261,10 @@ jobs:
                   success|skipped) passed+=("$label") ;;
                   *) failed+=("$label ($conclusion)") ;;
                 esac
-              elif [ "$label" = "Design Review" ]; then
-                # Design is advisory. Completion is required so Arbiter has its
-                # input, but its opinion and infrastructure failures do not
-                # become an independent readiness blocker.
+              elif [ "$label" = "Design Review" ] || [ "$label" = "UX Review" ]; then
+                # Design and UX are advisory. Completion is required so Arbiter
+                # has its inputs, but their opinions and infrastructure failures
+                # do not become an independent readiness blocker.
                 passed+=("$label (advisory)")
               else
                 case "$conclusion" in
