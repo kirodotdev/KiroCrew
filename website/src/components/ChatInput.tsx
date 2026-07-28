@@ -1917,14 +1917,24 @@ function ChatInput({
         onClose={() => { setSkillPickerOpen(false); setSkillQuery('') }}
       />
 
-      {/* Unified input container — drag-to-resize targets this div.
-       *  Wrapped in AnimatePresence so the swap between "bar above input"
-       *  and "bar replaces input" feels like a single continuous morph
-       *  rather than a hard pop. */}
+      {/* Unified input container — drag-to-resize targets the inner div. */}
+      {/* The composer's SHOWN state is initial === animate ({opacity:1,height:auto}),
+          so entering it requires NO animation and it can never be stranded
+          invisible. Only the transient collapse toward the approval "ghost" bar
+          animates (exit -> {opacity:0,height:0}); any re-entry cancels that exit
+          and snaps straight back to the shown state. This was the bug: the old
+          initial={opacity:0,height:0} enter animated height:auto, and when that
+          animation was interrupted (e.g. an approval resolving while the chat tab
+          was backgrounded, so requestAnimationFrame was throttled and the
+          completion that restores height:auto never ran) the motion.div was
+          stranded at height:0/opacity:0 — the input vanished until a remount,
+          which is why it only "came back after switching tabs". Keeping the
+          unmount-while-ghost behavior also means the collapsed composer is never a
+          persistently focusable invisible element. */}
       <AnimatePresence initial={false}>
       {!showGhost && (<motion.div
         key="input-container"
-        initial={{ opacity: 0, height: 0 }}
+        initial={{ opacity: 1, height: 'auto' }}
         animate={{ opacity: 1, height: 'auto' }}
         exit={{ opacity: 0, height: 0 }}
         transition={{ type: 'spring', damping: 26, stiffness: 280, mass: 0.7 }}
